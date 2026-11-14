@@ -1614,9 +1614,10 @@ function toldArchitect(runDir: string, sender: string, threads: z.infer<typeof T
  * (`refusedCompletions`) and scored by neither case: what a role should have done instead of
  * one is no part of the rule these words give. They are the 409 HANDOFF_NOT_CURRENT_PHASE of a
  * late completion — the implementer's, whose round already stands, in `reviewing` or
- * `accepting`, and on the base label the reviewer's once the round has moved the issue — which
- * the run's label's daemon answers so (daemon-standin.ts, completion-answers.ts's ANSWERS), and
- * which is a reading of the run; every other refusal of a completion is a rig error
+ * `accepting`; on the base label the reviewer's once the round has moved the issue; and on the
+ * head label the reviewer's repeat, a late completion after its own earlier one was answered 200
+ * — which the run's label's daemon answers so (daemon-standin.ts, completion-answers.ts's
+ * ANSWERS), and which is a reading of the run; every other refusal of a completion is a rig error
  * (`unscored`). The reviewer's completion in text-fixes' `reviewing` is its own phase's and is
  * accepted.
  * `ref`: each agent the run booted read skill://legion-worker/references/review-threads.md,
@@ -4368,9 +4369,10 @@ function unscored(
   // run's label's daemon refuses that role's completion so in this world
   // (completion-answers.ts's ANSWERS): threads-closed's implementer, whose round already stands,
   // is refused 409 HANDOFF_NOT_CURRENT_PHASE by either daemon, and so is a base reviewer whose
-  // round has moved the issue, which threadsClosed reports. Every other refusal says the stand-in
-  // and the agent's own plugin disagree about the completion — a body the stand-in's request
-  // contract does not take (400 with no code), a completion with no record the tool always
+  // round has moved the issue and a head reviewer's repeat, a late completion after its own
+  // earlier one was answered 200, which threadsClosed reports. Every other refusal says the
+  // stand-in and the agent's own plugin disagree about the completion — a body the stand-in's
+  // request contract does not take (400 with no code), a completion with no record the tool always
   // attaches (400 HANDOFF_RECORD_REQUIRED), a record on a phase that ends with none (409
   // HANDOFF_RECORD_MISMATCH), a grant it minted and does not know (403) — so what the run did
   // next answers a world the daemon would not have served. Measured on 2026-11-12: every base

@@ -40,8 +40,6 @@ type Call struct {
 	Identity runtime.GitIdentity
 	// Tree is CleanupTree's tree.
 	Tree string
-	// Rescue is RescueUnpushed's request.
-	Rescue runtime.RescueRequest
 }
 
 // SpawnResult is one scripted answer to Spawn or Resume.
@@ -80,20 +78,20 @@ type Runtime struct {
 	// and nothing is started.
 	OnResume func(ctx context.Context) error
 
-	mu          sync.Mutex
-	pending     *sync.Cond
-	calls       []Call
-	spawns      []SpawnResult
-	resumes     []SpawnResult
-	probes      []ProbeResult
-	failures    map[string]error
-	drift       map[claim.Token][]string
-	gone        map[claim.Token]bool
-	holdReplace func()
-	holdResume  func()
-	rescuer     func(context.Context, runtime.Known, runtime.RescueRequest) ([]runtime.WorkspaceRescue, error)
-	queue       []runtime.Observation
-	minted      int
+	mu           sync.Mutex
+	pending      *sync.Cond
+	calls        []Call
+	spawns       []SpawnResult
+	resumes      []SpawnResult
+	probes       []ProbeResult
+	failures     map[string]error
+	drift        map[claim.Token][]string
+	gone         map[claim.Token]bool
+	holdReplace  func()
+	replaceNoPod bool
+	holdResume   func()
+	queue        []runtime.Observation
+	minted       int
 }
 
 // NewRuntime is a fake ready to record: no script, controller launched by the daemon, real time.
@@ -213,6 +211,17 @@ func (r *Runtime) HoldReplacePod(hold func()) {
 	r.holdReplace = hold
 }
 
+// FindNoPodToReplace makes every later ReplacePod answer nil without asking due and without
+// replacing anything, as the Sandbox runtime answers a Sandbox that is absent or suspended, or
+// whose pod is no longer the one the locator records: there is no pod of the round to end. The
+// call is recorded as ReplacePodNoPod, so no ReplacePod call stands for a replacement. false
+// clears it.
+func (r *Runtime) FindNoPodToReplace(none bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.replaceNoPod = none
+}
+
 // HoldResume makes every later Resume run hold before it answers, which is where the Sandbox
 // runtime waits out a pod it is building: the claim's machine holds its own lock for the whole
 // call, so a reader that waits on Machine.Claim waits with it. A test holds there to read what
@@ -223,16 +232,6 @@ func (r *Runtime) HoldResume(hold func()) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.holdResume = hold
-}
-
-// RescueWith makes every later RescueUnpushed answer what rescuer answers, which a test points at
-// the real push check (internal/rescue) over repositories of its own, or at a scripted answer. nil
-// clears it: a RescueUnpushed then answers a disk with no workspace on it, which is nothing to lose.
-// The hook runs with none of the fake's own locks held.
-func (r *Runtime) RescueWith(rescuer func(context.Context, runtime.Known, runtime.RescueRequest) ([]runtime.WorkspaceRescue, error)) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.rescuer = rescuer
 }
 
 func (r *Runtime) fail(method string, err error) {
@@ -477,12 +476,13 @@ func (r *Runtime) PodDrift(_ context.Context, k runtime.Known) ([]string, error)
 }
 
 // ReplacePod plays the Sandbox runtime's own order: it waits where that runtime waits for the
-// pod's launch turn (HoldReplacePod), asks due whether the replacement is still due, and only
-// then replaces anything. A due that refuses records a ReplacePodNotDue call and changes nothing
-// — no replacement was made, so no ReplacePod call stands for one — and its error is returned as
-// the runtime hands it back. Otherwise the call is recorded, the claim's drift forgotten — the
-// place it named is gone, and the one built in its stead is built from the configuration the
-// runtime has now — and what FailReplacePod set is answered, nil by default.
+// pod's launch turn (HoldReplacePod), answers nil there for a pod it finds no longer there
+// (FindNoPodToReplace), asks due whether the replacement is still due, and only then replaces
+// anything. A due that refuses records a ReplacePodNotDue call and changes nothing — no
+// replacement was made, so no ReplacePod call stands for one — and its error is returned as the
+// runtime hands it back. Otherwise the call is recorded, the claim's drift forgotten — the place
+// it named is gone, and the one built in its stead is built from the configuration the runtime
+// has now — and what FailReplacePod set is answered, nil by default.
 func (r *Runtime) ReplacePod(ctx context.Context, k runtime.Known, due func(context.Context) error) error {
 	r.mu.Lock()
 	hold := r.holdReplace
@@ -490,6 +490,13 @@ func (r *Runtime) ReplacePod(ctx context.Context, k runtime.Known, due func(cont
 	if hold != nil {
 		hold()
 	}
+	r.mu.Lock()
+	if r.replaceNoPod {
+		r.calls = append(r.calls, Call{Method: "ReplacePodNoPod", Pod: copyKnown(k)})
+		r.mu.Unlock()
+		return nil
+	}
+	r.mu.Unlock()
 	if err := due(ctx); err != nil {
 		r.mu.Lock()
 		defer r.mu.Unlock()
@@ -504,19 +511,6 @@ func (r *Runtime) ReplacePod(ctx context.Context, k runtime.Known, due func(cont
 	}
 	delete(r.drift, k.Claim)
 	return nil
-}
-
-// RescueUnpushed records its call, with the claim it asked through and the request in Rescue, and
-// answers what RescueWith set; with none, a disk with no workspace on it.
-func (r *Runtime) RescueUnpushed(ctx context.Context, k runtime.Known, request runtime.RescueRequest) ([]runtime.WorkspaceRescue, error) {
-	r.mu.Lock()
-	r.calls = append(r.calls, Call{Method: "RescueUnpushed", Pod: copyKnown(k), Rescue: request})
-	rescuer := r.rescuer
-	r.mu.Unlock()
-	if rescuer == nil {
-		return nil, nil
-	}
-	return rescuer(ctx, k, request)
 }
 
 // CleanupTree records its call and answers what FailCleanupTree set, nil by default.

@@ -1,0 +1,2 @@
+{"at":"2026-11-14T00:00:00Z","path":"/legion/v1/handoff/complete","status":200,"role":"reviewer","phase":"reviewing"}
+{"at":"2026-11-14T00:00:05Z","path":"/legion/v1/handoff/complete","status":409,"role":"reviewer","code":"HANDOFF_NOT_CURRENT_PHASE","phase":"accepting"}

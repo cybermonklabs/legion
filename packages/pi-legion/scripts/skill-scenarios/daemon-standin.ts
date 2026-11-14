@@ -21,27 +21,41 @@
  * single-use. A completion is answered as the run's label's daemon answers it
  * (completion-answers.ts's `LABEL_DAEMONS`, read by the label the run directory's name ends with,
  * `labelOf`), on the phase the issue stands in now (`served()`), never on the phase the role was
- * booted in. First the route (`packages/daemon/internal/api/handoff.go`, identical at main
- * `ff2a10ef`): `word, writer, handoffPhase := phase.Handoff(issue.Phase); recordBacked :=
- * handoffPhase && writer == grant.Role`. A record-backed completion naming no record
- * (`handoffId` and a positive `handoffVersion`) is refused 400 HANDOFF_RECORD_REQUIRED, and a
- * completion naming one in a phase that ends with none is refused 409 HANDOFF_RECORD_MISMATCH.
- * Then the workflow (`packages/daemon/internal/workflow/engine.go`, `handoff`): a completion from
+ * booted in. First the label's route (`packages/daemon/internal/api/handoff.go`, `RecordRoute`),
+ * which decides whether the completion is record-backed. This checkout's (`left`): `of :=
+ * phase.Of(grant.Role, issue.Phase); word, writer, handoffPhase := phase.Handoff(of);
+ * recordBacked := handoffPhase && writer == grant.Role && (of == issue.Phase || namesRecord)`.
+ * Main `ff2a10ef`'s (`issue`): `phase.Handoff(issue.Phase)` and `recordBacked := handoffPhase &&
+ * writer == grant.Role`. A record-backed completion naming no record (`handoffId` and a positive
+ * `handoffVersion`) is refused 400 HANDOFF_RECORD_REQUIRED, and one naming a record is read back
+ * from Dispatch, which the stand-in takes as found (below); a completion naming one of a phase
+ * that ends with none is refused 409 HANDOFF_RECORD_MISMATCH. Then the workflow
+ * (`packages/daemon/internal/workflow/engine.go`, `handoff`): a completion from
  * the role whose phase the issue stands in is taken `{}` and moves nothing, since the record
  * moves on the review, as main's engine moves it (`servedPhase`). A completion from any other
  * role (a late role) is answered by the label's engine (`LateRole`):
  *   - this checkout's `leftItsPhase` takes it, `{}` and moving nothing, when the daemon started
- *     the role on the issue and the role's row holds no handoff commit. The completion is then
- *     one of the phase the role left (`leftPhase`), whose record it must name, or it is refused
- *     409 HANDOFF_RECORD_REQUIRED (`phase.Handoff(reported)`, through `refused`). A role whose
- *     row holds a handoff commit is refused 409 HANDOFF_NOT_CURRENT_PHASE. That holds for the
- *     roles the run's world says have completed (the [completed] argument: threads-closed's
- *     implementer, whose implementing round stands) and for a role whose taken completion here
- *     carried a commit, as the engine writes `row.HandoffCommit` from it. Every rig half is a
- *     worker the daemon started, so the refusal of a role the daemon never started is not
- *     modelled;
+ *     the role on the issue and the role's row holds no completion (`row.Completed()`). The
+ *     completion is then one of the phase the role left (`phase.Of`), whose record it must name,
+ *     or it is refused 409 HANDOFF_RECORD_REQUIRED (`phase.Handoff(reported)`, through
+ *     `refused`). A role whose row holds a completion is refused 409 HANDOFF_NOT_CURRENT_PHASE.
+ *     That holds for the roles the run's world says have completed (the [completed] argument:
+ *     threads-closed's implementer, whose implementing round stands) and for a role whose
+ *     completion was taken here, since the engine writes the completion's commit and record on
+ *     the row (`row.HandoffCommit`, `row.HandoffRecord`). Every rig half is a worker the daemon
+ *     started, so the refusal of a role the daemon never started is not modelled;
  *   - main `ff2a10ef` has no `leftItsPhase` and refuses every late completion 409
  *     HANDOFF_NOT_CURRENT_PHASE (`if RoleFor(issue.Phase) != fact.Role`).
+ * The phase a completion is of (`phase.Of`) is the served phase when the role works it and
+ * otherwise the role's own, its first (below): the implementer's would be retro once the issue
+ * stands in merging, where no run of this rig stands. The route's entry fence (`entryFence`:
+ * HANDOFF_STALE_ENTRY, or HANDOFF_NOT_CURRENT_PHASE in another role's phase, for a completion of
+ * a phase entry its role's row has moved past, decided by `behindEntryClause` on the head the
+ * record names) is not modelled: it compares two entries, the one the claim serves and the one
+ * the role's row names, and those differ only once the issue has entered the role's phase again
+ * while its worker was on the earlier entry. No run of this rig enters a phase again: the issue
+ * leaves `reviewing` at most once and stays where it moved (`servedPhase`), and every other
+ * phase stands still, so a rig half's completion is always of the entry its row names.
  * The NOT_CURRENT_PHASE code and message are the daemon's own, read from its code at boot
  * (`NOT_CURRENT_PHASE`), because the skill has the worker quote them to its architect. The real
  * daemon's earlier fence, the 409 `HANDOFF_NO_RUN` of a completion it can attribute to
@@ -81,7 +95,7 @@
  * where the caller names none, in the first phase its role works (daemon-pane.go's `phase
  * <role>`): the implementer works implementing and retro, and the daemon starts it in either.
  * [completed] is the roles, comma-separated, whose row the run's world gives a handoff commit:
- * each completed its phase before the run began (`HANDOFF_COMMITS`).
+ * each completed its phase before the run began (`COMPLETED_ROWS`).
  * An issue in `reviewing` moves on what the same run directory reports: its remote's tip, the
  * reviews of its world and of its gh record, and the merge state its world reports for that tip
  * (`servedPhase`).
@@ -102,7 +116,6 @@ import { z } from "zod";
 import {
   COMPLETE_PATH,
   LABEL_DAEMONS,
-  type LateRole,
   labelOf,
   NOT_CURRENT_PHASE as NOT_CURRENT_PHASE_CODE,
 } from "./completion-answers";
@@ -140,26 +153,28 @@ if (!isLegionRole(role)) {
   console.error(`${role} is not a Legion role`);
   process.exit(2);
 }
-/** How the run's label's daemon answers a late role (completion-answers.ts's `LateRole`), read
- * by the label the run directory's name ends with. A run of a label the rig models no daemon for
- * fails the boot rather than being answered as some other label's daemon would answer it. */
-const LATE_ROLE: LateRole = (() => {
+/** How the run's label's daemon answers a late role and which phase its route holds a record to
+ * (completion-answers.ts's `LateRole` and `RecordRoute`), read by the label the run directory's
+ * name ends with. A run of a label the rig models no daemon for fails the boot rather than being
+ * answered as some other label's daemon would answer it. */
+const { lateRole: LATE_ROLE, recordRoute: RECORD_ROUTE } = (() => {
   try {
     const label = labelOf(runDir);
     const daemon = LABEL_DAEMONS[label];
     if (daemon === undefined) throw new Error(`no daemon is declared for the ${label} label`);
-    return daemon.lateRole;
+    return daemon;
   } catch (error) {
     console.error(`daemon-standin: ${error instanceof Error ? error.message : String(error)}`);
     process.exit(2);
   }
 })();
-/** The roles whose phase row holds a handoff commit, which the engine refuses a late completion
- * from (`leftItsPhase`'s `row.HandoffCommit != ""`): the roles the run's world says completed
- * their phase with a commit before the run began, and a role whose taken completion here
- * carried one (`handle`'s `handoff/complete`). */
-const HANDOFF_COMMITS = new Set(completedArg.split(",").filter((named) => named !== ""));
-for (const named of HANDOFF_COMMITS) {
+/** The roles whose phase row holds a completion, which this checkout's engine refuses a late
+ * completion from (`leftItsPhase`'s `row.Completed()`, a handoff commit or a handoff record on
+ * the row): the roles the run's world says completed their phase with a commit before the run
+ * began, and a role whose completion was taken here naming a commit or a record (`handle`'s
+ * `handoff/complete`). */
+const COMPLETED_ROWS = new Set(completedArg.split(",").filter((named) => named !== ""));
+for (const named of COMPLETED_ROWS) {
   if (!isLegionRole(named)) {
     console.error(`daemon-standin: [completed] names ${named}, which is not a Legion role`);
     process.exit(2);
@@ -526,14 +541,28 @@ function handle(
       // Both the route and the workflow read the phase the issue stands in now, the one a state
       // read serves, and never the phase this role was booted in. The earlier HANDOFF_NO_RUN
       // fence of the route is not reached: a rig half is a live registered worker serving
-      // generation 1, so the route attributes its completion to a run.
+      // generation 1, so the route attributes its completion to a run; nor is the entry fence
+      // (the module doc says why).
       const phase = served();
       const { handoffId, handoffVersion, commit } = parsed.data;
-      // The route (packages/daemon/internal/api/handoff.go): `recordBacked := handoffPhase &&
-      // writer == grant.Role`. A phase's writer is the role the workflow starts on it, so a
-      // completion is record-backed exactly when the issue stands in this role's own phase and
-      // that phase ends with a record.
-      if (phase === ROLE_PHASE && HANDOFF_WORD !== "") {
+      const namesRecord = handoffId !== undefined || handoffVersion !== undefined;
+      // The route (packages/daemon/internal/api/handoff.go), as the label's daemon has it
+      // (`RECORD_ROUTE`). A phase's writer is the role the workflow starts on it. This
+      // checkout's holds the completion to the phase it is of (`phase.Of`): the served phase
+      // when this role works it, and otherwise the one it left, its own; the completion is
+      // record-backed when that phase ends with a record and it is the served phase or the
+      // completion names a record. `ff2a10ef`'s holds it to the served phase, and it is
+      // record-backed exactly when the issue stands in this role's own phase and that phase ends
+      // with a record.
+      const of = RECORD_ROUTE === "left" ? ROLE_PHASE : phase;
+      const recordBacked =
+        RECORD_ROUTE === "left"
+          ? HANDOFF_WORD !== "" && (phase === ROLE_PHASE || namesRecord)
+          : phase === ROLE_PHASE && HANDOFF_WORD !== "";
+      if (recordBacked) {
+        // A record it names is read back from Dispatch and held to the issue, the word, the
+        // version and the session (`handoffRecord`), which the stand-in takes as found: the
+        // scorer reads the record back instead (the module doc).
         if (handoffId === undefined || handoffVersion === undefined) {
           const write = `\`dispatch handoff-write --issue ${issue} --phase ${HANDOFF_WORD} --body-file <file>\``;
           return {
@@ -541,20 +570,17 @@ function handle(
             response: failure(
               400,
               "HANDOFF_RECORD_REQUIRED",
-              `phase ${phase} of ${issue} ends with its ${HANDOFF_WORD} handoff recorded on the Dispatch issue, and this completion names no record (handoffId and a positive handoffVersion): write it with ${write}, then complete again; this completion changed nothing`
+              `phase ${of} of ${issue} ends with its ${HANDOFF_WORD} handoff recorded on the Dispatch issue, and this completion names no record (handoffId and a positive handoffVersion): write it with ${write}, then complete again; this completion changed nothing`
             ),
           };
         }
-      } else if (
-        !RECORD_PHASES.includes(phase) &&
-        (handoffId !== undefined || handoffVersion !== undefined)
-      ) {
+      } else if (!RECORD_PHASES.includes(of) && namesRecord) {
         return {
           phase,
           response: failure(
             409,
             "HANDOFF_RECORD_MISMATCH",
-            `phase ${phase} of ${issue} ends with no handoff record, and this completion names one: complete without handoffId and handoffVersion; this completion changed nothing`
+            `phase ${of} of ${issue} ends with no handoff record, and this completion names one: complete without handoffId and handoffVersion; this completion changed nothing`
           ),
         };
       }
@@ -563,7 +589,7 @@ function handle(
       // are the daemon's own, read from its code at boot (NOT_CURRENT_PHASE), because the skill
       // has the worker quote them to its architect.
       if (phase !== ROLE_PHASE) {
-        if (LATE_ROLE === "refused" || HANDOFF_COMMITS.has(role)) {
+        if (LATE_ROLE === "refused" || COMPLETED_ROWS.has(role)) {
           if (NOT_CURRENT_PHASE === undefined)
             throw new Error(`no refusal was read at boot for ${role}'s completion in ${phase}`);
           return {
@@ -575,7 +601,7 @@ function handle(
             ),
           };
         }
-        // `leftItsPhase`: the completion is of the phase this role left (`leftPhase`, the
+        // `leftItsPhase`: the completion is of the phase this role left (`phase.Of`, the
         // role's own), and a phase that ends with a record requires the record it names.
         if (HANDOFF_WORD !== "" && handoffId === undefined) {
           return {
@@ -588,10 +614,11 @@ function handle(
           };
         }
       }
-      // A taken completion is written on the role's row, its commit as the row's handoff commit,
-      // and it moves nothing: the review decides the round, and the record moves when the world
-      // reports a decision that ends it (`servedPhase`, `roundOutcome`).
-      if (commit !== undefined) HANDOFF_COMMITS.add(role);
+      // A taken completion is written on the role's row, its commit as the row's handoff commit
+      // and its record as the row's handoff record, either of which completes the row
+      // (`row.Completed()`), and it moves nothing: the review decides the round, and the record
+      // moves when the world reports a decision that ends it (`servedPhase`, `roundOutcome`).
+      if (commit !== undefined || handoffId !== undefined) COMPLETED_ROWS.add(role);
       return { response: json(200, {}), phase };
     }
     case "/legion/v1/phase/backward": {
@@ -637,9 +664,9 @@ const server = Bun.serve({
     // A refusal's line carries its code, the daemon's `Failure` code where the answer has one, so
     // a reader of the log can tell the daemon's own answer to a run (HANDOFF_NOT_CURRENT_PHASE)
     // from a body this stand-in could not take at all, whose 400 has none (score.ts's
-    // `unscored`). A completion's line carries the phase it was answered on, since one code can
-    // be the daemon's answer in one phase and a broken world's in another (completion-answers.ts's
-    // `ANSWERS`).
+    // `unscored`). A completion's line carries the phase it was answered on, which no program
+    // reads (completion-answers.ts's `DaemonLine`): it is how a person reading the run tells a
+    // late completion from one of the role's own phase.
     const refusal: unknown = response.status >= 400 ? await response.clone().json() : undefined;
     const line: LogLine = {
       at: new Date().toISOString(),

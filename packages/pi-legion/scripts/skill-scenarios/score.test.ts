@@ -3932,8 +3932,9 @@ reviewRun("reviewer-text-findings-text-only-base-1", {
 // The reviewer's completion after its round moved the issue, refused 409
 // HANDOFF_NOT_CURRENT_PHASE: the base label's daemon (`ff2a10ef`, no `leftItsPhase`) refuses a
 // late reviewer so, and base-2 is scored; this checkout's daemon takes a late reviewer naming
-// its record and refuses no reviewer here so, and head-126 is a rig error
-// (completion-answers.ts's ANSWERS, which `unscored` and health.ts both read).
+// its record and refuses one so only as a repeat after its own taken completion, which a lone
+// refusal is not, so head-126 is a rig error (completion-answers.ts's ANSWERS, which `unscored`
+// and health.ts both read).
 for (const name of [
   "reviewer-text-findings-text-only-base-2",
   "reviewer-text-findings-text-only-head-126",
@@ -5109,10 +5110,11 @@ const changesRequested = (commit: string, at = "2026-09-30T17:38:00.000Z") => ({
   by: "reviewer",
 });
 /** The daemon stand-in's log line of a completion it refused as the workflow refuses one of a
- * phase the completing role does not run, which is the answer the implementer of this loop gets
- * in `reviewing` and either half gets in `accepting` (rig.sh's run_threads_closed), 409
- * HANDOFF_NOT_CURRENT_PHASE (daemon-standin.ts): a reading of the run, and no rig error. The
- * stand-in names the role it serves on every line, and a completion's is read by it alone. */
+ * phase the completing role does not run, 409 HANDOFF_NOT_CURRENT_PHASE (daemon-standin.ts):
+ * the answer the implementer of this loop gets in `reviewing` and in `accepting` (rig.sh's
+ * run_threads_closed), the base reviewer gets once the round has moved the issue, and the head
+ * reviewer gets for a repeat after its own earlier 200. A reading of the run, and no rig error.
+ * The stand-in names the role it serves on every line, and a completion's is read by it alone. */
 const refusedCompletion = {
   at: "2026-09-30T17:40:00.000Z",
   path: "/legion/v1/handoff/complete",
@@ -8461,10 +8463,10 @@ test("a completion line that names no role is a rig error, never given a role", 
   expect(out).not.toContain("threads-closed-text-fixes-head-101\tpass=");
 });
 
-// Catches: one exemption for a code whatever label and role it answered. The same 409
+// Catches: one exemption for a code whatever label and role it answered. The same lone 409
 // HANDOFF_NOT_CURRENT_PHASE to a reviewer is how the base label's daemon takes a late reviewer's
-// completion and a refusal the head label's daemon never gives one here (completion-answers.ts's
-// ANSWERS, read through the `refusedCompletion` health.ts reads too).
+// completion and a refusal the head label's daemon gives one here only after a 200 of its own
+// (completion-answers.ts's ANSWERS, read through the `refusedCompletion` health.ts reads too).
 test("a reviewer's not-current-phase refusal is scored on the base label and a rig error on head", () => {
   expect(out).toContain("reviewer-text-findings-text-only-base-2\tpass=");
   expect(out).toContain(

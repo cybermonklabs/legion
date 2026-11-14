@@ -1255,7 +1255,7 @@ describe("worker_boot", () => {
 
   // Catches: a world statement that never reaches the stand-in. threads-closed's implementer
   // completed its round before the run began, which is what makes either label's daemon refuse
-  // its completion 409 HANDOFF_NOT_CURRENT_PHASE (daemon-standin.ts's HANDOFF_COMMITS); a boot
+  // its completion 409 HANDOFF_NOT_CURRENT_PHASE (daemon-standin.ts's COMPLETED_ROWS); a boot
   // that dropped COMPLETED would have the head stand-in take the implementer as a role that left
   // its phase with nothing on its row.
   test("the stand-in is given the roles the world says completed their phase", () => {
@@ -1510,9 +1510,9 @@ describe("health", () => {
   });
 
   // Catches: the same code read as allowed whatever role it answered. The head daemon refuses a
-  // reviewer 409 HANDOFF_NOT_CURRENT_PHASE only once its row holds a commit, which no
-  // threads-closed world gives it, so a head reviewer refused so is a world the daemon would not
-  // have served.
+  // reviewer 409 HANDOFF_NOT_CURRENT_PHASE only once its row holds a completion, which no
+  // threads-closed world gives it before the run, so a head reviewer refused so with no earlier
+  // 200 of its own is a world the daemon would not have served.
   test("a head threads-closed reviewer refused not-current-phase is unhealthy", () => {
     const named = run("threads-closed-text-fixes-head-2", [
       [complete(409, NOT_CURRENT, "implementer")],
@@ -1527,8 +1527,8 @@ describe("health", () => {
 
   // Catches: one exemption for every label. Main `ff2a10ef` refuses a reviewer whose round has
   // moved the issue 409 HANDOFF_NOT_CURRENT_PHASE, which is how the base daemon takes that
-  // completion; this checkout records it, so the same answer on the head label is a refusal the
-  // head daemon never gives a reviewer here.
+  // completion; this checkout records it, so the same answer on the head label, with no earlier
+  // 200 of the reviewer's, is a refusal the head daemon never gives a reviewer here.
   test("a reviewer-text-findings reviewer refused not-current-phase is healthy on base and not on head", () => {
     const base = run("reviewer-text-findings-text-only-base-1", [
       [complete(409, NOT_CURRENT, "reviewer")],
@@ -1545,51 +1545,61 @@ describe("health", () => {
     expect(stdout).toEndWith("health: 1 of 2 runs unhealthy\n");
   });
 
-  // Catches: the head route's own refusal of a late reviewer in `accepting` read as unhealthy,
-  // and the same code read as allowed wherever it was answered. The head plugin names the review
-  // record of the phase the reviewer left, and the route refuses a record named in a phase that
-  // writes none 409 HANDOFF_RECORD_MISMATCH: a threads-closed reviewer stands in `accepting`
-  // after its approval of the fix head, or is booted there in code-defect. The route also
-  // answers that code to a record of another issue, phase or version in a record-backed phase,
-  // which no world gives, so the same answer in `reviewing`, or on a line that names no phase,
-  // is a broken world. reviewer-text-findings' world holds its head BLOCKED, so its reviewer never
-  // stands in `accepting`, and the answer is a refusal its world should not have given there.
-  test("a head reviewer refused record-mismatch is healthy in threads-closed's accepting alone", () => {
-    const MISMATCH = "HANDOFF_RECORD_MISMATCH";
+  // Catches: a head reviewer's late refusal read by its code alone. This checkout's route reads
+  // back the review record a late reviewer names, and its engine records that completion 200
+  // unless the reviewer's row already holds one: a completion of its own taken earlier in the
+  // run, after which the engine refuses a repeat 409 HANDOFF_NOT_CURRENT_PHASE
+  // (completion-answers.ts's `ANSWERS`, `AFTER_TAKEN`). So that refusal is the head daemon's
+  // answer after an earlier 200 of the same reviewer on the run's log alone: not with none, not
+  // with the 200 after it, and not after another role's 200. The head route refuses no reviewer
+  // 409 HANDOFF_RECORD_MISMATCH in this rig, `accepting` included, since the phase its completion
+  // is of is `reviewing`, which writes a record.
+  test("a head reviewer refused not-current-phase is healthy only as a repeat of its own earlier 200", () => {
     const fixes = run("threads-closed-text-fixes-head-4", [
       [complete(409, NOT_CURRENT, "implementer", "reviewing")],
       [
         complete(200, undefined, "reviewer", "reviewing"),
-        complete(409, MISMATCH, "reviewer", "accepting"),
+        complete(409, NOT_CURRENT, "reviewer", "accepting"),
       ],
-    ]);
-    const defect = run("threads-closed-code-defect-head-1", [
-      [complete(409, NOT_CURRENT, "implementer", "accepting")],
-      [complete(409, MISMATCH, "reviewer", "accepting")],
-    ]);
-    const reviewing = run("threads-closed-text-fixes-head-5", [
-      [complete(409, NOT_CURRENT, "implementer", "reviewing")],
-      [complete(409, MISMATCH, "reviewer", "reviewing")],
-    ]);
-    const unphased = run("threads-closed-code-defect-head-2", [
-      [complete(409, NOT_CURRENT, "implementer")],
-      [complete(409, MISMATCH, "reviewer")],
     ]);
     const review = run("reviewer-text-findings-text-only-head-3", [
       [
         complete(200, undefined, "reviewer", "reviewing"),
-        complete(409, MISMATCH, "reviewer", "accepting"),
+        complete(409, NOT_CURRENT, "reviewer", "implementing"),
       ],
     ]);
-    const { code, stdout } = health(fixes, defect, reviewing, unphased, review);
+    const alone = run("threads-closed-code-defect-head-1", [
+      [complete(409, NOT_CURRENT, "implementer", "accepting")],
+      [complete(409, NOT_CURRENT, "reviewer", "accepting")],
+    ]);
+    const before = run("threads-closed-text-fixes-head-8", [
+      [complete(409, NOT_CURRENT, "implementer", "reviewing")],
+      [
+        complete(409, NOT_CURRENT, "reviewer", "accepting"),
+        complete(200, undefined, "reviewer", "accepting"),
+      ],
+    ]);
+    const another = run("threads-closed-code-defect-head-6", [
+      [complete(200, undefined, "implementer", "accepting")],
+      [complete(409, NOT_CURRENT, "reviewer", "accepting")],
+    ]);
+    const MISMATCH = "HANDOFF_RECORD_MISMATCH";
+    const accepting = run("threads-closed-code-defect-head-2", [
+      [complete(409, NOT_CURRENT, "implementer", "accepting")],
+      [complete(409, MISMATCH, "reviewer", "accepting")],
+    ]);
+    const { code, stdout } = health(fixes, review, alone, before, another, accepting);
     expect(code).toBe(1);
     expect(verdict(stdout, fixes)).toBe("threads-closed-text-fixes-head-4  healthy");
-    expect(verdict(stdout, defect)).toBe("threads-closed-code-defect-head-1  healthy");
-    const refused =
-      "unhealthy: refused completion: POST /legion/v1/handoff/complete of the reviewer answered 409 HANDOFF_RECORD_MISMATCH, which the head label's daemon does not answer it with in this world";
-    for (const dir of [reviewing, unphased, review])
-      expect(verdict(stdout, dir)).toBe(`${path.basename(dir)}  ${refused}`);
-    expect(stdout).toEndWith("health: 3 of 5 runs unhealthy\n");
+    expect(verdict(stdout, review)).toBe("reviewer-text-findings-text-only-head-3  healthy");
+    const refused = (answer: string) =>
+      `unhealthy: refused completion: POST /legion/v1/handoff/complete of the reviewer answered ${answer}, which the head label's daemon does not answer it with in this world`;
+    for (const dir of [alone, before, another])
+      expect(verdict(stdout, dir)).toBe(`${path.basename(dir)}  ${refused(`409 ${NOT_CURRENT}`)}`);
+    expect(verdict(stdout, accepting)).toBe(
+      `threads-closed-code-defect-head-2  ${refused(`409 ${MISMATCH}`)}`
+    );
+    expect(stdout).toEndWith("health: 4 of 6 runs unhealthy\n");
   });
 
   // Catches: a code outside the run's own entry read as allowed because some entry allows it.
@@ -2001,8 +2011,9 @@ describe("health", () => {
     );
   });
 
-  // The tester's fixture of 2026-11-14 (health-fixture/): eighteen runs covering the twelve
-  // completion worlds (fields in either order, a log line that is no JSON, a role-less 409), a
+  // The tester's fixture of 2026-11-14 (health-fixture/): twenty-one runs covering the fifteen
+  // completion worlds (fields in either order, a log line that is no JSON, a role-less 409, a
+  // head reviewer's late refusal after its own 200 and one before it), a
   // later run reading an earlier run's /tmp write, a read of an entry from before the batch, a run
   // reading its own file, another run's path named only in a subagent's transcript, and a push
   // the guard could not check; its `expected` is the tester's own verdict, run for run, and its
@@ -2032,7 +2043,7 @@ describe("health", () => {
         ),
       ])
     );
-    expect(stdout).toEndWith("health: 12 of 18 runs unhealthy\n");
+    expect(stdout).toEndWith("health: 14 of 21 runs unhealthy\n");
   });
 });
 

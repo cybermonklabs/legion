@@ -8,7 +8,7 @@
 //	                         word of the handoff record that phase ends with (handoffWords), empty
 //	                         for a phase that ends with none: the first phase workflow.RoleFor
 //	                         gives to the role
-//	refusal not-current-phase <role> <phase> <issue>
+//	refusal not-current-phase <role> <phase> <issue> [<engine source> [<intake package dir>]]
 //	                         prints the code of the daemon's refusal of a completion of a phase
 //	                         the role does not run, then on a second line the daemon's own
 //	                         message for it, read out of the daemon's source (notCurrentPhase)
@@ -46,7 +46,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
-const usage = "usage: daemon-pane phase <role> | refusal not-current-phase <role> <phase> <issue> [<engine source>] | pane < request.json"
+const usage = "usage: daemon-pane phase <role> | refusal not-current-phase <role> <phase> <issue> [<engine source> [<intake package dir>]] | pane < request.json"
 
 func main() {
 	args := os.Args[1:]
@@ -54,18 +54,23 @@ func main() {
 	switch {
 	case len(args) == 2 && args[0] == "phase":
 		err = printPhase(claim.Role(args[1]))
-	case (len(args) == 5 || len(args) == 6) && args[0] == "refusal" && args[1] == "not-current-phase":
-		// The engine source the refusal is read out of: the daemon's own, and the one a caller
-		// names otherwise. A caller names one so that a test can hold this reading to a
-		// substitute engine.go and watch each guard below fire — the guards answer a daemon
-		// that writes the refusal in some other shape, which today's daemon does not, so
-		// without a source of its own not one of them can be reached (daemon-pane.test.ts).
-		// The rig itself names none and reads the daemon's file.
-		engine := defaultEngineFile
-		if len(args) == 6 {
+	case len(args) >= 5 && len(args) <= 7 && args[0] == "refusal" && args[1] == "not-current-phase":
+		// The engine source the refusal is read out of, and the intake package the engine's
+		// shared refusals are built in: the daemon's own, and the ones a caller names otherwise.
+		// A caller names them so that a test can hold this reading to substitutes of its own and
+		// watch each shape and each guard below fire — the guards answer a daemon that writes
+		// the refusal in some other shape, which today's daemon does not, and the base label's
+		// shape is one today's daemon no longer writes, so without sources of its own not one of
+		// them can be reached (daemon-pane.test.ts). The rig itself names none and reads the
+		// daemon's files.
+		engine, intakeDir := defaultEngineFile, defaultIntakeDir
+		if len(args) >= 6 {
 			engine = args[5]
 		}
-		err = printNotCurrentPhase(args[2], args[3], args[4], engine)
+		if len(args) == 7 {
+			intakeDir = args[6]
+		}
+		err = printNotCurrentPhase(args[2], args[3], args[4], engine, intakeDir)
 	case len(args) == 1 && args[0] == "pane":
 		err = pane()
 	default:
@@ -107,14 +112,19 @@ func printPhase(role claim.Role) error {
 // substitute of its own.
 const defaultEngineFile = "internal/workflow/engine.go"
 
+// defaultIntakeDir is the package a refusal the engine shares with the completion route is built
+// in (`intake.NotCurrentPhase`), read relative to the module as defaultEngineFile is, and taken
+// as an argument for the same reason.
+const defaultIntakeDir = "internal/intake"
+
 // notCurrentPhaseCode is the refusal the daemon answers a completion of a phase the completing
 // role does not run with.
 const notCurrentPhaseCode = "HANDOFF_NOT_CURRENT_PHASE"
 
 // printNotCurrentPhase prints that refusal's code and the daemon's own message for it, for the
 // stand-in to answer such a completion with (daemon-standin.ts).
-func printNotCurrentPhase(role, issuePhase, issue, engineFile string) error {
-	message, err := notCurrentPhase(role, issuePhase, issue, engineFile)
+func printNotCurrentPhase(role, issuePhase, issue, engineFile, intakeDir string) error {
+	message, err := notCurrentPhase(role, issuePhase, issue, engineFile, intakeDir)
 	if err != nil {
 		return err
 	}
@@ -127,12 +137,12 @@ func printNotCurrentPhase(role, issuePhase, issue, engineFile string) error {
 // role does not run, read out of the daemon's own code rather than restated here: the skill has
 // the worker quote that sentence to its architect, so a stand-in answering a sentence of its own
 // would teach every agent a message the daemon never sends, and a copy goes stale the day the
-// daemon's wording moves with nothing to say so. The engine builds it in one place,
-// `refused("HANDOFF_NOT_CURRENT_PHASE", fmt.Sprintf(<format>, <arguments>...))`, so this reads
-// that call's format and fills it with the arguments the engine itself names. A daemon that
-// writes the refusal in some other shape is an error here, never a sentence this invents.
-func notCurrentPhase(role, issuePhase, issue, engineFile string) (string, error) {
-	format, arguments, err := refusalMessage(notCurrentPhaseCode, engineFile)
+// daemon's wording moves with nothing to say so. The engine builds it in one place, in one of two
+// shapes (refusalMessage), so this reads that call's format and fills it with the arguments the
+// engine itself names. A daemon that writes the refusal in some other shape is an error here,
+// never a sentence this invents.
+func notCurrentPhase(role, issuePhase, issue, engineFile, intakeDir string) (string, error) {
+	format, arguments, err := refusalMessage(notCurrentPhaseCode, engineFile, intakeDir)
 	if err != nil {
 		return "", err
 	}
@@ -152,20 +162,34 @@ func notCurrentPhase(role, issuePhase, issue, engineFile string) (string, error)
 	return message, nil
 }
 
-// refusalMessage is the format string and the argument expressions, as the daemon writes them,
-// of the engine's `refused(code, fmt.Sprintf(…))` call for `code`.
-func refusalMessage(code, engineFile string) (string, []string, error) {
+// refusalMessage is the format string of the engine's refusal `code` and the argument
+// expressions the engine fills it with, as the daemon writes them, in one of the two shapes the
+// engine has built that refusal in:
+//   - `refused(code, fmt.Sprintf(<format>, <arguments>...))` in the engine itself, main
+//     `ff2a10ef`'s, the base label's;
+//   - `intake.NotCurrentPhase(<arguments>...)` in the engine, this checkout's, whose sentence the
+//     intake package builds, shared with the completion route: its `func NotCurrentPhase` returns
+//     a refusal of `code` whose `Message` is `fmt.Sprintf(<format>, <parameters>...)`, and each
+//     parameter it fills the format with is replaced by the engine's argument in that place.
+//
+// The first is read first; finding neither is an error naming both.
+func refusalMessage(code, engineFile, intakeDir string) (string, []string, error) {
 	file, err := parser.ParseFile(token.NewFileSet(), engineFile, nil, 0)
 	if err != nil {
 		return "", nil, fmt.Errorf("read the daemon's %s: %w", engineFile, err)
 	}
 	format, arguments, found := "", []string(nil), false
+	var shared *ast.CallExpr
 	ast.Inspect(file, func(node ast.Node) bool {
 		if found {
 			return false
 		}
 		call, isCall := node.(*ast.CallExpr)
 		if !isCall {
+			return true
+		}
+		if shared == nil && isIntakeNotCurrentPhase(call) {
+			shared = call
 			return true
 		}
 		name, isName := call.Fun.(*ast.Ident)
@@ -175,28 +199,144 @@ func refusalMessage(code, engineFile string) (string, []string, error) {
 		if refused, isText := stringLiteral(call.Args[0]); !isText || refused != code {
 			return true
 		}
-		sprintf, isSprintf := call.Args[1].(*ast.CallExpr)
+		text, filled, isSprintf := sprintfOf(call.Args[1])
 		if !isSprintf {
 			return true
 		}
-		printer, isSelector := sprintf.Fun.(*ast.SelectorExpr)
-		if !isSelector || printer.Sel.Name != "Sprintf" || len(sprintf.Args) == 0 {
-			return true
-		}
-		text, isText := stringLiteral(sprintf.Args[0])
-		if !isText {
-			return true
-		}
 		format, found = text, true
-		for _, argument := range sprintf.Args[1:] {
+		for _, argument := range filled {
 			arguments = append(arguments, types.ExprString(argument))
 		}
 		return false
 	})
+	if found {
+		return format, arguments, nil
+	}
+	if shared == nil {
+		return "", nil, fmt.Errorf("%s holds no refused(%q, fmt.Sprintf(…)) call and no intake.NotCurrentPhase(…) call: the daemon writes that refusal some other way now", engineFile, code)
+	}
+	return sharedRefusal(code, shared, intakeDir)
+}
+
+// isIntakeNotCurrentPhase says whether `call` is `intake.NotCurrentPhase(…)`.
+func isIntakeNotCurrentPhase(call *ast.CallExpr) bool {
+	selector, isSelector := call.Fun.(*ast.SelectorExpr)
+	if !isSelector || selector.Sel.Name != "NotCurrentPhase" {
+		return false
+	}
+	pkg, isIdent := selector.X.(*ast.Ident)
+	return isIdent && pkg.Name == "intake"
+}
+
+// sharedRefusal is the format and the engine's arguments of the refusal `code` the engine builds
+// with `call`, `intake.NotCurrentPhase(…)`: the format of the `Message` the intake package's
+// `func NotCurrentPhase` writes beside `Code: code`, and, for each parameter that format is
+// filled with, the engine's argument in that parameter's place.
+func sharedRefusal(code string, call *ast.CallExpr, intakeDir string) (string, []string, error) {
+	sources, err := filepath.Glob(filepath.Join(intakeDir, "*.go"))
+	if err != nil {
+		return "", nil, fmt.Errorf("list the daemon's %s: %w", intakeDir, err)
+	}
+	missing := fmt.Errorf("%s holds no func NotCurrentPhase returning a %s refusal whose Message is fmt.Sprintf(…) of its parameters: the daemon writes that refusal some other way now", intakeDir, code)
+	var function *ast.FuncDecl
+	for _, source := range sources {
+		if strings.HasSuffix(source, "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(token.NewFileSet(), source, nil, 0)
+		if err != nil {
+			return "", nil, fmt.Errorf("read the daemon's %s: %w", source, err)
+		}
+		for _, decl := range file.Decls {
+			if fn, isFunc := decl.(*ast.FuncDecl); isFunc && fn.Recv == nil && fn.Name.Name == "NotCurrentPhase" && fn.Body != nil {
+				function = fn
+			}
+		}
+	}
+	if function == nil {
+		return "", nil, missing
+	}
+	var parameters []string
+	for _, field := range function.Type.Params.List {
+		for _, name := range field.Names {
+			parameters = append(parameters, name.Name)
+		}
+	}
+	if len(parameters) != len(call.Args) {
+		return "", nil, fmt.Errorf("the engine calls intake.NotCurrentPhase with %d arguments, and %s's takes %d", len(call.Args), intakeDir, len(parameters))
+	}
+	format, filled, found := "", []ast.Expr(nil), false
+	ast.Inspect(function.Body, func(node ast.Node) bool {
+		if found {
+			return false
+		}
+		literal, isLiteral := node.(*ast.CompositeLit)
+		if !isLiteral {
+			return true
+		}
+		var coded bool
+		var message ast.Expr
+		for _, element := range literal.Elts {
+			field, isField := element.(*ast.KeyValueExpr)
+			if !isField {
+				continue
+			}
+			key, isKey := field.Key.(*ast.Ident)
+			if !isKey {
+				continue
+			}
+			switch key.Name {
+			case "Code":
+				text, isText := stringLiteral(field.Value)
+				coded = isText && text == code
+			case "Message":
+				message = field.Value
+			}
+		}
+		if !coded || message == nil {
+			return true
+		}
+		format, filled, found = sprintfOf(message)
+		return !found
+	})
 	if !found {
-		return "", nil, fmt.Errorf("%s holds no refused(%q, fmt.Sprintf(…)) call: the daemon writes that refusal some other way now", engineFile, code)
+		return "", nil, missing
+	}
+	arguments := make([]string, 0, len(filled))
+	for _, expression := range filled {
+		name, isName := expression.(*ast.Ident)
+		place := -1
+		if isName {
+			for at, parameter := range parameters {
+				if parameter == name.Name {
+					place = at
+				}
+			}
+		}
+		if place < 0 {
+			return "", nil, fmt.Errorf("%s fills the %s message with %s, which is none of NotCurrentPhase's parameters", intakeDir, code, types.ExprString(expression))
+		}
+		arguments = append(arguments, types.ExprString(call.Args[place]))
 	}
 	return format, arguments, nil
+}
+
+// sprintfOf is the format literal and the arguments of `expression` when it is
+// `fmt.Sprintf(<format literal>, <arguments>...)`, and false for any other expression.
+func sprintfOf(expression ast.Expr) (string, []ast.Expr, bool) {
+	sprintf, isCall := expression.(*ast.CallExpr)
+	if !isCall {
+		return "", nil, false
+	}
+	printer, isSelector := sprintf.Fun.(*ast.SelectorExpr)
+	if !isSelector || printer.Sel.Name != "Sprintf" || len(sprintf.Args) == 0 {
+		return "", nil, false
+	}
+	text, isText := stringLiteral(sprintf.Args[0])
+	if !isText {
+		return "", nil, false
+	}
+	return text, sprintf.Args[1:], true
 }
 
 // stringLiteral is the text of an interpreted string literal, and false for any other expression.

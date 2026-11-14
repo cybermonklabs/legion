@@ -1,4 +1,4 @@
-threads-closed-text-fixes-head-1 healthy
+threads-closed-text-fixes-head-1 UNHEALTHY
 threads-closed-text-fixes-head-2 UNHEALTHY
 threads-closed-text-fixes-head-3 UNHEALTHY
 threads-closed-text-fixes-head-4 UNHEALTHY
@@ -16,3 +16,6 @@ threads-closed-code-defect-head-3 UNHEALTHY
 threads-closed-code-defect-head-4 healthy
 threads-closed-code-defect-head-5 UNHEALTHY
 threads-closed-code-defect-base-2 UNHEALTHY
+threads-closed-text-fixes-head-7 healthy
+threads-closed-text-fixes-head-8 UNHEALTHY
+reviewer-text-findings-text-only-head-2 healthy

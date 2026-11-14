@@ -287,16 +287,23 @@ test.skipIf(skip)(
 
 // The refusal a worker's completion of a phase its role does not run gets is the daemon's own
 // sentence, which the stand-in answers with and the skill has the worker quote to its
-// architect. This row holds the reading to the daemon's source: it takes the format out of
-// engine.go itself and fills it, so a reading that drifted from the daemon — a different
-// sentence, the arguments in another order — fails here.
+// architect. This row holds the reading to the daemon's source: it takes the format out of the
+// source itself and fills it, so a reading that drifted from the daemon — a different sentence,
+// the arguments in another order — fails here. This checkout's engine builds that refusal with
+// `intake.NotCurrentPhase(fact.Role, issue.Phase, issue.Key)`, whose sentence intake's
+// `func NotCurrentPhase` writes with its parameters in the same order.
 const ENGINE = path.join(DAEMON_MODULE, "internal", "workflow", "engine.go");
-/** The format the daemon's engine builds its HANDOFF_NOT_CURRENT_PHASE message with, read out
- * of its source, and the pieces of text around its verbs. */
+const INTAKE = path.join(DAEMON_MODULE, "internal", "intake", "facts.go");
+/** The format the daemon builds its HANDOFF_NOT_CURRENT_PHASE message with, read out of its
+ * source, and the pieces of text around its verbs. */
 function refusalFormat(): { format: string; pieces: string[] } {
-  const source = readFileSync(ENGINE, "utf8");
+  expect(readFileSync(ENGINE, "utf8")).toContain(
+    "intake.NotCurrentPhase(fact.Role, issue.Phase, issue.Key)"
+  );
   const [, format = ""] =
-    /refused\("HANDOFF_NOT_CURRENT_PHASE", fmt\.Sprintf\("((?:[^"\\]|\\.)*)"/.exec(source) ?? [];
+    /func NotCurrentPhase\(role claim\.Role, p phase\.Phase, issue string\)[^{]*\{[^}]*Code: "HANDOFF_NOT_CURRENT_PHASE", Message: fmt\.Sprintf\("((?:[^"\\]|\\.)*)", role, p, issue\)/.exec(
+      readFileSync(INTAKE, "utf8")
+    ) ?? [];
   return { format, pieces: format.split(/%[a-z]/) };
 }
 test.skipIf(skip)(
@@ -304,7 +311,7 @@ test.skipIf(skip)(
   () => {
     const { format, pieces } = refusalFormat();
     expect(format).not.toBe("");
-    // The engine fills it with the role, the issue's phase and the issue's key, in that order.
+    // Filled with the role, the issue's phase and the issue's key, in that order (refusalFormat).
     const filled = ["implementer", "accepting", "LWEVAL-1"].reduce(
       (text, value) => text.replace(/%[a-z]/, value),
       format
@@ -344,15 +351,86 @@ test("no file of the rig restates the daemon's refusal", () => {
   }
 });
 
+// The two shapes the daemon has built that refusal in, one row each, and a source in neither,
+// each read through sources of the row's own: the files the `refusal` command takes after its
+// three arguments, an engine source and an intake package directory (daemon-pane.go's main),
+// which are the daemon's own for every other caller. Parsed, never compiled or linked: the
+// reading is `parser.ParseFile` of each, so a substitute needs the shape of the daemon's code
+// and nothing it declares. Catches: either shape's branch dropped (this checkout's engine no
+// longer writes the base's, so no other row reaches it), parameters filled in the format's order
+// rather than mapped to the engine's arguments, and a reading that answers a daemon in neither
+// shape with a sentence rather than a refusal to boot.
+/** Runs the `refusal` command over `engine`, the engine's body, and over an intake package
+ * holding `intake` when given, and answers what it printed. */
+function refusalOver(name: string, engine: string, intake?: string): string {
+  const engineFile = path.join(rig, `engine-${name}.go`);
+  writeFileSync(engineFile, `package workflow\n\nfunc complete() error {\n\treturn ${engine}\n}\n`);
+  const intakeDir = path.join(rig, `intake-${name}`);
+  mkdirSync(intakeDir, { recursive: true });
+  if (intake !== undefined)
+    writeFileSync(path.join(intakeDir, "facts.go"), `package intake\n\n${intake}\n`);
+  return runDaemonPane(DAEMON_MODULE, [
+    "refusal",
+    "not-current-phase",
+    "implementer",
+    "accepting",
+    "LWEVAL-1",
+    engineFile,
+    intakeDir,
+  ]);
+}
+test.skipIf(skip)(
+  "the refusal reading fills the intake package's sentence with the engine's arguments",
+  () => {
+    // The format takes the issue first; the engine's call names it last.
+    expect(
+      refusalOver(
+        "intake-shape",
+        "intake.NotCurrentPhase(fact.Role, issue.Phase, issue.Key)",
+        'func NotCurrentPhase(role claim.Role, p phase.Phase, issue string) *Refusal {\n\treturn &Refusal{Status: 409, Code: "HANDOFF_NOT_CURRENT_PHASE", Message: fmt.Sprintf("%s: the %s may not finish %s", issue, role, p)}\n}'
+      )
+    ).toBe("HANDOFF_NOT_CURRENT_PHASE\nLWEVAL-1: the implementer may not finish accepting\n");
+  },
+  600_000
+);
+test.skipIf(skip)(
+  "the refusal reading fills the base label's refused call",
+  () => {
+    expect(
+      refusalOver(
+        "refused-shape",
+        'refused("HANDOFF_NOT_CURRENT_PHASE", fmt.Sprintf("the %s may not finish %s of %s", fact.Role, issue.Phase, issue.Key))'
+      )
+    ).toBe("HANDOFF_NOT_CURRENT_PHASE\nthe implementer may not finish accepting of LWEVAL-1\n");
+  },
+  600_000
+);
+test.skipIf(skip)(
+  "the refusal reading refuses a daemon in neither shape, naming both",
+  () => {
+    expect(() => refusalOver("neither-shape", "nil")).toThrow(
+      'holds no refused("HANDOFF_NOT_CURRENT_PHASE", fmt.Sprintf(…)) call and no intake.NotCurrentPhase(…) call'
+    );
+  },
+  600_000
+);
+
 // The guards that reading stands on, one row each. Every one of them answers a daemon that
 // writes its refusal in a shape this program cannot fill, which today's daemon does not, so a
-// row reaches them only through an engine source of its own: the file the `refusal` command
-// takes after its three arguments (daemon-pane.go's main), which is the daemon's own file for
-// every other caller. Catches: any of the four dropped, each of which survived the mutation
-// pass of 3d88a1ed for want of this path. A dropped guard answers a drifted daemon with a
-// sentence built out of nothing — an empty argument, a `%!s(MISSING)` verb, a format some other
-// printer wrote — or with a panic, and the stand-in would teach every agent that sentence.
-const SUBSTITUTE_ENGINES = [
+// row reaches them only through sources of its own (above). Catches: any of them dropped, each
+// of the first four of which survived the mutation pass of 3d88a1ed for want of this path. A
+// dropped guard answers a drifted daemon with a sentence built out of nothing — an empty
+// argument, a `%!s(MISSING)` verb, a format some other printer wrote — or with a panic, and the
+// stand-in would teach every agent that sentence.
+const SHARED =
+  'func NotCurrentPhase(role claim.Role, p phase.Phase, issue string) *Refusal {\n\treturn &Refusal{Status: 409, Code: "HANDOFF_NOT_CURRENT_PHASE", Message: fmt.Sprintf("%s may not finish %s of %s", role, p, issue)}\n}';
+const SUBSTITUTE_ENGINES: readonly {
+  readonly file: string;
+  readonly shape: string;
+  readonly call: string;
+  readonly intake?: string;
+  readonly says: string;
+}[] = [
   {
     file: "unknown-argument",
     shape: "an argument this program has no value for",
@@ -385,30 +463,38 @@ const SUBSTITUTE_ENGINES = [
     call: 'refused("HANDOFF_NOT_CURRENT_PHASE", fmt.Errorf("%s may not complete %s", fact.Role, issue.Phase))',
     says: 'holds no refused("HANDOFF_NOT_CURRENT_PHASE", fmt.Sprintf(…)) call',
   },
-] as const;
-for (const { file, shape, call, says } of SUBSTITUTE_ENGINES) {
+  {
+    file: "no-intake-function",
+    shape: "an intake call whose package holds no NotCurrentPhase",
+    call: "intake.NotCurrentPhase(fact.Role, issue.Phase, issue.Key)",
+    intake: "func OtherRefusal() *Refusal { return nil }",
+    says: "holds no func NotCurrentPhase returning a HANDOFF_NOT_CURRENT_PHASE refusal",
+  },
+  {
+    file: "intake-arity",
+    shape: "an intake call of another arity than the function it calls",
+    call: "intake.NotCurrentPhase(fact.Role, issue.Phase)",
+    intake: SHARED,
+    says: "calls intake.NotCurrentPhase with 2 arguments",
+  },
+  {
+    file: "intake-no-parameter",
+    shape: "an intake sentence filled with no parameter of its function",
+    call: "intake.NotCurrentPhase(fact.Role, issue.Phase, issue.Key)",
+    intake:
+      'func NotCurrentPhase(role claim.Role, p phase.Phase, issue string) *Refusal {\n\treturn &Refusal{Status: 409, Code: "HANDOFF_NOT_CURRENT_PHASE", Message: fmt.Sprintf("%s may not finish %s", role, tree)}\n}',
+    says: "fills the HANDOFF_NOT_CURRENT_PHASE message with tree, which is none of NotCurrentPhase's parameters",
+  },
+];
+for (const { file, shape, call, intake, says } of SUBSTITUTE_ENGINES) {
   test.skipIf(skip)(
     `the refusal reading refuses ${shape} and invents no sentence`,
     () => {
-      const engine = path.join(rig, `engine-${file}.go`);
-      // Parsed, never compiled or linked: the reading is one `parser.ParseFile` of the file, so
-      // the substitute needs the shape of the engine's call and nothing the engine declares.
-      writeFileSync(engine, `package workflow\n\nfunc complete() error {\n\treturn ${call}\n}\n`);
-      expect(() =>
-        runDaemonPane(DAEMON_MODULE, [
-          "refusal",
-          "not-current-phase",
-          "implementer",
-          "accepting",
-          "LWEVAL-1",
-          engine,
-        ])
-      ).toThrow(says);
+      expect(() => refusalOver(file, call, intake)).toThrow(says);
     },
     600_000
   );
 }
-
 // worker-pane.ts reads the repository its addressing names, and the branch it gives as the
 // default, out of the run's own world (rig.sh's worker world comment), so the rig names neither
 // a second time. Catches: a pane built on names of its own, which is the addressing defect

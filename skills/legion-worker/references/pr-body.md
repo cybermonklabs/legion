@@ -206,6 +206,8 @@ and decides there, the only gate on such an issue.
   PR body, because the reviewer and the merger verify facts on GitHub and never from a handoff.
   The `implement` handoff carries none: Dispatch holds them, and the tester reads them with
   `dispatch results`.
+  What a handoff does carry is `head`, the 40-character lower-case commit its work was done
+  against, which the completion sends to the daemon.
 - **The tester judges the implementer's results and records its own.** It runs and records no
   check with `ci_check`, whose result `dispatch results` derives. A derived fail, or a run that
   concluded `skipped`, `neutral` or `cancelled`, is a test failure. A run still going, or GitHub

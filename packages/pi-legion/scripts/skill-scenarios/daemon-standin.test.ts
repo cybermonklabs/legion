@@ -539,8 +539,8 @@ function lateRefusal(role: string, phase: string) {
 // Catches: a stand-in that takes a completion from threads-closed's implementer, whose
 // implementing round the run's world says already stands (rig.sh's run_threads_closed passes
 // COMPLETED), and one that refuses it with an answer the daemon does not give. Either label's
-// engine refuses a late role whose row holds a handoff commit 409 HANDOFF_NOT_CURRENT_PHASE
-// (engine.go's `leftItsPhase`, `row.HandoffCommit != ""`; `ff2a10ef`'s `RoleFor(issue.Phase) !=
+// engine refuses a late role whose row holds a completion 409 HANDOFF_NOT_CURRENT_PHASE
+// (engine.go's `leftItsPhase`, `row.Completed()`; `ff2a10ef`'s `RoleFor(issue.Phase) !=
 // fact.Role`), with the daemon's own sentence for the phase the issue stands in, which the skill
 // has the worker quote to its architect. The route's earlier HANDOFF_NO_RUN fence is not what a
 // rig half meets: each half is a live registered worker serving generation 1.
@@ -572,7 +572,7 @@ test.skipIf(skip)(
 
 // Catches: a stand-in that reads "the implementer has completed" off the phase it was booted in
 // rather than off what the run's world says. On the head label an implementer whose row holds no
-// handoff commit is one `leftItsPhase` takes, and its completion is then of the implementing
+// completion is one `leftItsPhase` takes, and its completion is then of the implementing
 // phase it left, whose record it must name: engine.go refuses one naming none 409
 // HANDOFF_RECORD_REQUIRED through `refused`.
 test.skipIf(skip)(
@@ -598,13 +598,13 @@ test.skipIf(skip)(
 // Catches: a stand-in that decides "record required" from the phase the role was booted in
 // rather than the phase the issue stands in now, which answered every completion after a
 // reviewer's own REQUEST_CHANGES 400 HANDOFF_RECORD_REQUIRED (the batch at a61c46a7). After the
-// round sends the issue to `implementing`, the route does not hold the reviewer to a record:
-// `recordBacked := handoffPhase && writer == grant.Role` is false, the implementer being the
-// writer there. This checkout's engine then takes the reviewer's late completion
-// (`leftItsPhase`), as one of `reviewing`, the phase it left, whose record it must name: naming
-// none is refused 409 HANDOFF_RECORD_REQUIRED by the engine, never 400 by the route; naming one
-// is taken and moves nothing. A taken completion with a commit puts that commit on the
-// reviewer's row, so a second late completion is refused 409 HANDOFF_NOT_CURRENT_PHASE.
+// round sends the issue to `implementing`, the route holds the reviewer to the record of
+// `reviewing`, the phase it left (`phase.Of`), only when the completion names one. This
+// checkout's engine then takes the reviewer's late completion (`leftItsPhase`), as one of
+// `reviewing`, whose record it must name: naming none is refused 409 HANDOFF_RECORD_REQUIRED by
+// the engine, never 400 by the route; naming one is taken and moves nothing. A taken completion
+// completes the reviewer's row, so a second late completion is refused 409
+// HANDOFF_NOT_CURRENT_PHASE.
 test.skipIf(skip)(
   "on the head label, a reviewer's completion after its change request is answered as leftItsPhase answers it",
   async () => {
@@ -632,11 +632,14 @@ test.skipIf(skip)(
   600_000
 );
 
-// Catches: the same boot-phase decision after an approval that moves the issue to `accepting`,
-// which writes no record (`phase.Handoff`). The route refuses a completion naming one there 409
-// HANDOFF_RECORD_MISMATCH before the engine reads it; one naming none passes the route, and this
-// checkout's engine holds it to the record of `reviewing`, the phase it left: 409
-// HANDOFF_RECORD_REQUIRED.
+// Catches: a head stand-in answering a late reviewer in `accepting` with `ff2a10ef`'s route,
+// which held the completion to the record of the phase the issue stands in: `accepting` writes
+// none, so a completion naming the review record was refused 409 HANDOFF_RECORD_MISMATCH. This
+// checkout's route holds it to `reviewing`, the phase the reviewer left (`phase.Of`), and reads
+// the record back (`recordBacked`'s `namesRecord`), so the engine takes it 200 and moves
+// nothing. One naming none passes the route and the engine holds it to the record of
+// `reviewing`: 409 HANDOFF_RECORD_REQUIRED, never MISMATCH. A taken one completes the row, so a
+// repeat is refused 409 HANDOFF_NOT_CURRENT_PHASE.
 test.skipIf(skip)(
   "on the head label, a reviewer's completion after an approval that moved the issue is answered as the daemon answers it",
   async () => {
@@ -646,11 +649,18 @@ test.skipIf(skip)(
       expect(await daemon.phase()).toBe("accepting");
       const unnamed = await daemon.complete(false);
       expect(unnamed.status).toBe(409);
-      expect(await unnamed.json()).toMatchObject({ code: "HANDOFF_RECORD_REQUIRED" });
-      const named = await daemon.complete(true);
-      expect(named.status).toBe(409);
-      expect(await named.json()).toMatchObject({ code: "HANDOFF_RECORD_MISMATCH" });
+      expect(await unnamed.json()).toMatchObject({
+        code: "HANDOFF_RECORD_REQUIRED",
+        error: expect.stringContaining(
+          "the reviewer's completion of phase reviewing of LWEVAL-1 names no handoff record"
+        ),
+      });
+      const named = await daemon.complete(true, { commit: "0".repeat(40) });
+      expect(named.status).toBe(200);
       expect(await daemon.phase()).toBe("accepting");
+      const again = await daemon.complete(true, { commit: "0".repeat(40) });
+      expect(again.status).toBe(409);
+      expect(await again.json()).toEqual(lateRefusal("reviewer", "accepting"));
     } finally {
       daemon.stop();
     }
@@ -658,13 +668,34 @@ test.skipIf(skip)(
   600_000
 );
 
-// Catches: a completion's log line that does not say which phase it was answered on. Health
-// allows the head reviewer's 409 HANDOFF_RECORD_MISMATCH in `accepting` alone, since the route
-// gives that code a record of another issue, phase or version in a record-backed phase too
-// (completion-answers.ts's `ANSWERS`), so the line must name the phase the answer was given on,
-// which is the one the stand-in served then and not the one its role was booted in.
+// Catches: a head stand-in that takes a record named for a phase that writes none. This
+// checkout's route still refuses it 409 HANDOFF_RECORD_MISMATCH: the merger's merging, the phase
+// its completion is of, ends with no handoff record.
 test.skipIf(skip)(
-  "a completion's log line names the phase it was answered on",
+  "on the head label, a completion naming a record of a phase that writes none is refused record-mismatch",
+  async () => {
+    const daemon = await standin("merger");
+    try {
+      const named = await daemon.complete(true, { commit: "0".repeat(40) });
+      expect(named.status).toBe(409);
+      expect(await named.json()).toMatchObject({
+        code: "HANDOFF_RECORD_MISMATCH",
+        error: expect.stringContaining("phase merging of LWEVAL-1 ends with no handoff record"),
+      });
+    } finally {
+      daemon.stop();
+    }
+  },
+  600_000
+);
+
+// Catches: a stand-in that takes a record-naming completion and leaves the row open, as the
+// engine before main's `row.Completed()` read a row holding a record and no commit; and a
+// completion's log line that does not say which phase it was answered on, which is how a person
+// reading the run tells the late completion from the reviewer's own. The plugin's completion
+// here names a record and no commit, so the late one is a repeat the engine refuses.
+test.skipIf(skip)(
+  "a completion's log line names the phase it was answered on, and a taken record completes the row",
   async () => {
     const daemon = await standin("reviewer");
     try {
@@ -678,7 +709,7 @@ test.skipIf(skip)(
           .map((line) => [line.status, line.code, line.phase])
       ).toEqual([
         [200, undefined, "reviewing"],
-        [409, "HANDOFF_RECORD_MISMATCH", "accepting"],
+        [409, "HANDOFF_NOT_CURRENT_PHASE", "accepting"],
       ]);
     } finally {
       daemon.stop();
@@ -687,11 +718,11 @@ test.skipIf(skip)(
   600_000
 );
 
-// Catches: a base-label stand-in answered as this checkout's engine answers. Main `ff2a10ef`
+// Catches: a base-label stand-in answered as this checkout's daemon answers. Main `ff2a10ef`
 // has no `leftItsPhase`: its `handoff` refuses every completion from a role that does not run
-// the issue's phase 409 HANDOFF_NOT_CURRENT_PHASE, whatever record it names, once the route,
-// which is the same, has let it through. In `accepting` the route refuses a named record 409
-// HANDOFF_RECORD_MISMATCH first.
+// the issue's phase 409 HANDOFF_NOT_CURRENT_PHASE, whatever record it names, once its route has
+// let it through. That route holds a completion to the record of the phase the issue stands in,
+// so in `accepting` it refuses a named record 409 HANDOFF_RECORD_MISMATCH first.
 test.skipIf(skip)(
   "on the base label, a reviewer's late completion is refused HANDOFF_NOT_CURRENT_PHASE",
   async () => {
