@@ -338,18 +338,21 @@ func newControllerStart(t *testing.T, d *controllerDaemon, opts controllerOption
 	c.write("controller.yaml", strings.Join(lines, "\n")+"\n", 0o600)
 
 	// The Oh My Pi LEGION_OMP_PATH names. As the load probe (`models --extension <probe>`) it
-	// records its environment and working directory and reports, as the probe extension does,
+	// records its environment, its working directory, and the mode of the directory its
+	// AGENT_SECRETS_SIGNIN_DIR names where that is one, and reports, as the probe extension does,
 	// pi-legion loaded from the file `loaded-from` names, or not loaded when there is none;
 	// pi-envoy publishing the interface `envoy-interface` holds (1 when absent; `none` for no
 	// pi-envoy) from the file `envoy-loaded-from` names; and the pre-split package loaded from the
 	// file `legacy-loaded-from` names, when there is one. As the controller it records its argv,
-	// environment, and working directory, and exits with the code the test asked for.
+	// environment, working directory, and that sign-in directory's mode, and exits with the code
+	// the test asked for.
 	omp := filepath.Join(record, "omp")
 	script := fmt.Sprintf(`#!/bin/sh
 if [ "$1" = models ]; then
   env -0 >%[1]s/probe-env
   pwd -P >%[1]s/probe-cwd
   readlink /proc/self/fd/0 >%[1]s/probe-stdin
+  [ ! -d "$AGENT_SECRETS_SIGNIN_DIR" ] || stat -c %%a "$AGENT_SECRETS_SIGNIN_DIR" >%[1]s/probe-signins-mode
   if [ -f %[1]s/loaded-from ]; then
     printf 'LEGION_PLUGIN_LOADED=yes\nLEGION_PLUGIN_LOADED_FROM=%%s\nLEGION_PLUGIN_ENVOY_INTERFACE=1\n' "$(cat %[1]s/loaded-from)" >&2
   else
@@ -368,6 +371,7 @@ fi
 %[3]s
 for a in "$@"; do printf '%%s\0' "$a"; done >%[1]s/argv
 readlink /proc/self/fd/0 >%[1]s/stdin
+[ ! -d "$AGENT_SECRETS_SIGNIN_DIR" ] || stat -c %%a "$AGENT_SECRETS_SIGNIN_DIR" >%[1]s/signins-mode
 env -0 >%[1]s/env
 pwd >%[1]s/cwd
 exit %[2]d
@@ -462,6 +466,20 @@ func (c *operatorMachine) tells(name, value string) {
 func (c *operatorMachine) probeEnv() map[string]string {
 	c.t.Helper()
 	return readEnv(c.t, filepath.Join(c.record, "probe-env"))
+}
+
+// signInsModes is the mode, as `stat -c %a` prints it, of the directory the load probe's and then
+// the controller's Oh My Pi found at its AGENT_SECRETS_SIGNIN_DIR; empty where it found none.
+func (c *operatorMachine) signInsModes() (probe, launch string) {
+	c.t.Helper()
+	read := func(name string) string {
+		raw, err := os.ReadFile(filepath.Join(c.record, name))
+		if err != nil && !os.IsNotExist(err) {
+			c.t.Fatal(err)
+		}
+		return strings.TrimSpace(string(raw))
+	}
+	return read("probe-signins-mode"), read("signins-mode")
 }
 
 // installPluginAt installs a pi-legion manifest declaring contract, and a pi-envoy manifest, under
@@ -726,6 +744,7 @@ func TestControllerStartLaunchesOhMyPiWithTheSharedControllerEnvironment(t *test
 		"LEGION_GH_OWNERS_DIR":            filepath.Join(c.defaultDir, "gh"),
 		"LEGION_GH_PATH":                  c.gh,
 		"LEGION_CONTROLLER_START_MESSAGE": daemon.ControllerStartMessage,
+		"AGENT_SECRETS_SIGNIN_DIR":        filepath.Join(c.defaultDir, "controller-signins"),
 		"DISPATCH_URL":                    "https://dispatch.test",
 		"DISPATCH_TOKEN_FILE":             filepath.Join(c.dir, "dispatch-token"),
 		"LEGION_CONTROLLER_SECRET_FILE":   filepath.Join(secrets, "legion-demo-controller"),
@@ -1362,6 +1381,139 @@ func TestControllerStartDropsInheritedSlackChannels(t *testing.T) {
 		if value, set := env["LEGION_SLACK_CHANNELS"]; set {
 			t.Errorf("the %s's environment carries LEGION_SLACK_CHANNELS=%q", kind, value)
 		}
+	}
+}
+
+// The controller keeps the operator's HOME and XDG_STATE_HOME, where `agent-secrets login` keeps
+// the operator's sign-in, so a credential its session trades at the secrets broker would trade
+// that person's. Under either Dispatch credential, the load probe and the controller are told
+// AGENT_SECRETS_SIGNIN_DIR naming a directory of the controller's own under the state directory,
+// in place of the one the operator's shell exports, and each finds that directory there, 0700
+// and empty: the start made it before the probe ran.
+func TestControllerStartGivesTheControllerASignInDirectoryOfItsOwn(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		broker bool
+	}{
+		{"dispatch_token_file", false},
+		{"dispatch_token_broker", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := newControllerDaemon(t)
+			c := newControllerStart(t, d, controllerOptions{dispatchBroker: tc.broker})
+			if tc.broker {
+				c.provesAnIdentity(newStubBroker(t, ""))
+			}
+			// The operator signed in on this machine, and the operator's shell names that store.
+			operatorSignIns := filepath.Join(c.home, ".local", "state", "agent-secrets", "signins")
+			if err := os.MkdirAll(operatorSignIns, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(operatorSignIns, "operator.json"), []byte(`{"person":"operator@example.com"}`+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("AGENT_SECRETS_SIGNIN_DIR", operatorSignIns)
+
+			if code, _, errb := c.run(); code != 0 {
+				t.Fatalf("legion controller start = %d, stderr %q", code, errb)
+			}
+			own := filepath.Join(c.defaultDir, "controller-signins")
+			for kind, env := range map[string]map[string]string{"load probe": c.probeEnv(), "controller": c.env()} {
+				if got := env["AGENT_SECRETS_SIGNIN_DIR"]; got != own {
+					t.Errorf("the %s's AGENT_SECRETS_SIGNIN_DIR = %q, want the controller's own %q", kind, got, own)
+				}
+			}
+			if probe, launch := c.signInsModes(); probe != "700" || launch != "700" {
+				t.Errorf("the load probe found the controller's sign-in directory at mode %q and the controller at %q, want 700 for both", probe, launch)
+			}
+			if entries, err := os.ReadDir(own); err != nil || len(entries) != 0 {
+				t.Errorf("the controller's sign-in directory holds %v (%v), want nothing", entries, err)
+			}
+		})
+	}
+}
+
+// An empty sign-in directory of the controller's with a wider mode, which an earlier start or
+// the operator left, holds nothing to trade, so the start makes it 0700 rather than refusing.
+func TestControllerStartMakesAnEmptySignInDirectory0700(t *testing.T) {
+	d := newControllerDaemon(t)
+	c := newControllerStart(t, d, controllerOptions{})
+	own := filepath.Join(c.defaultDir, "controller-signins")
+	if err := os.MkdirAll(own, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(own, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if code, _, errb := c.run(); code != 0 {
+		t.Fatalf("legion controller start = %d, stderr %q", code, errb)
+	}
+	if probe, launch := c.signInsModes(); probe != "700" || launch != "700" {
+		t.Errorf("the load probe found the controller's sign-in directory at mode %q and the controller at %q, want 700 for both", probe, launch)
+	}
+	if got := modeOf(t, own); got != 0o700 {
+		t.Errorf("the controller's sign-in directory mode %o, want 0700", got)
+	}
+}
+
+// A sign-in directory of the controller's that holds any entry, or a path there that is no
+// directory, is refused by name before the daemon is asked for anything: a record there would be
+// traded as a person's sign-in, and the mint revokes the running controller. Nothing is probed,
+// launched or made, and what was there stays.
+func TestControllerStartRefusesASignInDirectoryThatIsNotEmpty(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// place puts what the test is about at own's place, and answers the path it put there.
+		place func(t *testing.T, own string) string
+		want  string
+	}{
+		{"a sign-in record", func(t *testing.T, own string) string {
+			if err := os.MkdirAll(own, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			signIn := filepath.Join(own, "person.json")
+			if err := os.WriteFile(signIn, []byte(`{"person":"operator@example.com"}`+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			return signIn
+		}, " holds person.json: "},
+		{"a directory", func(t *testing.T, own string) string {
+			stale := filepath.Join(own, "stale")
+			if err := os.MkdirAll(stale, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			return stale
+		}, " holds stale: "},
+		{"a symbolic link in its place", func(t *testing.T, own string) string {
+			if err := os.MkdirAll(filepath.Dir(own), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(t.TempDir(), own); err != nil {
+				t.Fatal(err)
+			}
+			return own
+		}, " is not a directory (mode L"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := newControllerDaemon(t)
+			c := newControllerStart(t, d, controllerOptions{})
+			own := filepath.Join(c.defaultDir, "controller-signins")
+			placed := tc.place(t, own)
+			c.refused("the controller's sign-in directory " + own + tc.want)
+			c.wantNoSecretRequest()
+			if _, err := os.Stat(filepath.Join(c.record, "probe-env")); !os.IsNotExist(err) {
+				t.Errorf("the load probe ran (%v); want no probe", err)
+			}
+			if c.launched() {
+				t.Error("Oh My Pi was launched")
+			}
+			if _, err := os.Stat(filepath.Join(c.defaultDir, "controller")); !os.IsNotExist(err) {
+				t.Errorf("the controller's directory exists (%v); want nothing made", err)
+			}
+			if _, err := os.Lstat(placed); err != nil {
+				t.Errorf("%s is gone (%v); want what was there left as it was", placed, err)
+			}
+		})
 	}
 }
 

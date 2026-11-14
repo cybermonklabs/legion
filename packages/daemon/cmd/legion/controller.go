@@ -80,7 +80,12 @@ func runControllerStart(ctx context.Context, args []string, stdout, stderr io.Wr
 // `dispatch_url` whose file names neither of the two Dispatch credentials, a secrets broker that
 // refuses this machine's identity under `dispatch_token_broker` (controllerDispatchBroker) and a
 // blank or unreadable Dispatch token file under `dispatch_token_file`, an instructions file that
-// is missing or blank, and an Oh My Pi invocation that does not resolve;
+// is missing or blank, an Oh My Pi invocation that does not resolve, and a sign-in directory of
+// the controller's own (`<state_dir>/controller-signins`, its AGENT_SECRETS_SIGNIN_DIR) that
+// holds any entry, which is otherwise made, or kept, 0700 and empty before anything runs under
+// the controller's environment (controllerSignIns: the controller keeps the operator's HOME, so
+// without it a credential its session trades at the secrets broker would trade the operator's
+// `agent-secrets login` sign-in);
 // then probe that Oh My Pi as the controller will run it — the launch prefix, the invocation, the
 // controller's whole environment, in
 // `<state_dir>/controller`, created for it, at the operator's terminal — and refuse a
@@ -106,7 +111,7 @@ func runControllerStart(ctx context.Context, args []string, stdout, stderr io.Wr
 // as LEGION_CONTROLLER_START_MESSAGE in its environment for that pi-legion command to send as the
 // first turn — in the foreground with the same environment, and answer
 // its exit code. A refusal before the secret is written removes the directories made for the
-// probe, so the state directory is as it was.
+// probe and the sign-in directory, so the state directory is as it was.
 func controllerStart(ctx context.Context, configPath, daemonURL string, stderr io.Writer) (int, error) {
 	absolute, err := filepath.EvalSymlinks(configPath)
 	if err == nil {
@@ -131,9 +136,10 @@ func controllerStart(ctx context.Context, configPath, daemonURL string, stderr i
 		return 0, errors.New("stdin is not a terminal: Oh My Pi would run headless print mode, running the controller start command after the daemon's mint had revoked the running controller; run `legion controller start` at a terminal")
 	}
 	// Every check this machine can make on its own comes before the fetch, and none of them writes
-	// under the state directory but the probe's own directory, removed again on a refusal: the
-	// daemon mints a fresh capability on every request and revokes the incumbent controller's, so
-	// a failure found here never cuts the running controller off for nothing.
+	// under the state directory but the probe's own directory and the controller's sign-in
+	// directory, both removed again on a refusal: the daemon mints a fresh capability on every
+	// request and revokes the incumbent controller's, so a failure found here never cuts the
+	// running controller off for nothing.
 	if cfg.EnvoyTokenFile != "" {
 		if _, err := config.ReadSecretPointer("envoy_token_file", cfg.EnvoyTokenFile); err != nil {
 			return 0, err
@@ -200,13 +206,19 @@ func controllerStart(ctx context.Context, configPath, daemonURL string, stderr i
 	// bearer Dispatch refuses (controllerDispatchBroker). The drop is not the whole of it — the
 	// operator's HOME is the controller's, and the envoy.json there holds that person's
 	// `dispatch.token`, which no delete here reaches — so the controller's set carries
-	// DISPATCH_TOKEN_BROKER, the session's word that its Dispatch credential is this machine's
-	// own identity and nothing else, under which the client reads no bearer from any source and
+	// DISPATCH_TOKEN_BROKER, the session's word that its Dispatch credential is traded at the
+	// secrets broker and nothing else, under which the client reads no bearer from any source and
 	// turns Dispatch off saying so when it can trade none (dispatch-config.ts, dispatchTarget).
-	// The one difference between the probed and the launched
-	// environment is GH_CONFIG_DIR, which names
-	// the default owner's directory only once the credential fetch after the mint has named that
-	// owner.
+	// That route trades a person's sign-in where the machine holds one, and the operator's HOME
+	// and XDG_STATE_HOME are the controller's too, so the store `agent-secrets login` keeps there
+	// (brokerclient.SignIns in packages/envoy, signins.ts in packages/broker-client) would be the
+	// controller's: every credential its session trades at the broker, for Dispatch or for Envoy,
+	// would trade the operator's sign-in and act for that person. So the set also carries
+	// AGENT_SECRETS_SIGNIN_DIR, under every configuration (`dispatch_token_broker` or
+	// `dispatch_token_file`), naming a directory of the controller's own that controllerSignIns
+	// keeps empty, and both credentials trade this machine's identity. The one difference between
+	// the probed and the launched environment is GH_CONFIG_DIR, which names the default owner's
+	// directory only once the credential fetch after the mint has named that owner.
 	env := processEnvironment()
 	delete(env, natsauth.DaemonSeedVariable)
 	delete(env, natsauth.DaemonSeedFileVariable)
@@ -220,10 +232,20 @@ func controllerStart(ctx context.Context, configPath, daemonURL string, stderr i
 	for _, pair := range controllerEnvironment(cfg, stateDir, runtime.SecretFilePath(stateDir, token), gh) {
 		env[pair[0]] = pair[1]
 	}
-	created, err := makeDirs(controllerDir)
+	// The sign-in directory first, since its refusal comes before any directory is made, and
+	// before the probe, which runs Oh My Pi under this environment; then the probe's own
+	// directory. A refusal from here to the mint removes what either made (removeDirs), deepest
+	// first.
+	created, err := controllerSignIns(controllerSignInDir(stateDir))
 	if err != nil {
 		return 0, err
 	}
+	made, err := makeDirs(controllerDir)
+	if err != nil {
+		removeDirs(created)
+		return 0, err
+	}
+	created = append(created, made...)
 	// The project's repository mapping (GET /legion/v1/state, unauthenticated) is read and
 	// validated before the capability mint: the mint revokes the incumbent controller's
 	// registration and grants (api.controllerSecret), so a repository-mapping failure found here
@@ -330,8 +352,15 @@ func controllerStart(ctx context.Context, configPath, daemonURL string, stderr i
 // which the controller reads because it keeps the operator's HOME, names a `dispatch.token` that
 // resolves first — the controller would write Dispatch as the operator, which is the whole of
 // what this setting exists to stop. Set, no bearer of any source is read, and a machine that can
-// trade nothing turns Dispatch off saying so rather than falling back to a person's token. Later
-// pairs replace any inherited value of the same name.
+// trade nothing turns Dispatch off saying so rather than falling back to a person's token.
+// AGENT_SECRETS_SIGNIN_DIR names `<state_dir>/controller-signins` (controllerSignInDir) under
+// every configuration, `dispatch_token_broker` or `dispatch_token_file`: the broker route trades
+// a person's sign-in where the sign-in store holds one, and the controller keeps the operator's
+// HOME and XDG_STATE_HOME, where `agent-secrets login` keeps the operator's own record, so
+// without it the controller's Dispatch credential under DISPATCH_TOKEN_BROKER, and its Envoy
+// credential wherever no bearer names one, would trade the operator's sign-in and act for that
+// person. controllerStart keeps that directory 0700 and empty (controllerSignIns), so both trade
+// this machine's identity. Later pairs replace any inherited value of the same name.
 func controllerEnvironment(cfg config.ControllerConfig, stateDir, secretFile, gh string) [][2]string {
 	bin := workerbin.LauncherDir(stateDir)
 	env := [][2]string{
@@ -353,6 +382,7 @@ func controllerEnvironment(cfg config.ControllerConfig, stateDir, secretFile, gh
 		{"LEGION_GH_OWNERS_DIR", controllerGHDir(stateDir)},
 		{"LEGION_GH_PATH", gh},
 		{"LEGION_CONTROLLER_START_MESSAGE", daemon.ControllerStartMessage},
+		{"AGENT_SECRETS_SIGNIN_DIR", controllerSignInDir(stateDir)},
 	}
 	if cfg.DispatchURL != "" {
 		env = append(env, [2]string{"DISPATCH_URL", cfg.DispatchURL})
@@ -464,6 +494,65 @@ func controllerRepositories(ctx context.Context, daemonURL string) (api.Reposito
 		}
 	}
 	return *state.Repositories, nil
+}
+
+// controllerSignInDir is the controller's own sign-in store within stateDir, its
+// AGENT_SECRETS_SIGNIN_DIR (controllerEnvironment), which controllerSignIns keeps empty.
+func controllerSignInDir(stateDir string) string {
+	return filepath.Join(stateDir, "controller-signins")
+}
+
+// controllerSignIns makes dir, the controller's sign-in directory (controllerSignInDir), 0700
+// and empty, and answers the directories it created (makeDirs) for a refusal to remove.
+//
+// Why a directory of its own: the controller keeps the operator's HOME and XDG_STATE_HOME, and
+// the sign-in store every client reads when AGENT_SECRETS_SIGNIN_DIR is unset lies under them
+// (packages/envoy's brokerclient.SignIns, packages/broker-client's signins.ts), where
+// `agent-secrets login` keeps the operator's record. Every credential the controller's session
+// trades at the secrets broker — its Dispatch credential under `dispatch_token_broker`, its
+// Envoy credential wherever no bearer names one — would find that record and trade the
+// operator's sign-in, and the controller would act for that person. An empty directory of its
+// own keeps both on this machine's identity, under every configuration.
+//
+// So a directory there that already holds any entry is refused, naming it and what it holds: a
+// record there would be traded as a person's sign-in, and nothing here tells a stale copy from
+// one put there on purpose, so the operator empties it. A path there that is no directory, a
+// symbolic link included, which could name a store that is not the controller's, is refused
+// too. An empty directory of another mode is made 0700, the mode every sign-in store has
+// (brokerclient.SignInStore.Write), rather than refused: it is the controller's own and holds
+// nothing, so a refusal later in the start leaves it 0700 rather than undoing that. Every refusal
+// here comes before the probe and before the mint, which revokes the running controller
+// (controllerStart).
+func controllerSignIns(dir string) ([]string, error) {
+	var created []string
+	info, err := os.Lstat(dir)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		if created, err = makeDirs(dir); err != nil {
+			return nil, err
+		}
+	case err != nil:
+		return nil, fmt.Errorf("the controller's sign-in directory %s could not be read: %w", dir, err)
+	case !info.IsDir():
+		return nil, fmt.Errorf("the controller's sign-in directory %s is not a directory (mode %v): it is the controller's AGENT_SECRETS_SIGNIN_DIR, which this start makes 0700 and keeps empty; remove it and start again", dir, info.Mode())
+	default:
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			return nil, fmt.Errorf("read the controller's sign-in directory %s: %w", dir, err)
+		}
+		if len(entries) > 0 {
+			names := make([]string, len(entries))
+			for i, entry := range entries {
+				names[i] = entry.Name()
+			}
+			return nil, fmt.Errorf("the controller's sign-in directory %s holds %s: it is the controller's AGENT_SECRETS_SIGNIN_DIR, kept empty so that every credential its session trades at the secrets broker trades this machine's identity, and a sign-in there would act for a person; empty it and start again", dir, strings.Join(names, ", "))
+		}
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		removeDirs(created)
+		return nil, fmt.Errorf("make the controller's sign-in directory %s 0700: %w", dir, err)
+	}
+	return created, nil
 }
 
 // makeDirs creates dir and its missing parents, 0700, and answers the ones it created, deepest
