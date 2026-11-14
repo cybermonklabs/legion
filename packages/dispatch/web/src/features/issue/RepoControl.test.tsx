@@ -8,6 +8,7 @@ import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { ApiError, api } from "../../api/client";
 import type { Issue, IssueDetails, IssueSummary, RepoProject } from "../../api/types";
+import { writesOf } from "../writes/write-store";
 import { RepoControl } from "./RepoControl";
 
 const issue: Issue = {
@@ -207,7 +208,10 @@ test("RepoControl lists the project's mapped repositories, shows the resolved on
     );
     expect(select().value).toBe("acme/gadgets");
     expect(screen.getByText("acme/gadgets", { selector: badge })).toBeTruthy();
-    expect(queryClient.getQueryData<IssueSummary[]>(listKey)?.[0]?.repo).toBe("acme/gadgets");
+    // The project list shows the pick over Dispatch's list, which holds only Dispatch's answers
+    // and so still names none until that list is read again.
+    expect(writesOf(queryClient).shown<IssueSummary[]>(listKey)?.[0]?.repo).toBe("acme/gadgets");
+    expect(queryClient.getQueryData<IssueSummary[]>(listKey)?.[0]?.repo).toBeNull();
   } finally {
     unmount();
     patchIssue.mockRestore();

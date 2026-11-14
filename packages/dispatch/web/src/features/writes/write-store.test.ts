@@ -2523,3 +2523,169 @@ test("a live change taking a row out of an offset-paged list leaves Show more re
     tab.close();
   }
 });
+
+/** A card of a project list, as far as these rows read it. */
+interface Card {
+  readonly key: string;
+  readonly priority: number;
+}
+
+const CORE_LISTS = ["project-issues", "CORE"];
+
+/** A pick of CORE-1's priority shown on every list of CORE, as the priority control's is, whose
+ *  attempt answers once `saved` does. */
+function pickOf(writes: Writes, priority: number, saved: Promise<unknown>): Promise<unknown> {
+  return writes.run({
+    detail: null,
+    kind: plainWrite,
+    label: `CORE-1 set to P${priority}`,
+    presentation: "indicator",
+    shows: (shown) =>
+      shown.under<Card[]>(CORE_LISTS, (cards) =>
+        cards.map((card) => (card.key === "CORE-1" ? { ...card, priority } : card))
+      ),
+    unlined: offLine,
+    write: attemptOf(patch, () => saved),
+  });
+}
+
+/** A list of CORE at `key`, read as the board reads it, whose every fetch waits for the test to
+ *  answer it: `answers[n]` is the fetch the list began n-th. */
+function heldList(client: QueryClient, key: readonly unknown[]) {
+  const answers: { resolve: (cards: Card[]) => void; reject: (error: Error) => void }[] = [];
+  const observer = new QueryObserver(client, {
+    queryFn: () => {
+      const answer = Promise.withResolvers<Card[]>();
+      answers.push(answer);
+      return answer.promise;
+    },
+    queryKey: key,
+    retry: false,
+    staleTime: Number.POSITIVE_INFINITY,
+  });
+  const unsubscribe = observer.subscribe(() => {});
+  /** Answers the list's `at`-th fetch once it has begun. */
+  const answer = async (at: number, priority: number | Error) => {
+    await waitFor(() => expect(answers.length).toBeGreaterThan(at));
+    const fetch = answers[at];
+    if (priority instanceof Error) fetch?.reject(priority);
+    else fetch?.resolve([{ key: "CORE-1", priority }]);
+    await settle();
+  };
+  return { answer, answers, unsubscribe };
+}
+
+// Round seven's Medium of dispatch://INFRA-299's pull request, the reviewer's own probe: a pick
+// is pressed and its PATCH goes out; an event reads the list again, and Dispatch serves that
+// read before the PATCH commits; the PATCH lands; then the read answers, with P2. The cache
+// holds only Dispatch's answers, so the pick goes on being composed over that answer, and over
+// the next one whose fetch fails, until the list answers a fetch begun after the landing.
+test("a read sent before the save answers after it lands: the pick stays over it until a read begun after the landing answers", async () => {
+  const tab = keptTab();
+  const client = dispatchClient();
+  const writes = new Writes(client, tab.page(), memoryFiles());
+  const key = [...CORE_LISTS, []];
+  const list = heldList(client, key);
+  const shown = () => `P${writes.shown<Card[]>(key)?.[0]?.priority}`;
+  try {
+    await list.answer(0, 2);
+    const saved = Promise.withResolvers<unknown>();
+    const pick = pickOf(writes, 0, saved.promise);
+    const seen = [`pressed:${shown()}`];
+    // The event's read, out before the save commits.
+    void client.invalidateQueries({ queryKey: key });
+    saved.resolve({ key: "CORE-1", priority: 0 });
+    await pick;
+    seen.push(`landed:${shown()}`);
+    // The surface reads the list again once its save answered; that read waits for the one out.
+    void client.invalidateQueries({ queryKey: key });
+    await list.answer(1, 2);
+    seen.push(`stale-arrived:${shown()}`);
+    await list.answer(2, new Error("Failed to fetch"));
+    seen.push(`refetch-failed:${shown()}`);
+    void client.refetchQueries({ queryKey: key });
+    // Another device's pick since: an answer to a fetch begun after the landing is Dispatch's.
+    await list.answer(3, 1);
+    seen.push(`refetched:${shown()}`);
+    expect(seen).toEqual([
+      "pressed:P0",
+      "landed:P0",
+      "stale-arrived:P0",
+      "refetch-failed:P0",
+      "refetched:P1",
+    ]);
+    // No cache holds the pick any more, so the store composes it nowhere.
+    expect(writes.overlay(key)).toBe(writes.overlay(["nothing composed here"]));
+  } finally {
+    list.unsubscribe();
+    writes.clear();
+    tab.close();
+  }
+});
+
+// Round seven's Medium: a cache the page lets go of - a sign-out, garbage collection - holds the
+// landed pick no more, and a list read under that key afterwards is Dispatch's whole.
+test("a read sent before the save answers after it lands: the pick stays over it until its list is removed", async () => {
+  const tab = keptTab();
+  const client = dispatchClient();
+  const writes = new Writes(client, tab.page(), memoryFiles());
+  const key = [...CORE_LISTS, []];
+  const list = heldList(client, key);
+  const shown = () => writes.shown<Card[]>(key)?.[0]?.priority;
+  try {
+    await list.answer(0, 2);
+    const saved = Promise.withResolvers<unknown>();
+    const pick = pickOf(writes, 0, saved.promise);
+    void client.invalidateQueries({ queryKey: key });
+    saved.resolve({ key: "CORE-1", priority: 0 });
+    await pick;
+    await list.answer(1, 2);
+    expect(shown()).toBe(0);
+
+    list.unsubscribe();
+    client.removeQueries({ queryKey: key });
+    expect(writes.overlay(key)).toBe(writes.overlay(["nothing composed here"]));
+    client.setQueryData(key, [{ key: "CORE-1", priority: 2 }]);
+    expect(shown()).toBe(2);
+  } finally {
+    list.unsubscribe();
+    writes.clear();
+    tab.close();
+  }
+});
+
+// Round seven's Medium, per cache: the pick lands while the board's list and a filtered list of
+// the same project both hold it, each with a read out from before the landing. The board's list
+// answers a read begun after the landing and is Dispatch's whole; the filtered list has had no
+// such answer, and its late answer still shows the pick.
+test("a read sent before the save answers after it lands: each list holds the pick until it answers a read begun after the landing", async () => {
+  const tab = keptTab();
+  const client = dispatchClient();
+  const writes = new Writes(client, tab.page(), memoryFiles());
+  const boardKey = [...CORE_LISTS, []];
+  const filteredKey = [...CORE_LISTS, ["bug"]];
+  const board = heldList(client, boardKey);
+  const filtered = heldList(client, filteredKey);
+  const shown = (key: readonly unknown[]) => writes.shown<Card[]>(key)?.[0]?.priority;
+  try {
+    await board.answer(0, 2);
+    await filtered.answer(0, 2);
+    const saved = Promise.withResolvers<unknown>();
+    const pick = pickOf(writes, 0, saved.promise);
+    void client.invalidateQueries({ queryKey: CORE_LISTS });
+    saved.resolve({ key: "CORE-1", priority: 0 });
+    await pick;
+    void client.invalidateQueries({ queryKey: boardKey });
+    await board.answer(1, 2);
+    await board.answer(2, 1);
+    expect(shown(boardKey)).toBe(1);
+
+    await filtered.answer(1, 2);
+    expect(shown(filteredKey)).toBe(0);
+  } finally {
+    board.unsubscribe();
+    filtered.unsubscribe();
+    writes.clear();
+    tab.close();
+  }
+});

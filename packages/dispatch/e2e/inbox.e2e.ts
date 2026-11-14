@@ -21,6 +21,7 @@ import {
 import { recordClipboard } from "./clipboard";
 import { needsYouCards } from "./editor";
 import { setPendingCredentialRequests } from "./fake-broker-helpers";
+import { nextFrames } from "./frames";
 import {
   assigneeFilter,
   assigneeOptions,
@@ -753,6 +754,102 @@ test("the Inbox sets its question's issue priority in place", async ({ browser }
     await page.reload();
     await expect(controls.locator("span", { hasText: /^P0$/ })).toBeVisible();
   } finally {
+    await alice.close();
+  }
+});
+
+// Round seven's Medium of dispatch://INFRA-299's pull request. A row's priority is picked and its
+// PATCH goes out; a new question reads the Inbox again, and Dispatch serves that read before the
+// PATCH reaches it; the PATCH answers; then the old Inbox arrives. The row keeps the picked
+// priority through that answer, and through the read the landing asks for, which is held open
+// here: a page that let the pick go as it landed would show P2 for as long as that read is out.
+test("a read sent before the save answers after it lands: the Inbox row keeps the picked priority", async ({
+  browser,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "Needs a priority" });
+  await patchIssue(issue.key, { priority: 2 });
+  const ask = await createAsk(issue.key, { question: "How urgent is this?" }, session);
+  const later = await createIssue({ project: "CORE", title: "Asked about later" });
+
+  const alice = await asUser(browser, "alice");
+  const page = await alice.newPage();
+  const patchOut = Promise.withResolvers<void>();
+  const releasePatch = Promise.withResolvers<void>();
+  const staleOut = Promise.withResolvers<void>();
+  const releaseStale = Promise.withResolvers<void>();
+  const releaseFresh = Promise.withResolvers<void>();
+  let holding = false;
+  let staleTaken = false;
+  let freshReads = 0;
+  try {
+    await page.route(`**/api/v1/issues/${issue.key}`, async (route) => {
+      if (route.request().method() !== "PATCH") {
+        await route.continue();
+        return;
+      }
+      patchOut.resolve();
+      await releasePatch.promise;
+      await route.continue();
+    });
+    await page.route("**/api/v1/inbox", async (route) => {
+      if (!holding) {
+        await route.continue();
+        return;
+      }
+      if (!staleTaken) {
+        staleTaken = true;
+        // Dispatch answers it now, before the PATCH reaches it; the page has it only later.
+        const stale = await route.fetch();
+        staleOut.resolve();
+        await releaseStale.promise;
+        await route.fulfill({ response: stale });
+        return;
+      }
+      await releaseFresh.promise;
+      freshReads += 1;
+      await route.continue();
+    });
+    await page.goto("/");
+    // The question's own controls, where this width puts them, for the row it is showing.
+    const controls = await askControls(page, ask.id);
+    const badge = (label: string) =>
+      controls.locator("span", { hasText: new RegExp(`^${label}$`) });
+    await expect(badge("P2")).toBeVisible();
+
+    const answered = page.waitForResponse(
+      (response) =>
+        response.request().method() === "PATCH" &&
+        new URL(response.url()).pathname === `/api/v1/issues/${issue.key}`
+    );
+    await controls.getByLabel(`Priority of ${issue.key}`).selectOption("0");
+    await patchOut.promise;
+    holding = true;
+    await expect(badge("P0")).toBeVisible();
+    // A new question reads the Inbox again while the PATCH is still on its way.
+    const asked = await createAsk(later.key, { question: "Who reads this first?" }, session);
+    await staleOut.promise;
+
+    releasePatch.resolve();
+    expect((await answered).status()).toBe(200);
+    await nextFrames(page);
+    await expect(badge("P0")).toBeVisible();
+
+    releaseStale.resolve();
+    // The old Inbox is on screen: it carries the question the read was served after.
+    await expect(inboxRow(page, asked.id)).toBeVisible();
+    await expect(badge("P0")).toBeVisible();
+    await expect(badge("P2")).toHaveCount(0);
+
+    releaseFresh.resolve();
+    await expect.poll(() => freshReads).toBeGreaterThan(0);
+    await expect.poll(() => getIssue(issue.key)).toMatchObject({ priority: 0 });
+    await expect(badge("P2")).toHaveCount(0);
+    await expect(badge("P0")).toBeVisible();
+  } finally {
+    releasePatch.resolve();
+    releaseStale.resolve();
+    releaseFresh.resolve();
     await alice.close();
   }
 });

@@ -216,18 +216,21 @@ export type WriteLine =
 /**
  * The caches one change is composed on, and the one way a write shows itself: a change names each
  * cache it shows itself on, and every read of that cache composes it over the data Dispatch last
- * gave it while the write is live (R7 of dispatch://INFRA-299). Every change is a function of the
- * cache as it stands, never of a value read before it: `change` is handed Dispatch's data - the
- * answer, once one has landed - with every live change pressed before it over it, and answers
- * with the data the person's change leaves. A cache holding nothing is left holding nothing:
- * there is no row there to change, and the answer that fills it is composed over in its turn.
+ * gave it while the write is live (R7 of dispatch://INFRA-299), and, once Dispatch has made the
+ * write, over each cache it named until that cache answers a read begun after the landing
+ * (`Writes.overlay`). Every change is a function of the cache as it stands, never of a value read
+ * before it: `change` is handed Dispatch's data - an answer that may or may not carry the write
+ * already - with every change pressed before it over it, and answers with the data the person's
+ * change leaves, the same whether or not that data holds the change. A cache holding nothing is
+ * left holding nothing: there is no row there to change, and the answer that fills it is composed
+ * over in its turn.
  */
 export interface Shown {
-  /** Shows the change on the cache at `key`. `made`, where given, is what the change leaves in
-   *  that cache once Dispatch has made the write (`Writes.#keepMade`), for a change whose
-   *  composition holds more than its own write: the unread count's, held under the bound of
-   *  every press still out, of which Dispatch made this press's drop alone. Left out, the change
-   *  itself. */
+  /** Shows the change on the cache at `key`. `made`, where given, is what the store composes on
+   *  that cache once Dispatch has made the write, until that cache answers a read begun after the
+   *  landing, for a change whose composition holds more than its own write: the unread count's,
+   *  held under the bound of every press still out, of which Dispatch made this press's drop
+   *  alone. Left out, the change itself. */
   on<T>(key: QueryKey, change: (data: T) => T, made?: (data: T) => T): void;
   /** Shows it on every cache whose key starts with `key` - a project's issue lists, the Inbox's
    *  reads - including one read for the first time after the press, since the answer that fills
@@ -290,10 +293,12 @@ interface WriteSpecBase<D, K> {
    *  answer that lands on a cache it names, and again as a Retry puts it back in its line - by
    *  composing it over Dispatch's data at every read of such a cache (`Writes.overlay`), never
    *  by writing it into the cache; a write that leaves its line without landing simply stops
-   *  being composed. A change its surface composed from the press, before the write could join
-   *  the store, is named here as what `Writes.fromPress` handed back, and the write takes it over
-   *  where it stands. A write that shows nothing - a read mark, a create that only asks for a
-   *  list again - leaves it out. */
+   *  being composed. A write that lands goes on being composed over each cache it named until
+   *  that cache answers a read begun after the landing, or is removed: a read sent before
+   *  Dispatch made the write may answer after it with the row as it stood. A change its surface
+   *  composed from the press, before the write could join the store, is named here as what
+   *  `Writes.fromPress` handed back, and the write takes it over where it stands. A write that
+   *  shows nothing - a read mark, a create that only asks for a list again - leaves it out. */
   readonly shows?: WriteChange | FromPress;
 }
 
@@ -382,10 +387,15 @@ interface Showing {
   readonly exact: ReadonlySet<string>;
   /** The key every cache it names by prefix starts with (`Shown.under`). */
   readonly under: readonly QueryKey[];
+  /** Once its write landed, the caches it is still composed on - each it named that the page
+   *  held as the write landed, by hash - each with the count of that cache's fetches begun by
+   *  then (`Writes.#fetches`); a cache leaves as it answers a fetch begun later, or is removed
+   *  (`Writes.#release`). Nothing while its write has not landed. */
+  landed: Map<string, number> | undefined;
 }
 
 /** `change` in place `order`, with the caches it names read off it once: what a refusal reads
- *  again and what a landing writes its made change into. */
+ *  again and what a landing holds it on. */
 function showingOf(change: WriteChange, order: number): Showing {
   const exact = new Set<string>();
   const under: QueryKey[] = [];
@@ -397,7 +407,7 @@ function showingOf(change: WriteChange, order: number): Showing {
       if (!under.some((head) => hashKey(head) === hashKey(key))) under.push(key);
     },
   });
-  return { change, exact, order, under };
+  return { change, exact, landed: undefined, order, under };
 }
 
 /** A change a surface composed from its press for a write that joins the store only later
@@ -408,8 +418,10 @@ export interface FromPress {
   readonly release: () => void;
 }
 
-/** Whether `showing` names the cache at `key` (hashed `hash`), by key or by prefix. */
+/** Whether `showing` names the cache at `key` (hashed `hash`), by key or by prefix - or, once its
+ *  write landed, whether it is still composed there. */
 function names(showing: Showing, key: QueryKey, hash: string): boolean {
+  if (showing.landed !== undefined) return showing.landed.has(hash);
   return showing.exact.has(hash) || showing.under.some((head) => startsWith(key, head));
 }
 
@@ -429,14 +441,16 @@ interface HeldOverlay {
   readonly named: readonly Showing[];
 }
 
-/** Whether `entry`'s change is on the screen: a live write that shows one, whether or not a
- *  press still waits for it. One that is not live is composed nowhere. */
+/** Whether `entry`'s change is on the screen as its press made it: a live write that shows one,
+ *  whether or not a press still waits for it. One that is not live is composed as a live change
+ *  nowhere; one that landed is held on the caches it named instead (`Writes.#holdLanded`). */
 function shownLive(entry: Entry): entry is Entry & { readonly showing: Showing } {
   return entry.showing !== undefined && liveWrite(entry.write);
 }
 
-/** Whether `write` may still reach Dispatch, which is while its change is composed: waiting
- *  its turn, out, or late - `stopping` among them, since the attempt already out may still land.
+/** Whether `write` may still reach Dispatch, which is while its change is composed as pressed:
+ *  waiting its turn, out, or late - `stopping` among them, since the attempt already out may
+ *  still land.
  *  A refused write is not, nor a made one, and a discarded write is held no longer. The one rule
  *  every engine that reads the store's rows asks it by, and a view of a write - a broadcast's
  *  row in the send strip (`broadcastRows`) - is decided by it where the view is made. */
@@ -567,10 +581,22 @@ export class Writes {
   /** The changes surfaces composed from their presses whose writes have not joined yet
    *  (`fromPress`). */
   readonly #pressed = new Map<FromPress, Showing>();
-  /** Every live change, in the store's order (`joined`): what every read of a cache composes
+  /** Every change composed: each live change, and each landed one still composed on a cache it
+   *  named (`#made`), in the store's order (`joined`): what every read of a cache composes
    *  over Dispatch's data. One array until a change starts or stops being composed. */
   #live: readonly Showing[] = NO_SHOWINGS;
-  /** The overlay of each cache some live change names, by its hash, with the changes it
+  /** The changes whose writes landed and that are still composed on a cache they named, until
+   *  each such cache answers a fetch begun after the landing or is removed (`#holdLanded`,
+   *  `#release`): a read sent before Dispatch made the write can answer after it with the row as
+   *  it stood. One leaves once no cache holds it. */
+  readonly #made = new Set<Showing>();
+  /** How many fetches of each cache, by hash, have begun since the store began counting: the
+   *  order a landing is compared with (`Showing.landed`). Counted from the cache's own `fetch`
+   *  action, while a landed change is held and only then (`#countFetches`). */
+  readonly #fetches = new Map<string, number>();
+  /** Stops counting fetches; nothing while none are counted. */
+  #stopCounting: (() => void) | undefined;
+  /** The overlay of each cache some composed change names, by its hash, with the changes it
    *  composes: each holds the last data it composed and what it composed, so a tree prediction
    *  or a row filter runs once per answer and per composition, not once per reader and per
    *  render. One is kept while the changes naming its cache are the same ones (`#compose`). */
@@ -616,7 +642,10 @@ export class Writes {
    * computed before it. Nothing is written into the cache, so an answer that lands is simply
    * the data the next read composes over, a page a fetch-more reads is built from Dispatch's own
    * pages, and a write that leaves its line without landing simply stops being composed (R10):
-   * nothing is put back, because nothing was overwritten.
+   * nothing is put back, because nothing was overwritten. A write that lands is composed on,
+   * as its making leaves it (`Shown.on`'s `made`), over each cache it named until that cache
+   * answers a fetch begun after the landing: a read sent before Dispatch made it can answer
+   * after it with the row as it stood, and the person's change stays over that answer.
    *
    * The function is one value for as long as the changes naming the cache are the same ones -
    * one value for every cache no change names (`AS_DISPATCHED`), whatever starts or stops being
@@ -637,7 +666,7 @@ export class Writes {
       if (data === undefined) return data;
       if (last !== undefined && Object.is(last.data, data)) return last.shown;
       const shown = named.reduce(
-        (over: unknown, showing) => shownOn(key, hash, showing, over, false),
+        (over: unknown, showing) => shownOn(key, hash, showing, over, showing.landed !== undefined),
         data
       );
       last = { data, shown };
@@ -659,8 +688,9 @@ export class Writes {
   /** The cache at `key` as Dispatch answered it, with no live change over it, for a reader that
    *  wants exactly that: who Dispatch says is signed in, the event feed's cursor, the id a
    *  reference warms a document's text by, and a read a change makes inside its own composition,
-   *  which a landing writes into the cache (`#keepMade`) and so must carry no other write's
-   *  change. Typed by the key as TanStack's `getQueryData` is. */
+   *  which must carry no other write's change: each change is composed over the changes pressed
+   *  before it, never over a value one of them made. Typed by the key as TanStack's
+   *  `getQueryData` is. */
   dispatched<
     TQueryFnData = unknown,
     TTaggedQueryKey extends QueryKey = QueryKey,
@@ -689,30 +719,28 @@ export class Writes {
     return query.state.data;
   }
 
-  /** Composes every cache again, for a change whose rule reads more than the cache - the unread
-   *  count's bounds, once a refused press has left them (`refusedUnreadDrop`). */
-  recompose(): void {
-    this.#recompose(true);
+  /** Composes the cache at `key` again, for a change whose rule reads more than the cache - the
+   *  unread count's bounds, once a refused press has left them (`refusedUnreadDrop`). Every
+   *  other cache keeps its overlay, and its readers render nothing. */
+  recompose(key: QueryKey): void {
+    if (!this.#overlays.delete(hashKey(key))) return;
+    for (const listener of this.#listeners) listener();
   }
 
-  /** Takes the live changes afresh - each live write's that shows one, and each composed from a
-   *  press - in the store's order. A set that differs from the one held lets go of each overlay
-   *  whose cache it names otherwise; `force` lets every overlay go. Says whether either did. */
-  #compose(force: boolean): boolean {
-    const live = [...this.#pressed.values()];
+  /** Takes the composed changes afresh - each live write's that shows one, each composed from a
+   *  press, and each landed one still held - in the store's order. A set that differs from the
+   *  one held lets go of each overlay whose cache it names otherwise. Says whether it did. */
+  #compose(): boolean {
+    const live = [...this.#pressed.values(), ...this.#made];
     for (const entry of this.#entries.values()) {
       if (shownLive(entry)) live.push(entry.showing);
     }
     live.sort((a, b) => a.order - b.order);
     const held = this.#live;
-    if (!force && live.length === held.length && live.every((one, at) => one === held[at])) {
+    if (live.length === held.length && live.every((one, at) => one === held[at])) {
       return false;
     }
     this.#live = live.length === 0 ? NO_SHOWINGS : live;
-    if (force) {
-      this.#overlays.clear();
-      return true;
-    }
     for (const [hash, overlay] of this.#overlays) {
       const named = live.filter((showing) => names(showing, overlay.key, hash));
       if (
@@ -726,8 +754,8 @@ export class Writes {
   }
 
   /** `#compose`, telling every listener of a new composition. */
-  #recompose(force: boolean): void {
-    if (!this.#compose(force)) return;
+  #recompose(): void {
+    if (!this.#compose()) return;
     for (const listener of this.#listeners) listener();
   }
 
@@ -743,11 +771,11 @@ export class Writes {
     const showing = showingOf(change, this.#nextJoin());
     const pressed: FromPress = {
       release: () => {
-        if (this.#pressed.delete(pressed)) this.#recompose(false);
+        if (this.#pressed.delete(pressed)) this.#recompose();
       },
     };
     this.#pressed.set(pressed, showing);
-    this.#recompose(false);
+    this.#recompose();
     return pressed;
   }
 
@@ -762,25 +790,82 @@ export class Writes {
     return pressed;
   }
 
-  /** Writes the change of `entry`, which Dispatch has just made, into every cache it names that
-   *  holds data - a plain cache write of what its making leaves (`Shown.on`'s `made`) - before it
-   *  stops being composed: Dispatch's answer to it may never be merged there - a kind leaves that
-   *  to the newest write of its row still out, a surface reads the cache again instead - so until
-   *  an answer replaces it, the change is part of what Dispatch last gave, and a later write that
-   *  leaves without landing leaves it on the screen. The write keeps the cache as old as its last
-   *  answer left it and still owed a read it was owed, so a landing never makes a stale cache
-   *  look freshly read. */
-  #keepMade(entry: Entry): void {
+  /**
+   * Holds the change of `entry`, which Dispatch has just made, on every cache it names that the
+   * page holds, as it goes on being composed there (`Shown.on`'s `made` where one names it) until
+   * that cache answers a fetch begun after this landing, or is removed (`#release`). The cache
+   * holds only Dispatch's answers, and nothing is written into it: a read sent before Dispatch
+   * made the write - an event's refresh, another surface's - can answer after the landing with
+   * the row as it stood, and the person's change stays over that answer rather than the old row
+   * showing until the next read. The order is the cache's own count of fetches begun
+   * (`#fetches`), never a clock and never when an answer arrived. A cache the page first holds
+   * after the landing is not held: every fetch of it begins after Dispatch made the write.
+   */
+  #holdLanded(entry: Entry): void {
     const { showing } = entry;
     if (showing === undefined) return;
-    const cache = this.#client.getQueryCache();
-    for (const query of cache.findAll({ predicate: (query) => wrote(showing, query) })) {
-      const { data, dataUpdatedAt, isInvalidated } = query.state;
-      if (data === undefined) continue;
-      const made = shownOn(query.queryKey, query.queryHash, showing, data, true);
-      this.#client.setQueryData(query.queryKey, made, { updatedAt: dataUpdatedAt });
-      if (isInvalidated) query.invalidate();
+    const caches = new Map<string, number>();
+    for (const query of this.#client.getQueryCache().findAll()) {
+      if (wrote(showing, query)) {
+        caches.set(query.queryHash, this.#fetches.get(query.queryHash) ?? 0);
+      }
     }
+    if (caches.size === 0) return;
+    showing.landed = caches;
+    this.#made.add(showing);
+    // Each overlay it is in composes it now as its making leaves it, and on the caches it holds.
+    for (const [hash, overlay] of this.#overlays) {
+      if (overlay.named.includes(showing)) this.#overlays.delete(hash);
+    }
+    this.#countFetches();
+  }
+
+  /** Counts each cache's fetches as they begin (`#fetches`), and lets a landed change go from a
+   *  cache that answers a fetch begun after its landing, or that is removed, while any landed
+   *  change is held. A fetch that fails lets nothing go. */
+  #countFetches(): void {
+    if (this.#stopCounting !== undefined) return;
+    this.#stopCounting = this.#client.getQueryCache().subscribe((event) => {
+      const hash = event.query.queryHash;
+      if (event.type === "removed") {
+        this.#fetches.delete(hash);
+        this.#release(hash, undefined);
+        return;
+      }
+      if (event.type !== "updated") return;
+      const { action } = event;
+      if (action.type === "fetch") {
+        this.#fetches.set(hash, (this.#fetches.get(hash) ?? 0) + 1);
+      } else if (action.type === "success" && action.manual !== true) {
+        this.#release(hash, this.#fetches.get(hash) ?? 0);
+      }
+    });
+  }
+
+  /** Lets every landed change go from the cache hashed `hash`: one whose landing came before
+   *  the fetch numbered `fetched`, which has just answered, or, `undefined`, every one - the
+   *  cache is gone. A change no cache holds leaves the store, and once none is held the store
+   *  stops counting fetches. */
+  #release(hash: string, fetched: number | undefined): void {
+    let released = false;
+    for (const showing of this.#made) {
+      const at = showing.landed?.get(hash);
+      if (at === undefined || (fetched !== undefined && fetched <= at)) continue;
+      showing.landed?.delete(hash);
+      if (showing.landed?.size === 0) this.#made.delete(showing);
+      released = true;
+    }
+    if (!released) return;
+    if (this.#made.size === 0) this.#stopCountingFetches();
+    this.#overlays.delete(hash);
+    this.#compose();
+    for (const listener of this.#listeners) listener();
+  }
+
+  #stopCountingFetches(): void {
+    this.#stopCounting?.();
+    this.#stopCounting = undefined;
+    this.#fetches.clear();
   }
 
   /** Shows `change` for the write `id`, and holds it with that write: a surface that shows its
@@ -792,7 +877,7 @@ export class Writes {
     const entry = this.#entries.get(id);
     if (entry === undefined) return;
     entry.showing = showingOf(change, entry.write.joined);
-    this.#recompose(false);
+    this.#recompose();
   }
 
   /** Makes `spec`'s write, stamped with the person signed in now, and answers with Dispatch's 2xx,
@@ -1071,6 +1156,11 @@ export class Writes {
    *  included: the person who made them signed out. */
   clear(): void {
     this.#take([...this.#entries.values()]);
+    // Nothing of the person who signed out is composed any more, made or not.
+    for (const showing of this.#made) showing.landed = undefined;
+    this.#made.clear();
+    this.#stopCountingFetches();
+    this.#recompose();
     this.#signingOut.clear();
     this.#resetKinds();
     void this.#files.keepOnly(undefined);
@@ -1472,15 +1562,16 @@ export class Writes {
     this.#join(entry, late ? "late" : "sending");
   }
 
-  /** The write `entry` landed with `answer` (`null` for a landing with none): its change is
-   *  written into the caches it named as Dispatch's (`#keepMade`), it leaves, or stays made for
-   *  its kind to show, and its kind refreshes what it wrote. */
+  /** The write `entry` landed with `answer` (`null` for a landing with none): its change goes on
+   *  being composed on the caches it named until each answers a read begun after the landing
+   *  (`#holdLanded`), it leaves, or stays made for its kind to show, and its kind refreshes what
+   *  it wrote. */
   #landed(entry: Entry, answer: unknown): void {
     const kind = kinds.get(entry.write.kind);
     const awaited = entry.press !== undefined;
     entry.press?.resolve(answer);
     entry.press = undefined;
-    this.#keepMade(entry);
+    this.#holdLanded(entry);
     if (kind?.keepsMade === true && answer !== null) {
       clearTimeout(entry.expiry);
       this.#forget(entry);
@@ -1653,7 +1744,7 @@ export class Writes {
       .map((entry) => entry.write)
       .sort((a, b) => a.id - b.id);
     this.#rows = rows.length === 0 ? NO_WRITES : rows;
-    this.#compose(false);
+    this.#compose();
     for (const listener of this.#listeners) listener();
   }
 

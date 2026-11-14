@@ -14,6 +14,7 @@ import { MemoryRouter } from "react-router-dom";
 import { answerInboxDismisses, answerInboxReads } from "../../__tests__/send-answers";
 import { ApiError, api } from "../../api/client";
 import { inboxThreadsQuery, myRepliesCountQuery, whoAmIQuery } from "../../api/queries";
+import { DispatchQueryClient } from "../../api/query-client";
 import type {
   InboxDismissResponse,
   InboxReadResponse,
@@ -82,8 +83,8 @@ function Presses(): ReactNode {
 }
 
 /** The presses over `ROWS`, each held open until the test answers it, and the count's reads
- *  answered with `COUNT` unless the test says otherwise. */
-function renderPresses() {
+ *  answered with `COUNT` unless the test says otherwise, on a page whose client is a `Client`. */
+function renderPresses(Client: typeof QueryClient = QueryClient) {
   const read = Promise.withResolvers<InboxReadResponse>();
   const dismissed = Promise.withResolvers<InboxDismissResponse>();
   answerInboxReads().mockReturnValue(read.promise);
@@ -93,7 +94,7 @@ function renderPresses() {
     total: COUNT,
   });
   restores.push(listMyReplies);
-  const client = new QueryClient({
+  const client = new Client({
     defaultOptions: {
       mutations: { retry: false },
       queries: { retry: false, staleTime: Number.POSITIVE_INFINITY },
@@ -306,5 +307,56 @@ test("a Dismiss refused after a later Mark all read was made reads three when ev
   dismissed.reject(refusal());
   await screen.findByText("Could not dismiss 1 thread: not found.");
   await waitFor(() => expect(client.isFetching()).toBe(0));
+  expect(inboxCount()).toBe("3");
+});
+
+// Round seven's Medium of dispatch://INFRA-299's pull request, on the count: a read of the count
+// out before a press is made can answer after it lands with the count as it stood - five, before
+// the Dismiss - or with the press already counted - two, after both presses. The store goes on
+// composing the landed press's own drop over either until the count answers a read begun after
+// the landing, so the badge drops once and never twice; that read's answer is Dispatch's whole.
+test("a Mark all read or Dismiss press that lands and whose count read then answers is not dropped twice", async () => {
+  const user = userEvent.setup();
+  const { client, dismissed, listMyReplies, read } = renderPresses(DispatchQueryClient);
+  const counts: { resolve: (count: MyRepliesResponse) => void }[] = [];
+  listMyReplies.mockImplementation((page) => {
+    if (page?.limit !== 1) return Promise.resolve(threadsRead(ROWS));
+    const count = Promise.withResolvers<MyRepliesResponse>();
+    counts.push(count);
+    return count.promise;
+  });
+  const countKey = myRepliesCountQuery().queryKey;
+  /** Answers the count's `at`-th read with `total` once that read has gone out. */
+  const answerCount = async (at: number, total: number) => {
+    await waitFor(() => expect(counts.length).toBeGreaterThan(at));
+    await act(async () => counts[at]?.resolve({ ...threadsRead([]), total }));
+  };
+  /** Makes the press held open as `press`, and waits for it to settle. */
+  const land = async (press: () => void) => {
+    await act(async () => press());
+    await waitFor(() => expect(client.isMutating()).toBe(0));
+  };
+
+  await user.click(screen.getByRole("button", { name: "Dismiss" }));
+  await waitFor(() => expect(inboxCount()).toBe("4"));
+  // A read of the count, out before Dismiss is made.
+  void client.refetchQueries({ exact: true, queryKey: countKey });
+  await land(() => dismissed.resolve({ dismissed: 1 }));
+  // It answers with the count as it stood: the Dismiss stays.
+  await answerCount(0, COUNT);
+  expect(inboxCount()).toBe("4");
+  // The read the landing asked for, begun after it, answers Dispatch's count.
+  await answerCount(1, COUNT - 1);
+  expect(inboxCount()).toBe("4");
+
+  await user.click(screen.getByRole("button", { name: "Mark all read" }));
+  await waitFor(() => expect(inboxCount()).toBe("2"));
+  void client.refetchQueries({ exact: true, queryKey: countKey });
+  await land(() => read.resolve({ marked: 2 }));
+  // It answers with Mark all read already counted: two, not two less the rows it marked.
+  await answerCount(2, COUNT - 3);
+  expect(inboxCount()).toBe("2");
+  // A thread arrived since: the read begun after the landing is Dispatch's whole.
+  await answerCount(3, COUNT - 2);
   expect(inboxCount()).toBe("3");
 });

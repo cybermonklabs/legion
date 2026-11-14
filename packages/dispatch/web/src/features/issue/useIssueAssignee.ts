@@ -9,8 +9,9 @@ import { type IssueFieldWrite, inboxKey, useIssueFieldWrite } from "./useIssueFi
  * "Assign to me" share this: the new login lands in the issue detail, every project issue list
  * and every inbox row that belongs to the issue (so a row the Inbox's assignee filter judges by
  * that login moves in or out of the list at once), the store composes it there over each answer
- * that lands while the write is live (R7) and stops composing it if it fails, and the lists
- * refetch once the server has answered (see `useIssueFieldWrite`).
+ * that lands while the write is live (R7), and once it lands over each answer of a read begun
+ * before the landing, and stops composing it if it fails, and the lists refetch once the server
+ * has answered (see `useIssueFieldWrite`).
  *
  * An inbox row is judged by the person it waits on, which the server answers as
  * `coalesce(a.asked_of, i.assignee, p.default_assignee)`: so a row whose ask nobody has handed on
@@ -18,10 +19,10 @@ import { type IssueFieldWrite, inboxKey, useIssueFieldWrite } from "./useIssueFi
  * holds its issue. An unassign moves a row nobody handed on to its project's default assignee,
  * taken from Dispatch's answer to the defaults read the Settings page holds
  * (`projectDefaultAssigneesQuery`, `Writes.dispatched`: the change is composed over Dispatch's
- * data and written into the cache as its write lands, so it reads no other write's change) where
- * the client has it; where it does not, the row keeps the person it waited on until the refetch
- * names the default. It never names nobody: every project names a default, so no row the server
- * answers does, and one written so would read as an ask no person waits on.
+ * data, so it reads no other write's change) where the client has it; where it does not, the
+ * row keeps the person it waited on until the refetch names the default. It never names nobody:
+ * every project names a default, so no row the server answers does, and one written so would
+ * read as an ask no person waits on.
  */
 export function useIssueAssignee(issueKey: string): IssueFieldWrite<string | null> {
   const writes = useWrites();
