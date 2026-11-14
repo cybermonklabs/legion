@@ -146,9 +146,8 @@ func newIssueVolume(t *testing.T) *issueVolume {
 		// under test starts from — drops PUBLIC_LEAK_CHECK with the rest of what reaches past
 		// the test. Without a check of the volume's own, the seed push that builds its remote
 		// stops with LEAK CHECK SETUP ERROR and the row fails before it tests anything. This one
-		// clears every write, as every other fixture that pushes writes one
-		// (internal/rescue/rescuetest's disk), so these rows prove the same thing in a pod as on
-		// a runner whose git is the real one.
+		// clears every write, as every other fixture that pushes writes one, so these rows prove
+		// the same thing in a pod as on a runner whose git is the real one.
 		"PUBLIC_LEAK_CHECK": leakguardtest.Write(t, dir, leakguardtest.Passes),
 	}
 	return v

@@ -88,9 +88,9 @@ done
 # legion git, in Go, puts the trailer arguments in. Every other command goes to the real git with
 # "$@" as it came. A POSIX shell edits its own positional parameters by taking each from the front
 # and putting the kept ones back at the end with `set -- "$@" "$arg"`, and dash copies the whole
-# list each time, so a rebuild costs time that grows with the square of the argument count: a
-# rescue push's leak check spent 62 s of its 78 s in this wrapper, rebuilding a `git rev-list` of
-# about 4,970 `^<sha>` arguments (dispatch://INFRA-3456).
+# list each time, so a rebuild costs time that grows with the square of the argument count: one
+# push's leak check spent 62 s of its 78 s in this wrapper, rebuilding a `git rev-list` of about
+# 4,970 `^<sha>` arguments (dispatch://INFRA-3456).
 if [ "$commit" -eq 1 ]; then
   exec "$legion" git --real "$real" -- "$@"
 fi

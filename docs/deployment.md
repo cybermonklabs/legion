@@ -185,9 +185,8 @@ a shared box has no such boundary: the daemon, its panes and the operator are on
 wrapper put first on a pane's `PATH` would be one the pane can replace, and a `core.hooksPath`
 pinned for it one the pane can override.
 A copy of them here would read as a guard and hold nothing.
-What a pane does run the guard in is `legion gh` and the rescue helper, the same binary with the
-same rules compiled in, and each of them resolves the shared public leak check from the pane's
-own `PUBLIC_LEAK_CHECK`.
+What a pane does run the guard in is `legion gh`, the same binary with the same rules compiled
+in, which resolves the shared public leak check from the pane's own `PUBLIC_LEAK_CHECK`.
 A pane can find that check no other way: `PUBLIC_LEAK_CHECK` is not a name a pane reads from the
 daemon's environment, a pane's `XDG_CONFIG_HOME` is under the state directory rather than the
 operator's home, and the check's installer puts its files on no `PATH` a pane has.
