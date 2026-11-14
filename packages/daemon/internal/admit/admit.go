@@ -1392,6 +1392,12 @@ func (a *Admission) readmit(ctx context.Context, tx pgx.Tx, stored record.Issue,
 // latest, because readmitted_approvals keeps one row for each root; it carries that step, so the
 // task names the document the person reviewed rather than the spec of every deployment.
 //
+// The approval read is the person's own (record.DesignGate.ApprovedByPerson), never the version
+// an ancestor's approval opened the step at (dispatch://INFRA-3320, R2 and R3): a step that stands
+// open on a basis at its latest version keeps the person's approval of an earlier version apart,
+// and that is the approval kept, so the re-admission neither loses it nor names the basis as a
+// person's approval.
+//
 // Where the deployment gates no step, which asks no person, nothing is kept and any pair an
 // earlier re-admission kept is dropped: no start names one there, so no delivery would forget
 // it. Otherwise a root whose required steps hold no stale approval drops an earlier pair, which
@@ -1410,12 +1416,13 @@ func (a *Admission) keepStaleApproval(ctx context.Context, tx pgx.Tx, key string
 	unregistered := false
 	for _, step := range steps {
 		gate, ok := gates[step]
-		switch {
-		case !ok:
+		if !ok {
 			unregistered = true
-		case gate.ApprovedVersion != nil && *gate.ApprovedVersion < gate.LatestVersion:
+			continue
+		}
+		if approved := gate.ApprovedByPerson(); approved != nil && approved.Version < gate.LatestVersion {
 			return a.store.KeepReadmittedApproval(ctx, tx, key, record.KeptApproval{
-				Step: step, Approved: *gate.ApprovedVersion, Latest: gate.LatestVersion})
+				Step: step, Approved: approved.Version, Latest: gate.LatestVersion})
 		}
 	}
 	if unregistered {

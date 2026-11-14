@@ -359,6 +359,25 @@ type BasisChangesRead struct {
 
 func (BasisChangesRead) isFact() {}
 
+// ReparentRead is the re-parent seed's read (record.ReparentSeed) of the new Dispatch parent of a
+// root that ran as a tree of its own and that a person made a child of a live tree: the root
+// (Issue), the parent, the root of the live tree the parent is in (Tree), and why the root stays a
+// tree of its own (Ran). BasisVersion is the version of the parent's primary document that R1's
+// path can rest the root on (dispatch://INFRA-3320, R1 and R2): the document's latest version,
+// where a person approved that version, the parent carries the legion label, Dispatch shows it
+// neither retro nor done, and that version marks requirement blocks. It is 0 where any of those
+// fails. The workflow posts the message on the root and tells the architect of Tree, and names
+// R1's path only where BasisVersion is set.
+type ReparentRead struct {
+	Issue        string
+	Parent       string
+	Tree         string
+	Ran          string
+	BasisVersion int
+}
+
+func (ReparentRead) isFact() {}
+
 // DispatchAskOpened is an ask a session or a person opened on an issue, with its kind (Kind:
 // record.AskQuestion, record.AskApproval, or "" for a kind this daemon does not know, such as an
 // event retained from before Dispatch had the two), the document an approval request asks a person

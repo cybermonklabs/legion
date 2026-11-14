@@ -505,8 +505,10 @@ func (e *Engine) endPendingBasis(ctx context.Context, tx pgx.Tx, root record.Iss
 // keeps that wait beside its step's, so the end answers it, as a changes request does, with no
 // notice beside it: the answer's detail says what ended the step's wait (basisEndedAnswer). An act
 // on the root's own document (own) that meets a wait already answered is named by the resume as
-// well. Every other end reaches the root's architect as a basis-ended notice that names the act,
-// the ancestor's document and the version, and who made the act (actor, "" for nobody).
+// well: what is joined to the answer's detail (basisEndedAfter), and the resume names it after the
+// act that answered the wait. Every other end reaches the root's architect as a basis-ended notice
+// that names the act, the ancestor's document and the version, and who made the act (actor, "" for
+// nobody).
 func (e *Engine) tellPendingEnded(ctx context.Context, tx pgx.Tx, key string, step record.DesignStep, basis record.GateBasis, what, actor string, own bool) error {
 	root, err := e.store.Issue(ctx, tx, key)
 	if err != nil || root == nil {
@@ -523,7 +525,8 @@ func (e *Engine) tellPendingEnded(ctx context.Context, tx pgx.Tx, key string, st
 	case root.AwaitingPerson() && own:
 		e.logOnCommit(ctx, "workflow: a root waiting on a person is told by its resume of the act on its own document that ended its step's wait", "issue", key,
 			"step", step, "ask", basis.Pending.Ask)
-		return nil
+		root.Awaiting.AnsweredDetail += basisEndedAfter + what
+		return e.store.PutIssue(ctx, tx, *root)
 	}
 	return e.notice(ctx, tx, key, record.Notice{Kind: "basis-ended", Role: claim.RoleArchitect, Version: basis.Version, Actor: actor,
 		Ref: stepRef(basis.Issue, step), Reason: what})

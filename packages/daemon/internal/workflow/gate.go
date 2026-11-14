@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 
@@ -458,7 +459,7 @@ func (e *Engine) answerRegisteredGate(ctx context.Context, tx pgx.Tx, fact intak
 	case onGate && fact.DispatchVersion > waited && fact.RequestWaitsOnAgent:
 		by, version = record.AnsweredByVersion, fact.DispatchVersion
 	case gate.OnBasis() && onGate && gate.LatestVersion >= waited:
-		by, version = record.AnsweredByApproval, gate.LatestVersion
+		by, version, detail = record.AnsweredByApproval, gate.LatestVersion, approvalDetail(gate.LatestVersion, &gate)
 	case !gate.OnBasis() && classify.DesignGateOpen(gate) && fact.ApprovedVersion >= waited && (onGate || placedAfter(*issue, fact.ApprovedMark)):
 		by, version = record.AnsweredByApproval, fact.ApprovedVersion
 	case changesRequested && fact.ChangesRequestedVersion >= waited && !placedAfter(*issue, fact.ChangesRequestedMark):
@@ -1024,6 +1025,11 @@ func (e *Engine) applyArtifact(ctx context.Context, tx pgx.Tx, gate record.Desig
 // design the person was being asked about again (dispatch://INFRA-714/spec R5). The opening is
 // told the same way, so a worker that was told to expect a change hears that it landed.
 //
+// onBasis is every gated step that stands open on an ancestor's approval when the gate opens
+// (basisSteps), none for a close. No person approved the root's version of such a step
+// (dispatch://INFRA-3320, R2), so the opening then says which approval each such step stands on
+// (gateOpenedOnBasis), and never that a person approved it.
+//
 // No phase is moved and no turn is interrupted: the gate holds the merger's start while it is
 // closed (the daemon's supervise row) and releases it at the opening, and every other worker
 // decides for itself what the version means for the work in hand. A phase no worker holds names
@@ -1038,7 +1044,7 @@ func (e *Engine) applyArtifact(ctx context.Context, tx pgx.Tx, gate record.Desig
 // daemon could not spell - a tree whose root key is not an issue key is one such - which would
 // leave the gate closed under workers the message existed to warn.
 func (e *Engine) tellGateMoved(ctx context.Context, tx pgx.Tx, key string, step record.DesignStep,
-	document string, version int, open bool) error {
+	document string, version int, open bool, onBasis []record.DesignGate) error {
 	root, err := e.store.Issue(ctx, tx, key)
 	if err != nil || root == nil {
 		return err
@@ -1070,11 +1076,14 @@ func (e *Engine) tellGateMoved(ctx context.Context, tx pgx.Tx, key string, step 
 	// version this event carries is that step's document's, and a message naming the spec would
 	// send a reader to the wrong one (INFRA-1272).
 	var body string
-	if open {
+	switch {
+	case open && len(onBasis) > 0:
+		body = gateOpenedOnBasis(root.Tree, step, document, version, onBasis)
+	case open:
 		body = fmt.Sprintf("The design gate of %s opened: a person approved version %d of its %s document (%s), "+
 			"and every step the deployment gates now stands open, so the design you are working to is the approved one. "+
 			"A merge the closed gate held is released.", root.Tree, version, step, document)
-	} else {
+	default:
 		body = fmt.Sprintf("The design gate of %s closed: version %d of its %s document (%s) is with its reviewer, "+
 			"so the design you are working to may change. Your phase goes on; the merge waits until every gated step "+
 			"stands open again.", root.Tree, version, step, document)
@@ -1087,6 +1096,47 @@ func (e *Engine) tellGateMoved(ctx context.Context, tx pgx.Tx, key string, step 
 	e.logOnCommit(ctx, "workflow: the design gate moved and every phase holder of the tree is told", "issue", key, "tree", root.Tree,
 		"step", string(step), "version", version, "open", open, "told", len(told))
 	return nil
+}
+
+// gateOpenedOnBasis is the message of an opening of tree's standing gate while onBasis, one or
+// more gated steps, stand open on an ancestor's approval. It keeps the two parts of every opening
+// that roles/merger.md quotes as the release of a merge: `The design gate of <tree> opened:` and
+// `every step the deployment gates now stands open`. Where the step whose move opened the gate
+// (step, at version of document) stands on a person's approval, that approval is named first, as
+// a person's opening names it. Then each step on a basis is named with the ancestor's approval it
+// stands on, and with the root's version that no person approved.
+func gateOpenedOnBasis(tree string, step record.DesignStep, document string, version int, onBasis []record.DesignGate) string {
+	var body strings.Builder
+	fmt.Fprintf(&body, "The design gate of %s opened: ", tree)
+	if !slices.ContainsFunc(onBasis, func(gate record.DesignGate) bool { return gate.Step.OrSpec() == step }) {
+		fmt.Fprintf(&body, "a person approved version %d of its %s document (%s), and ", version, step, document)
+	}
+	body.WriteString("every step the deployment gates now stands open. A merge the closed gate held is released.")
+	for _, gate := range onBasis {
+		fmt.Fprintf(&body, " The %s step stands open on an ancestor's approval: %s. No person approved version %d of its %s document (%s).",
+			gate.Step.OrSpec(), basisApproval(gate), gate.LatestVersion, gate.Step.OrSpec(), gate.ArtifactID)
+	}
+	return body.String()
+}
+
+// basisApproval names the ancestor's approval gate stands open on (record.DesignGate.OnBasis): the
+// version a person approved and the ancestor's document for the step. It is the one wording of
+// that approval that the gate's messages and the resume task share, and it names a person's
+// approval of the ancestor's document only, never of the root's.
+func basisApproval(gate record.DesignGate) string {
+	return fmt.Sprintf("a person approved version %d of %s", gate.Basis.Version, documentOf(gate.Basis.Issue, gate.Step.OrSpec()))
+}
+
+// basisSteps is every step the deployment gates that stands open on an ancestor's approval in
+// gates, in the order the deployment names the steps.
+func (e *Engine) basisSteps(gates map[record.DesignStep]record.DesignGate) []record.DesignGate {
+	var onBasis []record.DesignGate
+	for _, step := range classify.RequiredSteps(e.cfg.Steps) {
+		if gate, ok := gates[step]; ok && gate.OnBasis() {
+			onBasis = append(onBasis, gate)
+		}
+	}
+	return onBasis
 }
 
 // putGateTold writes gate's row and, when that write moves the standing gate of its tree, tells
@@ -1125,7 +1175,11 @@ func (e *Engine) putGateTold(ctx context.Context, tx pgx.Tx, gate record.DesignG
 	if stands == stood {
 		return nil
 	}
-	return e.tellGateMoved(ctx, tx, gate.Issue, step, gate.ArtifactID, version, stands)
+	var onBasis []record.DesignGate
+	if stands {
+		onBasis = e.basisSteps(gates)
+	}
+	return e.tellGateMoved(ctx, tx, gate.Issue, step, gate.ArtifactID, version, stands, onBasis)
 }
 
 // standingGateOpen is whether the tree's work stands released under gates, the rows an issue
@@ -1154,7 +1208,7 @@ func (e *Engine) tellChangesOnce(ctx context.Context, tx pgx.Tx, step record.Des
 		return err
 	}
 	byResume := issue.AwaitingPerson() && placedAfter(*issue, fact.Mark) &&
-		(recorded || issue.Awaiting.AnsweredBy == record.AnsweredByChanges && issue.Awaiting.AnsweredDetail == changesDetail(fact.Version, fact.Reason))
+		(recorded || issue.Awaiting.AnsweredBy == record.AnsweredByChanges && answeredAct(issue.Awaiting.AnsweredDetail) == changesDetail(fact.Version, fact.Reason))
 	if byResume {
 		e.logOnCommit(ctx, "workflow: a changes request on a root waiting on a person is named by its resume, not by a notice",
 			"issue", fact.Key, "version", fact.Version)

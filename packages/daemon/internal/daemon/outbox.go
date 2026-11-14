@@ -15,6 +15,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/dispatchblocks"
+
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/classify"
@@ -635,6 +637,8 @@ func (r *outbox) execute(ctx context.Context, row record.OutboxRow) error {
 		return r.seedGate(ctx, row, value)
 	case record.PendingBasisSeed:
 		return r.seedPendingBasis(ctx, row, value)
+	case record.ReparentSeed:
+		return r.seedReparent(ctx, row, value)
 	case record.LingerClose:
 		return r.linger(ctx, row, value)
 	case record.IssueSuspend:
@@ -2791,6 +2795,62 @@ func (r *outbox) seedPendingBasis(ctx context.Context, row record.OutboxRow, pay
 		return fmt.Errorf("apply the pending-basis seed of %s: %w", row.Issue, err)
 	}
 	return nil
+}
+
+// seedReparent reads, for the row's issue, a root that ran as a tree of its own and that a person
+// made a child of a live tree (record.ReparentSeed), whether R1's path is open on its new parent
+// (dispatch://INFRA-3320, R1 and R2; reparentBasisVersion), and applies what it read as a fact
+// (intake.ReparentRead), whose workflow handler posts the message on the root and tells the
+// architect of the parent's tree. The read decides only the words: a parent R1's path is closed
+// on gets today's words. The fact's id is the row's, so a run of the same row again is a
+// duplicate, and the seed of a later move is a fact of its own.
+func (r *outbox) seedReparent(ctx context.Context, row record.OutboxRow, payload record.ReparentSeed) error {
+	if r.dispatch == nil {
+		return errors.New("re-parent seed executor has no Dispatch client")
+	}
+	version, err := r.reparentBasisVersion(ctx, payload.Parent)
+	if err != nil {
+		return err
+	}
+	id := fmt.Sprintf("reparent-seed:%s:%d", row.Issue, row.ID)
+	if _, err := intake.ApplyFact(ctx, r.pool, "outbox", id, intake.ReparentRead{Issue: row.Issue, Parent: payload.Parent, Tree: payload.Tree,
+		Ran: payload.Ran, BasisVersion: version}, r.handlers...); err != nil {
+		return fmt.Errorf("apply the re-parent seed of %s: %w", row.Issue, err)
+	}
+	return nil
+}
+
+// reparentBasisVersion is the version of parent's primary document that R1's path can rest a
+// child root on, 0 where the path is closed: parent carries the legion label, Dispatch shows it
+// neither retro nor done, a person approved the latest version of its primary document, and that
+// version marks a requirement block that names an id, as register_gate reads one
+// (api's requirementsOf).
+func (r *outbox) reparentBasisVersion(ctx context.Context, parent string) (int, error) {
+	issue, err := r.dispatch.GetIssue(ctx, parent)
+	if err != nil {
+		return 0, fmt.Errorf("read Dispatch issue %s, a new parent: %w", parent, err)
+	}
+	if !dispatch.CarriesLegionLabel(issue.Labels) || issue.Status == "retro" || issue.Status == "done" || issue.PrimaryArtifactID == "" {
+		return 0, nil
+	}
+	approval, err := r.dispatch.Approval(ctx, issue.PrimaryArtifactID)
+	if err != nil {
+		return 0, fmt.Errorf("read Dispatch approval %s, the primary document of %s: %w", issue.PrimaryArtifactID, parent, err)
+	}
+	version := approval.ApprovedLatest()
+	if version == 0 || !approval.By.Person() {
+		return 0, nil
+	}
+	markdown, err := r.dispatch.DocumentVersion(ctx, issue.PrimaryArtifactID, version)
+	if err != nil {
+		return 0, fmt.Errorf("read version %d of %s, the primary document of %s: %w", version, issue.PrimaryArtifactID, parent, err)
+	}
+	for _, block := range dispatchblocks.Read(markdown) {
+		if block.Type == "requirement" && block.ID != "" {
+			return version, nil
+		}
+	}
+	return 0, nil
 }
 
 func (r *outbox) linger(ctx context.Context, row record.OutboxRow, payload record.LingerClose) error {

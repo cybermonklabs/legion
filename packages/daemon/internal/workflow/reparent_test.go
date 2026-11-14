@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -19,7 +20,9 @@ import (
 // own. The daemon says so once per parent — on the issue, where the person reads it, and to the
 // architect of the tree it was moved under, which would otherwise wait for a release it cannot
 // make (dispatch://INFRA-714/spec R3). A later event under the same parent repeats nothing; a move
-// under another live tree is told anew.
+// under another live tree is told anew. The engine does no I/O, so the move queues a re-parent seed
+// whose read of the parent decides the words (dispatch://INFRA-3320, R2), and the message and the
+// notice come with that read's fact.
 func TestARootThatRanIsToldOncePerParentThatItStaysItsOwnTree(t *testing.T) {
 	pool := migratedPool(t)
 	seedLiveRoot(t, pool, "LEGION-208", 0)
@@ -36,8 +39,24 @@ func TestARootThatRanIsToldOncePerParentThatItStaysItsOwnTree(t *testing.T) {
 		applyMirrored(t, pool, engine, id, intake.DispatchIssue{Key: "LEGION-500", ResolvedRepo: "sjawhar/legion", Seq: seq,
 			Type: "issue.updated", Status: "todo", Title: "a tree of its own", Parent: parent, Rank: "Z", HandedOver: true})
 	}
+	// read applies what the seed's executor reads of a parent R1's path is closed on.
+	read := func(id string, seed record.ReparentSeed) {
+		t.Helper()
+		applyMirrored(t, pool, engine, id, intake.ReparentRead{Issue: "LEGION-500", Parent: seed.Parent, Tree: seed.Tree, Ran: seed.Ran})
+	}
 
 	reparent("moved-under-208", "LEGION-208", 5)
+	seeds := reparentSeeds(t, pool, "LEGION-500")
+	if len(seeds) != 1 || seeds[0] != (record.ReparentSeed{Parent: "LEGION-208", Tree: "LEGION-208", Ran: "it carries a run handed over to it as a root of its own"}) {
+		t.Fatalf("the re-parent seeds of LEGION-500 = %#v, want one reading LEGION-208 in its own live tree", seeds)
+	}
+	if got := dispatchMessages(t, pool, "LEGION-500"); len(got) != 0 {
+		t.Fatalf("the messages on the re-parented root before the seed's read = %q, want none", got)
+	}
+	if got := toldParent(t, pool, "LEGION-500"); got != "LEGION-208" {
+		t.Fatalf("the parent recorded as told = %q, want LEGION-208", got)
+	}
+	read("read-208", seeds[0])
 	first := dispatchMessages(t, pool, "LEGION-500")
 	if len(first) != 1 || !strings.Contains(first[0], "LEGION-208") || !strings.Contains(first[0], "stays a tree of its own") {
 		t.Fatalf("the messages on the re-parented root = %q, want one saying it stays its own tree under LEGION-208", first)
@@ -45,32 +64,89 @@ func TestARootThatRanIsToldOncePerParentThatItStaysItsOwnTree(t *testing.T) {
 	if told := noticeReasons(t, pool, "LEGION-208"); len(told) != 1 || told[0] != first[0] {
 		t.Fatalf("the notices to the tree of LEGION-208 = %q, want the one the issue was told", told)
 	}
-	if got := toldParent(t, pool, "LEGION-500"); got != "LEGION-208" {
-		t.Fatalf("the parent recorded as told = %q, want LEGION-208", got)
-	}
 
 	// An edit of the issue that leaves it under the same parent says nothing new.
 	reparent("edited-under-208", "LEGION-208", 6)
+	if again := reparentSeeds(t, pool, "LEGION-500"); len(again) != 1 {
+		t.Fatalf("the re-parent seeds after a second event under the same parent = %#v, want the first alone", again)
+	}
 	if again := dispatchMessages(t, pool, "LEGION-500"); len(again) != 1 {
 		t.Fatalf("the messages after a second event under the same parent = %q, want the first alone", again)
-	}
-	if told := noticeReasons(t, pool, "LEGION-208"); len(told) != 1 {
-		t.Fatalf("the notices after a second event under the same parent = %q, want the first alone", told)
 	}
 
 	// A move under another live tree is another parent, and that tree's architect has not heard it.
 	reparent("moved-under-300", "LEGION-300", 7)
+	seeds = reparentSeeds(t, pool, "LEGION-500")
+	if len(seeds) != 2 || seeds[1].Parent != "LEGION-300" || seeds[1].Tree != "LEGION-300" {
+		t.Fatalf("the re-parent seeds after the move under LEGION-300 = %#v, want a second reading LEGION-300", seeds)
+	}
+	// The first seed's read, run late, names a parent the root is no longer told under: it tells
+	// nothing.
+	read("read-208-late", seeds[0])
+	read("read-300", seeds[1])
 	if moved := dispatchMessages(t, pool, "LEGION-500"); len(moved) != 2 || !strings.Contains(moved[1], "LEGION-300") {
 		t.Fatalf("the messages after the move under LEGION-300 = %q, want a second naming LEGION-300", moved)
 	}
 	if told := noticeReasons(t, pool, "LEGION-300"); len(told) != 1 {
 		t.Fatalf("the notices to the tree of LEGION-300 = %q, want one", told)
 	}
+	if told := noticeReasons(t, pool, "LEGION-208"); len(told) != 1 {
+		t.Fatalf("the notices to the tree of LEGION-208 = %q, want the first alone", told)
+	}
 	if got := toldParent(t, pool, "LEGION-500"); got != "LEGION-300" {
 		t.Fatalf("the parent recorded as told = %q, want LEGION-300", got)
 	}
 	if got := treeOf(t, pool, "LEGION-500"); got != "LEGION-500" {
 		t.Fatalf("the re-parented root is recorded in the tree of %s, want its own", got)
+	}
+}
+
+// The read of the new parent decides the words (dispatch://INFRA-3320, R2). Where R1's path is
+// open on the parent — it carries legion, is not accepted, holds a person's approval of its latest
+// version and marks requirement blocks there (intake.ReparentRead.BasisVersion) — the root and the
+// parent's tree's architect are told that the root can be written as a view on the parent and
+// register its design gate on that approval. Otherwise, and where the record shows the parent
+// accepted whatever the read found, both are told today's words.
+func TestAReparentReadNamesR1sPathOnlyWhereItIsOpen(t *testing.T) {
+	const ran = "it ran as a tree of its own"
+	stays := "LEGION-500 is now a child of LEGION-208 in Dispatch, and it stays a tree of its own in Legion: " + ran +
+		", so the tree of LEGION-208 cannot take it in and its architect cannot release it."
+	today := stays + " It runs under its own architect, and its work reaches the tree of LEGION-208 only through that tree's own issues."
+	path := stays + " It runs under its own architect. LEGION-208 carries the legion label and marks requirement blocks in its primary document. " +
+		"A person approved version 7 of that document, which is its latest version. So the architect of LEGION-500 can write it as a view on LEGION-208. " +
+		"Then that architect can register the design gate of LEGION-500 on that approval, with no approval of its own, " +
+		"as skill://legion-architect/references/design-gate.md says."
+	for _, tc := range []struct {
+		name     string
+		version  int
+		accepted bool
+		want     string
+	}{
+		{"a parent R1's path is open on", 7, false, path},
+		{"a parent R1's path is closed on", 0, false, today},
+		{"a parent the record shows accepted", 7, true, today},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			seedLiveRoot(t, pool, "LEGION-208", 0)
+			if tc.accepted {
+				seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
+					Tree: "LEGION-208", Project: "LEGION", Title: "LEGION-208", Phase: phase.Merging, Generation: 1, Status: "retro", Rank: "U"})
+			}
+			seedIssue(t, pool, record.Issue{Key: "LEGION-500", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
+				Tree: "LEGION-500", Project: "LEGION", Title: "a tree of its own", Phase: phase.Done, Generation: 2, Status: "todo",
+				DispatchStatus: "todo", HandedOver: true, TakenBack: true, Rank: "Z", LastDispatchSeq: 4, ToldParent: "LEGION-208"})
+
+			applyMirrored(t, pool, testEngine(config.DesignGateRootIssues, nil), "read", intake.ReparentRead{Issue: "LEGION-500", Parent: "LEGION-208",
+				Tree: "LEGION-208", Ran: ran, BasisVersion: tc.version})
+
+			if got := dispatchMessages(t, pool, "LEGION-500"); len(got) != 1 || got[0] != tc.want {
+				t.Fatalf("the messages on LEGION-500 = %q, want one reading %q", got, tc.want)
+			}
+			if got := noticeReasons(t, pool, "LEGION-208"); len(got) != 1 || got[0] != tc.want {
+				t.Fatalf("the notices to the tree of LEGION-208 = %q, want one reading %q", got, tc.want)
+			}
+		})
 	}
 }
 
@@ -89,6 +165,9 @@ func TestARootThatNeverRanIsToldNothingWhenItIsReparented(t *testing.T) {
 
 	if got := dispatchMessages(t, pool, "LEGION-501"); len(got) != 0 {
 		t.Fatalf("the messages on a queued root a person re-parented = %q, want none: the release adopts it", got)
+	}
+	if got := reparentSeeds(t, pool, "LEGION-501"); len(got) != 0 {
+		t.Fatalf("the re-parent seeds of a queued root a person re-parented = %#v, want none: the release adopts it", got)
 	}
 	if got := toldParent(t, pool, "LEGION-501"); got != "" {
 		t.Fatalf("the parent recorded as told = %q, want none", got)
@@ -114,6 +193,20 @@ func dispatchMessages(t *testing.T, pool *pgxpool.Pool, issue string) []string {
 func noticeReasons(t *testing.T, pool *pgxpool.Pool, issue string) []string {
 	t.Helper()
 	return outboxStrings(t, pool, "select payload->>'reason' from outbox where kind = 'notice' and issue = $1 order by id", issue)
+}
+
+// reparentSeeds is every re-parent seed the outbox holds for issue, oldest first.
+func reparentSeeds(t *testing.T, pool *pgxpool.Pool, issue string) []record.ReparentSeed {
+	t.Helper()
+	var seeds []record.ReparentSeed
+	for _, payload := range outboxStrings(t, pool, "select payload::text from outbox where kind = 'reparent_seed' and issue = $1 order by id", issue) {
+		var seed record.ReparentSeed
+		if err := json.Unmarshal([]byte(payload), &seed); err != nil {
+			t.Fatalf("decode a re-parent seed of %s: %v", issue, err)
+		}
+		seeds = append(seeds, seed)
+	}
+	return seeds
 }
 
 func outboxStrings(t *testing.T, pool *pgxpool.Pool, query, issue string) []string {

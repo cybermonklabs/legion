@@ -114,6 +114,13 @@ func ParkedDecisionTask(ctx context.Context, tx pgx.Tx, store record.Store, step
 // root's own, so it is named whenever kept carries one — the gate was read where it was first
 // kept — and it is named on the document of its own step (record.DesignStep.Document), which is
 // the document the person reviewed and the one whose approval the architect requests again.
+//
+// The approval kept is a person's approval of an earlier version of the root's own document,
+// never the version an ancestor's approval opened a step at (Admission.keepStaleApproval reads
+// record.DesignGate.ApprovedByPerson), so the task names no approval of the root's document that
+// a basis gave (dispatch://INFRA-3320, R2 and R3). Beside the request of the latest version it
+// names R1's path: a registration on an approved ancestor's approval, where the root is written
+// as a view on that ancestor.
 func KeptDecisionsTask(root string, kept record.KeptDecisions) string {
 	var parts []string
 	if len(kept.Decisions) > 0 {
@@ -125,9 +132,11 @@ func KeptDecisionsTask(root string, kept record.KeptDecisions) string {
 			root, strings.Join(named, "; ")))
 	}
 	if kept.Approved > 0 {
-		parts = append(parts, fmt.Sprintf("The %s is approved at version %d and is now at version %d: request approval of version %d, "+
-			"as skill://legion-architect/references/design-gate.md (\"The armed gate\") says.",
-			kept.Step.Document(), kept.Approved, kept.Latest, kept.Latest))
+		document := kept.Step.Document()
+		parts = append(parts, fmt.Sprintf("A person approved version %d of the %s, and the %s is now at version %d. "+
+			"Request approval of version %d, as skill://legion-architect/references/design-gate.md (\"The armed gate\") says. "+
+			"The other way is to write %s as a view on an approved ancestor and register the step on that ancestor's approval, as the same page says.",
+			kept.Approved, document, document, kept.Latest, kept.Latest, root))
 	}
 	return strings.Join(parts, " ")
 }

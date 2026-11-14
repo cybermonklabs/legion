@@ -182,6 +182,8 @@ func (e *Engine) apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake
 		return e.pendingBasisRead(ctx, tx, fact)
 	case intake.BasisChangesRead:
 		return e.basisChangesRead(ctx, tx, fact)
+	case intake.ReparentRead:
+		return e.reparentRead(ctx, tx, fact)
 	case intake.GateRequestFound:
 		return e.gateRequestFound(ctx, tx, fact)
 	case intake.CatchUpApplied:

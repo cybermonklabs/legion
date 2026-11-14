@@ -410,7 +410,7 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 	// records and the facts this pass already holds, so the reading costs no query, and they
 	// are the same roots record.LiveRoots is read from above — live is wider than running,
 	// and a parked root's tree is neither.
-	whyStates(&projected, own, record.RunningRoots(own, facts), stranded, rows, facts.ChildWaits)
+	whyStates(&projected, own, record.RunningRoots(own, facts), stranded, rows, facts.ChildWaits, facts.Gates)
 	// Every issue of a live tree carries that tree's quiet time (contract 111): `treeMovedAt`,
 	// the newest movement the daemon has seen anywhere in the tree, and `quietHours`, how long
 	// it has been still at the instant the rest of this state is measured at. The pair is the

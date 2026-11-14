@@ -161,6 +161,11 @@ func (e *Engine) Ancestry(ctx context.Context, tx pgx.Tx, issue record.Issue, ch
 // a move under another live tree is told anew. Nothing else is told: a root that never ran is
 // adopted rather than refused, a parent inside the root's own tree is no move out of it, and a
 // parent whose tree is not live has no architect to tell.
+//
+// The words depend on the parent's Dispatch state: where R1's path is open on the parent
+// (dispatch://INFRA-3320, R1 and R2), they name that path. The engine does no I/O, so this queues
+// the re-parent seed (record.ReparentSeed), whose read of the parent comes back as a fact
+// (intake.ReparentRead) that posts the message and the notice (reparentRead).
 func (e *Engine) tellReparented(ctx context.Context, tx pgx.Tx, issue *record.Issue, fact intake.DispatchIssue) error {
 	if fact.Parent == "" || fact.Parent == issue.ToldParent || !claim.IsTreeRoot(issue.Key, issue.Tree) {
 		return nil
@@ -185,14 +190,55 @@ func (e *Engine) tellReparented(ctx context.Context, tx pgx.Tx, issue *record.Is
 	if err := e.store.PutIssue(ctx, tx, *issue); err != nil {
 		return err
 	}
-	told := fmt.Sprintf("%s is now a child of %s in Dispatch, and it stays a tree of its own in Legion: %s, so the tree of %s cannot take it in and its architect cannot release it. It runs under its own architect, and its work reaches the tree of %s only through that tree's own issues.",
-		issue.Key, fact.Parent, ran, root.Key, root.Key)
-	if err := e.enqueue(ctx, tx, issue.Key, record.MessagePost{Body: told}); err != nil {
-		return err
-	}
-	e.logOnCommit(ctx, "workflow: a root that ran was re-parented under a live tree and stays its own tree", "issue", issue.Key,
+	e.logOnCommit(ctx, "workflow: a root that ran was re-parented under a live tree and stays its own tree; the parent is read before it is told", "issue", issue.Key,
 		"parent", fact.Parent, "tree", root.Key, "reason", ran)
-	return e.notice(ctx, tx, root.Key, record.Notice{Kind: "child-status", Role: claim.RoleArchitect, Reason: told})
+	return e.enqueue(ctx, tx, issue.Key, record.ReparentSeed{Parent: fact.Parent, Tree: root.Key, Ran: ran})
+}
+
+// reparentRead tells what the re-parent seed read of a re-parented root's new parent
+// (intake.ReparentRead): one message on the root and the same words to the architect of the
+// parent's tree, as a child-status notice. Only a root still told under that parent is told: a
+// move under another parent since queued a seed of its own. The words name R1's path where the
+// read found it open on the parent and the record does not show the parent accepted
+// (record.Accepted), and are today's words otherwise (reparentedWords).
+func (e *Engine) reparentRead(ctx context.Context, tx pgx.Tx, fact intake.ReparentRead) (intake.Result, error) {
+	issue, err := e.store.Issue(ctx, tx, fact.Issue)
+	if err != nil || issue == nil || issue.ToldParent != fact.Parent {
+		return intake.Result{}, err
+	}
+	version := fact.BasisVersion
+	parent, err := e.store.Issue(ctx, tx, fact.Parent)
+	if err != nil {
+		return intake.Result{}, err
+	}
+	if parent != nil && record.Accepted(*parent) {
+		version = 0
+	}
+	told := reparentedWords(fact.Issue, fact.Parent, fact.Tree, fact.Ran, version)
+	if err := e.enqueue(ctx, tx, fact.Issue, record.MessagePost{Body: told}); err != nil {
+		return intake.Result{}, err
+	}
+	e.logOnCommit(ctx, "workflow: a re-parented root that ran is told it stays its own tree", "issue", fact.Issue,
+		"parent", fact.Parent, "tree", fact.Tree, "basis_version", version)
+	return intake.Result{}, e.notice(ctx, tx, fact.Tree, record.Notice{Kind: "child-status", Role: claim.RoleArchitect, Reason: told})
+}
+
+// reparentedWords is what a root that ran is told when a person makes it a child of parent, in
+// the live tree of tree, and what that tree's architect is told: it stays a tree of its own, for
+// the reason ran. Where version is set, R1's path is open on parent at that version of its
+// primary document, and the words name that path: the root can be written as a view on parent and
+// register its design gate on that approval. Otherwise the root's work reaches the tree only
+// through that tree's own issues.
+func reparentedWords(issue, parent, tree, ran string, version int) string {
+	stays := fmt.Sprintf("%s is now a child of %s in Dispatch, and it stays a tree of its own in Legion: %s, so the tree of %s cannot take it in and its architect cannot release it.",
+		issue, parent, ran, tree)
+	if version == 0 {
+		return stays + fmt.Sprintf(" It runs under its own architect, and its work reaches the tree of %s only through that tree's own issues.", tree)
+	}
+	return stays + fmt.Sprintf(" It runs under its own architect. %s carries the legion label and marks requirement blocks in its primary document. "+
+		"A person approved version %d of that document, which is its latest version. So the architect of %s can write it as a view on %s. "+
+		"Then that architect can register the design gate of %s on that approval, with no approval of its own, "+
+		"as skill://legion-architect/references/design-gate.md says.", parent, version, issue, parent, issue)
 }
 
 // Adopt moves issue, a recorded root AdoptionRefusal found adoptable into root's live tree, into
