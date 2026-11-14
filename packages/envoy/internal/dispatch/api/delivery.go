@@ -87,12 +87,13 @@ func parseOptionalRFC3339(query url.Values, name string, fallback time.Time) (ti
 	if !query.Has(name) {
 		return fallback, nil
 	}
-	parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(query.Get(name)))
+	value := strings.TrimSpace(query.Get(name))
+	parsed, err := time.Parse(time.RFC3339, value)
 	if err != nil {
 		return time.Time{}, fmt.Errorf("%s must be an RFC3339 timestamp", name)
 	}
 	if year := parsed.UTC().Year(); year < 1 || year > 9999 {
-		return time.Time{}, fmt.Errorf("%s must be a moment of the UTC years 1 to 9999, and %s is one of the year %d", name, query.Get(name), year)
+		return time.Time{}, fmt.Errorf("%s must be a moment of the UTC years 1 to 9999, and %s is one of the year %d", name, value, year)
 	}
 	return parsed, nil
 }
