@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/testtmp"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 type rig struct {
@@ -27,6 +28,9 @@ type rig struct {
 	srv    *Server
 	sock   string
 	cancel context.CancelFunc
+	// served is closed once Serve has returned, so a test that stops the helper (cancel) can
+	// order what Serve does before it returns against what the test reads.
+	served <-chan struct{}
 	// callerPID is the pid PeerOf presents for the next connection; 0 means the real peer.
 	// Atomic: the server goroutine reads it while the test goroutine writes it.
 	callerPID atomic.Int64
@@ -90,6 +94,7 @@ func newLoggedRig(t *testing.T, statePath string, log *slog.Logger) *rig {
 	ctx, cancel := context.WithCancel(context.Background())
 	r.cancel = cancel
 	served := make(chan struct{})
+	r.served = served
 	t.Cleanup(func() {
 		// A registered session's watchExit goroutine only ends when Registry.Remove closes its
 		// stop channel — cancel(ctx) alone stops enrollLoop/renewLoop (they select on
@@ -374,8 +379,17 @@ func TestExitRevokesAndUnregisterRevokes(t *testing.T) {
 	r.callerPID.Store(int64(second.Process.Pid))
 	reg2 := r.call(t, Request{Op: "register", WaitSeconds: 5})
 	un := r.call(t, Request{Op: "unregister"})
+	if !un.OK {
+		t.Fatalf("unregister: %+v", un)
+	}
+	// unregister answers before its revoke ends (retire fires the revoke off), so the DELETE is
+	// waited for rather than read at once.
+	testwait.Holds(5*time.Second, 50*time.Millisecond, func() bool {
+		_, deletes, _ := r.fake.snapshot()
+		return len(deletes) == 2
+	})
 	_, deletes, _ = r.fake.snapshot()
-	if !un.OK || len(deletes) != 2 || deletes[1] != reg2.EnrollmentID {
+	if len(deletes) != 2 || deletes[1] != reg2.EnrollmentID {
 		t.Fatalf("unregister must revoke: %+v %v", un, deletes)
 	}
 	r.callerPID.Store(int64(0))
