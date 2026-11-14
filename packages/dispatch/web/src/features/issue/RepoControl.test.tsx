@@ -319,6 +319,58 @@ test("RepoControl refuses a value that is not owner/name without writing it", as
   }
 });
 
+// The box holds what is typed to GitHub's own grammar, which is what the server holds it to:
+// a name GitHub could hold no repository at reaches the box's refusal rather than a round trip,
+// and a name GitHub does hold is written whatever its case, its leading dot or its `.git`.
+test("RepoControl refuses a name GitHub could hold no repository at", async () => {
+  const patchIssue = answerIssuePatches();
+  const { unmount, user } = renderControl({ repo: null, resolvedRepo: "acme/widgets" });
+  try {
+    for (const typed of ["x/..", "x/.", "-bad/x", "own%er/x", `owner/${"a".repeat(101)}`]) {
+      await write(user, typed);
+      expect(await screen.findByRole("alert")).toHaveTextContent(
+        "Write the repository as owner/name."
+      );
+      expect(box().value).toBe(typed);
+      expect(box()).toHaveAttribute("aria-invalid", "true");
+    }
+    expect(patchIssue).not.toHaveBeenCalled();
+    patchIssue.mockResolvedValue({
+      ...issue,
+      repo: "sjawhar/.knives-ledger",
+      resolved_repo: "sjawhar/.knives-ledger",
+    });
+    await write(user, "Sjawhar/.knives-ledger.git");
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenCalledWith(
+        "CORE-1",
+        { repo: "Sjawhar/.knives-ledger.git" },
+        keyedAttempt
+      )
+    );
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    // An owner GitHub serves that its sign-up form would refuse a new account - a doubled
+    // hyphen, a hyphen at the end, a managed user's `_<shortcode>` - names a repository the
+    // server takes, so the box takes it too.
+    patchIssue.mockResolvedValue({
+      ...issue,
+      repo: "mona-cat_octo/hello--world",
+      resolved_repo: "mona-cat_octo/hello--world",
+    });
+    await write(user, "mona-cat_octo/hello--world");
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenCalledWith(
+        "CORE-1",
+        { repo: "mona-cat_octo/hello--world" },
+        keyedAttempt
+      )
+    );
+  } finally {
+    unmount();
+    patchIssue.mockRestore();
+  }
+});
+
 test("RepoControl restores the issue's repository on Escape", async () => {
   const patchIssue = answerIssuePatches();
   const { unmount, user } = renderControl({ repo: "acme/gadgets", resolvedRepo: "acme/gadgets" });

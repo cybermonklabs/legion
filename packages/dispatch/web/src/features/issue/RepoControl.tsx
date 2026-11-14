@@ -10,15 +10,25 @@ import {
   textSecondaryHoverToPrimary,
   textSecondaryOnSurface,
 } from "../../theme/classes";
-import { ownerRepoPattern } from "../settings/classes";
 import { useIssueRepo } from "./useIssueRepo";
+
+/** The grammar a repository GitHub could hold is written in, which is the grammar the server
+ *  holds an issue's repository to (`githubCouldHoldRepo`, `issue_repo.go`, itself copied from the
+ *  daemon's `ghrepo`): an owner is a letter or digit and then up to 38 letters, digits, hyphens
+ *  and underscores - as GitHub serves logins, which is looser than its sign-up form, since
+ *  `hello--world`, `artofcode-` and a managed user's `mona-cat_octo` are all served - and a
+ *  repository name is at most 100 letters, digits, `.`, `-` and `_`, and is neither `.` nor
+ *  `..`. It is written here rather than taken from `ownerRepoPattern`, the looser `owner/name`
+ *  shape the settings forms share, because those forms write a repository mapping, which the
+ *  server holds to that looser shape alone. */
+const ownerRepoPattern = "[A-Za-z0-9][A-Za-z0-9_-]{0,38}/(?!\\.{1,2}$)[A-Za-z0-9._-]{1,100}";
 
 /** `ownerRepoPattern` as a test of a whole value: the check this control makes before it writes,
  *  so a typo shows at the box rather than coming back as the server's 400 a round trip later. */
-const ownerRepo = new RegExp(`^${ownerRepoPattern}$`);
+const ownerRepo = new RegExp(`^(?:${ownerRepoPattern})$`);
 
-/** What the box says about a value that is not `owner/name`. The server says the same thing in
- *  its own words for anything that reaches it. */
+/** What the box says about a value GitHub could hold no repository at. The server says the same
+ *  thing in its own words for anything that reaches it. */
 const NOT_OWNER_NAME = "Write the repository as owner/name.";
 
 /**
@@ -38,10 +48,11 @@ const NOT_OWNER_NAME = "Write the repository as owner/name.";
  *
  * What is typed is written when the box is left or Enter is pressed, never per keystroke, since
  * `owner/name` is only a repository once the whole of it is there; Escape restores what the issue
- * holds. A value that is not `owner/name` is refused here, at the box, with what was typed still
- * in it, and the write path (`useIssueRepo`, `useIssueFieldWrite`) is unchanged, so the optimistic
- * write, the rollback and the server's own refusal - `INVALID_ISSUE` for anything that reaches it
- * - show as they did.
+ * holds. A value GitHub could hold no repository at - one that is not `owner/name`, or one whose
+ * owner or name is outside GitHub's own grammar (`ownerRepoPattern` above) - is refused here, at
+ * the box, with what was typed still in it, and the write path (`useIssueRepo`,
+ * `useIssueFieldWrite`) is unchanged, so the optimistic write, the rollback and the server's own
+ * refusal - `INVALID_ISSUE` for anything that reaches it - show as they did.
  *
  * The item renders whenever the issue can carry a repository, which is always: a project that
  * maps none has nothing to suggest, and its issues still take any repository. The mappings are
@@ -100,7 +111,9 @@ export function RepoControl({
       return;
     }
     const typed = draft.trim();
-    if (typed !== "" && !ownerRepo.test(typed)) {
+    // What is read is what the server reads: it drops a `.git` suffix before it judges the name
+    // (canonicalRepo), so a clone URL's name is no longer to the box than to the server.
+    if (typed !== "" && !ownerRepo.test(typed.replace(/\.git$/i, ""))) {
       setRefused(true);
       return;
     }
