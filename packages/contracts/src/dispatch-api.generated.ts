@@ -1575,7 +1575,7 @@ export interface paths {
       cookie?: never;
     };
     get?: never;
-    /** @description Publish the documents this issue's design-gate steps record {gates}: each entry {step, artifact_id}, step one of decisions, criteria and spec and artifact_id the document that step's gate recorded, or [] for an issue whose gates record none. The deployment's daemon writes it and replaces the issue's whole set, appending no issue event and notifying nobody whether the set changed or not. Answers 200 {issue, gates} with the stored set in step order. A body without gates, a step that is none of the three, a step named twice, and an artifact_id that is empty are each 400 INVALID_ISSUE; an issue Dispatch does not know is 404 ISSUE_NOT_FOUND. */
+    /** @description Publish the documents this issue's design-gate steps record {gates}: each entry {step, artifact_id, holds}, step one of decisions, criteria and spec, artifact_id the document that step's gate recorded, and holds whether the deployment's gate holds the issue's tree on that step, or [] for an issue whose gates record none. An entry without holds, or with holds null, is stored as null, which the superseded_approval advice answers by the project's gated_steps. The deployment's daemon writes it and replaces the issue's whole set, appending no issue event and notifying nobody whether the set changed or not. Answers 200 {issue, gates} with the stored set in step order. A body without gates, a step that is none of the three, a step named twice, and an artifact_id that is empty are each 400 INVALID_ISSUE; an issue Dispatch does not know is 404 ISSUE_NOT_FOUND. */
     put: operations["putApiV1IssuesByKeyDesignGates"];
     post?: never;
     delete?: never;
@@ -4966,6 +4966,7 @@ export interface components {
     };
     IssueDesignGate: {
       artifact_id: string;
+      holds: null | boolean;
       /** @enum {string} */
       step: "decisions" | "criteria" | "spec";
     };

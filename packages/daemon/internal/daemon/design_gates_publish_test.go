@@ -125,6 +125,9 @@ type gatePublishRig struct {
 	admission *admit.Admission
 	client    *gatePublishDispatch
 	runner    *outbox
+	// steps are the design-gate steps the rig's deployment gates, which decide whether each row
+	// a publication carries holds its tree (record.GateDocuments).
+	steps []record.DesignStep
 	// ahead moves the rig's clock past the wall clock, so a row's backoff is read rather than
 	// waited out. The clock is the wall clock plus this offset rather than a moment of its own,
 	// because the one collaborator a test cannot hand a clock to is admission, whose own now is
@@ -133,13 +136,15 @@ type gatePublishRig struct {
 	ahead time.Duration
 }
 
-func newGatePublishRig(t *testing.T, slots int) *gatePublishRig {
+// newGatePublishRig is the rig of a deployment that gates steps.
+func newGatePublishRig(t *testing.T, slots int, steps []record.DesignStep) *gatePublishRig {
 	t.Helper()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
-	rig := &gatePublishRig{t: t, ctx: context.Background(), pool: pool, records: records, client: &gatePublishDispatch{}}
+	rig := &gatePublishRig{t: t, ctx: context.Background(), pool: pool, records: records, client: &gatePublishDispatch{},
+		steps: steps}
 	rig.engine = workflow.New(records, workflow.Config{Project: gatePublishProject, Repositories: testRepositories,
-		Steps: gatePublishSteps, Linger: time.Hour, Clock: rig.clock}, quietLogger())
+		Steps: steps, Linger: time.Hour, Clock: rig.clock}, quietLogger())
 	rig.admission = admit.New(records, rig.engine, slots, gatePublishProject, quietLogger())
 	rig.runner = &outbox{pool: pool, records: records, dispatch: rig.client, dispatchProject: gatePublishProject,
 		now: rig.clock, log: quietLogger()}
@@ -246,7 +251,7 @@ func (r *gatePublishRig) gatesOf(issue string) []record.DesignGateDocument {
 		if err != nil {
 			return err
 		}
-		pairs = record.GateDocuments(gates)
+		pairs = record.GateDocuments(r.steps, gates)
 		return nil
 	})
 	return pairs
@@ -289,7 +294,7 @@ func (r *gatePublishRig) wantPublished(what string, got []gatePublished, want ..
 func wire(pairs ...record.DesignGateDocument) []dispatch.DesignGateDocument {
 	sent := make([]dispatch.DesignGateDocument, 0, len(pairs))
 	for _, pair := range pairs {
-		sent = append(sent, dispatch.DesignGateDocument{Step: string(pair.Step), ArtifactID: pair.ArtifactID})
+		sent = append(sent, dispatch.DesignGateDocument{Step: string(pair.Step), ArtifactID: pair.ArtifactID, Holds: pair.Holds})
 	}
 	return sent
 }
@@ -311,13 +316,14 @@ func wire(pairs ...record.DesignGateDocument) []dispatch.DesignGateDocument {
 //     anything, so what Dispatch learns of the child's documents, it learns here or nowhere.
 func TestGateChangeQueuesItsDispatchPublication(t *testing.T) {
 	const root, criteria, spec = "LEGION-100", "artifact-criteria", "artifact-spec"
-	r := newGatePublishRig(t, 2)
+	r := newGatePublishRig(t, 2, gatePublishSteps)
 	r.seedRoot(root, phase.Admitted, "A")
 
 	// 1. The architect registers the criteria document of its root's gate.
 	r.apply("register-criteria", intake.GateRegistered{Issue: root, Step: record.DesignStepCriteria,
 		ArtifactID: criteria, Version: 1, DispatchVersion: 1})
-	criteriaPair := record.DesignGateDocument{Step: record.DesignStepCriteria, ArtifactID: criteria}
+	// The deployment gates both steps, so every row of this test holds its tree.
+	criteriaPair := record.DesignGateDocument{Step: record.DesignStepCriteria, ArtifactID: criteria, Holds: new(true)}
 	r.wantPublished("the registration of the criteria document", r.published(),
 		gatePublished{Issue: root, Gates: wire(criteriaPair)})
 
@@ -325,7 +331,7 @@ func TestGateChangeQueuesItsDispatchPublication(t *testing.T) {
 	// after the write, not the row the write touched.
 	r.apply("register-spec", intake.GateRegistered{Issue: root, Step: record.DesignStepSpec,
 		ArtifactID: spec, Version: 1, DispatchVersion: 1})
-	specPair := record.DesignGateDocument{Step: record.DesignStepSpec, ArtifactID: spec}
+	specPair := record.DesignGateDocument{Step: record.DesignStepSpec, ArtifactID: spec, Holds: new(true)}
 	both := []record.DesignGateDocument{criteriaPair, specPair}
 	if got := r.gatesOf(root); !reflect.DeepEqual(got, both) {
 		t.Fatalf("the gates of %s record %+v, want %+v", root, got, both)
@@ -367,8 +373,8 @@ func TestGateChangeQueuesItsDispatchPublication(t *testing.T) {
 			LastDispatchSeq: 1})
 	})
 	carried := []record.DesignGateDocument{
-		{Step: record.DesignStepCriteria, ArtifactID: oldCriteria},
-		{Step: record.DesignStepSpec, ArtifactID: oldSpec},
+		{Step: record.DesignStepCriteria, ArtifactID: oldCriteria, Holds: new(true)},
+		{Step: record.DesignStepSpec, ArtifactID: oldSpec, Holds: new(true)},
 	}
 	r.seedGates(old, carried...)
 	r.seedMember(child, old, old, phase.Implementing, "in_progress", "C", 2)
@@ -385,6 +391,66 @@ func TestGateChangeQueuesItsDispatchPublication(t *testing.T) {
 	}
 	r.wantPublished("the carry of the old root's gate onto its child", r.published(),
 		gatePublished{Issue: child, Gates: wire(carried...)})
+}
+
+// Each entry of a publication says whether its row holds the issue's tree (record.GateDocuments),
+// by the rule every reader of the gate applies: the steps the tree is gated on, record.TreeSteps
+// over the deployment's steps and the root's rows. Dispatch's advice reads that answer to name the
+// gates a new version of an approved document closes, rather than working it out from the
+// project's gated steps, and the two deployments here are the two where that list and the rule
+// part. Under a deployment of spec alone the architect registers its root's Verification document
+// as criteria, a step the project's list does not name, and that row holds the tree beside the
+// spec's. Under `gates.design: off` each registration records its row and approves it at once, and
+// no row holds anything, the spec's included.
+//
+// A row an older daemon queued says nothing of it, and is sent so: null, which Dispatch answers by
+// the project's list as it answered every row before, so the daemon and Dispatch deploy in either
+// order.
+func TestDesignGatesPublishSaysWhetherEachRowHoldsItsTree(t *testing.T) {
+	const root, criteria, spec = "LEGION-100", "artifact-criteria", "artifact-spec"
+	// registerBoth registers the criteria document and then the spec of a root waiting at
+	// admitted, and answers what Dispatch was told of both: one publication, since the second
+	// registration's set replaces the one the first queued while it still waits.
+	registerBoth := func(r *gatePublishRig) []gatePublished {
+		r.seedRoot(root, phase.Admitted, "A")
+		r.apply("register-criteria", intake.GateRegistered{Issue: root, Step: record.DesignStepCriteria,
+			ArtifactID: criteria, Version: 1, DispatchVersion: 1})
+		r.apply("register-spec", intake.GateRegistered{Issue: root, Step: record.DesignStepSpec,
+			ArtifactID: spec, Version: 1, DispatchVersion: 1})
+		return r.published()
+	}
+
+	t.Run("a criteria row a root registered beside a deployment of spec alone holds the tree", func(t *testing.T) {
+		r := newGatePublishRig(t, 1, []record.DesignStep{record.DesignStepSpec})
+		r.wantPublished("the registrations under a deployment of spec alone", registerBoth(r),
+			gatePublished{Issue: root, Gates: []dispatch.DesignGateDocument{
+				{Step: string(record.DesignStepCriteria), ArtifactID: criteria, Holds: new(true)},
+				{Step: string(record.DesignStepSpec), ArtifactID: spec, Holds: new(true)},
+			}})
+	})
+
+	t.Run("no row holds a tree under gates.design off", func(t *testing.T) {
+		r := newGatePublishRig(t, 1, []record.DesignStep{})
+		r.wantPublished("the registrations under gates.design off", registerBoth(r),
+			gatePublished{Issue: root, Gates: []dispatch.DesignGateDocument{
+				{Step: string(record.DesignStepCriteria), ArtifactID: criteria, Holds: new(false)},
+				{Step: string(record.DesignStepSpec), ArtifactID: spec, Holds: new(false)},
+			}})
+	})
+
+	t.Run("a row an older daemon queued is sent saying nothing of it", func(t *testing.T) {
+		const issue = "LEGION-208"
+		r := newGatePublishRig(t, 1, []record.DesignStep{record.DesignStepSpec})
+		r.inTx(func(ctx context.Context, tx pgx.Tx) error {
+			return r.records.Enqueue(ctx, tx, record.OutboxRow{Kind: record.OutboxKindDesignGatesPublish, Issue: issue,
+				Payload: json.RawMessage(`{"issue":"` + issue + `","gates":[{"step":"spec","artifactId":"` + spec + `"}]}`),
+				NextAt:  r.clock()})
+		})
+		r.wantPublished("the row an older daemon queued", r.published(),
+			gatePublished{Issue: issue, Gates: []dispatch.DesignGateDocument{
+				{Step: string(record.DesignStepSpec), ArtifactID: spec},
+			}})
+	})
 }
 
 // Every path that empties an issue's design gates queues one publication of the empty set for each
@@ -407,7 +473,7 @@ func TestClearedGenerationPublishesTheEmptySetPerIssue(t *testing.T) {
 
 	t.Run("an adoption clears every member of the tree it takes in", func(t *testing.T) {
 		const live, queued, member, ungated = "LEGION-100", "LEGION-200", "LEGION-201", "LEGION-202"
-		r := newGatePublishRig(t, 3)
+		r := newGatePublishRig(t, 3, gatePublishSteps)
 		r.seedRoot(live, phase.Implementing, "A")
 		r.seedGates(live, spec)
 		// The queued root never ran, so it is adoptable: its own tree, waiting in the line, with
@@ -436,7 +502,7 @@ func TestClearedGenerationPublishesTheEmptySetPerIssue(t *testing.T) {
 
 	t.Run("a re-admission clears every member of the tree that starts again", func(t *testing.T) {
 		const root, member, ungated = "LEGION-300", "LEGION-301", "LEGION-302"
-		r := newGatePublishRig(t, 3)
+		r := newGatePublishRig(t, 3, gatePublishSteps)
 		until := r.clock().Add(time.Hour)
 		r.inTx(func(ctx context.Context, tx pgx.Tx) error {
 			return r.records.PutIssue(ctx, tx, record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main",
@@ -461,7 +527,7 @@ func TestClearedGenerationPublishesTheEmptySetPerIssue(t *testing.T) {
 
 	t.Run("a child re-entering its phase clears its own", func(t *testing.T) {
 		const root, child, sibling = "LEGION-400", "LEGION-401", "LEGION-402"
-		r := newGatePublishRig(t, 3)
+		r := newGatePublishRig(t, 3, gatePublishSteps)
 		r.seedRoot(root, phase.Implementing, "A")
 		r.seedGates(root, criteria, spec)
 		r.seedMember(child, root, root, phase.Done, "backlog", "B", 2)
@@ -499,10 +565,10 @@ func TestClearedGenerationPublishesTheEmptySetPerIssue(t *testing.T) {
 // up first, which is exactly what the retry lets happen in either order.
 func TestGatePublicationExecutorSendsTheSetAndRetriesARefusal(t *testing.T) {
 	const issue = "LEGION-208"
-	r := newGatePublishRig(t, 1)
+	r := newGatePublishRig(t, 1, gatePublishSteps)
 	set := []record.DesignGateDocument{
-		{Step: record.DesignStepCriteria, ArtifactID: "artifact-criteria"},
-		{Step: record.DesignStepSpec, ArtifactID: "artifact-spec"},
+		{Step: record.DesignStepCriteria, ArtifactID: "artifact-criteria", Holds: new(true)},
+		{Step: record.DesignStepSpec, ArtifactID: "artifact-spec", Holds: new(true)},
 	}
 	r.client.answers = []error{
 		fmt.Errorf("publish the design gates of %s: %w", issue, errors.New("Dispatch is down")),

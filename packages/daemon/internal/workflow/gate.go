@@ -189,7 +189,7 @@ func (e *Engine) gateRegistered(ctx context.Context, tx pgx.Tx, fact intake.Gate
 	// often moves the issue's pairs; a re-registration of the document the step already names
 	// queues nothing (record.PublishChangedGates). Its read of the issue's gates is made after
 	// the write in this transaction, so the set it publishes is the one the registration leaves.
-	if err := record.PublishChangedGates(ctx, e.store, tx, fact.Issue, gates, e.now()); err != nil {
+	if err := record.PublishChangedGates(ctx, e.store, tx, e.cfg.Steps, fact.Issue, gates, e.now()); err != nil {
 		return intake.Result{}, err
 	}
 	e.logOnCommit(ctx, "workflow: design gate registered", "issue", issue.Key, "artifact", fact.ArtifactID, "step", step,
@@ -506,7 +506,7 @@ func (e *Engine) untellUnresumedChanges(ctx context.Context, tx pgx.Tx, root rec
 	// Every gate write asks the same question of the issue's pairs, this one included: these
 	// writes clear a review mark and leave each step on the document it named, so the answer is
 	// that nothing is published.
-	err = record.PublishChangedGates(ctx, e.store, tx, root.Key, gates, e.now())
+	err = record.PublishChangedGates(ctx, e.store, tx, e.cfg.Steps, root.Key, gates, e.now())
 	return err
 }
 
@@ -567,7 +567,7 @@ func (e *Engine) gateAboveDispatch(ctx context.Context, tx pgx.Tx, fact intake.G
 	}
 	// The reset keeps the step on the document it named, so the pairs stand as they were and
 	// nothing is published; the question is asked of every gate write.
-	if err := record.PublishChangedGates(ctx, e.store, tx, issue.Key, gates, e.now()); err != nil {
+	if err := record.PublishChangedGates(ctx, e.store, tx, e.cfg.Steps, issue.Key, gates, e.now()); err != nil {
 		return intake.Result{}, err
 	}
 	if !ungated && fact.Read.Kind != intake.DispatchArtifactVersion {
@@ -710,7 +710,7 @@ func (e *Engine) recordHandover(ctx context.Context, tx pgx.Tx, gate record.Desi
 	if err := e.store.PutGate(ctx, tx, classify.ApplyDesignGateEvent(gate, classify.DesignGateApproved, fact.Version, fact.Mark)); err != nil {
 		return err
 	}
-	err = record.PublishChangedGates(ctx, e.store, tx, gate.Issue, before, e.now())
+	err = record.PublishChangedGates(ctx, e.store, tx, e.cfg.Steps, gate.Issue, before, e.now())
 	return err
 }
 
@@ -906,7 +906,7 @@ func (e *Engine) applyArtifact(ctx context.Context, tx pgx.Tx, gate record.Desig
 	if err := e.putGateTold(ctx, tx, updated, fact.Version); err != nil {
 		return err
 	}
-	if err := record.PublishChangedGates(ctx, e.store, tx, key, before, e.now()); err != nil {
+	if err := record.PublishChangedGates(ctx, e.store, tx, e.cfg.Steps, key, before, e.now()); err != nil {
 		return err
 	}
 	// What the tree does next is the whole issue's question, not this row's, and nothing here

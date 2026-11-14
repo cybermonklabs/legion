@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"slices"
 	"testing"
 
@@ -42,6 +43,17 @@ func recordedDesignGates(t *testing.T, handler http.Handler, issueKey string) []
 	return decodeBody[struct {
 		DesignGates []issueDesignGate `json:"design_gates"`
 	}](t, response).DesignGates
+}
+
+// designGatesJSON is a set of gates as the route writes it, which is how a failure names one: the
+// %#v of an entry prints its holds as an address rather than as what it says.
+func designGatesJSON(t *testing.T, gates []issueDesignGate) string {
+	t.Helper()
+	encoded, err := json.Marshal(gates)
+	if err != nil {
+		t.Fatalf("encode the gates: %v", err)
+	}
+	return string(encoded)
 }
 
 // setIssueStatus moves an issue to one status of the lifecycle, as a person moves it in the
@@ -144,16 +156,18 @@ func designGateEditRequest(t *testing.T, artifactID, markdown string) *http.Requ
 
 // What a Legion deployment's gate records on an issue is what decides the design-gate clause of
 // Dispatch's `superseded_approval` advice. The daemon publishes the document each gated step
-// records (PUT /api/v1/issues/{key}/design-gates), the issue read answers that record, and a write
-// that supersedes a person's approval names the live issues whose gates record the document it
-// rewrote, on a step that deployment gates, and stays quiet about every other document. The rows
-// below are that whole path, driven over the routes a daemon, a person and an agent each reach,
-// and never over the table itself.
+// records and whether that row holds the issue's tree (PUT /api/v1/issues/{key}/design-gates), the
+// issue read answers that record, and a write that supersedes a person's approval names the live
+// issues whose gates record the document it rewrote, on a row that holds its tree - as its daemon
+// says, or as the deployment's list says of a row whose daemon said nothing - and stays quiet
+// about every other document. The rows below are that whole path, driven over the routes a
+// daemon, a person and an agent each reach, and never over the table itself.
 func TestDesignGateRecordDecidesTheSupersededApprovalAdvice(t *testing.T) {
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	createAdviceProject(t, handler, "DGATE")
-	// The deployment serving DGATE gates all three steps, so the rows below turn on the record
-	// alone; the two rows at the end are the ones that move this list.
+	// The deployment serving DGATE gates all three steps, and its rows say nothing of holding
+	// their tree, so the rows below turn on the record alone; the rows at the end are the ones
+	// that move this list or give that answer.
 	publishGatedSteps(t, handler, "DGATE", []string{model.GatedStepDecisions, model.GatedStepCriteria, model.GatedStepSpec})
 	spec := "# Design\n\nThe design, as approved.\n"
 
@@ -444,7 +458,8 @@ func TestDesignGateRecordDecidesTheSupersededApprovalAdvice(t *testing.T) {
 	t.Run("a gate on a step the deployment does not gate names none", func(t *testing.T) {
 		// A daemon records a gate row for a step it does not gate - under `gates.design: off` the
 		// registration records the spec step and approves it, and no later event ever moves it -
-		// and such a gate refuses no READY. The project's own list is what says so.
+		// and such a gate refuses no READY. These rows say nothing of holding their tree, so the
+		// project's own list is what says so.
 		createAdviceProject(t, handler, "GATEONE")
 		publishGatedSteps(t, handler, "GATEONE", []string{model.GatedStepSpec})
 		issue := createWorkingIssue(t, handler, "GATEONE", "Gated on its spec alone", &spec)
@@ -460,6 +475,94 @@ func TestDesignGateRecordDecidesTheSupersededApprovalAdvice(t *testing.T) {
 			t.Fatalf("design_gates = %#v, want %#v: the criteria gate of a deployment that gates the spec alone holds no READY back",
 				superseded.DesignGates, want)
 		}
+	})
+
+	t.Run("a criteria row the daemon says holds its tree is named though the list gates the spec alone", func(t *testing.T) {
+		// A root's architect may register its Verification document as criteria beside a
+		// deployment that gates the spec alone, and from then on that row holds the tree as the
+		// spec's does. The project's list does not name the step, so the daemon's own answer is
+		// what says so, and the issue read shows it beside each document.
+		createAdviceProject(t, handler, "GATEHOLD")
+		publishGatedSteps(t, handler, "GATEHOLD", []string{model.GatedStepSpec})
+		issue := createWorkingIssue(t, handler, "GATEHOLD", "Gated on its spec and its Verification document", &spec)
+		verification := uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", "# Verification\n\nOne check.\n")
+		gates := []issueDesignGate{
+			{Step: model.GatedStepCriteria, ArtifactID: verification.Artifact.ID, Holds: new(true)},
+			{Step: model.GatedStepSpec, ArtifactID: issue.PrimaryArtifactID, Holds: new(true)},
+		}
+		if published := publishDesignGates(t, handler, issue.Key, gates); !reflect.DeepEqual(published.Gates, gates) {
+			t.Fatalf("the publish answered %s, want %s", designGatesJSON(t, published.Gates), designGatesJSON(t, gates))
+		}
+		if got := recordedDesignGates(t, handler, issue.Key); !reflect.DeepEqual(got, gates) {
+			t.Fatalf("%s records %s, want %s", issue.Key, designGatesJSON(t, got), designGatesJSON(t, gates))
+		}
+		approved := approveAdviceDocument(t, handler, verification.Artifact.ID)
+
+		superseded := supersededByEdit(t, handler, verification.Artifact.ID, "One more check.", approved)
+		want := []supersededApprovalGate{{Issue: issue.Key, Step: model.GatedStepCriteria}}
+		if !slices.Equal(superseded.DesignGates, want) {
+			t.Fatalf("design_gates = %#v, want %#v: the write reopened the criteria gate that holds this tree",
+				superseded.DesignGates, want)
+		}
+	})
+
+	t.Run("a row the daemon says holds nothing names none though the list names its step", func(t *testing.T) {
+		// Where the daemon gave an answer, its answer is the rule, and the list is not asked: the
+		// list names this row's step, and the daemon that published the row says it holds nothing,
+		// as the daemon of a deployment that gates no step says of every row it keeps.
+		createAdviceProject(t, handler, "GATEFREE")
+		publishGatedSteps(t, handler, "GATEFREE", []string{model.GatedStepSpec})
+		issue := createWorkingIssue(t, handler, "GATEFREE", "Recorded by a daemon whose gate holds nothing here", &spec)
+		publishDesignGates(t, handler, issue.Key, []issueDesignGate{
+			{Step: model.GatedStepSpec, ArtifactID: issue.PrimaryArtifactID, Holds: new(false)},
+		})
+		approved := approveAdviceDocument(t, handler, issue.PrimaryArtifactID)
+
+		superseded := supersededByEdit(t, handler, issue.PrimaryArtifactID, "A sentence no gate waits on.", approved)
+		requireNoDesignGates(t, superseded, "a document whose one gate row the daemon says holds nothing")
+	})
+
+	t.Run("a row an older daemon published keeps the answer the list gives", func(t *testing.T) {
+		// A daemon older than holds sends each entry with its step and its document alone. Each
+		// such entry is stored with no answer, replacing whatever answer an earlier publish gave
+		// the row, and the advice reads it as every row was read before the daemon said: by the
+		// project's list, which names the spec and not criteria. So either side deploys first.
+		createAdviceProject(t, handler, "GATEOLD")
+		publishGatedSteps(t, handler, "GATEOLD", []string{model.GatedStepSpec})
+		issue := createWorkingIssue(t, handler, "GATEOLD", "Recorded by an older daemon", &spec)
+		verification := uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", "# Verification\n\nOne check.\n")
+		publishDesignGates(t, handler, issue.Key, []issueDesignGate{
+			{Step: model.GatedStepCriteria, ArtifactID: verification.Artifact.ID, Holds: new(true)},
+			{Step: model.GatedStepSpec, ArtifactID: issue.PrimaryArtifactID, Holds: new(true)},
+		})
+		response := publishDesignGatesResponse(t, handler, issue.Key, map[string]any{
+			"gates": []map[string]string{
+				{"step": model.GatedStepCriteria, "artifact_id": verification.Artifact.ID},
+				{"step": model.GatedStepSpec, "artifact_id": issue.PrimaryArtifactID},
+			},
+			"actor": sessionActor(),
+		})
+		if response.Code != http.StatusOK {
+			t.Fatalf("the older daemon's publish on %s: status=%d body=%s", issue.Key, response.Code, response.Body.String())
+		}
+		stored := []issueDesignGate{
+			{Step: model.GatedStepCriteria, ArtifactID: verification.Artifact.ID},
+			{Step: model.GatedStepSpec, ArtifactID: issue.PrimaryArtifactID},
+		}
+		if got := recordedDesignGates(t, handler, issue.Key); !reflect.DeepEqual(got, stored) {
+			t.Fatalf("%s records %s after the older daemon's publish, want %s", issue.Key, designGatesJSON(t, got), designGatesJSON(t, stored))
+		}
+
+		approvedSpec := approveAdviceDocument(t, handler, issue.PrimaryArtifactID)
+		superseded := supersededByEdit(t, handler, issue.PrimaryArtifactID, "A sentence the spec gate had not seen.", approvedSpec)
+		want := []supersededApprovalGate{{Issue: issue.Key, Step: model.GatedStepSpec}}
+		if !slices.Equal(superseded.DesignGates, want) {
+			t.Fatalf("design_gates = %#v, want %#v: the list names the spec of a row that says nothing of it",
+				superseded.DesignGates, want)
+		}
+		approvedVerification := approveAdviceDocument(t, handler, verification.Artifact.ID)
+		superseded = supersededByEdit(t, handler, verification.Artifact.ID, "One more check.", approvedVerification)
+		requireNoDesignGates(t, superseded, "a Verification document whose criteria row says nothing of holding its tree")
 	})
 
 	t.Run("a project whose deployment gates nothing names none", func(t *testing.T) {

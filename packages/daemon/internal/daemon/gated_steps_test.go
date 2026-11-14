@@ -142,10 +142,11 @@ func TestBootQueuesEveryRecordedGatePublication(t *testing.T) {
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
-	boot := &workflowRuntime{pool: pool, records: records, dispatchProject: gatePublishProject}
+	boot := &workflowRuntime{pool: pool, records: records, dispatchProject: gatePublishProject, gatedSteps: gatePublishSteps}
 	const gated, done, ungated = "LEGION-301", "LEGION-302", "LEGION-303"
-	criteria := record.DesignGateDocument{Step: record.DesignStepCriteria, ArtifactID: "artifact-criteria"}
-	spec := record.DesignGateDocument{Step: record.DesignStepSpec, ArtifactID: "artifact-spec"}
+	// The boot's deployment gates both steps, so each row it publishes holds its tree.
+	criteria := record.DesignGateDocument{Step: record.DesignStepCriteria, ArtifactID: "artifact-criteria", Holds: new(true)}
+	spec := record.DesignGateDocument{Step: record.DesignStepSpec, ArtifactID: "artifact-spec", Holds: new(true)}
 	approved := 1
 	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
 		for _, seed := range []struct {

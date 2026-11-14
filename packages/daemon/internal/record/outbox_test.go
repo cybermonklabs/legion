@@ -55,7 +55,7 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 		LingerClose{Generation: 7},
 		WorkspaceRemove{Linger: 3},
 		GatedStepsPublish{Project: "LEGION", Steps: []DesignStep{DesignStepCriteria, DesignStepSpec}},
-		DesignGatesPublish{Issue: "LEGION-208", Gates: []DesignGateDocument{{Step: DesignStepCriteria, ArtifactID: "artifact-criteria"}, {Step: DesignStepSpec, ArtifactID: "artifact-208"}}},
+		DesignGatesPublish{Issue: "LEGION-208", Gates: []DesignGateDocument{{Step: DesignStepCriteria, ArtifactID: "artifact-criteria", Holds: new(false)}, {Step: DesignStepSpec, ArtifactID: "artifact-208", Holds: new(true)}}},
 		IssueBranch{Generation: 2},
 		SuperviseRequest{Op: "issue_close", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 3, Reason: "LEGION-209 is done"},
 		IssueSuspend{Tree: "LEGION-208", Generation: 3, TreeGeneration: 7},

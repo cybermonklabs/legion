@@ -1381,7 +1381,7 @@ func (a *Admission) readmit(ctx context.Context, tx pgx.Tx, stored record.Issue,
 			// documents (record.PublishChangedGates); a carry is the one path that gives an issue a
 			// gate without its architect registering anything, so Dispatch hears of it here or
 			// nowhere.
-			if err := record.PublishChangedGates(ctx, a.store, tx, stored.Key, held, a.now()); err != nil {
+			if err := record.PublishChangedGates(ctx, a.store, tx, a.engine.GatedSteps(), stored.Key, held, a.now()); err != nil {
 				return fmt.Errorf("publish the gates carried to re-admitted orphan %s: %w", stored.Key, err)
 			}
 		}

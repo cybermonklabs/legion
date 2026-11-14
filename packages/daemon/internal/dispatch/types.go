@@ -70,12 +70,16 @@ type RepoProject struct {
 }
 
 // DesignGateDocument is one entry of an issue's design-gate publication, as Dispatch's route
-// takes and answers it: Step is one of `decisions`, `criteria` and `spec`, and ArtifactID the
-// document that step's gate recorded. The step is a string here rather than the record's own
-// type, because this package names Dispatch's wire shapes and imports no record of the daemon's.
+// takes and answers it: Step is one of `decisions`, `criteria` and `spec`, ArtifactID the
+// document that step's gate recorded, and Holds whether the issue's tree is gated on that step,
+// which Dispatch's advice reads in place of the project's gated steps. Holds is sent as null only
+// for an entry an older daemon queued without it, which Dispatch answers by the project's list.
+// The step is a string here rather than the record's own type, because this package names
+// Dispatch's wire shapes and imports no record of the daemon's.
 type DesignGateDocument struct {
 	Step       string `json:"step"`
 	ArtifactID string `json:"artifact_id"`
+	Holds      *bool  `json:"holds"`
 }
 
 // LegionLabel is the Dispatch label that hands an issue to Legion. A human sets it from the issue

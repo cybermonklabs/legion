@@ -470,9 +470,10 @@ type decisionBlockCheck struct {
 // Whether a Legion design gate was among the things that approval held open is what DesignGates
 // answers. Dispatch keeps, issue by issue, which document each gated step records (design_gates,
 // PUT /api/v1/issues/{key}/design-gates), and the list is that record read for this document,
-// kept to the gates that hold a READY back: the issue is in the workflow there, and the project's own
-// list of gated steps names the row's step (supersededApprovalGates). Where nothing is left,
-// this write closed no gate anyone here knows of.
+// kept to the gates that hold a READY back: the issue is in the workflow there, and the row holds
+// its tree, as the daemon that published it says or, where it said nothing, as the project's own
+// list of gated steps says (supersededApprovalGates). Where nothing is left, this write closed no
+// gate anyone here knows of.
 type supersededApproval struct {
 	// ApprovedVersion is the version a person approved, the one this write superseded.
 	ApprovedVersion int `json:"approved_version"`
@@ -481,7 +482,7 @@ type supersededApproval struct {
 	// ApprovedBy is who gave that approval, as its review records the actor's id.
 	ApprovedBy string `json:"approved_by"`
 	// DesignGates are the design gates Dispatch's record says this document is: one entry per
-	// issue and step, kept to the issues still in the workflow whose step the project gates.
+	// issue and step, kept to the issues still in the workflow whose row holds its tree.
 	// Omitted when empty, and empty is also what a failed gate read leaves
 	// (supersededApprovalAdvice), because an absent list and an empty one say the one thing a
 	// client acts on - Dispatch names no gate here.
@@ -554,7 +555,7 @@ func (s *server) supersededApprovalAdvice(
 
 // supersededApprovalGates reads Dispatch's record of which issues' design gates record this
 // document (design_gates, written by PUT /api/v1/issues/{key}/design-gates), keeping the rows
-// that hold a READY back and no others. Two things decide that, and the row alone says neither.
+// that hold a READY back and no others. Two things decide that.
 //
 // The issue must be in the workflow, which is every status but the four that take it out
 // (model.IssueStatusesOutOfWorkflow): a closed tree, and a tree parked in `backlog` or `icebox`,
@@ -563,13 +564,22 @@ func (s *server) supersededApprovalAdvice(
 // them for as long as it stays parked - so the rows outlive the tree that ran, and only the
 // re-admission that brings it back clears them.
 //
-// The deployment must gate the row's step, which is the project's own list (projects.gated_steps,
-// written by PUT /api/v1/projects/{key}/gated-steps, the publication of the same boot that writes
-// these rows). A daemon records a gate row for a step it does not gate - with `gates.design: off`
-// the registration records the spec step, approves it, and no later event ever moves it - and
-// that gate refuses nothing. A project whose daemon has published no list gates nothing it holds,
-// and prints no clause, which is the direction this whole change takes: a reader told nothing
-// asks the architect, where a reader told a gate that is not there stops working.
+// The row must hold its tree, and the daemon that published it says whether it does
+// (design_gates.holds): which steps a tree is gated on is the daemon's rule, and the project's
+// own list (projects.gated_steps, written by PUT /api/v1/projects/{key}/gated-steps) is not the
+// whole of it. A root's architect may register its Verification document as `criteria` beside a
+// deployment that gates `spec` alone, and that row holds the tree although the list does not name
+// its step. A daemon also records a gate row for a step it does not gate - with `gates.design:
+// off` the registration records the spec step, approves it, and no later event ever moves it -
+// and that row holds nothing.
+//
+// A null holds is a row a daemon older than the column published, and the rule keeps it where
+// the project's list names its step (`coalesce`), which is how every row was read before the
+// daemon said, so either side may deploy first: a daemon that sends holds to a Dispatch older
+// than the column is refused and retries, and a Dispatch with the column reads an older daemon's
+// rows as it always read them. For such a row a project whose daemon has published no list gates
+// nothing, and prints no clause, which is the direction this whole change takes: a reader told
+// nothing asks the architect, where a reader told a gate that is not there stops working.
 //
 // The order is the issue's key and then the order a gate runs the steps in ($2,
 // model.GatedStepsKnown), the order the issue read lists an issue's own gates in.
@@ -579,7 +589,8 @@ func supersededApprovalGates(ctx context.Context, q docs.Queryer, artifactID str
 		from design_gates g
 		join issues i on i.key = g.issue
 		join projects p on p.key = i.project_key
-		where g.artifact_id = $1 and not (i.status = any($3::text[])) and g.step = any(p.gated_steps)
+		where g.artifact_id = $1 and not (i.status = any($3::text[]))
+			and coalesce(g.holds, g.step = any(p.gated_steps))
 		order by g.issue, array_position($2::text[], g.step)
 	`, artifactID, model.GatedStepsKnown, model.IssueStatusesOutOfWorkflow)
 	if err != nil {

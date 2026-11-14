@@ -965,10 +965,19 @@ type DesignGatesPublish struct {
 	Gates []DesignGateDocument `json:"gates"`
 }
 
-// DesignGateDocument is one step of a publication and the document that step's gate recorded.
+// DesignGateDocument is one step of a publication, the document that step's gate recorded, and
+// Holds, whether the issue's tree is gated on that step (GateDocuments: TreeSteps over the
+// deployment's steps and the issue's own rows). Dispatch's advice reads Holds to name the gates a
+// new version of an approved document closes: a criteria row a root registered beside a
+// deployment of spec alone holds that tree although the project's gated steps do not name
+// criteria, and a row kept under `gates.design: off` holds nothing although the row is there.
+// Holds is nil only in a payload an older daemon queued, which carried no such field; it is sent
+// as null, which Dispatch reads as a row an older daemon published and answers by the project's
+// gated steps, as it answered every row before this field.
 type DesignGateDocument struct {
 	Step       DesignStep `json:"step"`
 	ArtifactID string     `json:"artifactId"`
+	Holds      *bool      `json:"holds"`
 }
 
 func (DesignGatesPublish) OutboxKind() OutboxKind { return OutboxKindDesignGatesPublish }

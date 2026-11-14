@@ -1329,7 +1329,9 @@ func (s *Postgres) clearGeneration(ctx context.Context, tx pgx.Tx, where, issues
 // delete names the issues it emptied rather than the clear naming every issue it covers, so an
 // issue that held no gate row — the ordinary child of a re-entry, and every member of a
 // re-admitted tree whose architect registered nothing — costs no Dispatch write. A row comes back
-// for each step, so an issue gated on several steps is published once.
+// for each step, so an issue gated on several steps is published once. The empty set carries no
+// entry, so nothing in it says whether a row holds a tree (DesignGateDocument.Holds), and the
+// clear needs none of the deployment's steps to build it.
 //
 // The publication is queued through this store, which knows nothing of the lanes beside it, so no
 // lane is woken for it: the row waits on its issue's board lane for the next sweep, among the
@@ -1345,7 +1347,7 @@ func (s *Postgres) clearGates(ctx context.Context, tx pgx.Tx, where, key, descri
 	}
 	slices.Sort(emptied)
 	for _, issue := range slices.Compact(emptied) {
-		if err := s.EnqueueDesignGates(ctx, tx, DesignGatesPublish{Issue: issue, Gates: GateDocuments(nil)}, now); err != nil {
+		if err := s.EnqueueDesignGates(ctx, tx, DesignGatesPublish{Issue: issue, Gates: GateDocuments(nil, nil)}, now); err != nil {
 			return fmt.Errorf("%s: %w", describe, err)
 		}
 	}

@@ -1103,7 +1103,9 @@ func (r *outbox) publishGatedSteps(ctx context.Context, payload record.GatedStep
 // issue's Dispatch row. The row's own issue is that issue, and the payload names it too, so the
 // write addresses the issue whose gate change queued it however the row is read back. The set is
 // sent whole, empty included: it replaces what Dispatch holds, so an issue whose gates record
-// nothing clears the set rather than leaving the last one standing.
+// nothing clears the set rather than leaving the last one standing. Each entry carries whether it
+// holds the issue's tree as the payload says it (record.DesignGateDocument.Holds), null for a row
+// an older daemon queued.
 //
 // A Dispatch that has not got the route yet answers its router's 404 under the code NOT_FOUND,
 // and nothing here treats that as final (permanentRefusal, which ends the row on ISSUE_NOT_FOUND
@@ -1115,7 +1117,7 @@ func (r *outbox) publishDesignGates(ctx context.Context, payload record.DesignGa
 	}
 	gates := make([]dispatch.DesignGateDocument, len(payload.Gates))
 	for i, gate := range payload.Gates {
-		gates[i] = dispatch.DesignGateDocument{Step: string(gate.Step), ArtifactID: gate.ArtifactID}
+		gates[i] = dispatch.DesignGateDocument{Step: string(gate.Step), ArtifactID: gate.ArtifactID, Holds: gate.Holds}
 	}
 	if err := r.dispatch.PutDesignGates(ctx, payload.Issue, gates); err != nil {
 		return fmt.Errorf("publish the design gates of %s: %w", payload.Issue, err)
