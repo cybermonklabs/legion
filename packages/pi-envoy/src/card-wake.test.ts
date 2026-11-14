@@ -9,6 +9,7 @@ import {
   STARTUP_CARD_CAP_MS,
   STARTUP_TURN_CAP_MS,
   STARTUP_TURN_POLL_MS,
+  TASK_TURN_POLL_MS,
   unreadCards,
 } from "./card-wake";
 
@@ -44,7 +45,9 @@ const OWN_SESSION = "ses_own";
  * a context without one). The wake starts in its startup phase, and `endStartup` ends it with a
  * startup card a run read. The cards go into `OWN_SESSION`; `markUnsent` and `markSent` set the
  * start-turn mark the wake reads (empty until a test sets it) to name a session, `OWN_SESSION`
- * unless told, with its start unsent or sent at a time, and `startTurn` runs the start turn.
+ * unless told, with its start unsent or sent at a time, and `startTurn` runs the start turn;
+ * `markTaskPending` sets the task-turn mark, `clearTaskPending` clears it, as a refused take
+ * does, and `taskTurn` runs the task's turn, whose `agent_start` clears it.
  */
 function harness(
   options: {
@@ -56,12 +59,14 @@ function harness(
   let idle = false;
   const sent: Sent[] = [];
   let mark: EnvoyPluginInterface["startupTurn"];
+  let taskMark: EnvoyPluginInterface["taskTurnPending"];
   const wake = new CardWake({
     now: () => clock,
     sendMessage: (message, sendOptions) => {
       sent.push({ message, options: sendOptions });
     },
     startupTurn: () => mark,
+    taskTurnPending: () => taskMark,
     isOwnSession: (session) => session === OWN_SESSION,
   });
   const branch: unknown[] = [];
@@ -180,6 +185,26 @@ function harness(
       wake.agentStart();
       mark = undefined;
       message({ role: "user", content: "start" });
+      message(reply());
+      idle = true;
+      wake.agentEnd(context);
+    },
+    /** The task-turn mark names `session`, as the Legion entry's take sets it. */
+    markTaskPending: (session = OWN_SESSION) => {
+      taskMark = { session };
+    },
+    /** The task-turn mark is cleared with no turn, as a refused or dropped take clears it. */
+    clearTaskPending: () => {
+      taskMark = undefined;
+    },
+    /** The task's turn runs: its `agent_start` clears the task-turn mark, as the Legion entry's
+     *  take does, the take's text and the model's reply land in the branch, and its `agent_end`
+     *  comes on an idle host. */
+    taskTurn: () => {
+      idle = false;
+      wake.agentStart();
+      taskMark = undefined;
+      message({ role: "user", content: "the task" });
       message(reply());
       idle = true;
       wake.agentEnd(context);
@@ -1052,6 +1077,116 @@ describe("while the start-turn mark names the session", () => {
       });
     }
   }
+});
+
+// A Legion worker's task is a value it takes from the daemon once its host is idle, and the take's
+// turn comes before any card's, the lane kept for the role included. The Legion entry names the
+// session in the task-turn mark from the moment it holds a value it will ask about until that
+// task's turn starts or the take is refused or dropped.
+describe("while the task-turn mark names the session", () => {
+  const oneCard = "1 Envoy message above arrived with no turn to read it: read it and act on it.";
+  const twoCards =
+    "2 Envoy messages above arrived with no turn to read them: read them and act on them.";
+
+  for (const mode of ["tui", "rpc"] as const) {
+    test(`holds an idle card after the startup phase as a follow-up that starts no turn (${mode}), and wakes for none while the mark holds, reading it again at each poll`, async () => {
+      const host = harness({ mode });
+      await host.endStartup();
+      host.markTaskPending();
+      host.setIdle(true);
+      const card = host.card("held-for-the-task");
+      expect(card.delivery).toEqual({
+        ...followUp,
+        details: { envoyCard: expect.any(String), handOver: "task-pending", wake: "startup" },
+      });
+
+      host.message(card.message);
+      await host.fire();
+      expect(host.sent).toEqual([]);
+      // No event tells the wake that a take was refused, so it reads the mark again at each poll,
+      // and holds for as long as the mark does: the mark has no cap.
+      for (let polls = 0; polls < 3 * (STARTUP_TURN_CAP_MS / TASK_TURN_POLL_MS); polls += 1) {
+        expect(host.delays.at(-1)).toBe(TASK_TURN_POLL_MS);
+        host.advance(TASK_TURN_POLL_MS);
+        await host.fire();
+      }
+      expect(host.sent).toEqual([]);
+      expect(host.card("held-too").delivery).toMatchObject(followUp);
+    });
+  }
+
+  test("holds the lane's cards through the task's turn and wakes once after its agent_end for every one, though the task's reply follows them", async () => {
+    const host = harness({ mode: "tui" });
+    await host.endStartup();
+    host.markTaskPending();
+    host.setIdle(true);
+    const cards = [host.card("kept-one"), host.card("kept-two", true)];
+    for (const card of cards) host.message(card.message);
+    await host.fire();
+    expect(host.sent).toEqual([]);
+
+    host.taskTurn();
+    await host.fire();
+    expect(host.sent).toEqual([wakeMessage(twoCards)]);
+    // The mark is gone: an idle card starts its own turn again.
+    expect(host.card("after-the-task").delivery).toMatchObject(aside);
+  });
+
+  test("wakes at the next poll for the cards it held once a refused take clears the mark with no turn", async () => {
+    const host = harness({ mode: "tui" });
+    await host.endStartup();
+    host.markTaskPending();
+    host.setIdle(true);
+    host.message(host.card("held-then-refused").message);
+    await host.fire();
+    expect(host.sent).toEqual([]);
+
+    host.clearTaskPending();
+    host.advance(TASK_TURN_POLL_MS);
+    await host.fire();
+    expect(host.sent).toEqual([wakeMessage(oneCard)]);
+  });
+
+  test("holds a startup card past the start-turn mark's cap while the task-turn mark holds, and wakes after the task's turn", async () => {
+    const host = harness({ mode: "rpc" });
+    host.markTaskPending();
+    host.setIdle(true);
+    const card = host.card("startup-and-task");
+    expect(card.delivery.details.handOver).toBe("task-pending");
+    host.message(card.message);
+    await host.fire();
+    host.advance(2 * STARTUP_TURN_CAP_MS);
+    await host.fire();
+    expect(host.sent).toEqual([]);
+
+    host.taskTurn();
+    await host.fire();
+    expect(host.sent).toEqual([wakeMessage(oneCard)]);
+  });
+
+  test("leaves a card that finds a run going an aside the run reads", async () => {
+    const host = harness();
+    await host.endStartup();
+    host.markTaskPending();
+    host.run();
+
+    expect(host.card("into-the-run").delivery).toEqual({
+      ...aside,
+      details: { envoyCard: expect.any(String), handOver: "run-active", wake: "fold" },
+    });
+  });
+
+  test("holds nothing while the mark names another session, a task subagent's", async () => {
+    const host = harness({ mode: "tui" });
+    await host.endStartup();
+    host.markTaskPending("ses_task_subagent");
+    host.setIdle(true);
+
+    expect(host.card("not-held").delivery).toEqual({
+      ...aside,
+      details: { envoyCard: expect.any(String), handOver: "idle", wake: "fold" },
+    });
+  });
 });
 
 // While the host sets up a prompt (busy, before its run's `agent_start`: the usage preflight,

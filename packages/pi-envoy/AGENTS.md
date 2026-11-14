@@ -48,8 +48,8 @@ RPC `abort` a Legion daemon sends) is folded into the context with no run and re
 turn. The host also folds an aside with no turn when it lands after the run's last step (during the
 run's `agent_end` handlers or an automatic compaction) and the person interrupted after it was
 sent. So every card carries a marker in its `details` (`EnvoyCardMarker`), which also holds the
-host state at the hand-over (`handOver`: `startup`, `run-active`, `prompt-setup`, `idle`, `inert`
-or `unknown`), so a later reading of the stored transcripts says which state held a card that
+host state at the hand-over (`handOver`: `startup`, `task-pending`, `run-active`, `prompt-setup`,
+`idle`, `inert` or `unknown`), so a later reading of the stored transcripts says which state held a card that
 waited; the inert path stamps `inert` and carries no card id, since the wake tracks no inert card.
 A card's `message_end` arms one check on
 the host's timer: when the session is idle, no run has started since the card, no interrupt is in
@@ -96,7 +96,8 @@ controller's start and clears at that session's first `agent_start`) keeps that 
 first turn. The operator's controller in a terminal is marked at its `session_start` with the start
 unsent (`sentAt` undefined), since it sends the start message only from `/legion-controller-start`,
 which Oh My Pi runs after its startup, and that send marks it sent; the daemon's controller in RPC
-mode is marked sent right before its `claims/ready`, after which the daemon writes the start prompt.
+mode is marked sent right before its `claims/ready`, after which the daemon writes its start
+task's value, which the controller takes.
 Without the mark, a terminal's idle card would start its turn ahead of the start command, and in
 RPC mode a card's wake would fire once the host is idle after its startup, which can be before the
 daemon's prompt arrives. While the mark names this session (the instance's own and the host's live
@@ -122,6 +123,17 @@ session switched away from) changes nothing, and a session change drops the owed
 rest. A card that reaches the session before
 the Legion entry's `session_start` has set the unsent mark (inside the Envoy entry's own
 `session_start`, when Oh My Pi runs that first) finds no mark.
+The task-turn mark (`EnvoyPluginInterface.taskTurnPending`, which `@sjawhar/pi-legion`'s take sets
+from the moment it holds a task value it will ask the daemon about until that task's turn starts or
+the take is refused or dropped) holds an idle card the same way in any phase and any mode: while it
+names this session, an idle card goes as a `followUp` with no turn (`handOver: "task-pending"`),
+an idle check sends no wake and reads the mark again every second (`TASK_TURN_POLL_MS`), and every
+card it held is owed the one wake that check sends once the mark is gone, after the task turn's
+`agent_end` or at the poll after a refused take. It has no cap, since a take the Legion entry sends
+again while the daemon is unreachable is still the turn the cards must not run ahead of. The Envoy
+entry also hands each task value its relay's task frames carry, and each new epoch of that relay
+once the listener answers its registration, to the Legion entry through the interface
+(`taskValues`, `@legion/pi-shared/task-values`).
 The limits: an Esc puts a person's queued Sends back in the
 input box merged and without their Dispatch ids, until the session runs an Oh My Pi release with
 dispatch://INFRA-498; an interrupt during a run's post-run steps other than compaction and a retry

@@ -331,6 +331,13 @@ export interface AgentEndMessage {
    * `packages/ai/src/types.ts:1463-1471` at the pinned tag). `classifyProviderTurn`
    * (`./provider-refusal`) reads it to tell a content filter from any other provider failure. */
   readonly errorMessage?: string;
+  /** The HTTP status of the provider request an `error` stop failed on, when it had one, and the
+   * provider and model the request went to (`AssistantMessage`, `packages/ai/src/types.ts` at the
+   * pinned tag): the fields Oh My Pi's own `prompt_result` error carries as `httpStatus`,
+   * `provider` and `model`. */
+  readonly errorStatus?: number;
+  readonly provider?: string;
+  readonly model?: string;
 }
 
 /**

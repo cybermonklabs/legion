@@ -478,3 +478,35 @@ test("the wait an update answer creates arms no reminder, where a WAITING reply 
   expect(timers).toHaveLength(1);
   expect(timers[0]?.delayMs).toBe(DEFAULT_STALL_LIMITS.waitingMs);
 });
+
+// A worker the daemon relaunched into an open phase, its session continuing, that finished the
+// last task written to it is given nothing at the relaunch (R4 of INFRA-2811): its own reminder is
+// what wakes it. One reminder turn comes after `resumeMs`, and none before it; a task the claim
+// still owes is taken once the ready has answered, and its turn makes the timer stale; a phase the
+// record holds closed arms nothing.
+test("a resumed session whose phase is open gets one reminder turn after resumeMs", async () => {
+  const { reminder, timers, sent } = rig({});
+  reminder.restore({ state: "open", count: 0, reported: false });
+
+  reminder.armResumeReminder();
+
+  expect(timers.map((timer) => timer.delayMs)).toEqual([DEFAULT_STALL_LIMITS.resumeMs]);
+  expect(sent).toEqual([]);
+  await fireLast(timers);
+  expect(sent).toHaveLength(1);
+  expect(sent[0]).toContain(REMINDER);
+
+  // A turn that starts first — a task the claim still owed, taken once its ready answered —
+  // leaves the resume timer stale, and it reminds nothing.
+  const resumed = rig({});
+  resumed.reminder.restore({ state: "open", count: 0, reported: false });
+  resumed.reminder.armResumeReminder();
+  resumed.reminder.turnStarted();
+  await fireLast(resumed.timers);
+  expect(resumed.sent).toEqual([]);
+
+  const closed = rig({});
+  closed.reminder.restore(undefined);
+  closed.reminder.armResumeReminder();
+  expect(closed.timers).toEqual([]);
+});

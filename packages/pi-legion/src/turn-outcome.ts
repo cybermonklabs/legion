@@ -1,8 +1,9 @@
+import type { LegionTurnOutcomeRequestBody } from "@legion/contracts/legion-api";
 import { messageFor } from "@legion/envoy-client/errors";
 import { type LegionDaemonClient, retryWhileDaemonRestarts } from "@legion/pi-shared/daemon-client";
 import type { ClaimCapability } from "@legion/pi-shared/legion-phase-ops";
 import { assistantRefusal } from "@legion/pi-shared/phase-stall";
-import type { AgentEndEvent } from "@legion/pi-shared/pi-types";
+import type { AgentEndEvent, AgentEndMessage } from "@legion/pi-shared/pi-types";
 
 /**
  * The Oh My Pi half of the turn-outcome report (INFRA-714). Every turn this pane ends — one the
@@ -17,6 +18,13 @@ import type { AgentEndEvent } from "@legion/pi-shared/pi-types";
  * sent, so reports that overlap keep the order their turns ended in whatever order they arrive —
  * the daemon keys each outcome by `(generation, sequence)` and derives the trailing run of
  * refusals afresh, so a late report lands in its own place and nothing is ever recounted.
+ *
+ * The report of a task's turn — the first run after an accepted take (`@legion/pi-shared/task-take`)
+ * — names the task's number (`task`), which is what finishes the task on the daemon. A turn the
+ * provider failed also carries the failure (`providerError`): the HTTP status of the request it
+ * failed on, the provider and model it went to, and the provider's message, with which the
+ * daemon keeps the task under its number and writes its value again after a wait instead of
+ * finishing it (dispatch://INFRA-2811 R2).
  *
  * Claude Code's half of the same report is `packages/daemon/internal/claudebridge`: neither half
  * is a shimwire frame, because a plugin cannot put one on the shim stream and `shimwire.AgentEnd`
@@ -40,11 +48,35 @@ export interface TurnOutcomeReporterDeps {
 
 export interface TurnOutcomeReporter {
   /**
-   * Reports the turn that `agent_end` just ended, for the claim the session holds. Never rejects:
-   * Oh My Pi does not await an `agent_end` handler, so a rejection here would be an unhandled one,
-   * and nothing of the turn waits on the report either way.
+   * Reports the turn that `agent_end` just ended, for the claim the session holds; `task` is the
+   * number of the task whose turn it was, undefined for a turn of no task. Never rejects: Oh My Pi
+   * does not await an `agent_end` handler, so a rejection here would be an unhandled one, and
+   * nothing of the turn waits on the report either way.
    */
-  readonly report: (sessionID: string, event: AgentEndEvent) => Promise<void>;
+  readonly report: (sessionID: string, event: AgentEndEvent, task?: number) => Promise<void>;
+}
+
+/** Statuses a provider answers "not now" with, which its own retries may still get through. */
+const TRANSIENT_STATUSES: Readonly<Record<number, true>> = { 408: true, 429: true };
+
+/**
+ * The provider failure an `error` stop carries, as the turn-outcome report names it: the HTTP
+ * status of the failed request (0 where it had none, as a content filter's refusal has none), the
+ * provider and the model, the provider's message, and whether this plugin reads the status as a
+ * failure that may clear (a 408, a 429 or a 5xx). The daemon decides by the status alone.
+ */
+function providerError(
+  message: AgentEndMessage,
+  refusal: string
+): NonNullable<LegionTurnOutcomeRequestBody["providerError"]> {
+  const status = message.errorStatus ?? 0;
+  return {
+    status,
+    provider: message.provider ?? "",
+    model: message.model ?? "",
+    message: refusal,
+    retryable: TRANSIENT_STATUSES[status] === true || status >= 500,
+  };
 }
 
 export function createTurnOutcomeReporter(deps: TurnOutcomeReporterDeps): TurnOutcomeReporter {
@@ -53,7 +85,7 @@ export function createTurnOutcomeReporter(deps: TurnOutcomeReporterDeps): TurnOu
   let sequence = 0;
 
   return {
-    report: async (sessionID, event) => {
+    report: async (sessionID, event, task) => {
       const claim = deps.claim(sessionID);
       if (claim === undefined) return;
       // Taken before the first await, so two turns can never take the same number nor take them
@@ -67,9 +99,8 @@ export function createTurnOutcomeReporter(deps: TurnOutcomeReporterDeps): TurnOu
       // The number this report owns: `sequence` moves on as the next turn ends, and the lines
       // below are written after an await.
       const mine = sequence;
-      const refusal = assistantRefusal(
-        event.messages?.findLast((message) => message.role === "assistant")
-      );
+      const last = event.messages?.findLast((message) => message.role === "assistant");
+      const refusal = assistantRefusal(last);
       const request = {
         claimToken: claim.claimToken,
         sessionId: claim.sessionID,
@@ -78,6 +109,10 @@ export function createTurnOutcomeReporter(deps: TurnOutcomeReporterDeps): TurnOu
         sequence: mine,
         outcome: refusal === undefined ? ("clean" as const) : ("refused" as const),
         ...(refusal === undefined ? {} : { message: refusal }),
+        ...(task === undefined ? {} : { task }),
+        ...(refusal === undefined || last === undefined
+          ? {}
+          : { providerError: providerError(last, refusal) }),
       };
       try {
         // A send that fails on nothing but a restarting daemon is retried until it lands: the
@@ -94,6 +129,7 @@ export function createTurnOutcomeReporter(deps: TurnOutcomeReporterDeps): TurnOu
           role: claim.role,
           sequence: mine,
           outcome: request.outcome,
+          ...(task === undefined ? {} : { task }),
           refusedRun: outcome.refusedRun,
           failed: outcome.failed,
         });
@@ -103,6 +139,7 @@ export function createTurnOutcomeReporter(deps: TurnOutcomeReporterDeps): TurnOu
           role: claim.role,
           sequence: mine,
           outcome: request.outcome,
+          ...(task === undefined ? {} : { task }),
           error: messageFor(error),
         });
       }

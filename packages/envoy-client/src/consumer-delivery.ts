@@ -44,6 +44,54 @@ export const RelayHeader = {
 } as const;
 
 /**
+ * The headers of a task frame: the core message the listener publishes on a session's relay
+ * subject for each put and delete of the Legion task bucket's key of the claim whose role that
+ * session holds (the listener's task relay; the names are `legiontasks.Header*` in
+ * `packages/envoy/legiontasks`). A frame carrying `claim` is a task frame, whatever else it
+ * carries: it is no stored message of the session's consumer, so it has none of the relay
+ * headers above.
+ */
+export const TaskHeader = {
+  /** The bucket's key the frame relays: the claim's token. */
+  claim: "Envoy-Task-Claim",
+  /** The bucket's epoch the revision belongs to: its stream's creation time, compared only. */
+  epoch: "Envoy-Task-Epoch",
+  /** The key's revision in the bucket, decimal. */
+  revision: "Envoy-Task-Revision",
+  /** What happened to the key at that revision: `put` or `delete`. */
+  op: "Envoy-Task-Op",
+} as const;
+
+/**
+ * A claim's task value as a task frame relays it: the claim, the bucket's epoch and the key's
+ * revision in it, and what happened to the key there. A `put` names the number of the claim's
+ * current task (`task`), the one thing the bucket holds for a claim; a `delete` names none, the
+ * claim having no current task.
+ */
+export type RelayTaskValue =
+  | {
+      readonly claim: string;
+      readonly epoch: string;
+      readonly revision: number;
+      readonly op: "put";
+      readonly task: number;
+    }
+  | {
+      readonly claim: string;
+      readonly epoch: string;
+      readonly revision: number;
+      readonly op: "delete";
+    };
+
+type DecodedTaskFrame = { readonly value: RelayTaskValue } | { readonly error: string };
+
+// A put's data, exactly as the daemon writes it (`legiontasks.Value.Encode`) and its decode reads
+// it: one object holding the one member `task`, a positive integer with no sign, fraction or
+// exponent, and JSON's insignificant whitespace around each token.
+const TASK_VALUE =
+  /^[ \t\r\n]*\{[ \t\r\n]*"task"[ \t\r\n]*:[ \t\r\n]*([1-9][0-9]*)[ \t\r\n]*\}[ \t\r\n]*$/;
+
+/**
  * A session's answers on a frame's reply subject, each exactly one ASCII word. `received`: the
  * frame decoded, before any host work. `progress`: still held unwritten (the listener extends the
  * ack wait). `done`: written, or skipped, suppressed, rejected or a duplicate (the listener acks
@@ -165,6 +213,25 @@ export function decodeRelayFrame(message: RelayMessage): DecodedRelayFrame {
   };
 }
 
+/** Reads a task frame; any header missing or malformed, or a put whose data is no task value, is
+ * an error. A delete's data is not read: the bucket holds nothing at a delete. */
+export function decodeTaskFrame(message: RelayMessage): DecodedTaskFrame {
+  const headers = message.headers;
+  const claim = headers?.get(TaskHeader.claim) ?? "";
+  if (headers === undefined || claim === "") return { error: `no ${TaskHeader.claim}` };
+  const epoch = headers.get(TaskHeader.epoch) ?? "";
+  if (epoch === "") return { error: `no ${TaskHeader.epoch}` };
+  const revision = positiveInteger(headers.get(TaskHeader.revision));
+  if (revision === undefined) return { error: `bad ${TaskHeader.revision}` };
+  const op = headers.get(TaskHeader.op);
+  if (op === "delete") return { value: { claim, epoch, revision, op } };
+  if (op !== "put") return { error: `bad ${TaskHeader.op}` };
+  const data = typeof message.data === "string" ? message.data : decoder.decode(message.data);
+  const task = positiveInteger(TASK_VALUE.exec(data)?.[1]);
+  if (task === undefined) return { error: "a put whose data is no task value" };
+  return { value: { claim, epoch, revision, op, task } };
+}
+
 /** A random string per plugin NATS connection: the registration's `delivery.epoch`. */
 function newEpoch(): string {
   return crypto.randomUUID();
@@ -223,6 +290,14 @@ export interface ConsumerDeliveryHost {
   /** Tells the session once that messages may be missing. */
   gap(notice: ConsumerGapNotice): void;
   log(message: string, error?: unknown): void;
+  /**
+   * Takes a claim's task value a task frame relayed (`decodeTaskFrame`). A task frame is no
+   * message of the session's consumer: it is never answered, never counted in the ledger, never
+   * ordered with the frames `deliver` takes, and it moves neither the stream nor the resume point,
+   * so it comes here at once, ahead of any frame still held. A host that serves no Legion claim
+   * leaves this out, and a task frame reaching it is dropped.
+   */
+  onTaskValue?(value: RelayTaskValue): void;
 }
 
 export interface ConsumerDeliveryOptions {
@@ -269,7 +344,8 @@ export type ConsumerDeliverySnapshot = z.infer<typeof ConsumerDeliverySnapshotSc
 export interface ConsumerDelivery {
   /** The relay subject; the host subscribes to it before it registers. */
   readonly subject: string;
-  /** Takes one message from the relay subscription. */
+  /** Takes one message from the relay subscription: a relay frame, or a task frame, which goes
+   *  to the host's `onTaskValue` and nowhere else. */
   receive(message: RelayMessage): void;
   /** The current epoch; one begins when the delivery is created. */
   epoch(): ConsumerEpoch;
@@ -601,7 +677,27 @@ export function createConsumerDelivery(options: ConsumerDeliveryOptions): Consum
     }
   }
 
+  // A task frame is the claim's task value and nothing of the consumer (`onTaskValue`): it is
+  // handed over and nothing else, not even answered. Its reply subject is the listener's, which
+  // reads no answer to it.
+  const receiveTaskValue = (message: RelayMessage) => {
+    if (closed) return;
+    const decoded = decodeTaskFrame(message);
+    if ("error" in decoded) {
+      log(`dropping an undecodable task frame: ${decoded.error}`);
+      return;
+    }
+    const { onTaskValue } = host;
+    if (onTaskValue === undefined) return;
+    safely("task value", () => onTaskValue.call(host, decoded.value));
+  };
+
   const receive = (message: RelayMessage) => {
+    // A frame carrying a claim header is a task frame, whatever else it carries.
+    if ((message.headers?.get(TaskHeader.claim) ?? "") !== "") {
+      receiveTaskValue(message);
+      return;
+    }
     const decoded = decodeRelayFrame(message);
     if ("error" in decoded) {
       // Redelivery cannot fix a frame that does not decode, so it is acked away.

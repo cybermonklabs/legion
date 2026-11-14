@@ -39,7 +39,7 @@ import {
   STORE_BEAT_MS,
 } from "@legion/envoy-client/askgate-marker";
 import { forgetBrokerClients } from "@legion/envoy-client/broker-credential";
-import { deliverSubject, RelayHeader } from "@legion/envoy-client/consumer-delivery";
+import { deliverSubject, RelayHeader, TaskHeader } from "@legion/envoy-client/consumer-delivery";
 import type {
   DeliveryLedgerHost,
   DeliveryLedgerOptions,
@@ -66,6 +66,7 @@ import type { TmuxPlace, TmuxPlaceReading } from "@legion/envoy-client/tmux-plac
 import { envoyToolSpecs } from "@legion/envoy-client/tool-contract";
 import { matchInjectedUserTurn } from "@legion/pi-shared/injected-user-turns";
 import {
+  type EnvoyTaskSignal,
   envoyPluginInterface,
   LOCAL_ENVOY_NOTICE,
   resetEnvoyPluginInterfaceForTests,
@@ -81,6 +82,7 @@ import {
   onEnvoyRoleRegained,
   subscribeLegionNotice,
 } from "@legion/pi-shared/role-claim-bridge";
+import { takeTaskSignals } from "@legion/pi-shared/task-values";
 import { hostAgentRegistryMock, testAgentRoster } from "@legion/pi-shared/test/host-registry";
 import { captureEnvironment, restoreEnvironment } from "@legion/test-fixtures/environment";
 import type { UserInputBuiltinCommand } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/send-user-input-handler";
@@ -13021,6 +13023,74 @@ console.log(JSON.stringify(args));
       agent.push(forwardedRoleEnvelope("legion-controller", "other mark", "other-mark-card"));
       await delivered(2);
       expect(sends[1]?.options).toEqual({ deliverAs: "aside", triggerTurn: true });
+    });
+
+    // The Legion entry's take names this session in the task-turn mark from the moment it holds
+    // a value it will ask about until the task's turn starts or the take is refused or dropped
+    // (`../src/card-wake`): an idle card meanwhile, in any mode and long after the startup phase,
+    // is a follow-up that starts no turn, so the take's text keeps the turn. Once the mark is
+    // gone, an idle card starts its own turn again.
+    test("holds a card that reaches an idle session while the task-turn mark names it as a follow-up that starts no turn, and releases the next once the mark is gone", async () => {
+      const { agent, delivered, sends } = await bootDirectSession("idle-card-task-turn", {
+        idle: () => true,
+      });
+      const iface = envoyPluginInterface();
+
+      iface.taskTurnPending = { session: "ses_delivery" };
+      agent.push(forwardedRoleEnvelope("legion-controller", "kept lane", "task-turn-card"));
+      await delivered(1);
+      expect(sends[0]?.options).toEqual({ deliverAs: "followUp", triggerTurn: false });
+
+      iface.taskTurnPending = { session: "ses_task_subagent" };
+      agent.push(forwardedRoleEnvelope("legion-controller", "another mark", "other-task-mark"));
+      await delivered(2);
+      expect(sends[1]?.options).toEqual({ deliverAs: "aside", triggerTurn: true });
+
+      iface.taskTurnPending = undefined;
+      agent.push(forwardedRoleEnvelope("legion-controller", "after the task", "after-task-card"));
+      await delivered(3);
+      expect(sends[2]?.options).toEqual({ deliverAs: "aside", triggerTurn: true });
+    });
+
+    // A claim's task value reaches the Legion entry only through this entry: the listener relays
+    // it on the session's relay subject as a task frame, which is no message of the consumer and
+    // is never answered, and each epoch of the relay the listener answers tells the claim to read
+    // its value again, since a frame relayed while the session was not subscribed is lost.
+    test("hands each task frame its relay carries, and each new epoch of that relay, to the Legion entry's taker, answering the frame nothing", async () => {
+      const signals: EnvoyTaskSignal[] = [];
+      takeTaskSignals((signal) => signals.push(signal));
+      const { sends } = await bootDirectSession("task-frame-taker", { idle: () => true });
+      await until(() => signals.length > 0, "the first epoch's signal");
+      expect(signals).toEqual([{ kind: "epoch", session: "ses_delivery" }]);
+
+      const relay = natsState.controls.get(deliverSubject("ses_delivery"));
+      relay?.push(JSON.stringify({ task: 4 }), "_INBOX.relay.task.frame", {
+        [TaskHeader.claim]: "legion-legion-legion-208-implementer",
+        [TaskHeader.epoch]: "2026-11-13T16:21:44.123456789Z",
+        [TaskHeader.revision]: "12",
+        [TaskHeader.op]: "put",
+      });
+      await until(() => signals.length > 1, "the task frame's signal");
+      expect(signals[1]).toEqual({
+        kind: "value",
+        session: "ses_delivery",
+        value: {
+          claim: "legion-legion-legion-208-implementer",
+          epoch: "2026-11-13T16:21:44.123456789Z",
+          revision: 12,
+          op: "put",
+          task: 4,
+        },
+      });
+      expect(
+        natsState.published.filter(({ subject }) => subject === "_INBOX.relay.task.frame")
+      ).toEqual([]);
+      expect(sends).toEqual([]);
+
+      // A NATS reconnect begins a new epoch, which tells the claim once the listener answered it.
+      pushNatsStatus("reconnect");
+      await until(() => signals.length > 2, "the reconnect's epoch signal");
+      expect(signals[2]).toEqual({ kind: "epoch", session: "ses_delivery" });
     });
 
     // Only Dispatch's 200 makes a turn: whatever it refuses, and whatever keeps it from answering,

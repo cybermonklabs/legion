@@ -26,12 +26,17 @@ import {
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
 import {
+  publishTaskFrame,
+  type TaskStandIn,
+  taskStandIn,
+} from "@legion/pi-shared/test/task-stand-in";
+import {
   completeLines,
   endsWhole,
   type Writer,
   writtenLines,
 } from "@legion/test-fixtures/transcript-lines";
-import { connect, type Msg, headers as natsHeaders, StringCodec } from "nats";
+import { connect, type Msg, type NatsConnection, headers as natsHeaders, StringCodec } from "nats";
 import { z } from "zod";
 
 // The operator's controller on the real, interactive Oh My Pi, as `legion controller start` runs
@@ -376,6 +381,12 @@ interface ControllerStandin {
   readonly base: string;
   /** Every Messages request so far, in arrival order. */
   readonly turns: Turn[];
+  /** The daemon's task routes for the controller's claim (`claims/task`, `task-seen`, `take`). */
+  readonly tasks: TaskStandIn;
+  /** The controller's claim token, the role its tasks are relayed for. */
+  readonly claimToken: string;
+  /** The session that holds the controller role now, "" before any claimed it. */
+  readonly roleHolder: () => string;
 }
 
 /**
@@ -414,6 +425,7 @@ async function serveController(
   let grants = 0;
   // Set at the controller role's first claim, until the registration after it arrives.
   let noticeInterestDue = false;
+  const tasks = taskStandIn();
   const { base } = serveStandin(cleanup, async (url, body) => {
     if (url.pathname === "/anthropic/v1/messages") {
       const index = turns.length;
@@ -433,6 +445,8 @@ async function serveController(
       return new Response(null, { status: 204 });
     }
     if (url.pathname === "/legion/v1/state") return Response.json(daemonState);
+    const taskAnswer = tasks.answer(url.pathname, body);
+    if (taskAnswer !== undefined) return taskAnswer;
     if (url.pathname === "/legion/v1/claims/register") {
       return hooks.register?.(body) ?? Response.json(registered);
     }
@@ -518,7 +532,20 @@ async function serveController(
   if (hooks.keybindings !== undefined) {
     await writeFile(path.join(home, ".omp", "agent", "keybindings.yml"), hooks.keybindings);
   }
-  return { binary, nats, root, home, workspace, sessions, state, base, turns };
+  return {
+    binary,
+    nats,
+    root,
+    home,
+    workspace,
+    sessions,
+    state,
+    base,
+    turns,
+    tasks,
+    claimToken: registered.claimToken,
+    roleHolder: () => roleHolder,
+  };
 }
 
 /**
@@ -650,9 +677,9 @@ interface DaemonController {
   /** The next Messages request after the ones already taken, once it arrives. */
   nextTurn(what: string): Promise<Turn>;
   /**
-   * Writes the daemon's delivery of `message` as the shim writes it to Oh My Pi's stdin: one RPC
-   * `prompt` (packages/daemon/internal/shimwire `Prompt`). Its response is not awaited, as the
-   * daemon's delivery reads only the turn it starts.
+   * Gives the controller the daemon's task `message`, as the daemon writes a task's value and the
+   * listener relays it: a task frame on the session's deliver subject, which the session takes
+   * once its host is idle, its take answered with `message`.
    */
   deliver(message: string): void;
   /** Answers one RPC `get_state`, which Oh My Pi reads only once its startup is over. */
@@ -669,9 +696,9 @@ interface DaemonController {
  * Starts the controller as the daemon launches it (`controller: daemon`): `omp --mode rpc` with
  * both extensions and the pod's environment — its boot token's file in place of a capability, the
  * project's Slack channels (none unless `launch` names them), and no
- * LEGION_CONTROLLER_START_MESSAGE, since the daemon delivers the start message itself once the
- * controller reports ready — against the controller's stand-in (`serveController`), which answers
- * the daemon's state while the daemon holds the controller's claim (internal/projection's
+ * LEGION_CONTROLLER_START_MESSAGE, since the controller takes its start message as a task once
+ * it reports ready (`deliver`) — against the controller's stand-in (`serveController`), which
+ * answers the daemon's state while the daemon holds the controller's claim (internal/projection's
  * golden), with `hooks`. `launch.heartbeatMs` is Envoy's registration heartbeat
  * (ENVOY_HEARTBEAT_MS, 90 s by default), which a case that watches a pass shortens.
  */
@@ -679,8 +706,9 @@ async function startDaemonController(
   hooks: StandinHooks,
   launch: { readonly slackChannels?: readonly string[]; readonly heartbeatMs?: number } = {}
 ): Promise<DaemonController> {
-  const { binary, nats, root, home, workspace, sessions, state, base, turns } =
-    await serveController("state-controller-claim.json", hooks);
+  const stand = await serveController("state-controller-claim.json", hooks);
+  const { binary, nats, root, home, workspace, sessions, state, base, turns } = stand;
+  const { tasks, claimToken, roleHolder } = stand;
   const bootFile = path.join(root, "LEGION_BOOT_TOKEN");
   await writeFile(bootFile, "launch-boot-token\n", { mode: 0o600 });
 
@@ -753,6 +781,8 @@ async function startDaemonController(
   };
 
   let taken = 0;
+  // The connection a task is relayed on, opened at the first task given.
+  let relay: NatsConnection | undefined;
   return {
     turns,
     async nextTurn(what) {
@@ -761,7 +791,16 @@ async function startDaemonController(
       return turn;
     },
     deliver(message) {
-      rpc.send({ type: "prompt", id: randomUUID(), message });
+      void (async () => {
+        if (relay === undefined) {
+          relay = await connect({ servers: nats });
+          const opened = relay;
+          cleanup.push(() => opened.close());
+        }
+        publishTaskFrame(relay, roleHolder(), claimToken, tasks.give(message));
+      })().catch((error: unknown) => {
+        closed.error = error;
+      });
     },
     async state() {
       return RpcStateSchema.parse((await command({ type: "get_state" })).data);

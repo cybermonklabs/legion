@@ -52,8 +52,11 @@ export const DEFAULT_STALL_LIMITS: StallLimits = {
   // 15 minutes is longer than a CI run here, so a worker that said what it waits on is not woken
   // in the middle of the wait.
   waitingMs: 900_000,
-  // 2 minutes is longer than the daemon's re-send of an interrupted task after `ready`, so a
-  // resumed worker the daemon is about to prompt again is prompted before it is reminded.
+  // 2 minutes is longer than a relaunched worker takes to take a task it is owed — it holds the
+  // value from its registration and asks the moment its ready answers and its host is idle — so
+  // a resumed worker given its task again runs that task before it is reminded. A resumed worker
+  // whose phase is open and that is owed nothing is given no task at its relaunch (R4 of
+  // INFRA-2811), and this reminder is what wakes it.
   resumeMs: 120_000,
   // 3 unanswered reminders is about ten minutes of a worker doing nothing at all.
   architectAfter: 3,
@@ -100,8 +103,7 @@ export function defaultCallBoundMs(role: string | undefined): number {
 
 /** One variable's value: the default when it is unset, and the default with one `warn` naming the
  * variable when it is not an integer of `least` or more. The refusal cooldown's own two variables
- * are read through it too (`src/fallback-cooldown.ts`), as is the claim boot's first-turn bound
- * (`src/claim-first-turn-bound.ts`), so one wording warns about any of them. */
+ * are read through it too (`src/fallback-cooldown.ts`), so one wording warns about any of them. */
 export function integerSetting(
   env: Record<string, string | undefined>,
   log: StallLimitsLog,

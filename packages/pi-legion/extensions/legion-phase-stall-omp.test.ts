@@ -353,8 +353,10 @@ test.skipIf(skip)(
       [{ type: "text", text: "Reported." }],
     ]);
 
-    // The worker registered through the daemon's routes; the reminder's record check read the
-    // issue's record before it was sent, and the handoff_complete read it again, read the newest
+    // The worker registered through the daemon's routes and took its task: the registration's
+    // value reported seen, the ready, and the take once the host was idle. The reminder's record
+    // check read the issue's record before it was sent, and the handoff_complete read it again,
+    // read the newest
     // implement record from the pane's Dispatch and the pushed tip of legion/STALL-2@origin from
     // the pane's jj, minted a grant in-process and posted the completion with them: no grant file,
     // no `legion` command, and no handoff file. Each of the two runs the host settled also
@@ -362,7 +364,9 @@ test.skipIf(skip)(
     // tool call ends no run of its own, so it earns no report.
     expect(daemonRoutes(pane)).toEqual([
       "/legion/v1/claims/register",
+      "/legion/v1/claims/task-seen",
       "/legion/v1/claims/ready",
+      "/legion/v1/claims/take",
       "/legion/v1/state",
       "/legion/v1/claims/turn-outcome",
       "/legion/v1/state",

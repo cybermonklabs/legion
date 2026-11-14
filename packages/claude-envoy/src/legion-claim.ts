@@ -5,14 +5,12 @@ import { SESSION_LIVE_WINDOW_MS } from "@legion/contracts"
 import { messageFor } from "@legion/envoy-client/errors"
 import { readSecretFile } from "@legion/envoy-client/secret-file"
 import type { EnvoyClient } from "@legion/envoy-client/transport"
-import { claimFirstTurnBoundMs } from "@legion/pi-shared/claim-first-turn-bound"
 import type { LegionDaemonClient } from "@legion/pi-shared/daemon-client"
-import { bootLegionClaim, type LegionClaimBoot } from "@legion/pi-shared/legion-claim-core"
+import { bootLegionClaim } from "@legion/pi-shared/legion-claim-core"
 import type { ClaimCapability } from "@legion/pi-shared/legion-phase-ops"
 import { legion } from "../package.json" with { type: "json" }
 import { configuredValue } from "./claude-session"
 import type { ChannelSession } from "./envoy-channel-server"
-import { paneReminderLog } from "./legion-phase-hook"
 
 /**
  * A Claude Code phase worker's claim on the Legion daemon, made by the MCP server Claude Code runs
@@ -139,8 +137,8 @@ function isFile(file: string): Promise<boolean> {
  * How long apart the attempts of {@link startLegionClaim}'s wait on a claim the listener refused
  * naming this very session are.
  *
- * The wait runs after `claims/ready`, not before it: the role is claimed last, at the session's
- * first turn or at the bound (INFRA-1573), so the daemon's registration deadline —
+ * The wait runs after `claims/ready`, not before it: the role is claimed right after the ready
+ * has answered (`bootLegionClaim`), so the daemon's registration deadline —
  * `worker_boot_timeout_seconds` × `worker_boot_registration_deadline_intervals`, 120 s × 3 = 360
  * s with the shipped defaults (`packages/daemon/internal/config/config.go`, armed by `register`
  * through `armRegistration` in `packages/daemon/internal/supervise`) — is already met when the
@@ -178,12 +176,10 @@ export const ROLE_CLAIM_WAIT_MS = SESSION_LIVE_WINDOW_MS + ROLE_CLAIM_RETRY_MS
 export interface LegionClaim {
   /** The registered claim, or undefined until `claims/register` has answered. */
   readonly capability: () => ClaimCapability | undefined
-  /** Settles once the boot has run: ready sent, or the failure reported. Never rejects. */
+  /** Settles once the boot has run — ready sent and the Envoy role claimed, or the failure
+   * reported and the pane stopped, or a boot that never reached a registration logged. Never
+   * rejects. */
   readonly booted: Promise<void>
-  /** Settles once the boot's last step has run — the Envoy role claimed at this session's first
-   * turn or at the bound, or the refusal logged and the pane stopped — and at once for a boot
-   * that never reached that step (`LegionClaimBoot.claimed`). Never rejects. */
-  readonly claimed: Promise<void>
 }
 
 /**
@@ -191,12 +187,10 @@ export interface LegionClaim {
  * transcript, and in a pod whose launcher keeps it (`launcherSaves`) for the launcher's first save
  * of it too, registers with it as the session file (`agentId` is the session id,
  * `pluginContract` this package's `legion.daemonApiVersion`), sends `claims/ready` with no
- * capability report, again each time the heartbeat regains the role, and claims the claim
- * token's Envoy role soft last of all — at this session's first turn (`onFirstTurn`) or at the
- * bound this pane's environment names, whichever comes first — recording it with the channel
- * session, whose heartbeat re-asserts it. A failure the core stops on ends the pane through
- * `stop`; a failure before a registration is logged and leaves the pane to the daemon's
- * registration deadline.
+ * capability report, and claims the claim token's Envoy role soft right after it, recording it
+ * with the channel session, whose heartbeat re-asserts it. A failure the core stops on ends the
+ * pane through `stop`; a failure before a registration is logged and leaves the pane to the
+ * daemon's registration deadline.
  *
  * A claim the listener refuses naming this very session is waited out rather than stopped on:
  * the pane the daemon relaunched with `--resume` meets the standing claim of the process it
@@ -222,14 +216,6 @@ export function startLegionClaim(deps: {
   readonly log: (line: string) => void
   /** Ends the pane's Claude Code, this server's parent, so the daemon launches the claim again. */
   readonly stop: () => void
-  /** Registers the step that takes this session's Envoy name, to be run once a turn of this
-   * session has started: the channel server holds it in a slot the phase hook's
-   * `UserPromptSubmit` calls, the only sight this process has of a turn beginning
-   * (`./legion-phase-hook`). It is called once the boot has registered, and a prompt submitted
-   * before that — the bridge's seeding `/rename`, which runs before any claim exists — runs
-   * nothing, so the name is never taken ahead of the daemon's task
-   * (`src/envoy-channel-server.ts`). */
-  readonly onFirstTurn: (claim: () => void) => void
   /**
    * How long a claim refused by a standing claim under this very session id keeps asking before
    * it gives up and the pane is stopped: {@link ROLE_CLAIM_WAIT_MS}.
@@ -237,10 +223,6 @@ export function startLegionClaim(deps: {
   readonly roleWaitMs?: number
   /** How long between those attempts: {@link ROLE_CLAIM_RETRY_MS}. */
   readonly roleRetryMs?: number
-  /** The pane's own environment, which the first-turn bound is read from
-   * (`claimFirstTurnBoundMs`): `process.env` for the server, and a case's own map in a test that
-   * will not wait 30 seconds. */
-  readonly env?: NodeJS.ProcessEnv
   readonly pollMs?: number
 }): LegionClaim {
   let capability: ClaimCapability | undefined
@@ -248,7 +230,7 @@ export function startLegionClaim(deps: {
   const roleWaitMs = deps.roleWaitMs ?? ROLE_CLAIM_WAIT_MS
   const roleRetryMs = deps.roleRetryMs ?? ROLE_CLAIM_RETRY_MS
 
-  const boot = async (): Promise<LegionClaimBoot> => {
+  const boot = async (): Promise<void> => {
     const transcript = await waitForTranscript(
       deps.pane.configDir,
       sessionID,
@@ -258,7 +240,7 @@ export function startLegionClaim(deps: {
     if (deps.pane.launcherSaves) {
       await waitForSavedTranscript(transcript, deps.signal, deps.pollMs)
     }
-    return await bootLegionClaim({
+    await bootLegionClaim({
       daemon: deps.daemon,
       registration: {
         bootToken: deps.pane.bootToken,
@@ -313,10 +295,6 @@ export function startLegionClaim(deps: {
         }
         await deps.session.rememberRole(role)
       },
-      onFirstTurn: deps.onFirstTurn,
-      // The pane's own bound, read from its environment as the reminder's four numbers are
-      // (`stallLimits` in `./legion-phase-hook`), and warned about on the pane's own log line.
-      firstTurnBoundMs: claimFirstTurnBoundMs(deps.env ?? process.env, paneReminderLog(deps.log)),
       onRoleRegained: (listener) => deps.session.onRoleRegained(listener),
       log: deps.log,
       stopping: "stopping the pane so the daemon launches it again",
@@ -328,20 +306,17 @@ export function startLegionClaim(deps: {
     })
   }
 
-  // A boot that failed before a registration claims nothing, and says so with a `claimed` that
-  // is already settled: a caller waiting on the name is not left waiting for a step that is
-  // never coming.
-  const started = boot().catch((error: unknown): LegionClaimBoot => {
+  // A boot that failed before a registration claims nothing, and says so with a `booted` that
+  // settles: a caller waiting on the boot is not left waiting for a step that is never coming.
+  const booted = boot().catch((error: unknown): void => {
     if (!deps.signal.aborted) {
       deps.log(
         `claim boot failed before a registration; the daemon's registration deadline relaunches the pane: ${messageFor(error)}`,
       )
     }
-    return { claimed: Promise.resolve() }
   })
   return {
     capability: () => capability,
-    booted: started.then(() => undefined),
-    claimed: started.then((claimBoot) => claimBoot.claimed),
+    booted,
   }
 }

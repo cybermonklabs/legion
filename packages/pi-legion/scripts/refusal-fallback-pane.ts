@@ -49,6 +49,8 @@ import {
   serveStandin,
   spawnRpc,
 } from "@legion/pi-shared/test/omp-harness";
+import { publishTaskFrame, taskStandIn } from "@legion/pi-shared/test/task-stand-in";
+import { connect } from "nats";
 
 const [cooldownArg, driveArg, evidence] = process.argv.slice(2);
 const binary = process.env.LEGION_OMP_PATH ?? "";
@@ -457,6 +459,11 @@ async function runPane(run: Run, pane: Pane, cleanup: Cleanup): Promise<void> {
   // stand-in's `claims/register` too.
   const registered: Record<string, unknown> = JSON.parse(await readFile(registerFixture, "utf8"));
   let grants = 0;
+  // The daemon's two assignments are tasks the pane takes: the first is the registration's value,
+  // the second is relayed to the session as a task frame once the first run has settled.
+  const tasks = taskStandIn();
+  const claimToken = `legion-${run.label}-${run.key.toLowerCase()}-architect`;
+  let paneSession = "";
 
   const record = (at: number, model: string, what: string): void => {
     pane.served.push({ at, model, answer: what });
@@ -484,15 +491,19 @@ async function runPane(run: Run, pane: Pane, cleanup: Cleanup): Promise<void> {
     // empty: the profile names the two models itself. The provider sits under a prefix of its
     // own, since the Envoy listener this stand-in also answers for serves its own `/v1/` routes.
     if (url.pathname.startsWith("/openai/")) return Response.json({ data: [] });
+    const taskAnswer = tasks.answer(url.pathname, body);
+    if (taskAnswer !== undefined) return taskAnswer;
     if (url.pathname === "/legion/v1/claims/register") {
+      paneSession = typeof body.sessionId === "string" ? body.sessionId : "";
       return Response.json({
         ...registered,
-        claimToken: `legion-${run.label}-${run.key.toLowerCase()}-architect`,
+        claimToken,
         tree: run.key,
         issue: run.key,
         role: "architect",
         generation: 1,
         secret: `${run.label}-secret`,
+        ...tasks.registered(),
       });
     }
     if (url.pathname === "/legion/v1/claims/ready") return new Response(null, { status: 204 });
@@ -520,6 +531,9 @@ async function runPane(run: Run, pane: Pane, cleanup: Cleanup): Promise<void> {
   });
   await writeProfile(home, base);
 
+  const first = `Start ${run.key}.`;
+  const later = ["Keep working."];
+  tasks.give(first);
   let settled = Promise.withResolvers<void>();
   const rpc = spawnRpc(
     binary,
@@ -561,9 +575,16 @@ async function runPane(run: Run, pane: Pane, cleanup: Cleanup): Promise<void> {
   // refusal ended its run where it stood. For the two the host replays or retries, the long turn
   // is the first assignment's own and the second is one last reading of the session's model.
   try {
-    for (const prompt of [`Start ${run.key}.`, "Keep working."]) {
+    const connection = await connect({ servers: natsUrl });
+    cleanup.push(() => connection.close());
+    await within(
+      deadlineAt - Date.now(),
+      `${run.label}: the assignment "${first}"`,
+      Promise.race([settled.promise, rpc.closed])
+    );
+    for (const prompt of later) {
       settled = Promise.withResolvers<void>();
-      rpc.send({ type: "prompt", message: prompt });
+      publishTaskFrame(connection, paneSession, claimToken, tasks.give(prompt));
       await within(
         deadlineAt - Date.now(),
         `${run.label}: the assignment "${prompt}"`,

@@ -77,9 +77,13 @@
       "types": "./src/legion-claim-core.ts",
       "bun": "./src/legion-claim-core.ts"
     },
-    "./claim-first-turn-bound": {
-      "types": "./src/claim-first-turn-bound.ts",
-      "bun": "./src/claim-first-turn-bound.ts"
+    "./task-take": {
+      "types": "./src/task-take.ts",
+      "bun": "./src/task-take.ts"
+    },
+    "./task-values": {
+      "types": "./src/task-values.ts",
+      "bun": "./src/task-values.ts"
     },
     "./phase-stall": {
       "types": "./src/phase-stall.ts",
@@ -140,6 +144,10 @@
     "./test/skills-guard": {
       "types": "./test/skills-guard.ts",
       "bun": "./test/skills-guard.ts"
+    },
+    "./test/task-stand-in": {
+      "types": "./test/task-stand-in.ts",
+      "bun": "./test/task-stand-in.ts"
     }
   },
   "scripts": {

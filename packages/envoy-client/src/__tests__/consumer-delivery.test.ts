@@ -7,12 +7,14 @@ import {
   createConsumerDelivery,
   DELIVER_SUBJECT_PREFIX,
   decodeRelayFrame,
+  decodeTaskFrame,
   deliverSubject,
   FOLLOW_CLOCK_ALLOWANCE_MS,
   inboundUnavailable,
   RELAY_PROGRESS_INTERVAL_MS,
   type RelayMessage,
   type RelayReply,
+  type RelayTaskValue,
   registerWithRelay,
 } from "../consumer-delivery";
 import { createDeliveryLedger, type DeliveryLedger, type LedgerSnapshot } from "../delivery-ledger";
@@ -55,6 +57,38 @@ function relay(input: RelayInput): RelayMessage {
     ),
     headers: { get: (name) => headers[name] ?? "" },
     reply: input.reply ?? `_INBOX.${input.seq}.${input.delivered ?? 1}`,
+  };
+}
+
+const CLAIM = "legion-legion-legion-208-implementer";
+const BUCKET_EPOCH = "2026-11-13T16:21:44.123456789Z";
+
+interface TaskFrameInput {
+  readonly revision: number;
+  readonly op?: "put" | "delete";
+  /** The number a put names; its data unless `payload` replaces it. */
+  readonly task?: number;
+  readonly payload?: string;
+  readonly epoch?: string;
+  readonly reply?: string;
+}
+
+/** A task frame as the listener's task relay publishes one: the four task headers, the value's
+ *  bytes as data (none for a delete), and a reply subject under the relay's reply prefix. */
+function taskFrame(input: TaskFrameInput): RelayMessage {
+  const op = input.op ?? "put";
+  const headers: Record<string, string> = {
+    "Envoy-Task-Claim": CLAIM,
+    "Envoy-Task-Epoch": input.epoch ?? BUCKET_EPOCH,
+    "Envoy-Task-Revision": String(input.revision),
+    "Envoy-Task-Op": op,
+  };
+  return {
+    data: new TextEncoder().encode(
+      input.payload ?? (op === "put" ? JSON.stringify({ task: input.task ?? 4 }) : "")
+    ),
+    headers: { get: (name) => headers[name] ?? "" },
+    reply: input.reply ?? `_INBOX.relay.task.frame`,
   };
 }
 
@@ -123,6 +157,8 @@ function setup(
   // is told nothing, and the relay must then leave the frame on the stream.
   const notice = { told: true, rejectWith: undefined as Error | undefined };
   const logs: string[] = [];
+  // The claims' task values the task frames handed over (`onTaskValue`).
+  const taskValues: RelayTaskValue[] = [];
   // The snapshots the host was asked to write.
   const persisted: ConsumerDeliverySnapshot[] = [];
   const state = {
@@ -139,6 +175,7 @@ function setup(
       },
       gap: (notice) => gaps.push(notice),
       log: (message) => logs.push(message),
+      onTaskValue: (value) => taskValues.push(value),
     },
     publish: (reply, body) => replies.push([reply, body]),
     ledger: {
@@ -186,6 +223,7 @@ function setup(
     failed,
     notice,
     logs,
+    taskValues,
     state,
     delivery,
     settled,
@@ -241,6 +279,134 @@ describe("relay frames", () => {
     expect(replies).toEqual([["_INBOX.bad", "done"]]);
     expect(handed).toEqual([]);
     expect(logs.some((line) => line.includes("undecodable"))).toBe(true);
+  });
+});
+
+describe("task frames", () => {
+  test("decodes a put's claim, epoch, revision and number, and a delete's without one", () => {
+    expect(decodeTaskFrame(taskFrame({ revision: 12, task: 4 }))).toEqual({
+      value: { claim: CLAIM, epoch: BUCKET_EPOCH, revision: 12, op: "put", task: 4 },
+    });
+    // The daemon's encoding has no whitespace; JSON's insignificant whitespace is read as its
+    // decode reads it.
+    expect(decodeTaskFrame(taskFrame({ revision: 3, payload: ' { "task" : 7 }\n' }))).toEqual({
+      value: { claim: CLAIM, epoch: BUCKET_EPOCH, revision: 3, op: "put", task: 7 },
+    });
+    expect(decodeTaskFrame(taskFrame({ revision: 13, op: "delete" }))).toEqual({
+      value: { claim: CLAIM, epoch: BUCKET_EPOCH, revision: 13, op: "delete" },
+    });
+  });
+
+  test("refuses a put whose data is anything but the one positive task number, and a bad header", () => {
+    for (const payload of [
+      '{"task":0}',
+      '{"task":-1}',
+      '{"task":1.5}',
+      '{"task":1e3}',
+      '{"task":"4"}',
+      '{"task":4,"text":"run this"}',
+      '{"Task":4}',
+      "4",
+      "",
+    ]) {
+      expect(decodeTaskFrame(taskFrame({ revision: 1, payload })), payload).toEqual({
+        error: "a put whose data is no task value",
+      });
+    }
+    expect(decodeTaskFrame(taskFrame({ revision: 0 }))).toEqual({
+      error: "bad Envoy-Task-Revision",
+    });
+    expect(decodeTaskFrame(taskFrame({ revision: 1, epoch: "" }))).toEqual({
+      error: "no Envoy-Task-Epoch",
+    });
+    expect(decodeTaskFrame(taskFrame({ revision: 1, op: "purge" as never }))).toEqual({
+      error: "bad Envoy-Task-Op",
+    });
+  });
+
+  test("a task frame reaches onTaskValue and not the host's deliver, and is never answered", () => {
+    const { delivery, replies, handed, taskValues, persisted } = setup();
+
+    delivery.receive(taskFrame({ revision: 12, task: 4, reply: "_INBOX.task-12" }));
+    delivery.receive(taskFrame({ revision: 13, op: "delete", reply: "_INBOX.task-13" }));
+
+    expect(taskValues).toEqual([
+      { claim: CLAIM, epoch: BUCKET_EPOCH, revision: 12, op: "put", task: 4 },
+      { claim: CLAIM, epoch: BUCKET_EPOCH, revision: 13, op: "delete" },
+    ]);
+    expect(handed).toEqual([]);
+    expect(replies).toEqual([]);
+    // Nothing of the consumer moved: no stream, no resume point, nothing to persist.
+    expect(delivery.resumePoint()).toBeUndefined();
+    expect(persisted).toEqual([]);
+  });
+
+  test("a card after a task frame is unaffected, and no gap notice is told", async () => {
+    const { delivery, replies, handed, gaps, taskValues, settled } = setup();
+    delivery.receive(relay({ seq: 1, reply: "_INBOX.1" }));
+    handed[0]?.done();
+    await settled();
+    const before = delivery.resumePoint();
+
+    // A task frame carries no stream id and no sequence, so it can neither switch the stream
+    // nor read as a gap in it, and the card after it is the next card of the same stream.
+    delivery.receive(taskFrame({ revision: 12, task: 4 }));
+    expect(delivery.resumePoint()).toEqual(before);
+    delivery.receive(relay({ seq: 2, reply: "_INBOX.2" }));
+    handed[1]?.done();
+    await settled();
+
+    expect(taskValues).toHaveLength(1);
+    expect(seqs(handed)).toEqual([1, 2]);
+    expect(repliesTo(replies, "_INBOX.2")).toEqual(["received", "done"]);
+    expect(gaps).toEqual([]);
+    expect(delivery.resumePoint()).toEqual({ stream_id: STREAM, seq: 2 });
+  });
+
+  test("a task frame is handed over at once, ahead of a card still held", () => {
+    const { delivery, handed, taskValues, state } = setup();
+    // The host is still writing the first card, so the second waits behind it.
+    state.deliver = () => new Promise<void>(() => undefined);
+    delivery.receive(relay({ seq: 1 }));
+    delivery.receive(relay({ seq: 2 }));
+
+    delivery.receive(taskFrame({ revision: 12, task: 4 }));
+
+    // The task value is ordered with neither card.
+    expect(seqs(handed)).toEqual([1]);
+    expect(taskValues).toHaveLength(1);
+  });
+
+  test("an undecodable task frame is logged and dropped, answered nothing, and never handed to deliver", () => {
+    const { delivery, replies, handed, taskValues, logs } = setup();
+
+    delivery.receive(taskFrame({ revision: 12, payload: '{"task":"4"}' }));
+
+    expect(taskValues).toEqual([]);
+    expect(handed).toEqual([]);
+    expect(replies).toEqual([]);
+    expect(logs).toEqual([
+      "consumer delivery: dropping an undecodable task frame: a put whose data is no task value",
+    ]);
+  });
+
+  test("a closed delivery hands over no task value, and a host without a handler drops one", () => {
+    const closed = setup();
+    closed.delivery.close();
+    closed.delivery.receive(taskFrame({ revision: 12, task: 4 }));
+    expect(closed.taskValues).toEqual([]);
+    expect(closed.replies).toEqual([]);
+
+    const replies: Array<readonly [string, RelayReply]> = [];
+    const bare = createConsumerDelivery({
+      sessionID: SESSION,
+      host: { deliver: () => undefined, gap: () => undefined, log: () => undefined },
+      publish: (reply, body) => replies.push([reply, body]),
+      ledger: { delivered: () => false, liveFailed: async () => true },
+      persist: () => true,
+    });
+    bare.receive(taskFrame({ revision: 12, task: 4 }));
+    expect(replies).toEqual([]);
   });
 });
 

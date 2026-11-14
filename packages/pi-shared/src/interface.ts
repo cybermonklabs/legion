@@ -1,3 +1,4 @@
+import type { RelayTaskValue } from "@legion/envoy-client/consumer-delivery";
 import { logger } from "@oh-my-pi/pi-utils";
 import type { SessionUserTurns } from "./injected-user-turns";
 import type { LegionRoleClaimBridge } from "./role-claim-bridge";
@@ -16,7 +17,7 @@ import type { LegionRoleClaimBridge } from "./role-claim-bridge";
  * `task` subagent, so a per-instance callback stored here would be the last instance's, not the
  * pane's (docs/solutions/envoy/heartbeat-role-reassertion-and-regain-hooks.md).
  */
-export const ENVOY_PLUGIN_INTERFACE_VERSION = 5;
+export const ENVOY_PLUGIN_INTERFACE_VERSION = 6;
 export const ENVOY_PLUGIN_INTERFACE_KEY = Symbol.for("legion.pi-shared.envoy-plugin-interface");
 /** Set by the Legion entry's factory to `{ from: import.meta.url, envoyInterface: <version> }`;
  * the daemon's boot gate reads it from `globalThis` to prove the Legion plugin loaded. */
@@ -27,6 +28,28 @@ export const LEGACY_LEGION_LOADED_KEY = Symbol.for("legion.pi-envoy.legion-loade
  * defined in a leaf module (`./envoy-notice`) because the phase-stall check reads it and is
  * bundled by a host with no Oh My Pi, which this module's logger would drag in. */
 export { LOCAL_ENVOY_NOTICE } from "./envoy-notice";
+
+/**
+ * What the Envoy entry hands the Legion entry of a claim's task value (`taskValues`), for the
+ * session `session`, the one whose relay it came on: `value`, a task value a task frame relayed
+ * (`@legion/envoy-client/consumer-delivery`), or `epoch`, that session's relay beginning a new
+ * epoch, after which a frame relayed while it was not subscribed is lost, so the taker reads its
+ * claim's value from the daemon again.
+ */
+export type EnvoyTaskSignal =
+  | { readonly kind: "value"; readonly session: string; readonly value: RelayTaskValue }
+  | { readonly kind: "epoch"; readonly session: string };
+
+/** The claims' task values the Envoy entry publishes and the Legion entry takes. */
+export interface EnvoyTaskValues {
+  /**
+   * The Legion entry's taker of each signal (`src/task-values.ts`). One slot, as
+   * `roleClaim.regained` is: only the claim boot that establishes this process's Legion identity
+   * writes it, never an extension factory, so a `task` subagent's re-bound instance cannot
+   * replace the pane's taker. Undefined until a claim boot sets it; a signal then reaches nobody.
+   */
+  taker: ((signal: EnvoyTaskSignal) => void) | undefined;
+}
 
 export interface EnvoyPluginInterface {
   readonly version: number;
@@ -45,8 +68,9 @@ export interface EnvoyPluginInterface {
    * at `session_start`, since it claims and sends only from `/legion-controller-start`, which Oh My
    * Pi runs after its startup. Any claim that sends the operator's controller its start message to
    * an idle session marks it sent right before the send, and the daemon-launched controller marks
-   * it sent right before `claims/ready`, after which the daemon sends its start prompt. A start
-   * message queued as a follow-up behind a turn the operator already started marks nothing, since
+   * it sent right before `claims/ready`, after which the daemon writes the value of its start
+   * task, which that controller then takes. A start message queued as a follow-up behind a turn
+   * the operator already started marks nothing, since
    * that session's first run has already started and its `agent_start` cleared an unsent mark. It
    * is cleared once that session's first run starts or the session shuts down, and an unsent mark
    * once the start command's claim fails before the send or hands over to a new session. The Envoy
@@ -56,6 +80,19 @@ export interface EnvoyPluginInterface {
    * start turn.
    */
   startupTurn: { readonly session: string; readonly sentAt: number | undefined } | undefined;
+  /** The claims' task values: the Envoy entry publishes each one its relay hands over, and each
+   * new epoch of that relay; the Legion entry's claim takes them (`src/task-values.ts`). */
+  readonly taskValues: EnvoyTaskValues;
+  /**
+   * The session whose task's turn is pending, undefined while none is. The Legion entry's take
+   * (`src/task-take.ts`) sets it from the moment it holds a task value it will ask the daemon to
+   * take — the registration's value included, before the role is claimed — until the task's turn
+   * starts or the take is refused or dropped. The Envoy entry reads it
+   * (`packages/pi-envoy/src/card-wake.ts`): while it names the Envoy entry's own live session, a
+   * card that finds the session idle starts no turn, and the wake for it waits, so neither a card
+   * nor the lane kept for the role is the turn the task's take goes into.
+   */
+  taskTurnPending: { readonly session: string } | undefined;
 }
 
 type EnvoyPluginInterfaceReading =
@@ -100,6 +137,8 @@ export function envoyPluginInterface(): EnvoyPluginInterface {
     injectedUserTurns: new Map(),
     bootstrappedSession: { file: undefined },
     startupTurn: undefined,
+    taskValues: { taker: undefined },
+    taskTurnPending: undefined,
   };
   store[ENVOY_PLUGIN_INTERFACE_KEY] = created;
   return created;
