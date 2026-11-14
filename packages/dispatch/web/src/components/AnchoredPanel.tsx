@@ -26,6 +26,7 @@ export function AnchoredPanel({
   anchorRef,
   children,
   className,
+  flip = false,
   label,
   onDismiss,
   role,
@@ -34,10 +35,13 @@ export function AnchoredPanel({
   anchorRef: RefObject<HTMLElement | null>;
   children: ReactNode;
   className: string;
+  /** Opens above the anchor where the window has no room for the panel below it, rather than
+   *  over the anchor: a menu off a control near the window's foot. */
+  flip?: boolean;
   /** The panel's accessible name, for a panel that names itself. */
   label?: string;
   onDismiss: () => void;
-  role?: "dialog";
+  role?: "dialog" | "menu";
 }): ReactNode {
   const panelRef = useRef<HTMLDivElement>(null);
   const [position, setPosition] = useState({ left: 0, top: 0 });
@@ -70,10 +74,12 @@ export function AnchoredPanel({
         8,
         Math.min(align === "right" ? box.right - width : box.left, window.innerWidth - width - 8)
       );
-      const top = Math.max(
-        8,
-        Math.min(box.bottom + 4, window.innerHeight - (panelRef.current?.offsetHeight ?? 200) - 8)
-      );
+      const height = panelRef.current?.offsetHeight ?? 200;
+      const roomBelow = box.bottom + 4 + height <= window.innerHeight - 8;
+      const top =
+        flip && !roomBelow && box.top - 4 - height >= 8
+          ? box.top - 4 - height
+          : Math.max(8, Math.min(box.bottom + 4, window.innerHeight - height - 8));
       setPosition((current) =>
         current.left === left && current.top === top ? current : { left, top }
       );

@@ -8,9 +8,7 @@ import { submitOnModifiedEnter } from "../../hooks/submitOnModifiedEnter";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
 import {
   backdrop40,
-  borderDefault,
   card,
-  cardHoverBorder,
   dangerText,
   inputClasses,
   primaryButtonBg,
@@ -135,11 +133,12 @@ function DeclineDialog({
 
 /**
  * The person's **Decline to answer**: they close an open question with no answer, and Dispatch
- * tells the agent that asked to decide without one. It is drawn on an open question alone -
+ * tells the agent that asked to decide without one. It is offered on an open question alone -
  * an approval request is answered with Approve or Request changes, and the server refuses a
- * decline of one - and, since every surface that shows an ask shows `AskCard`, which draws this,
- * writing it here reaches all of them: the Inbox row, the reading pane, the Conversation, a
- * document's decision block, the margin and the Answers page.
+ * decline of one - and, since every surface that shows an ask shows `AskCard`, whose actions
+ * menu opens this, writing it here reaches all of them: the Inbox row, the reading pane, the
+ * Conversation, a document's decision block, the margin and the Answers page. The card owns
+ * whether the dialog is open (`open`, `onOpenChange`): the menu item, or the card's `n`.
  *
  * The write takes the row out of the Inbox the moment it goes, as the answer write does, so the
  * ask is held while the server decides it (`useOutstandingAnswerWrite`): the reading column keeps
@@ -152,15 +151,19 @@ export function DeclineControl({
   ask,
   decline,
   onDeclined,
+  onOpenChange,
+  open,
 }: {
   ask: Ask;
   decline: (id: string, input: DeclineAskInput, bounds: WriteBounds) => Promise<Ask>;
   /** Called once the server has recorded the decline, as an answer from this card calls it. */
   onDeclined?: (id: string) => void;
+  onOpenChange: (open: boolean) => void;
+  open: boolean;
 }): ReactNode {
   const queryClient = useQueryClient();
   const submitGuard = useSubmitGuard();
-  const [open, setOpen] = useState(false);
+  const setOpen = onOpenChange;
   // The dialog shows a refused decline itself, over the note it keeps, so the write is inline:
   // the shell's indicator carries it only while it is out.
   const write = useOutstandingAnswerWrite({
@@ -182,27 +185,15 @@ export function DeclineControl({
     },
   });
 
-  return (
-    <div className="mt-3">
-      <button
-        className={`min-h-11 rounded-lg border px-3 py-2 text-sm font-medium ${borderDefault} ${textSecondaryOnSurface} ${cardHoverBorder}`}
-        disabled={write.isPending}
-        onClick={() => setOpen(true)}
-        type="button"
-      >
-        {write.isPending ? "Declining…" : "Decline to answer"}
-      </button>
-      {open ? (
-        <DeclineDialog
-          error={write.isError ? write.error : null}
-          onClose={() => {
-            write.reset();
-            setOpen(false);
-          }}
-          onSubmit={(note) => submitGuard.guard(() => write.mutate(note === "" ? {} : { note }))}
-          saving={write.isPending}
-        />
-      ) : null}
-    </div>
-  );
+  return open ? (
+    <DeclineDialog
+      error={write.isError ? write.error : null}
+      onClose={() => {
+        write.reset();
+        setOpen(false);
+      }}
+      onSubmit={(note) => submitGuard.guard(() => write.mutate(note === "" ? {} : { note }))}
+      saving={write.isPending}
+    />
+  ) : null;
 }

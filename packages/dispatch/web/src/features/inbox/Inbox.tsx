@@ -46,7 +46,13 @@ import {
   parseInboxSearch,
 } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
-import { type KeymapScope, useKeymap, useKeymapScope } from "../shell/keymap";
+import {
+  DIALOG_SCOPE,
+  type KeyBinding,
+  type KeymapScope,
+  useKeymap,
+  useKeymapScope,
+} from "../shell/keymap";
 import { closestMatching, focusedMatching, roveFocus } from "../shell/roving";
 import { READING_PANE_QUERY, useMediaQuery } from "../shell/useDialog";
 import { ViewportAnchor } from "../shell/ViewportAnchor";
@@ -56,6 +62,7 @@ import { InboxOwnerLink, ThreadOwnerLine } from "./AskOwnerLink";
 import { AssignToMe } from "./AssignToMe";
 import { formatAskAge } from "./ask-age";
 import { outsideAskCard } from "./ask-card";
+import { useAskCardKeys } from "./ask-card-keys";
 import { type AskOrdinal, askOrdinals, controlName } from "./ask-name";
 import { askUrgency } from "./ask-urgency";
 import { BlockedOnYou, waitingOnHuman } from "./BlockedOnYou";
@@ -1160,6 +1167,59 @@ export function Inbox({
   // has no row to fall back through - is one level out rather than a dead end.
   const pickerOrigin = useRef<string | null>(null);
   useKeymapScope(keymapScope);
+  // The selected question's card takes its keys first: the `ask` scope stands above the list's
+  // own. The drawer is a dialog, which consults its own scope alone, so there the card's keys
+  // stay on it.
+  const cardScope: KeymapScope = keymapScope === DIALOG_SCOPE ? keymapScope : "ask";
+  useKeymapScope(cardScope === "ask" ? "ask" : null);
+  const cardLead: KeyBinding[] = [
+    {
+      id: "option",
+      keys: ["1", "2", "3", "4", "5", "6", "7", "8", "9"],
+      label: "Pick an option",
+      run: (event) => {
+        const options = answerHand()?.querySelectorAll<HTMLElement>("[data-ask-option]");
+        options?.[Number(event.key) - 1]?.click();
+      },
+      when: () => inAnswerHand("[data-ask-option]") !== null,
+    },
+    {
+      id: "answer",
+      keys: "Enter",
+      label: "Put the cursor in the answer box",
+      run: () => {
+        // A decision block's compact card folds its answer box behind "Add a note"; Enter
+        // presses that disclosure, and the card lands the focus in the box its own render
+        // reveals (`AskCard.tsx`) - the box does not exist in this tick, so nothing here could
+        // focus it. Only the column draws that compact card: from a row, and from a disclosure
+        // already open, the key goes straight to the box.
+        const box = inAnswerHand("[data-ask-answer]");
+        if (box === null && paneShown) {
+          inAnswerHand(NOTE_DISCLOSURE_SELECTOR)?.click();
+          return;
+        }
+        box?.focus();
+      },
+      // Enter is the list's key: it carries the reader from the row they are on into the
+      // column's answer box. Everywhere else the key belongs to the control that holds the
+      // focus - the card's own `Ask back instead` or an option inside the column, a row's owner
+      // link, a band's fold, the bulk-snooze bar, a filter control - and the registry's handler
+      // calls `preventDefault` for every binding that fires, so a binding that claimed the key
+      // there would press nothing. It fires from a row itself, and with the focus on nothing
+      // (`document.body`), where a reader who has pressed no key yet stands. `h` stands down
+      // inside an ask card for the same reason (`outsideAskCard`).
+      when: () =>
+        paneShown
+          ? (focusedRow() !== null || document.activeElement === document.body) &&
+            (inAnswerHand("[data-ask-answer]") !== null ||
+              inAnswerHand(NOTE_DISCLOSURE_SELECTOR) !== null)
+          : inAnswerHand("[data-ask-answer]") !== null,
+    },
+  ];
+  // In the `ask` scope the lead goes in with the card's other keys, in the help's order; in the
+  // drawer it stays on the dialog's scope, which is the one a dialog consults.
+  useAskCardKeys(answerHand, cardScope === "ask" ? cardLead : []);
+  useKeymap(cardScope, cardScope === "ask" ? [] : cardLead);
   useKeymap(keymapScope, [
     // Movement is what the arrow keys are for; a palette row that moves the cursor helps nobody.
     // With the reading column on, movement is the selection's: the column follows it, and the
@@ -1186,48 +1246,6 @@ export function Inbox({
       label: `Next / previous row while ${arrowsWhen}`,
       run: (event) => move(event.key === "ArrowDown" ? 1 : -1),
       when: arrowsMove,
-    },
-    {
-      id: "answer",
-      keys: "Enter",
-      label: `Answer the ${acted} ask`,
-      run: () => {
-        // A decision block's compact card folds its answer box behind "Add a note or answer in
-        // your own words"; Enter presses that disclosure, and the card lands the focus in the
-        // box its own render reveals (`AskCard.tsx`) - the box does not exist in this tick, so
-        // nothing here could focus it. Only the column draws that compact card: from a row, and
-        // from a disclosure already open, the key goes straight to the box.
-        const box = inAnswerHand("[data-ask-answer]");
-        if (box === null && paneShown) {
-          inAnswerHand(NOTE_DISCLOSURE_SELECTOR)?.click();
-          return;
-        }
-        box?.focus();
-      },
-      // Enter is the list's key: it carries the reader from the row they are on into the
-      // column's answer box. Everywhere else the key belongs to the control that holds the
-      // focus - the card's own `Ask back instead` or an option inside the column, a row's owner
-      // link, a band's fold, the bulk-snooze bar, a filter control - and the registry's handler
-      // calls `preventDefault` for every binding that fires, so a binding that claimed the key
-      // there would press nothing. It fires from a row itself, and with the focus on nothing
-      // (`document.body`), where a reader who has pressed no key yet stands. `h` stands down
-      // inside an ask card for the same reason (`outsideAskCard`).
-      when: () =>
-        paneShown
-          ? (focusedRow() !== null || document.activeElement === document.body) &&
-            (inAnswerHand("[data-ask-answer]") !== null ||
-              inAnswerHand(NOTE_DISCLOSURE_SELECTOR) !== null)
-          : inAnswerHand("[data-ask-answer]") !== null,
-    },
-    {
-      id: "option",
-      keys: ["1", "2", "3", "4", "5", "6", "7", "8", "9"],
-      label: `Select option 1–9 of the ${acted} ask`,
-      run: (event) => {
-        const options = answerHand()?.querySelectorAll<HTMLElement>("[data-ask-option]");
-        options?.[Number(event.key) - 1]?.click();
-      },
-      when: () => inAnswerHand("[data-ask-option]") !== null,
     },
     {
       id: "open",

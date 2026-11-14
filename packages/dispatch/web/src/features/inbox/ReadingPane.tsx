@@ -17,6 +17,7 @@ import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { borderDefault } from "../../theme/classes";
 import { versionsNewestFirst } from "../artifacts/ArtifactHeader";
 import { CHANGED_BLOCK_CLASS } from "../doc/change-marks";
+import { documentPlace } from "../doc/document-define";
 import { DocumentRuntime } from "../doc/runtime";
 import { loadBlockSchema } from "../doc/schema";
 import { scrollElementToTop } from "../doc/scroll-block";
@@ -322,7 +323,9 @@ function ApprovalBody({
               (artifact.versions ?? []).find((version) => version.number === latestVersion)
                 ?.created_at
             }
+            definePlace={documentPlace(artifact, latestVersion)}
             highlight={undefined}
+            keyScope="inbox"
             owner={
               artifact.issue_key === null
                 ? { project: artifact.project, slug: artifact.slug }

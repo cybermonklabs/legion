@@ -92,7 +92,7 @@ import {
 
 import { dispatchMarkPlugins, remarkDispatchMarksPlugin, dispatchMarkHandler } from './dispatch-marks';
 import type { MarkAction, RecordMarkPlacement, SelectionBarActionKind } from './dispatch-marks';
-import { commentOnSelection, dispatchActionBarPlugin, setAccess } from './dispatch-action-bar';
+import { commentOnSelection, defineSelection, dispatchActionBarPlugin, setAccess } from './dispatch-action-bar';
 import type { ProofEditorAccess } from './dispatch-action-bar';
 import { registerPopoverHookInstance } from './dispatch-popover-hook';
 import { dispatchMarkEventsPlugin } from './dispatch-mark-events';
@@ -174,6 +174,10 @@ export interface CreateProofEditorOptions {
    *  local mutation is applied for these — the host's server is expected to
    *  mutate and the change arrives back through the shared Y.Doc). */
   onMarkAction?: (action: MarkAction) => void | Promise<void>;
+  /** Offers Define on the selection bar, on every access, for a selection that holds text, and
+   *  is called when the reader presses it (or `defineSelection`). It writes nothing: the host
+   *  reads the selected words and their place on screen from the selection itself. */
+  onDefine?: () => void;
   /** Margin mode: report clicks and hover on mark spans and register neither
    *  the mark popover nor the arrow-comment plugin; the host renders threads
    *  itself. */
@@ -248,6 +252,10 @@ export interface ProofEditorHandle extends TypedBlockCommands {
    *  does, `onMarkAction` included, and answers whether it did: false for an empty selection and
    *  while the document is read-only and takes no comments, where the bar offers no Comment. */
   commentOnSelection(): boolean;
+  /** Defines the current selection exactly as the selection bar's Define button does, `onDefine`
+   *  included, and answers whether it did: false for a selection that holds no text and for an
+   *  editor given no `onDefine`. */
+  defineSelection(): boolean;
   /** Scrolls a mark's anchor into view and pulses it. Works for both the
    *  unified marks system and dispatchAsk marks: both render `data-id`. */
   focusMark(markId: string): void;
@@ -439,10 +447,10 @@ export async function createProofEditor(
   }
 
   const editor = await builder
-    // This library's own Comment/Suggest/Ask bar replaces upstream's
+    // This library's own Comment/Suggest/Ask/Define bar replaces upstream's
     // markSelectionBarPlugin, which has no extension point for Ask or a hook
     // for Comment/Suggest.
-    .use(dispatchActionBarPlugin({ by: opts.user.name, onMarkAction: opts.onMarkAction }))
+    .use(dispatchActionBarPlugin({ by: opts.user.name, onMarkAction: opts.onMarkAction, onDefine: opts.onDefine }))
     .use(findHighlightsPlugin)
     .use(taskCheckboxesPlugin)
     .use(mermaidCodeBlockPlugin(opts.drawMermaid))
@@ -615,6 +623,10 @@ export async function createProofEditor(
     commentOnSelection(): boolean {
       if (view.isDestroyed) return false;
       return commentOnSelection(view);
+    },
+    defineSelection(): boolean {
+      if (view.isDestroyed) return false;
+      return defineSelection(view);
     },
     focusMark(markId: string): void {
       const escaped = cssEscapeAttrValue(markId);

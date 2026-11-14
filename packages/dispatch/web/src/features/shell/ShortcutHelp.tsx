@@ -43,6 +43,7 @@ function keyTokens(keys: string): { key: string; token: string }[] {
 const SCOPE_LABELS: Record<KeymapScope, string> = {
   agents: "Agents",
   architecture: "Architecture",
+  ask: "Ask card",
   board: "Board",
   dialog: "Dialog",
   document: "Document",
@@ -53,11 +54,14 @@ const SCOPE_LABELS: Record<KeymapScope, string> = {
 };
 
 /**
- * Section order in `?`: the shell's own scope, then page scopes outermost first, then dialogs.
- * Registration order would do, except React runs child layout effects first, so a page that
- * mounts straight into its Board would list `board` above `project`.
+ * Section order in `?`: the ask card's keys first, since a card in hand is what the reader acts
+ * on and its scope takes a key before any other; then the shell's own scope, then page scopes
+ * outermost first, then dialogs. Registration order would do, except React runs child layout
+ * effects first, so a page that mounts straight into its Board would list `board` above
+ * `project`.
  */
 const SCOPE_ORDER: readonly KeymapScope[] = [
+  "ask",
   "global",
   "project",
   "architecture",

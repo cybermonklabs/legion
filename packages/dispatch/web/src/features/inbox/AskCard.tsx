@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   type ReactNode,
   useCallback,
@@ -11,14 +11,14 @@ import {
 } from "react";
 
 import { type ArtifactOwner, api, type DeclineAskInput, type WriteBounds } from "../../api/client";
-import { usersQuery } from "../../api/queries";
+import { inboxQuery, whoAmIQuery } from "../../api/queries";
 import type {
   AnswerAskInput,
   Ask,
   AskRead,
-  AskUrgency,
   Comment,
   CreateCommentInput,
+  InboxRow,
 } from "../../api/types";
 import { CopyButton } from "../../components/CopyButton";
 import { ChevronIcon } from "../../components/DisclosureToggle";
@@ -27,12 +27,8 @@ import { TruncatedText } from "../../components/TruncatedText";
 import { submitOnModifiedEnter } from "../../hooks/submitOnModifiedEnter";
 import { compareTimestamps } from "../../lib/timestamps";
 import {
+  askQuestionProse,
   askUrgencyAccent,
-  badgeBlocking,
-  badgeHigh,
-  badgeLow,
-  badgeMed,
-  badgePrimary,
   borderDefault,
   card,
   cardHoverBorder,
@@ -43,14 +39,12 @@ import {
   primaryButtonBg,
   primaryButtonDisabled,
   primaryButtonEnabledHoverBg,
-  surfaceBg,
   textMutedHoverToSecondary,
   textMutedOnSurface,
   textPrimaryOnSurface,
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { appendToDraft, DraftUploadStatus, useDraftUpload } from "../artifacts/ArtifactUpload";
-import { badgeSelectBadge, badgeSelectOverlay, badgeSelectWrapper } from "../issue/badge-select";
 import { AgentName, useAgentText } from "../refs/AgentName";
 import { CopyRefButton } from "../refs/CopyRefButton";
 import { MarkdownBody } from "../refs/MarkdownBody";
@@ -58,6 +52,7 @@ import { ReferencedBy, ReferencedByToggle } from "../refs/ReferencedBy";
 import { buildDispatchReference, itemRoute } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
+import { useKeymapScope } from "../shell/keymap";
 import { composerFirst } from "../threads/thread-layout";
 import { useThreadOrder } from "../threads/thread-order";
 import { askRepliesOwner, useMarkThreadRead } from "../threads/useMarkThreadRead";
@@ -70,20 +65,31 @@ import {
   type AskFrame,
   OrphanedAnchorNotice,
 } from "./AskCompletionCard";
+import { AskHandOnPicker } from "./AskHandOnPicker";
 import { AskChoiceRow } from "./AskOptionRow";
-import { AskRecipients } from "./AskRecipients";
+import { AskRewriteBadge } from "./AskRewriteBadge";
+import { type AskMenuItem, AskSplitButton } from "./AskSplitButton";
 import { AskThread } from "./AskThread";
 import { AskThreadDisclosure } from "./AskThreadDisclosure";
+import {
+  type AskCardActions,
+  askCardLeadKeys,
+  registerAskCard,
+  useAskCardKeys,
+} from "./ask-card-keys";
 import type { OwnedAsk } from "./ask-name";
+import { askRewrite, rewriteAsk } from "./ask-rewrite";
 import { askTurnHolder } from "./ask-turn";
 import { askUrgency, URGENCY_LABELS } from "./ask-urgency";
 import { DeclineControl } from "./DeclineControl";
+import { DefinePopover, type SelectedWords, selectedWordsIn } from "./DefinePopover";
 import { EarlierApproval } from "./EarlierApproval";
 import { AskHandOnLiveContext } from "./hand-on-live";
 import { askWaitingOnPerson } from "./list-row";
+import { invalidateOwnerReads } from "./owner-reads";
 import { clearReplyDraft } from "./reply-drafts";
 import { useAskAnswerForm } from "./useAskAnswerForm";
-import { useAskHandOn } from "./useAskHandOn";
+import { type AskHandOnWrite, useAskHandOn } from "./useAskHandOn";
 
 const answerAsk = (id: string, input: AnswerAskInput, bounds: WriteBounds): Promise<Ask> =>
   api.answerAsk(id, input, bounds);
@@ -152,14 +158,6 @@ export interface AskCardProps {
   currentReplyId?: string;
 }
 
-/** The urgency notch's text colour, matching the urgency badge of the same level. */
-const URGENCY_NOTCH_TEXT: Record<AskUrgency, string> = {
-  blocking: badgeBlocking.text,
-  high: badgeHigh.text,
-  low: badgeLow.text,
-  med: badgeMed.text,
-};
-
 /** Moves focus from inside the form to the nearest focusable ancestor (in the Inbox, the row, so
  *  j/k/Escape still start from the same place) instead of letting it fall to the document body. */
 function handOffFocus(form: HTMLElement): void {
@@ -192,45 +190,27 @@ function useFormRef(): [
 }
 
 /**
- * Who an open ask waits on, and the one control that hands it to somebody else. It sits in the
- * card rather than in the Inbox, so every surface that draws an open ask has it: the Inbox row
- * and its reading pane, the issue page, a document's margin, a document's ask block and
- * `ThreadBody`.
+ * The hand-on write of an open ask, which the card's **Hand this question to…** makes: the
+ * menu item, or `a`, opens the people picker (`AskHandOnPicker`), and the card names whom the
+ * question waits on in the line under it. The person is the server's own answer
+ * (`waiting_on_person`: whoever the ask was handed to, else the assignee of its issue, else the
+ * default assignee of its project, which every project names).
  *
- * The badge is the server's own answer (`waiting_on_person`: whoever the ask was handed to,
- * else the assignee of its issue, else the default assignee of its project, which every project
- * names), and the picker over it is the same
- * invisible native `<select>` the assignee and priority pickers use, so the menu is one tap on
- * a phone and one keyboard interaction on a desktop. Its people are everyone who has signed in
- * (`usersQuery`, read only once the reader reaches for the control and then kept for the
- * session), with the assignee of the ask's own issue offered first where the card has it -
- * `assignee` is the Inbox row's `issue.assignee`, the one read that hydrates the issue, and
- * null on every other surface - since handing the ask back to them is what empties the stored
- * field and lets the ask follow its issue again. Where it is null that person is still in the
- * people list, under their own login: the named choice is a label, not the only way to pick
- * them, and the control's own value comes from the ask itself.
- *
- * Under it, where somebody has already handed the ask on, who did it and when
- * (`asked_of_by`, `asked_of_at`). A refusal shows the server's reason with Retry where the
- * reader pressed it, as `AssignToMe` and `SnoozeControl` do - and, as those two do, it asks
- * the list drawing it to hold the ask while that write is live (pending or failed), because
- * the optimistic `waiting_on_person` takes the row out of the Inbox's own list the moment the
- * write starts (`isMine`, `inAssigneeFilter`): without the hold this card would be unmounted
- * before the server answered, and a refusal would put the row back with a fresh card that
- * never failed, so the reader would see it return and no reason. The hold comes from the list
- * itself, through the context it provides (`hand-on-live.ts`), rather than from a prop every
- * host passes down: the card the reader pressed can be one the Inbox never rendered itself -
- * the decision block its reading column draws through the document page - and a prop that
- * path does not carry is a hold that path does not get. What the list does with the request
- * is the list's own: it holds an ask it already listed a row for and ignores one it did not,
- * since a card can be drawn inside a list that lists no row for its ask - a Reply-thread
- * card, a sibling ask block - and holding that ask would pull it into the reader's list. A
- * card drawn where no list can drop it registers with nobody.
+ * A refusal shows the server's reason with Retry under that line, as `AssignToMe` and
+ * `SnoozeControl` do - and, as those two do, the card asks the list drawing it to hold the ask
+ * while that write is live (pending or failed), because the optimistic `waiting_on_person` takes
+ * the row out of the Inbox's own list the moment the write starts (`isMine`,
+ * `inAssigneeFilter`): without the hold this card would be unmounted before the server
+ * answered, and a refusal would put the row back with a fresh card that never failed, so the
+ * reader would see it return and no reason. The hold comes from the list itself, through the
+ * context it provides (`hand-on-live.ts`), rather than from a prop every host passes down: the
+ * card the reader pressed can be one the Inbox never rendered itself - the decision block its
+ * reading column draws through the document page - and a prop that path does not carry is a
+ * hold that path does not get. What the list does with the request is the list's own: it holds
+ * an ask it already listed a row for and ignores one it did not. A card drawn where no list can
+ * drop it registers with nobody.
  */
-function AskHandOn({ ask, assignee }: { ask: Ask; assignee: string | null }): ReactNode {
-  const [wanted, setWanted] = useState(false);
-  const people = useQuery({ ...usersQuery(), enabled: wanted });
-  const want = () => setWanted(true);
+function useHeldHandOn(ask: Ask): AskHandOnWrite {
   const write = useAskHandOn(ask);
   const onLive = useContext(AskHandOnLiveContext);
   const live = write.pending || write.failed;
@@ -239,86 +219,7 @@ function AskHandOn({ ask, assignee }: { ask: Ask; assignee: string | null }): Re
     onLive(ask.id, true);
     return () => onLive(ask.id, false);
   }, [ask.id, live, onLive]);
-  const waitingOn = askWaitingOnPerson(ask) ?? "";
-  // The list is drawn only once the reader reaches for the control, as it is read: the query
-  // keeps its people for the session, so a card that built its options from whatever another
-  // control had already fetched would draw one `<option>` per signed-in person for every open
-  // ask on the page.
-  const logins = (wanted ? (people.data ?? []) : [])
-    .map((user) => user.login)
-    .filter((login) => login !== assignee);
-  // Whoever holds the ask stays selectable even where the people list does not carry them (it
-  // is unread until the reader reaches for the control), so the select never shows a value its
-  // options lack.
-  const others =
-    waitingOn === "" || waitingOn === assignee || logins.includes(waitingOn)
-      ? logins
-      : [waitingOn, ...logins];
-  const handedOnBy = ask.asked_of_by ?? "";
-  const handedOnAt = ask.asked_of_at ?? null;
-  const tone = waitingOn === "" ? badgeLow : badgePrimary;
-  return (
-    <div
-      className={`mt-1.5 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs ${textMutedOnSurface}`}
-    >
-      <span className={badgeSelectWrapper}>
-        <span aria-hidden="true" className={`${badgeSelectBadge} ${tone.bg} ${tone.text}`}>
-          {write.pending
-            ? "Handing on…"
-            : waitingOn === ""
-              ? "Asked of nobody"
-              : `Asked of ${waitingOn}`}
-        </span>
-        <select
-          aria-label="Hand this question to"
-          className={badgeSelectOverlay}
-          data-ask-hand-on={ask.id}
-          onChange={(event) => {
-            const { value } = event.target;
-            if (value !== "") write.submit(value);
-          }}
-          onFocus={want}
-          onMouseDown={(event) => event.stopPropagation()}
-          onPointerDown={(event) => event.stopPropagation()}
-          onPointerEnter={want}
-          onTouchStart={(event) => {
-            event.stopPropagation();
-            want();
-          }}
-          value={waitingOn}
-        >
-          {/* Selected only where the server names no person, which only a Dispatch older than
-              every project naming a default answers. Nobody is not a pick: the route takes a
-              person's email and refuses anything else. */}
-          <option disabled value="">
-            Nobody
-          </option>
-          {assignee === null ? null : (
-            <option value={assignee}>{assignee} (the issue's assignee)</option>
-          )}
-          {others.map((login) => (
-            <option key={login} value={login}>
-              {login}
-            </option>
-          ))}
-        </select>
-      </span>
-      {handedOnBy === "" || handedOnAt === null ? null : (
-        <span>
-          handed on by {handedOnBy} <Timestamp at={handedOnAt} />
-        </span>
-      )}
-      {write.failed ? (
-        <span className="basis-full">
-          <QueryError
-            message={write.error ?? "Could not hand this question on."}
-            onRetry={write.retry}
-            retrying={write.pending}
-          />
-        </span>
-      ) : null}
-    </div>
-  );
+  return write;
 }
 
 export function AskCard({
@@ -460,6 +361,114 @@ export function AskCard({
       handOffFocus(form);
     }
   });
+  // The card's other actions, behind the split button's chevron and on the card's keys: Rewrite,
+  // Define, Ask back, Hand this question to and Decline to answer (`e2e/ask-card-demo/README.md`).
+  const queryClient = useQueryClient();
+  const viewer = useQuery(whoAmIQuery()).data?.login;
+  const articleRef = useRef<HTMLElement | null>(null);
+  const actionsRef = useRef<HTMLDivElement>(null);
+  const [menuOpen, setMenuOpen] = useState(false);
+  // Define reads the words selected when the menu opened: the menu's own focus may draw the
+  // selection as inactive, and a press on an item must still find it.
+  const [menuSelection, setMenuSelection] = useState<SelectedWords | null>(null);
+  const [handOnOpen, setHandOnOpen] = useState(false);
+  const [declineOpen, setDeclineOpen] = useState(false);
+  const [askingBack, setAskingBack] = useState(false);
+  const [showingOriginal, setShowingOriginal] = useState(false);
+  const [definition, setDefinition] = useState<SelectedWords | null>(null);
+  const [focusWithin, setFocusWithin] = useState(false);
+  const handOn = useHeldHandOn(displayedAsk);
+  const rewrite = askRewrite(displayedAsk);
+  const rewriting = useMutation({
+    mutationFn: () => rewriteAsk(displayedAsk.id),
+    onSuccess: (rewritten) => {
+      // The card shows the rewrite at once: the thread it reads and the Inbox row it was drawn
+      // from both take the ask the route answered, and every owner list reads it again.
+      queryClient.setQueryData<AskRead>(["ask-thread", displayedAsk.id], (current) =>
+        current === undefined ? undefined : { ...current, ask: rewritten }
+      );
+      queryClient.setQueriesData<InboxRow[]>({ queryKey: inboxQuery().queryKey }, (rows) =>
+        rows?.map((row) => (row.id === rewritten.id ? { ...row, ...rewritten } : row))
+      );
+      invalidateOwnerReads(queryClient, displayedAsk);
+    },
+  });
+  const rewriteRunning = rewriting.isPending || rewrite?.state === "running";
+  // A rewrite the route itself refused stands as a failed one, with the route's reason.
+  const shownRewrite =
+    rewriting.isError && !rewriting.isPending
+      ? {
+          at: new Date().toISOString(),
+          by: "person" as const,
+          original: { options: [], question: displayedAsk.question },
+          reason: rewriting.error.message,
+          state: "failed" as const,
+        }
+      : rewrite;
+  const original =
+    showingOriginal && shownRewrite?.state === "done" ? shownRewrite.original : undefined;
+  const startRewrite = () => {
+    if (isApproval || rewriteRunning) return;
+    setShowingOriginal(false);
+    rewriting.mutate();
+  };
+  const startAskBack = () => {
+    setQuestionChoice(false);
+    setAskingBack(true);
+    if (isCompact) setOwnWordsOpen(true);
+  };
+  const stopAskingBack = () => {
+    if (!askingBack) return false;
+    setAskingBack(false);
+    return true;
+  };
+  useEffect(() => {
+    if (askingBack) answerFieldRef.current?.focus();
+  }, [askingBack]);
+  useEffect(() => {
+    if (clarification.isSuccess) setAskingBack(false);
+  }, [clarification.isSuccess]);
+  /** The words the reader selected in the card's question or options, outside any field. */
+  const selectionInCard = () => {
+    const active = document.activeElement;
+    if (active instanceof HTMLTextAreaElement || active instanceof HTMLInputElement) {
+      if (active.type !== "radio" && active.type !== "checkbox") return null;
+    }
+    return selectedWordsIn(articleRef.current);
+  };
+  const openDefine = (picked: SelectedWords | null) => {
+    if (picked === null) return false;
+    setDefinition(picked);
+    return true;
+  };
+  const changeMenuOpen = (open: boolean) => {
+    if (open) setMenuSelection(selectionInCard());
+    setMenuOpen(open);
+  };
+  const declinable = displayedAsk.state === "open" && displayedAsk.kind === "question";
+  // Registered again on every commit, so the keys always reach this render's state.
+  useLayoutEffect(() => {
+    const element = articleRef.current;
+    if (element === null || displayedAsk.state !== "open") return undefined;
+    const actions: AskCardActions = {
+      askBack: startAskBack,
+      decline: declinable ? () => setDeclineOpen(true) : undefined,
+      define: () => openDefine(selectionInCard()),
+      handOn: () => setHandOnOpen(true),
+      hasSelection: () => selectionInCard() !== null,
+      rewrite: isApproval ? undefined : startRewrite,
+      send: () => formRef.current?.requestSubmit(),
+      stopAskingBack,
+      toggleOriginal:
+        shownRewrite?.state === "done" ? () => setShowingOriginal((shown) => !shown) : undefined,
+    };
+    return registerAskCard(element, actions);
+  });
+  // Off the Inbox, the card in hand is the one holding the focus: its keys act while it does.
+  useKeymapScope(focusWithin ? "ask" : null);
+  const cardInHand = () => (focusWithin ? articleRef.current : null);
+  useAskCardKeys(cardInHand, askCardLeadKeys(cardInHand));
+  const waitingOnPerson = askWaitingOnPerson(displayedAsk) ?? "";
   const submitHintId = `${answerFieldId}-hint`;
   const agentText = useAgentText();
   // The asker as its button's tooltip: a block ask the server indexed with no pending author
@@ -477,7 +486,6 @@ export function AskCard({
   const sessionTitle = sessionAuthor?.origin?.session_title?.trim();
   const tmuxTarget = sessionAuthor?.origin?.tmux;
   const urgency = askUrgency(displayedAsk.urgency);
-  const hasUrgencyNotch = !inBlock && (urgency === "blocking" || urgency === "high");
   // The thread's own "still open?" wording must track the post-answer ask, not the possibly
   // stale prop passed to this instance: `completed` renders before an invalidated `ask` prop
   // round-trips down from the parent.
@@ -491,6 +499,18 @@ export function AskCard({
   // a backlink count, and the answer response is the one ask shape that carries no count.
   const referencedByCount = displayedAsk.referenced_by_count ?? 0;
   const turnHolder = askTurnHolder(currentAsk, (threadQuery.data?.replies ?? []).at(-1));
+  // Whose turn it is, named only where it is not the reader's own question: an agent's, or a
+  // person's the question was handed to.
+  const turnLabel: ReactNode =
+    turnHolder === null ? null : handOn.pending ? (
+      "Handing on…"
+    ) : turnHolder !== "you" ? (
+      <>
+        Waiting on <AgentName actor={turnHolder} inline />
+      </>
+    ) : waitingOnPerson === "" || waitingOnPerson === viewer ? null : (
+      `Waiting on ${waitingOnPerson}`
+    );
   // The thread's newest write the card shows, which the shared thread read mark watches and
   // reads through: the newest reply, unless the record's answer came after it (an answer is a
   // write like a reply).
@@ -572,8 +592,9 @@ export function AskCard({
           {reasonRequired ? "Reason (required)" : isApproval ? "Reason" : "Your answer"}
         </span>
         <textarea
-          className={`block w-full rounded-lg px-3 py-2 font-normal outline-none ${inputClasses(true)}`}
+          className={`block w-full rounded-lg border px-3 py-2 text-base font-normal outline-none sm:text-sm ${inputClasses(true)}`}
           data-ask-answer=""
+          data-asking-back={askingBack}
           disabled={isSubmitting}
           id={answerFieldId}
           onChange={(event) => {
@@ -583,11 +604,18 @@ export function AskCard({
           onDrop={
             uploadOwner === undefined ? undefined : (event) => upload.drop(event, uploadOwner)
           }
-          onKeyDown={(event) => submitOnModifiedEnter(event, { disabled: uploading })}
+          onKeyDown={(event) => {
+            if (event.key === "Escape" && askingBack) {
+              event.preventDefault();
+              stopAskingBack();
+              return;
+            }
+            submitOnModifiedEnter(event, { disabled: uploading });
+          }}
           onPaste={
             uploadOwner === undefined ? undefined : (event) => upload.paste(event, uploadOwner)
           }
-          placeholder={answerPlaceholder}
+          placeholder={askingBack ? "Ask a question back" : answerPlaceholder}
           ref={answerFieldRef}
           rows={2}
           value={answerText}
@@ -596,7 +624,55 @@ export function AskCard({
       <DraftUploadStatus upload={upload} />
     </>
   );
-  const submitButton = (
+  // The menu in the shortcut help's order: what the reader does with the question, the way out
+  // of it, and last Define, which acts on words they select.
+  const menuGroups: AskMenuItem[][] =
+    displayedAsk.state !== "open"
+      ? []
+      : [
+          [
+            ...(isApproval
+              ? []
+              : [
+                  {
+                    hotkey: "r",
+                    id: "rewrite",
+                    label: "Rewrite",
+                    refused: rewriteRunning ? "A rewrite is running" : undefined,
+                    run: startRewrite,
+                  },
+                ]),
+            askingBack
+              ? { hotkey: "Esc", id: "ask-back", label: "Answer instead", run: stopAskingBack }
+              : { hotkey: "b", id: "ask-back", label: "Ask back", run: startAskBack },
+            {
+              hotkey: "a",
+              id: "hand-on",
+              label: "Hand this question to…",
+              run: () => setHandOnOpen(true),
+            },
+          ],
+          declinable
+            ? [
+                {
+                  hotkey: "n",
+                  id: "decline",
+                  label: "Decline to answer",
+                  run: () => setDeclineOpen(true),
+                },
+              ]
+            : [],
+          [
+            {
+              hotkey: "d",
+              id: "define",
+              label: "Define selected words",
+              refused: menuSelection === null ? "Select words in the question first" : undefined,
+              run: () => openDefine(menuSelection),
+            },
+          ],
+        ];
+  const submitButton = changing ? (
     <button
       aria-describedby={submitHint === undefined ? undefined : submitHintId}
       className={`min-h-11 rounded-lg px-3 py-2 text-sm font-semibold ${primaryButtonBg} ${primaryButtonEnabledHoverBg} ${primaryButtonDisabled}`}
@@ -604,14 +680,30 @@ export function AskCard({
       title={submitHint}
       type="submit"
     >
-      {mutation.isPending
-        ? changing
-          ? "Saving…"
-          : "Answering…"
-        : changing
-          ? "Save answer"
-          : "Answer"}
+      {mutation.isPending ? "Saving…" : "Save answer"}
     </button>
+  ) : (
+    <div className="inline-flex" ref={actionsRef}>
+      <AskSplitButton
+        action={
+          askingBack
+            ? clarification.isPending
+              ? "Sending…"
+              : "Ask back"
+            : mutation.isPending
+              ? "Answering…"
+              : "Answer"
+        }
+        actionDescribedBy={submitHint === undefined ? undefined : submitHintId}
+        actionRefused={
+          isSubmitting || uploading || (askingBack ? trimmedAnswer === "" : !canAnswer)
+        }
+        actionTitle={submitHint}
+        groups={menuGroups}
+        menuOpen={menuOpen}
+        onMenuOpenChange={changeMenuOpen}
+      />
+    </div>
   );
   const submitHintNode =
     submitHint === undefined ? null : (
@@ -652,16 +744,7 @@ export function AskCard({
           >
             Cancel
           </button>
-        ) : (
-          <button
-            className={`min-h-11 rounded-lg border px-3 py-2 text-sm font-medium ${borderDefault} ${textSecondaryOnSurface} ${cardHoverBorder}`}
-            disabled={trimmedAnswer === "" || isSubmitting || uploading}
-            onClick={sendClarification}
-            type="button"
-          >
-            {clarification.isPending ? "Sending…" : "Ask back"}
-          </button>
-        )}
+        ) : null}
       </div>
       {submitHintNode}
     </div>
@@ -707,7 +790,7 @@ export function AskCard({
       className={
         inBlock
           ? "relative mt-3"
-          : `relative rounded-xl border-l-4 shadow-sm ${isCompact ? "px-3 pt-4 pb-3" : "px-4 pt-5 pb-4"} ${hasUrgencyNotch ? "mt-3" : ""} ${card} ${askUrgencyAccent[urgency]}`
+          : `relative rounded-xl border-l-4 shadow-sm ${isCompact ? "px-3 pt-3 pb-3" : "px-4 pt-4 pb-4"} ${card} ${askUrgencyAccent[urgency]}`
       }
       // The one handle on a card as a whole, carrying the question the card draws: a page-level
       // key that must not fire while the reader is answering an ask (the issue page's priority
@@ -716,15 +799,19 @@ export function AskCard({
       // `Inbox.tsx`). Neither asks for a test id.
       data-ask-card={displayedAsk.id}
       data-testid={`ask-${displayedAsk.id}`}
+      onBlur={(event) => {
+        if (
+          !(
+            event.relatedTarget instanceof Node && event.currentTarget.contains(event.relatedTarget)
+          )
+        )
+          setFocusWithin(false);
+      }}
+      onFocus={() => setFocusWithin(true)}
+      ref={articleRef}
     >
-      {hasUrgencyNotch ? (
-        <span
-          aria-hidden="true"
-          className={`absolute -top-2 left-3 rounded px-1.5 text-[10px] leading-4 font-semibold tracking-wide uppercase ${surfaceBg} ${URGENCY_NOTCH_TEXT[urgency]}`}
-        >
-          {URGENCY_LABELS[urgency].toUpperCase()}
-        </span>
-      ) : null}
+      {/* The urgency is the card's leading rule alone (and its label for a screen reader): the
+          row that opens it already names the urgency in words. */}
       <AskAnchorHeader ask={displayedAsk} inBlock={inBlock} quoteSpacing="roomy" tone="surface" />
       <OrphanedAnchorNotice artifactSlug={artifactSlug} ask={displayedAsk} />
       {inBlock ||
@@ -736,59 +823,33 @@ export function AskCard({
         </p>
       )}
       <div>
-        {isApproval ? (
-          <p className={`text-[10px] font-semibold uppercase tracking-wide ${textMutedOnSurface}`}>
-            Approval requested
-          </p>
-        ) : null}
-        {isApproval && documentLink ? (
-          <p className={`mt-1 text-sm ${linkText} ${linkHoverText}`}>
-            <AskApprovalLink ask={displayedAsk} />
-          </p>
-        ) : null}
-        {inBlock ? null : (
-          <div className={`text-[15px] leading-relaxed font-medium ${textPrimaryOnSurface}`}>
-            <MarkdownBody
-              markdown={displayedAsk.question}
-              source={source}
-              tree={displayedAsk.question_tree}
-            />
-          </div>
-        )}
-        {/* A request to approve again names the approval it follows, under the question (the
-            spec's own placement), with the diff from that version behind Show diff; a first
-            request carries no earlier approval, and EarlierApproval renders nothing for it. */}
-        {displayedAsk.approval === undefined ? null : (
-          <EarlierApproval approval={displayedAsk.approval} />
-        )}
-        {/* One provenance line under the question, in the spec's decided conversation grammar:
-            whose turn it is (the only part a reader acts on), who asked, when, and the ask's
-            own reference. The session's own handles - its ID, its title, its tmux target - are
-            chrome a reader wants perhaps once a week, so they fold behind the author chip and
-            open onto their own row. That keeps the line inside the card at 390 px and in a
-            280 px margin, where a single row could not hold five copy controls without pushing
-            the reference out of reach. */}
+        {/* One provenance line, above the question as a message's sender is: whose turn it is
+            where it is not the reader's own, who asked, when, the rewrite's badge, and the ask's
+            own reference at the line's end. Above the question it stays where it is when the
+            badge swaps the wording in place, so the badge is pressed back where it was pressed.
+            The session's own handles - its ID, its title, its tmux target - are chrome a reader
+            wants perhaps once a week, so they fold behind the author chip and open onto their
+            own row. The names are the parts that give up width: a separator that wrapped left a
+            line opening - or ending - on a bare "·". A block ask the server indexed with no
+            pending author has an empty label and still says when it was asked. The reader's own
+            question is waiting on them wherever it is drawn, so "Waiting on you" is a line they
+            do not need and the turn is named only where it is somebody else's. */}
         <div
-          className={`@container mt-1.5 flex flex-wrap items-center gap-x-1.5 text-xs ${textMutedOnSurface}`}
+          // One line, whose names truncate before the copy control wraps away from it; the
+          // session's handles, once opened, take a row of their own beneath it.
+          className={`mb-1.5 flex items-center gap-x-1.5 text-xs ${handlesOpen ? "flex-wrap" : ""} ${textMutedOnSurface}`}
         >
-          {/* Turn, author and time are one group whose names truncate: a separator that wrapped
-              left a line opening - or ending - on a bare "·", and the agents are the only parts
-              that can give up width ("Waiting on you" never does). Below 24rem of line (a phone,
-              a margin) the turn takes a line of its own with no separator after it, and the
-              asker and time share the next: beside the turn and the live link's 44 px touch box
-              the asker's name kept only two letters. A block ask the server indexed with no
-              pending author has an empty label and still says when it was asked. */}
-          <span className="flex min-w-0 items-center gap-x-1.5 whitespace-nowrap @max-sm:flex-wrap">
-            {turnHolder === null ? null : (
+          <span className="flex min-w-0 items-center gap-x-1.5 whitespace-nowrap">
+            {turnLabel === null ? null : (
               <span
-                className={`${turnHolder === "you" ? "shrink-0" : "min-w-0 truncate"} font-semibold @max-sm:basis-full ${textSecondaryOnSurface}`}
+                className={`min-w-0 truncate font-semibold ${textSecondaryOnSurface}`}
                 data-testid={`turn-${displayedAsk.id}`}
               >
-                Waiting on {turnHolder === "you" ? "you" : <AgentName actor={turnHolder} inline />}
+                {turnLabel}
               </span>
             )}
-            {turnHolder === null ? null : (
-              <span className="shrink-0 @max-sm:hidden" aria-hidden="true">
+            {turnLabel === null ? null : (
+              <span className="shrink-0" aria-hidden="true">
                 ·
               </span>
             )}
@@ -830,7 +891,20 @@ export function AskCard({
               <Timestamp at={displayedAsk.created_at} />
             </span>
           </span>
-          {reference === undefined ? null : <CopyRefButton route={reference} />}
+          {isApproval ? null : (
+            <AskRewriteBadge
+              onRetry={startRewrite}
+              onToggle={() => setShowingOriginal((shown) => !shown)}
+              rewrite={shownRewrite}
+              running={rewriting.isPending}
+              showingOriginal={showingOriginal}
+            />
+          )}
+          {reference === undefined ? null : (
+            <span className="ml-auto shrink-0">
+              <CopyRefButton route={reference} />
+            </span>
+          )}
           {!handlesOpen ? null : (
             <span className="flex basis-full flex-wrap items-center gap-x-1.5">
               {sessionAuthor === undefined ? null : (
@@ -851,16 +925,44 @@ export function AskCard({
             </span>
           )}
         </div>
-        {/* Whose question it is now, and the one control that hands it to somebody else. An
-            ask that is not open waits on nobody, so it has none: a card whose ask is answered,
-            resolved or withdrawn draws its record instead, and the one case that reaches here
-            is a reader changing the answer of a closed ask. The ask is the fresher read and
-            the issue is the card's own prop: only an Inbox row carries one, and the ask reads
-            do not. */}
-        {displayedAsk.state === "open" ? (
-          <AskHandOn ask={displayedAsk} assignee={ask.issue?.assignee ?? null} />
+        {/* An approval request names the document and version it asks for, as a link: the
+            question under it begins "Approve", so no label repeats that it is one. */}
+        {isApproval && documentLink ? (
+          <p className={`mb-1 text-sm ${linkText} ${linkHoverText}`}>
+            <AskApprovalLink ask={displayedAsk} />
+          </p>
         ) : null}
-        <AskEditHistory ask={displayedAsk} edits={edits} />
+        {inBlock ? null : (
+          <div
+            className={`text-[15px] leading-relaxed font-medium ${textPrimaryOnSurface} ${askQuestionProse}`}
+            data-ask-question=""
+          >
+            <MarkdownBody
+              markdown={original?.question ?? displayedAsk.question}
+              source={source}
+              tree={original === undefined ? displayedAsk.question_tree : undefined}
+            />
+          </div>
+        )}
+        {/* A request to approve again names the approval it follows, under the question (the
+            spec's own placement), with the diff from that version behind Show diff; a first
+            request carries no earlier approval, and EarlierApproval renders nothing for it. */}
+        {displayedAsk.approval === undefined ? null : (
+          <EarlierApproval approval={displayedAsk.approval} />
+        )}
+        {handOn.failed ? (
+          <div className="mt-1.5">
+            <QueryError
+              message={handOn.error ?? "Could not hand this question on."}
+              onRetry={handOn.retry}
+              retrying={handOn.pending}
+            />
+          </div>
+        ) : null}
+        {/* A rewrite is an edit of the ask, which its badge already marks. */}
+        {shownRewrite?.state === "done" ? null : (
+          <AskEditHistory ask={displayedAsk} edits={edits} />
+        )}
         {referencedByNode}
       </div>
       {askChanged ? (
@@ -872,26 +974,48 @@ export function AskCard({
       {/* The options and the answer box sit where the order puts a thread's reply box: under
           the question in Newest first, at the foot of the card in Oldest first. */}
       {answerFirst ? null : threadNode}
-      <form className="mt-3 space-y-3" onSubmit={submit} ref={trackForm}>
+      <form
+        className="mt-3 space-y-3"
+        onSubmit={
+          askingBack
+            ? (event) => {
+                event.preventDefault();
+                sendClarification();
+              }
+            : submit
+        }
+        ref={trackForm}
+      >
         {(displayedAsk.options ?? []).length === 0 ? null : (
           <fieldset className="min-w-0 space-y-2">
             <legend className="sr-only">Answer options</legend>
-            {(displayedAsk.options ?? []).map((option) => (
-              <AskChoiceRow
-                checked={selected.includes(option.label)}
-                disabled={isSubmitting}
-                hotkey
-                key={option.label}
-                multiple={displayedAsk.multiple}
-                name={`ask-${displayedAsk.id}`}
-                onChange={() => {
-                  selectRealOption(option.label);
-                  if (isCompact)
-                    setOwnWordsOpen(requiresReason(option.label) || trimmedAnswer !== "");
-                }}
-                option={option}
-              />
-            ))}
+            {(displayedAsk.options ?? []).map((option) => {
+              // The original wording keeps each option's label, which a rewrite never changes,
+              // with the description the agent wrote, or none.
+              const before = original?.options.find((one) => one.label === option.label);
+              const shown =
+                original === undefined
+                  ? option
+                  : before?.description === undefined
+                    ? { label: option.label }
+                    : { description: before.description, label: option.label };
+              return (
+                <AskChoiceRow
+                  checked={selected.includes(option.label)}
+                  disabled={isSubmitting}
+                  hotkey
+                  key={option.label}
+                  multiple={displayedAsk.multiple}
+                  name={`ask-${displayedAsk.id}`}
+                  onChange={() => {
+                    selectRealOption(option.label);
+                    if (isCompact)
+                      setOwnWordsOpen(requiresReason(option.label) || trimmedAnswer !== "");
+                  }}
+                  option={shown}
+                />
+              );
+            })}
             {isApproval ? null : (
               <AskChoiceRow
                 checked={otherSelected}
@@ -909,37 +1033,34 @@ export function AskCard({
         )}
         {isCompact ? (
           <>
-            {selected.length === 0 || ownWordsOpen ? null : (
-              <div className="space-y-2">
-                {submitButton}
-                {submitHintNode}
+            {ownWordsOpen ? (
+              <div className="space-y-3" id={`${answerFieldId}-disclosure`}>
+                {answerField}
               </div>
-            )}
-            <div>
-              <button
-                aria-controls={`${answerFieldId}-disclosure`}
-                aria-expanded={ownWordsOpen}
-                className={`min-h-11 text-sm font-medium ${textSecondaryOnSurface}`}
-                // The Inbox's Enter opens this disclosure to reach the answer box behind it,
-                // and finds the control by this handle, as it finds the box by
-                // `data-ask-answer` and an option by `data-ask-option` (`Inbox.tsx`).
-                data-ask-note-disclosure=""
-                onClick={() => {
-                  // Opening it is a move into the field behind it; closing it moves nowhere.
-                  focusNoteOnOpen.current = !ownWordsOpen;
-                  setOwnWordsOpen(!ownWordsOpen);
-                }}
-                type="button"
-              >
-                Add a note or answer in your own words
-              </button>
-              {ownWordsOpen ? (
-                <div className="space-y-3 pt-3" id={`${answerFieldId}-disclosure`}>
-                  {answerField}
-                  {answerActions}
-                </div>
-              ) : null}
+            ) : null}
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+              {questionChoice ? answerActions : submitButton}
+              {ownWordsOpen ? null : (
+                <button
+                  aria-controls={`${answerFieldId}-disclosure`}
+                  aria-expanded={ownWordsOpen}
+                  className={`min-h-11 text-sm font-medium ${textMutedHoverToSecondary}`}
+                  // The Inbox's Enter opens this disclosure to reach the answer box behind it,
+                  // and finds the control by this handle, as it finds the box by
+                  // `data-ask-answer` and an option by `data-ask-option` (`Inbox.tsx`).
+                  data-ask-note-disclosure=""
+                  onClick={() => {
+                    // Opening it is a move into the field behind it.
+                    focusNoteOnOpen.current = true;
+                    setOwnWordsOpen(true);
+                  }}
+                  type="button"
+                >
+                  Add a note
+                </button>
+              )}
             </div>
+            {submitHintNode}
           </>
         ) : (
           <>
@@ -962,21 +1083,34 @@ export function AskCard({
           />
         ) : null}
       </form>
-      {/* The person's way out of a question they will not answer, under the form that answers
-          it. An approval request draws none: it is answered with Approve or Request changes. */}
-      {displayedAsk.state === "open" && displayedAsk.kind === "question" ? (
-        <DeclineControl ask={displayedAsk} decline={decline} onDeclined={onAnswered} />
-      ) : null}
       {answerFirst ? threadNode : null}
-      <AskRecipients
-        askId={displayedAsk.id}
-        claimant={threadQuery.data?.claimant ?? null}
-        followers={threadQuery.data?.followers ?? []}
-        owner={displayedAsk}
-        route={threadQuery.data?.route ?? null}
-        routeHolder={threadQuery.data?.route_holder ?? null}
-        routeStatus={threadQuery.data?.route_status ?? null}
-      />
+      {declinable ? (
+        <DeclineControl
+          ask={displayedAsk}
+          decline={decline}
+          onDeclined={onAnswered}
+          onOpenChange={setDeclineOpen}
+          open={declineOpen}
+        />
+      ) : null}
+      {handOnOpen ? (
+        <AskHandOnPicker
+          anchorRef={actionsRef}
+          assignee={ask.issue?.assignee ?? null}
+          onClose={() => setHandOnOpen(false)}
+          onPick={handOn.submit}
+          waitingOn={waitingOnPerson}
+        />
+      ) : null}
+      {definition === null ? null : (
+        <DefinePopover
+          column={definition.column}
+          onClose={() => setDefinition(null)}
+          place={{ ask_id: displayedAsk.id }}
+          rect={definition.rect}
+          words={definition.words}
+        />
+      )}
     </article>
   );
 }

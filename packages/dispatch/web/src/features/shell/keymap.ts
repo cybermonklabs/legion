@@ -22,7 +22,11 @@ export type KeymapScope =
   | "board"
   | "issue"
   | "document"
-  | "agents";
+  | "agents"
+  /** The ask card's own keys: pushed above the page's scope while a card, or the Inbox row
+   *  whose card the reading pane shows, is in hand, so `1`–`9`, Enter and the card's letters
+   *  act on the card before the page's keys do (`features/inbox/ask-card-keys.ts`). */
+  | "ask";
 
 export interface KeyBinding {
   /** Stable identifier, unique within the registering component. */

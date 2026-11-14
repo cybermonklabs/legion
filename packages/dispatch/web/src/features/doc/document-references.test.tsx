@@ -295,7 +295,9 @@ function renderVersion(markdown: string = TEXT) {
             asks={[]}
             blockSchema={fake.runtime.blockSchema}
             createdAt="2026-09-09T00:00:00Z"
+            definePlace={undefined}
             highlight={undefined}
+            keyScope="document"
             owner={undefined}
             version={1}
           />

@@ -12,7 +12,9 @@ import {
 } from "../../theme/classes";
 import { MarkdownBody } from "../refs/MarkdownBody";
 
-const ROW_CLASS = `flex min-h-11 items-start gap-3 rounded-lg border px-3 py-2 text-sm ${borderDefault}`;
+/** One line of `text-sm` (20 px) and 12 px above and below it is the 44 px tap target, so a
+ *  one-line option sits centred in its row; the mark beside it is centred on that first line. */
+const ROW_CLASS = `flex min-h-11 items-start gap-3 rounded-lg border px-3 py-3 text-sm leading-5 ${borderDefault}`;
 
 /** The label/description column is a flex item; `min-w-0` overrides its `min-width: auto` so it
  *  shrinks to the row and `MarkdownBody`'s own `break-words` folds a long word. The row's parent
@@ -66,6 +68,7 @@ export function AskChoiceRow({
       className={`${ROW_CLASS} cursor-pointer ${checked ? `${selectedCardBorder} ${selectedCardBg}` : cardHoverBorder} ${className}`}
     >
       <input
+        className="mt-0.5 size-4 shrink-0"
         checked={checked}
         data-ask-option={hotkey ? "" : undefined}
         disabled={disabled}

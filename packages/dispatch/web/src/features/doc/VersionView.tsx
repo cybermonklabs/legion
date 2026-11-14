@@ -7,13 +7,16 @@ import { isText } from "../../api/artifact-version";
 import { api } from "../../api/client";
 import { whoAmIQuery } from "../../api/queries";
 import type { Ask, BlockSchema } from "../../api/types";
+import type { DefinitionPlace } from "../inbox/ask-rewrite";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { watchPicturePath } from "../refs/reference-target";
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
+import { useKeymap } from "../shell/keymap";
 import { AskBlockCard } from "./AskBlockCard";
 import { type ChangeBaseline, changeMarksAgainst } from "./change-marks";
 import { colorForLogin } from "./connection";
+import { defineKey, useDocumentDefine } from "./document-define";
 import { DocumentReferences, useReferenceClick } from "./document-references";
 import { createDoc, type EditorHandle } from "./editor";
 import type { Highlight } from "./highlight";
@@ -36,7 +39,12 @@ export interface VersionViewProps {
    *  is marked. */
   changeBaseline?: ChangeBaseline;
   createdAt: string | undefined;
+  /** Where the version's words stand, for Define (`documentPlace`); undefined offers no Define. */
+  definePlace: DefinitionPlace | undefined;
   highlight: Highlight | undefined;
+  /** The scope of the page the version is drawn on, which its Define key `d` is registered in:
+   *  a document page's own, or the Inbox's for its reading column. */
+  keyScope: "document" | "inbox";
   /** The project document shown, for block asks with no issue to be referenced under. */
   owner: { project: string; slug: string } | undefined;
   version: number;
@@ -48,7 +56,9 @@ export function VersionView({
   blockSchema,
   changeBaseline,
   createdAt,
+  definePlace,
   highlight,
+  keyScope,
   owner,
   version,
 }: VersionViewProps): ReactNode {
@@ -64,6 +74,10 @@ export function VersionView({
     queryKey: ["artifact", artifactId, "version", version],
     queryFn: () => api.getArtifactVersion(artifactId, version),
   });
+  const definable = definePlace !== undefined;
+  const { define, popover: definition } = useDocumentDefine(root, definePlace);
+  // `d` defines words selected in this version, in the scope of the page it is drawn on.
+  useKeymap(keyScope, definable ? [defineKey(root, () => editorHandle)] : []);
   // The signed-in person reaches the editor as their login alone, and the effect below depends
   // on that string rather than on the whoami answer: the answer carries `event_head`, so it is
   // a new object after every committed event, and keyed on it the editor is destroyed and
@@ -151,6 +165,7 @@ export function VersionView({
         blockSchema,
         heatMapMode: "hidden",
         onAskBlockHosts: setAskBlockHosts,
+        onDefine: definable ? define : undefined,
         user: { color: colorForLogin(login), name: login },
         watchPicture: (route, onPicture) => watchPicturePath(queryClient, route, onPicture),
         ydoc: doc,
@@ -218,7 +233,18 @@ export function VersionView({
       ydoc?.destroy();
       setEditorHandle(undefined);
     };
-  }, [baseline, blockSchema, createEditor, highlighted, login, markdown, queryClient, tree]);
+  }, [
+    baseline,
+    blockSchema,
+    createEditor,
+    define,
+    definable,
+    highlighted,
+    login,
+    markdown,
+    queryClient,
+    tree,
+  ]);
 
   if (versionQuery.isPending) {
     return <p>Loading version…</p>;
@@ -247,6 +273,7 @@ export function VersionView({
       {renderError === undefined ? null : (
         <p role="alert">This version could not be rendered: {renderError}</p>
       )}
+      {definition}
       {/* biome-ignore lint/a11y/useKeyWithClickEvents: dispatch:// link clicks bubble here; the
       editor already handles keyboard activation of its own links. */}
       <article

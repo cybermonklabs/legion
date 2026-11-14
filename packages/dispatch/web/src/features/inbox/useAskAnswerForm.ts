@@ -327,7 +327,7 @@ export function useAskAnswerForm({
       ? "Note (optional)"
       : selected.length > 0
         ? "Add a note (optional)"
-        : "Answer in your own words, or ask a question back";
+        : "Answer in your own words";
   const sendAnswer = (text: string) => {
     submitGuard.guard(() => {
       const answerSelection = isApproval || hasOptions ? selected : [];
