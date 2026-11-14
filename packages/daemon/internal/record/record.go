@@ -1386,6 +1386,11 @@ type Store interface {
 	// the newest claim Dispatch showed.
 	DispatchClaim(ctx context.Context, tx pgx.Tx, key string) (string, error)
 	Phases(ctx context.Context, tx pgx.Tx, issue string) ([]PhaseRow, error)
+	// PhasesOf is the phases rows of each of issues, by issue, each issue's rows in role order as
+	// Phases reads them, in one read: the rows a look over many claims judges from (workflow's
+	// QuietByDesign, admit's silentWorkers and workingTrees), rather than a read per issue. An
+	// issue with no row has no entry, and no issues read nothing.
+	PhasesOf(ctx context.Context, tx pgx.Tx, issues []string) (map[string][]PhaseRow, error)
 	PutPhase(ctx context.Context, tx pgx.Tx, phase PhaseRow) error
 	PullRequest(ctx context.Context, tx pgx.Tx, issue string) (*PullRequest, error)
 	PullRequestByBranch(ctx context.Context, tx pgx.Tx, repo, branch string) (*PullRequest, error)

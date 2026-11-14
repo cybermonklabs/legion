@@ -697,10 +697,41 @@ func (a *Admission) phaseWorkers(ctx context.Context, tx pgx.Tx, candidates []re
 	return workers, runs, nil
 }
 
+// waitRows is the phases row of each of workers whose claim has a wait row with no end, by token,
+// in one batched read (record.Store.PhasesOf): the row SilentPhaseWorker and
+// BackgroundStalledWorker weigh such a wait against (workflow.WaitStands, whose wait stands only
+// on the entry it was declared at and before a completion). A claim with no wait row needs no row
+// for that term, since no wait of it can stand, and is judged by the zero row, so a pass over a
+// project where no worker waits reads nothing here.
+func (a *Admission) waitRows(ctx context.Context, tx pgx.Tx, workers []phaseWorker, runs map[claim.Token]record.RoleRun) (map[claim.Token]record.PhaseRow, error) {
+	var keys []string
+	for _, worker := range workers {
+		if held := runs[worker.token].Claim; held != nil && held.Wait != nil {
+			keys = append(keys, worker.issue.Key)
+		}
+	}
+	rows := make(map[claim.Token]record.PhaseRow, len(keys))
+	if len(keys) == 0 {
+		return rows, nil
+	}
+	phases, err := a.store.PhasesOf(ctx, tx, keys)
+	if err != nil {
+		return nil, err
+	}
+	for _, worker := range workers {
+		if held := runs[worker.token].Claim; held != nil && held.Wait != nil {
+			rows[worker.token] = record.PhaseRowOf(phases[worker.issue.Key], worker.role)
+		}
+	}
+	return rows, nil
+}
+
 // silentWorkers is every issue of the project whose phase worker is one nothing will prompt, as
-// the tick notice carries it: its process is up and between turns, it holds no task, and either
-// its agent's last recorded step is older than the bound this deployment gives a phase worker
-// (UseWorkerSilence, config.Config.WorkerSilence; workflow.SilentPhaseWorker) or its own
+// the tick notice carries it: its process is up and between turns, it holds no task, the record
+// gives no reason of the daemon's own for its quiet — no closed design gate holds it as a merger,
+// and no wait of its stands (workflow's quietByDesign, dispatch://INFRA-2040 R1 and R3) — and
+// either its agent's last recorded step is older than the bound this deployment gives a phase
+// worker (UseWorkerSilence, config.Config.WorkerSilence; workflow.SilentPhaseWorker) or its own
 // session's report of background work has stood past the longer bound
 // (config.Config.WorkerBackground; workflow.BackgroundStalledWorker). The daemon prompts the
 // second kind never, and the list marks it with the moment of that report
@@ -742,15 +773,19 @@ func (a *Admission) silentWorkers(ctx context.Context, tx pgx.Tx, issues []recor
 	if err != nil {
 		return nil, err
 	}
+	rows, err := a.waitRows(ctx, tx, workers, runs)
+	if err != nil {
+		return nil, err
+	}
 	now := a.now()
 	var silent []record.SilentIssue
 	for _, held := range workers {
-		run := runs[held.token]
+		run, row := runs[held.token], rows[held.token]
 		gate := facts.Gates[held.issue.Tree]
 		// The two rules never both hold: SilentPhaseWorker refuses the claim whose report
 		// names background work, and BackgroundStalledWorker is about that claim alone.
-		stepped := workflow.SilentPhaseWorker(held.issue, held.root, gate, held.role, run, a.workerSilence, now)
-		background := !stepped && workflow.BackgroundStalledWorker(held.issue, held.root, gate, held.role, run, a.workerBackground, now)
+		stepped := workflow.SilentPhaseWorker(held.issue, held.root, gate, held.role, run, row, a.workerSilence, now)
+		background := !stepped && workflow.BackgroundStalledWorker(held.issue, held.root, gate, held.role, run, row, a.workerBackground, now)
 		if !stepped && !background {
 			continue
 		}

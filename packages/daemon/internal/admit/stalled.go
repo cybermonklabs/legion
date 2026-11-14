@@ -128,8 +128,10 @@ func (a *Admission) quietTrees(ctx context.Context, tx pgx.Tx, issues []record.I
 //     movement and never with the record-only one, which can stand behind it. Where a tree past
 //     the bound and past its told mark still has a claim at work by its state, the trees R6
 //     counts at work are built (workingTrees), which reads the runs of the project's phase
-//     workers in ready once, in one batched record.Store.RoleRuns read, and only where the
-//     deployment sets `worker_silence_minutes`; a pass with no such tree builds nothing here;
+//     workers in ready once, in one batched record.Store.RoleRuns read, and the phases rows of
+//     those of them that declared a wait in one batched record.Store.PhasesOf read, and only
+//     where the deployment sets `worker_silence_minutes`; a pass with no such tree builds
+//     nothing here;
 //  3. whether a controller is registered (record.Store.ControllerRegistered, one read). It is a
 //     refusal wakeController makes below, and one that answers for every root of this pass at
 //     once, so a project with no controller registered builds no membership and judges no tree
@@ -383,12 +385,17 @@ func (a *Admission) tellStalledTrees(ctx context.Context, tx pgx.Tx, issues []re
 //
 // What it costs: at most one batched read of the runs of those claims' issues' phase workers
 // (phaseWorkers, record.Store.RoleRuns, the read the tick's silent list makes for the same
-// rule), made only where some claim is left to judge, and walks of the pass's own records and
-// of the claims quietTrees already read. It makes no read per tree or per issue, and the caller
-// builds it at most once per pass, at the first of its two readers the pass reaches. The run is
-// read inside the pass's own transaction, as the claims were. It reads no phase row
-// (workflow.PhaseWorkerOwedTurn), which the tick's list adds to leave out a worker owed no turn:
-// such a worker is stopped all the more, and R6 names SilentPhaseWorker alone.
+// rule), made only where some claim is left to judge, at most one batched read of the phases
+// rows of those whose claim has a wait row with no end (waitRows, which a wait that stands is
+// weighed against, as the tick's list weighs it), and walks of the pass's own records and of the
+// claims quietTrees already read. It makes no read per tree or per issue, and the caller builds it
+// at most once per pass, at the first of its two readers the pass reaches. The run is read inside
+// the pass's own transaction, as the claims were. It asks nothing of a phase row beyond a wait's
+// term (workflow.PhaseWorkerOwedTurn), which the tick's list adds to leave out a worker owed no
+// turn: such a worker is stopped all the more, and R6 names SilentPhaseWorker alone. A worker
+// the record gives a reason of the daemon's own for its quiet — a merger the closed design gate
+// holds, or one whose wait stands (dispatch://INFRA-2040 R1 and R3) — is no worker the daemon
+// names silent, so its claim in ready is work under way, as SilentPhaseWorker reads it.
 func (a *Admission) workingTrees(ctx context.Context, tx pgx.Tx, issues []record.Issue, facts record.LineFacts,
 	claims []record.TreeClaim, now time.Time,
 ) (map[string]struct{}, error) {
@@ -429,10 +436,14 @@ func (a *Admission) workingTrees(ctx context.Context, tx pgx.Tx, issues []record
 	if err != nil {
 		return nil, err
 	}
+	rows, err := a.waitRows(ctx, tx, workers, runs)
+	if err != nil {
+		return nil, err
+	}
 	silent := make(map[claim.Token]struct{}, len(workers))
 	for _, worker := range workers {
 		gate := facts.Gates[worker.issue.Tree]
-		if workflow.SilentPhaseWorker(worker.issue, worker.root, gate, worker.role, runs[worker.token], a.workerSilence, now) {
+		if workflow.SilentPhaseWorker(worker.issue, worker.root, gate, worker.role, runs[worker.token], rows[worker.token], a.workerSilence, now) {
 			silent[worker.token] = struct{}{}
 		}
 	}

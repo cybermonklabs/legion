@@ -533,8 +533,12 @@ func scanIssue(row scanner) (*Issue, error) {
 	return &issue, nil
 }
 
+// phaseColumns are the phases table's columns in the order scanPhase reads them, the one list
+// Phases and PhasesOf both select.
+const phaseColumns = `issue, role, claim, handoff_commit, pass, handoff_record, handoff_version, rounds, conflict_rounds, backward_moves, cap_told, verdict, summary, last_handoff, decision, completed_at, entry, entry_task, entry_raised_at`
+
 func (s *Postgres) Phases(ctx context.Context, tx pgx.Tx, issue string) ([]PhaseRow, error) {
-	rows, err := tx.Query(ctx, `select issue, role, claim, handoff_commit, pass, handoff_record, handoff_version, rounds, conflict_rounds, backward_moves, cap_told, verdict, summary, last_handoff, decision, completed_at, entry, entry_task, entry_raised_at from phases
+	rows, err := tx.Query(ctx, `select `+phaseColumns+` from phases
 		where issue = $1 order by role`, issue)
 	if err != nil {
 		return nil, fmt.Errorf("list phases for %s: %w", issue, err)
@@ -550,6 +554,33 @@ func (s *Postgres) Phases(ctx context.Context, tx pgx.Tx, issue string) ([]Phase
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("list phases for %s: %w", issue, err)
+	}
+	return phases, nil
+}
+
+// PhasesOf is the phases rows of each of issues, by issue (Store.PhasesOf): one query whatever
+// the number of issues, each issue's rows in role order as Phases reads them. No issues read
+// nothing — the query is not made.
+func (s *Postgres) PhasesOf(ctx context.Context, tx pgx.Tx, issues []string) (map[string][]PhaseRow, error) {
+	phases := make(map[string][]PhaseRow, len(issues))
+	if len(issues) == 0 {
+		return phases, nil
+	}
+	rows, err := tx.Query(ctx, `select `+phaseColumns+` from phases
+		where issue = any($1) order by issue, role`, issues)
+	if err != nil {
+		return nil, fmt.Errorf("read the phases of %v: %w", issues, err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		phase, err := scanPhase(rows)
+		if err != nil {
+			return nil, fmt.Errorf("read the phases of %v: %w", issues, err)
+		}
+		phases[phase.Issue] = append(phases[phase.Issue], phase)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the phases of %v: %w", issues, err)
 	}
 	return phases, nil
 }

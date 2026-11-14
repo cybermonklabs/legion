@@ -1103,6 +1103,23 @@ func (w *workflowRuntime) applySweepFacts(ctx context.Context, facts []sweptFact
 	return first
 }
 
+// quietByDesign is the whole of what the silence sweep reads of the record before it mints its
+// facts (supervision.quietByDesign): the engine's batched reading of which of keys' claims a
+// closed design gate holds or a standing wait explains (workflow's Engine.QuietByDesign), in a
+// read-only transaction of its own and outside the fact lock, as the sweep's read of which of its
+// facts are applied already is (applySweepFacts).
+func (w *workflowRuntime) quietByDesign(ctx context.Context, keys []record.RoleRunKey) (map[claim.Token]struct{}, error) {
+	var quiet map[claim.Token]struct{}
+	if err := pgx.BeginTxFunc(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+		var err error
+		quiet, err = w.engine.QuietByDesign(ctx, tx, keys)
+		return err
+	}); err != nil {
+		return nil, fmt.Errorf("read which claims a wait or the design gate explains: %w", err)
+	}
+	return quiet, nil
+}
+
 // attach gives the workflow what only supervision has: the outbox, built on its supervisor and
 // its runtime, and the deployment's budget limits, which a failed claim's fact carries to the
 // workflow engine (applyTerminal). The pace a paced catch-up's wake line names is the
@@ -1120,6 +1137,7 @@ func (w *workflowRuntime) attach(supervision *supervision) {
 	supervision.supervisor.OnDurableState(w.claimDurableState)
 	supervision.enqueue = w.enqueueOutbox
 	supervision.applySweepFacts = w.applySweepFacts
+	supervision.quietByDesign = w.quietByDesign
 	w.attachIdleRelease(supervision)
 }
 

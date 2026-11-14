@@ -275,7 +275,15 @@ func (r *outbox) wakeForDelivery(ctx context.Context, token claim.Token, detail 
 // period — and neither does an issue whose phase no role works.
 //
 // It also cancels the backstops the release before this one armed: that pod is gone, and its
-// backstop has nothing left to bring back.
+// backstop has nothing left to bring back. The cancel comes first whatever is armed after it, so
+// a claim that a start brought back since that release, still holding its backstop, holds none
+// once this release takes its pod again.
+//
+// A worker whose wait stands gets none (dispatch://INFRA-2040 R3): the wait's time wakes it
+// (workflow's waitDue), and a backstop would wake it before that for nothing it waits on. The
+// wait is read as every reader of a wait reads it (standingWait). A merger the closed design
+// gate holds gets its backstop as any released worker does (R1): no wait stands under the hold
+// (workflow.WaitStands), and when such a backstop is taken is dispatch://INFRA-3522's.
 func (r *outbox) armBackstops(ctx context.Context, issue record.Issue) error {
 	if err := r.trees.CancelPodBackstopsOf(ctx, r.project, issue.Key); err != nil {
 		return err
@@ -294,6 +302,15 @@ func (r *outbox) armBackstops(ctx context.Context, issue record.Issue) error {
 	for _, c := range released {
 		if c.Role != role || c.ServingGeneration != issue.Generation {
 			continue
+		}
+		wait, stands, err := r.standingWait(ctx, c.Token)
+		if err != nil {
+			return err
+		}
+		if stands {
+			r.log.Info("wake: the release of an issue's pod arms no backstop for its open phase's worker: the claim's wait stands, and its time wakes it",
+				"issue", issue.Key, "role", role, "claim", c.Token, "wait", wait.ID, "wake_at", wait.WakeAt.UTC().Format(time.RFC3339))
+			return nil
 		}
 		due := r.now().UTC().Add(r.backstop)
 		r.log.Info("wake: the release of an issue's pod arms its open phase's backstop",

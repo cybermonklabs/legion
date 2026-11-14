@@ -147,7 +147,10 @@ func PastBound(at time.Time, bound time.Duration, now time.Time) bool {
 // launch that replaces a process clears its report (store's putClaim), and a report is written
 // only onto the launch whose secret authenticated it (store's PutClaimActivity), so the report
 // read is the running process's. A reminder already due explains nothing: it is the timer a
-// silence repair backs up.
+// silence repair backs up. The record gives two reasons of its own beside the report, which this
+// does not read: the design gate holding a merger and a wait that stands (quietByDesign). Every
+// reader of this one asks those beside it — SilentPhaseWorker, the silence handler, which leaves
+// a silence either explains unspent (workerSilent), and the sweep's own filter (QuietByDesign).
 func ReportExplainsQuiet(background bool, nextReminder time.Time, now time.Time) bool {
 	return background || nextReminder.After(now)
 }
@@ -157,17 +160,19 @@ func ReportExplainsQuiet(background bool, nextReminder time.Time, now time.Time)
 // (ReportExplainsQuiet), and whose agent's last recorded step is past bound (PastBound). A live
 // claim holding no task is owed nothing by the daemon, and the timer that carries a worker
 // through its phase runs in its own process (packages/pi-shared/src/phase-reminder.ts), so it
-// dies with that process.
+// dies with that process. row is the role's phases row (record.PhaseRowOf), which only a claim
+// with a wait row is judged by (quietByDesign); a caller that read none passes the zero row for a
+// claim with no wait.
 //
 // Terms the code does not show:
 //   - a suspension held for the agent's turn is not a term: no record carries it
 //     (supervise.Claim.SuspensionHeld), and the outbox refuses the start while it holds.
 //   - a finished phase or an accepted completion is not a term: this reads no store, so its
 //     callers ask PhaseWorkerOwedTurn as well.
-func SilentPhaseWorker(issue, root record.Issue, gate record.TreeGate, role claim.Role, run record.RoleRun,
+func SilentPhaseWorker(issue, root record.Issue, gate record.TreeGate, role claim.Role, run record.RoleRun, row record.PhaseRow,
 	bound time.Duration, now time.Time,
 ) bool {
-	if !unpromptedPhaseWorker(issue, root, gate, role, run) {
+	if !unpromptedPhaseWorker(issue, root, gate, role, run, row) {
 		return false
 	}
 	c := run.Claim
@@ -177,18 +182,24 @@ func SilentPhaseWorker(issue, root record.Issue, gate record.TreeGate, role clai
 	return PastBound(c.Step.LastStep(), bound, now)
 }
 
-// unpromptedPhaseWorker is the half of SilentPhaseWorker that is not about a moment: a live claim
-// of the role that works issue's phase (OpenPhaseRole), on an issue at work in a tree that does
-// not linger, up and between turns, in no update round, holding no task it still works, with no
-// acting stop and no queued start and recorded in root's tree. Ready and idle are both a process
-// waiting to be prompted; the role, not the state, tells a fault from health. The last three
-// terms are StartFor's, read the other way, so no claim a start of the daemon's is already on
-// its way to is named. Admission's repair of a role behind its entry (admit's owedEntryRoles)
-// can name the same claim when it is behind the entry its phases row names, and both then send
-// that entry's work (repairSilence, SendOwedEntry); whichever writes first leaves a queued start
-// the other's rule reads and passes over. BackgroundStalledWorker stands on it too, so the two
-// rules agree on which claim they are about.
-func unpromptedPhaseWorker(issue, root record.Issue, gate record.TreeGate, role claim.Role, run record.RoleRun) bool {
+// unpromptedPhaseWorker is the half of SilentPhaseWorker that is not about a moment: a claim
+// phaseWorkerBetweenTurns holds whose quiet no reason of the daemon's own explains
+// (quietByDesign). BackgroundStalledWorker stands on it too, so the two rules agree on which claim
+// they are about.
+func unpromptedPhaseWorker(issue, root record.Issue, gate record.TreeGate, role claim.Role, run record.RoleRun, row record.PhaseRow) bool {
+	return phaseWorkerBetweenTurns(issue, root, gate, role, run) && !quietByDesign(issue, root, gate, role, run, row)
+}
+
+// phaseWorkerBetweenTurns is a live claim of the role that works issue's phase (OpenPhaseRole), on
+// an issue at work in a tree that does not linger, up and between turns, in no update round,
+// holding no task it still works, with no acting stop and no queued start and recorded in root's
+// tree. Ready and idle are both a process waiting to be prompted; the role, not the state, tells
+// a fault from health. The last three terms are StartFor's, read the other way, so no claim a
+// start of the daemon's is already on its way to is named. Admission's repair of a role behind
+// its entry (admit's owedEntryRoles) can name the same claim when it is behind the entry its
+// phases row names, and both then send that entry's work (repairSilence, SendOwedEntry);
+// whichever writes first leaves a queued start the other's rule reads and passes over.
+func phaseWorkerBetweenTurns(issue, root record.Issue, gate record.TreeGate, role claim.Role, run record.RoleRun) bool {
 	if run.Claim == nil {
 		return false
 	}
@@ -210,6 +221,22 @@ func unpromptedPhaseWorker(issue, root record.Issue, gate record.TreeGate, role 
 	}
 	stop := actingStop(run, root)
 	return stop == 0 && c.Tree == root.Key && !queuedStartActs(run, stop, issue.Phase)
+}
+
+// quietByDesign is whether the record gives role's claim in run a reason of the daemon's own to
+// take no turn, which no silence repair, no notice and no tick list may treat as a stop
+// (dispatch://INFRA-2040 R1 and R3): the design gate holds it, a merger in merging under a closed
+// gate (HeldByDesignGate, the outbox fence's own test, so a gated step with no row holds none,
+// whatever record.TreeGate.Open reads), or a wait it declared stands (WaitStands, over row, the
+// role's phases row). Either ends on its own — the gate's opening, the wait's time or one of its
+// other ends — and the worker is the sweep's to judge again from then (workerSilent leaves such a
+// fact unspent).
+func quietByDesign(issue, root record.Issue, gate record.TreeGate, role claim.Role, run record.RoleRun, row record.PhaseRow) bool {
+	if _, held := HeldByDesignGate(issue, role, gate); held {
+		return true
+	}
+	_, stands := WaitStands(issue, root, row, run, gate)
+	return stands
 }
 
 // PhaseWorkerOwedTurn is whether role's worker of issue's phase is still owed a turn, the half of
@@ -291,8 +318,8 @@ func OwedEntry(run record.RoleRun, root record.Issue, entry int64) bool {
 // Such a stop undoes every start older than it, and it may run before them, so every rule that
 // reads it counts only a queued start newer than it: StartFor, asking what a re-admitted tree's
 // promotion must start, OwedEntry, asking whether a role is owed its entry's work, and
-// unpromptedPhaseWorker, asking whether nothing will prompt a live claim. One body is what keeps
-// them from reading the same rows differently.
+// phaseWorkerBetweenTurns, asking whether a live claim is up between turns with nothing on its
+// way to it. One body is what keeps them from reading the same rows differently.
 func actingStop(run record.RoleRun, root record.Issue) int64 {
 	var lastStart int64
 	if run.Claim != nil {

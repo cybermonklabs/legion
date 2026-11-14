@@ -1248,6 +1248,13 @@ type supervision struct {
 	// transaction each. The workflow sets it where it attaches, before supervision restores or
 	// launches any claim, as it sets enqueue above.
 	applySweepFacts func(ctx context.Context, facts []sweptFact) error
+	// quietByDesign answers, of the role runs it is given, the claims whose quiet the record
+	// explains by a reason of the daemon's own — a merger the closed design gate holds, or a wait
+	// that stands (workflowRuntime.quietByDesign, workflow's Engine.QuietByDesign) — read once per
+	// sweep over the claims the silence sweep would otherwise mint a fact for, so no such claim
+	// costs a fact's transaction each minute (tellSilentPhaseWorkers). nil in a deployment with no
+	// workflow, as applySweepFacts is; the workflow sets both where it attaches.
+	quietByDesign func(ctx context.Context, keys []record.RoleRunKey) (map[claim.Token]struct{}, error)
 	// backstopMu guards backstopOwed: the owner notices of turns the stall backstop ended that
 	// the store has refused, by claim, waiting for the next sweep to write them
 	// (stallBackstopped, tellStallsOwed). A mutex, because the machine's own goroutine records
