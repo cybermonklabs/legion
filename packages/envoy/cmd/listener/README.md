@@ -259,7 +259,7 @@ A probe contract that fits these answers:
 Every pod of a machine id reads and writes the same records, so a pod that takes over, or a standby answering `/v1`, answers as the active pod would:
 
 - **Delivery ledger** (`internal/dedupe`, `delivery.<durable>.<32 hex of sha256(dedupe key)>.<session>` in `envoy_listener`):
-  these ask it, and nothing else does — a role-lane forward, the kept lane's drain of a role's stored copies (`keptRoleForwardAttempt`), a fan-out refusal, an unplaceable agent delivery's give-up, an agent-subject delivery whose route to the session failed, which it reports `delivery_failed`, and the publish route's confirmation of a send the recipient answered.
+  these ask it, and nothing else does — a role-lane forward, the kept lane's drain of a role's stored copies (`keptRoleForwardAttempt`), a fan-out refusal, an unplaceable agent delivery's give-up, an agent-subject delivery whose route to the session failed, which it reports `delivery_failed`, and the publish route's confirmation that the stream stored a forward it made.
   No session receives from a plain NATS subscription any more (main's #2603 removed that path), so no copy is read off the bus outside this listener and nothing asks the ledger for one.
   Before any of them, a pod records the pair attempted, and once it lands, delivered:
   a pair another pod delivered is not delivered again, and a refusal or a give-up another pod reported is not reported twice.
@@ -270,7 +270,7 @@ Every pod of a machine id reads and writes the same records, so a pod that takes
   a give-up, a fanout refusal) for 5 minutes.
   An attempted record of its own boot that it holds no such attempt for (a clear that could not be written, a write whose reply was lost) is taken over and the pair delivered.
   An attempt by a boot that held this machine's lease before the current holder (the lease record's `former_boots`) is taken over without that wait, so the settle hold delivers that message in stream order:
-  at once for a holder taken over by force (killed, its node lost, its record left to expire), which writes nothing more, and only after 2.25 s (`ledgerFormerSettle`) for one that released the record, which is alive and whose role lane is finishing the forward it had in flight (`roleReceiptTimeout`).
+  at once for a holder taken over by force (killed, its node lost, its record left to expire), which writes nothing more, and only after 2.25 s (`ledgerFormerSettle`, `roleForwardTimeout` + 250 ms, `lease_record.go`) for one that released the record, which is alive and whose role lane is finishing the forward it had in flight.
   An attempt by a pod that still holds or renews a lease, or by a live pod's role lane, less than 35 s old (`deliveryHandlingLimit` and `ledgerTakeoverMargin`) is retried later on the durable lane;
   an older one is taken over, since its writer died.
   A ledger that cannot be read NAKs the durable message for a retry; the role lane then delivers without it and logs `delivery ledger unavailable`.
@@ -306,7 +306,7 @@ Every pod of a machine id reads and writes the same records, so a pod that takes
 
     - the session leaves the set this pod relays and rejoins it.
 
-    Outside the relay, a repeat also comes from the role lane re-forwarding a message whose holder sent no receipt inside `roleReceiptTimeout`, from its take-over of a former boot's unresolved attempt, and from the kept lane's drain re-forwarding a copy whose confirm never landed (`role_keep.go`).
+    Outside the relay, a repeat also comes from the role lane's take-over of a former boot's unresolved attempt, and from the kept lane's drain forwarding again a copy whose pod was killed before it settled the forward (`role_keep.go`).
     Each of those carries its own event id too.
 
 - **Delivery exceptions** carry an id derived from the event id, the recipient session and the reason, so a redelivery that fails the same way publishes an exception with the same id and dedupe key, which the stream stores once.
@@ -324,13 +324,14 @@ Every pod of a machine id reads and writes the same records, so a pod that takes
   the server's time of the write that took the lease when no pod of the machine was serving (no record, or one last written more than two TTLs before).
   A claim stored before `service_since` keeps its grace for one session TTL after it; every pod answers a claim alike, whenever it started.
 
-- **Registry writes** (session registrations, interests, role claims) are compare-and-set at the revision the pod read, merged again over the bucket's value on a conflict, at most 5 attempts, then `503` with `Retry-After: 1`.
+- **Registry writes** (session registrations, interests, role claims) are compare-and-set at the revision the pod read, merged again over the bucket's value on a conflict, then `503` with `Retry-After: 1` once a write's attempts are spent:
+  5 for a session registration (`writeAttempts`, `internal/session/registry.go`), 3 for an interest (`interestWriteAttempts`, `internal/store/interest_writes.go`), 3 for a role claim's release or hand-back (`roleClaimReleaseAttempts`, `internal/store/role_release.go`) and 1 for its renewal (`renewRoleClaim`'s `attempts: 1`, `internal/store/role_renewal.go`).
   A pod whose cache has not seen a registration reads the bucket before `/v1/messages/send` or `/v1/roles/set` answers that the session is unknown.
 
 One record is each pod's own, deliberately:
-the **publish route's confirmation record** (`listenerDeps.confirmed`, `internal/dedupe`'s in-process cache), which holds each (dedupe key, session) whose receipt arrived through `/v1/messages/send` or `/v1/messages/publish` on this pod.
-Only a receipt the route itself took counts, and the delivery ledger above records what the machine delivered rather than what a recipient confirmed, so the two are not one record.
-A send retried against another pod of the machine forwards again, and the holder's receipt answers it.
+the **publish route's confirmation record** (`listenerDeps.confirmed`, `internal/dedupe`'s in-process cache), which holds each (dedupe key, session) the stream stored a forward of through `/v1/messages/send` or `/v1/messages/publish` on this pod.
+Only a forward the route itself made counts, and the delivery ledger above records what the machine delivered, which is not the route's own forward to the holder, so the two are not one record.
+A send retried against another pod of the machine forwards again, and the stream keeps one copy of that forward under its `Nats-Msg-Id` (`bus.ForwardMsgID`).
 
 ## Two builds of the listener
 

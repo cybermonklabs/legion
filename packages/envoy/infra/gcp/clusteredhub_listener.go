@@ -20,9 +20,10 @@ const (
 	clusteredHubListenerPreStopSeconds = 5
 	// clusteredHubListenerShutdownSeconds is the longest the session listener takes to stop on its
 	// SIGTERM: the HTTP server's 10 s, the role lane's 5 s (a 3 s drain of the lane's own client,
-	// and the 2 s receipt window for the forwards its handler handed over, roleLane.drain) and the
-	// NATS connection's 13 s drain, run one after another. The listener holds the three as
-	// stopHTTPGrace, stopLaneGrace and stopClientDrain, summed as stopBudget
+	// and the 2 s it waits for the stream to acknowledge the forwards its handler handed over,
+	// roleForwardTimeout, roleLane.drain) and the NATS connection's 13 s drain, run one after
+	// another. The listener holds the three as stopHTTPGrace, stopLaneGrace and stopClientDrain,
+	// summed as stopBudget
 	// (packages/envoy/cmd/listener/main.go); this module is a Go module of its own and cannot
 	// import them, so the number is written again here and the two listener pod goldens are held
 	// to stopBudget by the listener's own TestListenerPodGracesCoverTheStopBudget.

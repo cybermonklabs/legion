@@ -264,17 +264,11 @@ func clearLedgerAttempt(cfg listenerDeliveryHandlerConfig, item contracts.Envelo
 	}
 }
 
-// ledgerAsk is what one caller wants of the delivery ledger (ledgerAttempt).
-type ledgerAsk struct {
-	// role picks the role lane's skip line, `listener role dedupe skip`, for every skip.
-	role bool
-}
-
-// ledgerAttempt asks the delivery ledger for (item, sessionID) before the listener forwards the
-// role-lane message to it, and logs and
-// counts any skip. It returns the attempt the delivery settles and deliver=true when the
-// listener goes on to deliver; otherwise retryIn > 0 asks the durable lane to retry the message
-// after it, and zero to ack it.
+// ledgerAttempt asks the delivery ledger for (item, sessionID) before a delivery path acts on the
+// pair, and logs and counts any skip: under the role lane's own line, `listener role dedupe
+// skip`, for a role-lane message (contracts.RoleTopicPrefix). It returns the attempt the delivery
+// settles and deliver=true when the listener goes on to deliver; otherwise retryIn > 0 asks the
+// durable lane to retry the message after it, and zero to ack it.
 //
 //   - Delivered (already delivered) and InFlight (this process's attempt whose delivery may still
 //     be running, or one a delivery kept) skip the pair, and the message is acked.
@@ -284,7 +278,7 @@ type ledgerAsk struct {
 //     a core lane delivers without the ledger, under the zero attempt, which settles nothing. The
 //     durable lane first waits for the ledger's connection (ledgerReconnected) and asks once more,
 //     so a call that failed while that connection was reconnecting costs no 30 s.
-func ledgerAttempt(cfg listenerDeliveryHandlerConfig, message deliveryMessage, item contracts.Envelope, sessionID string, ask ledgerAsk) (attempt dedupe.Attempt, deliver bool, retryIn time.Duration) {
+func ledgerAttempt(cfg listenerDeliveryHandlerConfig, message deliveryMessage, item contracts.Envelope, sessionID string) (attempt dedupe.Attempt, deliver bool, retryIn time.Duration) {
 	durable := message.mode == durableDelivery
 	attempt, err := cfg.ledger.Attempt(item.DedupeKey, sessionID)
 	// Only the durable lane waits for the ledger's connection and asks again: every other ask
@@ -322,7 +316,7 @@ func ledgerAttempt(cfg listenerDeliveryHandlerConfig, message deliveryMessage, i
 			retryIn = attempt.RetryIn
 		}
 	}
-	if ask.role {
+	if strings.HasPrefix(item.Topic, contracts.RoleTopicPrefix) {
 		line = "listener role dedupe skip"
 	}
 	applyDeliveryOutcome(cfg, item, deliveryOutcome{
@@ -509,7 +503,7 @@ func roleTopicDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMessag
 		message.finalize(false)
 		return
 	}
-	attempt, deliver, _ := ledgerAttempt(cfg, message, item, sessionID, ledgerAsk{role: true})
+	attempt, deliver, _ := ledgerAttempt(cfg, message, item, sessionID)
 	if !deliver {
 		message.finalize(false)
 		return
@@ -709,7 +703,7 @@ func agentSubjectDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMes
 	// message the relay of the session's own consumer delivers, and one a session another
 	// listener owns. A record of either would say this listener delivered a message it handed to
 	// nobody, and the relay, which asks the ledger for nothing, would be judged by it.
-	attempt, deliver, retryIn := ledgerAttempt(cfg, message, item, sessionID, ledgerAsk{})
+	attempt, deliver, retryIn := ledgerAttempt(cfg, message, item, sessionID)
 	if !deliver {
 		message.finish(cfg, retryIn)
 		return
@@ -753,18 +747,15 @@ func agentSubjectDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMes
 	unplaceableAgentDelivery(cfg, message, item, sessionID, metadata, attempt)
 }
 
-// fanoutDelivery delivers a general-topic envelope to every session that
-// registered interest in it (registry.Match), aggregating per-recipient
-// failures into a single NAK/ACK decision for the underlying message. Every
-// recipient this path answers for is asked of the delivery ledger, after the
-// echo check and before its delivery-mode checks: a recipient it refuses, so
-// that one `delivery_failed` holds across the copies of an event stored on
-// several of the session's topics. A recipient whose own consumer relays the
-// message is asked nothing at all: a
-// record written here would have the relay's own copy of the next event under
-// that key skipped as one the session already has. The message is retried
-// after the longest wait any recipient asks for: durableRetryDelay for a
-// failure, or until another pod's attempt can be taken over.
+// fanoutDelivery delivers a general-topic envelope to every session that registered interest in
+// it (registry.Match), aggregating per-recipient failures into a single NAK/ACK decision for the
+// underlying message. Every recipient this path answers for is asked of the delivery ledger,
+// after the echo check and before its delivery-mode checks: a recipient it refuses, so that one
+// `delivery_failed` holds across the copies of an event stored on several of the session's
+// topics. A recipient whose own consumer relays the message is asked nothing at all: a record
+// written here would have the relay's own copy of the next event under that key skipped as one
+// the session already has. The message is retried after the longest wait any recipient asks for:
+// durableRetryDelay for a failure, or until another pod's attempt can be taken over.
 func fanoutDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMessage, item contracts.Envelope) {
 	items := cfg.registry.Match(cfg.machineID, item.Topic)
 	if len(items) == 0 {
@@ -827,7 +818,7 @@ func fanoutDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMessage, 
 		if !relayed && verdict != takeFollowedTopic {
 			var deliver bool
 			var wait time.Duration
-			if attempt, deliver, wait = ledgerAttempt(cfg, message, item, interest.SessionID, ledgerAsk{}); !deliver {
+			if attempt, deliver, wait = ledgerAttempt(cfg, message, item, interest.SessionID); !deliver {
 				retryIn = max(retryIn, wait)
 				continue
 			}

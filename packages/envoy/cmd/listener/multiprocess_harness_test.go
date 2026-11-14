@@ -529,6 +529,34 @@ func mpStartNATS(t *testing.T, grant func(testing.TB, string) testnats.Grant) (*
 	return granted.Server, granted.AdminURL
 }
 
+// lineWith is the first line of output containing every one of parts, or "": the rows read a
+// pod's log line through it.
+func lineWith(output string, parts ...string) string {
+	for line := range strings.SplitSeq(output, "\n") {
+		if lineHasAll(line, parts) {
+			return line
+		}
+	}
+	return ""
+}
+
+// linesWith counts the lines of output containing every one of parts, which lineWith finds the
+// first of.
+func linesWith(output string, parts ...string) int {
+	n := 0
+	for line := range strings.SplitSeq(output, "\n") {
+		if lineHasAll(line, parts) {
+			n++
+		}
+	}
+	return n
+}
+
+// lineHasAll reports whether line contains every one of parts.
+func lineHasAll(line string, parts []string) bool {
+	return !slices.ContainsFunc(parts, func(part string) bool { return !strings.Contains(line, part) })
+}
+
 // mpLinesWithout is output without the two lines the listener logs for every delivery, which would
 // bury the rest.
 func mpLinesWithout(output string) string {

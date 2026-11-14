@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dedupe"
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/session"
+	"github.com/sjawhar/envoy/internal/store"
 )
 
 // settledMessage is a durable message whose ack or NAK the test reads back: its reply subject is
@@ -78,18 +79,6 @@ func TestAPodTakingOverDoesNotForwardARoleMessageTheOldPodDelivered(t *testing.T
 	if _, err := harness.registry.SetRole(holder, "test-machine", role, false); err != nil {
 		t.Fatalf("claim the role: %v", err)
 	}
-	receipts, err := harness.client.Conn.Subscribe(contracts.AgentSubject(holder), func(message *natsgo.Msg) {
-		if message.Reply != "" {
-			_ = message.Respond(nil)
-		}
-	})
-	if err != nil {
-		t.Fatalf("subscribe the holder's receipt: %v", err)
-	}
-	t.Cleanup(func() { _ = receipts.Unsubscribe() })
-	if err := harness.client.Conn.Flush(); err != nil {
-		t.Fatalf("flush the holder's subscription: %v", err)
-	}
 	item := listenerTestEnvelope(contracts.RoleTopicPrefix+role, "ledger-takeover-"+id.New())
 	item.Payload = `{"type":"worker-queued"}`
 	data := marshalListenerEnvelope(t, item)
@@ -138,7 +127,7 @@ func TestAPodTakingOverDoesNotForwardARoleMessageTheOldPodDelivered(t *testing.T
 func TestADurableMessageAnotherPodIsAttemptingIsRetriedOnceItCanBeTakenOver(t *testing.T) {
 	harness := newListenerDeliveryHarness(t)
 	const topic = "notifications.github.owner.repo.issue.8"
-	harness.registerCorePathTarget(t, "ses_deferred", topic, nil)
+	harness.registerFanoutTarget(t, "ses_deferred", topic, nil)
 	probe := exceptionProbe(t, harness.client)
 	item := listenerTestEnvelope(topic, "ledger-deferred")
 	item.Payload = `{"delivery":{"mode":"btw"}}`
@@ -180,20 +169,19 @@ func heldOnly(attempt dedupe.Attempt) error {
 }
 
 // A ledger that cannot be read leaves the durable lane unable to tell a repeat from a first
-// delivery, so it retries the message after the usual 30 s rather than risk reporting twice; the
-// core lane, which retries nothing, judges it without the ledger. Each says so at WARN.
-func TestAnUnavailableLedgerRetriesTheDurableLaneAndLetsACoreLaneDeliver(t *testing.T) {
+// delivery, so it retries the message after the usual 30 s rather than risk reporting twice, and
+// says so at WARN.
+func TestAnUnavailableLedgerRetriesTheDurableLane(t *testing.T) {
 	harness := newListenerDeliveryHarness(t)
 	const topic = "notifications.github.owner.repo.issue.9"
-	harness.registerCorePathTarget(t, "ses_unavailable", topic, nil)
+	harness.registerFanoutTarget(t, "ses_unavailable", topic, nil)
 	probe := exceptionProbe(t, harness.client)
 	cfg := harness.config
 	cfg.ledger = unavailableLedger{}
 	item := listenerTestEnvelope(topic, "ledger-unavailable")
 	item.Payload = `{"delivery":{"mode":"btw"}}`
-	data := marshalListenerEnvelope(t, item)
 
-	msg, settlement := settledMessage(t, harness.client.Conn, data)
+	msg, settlement := settledMessage(t, harness.client.Conn, marshalListenerEnvelope(t, item))
 	jetStreamDeliveryHandler(cfg)(context.Background(), msg)
 	if delay := nakDelay(t, settlement(t)); delay != durableRetryDelay {
 		t.Fatalf("durable NAK delay = %s, want %s", delay, durableRetryDelay)
@@ -201,12 +189,6 @@ func TestAnUnavailableLedgerRetriesTheDurableLaneAndLetsACoreLaneDeliver(t *test
 	noException(t, probe)
 	if logs := harness.logs.String(); !strings.Contains(logs, `"msg":"`+ledgerUnavailableLine+`"`) {
 		t.Fatalf("no %q WARN:\n%s", ledgerUnavailableLine, logs)
-	}
-
-	coreNATSDeliveryHandler(cfg)(&natsgo.Msg{Subject: topic, Data: data})
-	assertDeliveryException(t, probe, item, "delivery_failed")
-	if got := strings.Count(harness.logs.String(), `"msg":"`+ledgerUnavailableLine+`"`); got != 2 {
-		t.Fatalf("logged %d %q WARNs, want one per lane", got, ledgerUnavailableLine)
 	}
 }
 
@@ -231,7 +213,7 @@ func (l *failingOnceLedger) Attempt(dedupeKey, sessionID string) (dedupe.Attempt
 func TestALedgerCallThatFailedInAReconnectIsMadeAgainOnceTheConnectionIsBack(t *testing.T) {
 	harness := newListenerDeliveryHarness(t)
 	const topic = "notifications.github.owner.repo.issue.10"
-	harness.registerCorePathTarget(t, "ses_reconnect", topic, nil)
+	harness.registerFanoutTarget(t, "ses_reconnect", topic, nil)
 	probe := exceptionProbe(t, harness.client)
 	cfg := harness.config
 	cfg.ledger = &failingOnceLedger{Ledger: testDeliveryLedger(t, harness.client.Conn, "test-machine", "boot-reconnect")}
@@ -265,19 +247,51 @@ func TestALedgerCallThatFailedInAReconnectIsMadeAgainOnceTheConnectionIsBack(t *
 	noException(t, probe)
 }
 
-// ledgerDownForSession fails every Attempt for one session and answers from Ledger for the rest:
-// a ledger outage of one pair alone, which is what tells a delay that recipient caused from one
-// another recipient caused.
-type ledgerDownForSession struct {
-	dedupe.Ledger
-	sessionID string
-}
-
-func (l ledgerDownForSession) Attempt(dedupeKey, sessionID string) (dedupe.Attempt, error) {
-	if sessionID == l.sessionID {
-		return dedupe.Attempt{}, errLedgerDown
+// A message on the agent subject of a session this listener hands nothing to - one whose own
+// consumer relays the message, and one another listener owns - is settled before the delivery
+// ledger is asked (agentSubjectDelivery), so it costs no ledger write, no wait for the ledger's
+// connection and no 30 s retry however down the ledger is: a NAK here would hold back, for a
+// copy this listener handed to nobody, a message the relay or the other listener delivers. The
+// durable acknowledges both before it decodes them while its cached copies of the two
+// registries are current (durableNeedsDelivery), so the row hands each to the delivery path
+// itself, as the durable does when a copy trails the bucket that path reads.
+func TestAnAgentMessageThisListenerHandsToNobodyIsAckedWithoutAskingTheLedger(t *testing.T) {
+	harness := newListenerDeliveryHarness(t)
+	cfg := harness.config
+	cfg.ledger = unavailableLedger{}
+	var waits atomic.Int32
+	cfg.ledgerReconnected = func(context.Context) bool { waits.Add(1); return false }
+	recipients := []struct{ sessionID, machineID string }{
+		{"ses_relayed", "test-machine"},
+		{"ses_elsewhere", "other-machine"},
 	}
-	return l.Ledger.Attempt(dedupeKey, sessionID)
+	for _, recipient := range recipients {
+		if _, err := harness.registry.Upsert(store.Interest{SessionID: recipient.sessionID, MachineID: recipient.machineID}, nil); err != nil {
+			t.Fatalf("register %s's stored subscription: %v", recipient.sessionID, err)
+		}
+		if err := harness.sessions.Put(recipient.sessionID, session.SessionEntry{SelfSubscribed: true, MachineID: recipient.machineID, Delivery: session.DeliveryConsumer, Epoch: "e"}); err != nil {
+			t.Fatalf("register %s on consumer delivery: %v", recipient.sessionID, err)
+		}
+	}
+	deliver := listenerDeliveryHandler(cfg)
+	for _, recipient := range recipients {
+		item := listenerTestEnvelope(contracts.AgentSubject(recipient.sessionID), "unasked-"+recipient.sessionID)
+		msg, settlement := settledMessage(t, harness.client.Conn, marshalListenerEnvelope(t, item))
+		warned := strings.Count(harness.logs.String(), ledgerUnavailableLine)
+		deliver(deliveryMessage{data: msg.Data, mode: durableDelivery, msg: msg, ctx: context.Background()})
+		if got := settlement(t); got != "+ACK" {
+			t.Errorf("%s: settlement = %q, want an ack with no %s retry", recipient.sessionID, got, durableRetryDelay)
+		}
+		if got := waits.Swap(0); got != 0 {
+			t.Errorf("%s: the durable lane waited for the ledger's connection %d times, want none", recipient.sessionID, got)
+		}
+		if got := strings.Count(harness.logs.String(), ledgerUnavailableLine) - warned; got != 0 {
+			t.Errorf("%s: a message this listener hands to nobody asked the ledger, logging %d %q WARNs", recipient.sessionID, got, ledgerUnavailableLine)
+		}
+	}
+	if body := deliveredMetrics(t, harness); !strings.Contains(body, `test_messages_delivered{delivery_status="skipped"} 1`) {
+		t.Fatalf("delivery metrics %s, want the relayed session's delivery skipped once", body)
+	}
 }
 
 func TestADeliveryExceptionsIDIsItsEventRecipientAndReason(t *testing.T) {

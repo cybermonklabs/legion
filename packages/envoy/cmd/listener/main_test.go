@@ -3790,27 +3790,6 @@ func (h listenerDeliveryHarness) registerFanoutTarget(t *testing.T, sessionID, t
 	}
 }
 
-// registerCorePathTarget is registerFanoutTarget for a session on the core path: an entry that
-// records neither a consumer of its own nor a subscription of its own, as a registration the
-// listener answered `core` for want of the session-consumer grant leaves. The durable path
-// fans a stored message out to such a session, which is what makes it the recipient a fan-out
-// refusal - and so a ledger attempt - is about.
-func (h listenerDeliveryHarness) registerCorePathTarget(t *testing.T, sessionID, topic string, capabilities []string) {
-	t.Helper()
-	if _, err := h.registry.Upsert(store.Interest{
-		SessionID: sessionID,
-		MachineID: "test-machine",
-	}, []string{topic}); err != nil {
-		t.Fatalf("register interest: %v", err)
-	}
-	if err := h.sessions.Put(sessionID, session.SessionEntry{
-		MachineID:    "test-machine",
-		Capabilities: capabilities,
-	}); err != nil {
-		t.Fatalf("register session: %v", err)
-	}
-}
-
 // registerConsumerTarget is registerFanoutTarget for a session on consumer delivery, the shape
 // every live registration has (consumerRegistration): its messages are held by its own consumer
 // and sent by that consumer's relay, so a delivery to it resolves as relayed and is counted
@@ -3853,17 +3832,6 @@ func listenerTestEnvelope(topic, dedupeKey string) contracts.Envelope {
 		PayloadSummary: "listener test notification",
 		TraceID:        id.New(),
 	}
-}
-
-// lineWith is the first line of output containing every one of parts, or "". The rows of both
-// builds read a log line through it.
-func lineWith(output string, parts ...string) string {
-	for line := range strings.SplitSeq(output, "\n") {
-		if !slices.ContainsFunc(parts, func(part string) bool { return !strings.Contains(line, part) }) {
-			return line
-		}
-	}
-	return ""
 }
 
 func marshalListenerEnvelope(t *testing.T, item contracts.Envelope) []byte {

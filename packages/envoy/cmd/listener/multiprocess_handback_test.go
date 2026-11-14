@@ -348,15 +348,7 @@ func mpRetryOutstanding(t *testing.T, uri string, a *mpPod, row string) (serving
 		{`"msg":"interest registry cache warm-up"`, `"outcome":"completed"`},
 		{`"msg":"session registry cache warm-up"`, `"outcome":"completed"`},
 	}
-	count := func(parts []string) int {
-		n := 0
-		for line := range strings.SplitSeq(a.Output.String(), "\n") {
-			if !slices.ContainsFunc(parts, func(part string) bool { return !strings.Contains(line, part) }) {
-				n++
-			}
-		}
-		return n
-	}
+	count := func(parts []string) int { return linesWith(a.Output.String(), parts...) }
 	before := make([]int, len(back))
 	for index, parts := range back {
 		before[index] = count(parts)
@@ -402,12 +394,7 @@ func mpRetryOutstanding(t *testing.T, uri string, a *mpPod, row string) (serving
 	})
 	failed := `"msg":"listener delivery failed"`
 	mpEventually(t, 30*time.Second, a.instance+" to NAK every parked message for durableRetryDelay", func() bool {
-		failures := 0
-		for line := range strings.SplitSeq(a.Output.String(), "\n") {
-			if strings.Contains(line, failed) && strings.Contains(line, `"session_id":"`+parked+`"`) {
-				failures++
-			}
-		}
+		failures := linesWith(a.Output.String(), failed, `"session_id":"`+parked+`"`)
 		return failures >= mpParkedMessages &&
 			metricValue(t, &listenerProcess{Process: a.Process, port: a.port}, "envoy_messages_naked_total") >= mpParkedMessages
 	})

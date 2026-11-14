@@ -83,26 +83,14 @@ func TestAListenerUnderItsMachinesGrantHoldsTheLeaseAndRecordsLastSeen(t *testin
 	if frame := standIn.collect(t, 1, 15*time.Second)[0]; frame.item.EventID != item.EventID {
 		t.Fatalf("the frame relayed to %s carries event %s, want %s", sessionID, frame.item.EventID, item.EventID)
 	}
-	// Neither the relay of a session's own consumer nor a session that reads its own
-	// subscription costs a ledger write: this listener hands them nothing. The one delivery it
-	// makes itself is the role-lane forward, which records the pair delivered, so that is the
-	// `delivery.` key this grant must allow.
+	// The relay of a session's own consumer costs no ledger write: this listener hands it
+	// nothing. The one delivery it makes itself is the role-lane forward, which records the pair
+	// delivered once the stream stored the forward, so that is the `delivery.` key this grant must
+	// allow.
 	const role = "granted-keeper"
 	if status, answer := callListener(t, listener.port, http.MethodPost, "/v1/roles/set",
 		fmt.Sprintf(`{"session_id":%q,"role":%q}`, sessionID, role)); status != http.StatusOK {
 		t.Fatalf("claim %s for %s: status %d %s", role, sessionID, status, answer)
-	}
-	receipts, err := publisher.Conn.Subscribe(contracts.AgentSubject(sessionID), func(message *natsgo.Msg) {
-		if message.Reply != "" {
-			_ = message.Respond(nil)
-		}
-	})
-	if err != nil {
-		t.Fatalf("subscribe the holder's receipt: %v", err)
-	}
-	t.Cleanup(func() { _ = receipts.Unsubscribe() })
-	if err := publisher.Conn.Flush(); err != nil {
-		t.Fatalf("flush the holder's subscription: %v", err)
 	}
 	publish(t, publisher, newEnvelope("dispatch", contracts.RoleTopicPrefix+role, "a role message for its holder"))
 	ledger := "delivery." + bus.ListenerDurable(machineID) + "."

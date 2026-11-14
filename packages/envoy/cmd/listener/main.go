@@ -1077,8 +1077,9 @@ func openDeliveryLease(urls []string, replicas int, machineID, instance string, 
 
 // deliveryHandlingLimit is the longest one durable message's handling may take while it holds a
 // delivery-ledger attempt: its session read, its ledger calls, and, on the role lane, the
-// forward's publish and receipt wait. The delivery ledger's take-over age and the unplaceable
-// deferrals' expiry (unplaceableDeferralExpiry) count on it.
+// forward's publish and its wait for the stream's acknowledgement (roleForwardTimeout). The
+// delivery ledger's take-over age and the unplaceable deferrals' expiry
+// (unplaceableDeferralExpiry) count on it.
 const deliveryHandlingLimit = 30 * time.Second
 
 // ledgerTakeoverMargin is how much longer than one message's handling (deliveryHandlingLimit) a
@@ -1129,8 +1130,9 @@ func ledgerConnected(conn *nats.Conn) func(ctx context.Context) bool {
 //
 // A record is keyed by the envelope's dedupe key, not its event id: fan-out normalization can
 // produce envelopes with one event id and distinct dedupe keys. Each forward is recorded as
-// attempted before it is sent and as delivered once the holder receipts it, so a receipt this
-// pod gave up waiting for costs no second forward.
+// attempted before it is sent and as delivered once the stream acknowledges that it stored the
+// forward, which is the whole of a forward's outcome (startRoleForward), so no pod of the machine
+// forwards that pair again.
 func newDeliveryLedger(deliveryLease *lease, machineID string, requestLimit time.Duration) dedupe.Ledger {
 	takeoverAfter := requestLimit + ledgerTakeoverMargin
 	if deliveryLease == nil {
@@ -1316,7 +1318,7 @@ func main() {
 	sessionsReaped := met.NewCounter("envoy_sessions_reaped_total", "Session records deleted at the gone horizon with no clean stop")
 	sessionStoredAfterLastSeen := met.NewCounter("envoy_session_messages_stored_after_last_seen_total", "Messages the stream held for a reaped session, stored after its last registration; not a count of unread messages, since the listener keeps no read receipt")
 	sendsToUnresponsive := met.NewCounter("envoy_sends_unresponsive_total", "Sends accepted and stored for a recipient past the live window")
-	fanoutUnresponsiveSkips := met.NewCounter("envoy_fanout_unresponsive_skipped_total", "Topic deliveries to a session past the live window that were not made: a push not sent, or an ad-hoc topic send's receipt not waited for; the message is stored for the session either way")
+	fanoutUnresponsiveSkips := met.NewCounter("envoy_fanout_unresponsive_skipped_total", "Topic fan-outs skipped for a session past the live window; the message is stored for the session either way")
 	roleKeptExpired := met.NewCounter("envoy_role_kept_expired_total", "Kept role messages a claim's drain dropped unforwarded, the stream having held them longer than the keep window")
 	deliveryDuration := met.NewHistogram("envoy_delivery_duration_seconds", "Duration of message delivery attempts", metrics.DefaultBuckets)
 	// The CI summary loop runs only beside the GitHub webhook route (holderLoops starts it), so

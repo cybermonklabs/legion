@@ -117,7 +117,7 @@ func (r *Registry) renewRoleClaim(ctx context.Context, role, sessionID, clientIn
 			renewed := claim
 			renewed.ClientInstanceID = clientInstanceID
 			renewed.RenewedAt = r.now().UnixMilli()
-			data, err := EncodeKeeping(renewed, renewed.unknown)
+			data, err := encodeRoleClaim(renewed)
 			if err != nil {
 				return 0, err
 			}

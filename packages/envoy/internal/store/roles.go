@@ -229,6 +229,12 @@ func DecodeRoleClaim(value []byte) (RoleClaim, error) {
 	return RoleClaim{HolderSessionID: holder}, nil
 }
 
+// encodeRoleClaim writes claim for the bucket: its known fields, and the unknown keys it was
+// decoded with (DecodeRoleClaim).
+func encodeRoleClaim(claim RoleClaim) ([]byte, error) {
+	return EncodeKeeping(claim, claim.unknown)
+}
+
 // newRoleHolderCopy is an empty copy of the role claim bucket, which keeps the session each claim
 // it can read names. A claim this build cannot read (ErrMalformedRoleClaim) gives its role to
 // nobody, so the copy keeps no entry for it, as a delete marker leaves none.
@@ -684,7 +690,7 @@ func (r *Registry) SetRoleWithPrevious(ctx context.Context, req RoleClaimRequest
 	if req.Soft {
 		claim.PreviousSessionID = req.PreviousSessionID
 	}
-	data, err := EncodeKeeping(claim, claim.unknown)
+	data, err := encodeRoleClaim(claim)
 	if err != nil {
 		return Interest{}, err
 	}

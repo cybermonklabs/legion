@@ -451,10 +451,7 @@ func (r *relayRun) dropWake() {
 // waitPause waits out a paused run's backoff, d, the session's next registration, or the end of the
 // run, and reports whether the run goes on.
 func (r *relayRun) waitPause(ctx context.Context, d time.Duration) bool {
-	select {
-	case <-r.resume:
-	default:
-	}
+	r.dropWake()
 	timer := time.NewTimer(d)
 	defer timer.Stop()
 	select {

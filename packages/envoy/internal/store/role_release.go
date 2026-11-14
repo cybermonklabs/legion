@@ -294,7 +294,7 @@ func (r *Registry) markRoleClaimHandedBack(ctx context.Context, sessionID, role 
 		send: func(claim RoleClaim) (uint64, error) {
 			marked := claim
 			marked.HandedBack = true
-			data, err := EncodeKeeping(marked, marked.unknown)
+			data, err := encodeRoleClaim(marked)
 			if err != nil {
 				return 0, err
 			}

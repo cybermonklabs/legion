@@ -7,9 +7,9 @@ import (
 
 // Cache is one process's record of the (dedupe key, session) pairs it has confirmed, kept for a
 // TTL. It is not the delivery ledger: the ledger is the machine's record of what every lane
-// delivered or forwarded, and the listener's publish route keeps this one beside it, because only a
-// receipt that arrived through the route may answer a later send of the same key 200 with nothing
-// forwarded (cmd/listener/confirmed.go). Thread-safe via sync.RWMutex.
+// delivered or forwarded, and the listener's publish route keeps this one beside it, because only
+// a forward the stream stored through the route may answer a later send of the same key 200 with
+// nothing forwarded (cmd/listener/confirmed.go). Thread-safe via sync.RWMutex.
 type Cache struct {
 	mu      sync.RWMutex
 	entries map[Key]time.Time

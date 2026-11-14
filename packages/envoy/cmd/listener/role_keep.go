@@ -665,15 +665,16 @@ func readKeptLaneHead(ctx context.Context, client *bus.Client, role string) (kep
 // a forward that failed, a context that ran out - because the walk starts at kept + 1, so a copy
 // claimed and never confirmed is simply the next copy a walk reads: the next one of all, where
 // the walk released its claim on its way out (roleKeepLaneCursor.release), and the next one past
-// bus.KeptRoleClaimWindow where nothing was left to release it. What that costs is one more copy
-// when a walk ends between its forward and its confirm, which the walk reports
-// (roleKeepDrainResult): the repeat carries the same stable id (bus.ForwardMsgID of the
-// forward's dedupe key and the agent subject), so for the same holder the stream's duplicate
-// window keeps one stored copy and the holder's own dedupe_key drops the second. The delivery
-// ledger the machine's pods share answers for that copy before the repeat is made at all
-// (keptRoleForwardAttempt): a forward settled delivered there is passed over, where one the
-// ledger has no record of - a receipt that never came, a pod killed before it settled - is
-// forwarded once more.
+// bus.KeptRoleClaimWindow where nothing was left to release it. A walk that ends between its
+// forward and its confirm costs the holder no second copy for it: the forward is settled
+// delivered in the delivery ledger the machine's pods share before the confirm is written
+// (finishRoleForward), and the next walk asks that ledger before it forwards a copy
+// (keptRoleForwardAttempt), so it passes this one over. The walk still reports the copy
+// unconfirmed (roleKeepDrainResult). Only a copy the ledger holds no delivered record of - a pod
+// killed before it settled - is forwarded once more, and the repeat carries the same stable id
+// (bus.ForwardMsgID of the forward's dedupe key and the agent subject), so for the same holder
+// the stream's duplicate window keeps one stored copy and the holder's own dedupe_key drops the
+// second.
 //
 // Before each copy it reads the role's holder from the registry's watched copy of the role
 // bucket, which costs no round trip, and stops when the role has moved to another session

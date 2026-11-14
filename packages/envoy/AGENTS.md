@@ -4252,8 +4252,9 @@ Each item below names an endpoint and its method, then its contract, and an item
   A role topic is answered once the stream stored the forward, or once 4 s from the request's arrival have passed (`publishDeliveryWindow`), and publishes no delivery exception: the sender has the answer.
   Only a store the route itself made counts:
   the route keeps its own record of each session it stored a dedupe key for (`listenerDeps.confirmed`, 10 minutes), which a later send of the key reads.
-  Four deliveries ask the delivery ledger and no others do: a role-lane forward, a fan-out refusal, an unplaceable agent delivery's give-up, and the agent-subject delivery of a message a session takes off its own subscription, which records the pair delivered so the next copy of it is a `dedupe` skip (`TestListenerDeliveryHandler_DedupesSuccessfulDelivery`).
-  That record says the machine delivered the message, not that the session confirmed it, so the route reads its own `confirmed` record rather than the ledger, and `fanoutDelivery`, which asks the ledger only for a recipient it refuses, writes nothing for a self-subscribed recipient at all.
+  Six deliveries ask the delivery ledger and no others do (`cmd/listener/README.md`, "State the pods share"):
+  a role-lane forward, the kept lane's drain, a fan-out refusal, an unplaceable agent delivery's give-up, an agent-subject delivery whose route to the session failed, and this route's confirmation that the stream stored its forward.
+  The ledger records what the machine delivered, which is not this route's own forward to the holder, so the route reads its own `confirmed` record rather than the ledger.
 
 - A topic that does not begin with `notifications.` is refused `400 {"error":"topic must begin with notifications.","expected":["topic"]}` and nothing is published, which closes the raw-subject route a bearer could otherwise use to write the listener's own key-value buckets
   — the role-claim records among them — and reach `$JS.API.*`.

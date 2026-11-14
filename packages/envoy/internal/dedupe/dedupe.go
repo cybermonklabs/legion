@@ -1,7 +1,7 @@
 // Package dedupe is the listener's delivery ledger: what it knows of each (dedupe key, session)
-// pair it forwards on the role lane, or counts delivered for a session that reads the message on
-// its own NATS subscription, so a message already delivered to a session, or being delivered to
-// it, is not delivered again. Every pod of one machine shares one ledger (KV, over the listener
+// pair it forwards to a role's holder, or reports or gives up a delivery of, so a message already
+// delivered to a session, or being delivered to it, is not delivered again, and a failure already
+// reported is not reported twice. Every pod of one machine shares one ledger (KV, over the listener
 // state bucket), so a pod that takes the delivery lease over does not forward to a session again
 // what the pod before it delivered. A listener that cannot open that bucket keeps its ledger in
 // process (Memory), as one listener process alone always did.
