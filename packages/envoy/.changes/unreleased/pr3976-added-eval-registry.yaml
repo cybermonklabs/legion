@@ -1,0 +1,20 @@
+kind: Added
+body: |-
+  Dispatch keeps an eval registry: every number of a project's Delivery, Pipeline and Legion
+  sections is a row of `eval_versions` (its question, the decision it changes, its failure modes,
+  unit, direction, target, owner and the exported fold that computes it), with its series in
+  `eval_series`, logged readings in `eval_readings`, and a section of the project's `evals-md`
+  document holding its method. Every project is seeded with the catalogue when it is created and
+  at boot. `GET /api/v1/projects/{key}/evals` folds each eval's stored per-day rows (`eval_days`)
+  for a window and an optional compare range, with the verdict against its target and the first
+  day it has data; `GET .../evals/{slug}` answers its versions and its method text;
+  `GET .../evals/{slug}/items` answers the rows behind a number in one shape for every row kind;
+  `POST .../evals/{slug}/readings` takes a batch of readings under an `Idempotency-Key`, whole or
+  not at all, and registers a slug no row holds; `POST /api/v1/projects/{key}/evals` registers or
+  changes a definition; `PUT` and `DELETE` of a reading answer `405 READING_APPEND_ONLY`; and
+  `GET /api/v1/evals` reads every project, or the ones named. A refresher keeps the day rows true
+  to their inputs from the delivery change feed, issue events and a daily tick, and the live hub
+  has an `evals` view that wakes when a reading, a version or a day row of its project lands.
+  The per-issue Legion facts also store parked, queued and slot-wait hours, the role bars with
+  their segments, idle hours by role, the hours after the first review, the children and the
+  started and merged times, and the filings a Legion session made are stored in `issue_filings`.

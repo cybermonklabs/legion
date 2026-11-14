@@ -1,0 +1,8 @@
+kind: Changed
+body: |-
+  Three reads of the Delivery page take their own keys instead of scanning: a session's title is
+  stored in `session_titles` (written by a trigger on `events` and filled at boot) and read by
+  primary key, a run-jobs read names the jobs it reads, and the open-P0 partial index
+  `issues_open_p0` serves the unowned-P0 count and the live hub's read of open P0 issues. The
+  lease pool holds two more connections, for the eval seed and the day-row refresher, so a
+  process opens 109 connections at most.

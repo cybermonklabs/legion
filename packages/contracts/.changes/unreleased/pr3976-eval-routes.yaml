@@ -1,0 +1,6 @@
+kind: Changed
+body: |-
+  The Dispatch API contract carries the eval routes' types (the list, detail, items, readings and
+  register bodies, `EvalListItem` and the `evals` live view) and no longer carries the Legion
+  metrics route's response types. The delivery measures' `change_failure_rate` is nullable: it is
+  null while no failure source exists.
