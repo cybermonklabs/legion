@@ -490,6 +490,14 @@ var refusedRows = []refusedRow{
 	{name: "after an alter event trigger", migrations: []string{"alter event trigger et_1792 enable", "alter table big alter column flag drop default"}, says: "the earlier pending migration 0002_row.up.sql creates or alters an event trigger, which can run code of its own on them"},
 	{name: "after a migration that does not parse, an admitted form without a catalog read is not exempt either", migrations: []string{"create tabel broken (id int)", "alter table big alter column flag drop default"}, says: "the earlier pending migration 0002_row.up.sql does not parse, so the census cannot see whether it creates or alters an event trigger"},
 	{name: "after a create event trigger, a concurrent index build", migrations: []string{"create event trigger et_pending_1792 on ddl_command_start execute function et_fn_1792()", "-- pgmigrate:non-transactional\ncreate index concurrently if not exists big_kind_concurrent on big (kind)"}, says: "the earlier pending migration 0002_row.up.sql creates or alters an event trigger, which can run code of its own on the concurrent index build"},
+	// A pending write of pg_catalog.pg_event_trigger can enable a disabled event trigger, as an
+	// ALTER EVENT TRIGGER … ENABLE does, and the statement shows the write in its own text. The
+	// census reads pg_event_trigger as it stands before any pending migration applies, so it cannot
+	// see the trigger the write enables, and the second migration's DROP DEFAULT needs no catalog
+	// read. On PostgreSQL 18.6, with artifact_versions at 1.2 GiB, the census exempted such a
+	// DROP COLUMN after this UPDATE, and at apply time the trigger counted every row of the table.
+	{name: "after an update of pg_catalog.pg_event_trigger", migrations: []string{"update pg_catalog.pg_event_trigger set evtenabled = 'O' where evtname = 'et_1792'", "alter table big alter column flag drop default"}},
+	{name: "after an update of pg_event_trigger without its schema", migrations: []string{"update pg_event_trigger set evtenabled = 'O' where evtname = 'et_1792'", "alter table big alter column flag drop default"}},
 }
 
 // censusOf runs one census, with the table limit at one byte, of sqls as pending migrations
