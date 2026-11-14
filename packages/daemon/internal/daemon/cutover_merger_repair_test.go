@@ -498,7 +498,7 @@ func newCutoverRig(t *testing.T) *cutoverRig {
 	// given and served, with no task recorded for that entry, S's included, whose start the old
 	// record still holds but which 20261110233602 unmarked before the fill read the marked starts.
 	// A merger left behind its entry would be sent the same resume task by another rule
-	// (workflow's sendOwedEntry, for an entry with no task), so the prompts the test counts would
+	// (workflow's sendOwedEntry, for an entry with no task), so the tasks the test counts would
 	// not tell the two records apart.
 	for _, issue := range rig.roots() {
 		var entry, given, served int64

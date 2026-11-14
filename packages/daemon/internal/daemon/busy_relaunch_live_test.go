@@ -14,7 +14,9 @@
 // checkout, paneStandin (claim_compaction_live_test.go), which answers every turn alike and tells
 // the plugin's side question and a compaction's summary apart, and the local runtime that starts a
 // pane where there is no tmux (localruntime_live_test.go). Every stand-in this proof adds is in
-// this file, so the file compiles over the base commit, where none of the shared files has it:
+// this file, so the file compiles over the base commit, where none of the shared files has it.
+// The list below names those stand-ins and the two shared helpers the proof calls besides, which
+// the negative control's base commit must hold, as 7df0a64c does:
 //
 //   - a Hindsight stand-in (hindsightStandin). One pane's overlay turns Oh My Pi's memory backend
 //     on at it, and a step arms it to hold the recall of the next prompt. At the pin Oh My Pi
@@ -26,11 +28,13 @@
 //     session and the next prompt recalls nothing, and one that fails is not, which a run of the
 //     pin made for this proof read (a recall answered 200 made the next prompt start its turn at
 //     once; one answered 503 made the next prompt recall again).
-//   - a scripted answer in front of paneStandin (scriptedStandin): a `tool_use` answer, ported
-//     from the plugins' own pane harness (packages/pi-shared/test/omp-harness.ts, messageStream),
-//     so a turn starts a `task` subagent or an `async` bash job, and a held answer, so a turn —
-//     the late turn, a turn of the agent's own, a subagent's own request — stays open until the
-//     step lets it go or the process that asked dies.
+//   - a scripted answer in front of paneStandin (scriptedStandin): a `tool_use` answer, which the
+//     live proofs' shared streamAnthropicToolUse writes (live_agent_proof_test.go; at 7df0a64c,
+//     late_completion_live_test.go) as the plugins' own pane harness scripts one
+//     (packages/pi-shared/test/omp-harness.ts, messageStream), so a turn starts a `task` subagent
+//     or an `async` bash job, and a held answer, so a turn — the late turn, a turn of the agent's
+//     own, a subagent's own request — stays open until the step lets it go or the process that
+//     asked dies.
 //   - the Envoy listener a pane registers with: the live proofs' shared newPaneListener
 //     (live_agent_proof_test.go), which answers that registration with a consumer of the
 //     session's own, as a session has needed since cybermonklabs/legion#2603.

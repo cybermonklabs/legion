@@ -17,11 +17,16 @@ import (
 // endedWorkLine is the one line a let-go that records what it ended writes (recordEnd).
 const endedWorkLine = "supervise: the relaunch ended work the agent had running"
 
-// The statements of the sentence of a turn cut off that tell what of its background work ended
-// (relaunchSentence): the kind the record names; that the daemon has no report of the turn, and so
-// that its subagents and jobs are gone; that every other one is gone too, where the record names
-// none; and that the turn's subagents and jobs are gone, where the record holds a report of it.
+// The statements of the sentence a relaunched process is told of its let-go (relaunchSentence):
+// whether it cut a turn off — no turn; a turn the agent was in; and the turn of the task it holds
+// — and what of its background work ended: the kind the record names; that the daemon has no
+// report of the turn, and so that its subagents and jobs are gone; that every other one is gone
+// too, where the record names none; and that the turn's subagents and jobs are gone, where the
+// record holds a report of it.
 const (
+	saysNoTurn             = "You were not in a turn then."
+	saysTurnCut            = "The turn you were in was interrupted."
+	saysTaskTurn           = "Your previous turn on this task was interrupted."
 	saysSubagentStopped    = "Each subagent that you started stopped with that process."
 	saysNoReport           = "The daemon has no report"
 	saysTurnGoneUnreported = "So the subagents and background jobs of that turn are gone."
@@ -219,7 +224,7 @@ func TestARelaunchRecordsTheStallBackstop(t *testing.T) {
 
 	h.wantState(StateLaunching)
 	h.wantCalls("Resume", 1)
-	cause := endStalled(backstopBound)
+	cause := endStalled(backstopBound, true)
 	h.wantEnded(EndedWork{At: at, Cause: cause, Generation: stalled, Turn: true, TaskTurn: true,
 		Background: true, Kinds: []string{"subagent"}, Reported: true})
 	h.wantEndedLine(cause)
@@ -288,7 +293,7 @@ func TestARelaunchRecordsTheRegistrationDeadline(t *testing.T) {
 	h.wantEnded(EndedWork{At: at, Cause: cause, Generation: retired,
 		Background: true, Kinds: []string{"async-job"}, Reported: true})
 	h.wantEndedLine(cause)
-	because := "Your previous process ended because " + cause + ". You were not in a turn then."
+	because := "Your previous process ended because " + cause + ". " + saysNoTurn
 	if got := RelaunchSentence(h.claim().EndedWork); !strings.HasPrefix(got, because) {
 		t.Errorf("the relaunch is told %q, want it to begin %q", got, because)
 	}
@@ -574,10 +579,10 @@ func TestARelaunchRecordsTheWorkAnOlderReportSawOfAProcessThatDiesIdle(t *testin
 			says:    []string{saysSubagentStopped, saysNoLastTurnReport, saysEveryOneGone},
 			saysNot: []string{"Your tool calls in flight", saysTurnGoneUnreported}},
 		{name: "a report before the last turn began said nothing runs", before: true,
-			says:    []string{"You were not in a turn then.", saysNoLastTurnReport, saysEveryOneGone},
+			says:    []string{saysNoTurn, saysNoLastTurnReport, saysEveryOneGone},
 			saysNot: []string{"stopped with that process", "Your tool calls in flight", saysTurnGoneUnreported}},
 		{name: "a report after the last turn began named a subagent", kinds: []string{"subagent"}, reported: true,
-			says:    []string{saysSubagentStopped, "You were not in a turn then."},
+			says:    []string{saysSubagentStopped, saysNoTurn},
 			saysNot: []string{saysNoReport, saysEveryOneGone}},
 	} {
 		t.Run(row.name, func(t *testing.T) {
@@ -834,33 +839,33 @@ func TestARelaunchRecordsTheUnionWithAnUntoldRecord(t *testing.T) {
 		Background: true, Kinds: []string{"subagent", "async-job"}, Reported: true})
 }
 
-// The statements of the sentence of a let-go that say whether it cut a turn off
-// (relaunchSentence): no turn; a turn the agent was in; and the turn of the task it holds.
-const (
-	saysNoTurn   = "You were not in a turn then."
-	saysTurnCut  = "The turn you were in was interrupted."
-	saysTaskTurn = "Your previous turn on this task was interrupted."
-)
-
 // compactingIdle is an idle claim whose process's own report named a subagent running, taken for
-// a compaction its connection holds: the claim is stored working, and no turn runs
-// (compactStart). compacted carries what Machine.Compact answers once release lets Oh My Pi
-// answer.
+// a compaction its connection holds (compactHeld).
 func compactingIdle(t *testing.T) (h *harness, release func(), compacted chan error) {
 	t.Helper()
 	h = newHarness(t)
 	h.reach(StateIdle)
 	h.reportActivity("subagent")
-	release = h.conn.HoldCompact()
-	compacted = make(chan error, 1)
-	go func() { compacted <- h.m.Compact(h.ctx, testCompactInstructions) }()
-	waitForCompacting(t, h)
+	release, compacted = h.compactHeld()
 	return h, release, compacted
 }
 
+// compactHeld takes the claim for a compaction of its session that its connection holds: the
+// claim is stored working, and no turn runs (compactStart). compacted carries what
+// Machine.Compact answers once release lets Oh My Pi answer.
+func (h *harness) compactHeld() (release func(), compacted chan error) {
+	h.t.Helper()
+	release = h.conn.HoldCompact()
+	compacted = make(chan error, 1)
+	go func() { compacted <- h.m.Compact(h.ctx, testCompactInstructions) }()
+	waitForCompacting(h.t, h)
+	return release, compacted
+}
+
 // wantRelaunchTold is the relaunched claim, which holds no task, sent the daemon's own delivery of
-// its record at its ready (queueRelaunch), whose sentence says says.
-func (h *harness) wantRelaunchTold(says string) {
+// its record at its ready (queueRelaunch), whose sentence says says. It answers the message that
+// delivery carried.
+func (h *harness) wantRelaunchTold(says string) string {
 	h.t.Helper()
 	sent := len(h.prompts())
 	h.relaunched()
@@ -869,6 +874,7 @@ func (h *harness) wantRelaunchTold(says string) {
 	if !relaunchTask(told.DeliveryID) || !strings.Contains(told.Message, says) {
 		h.t.Errorf("the relaunched claim was sent %+v, want the daemon's own delivery of its record saying %q", told, says)
 	}
+	return told.Message
 }
 
 // A death or a displacement while the claim's session is being compacted, with no turn started
@@ -973,6 +979,41 @@ func TestARelaunchRecordsNoTurnForASuspensionDuringACompaction(t *testing.T) {
 	}
 }
 
+// The stall backstop over a claim working for a compaction with no turn started under it: the
+// daemon's sweep posts over any claim stored working whose last step is past its bound (the
+// daemon's backstopStalledTurns), and compactStart put this idle claim in working in no turn, its
+// last step the start of the turn before. The stop reads the claim as the idle the compaction took
+// it from (endState), so the record names no turn, and its cause says that the claim showed no
+// progress, not a turn (endStalled): the relaunched process is told it was in no turn, and never
+// that a turn of its showed no progress.
+func TestARelaunchRecordsTheStallBackstopDuringACompaction(t *testing.T) {
+	h, release, compacted := compactingIdle(t)
+	last := h.store.step(h.token).LastStep()
+	if last.IsZero() {
+		t.Fatal("the claim records no last step, want the start of the turn before the compaction")
+	}
+	h.advance(backstopBound + time.Minute)
+	stalled, at := h.generation(), h.clock.Now()
+
+	h.must(h.backstop(last))
+
+	h.wantState(StateLaunching)
+	h.wantCalls("Resume", 1)
+	cause := endStalled(backstopBound, false)
+	h.wantEnded(EndedWork{At: at, Cause: cause, Generation: stalled,
+		Background: true, Kinds: []string{"subagent"}, Reported: true})
+	h.wantEndedLine(cause)
+	release()
+	if err := <-compacted; !errors.Is(err, ErrCompactProcessGone) {
+		t.Fatalf("the compaction whose process the backstop let go answered %v, want ErrCompactProcessGone", err)
+	}
+	h.m.Wait()
+	told := h.wantRelaunchTold("Your previous process ended because " + cause + ". " + saysNoTurn)
+	if strings.Contains(told, "its turn showed no progress") {
+		t.Errorf("the relaunched claim was told %q, want no word of a turn that showed no progress", told)
+	}
+}
+
 // A death whose relaunch the wake pacing parks, over a ready claim whose session was being
 // compacted, records nothing: the process never ran a turn, reported nothing and was in none. The
 // death finds nothing to record, so the let-go at the wake's turn decides the record again, with
@@ -983,10 +1024,7 @@ func TestARelaunchRecordsNoTurnForASuspensionDuringACompaction(t *testing.T) {
 func TestARelaunchRecordsNoTurnAtAParkedWakesTurnAfterACompactionLostItsProcess(t *testing.T) {
 	h := pacedHarness(t, wakeRate)
 	h.reach(StateReady)
-	release := h.conn.HoldCompact()
-	compacted := make(chan error, 1)
-	go func() { compacted <- h.m.Compact(h.ctx, testCompactInstructions) }()
-	waitForCompacting(t, h)
+	release, compacted := h.compactHeld()
 
 	h.observe(runtime.Gone)
 	waiting := h.wantWaitingWake(WakeLaunch)

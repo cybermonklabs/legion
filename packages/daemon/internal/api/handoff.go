@@ -235,8 +235,13 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	// — is none of the work a completion could be of, and is refused below, whether the claim
 	// answered for it (supervise's serving reads such a task too, for a claim that has served
 	// nothing) or answered for nothing. Why the held task is not the issue's current task is one
-	// question with one answer (heldTaskNotCurrent), and this is its one reader, so the 409 can
-	// never describe a rule this route does not apply.
+	// question with one answer (heldTaskNotCurrent), and this route is its one reader, so the 409
+	// can never describe a rule this route does not apply. The refusal asks it too when the
+	// fallback did not: a claim that has retired no run and holds a task the agent read or a turn
+	// confirmed, which carries no run — an operator's own, or the daemon's own delivery of what its
+	// relaunch ended (supervise.Delivery.Relaunch), which the turn that reads it confirms — serves
+	// no run either, and the refusal says what the claim holds rather than giving no reason
+	// (noRunCompletion).
 	//
 	// What the narrowness does not buy is a claim with no earlier run to confuse this completion
 	// with. Nothing on this route confirms a delivery or retires a run, so a claim whose held task
@@ -263,6 +268,9 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 		}
 	}
 	if serving == 0 {
+		if notCurrent == "" {
+			notCurrent = heldTaskNotCurrent(grant.Issue, issue.Generation, issue.Phase, c.Pending)
+		}
 		writeFailure(w, http.StatusConflict, "HANDOFF_NO_RUN", noRunCompletion(grant.Issue, issue.Generation, issue.Phase, notCurrent))
 		return
 	}

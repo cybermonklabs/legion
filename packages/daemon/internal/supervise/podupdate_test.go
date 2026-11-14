@@ -475,7 +475,7 @@ func TestPodUpdateAnOperatorsSuspendedClaimDropsTheOlderDaemonsAskAtItsResume(t 
 	if HoldsTask(c.Pending) {
 		t.Fatalf("pending = %+v after the resume, want the older daemon's ask dropped", c.Pending)
 	}
-	if d, held := h.store.delivery(h.token); held && !d.Relaunch() {
+	if d, held := h.store.delivery(h.token); held && HoldsTask(&d) {
 		t.Errorf("the store still holds %+v, want the older daemon's ask deleted", d)
 	}
 }
@@ -1330,7 +1330,7 @@ func TestPodUpdateAnAskKeepsItsRoundWhenItsIdRotates(t *testing.T) {
 	if p := h.claim().Pending; HoldsTask(p) {
 		t.Fatalf("pending after the relaunch's ready = %+v, want the older daemon's ask dropped", p)
 	}
-	if d, held := h.store.delivery(h.token); held && !d.Relaunch() {
+	if d, held := h.store.delivery(h.token); held && HoldsTask(&d) {
 		t.Errorf("the store still holds %+v, want the older daemon's ask deleted", d)
 	}
 }

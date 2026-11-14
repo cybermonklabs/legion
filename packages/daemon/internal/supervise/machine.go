@@ -1175,16 +1175,17 @@ type Machine struct {
 	// (endState). Nothing else reads it: for the rest of the daemon the compaction is gone. It
 	// is memory only, as compacting is.
 	lostCompaction *compacting
-	// turnOver is the state the claim's held suspension finds it in when it runs at the end of
+	// heldStopBack is the state the claim's held suspension finds it in when it runs at the end of
 	// the turn, or of the compaction, the claim is still stored working for (suspendHeldAtEnd):
-	// the state that end gives the claim back in, idle after a turn and the state the compaction
-	// took it from after a compaction with no turn under it. It is "" at every other moment.
-	// Nothing runs any more at that end, so the let-go the stop makes reads the claim in this
-	// state rather than as a turn cut off (endState, recordEnd). The claim's own state stays
-	// working through the stop, as it always has: the stop publishes the claim while the runtime
-	// stops it (stoppingProcess), and the end gives the claim its state back only once the hold's
-	// outcome is known (turnEnded, compactEnded).
-	turnOver ClaimState
+	// the state that end gives the claim back in. That is idle after a turn, and after a
+	// compaction the state it gives back (compacting.back): the state it took the claim from
+	// where no turn ran under it, and idle where a turn ran and ended under it (endState). It is
+	// "" at every other moment. Nothing runs any more at that end, so the let-go the stop makes
+	// reads the claim in this state rather than as a turn cut off (endState, recordEnd). The
+	// claim's own state stays working through the stop, as it always has: the stop publishes the
+	// claim while the runtime stops it (stoppingProcess), and the end gives the claim its state
+	// back only once the hold's outcome is known (turnEnded, compactEnded).
+	heldStopBack ClaimState
 	// processGone is what the runtime's last report of the process the claim records found
 	// (reportedProcess, Claim.ProcessGone), and false until a report has found that process
 	// gone. Every report the machine judges writes it — a gone verdict sets it and a verdict

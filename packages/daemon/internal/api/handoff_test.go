@@ -1997,7 +1997,9 @@ func TestHandoffCompleteRefusesTheCompletionNoTaskOfTheIssuesOwnWorkBacks(t *tes
 		role       claim.Role
 		generation uint64
 		pending    *supervise.RequestDeliver
-		says       []string
+		// confirmed is whether a turn confirmed the held delivery, as the turn that reads it does.
+		confirmed bool
+		says      []string
 	}{
 		{
 			name: "no task at all", at: phase.Testing, role: claim.RoleTester, generation: 1,
@@ -2009,6 +2011,22 @@ func TestHandoffCompleteRefusesTheCompletionNoTaskOfTheIssuesOwnWorkBacks(t *tes
 			name: "the daemon's own delivery of a relaunch's record", at: phase.Testing, role: claim.RoleTester, generation: 1,
 			pending: &supervise.RequestDeliver{Task: "Your previous process ended because its pod was replaced.", ID: "relaunch:WORD"},
 			says:    []string{"this claim holds no task, only the daemon's own delivery of what its relaunch ended (relaunch:WORD), and LEGION-208 is on generation 1 in testing"},
+		},
+		{
+			// The same delivery confirmed by the turn that read it: the claim still serves no run,
+			// since the delivery carries none, and the reason is still what the claim holds.
+			name: "the daemon's own delivery of a relaunch's record, confirmed by its turn", at: phase.Testing, role: claim.RoleTester, generation: 1,
+			pending:   &supervise.RequestDeliver{Task: "Your previous process ended because its pod was replaced.", ID: "relaunch:WORD"},
+			confirmed: true,
+			says:      []string{"this claim holds no task, only the daemon's own delivery of what its relaunch ended (relaunch:WORD), and LEGION-208 is on generation 1 in testing"},
+		},
+		{
+			// An operator's own task the agent's turn confirmed: it carries no run, so the claim
+			// serves none, and the refusal says what the task is rather than giving no reason.
+			name: "an operator's own task, confirmed by its turn", at: phase.Testing, role: claim.RoleTester, generation: 1,
+			pending:   &supervise.RequestDeliver{Task: "look at the flaky test", ID: "operator:77"},
+			confirmed: true,
+			says:      []string{"the task this claim holds (operator:77) is no run's (an operator's own task carries no generation), and LEGION-208 is on generation 1"},
 		},
 		{
 			// The tester's task of run 1 was never read; the child was re-admitted and the issue
@@ -2035,6 +2053,15 @@ func TestHandoffCompleteRefusesTheCompletionNoTaskOfTheIssuesOwnWorkBacks(t *tes
 			if tc.pending != nil {
 				holdingTask(t, h, worker, *tc.pending)
 			}
+			if tc.confirmed {
+				machine, _ := h.supervisor.Machine(worker.token)
+				if err := machine.Handle(context.Background(), supervise.StreamTurnStart{Claim: worker.token, DeliveryID: tc.pending.ID}); err != nil {
+					t.Fatalf("start the turn of %s: %v", tc.pending.ID, err)
+				}
+				if held := machine.Claim().Pending; held == nil || held.ConfirmedAt.IsZero() {
+					t.Fatalf("the pending delivery = %+v, want it confirmed by its turn", held)
+				}
+			}
 			request := HandoffCompleteRequest{GrantID: worker.grant(t), Summary: "the work is done", Commit: headSHA}
 			if tc.role == claim.RoleTester {
 				request = HandoffCompleteRequest{GrantID: worker.grant(t), Summary: "tests pass", Verdict: "pass",
@@ -2042,6 +2069,9 @@ func TestHandoffCompleteRefusesTheCompletionNoTaskOfTheIssuesOwnWorkBacks(t *tes
 			}
 
 			message := refused(t, h.complete(request), http.StatusConflict, "HANDOFF_NO_RUN")
+			if strings.Contains(message, ": ;") {
+				t.Fatalf("the refusal = %q, want it to give its reason", message)
+			}
 			for _, want := range append(tc.says,
 				"nothing was recorded",
 				"Push nothing further, end this turn without completing and tell the architect",

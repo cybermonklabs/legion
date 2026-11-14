@@ -134,9 +134,17 @@ const (
 // endDied is a death's cause, with the runtime's own account of it (Claim.LastDeathCause), quoted.
 func endDied(cause string) string { return "the process died: " + strconv.Quote(cause) }
 
-// endStalled is the stall backstop's cause, with the bound the turn passed.
-func endStalled(bound time.Duration) string {
-	return fmt.Sprintf("its turn showed no progress for %s", bound)
+// endStalled is the stall backstop's cause, with the bound the claim's last step passed. It names
+// a turn only where the stop finds one (inTurn: the claim reads working, endState). The daemon's
+// sweep posts over any claim stored working past its bound (the daemon's backstopStalledTurns),
+// and that includes a claim working for a compaction with no turn started under it, which endState
+// reads as no turn: there it is the claim that showed no progress, so the sentence the next process
+// reads never says a turn stalled and then that it was in none (relaunchSentence).
+func endStalled(bound time.Duration, inTurn bool) string {
+	if inTurn {
+		return fmt.Sprintf("its turn showed no progress for %s", bound)
+	}
+	return fmt.Sprintf("its claim showed no progress for %s", bound)
 }
 
 // endSuspended is a suspension's cause, naming who suspended the claim.
@@ -270,7 +278,7 @@ func (m *Machine) recordGoneEnd(ctx context.Context, cause string) {
 // endState is the claim's state as a let-go reads it for the turn it cuts off (recordEnd): the
 // claim's own, except for a claim stored working for nothing that runs, which reads as the state
 // it is given back in. That is the state a held suspension running at the end of the turn or the
-// compaction the claim was working for finds it in (Machine.turnOver); and, for a claim working
+// compaction the claim was working for finds it in (Machine.heldStopBack); and, for a claim working
 // for a compaction with no turn started under it, the compaction in flight or the one a gone
 // verdict dropped with its process (Machine.compacting, Machine.lostCompaction), the state that
 // compaction took the claim from, or idle once a turn ended under it (compacting.back). A turn
@@ -281,8 +289,8 @@ func (m *Machine) endState() ClaimState {
 	if m.claim.State != StateWorking {
 		return m.claim.State
 	}
-	if m.turnOver != "" {
-		return m.turnOver
+	if m.heldStopBack != "" {
+		return m.heldStopBack
 	}
 	run := m.compacting
 	if run == nil {

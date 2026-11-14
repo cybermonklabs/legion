@@ -333,14 +333,14 @@ func (m *Machine) suspendHeld(ctx context.Context) error {
 // suspendHeldAtEnd is suspendHeld at the end of the turn, or of the compaction, the claim is
 // still stored working for (turnEnded, compactEnded): nothing runs any more, so the stop cuts
 // off no turn, and the let-go it makes reads the claim in back, the state that end gives the
-// claim back in, for its record (Machine.turnOver, endState, recordEnd). Read as the working it
+// claim back in, for its record (Machine.heldStopBack, endState, recordEnd). Read as the working it
 // is still stored in, the record would tell the next process that the turn it was in was
 // interrupted, of a turn that had ended or a compaction that ran none. The claim's own state is
 // left alone, as is everything else the stop decides: the end sets it once the hold's outcome is
 // known, and the mark goes when the stop returns, landed or refused.
 func (m *Machine) suspendHeldAtEnd(ctx context.Context, back ClaimState) error {
-	m.turnOver = back
-	defer func() { m.turnOver = "" }()
+	m.heldStopBack = back
+	defer func() { m.heldStopBack = "" }()
 	return m.suspendHeld(ctx)
 }
 
