@@ -558,6 +558,38 @@ func TestAGiveUpForAReleasedLegionAgentReachesItsWake(t *testing.T) {
 	}
 }
 
+// The role path reads `released` as the session path does: a role publish whose role is finished
+// and whose newest session's claim is released - the daemon released its idle issue pod and keeps
+// the claim to resume (INFRA-945) - is handed to no daemon, so the publish is kept for the role
+// as before the hand-off existed and the wake it raises reaches the worker. The same role's
+// shape without `released` is handed off, which is the control: the rig reaches the role path's
+// hand-off, and only the flag turns it away.
+func TestARolePublishWhoseNewestSessionIsReleasedIsNotHandedOff(t *testing.T) {
+	rig := newHandoffRig(t, 0)
+	const released, stopped = "ses-rel-reviewer", "ses-fin-reviewer"
+	releasedRole, stoppedRole := "legion-infra-infra-205-reviewer", "legion-infra-infra-206-reviewer"
+	rig.want(t, http.StatusOK, http.MethodPut, "/v1/legion/agents/sessions/"+released,
+		strings.TrimSuffix(finishedLegionEntry(released, "INFRA-205", "reviewer", "2026-10-26T03:00:00Z"), "}")+`,"released":true}`)
+	rig.registerFinished(t, stopped, "INFRA-206", "reviewer", "2026-10-26T03:00:00Z")
+	rig.beat(t, true, time.Now())
+
+	role := envelopeFor(contracts.RoleTopicPrefix+releasedRole, "publish.released", "agent")
+	handed, err := rig.handoff.handOffToLegion(context.Background(), legionHandoffTarget{envelope: role, roleToken: releasedRole})
+	if err != nil || handed != nil {
+		t.Fatalf("a publish to the finished role %s whose newest session %s is released = %v, %v; want nothing handed off",
+			releasedRole, released, handed, err)
+	}
+	if count, data := handoffs(t, rig.client, released); count != 0 {
+		t.Fatalf("the stream holds %d hand-offs for the released session %s, want none; the last: %s", count, released, data)
+	}
+
+	control := envelopeFor(contracts.RoleTopicPrefix+stoppedRole, "publish.stopped", "agent")
+	handed, err = rig.handoff.handOffToLegion(context.Background(), legionHandoffTarget{envelope: control, roleToken: stoppedRole})
+	if err != nil || handed == nil || handed.TargetSession != stopped {
+		t.Fatalf("a publish to the finished role %s, not released = %v, %v; want it handed to %s", stoppedRole, handed, err, stopped)
+	}
+}
+
 // The subject a hand-off is published on is read back exactly: notifications.legion.<project>.
 // agents.<session> and nothing else, so a listener's durable acknowledges a hand-off unread and
 // treats no other retained message as one.
