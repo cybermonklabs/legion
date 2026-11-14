@@ -20,6 +20,12 @@ import (
 // then answered, and the next settlement writes the answered state into the block and a version
 // holding it, whose block index pass writes the block's node. That node stays live, in its row
 // and in its log, and the census over the store reads zero differences.
+//
+// This is a regression lock, not the proof that the store keeps an answer state off a node's
+// base state. No writer stores a block's markdown attribute values yet, so this test passes with
+// the seed naming the attribute ask/state as well. The proof is schemanodes'
+// TestNoAttributeNodeStoresItsValuesUnderABaseAttribute, which fails naming the colliding
+// attribute node.
 func TestAnAnsweredAskBlockIndexesAsALiveNodeAndTheCensusAgrees(t *testing.T) {
 	service, document := newTestService(t)
 	service.settle = time.Hour
