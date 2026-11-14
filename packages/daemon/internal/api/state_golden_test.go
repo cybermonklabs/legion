@@ -1045,6 +1045,20 @@ func TestReleaseRecordsResponseGolden(t *testing.T) {
 	}))
 }
 
+// The answer to a recorded wait (POST /legion/v1/claims/wait): the id the daemon minted, the text
+// as recorded (trimmed), the wait's time and when the daemon recorded the declaration. The
+// declaration's time is the daemon's own clock kept to the microsecond the record keeps, so it
+// carries a fraction on the wire; the wait's time is the worker's, here a whole second.
+func TestWaitResponseGolden(t *testing.T) {
+	declaredAt := time.Date(2026, 11, 14, 6, 0, 0, 123456000, time.UTC)
+	golden(t, "wait.json", WaitResponse{Wait: WaitView{
+		ID:         "3f6c2a9e-8b14-4d7a-9e25-1c0b7f4d2a68",
+		WaitingOn:  "the review of LEGION-207's pull request",
+		WakeAt:     time.Date(2026, 11, 14, 8, 0, 0, 0, time.UTC),
+		DeclaredAt: declaredAt,
+	}})
+}
+
 // A session's report shows on its claim as the names it proved and the gaps it did not, each side
 // in the report's order, and both sides are arrays on the wire even when empty: a session that
 // proved every row has `"open": []`, not `null`, under the plugin's reader.

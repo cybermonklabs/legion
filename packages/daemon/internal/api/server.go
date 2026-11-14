@@ -184,7 +184,8 @@ type Options struct {
 	// (memorygroup.DrawAndRecord). The zero block is a project that names none, which draws
 	// every tree `none`. MemoryCoin is the coin the `random` mode is drawn with; nil is
 	// memorygroup.CryptoCoin, and a test pins it. Now is the clock that draw's instant is read
-	// from; nil is time.Now, and a test pins it.
+	// from, and the moment a declared wait is recorded at (the wait route); nil is time.Now, and a
+	// test pins it.
 	Memory     config.Memory
 	MemoryCoin func() (bool, error)
 	Now        func() time.Time
@@ -330,7 +331,8 @@ type server struct {
 	releaser  store.TreeReleaser
 	trees     TreeLifecycles
 	// memory, coin and now are Options.Memory, Options.MemoryCoin and Options.Now: what the
-	// spawn's own draw of a tree it opens for the first time reads (drawMemory).
+	// spawn's own draw of a tree it opens for the first time reads (drawMemory). now is also the
+	// moment a declared wait is recorded at (wait).
 	memory     config.Memory
 	coin       func() (bool, error)
 	now        func() time.Time
@@ -468,6 +470,7 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 	mux.HandleFunc("POST /legion/v1/claims/exit", s.exit)
 	mux.HandleFunc("POST /legion/v1/claims/turn-outcome", s.turnOutcome)
 	mux.HandleFunc("POST /legion/v1/claims/activity", s.activity)
+	mux.HandleFunc("POST /legion/v1/claims/wait", s.wait)
 	mux.HandleFunc("POST /legion/v1/claims/release-records", s.releaseRecords)
 	mux.HandleFunc("POST /legion/v1/grants", s.grant)
 	mux.HandleFunc("POST /legion/v1/controller/secret", s.controllerSecret)

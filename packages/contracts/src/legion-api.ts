@@ -1142,6 +1142,44 @@ export const LegionActivityRequest = z.strictObject({
 
 export type LegionActivityRequestBody = z.output<typeof LegionActivityRequest>;
 
+/** `api.WaitRequest`, the body of `POST /legion/v1/claims/wait`: a phase worker declaring that it
+ * waits on something outside its own work — a person's answer, a CI run, another issue — until
+ * `wakeAt`, so the daemon's own wakes leave it be until then. It is authenticated by the
+ * registration's secret, as `claims/activity` is, and the daemon holds it to the session the claim
+ * records. `waitingOn` says what the wait is for: the daemon refuses one empty once trimmed
+ * (`WAIT_TEXT_REQUIRED`). `wakeAt` is a `LegionInstant`, which the daemon decodes with
+ * `time.Parse(time.RFC3339, …)`, and it must fall from one minute to 24 hours after the daemon
+ * records the declaration (`WAIT_TOO_SOON`, `WAIT_TOO_FAR`). A claim that does not work its
+ * issue's open phase is refused `WAIT_NOT_OPEN_PHASE`, and a merger the design gate holds
+ * `WAIT_HELD_BY_DESIGN_GATE`; every refusal is a `LegionErrorResponse` and records nothing. */
+export const LegionWaitRequest = z.strictObject({
+  claimToken: nonEmptyString,
+  sessionId: nonEmptyString,
+  secret: nonEmptyString,
+  waitingOn: nonEmptyString,
+  wakeAt: LegionInstant,
+});
+
+export type LegionWaitRequestBody = z.output<typeof LegionWaitRequest>;
+
+/** `api.WaitView` — one wait as the daemon recorded it: the id it minted, what the wait waits on
+ * (trimmed), when its time comes, and when the daemon recorded the declaration, to the
+ * microsecond. */
+const legionWait = z.object({
+  id: nonEmptyString,
+  waitingOn: nonEmptyString,
+  wakeAt: timestamp,
+  declaredAt: timestamp,
+});
+
+/** `api.WaitResponse`, the body `POST /legion/v1/claims/wait` answers once the wait is recorded.
+ * A claim keeps one standing wait: a new declaration ends the one it replaces. */
+export const LegionWaitResponse = z.object({
+  wait: legionWait,
+});
+
+export type LegionWait = z.output<typeof LegionWaitResponse>;
+
 /** `api.ReleaseRecord` — one issue pod the daemon released: the run it released, the roles whose
  * claims it suspended (sorted, as the store holds them), when the release completed, and the size
  * of the git bundle of unpushed work it saved, zero when the workspace held none. */

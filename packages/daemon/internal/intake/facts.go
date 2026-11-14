@@ -1215,6 +1215,32 @@ type WorkerBackgroundStalled struct {
 
 func (WorkerBackgroundStalled) isFact() {}
 
+// WaitDeclared is a phase worker declaring that it waits on something outside its own work
+// until WakeAt (POST /legion/v1/claims/wait, dispatch://INFRA-2040 R2): the claim Token on
+// Issue's Role, in the session Session, under the id WaitID the route minted, waiting on
+// WaitingOn. Generation is the issue generation of the run whose task the claim's worker took
+// (supervise.Claim.ServingRun), which the engine holds to the issue's own run, and TakenEntry the
+// phase entry of the task it had taken (api's takenEntry), which the wait records so that a later
+// send of a task it had taken is told from new work. At is when the daemon received the
+// declaration: the wait's time is measured from it (workflow.MinWaitAhead, MaxWaitAhead) and the
+// wait records it as its declaration. The route reads every claim field of it from one read of
+// the claim, and the engine refuses or records it in the fact's own transaction (workflow's
+// waitDeclared).
+type WaitDeclared struct {
+	Token      claim.Token
+	Issue      string
+	Role       claim.Role
+	Session    string
+	Generation uint64
+	WaitID     string
+	WaitingOn  string
+	WakeAt     time.Time
+	TakenEntry int64
+	At         time.Time
+}
+
+func (WaitDeclared) isFact() {}
+
 // Handler changes the workflow record inside the caller-owned transaction.
 type Handler interface {
 	Apply(context.Context, pgx.Tx, Fact) (Result, error)

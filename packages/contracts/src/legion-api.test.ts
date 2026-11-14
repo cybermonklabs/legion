@@ -42,6 +42,8 @@ import {
   LegionSignOffRequest,
   LegionStateResponse,
   LegionTurnOutcomeResponse,
+  LegionWaitRequest,
+  LegionWaitResponse,
   LegionWaveReleaseRequest,
   LegionWaveReleaseResponse,
 } from "./legion-api";
@@ -71,6 +73,9 @@ const schemas: Record<string, z.ZodType> = {
   // What a pod reads of its deployment's idle release: every release, resume and hold of the
   // window it named (`api.ReleaseRecordsResponse`).
   "release-records.json": LegionReleaseRecordsResponse,
+  // What a phase worker's declared wait comes back as once the daemon recorded it: its id, its
+  // text, its time and when the daemon recorded the declaration (`api.WaitResponse`).
+  "wait.json": LegionWaitResponse,
   "register-controller.json": LegionControllerRegisterResponse,
   "controller-secret.json": LegionControllerSecretResponse,
   "controller-github-credential.json": LegionControllerCredentialResponse,
@@ -1147,6 +1152,15 @@ test("every request-side object refuses a key it does not name", () => {
   expect(found.refuses.length).toBeGreaterThan(0);
 });
 
+/** A body `POST /legion/v1/claims/wait` accepts: a phase worker's declared wait, its claim first. */
+const waitRequest = {
+  claimToken: "legion-legion-legion-208-implementer",
+  sessionId: "ses_implementer_208",
+  secret: "U3VwZXJ2aXNlZEJ5TGVnaW9u",
+  waitingOn: "the review of LEGION-207's pull request",
+  wakeAt: "2026-11-14T08:00:00Z",
+};
+
 // What only a real body can prove, route by route: the body each route sends parses, and a body
 // missing a required field is refused. That a body carrying a key no schema names is refused is
 // held at every depth by the census above, for every request schema the module exports.
@@ -1249,6 +1263,8 @@ test("every request the plugin sends parses and names its required fields", () =
         since: "2026-11-01T12:00:00Z",
       },
     ],
+    // A phase worker's declared wait, authenticated by its claim as the activity report is.
+    ["wait", LegionWaitRequest, waitRequest],
   ];
 
   for (const [name, schema, request] of requests) {
@@ -1268,6 +1284,18 @@ test("an escalation rejects empty required fields", () => {
   for (const field of ["grantId", "issue", "reason"] as const) {
     expect(LegionEscalateRequest.safeParse({ ...request, [field]: "" }).success).toBeFalse();
   }
+});
+
+// A declared wait names what it waits on and a time with seconds, as the daemon decodes one: an
+// empty text and a time with no seconds are refused before a body is sent.
+test("a wait refuses an empty text and a time without seconds", () => {
+  expect(LegionWaitRequest.safeParse({ ...waitRequest, waitingOn: "" }).success).toBeFalse();
+  expect(
+    LegionWaitRequest.safeParse({ ...waitRequest, wakeAt: "2026-11-14T08:00Z" }).success
+  ).toBeFalse();
+  expect(
+    LegionWaitRequest.safeParse({ ...waitRequest, wakeAt: "2026-11-14T08:00:00+01:00" }).success
+  ).toBeTrue();
 });
 
 test("a workflow refusal preserves its stable code and message", () => {

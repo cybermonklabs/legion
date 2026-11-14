@@ -1,9 +1,15 @@
 package workflow
 
 import (
+	"context"
 	"fmt"
+	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
@@ -126,4 +132,178 @@ func unendedWait(run record.RoleRun) *record.ClaimWait {
 		return nil
 	}
 	return run.Claim.Wait
+}
+
+// waitDeclared applies one intake.WaitDeclared, a phase worker's declaration of a wait, deciding
+// on the record read in the fact's own transaction. That transaction holds the lock every fact
+// applies under (intake.ApplyFact), the design gate's closing among them, so a declaration and a
+// closing made at once are applied one after the other, each on what the other wrote: a
+// declaration applied after the closing is refused, and a wait recorded before it stops standing
+// the moment the closing commits (WaitStands).
+//
+// It refuses, recording nothing (D10 of dispatch://INFRA-2040's plan):
+//   - WAIT_TEXT_REQUIRED (400): what the wait waits on is empty once trimmed;
+//   - WAIT_TOO_SOON and WAIT_TOO_FAR (400): its time is less than MinWaitAhead, or more than
+//     MaxWaitAhead, after the declaration (fact.At);
+//   - WAIT_NOT_OPEN_PHASE (409): the claim does not work its issue's open phase — the record
+//     holds no such issue, root or claim, the role's phases row records its completion, the phase
+//     is another role's or no phase worker's (a look of a done issue's production check is none),
+//     the issue is out of the workflow, its tree lingers, the claim's worker is on another run
+//     than the issue's, or the claim runs another session now;
+//   - WAIT_HELD_BY_DESIGN_GATE (409): the claim is a merger the design gate holds
+//     (HeldByDesignGate), named with the gated step, its document and its version.
+//
+// The record's refusals are the terms of WaitStands asked of the wait as it would stand once
+// recorded (WaitEndCause), so the one rule that says whether a wait stands also says whether one
+// may be declared, and no wait is recorded that would not stand at once. Otherwise the wait is
+// recorded (record.Store.DeclareWait), ending the claim's standing wait as replaced. Every line
+// is logged once the fact commits, so a fact rolled back logs no declaration.
+func (e *Engine) waitDeclared(ctx context.Context, tx pgx.Tx, fact intake.WaitDeclared) (intake.Result, error) {
+	if refusal := declarationRefusal(fact); refusal != nil {
+		return e.refuseWait(ctx, fact, refusal), nil
+	}
+	issue, err := e.store.Issue(ctx, tx, fact.Issue)
+	if err != nil {
+		return intake.Result{}, err
+	}
+	if issue == nil {
+		return e.refuseWait(ctx, fact, notOpenPhase(fmt.Sprintf("the workflow records no issue %s", fact.Issue))), nil
+	}
+	root := issue
+	if issue.Tree != issue.Key {
+		if root, err = e.store.Issue(ctx, tx, issue.Tree); err != nil {
+			return intake.Result{}, err
+		}
+		if root == nil {
+			return e.refuseWait(ctx, fact, notOpenPhase(fmt.Sprintf("the workflow records no root %s of the tree of %s", issue.Tree, issue.Key))), nil
+		}
+	}
+	rows, err := e.store.Phases(ctx, tx, issue.Key)
+	if err != nil {
+		return intake.Result{}, err
+	}
+	gates, err := e.store.GatesOf(ctx, tx, issue.Tree)
+	if err != nil {
+		return intake.Result{}, err
+	}
+	claims, err := e.store.RoleClaims(ctx, tx, []claim.Token{fact.Token})
+	if err != nil {
+		return intake.Result{}, err
+	}
+	held := claims[fact.Token]
+	if held == nil {
+		return e.refuseWait(ctx, fact, notOpenPhase(fmt.Sprintf("the daemon records no claim %s", fact.Token))), nil
+	}
+	project, err := claim.ProjectToken(e.cfg.Project)
+	if err != nil {
+		return intake.Result{}, err
+	}
+	row, gate := record.PhaseRowOf(rows, fact.Role), record.TreeGate{Steps: e.cfg.Steps, Rows: gates}
+	// The wait as it would be recorded. Its generation is the run the claim's worker is on, which
+	// WaitEndCause holds to the issue's own, so a wait that is recorded carries the issue's.
+	wait := record.ClaimWait{ID: fact.WaitID, Project: project, Token: fact.Token, Issue: issue.Key, Role: fact.Role,
+		Generation: fact.Generation, Phase: issue.Phase, PhaseEntry: row.Entry, TakenEntry: fact.TakenEntry,
+		Session: fact.Session, WaitingOn: fact.WaitingOn, WakeAt: fact.WakeAt, DeclaredAt: fact.At}
+	declaring := *held
+	declaring.Wait = &wait
+	if cause := WaitEndCause(*issue, *root, row, record.RoleRun{Claim: &declaring}, gate); cause != "" {
+		return e.refuseWait(ctx, fact, recordRefusal(cause, *issue, gate, fact, held.Session)), nil
+	}
+	replaced, err := e.store.DeclareWait(ctx, tx, wait)
+	if err != nil {
+		return intake.Result{}, err
+	}
+	if replaced != nil {
+		e.logOnCommit(ctx, "wait: ended", "claim", fact.Token, "issue", issue.Key, "role", fact.Role, "wait", replaced.ID,
+			"cause", record.WaitReplaced, "ended_by", wait.ID)
+	}
+	e.logOnCommit(ctx, "wait: declared", "claim", fact.Token, "issue", issue.Key, "role", fact.Role, "wait", wait.ID,
+		"wake_at", wait.WakeAt.UTC().Format(time.RFC3339), "taken_entry", wait.TakenEntry)
+	return intake.Result{}, nil
+}
+
+// refuseWait is fact's refusal, logged with its code once the fact commits. Every refusal comes
+// before the declaration's one write, so nothing else is written.
+func (e *Engine) refuseWait(ctx context.Context, fact intake.WaitDeclared, refusal *intake.Refusal) intake.Result {
+	e.logOnCommit(ctx, "wait: refused", "claim", fact.Token, "issue", fact.Issue, "role", fact.Role, "wait", fact.WaitID,
+		"code", refusal.Code, "reason", refusal.Message)
+	return intake.Result{Refusal: refusal}
+}
+
+// declarationRefusal is the refusal a declaration earns on its own, before the record is read:
+// nothing it waits on, or a time outside the bounds measured from the declaration; nil for none.
+// The bounds are inclusive: a wait MinWaitAhead or MaxWaitAhead ahead is recorded.
+func declarationRefusal(fact intake.WaitDeclared) *intake.Refusal {
+	switch ahead := fact.WakeAt.Sub(fact.At); {
+	case strings.TrimSpace(fact.WaitingOn) == "":
+		return &intake.Refusal{Status: 400, Code: "WAIT_TEXT_REQUIRED", Message: "waitingOn is empty: say what the wait " +
+			"waits on, such as the answer, the run or the person it is for; this declaration recorded nothing"}
+	case ahead < MinWaitAhead:
+		return &intake.Refusal{Status: 400, Code: "WAIT_TOO_SOON", Message: fmt.Sprintf(
+			"wakeAt %s is less than %s after this declaration at %s: name a time at least %s ahead; this declaration recorded nothing",
+			fact.WakeAt.UTC().Format(time.RFC3339), aheadWords(MinWaitAhead), fact.At.UTC().Format(time.RFC3339), aheadWords(MinWaitAhead))}
+	case ahead > MaxWaitAhead:
+		return &intake.Refusal{Status: 400, Code: "WAIT_TOO_FAR", Message: fmt.Sprintf(
+			"wakeAt %s is more than %s after this declaration at %s: name a time at most %s ahead, and declare the wait again "+
+				"then if it still stands; this declaration recorded nothing",
+			fact.WakeAt.UTC().Format(time.RFC3339), aheadWords(MaxWaitAhead), fact.At.UTC().Format(time.RFC3339), aheadWords(MaxWaitAhead))}
+	}
+	return nil
+}
+
+// aheadWords is a bound of a wait's time in words: whole hours in hours, anything else in
+// minutes.
+func aheadWords(d time.Duration) string {
+	n, unit := int64(d/time.Minute), "minute"
+	if d%time.Hour == 0 {
+		n, unit = int64(d/time.Hour), "hour"
+	}
+	if n != 1 {
+		unit += "s"
+	}
+	return fmt.Sprintf("%d %s", n, unit)
+}
+
+// recordRefusal is the refusal a declaration earns from the record: cause is the term of
+// WaitStands the wait would fail the moment it was recorded (WaitEndCause), named here in the
+// record's own terms. A merger the design gate holds is WAIT_HELD_BY_DESIGN_GATE, naming the gate
+// row that holds it; every other term is WAIT_NOT_OPEN_PHASE. session is the session the record
+// says the claim runs now.
+func recordRefusal(cause string, issue record.Issue, gate record.TreeGate, fact intake.WaitDeclared, session string) *intake.Refusal {
+	working := OpenPhaseRole(issue.Phase)
+	switch {
+	case cause == WaitEndDesignGateClosed:
+		closed, _ := HeldByDesignGate(issue, fact.Role, gate)
+		return &intake.Refusal{Status: 409, Code: "WAIT_HELD_BY_DESIGN_GATE", Message: fmt.Sprintf(
+			"the design gate of %s holds this merger: version %d of its %s document (%s) is with its reviewer, and %s merges "+
+				"nothing until every gated step stands open again. The daemon tells this merger when the gate opens, so the hold "+
+				"needs no wait of its own; this declaration recorded nothing",
+			issue.Tree, closed.LatestVersion, closed.Step.OrSpec(), closed.ArtifactID, issue.Key)}
+	case cause == WaitEndCompleted:
+		return notOpenPhase(fmt.Sprintf("the %s's phases row of %s records the completion of its phase", fact.Role, issue.Key))
+	case cause == WaitEndAnotherRolesPhase && issue.Phase == phase.Done:
+		return notOpenPhase(fmt.Sprintf("%s is done, so no phase of it is open, and a look of its production check is no phase", issue.Key))
+	case cause == WaitEndAnotherRolesPhase && working == "":
+		return notOpenPhase(fmt.Sprintf("%s stands in %s, which no phase worker works", issue.Key, issue.Phase))
+	case cause == WaitEndAnotherRolesPhase:
+		return notOpenPhase(fmt.Sprintf("%s stands in %s, which is the %s's phase, not the %s's", issue.Key, issue.Phase, working, fact.Role))
+	case cause == WaitEndLeftWorkflow:
+		return notOpenPhase(fmt.Sprintf("%s is out of the workflow (Dispatch status %s)", issue.Key, issue.Status))
+	case cause == WaitEndTreeLingers:
+		return notOpenPhase(fmt.Sprintf("the tree of %s lingers after its close, and nothing in it moves", issue.Tree))
+	case cause == WaitEndNewGeneration && fact.Generation == 0:
+		return notOpenPhase(fmt.Sprintf("this claim's worker has taken no task of run %d of %s", issue.Generation, issue.Key))
+	case cause == WaitEndNewGeneration:
+		return notOpenPhase(fmt.Sprintf("this claim's worker is on run %d of %s, and the issue runs %d now",
+			fact.Generation, issue.Key, issue.Generation))
+	case cause == WaitEndFreshSession:
+		return notOpenPhase(fmt.Sprintf("the claim runs session %s now, not %s, which declared this wait", session, fact.Session))
+	}
+	return notOpenPhase(fmt.Sprintf("the wait would end the moment it was recorded (%s)", cause))
+}
+
+// notOpenPhase is the WAIT_NOT_OPEN_PHASE refusal, fault being what the record shows.
+func notOpenPhase(fault string) *intake.Refusal {
+	return &intake.Refusal{Status: 409, Code: "WAIT_NOT_OPEN_PHASE", Message: fault +
+		": a wait is declared only by the worker of its issue's open phase, and this declaration recorded nothing"}
 }
