@@ -41,11 +41,10 @@ func (s *selectors) add(owner, what string) {
 
 // repository records the owner and the repository value names: a selector naming one repository
 // of one owner. The owner is lowercased, as a bundle's directory names an owner, and the
-// repository is keyed as the directory holding its token is named for it
-// (ghconfig.RepositoryName), so two spellings of one repository — `Legion-Smoke` in a pull
-// request's URL beside `-R sjawhar/legion-smoke`, or a remote's `widgets.git` beside `widgets` —
-// are the one repository the command names rather than two, which would send it to the owner's
-// own directory.
+// repository is keyed as gh reads a name of it (ghconfig.RepositoryName), so two spellings of
+// one repository — `Legion-Smoke` in a pull request's URL beside `-R sjawhar/legion-smoke`, or
+// a remote's `widgets.git` beside `widgets` — are the one repository the command names rather
+// than two, which would leave the call's record naming no repository at all (onlyRepository).
 func (s *selectors) repository(value, what string) error {
 	owner, repo, err := repositoryTarget(value, what, s.api)
 	if err == nil {
@@ -83,14 +82,13 @@ func (s *selectors) pairOwner(value, what string) error {
 	return err
 }
 
-// onlyRepository is the one repository every selector of the command named, as the bundle's
-// directory holding its token is named for it (ghconfig.RepositoryName, the key
-// selectors.repository records): "" where a selector named the command's owner alone, where the
-// selectors named two repositories, and where they named none. A command whose selectors agree
-// on one repository is the one whose narrowest token the bundle may hold; every other reaches
-// whatever else of the owner's gh resolves, and so the owner's own directory. The owner is its
-// caller's, the one owner the command names (ghTargetOf), since a second owner is a refusal
-// before this is asked.
+// onlyRepository is the one repository every selector of the command named, keyed as gh reads a
+// name of it (ghconfig.RepositoryName, the key selectors.repository records): "" where a
+// selector named the command's owner alone, where the selectors named two repositories, and
+// where they named none. It is the repository the leak guard is told the call acts on
+// (leakguard.GhRequest.Repo), which a command naming two of them, or none, names none of. The
+// owner is its caller's, the one owner the command names (ghTargetOf), since a second owner is
+// a refusal before this is asked.
 func (s *selectors) onlyRepository() string {
 	if s.ownerOnly || len(s.repos) != 1 {
 		return ""
@@ -437,11 +435,8 @@ func isGitHubHost(host string) bool {
 // normalizes it (isGitHubHost) — refused when it names no owner, another host, or an owner that
 // is no GitHub login. The name is the second segment as gh reads it, whatever follows it (a pull
 // request's number, a tree's path), as the argument spells it. The caller that records it keys
-// it as the directory holding its token is named for it (selectors.repository,
-// ghconfig.RepositoryName), so two spellings of one repository are one selector;
-// the lookup normalizes it again, which changes nothing for a name GitHub holds, and decides
-// whether a bundle can hold a directory of that name, since a name no directory can hold is one
-// the bundle holds none for.
+// it as gh reads a name of it (selectors.repository, ghconfig.RepositoryName), so two spellings
+// of one repository are one selector.
 func repositoryTarget(value, what string, api bool) (owner, repo string, err error) {
 	host, rest := "", value
 	if parsed, err := url.Parse(value); err == nil && parsed.Scheme != "" && parsed.Host != "" {
@@ -523,7 +518,7 @@ func ghParseGitURL(raw string) (*url.URL, error) {
 // setting names, read as gh reads it (ghParseGitURL), "" for one naming none gh reads: a remote
 // with no host (a local path) or on another host, and a gh-resolved "base", whose remote's own
 // URL is read beside it. The name is carried on as the setting spells it, `.git` and all, which
-// the one gh directory lookup normalizes (repositoryGHConfigDir). why says why a setting is one
+// the selector that records it normalizes (selectors.repository). why says why a setting is one
 // this cannot read: a URL gh's parser refuses, an ssh remote on another host, which gh may read
 // as an alias of github.com from ssh's configuration, and a github.com one naming no OWNER/REPO
 // whose owner is a GitHub login.

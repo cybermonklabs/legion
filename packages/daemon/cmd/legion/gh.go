@@ -22,25 +22,20 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 )
 
-const ghUsage = "usage: legion gh [gh args…]  (the gh first on a Legion pane's or pod's PATH: runs LEGION_GH_PATH with GH_CONFIG_DIR set to the gh directory of the repository the command names, or of its owner where the bundle holds the repository none, under LEGION_GH_OWNERS_DIR)"
+const ghUsage = "usage: legion gh [gh args…]  (the gh first on a Legion pane's or pod's PATH: runs LEGION_GH_PATH with GH_CONFIG_DIR set to the gh directory of the owner the command names, under LEGION_GH_OWNERS_DIR)"
 
 // runGh is `legion gh`, the gh a pane or pod runs. It reads the repository the command acts on,
 // and its owner, as gh resolves them (ghTargetOf) and execs the real gh (LEGION_GH_PATH) as `gh`
 // with its arguments untouched and GH_CONFIG_DIR set to a gh directory under
-// LEGION_GH_OWNERS_DIR: the repository's own, `<owner>/<repo>`, when every selector of the
-// command named that one repository and the bundle holds its directory, and the owner's
-// otherwise (repositoryGHConfigDir) — a command naming no repository, one naming two
-// repositories of the one owner, one where a selector named the owner alone beside a
-// repository, and one whose repository the bundle holds no directory for, which the bundle a
-// daemon builds now holds for every repository: it holds one directory per owner the role's
-// App is installed on, whose token reaches every repository that installation holds, and a
-// repository directory only in the projection of a pod launched before that change. A command
-// naming no owner at all,
-// in a working directory whose git remotes name none, keeps GH_CONFIG_DIR, the issue's owner's.
-// A command it cannot read for certain, one naming two owners, and one naming an owner the
-// bundle holds no directory for — an owner the role's App is not installed on — are refused,
-// exit 2, naming why, and the real gh never runs: no
-// token but the target repository's or its owner's is ever sent.
+// LEGION_GH_OWNERS_DIR: the directory of the owner the command names (ownerGHConfigDir), the
+// one directory the bundle holds for that account, whose token reaches every repository its
+// installation holds. Every command of one owner runs with that one directory — one naming one
+// of its repositories, one naming two, and one where a selector named the owner alone — since
+// the bundle holds no narrower token to run it with. A command naming no owner at all, in a
+// working directory whose git remotes name none, keeps GH_CONFIG_DIR, the issue's owner's. A
+// command it cannot read for certain, one naming two owners, and one naming an owner the bundle
+// holds no directory for — an owner the role's App is not installed on — are refused, exit 2,
+// naming why, and the real gh never runs: no token but the target owner's is ever sent.
 //
 // Before gh is handed anything, the leak guard reads the call (leakguard.GhCall): a call it
 // refuses, and one whose checks could not be made to run, are refused here, exit 2, with the
@@ -51,7 +46,7 @@ const ghUsage = "usage: legion gh [gh args…]  (the gh first on a Legion pane's
 // The git gh runs itself (a clone, a fetch of a fork's parent, `pr checkout`) authenticates
 // through the credential helper gh names after its own executable, GH_PATH: runGh sets it to the
 // `gh` wrapper first on PATH, so that helper is `legion gh auth git-credential`, which answers as
-// `legion git-credential` does, from the directory of the repository in git's path (useHttpPath set
+// `legion git-credential` does, from the directory of the owner in git's path (useHttpPath set
 // for github.com through GIT_CONFIG_COUNT), never with GH_CONFIG_DIR's token; when PATH's first gh
 // is no such wrapper it refuses. The child also runs with gh's update check and prompts off, which a TTY
 // would otherwise reach. Each of the three variables is runtime-set and required; an unset one is
@@ -122,7 +117,7 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 	dir := env["GH_CONFIG_DIR"]
 	if target.owner != "" {
-		if dir, err = repositoryGHConfigDir(env["LEGION_GH_OWNERS_DIR"], target.owner, target.repo); err != nil {
+		if dir, err = ownerGHConfigDir(env["LEGION_GH_OWNERS_DIR"], target.owner); err != nil {
 			fmt.Fprintf(stderr, "legion gh: %v\n", err)
 			return 2
 		}

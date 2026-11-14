@@ -18,9 +18,11 @@ import (
 // workflow role's every directory carries that lease at the role's own permissions and none is
 // read-only; a controller's bundle is the one made of reading leases (appauth's
 // GitHubCredential and ControllerCredential, INFRA-2543). The name authorises nothing — the
-// token in the directory does. A pod launched before that ruling also holds `<owner>/<repo>`
-// directories, whose token reaches that one repository, which is why this package still answers
-// for that shape (IsDirName) though no bundle built now holds one.
+// token in the directory does. No bundle this daemon builds holds a `<owner>/<repo>` directory
+// (appauth's bundleDirs), and this package answers for that shape (IsDirName) only to clean up
+// after a run of before that ruling: WriteBundle prunes the repository directories such a run
+// left under an owner's own, and the Sandbox drift check reads them off a pod launched then
+// (sandbox's movedGhDirs).
 type Bundle struct {
 	Default string
 	Dirs    map[string]Rendered
@@ -53,9 +55,11 @@ func IsOwner(owner string) bool { return ownerLogin.MatchString(owner) }
 //
 // No bundle this daemon builds holds a repository directory at all: a role's token reaches every
 // repository its App's installation holds, so one directory per owner carries it (appauth's
-// bundleDirs). The `<owner>/<repo>` shape stays a name this answers for, because a pod launched
-// before that change holds such a directory on its disk, which `legion git-credential` reads and
-// the Sandbox drift check reports (cmd/legion's repositoryGHConfigDir, sandbox's movedGhDirs).
+// bundleDirs). The `<owner>/<repo>` shape stays a name this answers for, because a root an
+// earlier run wrote still holds such directories, which WriteBundle prunes, and a pod launched
+// before that change projects them, which the Sandbox drift check reports (sandbox's
+// movedGhDirs). No token is read out of one: `legion gh` and `legion git-credential` answer for
+// every repository of an owner from that owner's own directory.
 func IsDirName(name string) bool {
 	owner, repo, nested := strings.Cut(name, "/")
 	if !IsOwner(owner) {
@@ -71,44 +75,15 @@ func IsDirName(name string) bool {
 // which for a `<owner>/<repo>` entry is a directory under the owner's own.
 func Dir(root, name string) string { return filepath.Join(root, name) }
 
-// RepositoryName is a repository's name as the bundle directory holding its token is named for
-// it: lowercased, and without the `.git` a git credential request's path and a clone URL carry,
-// which gh trims as it reads a remote (ghrepo.FromURL) and which no GitHub repository's own name
-// ends in. One trim is all a spelling of such a name needs, so a second call changes nothing; a
-// name ending `.git.git` would lose one suffix a call, and GitHub holds no repository of that
-// name.
+// RepositoryName is the one key a repository's every spelling has: lowercased, and without the
+// `.git` a git credential request's path and a clone URL carry, which gh trims as it reads a
+// remote (ghrepo.FromURL) and which no GitHub repository's own name ends in. One trim is all a
+// spelling of such a name needs, so a second call changes nothing; a name ending `.git.git`
+// would lose one suffix a call, and GitHub holds no repository of that name. The gh wrapper
+// keys the repositories a command names by it, so two spellings of one repository are one
+// repository (cmd/legion's gh_selectors).
 func RepositoryName(repo string) string {
 	return strings.TrimSuffix(strings.ToLower(repo), ".git")
-}
-
-// RepositoryDir is the directory of the bundle under root whose token reaches owner's repository
-// repo: the repository's own, `<owner>/<repo>`, whose token reaches that one repository, where
-// the bundle holds it; the owner's own, `<owner>`, where it holds that; and "" where it holds
-// neither, which the caller answers in its own way. It normalizes the repository's name
-// (RepositoryName), so a caller may hand it the name as it was given it, and a repo no bundle
-// directory could be named for (IsDirName) is one the bundle holds none for, so the owner's is
-// answered rather than nothing.
-//
-// It is the one place that choice is made. `legion git-credential` answers git's request from it
-// and refuses a miss (cmd/legion's repositoryGHConfigDir, which `legion gh` picks a call's
-// directory with too). What a miss means is that caller's to decide, not this function's.
-func RepositoryDir(root, owner, repo string) string {
-	if name := owner + "/" + RepositoryName(repo); repo != "" && IsDirName(name) {
-		if dir := Dir(root, name); isDirectory(dir) {
-			return dir
-		}
-	}
-	if dir := Dir(root, owner); isDirectory(dir) {
-		return dir
-	}
-	return ""
-}
-
-// isDirectory says whether path is a directory that is there, which is what makes a bundle entry
-// one a gh or a git request may be answered from.
-func isDirectory(path string) bool {
-	info, err := os.Stat(path)
-	return err == nil && info.IsDir()
 }
 
 // DirNames is the bundle's directory names, sorted. An owner sorts before its own repositories'
