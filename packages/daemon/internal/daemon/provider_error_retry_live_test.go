@@ -220,7 +220,7 @@ func newProviderErrorLive(t *testing.T) *providerErrorLive {
 	overlays := r.writeOverlays(work)
 
 	r.rt = newLocalRuntime(t, r.cfg.StateDir, r.legion, omp, home, profile)
-	r.rt.daemonURL, r.rt.envoyURL, r.rt.natsURLs = r.cfg.DaemonURL, newPaneListener(t), r.cfg.NatsURLs
+	r.rt.daemonURL, r.rt.envoyURL, r.rt.natsURLs = r.cfg.DaemonURL, newPaneListener(t, r.cfg.NatsURLs), r.cfg.NatsURLs
 	r.rt.overlays = func(token claim.Token) []string { return overlays[token] }
 
 	r.seed()
@@ -315,16 +315,17 @@ func (r *providerErrorLive) seed() {
 		token := r.token(seeded.key, seeded.role)
 		if _, err := r.st.AdmitClaim(ctx, supervise.Claim{
 			Token: token, Project: r.project, Tree: seeded.key, Issue: seeded.key, Role: seeded.role,
-			Generation: 1, State: supervise.StateLaunching,
+			Generation: 1, State: supervise.StateLaunching, TaskWritten: 1,
 			BootTokenHash: supervise.HashBootToken("interrupted-" + randomSuffix(t)), ServingGeneration: 1,
 		}); err != nil {
 			t.Fatalf("record the unfinished launch of %s: %v", token, err)
 		}
-		// Unconfirmed and unread: the launch this seed interrupts never put the task in front of
-		// an agent, so the relaunched pane is sent it once it reports ready.
+		// Untaken: the launch this seed interrupts never had the task taken, so the relaunched pane
+		// takes it once it reports ready. It is numbered as a claim's first task is queued
+		// (Claim.TaskWritten, Delivery.Number), so the boot writes its value to the task bucket.
 		if err := r.st.PutDelivery(ctx, token, supervise.Delivery{
 			ID: "seeded-start-" + randomSuffix(t), Task: seeded.task, Generation: 1,
-			Phase: seeded.phase, QueuedAt: time.Now(),
+			Phase: seeded.phase, QueuedAt: time.Now(), Number: 1, Origin: supervise.OriginPhaseStart,
 		}); err != nil {
 			t.Fatalf("record the task %s's start left pending: %v", token, err)
 		}

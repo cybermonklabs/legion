@@ -593,8 +593,8 @@ func TestAPassWhoseScanTimedOutPurgesNothingAndLeavesTheRegistryHealthy(t *testi
 		t.Fatalf("wrap the role bucket: %v", err)
 	}
 	registry := &Registry{roleKV: roles, now: time.Now, index: newSubjectIndex()}
-	registry.roleHolders = newRoleHolderCopy(registry.roleHolderChangedLocked)
 	registry.cache = newInterestCopy(registry)
+	registry.roleHolders = newRoleHolderCopy(registry)
 	handle := bus.NewKeyValue(kv, earlyEndKV{KeyValue: interests.WatchHandle(), after: 2}, interests.Streams())
 	registry.watcher = kvwatch.New("interest registry", handle, interestCache{registry}, kvwatch.WithScanIdleTimeout(idle))
 	registry.roleWatcher = kvwatch.New("role claims", roles, roleCache{registry})

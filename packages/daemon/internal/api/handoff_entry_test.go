@@ -212,11 +212,14 @@ func TestStaleEntryInstructionGolden(t *testing.T) {
 	if staleEntryCode != "HANDOFF_STALE_ENTRY" {
 		t.Fatalf("staleEntryCode = %q, want the wire code HANDOFF_STALE_ENTRY", staleEntryCode)
 	}
+	// What decided the refusal stands in the middle of it (behindEntryClause), so the instruction
+	// is still the text the refusal ends with, whichever clause it carries.
+	decided := behindEntryClause(true, "", &record.PullRequest{HeadSHA: headSHA}, false)
 	for clause, pending := range map[string]*supervise.Delivery{
-		"the entry 2 the phase is on; nothing was recorded":                                     nil,
+		"the entry 2 the phase is on, and " + decided + "; nothing was recorded":                nil,
 		"your turn began before the daemon's task for entry 2 (outbox:78) reached this session": {ID: "outbox:78", Entry: 2},
 	} {
-		refusal := staleEntry("LEGION-208", claim.RoleTester, phase.Testing, 2, 1, pending)
+		refusal := staleEntry("LEGION-208", claim.RoleTester, phase.Testing, 2, 1, pending, decided)
 		if !strings.HasSuffix(refusal, clause+". "+staleEntryInstruction) {
 			t.Fatalf("staleEntry with pending %+v = %q, want %q and then exactly %q", pending, refusal, clause, staleEntryInstruction)
 		}
@@ -349,6 +352,282 @@ func TestAHeldPhasesRetryKeepsTheEntryItsWorkerStillServes(t *testing.T) {
 	}
 }
 
+// The entry says a completion is behind; what the worker reported says whether that matters. A
+// verdict is a fact about a head, and a phase can be handed to its role again at the head the
+// role is already reporting on — the issue left the phase and came back with nothing pushed in
+// between — where the second entry's task asks for the very work this turn did. The phase ends
+// with a handoff record, which names the phase it is of, so the completion is readable as this
+// phase's answer; the commit it names is the head the record holds. It is taken, and the fact it
+// reports moves the issue on to reviewing.
+func TestABehindCompletionAtTheRecordedHeadIsTaken(t *testing.T) {
+	h, _, facts := newEntryHarness(t)
+	seedIssueAt(t, h, "LEGION-208", phase.Testing)
+	seedPullRequest(t, h, "LEGION-208", headSHA)
+	seedEntry(t, h, "LEGION-208", claim.RoleTester, 2)
+	tester := newLiveClaim(t, h, "LEGION-208", claim.RoleTester)
+	takeTask(t, h, tester.token, "outbox:77", "test LEGION-208", 1, 1)
+	machine, ok := h.supervisor.Machine(tester.token)
+	if !ok {
+		t.Fatal("no machine for the tester")
+	}
+	if got := machine.Claim().ServingEntry(); got != 1 {
+		t.Fatalf("the tester serves entry %d, want the 1 its task carried while the row is on 2", got)
+	}
+
+	completion(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass",
+		Commit: headSHA, HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}))
+
+	assertIssuePhase(t, h, phase.Reviewing)
+	testers := 0
+	for _, fact := range facts.recorded() {
+		completed, ok := fact.(intake.HandoffComplete)
+		if !ok || completed.Role != claim.RoleTester {
+			continue
+		}
+		testers++
+		if completed.Commit != headSHA || completed.Verdict != "pass" {
+			t.Fatalf("the completion the workflow saw = %#v, want the pass at %s this turn reported", completed, headSHA)
+		}
+	}
+	if testers != 1 {
+		t.Fatalf("the workflow saw %d tester completions, want the one this turn reported", testers)
+	}
+	if got := recordedCompletions(t, h, claim.RoleTester); got != 1 {
+		t.Fatalf("%d tester completions are recorded, want the one that was taken", got)
+	}
+}
+
+// The head takes a behind completion only where the phase was handed out again for the same
+// work, and a move back is the case where it was not: the architect's move back and the
+// reviewer's request for changes ask for this phase's work to be done again, at the head that is
+// already there, so the commit the turn reports and the head the record holds read alike and the
+// heads alone would take a verdict the new entry exists to replace. What tells the two cases
+// apart is the move the transition wrote onto the entry it raised
+// (record.PhaseRow.EntryMovedBack), which the fence reads: this completion is refused at the
+// very head that takes the one above, the refusal says the move is what refused it, and nothing
+// is recorded. Its control is TestABehindCompletionAtTheRecordedHeadIsTaken, the same completion
+// at the same head whose current entry a forward move raised.
+func TestABehindCompletionWhoseEntryAMoveBackRaisedIsRefused(t *testing.T) {
+	h, _, facts := newEntryHarness(t)
+	seedIssueAt(t, h, "LEGION-208", phase.Testing)
+	seedPullRequest(t, h, "LEGION-208", headSHA)
+	seedMovedBackEntry(t, h, "LEGION-208", claim.RoleTester, 2)
+	tester := newLiveClaim(t, h, "LEGION-208", claim.RoleTester)
+	takeTask(t, h, tester.token, "outbox:77", "test LEGION-208", 1, 1)
+
+	message := refused(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass",
+		Commit: headSHA, HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}), http.StatusConflict, "HANDOFF_STALE_ENTRY")
+	for _, want := range []string{
+		"LEGION-208 handed the tester phase testing again: this completion is of entry 1, which is 1 behind the entry 2 the phase is on",
+		"this completion is at commit " + headSHA + " while the pull request the record holds is at head " + headSHA,
+		"the move that handed the phase out again moved the issue back, which asks for this phase's work to be done again, so no verdict on either head answers for it",
+		"nothing was recorded",
+	} {
+		if !strings.Contains(message, want) {
+			t.Fatalf("the refusal = %q, want it to say %q", message, want)
+		}
+	}
+	assertIssuePhase(t, h, phase.Testing)
+	if got := facts.recorded(); len(got) != 0 {
+		t.Fatalf("facts after the refusal = %#v, want none applied: the issue stays in the phase the move back put it in", got)
+	}
+	if got := recordedCompletions(t, h, claim.RoleTester); got != 0 {
+		t.Fatalf("%d tester completions are recorded, want none: a refusal before the fact records nothing", got)
+	}
+}
+
+// Only the head the record holds takes a behind completion, because that head is what the daemon
+// knows the phase's work is of. A completion at the commit before it is a verdict on a head the
+// issue has left, and one naming no commit says nothing about a head at all: each is refused as
+// before, nothing is recorded, and the refusal names what the completion gave against what the
+// record holds.
+func TestABehindCompletionAwayFromTheRecordedHeadIsRefused(t *testing.T) {
+	// The commit before headSHA: the head the tester tested before a push moved the pull request on.
+	const earlierSHA = "a99e0000000000000000000000000000000000ff"
+	for _, tc := range []struct {
+		name   string
+		commit string
+		says   string
+	}{
+		{
+			name: "the commit before the head the record holds", commit: earlierSHA,
+			says: "this completion is at commit " + earlierSHA + " while the pull request the record holds is at head " + headSHA,
+		},
+		{
+			name: "no commit at all",
+			says: "this completion names no commit while the pull request the record holds is at head " + headSHA,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, facts := newHandoffHarness(t, newHandoffGitHub(t), nil, nil)
+			seedIssueAt(t, h, "LEGION-208", phase.Testing)
+			seedPullRequest(t, h, "LEGION-208", headSHA)
+			seedEntry(t, h, "LEGION-208", claim.RoleTester, 2)
+			tester := newLiveClaim(t, h, "LEGION-208", claim.RoleTester)
+			takeTask(t, h, tester.token, "outbox:77", "test LEGION-208", 1, 1)
+
+			message := refused(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass",
+				Commit: tc.commit, HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}), http.StatusConflict, "HANDOFF_STALE_ENTRY")
+			for _, want := range []string{
+				"LEGION-208 handed the tester phase testing again: this completion is of entry 1, which is 1 behind the entry 2 the phase is on",
+				tc.says,
+				"nothing was recorded",
+			} {
+				if !strings.Contains(message, want) {
+					t.Fatalf("the refusal = %q, want it to say %q", message, want)
+				}
+			}
+			if got := facts.recorded(); len(got) != 0 {
+				t.Fatalf("facts after the refusal = %#v, want none applied", got)
+			}
+			if got := recordedCompletions(t, h, claim.RoleTester); got != 0 {
+				t.Fatalf("%d tester completions are recorded, want none: a refusal before the fact records nothing", got)
+			}
+		})
+	}
+}
+
+// Retro and merging end with no handoff record, so a completion of theirs reports a
+// commit and nothing that says which entry's work it is: the record that would have named the
+// phase, and that HANDOFF_RECORD_MISMATCH and HANDOFF_NOT_NEW hold a completion to, was never
+// written. Each is refused behind its entry however its commit reads — here at the very head the
+// record holds, which is what takes a tester's — and the refusal says that missing record is what
+// decided it and names no head: at this head, naming the two would answer the worker with the one
+// reading under which a behind completion is taken.
+func TestABehindCompletionOfAPhaseWithNoRecordIsRefused(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		at   phase.Phase
+		role claim.Role
+	}{
+		{name: "retro", at: phase.Retro, role: claim.RoleImplementer},
+		{name: "merging", at: phase.Merging, role: claim.RoleMerger},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, facts := newHandoffHarness(t, newHandoffGitHub(t), nil, nil)
+			seedIssueAt(t, h, "LEGION-208", tc.at)
+			seedPullRequest(t, h, "LEGION-208", headSHA)
+			seedEntry(t, h, "LEGION-208", tc.role, 2)
+			worker := newLiveClaim(t, h, "LEGION-208", tc.role)
+			takeTask(t, h, worker.token, "outbox:77", "finish LEGION-208", 1, 1)
+
+			message := refused(t, h.complete(HandoffCompleteRequest{GrantID: worker.grant(t), Summary: "done", Commit: headSHA}),
+				http.StatusConflict, "HANDOFF_STALE_ENTRY")
+			for _, want := range []string{
+				fmt.Sprintf("LEGION-208 handed the %s phase %s again: this completion is of entry 1, which is 1 behind the entry 2 the phase is on", tc.role, tc.at),
+				"this phase ends with no handoff record this role writes, so nothing this completion names says which entry's work it is",
+				"nothing was recorded",
+			} {
+				if !strings.Contains(message, want) {
+					t.Fatalf("the refusal = %q, want it to say %q", message, want)
+				}
+			}
+			if got := facts.recorded(); len(got) != 0 {
+				t.Fatalf("facts after the refusal = %#v, want none applied", got)
+			}
+		})
+	}
+}
+
+// What keeps an accepted behind completion from having the worker do the entry again is the rule
+// every task is taken under: a task carries the phase it was queued for, and the issue has left
+// that phase, so the take of it is answered dropped and its value deleted rather than accepted
+// (supervise's phaseHolds, at the take). Without that the worker would be given the second entry's
+// task after its own answer had moved the issue on, and would do the same work again at the same
+// head for the same answer.
+func TestTheCurrentEntrysTaskIsDroppedAfterAnAcceptedBehindCompletion(t *testing.T) {
+	h, _, _ := newEntryHarness(t)
+	holdPhases(h)
+	seedIssueAt(t, h, "LEGION-208", phase.Testing)
+	seedPullRequest(t, h, "LEGION-208", headSHA)
+	seedEntry(t, h, "LEGION-208", claim.RoleTester, 2)
+	tester := newLiveClaim(t, h, "LEGION-208", claim.RoleTester)
+	takeTask(t, h, tester.token, "outbox:77", "test LEGION-208", 1, 1)
+	completion(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass",
+		Commit: headSHA, HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}))
+	assertIssuePhase(t, h, phase.Reviewing)
+
+	// The second testing entry's task reaches the claim, queued for the phase the completion has
+	// just taken the issue out of, and its worker takes it.
+	deliverPhaseTask(t, h, tester.token, "outbox:78", "test LEGION-208 again", phase.Testing, 2, 1)
+	machine, ok := h.supervisor.Machine(tester.token)
+	if !ok {
+		t.Fatal("no machine for the tester")
+	}
+	if answer := takePending(t, machine); answer.Outcome != supervise.TakeOutcomeDropped {
+		t.Fatalf("the take of entry 2's task = %+v, want it dropped rather than worked a second time: the issue has left the phase it was queued for", answer)
+	}
+	if p := machine.Claim().Pending; p != nil {
+		t.Fatalf("the tester holds %+v, want entry 2's task dropped: the issue has left the phase it was queued for", p)
+	}
+}
+
+// A completion the route has taken is sometimes sent again: pi-shared's
+// retryWhileDaemonRestarts sends handoff_complete once more when a connection dropped before the
+// daemon answered, on the contract that a repeat is answered HANDOFF_ALREADY_RECORDED or, once the
+// completion moved the issue, refused as no longer the role's phase. A level completion's repeat
+// is answered that way (HANDOFF_NOT_CURRENT_PHASE). A behind completion taken at the recorded head
+// leaves the claim serving the entry it was behind on, so its repeat meets the entry fence again,
+// in a phase the role does not work. It must still be answered as a repeat, and never with
+// HANDOFF_STALE_ENTRY, whose words tell the worker the current entry's task is owed to it and the
+// daemon sends it: that task was dropped when the issue left testing, so a worker that obeys
+// waits for a task that never comes, and tells its architect that a completion the daemon took
+// was refused.
+func TestARepeatOfAnAcceptedBehindCompletionIsAnsweredAsARepeat(t *testing.T) {
+	h, _, _ := newEntryHarness(t)
+	seedIssueAt(t, h, "LEGION-208", phase.Testing)
+	seedPullRequest(t, h, "LEGION-208", headSHA)
+	seedEntry(t, h, "LEGION-208", claim.RoleTester, 2)
+	tester := newLiveClaim(t, h, "LEGION-208", claim.RoleTester)
+	takeTask(t, h, tester.token, "outbox:77", "test LEGION-208", 1, 1)
+	request := HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass",
+		Commit: headSHA, HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}
+	completion(t, h.complete(request))
+	assertIssuePhase(t, h, phase.Reviewing)
+
+	request.GrantID = tester.grant(t)
+	recorder := h.complete(request)
+	if recorder.Code != http.StatusConflict {
+		t.Fatalf("the repeat = %d: %s, want 409: the first completion was taken and the issue has left testing", recorder.Code, recorder.Body)
+	}
+	var failure Failure
+	decodeInto(t, recorder, &failure)
+	switch failure.Code {
+	case "HANDOFF_ALREADY_RECORDED", "HANDOFF_NOT_CURRENT_PHASE":
+	default:
+		t.Fatalf("the repeat of a taken behind completion is refused %s (%q), want HANDOFF_ALREADY_RECORDED or HANDOFF_NOT_CURRENT_PHASE, as the repeat of a level completion is", failure.Code, failure.Error)
+	}
+	assertIssuePhase(t, h, phase.Reviewing)
+}
+
+// The same answer holds for any further completion from that claim, not only a byte-for-byte
+// repeat. Every phase worker's prompt says a completion it reports for a phase it no longer works
+// is refused HANDOFF_NOT_CURRENT_PHASE (go/worker-common.md), and a level claim's further
+// completion naming a newer record of the phase is answered so. A behind completion taken at the
+// recorded head leaves the claim serving the entry it was behind on, so a further completion that
+// names a newer record meets the entry fence in reviewing. It must not be answered
+// HANDOFF_STALE_ENTRY, which tells the worker the current entry's task is owed to it and the
+// daemon sends it: that task was dropped when the issue left testing, and the role's own answer
+// to the phase already stands.
+func TestAFurtherCompletionAfterATakenBehindCompletionIsAnsweredAsNoLongerTheRolesPhase(t *testing.T) {
+	h, _, _ := newEntryHarness(t)
+	seedIssueAt(t, h, "LEGION-208", phase.Testing)
+	seedPullRequest(t, h, "LEGION-208", headSHA)
+	seedEntry(t, h, "LEGION-208", claim.RoleTester, 2)
+	tester := newLiveClaim(t, h, "LEGION-208", claim.RoleTester)
+	takeTask(t, h, tester.token, "outbox:77", "test LEGION-208", 1, 1)
+	completion(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass",
+		Commit: headSHA, HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}))
+	assertIssuePhase(t, h, phase.Reviewing)
+
+	message := refused(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass, record corrected", Verdict: "pass",
+		Commit: headSHA, HandoffID: tester.writeHandoff("test", 2), HandoffVersion: 2}), http.StatusConflict, "HANDOFF_NOT_CURRENT_PHASE")
+	if strings.Contains(message, "owed to this claim") {
+		t.Fatalf("the refusal = %q, want no task named as owed: the issue has left testing and the tester's answer stands", message)
+	}
+	assertIssuePhase(t, h, phase.Reviewing)
+}
+
 // newEntryHarness serves the daemon's routes with the workflow deciding every fact they apply
 // (newWorkflowHarness), configured as a project that checks nothing in production.
 func newEntryHarness(t *testing.T) (*harness, *workflow.Engine, *factRecorder) {
@@ -390,13 +669,28 @@ func assertIssuePhase(t *testing.T, h *harness, want phase.Phase) {
 	}
 }
 
-// seedEntry puts role's phases row on issue at entry, as the transition that handed that role its
-// task raised it.
+// seedEntry puts role's phases row on issue at entry, as a transition that moved the issue
+// forward into the phase and handed that role its task raised it.
 func seedEntry(t *testing.T, h *harness, issue string, role claim.Role, entry int64) {
+	t.Helper()
+	putEntry(t, h, issue, role, entry, false)
+}
+
+// seedMovedBackEntry is seedEntry for an entry a move back to an earlier phase raised: the
+// architect's move back or the reviewer's request for changes, which hand the role its phase
+// again for work to be done again (record.PhaseRow.EntryMovedBack).
+func seedMovedBackEntry(t *testing.T, h *harness, issue string, role claim.Role, entry int64) {
+	t.Helper()
+	putEntry(t, h, issue, role, entry, true)
+}
+
+// putEntry is the write both of them make, which they differ in only by the move they name.
+func putEntry(t *testing.T, h *harness, issue string, role claim.Role, entry int64, movedBack bool) {
 	t.Helper()
 	ctx := context.Background()
 	if err := h.store.Tx(ctx, func(tx pgx.Tx) error {
-		return record.NewStore().PutPhase(ctx, tx, record.PhaseRow{Issue: issue, Role: role, Claim: claim.Token(string(role) + "-claim"), Entry: entry})
+		return record.NewStore().PutPhase(ctx, tx, record.PhaseRow{Issue: issue, Role: role,
+			Claim: claim.Token(string(role) + "-claim"), Entry: entry, EntryMovedBack: movedBack})
 	}); err != nil {
 		t.Fatalf("put the %s's row of %s on entry %d: %v", role, issue, entry, err)
 	}
@@ -456,8 +750,52 @@ func takeTask(t *testing.T, h *harness, token claim.Token, id, task string, entr
 
 // queueTask is takeTask's delivery without the take: the task waits on the claim untaken, as one
 // the outbox queued and the worker has not taken, so the claim goes on serving the entry its last
-// taken task carried (supervise.Claim.ServingEntry).
+// taken task carried (supervise.Claim.ServingEntry). It is deliverPhaseTask for a delivery of no
+// phase, which is what every task these tests queue by hand carries.
 func queueTask(t *testing.T, h *harness, token claim.Token, id, task string, entry int64, generation uint64) {
+	t.Helper()
+	deliverPhaseTask(t, h, token, id, task, "", entry, generation)
+}
+
+// recordedCompletions is how many completions of role on LEGION-208 are recorded as processed.
+func recordedCompletions(t *testing.T, h *harness, role claim.Role) int {
+	t.Helper()
+	var stored int
+	if err := h.store.Pool().QueryRow(context.Background(),
+		"select count(*) from processed_events where event_id like $1", "handoff:LEGION-208:%:"+string(role)+":%").Scan(&stored); err != nil {
+		t.Fatalf("count the recorded %s completions: %v", role, err)
+	}
+	return stored
+}
+
+// holdPhases wires the supervisor to the issue record the way daemon.go wires
+// workflowRuntime.phaseHolds in production, with the predicate that function answers with
+// (record.PhaseHolds): a task carries the phase and the run it was queued for, and one the issue
+// has left is dropped rather than sent. The harness wires none of its own, so every delivery
+// holds until a test asks for this.
+//
+// It must be called before the test creates its first claim: testSupervisor.Create copies deps
+// by value into each machine it makes (supervise.NewMachine), so a machine made before this call
+// carries no hook of it at all and every delivery of that machine's holds (supervise's
+// phaseHolds), which is a test passing with the rule it is about never asked.
+func holdPhases(h *harness) {
+	h.supervisor.deps.PhaseHolds = func(ctx context.Context, key string, queuedFor phase.Phase, generation uint64) (bool, error) {
+		var issue *record.Issue
+		if err := h.store.Tx(ctx, func(tx pgx.Tx) error {
+			var err error
+			issue, err = record.NewStore().Issue(ctx, tx, key)
+			return err
+		}); err != nil {
+			return false, err
+		}
+		return record.PhaseHolds(issue, queuedFor, generation), nil
+	}
+}
+
+// deliverPhaseTask is the delivery both helpers make, with the phase a start of a phase carries:
+// naming it is what puts the task to the question a workflow task is sent under (holdPhases).
+// The tasks queueTask hands out name none and are never put to it.
+func deliverPhaseTask(t *testing.T, h *harness, token claim.Token, id, task string, p phase.Phase, entry int64, generation uint64) {
 	t.Helper()
 	ctx := context.Background()
 	machine, ok := h.supervisor.Machine(token)
@@ -470,18 +808,7 @@ func queueTask(t *testing.T, h *harness, token claim.Token, id, task string, ent
 		}
 	}
 	if err := machine.Handle(ctx, supervise.RequestDeliver{Claim: token, Task: task, ID: id,
-		Generation: generation, Entry: entry}); err != nil {
+		Phase: p, Generation: generation, Entry: entry}); err != nil {
 		t.Fatalf("deliver %s to %s: %v", id, token, err)
 	}
-}
-
-// recordedCompletions is how many completions of role on LEGION-208 are recorded as processed.
-func recordedCompletions(t *testing.T, h *harness, role claim.Role) int {
-	t.Helper()
-	var stored int
-	if err := h.store.Pool().QueryRow(context.Background(),
-		"select count(*) from processed_events where event_id like $1", "handoff:LEGION-208:%:"+string(role)+":%").Scan(&stored); err != nil {
-		t.Fatalf("count the recorded %s completions: %v", role, err)
-	}
-	return stored
 }

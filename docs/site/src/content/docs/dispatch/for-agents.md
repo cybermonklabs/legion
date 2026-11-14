@@ -75,7 +75,8 @@ tells the agent who Dispatch takes it for.
 
 | Area | Commands |
 | --- | --- |
-| Issues | `dispatch issue` creates one; `--blocked-by <key>`, repeated, names up to 20 issues in the same project it waits on. `dispatch issue-update` changes status, title, labels, priority, assignee, parent, links, blockers, or components; `--assignee <email>` names the person the issue's asks wait on and `--clear-assignee` leaves them on the project's default assignee; its `--blocked-by` replaces the list, and `--clear-blocked-by` empties it; `--before <KEY>` and `--after <KEY>` move it on its project's board, above that issue, below it, or between the two. `dispatch claim` claims an issue before work starts. `dispatch issues` lists a project's issues. |
+| Issues | `dispatch issue` creates one; `--blocked-by <key>`, repeated, names up to 20 issues in the same project it waits on. `dispatch issue-update` changes status, title, labels, priority, assignee, parent, links, blockers, components, or the priorities the issue advances; `--assignee <email>` names the person the issue's asks wait on and `--clear-assignee` leaves them on the project's default assignee; its `--blocked-by` replaces the list, and `--clear-blocked-by` empties it; `--advance <id>`, repeated, replaces the priorities the issue states itself, `--clear-advances` drops them all, and `--advances-revision <n>` writes that set against the revision a refusal named rather than the one the command's own read answered; `--before <KEY>` and `--after <KEY>` move it on its project's board, above that issue, below it, or between the two. `dispatch claim` claims an issue before work starts. `dispatch issues` lists a project's issues. |
+| Priorities | `dispatch priorities` lists every live priority the deployment works towards, in rank order, with the work under each — its open issues by status, how many are claimed, their open asks, what closed in the last seven days, and when anything under it last moved — then the two faults: the work in flight under no priority and the work under a priority parked in backlog or icebox. `--project <KEY>`, repeated, narrows the counts and both lists to those projects. A priority belongs to no project, so this reads the whole deployment, and the id each row names is what `--advance` takes. |
 | Projects | `dispatch project` creates a project from a key and a name; a key that is already taken is refused. `--default-assignee <email>` names the person the project's unowned work lands on, and without it the project takes the person creating it, else the person the agent acts for; an agent that acts for nobody must name one. `dispatch projects` lists every project's key and name. |
 | Asks | `dispatch ask` opens one. `dispatch edit-ask` rewords an open one. `dispatch resolve-ask` retracts or resolves one. `dispatch follow` follows or leaves an ask's thread. `dispatch open-asks` lists open asks. `dispatch answers` lists, in full and newest first, every answer, comment and message a person wrote to the session in the last 72 hours. |
 | Comments | `dispatch comment` comments on a document or replies in a thread. `dispatch suggest` proposes replacement text. `dispatch resolve-comment` resolves a thread. |
@@ -97,8 +98,8 @@ Bulk parent changes are ordinary independent keyed writes, at most eight in flig
 New epic waits for the create's answer before registering parent changes. Start next waits for each predecessor rank write and stops at a refusal, reporting which issues did not move up; a selection already at the head of the queue is reported, not rewritten.
 
 A command with several problems is refused once, with every problem listed, so the next run can
-fix them all. It exits 0 when it wrote or read, 1 when Dispatch or the flags refused it, and 2 on a
-usage error such as an unknown command.
+fix them all. It exits 0 when it wrote or read, and 1 when Dispatch or AskGate refused it. It
+exits 2 on a usage error, such as an unknown command or flags it refused before any request.
 
 Long text, such as a message body or a document, goes on stdin through a quoted here-document, so
 the shell expands nothing in it:
@@ -108,6 +109,9 @@ dispatch message --issue LEGION-1 --body-file - <<'EOF'
 Shipped in owner/repo#7.
 EOF
 ```
+
+Only one flag of a call may read stdin. The command refuses `--body -`, and its refusal names
+`--body-file -`.
 
 ## AskGate reviews each write
 

@@ -218,7 +218,7 @@ func newClaimCompactionLive(t *testing.T) *claimCompactionLive {
 	r.overlays = r.writeOverlays(work)
 
 	r.rt = newLocalRuntime(t, r.cfg.StateDir, r.legion, omp, r.home, r.profile)
-	r.rt.daemonURL, r.rt.envoyURL, r.rt.natsURLs = r.cfg.DaemonURL, newPaneListener(t), r.cfg.NatsURLs
+	r.rt.daemonURL, r.rt.envoyURL, r.rt.natsURLs = r.cfg.DaemonURL, newPaneListener(t, r.cfg.NatsURLs), r.cfg.NatsURLs
 	r.rt.overlays = func(token claim.Token) []string { return r.overlays[token] }
 
 	r.seed()
@@ -377,21 +377,23 @@ func (r *claimCompactionLive) seed() {
 		if _, err := r.st.OpenTreeLifecycle(ctx, r.project, seeded.issue, treelifecycle.AuthorityWorkflow); err != nil {
 			t.Fatalf("open the lifecycle of %s: %v", seeded.issue, err)
 		}
-		r.seedClaim(ctx, seeded.issue, seeded.role, supervise.StateLaunching, "")
 		if seeded.role == claim.RoleArchitect {
+			r.seedClaim(ctx, seeded.issue, seeded.role, supervise.StateLaunching, "", 0)
 			continue
 		}
-		// Unconfirmed and unread: the launch this seed interrupts never put the task in front of
-		// an agent, so the relaunched pane is sent it once it reports ready.
+		// Untaken: the launch this seed interrupts never had the task taken, so the relaunched
+		// pane takes it once it reports ready. It is numbered as a claim's first task is queued
+		// (Claim.TaskWritten, Delivery.Number), so the boot writes its value to the task bucket.
+		r.seedClaim(ctx, seeded.issue, seeded.role, supervise.StateLaunching, "", 1)
 		token := r.token(seeded.issue, seeded.role)
 		if err := r.st.PutDelivery(ctx, token, supervise.Delivery{
 			ID: "seeded-start-" + randomSuffix(t), Task: startTask(seeded.role), Generation: 1,
-			Phase: seeded.at, QueuedAt: time.Now(),
+			Phase: seeded.at, QueuedAt: time.Now(), Number: 1, Origin: supervise.OriginPhaseStart,
 		}); err != nil {
 			t.Fatalf("record the task %s's start left pending: %v", token, err)
 		}
 	}
-	r.seedClaim(ctx, r.ladder, r.onClaude, supervise.StateRetired, "")
+	r.seedClaim(ctx, r.ladder, r.onClaude, supervise.StateRetired, "", 0)
 	r.note("seeded %s (%s, %s), %s (%s, %s), %s (%s, %s) and %s (%s, %s), each with its worker mid-launch — every phase "+
 		"worker holding the task its start left pending, which is what admission's repair of a slotted worker passes "+
 		"over — and %s's %s stopped",
@@ -406,14 +408,17 @@ func startTask(role claim.Role) string {
 	return "Say the word START-" + strings.ToUpper(string(role)) + " and nothing else."
 }
 
-// seedClaim records one claim of issue in state, with the prompt file every launch reads.
-func (r *claimCompactionLive) seedClaim(ctx context.Context, issue string, role claim.Role, state supervise.ClaimState, by supervise.SuspendSource) {
+// seedClaim records one claim of issue in state, with the prompt file every launch reads, its
+// record's task number at written (Claim.TaskWritten), the number of the task the seed leaves
+// pending on it, or 0 for none.
+func (r *claimCompactionLive) seedClaim(ctx context.Context, issue string, role claim.Role, state supervise.ClaimState,
+	by supervise.SuspendSource, written uint64) {
 	t := r.t
 	t.Helper()
 	token := r.token(issue, role)
 	if _, err := r.st.AdmitClaim(ctx, supervise.Claim{
 		Token: token, Project: r.project, Tree: issue, Issue: issue, Role: role,
-		Generation: 1, State: state, SuspendedBy: by,
+		Generation: 1, State: state, SuspendedBy: by, TaskWritten: written,
 		BootTokenHash: supervise.HashBootToken("seeded-" + randomSuffix(t)), ServingGeneration: 1,
 	}); err != nil {
 		t.Fatalf("record the claim %s: %v", token, err)

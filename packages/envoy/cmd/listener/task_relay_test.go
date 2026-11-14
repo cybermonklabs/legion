@@ -397,6 +397,40 @@ func TestTaskRelayRelaysNothingToASessionThatDoesNotHoldTheRole(t *testing.T) {
 	bystander.none(t, 0)
 }
 
+// The session a value is relayed to is the one the role's claim record names, never the one the
+// listener's role claim copy names when the two differ, as for every listener act that turns on
+// who holds a role: with the copy naming the bystander for the holder's role, a new value goes to
+// the holder and the bystander hears nothing, and with the holder's claim lost from the copy, a new
+// value still goes to the holder.
+func TestTaskRelayRelaysToTheSessionTheClaimRecordNames(t *testing.T) {
+	rig := newTaskRig(t)
+	js, kv := createTaskBucket(t, rig.url)
+	const holderID, bystanderID = "ses_task_record", "ses_task_copy"
+	claim := "legion-infra-infra-2811-1-planner"
+	holder := startTaskStandIn(t, rig.url, holderID)
+	bystander := startTaskStandIn(t, rig.url, bystanderID)
+	rig.subscribe(t, consumerRegistration(holderID, "epoch-1"))
+	rig.subscribe(t, consumerRegistration(bystanderID, "epoch-1"))
+	claimTaskRole(t, rig.sessionConsumerRig, holderID, claim)
+	epoch := taskEpoch(t, js)
+	registry := rig.harness.registry
+
+	// The surplus direction: the copy names the bystander, the record the holder.
+	holdRoleInCopy(t, registry, claim, bystanderID)
+	requireDrift(t, registry, claim, bystanderID, holderID)
+	revision := putTask(t, kv, claim, 4)
+	holder.next(t, 5*time.Second).require(t, claim, legiontasks.OpPut, epoch, revision, encodedTask(t, 4))
+	bystander.none(t, time.Second)
+
+	// The lost direction: the copy names nobody, the record the holder.
+	dropRoleFromCopy(t, registry, claim)
+	requireDrift(t, registry, claim, "", holderID)
+	revision = putTask(t, kv, claim, 5)
+	holder.next(t, 5*time.Second).require(t, claim, legiontasks.OpPut, epoch, revision, encodedTask(t, 5))
+	bystander.none(t, time.Second)
+	holder.none(t, 0)
+}
+
 // A task frame names the key's revision and the bucket's epoch, the RFC 3339 creation time of the
 // bucket's stream, and its reply subject is under the relay's own reply inbox, where an answer
 // goes nowhere: a client that cannot read the frame answers it done, and that answer acks nothing

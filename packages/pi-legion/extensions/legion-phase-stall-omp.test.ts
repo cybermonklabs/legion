@@ -96,7 +96,8 @@ const PANE_IDENTITY = { JJ_USER: "Legion Test", JJ_EMAIL: "legion-test@example.i
 
 /** The implement handoff the worker wrote to the stand-in Dispatch with `dispatch handoff-write`
  * before completing: the newest record of STALL-2's implement phase, which its `handoff_complete`
- * reads and names. */
+ * reads and names. Its body names the head the round pushed, which the workspace this file builds
+ * decides, so the body is written once that push has happened. */
 const STALL_RECORD = {
   id: "0c9e7d2a-41b6-4f58-9a3e-6d1b2c8f5e70",
   issue_key: "STALL-2",
@@ -104,7 +105,6 @@ const STALL_RECORD = {
   version: 1,
   author: { kind: "agent", session_id: "ses_stall" },
   created_at: "2026-10-09T08:00:00Z",
-  body: '{"schemaVersion":1,"phase":"implement","issue":"STALL-2"}',
 };
 
 /** Runs `jj` in `cwd` as the pane's identity, failing loudly on a non-zero exit, and answers its
@@ -229,7 +229,7 @@ async function stallPane(
 ): Promise<StallPane> {
   let pushedTip = "";
   /** The stand-in Dispatch's handoff records of STALL-2's implement phase, oldest first. */
-  const records: (typeof STALL_RECORD)[] = [];
+  const records: Array<typeof STALL_RECORD & { body: string }> = [];
   const pane = await runLegionPane(
     run.binary,
     replies,
@@ -271,8 +271,17 @@ async function stallPane(
         await jjIn("bookmark", "set", "legion/STALL-2", "-r", "@-");
         await jjIn("git", "push", "--bookmark", "legion/STALL-2");
         pushedTip = await jjIn("log", "-r", "@-", "--no-graph", "-T", "commit_id");
-        // The worker's `dispatch handoff-write --issue STALL-2 --phase implement`.
-        records.push(STALL_RECORD);
+        // The worker's `dispatch handoff-write --issue STALL-2 --phase implement`, whose body
+        // names the tip it just pushed.
+        records.push({
+          ...STALL_RECORD,
+          body: JSON.stringify({
+            schemaVersion: 1,
+            phase: "implement",
+            issue: "STALL-2",
+            head: pushedTip,
+          }),
+        });
       },
       answer: (url, body) => {
         const own = options.answer?.(url, body);
@@ -356,12 +365,12 @@ test.skipIf(skip)(
     // The worker registered through the daemon's routes and took its task: the registration's
     // value reported seen, the ready, and the take once the host was idle. The reminder's record
     // check read the issue's record before it was sent, and the handoff_complete read it again,
-    // read the newest
-    // implement record from the pane's Dispatch and the pushed tip of legion/STALL-2@origin from
-    // the pane's jj, minted a grant in-process and posted the completion with them: no grant file,
-    // no `legion` command, and no handoff file. Each of the two runs the host settled also
-    // reported the turn it ended to the daemon (`src/turn-outcome.ts`); the turn that ended on the
-    // tool call ends no run of its own, so it earns no report.
+    // read the newest implement record from the pane's Dispatch, held the head that record names
+    // to the commit the pane's workspace stands on, pushed to legion/STALL-2@origin, with the
+    // pane's jj, minted a grant in-process and posted the completion at that head with the record:
+    // no grant file, no `legion` command, and no handoff file. Each of the two runs the host
+    // settled also reported the turn it ended to the daemon (`src/turn-outcome.ts`); the turn that
+    // ended on the tool call ends no run of its own, so it earns no report.
     expect(daemonRoutes(pane)).toEqual([
       "/legion/v1/claims/register",
       "/legion/v1/claims/task-seen",

@@ -124,7 +124,7 @@ var (
 // nor the held list, nor the quiet time; a pod from 87 to 93 the claim views' `leakCheckCause`
 // too, and still neither entry number, nor the held list, nor the quiet time; a pod from 94 to 97
 // the two entry numbers too, and still no held list and no quiet time; a pod from 98 to 110 the
-// held list too, and still no tree quiet time; a pod from 111 to 119 the quiet time too, and no
+// held list too, and still no tree quiet time; a pod from 111 to 129 the quiet time too, and no
 // `unseenTaskValues`; a pod below 46 none of the seventeen; and a pod at
 // supervise.TaskTakeContract, the contract a worker takes its task at and this daemon's declared
 // contract, a pod whose claims record no contract and a caller in no pod — the operator's
@@ -278,7 +278,7 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		// The band from 98 to 110, from heldContract to below quietTimeContract: the held list is
 		// served too, and the tree quiet time and `unseenTaskValues` are held back.
 		{name: "a pod at heldContract", remote: statePodAddr + ":41000", claims: podClaims(heldContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true},
-		// The band from 111 to 119, from quietTimeContract to below supervise.TaskTakeContract,
+		// The band from 111 to 129, from quietTimeContract to below supervise.TaskTakeContract,
 		// the last band under the declared contract: the tree quiet time is served too, and
 		// `unseenTaskValues` is the one key held back.
 		{name: "a pod at quietTimeContract", remote: statePodAddr + ":41000", claims: podClaims(quietTimeContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true},

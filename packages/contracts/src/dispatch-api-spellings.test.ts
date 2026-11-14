@@ -280,7 +280,7 @@ const DIFFERENCES = SPELLED_TWICE.map(({ name, declaredName, schema }) =>
  * One shape is not reached by this comparison at all: `ActorSchema` is a union, so each member
  * carries its own optionality and there is no one field to compare: the count passes it over.
  */
-const TOLERATED_ABSENCES = 20;
+const TOLERATED_ABSENCES = 22;
 
 /**
  * How many fields the bus reading requires and the document declares optional. That is the

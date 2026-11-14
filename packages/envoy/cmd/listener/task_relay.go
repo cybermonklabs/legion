@@ -75,19 +75,27 @@ type taskRelayed struct {
 // session that holds the claim's role, as a core frame on that session's relay subject
 // (bus.DeliverSubject), beside the session relays (sessionRelays) that relay the session's
 // messages on the same subject. A key of the bucket is a claim token, and a claim token is the
-// role its worker's session claims, so the session to relay key K to is the holder of role K
-// (store.Registry.CachedRoleHolder).
+// role its worker's session claims, so the session to relay key K to is the holder of role K. That
+// holder is read from role K's claim record, through the role lane's bounded claim read
+// (roleLaneClaims.RoleClaim), as every listener act that turns on who holds a role reads it, and
+// never from the registry's watched copy of the role bucket, which can lack a claim the bucket
+// holds or keep one the bucket dropped.
 //
 // It relays from the listener that relays the holder's own consumer (sessionRelays.wanted): the
 // one whose machine id the session's entry names, holding its machine's durable binding, for a
 // session on consumer delivery. Every other listener watches the same bucket and relays nothing to
 // that session. It relays a key's record when the watch delivers a newer one (each put and delete,
-// and every key of a first read), and the key's current record when the role's claim changes in the
-// role claim view (store.Registry.OnRoleHolderChange) to a holder it has not relayed that record
-// to, so a role claimed after its value was written gets the value then. A claim's renewal, which
-// every registration writes, is such a change too, so a session that becomes this listener's after
-// its claim was written gets its value at its next registration at the latest. A record superseded
-// before the relay reached it is not sent: a worker takes only its claim's current value.
+// and every key of a first read), and the key's current record when the role's entry changes in the
+// role claim copy (store.Registry.OnRoleHolderChange) and the claim record then names a holder it
+// has not relayed that record to, so a role claimed after its value was written gets the value
+// then. The copy's change only wakes the relay; the record decides where the value goes. A claim's
+// renewal, which every registration writes, is such a change too, so a session that becomes this
+// listener's after its claim was written gets its value at its next registration at the latest,
+// and so is each whole read of the role bucket the copy's repair makes once a minute
+// (store.Registry.RoleClaimRepair), which stores every claim the bucket holds again and takes out
+// each one it no longer holds, so a claim change the copy missed reaches the relay within that
+// minute. A record superseded before the relay reached it is not sent: a worker takes only its
+// claim's current value.
 //
 // It runs only on a listener that gives its sessions consumer delivery: it opens the bucket once a
 // session consumer call of this listener has succeeded (sessionDelivery.consumerGrantHeld), which is
@@ -381,9 +389,11 @@ func (r *taskRelay) relayPending() {
 }
 
 // relayKey relays key's current record to the holder of role key, when the bucket holds a record
-// of key, the role has a holder this listener relays (sessionRelays.wanted), and that record has
-// not already been relayed to that holder. A frame that could not be published is relayed again at
-// the key's next record or the role's next claim write.
+// of key, role key's claim record names a holder this listener relays (sessionRelays.wanted), and
+// that record has not already been relayed to that holder. The claim is read from the role bucket
+// within roleHolderReadTimeout (roleLaneClaims.RoleClaim), only for a key the bucket holds. A claim
+// that could not be read, or a frame that could not be published, is relayed again at the key's
+// next record or the role's next change in the copy (a renewal, or the copy's repair).
 func (r *taskRelay) relayKey(key string) {
 	r.mu.Lock()
 	record, held := r.records[key]
@@ -392,13 +402,17 @@ func (r *taskRelay) relayKey(key string) {
 	if !held {
 		return
 	}
-	holder, err := r.registry.CachedRoleHolder(key)
+	claim, err := roleLaneClaims{r.registry}.RoleClaim(r.ctx, key)
 	if err != nil {
+		if r.ctx.Err() != nil {
+			return
+		}
 		r.logger.Warn("task relay could not read who holds a claim's role, so it relays the claim's task value at the key's next write or the role's next claim",
 			slog.String("claim", key),
 			slog.String("error", err.Error()))
 		return
 	}
+	holder := claim.HolderSessionID
 	if holder == "" {
 		return
 	}

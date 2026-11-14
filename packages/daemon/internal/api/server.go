@@ -1063,7 +1063,7 @@ const phaseEntriesContract = 94
 // one measure: a caller served the movement without the quiet time beside it, or the other way
 // about, would hold half of what one read of the tree said. It is the band below
 // supervise.TaskTakeContract's band, the highest of the seventeen and this daemon's own contract,
-// so a caller in a pod at 111 through 119 is served the measure and not `unseenTaskValues`.
+// so a caller in a pod at 111 through 129 is served the measure and not `unseenTaskValues`.
 const quietTimeContract = 111
 
 // carriesUpdateRounds is whether any claim view of state carries `updateRound` or `updateHead`.

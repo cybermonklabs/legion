@@ -1029,7 +1029,7 @@ const legionTaskValue = z.object({
  * discovered agents against (contract 21). Never null: a role whose prompts name none gets `[]`.
  * `task` and `finished` are what `POST /legion/v1/claims/task` answers (`LegionTaskResponse`),
  * read once the registration is recorded, so the worker holds its claim's value before its ready
- * (contract 120). */
+ * (contract 130). */
 export const LegionRegisterResponse = z.object({
   claimToken: nonEmptyString,
   tree: nonEmptyString,
@@ -1092,7 +1092,7 @@ const legionProviderError = z.strictObject({
  * provider said about a refusal, and a clean turn carries none. `task` is the number of the take
  * whose turn this was, absent for a turn of no task: the report that names the claim's taken task
  * finishes it, unless it carries `providerError`, which keeps the task under its number and starts
- * the wait before its value is written again (contract 120). */
+ * the wait before its value is written again (contract 130). */
 const turnOutcomeFields = {
   generation: z.number().int().positive(),
   sequence: z.number().int().positive(),
@@ -1174,14 +1174,14 @@ const taskValueFields = {
 };
 
 /** `claim.TaskRequest`, the body of `POST /legion/v1/claims/task`: a worker reading its claim's
- * value, at a new epoch of its relay or when it gains its role again (contract 120). */
+ * value, at a new epoch of its relay or when it gains its role again (contract 130). */
 export const LegionTaskRequest = eitherCaller({ generation: z.number().int().positive() });
 
 export type LegionTaskRequestBody = z.output<typeof LegionTaskRequest>;
 
 /** `claim.TaskResponse`, the answer of `POST /legion/v1/claims/task`: the claim's value as the
  * bucket holds it now, null where it holds none, and the number of the last task the claim
- * finished, 0 for none (contract 120). */
+ * finished, 0 for none (contract 130). */
 export const LegionTaskResponse = z.object({
   task: legionTaskValue.nullable(),
   finished: z.number().int().nonnegative(),
@@ -1190,7 +1190,7 @@ export const LegionTaskResponse = z.object({
 export type LegionTask = z.output<typeof LegionTaskResponse>;
 
 /** `claim.TaskSeenRequest`, the body of `POST /legion/v1/claims/task-seen`, answered 204: the
- * worker reporting the value it was handed, whether or not its host is idle (contract 120). */
+ * worker reporting the value it was handed, whether or not its host is idle (contract 130). */
 export const LegionTaskSeenRequest = eitherCaller(taskValueFields);
 
 export type LegionTaskSeenRequestBody = z.output<typeof LegionTaskSeenRequest>;
@@ -1199,7 +1199,7 @@ export type LegionTaskSeenRequestBody = z.output<typeof LegionTaskSeenRequest>;
  * host is idle, to take the task its value names. A take with no answer — a refused, reset or
  * closed connection, a DNS failure, no answer in 5 minutes, or a 502, 503 or 504 that names no
  * `code` — is sent again unchanged, and a take of a number already accepted whose turn has not
- * started is answered the same text again (contract 120). */
+ * started is answered the same text again (contract 130). */
 export const LegionTakeRequest = eitherCaller(taskValueFields);
 
 export type LegionTakeRequestBody = z.output<typeof LegionTakeRequest>;
@@ -1211,7 +1211,7 @@ export type LegionTakeRequestBody = z.output<typeof LegionTakeRequest>;
  * (`not-owed`, `in-turn`, `not-ready`, `issue-in-turn`, `suspension`, `update-round`,
  * `launch-waits`, `stale-plugin`, `root-hears`, `provider-error`, `adoption`), since a worker acts
  * on none of them by name and a hold a later daemon adds must not refuse the answer (contract
- * 120). */
+ * 130). */
 export const LegionTakeResponse = z.discriminatedUnion("outcome", [
   z.object({ outcome: z.literal("accepted"), text: nonEmptyString }),
   z.object({ outcome: z.literal("refused"), hold: nonEmptyString }),
@@ -1399,7 +1399,7 @@ export const LegionErrorResponse = z.object({
 });
 
 /** `api.DeliveryView` — the claim's pending task; `confirmedAt` is when the task was recorded as
- * taken (an accepted take), absent until it is. No prompt is acknowledged since contract 120, so
+ * taken (an accepted take), absent until it is. No prompt is acknowledged since contract 130, so
  * the view carries no `deliveredAt`. `phase` is the issue phase the task was queued for, which is
  * what says whether it is still the work to do; a task of no phase — an operator's own, an
  * architect's — carries none. */
@@ -1591,10 +1591,17 @@ export const LegionControllerGrantRequest = z.strictObject({
  * Dispatch and refuses when it is missing (`HANDOFF_RECORD_REQUIRED`), unknown
  * (`HANDOFF_RECORD_NOT_FOUND`), unreadable (`DISPATCH_READ_FAILED`), of another issue, phase or
  * version (`HANDOFF_RECORD_MISMATCH`), or written by another session than the claim's
- * (`HANDOFF_SESSION_MISMATCH`). `commit` is the implementer's (its pushed tip for an implementing
- * round, the commit it stands on for retro) and the head the merger merged; the planner, the tester
- * and the reviewer report none, and a check report carries neither (the look pushed nothing), so
- * all three are optional here, and the daemon requires each where it applies. `verdict` is `pass`
+ * (`HANDOFF_SESSION_MISMATCH`). `commit` on such a completion is the head that record's body
+ * names (`head`, the 40-character lower-case commit the work the handoff reports was done
+ * against), which is what a completion of an earlier phase entry is taken at. The plugin refuses
+ * the implementer's completion before it goes when its `implement` record names no head, when the
+ * commit its workspace stands on (`@-`) is not on `legion/<issue>@origin`, and when the record's
+ * head is not that pushed `@-`; a record naming no head leaves the planner's, the tester's and
+ * the reviewer's completion without one. Retro and every completion of a phase its
+ * role does not work report the commit the workspace stands on instead, the merger's reports the
+ * head the merger merged, and a check report carries neither commit nor record (the look pushed
+ * nothing), so all three are optional here, and the daemon requires each where it applies.
+ * `verdict` is `pass`
  * or `fail` for the tester's completion, `pass`, `pending` or `fail` for a check report
  * (`CHECK_VERDICT_REQUIRED`), and the empty string for every other completion; it stays a string
  * on the wire, as the Go field is. `wakeAt` is the check report's alone (contract 54): when the

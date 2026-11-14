@@ -2014,7 +2014,7 @@ A turn that still runs at the bound ends with the pod.
 The daemon reads nothing of the pod's disk before it replaces the pod: a role's own push is what keeps its work, and work a role did not push before the pod goes, a failed claim's included, is lost with the disk; an operator who wants such work kept runs [Carrying unpushed work out of an issue's pod](#carrying-unpushed-work-out-of-an-issues-pod) before the roll.
 A role whose running plugin predates the contract that added the op is asked all the same:
 its message tells it to push its work and end its turn, and its round ends at the bound whatever it does, so its pod is replaced like every other and the role resumes in its own session on the new image.
-A role on Claude Code, whose plugin is its pod image's own and which no install can move, is carried by that same path and needs no operator step either ("Contract discipline" below), unless that plugin takes no task, a contract below 120 (`supervise.TaskTakeContract`): the idle release takes such a role's pod instead of waiting for its round ("Contract discipline" below).
+A role on Claude Code, whose plugin is its pod image's own and which no install can move, is carried by that same path and needs no operator step either ("Contract discipline" below), unless that plugin takes no task, a contract below 130 (`supervise.TaskTakeContract`): the idle release takes such a role's pod instead of waiting for its round ("Contract discipline" below).
 What holds a round past its bound is a claim an operator's own suspension holds, a pod replacement the cluster refuses, no process in the round's pod, or two pods at once,
 and the daemon reports such a round to the project's controller as `update-stalled`, once, after the bound has passed.
 After this release deploys, move the project's controller onto this release's `skills/legion-controller`.
@@ -2331,8 +2331,8 @@ The first run printed `BEGIN`, three `ALTER TABLE`s, `UPDATE 2`, six `ALTER TABL
 After them the three assignment columns stood, none of the six entry columns did, `claims.leak_check_cause` still stood, `schema_version` held 132 rows with none of 20261111225552 and its highest still at 20261112180548, the two supervise payloads had lost both keys and kept every other key they carried — the `assignment` the second of them carried among them — and the `notice` row kept its own `entry`.
 Running `Migrate` again then applied that one migration a second time, reporting one migration applied: the six entry columns stood on the three tables again, the three assignment columns were dropped again, and `schema_version` held 133 rows, 20261111225552 among them and 20261112180548 still the highest.
 
-**Tasks the worker takes (daemon API contract 120).**
-A release at contract 120 hands a worker its task as a value it takes, not as a prompt the daemon pushes:
+**Tasks the worker takes (daemon API contract 130).**
+A release at contract 130 hands a worker its task as a value it takes, not as a prompt the daemon pushes:
 the daemon writes the number of each claim's task under the claim's token in the task bucket `legion_tasks` on Envoy's NATS, the Envoy listener relays each value to the session that holds the claim's role, and the worker asks the daemon to take the task (`POST /legion/v1/claims/take`) once its host is idle, so the worker stream carries no task at all.
 The daemon opens the bucket at every boot before it supervises anything, creating it where it does not exist yet, and refuses to boot when it cannot, naming the bucket and the subject its NATS user was refused ([Configuration](#configuration) lists the daemon user's grant);
 a daemon whose NATS user is the pane seed's, the session user every pane shares, holds no grant on the bucket and is refused all the same, told to take a user of its own (`nats_daemon_nkey_seed_file`).
@@ -2358,7 +2358,7 @@ Nothing stops step 3 before step 2:
 a daemon of this release refuses to boot only without its grant, and with no listener relaying the values a worker is handed its value at its registration and at each new epoch of its relay only.
 `legion state` then names every running claim whose value nobody reported seeing for a whole `worker_take_timeout_seconds` (`task values nobody reported seeing`, `unseenTaskValues` in `--json`), which charges no worker: the daemon writes such a value again once per that bound.
 
-A worker whose plugin is below contract 120 (`supervise.TaskTakeContract`) takes no task, so step 3 moves it as soon as the daemon can ("Contract discipline" below):
+A worker whose plugin is below contract 130 (`supervise.TaskTakeContract`) takes no task, so step 3 moves it as soon as the daemon can ("Contract discipline" below):
 a worker the stale-plugin lane can relaunch is relaunched onto the current plugin even inside the pod update round the image change opens, and a Claude Code role in a pod, whose plugin only its pod's image moves, has its pod released by the idle release once it is in no turn, its unpushed work saved as a bundle first ([Idle release](#idle-release)).
 That release runs on the idle release's tick, so a daemon whose idle release is off (`runtime.kubernetes.idle_release.idle_minutes: 0`) makes none:
 each such Claude Code role waits for its pod's update round, which replaces the pod at its bound at the latest, and its operator replaces those pods sooner, beside the two restarts above, by deleting each one's issue Sandbox once its roles have pushed (`kubectl -n legion delete sandbox <name>`).
@@ -2443,7 +2443,7 @@ The pod update round is untouched by all this: it replaces a pod and its disk, s
 
 A claim in an open pod update round is the one stale claim the lane leaves alone:
 it is served on the contract it records until the round ends, since the round replaces its pod and the role comes back in the new pod on the new image's plugin (`StaleRefusesCalls` in `internal/supervise/plugin.go`, `staleForTheLane` in `internal/daemon/daemon.go`).
-That rule is reversed for a claim whose plugin takes no task, a contract below 120 (`supervise.TaskTakeContract`, `TakesNoTask`), the contract at which a worker takes its task rather than being sent it:
+That rule is reversed for a claim whose plugin takes no task, a contract below 130 (`supervise.TaskTakeContract`, `TakesNoTask`), the contract at which a worker takes its task rather than being sent it:
 on its old contract such a claim takes none of its tasks until its round ends, and the rollout that moves a project's daemon and worker image together opens a round over every issue pod (`PodDrift`), so every such worker of the fleet would wait out a round.
 So such a claim is refused inside a round as outside one, and the lane relaunches it onto the current plugin there, whose process then takes its tasks.
 
@@ -2492,7 +2492,7 @@ the process would come up on the same image's plugin, register the same contract
 Such a claim is therefore relaunched by nothing, and the rule is the runtime and the role's backend together, never the backend alone (`noPluginInstall`, `packages/daemon/internal/daemon/daemon.go`):
 no `StalePlugin` is posted for a Claude Code claim of a pod at any contract, round or no round (`refreshStalePlugins`), and a registration of that claim still on the old contract is accepted, uncharged, rather than relaunched (`staleRegistration`).
 What carries it is the update round over its pod, which asks it like every other role and ends at its bound whatever it answers, so the new image reaches it with nothing asked of an operator.
-A Claude Code role in a pod whose plugin takes no task (its registered process below contract 120, `supervise.TaskTakeContract`) is the exception, since it waits for a prompt this daemon never sends:
+A Claude Code role in a pod whose plugin takes no task (its registered process below contract 130, `supervise.TaskTakeContract`) is the exception, since it waits for a prompt this daemon never sends:
 the idle release takes its pod instead ([Idle release](#idle-release)), without waiting out the idle period and past the three holds that keep a pod behind for a relaunch or a round to replace (the pod's image, a live claim's contract, an open round), the workspace's unpushed work saved as a bundle first as at every release.
 Every other condition of the release holds such a pod as it holds any pod (a turn in progress, background work its session reported, a reminder due, a root's wait on a person), so a role in a turn has its pod released at that turn's end, and the role comes back in a pod built from the configured image, whose claude-envoy takes its tasks.
 Such a release logs `idle release: releasing an issue's pod whose Claude Code role runs a plugin that takes no task, so the role comes back on the configured image` with the `claim`, its `pluginContract` and `taskTakeContract`, and each role's stop gives that reason.
@@ -3025,7 +3025,7 @@ The notification stream's subjects were verified live: a server granting exactly
 the daemon's permission test (`internal/daemon/nats_permissions_test.go`) creates all three durables and reads their lag under the same grant and expects no refusal, and has the daemon create the task bucket, open it again, and write, read, watch and delete a claim's value under it with no refusal, and report the refused write of a grant without the bucket's key writes.
 The stored-message get reaches a deployment with the envoy-infra release that carries it:
 until then the daemon runs as before, and only the lag's oldest message is `unavailable`.
-The task bucket's entries are not optional in that way: a daemon of contract 120 or later refuses to boot without them, naming the bucket and the subject refused ("Tasks the worker takes", under [Pinning a release that drops what a running pod still uses](#pinning-a-release-that-drops-what-a-running-pod-still-uses)).
+The task bucket's entries are not optional in that way: a daemon of contract 130 or later refuses to boot without them, naming the bucket and the subject refused ("Tasks the worker takes", under [Pinning a release that drops what a running pod still uses](#pinning-a-release-that-drops-what-a-running-pod-still-uses)).
 The daemon's seed is read by the same rule and refusals as the pane seed, the group-readable mount included, and neither seed falls back to the other:
 an unusable daemon seed refuses boot even beside a good pane seed.
 Unset, the daemon connects as the pane seed, and with neither, with no credential.
@@ -4711,7 +4711,7 @@ A `failed` claim is the exception: it runs no turn on the pod, so the round asks
 No claim is left out of a round for the contract its plugin records:
 a role whose `legion` tool has no `ready_for_update` operation is told to push its work and end its turn, since its round ends at the bound whatever it does.
 The end of a turn is no answer at any contract: only the `ready_for_update` call answers the round.
-A claim whose plugin takes no task, a contract below 120 (`supervise.TaskTakeContract`), is asked like any other but not left on that plugin for the round's length: the stale-plugin lane relaunches it onto the current plugin inside the round, and the idle release takes the pod of a Claude Code role on such a plugin ("Contract discipline" above).
+A claim whose plugin takes no task, a contract below 130 (`supervise.TaskTakeContract`), is asked like any other but not left on that plugin for the round's length: the stale-plugin lane relaunches it onto the current plugin inside the round, and the idle release takes the pod of a Claude Code role on such a plugin ("Contract discipline" above).
 An answer stands until the round ends, through every later turn of that role, and the daemon refuses an answered role's take of a new task until the round ends (the hold `update-round`, `answeredOpenRound`), writing the task's value again at the round's end:
 work a later turn commits and does not push goes with the disk, since the answer is not taken back for it.
 The id is what makes the answer that round's:
@@ -4826,7 +4826,7 @@ The pod of a root that waits on a person's answer in `awaiting_person` is kept u
 A pod held past the idle period is held for one of those reasons, and the daemon records which one.
 One more reason holds a pod that is otherwise idle: a saved bundle of its unpushed work that no pod has restored yet (`bundle_unrestored`, below).
 
-The rule changes for one claim: a live Claude Code role in the pod whose registered process runs a plugin that takes no task, a contract below 120 (`supervise.TaskTakeContract`), whose plugin no relaunch can move because it is the image's own (`oldPlugin` and `IdleRelease` in `internal/workflow/idle.go`).
+The rule changes for one claim: a live Claude Code role in the pod whose registered process runs a plugin that takes no task, a contract below 130 (`supervise.TaskTakeContract`), whose plugin no relaunch can move because it is the image's own (`oldPlugin` and `IdleRelease` in `internal/workflow/idle.go`).
 Its pod, where it does not run the configured image, is released without waiting out the idle period and past the image, contract and update-round holds, while every other reason above still holds it, so a role in a turn has its pod released at that turn's end; its pod, where it runs the configured image already, is kept and the claim logged once as an Error, since a release would bring the same plugin back ("Contract discipline" above).
 That release is the three acts below like any other, the bundle saved first, and its role stops name why it was made rather than an idle period.
 It runs on the idle release's own tick, so with `idle_minutes: 0` it does not run at all: such a pod waits for its update round, and the operator replaces it sooner at the rollout ("Tasks the worker takes", under [Pinning a release that drops what a running pod still uses](#pinning-a-release-that-drops-what-a-running-pod-still-uses)).

@@ -13,6 +13,16 @@
   ],
   "hosted": [
     {
+      "script": "behind-entry-fence.sh",
+      "go_version_file": "packages/daemon/go.mod",
+      "apt": [],
+      "bun": false,
+      "evidence_variable": "BEHIND_ENTRY_FENCE_EVIDENCE_DIR",
+      "timeout_minutes": 25,
+      "why_hosted": "Run it from a checkout on a Linux host with go, awk and python3, as LEGION_TEST_PG_DSN=... bash scripts/e2e/behind-entry-fence.sh; CI's service satisfies it, and the script starts no container, installing the nats-server it needs with go install",
+      "jj": true
+    },
+    {
       "script": "child-adoption.sh",
       "go_version_file": "packages/daemon/go.mod",
       "apt": [],
@@ -145,6 +155,10 @@
     {
       "script": "envoy-session-states.sh",
       "needs": "a Legion pod: its own model route for both agent runtimes (LEGION_E2E_MODEL_BASE_URL, LEGION_E2E_MODEL_KEY_FILE, LEGION_E2E_MODEL_ID and LEGION_E2E_CLAUDE_MODEL), the worker image's Oh My Pi and Claude Code pin, and a loopback PostgreSQL with pgvector (ENVOY_SESSION_STATES_PG_DSN); it starts its own NATS, listeners and Dispatch"
+    },
+    {
+      "script": "late-completion.sh",
+      "needs": "the pinned Oh My Pi every pane runs (LEGION_OMP_PATH, an absolute executable, which a GitHub-hosted runner has none of), a loopback PostgreSQL carrying pgvector whose role may create databases (LEGION_TEST_PG_DSN), go, awk, tar, python3, jj and bun with this repository's node_modules"
     },
     {
       "script": "leak-guard-image-job.sh",

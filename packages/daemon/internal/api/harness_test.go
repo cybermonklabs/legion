@@ -538,6 +538,17 @@ func (h *harness) openTree(t *testing.T, project, tree string) {
 // It answers the text the take was answered with.
 func acceptTake(t *testing.T, machine *supervise.Machine) string {
 	t.Helper()
+	answer := takePending(t, machine)
+	if answer.Outcome != supervise.TakeOutcomeAccepted {
+		t.Fatalf("the take of %s's task = %+v, want it accepted", machine.Claim().Token, answer)
+	}
+	return answer.Text
+}
+
+// takePending is the claim's worker taking the task its claim holds: the take of the pending
+// number at the value the bucket holds, answered however the claim's machine decides it.
+func takePending(t *testing.T, machine *supervise.Machine) supervise.TakeAnswer {
+	t.Helper()
 	c := machine.Claim()
 	if c.Pending == nil {
 		t.Fatalf("%s holds no task to take", c.Token)
@@ -551,10 +562,10 @@ func acceptTake(t *testing.T, machine *supervise.Machine) string {
 		request.Epoch, request.Revision = current.Value.Epoch, current.Value.Revision
 	}
 	answer, err := machine.Take(context.Background(), request)
-	if err != nil || answer.Outcome != supervise.TakeOutcomeAccepted {
-		t.Fatalf("the take of task %d on %s = %+v, %v, want it accepted", c.Pending.Number, c.Token, answer, err)
+	if err != nil {
+		t.Fatalf("the take of task %d on %s: %v", c.Pending.Number, c.Token, err)
 	}
-	return answer.Text
+	return answer
 }
 
 // finishTurn ends the turn of the claim's taken task as its worker does: the agent_end, and behind

@@ -992,7 +992,7 @@ Closing the terminal leaves the project without one, and the daemon logs
    reads counts that add up to less than its `rounds`, and a hook of `hooks:` counts from the
    first move back after the upgrade.
 
-   **The first upgrade to a release where a worker takes its task** (daemon API contract 120)
+   **The first upgrade to a release where a worker takes its task** (daemon API contract 130)
    goes out in this order, so nothing is used before it exists: first the `envoy-infra` release
    whose grants carry the task bucket `legion_tasks` (the daemon's user may create, update, read
    and write it, the listener's user may only read it, and no session user gets anything of it);
