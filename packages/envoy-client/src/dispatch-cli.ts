@@ -61,11 +61,12 @@ const OK = 0;
 const REFUSED = 1;
 const USAGE = 2;
 
-const HOSTS = ["omp", "claude"] as const satisfies readonly DispatchHost[];
+const HOSTS = ["omp", "claude", "codex"] as const satisfies readonly DispatchHost[];
 
 /** Claude Code reads back at most 30,000 characters of a command's output by default
- *  (`BASH_MAX_OUTPUT_LENGTH`). The whole output stays under this, with room to spare, every line
- *  the CLI adds counted (`fitOutput`). */
+ *  (`BASH_MAX_OUTPUT_LENGTH`), and Codex cuts the middle out of a long command output, so under
+ *  either the whole output stays under this, with room to spare, every line the CLI adds counted
+ *  (`fitOutput`), and the rest goes to a file the output names. */
 const CLAUDE_OUTPUT_MAX = 25_000;
 
 /** Why a file that changed after AskGate read it is refused or posts unreviewed. */
@@ -186,7 +187,11 @@ export function fitOutput(
  * elsewhere); an empty variable counts as unset. With `DISPATCH_HOST` unset,
  * `CLAUDE_CODE_CHILD_SESSION=1`, which Claude Code sets in every Bash and hook process it runs, is
  * host `claude`: a Claude Code subagent's Bash can lack what the bridge's `SessionStart` hook
- * writes to `CLAUDE_ENV_FILE` (anthropics/claude-code#46696).
+ * writes to `CLAUDE_ENV_FILE` (anthropics/claude-code#46696). Under Codex the session's id is
+ * `CODEX_THREAD_ID`, which Codex sets in every shell command it runs; no Codex hook can export a
+ * variable into those shells, so the Codex plugin's own `dispatch` shim sets `DISPATCH_HOST=codex`,
+ * and with `DISPATCH_HOST` unset a shell that carries `CODEX_THREAD_ID` and not
+ * `CLAUDE_CODE_CHILD_SESSION=1` is host `codex` too (`fallbackHost`).
  *
  * The envoy.json it reads is the one its session's plugin chose: with `DISPATCH_HOST` set, the file
  * `ENVOY_CONFIG_FILE` names (each plugin sets the two together), else its host's own rule
@@ -195,6 +200,17 @@ export function fitOutput(
  * an outer session left there. Memory a long-lived host kept across calls lives in the session's
  * state directory.
  */
+/** The host a shell with no `DISPATCH_HOST` belongs to: Claude Code's when it carries
+ *  `CLAUDE_CODE_CHILD_SESSION=1`, Codex's when it carries `CODEX_THREAD_ID`, else none. Claude
+ *  Code is asked first, as it was before Codex was a host, so a Claude Code session started from a
+ *  Codex shell (which carries both) keeps acting as itself; a Codex session started from a Claude
+ *  Code shell is told apart by the Codex plugin's shim, which sets `DISPATCH_HOST`. */
+function fallbackHost(env: Readonly<Record<string, string>>): string | undefined {
+  if (env.CLAUDE_CODE_CHILD_SESSION === "1") return "claude";
+  if (env.CODEX_THREAD_ID !== undefined) return "codex";
+  return undefined;
+}
+
 export async function runDispatchCli(
   argv: readonly string[],
   rawEnv: Readonly<Record<string, string | undefined>>,
@@ -221,7 +237,10 @@ export async function runDispatchCli(
     askgate?: ResultInput["askgate"]
   ): number => {
     print(text);
-    const sessionId = claudeSession ?? env.DISPATCH_SESSION_ID;
+    const sessionId =
+      env.DISPATCH_HOST === "codex"
+        ? env.CODEX_THREAD_ID
+        : (claudeSession ?? env.DISPATCH_SESSION_ID ?? env.CODEX_THREAD_ID);
     if (sessionId !== undefined) {
       try {
         appendResult(sessionDirectory(env, sessionId), {
@@ -255,14 +274,13 @@ export async function runDispatchCli(
       : refuse(new ToolInputError(parsed.tool, parsed.problems).message, USAGE, parsed.tool);
   }
 
-  const hostName =
-    env.DISPATCH_HOST ?? (env.CLAUDE_CODE_CHILD_SESSION === "1" ? "claude" : undefined);
+  const hostName = env.DISPATCH_HOST ?? fallbackHost(env);
   const host = HOSTS.find((name) => name === hostName);
   if (host === undefined) {
     return refuse(
       hostName === undefined
         ? "dispatch: DISPATCH_HOST is not set. The host plugin sets it in an agent's shell. From an agent's session, send the command as a bash call. To run dispatch by hand, set DISPATCH_HOST, and set DISPATCH_SESSION_ID to the id of your own session."
-        : `dispatch: DISPATCH_HOST is ${JSON.stringify(hostName)}, not omp or claude.`,
+        : `dispatch: DISPATCH_HOST is ${JSON.stringify(hostName)}, not omp, claude or codex.`,
       USAGE,
       parsed.tool
     );
@@ -270,7 +288,9 @@ export async function runDispatchCli(
   const [sessionId, sessionVariable] =
     host === "claude"
       ? [claudeSession, "ENVOY_SESSION_ID or CLAUDE_CODE_SESSION_ID"]
-      : [env.DISPATCH_SESSION_ID, "DISPATCH_SESSION_ID"];
+      : host === "codex"
+        ? [env.CODEX_THREAD_ID, "CODEX_THREAD_ID"]
+        : [env.DISPATCH_SESSION_ID, "DISPATCH_SESSION_ID"];
   if (sessionId === undefined) {
     return refuse(
       `dispatch: ${sessionVariable} is not set, so this call has no session to act as. The host plugin sets it in an agent's shell.`,
@@ -551,7 +571,7 @@ export async function runDispatchCli(
       text,
       pictures,
       kept,
-      host === "claude" ? CLAUDE_OUTPUT_MAX : Number.POSITIVE_INFINITY,
+      host === "claude" || host === "codex" ? CLAUDE_OUTPUT_MAX : Number.POSITIVE_INFINITY,
       writeFull
     )
   );

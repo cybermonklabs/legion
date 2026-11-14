@@ -1743,6 +1743,55 @@ describe("the dispatch CLI's envoy.json", () => {
     expect(posted?.body).toMatchObject({ actor: { id: "subagent-1" } });
   });
 
+  // Codex sets CODEX_THREAD_ID in every shell command it runs and lets no plugin export a variable
+  // into those shells, so a Codex shell with no DISPATCH_HOST is host codex, acting as that thread.
+  test("a Codex shell with no DISPATCH_HOST is host codex, acting as CODEX_THREAD_ID", async () => {
+    serverConfig(join(stateDir, ".config", "legion"));
+    const { code, stdout } = await run(["message", "--issue", "DSP-1", "--body", "hello"], {
+      ...fromFile,
+      DISPATCH_HOST: undefined,
+      DISPATCH_SESSION_ID: undefined,
+      CODEX_THREAD_ID: "codex-thread-1",
+    });
+    expect(stdout).not.toStartWith("dispatch: ");
+    expect(code).toBe(0);
+    const posted = requests.find((request) => request.path === "/api/v1/issues/DSP-1/messages");
+    expect(posted?.body).toMatchObject({ actor: { id: "codex-thread-1" } });
+  });
+
+  // A Codex session started from a Claude Code Bash inherits DISPATCH_HOST=claude,
+  // CLAUDE_CODE_CHILD_SESSION=1 and the Claude session's id; the Codex plugin's shim sets
+  // DISPATCH_HOST=codex, so the command acts as the Codex thread and never as the Claude session.
+  test("DISPATCH_HOST=codex acts as CODEX_THREAD_ID over an inherited Claude Code session, reading no CODEX_HOME file", async () => {
+    serverConfig(join(stateDir, ".config", "legion"));
+    const codexHome = brokenConfigDirectory();
+    const { code, stdout } = await run(["message", "--issue", "DSP-1", "--body", "hello"], {
+      ...fromFile,
+      DISPATCH_HOST: "codex",
+      DISPATCH_SESSION_ID: undefined,
+      CLAUDE_CODE_CHILD_SESSION: "1",
+      CLAUDE_CODE_SESSION_ID: "claude-ses",
+      CLAUDE_CONFIG_DIR: brokenConfigDirectory(),
+      CODEX_HOME: codexHome,
+      CODEX_THREAD_ID: "codex-thread-2",
+    });
+    expect(stdout).not.toStartWith("dispatch: ");
+    expect(code).toBe(0);
+    const posted = requests.find((request) => request.path === "/api/v1/issues/DSP-1/messages");
+    expect(posted?.body).toMatchObject({ actor: { id: "codex-thread-2" } });
+  });
+
+  test("DISPATCH_HOST=codex with no CODEX_THREAD_ID refuses naming it, sending nothing", async () => {
+    const { code, stdout } = await run(["projects"], {
+      ...fromFile,
+      DISPATCH_HOST: "codex",
+      DISPATCH_SESSION_ID: "ses-1",
+    });
+    expect(stdout).toStartWith("dispatch: CODEX_THREAD_ID is not set");
+    expect(code).toBe(2);
+    expect(requests).toEqual([]);
+  });
+
   test("with neither DISPATCH_HOST nor CLAUDE_CODE_CHILD_SESSION=1 it refuses naming DISPATCH_HOST, whatever else Claude Code left", async () => {
     const claude = join(stateDir, "claude");
     serverConfig(claude);
@@ -2147,16 +2196,16 @@ describe("cliRefusals", () => {
   });
 
   // The whole line is pinned, not its `dispatch: ` prefix: `opencode` was an accepted host until
-  // it was removed, so the refusal naming it, and naming omp and claude as the ones left, is the
+  // it was removed, so the refusal naming it, and naming omp, claude and codex as the ones accepted, is the
   // user-visible behaviour that removal produces. A prefix-only assertion passes again the moment
   // the host comes back, or the message stops naming the hosts it accepts.
-  test("a host the command does not accept is refused by name, with the two it accepts", async () => {
+  test("a host the command does not accept is refused by name, with the three it accepts", async () => {
     const { code, stdout } = await run(["projects"], {
       DISPATCH_HOST: "opencode",
       DISPATCH_SESSION_ID: "ses-1",
     });
     expect(code).toBe(2);
-    expect(stdout).toBe('dispatch: DISPATCH_HOST is "opencode", not omp or claude.\n');
+    expect(stdout).toBe('dispatch: DISPATCH_HOST is "opencode", not omp, claude or codex.\n');
     expect(requests).toEqual([]);
   });
 
