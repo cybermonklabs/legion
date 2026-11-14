@@ -245,7 +245,7 @@ test("a tab holds one live socket for every live view @webkit @firefox @pr", asy
 const IDLE_MS = 5_000;
 /** How long a request may be open when the idle ends: half of it, as the bound above is read. */
 const HELD_OPEN_MS = IDLE_MS / 2;
-/** The page's own silence check interval (`SILENCE_CHECK_MS`, `web/src/api/live-socket.ts`),
+/** The page's own silence check interval (`SILENCE_CHECK_MS`, `web/src/api/cache/live-socket.ts`),
  *  which is not exported. A jump of it leaves the last frame well inside the 45 s that makes the
  *  page replace a silent socket (`LIVE_SOCKET_SILENT_MS`), so the check runs on a socket it
  *  keeps - the cycle this row covers - rather than opening a new one. */

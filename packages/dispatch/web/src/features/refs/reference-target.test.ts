@@ -1,17 +1,18 @@
 import { afterEach, beforeAll, expect, spyOn, test } from "bun:test";
-import {
-  focusManager,
-  QueryClient,
-  QueryClientProvider,
-  type QueryKey,
-  QueryObserver,
-  type QueryObserverOptions,
-} from "@tanstack/react-query";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
 
 import { displayTree } from "../../__tests__/display-trees";
 import { graphNodeFields } from "../../__tests__/graph-fixture";
+import type { ReadOptions } from "../../api/cache/read-options";
+import {
+  cacheOf,
+  focusManager,
+  QueryClient,
+  QueryClientProvider,
+  type QueryKey,
+  QueryObserver,
+} from "../../api/cache/test-client";
 import { ApiError, api } from "../../api/client";
 import type { GraphReferences, IssueReferenceSummary } from "../../api/types";
 import { warmMarkdownRenderer } from "./markdown-engine";
@@ -138,7 +139,7 @@ async function refocus(queryClient: QueryClient): Promise<void> {
  * held (an event's, which fetches the query directly) is fetched again on the next focus.
  */
 async function expectFocusRecoversFailedRead<TData, TKey extends QueryKey>(
-  options: QueryObserverOptions<TData, Error, TData, TData, TKey>,
+  options: ReadOptions<TData, Error, TData, TKey>,
   read: { mock: { calls: unknown[] }; mockRejectedValueOnce: (error: Error) => unknown }
 ): Promise<void> {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -194,7 +195,7 @@ test("a message reference's read sits outside the issue details' key", () => {
 test("hovering an issue warms the full issue and its spec text, which the hover card shows", async () => {
   const reads = spyReads();
   const queryClient = new QueryClient();
-  prefetchReference(queryClient, { key: "CORE-1", kind: "issue" });
+  prefetchReference(cacheOf(queryClient), { key: "CORE-1", kind: "issue" });
   await expectKeys(queryClient, [
     ["issue", "CORE-1"],
     ["artifact", "spec-1", "text"],
@@ -205,7 +206,7 @@ test("hovering an issue warms the full issue and its spec text, which the hover 
 test("hovering an issue's document warms its issue summary and its text, not the full issue", async () => {
   const reads = spyReads();
   const queryClient = new QueryClient();
-  prefetchReference(queryClient, { key: "CORE-1", kind: "artifact", slug: "design" });
+  prefetchReference(cacheOf(queryClient), { key: "CORE-1", kind: "artifact", slug: "design" });
   await expectKeys(queryClient, [
     ["issue-summary", "CORE-1"],
     ["artifact", "doc-1", "text"],
@@ -216,7 +217,7 @@ test("hovering an issue's document warms its issue summary and its text, not the
 test("hovering a project document warms its summary and the version it pins", async () => {
   const reads = spyReads();
   const queryClient = new QueryClient();
-  prefetchReference(queryClient, {
+  prefetchReference(cacheOf(queryClient), {
     kind: "document",
     project: "CORE",
     slug: "runbook-md",
@@ -232,10 +233,10 @@ test("hovering a project document warms its summary and the version it pins", as
 test("hovering an ask, a comment or a message warms its own read and nothing of its issue or document", async () => {
   const reads = spyReads();
   const queryClient = new QueryClient();
-  prefetchReference(queryClient, { id: "ask-1", key: "CORE-1", kind: "ask" });
-  prefetchReference(queryClient, { id: "comment-1", key: "CORE-1", kind: "comment" });
-  prefetchReference(queryClient, { id: "m-1", key: "CORE-1", kind: "message" });
-  prefetchReference(queryClient, {
+  prefetchReference(cacheOf(queryClient), { id: "ask-1", key: "CORE-1", kind: "ask" });
+  prefetchReference(cacheOf(queryClient), { id: "comment-1", key: "CORE-1", kind: "comment" });
+  prefetchReference(cacheOf(queryClient), { id: "m-1", key: "CORE-1", kind: "message" });
+  prefetchReference(cacheOf(queryClient), {
     item: { id: "ask-2", kind: "ask" },
     kind: "document",
     project: "CORE",
@@ -255,19 +256,19 @@ test("hovering an ask, a comment or a message warms its own read and nothing of 
 test("hovering a block of a comment or message warms its graph read alone, no summary of a document", async () => {
   const reads = spyReads();
   const queryClient = new QueryClient();
-  prefetchReference(queryClient, {
+  prefetchReference(cacheOf(queryClient), {
     block: { id: "b2" },
     id: "c-1",
     key: "CORE-1",
     kind: "comment",
   });
-  prefetchReference(queryClient, {
+  prefetchReference(cacheOf(queryClient), {
     block: { id: "b1" },
     id: "m-1",
     key: "CORE-1",
     kind: "message",
   });
-  prefetchReference(queryClient, {
+  prefetchReference(cacheOf(queryClient), {
     block: { id: "b3" },
     item: { id: "c-2", kind: "comment" },
     kind: "document",
@@ -405,7 +406,7 @@ test("watchPicturePath reports an image's latest version and follows its summary
   queryClient.setQueryData(issueSummaryQuery("CORE-1").queryKey, summary("image", 2));
   const reported: (string | undefined)[] = [];
   const stop = watchPicturePath(
-    queryClient,
+    cacheOf(queryClient),
     { key: "CORE-1", kind: "artifact", slug: "shot-png" },
     (path) => reported.push(path)
   );
@@ -432,8 +433,10 @@ test("watchPicturePath reports an image's latest version and follows its summary
 
 test("watchPicturePath answers undefined at once for a reference to no artifact", () => {
   const reported: (string | undefined)[] = [];
-  watchPicturePath(new QueryClient(), { id: "ask-1", key: "CORE-1", kind: "ask" }, (path) =>
-    reported.push(path)
+  watchPicturePath(
+    cacheOf(new QueryClient()),
+    { id: "ask-1", key: "CORE-1", kind: "ask" },
+    (path) => reported.push(path)
   );
   expect(reported).toEqual([undefined]);
 });

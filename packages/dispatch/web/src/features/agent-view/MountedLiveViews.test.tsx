@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, expect, type Mock, spyOn, test } from "bun:test";
 import type { AgentStreamFrame } from "@legion/contracts";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
@@ -11,9 +10,10 @@ import {
   type FakeLiveSockets,
   installFakeLiveSockets,
 } from "../../__tests__/live-socket-harness";
-import { answerAgentStates } from "../../__tests__/send-answers";
+import { type AgentStateAnswer, answerAgentStates } from "../../__tests__/send-answers";
+import { liveSocketFor } from "../../api/cache/live-socket";
+import { cacheOf, QueryClient, QueryClientProvider } from "../../api/cache/test-client";
 import { api } from "../../api/client";
-import { liveSocketFor } from "../../api/live-socket";
 import { userAgentStateQuery } from "../../api/queries";
 import type { Agent, MessageRead, UserAgentStates } from "../../api/types";
 import * as conversation from "./conversation";
@@ -126,13 +126,13 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   for (const spy of spies.splice(0)) spy.mockRestore();
-  for (const client of clients.splice(0)) liveSocketFor(client).close();
+  for (const client of clients.splice(0)) liveSocketFor(cacheOf(client)).close();
   sockets.restore();
   window.__dispatchLiveViews = undefined;
 });
 
 /** Dispatch's reads, signed in as sami, and the one write these rows make: the read mark. */
-function mockDispatch(agentState: UserAgentStates = {}): Mock<typeof api.putAgentState> {
+function mockDispatch(agentState: UserAgentStates = {}): Mock<AgentStateAnswer> {
   const putAgentState = answerAgentStates().mockImplementation(async (_session, input) => ({
     cleared_before: input.cleared_before ?? undefined,
     read_through: input.read_through ?? undefined,
@@ -247,9 +247,7 @@ function replay(socket: FakeLiveSocket, session: string, frames: readonly AgentS
 }
 
 /** Every read mark the page sent, as the session it was for and how far it read. */
-function readMarks(
-  putAgentState: Mock<typeof api.putAgentState>
-): [string, string | null | undefined][] {
+function readMarks(putAgentState: Mock<AgentStateAnswer>): [string, string | null | undefined][] {
   return putAgentState.mock.calls.map(([session, input]) => [session, input.read_through]);
 }
 

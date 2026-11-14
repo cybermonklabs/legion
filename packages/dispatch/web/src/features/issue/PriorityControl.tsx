@@ -1,9 +1,10 @@
-import type { ReactNode } from "react";
+import { type ReactNode, useEffect } from "react";
 
 import type { IssuePriority } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
 import { badgeLow, priorityBadge } from "../../theme/classes";
 import { badgeSelectBadge, badgeSelectOverlay, badgeSelectWrapper } from "./badge-select";
+import { reservedPriorityWidth } from "./reserved-width";
 import { type IssuePriorityWrite, useIssuePriority } from "./useIssuePriority";
 
 const priorityOptions: readonly { label: string; value: IssuePriority | null }[] = [
@@ -17,34 +18,62 @@ const priorityOptions: readonly { label: string; value: IssuePriority | null }[]
 /**
  * The priority editor for a surface that owns no write of its own - a list row, a board card,
  * an Inbox row - where this control is the only thing that writes that issue's priority.
+ *
+ * `onLive` tells a host whose own placement reads the priority - the Inbox, which bands its
+ * rows by it and may filter by it - while this control's write is in flight or refused, so the
+ * host keeps the row where it stood and this control, with its refusal and Retry, mounted. It
+ * is told at the press: the store composes the pick over the host's read as the write joins,
+ * before TanStack tells this control its own press is pending, so a registration made from that
+ * state a commit later would come after the row had moved. Unregistered once the write settles
+ * cleanly or the control unmounts.
  */
 export function PriorityControl({
   disabled,
   issueKey,
+  onLive,
   priority,
 }: {
   disabled?: boolean;
   issueKey: string;
+  onLive?: (live: boolean) => void;
   priority: IssuePriority | null;
 }): ReactNode {
   const write = useIssuePriority(issueKey);
+  const live = write.pending || write.failed;
+  useEffect(() => {
+    if (!live || onLive === undefined) return;
+    onLive(true);
+    return () => onLive(false);
+  }, [live, onLive]);
+  const held: IssuePriorityWrite =
+    onLive === undefined
+      ? write
+      : {
+          ...write,
+          submit: (next) => {
+            onLive(true);
+            write.submit(next);
+          },
+        };
   return (
-    <PriorityEditor disabled={disabled} issueKey={issueKey} priority={priority} write={write} />
+    <PriorityEditor disabled={disabled} issueKey={issueKey} priority={priority} write={held} />
   );
 }
 
 /**
  * The single priority editor: shows the issue's priority as the `P0`–`P3` badge (a muted
  * "Priority" tag when unset) and, on click, tap, Enter or Space, opens a native `<select>` to
- * pick P0–P3 or Unset — the same picker on desktop and iPhone. The select is laid invisibly over
- * the badge so the tap target stays 44 px (32 px from `md`) while the badge keeps its size, and
- * the wrapper draws the keyboard focus ring. `write` goes through `useIssuePriority`, so every
- * surface gets the same optimistic update, rollback and list refetch. The select stays enabled
- * while a save is in flight: a disabled control drops the focus it holds and leaves the tab
- * order, and a pick made meanwhile is queued behind the save rather than refused. A press on the
- * select stays on the select: a board card is a drag activator, and a held tap on the badge must
- * open the picker, not lift the card. The select is labelled `Priority of <KEY>`; the board's `p`
- * reaches it through the focused card.
+ * pick P0–P3 or Unset — the same picker on desktop and iPhone. The badge reserves the width of
+ * its widest value (`reservedPriorityWidth`), so a pick shown before the server answers it
+ * moves nothing beside the control. The select is laid invisibly over the badge so the tap
+ * target stays 44 px (32 px from `md`) while the badge keeps its size, and the wrapper draws the
+ * keyboard focus ring. `write` goes through `useIssuePriority`, so every surface shows the pick
+ * at once, stops showing it if it is refused, and reads the lists again. The select stays
+ * enabled while a save is in flight: a disabled control drops the focus it holds and leaves the
+ * tab order, and a pick made meanwhile is queued behind the save rather than refused. A press on
+ * the select stays on the select: a board card is a drag activator, and a held tap on the badge
+ * must open the picker, not lift the card. The select is labelled `Priority of <KEY>`; the
+ * board's `p` reaches it through the focused card.
  *
  * The host passes the write when it has other ways to set the same priority: the issue page
  * creates one for the page and shares it with the keyboard's `0`–`3` and the palette's Set
@@ -65,7 +94,10 @@ export function PriorityEditor({
   return (
     <>
       <span className={`${badgeSelectWrapper} ${disabled ? "opacity-50" : ""}`}>
-        <span aria-hidden="true" className={`${badgeSelectBadge} ${tone.bg} ${tone.text}`}>
+        <span
+          aria-hidden="true"
+          className={`${badgeSelectBadge} ${reservedPriorityWidth} ${tone.bg} ${tone.text}`}
+        >
           {priority === null ? "Priority" : `P${priority}`}
         </span>
         <select

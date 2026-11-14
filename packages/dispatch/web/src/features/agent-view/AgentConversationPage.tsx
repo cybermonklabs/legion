@@ -1,11 +1,10 @@
 import { DELIVERY_CAPABILITIES, type MessageDeliveryMode } from "@legion/contracts";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useCallback, useState } from "react";
 import { Link } from "react-router-dom";
-
+import { useCache } from "../../api/cache/cache";
+import { useShownQuery } from "../../api/cache/shown-query";
 import { agentMessageRequest, apiErrorMessage } from "../../api/client";
 import { agentMessagesQuery, whoAmIQuery } from "../../api/queries";
-import type { Message } from "../../api/types";
 import { ContextRing } from "../../components/ContextRing";
 import { PinButton } from "../../components/PinButton";
 import { AgentListRefilling } from "../../components/QueryError";
@@ -134,11 +133,11 @@ export function AgentConversationPage({
   // `dispatch message` command, which the stream shows only as a `bash` tool call whose arguments
   // hold that command. Without these the thread would show replies to messages the human cannot
   // see, and no replies at all.
-  const stored = useQuery(agentMessagesQuery(sessionId));
+  const stored = useShownQuery(agentMessagesQuery(sessionId));
   // Seeing them is reading them, so only the view the person is looking at marks them read, as
   // the Agents page's collapsed row does.
   useMarkRepliesRead(sessionId, front ? stored.data : undefined);
-  const viewer = useQuery(whoAmIQuery()).data;
+  const viewer = useShownQuery(whoAmIQuery()).data;
   // The header's switch, one at a time; while one waits for the session's answer neither picker
   // nor Send takes another, so this page's next prompt reaches the session after the switch.
   const sessionSwitch = useSessionSwitch(sessionId, stored.data);
@@ -152,8 +151,8 @@ export function AgentConversationPage({
   // follow the session's answer, and its pending state holds the next message until that answer.
   // It goes in the session's line with every message to it (`session:<id>`), and its refusal is
   // shown here, on the session it went to.
-  const queryClient = useQueryClient();
-  const switchWrite = useKeyedWrite<Message, { request: SwitchRequest; session: string }>({
+  const cache = useCache();
+  const switchWrite = useKeyedWrite({
     inline: true,
     label: ({ request }) =>
       request.kind === "model"
@@ -161,10 +160,10 @@ export function AgentConversationPage({
         : `Switch ${label}'s thinking level to ${request.value}`,
     onSuccess: (_message, { session }) => {
       if (session === sessionId) setOwnSendCount((previous) => previous + 1);
-      void queryClient.invalidateQueries({ queryKey: agentMessagesQuery(session).queryKey });
+      void cache.invalidate({ queryKey: agentMessagesQuery(session).queryKey });
     },
     target: ({ session }) => `session:${session}`,
-    request: ({ request, session }) =>
+    request: ({ request, session }: { request: SwitchRequest; session: string }) =>
       agentMessageRequest(session, { body: switchCommand(request), delivery: "steer" }),
   });
   // Each message is a write of its own in the app's write store, held for its session rather than
@@ -179,11 +178,14 @@ export function AgentConversationPage({
     [mode, sends, sessionId]
   );
   // The switch's status follows the whole keyed write, from the press until Dispatch answers,
-  // however many attempts that takes.
+  // however many attempts that takes, and reads the message Dispatch stored from its answer.
   const onPick = useCallback(
     (request: SwitchRequest) =>
       void sessionSwitch
-        .run(request, () => switchWrite.mutateAsync({ request, session: sessionId }))
+        .run(request, async () => {
+          const answer = await switchWrite.mutateAsync({ request, session: sessionId });
+          return answer === null ? null : answer.body;
+        })
         .catch(() => {}),
     [sessionId, sessionSwitch, switchWrite]
   );

@@ -1,4 +1,4 @@
-import { MIN_REFETCH_INTERVAL_MS } from "../web/src/api/query-refresh";
+import { MIN_REFETCH_INTERVAL_MS } from "../web/src/api/cache/query-refresh";
 
 import {
   createAsk,

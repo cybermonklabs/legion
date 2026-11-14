@@ -1,7 +1,8 @@
-import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState, useSyncExternalStore } from "react";
 
-import { liveSocketFor } from "../../api/live-socket";
+import { useCache } from "../../api/cache/cache";
+
+import { liveSocketFor } from "../../api/cache/live-socket";
 import {
   type AgentConversation,
   applyFrame,
@@ -57,8 +58,8 @@ const NOTHING_HEARD: Heard = {
  * what a first subscription does.
  */
 export function useAgentStream(sessionID: string): AgentStreamState {
-  const queryClient = useQueryClient();
-  const live = liveSocketFor(queryClient);
+  const cache = useCache();
+  const live = liveSocketFor(cache);
   // The connection alone: the rest of the socket's state - the delivery pages' last change time
   // among it - moves with every delivery delta, and none of it is this view's.
   const connection = useSyncExternalStore(live.onState, () => live.state().state);
@@ -69,7 +70,7 @@ export function useAgentStream(sessionID: string): AgentStreamState {
     // transcript as much as a reconnect's is.
     setHeard(NOTHING_HEARD);
     // The socket calls none of these handlers once the unsubscribe returned here has run.
-    return liveSocketFor(queryClient).subscribeAgent(sessionID, {
+    return liveSocketFor(cache).subscribeAgent(sessionID, {
       onResponder: (responder) =>
         setHeard((previous) => ({ ...previous, answered: true, responding: responder.responding })),
       // A rebuild from the session's own replay rather than a layer over a conversation whose
@@ -106,7 +107,7 @@ export function useAgentStream(sessionID: string): AgentStreamState {
         })),
       onUnavailable: () => setHeard((previous) => ({ ...previous, refused: true })),
     });
-  }, [queryClient, sessionID]);
+  }, [cache, sessionID]);
 
   // A refusal outranks the socket's state; a lost socket outranks what the view last heard.
   const status: AgentStreamStatus = heard.refused

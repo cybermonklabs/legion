@@ -1,6 +1,6 @@
-import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
-
+import { useCache } from "../../api/cache/cache";
+import { useShownQuery } from "../../api/cache/shown-query";
 import { threadReadRequest } from "../../api/client";
 import { myRepliesKey, myRepliesOwnerQuery } from "../../api/queries";
 import type { Ask } from "../../api/types";
@@ -76,12 +76,12 @@ export function useMarkThreadRead({
   threadId,
   writes,
 }: MarkThreadReadOptions): ThreadRead {
-  const queryClient = useQueryClient();
+  const cache = useCache();
   // The routes need the `person` scope, which a signed-in browser holds; any other principal
   // never asks, so never cycles on a 403.
   const human = useIsHuman();
   const watching = enabled && human && owner !== undefined && newestShownAt !== undefined;
-  const unreadSet = useQuery({ ...myRepliesOwnerQuery(owner ?? NO_OWNER), enabled: watching });
+  const unreadSet = useShownQuery({ ...myRepliesOwnerQuery(owner ?? NO_OWNER), enabled: watching });
   const rows = unreadSet.data;
   // This thread's own row of that set, which says both that it is unread and what in it is.
   const row = watching
@@ -104,7 +104,7 @@ export function useMarkThreadRead({
       seen === undefined || seen.threadId !== threadId
         ? undefined
         : { key: `${threadId} ${seen.at}`, value: seen.at },
-    onSuccess: () => void queryClient.invalidateQueries({ queryKey: myRepliesKey }),
+    onSuccess: () => void cache.invalidate({ queryKey: myRepliesKey }),
     request: (readThrough: string) => threadReadRequest(threadId, readThrough),
     shouldSend: watched,
     target: `read:thread:${threadId}`,

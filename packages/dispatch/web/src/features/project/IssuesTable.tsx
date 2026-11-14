@@ -1,6 +1,6 @@
-import { useQuery } from "@tanstack/react-query";
 import type { FilterFn, RowSelectionState } from "@tanstack/react-table";
 import { type ReactNode, useEffect, useMemo, useState } from "react";
+import { useShownQuery } from "../../api/cache/shown-query";
 import { userStateQuery } from "../../api/queries";
 import { Chip } from "../../components/Chip";
 import { DataTable, useDataTable } from "../../components/DataTable";
@@ -103,7 +103,7 @@ export function IssuesTable({
   );
   const { attachAbove, boxWidth } = layout;
   const flags = useIssueFilters();
-  const userState = useQuery(userStateQuery());
+  const userState = useShownQuery(userStateQuery());
   const [selection, setSelection] = useState<RowSelectionState>({});
   const [openFilter, setOpenFilter] = useState<string>();
 

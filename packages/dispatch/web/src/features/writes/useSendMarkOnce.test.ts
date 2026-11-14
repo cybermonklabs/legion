@@ -1,13 +1,12 @@
 import { expect, jest, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, renderHook } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
 
 import { onFakeClock } from "../../__tests__/fake-clock";
 import { answerSends } from "../../__tests__/send-answers";
+import { cacheOf, QueryClient, QueryClientProvider } from "../../api/cache/test-client";
 import { ApiError, NetworkError, type WriteRequest } from "../../api/client";
 import { useSendMarkOnce } from "./useSendMarkOnce";
-import { writesOf } from "./write-store";
 
 interface Props {
   readonly key: string | undefined;
@@ -112,8 +111,8 @@ test("a mark whose attempts fail short of a verdict is tried again under its key
     try {
       await settle();
       expect(
-        writesOf(client)
-          .rows()
+        cacheOf(client)
+          .writes.rows()
           .map((write) => write.presentation)
       ).toEqual(["quiet"]);
       await tick(4_000);
@@ -139,7 +138,7 @@ test("a refused mark of the latest key is sent again at the next wake", async ()
   try {
     await settle();
     expect(sent).toEqual(["a"]);
-    expect(writesOf(client).rows()).toEqual([]);
+    expect(cacheOf(client).writes.rows()).toEqual([]);
     fail = false;
     hook.rerender({ key: "a", shouldSend: true, wake: 2 });
     await settle();

@@ -1,5 +1,4 @@
 import type { EditorReferences, ReferenceTarget } from "@legion/proof-editor";
-import { useQueryClient } from "@tanstack/react-query";
 import {
   type MouseEvent as ReactMouseEvent,
   type ReactNode,
@@ -9,6 +8,8 @@ import {
   useState,
 } from "react";
 import { useNavigate } from "react-router-dom";
+
+import { useCache } from "../../api/cache/cache";
 
 import { fetchReferencePath, needsSpecSlug, useReferenceTarget } from "../refs/reference-target";
 import {
@@ -210,7 +211,7 @@ function dispatchHrefOf(anchor: Element): string | null {
  */
 export function useReferenceClick(): (event: ReactMouseEvent<HTMLElement>) => void {
   const navigate = useNavigate();
-  const queryClient = useQueryClient();
+  const cache = useCache();
   return useCallback(
     (event: ReactMouseEvent<HTMLElement>) => {
       // A modifier click (open in new tab/window) or a drag-selection that happens to end
@@ -235,11 +236,11 @@ export function useReferenceClick(): (event: ReactMouseEvent<HTMLElement>) => vo
       // A block of a spec pinned to a version opens that version under the spec's slug, which
       // only the issue names; every other reference's path is known at once.
       if (needsSpecSlug(route)) {
-        void fetchReferencePath(queryClient, route).then((path) => navigate(path));
+        void fetchReferencePath(cache, route).then((path) => navigate(path));
         return;
       }
       navigate(buildReferencePath(route));
     },
-    [navigate, queryClient]
+    [navigate, cache]
   );
 }

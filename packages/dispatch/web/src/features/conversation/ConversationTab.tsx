@@ -1,9 +1,12 @@
-import { type MutationKey, useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-
+import { useCache } from "../../api/cache/cache";
+import type { MutationKey } from "../../api/cache/keys";
+import { queryOptions } from "../../api/cache/read-options";
+import { useShownQuery } from "../../api/cache/shown-query";
+import { storeIssueState } from "../../api/cache/viewer-state";
 import { api, issueStateRequest, type WriteBounds } from "../../api/client";
-import { whoAmIQuery } from "../../api/queries";
+import { commentsQueryKey, whoAmIQuery } from "../../api/queries";
 import type {
   Agent,
   Artifact,
@@ -207,13 +210,14 @@ function ConversationReply({
   replyDisabled: boolean;
   root: MessageConversation;
 }): ReactNode {
-  const queryClient = useQueryClient();
+  const cache = useCache();
   const text = useAgentText();
   const targetName = recipientOf(reply.deliveries ?? [], root.root.target);
   const retry = useKeyedWrite({
     label: (delivery: MessageDeliveryMode) =>
       `Delivery to ${text.part(targetName)} again, as ${MODE_LABELS[delivery]}`,
-    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["issue-messages", issueKey] }),
+    onSuccess: () => void cache.invalidate({ queryKey: ["issue-messages", issueKey] }),
+    unlined: "a delivery sends a message to one session again and names no row",
     write: (delivery, bounds) => api.createMessageDelivery(reply.id, delivery, bounds),
   });
   const capabilities = capabilitiesForTarget(root.root.target, agents);
@@ -400,7 +404,7 @@ const handoffPre = `mt-1 max-h-64 overflow-auto rounded-md p-2 text-xs whitespac
  *  row, the `proof` list one row per entry. A version never changes once written, so the read
  *  is kept for the page's life. A body that is not a JSON object is shown as the text it is. */
 function HandoffFields({ handoffId, id }: { handoffId: string; id: string }): ReactNode {
-  const handoff = useQuery({
+  const handoff = useShownQuery({
     queryKey: ["handoff", handoffId],
     queryFn: () => api.getHandoff(handoffId),
     staleTime: Number.POSITIVE_INFINITY,
@@ -677,23 +681,25 @@ function CommentTurn({
   setExpanded: (expanded: boolean) => void;
   viewerLogin: string;
 }): ReactNode {
-  const queryClient = useQueryClient();
+  const cache = useCache();
   const agentText = useAgentText();
   const [editingCommentId, setEditingCommentId] = useState<string>();
   const [savingCommentEditId, setSavingCommentEditId] = useState<string>();
-  /** One attempt of a comment edit's save, under the composer's key (`sendRequest`). */
+  /** One attempt of a comment edit's save, under the composer's key (`sendRequest`). What it
+   *  saved is read again once it lands, and that read is not awaited here: an attempt that
+   *  waited for its own refetch would wait for itself. */
   const editComment = useCallback(
     async (id: string, body: string, carried: CarriedBlockIds | undefined, bounds: WriteBounds) => {
       setSavingCommentEditId(id);
       try {
         const comment = await api.editComment(id, { body, ...carried }, bounds);
-        await queryClient.invalidateQueries({ queryKey: ["comments", issueKey] });
+        void cache.invalidate({ queryKey: commentsQueryKey({ issue: issueKey }) });
         return comment;
       } finally {
         setSavingCommentEditId(undefined);
       }
     },
-    [issueKey, queryClient]
+    [issueKey, cache]
   );
   const replySendKey = useMemo(
     () => threadReplySendKey(sendKey, item.root.id),
@@ -709,7 +715,8 @@ function CommentTurn({
     label: (delivery: CommentDeliveryAttempt) =>
       `Delivery of the comment to ${agentText.part(targetPart(delivery.target))} again, as ${MODE_LABELS[delivery.delivery]}`,
     onSettled: () => retryGuard.release(),
-    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["comments", issueKey] }),
+    unlined: "a delivery sends a comment to one session again and names no row",
+    onSuccess: () => void cache.invalidate({ queryKey: commentsQueryKey({ issue: issueKey }) }),
     write: (delivery, bounds) =>
       api.createCommentDelivery(delivery.comment_id, delivery.target, delivery.delivery, bounds),
   });
@@ -840,13 +847,14 @@ function TargetedMessageTurn({
   register?: DwellRef;
   replyDisabled: boolean;
 }): ReactNode {
-  const queryClient = useQueryClient();
+  const cache = useCache();
   const text = useAgentText();
   const targetName = recipientOf(item.root.deliveries ?? [], item.root.target);
   const retry = useKeyedWrite({
     label: (delivery: MessageDeliveryMode) =>
       `Delivery to ${text.part(targetName)} again, as ${MODE_LABELS[delivery]}`,
-    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["issue-messages", issueKey] }),
+    onSuccess: () => void cache.invalidate({ queryKey: ["issue-messages", issueKey] }),
+    unlined: "a delivery sends a message to one session again and names no row",
     write: (delivery, bounds) => api.createMessageDelivery(item.root.id, delivery, bounds),
   });
   const capabilities = capabilitiesForTarget(item.root.target, agents);
@@ -907,7 +915,7 @@ export function ConversationTab({
   state,
   visible,
 }: ConversationTabProps): ReactNode {
-  const queryClient = useQueryClient();
+  const cache = useCache();
   // Every composer this tab shows names its send with `sendKey`, or beneath it: the docked one
   // with the key itself, the phone thread's composer and a thread card's inline reply beneath it
   // (`usePhoneThread`'s `composerKey`, `threadReplySendKey`).
@@ -921,7 +929,7 @@ export function ConversationTab({
   const store = useHeldSends();
   // Comments whose card's own reply the store holds, out or refused.
   const heldCardReplies = useHeldSendsUnder(threadRepliesSendKey(sendKey));
-  const viewer = useQuery(whoAmIQuery());
+  const viewer = useShownQuery(whoAmIQuery());
   // The four reads the list is built from, each the issue's whole set: a conversation is listed
   // however old it is, which no window of the event log could promise.
   // The comments are the read the margin already holds for this issue, under the key it owns
@@ -930,20 +938,22 @@ export function ConversationTab({
   // for it, where the margin and a document's decision blocks render the ask alone and read
   // `["asks", issueKey]` without one. Hence a key of its own - beneath that prefix, so every
   // `invalidateQueries({ queryKey: ["asks", key] })` already written reaches this read too.
-  const asks = useQuery({
+  const asks = useShownQuery({
     queryKey: ["asks", issueKey, "thread"],
     queryFn: () => api.listIssueAskThreads(issueKey, "all"),
   });
-  const comments = useQuery({
-    queryKey: ["comments", issueKey],
-    queryFn: () => api.listComments(issueKey),
-  });
-  const messages = useQuery({
+  const comments = useShownQuery(
+    queryOptions({
+      queryKey: commentsQueryKey({ issue: issueKey }),
+      queryFn: () => api.listComments(issueKey),
+    })
+  );
+  const messages = useShownQuery({
     queryKey: ["issue-messages", issueKey],
     queryFn: () => api.listIssueMessages(issueKey),
   });
   // Each version of each phase handoff, without its body; a card reads its body when expanded.
-  const handoffs = useQuery({
+  const handoffs = useShownQuery({
     queryKey: ["handoffs", issueKey],
     queryFn: () => api.listHandoffs(issueKey),
   });
@@ -951,12 +961,12 @@ export function ConversationTab({
   const lastReadSeq = issueState.last_read_seq;
   // The watermark as a moment: the first event the reader has not read. One row - the list is
   // ordered by activity, not by sequence, so the log is read for this and for the head alone.
-  const unreadBoundary = useQuery({
+  const unreadBoundary = useShownQuery({
     queryKey: ["events", issueKey, "unread-boundary", lastReadSeq],
     queryFn: () => api.getIssueEvents(issueKey, { after: lastReadSeq, limit: 1 }),
   });
   // The issue's head: what a dwell on the newest conversation marks read.
-  const head = useQuery({
+  const head = useShownQuery({
     queryKey: ["events", issueKey, "head"],
     queryFn: () => api.getIssueEvents(issueKey, { limit: 1, order: "desc" }),
   });
@@ -1047,9 +1057,9 @@ export function ConversationTab({
     // reply the reader was writing as they were, and a thread whose own reply is out stays open,
     // which closing would unmount.
     onSuccess: ({ id, kind }) => {
-      void queryClient.invalidateQueries({ queryKey: ["comments", issueKey] });
+      void cache.invalidate({ queryKey: commentsQueryKey({ issue: issueKey }) });
       if (kind === "reopen") return;
-      if (queryClient.isMutating({ mutationKey: threadReplySendKey(sendKey, id) }) > 0) return;
+      if (cache.pendingMutations({ mutationKey: threadReplySendKey(sendKey, id) }) > 0) return;
       setThreadOpen(id, false);
       if (phone.id === id) phone.hide();
     },
@@ -1182,11 +1192,9 @@ export function ConversationTab({
   });
   useSendMarkOnce({
     mark: read === undefined ? undefined : { key: `${read.issueKey} ${read.seq}`, value: read },
-    onSuccess: (next, mark) =>
-      queryClient.setQueryData<UserState>(["user-state"], (current) => ({
-        ...current,
-        [mark.issueKey]: next,
-      })),
+    // Into the viewer's state, which holds Dispatch's answers alone (`storeIssueState`), so a pin
+    // of any issue still out stays composed over the mark's answer and none is carried into it.
+    onSuccess: (next, mark) => storeIssueState(cache, mark.issueKey, next),
     request: (mark: { issueKey: string; seq: number }) =>
       issueStateRequest(mark.issueKey, { last_read_seq: mark.seq }),
     shouldSend: read !== undefined && read.seq > lastReadSeq,
@@ -1195,7 +1203,7 @@ export function ConversationTab({
   });
 
   const pinConversation = (id: string) =>
-    writePin(queryClient, issueKey, (dismissed) => ({
+    writePin(cache, issueKey, (dismissed) => ({
       id,
       op: isPinnedConversation(dismissed, id) ? "unpin" : "pin",
     }));

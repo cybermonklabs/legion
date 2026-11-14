@@ -1,6 +1,5 @@
 import { DELIVERY_CAPABILITIES } from "@legion/contracts";
 import { SEARCH_QUERY_MAX } from "@legion/contracts/dispatch-tools";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   type ReactNode,
   type RefObject,
@@ -13,7 +12,9 @@ import {
   useState,
 } from "react";
 import { Link } from "react-router-dom";
-
+import { useCache } from "../../api/cache/cache";
+import { useShownQuery } from "../../api/cache/shown-query";
+import { storeAgentState } from "../../api/cache/viewer-state";
 import { api } from "../../api/client";
 import {
   agentMessagesQuery,
@@ -101,7 +102,7 @@ import { agentReplyTo } from "./exchange-delivery";
 import { AGENT_ROW_SELECTOR, foldToggleOf, leaveAgentComposer, useAgentsKeymap } from "./keyboard";
 import { useAgentPinWrite, usePinnedAgents } from "./pins";
 import { groupCountLabel, matchingSelection, selectionSummary, toggleMatching } from "./selection";
-import { storeAgentState, unreadRepliesLabel, useMarkRepliesRead, useUnreadAtOpen } from "./unread";
+import { unreadRepliesLabel, useMarkRepliesRead, useUnreadAtOpen } from "./unread";
 
 /** The composer's one notice slot: the recipient limit, the exclusions, or the mode the selection
  *  sends in, one at a time. In the compact grid it is one line that scrolls sideways like the
@@ -199,16 +200,17 @@ function AgentExchangeReply({
   reply: MessageWithTrees;
   replyDisabled: boolean;
 }): ReactNode {
-  const queryClient = useQueryClient();
+  const cache = useCache();
   const text = useAgentText();
   const label = text.sessionText(agent.session_id, agent.title);
   const retry = useKeyedWrite({
     label: (delivery: MessageDeliveryMode) =>
       `Delivery to ${label} again, as ${MODE_LABELS[delivery]}`,
     onSuccess: () =>
-      void queryClient.invalidateQueries({
+      void cache.invalidate({
         queryKey: agentMessagesQuery(agent.session_id).queryKey,
       }),
+    unlined: "a delivery sends a message to one session again and names no row",
     write: (delivery, bounds) => api.createMessageDelivery(reply.id, delivery, bounds),
   });
   const replies = read.replies ?? [];
@@ -276,16 +278,17 @@ function AgentTargetedMessage({
   read: MessageRead;
   replyDisabled: boolean;
 }): ReactNode {
-  const queryClient = useQueryClient();
+  const cache = useCache();
   const text = useAgentText();
   const label = text.sessionText(agent.session_id, agent.title);
   const retry = useKeyedWrite({
     label: (delivery: MessageDeliveryMode) =>
       `Delivery to ${label} again, as ${MODE_LABELS[delivery]}`,
     onSuccess: () =>
-      void queryClient.invalidateQueries({
+      void cache.invalidate({
         queryKey: agentMessagesQuery(agent.session_id).queryKey,
       }),
+    unlined: "a delivery sends a message to one session again and names no row",
     write: (delivery, bounds) => api.createMessageDelivery(read.message.id, delivery, bounds),
   });
   const replies = read.replies ?? [];
@@ -370,9 +373,9 @@ function AgentMessageList({
   /** Holds every Reply while the row's send is in flight, as the picker is held. */
   replyDisabled: boolean;
 }): ReactNode {
-  const queryClient = useQueryClient();
-  const messages = useQuery(agentMessagesQuery(agent.session_id));
-  const agentState = useQuery(userAgentStateQuery());
+  const cache = useCache();
+  const messages = useShownQuery(agentMessagesQuery(agent.session_id));
+  const agentState = useShownQuery(userAgentStateQuery());
   const [showOlder, setShowOlder] = useState(false);
   const [showCleared, setShowCleared] = useState(false);
   const clearedBefore = agentState.data?.[agent.session_id]?.cleared_before;
@@ -401,11 +404,12 @@ function AgentMessageList({
   const clear = useKeyedWrite({
     write: (cutoff: string, bounds) =>
       api.putAgentState(agent.session_id, { cleared_before: cutoff }, bounds),
+    unlined: "Clear hides what this viewer saw of one session, and nothing else writes it",
     label: () => `Conversation with ${label} cleared`,
     // A landing with no answer to give has the store read every query again.
     onSuccess: (next) => {
       setShowCleared(false);
-      if (next !== null) storeAgentState(queryClient, agent.session_id, next);
+      if (next !== null) storeAgentState(cache, agent.session_id, next);
     },
   });
   if (messages.isPending || agentState.isPending) return null;
@@ -1404,9 +1408,9 @@ export function AgentsPage(): ReactNode {
   // row: it decides what each row's directory shows, and a list of two hundred rows is two
   // hundred listeners otherwise.
   const mdViewport = useMediaQuery(MD_VIEWPORT_QUERY);
-  const inbox = useQuery(inboxQuery());
+  const inbox = useShownQuery(inboxQuery());
   // Until `/auth/whoami` answers, no question is counted as the reader's.
-  const viewer = useQuery(whoAmIQuery()).data?.login;
+  const viewer = useShownQuery(whoAmIQuery()).data?.login;
   // The pins are the person's, not this browser's (INFRA-812): the Agents page reads them from
   // the viewer's agent state and writes them to Dispatch, so a pin made here is in the rail and
   // in the person's other browsers at once.
@@ -1415,7 +1419,7 @@ export function AgentsPage(): ReactNode {
   // The viewer's own state for each session, which the rows already read for their unread
   // badges: one query, one answer, and the replies they have not read are what put a session in
   // Needs you beside the asks that wait on them.
-  const agentStates = useQuery(userAgentStateQuery()).data ?? {};
+  const agentStates = useShownQuery(userAgentStateQuery()).data ?? {};
   // The first card number: the reader's own work with this session - a question whose next move
   // is a person's and which waits on them. One meaning for every count of what waits on
   // the reader, wherever it is shown.

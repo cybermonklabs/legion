@@ -9,7 +9,7 @@
  */
 import { expect } from "@playwright/test";
 
-import { QUERY_RETRY_DELAY_MS } from "../web/src/api/query-client";
+import { QUERY_RETRY_DELAY_MS } from "../web/src/api/cache/query-client";
 import {
   createAsk,
   createIssue,

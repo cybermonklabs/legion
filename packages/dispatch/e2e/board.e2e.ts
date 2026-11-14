@@ -451,6 +451,108 @@ test("a stale board refreshes and says so when the server rejects the rank", asy
   }
 });
 
+/** Whether `url` is a read of CORE's issue list, which the board renders. */
+function isCoreList(url: URL): boolean {
+  return url.pathname === "/api/v1/issues" && url.searchParams.get("project") === "CORE";
+}
+
+// Round seven's Medium of dispatch://INFRA-299's pull request. A card is dropped in another
+// column and its PATCH goes out; another write to the project reads the board's list again, and
+// Dispatch serves that read before the PATCH reaches it; the PATCH answers; then the old list
+// arrives. The card stays in the column it was dropped in through that answer, and through the
+// read the landing asks for, which is held open here: a page that let the move go as it landed
+// would show the card back in Todo for as long as that read is out.
+test("a read sent before the save answers after it lands: the board keeps the moved card in its new column", async ({
+  browser,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const moved = await createIssue({ project: "CORE", title: "Moved card" });
+  const other = await createIssue({ project: "CORE", title: "Other card" });
+  await Promise.all([
+    patchIssue(moved.key, { status: "todo" }),
+    patchIssue(other.key, { status: "todo" }),
+  ]);
+
+  const context = await asUser(browser, "alice");
+  const page = await context.newPage();
+  const patchOut = Promise.withResolvers<void>();
+  const releasePatch = Promise.withResolvers<void>();
+  const staleOut = Promise.withResolvers<void>();
+  const releaseStale = Promise.withResolvers<void>();
+  const releaseFresh = Promise.withResolvers<void>();
+  let holding = false;
+  let staleTaken = false;
+  let freshReads = 0;
+  try {
+    await page.route(`**/api/v1/issues/${moved.key}`, async (route) => {
+      if (route.request().method() !== "PATCH") {
+        await route.continue();
+        return;
+      }
+      patchOut.resolve();
+      await releasePatch.promise;
+      await route.continue();
+    });
+    await page.route(isCoreList, async (route) => {
+      if (!holding || route.request().method() !== "GET") {
+        await route.continue();
+        return;
+      }
+      if (!staleTaken) {
+        staleTaken = true;
+        // Dispatch answers it now, before the PATCH reaches it; the page has it only later.
+        const stale = await route.fetch();
+        staleOut.resolve();
+        await releaseStale.promise;
+        await route.fulfill({ response: stale });
+        return;
+      }
+      await releaseFresh.promise;
+      freshReads += 1;
+      await route.continue();
+    });
+    await page.setViewportSize({ width: 1920, height: 900 });
+    await page.goto("/projects/CORE");
+    await page.getByRole("button", { name: "Board" }).click();
+    const todo = page.getByRole("region", { name: "Todo" });
+    const inProgress = page.getByRole("region", { name: "In progress" });
+    const cardIn = (column: Locator) =>
+      column.getByRole("article", { name: `${moved.key} Moved card` });
+    await expect(cardIn(todo)).toBeVisible();
+
+    const answered = patchOf(page, moved.key);
+    await mouseDrag(page, cardIn(todo), inProgress);
+    await patchOut.promise;
+    holding = true;
+    await expect(cardIn(inProgress)).toBeVisible();
+    // Its event reads the board's list again while the PATCH is still on its way.
+    await patchIssue(other.key, { title: "Other card, renamed" });
+    await staleOut.promise;
+
+    releasePatch.resolve();
+    expect((await answered).status()).toBe(200);
+    await nextFrames(page);
+    await expect(cardIn(inProgress)).toBeVisible();
+
+    releaseStale.resolve();
+    // The old list is on screen: it carries the rename the read was served after.
+    await expect(todo).toContainText("Other card, renamed");
+    await expect(cardIn(todo)).toHaveCount(0);
+    await expect(cardIn(inProgress)).toBeVisible();
+
+    releaseFresh.resolve();
+    await expect.poll(() => freshReads).toBeGreaterThan(0);
+    await expect.poll(() => getIssue(moved.key)).toMatchObject({ status: "in_progress" });
+    await expect(cardIn(todo)).toHaveCount(0);
+    await expect(cardIn(inProgress)).toBeVisible();
+  } finally {
+    releasePatch.resolve();
+    releaseStale.resolve();
+    releaseFresh.resolve();
+    await context.close();
+  }
+});
+
 test("board cards carry the unread dot the project list shows", async ({ browser }) => {
   await createProject({ key: "CORE", name: "Core" });
   const unread = await createIssue({ project: "CORE", title: "Unread card" });

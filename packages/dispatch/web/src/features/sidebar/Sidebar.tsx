@@ -1,10 +1,11 @@
-import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
-
+import { queryOptions } from "../../api/cache/read-options";
+import { useShownQuery } from "../../api/cache/shown-query";
 import { api } from "../../api/client";
 import {
   inboxQuery,
+  pinnedIssuesKey,
   prioritySummaryQuery,
   projectsQuery,
   userAgentStateQuery,
@@ -153,19 +154,21 @@ export function Sidebar({
   user: AuthenticatedUser;
 }): ReactNode {
   const location = useLocation();
-  const inbox = useQuery(inboxQuery());
-  const pinned = useQuery({
-    queryKey: ["issues", "pinned"],
-    queryFn: () => api.listIssues({ pinned: true }),
-  });
-  const projects = useQuery(projectsQuery());
+  const inbox = useShownQuery(inboxQuery());
+  const pinned = useShownQuery(
+    queryOptions({
+      queryKey: pinnedIssuesKey,
+      queryFn: () => api.listIssues({ pinned: true }),
+    })
+  );
+  const projects = useShownQuery(projectsQuery());
   // The number beside Priorities (INFRA-2947, R8): the two faults added - the work in flight
   // under no priority and the priority work parked in `backlog` or `icebox` - read from the
   // summary call alone, which answers neither list. An event that moves a relation, a status or
   // a parent refreshes it with the page (`api/event-refresh.ts`). A deployment that has written
   // no priority answers `empty` and no number is drawn, since nothing is yet off a list that
   // does not exist; a read that failed draws none either, rather than a zero it did not read.
-  const prioritySummary = useQuery(prioritySummaryQuery()).data;
+  const prioritySummary = useShownQuery(prioritySummaryQuery()).data;
   const priorityFaults =
     prioritySummary === undefined || (prioritySummary.empty ?? "") !== ""
       ? undefined
@@ -173,7 +176,7 @@ export function Sidebar({
   // One number on Inbox, composed in one place (`useInboxCount.ts`): the work waiting on
   // the reader plus the threads they have not read, which the Inbox lists beside those asks now.
   const inboxCount = useInboxCount();
-  const agentState = useQuery(userAgentStateQuery()).data;
+  const agentState = useShownQuery(userAgentStateQuery()).data;
   const unreadReplies = totalUnreadReplies(agentState);
   // The rail's own list: the person's pinned agents, oldest pin first, and the control that
   // unpins one from here. The registry is told the whole set in the shell (`app.tsx`), not

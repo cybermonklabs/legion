@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import type { LiveSocketState } from "../../../api/live-socket";
+import type { LiveSocketState } from "../../../api/cache/live-socket";
 import { type DeliveryFreshness, sourceFreshness } from "./freshness";
 
 const NOW = Date.parse("2024-06-01T12:00:00Z");

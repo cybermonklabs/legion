@@ -1,5 +1,4 @@
 import { afterEach, expect, jest, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { type RenderResult, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { type ComponentProps, useState } from "react";
@@ -9,11 +8,12 @@ import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { graphNode } from "../../__tests__/graph-fixture";
 import { dwellOn, installIntersectionObserver } from "../../__tests__/intersection-observer";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { seedUnread } from "../../__tests__/replies-seed";
 import { answerThreadReads } from "../../__tests__/send-answers";
+import { cacheOf, QueryClient, QueryClientProvider } from "../../api/cache/test-client";
 import { api } from "../../api/client";
 import type { Comment } from "../../api/types";
 import { userPreferenceStorageKey } from "../shell/userPreference";
-import { seedUnread } from "../threads/replies-fixture";
 import { ThreadCard } from "./ThreadCard";
 import type { Thread } from "./useMarginItems";
 
@@ -656,7 +656,7 @@ function renderUnreadCard(expanded: boolean) {
       queries: { retry: false, staleTime: Number.POSITIVE_INFINITY },
     },
   });
-  seedUnread(queryClient, { issue: "CORE-1" }, [root.id]);
+  seedUnread(cacheOf(queryClient), { issue: "CORE-1" }, [root.id]);
   const view = renderCard(thread(), { expanded }, queryClient);
   return {
     cleanup: () => {
@@ -710,7 +710,7 @@ for (const order of ["oldest", "newest"] as const) {
     const queryClient = new QueryClient({
       defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
     });
-    seedUnread(queryClient, { issue: "CORE-1" }, []);
+    seedUnread(cacheOf(queryClient), { issue: "CORE-1" }, []);
     const view = renderCard(thread({ replies: [reply, second] }), {}, queryClient);
     try {
       const replies = await screen.findByRole("list", { name: "Replies" });

@@ -1,14 +1,18 @@
 import { expect, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider, type QueryKey } from "@tanstack/react-query";
 import { renderHook, waitFor } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
+import { mergeEventPages, prependEventToLog } from "../api/cache/event-log";
+import { refreshQueries } from "../api/cache/query-refresh";
+import {
+  answeredByDispatch,
+  cacheOf,
+  QueryClient,
+  QueryClientProvider,
+  type QueryKey,
+} from "../api/cache/test-client";
 
 import { api } from "../api/client";
-import {
-  markAskThreadsSeededByAnInFlightInbox,
-  mergeEventPages,
-  prependEventToLog,
-} from "../api/event-feed";
+import { markAskThreadsSeededByAnInFlightInbox } from "../api/event-feed";
 import { askThreadsIssue, eventRefreshTargets } from "../api/event-refresh";
 import {
   advancesIssuesQuery,
@@ -27,7 +31,6 @@ import {
   projectsQuery,
   userStateQuery,
 } from "../api/queries";
-import { refreshQueries } from "../api/query-refresh";
 import type { Ask, AskRead, DispatchEvent, EventType, InboxRow } from "../api/types";
 import { hasPendingAskThreadInvalidation } from "../features/inbox/ask-thread-freshness";
 import { issueAsk } from "../features/inbox/inbox-fixture";
@@ -338,7 +341,7 @@ function refreshedReads(event: DispatchEvent, page: Partial<PageOptions> = {}): 
   for (const name of names) {
     queryClient.setQueryData(READS[name].key, dataFor(name, options));
   }
-  refreshQueries(queryClient, eventRefreshTargets(event, "alice"));
+  refreshQueries(cacheOf(queryClient), eventRefreshTargets(event, "alice"));
   return names.filter((name) => queryClient.getQueryState(READS[name].key)?.isInvalidated);
 }
 
@@ -1792,7 +1795,10 @@ test("a feed event prepends a newer event to the loaded log page", () => {
     pageParams: [null],
     pages: [[event("message.created", {}, { id: 7, seq: 7 })]],
   });
-  prependEventToLog(client, event("message.created", {}, { id: 8, seq: 8 }));
+  prependEventToLog(
+    cacheOf(client),
+    answeredByDispatch(event("message.created", {}, { id: 8, seq: 8 }))
+  );
   expect(client.getQueryData<{ pages: DispatchEvent[][] }>(["events", "CORE-1"])?.pages[0]).toEqual(
     [
       event("message.created", {}, { id: 8, seq: 8 }),
@@ -1838,7 +1844,7 @@ function refreshedThreads(incoming: DispatchEvent): string[] {
   cacheThread(client, "ask-1", "CORE-1");
   cacheThread(client, "ask-2", "CORE-2");
   cacheThread(client, "ask-doc", null);
-  refreshQueries(client, eventRefreshTargets(incoming, "alice"));
+  refreshQueries(cacheOf(client), eventRefreshTargets(incoming, "alice"));
   return ["ask-1", "ask-2", "ask-doc"].filter(
     (id) => client.getQueryState(["ask-thread", id])?.isInvalidated
   );
@@ -1893,7 +1899,10 @@ test("a thread on its first load is judged on the response that lands: refreshed
     client.prefetchQuery({ queryFn: () => onIssue.promise, queryKey: ["ask-thread", "ask-3"] }),
     client.prefetchQuery({ queryFn: () => elsewhere.promise, queryKey: ["ask-thread", "ask-4"] }),
   ];
-  refreshQueries(client, eventRefreshTargets(event("issue.claimed", { key: "CORE-1" }), "alice"));
+  refreshQueries(
+    cacheOf(client),
+    eventRefreshTargets(event("issue.claimed", { key: "CORE-1" }), "alice")
+  );
   onIssue.resolve({ ask: { id: "ask-3", issue_key: "CORE-1" } } as unknown as AskRead);
   elsewhere.resolve({ ask: { id: "ask-4", issue_key: "CORE-2" } } as unknown as AskRead);
   await Promise.all(loads);
@@ -1932,11 +1941,7 @@ test("a claim that moves while the Inbox is in flight sends that issue's later c
     renderHook(
       () =>
         useAskAnswerForm({
-          answer: async () => row as Ask,
           ask: row,
-          createReply: async () => {
-            throw new Error("no reply in this test");
-          },
           getAskThread,
           initialThread: threadOf(row),
           initialThreadUpdatedAt: Date.now(),
@@ -1952,15 +1957,15 @@ test("a claim that moves while the Inbox is in flight sends that issue's later c
       reason: "claimed",
     });
     markAskThreadsSeededByAnInFlightInbox(
-      client,
+      cacheOf(client),
       eventRefreshTargets(claimed, "alice"),
       askThreadsIssue(claimed)
     );
     // The in-flight body was composed before the claim.
     inFlight.resolve(rows);
     await waitFor(() => expect(client.getQueryState(inboxKey)?.fetchStatus).toBe("idle"));
-    expect(hasPendingAskThreadInvalidation(client, onIssue)).toBe(true);
-    expect(hasPendingAskThreadInvalidation(client, elsewhere)).toBe(false);
+    expect(hasPendingAskThreadInvalidation(cacheOf(client), onIssue)).toBe(true);
+    expect(hasPendingAskThreadInvalidation(cacheOf(client), elsewhere)).toBe(false);
 
     const first = mountCard(onIssue);
     cards.push(first);
@@ -1981,8 +1986,8 @@ test("a claim that moves while the Inbox is in flight sends that issue's later c
     // A newer Inbox, composed after the claim, clears the issue's mark.
     getInbox.mockResolvedValueOnce(rows);
     await client.refetchQueries({ queryKey: inboxKey });
-    expect(hasPendingAskThreadInvalidation(client, onIssue)).toBe(false);
-    expect(hasPendingAskThreadInvalidation(client, sibling)).toBe(false);
+    expect(hasPendingAskThreadInvalidation(cacheOf(client), onIssue)).toBe(false);
+    expect(hasPendingAskThreadInvalidation(cacheOf(client), sibling)).toBe(false);
   } finally {
     for (const card of cards) card.unmount();
     getInbox.mockRestore();

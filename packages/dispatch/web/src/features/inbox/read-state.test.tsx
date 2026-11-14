@@ -4,7 +4,6 @@
  */
 
 import { afterEach, expect, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
@@ -13,6 +12,7 @@ import { onFakeClock } from "../../__tests__/fake-clock";
 import { dwellOn, installIntersectionObserver } from "../../__tests__/intersection-observer";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerAgentStates, answerThreadReads } from "../../__tests__/send-answers";
+import { QueryClient, QueryClientProvider } from "../../api/cache/test-client";
 import { api } from "../../api/client";
 import {
   inboxQuery,

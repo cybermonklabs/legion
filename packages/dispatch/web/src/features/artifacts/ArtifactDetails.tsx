@@ -1,7 +1,6 @@
-import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useState } from "react";
-
 import { isText } from "../../api/artifact-version";
+import { useShownQuery } from "../../api/cache/shown-query";
 import { api } from "../../api/client";
 import type { Artifact, Version } from "../../api/types";
 import {
@@ -113,12 +112,12 @@ export function ArtifactDetails({ artifact }: { artifact: Artifact }): ReactNode
   const [after, setAfter] = useState<number | undefined>();
   const beforeVersion = before ?? beforeDefault;
   const afterVersion = after ?? afterDefault;
-  const beforeContent = useQuery({
+  const beforeContent = useShownQuery({
     enabled: compareOpen && artifact.kind === "doc" && beforeVersion !== undefined,
     queryKey: ["artifact", artifact.id, "version", beforeVersion],
     queryFn: () => api.getArtifactVersion(artifact.id, beforeVersion ?? 0),
   });
-  const afterContent = useQuery({
+  const afterContent = useShownQuery({
     enabled: compareOpen && artifact.kind === "doc" && afterVersion !== undefined,
     queryKey: ["artifact", artifact.id, "version", afterVersion],
     queryFn: () => api.getArtifactVersion(artifact.id, afterVersion ?? 0),

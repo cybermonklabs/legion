@@ -4,11 +4,11 @@
 // share `last_reconcile_at` and `last_error`. Dispatch's issues and the agents' titles are read
 // from Dispatch's own tables while the server answers, so they are as old as the answer
 // (`readAtMs`). Events are the last GitHub event intake processed. While the page's live socket
-// (`api/live-socket.ts`) is open, Dispatch tells it every change as it is recorded, so the
+// (`api/cache/live-socket.ts`) is open, Dispatch tells it every change as it is recorded, so the
 // reconciled and event rows say Live, aged by the last change it applied, and the read rows are
 // current; a source Dispatch's verdict names stale, or a reconcile error, keeps today's red row.
 // No React.
-import type { LiveSocketState } from "../../../api/live-socket";
+import type { LiveSocketState } from "../../../api/cache/live-socket";
 import type { DeliveryTimelineWithMeasures } from "../../../api/types";
 
 export type DeliveryFreshness = DeliveryTimelineWithMeasures["freshness"];

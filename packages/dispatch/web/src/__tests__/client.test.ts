@@ -1,23 +1,40 @@
 import { expect, jest, test } from "bun:test";
-import { QueryClient } from "@tanstack/react-query";
+import { QUERY_RETRY_DELAY_MS, queryRetryDelay } from "../api/cache/query-client";
+import { QueryClient } from "../api/cache/test-client";
 
 import {
   AnswerNotKeptError,
   ApiError,
+  agentTokenCreateRequest,
+  agentTokenRevokeRequest,
   apiErrorMessage,
+  architectureSourceDeleteRequest,
+  architectureSourceRequest,
+  architectureSourceSyncRequest,
+  askAnswerRequest,
+  commentAcceptRequest,
+  commentRejectRequest,
+  commentReopenRequest,
+  commentResolveRequest,
   createApiClient,
+  deliverySettingsRequest,
   type FetchImplementation,
   isCredentialFeatureOff,
   isDeliveryNotConfigured,
   isRetryableQueryError,
+  issueClaimReleaseRequest,
+  issueCreateRequest,
+  issuePatchRequest,
   isUnauthorized,
   NetworkError,
   REQUEST_DEADLINE_MS,
   RequestTimeoutError,
+  repoProjectDeleteRequest,
+  repoProjectRequest,
+  threadReadRequest,
   UnreadableAnswerError,
   type UploadImplementation,
 } from "../api/client";
-import { QUERY_RETRY_DELAY_MS, queryRetryDelay } from "../api/query-client";
 import { FIRST_BACKOFF_MS, writeUnderKey } from "../features/writes/keyed-write";
 import { onFakeClock, settle } from "./fake-clock";
 
@@ -253,12 +270,15 @@ test("a POST carries no deadline", async () => {
     const stub = heldFetch();
     const api = createApiClient(stub.fetch);
 
-    const created = api.createIssue({ project: "CORE", title: "Slow to create" }, keyed("write-1"));
+    const created = api.send(
+      issueCreateRequest({ project: "CORE", title: "Slow to create" }),
+      keyed("write-1")
+    );
     jest.advanceTimersByTime(10 * 60_000);
     expect(stub.requests[0]?.init?.signal).toBeUndefined();
     stub.answer(Response.json({ key: "CORE-1" }));
 
-    expect(await created).toEqual({ key: "CORE-1" } as never);
+    expect((await created).body).toEqual({ key: "CORE-1" } as never);
   });
 });
 
@@ -391,27 +411,22 @@ test("a write's failures are classified by kind", async () => {
   const failing = createApiClient(async () => {
     throw new TypeError("Failed to fetch");
   });
-  expect(
-    await outcome(failing.createIssue({ project: "CORE", title: "x" }, keyed("k")))
-  ).toBeInstanceOf(NetworkError);
+  const create = issueCreateRequest({ project: "CORE", title: "x" });
+  expect(await outcome(failing.send(create, keyed("k")))).toBeInstanceOf(NetworkError);
 
   const proxyPage = createApiClient(async () => new Response("<html>502</html>", { status: 200 }));
-  expect(
-    await outcome(proxyPage.createIssue({ project: "CORE", title: "x" }, keyed("k")))
-  ).toBeInstanceOf(UnreadableAnswerError);
+  expect(await outcome(proxyPage.send(create, keyed("k")))).toBeInstanceOf(UnreadableAnswerError);
 
   const notKept = { code: "ANSWER_NOT_KEPT", error: "answer too large" };
   const replayed = createApiClient(async () =>
     Response.json(notKept, { headers: { "Idempotency-Replayed": "?1" }, status: 201 })
   );
-  const landed = await outcome(replayed.createIssue({ project: "CORE", title: "x" }, keyed("k")));
+  const landed = await outcome(replayed.send(create, keyed("k")));
   expect(landed).toBeInstanceOf(AnswerNotKeptError);
   expect(landed).toMatchObject({ code: "ANSWER_NOT_KEPT", status: 201 });
 
   const fresh = createApiClient(async () => Response.json(notKept, { status: 201 }));
-  expect(await fresh.createIssue({ project: "CORE", title: "x" }, keyed("k"))).toEqual(
-    notKept as never
-  );
+  expect((await fresh.send(create, keyed("k"))).body).toEqual(notKept as never);
 
   const busy = createApiClient(async () =>
     Response.json(
@@ -419,9 +434,7 @@ test("a write's failures are classified by kind", async () => {
       { headers: { "Retry-After": "2" }, status: 409 }
     )
   );
-  expect(
-    await outcome(busy.createIssue({ project: "CORE", title: "x" }, keyed("k")))
-  ).toMatchObject({
+  expect(await outcome(busy.send(create, keyed("k")))).toMatchObject({
     code: "KEY_IN_FLIGHT",
     retryAfterMs: 2_000,
   });
@@ -441,10 +454,9 @@ test("a 2xx whose body read fails is a NetworkError, retried under its key", asy
       { status: 201 }
     );
 
+  const create = issueCreateRequest({ project: "CORE", title: "x" });
   const dropped = createApiClient(async () => cutOff());
-  expect(
-    await outcome(dropped.createIssue({ project: "CORE", title: "x" }, keyed("k")))
-  ).toBeInstanceOf(NetworkError);
+  expect(await outcome(dropped.send(create, keyed("k")))).toBeInstanceOf(NetworkError);
 
   // And the write's policy admits it: `retryAfter` gives a `NetworkError` a wait rather than
   // `undefined`, so the write waits its first backoff and asks again under the same key.
@@ -455,16 +467,12 @@ test("a 2xx whose body read fails is a NetworkError, retried under its key", asy
       return attempts === 1 ? cutOff() : Response.json({ key: "CORE-1" }, { status: 201 });
     });
 
-    const made = writeUnderKey(
-      (bounds) => api.createIssue({ project: "CORE", title: "x" }, bounds),
-      "k",
-      { carried: null }
-    );
+    const made = writeUnderKey((bounds) => api.send(create, bounds), "k", { carried: null });
     await settle();
     expect(attempts).toBe(1);
     jest.advanceTimersByTime(FIRST_BACKOFF_MS);
 
-    expect(await made).toMatchObject({ key: "CORE-1" });
+    expect((await made)?.body).toMatchObject({ key: "CORE-1" });
     expect(attempts).toBe(2);
   });
 });
@@ -474,9 +482,9 @@ test("a 2xx whose body read fails is a NetworkError, retried under its key", asy
 test("a write carries the login of the person who pressed it", async () => {
   const stub = stubFetch();
   const api = createApiClient(stub.fetch);
-  await api.patchIssue("CORE-1", { status: "done" }, { key: "k", login: "alice" });
+  await api.send(issuePatchRequest("CORE-1", { status: "done" }), { key: "k", login: "alice" });
   await api.putIssueState("CORE-1", { pinned: true }, { key: "p", login: "alice" });
-  await api.patchIssue("CORE-1", { status: "done" }, { key: "k" });
+  await api.send(issuePatchRequest("CORE-1", { status: "done" }), { key: "k" });
   expect(stub.requests.map(({ init }) => new Headers(init?.headers).get("Dispatch-Login"))).toEqual(
     ["alice", "alice", null]
   );
@@ -506,7 +514,11 @@ test("a keyed DELETE answered 204 with an empty body stream lands", async () => 
   globalThis.Response = FetchResponse as typeof Response;
   try {
     expect(
-      await answered.revokeAgentToken("token-1", { deadlineMs: 15_000, key: "k", login: "alice" })
+      await answered.send(agentTokenRevokeRequest("token-1"), {
+        deadlineMs: 15_000,
+        key: "k",
+        login: "alice",
+      })
     ).toBeUndefined();
   } finally {
     globalThis.Response = BunResponse;
@@ -609,14 +621,13 @@ test("API client sends the documented method and JSON body for mutations", async
     },
     keyed("write-1")
   );
-  await api.patchIssue("CORE-1", { status: "done" }, keyed("write-2"));
-  await api.answerAsk(
-    "ask-1",
-    {
+  await api.send(issuePatchRequest("CORE-1", { status: "done" }), keyed("write-2"));
+  await api.send(
+    askAnswerRequest("ask-1", {
       selected: ["Ship"],
       text: "Approved",
       expected_edited_at: "2026-09-12T12:00:00Z",
-    },
+    }),
     keyed("write-3")
   );
 
@@ -643,7 +654,7 @@ test("API client sends comment edits to their endpoint, and the reopen with no b
   const api = createApiClient(stub.fetch);
 
   await api.editComment("comment-1", { body: "Revised comment" }, keyed("write-1"));
-  await api.reopenComment("comment-1", keyed("write-2"));
+  await api.send(commentReopenRequest("comment-1"), keyed("write-2"));
 
   expect(stub.requests.map(({ init, path }) => [init?.method, path])).toEqual([
     ["PATCH", "/api/v1/comments/comment-1"],
@@ -662,8 +673,8 @@ test("API client sends repository project mapping requests to their settings rou
   const settingsApi = createApiClient(stub.fetch);
 
   await settingsApi.listRepoProjects();
-  await settingsApi.putRepoProject("owner/repo", { project: "CORE" }, keyed("put-1"));
-  await settingsApi.deleteRepoProject("owner/repo", keyed("delete-1"));
+  await settingsApi.send(repoProjectRequest("owner/repo", { project: "CORE" }), keyed("put-1"));
+  await settingsApi.send(repoProjectDeleteRequest("owner/repo"), keyed("delete-1"));
 
   expect(stub.requests.map(({ init, path }) => [init?.method ?? "GET", path])).toEqual([
     ["GET", "/api/v1/settings/repo-projects"],
@@ -681,14 +692,12 @@ test("API client sends architecture source requests to their routes", async () =
 
   await settingsApi.listArchitectureSources();
   await settingsApi.listProjectArchitectureSources("CORE");
-  await settingsApi.putArchitectureSource(
-    "CORE",
-    "legion/arch",
-    { branch: "main" },
+  await settingsApi.send(
+    architectureSourceRequest("CORE", "legion/arch", { branch: "main" }),
     keyed("write-1")
   );
-  await settingsApi.syncArchitectureSource("CORE", "legion/arch", keyed("write-2"));
-  await settingsApi.deleteArchitectureSource("CORE", "acme/infra", keyed("write-3"));
+  await settingsApi.send(architectureSourceSyncRequest("CORE", "legion/arch"), keyed("write-2"));
+  await settingsApi.send(architectureSourceDeleteRequest("CORE", "acme/infra"), keyed("write-3"));
 
   expect(stub.requests.map(({ init, path }) => [init?.method ?? "GET", path])).toEqual([
     ["GET", "/api/v1/settings/architecture-sources"],
@@ -1037,13 +1046,13 @@ test("a refusal keeps the server's Retry-After in delta-seconds, and no delay fo
 
 test(
   "the production retry policy issues one credential request when the broker is unconfigured, " +
-    "not three (every query shares this policy from main.tsx)",
+    "not three (every query shares this policy from api/cache/provider.tsx)",
   async () => {
     const stub = stubFetch(() =>
       Response.json({ error: "not configured", code: "FEATURE_OFF" }, { status: 404 })
     );
     const client = createApiClient(stub.fetch);
-    // Mirrors main.tsx's shared QueryClient retry options exactly.
+    // Mirrors api/cache/provider.tsx's shared QueryClient retry options exactly.
     const queryClient = new QueryClient({
       defaultOptions: {
         queries: {
@@ -1106,7 +1115,7 @@ test("API client reaches every remaining documented endpoint", async () => {
   await api.listProjects();
   await api.listIssues();
   await api.search("astrolabe");
-  await api.createIssue({ project: "CORE", title: "Ship it" }, keyed("write-1"));
+  await api.send(issueCreateRequest({ project: "CORE", title: "Ship it" }), keyed("write-1"));
   await api.getIssue("CORE-1");
   await api.getInbox("CORE");
   await api.createAsk("CORE-1", { question: "Ship?" }, keyed("write-2"));
@@ -1117,11 +1126,11 @@ test("API client reaches every remaining documented endpoint", async () => {
   await api.listMyReplies({ limit: 50 });
   await api.listMyReplies({ issue: "CORE-1", limit: 200 });
   await api.listMyReplies({ artifact: "artifact-1", limit: 200 });
-  await api.markThreadRead("comment-1", "2026-10-12T00:00:00.000Z", keyed("put-1"));
+  await api.send(threadReadRequest("comment-1", "2026-10-12T00:00:00.000Z"), keyed("put-1"));
   await api.createComment("CORE-1", { body: "Looks good" }, keyed("write-3"));
-  await api.resolveComment("comment-1", keyed("write-4"));
-  await api.acceptComment("comment-1", keyed("write-5"));
-  await api.rejectComment("comment-1", keyed("write-6"));
+  await api.send(commentResolveRequest("comment-1"), keyed("write-4"));
+  await api.send(commentAcceptRequest("comment-1"), keyed("write-5"));
+  await api.send(commentRejectRequest("comment-1"), keyed("write-6"));
   await api.createCommentDelivery(
     "comment-1",
     "session:planner-session",
@@ -1163,15 +1172,15 @@ test("API client reaches every remaining documented endpoint", async () => {
   await api.logout();
   await api.githubRest("repos/acme/dispatch");
   await api.getDeliverySettings();
-  await api.putDeliverySettings(
-    {
+  await api.send(
+    deliverySettingsRequest({
       deploy_repo: "acme/widgets",
       deploy_workflow_path: ".github/workflows/deploy.yml",
       excluded_repos: [],
       population_authors: ["octocat"],
       pr_checks_workflow_path: ".github/workflows/pr-checks.yml",
       production_job_names: ["widgets-release"],
-    },
+    }),
     keyed("put-4")
   );
 
@@ -1259,8 +1268,8 @@ test("API client keeps only small idempotent /me/ writes alive during navigation
     { cleared_before: "2026-09-15T20:51:00.000Z" },
     keyed("put-2")
   );
-  await api.revokeAgentToken("token-1", keyed("delete-1"));
-  await api.createAgentToken({ name: "planner" }, keyed("write-1"));
+  await api.send(agentTokenRevokeRequest("token-1"), keyed("delete-1"));
+  await api.send(agentTokenCreateRequest({ name: "planner" }), keyed("write-1"));
   await api.putIssueState("CORE-1", { dismissed: oversizedDismissed }, keyed("put-3"));
 
   const [smallIssueState, agentState, revokedToken, createdToken, oversizedIssueState] =
@@ -1285,7 +1294,7 @@ test("a PUT or a DELETE without its press's bounds does not type-check", () => {
     // @ts-expect-error a PUT goes with the bounds of the press it belongs to
     void api.putIssueState("CORE-1", { last_read_seq: 3 });
     // @ts-expect-error so does a DELETE
-    void api.releaseIssueClaim("CORE-1");
+    void api.send(issueClaimReleaseRequest("CORE-1"));
     // @ts-expect-error and either one made as a bare request
     void api.send({ method: "PUT", path: "/api/v1/me/issues/CORE-1/state" });
   };
@@ -1301,8 +1310,9 @@ const CLIENT_PLUMBING = new Set([
   "response",
   "json",
   "send",
+  "sendBody",
+  "resendBody",
   "post",
-  "put",
   "remove",
   "read",
   "patch",
@@ -1376,8 +1386,9 @@ test("every write method of the client goes through the one keyed path", async (
 
   // Every method reached Dispatch, so none is out of the census for want of a fitting argument.
   expect(silent).toEqual([]);
-  // The census found the client's writes, not a handful: every write of the page is one of these.
-  expect(writers.size).toBeGreaterThan(45);
+  // The census found the client's write methods, not a handful. A write made from its request
+  // alone (`writeRequest`'s builders) has no method of its own: `send` is the one call it makes.
+  expect(writers.size).toBeGreaterThan(30);
   const problems: string[] = [];
   for (const [name, writes] of writers) {
     for (const { key, login, method, path } of writes) {

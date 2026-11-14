@@ -1,20 +1,19 @@
 import { INBOX_THREAD_KINDS } from "@legion/contracts";
 
-import {
-  infiniteQueryOptions,
-  keepPreviousData,
-  type QueryFunctionContext,
-  queryOptions,
-  replaceEqualDeep,
-} from "@tanstack/react-query";
-
 import { beginInboxFetch, finishInboxFetch } from "../features/inbox/ask-thread-freshness";
-import { projectIssuesQueryKey } from "../features/project/issue-filters";
 import type { AdvancesListing } from "../features/project/issues-table-data";
 import { compareTimestamps, isTimestamp } from "../lib/timestamps";
 
+import { cacheFetching } from "./cache/cache";
+import { type QueryKey, replaceEqualDeep } from "./cache/keys";
+import { liveSocketFor } from "./cache/live-socket";
+import {
+  infiniteQueryOptions,
+  keepPreviousData,
+  queryOptions,
+  type ReadContext,
+} from "./cache/read-options";
 import { api } from "./client";
-import { liveSocketFor } from "./live-socket";
 import type {
   DeliveryLiveView,
   DeliveryMeasuresResponse,
@@ -35,23 +34,27 @@ export const whoAmIQuery = () =>
     queryFn: () => api.whoAmI(),
   });
 
-/** Every ask the viewer can see, as the Inbox lists them. */
+/** Every ask the viewer can see, as the Inbox lists them. The Inbox lists every project's
+ *  issues, so a write of an issue or an ask that is live is composed over each answer of this
+ *  read (R7 of dispatch://INFRA-299, `api/cache/write-store.ts`): the answer arrives whole
+ *  and the person's unsaved change is still on it. */
 export const inboxQuery = () =>
   queryOptions({
     queryKey: ["inbox"],
-    queryFn: async ({ client }) => {
-      const fetch = beginInboxFetch(client);
+    queryFn: async (context) => {
+      const cache = cacheFetching(context);
+      const fetch = beginInboxFetch(cache);
       let asks: InboxRow[] | undefined;
       try {
         asks = await api.getInbox();
         return asks;
       } finally {
-        finishInboxFetch(client, fetch, asks);
+        finishInboxFetch(cache, fetch, asks);
       }
     },
   });
 
-/** The viewer's per-issue read/pin/dismiss state. */
+/** The viewer's per-issue read/pin/dismiss state, which the pin writes (`pin:<KEY>`). */
 export const userStateQuery = () =>
   queryOptions({
     queryKey: ["user-state"],
@@ -82,7 +85,11 @@ function olderIssue(next: unknown, cached: unknown): boolean {
  * the cached issue, and is dropped: the cache never takes an issue whose `updated_at` is earlier
  * than the one it holds, as the event log never lets a fetched page take back the events above
  * its head (`mergeEventPages`). The rule is the query's own, so it holds for every writer of the
- * key: a read from any of its views, a PATCH's answer, an optimistic pick and its rollback.
+ * key: a read from any of its views, and a PATCH's answer (`mergeIssue`). It runs only where an
+ * answer enters the cache, and the cache holds only Dispatch's answers - a live pick is composed
+ * over the issue as a reader reads it (`api/cache/shown-query.ts`), outside TanStack, never
+ * written into the cache - so the rule judges one answer of this key against Dispatch's issue of
+ * this key, never a composed value nor the issue a reader showed before its key changed.
  */
 export const issueQuery = (key: string | undefined) =>
   queryOptions({
@@ -140,6 +147,20 @@ export const artifactBlocksQuery = (id: string) =>
     queryKey: ["artifact", id, "blocks"],
     queryFn: () => api.getArtifactBlocks(id),
   });
+
+/** The comments of one owner, read by the margin, by an Inbox thread's body and by a document's
+ *  own panel: an issue's comments, those of one document of an issue under that document's id
+ *  beside the issue's key, or a standalone document's own. One key per owner, so a comment
+ *  written on one surface shows on the others. */
+export function commentsQueryKey(
+  owner:
+    | { readonly issue: string | undefined; readonly document?: string }
+    | { readonly artifact: string }
+): QueryKey {
+  if ("artifact" in owner) return ["artifact", owner.artifact, "comments"];
+  const { document, issue } = owner;
+  return document === undefined ? ["comments", issue] : ["comments", issue, document];
+}
 
 /** The viewer's per-agent conversation state: each session's Clear, read mark, count of unread
  *  replies to the viewer's direct messages, and `pinned_at` where the viewer pinned it
@@ -269,6 +290,26 @@ export const projectArchitectureSourcesQuery = (project: string) =>
     queryFn: () => api.listProjectArchitectureSources(project),
   });
 
+/** One project's architecture tree, read by the project's Architecture tab and by the issue
+ *  header's component picker, which share the one key. A write of one of that project's sources
+ *  (`architecture-source:<project>/<owner/repo>`) shows no change on this read before Dispatch
+ *  answers it, so an answer of this read has nothing of the page's to undo. */
+export const architectureTreeQuery = (project: string) =>
+  queryOptions({
+    queryKey: ["architecture", project],
+    queryFn: () => api.getArchitecture(project),
+    staleTime: 15_000,
+  });
+
+/** Every repository mapped to a project, read by the Settings page's table and by the issue
+ *  header's repository picker: one key, so a mapping saved in Settings shows in the picker. A
+ *  live mapping write (`repo-mapping:<owner/repo>`) is composed over each answer. */
+export const repoProjectsQuery = () =>
+  queryOptions({
+    queryKey: ["repo-projects"],
+    queryFn: () => api.listRepoProjects(),
+  });
+
 /** Every project with the person it defaults to, one row per project: every project names one,
  *  and this read is the one place the page learns who, since the project list carries no default.
  *  Read by the Settings page's Projects table, and refreshed by the event a default write appends
@@ -279,60 +320,43 @@ export const projectDefaultAssigneesQuery = () =>
     queryFn: () => api.listProjectDefaultAssignees(),
   });
 
-/** The mutation key every board move on `project` carries; `projectIssuesQuery` waits on it. */
-export const boardMoveMutationKey = (project: string): readonly unknown[] => [
-  "board-move",
-  project,
-];
+/** The prefix every project issue list shares, whatever its labels: what a write composes its
+ *  change over, and what an event refresh tests every project's list under. */
+export const projectListsKey = ["issues", "project"] as const;
+
+/** The sidebar's list of the issues the viewer pinned: the one key the pin write, the sidebar
+ *  and the event refresh name it by. */
+export const pinnedIssuesKey = ["issues", "pinned"] as const;
+
+/** The one query key for a project's issue list: the plain list, or the server-filtered list
+ *  when labels are active. List and Board build their keys here, so one set of labels is one
+ *  key in both; `projectIssuesQuery` then forks on `open`, so the open-only read of a view that
+ *  hides closed issues is a key of its own under the same prefix. */
+export function projectIssuesQueryKey(project: string, labels: readonly string[]): QueryKey {
+  return labels.length === 0
+    ? [...projectListsKey, project]
+    : [...projectListsKey, project, "labels", labels];
+}
 
 /**
  * A project's issue list - plain, or server-filtered by labels - shared by the Board, the List,
  * the filter strip and the issue header's label picker. Every observer sets the query's function,
- * so each one takes it from here. A fetch that starts while a board move on the project is
- * unanswered waits for the answer: until then the server may not have applied the move, and its
- * list would put the card back where it came from.
+ * so each one takes it from here. An answer landing while a write of one of this project's
+ * issues is live arrives whole, and that write's change is composed over it as it is read - a
+ * board move, a header field, a components save, an issue create - so the server's older value
+ * never undoes what the person picked and every other row of the answer is shown (R7 of
+ * dispatch://INFRA-299).
  */
 export const projectIssuesQuery = (project: string, labels: readonly string[], open = false) =>
   queryOptions({
     queryKey: [...projectIssuesQueryKey(project, labels), ...(open ? ["open"] : [])],
-    queryFn: async (context) => {
-      await boardMovesSettled(context, project);
-      return api.listIssues({
+    queryFn: () =>
+      api.listIssues({
         project,
         ...(labels.length ? { label: [...labels] } : {}),
         ...(open ? { open: true } : {}),
-      });
-    },
+      }),
   });
-
-/** Resolves once no board move on `project` is pending; rejects if the fetch is cancelled first. */
-function boardMovesSettled(context: QueryFunctionContext, project: string): Promise<void> {
-  const { client } = context;
-  const filters = { mutationKey: boardMoveMutationKey(project) };
-  if (client.isMutating(filters) === 0) {
-    return Promise.resolve();
-  }
-  // Read only here: once a fetch reads its signal, query-core cancels it when the last observer
-  // unmounts, which a fetch that is not waiting has no reason to invite.
-  const { signal } = context;
-  const settled = Promise.withResolvers<void>();
-  const stop = () => {
-    unsubscribe();
-    signal.removeEventListener("abort", abort);
-  };
-  const abort = () => {
-    stop();
-    settled.reject(signal.reason);
-  };
-  const unsubscribe = client.getMutationCache().subscribe(() => {
-    if (client.isMutating(filters) === 0) {
-      stop();
-      settled.resolve();
-    }
-  });
-  signal.addEventListener("abort", abort);
-  return settled.promise;
-}
 
 /** What `GET /api/v1/issues` is asked for one advances listing: the issues advancing it, in the
  *  statuses it names, with their move into backlog or icebox where it asks for that. `open`
@@ -398,9 +422,9 @@ export const priorityHistoryQuery = (id: string) =>
   });
 
 /** What every live-owned delivery query shares (LEGION-690): its first load subscribes its view
- *  over the page's one live socket (`api/live-socket.ts`), which writes the snapshot and every
+ *  over the page's one live socket (`api/cache/live-socket.ts`), which writes the snapshot and every
  *  later change into the cache, so nothing here reads again. `meta.live` keeps the event feed's
- *  refresh paths away from it (`api/query-refresh.ts`); `gcTime` 0 drops the subscription with the
+ *  refresh paths away from it (`api/cache/query-refresh.ts`); `gcTime` 0 drops the subscription with the
  *  last observer; the page keeps the previous answer on screen while a new view's snapshot is out,
  *  as a filter change in the prototype it ports never blanks it. */
 const LIVE = {
@@ -420,12 +444,12 @@ interface DeliveryLiveBodies {
 
 /** The live view's answer, which is the body of the GET route its kind mirrors. */
 function subscribeLive<V extends DeliveryLiveView>(
-  context: QueryFunctionContext,
+  context: ReadContext,
   view: V
 ): Promise<DeliveryLiveBodies[V["kind"]]> {
   // The socket answers each view with its own route's body (packages/contracts DeliveryLiveView);
   // the frame carries the union, and the view's kind names the member.
-  return liveSocketFor(context.client).subscribe(context.queryKey, view) as Promise<
+  return liveSocketFor(cacheFetching(context)).subscribe(context.queryKey, view) as Promise<
     DeliveryLiveBodies[V["kind"]]
   >;
 }

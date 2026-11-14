@@ -1,11 +1,12 @@
 import { afterEach, beforeAll, expect, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
 import { displayTree } from "../../__tests__/display-trees";
 import { graphNode } from "../../__tests__/graph-fixture";
+import { answerDecisionKeeps, answerIssueComments } from "../../__tests__/send-answers";
+import { QueryClient, QueryClientProvider } from "../../api/cache/test-client";
 import { api } from "../../api/client";
 import type {
   Artifact,
@@ -193,7 +194,7 @@ test("the panel sorts the view into its four lists, in order", async () => {
 test("Keep records the decision and moves it from Waiting for your review to Your decisions", async () => {
   const user = userEvent.setup();
   const read = spyOn(api, "getIssueDecisions").mockResolvedValue(issueView());
-  const keep = spyOn(api, "keepDecision").mockResolvedValue({
+  const keep = answerDecisionKeeps().mockResolvedValue({
     artifact_id: documentId,
     block_id: "store",
     changed_version: 3,
@@ -206,7 +207,11 @@ test("Keep records the decision and moves it from Waiting for your review to You
     await user.click(within(waiting).getByRole("button", { name: "Keep" }));
 
     await waitFor(() => expect(keep).toHaveBeenCalled());
-    expect(keep.mock.calls[0]?.slice(0, 3)).toEqual([documentId, "store", "sum-store"]);
+    expect([
+      keep.mock.calls[0]?.[0],
+      keep.mock.calls[0]?.[1],
+      keep.mock.calls[0]?.[2]?.text_sha256,
+    ]).toEqual([documentId, "store", "sum-store"]);
     await waitFor(() =>
       expect(
         within(list("Waiting for your review")).queryByText("Store notices in a table")
@@ -222,7 +227,7 @@ test("Keep records the decision and moves it from Waiting for your review to You
 test("Change opens the comment composer on decisions.md, quoting the decision's first paragraph, and posts it as the issue's comment", async () => {
   const user = userEvent.setup();
   const read = spyOn(api, "getIssueDecisions").mockResolvedValue(issueView());
-  const comment = spyOn(api, "createComment").mockResolvedValue({} as Comment);
+  const comment = answerIssueComments().mockResolvedValue({} as Comment);
   try {
     renderPanel();
     const waiting = await screen.findByRole("region", { name: "Waiting for your review" });

@@ -1,8 +1,14 @@
 import { DISPATCH_SCOPES } from "@legion/contracts";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, type ReactNode, useState } from "react";
-
-import { api } from "../../api/client";
+import { useCache } from "../../api/cache/cache";
+import { queryOptions } from "../../api/cache/read-options";
+import { useShownQuery } from "../../api/cache/shown-query";
+import {
+  agentTokenCreateRequest,
+  agentTokenRevokeRequest,
+  agentTokenScopesRequest,
+  api,
+} from "../../api/client";
 import type { AgentToken, CreatedAgentToken, DispatchScope } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
 import { useCopyFeedback } from "../../hooks/useCopyFeedback";
@@ -35,7 +41,17 @@ import {
   settingsTableWrapper,
 } from "./classes";
 
-const agentTokensQueryKey = ["agent-tokens"] as const;
+/** The viewer's agent tokens, the list a mint adds to and each token's own row
+ *  (`agent-tokens:me`, `agent-token:<id>`). No write of either shows a change before Dispatch
+ *  answers it, so an answer of this read that lands while a mint, a scope change or a revoke is
+ *  unanswered has nothing of the page's to undo; each write puts its own answer in the list. */
+const agentTokensQuery = () =>
+  queryOptions({
+    queryKey: ["agent-tokens"],
+    queryFn: () => api.listAgentTokens(),
+  });
+
+const agentTokensQueryKey = agentTokensQuery().queryKey;
 
 /** A mint Dispatch made and lost the answer to: the label it was pressed with, the tokens already
  *  listed under any label when it was pressed (`before`), and whether the token list has been read
@@ -154,7 +170,7 @@ function TokenScopeChoices({
 }
 
 export function AgentTokensSection(): ReactNode {
-  const queryClient = useQueryClient();
+  const cache = useCache();
   const [name, setName] = useState("");
   /** What the mint form's boxes hold: both scopes until the reader clears one. */
   const [newScopes, setNewScopes] = useState<readonly DispatchScope[]>(BOTH_SCOPES);
@@ -162,14 +178,27 @@ export function AgentTokensSection(): ReactNode {
   /** When the token list was last read again after a mint whose answer was lost. */
   const [rereadAt, setRereadAt] = useState<number | undefined>(undefined);
   const { copy, reset: resetCopyStatus, status: copyStatus } = useCopyFeedback();
-  const tokens = useQuery({ queryKey: agentTokensQueryKey, queryFn: () => api.listAgentTokens() });
-  // The form shows a refused mint beside the name it was refused over.
+  const tokens = useShownQuery(agentTokensQuery());
+  // The form shows a refused mint beside the name it was refused over. A mint names no token
+  // until Dispatch answers it, so it stands in the line of the list it adds a row to
+  // (`agent-tokens:me`), where a change to what a token may do and a revoke stand in that
+  // token's own (`agent-token:<id>`).
   const createToken = useKeyedWrite({
+    // Spec version 22 of dispatch://INFRA-299: a reload drops the mint rather than send it again.
+    answerShownOnce:
+      "its answer is the token's secret, shown once: a mint a reload sent again would make a live token whose secret no page shows",
     inline: true,
     label: (input: { name: string; before: readonly string[]; scopes: readonly DispatchScope[] }) =>
       `New agent token ${input.name}`,
-    write: ({ name: label, scopes }, bounds) =>
-      api.createAgentToken({ name: label, scopes: [...scopes] }, bounds),
+    request: ({
+      name: label,
+      scopes,
+    }: {
+      name: string;
+      before: readonly string[];
+      scopes: readonly DispatchScope[];
+    }) => agentTokenCreateRequest({ name: label, scopes: [...scopes] }),
+    target: () => "agent-tokens:me",
     onSuccess: (created) => {
       setName("");
       setNewScopes(BOTH_SCOPES);
@@ -178,42 +207,46 @@ export function AgentTokensSection(): ReactNode {
         // (`createToken.unanswered`): the token is listed once the list is read again, and the
         // reader can replace it.
         setShownToken(undefined);
-        void queryClient
-          .invalidateQueries({ queryKey: agentTokensQueryKey })
+        void cache
+          .invalidate({ queryKey: agentTokensQueryKey })
           .then(() => setRereadAt(Date.now()));
         return;
       }
-      const { token, ...safeToken } = created;
-      queryClient.setQueryData<AgentToken[]>(agentTokensQueryKey, (current = []) => [
-        safeToken,
-        ...current,
-      ]);
-      setShownToken(created);
+      // The list holds the token as Dispatch made it, without the value it shows once.
+      cache.setDispatched(
+        agentTokensQueryKey,
+        created,
+        (current: AgentToken[] | undefined, { token, ...madeToken }) =>
+          current === undefined ? undefined : [madeToken, ...current]
+      );
+      setShownToken(created.body);
       resetCopyStatus();
     },
   });
   const revokeToken = useKeyedWrite({
     label: (id: string) => `Agent token ${id} revoked`,
-    write: (id: string, bounds) => api.revokeAgentToken(id, bounds),
-    onSuccess: (_result, id) => {
-      queryClient.setQueryData<AgentToken[]>(agentTokensQueryKey, (current = []) =>
-        current.map((token) =>
-          token.id === id ? { ...token, revoked_at: new Date().toISOString() } : token
-        )
-      );
-    },
+    request: (id: string) => agentTokenRevokeRequest(id),
+    target: (id) => `agent-token:${id}`,
+    // Dispatch answers a revoke with nothing, so the list is read again for the token as it now
+    // stands, revoked when Dispatch says it was.
+    onSuccess: () => cache.invalidate({ queryKey: agentTokensQueryKey }),
   });
   /** One row's two boxes, written as the whole set the token is to hold. The row reads the set
    *  back from the list, so the boxes follow the write rather than the press. */
   const setTokenScopes = useKeyedWrite({
     label: (input: { id: string; name: string; scopes: DispatchScope[] }) =>
       `What agent token ${input.name} may do`,
-    write: (input, bounds) => api.setAgentTokenScopes(input.id, input.scopes, bounds),
-    onSuccess: (updated, input) => {
-      queryClient.setQueryData<AgentToken[]>(agentTokensQueryKey, (current = []) =>
-        current.map((token) =>
-          token.id === input.id ? (updated ?? { ...token, scopes: input.scopes }) : token
-        )
+    request: (input: { id: string; name: string; scopes: DispatchScope[] }) =>
+      agentTokenScopesRequest(input.id, input.scopes),
+    target: (input) => `agent-token:${input.id}`,
+    // Updated with no answer to give: the store reads every query again.
+    onSuccess: (updated) => {
+      if (updated === null) return;
+      cache.setDispatched(
+        agentTokensQueryKey,
+        updated,
+        (current: AgentToken[] | undefined, answer) =>
+          current?.map((token) => (token.id === answer.id ? answer : token))
       );
     },
   });

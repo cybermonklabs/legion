@@ -1,8 +1,9 @@
 import { expect, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { renderHook, waitFor } from "@testing-library/react";
 import { http } from "msw";
 import type { ReactNode } from "react";
+
+import { QueryClient, QueryClientProvider } from "../api/cache/test-client";
 
 import { MEANING_PAUSE_MS, useTieredSearch } from "../features/search/useTieredSearch";
 import { answerRequests } from "./network";

@@ -1,9 +1,10 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: the drag of a row onto another below is a drag and a drop, which user-event has no form for
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
+import { answerPriorityPatches } from "../../__tests__/send-answers";
+import { QueryClient, QueryClientProvider } from "../../api/cache/test-client";
 import { api } from "../../api/client";
 import type { IssueSummary, Priorities, Priority, PriorityRow } from "../../api/types";
 import { PrioritiesPage } from "./PrioritiesPage";
@@ -122,9 +123,11 @@ function answerListing(issues: readonly IssueSummary[]) {
 }
 
 /** The page as a signed-in person sees it, with the reads it makes answered from `answer`; a
- *  reader who is not a person, and so may not write a priority, where `writer` is false. */
+ *  reader who is not a person, and so may not write a priority, where `writer` is false. Dispatch
+ *  keeps what it makes: a patch it answers changes the rows every later read answers with. */
 function page(answer: Priorities, issues: IssueSummary[] = [], writer = true) {
-  const priorities = spyOn(api, "listPriorities").mockResolvedValue(answer);
+  let held = answer;
+  const priorities = spyOn(api, "listPriorities").mockImplementation(async () => held);
   const listing = spyOn(api, "listIssues").mockImplementation(answerListing(issues));
   const state = spyOn(api, "getMyState").mockResolvedValue({});
   const agents = spyOn(api, "listAgents").mockResolvedValue([]);
@@ -134,7 +137,22 @@ function page(answer: Priorities, issues: IssueSummary[] = [], writer = true) {
     : ({ event_head: "0", kind: "token", login: "ci" } as never);
   const viewer = spyOn(api, "whoAmI").mockResolvedValue(whoami);
   const create = spyOn(api, "createPriority").mockResolvedValue(saved("new"));
-  const patch = spyOn(api, "patchPriority").mockImplementation(async (id) => saved(id));
+  const patch = answerPriorityPatches().mockImplementation(async (id, input) => {
+    held = {
+      ...held,
+      priorities: (held.priorities ?? []).map((row) =>
+        row.id === id
+          ? {
+              ...row,
+              description: input.description ?? row.description,
+              owner: input.owner ?? row.owner,
+              title: input.title ?? row.title,
+            }
+          : row
+      ),
+    };
+    return saved(id);
+  });
   // The unit DOM lays nothing out: give every table's box the height a window would.
   const descriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
   Object.defineProperty(HTMLElement.prototype, "clientHeight", {

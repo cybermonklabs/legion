@@ -1,7 +1,6 @@
 import { parseBlockPointerValue } from "@legion/contracts";
-import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useMemo } from "react";
-
+import { useShownQuery } from "../../api/cache/shown-query";
 import { artifactBlocksQuery } from "../../api/queries";
 import type { Artifact, ArtifactBlock } from "../../api/types";
 import { EmptyState } from "../../components/EmptyState";
@@ -74,7 +73,7 @@ interface PlanTask {
 function Tasks({ artifact }: { artifact: Artifact }): ReactNode {
   // The same key the document's own block read uses, so a tab opened after the document is
   // already answered.
-  const blocks = useQuery(artifactBlocksQuery(artifact.id));
+  const blocks = useShownQuery(artifactBlocksQuery(artifact.id));
   const data = blocks.data;
   const tasks = useMemo<readonly PlanTask[]>(() => {
     if (data === undefined) {

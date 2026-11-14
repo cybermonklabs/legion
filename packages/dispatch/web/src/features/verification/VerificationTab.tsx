@@ -1,6 +1,5 @@
-import { useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
-
+import { useShownQuery } from "../../api/cache/shown-query";
 import { issueResultsQuery } from "../../api/queries";
 import type {
   Artifact,
@@ -352,7 +351,7 @@ function CheckResults({
 }
 
 function Checks({ issueKey }: { issueKey: string }): ReactNode {
-  const results = useQuery(issueResultsQuery(issueKey));
+  const results = useShownQuery(issueResultsQuery(issueKey));
 
   if (results.isPending) {
     return (

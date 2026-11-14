@@ -9,16 +9,16 @@
  * of the same person without a reload, from the `user_agent_state.updated` event that write
  * announces (`api/event-refresh.ts`).
  */
-import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useMemo } from "react";
-
+import { useCache } from "../../api/cache/cache";
+import { useShownQuery } from "../../api/cache/shown-query";
+import { storeAgentState } from "../../api/cache/viewer-state";
 import { agentStateRequest } from "../../api/client";
 import { userAgentStateQuery } from "../../api/queries";
 import type { UserAgentState, UserAgentStates } from "../../api/types";
 import { compareTimestamps, isTimestamp } from "../../lib/timestamps";
 import { useAgentText } from "../refs/AgentName";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
-import { storeAgentState } from "./unread";
 
 /** One press of a pin control: the session, and what the press makes of it. */
 interface PinPress {
@@ -60,7 +60,7 @@ export function pinnedAgentSessions(states: UserAgentStates | undefined): string
 
 /** The viewer's pins, oldest first, re-read whenever their agent state changes. */
 export function usePinnedAgents(): readonly string[] {
-  const states = useQuery(userAgentStateQuery()).data;
+  const states = useShownQuery(userAgentStateQuery()).data;
   return useMemo(() => pinnedAgentSessions(states), [states]);
 }
 
@@ -79,8 +79,9 @@ function withPin(state: UserAgentState | undefined, pinned: boolean, at: string)
  * row. The page shows the press at once and Dispatch's answer replaces it; the write is one
  * write of the one store, ordered on its session (`pin:agent:<id>`), named in the shell's
  * pending-writes indicator and, refused, retried or discarded there, as an issue's pin is. A
- * press whose write fails has the viewer's agent state read again, so no row is left pinned in a
- * page Dispatch never took the pin for.
+ * press whose write fails stops being composed, as every write's change does: the page shows the
+ * agent state Dispatch last gave, with every other live pin over it, read again from Dispatch, so
+ * no row is left pinned in a page Dispatch never took the pin for, even where that read fails.
  *
  * It answers whether Dispatch made the write - a landing it kept no answer for counts, a
  * refusal and a press the reader stopped do not - and never rejects, so a control that presses
@@ -89,29 +90,36 @@ function withPin(state: UserAgentState | undefined, pinned: boolean, at: string)
  * them has landed (`app.tsx`).
  */
 export function useAgentPinWrite(): (sessionId: string, pinned: boolean) => Promise<boolean> {
-  const queryClient = useQueryClient();
+  const cache = useCache();
   const text = useAgentText();
   const reread = useCallback(() => {
-    void queryClient.invalidateQueries({ queryKey: userAgentStateQuery().queryKey });
-  }, [queryClient]);
-  const { mutateAsync } = useKeyedWrite<UserAgentState, PinPress>({
-    label: ({ pinned, sessionId }) =>
+    void cache.invalidate({ queryKey: userAgentStateQuery().queryKey });
+  }, [cache]);
+  // The pin is a change the write shows: the session's `pinned_at` alone, over the viewer's agent
+  // state as it stands (`shows`), so the store composes it over each answer or event that lands
+  // on that state while the pin is live, and every other session's state that answer carries
+  // arrives whole (R7 of dispatch://INFRA-299).
+  const { mutateAsync } = useKeyedWrite({
+    label: ({ pinned, sessionId }: PinPress) =>
       `${pinned ? "Pin" : "Unpin"} ${text.sessionText(sessionId, undefined)}`,
-    onError: reread,
-    onMutate: ({ pinned, sessionId }) => {
+    shows: ({ pinned, sessionId }) => {
       const at = new Date().toISOString();
-      queryClient.setQueryData<UserAgentStates>(userAgentStateQuery().queryKey, (current) => ({
-        ...current,
-        [sessionId]: withPin(current?.[sessionId], pinned, at),
-      }));
+      return (shown) => {
+        shown.on<UserAgentStates>(userAgentStateQuery().queryKey, (current) => ({
+          ...current,
+          [sessionId]: withPin(current[sessionId], pinned, at),
+        }));
+      };
     },
+    // No `onError` here: a refused, discarded or taken pin stops being composed by the store,
+    // which reads the state again.
     onSuccess: (next, { sessionId }) => {
       // A write Dispatch made and has no answer to give for is a landing: what it changed is
       // read again rather than left as the press drew it.
       if (next === null) reread();
-      else storeAgentState(queryClient, sessionId, next);
+      else storeAgentState(cache, sessionId, next);
     },
-    request: ({ pinned, sessionId }) => agentStateRequest(sessionId, { pinned }),
+    request: ({ pinned, sessionId }: PinPress) => agentStateRequest(sessionId, { pinned }),
     target: ({ sessionId }) => `pin:agent:${sessionId}`,
   });
   return useCallback(

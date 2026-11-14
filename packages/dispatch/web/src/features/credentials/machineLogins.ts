@@ -1,4 +1,4 @@
-import { queryOptions } from "@tanstack/react-query";
+import { queryOptions } from "../../api/cache/read-options";
 
 import { api } from "../../api/client";
 

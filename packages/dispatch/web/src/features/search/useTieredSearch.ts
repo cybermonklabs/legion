@@ -1,7 +1,7 @@
 import { SEARCH_QUERY_MAX } from "@legion/contracts/dispatch-tools";
-import { type UseQueryResult, useQuery } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
-
+import type { UseQueryResult } from "../../api/cache/keys";
+import { useShownQuery } from "../../api/cache/shown-query";
 import { api } from "../../api/client";
 import type { SearchResponse } from "../../api/types";
 import type { SearchRequest } from "./search-filters";
@@ -79,12 +79,12 @@ export function useTieredSearch({
   }, [words]);
 
   const keywordRequest: SearchRequest = { ...request, keywords_only: true };
-  const keywords = useQuery({
+  const keywords = useShownQuery({
     enabled: debouncedQuery.length >= 2 && debouncedQuery.length <= SEARCH_QUERY_MAX,
     queryFn: ({ signal }) => api.search(debouncedQuery, keywordRequest, { signal }),
     queryKey: ["search", debouncedQuery, keywordRequest],
   });
-  const meaning = useQuery({
+  const meaning = useShownQuery({
     enabled: restedQuery.length >= 2 && restedQuery.length <= SEARCH_QUERY_MAX,
     queryFn: ({ signal }) => api.search(restedQuery, request, { signal }),
     queryKey: ["search", restedQuery, request],

@@ -1,6 +1,7 @@
 import { expect, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, render, screen, within } from "@testing-library/react";
+
+import { QueryClient, QueryClientProvider } from "../../api/cache/test-client";
 
 import { api } from "../../api/client";
 import type { ApproverGrantResp } from "../../api/types";

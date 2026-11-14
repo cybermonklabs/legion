@@ -1,5 +1,4 @@
 import { afterAll, expect, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
@@ -7,6 +6,7 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { fakeDocumentRuntime } from "../../__tests__/document-runtime";
 import { graphNode } from "../../__tests__/graph-fixture";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { QueryClient, QueryClientProvider } from "../../api/cache/test-client";
 import { ApiError, api } from "../../api/client";
 import type { Artifact, Subscriber } from "../../api/types";
 import { DocumentRuntime } from "../doc/runtime";

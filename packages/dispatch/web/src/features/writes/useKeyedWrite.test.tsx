@@ -1,14 +1,19 @@
-import { expect, jest, spyOn, test } from "bun:test";
-import { onlineManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { expect, jest, test } from "bun:test";
 import { act, renderHook } from "@testing-library/react";
 import type { ReactNode } from "react";
 
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { keptTab } from "../../__tests__/kept-sends-harness";
-import { ApiError, api, NetworkError } from "../../api/client";
+import { answerAskAnswers } from "../../__tests__/send-answers";
+import {
+  cacheOf,
+  onlineManager,
+  QueryClient,
+  QueryClientProvider,
+} from "../../api/cache/test-client";
+import { ApiError, askAnswerRequest, NetworkError } from "../../api/client";
 import { SEND_DEADLINE_MS, SendStoppedError } from "./keyed-write";
 import { useKeyedWrite } from "./useKeyedWrite";
-import { writesOf } from "./write-store";
 
 const refusal = new ApiError(503, { code: "UNAVAILABLE", error: "the server is down" });
 const verdict = new ApiError(422, { code: "KEY_REUSED", error: "the key names another write" });
@@ -25,8 +30,9 @@ function renderAnswerWrite() {
       useKeyedWrite({
         inline: true,
         label: () => "Answer to “Ship?”",
-        write: (input: { selected: string[] }, bounds) =>
-          api.answerAsk("ask-1", { expected_edited_at: null, ...input }, bounds),
+        request: (input: { selected: string[] }) =>
+          askAnswerRequest("ask-1", { expected_edited_at: null, ...input }),
+        target: () => "ask:ask-1",
       }),
     { wrapper }
   );
@@ -40,17 +46,17 @@ function renderAnswerWrite() {
 test("a surface's Retry keeps the key after Stop trying, and takes a new one after Dispatch refused", async () => {
   jest.useFakeTimers();
   const tab = keptTab();
-  const answerAsk = spyOn(api, "answerAsk").mockRejectedValue(refusal);
+  const answerAsk = answerAskAnswers().mockRejectedValue(refusal);
   const { client, hook } = renderAnswerWrite();
   const input = { selected: ["Ship"] };
 
   try {
     act(() => hook.result.current.mutate(input));
     await tick(SEND_DEADLINE_MS + 1_000);
-    const [late] = writesOf(client).rows();
+    const [late] = cacheOf(client).writes.rows();
     expect(late?.status).toBe("late");
     act(() => {
-      writesOf(client).stop(late?.id ?? 0);
+      cacheOf(client).writes.stop(late?.id ?? 0);
     });
     await tick(60_000);
     expect(hook.result.current.error).toBeInstanceOf(SendStoppedError);
@@ -70,18 +76,17 @@ test("a surface's Retry keeps the key after Stop trying, and takes a new one aft
     expect(answerAsk.mock.calls.at(-1)?.[2]?.key).not.toBe(stoppedKey);
   } finally {
     hook.unmount();
-    answerAsk.mockRestore();
     tab.close();
     realClock();
   }
 });
 
 // W27. A write that landed with no answer to give - Dispatch answered its key `409 KEY_COMMITTED` -
-// is a success with no data: the surface's `onSuccess` runs with `null`, nothing is rolled back,
-// nothing shows as failed, and `mutateAsync` resolves.
-test("a write answered KEY_COMMITTED succeeds with null: no error and no rollback", async () => {
+// is a success with no data: the surface's `onSuccess` runs with `null`, nothing it showed stops
+// being composed early, nothing shows as failed, and `mutateAsync` resolves.
+test("a write answered KEY_COMMITTED succeeds with null: no error, and what it showed stays", async () => {
   const tab = keptTab();
-  const answerAsk = spyOn(api, "answerAsk").mockRejectedValue(
+  const answerAsk = answerAskAnswers().mockRejectedValue(
     new ApiError(409, { code: "KEY_COMMITTED", error: "already made" })
   );
   let rolledBack = 0;
@@ -100,8 +105,9 @@ test("a write answered KEY_COMMITTED succeeds with null: no error and no rollbac
           rolledBack += 1;
         },
         onSuccess: (data) => succeeded.push(data),
-        write: (input: { selected: string[] }, bounds) =>
-          api.answerAsk("ask-1", { expected_edited_at: null, ...input }, bounds),
+        request: (input: { selected: string[] }) =>
+          askAnswerRequest("ask-1", { expected_edited_at: null, ...input }),
+        target: () => "ask:ask-1",
       }),
     { wrapper }
   );
@@ -117,10 +123,9 @@ test("a write answered KEY_COMMITTED succeeds with null: no error and no rollbac
     expect(hook.result.current.data).toBeNull();
     expect(rolledBack).toBe(0);
     expect(succeeded).toEqual([null]);
-    expect(writesOf(client).rows()).toEqual([]);
+    expect(cacheOf(client).writes.rows()).toEqual([]);
   } finally {
     hook.unmount();
-    answerAsk.mockRestore();
     tab.close();
   }
 });
@@ -131,7 +136,7 @@ test("a write answered KEY_COMMITTED succeeds with null: no error and no rollbac
 test("a write pressed offline is attempted and goes late", async () => {
   jest.useFakeTimers();
   const online = onlineManager.isOnline();
-  const answerAsk = spyOn(api, "answerAsk").mockRejectedValue(
+  const answerAsk = answerAskAnswers().mockRejectedValue(
     new NetworkError("/api/v1/asks/ask-1/answer", new TypeError("Failed to fetch"))
   );
   const { client, hook } = renderAnswerWrite();
@@ -141,11 +146,10 @@ test("a write pressed offline is attempted and goes late", async () => {
     await tick(0);
     expect(answerAsk).toHaveBeenCalledTimes(1);
     await tick(SEND_DEADLINE_MS + 1_000);
-    expect(writesOf(client).rows()[0]?.status).toBe("late");
+    expect(cacheOf(client).writes.rows()[0]?.status).toBe("late");
   } finally {
     onlineManager.setOnline(online);
     hook.unmount();
-    answerAsk.mockRestore();
     realClock();
   }
 });

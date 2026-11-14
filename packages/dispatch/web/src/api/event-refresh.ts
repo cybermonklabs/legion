@@ -1,19 +1,24 @@
 import { askProject } from "../features/inbox/list-row";
 import { buildDispatchReference } from "../features/refs/routes";
 import { issueProject } from "../lib/issue-key";
+import type { RefreshCheck, RefreshTarget } from "./cache/query-refresh";
 import {
   agentMessagesQuery,
   architectureSourcesQuery,
+  architectureTreeQuery,
   inboxQuery,
   inboxThreadsKey,
   myRepliesKey,
+  pinnedIssuesKey,
   projectArchitectureSourcesQuery,
   projectDefaultAssigneesQuery,
+  projectIssuesQueryKey,
+  projectListsKey,
   projectsQuery,
+  repoProjectsQuery,
   userAgentStateQuery,
   userStateQuery,
 } from "./queries";
-import { answeredNotFound, type RefreshCheck, type RefreshTarget } from "./query-refresh";
 import type {
   ArchitectureTree,
   ArchitectureTreeComponent,
@@ -34,9 +39,11 @@ import type {
 
 /**
  * Which cached reads one event of the feed can change, and nothing else: `eventRefreshTargets` is
- * the whole of it, and `api/query-refresh.ts` decides when each read is fetched. Query keys are the
- * literal arrays their readers use (the reference reads' builders live in
- * `features/refs/reference-target.ts`; `__tests__/event-feed.test.ts` holds the two in step).
+ * the whole of it, and `api/cache/query-refresh.ts` decides when each read is fetched. Query keys are the
+ * literal arrays their readers use, bar the builders a reader shares (a project's issue list,
+ * `projectIssuesQueryKey`, the architecture tree, the repository mappings and the pinned list,
+ * all in `api/queries.ts`; the reference reads', in `features/refs/reference-target.ts`), and
+ * `__tests__/event-feed.test.ts` holds the two in step.
  *
  * The server says what a write moved where a rule needs it: `changed` and `ancestors` on
  * `issue.created|updated|closed`, `thread_logins` on the writes that can move someone's Replies
@@ -46,7 +53,6 @@ import type {
 
 const inboxKey = inboxQuery().queryKey;
 const projectsKey = projectsQuery().queryKey;
-const pinnedKey = ["issues", "pinned"] as const;
 
 /** One untyped-payload read for the fields the rules take off an event. */
 function payloadValue(event: DispatchEvent, key: string): unknown {
@@ -87,7 +93,7 @@ function rowsOf<Row>(data: unknown): readonly Row[] {
 function pinnedRow(key: string): RefreshTarget {
   return {
     exact: true,
-    queryKey: pinnedKey,
+    queryKey: pinnedIssuesKey,
     when: (data) => rowsOf<IssueSummary>(data).some((issue) => issue.key === key),
   };
 }
@@ -107,7 +113,7 @@ function issueSummaryOf(key: string, event: DispatchEvent): RefreshTarget {
   const target = { exact: true, queryKey: ["issue-summary", key] } as const;
   return event.type === "issue.created"
     ? target
-    : { ...target, when: (_data, query) => !answeredNotFound(query) };
+    : { ...target, when: (_data, read) => !read.answeredNotFound };
 }
 
 /** Every Inbox read (the Inbox and a project's) that holds a row of issue `key`'s open asks. */
@@ -169,8 +175,8 @@ function inboxRowsDecidedByDefault(project: string): RefreshTarget {
 function issueAskListsDecidedByDefault(project: string): RefreshTarget {
   return {
     queryKey: ["asks"],
-    when: (data, query) => {
-      const key = query.queryKey[1];
+    when: (data, read) => {
+      const key = read.queryKey[1];
       return (
         typeof key === "string" &&
         issueProject(key) === project &&
@@ -190,9 +196,9 @@ function issueAskListsDecidedByDefault(project: string): RefreshTarget {
  *  another project's document reads again and answers the same rows. */
 const DOCUMENT_ASK_LISTS_DECIDED_BY_DEFAULT: RefreshTarget = {
   queryKey: ["artifact"],
-  when: (data, query) =>
-    query.queryKey.length === 3 &&
-    query.queryKey[2] === "asks" &&
+  when: (data, read) =>
+    read.queryKey.length === 3 &&
+    read.queryKey[2] === "asks" &&
     rowsOf<Ask>(data).some(openAndNotHandedOn),
 };
 
@@ -269,7 +275,7 @@ function architectureListing(project: string, key: string): RefreshTarget {
     rowsOf<ArchitectureTreeIssueRef>(rows).some((issue) => issue.key === key);
   return {
     exact: true,
-    queryKey: ["architecture", project],
+    queryKey: architectureTreeQuery(project).queryKey,
     when: (data) => {
       const tree = data as Partial<ArchitectureTree> | undefined;
       return (
@@ -728,7 +734,10 @@ function issueWriteTargets(
   // issue.
   if (project !== undefined) {
     if (moved("status") || moved("parent") || moved("components")) {
-      targets.push({ queryKey: ["components", project] }, { queryKey: ["architecture", project] });
+      targets.push(
+        { queryKey: ["components", project] },
+        { queryKey: architectureTreeQuery(project).queryKey }
+      );
     } else if (!created) {
       targets.push(architectureListing(project, key));
     }
@@ -945,8 +954,8 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
     return [
       { queryKey: projectsKey },
       { queryKey: ["project", event.project] },
-      { queryKey: ["issues", "project", event.project] },
-      { queryKey: ["repo-projects"] },
+      { queryKey: projectIssuesQueryKey(event.project, []) },
+      { queryKey: repoProjectsQuery().queryKey },
       // The project list carries no default assignee: a new project's is in the defaults read
       // alone, which the Settings table reads it from and was answered before it existed.
       ...(event.type === "project.created"
@@ -998,7 +1007,7 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
       { queryKey: projectArchitectureSourcesQuery(event.project).queryKey },
       { queryKey: ["components", event.project] },
       // A re-import changes which components exist, so every count in the tree.
-      { queryKey: ["architecture", event.project] },
+      { queryKey: architectureTreeQuery(event.project).queryKey },
     ];
   }
   if (event.type === "user_state.updated") {
@@ -1013,7 +1022,7 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
     const changed = payloadStrings(event, "changed");
     const targets: RefreshTarget[] = [{ queryKey: userStateQuery().queryKey }];
     if (changed === undefined || changed.includes("pinned")) {
-      targets.push({ exact: true, queryKey: pinnedKey });
+      targets.push({ exact: true, queryKey: pinnedIssuesKey });
     }
     if (changed?.includes("snoozed") === true) {
       targets.push({ queryKey: inboxKey });
@@ -1077,7 +1086,7 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
     { exact: true, queryKey: ["issue", key] },
     { queryKey: ["events", key] },
     // Every event an issue owns moves its `last_seq`, which a project list's unread dot reads.
-    { queryKey: project === undefined ? ["issues", "project"] : ["issues", "project", project] },
+    { queryKey: project === undefined ? projectListsKey : projectIssuesQueryKey(project, []) },
   ];
   if (movesInboxThreads(event, viewer)) {
     targets.push({ queryKey: myRepliesKey });

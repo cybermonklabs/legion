@@ -1,5 +1,4 @@
 import { expect, jest, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: this file keeps fireEvent for the dialog form's own submit, which user-event has no form for
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { UserEvent } from "@testing-library/user-event";
@@ -8,7 +7,9 @@ import type { ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { realClock, tick } from "../../__tests__/fake-clock";
+import { answerRoute } from "../../__tests__/send-answers";
 import { userOnFakeClock } from "../../__tests__/user";
+import { QueryClient, QueryClientProvider } from "../../api/cache/test-client";
 import { ApiError, api } from "../../api/client";
 import type { CreateIssueInput, Issue } from "../../api/types";
 import { KeymapProvider } from "../shell/KeymapProvider";
@@ -54,7 +55,8 @@ function CurrentRoute(): ReactNode {
   return <output data-testid="current-route">{location.pathname}</output>;
 }
 
-/** The dialog, its project list and its related-item check answered here. */
+/** The dialog, its project list and its related-item check answered here; `create` answers the
+ *  one request the dialog sends (`issueCreateRequest`), on its route. */
 function renderDialog(
   user: UserEvent,
   create: (input: CreateIssueInput) => Promise<Issue>,
@@ -69,6 +71,10 @@ function renderDialog(
     related: [],
     search: "keywords_only",
   });
+  answerRoute<(input: CreateIssueInput) => Promise<Issue>>(
+    "POST",
+    "/api/v1/issues"
+  ).mockImplementation(create);
   const queryClient = new QueryClient({
     defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
   });
@@ -77,7 +83,7 @@ function renderDialog(
       <QueryClientProvider client={queryClient}>
         <KeymapProvider>
           <CurrentRoute />
-          <CreateIssueDialog createIssue={create} onClose={onClose} />
+          <CreateIssueDialog onClose={onClose} />
         </KeymapProvider>
       </QueryClientProvider>
     </MemoryRouter>

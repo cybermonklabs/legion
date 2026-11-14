@@ -1,11 +1,12 @@
 import { expect, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: the dropped file below is a drop, which user-event has no form for
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { answerArtifactRemovals } from "../../__tests__/send-answers";
+import { QueryClient, QueryClientProvider } from "../../api/cache/test-client";
 import { ApiError, api } from "../../api/client";
 import type { Artifact, IssueReferences } from "../../api/types";
 import { buildIssuePath } from "../refs/routes";
@@ -474,7 +475,7 @@ test("Remove on a document's row sends the delete and the row goes", async () =>
     versions: artifact.versions.slice(0, 1),
   };
   const { getIssueReferences, listArtifacts, view } = renderTab([notes]);
-  const deleteArtifact = spyOn(api, "deleteArtifact").mockImplementation(() => {
+  const deleteArtifact = answerArtifactRemovals().mockImplementation(() => {
     listArtifacts.mockResolvedValue([]);
     return Promise.resolve();
   });
@@ -484,7 +485,7 @@ test("Remove on a document's row sends the delete and the row goes", async () =>
     await user.click(within(row).getByRole("button", { name: "Remove" }));
 
     await waitFor(() =>
-      expect(deleteArtifact).toHaveBeenCalledWith("artifact-design-notes", keyedAttempt)
+      expect(deleteArtifact).toHaveBeenCalledWith("artifact-design-notes", undefined, keyedAttempt)
     );
     await waitFor(() => expect(screen.queryByTestId("artifact-design-notes")).toBeNull());
     expect(screen.getByText("No artifacts yet.")).not.toBeNull();
@@ -504,7 +505,7 @@ test("a refused removal shows the server's sentence on the row", async () => {
   const { getIssueReferences, listArtifacts, view } = renderTab([notes]);
   const refusal =
     "Design notes is not untouched: it holds writing; a document is removed only while it holds nothing";
-  const deleteArtifact = spyOn(api, "deleteArtifact").mockRejectedValue(
+  const deleteArtifact = answerArtifactRemovals().mockRejectedValue(
     new ApiError(409, { code: "ARTIFACT_NOT_UNTOUCHED", error: refusal })
   );
 

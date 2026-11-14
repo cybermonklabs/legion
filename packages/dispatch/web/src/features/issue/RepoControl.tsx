@@ -1,10 +1,11 @@
-import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useId, useState } from "react";
-
-import { api, apiErrorMessage } from "../../api/client";
+import { useShownQuery } from "../../api/cache/shown-query";
+import { apiErrorMessage } from "../../api/client";
+import { repoProjectsQuery } from "../../api/queries";
 import { QueryError } from "../../components/QueryError";
 import { badgeLow, badgePrimary, textSecondaryOnSurface } from "../../theme/classes";
 import { badgeSelectBadge, badgeSelectOverlay, badgeSelectRailWrapper } from "./badge-select";
+import { reservedOpenTextWidth } from "./reserved-width";
 import { useIssueRepo } from "./useIssueRepo";
 
 /**
@@ -21,7 +22,9 @@ import { useIssueRepo } from "./useIssueRepo";
  * item. A failed read beside a resolved repository shows the same failure next to the picker. The
  * badge is hidden from assistive technology; the select's description names what it shows: the
  * repository, `, inherited or the project's default` when it is not the issue's own, or
- * `No repository`.
+ * `No repository`; the picker wears those same words as its `title`, because an `owner/name` is
+ * open text and the badge reserves the fourteen characters of `reservedOpenTextWidth` whatever
+ * it names, cutting a longer one with an ellipsis.
  */
 export function RepoControl({
   disabled = false,
@@ -37,10 +40,9 @@ export function RepoControl({
   resolvedRepo: string | null;
 }): ReactNode {
   const [wanted, setWanted] = useState(false);
-  const mappings = useQuery({
+  const mappings = useShownQuery({
+    ...repoProjectsQuery(),
     enabled: wanted || resolvedRepo === null,
-    queryKey: ["repo-projects"],
-    queryFn: () => api.listRepoProjects(),
   });
   const want = () => setWanted(true);
   const descriptionId = useId();
@@ -77,13 +79,13 @@ export function RepoControl({
     resolvedRepo === null && mappings.isError ? null : (
       <span
         className={`${badgeSelectRailWrapper} ${disabled ? "opacity-50" : ""}`}
-        title={
-          repo === null && resolvedRepo !== null ? "Inherited or the project's default" : undefined
-        }
+        // The badge cuts a repository past its reserved width, so the whole of what it names is
+        // here, in the words the select's description uses.
+        title={description}
       >
         <span
           aria-hidden="true"
-          className={`${badgeSelectBadge} font-mono ${tone.bg} ${tone.text}`}
+          className={`${badgeSelectBadge} ${reservedOpenTextWidth} font-mono ${tone.bg} ${tone.text}`}
         >
           {resolvedRepo ?? "No repository"}
         </span>

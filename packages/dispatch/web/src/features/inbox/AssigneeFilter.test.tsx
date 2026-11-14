@@ -1,8 +1,9 @@
 import { expect, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
+
+import { QueryClient, QueryClientProvider } from "../../api/cache/test-client";
 
 import { api } from "../../api/client";
 import type { DispatchUser } from "../../api/types";

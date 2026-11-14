@@ -1,7 +1,7 @@
-import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useCallback, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-
+import { useCache } from "../../api/cache/cache";
+import { useShownQuery } from "../../api/cache/shown-query";
 import { api } from "../../api/client";
 import { QueryError } from "../../components/QueryError";
 import { dangerText } from "../../theme/classes";
@@ -26,7 +26,7 @@ import { useProjectArtifact } from "./useProjectArtifact";
 export function DocumentPage(): ReactNode {
   const location = useLocation();
   const navigate = useNavigate();
-  const queryClient = useQueryClient();
+  const cache = useCache();
   const route = parseProjectPath(location.pathname, location.search);
   const documentRoute = route?.kind === "document" ? route : undefined;
   const [showDiff, setShowDiff] = useState(false);
@@ -38,7 +38,7 @@ export function DocumentPage(): ReactNode {
     }
   }, []);
   const artifact = useProjectArtifact(documentRoute);
-  const subscribers = useQuery({
+  const subscribers = useShownQuery({
     enabled: artifact.data !== undefined,
     queryKey: ["subscribers", artifact.data?.id],
     queryFn: () => {
@@ -52,6 +52,7 @@ export function DocumentPage(): ReactNode {
   const unsubscribe = useKeyedWrite({
     label: (sessionId: string) =>
       `${agentText.sessionText(sessionId, subscribers.data?.find((row) => row.session_id === sessionId)?.title)} unsubscribed from this document`,
+    unlined: "one row per session: a repeat of this unsubscribe is the same DELETE",
     write: (sessionId: string, bounds) => {
       if (artifact.data === undefined) {
         throw new Error("Document unsubscribe requires an artifact.");
@@ -60,7 +61,7 @@ export function DocumentPage(): ReactNode {
     },
     onSuccess: () => {
       if (artifact.data !== undefined) {
-        void queryClient.invalidateQueries({ queryKey: ["subscribers", artifact.data.id] });
+        void cache.invalidate({ queryKey: ["subscribers", artifact.data.id] });
       }
     },
   });

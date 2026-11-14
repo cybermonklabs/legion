@@ -1,5 +1,5 @@
-import { useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
+import { useShownQuery } from "../../api/cache/shown-query";
 import { priorityHistoryQuery } from "../../api/queries";
 import type { PriorityAct } from "../../api/types";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
@@ -57,7 +57,7 @@ function actWords(act: PriorityAct): string {
  *  stated it and when, under the day it happened on. It is mounted only while Everything is the
  *  chosen state, so no other state reads the history. */
 function PriorityHistory({ id }: { id: string }): ReactNode {
-  const history = useQuery(priorityHistoryQuery(id));
+  const history = useShownQuery(priorityHistoryQuery(id));
   if (history.isPending) return <LoadingSkeleton label="Loading what happened" />;
   if (history.isError)
     return (

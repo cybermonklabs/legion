@@ -1,6 +1,6 @@
-import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useState } from "react";
-
+import { useCache } from "../../api/cache/cache";
+import { useShownQuery } from "../../api/cache/shown-query";
 import { api, type WriteBounds } from "../../api/client";
 import type { Ask, AskFollower, IssueDetails, Subscriber } from "../../api/types";
 import { DisclosureToggle } from "../../components/DisclosureToggle";
@@ -228,7 +228,7 @@ export function AskRecipients({
   routeHolder,
   routeStatus,
 }: AskRecipientsProps): ReactNode {
-  const queryClient = useQueryClient();
+  const cache = useCache();
   const subscription = ownerSubscription(owner);
   // The subscribers endpoints need the `person` scope, which a signed-in browser holds; the card
   // only asks once the sign-in read says the principal is a user, so nothing without the scope
@@ -239,7 +239,7 @@ export function AskRecipients({
   // fetch is two Envoy listener round trips (interests + sessions), so it is held fresh for a
   // while rather than refetched on every mount and focus; the event feed's invalidation still
   // refreshes it.
-  const subscribersQuery = useQuery({
+  const subscribersQuery = useShownQuery({
     enabled: subscription !== undefined && human,
     queryKey: ["subscribers", subscription?.id],
     queryFn: () => {
@@ -265,10 +265,13 @@ export function AskRecipients({
   const counted = !subscribersQuery.isError;
   const [confirming, setConfirming] = useState<Confirming | undefined>(undefined);
   const [open, setOpen] = useState(false);
+  // A follower row and a subscriber row are each one session's own: a repeat of either is the
+  // same DELETE, and the ask's line is for the writes of the ask itself.
   const unfollow = useKeyedWrite({
     write: (sessionId: string, bounds) => removeFollower(askId, sessionId, bounds),
     label: (sessionId) => `${text.sessionText(sessionId, undefined)} taken off this ask`,
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["ask-thread", askId] }),
+    unlined: "one row per session: a repeat of this unfollow is the same DELETE",
+    onSuccess: () => cache.invalidate({ queryKey: ["ask-thread", askId] }),
   });
   const unsubscribe = useKeyedWrite({
     write: (sessionId: string, bounds) => {
@@ -277,9 +280,10 @@ export function AskRecipients({
       }
       return subscription.remove(sessionId, bounds);
     },
+    unlined: "one row per session: a repeat of this unsubscribe is the same DELETE",
     label: (sessionId) =>
       `${text.sessionText(sessionId, subscribers.find((row) => row.session_id === sessionId)?.title)} unsubscribed from ${subscription?.label ?? "this ask"}`,
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["subscribers", subscription?.id] }),
+    onSuccess: () => cache.invalidate({ queryKey: ["subscribers", subscription?.id] }),
   });
 
   if (

@@ -1,5 +1,5 @@
-import type { UseQueryResult } from "@tanstack/react-query";
 import type { ReactNode } from "react";
+import type { UseQueryResult } from "../../api/cache/keys";
 
 import { apiErrorMessage, type WriteBounds } from "../../api/client";
 import { QueryError } from "../../components/QueryError";
@@ -82,6 +82,7 @@ export function RevocableList<Row>({
     label: (row: Row) => `${heading}: revoke ${rowKey(row)}`,
     onSettled: () => submitGuard.release(),
     onSuccess: onRevoked,
+    unlined: "a revoke ends the row it names; no second write of that row follows",
     write: revoke,
   });
   const press = (row: Row) => {

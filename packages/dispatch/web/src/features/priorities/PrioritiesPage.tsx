@@ -1,5 +1,5 @@
-import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useMemo } from "react";
+import { useShownQuery } from "../../api/cache/shown-query";
 import { prioritiesQuery } from "../../api/queries";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { QueryError } from "../../components/QueryError";
@@ -55,7 +55,7 @@ function countsLine(by: Readonly<Record<string, number>> | null): string {
  * issue listing the server narrows for it, under its own prefix in the address.
  */
 export function PrioritiesPage(): ReactNode {
-  const priorities = useQuery(prioritiesQuery());
+  const priorities = useShownQuery(prioritiesQuery());
   // What the page draws of one read, built once that read answers rather than once a render:
   // the titles are what the parked list's columns are declared over, so a map built afresh
   // would rebuild that table's columns on every refetch of anything.

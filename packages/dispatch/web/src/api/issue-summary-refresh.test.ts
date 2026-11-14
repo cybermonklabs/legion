@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, expect, jest, test } from "bun:test";
-import { QueryClient, QueryObserver } from "@tanstack/react-query";
+import { MIN_REFETCH_INTERVAL_MS, refreshQueries, trackQueryFetches } from "./cache/query-refresh";
+import { cacheOf, QueryClient, QueryObserver } from "./cache/test-client";
 
 import { ApiError } from "./client";
 import { eventRefreshTargets } from "./event-refresh";
-import { MIN_REFETCH_INTERVAL_MS, refreshQueries, trackQueryFetches } from "./query-refresh";
 import type { DispatchEvent } from "./types";
 
 // The scheduler runs on the clock - it holds a second fetch of one query to
@@ -44,7 +44,7 @@ function issueEvent(type: "issue.created" | "issue.updated", key: string): Dispa
 
 test("a key whose summary answered 404 is not asked again on issue.updated, and is on issue.created", async () => {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  trackQueryFetches(queryClient);
+  trackQueryFetches(cacheOf(queryClient));
   let fetches = 0;
   // The summary read of a key-shaped word a body writes bare that names no issue: it answers
   // 404, and something renders it, so a refresh that reaches it would fetch it again.
@@ -65,12 +65,18 @@ test("a key whose summary answered 404 is not asked again on issue.updated, and 
     expect(observer.getCurrentResult().error).toBeInstanceOf(ApiError);
 
     // An update of an issue cannot make a key name one, so the 404 stands and nothing is asked.
-    refreshQueries(queryClient, eventRefreshTargets(issueEvent("issue.updated", "CORE-404")));
+    refreshQueries(
+      cacheOf(queryClient),
+      eventRefreshTargets(issueEvent("issue.updated", "CORE-404"))
+    );
     await advance(MIN_REFETCH_INTERVAL_MS + 100);
     expect(fetches).toBe(1);
 
     // A new issue can, so that event asks again whatever the last answer was.
-    refreshQueries(queryClient, eventRefreshTargets(issueEvent("issue.created", "CORE-404")));
+    refreshQueries(
+      cacheOf(queryClient),
+      eventRefreshTargets(issueEvent("issue.created", "CORE-404"))
+    );
     await advance(MIN_REFETCH_INTERVAL_MS + 100);
     expect(fetches).toBe(2);
   } finally {

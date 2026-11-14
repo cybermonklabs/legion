@@ -1,8 +1,9 @@
 import { MAX_ISSUE_ADVANCES } from "@legion/contracts";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, type ReactNode, useId, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 
+import { useCache } from "../../api/cache/cache";
+import { useShownQuery } from "../../api/cache/shown-query";
 import { apiErrorMessage, issuePatchRequest } from "../../api/client";
 import { prioritiesQuery } from "../../api/queries";
 import type { Issue, PriorityRow } from "../../api/types";
@@ -66,8 +67,8 @@ export function IssuePriorityLine({
   const [adding, setAdding] = useState(false);
   const [picked, setPicked] = useState("");
   const selectId = useId();
-  const queryClient = useQueryClient();
-  const priorities = useQuery({
+  const cache = useCache();
+  const priorities = useShownQuery({
     ...prioritiesQuery(),
     enabled: adding || advances.length > 0,
   });
@@ -88,8 +89,8 @@ export function IssuePriorityLine({
       // its own, and a refused write leaves this issue's read stale, so the next press must carry
       // the revision it holds now. The priorities body and the rail's two counts move with the
       // relation as well.
-      void queryClient.invalidateQueries({ queryKey: ["issue"] });
-      void queryClient.invalidateQueries({ queryKey: ["priorities"] });
+      void cache.invalidate({ queryKey: ["issue"] });
+      void cache.invalidate({ queryKey: ["priorities"] });
     },
   });
   const writeOwn = (ids: string[]) =>

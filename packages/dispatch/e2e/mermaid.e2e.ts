@@ -337,7 +337,7 @@ test("a mermaid source a reader opened is open again when the comment is edited,
     const source = card.getByText("graph TD");
 
     // The edit reaches the page over the event feed, whose refetch the page holds to one a
-    // second (`MIN_REFETCH_INTERVAL_MS`, `web/src/api/query-refresh.ts`), so the new lead in the
+    // second (`MIN_REFETCH_INTERVAL_MS`, `web/src/api/cache/query-refresh.ts`), so the new lead in the
     // card is the repaint. The diagram's source is byte for byte the one the reader opened, and
     // it is theirs again without another click.
     await editComment(drawn.id, { body: flowchart("Reading this, reworded:", "Opened", "Kept") });

@@ -1,8 +1,8 @@
-import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useCallback, useMemo, useState } from "react";
-
+import { useShownQuery } from "../../api/cache/shown-query";
 import { projectIssuesQuery } from "../../api/queries";
 import { MultiSelect } from "../../components/MultiSelect";
+import { TruncatedText } from "../../components/TruncatedText";
 import {
   secondaryButtonBorder,
   secondaryButtonDisabledText,
@@ -11,6 +11,7 @@ import {
   surfaceMutedStrongBg,
   textSecondaryOnSurface,
 } from "../../theme/classes";
+import { reservedOpenTextWidth } from "./reserved-width";
 
 const maxLabelLength = 40;
 const maxLabels = 20;
@@ -64,7 +65,9 @@ export interface IssueLabelsProps {
 }
 
 /** The issue header's labels: the current chips and the shared `MultiSelect`, which stages a
- *  draft while open and saves the final draft once, when it closes. */
+ *  draft while open and saves the final draft once, when it closes. The trigger reserves one
+ *  box (`reservedOpenTextWidth`) for each of the three words it wears, so neither a pick nor
+ *  the save it starts moves what sits beside it. */
 export function IssueLabels({
   disabled,
   labels,
@@ -78,7 +81,7 @@ export function IssueLabels({
   const [inputError, setInputError] = useState<string | null>(null);
   // The same list the project's issues table and IssueBoard load for this project, so opening
   // the popover on a page that already has it fetches nothing.
-  const issues = useQuery({ ...projectIssuesQuery(project, []), enabled: open });
+  const issues = useShownQuery({ ...projectIssuesQuery(project, []), enabled: open });
   const options = useMemo(
     () =>
       uniqueLabels([
@@ -171,9 +174,20 @@ export function IssueLabels({
           searchLabel="Search or create label"
           selected={draft}
           triggerAriaLabel="Edit labels"
-          triggerClassName={`min-h-11 shrink-0 rounded-lg border px-3 py-1 text-xs font-medium whitespace-nowrap sm:min-h-7 sm:px-2 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`}
+          triggerClassName={`inline-flex min-h-11 shrink-0 items-center rounded-lg border px-3 py-1 text-xs font-medium whitespace-nowrap sm:min-h-7 sm:px-0 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`}
         >
-          {saving ? "Saving labels…" : displayLabels.length === 0 ? "Labels" : "+"}
+          {/* The trigger reserves one box for every word it wears — `Labels`, `+` and
+              `Saving labels…` — so picking a label moves nothing beside it, and the box is on
+              this text rather than on the button, whose padding changes with the width. From
+              `sm`, where that box is reserved, the word sits in its middle and the button draws
+              no padding of its own: fourteen characters hold the widest word with room on both
+              sides of it, so padding outside them only widened the details rail, and with
+              priorities' `+` beside them it ran a bare issue's rail past its width at 1920 px
+              (e2e/issue.e2e.ts, "the details rail fades its trailing edge only while it has
+              somewhere to scroll"). */}
+          <TruncatedText className={`${reservedOpenTextWidth} sm:text-center`}>
+            {saving ? "Saving labels…" : displayLabels.length === 0 ? "Labels" : "+"}
+          </TruncatedText>
         </MultiSelect>
       </div>
       {/* A refused save shows in the shell's pending-writes indicator, with every other write's

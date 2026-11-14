@@ -1,8 +1,9 @@
 import { afterEach, beforeAll, beforeEach, expect, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
+
+import { QueryClient, QueryClientProvider } from "../../api/cache/test-client";
 
 import { ApiError, api } from "../../api/client";
 import type { AskRead, ReferenceQuestions } from "../../api/types";

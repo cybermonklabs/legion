@@ -16,7 +16,7 @@ import {
   type WriteRequest,
 } from "../../api/client";
 import { onReachable, type Reachable, routeOf } from "../../api/reachability";
-import { keyMintedAt } from "../../lib/send-key";
+import { keyMintedAt, newSendKey } from "../../lib/send-key";
 
 /**
  * How long a write may go unanswered before the page says so: past it the write is late, still
@@ -162,6 +162,45 @@ export function retriesUnderItsKey(refusal: Error | undefined): boolean {
   return refusal instanceof SendStoppedError && !(refusal instanceof SendExpiredError);
 }
 
+/** A press that ended without Dispatch's verdict - the reader stopped it - and the value it was
+ *  made with: the next press of that same value is that press made again, under its key. */
+export interface StoppedPress<V> {
+  readonly key: string;
+  readonly value: V;
+}
+
+/** What the press of `value` under `key` that ended with `error` leaves for the next press of a
+ *  surface: itself, where the Retry of that refusal goes under the write's own key
+ *  (`retriesUnderItsKey`), and nothing where it does not. */
+export function stoppedPress<V>(
+  key: string,
+  value: V,
+  error: unknown
+): StoppedPress<V> | undefined {
+  return retriesUnderItsKey(error instanceof Error ? error : undefined)
+    ? { key, value }
+    : undefined;
+}
+
+/** The key a press of `value` goes under: `stopped`'s own where this press makes the same value
+ *  again - one value, or two that serialise alike (a form built afresh at each submit) - so
+ *  Dispatch answers it with what the stopped press did rather than taking the write twice, and
+ *  a key of its own otherwise. */
+export function pressKey<V>(stopped: StoppedPress<V> | undefined, value: V): string {
+  return stopped !== undefined && sameValue(stopped.value, value) ? stopped.key : newSendKey();
+}
+
+/** Whether `a` and `b` are the same value: one value, or two that serialise alike; values that
+ *  do not serialise are only themselves. */
+function sameValue(a: unknown, b: unknown): boolean {
+  if (Object.is(a, b)) return true;
+  try {
+    return JSON.stringify(a) === JSON.stringify(b);
+  } catch {
+    return false;
+  }
+}
+
 /** What ended one attempt without Dispatch's verdict, and so makes the write again under its key:
  *  how long to wait first, and whether the page learning Dispatch can be reached again cuts that
  *  wait short. `undefined` for an answer that is Dispatch's verdict, or an error of the page's
@@ -241,11 +280,12 @@ function pause(
  *  this loop cannot (`Writes`), and is required so that every caller says which it means:
  *  `null` is the answer that the key has carried nothing, not one reached by leaving it out.
  *  `planned` is the request the write was kept as before any attempt of it went out, which
- *  every attempt must make; `signal` stops the trying; `sent` is told each attempt's request as
- *  it goes out; `uploading` is told how much of an upload's body each attempt has sent;
- *  `failed` is told each attempt that ended without Dispatch's verdict; `unauthorized` is told
- *  each attempt Dispatch answers `401`, and answers whether the page's sign-in check, read
- *  again, still names the person who pressed it. */
+ *  every attempt must make; `signal` stops the trying, and each attempt is handed it
+ *  (`WriteBounds.signal`); `sent` is told each attempt's request as it goes out; `uploading` is
+ *  told how much of an upload's body each attempt has sent; `failed` is told each attempt that
+ *  ended without Dispatch's verdict; `unauthorized` is told each attempt Dispatch answers `401`,
+ *  and answers whether the page's sign-in check, read again, still names the person who pressed
+ *  it. */
 export interface KeyedWriteOptions {
   readonly carried: WriteMethod | null;
   readonly failed?: () => void;
@@ -351,6 +391,7 @@ export async function writeUnderKey<T>(
           login,
           progress: uploading,
           sent: told,
+          signal,
         });
       } catch (error) {
         if (isKeyCommitted(error) || error instanceof AnswerNotKeptError) return null;

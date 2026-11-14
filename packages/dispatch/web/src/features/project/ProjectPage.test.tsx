@@ -1,11 +1,11 @@
 import { expect, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor, waitForElementToBeRemoved, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http } from "msw";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { answerRequests } from "../../__tests__/network";
+import { QueryClient, QueryClientProvider } from "../../api/cache/test-client";
 import { ApiError, api } from "../../api/client";
 import type { ArchitectureSource, InboxRow } from "../../api/types";
 import { withWaitingOnPerson } from "../inbox/inbox-fixture";

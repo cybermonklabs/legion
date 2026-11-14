@@ -14,7 +14,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 
 import { expect } from "@playwright/test";
 
-import { QUERY_RETRY_DELAY_MS } from "../web/src/api/query-client";
+import { QUERY_RETRY_DELAY_MS } from "../web/src/api/cache/query-client";
 import { createIssue, createProject } from "./api";
 import { missEntryChunk, pageAssetPath, tabReloads } from "./shell";
 import { stubbed } from "./stub/stub-test";
@@ -61,7 +61,7 @@ test("a page stops on Couldn't reach Dispatch. while whoami answers EVENT_HEAD_R
 
   await page.clock.install();
   await page.goto("/");
-  // The two retries this code gets (`queryRetry`, `web/src/api/query-client.ts`) wait
+  // The two retries this code gets (`queryRetry`, `web/src/api/cache/query-client.ts`) wait
   // `QUERY_RETRY_DELAY_MS` each: page timers, fired here rather than waited out.
   for (let ask = 1; ask <= 3; ask += 1) {
     await expect.poll(() => refused).toBeGreaterThanOrEqual(ask);

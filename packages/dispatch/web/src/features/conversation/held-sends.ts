@@ -1,28 +1,23 @@
 import { DELIVERY_CAPABILITIES } from "@legion/contracts";
 import { ASK_URGENCIES } from "@legion/contracts/dispatch-tools";
-import {
-  hashKey,
-  type MutationKey,
-  partialMatchKey,
-  type QueryClient,
-  useQueryClient,
-} from "@tanstack/react-query";
 import { type Dispatch, type SetStateAction, useEffect, useRef, useState } from "react";
+import { type Cache, useCache, useWriteSelection } from "../../api/cache/cache";
+import { hashKey, type MutationKey, partialMatchKey } from "../../api/cache/keys";
+import {
+  defineWriteKind,
+  ofKind,
+  type Write,
+  type WriteLine,
+  type WriteOutcome,
+  type Writes,
+} from "../../api/cache/write-store";
 
 import { api } from "../../api/client";
-import { agentMessagesQuery } from "../../api/queries";
+import { agentMessagesQuery, commentsQueryKey } from "../../api/queries";
 import type { Actor } from "../../api/types";
 import { pastDeadlineKey } from "../../hooks/useSending";
 import { SEND_DEADLINE_MS } from "../writes/keyed-write";
 import { type Shape, shape } from "../writes/write-storage";
-import {
-  defineWriteKind,
-  ofKind,
-  useWriteSelection,
-  type Write,
-  type Writes,
-  writesOf,
-} from "../writes/write-store";
 import type { ReplyTarget } from "./composer-model";
 import {
   type CarriedBlockIds,
@@ -96,39 +91,40 @@ export function stoppable(held: HeldSend | undefined): boolean {
   return held?.status === "late" && !held.stopping;
 }
 
-/** What became of a held send: it landed, the server refused it, or the reader dropped its
- *  refusal. */
+/** What became of a held send: it landed, the server refused it, the reader discarded it, or the
+ *  store let it go before Dispatch answered - a sign-out, another login taking over
+ *  (`WriteOutcome`). */
 export interface HeldSendOutcome {
-  readonly kind: "discarded" | "landed" | "refused";
+  readonly kind: WriteOutcome["kind"];
   readonly send: HeldSend;
 }
 
 /** What a send that landed wrote, refreshed whether or not its composer is still on screen: the
  *  caches it is named by its own request. */
-function refreshAfter(client: QueryClient, { anchor, owner }: SentRequest): void {
+function refreshAfter(cache: Cache, { anchor, owner }: SentRequest): void {
   if (owner.kind === "session") {
-    void client.invalidateQueries({ queryKey: agentMessagesQuery(owner.sessionId).queryKey });
+    void cache.invalidate({ queryKey: agentMessagesQuery(owner.sessionId).queryKey });
     return;
   }
-  void client.invalidateQueries({
+  void cache.invalidate({
     queryKey:
       owner.kind === "issue"
-        ? ["comments", owner.issueKey]
-        : ["artifact", owner.artifactId, "comments"],
+        ? commentsQueryKey({ issue: owner.issueKey })
+        : commentsQueryKey({ artifact: owner.artifactId }),
   });
-  void client.invalidateQueries({ queryKey: ["inbox"] });
+  void cache.invalidate({ queryKey: ["inbox"] });
   if (anchor !== undefined) {
-    void client.invalidateQueries({ queryKey: ["artifact", anchor.artifact, "blocks"] });
+    void cache.invalidate({ queryKey: ["artifact", anchor.artifact, "blocks"] });
   }
   if (owner.kind === "issue") {
-    void client.invalidateQueries({ queryKey: ["events", owner.issueKey] });
-    void client.invalidateQueries({ queryKey: ["issue", owner.issueKey] });
+    void cache.invalidate({ queryKey: ["events", owner.issueKey] });
+    void cache.invalidate({ queryKey: ["issue", owner.issueKey] });
     // The Conversation lists the issue's messages itself, so a message the reader just wrote is
     // a new card in that list; a comment is one already, through the issue's comments above.
-    void client.invalidateQueries({ queryKey: ["issue-messages", owner.issueKey] });
+    void cache.invalidate({ queryKey: ["issue-messages", owner.issueKey] });
   } else {
-    void client.invalidateQueries({ queryKey: ["artifact", owner.artifactId] });
-    void client.invalidateQueries({ queryKey: ["project", owner.project, "artifacts"] });
+    void cache.invalidate({ queryKey: ["artifact", owner.artifactId] });
+    void cache.invalidate({ queryKey: ["project", owner.project, "artifacts"] });
   }
 }
 
@@ -250,18 +246,6 @@ function sendName(mutationKey: MutationKey): readonly string[] {
   return mutationKey.map((part) => (typeof part === "string" ? part : JSON.stringify(part)));
 }
 
-/** Holds `mutationKey` in TanStack's mutation cache while `answer` is out, so a host's hold on the
- *  name (`useSending`) counts a send from the task that starts it on, whether or not its composer
- *  is still mounted. Run whether or not the browser says it is online (`networkMode: "always"`):
- *  a mutation TanStack paused offline would hold nothing. */
-function hold(client: QueryClient, mutationKey: MutationKey, answer: () => Promise<unknown>): void {
-  client
-    .getMutationCache()
-    .build(client, { mutationFn: answer, mutationKey, networkMode: "always" })
-    .execute(undefined)
-    .catch(() => {});
-}
-
 /** A kept edit as the send it belongs to saves it again: through the default save - the host
  *  that gave the page its save is gone with it - carrying the ids its press carried, so every
  *  attempt under the send's own key, however many reloads it outlives, sends the very body
@@ -278,9 +262,9 @@ function restoredEdit(edit: KeptEdit): NonNullable<SentRequest["edit"]> {
  * name, its request and its draft. A send to one session is ordered on that session
  * (`session:<id>`), so two presses reach it in press order, each once. A send that lands
  * refreshes what it wrote whether or not a composer is mounted (`refreshAfter`). Each send also
- * holds its name in TanStack's mutation cache - under `pastDeadlineKey` once past its deadline -
- * so a host's hold on the name (`useSending`) counts it; its `untilDeadline` hold lets go at the
- * deadline.
+ * holds its name in the page's mutations (`Cache.holdMutation`) - under `pastDeadlineKey` once
+ * past its deadline - so a host's hold on the name (`useSending`) counts it; its `untilDeadline`
+ * hold lets go at the deadline.
  */
 export const composerSend = defineWriteKind<ComposerSend, KeptComposerSend>({
   keep: ({ draft, mutationKey, request }) => {
@@ -295,7 +279,7 @@ export const composerSend = defineWriteKind<ComposerSend, KeptComposerSend>({
     };
   },
   kept: keptComposerSend,
-  landed: (client, write) => refreshAfter(client, write.detail.request),
+  landed: (cache, write) => refreshAfter(cache, write.detail.request),
   name: "composer",
   restore: ({ draft, mutationKey, request: { edit, ...request } }) => ({
     draft,
@@ -303,19 +287,19 @@ export const composerSend = defineWriteKind<ComposerSend, KeptComposerSend>({
     request: { ...request, edit: edit === null ? undefined : restoredEdit(edit) },
   }),
   resume: ({ request }, wire) =>
-    wire === null ? sendAttempt(request) : (bounds) => api.send(wire, bounds),
-  started: (client, write, settled, late) => {
+    wire === null ? sendAttempt(request) : (bounds) => api.resendBody(wire, bounds),
+  started: (cache, write, settled, late) => {
     const name = write.detail.mutationKey;
     if (late) {
-      hold(client, pastDeadlineKey(name), () => settled);
+      cache.holdMutation(pastDeadlineKey(name), () => settled);
       return;
     }
     // Past its deadline the request is not refused: it goes on under `pastDeadlineKey`, held
     // before the name lets go, so a hold on the name never drops between them.
-    hold(client, name, () => {
+    cache.holdMutation(name, () => {
       const { promise, reject, resolve } = Promise.withResolvers<unknown>();
       const deadline = setTimeout(() => {
-        hold(client, pastDeadlineKey(name), () => settled);
+        cache.holdMutation(pastDeadlineKey(name), () => settled);
         resolve(undefined);
       }, SEND_DEADLINE_MS);
       settled.then(resolve, reject).finally(() => clearTimeout(deadline));
@@ -379,7 +363,7 @@ function heldUnder(rows: readonly Write[], mutationKey: MutationKey): HeldSend |
 
 /**
  * The app's held sends, as its composers read and make them, over the one write store
- * (`writesOf`): one send per composer's name, which a composer that mounts under that name shows,
+ * (`Cache.writes`): one send per composer's name, which a composer that mounts under that name shows,
  * out or refused, whatever unmounted the one that made it.
  */
 export class HeldSends {
@@ -416,30 +400,34 @@ export class HeldSends {
   /** Sends `request` under `mutationKey` and holds it until it lands - unless a send under that
    *  name is out already, which refuses this one: a composer holds one draft. A refused send's
    *  entry gives way to the new one, its Retry, which is no Discard (`Writes.supersede`): a
-   *  margin compose's mark stays in the document for it. */
+   *  margin compose's mark stays in the document for it. An edit writes the comment it saves, so
+   *  it stands in that row's line (`comment:<id>`) with the actions on it; a send to one session
+   *  stands in that session's (`session:<id>`); and a new comment, ask or message names no row
+   *  until Dispatch makes it. */
   send(mutationKey: MutationKey, request: SentRequest): boolean {
     const held = this.get(mutationKey);
     if (held !== undefined && held.status !== "refused") return false;
     if (held !== undefined) this.#writes.supersede(held.id);
-    const { owner } = request;
-    this.#writes
-      .run({
-        detail: {
-          draft: { ask: request.ask, draft: request.draft },
-          mutationKey: sendName(mutationKey),
-          request,
-        },
-        key: request.sendKey,
-        kind: composerSend,
-        label: "Message",
-        presentation: "composer",
-        target:
-          owner.kind === "session" && request.edit === undefined
-            ? `session:${owner.sessionId}`
-            : undefined,
-        write: sendAttempt(request),
-      })
-      .catch(() => {});
+    const { edit, owner } = request;
+    const press = {
+      detail: {
+        draft: { ask: request.ask, draft: request.draft },
+        mutationKey: sendName(mutationKey),
+        request,
+      },
+      key: request.sendKey,
+      kind: composerSend,
+      label: "Message",
+      presentation: "composer",
+      write: sendAttempt(request),
+    } as const;
+    const line: WriteLine =
+      edit !== undefined
+        ? { target: `comment:${edit.id}` }
+        : owner.kind === "session"
+          ? { target: `session:${owner.sessionId}` }
+          : { unlined: "a new comment, ask or message names no row until Dispatch makes it" };
+    this.#writes.run({ ...press, ...(line satisfies WriteLine) }).catch(() => {});
     return true;
   }
 
@@ -504,8 +492,8 @@ export class HeldSends {
 const facades = new WeakMap<Writes, HeldSends>();
 
 /** The held sends that live with `client`: its write store's composer sends. */
-export function heldSends(client: QueryClient): HeldSends {
-  const writes = writesOf(client);
+export function heldSends(cache: Cache): HeldSends {
+  const writes = cache.writes;
   let facade = facades.get(writes);
   if (facade === undefined) {
     facade = new HeldSends(writes);
@@ -515,7 +503,7 @@ export function heldSends(client: QueryClient): HeldSends {
 }
 
 export function useHeldSends(): HeldSends {
-  return heldSends(useQueryClient());
+  return heldSends(useCache());
 }
 
 /** The held send under `mutationKey`, re-rendering when it changes. */

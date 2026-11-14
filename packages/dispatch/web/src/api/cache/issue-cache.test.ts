@@ -1,11 +1,12 @@
 import { expect, spyOn, test } from "bun:test";
-import { QueryClient, QueryObserver } from "@tanstack/react-query";
+import { QueryClient } from "@tanstack/react-query";
 
-import { api } from "../api/client";
-import { mergeIssue } from "../api/issue-cache";
-import { issueQuery } from "../api/queries";
-import type { IssueDetails } from "../api/types";
-import { issue as fixture } from "../features/margin/margin-fixture";
+import { issue as fixture } from "../../features/margin/margin-fixture";
+import { api } from "../client";
+import { issueQuery } from "../queries";
+import type { IssueDetails } from "../types";
+import { mergeIssue } from "./issue-cache";
+import { answeredByDispatch, cacheOf, QueryObserver } from "./test-client";
 
 function cachedAfterPatch(before: IssueDetails, patch: Partial<IssueDetails>): IssueDetails {
   const queryClient = new QueryClient();
@@ -17,7 +18,7 @@ function cachedAfterPatch(before: IssueDetails, patch: Partial<IssueDetails>): I
     route_status_reason: _reason,
     ...response
   } = { ...before, ...patch };
-  mergeIssue(queryClient, response);
+  mergeIssue(cacheOf(queryClient), answeredByDispatch(response));
   const cached = queryClient.getQueryData<IssueDetails>(["issue", before.key]);
   if (cached === undefined) throw new Error("the merge dropped the cached issue");
   return cached;
@@ -36,6 +37,22 @@ test("a PATCH that leaves the route alone keeps its status until the next read",
   const cached = cachedAfterPatch(unheld, { title: "Renamed" });
   expect(cached.title).toBe("Renamed");
   expect(cached.route_status).toBe("no_holder");
+});
+
+// Round eight's Minor of dispatch://INFRA-299's pull request: TypeScript types an
+// `Object.assign` onto Dispatch's answer as an answer, though the copy carries none of it. The
+// cache write checks the answer as it runs and refuses the copy, so the screen's title never
+// enters the cache.
+test("a copy of Dispatch's answer with a field the screen set is refused, and the cache keeps Dispatch's issue", () => {
+  const queryClient = new QueryClient();
+  const key = ["issue", unheld.key];
+  queryClient.setQueryData(key, unheld);
+  const answer = answeredByDispatch({ ...unheld, title: "Dispatch's title" });
+  const copy = Object.assign({}, answer, { title: "The screen's title" });
+  expect(() => cacheOf(queryClient).setDispatched(key, copy)).toThrow(
+    "a cache write takes Dispatch's answer (Answered), and this is none"
+  );
+  expect(queryClient.getQueryData<IssueDetails>(key)).toBe(unheld);
 });
 
 const refilling: IssueDetails = {
@@ -77,11 +94,14 @@ test("a slow GET answered after a PATCH leaves the PATCH's answer in place", asy
 
     const refetch = observer.refetch();
     const { artifacts: _artifacts, children: _children, open_asks: _asks, ...issue } = read;
-    mergeIssue(queryClient, {
-      ...issue,
-      status: "done",
-      updated_at: "2026-10-01T00:00:00.123456Z",
-    });
+    mergeIssue(
+      cacheOf(queryClient),
+      answeredByDispatch({
+        ...issue,
+        status: "done",
+        updated_at: "2026-10-01T00:00:00.123456Z",
+      })
+    );
     slow.resolve(read);
     await refetch;
     expect(cached()).toMatchObject({ status: "done", updated_at: "2026-10-01T00:00:00.123456Z" });

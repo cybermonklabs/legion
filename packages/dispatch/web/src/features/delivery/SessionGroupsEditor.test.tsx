@@ -1,11 +1,11 @@
 import { expect, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { seedDeliveryReads } from "../../__tests__/live-socket-harness";
+import { QueryClient, QueryClientProvider } from "../../api/cache/test-client";
 import { ApiError, api } from "../../api/client";
 import type { Agent, DeliverySessionGroup } from "../../api/types";
 import { KeymapProvider } from "../shell/KeymapProvider";

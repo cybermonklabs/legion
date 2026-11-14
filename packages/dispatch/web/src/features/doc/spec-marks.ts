@@ -1,7 +1,7 @@
 import type { BlockMark } from "@legion/proof-editor";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
-
+import { useCache } from "../../api/cache/cache";
+import { useShownQuery } from "../../api/cache/shown-query";
 import { api, documentReadRequest } from "../../api/client";
 import type { Artifact, ArtifactBlock, GraphReferences, IssueDecisions } from "../../api/types";
 import { changedSinceReadMark, staleBlockMark } from "../../theme/classes";
@@ -127,10 +127,10 @@ export function useSpecMarks({
   /** The version the page shows: the spec's latest. */
   shownVersion: number | undefined;
 }): { changed: ChangedSinceRead | undefined; marks: readonly BlockMark[] } {
-  const queryClient = useQueryClient();
-  const decisions = useQuery(issueDecisionsQuery(issueKey, enabled));
+  const cache = useCache();
+  const decisions = useShownQuery(issueDecisionsQuery(issueKey, enabled));
   const readKey = ["document-read", artifact.id] as const;
-  const read = useQuery({
+  const read = useShownQuery({
     enabled,
     queryFn: () => api.getDocumentRead(artifact.id),
     queryKey: readKey,
@@ -144,12 +144,12 @@ export function useSpecMarks({
   }
   const readVersion = readAtOpen?.version ?? null;
   const specReference = `dispatch://${issueKey}/spec`;
-  const parts = useQuery({
+  const parts = useShownQuery({
     enabled: enabled && readVersion !== null,
     queryFn: () => api.getReferences(specReference, { kind: "part_of" }),
     queryKey: ["references", "to", specReference, "part_of"],
   });
-  const blocks = useQuery({
+  const blocks = useShownQuery({
     enabled: enabled && readVersion !== null,
     queryFn: () => api.getArtifactBlocks(artifact.id),
     queryKey: ["artifact", artifact.id, "blocks"],
@@ -174,8 +174,8 @@ export function useSpecMarks({
       enabled && readAtOpen !== undefined && shownVersion !== undefined
         ? { key: `${artifact.id}@${shownVersion}`, value: shownVersion }
         : undefined,
-    onSuccess: (result) => queryClient.setQueryData(readKey, result),
-    request: (version) => documentReadRequest(artifact.id, version),
+    onSuccess: (result) => cache.setDispatched(readKey, result),
+    request: (version: number) => documentReadRequest(artifact.id, version),
     shouldSend: true,
     target: `read:document:${artifact.id}`,
   });

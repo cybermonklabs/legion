@@ -1,7 +1,6 @@
-import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-
+import { useShownQuery } from "../../api/cache/shown-query";
 import { issueQuery } from "../../api/queries";
 import type {
   ArchitectureComponentRead,
@@ -315,7 +314,7 @@ function IssueChildren({
   rowSearch: (id: string) => string;
   tree: ArchitectureTree;
 }): ReactNode {
-  const detail = useQuery(issueQuery(parent));
+  const detail = useShownQuery(issueQuery(parent));
   if (detail.isPending) {
     return <p className={`px-3 pb-2 text-xs ${textMutedOnSurface}`}>Loading children…</p>;
   }

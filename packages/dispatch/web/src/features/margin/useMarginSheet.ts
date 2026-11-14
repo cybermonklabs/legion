@@ -1,10 +1,10 @@
 import { itemFromSearch } from "@legion/contracts";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "react-router-dom";
-
+import { useCache } from "../../api/cache/cache";
+import { primarySpec } from "../../api/cache/issue-cache";
+import { useShownQuery } from "../../api/cache/shown-query";
 import type { WriteBounds } from "../../api/client";
-import { primarySpec } from "../../api/issue-cache";
 import { issueQuery, whoAmIQuery } from "../../api/queries";
 import type { Ask } from "../../api/types";
 import { useSending } from "../../hooks/useSending";
@@ -91,7 +91,7 @@ export function useMarginSheet(): MarginSheetModel {
     shownCompose,
   } = useMargin();
   const store = useHeldSends();
-  const queryClient = useQueryClient();
+  const cache = useCache();
   const { key: locationKey, pathname, search } = useLocation();
   const issueRoute = parseIssuePath(pathname, search);
   const projectRoute = parseProjectPath(pathname, search);
@@ -149,8 +149,8 @@ export function useMarginSheet(): MarginSheetModel {
     if (sheetThreadKey !== undefined) store.discard(marginReplySendKey(sheetThreadKey));
   }, [sheetReplySendingNow, sheetThreadKey, store]);
   const marginRef = useRef<HTMLElement>(null);
-  const issue = useQuery({ ...issueQuery(issueKey), enabled: issueKey !== undefined });
-  const viewer = useQuery(whoAmIQuery());
+  const issue = useShownQuery({ ...issueQuery(issueKey), enabled: issueKey !== undefined });
+  const viewer = useShownQuery(whoAmIQuery());
   const visibleArtifact =
     documentRoute === undefined
       ? routeArtifactSlug === undefined
@@ -160,9 +160,9 @@ export function useMarginSheet(): MarginSheetModel {
   const visibleArtifactId = visibleArtifact?.id;
   const removePin = useCallback(
     (id: string) => {
-      if (owner?.kind === "issue") writePin(queryClient, owner.key, { id, op: "unpin" });
+      if (owner?.kind === "issue") writePin(cache, owner.key, { id, op: "unpin" });
     },
-    [owner, queryClient]
+    [owner, cache]
   );
   const unpin = useCallback(
     (eventId: number) => removePin(eventItemId({ id: eventId })),

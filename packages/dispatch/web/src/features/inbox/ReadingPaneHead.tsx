@@ -54,8 +54,16 @@ export interface ReadingPaneHeadProps {
   ask: InboxRow;
   /** The reader's own answer or review landed. */
   onAnswered: (askId: string) => void;
+  /** Registers the question while this head's "Assign to me" write is in flight or failed, as a
+   *  row's own control does: under the Unassigned filter the optimistic assignment takes the row
+   *  out of the list, and the column follows the list, so the head would go with it. */
+  onAssignLive: (askId: string, live: boolean) => void;
   /** Moves the column to the next block marked as changed; undefined when nothing is marked. */
   onNextChange: (() => void) | undefined;
+  /** Registers the question while this head's priority pick is in flight or failed, as a row's
+   *  own control does: the Inbox keeps the row where it stood, so a pick out of a priority
+   *  filter does not move the column off it and take the head's refusal with it. */
+  onPriorityLive: (askId: string, live: boolean) => void;
   /** Moves the column to the decision block; undefined when the question is not one. */
   onSkipToAnswer: (() => void) | undefined;
   /** Registers the question while this head's Snooze write is in flight or failed, exactly as
@@ -86,7 +94,9 @@ export function ReadingPaneHead({
   artifact,
   ask,
   onAnswered,
+  onAssignLive,
   onNextChange,
+  onPriorityLive,
   onSkipToAnswer,
   onSnoozeLive,
   sectionBlockId,
@@ -94,9 +104,20 @@ export function ReadingPaneHead({
 }: ReadingPaneHeadProps): ReactNode {
   // The Inbox row keeps "Assign to me" mounted while its write is in flight or failed, so
   // `Assigning…` and a refusal are shown by the instance that wrote rather than lost to the
-  // optimistic update that takes the issue out of `isUnassigned`. The head does the same.
+  // optimistic update that takes the issue out of `isUnassigned`. The head does the same, and
+  // tells the Inbox too, which keeps the row - and so this column - listed.
   const [assignLive, setAssignLive] = useState(false);
-  const onAssignLive = useCallback((_askId: string, live: boolean) => setAssignLive(live), []);
+  const onAssignHere = useCallback(
+    (askId: string, live: boolean) => {
+      setAssignLive(live);
+      onAssignLive(askId, live);
+    },
+    [onAssignLive]
+  );
+  const onPickLive = useCallback(
+    (live: boolean) => onPriorityLive(ask.id, live),
+    [ask.id, onPriorityLive]
+  );
   const name = controlName(ask, undefined);
   const page = openPagePath(ask, sectionBlockId);
   const reference = itemRoute("ask", ask, ask.document);
@@ -116,12 +137,16 @@ export function ReadingPaneHead({
         </Link>
       )}
       {ask.issue_key === null ? null : (
-        <PriorityControl issueKey={ask.issue_key} priority={issuePriority(ask.priority)} />
+        <PriorityControl
+          issueKey={ask.issue_key}
+          onLive={onPickLive}
+          priority={issuePriority(ask.priority)}
+        />
       )}
       {ask.issue_key !== null &&
       viewer !== undefined &&
       (isUnassigned({ ask, kind: "ask" }) || assignLive) ? (
-        <AssignToMe askId={ask.id} issueKey={ask.issue_key} onLive={onAssignLive} viewer={viewer} />
+        <AssignToMe askId={ask.id} issueKey={ask.issue_key} onLive={onAssignHere} viewer={viewer} />
       ) : null}
       <SnoozeControl
         askId={ask.id}

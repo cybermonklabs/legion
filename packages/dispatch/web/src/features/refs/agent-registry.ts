@@ -1,6 +1,6 @@
-import { queryOptions, useQuery } from "@tanstack/react-query";
 import { useEffect, useMemo, useSyncExternalStore } from "react";
-
+import { queryOptions } from "../../api/cache/read-options";
+import { useShownQuery } from "../../api/cache/shown-query";
 import { api, isAgentListRefilling } from "../../api/client";
 import type { Agent } from "../../api/types";
 
@@ -94,7 +94,7 @@ export function useRegistryPolling(active: boolean): void {
 /** The one owner of the registry's refresh cadence, mounted once in the app shell. */
 export function AgentRegistryPoller(): null {
   const wanted = useSyncExternalStore(subscribePolling, pollingWanted, pollingWanted);
-  useQuery({
+  useShownQuery({
     ...agentsQuery(),
     enabled: wanted,
     refetchInterval: wanted ? AGENT_REGISTRY_POLL_MS : false,
@@ -129,7 +129,7 @@ export interface AgentRegistry {
  */
 export function useAgentRegistry(enabled: boolean): AgentRegistry {
   useRegistryPolling(enabled);
-  const { data, error, isError, isPending } = useQuery({
+  const { data, error, isError, isPending } = useShownQuery({
     ...agentsQuery(),
     enabled,
     refetchOnMount: false,

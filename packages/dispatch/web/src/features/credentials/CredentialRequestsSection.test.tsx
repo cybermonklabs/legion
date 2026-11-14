@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, expect, jest, type Mock, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
+
+import { QueryClient, QueryClientProvider } from "../../api/cache/test-client";
 
 import { api } from "../../api/client";
 import type { CredentialPendingRow } from "../../api/types";

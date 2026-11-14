@@ -16,12 +16,19 @@
  */
 
 import { inboxThreadRow } from "@legion/contracts";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-
+import { useCache } from "../../api/cache/cache";
+import { queryOptions } from "../../api/cache/read-options";
+import { useShownQuery } from "../../api/cache/shown-query";
 import { api } from "../../api/client";
-import { agentMessagesQuery, askThreadQuery, issueQuery, myRepliesKey } from "../../api/queries";
+import {
+  agentMessagesQuery,
+  askThreadQuery,
+  commentsQueryKey,
+  issueQuery,
+  myRepliesKey,
+} from "../../api/queries";
 import type {
   Actor,
   CommentWithTrees,
@@ -289,26 +296,27 @@ function CommentThreadBody({
   owner: ThreadOwner;
   thread: MyReplyThreadRow;
 }): ReactNode {
-  const queryClient = useQueryClient();
+  const cache = useCache();
   const markNewest = useThreadRead(
     thread,
     owner.kind === "issue" ? { issue: owner.issueKey } : { artifact: owner.artifactId }
   );
   const issueKey = owner.kind === "issue" ? owner.issueKey : undefined;
-  const issue = useQuery({ ...issueQuery(issueKey), enabled: issueKey !== undefined });
+  const issue = useShownQuery({ ...issueQuery(issueKey), enabled: issueKey !== undefined });
   // The reads the issue's Conversation and the document's margin already hold, under their own
   // keys: the same request, shared rather than made a second time.
-  const commentsKey =
-    owner.kind === "issue"
-      ? ["comments", owner.issueKey]
-      : ["artifact", owner.artifactId, "comments"];
-  const comments = useQuery({
-    queryKey: commentsKey,
-    queryFn: () =>
-      owner.kind === "issue"
-        ? api.listComments(owner.issueKey)
-        : api.listArtifactComments(owner.artifactId),
-  });
+  const commentsKey = commentsQueryKey(
+    owner.kind === "issue" ? { issue: owner.issueKey } : { artifact: owner.artifactId }
+  );
+  const comments = useShownQuery(
+    queryOptions({
+      queryKey: commentsKey,
+      queryFn: () =>
+        owner.kind === "issue"
+          ? api.listComments(owner.issueKey)
+          : api.listArtifactComments(owner.artifactId),
+    })
+  );
   if (comments.isPending) return <LoadingSkeleton label="Opening the thread" />;
   if (comments.isError) {
     return <p className={`mt-2 text-sm ${dangerText}`}>Could not load this thread.</p>;
@@ -337,8 +345,8 @@ function CommentThreadBody({
             mutationKey={threadSendKey(thread.thread_id)}
             onClose={noReturn}
             onSent={() => {
-              void queryClient.invalidateQueries({ queryKey: commentsKey });
-              void queryClient.invalidateQueries({ queryKey: myRepliesKey });
+              void cache.invalidate({ queryKey: commentsKey });
+              void cache.invalidate({ queryKey: myRepliesKey });
             }}
             owner={owner}
             replyTo={{ actor: root.author, excerpt: "", id: root.id, parentKind: "comment" }}
@@ -388,11 +396,11 @@ function MessageThreadBody({
   openAtFirstUnread: boolean;
   thread: MyReplyThreadRow;
 }): ReactNode {
-  const queryClient = useQueryClient();
+  const cache = useCache();
   const markNewest = useThreadRead(thread, { issue: issueKey });
-  const issue = useQuery(issueQuery(issueKey));
+  const issue = useShownQuery(issueQuery(issueKey));
   const messagesKey = ["issue-messages", issueKey];
-  const messages = useQuery({
+  const messages = useShownQuery({
     queryKey: messagesKey,
     queryFn: () => api.listIssueMessages(issueKey),
   });
@@ -420,8 +428,8 @@ function MessageThreadBody({
             mutationKey={threadSendKey(thread.thread_id)}
             onClose={noReturn}
             onSent={() => {
-              void queryClient.invalidateQueries({ queryKey: messagesKey });
-              void queryClient.invalidateQueries({ queryKey: myRepliesKey });
+              void cache.invalidate({ queryKey: messagesKey });
+              void cache.invalidate({ queryKey: myRepliesKey });
             }}
             owner={{ issueKey, kind: "issue" }}
             replyTo={{
@@ -469,7 +477,7 @@ function AskThreadBody({
         ? undefined
         : { artifact: artifactId }
   );
-  const read = useQuery(askThreadQuery(thread.thread_id));
+  const read = useShownQuery(askThreadQuery(thread.thread_id));
   if (read.isPending) return <LoadingSkeleton label="Opening the thread" />;
   if (read.isError) {
     return <p className={`mt-2 text-sm ${dangerText}`}>Could not load this thread.</p>;
@@ -523,8 +531,8 @@ function AgentThreadBody({
   thread: MyReplyAgentRow;
 }): ReactNode {
   const sessionId = thread.session.id;
-  const messages = useQuery(agentMessagesQuery(sessionId));
-  const live = useQuery(agentsQuery());
+  const messages = useShownQuery(agentMessagesQuery(sessionId));
+  const live = useShownQuery(agentsQuery());
   const agent = live.data?.find((candidate) => candidate.session_id === sessionId);
   const sendKey = agentSendKey(sessionId);
   const hold = useSending(sendKey);

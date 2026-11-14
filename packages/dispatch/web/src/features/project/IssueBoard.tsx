@@ -11,12 +11,12 @@ import {
   useSensors,
 } from "@dnd-kit/core";
 import { SortableContext, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { CSSProperties, ReactNode } from "react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-
-import { projectIssuesQuery, userStateQuery } from "../../api/queries";
+import { useCache } from "../../api/cache/cache";
+import { useShownQuery } from "../../api/cache/shown-query";
+import { projectIssuesQuery, projectIssuesQueryKey, userStateQuery } from "../../api/queries";
 import type { IssueSummary, UserState } from "../../api/types";
 import { AttentionBadge } from "../../components/Badge";
 import { EmptyState } from "../../components/EmptyState";
@@ -71,7 +71,7 @@ import {
 } from "./board-model";
 import { useBoardMoves } from "./board-moves";
 import { CollapsedColumn } from "./CollapsedColumn";
-import { projectIssuesQueryKey, useIssueFilters } from "./issue-filters";
+import { useIssueFilters } from "./issue-filters";
 import { issueIsUnread, UnreadDot } from "./UnreadDot";
 
 const boardCollisionDetection: CollisionDetection = (args) => {
@@ -314,18 +314,18 @@ export function IssueBoard({
    *  cell. */
   lanes?: boolean;
 }): ReactNode {
-  const queryClient = useQueryClient();
+  const cache = useCache();
   const { labels, matches } = useIssueFilters();
   // The same query-key pair the List keeps: the plain project list, or the server-filtered
   // list while labels are active - shared keys, shared caches.
   const queryKey = projectIssuesQueryKey(project, labels);
-  const allIssues = useQuery(projectIssuesQuery(project, []));
-  const labelledIssues = useQuery({
+  const allIssues = useShownQuery(projectIssuesQuery(project, []));
+  const labelledIssues = useShownQuery({
     ...projectIssuesQuery(project, labels),
     enabled: labels.length > 0,
   });
   const issues = labels.length === 0 ? allIssues : labelledIssues;
-  const userState = useQuery(userStateQuery());
+  const userState = useShownQuery(userStateQuery());
   /** The strip's client-side filters against this viewer's read state: what the board renders,
    *  what drop indices count, and what the PATCH names as neighbours. */
   const isVisible = useCallback(
@@ -407,7 +407,8 @@ export function IssueBoard({
   );
   const onDragEnd = ({ active, over }: DragEndEvent) => {
     landCard();
-    const current = queryClient.getQueryData<IssueSummary[]>(queryKey);
+    // The board as the person sees it, every live drop composed over Dispatch's list.
+    const current = cache.shown<IssueSummary[]>(queryKey);
     if (over === null || current === undefined) {
       return;
     }
@@ -522,8 +523,8 @@ export function IssueBoard({
     if (target === undefined) {
       return;
     }
-    // Both move functions place the card in the cache synchronously before their request goes
-    // out, so the announcement reads the optimistic position - the one the user sees.
+    // Both move functions compose the card's placement from the press, before their request
+    // goes out, so the announcement reads the placed position - the one the user sees.
     const lane: PriorityLane | undefined = laneId === null ? undefined : laneFromKey(laneId);
     if (lanes && lane !== undefined) {
       void moveCardToLane(key, target.status, lane, target.insertionIndex);
@@ -531,7 +532,7 @@ export function IssueBoard({
       void moveCard(key, target.status, target.insertionIndex);
     }
     // The announcement's position and count are the visible cell - the one the user sees.
-    const column = (queryClient.getQueryData<IssueSummary[]>(queryKey) ?? []).filter(
+    const column = (cache.shown<IssueSummary[]>(queryKey) ?? []).filter(
       (issue) =>
         issue.status === target.status &&
         isVisible(issue) &&

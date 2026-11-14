@@ -66,3 +66,13 @@ export function pinnedConversations(dismissed: string[]): PinnedConversation[] {
 export function stateForIssue(state: UserState | undefined, issueKey: string): UserIssueState {
   return state?.[issueKey] ?? { dismissed: [], last_read_seq: 0, pinned: false, seq: 0 };
 }
+
+/** `state` with the issue's `pinned` set to `pinned`, and nothing else of it changed: what a pin
+ *  shows, composed over Dispatch's row while the pin's write is live. */
+export function withPinned(
+  state: UserState | undefined,
+  issueKey: string,
+  pinned: boolean
+): UserState {
+  return { ...state, [issueKey]: { ...stateForIssue(state, issueKey), pinned } };
+}

@@ -1,5 +1,5 @@
-import { RECONNECT_SPREAD_MS } from "../web/src/api/live-socket";
-import { MIN_REFETCH_INTERVAL_MS } from "../web/src/api/query-refresh";
+import { RECONNECT_SPREAD_MS } from "../web/src/api/cache/live-socket";
+import { MIN_REFETCH_INTERVAL_MS } from "../web/src/api/cache/query-refresh";
 import { DWELL_MS } from "../web/src/features/shell/useDwell";
 import {
   createComment,
@@ -30,7 +30,7 @@ const session = {
 const PROBE = { intervals: [50, 50, 100, 200, 500] };
 
 /** Spends the live socket's reconnect delay - a draw the attempt count grows
- *  (`web/src/api/live-socket.ts`) - on the page's own clock, until the pill is gone. */
+ *  (`web/src/api/cache/live-socket.ts`) - on the page's own clock, until the pill is gone. */
 async function reconnected(page: Page, pill: Locator): Promise<void> {
   await expect
     .poll(async () => {

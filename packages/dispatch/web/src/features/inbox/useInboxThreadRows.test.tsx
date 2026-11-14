@@ -10,9 +10,10 @@
  */
 
 import { afterEach, expect, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, render, waitFor } from "@testing-library/react";
 import { type ReactNode, useRef } from "react";
+
+import { QueryClient, QueryClientProvider } from "../../api/cache/test-client";
 
 import { api } from "../../api/client";
 import { dismissedThreadsQuery, whoAmIQuery } from "../../api/queries";

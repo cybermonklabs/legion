@@ -1,5 +1,4 @@
 import { decodeBlockId, isIdPrefix } from "@legion/contracts";
-import { queryOptions, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   type ReactNode,
   useCallback,
@@ -11,6 +10,9 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { Link, useLocation } from "react-router-dom";
+import { useCache } from "../../api/cache/cache";
+import { queryOptions } from "../../api/cache/read-options";
+import { useShownQuery } from "../../api/cache/shown-query";
 import {
   api,
   isArtifactNotFound,
@@ -296,7 +298,7 @@ export function ProofDocument({
   const marginRef = useRef(margin);
   marginRef.current = margin;
   highlightTermRef.current = highlightTerm;
-  const queryClient = useQueryClient();
+  const cache = useCache();
   // Where a `#id` in this document's text resolves: this document, whose question blocks
   // declare the asks it names (`refs.ScopeOf` of a document version is the document).
   const textSource = useMemo(() => textSourceOf("artifact", artifact.id), [artifact.id]);
@@ -305,16 +307,16 @@ export function ProofDocument({
   // block of this document changes it in place, firing no event of the browser's own.
   const { hash: routedHash } = useLocation();
   const documentRef = buildDispatchReference(documentRoute(artifact));
-  const blockSchemaQuery = useQuery({
+  const blockSchemaQuery = useShownQuery({
     queryFn: loadBlockSchema,
     queryKey: ["block-schema"],
     staleTime: Number.POSITIVE_INFINITY,
   });
-  const artifactQuery = useQuery({
+  const artifactQuery = useShownQuery({
     queryKey: ["artifact", artifact.id],
     queryFn: () => api.getArtifact(artifact.id),
   });
-  const liveTextQuery = useQuery(liveTextQueryOptions(artifact.id));
+  const liveTextQuery = useShownQuery(liveTextQueryOptions(artifact.id));
   // The repair replaces this document, so it uploads under the document's own name whatever the
   // picked file is called; a closed issue takes none.
   const repairUpload = useArtifactUpload(
@@ -359,16 +361,16 @@ export function ProofDocument({
   const repairError = page && admission?.kind === "repair" ? admission : undefined;
   const rebuildError = page && admission?.kind === "rebuild" ? admission : undefined;
   const shownLoadError = admission?.kind === "failed" ? admission.message : loadError;
-  const blockReferencesQuery = useQuery({
+  const blockReferencesQuery = useShownQuery({
     ...artifactBlocksQuery(artifact.id),
     enabled: version === undefined,
   });
-  const versionQuery = useQuery({
+  const versionQuery = useShownQuery({
     enabled: version !== undefined,
     queryKey: ["artifact", artifact.id, "version", version],
     queryFn: () => api.getArtifactVersion(artifact.id, version ?? 0),
   });
-  const asksQuery = useQuery({
+  const asksQuery = useShownQuery({
     queryKey: owner.kind === "issue" ? ["asks", owner.key] : ["artifact", artifact.id, "asks"],
     queryFn: () =>
       owner.kind === "issue" ? api.listIssueAsks(owner.key) : api.listArtifactAsks(artifact.id),
@@ -391,30 +393,38 @@ export function ProofDocument({
     // `write` comes first: `onSuccess` reads its answer.
     write: (summary: string, bounds) => api.createArtifactVersion(artifact.id, { summary }, bounds),
     inline: true,
+    unlined: "a version names no row until Dispatch makes it",
     label: () => `New version of ${artifact.name}`,
     onSuccess: (created) => {
       // Made either way, so the dialog closes and a second press names nothing twice; with no
       // answer to give, the store has read the document again.
       setIsNameDialogOpen(false);
       if (created === null) return;
-      queryClient.setQueryData<Artifact>(["artifact", artifact.id], (current) => {
-        const source = current ?? artifact;
-        return {
-          ...source,
-          versions: [
-            ...(source.versions ?? []).filter(({ number }) => number !== created.number),
-            created,
-          ],
-        };
-      });
-      onVersionChange(created.number);
+      // Folded into the document the cache holds, Dispatch's own; a document not read yet is
+      // filled by its own read, never by the one this surface was handed.
+      cache.setDispatched(
+        ["artifact", artifact.id],
+        created,
+        (current: Artifact | undefined, version) =>
+          current === undefined
+            ? undefined
+            : {
+                ...current,
+                versions: [
+                  ...(current.versions ?? []).filter(({ number }) => number !== version.number),
+                  version,
+                ],
+              }
+      );
+      onVersionChange(created.body.number);
     },
   });
   const rebuild = useKeyedWrite({
     inline: true,
     label: () => `Rebuild of ${artifact.name}`,
+    unlined: "a rebuild is this button's only write of the document it rebuilds",
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["artifact", artifact.id] });
+      void cache.invalidate({ queryKey: ["artifact", artifact.id] });
     },
     write: (_variables, bounds) => api.rebuildArtifact(artifact.id, undefined, bounds),
   });
@@ -454,10 +464,10 @@ export function ProofDocument({
   // host that selected the question hears of its answer too.
   const blockAnswered = useCallback(
     (askId: string) => {
-      void queryClient.invalidateQueries({ queryKey: ["artifact", artifact.id] });
+      void cache.invalidate({ queryKey: ["artifact", artifact.id] });
       onAskAnswered?.(askId);
     },
-    [queryClient, artifact.id, onAskAnswered]
+    [cache, artifact.id, onAskAnswered]
   );
   const openBlockAsks = useMemo(
     () =>
@@ -788,8 +798,8 @@ export function ProofDocument({
     // A blocked admission waits for the next successful read of the text, which a repair upload
     // or a rebuild brings about, and is admitted again (`readmitRef`).
     const admit = () => {
-      const textRead = queryClient
-        .fetchQuery({ ...liveTextQueryOptions(artifact.id), staleTime: 0 })
+      const textRead = cache
+        .fetchDispatched({ ...liveTextQueryOptions(artifact.id), staleTime: 0 })
         .then(
           () => undefined,
           async (error: unknown) => {
@@ -930,7 +940,7 @@ export function ProofDocument({
                   name: userRef.current.login,
                 },
                 blockSchema,
-                watchPicture: (route, onPicture) => watchPicturePath(queryClient, route, onPicture),
+                watchPicture: (route, onPicture) => watchPicturePath(cache, route, onPicture),
                 // The block the pane's thread hangs under: the node view it names publishes the
                 // host slot this page portals the thread into. A document's own page anchors no
                 // thread and passes none.
@@ -983,7 +993,7 @@ export function ProofDocument({
     loadTransport,
     page,
     pendingWaiter,
-    queryClient,
+    cache,
     whenSent,
   ]);
 

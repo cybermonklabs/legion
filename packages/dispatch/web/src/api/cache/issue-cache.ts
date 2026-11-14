@@ -1,6 +1,6 @@
-import type { QueryClient } from "@tanstack/react-query";
-
-import type { Artifact, DocumentRole, Issue, IssueDetails } from "./types";
+import type { Artifact, DocumentRole, Issue, IssueDetails } from "../types";
+import type { Answered } from "./answered";
+import type { Cache } from "./cache";
 
 /** The issue's primary document (its spec), or undefined until the details have loaded. */
 export function primarySpec(
@@ -39,17 +39,24 @@ export function roleDocument(
  * the `Issue` fields, so they are merged over the details-only fields until the next full fetch.
  * `route_status` is one of those, judged for the route the details were read with: a new route
  * clears it, its holder and its reason rather than wear the old route's, and the issue's own
- * event refetches them.
+ * event refetches them. The cache holds only Dispatch's answers - a pick of another field still
+ * out is composed over the issue as it is read, never written into the cache - so the response
+ * is merged into Dispatch's issue and that pick stays over it; a response older than the issue
+ * held is kept out by the issue read's own rule (`issueQuery`).
  */
-export function mergeIssue(queryClient: QueryClient, next: Issue): void {
-  queryClient.setQueryData<IssueDetails>(["issue", next.key], (current) => {
-    if (current === undefined) {
-      return undefined;
+export function mergeIssue(cache: Cache, next: Answered<Issue>): void {
+  cache.setDispatched(
+    ["issue", next.body.key],
+    next,
+    (current: IssueDetails | undefined, issue) => {
+      if (current === undefined) {
+        return undefined;
+      }
+      const reach =
+        current.route === issue.route
+          ? {}
+          : { route_status: null, route_holder: null, route_status_reason: null };
+      return { ...current, ...issue, ...reach };
     }
-    const reach =
-      current.route === next.route
-        ? {}
-        : { route_status: null, route_holder: null, route_status_reason: null };
-    return { ...current, ...next, ...reach };
-  });
+  );
 }

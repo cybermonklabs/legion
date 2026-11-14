@@ -1,4 +1,3 @@
-import { hashKey, type MutationKey, useQuery } from "@tanstack/react-query";
 import {
   type ClipboardEvent,
   type DragEvent,
@@ -14,7 +13,8 @@ import {
   useRef,
   useState,
 } from "react";
-
+import { hashKey, type MutationKey } from "../../api/cache/keys";
+import { useShownQuery } from "../../api/cache/shown-query";
 import {
   type ArtifactOwner,
   api,
@@ -656,7 +656,7 @@ export function MentionComposer({
   // (`changesCollaborators` in event-refresh.ts), which refetches it under a picker that stays
   // open.
   const collaboratorsIssue = owner.kind === "issue" ? owner.issueKey : undefined;
-  const collaborators = useQuery({
+  const collaborators = useShownQuery({
     ...issueCollaboratorsQuery(collaboratorsIssue),
     enabled: collaboratorsIssue !== undefined && autocompleteOpen,
   });

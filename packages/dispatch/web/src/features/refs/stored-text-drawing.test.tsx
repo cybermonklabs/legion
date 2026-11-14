@@ -1,9 +1,9 @@
 import { afterEach, beforeAll, beforeEach, expect, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, render, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 
 import { snippetSource } from "../../__tests__/display-trees";
+import { QueryClient, QueryClientProvider } from "../../api/cache/test-client";
 import { api } from "../../api/client";
 import type { DisplayTree } from "../../api/types";
 import fixtures from "./__fixtures__/display-trees.json";

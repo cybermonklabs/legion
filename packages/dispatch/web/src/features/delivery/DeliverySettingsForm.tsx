@@ -1,9 +1,8 @@
-import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, type ReactNode, useId, useState } from "react";
-
-import { api, apiErrorMessage } from "../../api/client";
+import { useCache } from "../../api/cache/cache";
+import { useShownQuery } from "../../api/cache/shown-query";
+import { apiErrorMessage, deliverySettingsRequest } from "../../api/client";
 import { deliverySettingsQuery } from "../../api/queries";
-import { isLiveQuery } from "../../api/query-refresh";
 import type { DeliverySettings, DeliverySettingsInput } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
@@ -115,7 +114,7 @@ interface DeliverySettingsFormProps {
  * form in place of a timeline it cannot read yet, shows the timeline once the save succeeds.
  */
 export function DeliverySettingsForm({ initial }: DeliverySettingsFormProps): ReactNode {
-  const settings = useQuery({ ...deliverySettingsQuery(), enabled: initial === undefined });
+  const settings = useShownQuery({ ...deliverySettingsQuery(), enabled: initial === undefined });
   let record = initial;
   if (record === undefined) {
     if (settings.isPending) {
@@ -140,7 +139,7 @@ export function DeliverySettingsForm({ initial }: DeliverySettingsFormProps): Re
 }
 
 function DeliverySettingsFields({ record }: { record: DeliverySettings | null }): ReactNode {
-  const queryClient = useQueryClient();
+  const cache = useCache();
   const id = useId();
   const submitGuard = useSubmitGuard();
   const [draft, setDraft] = useState<Draft>(() => ({
@@ -155,20 +154,19 @@ function DeliverySettingsFields({ record }: { record: DeliverySettings | null })
     staging_apply_job_name: record?.staging_apply_job_name ?? "",
     staging_e2e_job_name: record?.staging_e2e_job_name ?? "",
   }));
-  // The form shows its own refusal, under the fields it was refused over.
+  // The form shows its own refusal, under the fields it was refused over. The instance has one
+  // delivery-settings row, so every save of it stands in that row's line (`settings:delivery`).
   const save = useKeyedWrite({
-    write: (input: DeliverySettingsInput, bounds) => api.putDeliverySettings(input, bounds),
+    request: (input: DeliverySettingsInput) => deliverySettingsRequest(input),
+    target: () => "settings:delivery",
     inline: true,
     label: () => "Delivery settings saved",
     onSettled: () => submitGuard.release(),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: deliverySettingsQuery().queryKey });
+      void cache.invalidate({ queryKey: deliverySettingsQuery().queryKey });
       // A live view learns of the save from Dispatch, as a delta, or as the snapshot a page that
       // had none (DELIVERY_NOT_CONFIGURED) is answered once a configuration exists.
-      void queryClient.invalidateQueries({
-        queryKey: ["delivery"],
-        predicate: (query) => !isLiveQuery(query),
-      });
+      void cache.invalidate({ live: false, queryKey: ["delivery"] });
     },
   });
   const submit = (event: FormEvent<HTMLFormElement>) => {

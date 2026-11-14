@@ -1,13 +1,14 @@
 import { expect, spyOn, test } from "bun:test";
 import { ISSUE_CLAIM_UNRESPONSIVE_GRACE_MS } from "@legion/contracts";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
+import { QueryClient, QueryClientProvider } from "../../api/cache/test-client";
+
 import { api } from "../../api/client";
 import type { Agent, IssueClaim, IssueSummary } from "../../api/types";
-import { projectIssuesQueryKey, useIssueFilters } from "./issue-filters";
+import { useIssueFilters } from "./issue-filters";
 
 function agent(sessionID: string): Agent {
   return {
@@ -195,15 +196,4 @@ test("unclaimed holds an unresponsive holder's issue back until its claim is tak
     takeable.unmount();
     agents.mockRestore();
   }
-});
-
-test("the query key is the plain list without labels and the labelled list with them", () => {
-  expect(projectIssuesQueryKey("CORE", [])).toEqual(["issues", "project", "CORE"]);
-  expect(projectIssuesQueryKey("CORE", ["a"])).toEqual([
-    "issues",
-    "project",
-    "CORE",
-    "labels",
-    ["a"],
-  ]);
 });

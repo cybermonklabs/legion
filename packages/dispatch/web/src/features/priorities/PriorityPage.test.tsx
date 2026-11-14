@@ -1,10 +1,12 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor, within } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
-import { api } from "../../api/client";
+import { answerPriorityPatches } from "../../__tests__/send-answers";
+import { cacheOf, QueryClient, QueryClientProvider } from "../../api/cache/test-client";
+import { ApiError, api } from "../../api/client";
 import type { IssueSummary, Priorities, Priority, PriorityRow } from "../../api/types";
+import { PendingWritesIndicator } from "../writes/PendingWritesIndicator";
 import { PriorityPage } from "./PriorityPage";
 
 function priority(id: string, overrides: Partial<PriorityRow> = {}): PriorityRow {
@@ -102,8 +104,15 @@ afterEach(() => {
   localStorage.clear();
 });
 
+/** The page as a writer reads it, over a Dispatch that keeps what it makes: a patch it answers
+ *  changes the rows every later read of the priorities answers with. The shell's pending-writes
+ *  indicator is drawn beside it, where a refused or waiting write is said. */
 function page(id = "rocq-lean", issues: IssueSummary[] = [], writer = true) {
-  const priorities = spyOn(api, "listPriorities").mockResolvedValue(BODY);
+  let rows = ROWS;
+  const priorities = spyOn(api, "listPriorities").mockImplementation(async () => ({
+    ...BODY,
+    priorities: rows,
+  }));
   const listing = spyOn(api, "listIssues").mockImplementation(async (options = {}) =>
     issues.filter(
       (row) =>
@@ -119,7 +128,19 @@ function page(id = "rocq-lean", issues: IssueSummary[] = [], writer = true) {
     ? { event_head: "0", kind: "user" as const, login: "alice" }
     : ({ event_head: "0", kind: "token", login: "ci" } as never);
   const viewer = spyOn(api, "whoAmI").mockResolvedValue(whoami);
-  const patch = spyOn(api, "patchPriority").mockImplementation(async (key) => saved(key));
+  const patch = answerPriorityPatches().mockImplementation(async (patched, input) => {
+    rows = rows.map((row) =>
+      row.id === patched
+        ? {
+            ...row,
+            description: input.description ?? row.description,
+            owner: input.owner ?? row.owner,
+            title: input.title ?? row.title,
+          }
+        : row
+    );
+    return saved(patched);
+  });
   // The margin reads the priority's own history as soon as it opens on Everything.
   const history = spyOn(api, "getPriorityHistory").mockResolvedValue([]);
   const descriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
@@ -137,6 +158,7 @@ function page(id = "rocq-lean", issues: IssueSummary[] = [], writer = true) {
         <Routes>
           <Route element={<PriorityPage />} path="/priorities/:id" />
         </Routes>
+        <PendingWritesIndicator />
       </QueryClientProvider>
     </MemoryRouter>
   );
@@ -148,7 +170,7 @@ function page(id = "rocq-lean", issues: IssueSummary[] = [], writer = true) {
     if (descriptor) Object.defineProperty(HTMLElement.prototype, "clientHeight", descriptor);
     else Reflect.deleteProperty(HTMLElement.prototype, "clientHeight");
   });
-  return { listing, patch, view };
+  return { client, listing, patch, priorities, view };
 }
 
 test("the header carries the order, the title in place, the owner and the three counts", async () => {
@@ -207,6 +229,123 @@ test("the description reads rendered, opens on a click on its text and is saved 
   expect(await within(back).findByText("Speedruns run again. More.")).toBeDefined();
   expect(screen.queryByRole("textbox", { name: "Description of P2" })).toBeNull();
   expect(patch).toHaveBeenCalledTimes(1);
+});
+
+/** Writes `more` onto the end of P2's description and leaves the editor, which saves it. */
+async function writeDescription(user: UserEvent, more: string) {
+  const described = await screen.findByRole("group", { name: "Description of P2" });
+  await user.click(within(described).getByText("Speedruns run again."));
+  await user.type(await screen.findByRole("textbox", { name: "Description of P2" }), more);
+  await user.tab();
+}
+
+const P2_DESCRIPTION_WRITE = "Description of the priority “Rocq and Lean speed work restarted”";
+
+// A save Dispatch refuses leaves nothing of itself on the page: the block reads as Dispatch holds
+// the description, and the refusal is said where every refused write is, in Pending changes.
+test("a description save Dispatch refuses shows Dispatch's description again, and the refusal", async () => {
+  const user = userEvent.setup();
+  const { patch } = page();
+  patch.mockRejectedValueOnce(
+    new ApiError(400, { code: "PRIORITY_INPUT", error: "the description is not accepted" })
+  );
+  await writeDescription(user, " Refused.");
+  const indicator = await screen.findByTestId("pending-writes");
+  expect(
+    await within(indicator).findByText(
+      `Not saved: ${P2_DESCRIPTION_WRITE} — the description is not accepted`
+    )
+  ).toBeDefined();
+  const back = screen.getByRole("group", { name: "Description of P2" });
+  expect(within(back).queryByText(/Refused\./)).toBeNull();
+  expect(within(back).getByText("Speedruns run again.")).toBeDefined();
+});
+
+// A rename Dispatch has not answered holds the priority's line, so a description written after
+// it waits its turn, which is where Pending changes offers Discard. A discarded save is gone.
+test("a description save discarded from Pending changes shows Dispatch's description again", async () => {
+  const user = userEvent.setup();
+  const { patch } = page();
+  const rename = Promise.withResolvers<Priority>();
+  patch.mockReturnValueOnce(rename.promise);
+  const title = await screen.findByRole("textbox", { name: "Title" });
+  await user.clear(title);
+  await user.type(title, "Rocq first{Enter}");
+  await waitFor(() => expect(patch).toHaveBeenCalledTimes(1));
+  await writeDescription(user, " Discarded.");
+  const indicator = await screen.findByTestId("pending-writes");
+  const described = /^Description of the priority .* — Waiting to send$/;
+  const waiting = (await within(indicator).findByText(described)).closest("li");
+  if (waiting === null) throw new Error("the waiting description save is not a row");
+  await user.click(within(waiting).getByRole("button", { name: "Discard" }));
+  await waitFor(() => expect(within(indicator).queryByText(described)).toBeNull());
+  const back = screen.getByRole("group", { name: "Description of P2" });
+  expect(within(back).queryByText(/Discarded\./)).toBeNull();
+  expect(within(back).getByText("Speedruns run again.")).toBeDefined();
+  expect(patch).toHaveBeenCalledTimes(1);
+  await act(async () => rename.resolve(saved("rocq-lean")));
+});
+
+// A read of the priorities begun before the save lands - an event's refresh - can answer after
+// it with the row as it stood. The block shows what landed over that answer, and drawn afresh
+// it shows it too, since what it shows is the read's and not a copy of its own.
+test("a description save that lands shows the new text, also over a read Dispatch answers late", async () => {
+  const user = userEvent.setup();
+  const { client, patch, priorities } = page();
+  await screen.findByRole("group", { name: "Description of P2" });
+  const late = Promise.withResolvers<Priorities>();
+  const after = Promise.withResolvers<Priorities>();
+  priorities.mockReturnValueOnce(late.promise).mockReturnValueOnce(after.promise);
+  const before = priorities.mock.calls.length;
+  void cacheOf(client).invalidate({ queryKey: ["priorities", "full"] });
+  await waitFor(() => expect(priorities.mock.calls.length).toBe(before + 1));
+
+  await writeDescription(user, " Landed.");
+  await waitFor(() => expect(patch).toHaveBeenCalledTimes(1));
+  await act(async () => {
+    await patch.mock.results[0]?.value;
+  });
+  await act(async () => late.resolve(BODY));
+  await user.click(screen.getByRole("button", { name: "Description" }));
+  await user.click(screen.getByRole("button", { name: "Description, closed" }));
+  const shown = await screen.findByRole("group", { name: "Description of P2" });
+  expect(within(shown).getByText("Speedruns run again. Landed.")).toBeDefined();
+
+  // The read begun after the landing answers with the row as Dispatch made it.
+  const landed = ROWS.map((row) =>
+    row.id === "rocq-lean" ? { ...row, description: `${row.description} Landed.` } : row
+  );
+  await act(async () => after.resolve({ ...BODY, priorities: landed }));
+  expect(
+    within(screen.getByRole("group", { name: "Description of P2" })).getByText(
+      "Speedruns run again. Landed."
+    )
+  ).toBeDefined();
+});
+
+// The title and the owner are shown as the description is: from the read, with the write composed
+// over it. Enter saves a rename once, and a refused rename or owner leaves Dispatch's own text in
+// the field, not the words that were refused.
+test("a rename and an owner Dispatch refuses show Dispatch's title and owner again", async () => {
+  const user = userEvent.setup();
+  const { patch } = page();
+  const refusal = new ApiError(400, { code: "PRIORITY_INPUT", error: "not accepted" });
+  patch.mockRejectedValueOnce(refusal).mockRejectedValueOnce(refusal);
+  const title = await screen.findByRole("textbox", { name: "Title" });
+  await user.clear(title);
+  await user.type(title, "Refused name{Enter}");
+  const indicator = await screen.findByTestId("pending-writes");
+  expect(await within(indicator).findByText(/^Not saved: Rename the priority/)).toBeDefined();
+  expect(patch).toHaveBeenCalledTimes(1);
+  expect((title as HTMLInputElement).value).toBe("Rocq and Lean speed work restarted");
+
+  const owner = screen.getByRole("combobox", { name: "Owner" });
+  await user.clear(owner);
+  await user.type(owner, "Refused owner");
+  await user.tab();
+  expect(await within(indicator).findByText(/^Not saved: Owner of the priority/)).toBeDefined();
+  expect(patch).toHaveBeenCalledTimes(2);
+  expect((owner as HTMLInputElement).value).toBe("BET and LINUX controllers");
 });
 
 test("the rendered description is no control: the keyboard opens the editor with a button named by its own words", async () => {

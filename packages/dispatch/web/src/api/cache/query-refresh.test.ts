@@ -2,6 +2,7 @@ import { afterEach, beforeEach, expect, jest, test } from "bun:test";
 import { QueryClient, type QueryKey, QueryObserver } from "@tanstack/react-query";
 
 import { MIN_REFETCH_INTERVAL_MS, refreshQueries, trackQueryFetches } from "./query-refresh";
+import { cacheOf } from "./test-client";
 
 // The scheduler runs on the clock: every test drives fake timers, and each answer from the server
 // is a timer too, so a fetch takes exactly as long as the test says.
@@ -74,7 +75,7 @@ function servedQuery(
 
 function newClient(): QueryClient {
   const queryClient = new QueryClient();
-  trackQueryFetches(queryClient);
+  trackQueryFetches(cacheOf(queryClient));
   return queryClient;
 }
 
@@ -86,7 +87,7 @@ test("events every 100 ms fetch a read at most once a second, the last within a 
     await advance(200);
     let lastEvent = 0;
     for (let index = 0; index < 30; index += 1) {
-      refreshQueries(queryClient, [{ queryKey: ["issues", "project", "CORE"] }]);
+      refreshQueries(cacheOf(queryClient), [{ queryKey: ["issues", "project", "CORE"] }]);
       lastEvent = Date.now() - origin;
       await advance(100);
     }
@@ -115,7 +116,7 @@ test("events during a fetch give exactly one more fetch, once it settles", async
     // The first fetch is out from 0 to 400 ms; an event arrives at 100, 200 and 300 ms.
     for (let index = 0; index < 3; index += 1) {
       await advance(100);
-      refreshQueries(queryClient, [{ exact: true, queryKey: ["issue", "CORE-1"] }]);
+      refreshQueries(cacheOf(queryClient), [{ exact: true, queryKey: ["issue", "CORE-1"] }]);
     }
     await advance(3_000);
 
@@ -131,7 +132,7 @@ test("a fetch slower than a second is fetched again the moment it settles", asyn
   const inbox = servedQuery(queryClient, ["inbox"], 1_500);
   try {
     await advance(100);
-    refreshQueries(queryClient, [{ queryKey: ["inbox"] }]);
+    refreshQueries(cacheOf(queryClient), [{ queryKey: ["inbox"] }]);
     await advance(4_000);
 
     // It settles at 1,500 ms; the next fetch starts on the following tick, not at the 1 s mark.
@@ -149,7 +150,7 @@ test("an idle read last fetched over a second ago is fetched at once", async () 
   const detail = servedQuery(queryClient, ["issue", "CORE-1"], 50);
   try {
     await advance(2_000);
-    refreshQueries(queryClient, [{ queryKey: ["issue", "CORE-1"] }]);
+    refreshQueries(cacheOf(queryClient), [{ queryKey: ["issue", "CORE-1"] }]);
     await settle();
 
     expect(detail.starts).toEqual([0, 2_000]);
@@ -174,7 +175,7 @@ test("a read nothing renders is only marked stale", async () => {
   await advance(2_000);
   fetched = 0;
 
-  refreshQueries(queryClient, [{ queryKey: ["issue-summary"] }]);
+  refreshQueries(cacheOf(queryClient), [{ queryKey: ["issue-summary"] }]);
   await advance(3_000);
 
   expect(fetched).toBe(0);
@@ -187,8 +188,8 @@ test("a live-owned read is never touched, by a target or by the whole-cache refr
   const live = servedQuery(queryClient, ["delivery", "timeline"], 50, undefined, { live: true });
   try {
     await advance(2_000);
-    refreshQueries(queryClient, [{ queryKey: ["delivery"] }]);
-    refreshQueries(queryClient);
+    refreshQueries(cacheOf(queryClient), [{ queryKey: ["delivery"] }]);
+    refreshQueries(cacheOf(queryClient));
     await advance(3_000);
 
     expect(live.starts).toEqual([0]);
@@ -204,7 +205,7 @@ test("the whole-cache refresh keeps the same rules: a recent fetch waits out its
   queryClient.setQueryData(["github", "acme/widgets/pull/1"], { state: "open" });
   try {
     await advance(300);
-    refreshQueries(queryClient);
+    refreshQueries(cacheOf(queryClient));
     await advance(3_000);
 
     expect(projects.starts).toEqual([0, MIN_REFETCH_INTERVAL_MS]);
@@ -221,7 +222,7 @@ test("a test of a first load's data runs on the response that lands, and fetches
   const lacks = servedQuery(queryClient, ["inbox", "OTHER"], 300, () => [{ issue_key: "OTHER-1" }]);
   try {
     await advance(100);
-    refreshQueries(queryClient, [
+    refreshQueries(cacheOf(queryClient), [
       {
         queryKey: ["inbox"],
         when: (data) =>
@@ -244,7 +245,7 @@ test("a refresh owed to a removed read is not paid by the read that replaces it"
   const queryClient = newClient();
   const first = servedQuery(queryClient, ["issues", "pinned"], 500);
   await advance(100);
-  refreshQueries(queryClient, [{ queryKey: ["issues", "pinned"] }]);
+  refreshQueries(cacheOf(queryClient), [{ queryKey: ["issues", "pinned"] }]);
   first.stop();
   queryClient.removeQueries({ queryKey: ["issues", "pinned"] });
   await advance(100);
@@ -265,9 +266,9 @@ test("a read left inside the second after a fetch an event landed in still owes 
   await advance(1_200);
   // A first event fetches at 1,200 ms; a second lands at 1,300 ms while that fetch is out, whose
   // body was composed before it. The fetch settles at 1,500 ms and the owed one waits for 2,200.
-  refreshQueries(queryClient, [{ exact: true, queryKey: key }]);
+  refreshQueries(cacheOf(queryClient), [{ exact: true, queryKey: key }]);
   await advance(100);
-  refreshQueries(queryClient, [{ exact: true, queryKey: key }]);
+  refreshQueries(cacheOf(queryClient), [{ exact: true, queryKey: key }]);
   await advance(250);
   // The page is left inside that wait.
   summary.stop();
@@ -288,9 +289,9 @@ test("a test of a read's data while a fetch is out runs on the response that lan
   );
   try {
     await advance(1_500);
-    refreshQueries(queryClient, [{ queryKey: ["inbox"] }]);
+    refreshQueries(cacheOf(queryClient), [{ queryKey: ["inbox"] }]);
     await advance(100);
-    refreshQueries(queryClient, [
+    refreshQueries(cacheOf(queryClient), [
       {
         queryKey: ["inbox"],
         when: (data) =>

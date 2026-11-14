@@ -1,8 +1,4 @@
-import type { QueryClient } from "@tanstack/react-query";
-
-import { myRepliesOwnerQuery, whoAmIQuery } from "../../api/queries";
 import type { MyReplyAgentRow, MyReplyThreadRow } from "../../api/types";
-import type { RepliesOwner } from "./useMarkThreadRead";
 
 /** One unread thread row for `threadId`, as `GET /api/v1/me/replies` answers it: a Reply row,
  *  read through a mark older than its reply, at a version of its own - not 0, so a test cannot
@@ -72,26 +68,5 @@ export function plannerAgentRow(overrides: Partial<MyReplyAgentRow> = {}): MyRep
     subject: "Have a look at the build",
     unread_reply_ids: ["reply-1"],
     ...overrides,
-  });
-}
-
-/** Seeds the signed-in viewer (alice) and `owner`'s unread threads, so every thread mounted on
- *  that owner reads them from the cache rather than a request. */
-export function seedUnread(
-  queryClient: QueryClient,
-  owner: RepliesOwner,
-  threadIds: readonly string[]
-): void {
-  queryClient.setQueryData(whoAmIQuery().queryKey, {
-    event_head: "0",
-    kind: "user",
-    login: "alice",
-  });
-  queryClient.setQueryData(myRepliesOwnerQuery(owner).queryKey, {
-    as_of: "2026-10-12T00:00:00Z",
-    limit: 200,
-    offset: 0,
-    rows: threadIds.map((id) => replyRow(id)),
-    total: threadIds.length,
   });
 }

@@ -1,17 +1,9 @@
-import {
-  type QueryClient,
-  type QueryKey,
-  QueryObserver,
-  type QueryObserverOptions,
-  type QueryObserverResult,
-  type QueryStatus,
-  queryOptions,
-  type UseQueryResult,
-  useQuery,
-} from "@tanstack/react-query";
-
+import type { Cache } from "../../api/cache/cache";
+import { primarySpec } from "../../api/cache/issue-cache";
+import type { QueryKey, UseQueryResult } from "../../api/cache/keys";
+import { queryOptions, type ReadOptions, type ReadStatus } from "../../api/cache/read-options";
+import { useShownQuery, watchShownQuery } from "../../api/cache/shown-query";
 import { ApiError, api, artifactVersionPath } from "../../api/client";
-import { primarySpec } from "../../api/issue-cache";
 import { issueQuery } from "../../api/queries";
 import type {
   Artifact,
@@ -61,8 +53,8 @@ import { prefixReference, routeWithWholeIds, type TextSource } from "./text-refe
  * is fetched even over the data it holds, which an event's refetch that failed leaves fresh by
  * age (`staleTime: Infinity`).
  */
-const refetchFailedOnFocus = (query: { readonly state: { readonly status: QueryStatus } }) =>
-  query.state.status === "error" ? "always" : false;
+const refetchFailedOnFocus = (read: { readonly status: ReadStatus }) =>
+  read.status === "error" ? "always" : false;
 
 export interface ReferenceTarget {
   readonly title: string | undefined;
@@ -129,14 +121,17 @@ export const artifactTextQuery = (id: string | undefined, version: number | unde
         : api.getArtifactVersion(id ?? "", version),
   });
 
-/** One ask with its thread, followers, and edits. */
+/** One ask with its thread, followers, and edits. A live write of that ask (`ask:<id>`: its
+ *  answer, decline, hand-on, clarification and snooze) shows its change again over each answer
+ *  of this read. */
 export const askQuery = (id: string | undefined) =>
   queryOptions({
     queryKey: ["ask", id],
     queryFn: () => api.getAsk(id ?? ""),
   });
 
-/** One comment with its replies. */
+/** One comment with its replies; a live write of that comment (`comment:<id>`) shows its change
+ *  again over each answer of this read. */
 export const commentQuery = (id: string | undefined) =>
   queryOptions({
     queryKey: ["comment", id],
@@ -267,34 +262,35 @@ export interface ReferenceReadOptions {
  * its id is known; a block's graph read and, for a block of a document, the summary that names its
  * document, and no document text (a block of a comment or message is its graph read alone, whose
  * node carries the block's text); an ask's, comment's or message's own read. Every key comes from
- * the query builders above. */
-export function prefetchReference(queryClient: QueryClient, route: DispatchReferenceRoute): void {
+ * the query builders above. The document whose text is warmed is the one Dispatch's answer names
+ * (`Cache.dispatched`): a text read is Dispatch's, and the card composes its own reads. */
+export function prefetchReference(cache: Cache, route: DispatchReferenceRoute): void {
   const warmText = (
     artifact: Pick<ReferenceArtifact, "id" | "kind"> | undefined,
     version: number | undefined
   ) => {
     if (artifact?.kind === "doc") {
-      void queryClient.prefetchQuery(artifactTextQuery(artifact.id, version));
+      void cache.prefetch(artifactTextQuery(artifact.id, version));
     }
   };
   const block = blockReferenceOf(route);
   if (block !== undefined) {
-    void queryClient.prefetchQuery(blockQuery(block));
+    void cache.prefetch(blockQuery(block));
     if (itemOfBlock(route) !== undefined) {
       return;
     }
     if (route.kind === "document") {
-      void queryClient.prefetchQuery(documentSummaryQuery(route.project, route.slug));
+      void cache.prefetch(documentSummaryQuery(route.project, route.slug));
     } else if ("key" in route) {
-      void queryClient.prefetchQuery(issueSummaryQuery(route.key));
+      void cache.prefetch(issueSummaryQuery(route.key));
     }
     return;
   }
   switch (route.kind) {
     case "agent-artifact": {
       const query = agentArtifactQuery(route.session, route.slug);
-      void queryClient.prefetchQuery(query).then(() => {
-        const artifact = queryClient.getQueryData(query.queryKey);
+      void cache.prefetch(query).then(() => {
+        const artifact = cache.dispatched(query.queryKey);
         warmText(
           artifact === undefined ? undefined : agentReferenceArtifact(artifact),
           route.version
@@ -303,33 +299,33 @@ export function prefetchReference(queryClient: QueryClient, route: DispatchRefer
       return;
     }
     case "message":
-      void queryClient.prefetchQuery(messageQuery(route.key, route.id));
+      void cache.prefetch(messageQuery(route.key, route.id));
       return;
     case "ask":
-      void queryClient.prefetchQuery(askQuery(route.id));
+      void cache.prefetch(askQuery(route.id));
       return;
     case "comment":
-      void queryClient.prefetchQuery(commentQuery(route.id));
+      void cache.prefetch(commentQuery(route.id));
       return;
     case "document": {
       if (route.item?.kind === "ask") {
-        void queryClient.prefetchQuery(askQuery(route.item.id));
+        void cache.prefetch(askQuery(route.item.id));
         return;
       }
       if (route.item?.kind === "comment") {
-        void queryClient.prefetchQuery(commentQuery(route.item.id));
+        void cache.prefetch(commentQuery(route.item.id));
         return;
       }
       const query = documentSummaryQuery(route.project, route.slug);
-      void queryClient
-        .prefetchQuery(query)
-        .then(() => warmText(queryClient.getQueryData(query.queryKey), route.version));
+      void cache
+        .prefetch(query)
+        .then(() => warmText(cache.dispatched(query.queryKey), route.version));
       return;
     }
     case "artifact": {
       const query = issueSummaryQuery(route.key);
-      void queryClient.prefetchQuery(query).then(() => {
-        const documents = queryClient.getQueryData(query.queryKey)?.documents;
+      void cache.prefetch(query).then(() => {
+        const documents = cache.dispatched(query.queryKey)?.documents;
         warmText(
           documents?.find((candidate) => candidate.slug === route.slug),
           route.version
@@ -339,9 +335,9 @@ export function prefetchReference(queryClient: QueryClient, route: DispatchRefer
     }
     default: {
       const query = issueQuery(route.key);
-      void queryClient
-        .prefetchQuery(query)
-        .then(() => warmText(primarySpec(queryClient.getQueryData(query.queryKey)), undefined));
+      void cache
+        .prefetch(query)
+        .then(() => warmText(primarySpec(cache.dispatched(query.queryKey)), undefined));
     }
   }
 }
@@ -385,7 +381,7 @@ export interface WholeRouteRead {
 export function useWholeRouteRead(route: DispatchReferenceRoute | undefined): WholeRouteRead {
   const origin = window.location.origin;
   const prefix = route === undefined ? undefined : prefixReference(route);
-  const resolution = useQuery({ ...referencesQuery(prefix), enabled: prefix !== undefined });
+  const resolution = useShownQuery({ ...referencesQuery(prefix), enabled: prefix !== undefined });
   return {
     prefix,
     resolution,
@@ -443,24 +439,24 @@ export function useReferenceData(
       : record?.kind === "document" && record.item?.kind === "comment"
         ? record.item.id
         : undefined;
-  const issue = useQuery({
+  const issue = useShownQuery({
     ...issueSummaryQuery(summaryKey),
     enabled: summaryKey !== undefined,
   });
-  const messageQueryResult = useQuery({
+  const messageQueryResult = useShownQuery({
     ...messageQuery(message?.key, message?.id),
     enabled: message !== undefined,
   });
-  const projectDocument = useQuery({
+  const projectDocument = useShownQuery({
     ...documentSummaryQuery(document?.project, document?.slug),
     enabled: document !== undefined,
   });
-  const sessionArtifact = useQuery({
+  const sessionArtifact = useShownQuery({
     ...agentArtifactQuery(agentArtifact?.session, agentArtifact?.slug),
     enabled: agentArtifact !== undefined,
     select: agentReferenceArtifact,
   });
-  const block = useQuery({
+  const block = useShownQuery({
     ...blockQuery(blockReference),
     enabled: blockReference !== undefined,
   });
@@ -472,12 +468,12 @@ export function useReferenceData(
         : (issue.data?.documents ?? []).find(
             (candidate) => route?.kind === "artifact" && candidate.slug === route.slug
           );
-  const text = useQuery({
+  const text = useShownQuery({
     ...artifactTextQuery(artifact?.id, version),
     enabled: options.text && artifact?.kind === "doc",
   });
-  const ask = useQuery({ ...askQuery(askId), enabled: askId !== undefined });
-  const comment = useQuery({ ...commentQuery(commentId), enabled: commentId !== undefined });
+  const ask = useShownQuery({ ...askQuery(askId), enabled: askId !== undefined });
+  const comment = useShownQuery({ ...commentQuery(commentId), enabled: commentId !== undefined });
   return {
     issue: issue.data,
     artifact,
@@ -516,8 +512,8 @@ export function useBlockDocument(
   const project = named?.kind === "document" ? named : undefined;
   const issueKey =
     named !== undefined && named.kind !== "document" && "key" in named ? named.key : undefined;
-  const issue = useQuery({ ...issueSummaryQuery(issueKey), enabled: issueKey !== undefined });
-  const projectDocument = useQuery({
+  const issue = useShownQuery({ ...issueSummaryQuery(issueKey), enabled: issueKey !== undefined });
+  const projectDocument = useShownQuery({
     ...documentSummaryQuery(project?.project, project?.slug),
     enabled: project !== undefined,
   });
@@ -640,39 +636,37 @@ function picturePath(
     : artifactVersionPath(named.owner, named.slug, version);
 }
 
-/** Calls `onPicture` with the picture path a summary's data gives, now and whenever the summary
- *  query changes (an event refreshes it, a failed read recovers), until the returned function
- *  unsubscribes. Undefined while the summary is unread or unreadable. */
+/** Calls `onPicture` with the picture path a summary's data gives, as the person sees it
+ *  (`watchShownQuery`, the read `useReferenceTarget`'s picture makes inside React), now and
+ *  whenever the summary changes (an event refreshes it, a failed read recovers), until the
+ *  returned function unsubscribes. Undefined while the summary is unread or unreadable. */
 function observePicturePath<TData, TKey extends QueryKey>(
-  queryClient: QueryClient,
-  options: QueryObserverOptions<TData, Error, TData, TData, TKey>,
+  cache: Cache,
+  options: ReadOptions<TData, Error, TData, TKey>,
   artifactOf: (data: TData) => ReferenceArtifact | undefined,
   named: ReferencedArtifact,
   onPicture: (path: string | undefined) => void
 ): () => void {
-  const observer = new QueryObserver(queryClient, options);
-  const report = (result: QueryObserverResult<TData, Error>) =>
-    onPicture(result.data === undefined ? undefined : picturePath(named, artifactOf(result.data)));
-  const unsubscribe = observer.subscribe(report);
-  report(observer.getCurrentResult());
-  return unsubscribe;
+  return watchShownQuery(cache, options, (data) =>
+    onPicture(data === undefined ? undefined : picturePath(named, artifactOf(data)))
+  );
 }
 
 /** `useReferenceTarget`'s `picture`, for a caller outside React (the document editors' picture
- *  node view): it observes the same summary queries through `queryClient`, so every picture of
+ *  node view): it observes the same summary queries through `cache`, so every picture of
  *  one issue shares one summary read with the links and cards on the page, and follows the
  *  summary as an event refreshes it - a new version uploaded, a failed read recovered. Calls
  *  `onPicture` at once and on every change, with undefined for a reference to anything but an
  *  image artifact or while its summary is unread or unreadable; the returned function stops. */
 export function watchPicturePath(
-  queryClient: QueryClient,
+  cache: Cache,
   route: DispatchReferenceRoute,
   onPicture: (path: string | undefined) => void
 ): () => void {
   const named = referencedArtifact(route);
   if (named !== undefined && route.kind === "document") {
     return observePicturePath(
-      queryClient,
+      cache,
       documentSummaryQuery(route.project, route.slug),
       (summary) => summary,
       named,
@@ -681,7 +675,7 @@ export function watchPicturePath(
   }
   if (named !== undefined && route.kind === "agent-artifact") {
     return observePicturePath(
-      queryClient,
+      cache,
       agentArtifactQuery(route.session, route.slug),
       agentReferenceArtifact,
       named,
@@ -690,7 +684,7 @@ export function watchPicturePath(
   }
   if (named !== undefined && route.kind === "artifact") {
     return observePicturePath(
-      queryClient,
+      cache,
       issueSummaryQuery(route.key),
       (summary) => (summary.documents ?? []).find((candidate) => candidate.slug === route.slug),
       named,
@@ -717,20 +711,21 @@ export function useReferencePath(route: DispatchReferenceRoute): string;
 export function useReferencePath(route: DispatchReferenceRoute | undefined): string | undefined;
 export function useReferencePath(route: DispatchReferenceRoute | undefined): string | undefined {
   const specKey = route !== undefined && needsSpecSlug(route) ? route.key : undefined;
-  const issue = useQuery({ ...issueSummaryQuery(specKey), enabled: specKey !== undefined });
+  const issue = useShownQuery({ ...issueSummaryQuery(specKey), enabled: specKey !== undefined });
   return route === undefined ? undefined : buildReferencePath(route, summarySpec(issue.data)?.slug);
 }
 
 /** `useReferencePath`'s answer for a click outside a render: it waits for the issue summary a
  *  pinned block of a spec needs, and opens the live spec at the block when the summary cannot be
- *  read, as the hook's path does before it is. */
+ *  read, as the hook's path does before it is. The slug is the one Dispatch's answer names
+ *  (`fetchDispatched`): the path opens a page Dispatch serves. */
 export async function fetchReferencePath(
-  queryClient: QueryClient,
+  cache: Cache,
   route: DispatchReferenceRoute
 ): Promise<string> {
   if (!needsSpecSlug(route)) {
     return buildReferencePath(route);
   }
-  const issue = await queryClient.fetchQuery(issueSummaryQuery(route.key)).catch(() => undefined);
+  const issue = await cache.fetchDispatched(issueSummaryQuery(route.key)).catch(() => undefined);
   return buildReferencePath(route, summarySpec(issue)?.slug);
 }

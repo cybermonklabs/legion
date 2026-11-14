@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, expect, jest, type Mock, spyOn, test } from "bun:test";
 import type { ChangeDecorations } from "@legion/proof-editor";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { Node as ProseMirrorNode } from "prosemirror-model";
@@ -8,6 +7,8 @@ import { MemoryRouter } from "react-router-dom";
 
 import { fakeDocumentRuntime } from "../../__tests__/document-runtime";
 import { realClock, tick } from "../../__tests__/fake-clock";
+import { answerAskHandOns, answerAskSnoozes } from "../../__tests__/send-answers";
+import { QueryClient, QueryClientProvider } from "../../api/cache/test-client";
 import { ApiError, api } from "../../api/client";
 import type {
   Anchor,
@@ -265,6 +266,8 @@ function renderPane({
             <AskHandOnLiveContext value={(askId, live) => handOnLiveness.push([askId, live])}>
               <ReadingPane
                 onAnswered={(id) => answered.push(id)}
+                onAssignLive={() => {}}
+                onPriorityLive={() => {}}
                 onSnoozeLive={(askId, live) => snoozeLiveness.push([askId, live])}
                 row={{ ask: row, kind: "ask" }}
                 viewer="alice"
@@ -999,7 +1002,7 @@ test("a question in no document is today's card", async () => {
 test("the head's Snooze registers its write, so the list keeps the row the column is on", async () => {
   const user = userEvent.setup();
   const held = Promise.withResolvers<AskSnooze>();
-  const snoozeAsk = spyOn(api, "snoozeAsk").mockImplementation(() => held.promise);
+  const snoozeAsk = answerAskSnoozes().mockImplementation(() => held.promise);
   const { snoozeLiveness, view } = renderPane({ ask: issueAsk() });
 
   try {
@@ -1008,8 +1011,15 @@ test("the head's Snooze registers its write, so the list keeps the row the colum
       "tomorrow"
     );
     // The optimistic snooze folds the row into Later and the column follows the list, so a
-    // head that kept its write to itself would be unmounted with the row it wrote about.
-    await waitFor(() => expect(snoozeLiveness).toEqual([["ask-a", true]]));
+    // head that kept its write to itself would be unmounted with the row it wrote about. It
+    // registers at the press, before the snooze is composed over the list, and again from the
+    // write's own state; the list's hold is a set, so the second changes nothing.
+    await waitFor(() =>
+      expect(snoozeLiveness).toEqual([
+        ["ask-a", true],
+        ["ask-a", true],
+      ])
+    );
   } finally {
     held.resolve({ snoozed_until: "2026-10-31T09:00:00Z" });
     view.unmount();
@@ -1025,7 +1035,7 @@ test("the column's card registers its hand-on, so the list keeps the row the col
     issue: { assignee: "bob", key: "CORE-1", title: "Bob's issue" },
   });
   const held = Promise.withResolvers<InboxRow>();
-  const handAskTo = spyOn(api, "handAskTo").mockImplementation(() => held.promise);
+  const handAskTo = answerAskHandOns().mockImplementation(() => held.promise);
   // The control reads the people as the reader reaches for it, bob among them.
   const listUsers = spyOn(api, "listUsers").mockResolvedValue([
     { login: "alice" },
@@ -1039,8 +1049,14 @@ test("the column's card registers its hand-on, so the list keeps the row the col
     // The control sits in the card, not in the head, so the registration reaches the list
     // through the context the Inbox provides rather than through a prop of this column's: the
     // optimistic `waiting_on_person` takes the row out of that list as the write starts, and
-    // the card that wrote is the only surface a refusal is shown on.
-    await waitFor(() => expect(handOnLiveness).toEqual([["ask-a", true]]));
+    // the card that wrote is the only surface a refusal is shown on. It registers at the press,
+    // before the hand-on is composed over the list, and again from the write's own state.
+    await waitFor(() =>
+      expect(handOnLiveness).toEqual([
+        ["ask-a", true],
+        ["ask-a", true],
+      ])
+    );
   } finally {
     held.resolve({ ...row, asked_of: null, waiting_on_person: "bob" });
     view.unmount();
@@ -1161,6 +1177,58 @@ test("a selection changed twice inside the settle opens the second document alon
   }
 });
 
+// The reviewer's j/k: the column keeps its document flow mounted from one question to the next, so
+// its issue read moves from one key to another. The issue moved to was changed long before the one
+// left, which `issueQuery`'s own rule for Dispatch's answers would keep out of a cache - but that
+// rule judges answers, never what the column shows for another issue.
+test("a reader moved between two issues shows the issue it is on: the column's document, from an open issue's ask to a closed one's", async () => {
+  const openIssue = {
+    closed_at: null,
+    key: "CORE-1",
+    updated_at: "2026-11-10T00:00:00Z",
+  } as unknown as IssueDetails;
+  const closedIssue = {
+    closed_at: "2026-01-01T00:00:00Z",
+    key: "CORE-2",
+    updated_at: "2026-01-01T00:00:00Z",
+  } as unknown as IssueDetails;
+  getIssue.mockImplementation(async (key) => (key === "CORE-1" ? openIssue : closedIssue));
+  const { runtime, rerender, view } = renderPane({
+    ask: decisionAsk({ id: "ask-1" }),
+    seed: (client) => {
+      seedDocument(client, document());
+      seedDocument(
+        client,
+        document({ id: "artifact-2", issue_key: "CORE-2", name: "notes.md", slug: "notes" })
+      );
+      client.setQueryData(["issue", "CORE-1"], openIssue);
+      client.setQueryData(["issue", "CORE-2"], closedIssue);
+    },
+  });
+
+  try {
+    await waitFor(() => expect(runtime.connections).toHaveLength(1));
+    runtime.sync();
+    await waitFor(() => expect(runtime.editors).toHaveLength(1));
+    expect(screen.queryByText("This issue is closed. Its document is read-only.")).toBeNull();
+
+    rerender(
+      decisionAsk({
+        block_artifact: { id: "artifact-2", primary: false, slug: "notes" },
+        block_id: "later",
+        id: "ask-2",
+        issue: { assignee: "alice", key: "CORE-2", title: "A closed issue" },
+        issue_key: "CORE-2",
+      })
+    );
+    expect(
+      await screen.findByText("This issue is closed. Its document is read-only.")
+    ).toBeDefined();
+  } finally {
+    view.unmount();
+  }
+});
+
 // ---------------------------------------------------------------------------------------------
 // The four thread bodies: what the column shows for a Reply or an Agent row.
 // ---------------------------------------------------------------------------------------------
@@ -1211,6 +1279,8 @@ function renderThread(thread: MyReplyRow, seed: (client: QueryClient) => void = 
           <MarginProvider>
             <ReadingPane
               onAnswered={() => {}}
+              onAssignLive={() => {}}
+              onPriorityLive={() => {}}
               onSnoozeLive={() => {}}
               row={{ kind: "thread", thread }}
               viewer="alice"

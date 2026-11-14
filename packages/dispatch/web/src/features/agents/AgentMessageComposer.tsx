@@ -1,6 +1,7 @@
-import { hashKey, type MutationKey, useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
-
+import { useCache } from "../../api/cache/cache";
+import { hashKey, type MutationKey } from "../../api/cache/keys";
+import { useShownQuery } from "../../api/cache/shown-query";
 import { api } from "../../api/client";
 import { agentMessagesQuery } from "../../api/queries";
 import type { Agent } from "../../api/types";
@@ -73,7 +74,7 @@ export function AgentMessageComposer({
    *  column's thread box is, mounted again for every row the reader steps onto. */
   standing?: boolean;
 }): ReactNode {
-  const queryClient = useQueryClient();
+  const cache = useCache();
   const store = useHeldSends();
   const { sending, sendingNow } = hold;
   // The session's other messages still on their way - its live view's - show here too, as their
@@ -160,7 +161,7 @@ export function AgentMessageComposer({
     if (commits === 0) return;
     box.current?.querySelector("textarea")?.focus();
   }, [commits]);
-  const issues = useQuery({
+  const issues = useShownQuery({
     enabled: issuePickerOpen,
     queryFn: () => api.listIssues({ open: true }),
     queryKey: ["agents", "issue-picker"],
@@ -328,7 +329,7 @@ export function AgentMessageComposer({
         onSent={() => {
           sentJustNow.current = true;
           onCancelReply();
-          void queryClient.invalidateQueries({
+          void cache.invalidate({
             queryKey: agentMessagesQuery(agent.session_id).queryKey,
           });
           // Focus went to the document when the field disabled itself; take it back.

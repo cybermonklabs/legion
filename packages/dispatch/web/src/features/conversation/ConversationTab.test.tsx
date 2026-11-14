@@ -1,5 +1,4 @@
 import { afterEach, expect, jest, type Mock, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: the two clicks of one same-tick double press, which user-event cannot fire inside a single task
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -15,10 +14,23 @@ import {
   type Placement,
 } from "../../__tests__/intersection-observer";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
-import { answerIssueStates, answerThreadReads } from "../../__tests__/send-answers";
+import { seedUnread } from "../../__tests__/replies-seed";
+import {
+  answerCommentActions,
+  answerIssueStates,
+  answerThreadReads,
+} from "../../__tests__/send-answers";
 import { wholeText } from "../../__tests__/whole-text";
+import {
+  answeredByDispatch,
+  cacheOf,
+  QueryClient,
+  QueryClientProvider,
+  QueryObserver,
+} from "../../api/cache/test-client";
 import type { WriteBounds } from "../../api/client";
 import { ApiError, api } from "../../api/client";
+import { userStateQuery } from "../../api/queries";
 import type {
   Actor,
   Agent,
@@ -37,11 +49,11 @@ import type {
   UserState,
 } from "../../api/types";
 import { messageDeliveryFields } from "../agents/delivery-fixture";
+import { writePin } from "../issue/pin-write";
+import { pinnedItemMarker } from "../issue/pins";
 import { stubMatchMedia } from "../margin/margin-fixture";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { userPreferenceStorageKey } from "../shell/userPreference";
-import { seedUnread } from "../threads/replies-fixture";
-import { writesOf } from "../writes/write-store";
 import { ConversationTab } from "./ConversationTab";
 import { answeredWithErrorGuidance, safeRetryGuidance } from "./delivery";
 
@@ -496,7 +508,7 @@ test("each refused pin is retried on its own, over the state Dispatch holds", as
         throw new ApiError(409, { code: "PIN_REFUSED", error: "refused" });
       }
       saved = input.dismissed ?? [];
-      return issueState(saved);
+      return answeredByDispatch(issueState(saved));
     };
 
     unmount = render(tab({ "CORE-1": issueState() }, true, queryClient)).unmount;
@@ -507,7 +519,7 @@ test("each refused pin is retried on its own, over the state Dispatch holds", as
       await user.click(button);
     }
 
-    const writes = writesOf(queryClient);
+    const writes = cacheOf(queryClient).writes;
     await waitFor(() =>
       expect(writes.rows().map((write) => write.status)).toEqual(["refused", "refused"])
     );
@@ -1186,7 +1198,7 @@ test("a refused Resolve keeps the thread and its reply, and the one that lands c
   const queryClient = newQueryClient();
   let refuse = true;
   const resolves: string[] = [];
-  const resolveComment = spyOn(api, "resolveComment").mockImplementation(async (id) => {
+  const resolveComment = answerCommentActions("resolve").mockImplementation(async (id) => {
     resolves.push(id);
     if (refuse) throw new ApiError(409, { error: "the server is down" });
     return { ...root, resolved: true };
@@ -1227,14 +1239,12 @@ function ownResolveOverAReply() {
   const resolution = Promise.withResolvers<void>();
   const reply = Promise.withResolvers<Comment>();
   const listComments = api.listComments as Mock<typeof api.listComments>;
-  const spies = [
-    spyOn(api, "createComment").mockImplementation(() => reply.promise),
-    spyOn(api, "resolveComment").mockImplementation(async () => {
-      await resolution.promise;
-      stub.lists.comments = [{ ...root, resolved: true }];
-      return { ...root, resolved: true };
-    }),
-  ];
+  const resolveComment = answerCommentActions("resolve").mockImplementation(async () => {
+    await resolution.promise;
+    stub.lists.comments = [{ ...root, resolved: true }];
+    return { ...root, resolved: true };
+  });
+  const spies = [spyOn(api, "createComment").mockImplementation(() => reply.promise)];
   const queryClient = newQueryClient();
   const view = render(tab({ "CORE-1": issueState() }, true, queryClient));
   return {
@@ -1253,6 +1263,7 @@ function ownResolveOverAReply() {
         await reply.promise.catch(() => {});
       });
     },
+    resolveComment,
     restore: () => {
       view.unmount();
       for (const spy of spies) spy.mockRestore();
@@ -1320,7 +1331,7 @@ test("on a phone, a thread reply refused while the reader's Resolve is out outli
     await user.click(within(dialog).getByRole("button", { name: "Send" }));
     await waitFor(() => expect(api.createComment).toHaveBeenCalledTimes(1));
     await user.click(within(dialog).getByRole("button", { name: "Resolve" }));
-    await waitFor(() => expect(api.resolveComment).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(resolve.resolveComment).toHaveBeenCalledTimes(1));
     await resolve.refuse();
     await within(dialog).findByText(refusedText);
 
@@ -1522,7 +1533,7 @@ test("a comment's Reply names its session author's mention as the picker does", 
 
   try {
     await screen.findByText("Comment B");
-    await waitFor(() => expect(queryClient.getQueryData(["agents"])).toBeDefined());
+    await waitFor(() => expect(cacheOf(queryClient).shown(["agents"])).toBeDefined());
     const composer = screen.getByRole("form", { name: "Comment composer" });
     const field = within(composer).getByRole<HTMLTextAreaElement>("textbox", { name: "Comment" });
     await user.click(within(turn("comment-a")).getByRole("button", { name: "Reply" }));
@@ -2073,7 +2084,7 @@ function renderThreads(lists: Lists, unread: readonly string[], focusItemId?: st
   const scrollIntoView = HTMLElement.prototype.scrollIntoView;
   HTMLElement.prototype.scrollIntoView = () => {};
   const queryClient = newQueryClient();
-  seedUnread(queryClient, { issue: "CORE-1" }, unread);
+  seedUnread(cacheOf(queryClient), { issue: "CORE-1" }, unread);
   const view = render(
     tab({ "CORE-1": issueState() }, true, queryClient, false, new Map(), focusItemId)
   );
@@ -2312,10 +2323,68 @@ test("the read mark writes the issue's head seq as the reader, and retries an un
     const [first, second] = putIssueState.mock.calls;
     expect(second?.[2]?.key).toBe(first?.[2]?.key);
     await waitFor(() =>
-      expect(queryClient.getQueryData<UserState>(["user-state"])?.["CORE-1"]?.last_read_seq).toBe(7)
+      expect(cacheOf(queryClient).shown<UserState>(["user-state"])?.["CORE-1"]?.last_read_seq).toBe(
+        7
+      )
     );
   } finally {
     view.unmount();
+    getMyState.mockRestore();
+    putIssueState.mockRestore();
+    stub.restore();
+    viewport.restore();
+  }
+});
+
+// R7 and R10 of dispatch://INFRA-299. The read mark lands while another issue's pin is out, and
+// its answer is merged into the viewer's state, which holds Dispatch's answers alone, the pin
+// being composed over it as it is read. So once the pin is refused and the state cannot be read
+// again, the page shows the mark and not the pin Dispatch refused.
+test("a read mark's answer merged while another issue's pin is out stays once the pin is refused and the read fails", async () => {
+  const viewport = installIntersectionObserver();
+  const stub = stubLists({
+    comments: [comment("comment-1", { body: "Newest" })],
+    head: [headEvent(7)],
+  });
+  const getMyState = spyOn(api, "getMyState").mockImplementation(async () => ({
+    "CORE-1": issueState([], 1),
+  }));
+  const refusal = Promise.withResolvers<UserIssueState>();
+  const putIssueState = answerIssueStates().mockImplementation(async (key, input) =>
+    key === "CORE-2" ? refusal.promise : issueState([], input.last_read_seq ?? 0)
+  );
+  const queryClient = newQueryClient();
+  queryClient.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
+  queryClient.setQueryData<UserState>(["user-state"], { "CORE-1": issueState([], 1) });
+  // A surface drawing the viewer's state, so the read again goes out.
+  const unsubscribe = new QueryObserver(queryClient, userStateQuery()).subscribe(() => {});
+  const view = render(tab({ "CORE-1": issueState([], 1) }, true, queryClient));
+  const state = () => cacheOf(queryClient).shown<UserState>(["user-state"]);
+
+  try {
+    await screen.findByText("Newest");
+    act(() => writePin(cacheOf(queryClient), "CORE-2", { id: "comment-9", op: "pin" }));
+    await waitFor(() => expect(putIssueState).toHaveBeenCalledTimes(1));
+    expect(state()?.["CORE-2"]?.dismissed).toEqual([pinnedItemMarker("comment-9")]);
+
+    // From here on the viewer's state cannot be read: every read again fails.
+    getMyState.mockImplementation(() => Promise.reject(new Error("offline")));
+    const card = view.container.querySelector('[data-turn="comment:comment-1"]');
+    if (card === null) throw new Error("expected the newest card");
+    await dwellOnFakeClock(viewport, card);
+    await waitFor(() => expect(state()?.["CORE-1"]?.last_read_seq).toBe(7));
+    expect(state()?.["CORE-2"]?.dismissed).toEqual([pinnedItemMarker("comment-9")]);
+
+    await act(async () =>
+      refusal.reject(new ApiError(422, { code: "INVALID_STATE", error: "not a state" }))
+    );
+    await waitFor(() => expect(queryClient.getQueryState(["user-state"])?.status).toBe("error"));
+    expect(state()?.["CORE-2"]?.dismissed ?? []).toEqual([]);
+    expect(state()?.["CORE-1"]?.last_read_seq).toBe(7);
+  } finally {
+    view.unmount();
+    unsubscribe();
+    cacheOf(queryClient).writes.clear();
     getMyState.mockRestore();
     putIssueState.mockRestore();
     stub.restore();
@@ -2339,7 +2408,7 @@ for (const order of ["oldest", "newest"] as const) {
     });
     const queryClient = newQueryClient();
     // The browser's order is the signed-in person's, so the card waits on who they are.
-    seedUnread(queryClient, { issue: "CORE-1" }, []);
+    seedUnread(cacheOf(queryClient), { issue: "CORE-1" }, []);
     const view = render(tab({ "CORE-1": issueState() }, true, queryClient));
 
     try {

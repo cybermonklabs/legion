@@ -1,7 +1,8 @@
 import type { ReactNode } from "react";
 
+import { useWriteSelection, useWrites } from "../../api/cache/cache";
+import type { Write } from "../../api/cache/write-store";
 import { dangerText, secondaryButtonCompact, textSecondaryOnSurface } from "../../theme/classes";
-import { useWriteSelection, useWrites, type Write } from "./write-store";
 
 /** The writes a signed-out page still keeps for their person: every one they can see that
  *  Dispatch has not made. A read mark is never shown. */

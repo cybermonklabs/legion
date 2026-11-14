@@ -1,10 +1,10 @@
-import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useState } from "react";
-
+import { useShownQuery } from "../../api/cache/shown-query";
 import { usersQuery } from "../../api/queries";
 import { QueryError } from "../../components/QueryError";
 import { badgeLow, badgePrimary } from "../../theme/classes";
 import { badgeSelectBadge, badgeSelectOverlay, badgeSelectWrapper } from "./badge-select";
+import { reservedOpenTextWidth } from "./reserved-width";
 import { useIssueAssignee } from "./useIssueAssignee";
 
 /**
@@ -16,10 +16,12 @@ import { useIssueAssignee } from "./useIssueAssignee";
  * touch on it, or focus) and then kept for the session: a fresh issue load makes no request
  * for it, and the badge never waits on it. Anyone signed in may reassign. The write
  * goes through `useIssueAssignee`, so the issue detail, the project lists and the inbox's
- * partitions update at once and roll back together; a refused person shows the server's
- * reason. Like `PriorityControl`, the select stays enabled while a save is in flight - a
- * disabled control drops the focus it holds and leaves the tab order - and a pick made meanwhile
- * is queued behind the save. Labelled `Assignee of <KEY>`.
+ * partitions show the pick at once and stop showing it together if it is refused; a refused
+ * person shows the server's reason. Like `PriorityControl`, the select stays enabled while a
+ * save is in flight - a disabled control drops the focus it holds and leaves the tab order - and
+ * a pick made meanwhile is queued behind the save. A login is open text, so the badge reserves
+ * the fourteen characters of `reservedOpenTextWidth` whatever it names, cuts a longer login with
+ * an ellipsis and keeps the whole of it in the control's `title`. Labelled `Assignee of <KEY>`.
  */
 export function AssigneeControl({
   assignee,
@@ -31,7 +33,7 @@ export function AssigneeControl({
   issueKey: string;
 }): ReactNode {
   const [wanted, setWanted] = useState(false);
-  const users = useQuery({ ...usersQuery(), enabled: wanted });
+  const users = useShownQuery({ ...usersQuery(), enabled: wanted });
   const want = () => setWanted(true);
   const write = useIssueAssignee(issueKey);
   const logins = (users.data ?? []).map((user) => user.login);
@@ -41,8 +43,14 @@ export function AssigneeControl({
   const tone = assignee === null ? badgeLow : badgePrimary;
   return (
     <>
-      <span className={`${badgeSelectWrapper} ${disabled ? "opacity-50" : ""}`}>
-        <span aria-hidden="true" className={`${badgeSelectBadge} ${tone.bg} ${tone.text}`}>
+      <span
+        className={`${badgeSelectWrapper} ${disabled ? "opacity-50" : ""}`}
+        title={assignee ?? undefined}
+      >
+        <span
+          aria-hidden="true"
+          className={`${badgeSelectBadge} ${reservedOpenTextWidth} ${tone.bg} ${tone.text}`}
+        >
           {assignee ?? "Unassigned"}
         </span>
         <select

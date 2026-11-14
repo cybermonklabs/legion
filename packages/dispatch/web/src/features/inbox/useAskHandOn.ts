@@ -1,6 +1,6 @@
-import { useQueryClient } from "@tanstack/react-query";
+import { useCache } from "../../api/cache/cache";
 
-import { api } from "../../api/client";
+import { askHandOnRequest } from "../../api/client";
 import { inboxQuery, whoAmIQuery } from "../../api/queries";
 import type { Ask, InboxRow } from "../../api/types";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
@@ -20,67 +20,74 @@ export interface AskHandOnWrite {
 
 /**
  * The one way the SPA hands an ask to a person. The new person lands on every inbox cache at
- * once, so the row leaves the list it was in and joins theirs on the press, rolls back if the
- * server refuses, and every read carrying the ask - the Inbox and its owner's lists
- * (`invalidateOwnerReads`), and the ask's own thread - refetches once the hand-on settles, the
- * same shape as `useAskSnooze`, over `PUT /api/v1/asks/{id}/asked-of`.
+ * once, so the row leaves the list it was in and joins theirs on the press, and every read
+ * carrying the ask - the Inbox and its owner's lists (`invalidateOwnerReads`), and the ask's own
+ * thread - refetches once the hand-on settles, the same shape as `useAskSnooze`, over
+ * `PUT /api/v1/asks/{id}/asked-of`.
+ *
+ * The person is shown by the store (`WriteSpec.shows`), so it is shown again over each answer
+ * that lands on an inbox cache while the write is live (R7 of dispatch://INFRA-299): an answer
+ * composed before the hand-on arrives whole - every other row of it with it - and still waits on
+ * the person the reader named. A refused hand-on stops being composed: the lists are what
+ * Dispatch last gave them, every other live write's change over them (R10).
  *
  * What is patched is what the server will answer with: `waiting_on_person`, which is the person
  * named either way, and the three stored fields behind it - `asked_of`, empty when the ask was
  * handed to the assignee of its own issue, since an empty field means the ask follows that
- * issue again; `asked_of_by`, the reader; and `asked_of_at`, now. The reader is taken from the
- * `/auth/whoami` read the shell already holds rather than read again: it is in the cache before
- * any card can be pressed, and a hand-on made without it leaves the pair unnamed until the
- * refetch answers.
+ * issue again; `asked_of_by`, the reader; and `asked_of_at`, now. The reader is the person
+ * Dispatch's `/auth/whoami` answer the shell already holds names (`Cache.dispatched`), not read
+ * again: it is in the cache before any card can be pressed, and a hand-on made without it leaves
+ * the pair unnamed until the refetch answers. Both are read once, at the press, so the change
+ * shown again over a later answer is the same change; whom the ask is stored against is read from
+ * the row as it stands, so an answer that moves the issue's assignee is met by the rule rather
+ * than by a value taken before it.
  */
 export function useAskHandOn(ask: Ask): AskHandOnWrite {
-  const queryClient = useQueryClient();
+  const cache = useCache();
   const inboxKey = inboxQuery().queryKey;
-  // The card says why its hand-on was refused, where the reader pressed it.
+  // The card says why its hand-on was refused, where the reader pressed it. It writes the ask,
+  // so it stands in that row's line (`ask:<id>`).
   const mutation = useKeyedWrite({
-    write: (askedOf: string, bounds) => api.handAskTo(ask.id, askedOf, bounds),
+    request: (askedOf: string) => askHandOnRequest(ask.id, askedOf),
+    target: () => `ask:${ask.id}`,
     inline: true,
     label: (askedOf) => `Ask handed to ${askedOf}`,
-    onMutate: async (askedOf) => {
-      await queryClient.cancelQueries({ queryKey: inboxKey });
-      const previous = queryClient.getQueriesData<InboxRow[]>({ queryKey: inboxKey });
-      const by = queryClient.getQueryData(whoAmIQuery().queryKey)?.login ?? null;
+    shows: (askedOf) => {
+      const by = cache.dispatched(whoAmIQuery().queryKey)?.login ?? null;
       const at = new Date().toISOString();
-      queryClient.setQueriesData<InboxRow[]>({ queryKey: inboxKey }, (current) =>
-        current?.map((row) =>
-          row.id === ask.id
-            ? {
-                ...row,
-                // Naming the assignee of the ask's own issue stores no person: the ask
-                // follows that issue again, and whom it waits on is the person named either
-                // way.
-                asked_of: askedOf === (row.issue?.assignee ?? null) ? null : askedOf,
-                asked_of_by: by,
-                asked_of_at: at,
-                waiting_on_person: askedOf,
-              }
-            : row
-        )
-      );
-      return previous;
+      return (shown) => {
+        shown.under<InboxRow[]>(inboxKey, (current) =>
+          current.map((row) =>
+            row.id === ask.id
+              ? {
+                  ...row,
+                  // Naming the assignee of the ask's own issue stores no person: the ask
+                  // follows that issue again, and whom it waits on is the person named either
+                  // way.
+                  asked_of: askedOf === (row.issue?.assignee ?? null) ? null : askedOf,
+                  asked_of_by: by,
+                  asked_of_at: at,
+                  waiting_on_person: askedOf,
+                }
+              : row
+          )
+        );
+      };
     },
-    onError: (_error, _askedOf, previous) => {
-      for (const [key, data] of previous ?? []) {
-        queryClient.setQueryData(key, data);
-      }
-    },
+    // A read already out was asked before this press.
+    onMutate: () => cache.cancel({ queryKey: inboxKey }),
     onSettled: () => {
       // Every surface that draws this ask follows the write, not the `ask.asked_of` event that
       // lands after it: on the issue page, in a document's margin and in its ask block the card
       // reads the ask from its owner's list, where the control's own value comes from, so an
       // Inbox-only refresh would snap the picker back to the person before the hand-on.
-      invalidateOwnerReads(queryClient, ask);
+      invalidateOwnerReads(cache, ask);
       // The Inbox's own Reply-thread card is the one surface that reads the ask from its thread
       // instead (`ThreadBody`, `askThreadQuery`), which is kept for the session and never goes
       // stale of itself. It is read again here rather than in `invalidateOwnerReads`, whose
       // other caller - `useAskAnswerForm` - already refreshes that thread in each branch that
       // moves it, and whose own subject is the reads that carry an ask besides its own thread.
-      void queryClient.invalidateQueries({ queryKey: ["ask-thread", ask.id] });
+      void cache.invalidate({ queryKey: ["ask-thread", ask.id] });
     },
   });
   return {

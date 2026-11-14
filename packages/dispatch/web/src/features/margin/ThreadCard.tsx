@@ -1,6 +1,6 @@
-import type { MutationKey } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
+import type { MutationKey } from "../../api/cache/keys";
 
 import type { Suggestion } from "../../api/types";
 import { Pill } from "../../components/Pill";

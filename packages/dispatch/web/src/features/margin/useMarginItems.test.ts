@@ -1,6 +1,5 @@
 import { expect, spyOn, test } from "bun:test";
 import type { AcceptSuggestionResponse } from "@legion/contracts";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, renderHook, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createElement, type ReactNode } from "react";
@@ -8,6 +7,9 @@ import { MemoryRouter } from "react-router-dom";
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { graphNode } from "../../__tests__/graph-fixture";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { answerCommentActions } from "../../__tests__/send-answers";
+import { cacheOf, QueryClient, QueryClientProvider } from "../../api/cache/test-client";
+import { plainWrite, type Writes } from "../../api/cache/write-store";
 import { ApiError, api } from "../../api/client";
 import type {
   Artifact,
@@ -525,8 +527,9 @@ function renderActionButtons() {
   return { listComments, queryClient, unmount: view.unmount };
 }
 
-/** One held `acceptComment` call: the test settles it when it chooses. The accept route answers
- *  the comment and whether the suggestion it carried was lost (`AcceptSuggestionResponse`). */
+/** One held accept (`commentAcceptRequest`): the test settles it when it chooses. The accept
+ *  route answers the comment and whether the suggestion it carried was lost
+ *  (`AcceptSuggestionResponse`). */
 interface PendingSave {
   promise: Promise<AcceptSuggestionResponse>;
   reject: (reason: unknown) => void;
@@ -537,31 +540,43 @@ function actionState(): { error: string | null; pending: string[] } {
   return JSON.parse(screen.getByLabelText("Action state").textContent ?? "");
 }
 
+/** The lines the store holds a comment action on, in press order: where the actions waiting
+ *  their turn live, now that no component holds them (R8 of dispatch://INFRA-299). */
+function actionLines(client: QueryClient): string[] {
+  return cacheOf(client)
+    .writes.rows()
+    .map((row) => row.target ?? "no line");
+}
+
+// An action on another comment waits for the one in flight, and the waiting action is a write of
+// the store on its own comment's line, not a click a component is holding.
 test("two accepts in one tick reach the server one after the other, in click order", async () => {
   const user = userEvent.setup();
   const saves: PendingSave[] = [];
-  const acceptComment = spyOn(api, "acceptComment").mockImplementation(() => {
+  const acceptComment = answerCommentActions("accept").mockImplementation(() => {
     const save = Promise.withResolvers<AcceptSuggestionResponse>();
     saves.push(save);
     return save.promise;
   });
-  const { listComments, unmount } = renderActionButtons();
+  const { listComments, queryClient, unmount } = renderActionButtons();
   try {
     await user.click(screen.getByRole("button", { name: "Accept A" }));
     await user.click(screen.getByRole("button", { name: "Accept B" }));
     // A second press of the same button before its answer is one request, not two.
     await user.click(screen.getByRole("button", { name: "Accept A" }));
     await waitFor(() => expect(acceptComment).toHaveBeenCalledTimes(1));
-    expect(acceptComment).toHaveBeenLastCalledWith("A", keyedAttempt);
+    expect(acceptComment).toHaveBeenLastCalledWith("A", {}, keyedAttempt);
     await waitFor(() => expect(actionState().pending).toEqual(["A", "B"]));
+    expect(actionLines(queryClient)).toEqual(["comment:A", "comment:B"]);
 
     await act(async () => {
       saves[0]?.resolve({ ...comment("A", "m-a", "2026-09-09T00:00:00Z"), lost: false });
       await saves[0]?.promise;
     });
     await waitFor(() => expect(acceptComment).toHaveBeenCalledTimes(2));
-    expect(acceptComment).toHaveBeenLastCalledWith("B", keyedAttempt);
+    expect(acceptComment).toHaveBeenLastCalledWith("B", {}, keyedAttempt);
     await waitFor(() => expect(actionState().pending).toEqual(["B"]));
+    expect(actionLines(queryClient)).toEqual(["comment:B"]);
 
     await act(async () => {
       saves[1]?.resolve({ ...comment("B", "m-b", "2026-09-09T00:01:00Z"), lost: false });
@@ -569,6 +584,7 @@ test("two accepts in one tick reach the server one after the other, in click ord
     });
     await waitFor(() => expect(actionState()).toEqual({ error: null, pending: [] }));
     expect(acceptComment).toHaveBeenCalledTimes(2);
+    expect(actionLines(queryClient)).toEqual([]);
   } finally {
     unmount();
     acceptComment.mockRestore();
@@ -576,20 +592,23 @@ test("two accepts in one tick reach the server one after the other, in click ord
   }
 });
 
+// A failure clears the actions still waiting: they leave the store unsent, and nothing of them
+// is shown - the reader corrects or retries the action that failed.
 test("a failed action drops the clicks queued behind it and shows its error", async () => {
   const user = userEvent.setup();
   const saves: PendingSave[] = [];
-  const acceptComment = spyOn(api, "acceptComment").mockImplementation(() => {
+  const acceptComment = answerCommentActions("accept").mockImplementation(() => {
     const save = Promise.withResolvers<AcceptSuggestionResponse>();
     saves.push(save);
     return save.promise;
   });
-  const { listComments, unmount } = renderActionButtons();
+  const { listComments, queryClient, unmount } = renderActionButtons();
   try {
     await user.click(screen.getByRole("button", { name: "Accept A" }));
     await user.click(screen.getByRole("button", { name: "Accept B" }));
     await user.click(screen.getByRole("button", { name: "Accept C" }));
     await waitFor(() => expect(actionState().pending).toEqual(["A", "B", "C"]));
+    expect(actionLines(queryClient)).toEqual(["comment:A", "comment:B", "comment:C"]);
 
     await act(async () => {
       saves[0]?.reject(new Error("offline"));
@@ -597,11 +616,12 @@ test("a failed action drops the clicks queued behind it and shows its error", as
     });
     await waitFor(() => expect(actionState()).toEqual({ error: "A", pending: [] }));
     expect(acceptComment).toHaveBeenCalledTimes(1);
+    expect(actionLines(queryClient)).toEqual([]);
 
     // The queue is gone, not stuck: the next click goes straight out.
     await user.click(screen.getByRole("button", { name: "Accept C" }));
     await waitFor(() => expect(acceptComment).toHaveBeenCalledTimes(2));
-    expect(acceptComment).toHaveBeenLastCalledWith("C", keyedAttempt);
+    expect(acceptComment).toHaveBeenLastCalledWith("C", {}, keyedAttempt);
   } finally {
     unmount();
     acceptComment.mockRestore();
@@ -609,20 +629,163 @@ test("a failed action drops the clicks queued behind it and shows its error", as
   }
 });
 
-test("a chained action that fails refetches the comments its predecessor's success could not", async () => {
+// Every way a write leaves the store ends the wait of the action behind it: a sign-out lets every
+// write go (`Writes.clear`), and the action that was waiting its turn is never sent, whatever
+// lands after it.
+test("a sign-out ends the wait of an action behind another, and nothing of it is sent", async () => {
   const user = userEvent.setup();
   const saves: PendingSave[] = [];
-  const acceptComment = spyOn(api, "acceptComment").mockImplementation(() => {
+  const acceptComment = answerCommentActions("accept").mockImplementation(() => {
     const save = Promise.withResolvers<AcceptSuggestionResponse>();
     saves.push(save);
     return save.promise;
   });
   const { listComments, queryClient, unmount } = renderActionButtons();
-  const invalidate = spyOn(queryClient, "invalidateQueries");
-  const commentRefetches = () =>
-    invalidate.mock.calls.filter(
-      ([filters]) => JSON.stringify(filters?.queryKey) === JSON.stringify(["comments", "CORE-1"])
-    ).length;
+  const writes = cacheOf(queryClient).writes;
+  try {
+    await user.click(screen.getByRole("button", { name: "Accept A" }));
+    await user.click(screen.getByRole("button", { name: "Accept B" }));
+    await waitFor(() => expect(actionState().pending).toEqual(["A", "B"]));
+    expect(acceptComment).toHaveBeenCalledTimes(1);
+
+    act(() => writes.clear());
+    expect(actionLines(queryClient)).toEqual([]);
+    // An unrelated write lands after the sign-out: the store holds no action before B's, and B
+    // is no longer the store's to send.
+    await act(async () => {
+      await writes.run({
+        detail: null,
+        kind: plainWrite,
+        label: "Unrelated",
+        presentation: "quiet",
+        unlined: "a write of no row, landing after the sign-out",
+        write: async () => ({}),
+      });
+    });
+    await act(async () => {
+      saves[0]?.resolve({ ...comment("A", "m-a", "2026-09-09T00:00:00Z"), lost: false });
+      await saves[0]?.promise;
+    });
+    await act(async () => {});
+    expect(acceptComment).toHaveBeenCalledTimes(1);
+    expect(acceptComment).toHaveBeenLastCalledWith("A", {}, keyedAttempt);
+  } finally {
+    unmount();
+    acceptComment.mockRestore();
+    listComments.mockRestore();
+  }
+});
+
+/** Accept A out, Accept B waiting behind it, under alice's sign-in; `hold` holds her writes and
+ *  `release` ends the hold. While held, A's answer comes back and B goes back in its line unsent.
+ *  When A lands, B is sent once the hold ends; when A is refused (`refused`), B is cleared
+ *  behind it as it is with no hold, and never sent. */
+async function heldBehindAnother(
+  hold: (writes: Writes) => void,
+  release: (writes: Writes) => void,
+  refused = false
+): Promise<void> {
+  const user = userEvent.setup();
+  const saves: PendingSave[] = [];
+  const acceptComment = answerCommentActions("accept").mockImplementation(() => {
+    const save = Promise.withResolvers<AcceptSuggestionResponse>();
+    saves.push(save);
+    return save.promise;
+  });
+  const { listComments, queryClient, unmount } = renderActionButtons();
+  queryClient.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
+  const writes = cacheOf(queryClient).writes;
+  const statuses = () => writes.rows().map((row) => `${row.target} ${row.status}`);
+  try {
+    await user.click(screen.getByRole("button", { name: "Accept A" }));
+    await user.click(screen.getByRole("button", { name: "Accept B" }));
+    await waitFor(() => expect(actionState().pending).toEqual(["A", "B"]));
+    expect(acceptComment).toHaveBeenCalledTimes(1);
+
+    await act(async () => hold(writes));
+    // B waited inside its attempt, which the hold stops: it is back in its line, unsent.
+    expect(statuses()).toEqual(["comment:A sending", "comment:B queued"]);
+    await act(async () => {
+      if (refused) {
+        saves[0]?.reject(
+          new ApiError(409, { code: "ANCHOR_MISSING", error: "the suggestion's text moved" })
+        );
+      } else {
+        saves[0]?.resolve({ ...comment("A", "m-a", "2026-09-09T00:00:00Z"), lost: false });
+      }
+      await saves[0]?.promise.catch(() => undefined);
+    });
+    await act(async () => {});
+    expect(acceptComment).toHaveBeenCalledTimes(1);
+    expect(statuses()).toEqual(["comment:B queued"]);
+
+    await act(async () => release(writes));
+    if (refused) {
+      // The hold ends, and B's attempt reads that A was refused while B stood held: B leaves
+      // the store unsent, and the card shows A's refusal alone.
+      await waitFor(() => expect(actionState()).toEqual({ error: "A", pending: [] }));
+      await act(async () => {});
+      expect(acceptComment).toHaveBeenCalledTimes(1);
+      expect(statuses()).toEqual([]);
+    } else {
+      // The hold ends, and B waits for nothing: it goes.
+      await waitFor(() => expect(acceptComment).toHaveBeenCalledTimes(2));
+      expect(acceptComment).toHaveBeenLastCalledWith("B", {}, keyedAttempt);
+    }
+  } finally {
+    unmount();
+    acceptComment.mockRestore();
+    listComments.mockRestore();
+  }
+}
+
+// A sign-out of the person in another tab holds their writes here rather than letting them go
+// (`Writes.holdFor`): the action waiting behind another is not sent when the one before it lands,
+// and goes once that tab says the person is still signed in.
+test("another tab's sign-out holds an action behind another, unsent, until it is released", async () => {
+  await heldBehindAnother(
+    (writes) => writes.holdFor("alice"),
+    (writes) => writes.release("alice")
+  );
+});
+
+// A lapsed session holds every write until the next sign-in (`Writes.signedIn(undefined)`): the
+// action waiting behind another is not sent when the one before it lands, and goes once the same
+// person signs in again.
+test("a lapsed session holds an action behind another, unsent, until the person signs in again", async () => {
+  await heldBehindAnother(
+    (writes) => writes.signedIn(undefined),
+    (writes) => writes.signedIn("alice")
+  );
+});
+
+// A refusal clears the actions still waiting, those a hold put back in their line included: the
+// hold ended the wait that listened for it, and the attempt after the hold still reads it.
+test("an action refused during another tab's sign-out clears the one held behind it, unsent", async () => {
+  await heldBehindAnother(
+    (writes) => writes.holdFor("alice"),
+    (writes) => writes.release("alice"),
+    true
+  );
+});
+
+test("an action refused while the session is lapsed clears the one held behind it, unsent", async () => {
+  await heldBehindAnother(
+    (writes) => writes.signedIn(undefined),
+    (writes) => writes.signedIn("alice"),
+    true
+  );
+});
+
+test("a chained action that fails refetches the comments its predecessor's success could not", async () => {
+  const user = userEvent.setup();
+  const saves: PendingSave[] = [];
+  const acceptComment = answerCommentActions("accept").mockImplementation(() => {
+    const save = Promise.withResolvers<AcceptSuggestionResponse>();
+    saves.push(save);
+    return save.promise;
+  });
+  const { listComments, queryClient, unmount } = renderActionButtons();
   try {
     await user.click(screen.getByRole("button", { name: "Accept A" }));
     await user.click(screen.getByRole("button", { name: "Accept B" }));
@@ -632,19 +795,21 @@ test("a chained action that fails refetches the comments its predecessor's succe
       await saves[0]?.promise;
     });
     await waitFor(() => expect(acceptComment).toHaveBeenCalledTimes(2));
-    // A's success asked for a refetch; B's optimistic update cancelled it.
-    const before = commentRefetches();
-    expect(before).toBeGreaterThanOrEqual(1);
+    // A's success asked for a refetch; B's optimistic update cancelled it. What Dispatch holds
+    // from here on is A accepted, which only a read made after B's refusal brings.
+    const acceptedA = { ...comment("A", "m-a", "2026-09-09T00:00:00Z"), resolved: true };
+    listComments.mockResolvedValue([acceptedA]);
 
     await act(async () => {
       saves[1]?.reject(new Error("offline"));
       await saves[1]?.promise.catch(() => undefined);
     });
     await waitFor(() => expect(actionState()).toEqual({ error: "B", pending: [] }));
-    expect(commentRefetches()).toBe(before + 1);
+    await waitFor(() =>
+      expect(queryClient.getQueryData<Comment[]>(["comments", "CORE-1"])).toEqual([acceptedA])
+    );
   } finally {
     unmount();
-    invalidate.mockRestore();
     acceptComment.mockRestore();
     listComments.mockRestore();
   }
@@ -704,7 +869,7 @@ test("a failed action carries the API's reason, and a refusal of what it writes 
       want: { message: "Could not save this action.", retryable: true },
     },
   ]) {
-    const acceptComment = spyOn(api, "acceptComment").mockRejectedValue(error);
+    const acceptComment = answerCommentActions("accept").mockRejectedValue(error);
     const { listComments, unmount } = renderActionButtons();
     try {
       await user.click(screen.getByRole("button", { name: "Accept A" }));
@@ -716,7 +881,7 @@ test("a failed action carries the API's reason, and a refusal of what it writes 
     }
   }
 
-  const acceptComment = spyOn(api, "acceptComment")
+  const acceptComment = answerCommentActions("accept")
     .mockRejectedValueOnce(
       new ApiError(503, { code: "DOC_SERVICE_UNAVAILABLE", error: "document service unavailable" })
     )
@@ -726,7 +891,7 @@ test("a failed action carries the API's reason, and a refusal of what it writes 
     await user.click(screen.getByRole("button", { name: "Accept A" }));
     await waitFor(() => expect(acceptComment).toHaveBeenCalledTimes(2));
     expect(actionFailureShown()).toBeNull();
-    const [first, again] = acceptComment.mock.calls.map(([, bounds]) => bounds.key);
+    const [first, again] = acceptComment.mock.calls.map(([, , bounds]) => bounds.key);
     expect(again).toBe(first);
   } finally {
     unmount();

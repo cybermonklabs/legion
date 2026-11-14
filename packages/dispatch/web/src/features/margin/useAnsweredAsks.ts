@@ -1,6 +1,5 @@
-import { useQuery } from "@tanstack/react-query";
 import { useMemo } from "react";
-
+import { useShownQuery } from "../../api/cache/shown-query";
 import { api } from "../../api/client";
 import type { MarginOwner } from "./useMarginItems";
 
@@ -9,7 +8,7 @@ import type { MarginOwner } from "./useMarginItems";
  * endpoint; issue-owned asks retain the single per-issue history query.
  */
 export function useAnsweredAsks(owner: MarginOwner | undefined, artifactID: string | undefined) {
-  const query = useQuery({
+  const query = useShownQuery({
     enabled: owner !== undefined,
     queryFn: () => {
       if (owner === undefined) {

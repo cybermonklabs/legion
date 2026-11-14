@@ -1,12 +1,12 @@
-import { afterEach, expect, test } from "bun:test";
-import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, expect, spyOn, test } from "bun:test";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
-
 import { answerInboxReads } from "../../__tests__/send-answers";
-import { ApiError } from "../../api/client";
+import { useShownQuery } from "../../api/cache/shown-query";
+import { QueryClient, QueryClientProvider } from "../../api/cache/test-client";
+import { ApiError, api } from "../../api/client";
 import { inboxThreadsQuery, myRepliesCountQuery, whoAmIQuery } from "../../api/queries";
 import type { MyRepliesResponse, MyReplyRow } from "../../api/types";
 import { plannerAgentRow, replyRow } from "../threads/replies-fixture";
@@ -32,7 +32,7 @@ function noop(): void {}
  * the button and its refusal live on; the press itself is the Inbox's own hook.
  */
 function Bar({ filters = {} }: { filters?: InboxFilters }): ReactNode {
-  const read = useQuery(inboxThreadsQuery());
+  const read = useShownQuery(inboxThreadsQuery());
   const rows: readonly InboxListRow[] = (read.data?.rows ?? []).map((thread) => ({
     kind: "thread",
     thread,
@@ -143,34 +143,82 @@ test("the button shows only while the list holds an unread Reply or Agent row", 
   expect(screen.getByRole("button", { name: "Mark all read" })).toBeTruthy();
 });
 
-test("one press zeroes the count and draws the rows read, without taking one out of the list", async () => {
+test("one press drops the count and draws the rows read at once, without taking one out of the list", async () => {
   const user = userEvent.setup();
   const marked = answerInboxReads();
   const settle = Promise.withResolvers<{ marked: number }>();
   marked.mockReturnValue(settle.promise);
-  renderBar([replyRow("c1", { priority: 1 }), replyRow("c2", { priority: 1 })], 2, {
-    priority: ["P1"],
+  const rows = [replyRow("c1", { priority: 1 }), replyRow("c2", { priority: 1 })];
+  renderBar(rows, 2, { priority: ["P1"] });
+  // The reads the landed press makes again: both rows read, and nothing unread.
+  const listMyReplies = spyOn(api, "listMyReplies").mockResolvedValue({
+    ...threadsRead(rows.map((row) => ({ ...row, unread: false }))),
+    total: 0,
   });
 
-  expect(inboxCount()).toBe("2");
-  await user.click(screen.getByRole("button", { name: "Mark all read" }));
+  try {
+    expect(inboxCount()).toBe("2");
+    await user.click(screen.getByRole("button", { name: "Mark all read" }));
 
-  // At once, with the request still out: every badge reading the shared count is at zero and no
-  // row is unread any more - and both rows are still in the list, where a thread stays until it
-  // is dismissed.
-  await waitFor(() => expect(unread()).toBe("0"));
-  expect(listed()).toBe("2");
-  expect(inboxCount()).toBe("0");
-  expect(screen.queryByRole("button", { name: "Mark all read" })).not.toBeInTheDocument();
-  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    // At once, with the request still out: every badge reading the shared count is at zero and no
+    // row is unread any more - and both rows are still in the list, where a thread stays until it
+    // is dismissed.
+    await waitFor(() => expect(unread()).toBe("0"));
+    expect(listed()).toBe("2");
+    expect(inboxCount()).toBe("0");
+    expect(screen.queryByRole("button", { name: "Mark all read" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 
-  expect(marked.mock.calls[0]?.[0]).toEqual({
-    kind: ["reply", "agent"],
-    priority: ["P1"],
-    read_through: AS_OF,
-  });
-  settle.resolve({ marked: 2 });
-  await waitFor(() => expect(marked).toHaveBeenCalledTimes(1));
+    expect(marked.mock.calls[0]?.[0]).toEqual({
+      kind: ["reply", "agent"],
+      priority: ["P1"],
+      read_through: AS_OF,
+    });
+    settle.resolve({ marked: 2 });
+    // Landed: the press reads the count again, and every badge reading it is at zero.
+    await waitFor(() => expect(inboxCount()).toBe("0"));
+    expect(marked).toHaveBeenCalledTimes(1);
+  } finally {
+    listMyReplies.mockRestore();
+  }
+});
+
+// R7. A read of the count can land while the press is out, and a count holds no rows a change
+// could find the mark in: one answer may already count it (Dispatch made it and the press's own
+// answer is still on its way), another may not (a read that left before Dispatch made it). The
+// press holds the count at what it stood at when the reader pressed less the rows it marked, so
+// each answer gives the same count - lowered once, never twice.
+test("a count answer landing while the press is out is lowered once, whether or not it already counts the mark", async () => {
+  const user = userEvent.setup();
+  const marked = answerInboxReads();
+  const settle = Promise.withResolvers<{ marked: number }>();
+  marked.mockReturnValue(settle.promise);
+  // Five unread threads, the two in the list among them.
+  const client = renderBar([replyRow("c1"), replyRow("c2")], 5);
+  const listMyReplies = spyOn(api, "listMyReplies");
+  const readCount = (total: number) => {
+    listMyReplies.mockResolvedValueOnce({ ...threadsRead([]), total });
+    return act(() =>
+      client.refetchQueries({ exact: true, queryKey: myRepliesCountQuery().queryKey })
+    );
+  };
+  try {
+    await user.click(screen.getByRole("button", { name: "Mark all read" }));
+    await waitFor(() => expect(unread()).toBe("0"));
+    expect(inboxCount()).toBe("3");
+
+    // An answer read before Dispatch made the mark: the count is still five there.
+    await readCount(5);
+    expect(inboxCount()).toBe("3");
+    // An answer that already counts the mark: three, which is not lowered again.
+    await readCount(3);
+    expect(inboxCount()).toBe("3");
+
+    settle.resolve({ marked: 2 });
+    await waitFor(() => expect(marked).toHaveBeenCalledTimes(1));
+  } finally {
+    listMyReplies.mockRestore();
+  }
 });
 
 test("a refused press brings the rows and the counts back and says nothing was marked", async () => {
@@ -178,16 +226,29 @@ test("a refused press brings the rows and the counts back and says nothing was m
   const marked = answerInboxReads();
   // An old server mid-deploy has no such route, which is a failed request like any other.
   marked.mockRejectedValue(new ApiError(404, { error: "not found" }));
-  renderBar([replyRow("c1"), replyRow("c2")], 2);
+  const rows = [replyRow("c1"), replyRow("c2")];
+  const client = renderBar(rows, 2);
+  // What the refusal reads again, the list and the count alike: nothing was marked, so both
+  // threads are unread and the count is still two.
+  const listMyReplies = spyOn(api, "listMyReplies").mockResolvedValue(threadsRead(rows));
 
-  await user.click(screen.getByRole("button", { name: "Mark all read" }));
+  try {
+    await user.click(screen.getByRole("button", { name: "Mark all read" }));
 
-  const alert = await screen.findByRole("alert");
-  expect(alert.textContent).toBe(MARK_ALL_REFUSED_TEXT);
-  expect(MARK_ALL_REFUSED_TEXT).toBe("Nothing was marked read.");
-  // The sidebar's Inbox count and the compact header's Inbox link hold their pre-click number
-  // again, and the rows are back in the list with the button over them.
-  expect(inboxCount()).toBe("2");
-  expect(unread()).toBe("2");
-  expect(listed()).toBe("2");
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toBe(MARK_ALL_REFUSED_TEXT);
+    expect(MARK_ALL_REFUSED_TEXT).toBe("Nothing was marked read.");
+    // The sidebar's Inbox count and the compact header's Inbox link hold their pre-click number
+    // again, and the rows are back in the list with the button over them.
+    expect(inboxCount()).toBe("2");
+    expect(unread()).toBe("2");
+    expect(listed()).toBe("2");
+    // And so they stay once Dispatch's answers to the reads again have landed.
+    await waitFor(() => expect(client.isFetching()).toBe(0));
+    expect(inboxCount()).toBe("2");
+    expect(unread()).toBe("2");
+    expect(listed()).toBe("2");
+  } finally {
+    listMyReplies.mockRestore();
+  }
 });

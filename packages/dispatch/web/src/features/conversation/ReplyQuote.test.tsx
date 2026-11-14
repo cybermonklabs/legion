@@ -1,9 +1,10 @@
 import { expect, test } from "bun:test";
 import type { ReplyBlock } from "@legion/contracts";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, waitFor } from "@testing-library/react";
 import type { ComponentProps } from "react";
 import { MemoryRouter } from "react-router-dom";
+
+import { QueryClient, QueryClientProvider } from "../../api/cache/test-client";
 
 import { passageItem, ReplyQuote } from "./ReplyQuote";
 

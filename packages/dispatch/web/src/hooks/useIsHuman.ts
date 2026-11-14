@@ -1,5 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
-
+import { useShownQuery } from "../api/cache/shown-query";
 import { whoAmIQuery } from "../api/queries";
 
 /** Whether the signed-in principal is a person (`/auth/whoami`'s `kind: "user"`), whose sign-in
@@ -7,5 +6,5 @@ import { whoAmIQuery } from "../api/queries";
  *  principal is still loading and for every other principal, so a surface waits for the sign-in
  *  read before it asks and nothing without the scope cycles on a 403. */
 export function useIsHuman(): boolean {
-  return useQuery(whoAmIQuery()).data?.kind === "user";
+  return useShownQuery(whoAmIQuery()).data?.kind === "user";
 }

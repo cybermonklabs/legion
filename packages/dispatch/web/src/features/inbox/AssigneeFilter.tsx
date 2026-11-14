@@ -1,6 +1,5 @@
-import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useState } from "react";
-
+import { useShownQuery } from "../../api/cache/shown-query";
 import { usersQuery } from "../../api/queries";
 import { MultiSelect } from "../../components/MultiSelect";
 import { EVERYONE_FILTER_VALUE, isOwnList, UNASSIGNED_FILTER_VALUE } from "./sections";
@@ -44,7 +43,7 @@ export function AssigneeFilter({
   // Every Inbox reader renders this control and few open it, so the people are fetched on the
   // first open and kept from then on: a reader who never filters costs no `/api/v1/users`.
   const [wanted, setWanted] = useState(false);
-  const people = useQuery({ ...usersQuery(), enabled: wanted });
+  const people = useShownQuery({ ...usersQuery(), enabled: wanted });
 
   // A login equal to either reserved word would be a row that means the filter rather than the
   // person, so neither is offered among the people.

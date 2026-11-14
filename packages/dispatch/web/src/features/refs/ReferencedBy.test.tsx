@@ -1,9 +1,9 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { graphNodeFields } from "../../__tests__/graph-fixture";
+import { QueryClient, QueryClientProvider } from "../../api/cache/test-client";
 import { api } from "../../api/client";
 import type { GraphEdge, GraphReferences } from "../../api/types";
 import type { BlockItemKind } from "./block-reference";

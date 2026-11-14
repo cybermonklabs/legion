@@ -1,5 +1,6 @@
-import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo } from "react";
+import { useCache } from "../../api/cache/cache";
+import { useShownQuery } from "../../api/cache/shown-query";
 import { advancesIssuesQuery, issueQuery, projectIssuesQuery } from "../../api/queries";
 import { claimIsTakeable } from "../issue/ClaimChip";
 import { useAgentText } from "../refs/AgentName";
@@ -73,19 +74,19 @@ export function useIssueTableItems(
   listing: IssueListing,
   { wantsDone, registry }: { wantsDone: boolean; registry: AgentRegistry }
 ) {
-  const queryClient = useQueryClient();
+  const cache = useCache();
   const text = useAgentText();
   // Scoped, the listing is the priority's own, which names no project: a priority belongs to
   // none, so the work under it is every project's. A listing its open read answers whole never
   // asks for this one (`answeredWhole`, which `IssuesTable` reads).
-  const everyIssue = useQuery({
+  const everyIssue = useShownQuery({
     ...("project" in listing
       ? projectIssuesQuery(listing.project, [])
       : advancesIssuesQuery(listing)),
     enabled: wantsDone,
   });
   const doneLoaded = wantsDone && everyIssue.data !== undefined;
-  const openIssues = useQuery({
+  const openIssues = useShownQuery({
     ...("project" in listing
       ? projectIssuesQuery(listing.project, [], true)
       : advancesIssuesQuery(listing, true)),
@@ -103,7 +104,7 @@ export function useIssueTableItems(
       ),
     ];
   }, [all]);
-  const ancestry = useQuery({
+  const ancestry = useShownQuery({
     queryKey: ["issue-ancestors", listingName(listing), ...missingParents],
     enabled: missingParents.length > 0,
     retry: false,
@@ -112,7 +113,9 @@ export function useIssueTableItems(
       const ancestors: EpicAncestor[] = [];
       // A parent this reader cannot read — deleted, or in a project they are not in — costs
       // its own rows their epic and nothing else: the walk keeps every ancestor it did read,
-      // and stops asking for the one that failed.
+      // and stops asking for the one that failed. Each parent is Dispatch's answer
+      // (`fetchDispatched`), since the walk's own answer is a cache's data, which holds no
+      // live change.
       const unreadable = new Set<string>();
       for (;;) {
         const missing = [
@@ -128,7 +131,7 @@ export function useIssueTableItems(
         for (let from = 0; from < missing.length; from += PARENT_READS_IN_FLIGHT) {
           const slice = missing.slice(from, from + PARENT_READS_IN_FLIGHT);
           const answers = await Promise.allSettled(
-            slice.map((key) => queryClient.fetchQuery({ ...issueQuery(key), staleTime: Infinity }))
+            slice.map((key) => cache.fetchDispatched({ ...issueQuery(key), staleTime: Infinity }))
           );
           answers.forEach((answer, index) => {
             const key = slice[index];

@@ -1,6 +1,5 @@
-import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useMemo } from "react";
-
+import { useShownQuery } from "../../api/cache/shown-query";
 import { api } from "../../api/client";
 import type { DisplayTree } from "../../api/types";
 import {
@@ -10,7 +9,6 @@ import {
   surfaceMutedBg,
   textSecondaryOnSurface,
 } from "../../theme/classes";
-
 import { MarkdownPreview } from "./MarkdownPreview";
 import { referenceSpans, trimReference } from "./reference-spans";
 import { useReferencePath, useReferenceTarget } from "./reference-target";
@@ -92,7 +90,7 @@ function githubReference(value: string): string | undefined {
 }
 
 function GitHubUnfurl({ href, path }: { href: string; path: string }): ReactNode {
-  const issue = useQuery({
+  const issue = useShownQuery({
     queryKey: ["github", path],
     queryFn: async () => (await api.githubRest(path)).json() as Promise<GitHubIssue>,
   });

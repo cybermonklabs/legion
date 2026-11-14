@@ -1,12 +1,13 @@
 import { expect, spyOn, test } from "bun:test";
 import { ISSUE_CLAIM_UNRESPONSIVE_GRACE_MS } from "@legion/contracts";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { answerRoute } from "../../__tests__/send-answers";
+import { QueryClient, QueryClientProvider } from "../../api/cache/test-client";
 import { api } from "../../api/client";
 import type { Agent, ClaimHolderLiveness, Issue, IssueClaim, IssueDetails } from "../../api/types";
 import { MarginProvider } from "../margin/margin-context";
@@ -142,7 +143,10 @@ test("a claimed issue names its holder and releases the claim from the header", 
   const agents = spyOn(api, "listAgents").mockResolvedValue([
     running("session-one", "Implementer"),
   ]);
-  const release = spyOn(api, "releaseIssueClaim").mockResolvedValue({ ...base, claim: null });
+  const release = answerRoute<(key: string) => Promise<Issue>>(
+    "DELETE",
+    "/api/v1/issues/*/claim"
+  ).mockResolvedValue({ ...base, claim: null });
   const view = header({ ...base, claim });
   try {
     expect(await screen.findByTitle(/Claimed by Implementer/)).toBeDefined();
@@ -162,7 +166,7 @@ test("a claimed issue names its holder and releases the claim from the header", 
     );
     expect(screen.queryByText("not running")).not.toBeInTheDocument();
     await view.user.click(screen.getByRole("button", { name: "Release the claim on CORE-1" }));
-    await waitFor(() => expect(release).toHaveBeenCalledWith("CORE-1", keyedAttempt));
+    await waitFor(() => expect(release).toHaveBeenCalledWith("CORE-1", undefined, keyedAttempt));
   } finally {
     view.unmount();
     release.mockRestore();
@@ -201,7 +205,9 @@ test("a release that fails says so and offers a retry", async () => {
   const agents = spyOn(api, "listAgents").mockResolvedValue([
     running("session-one", "Implementer"),
   ]);
-  const release = spyOn(api, "releaseIssueClaim").mockRejectedValue(new Error("network error"));
+  const release = answerRoute("DELETE", "/api/v1/issues/*/claim").mockRejectedValue(
+    new Error("network error")
+  );
   const view = header({ ...base, claim });
   try {
     await view.user.click(

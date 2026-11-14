@@ -1,6 +1,6 @@
 import { type ReactNode, useEffect, useState } from "react";
 
-import { useLiveSocketState } from "../../api/live-socket";
+import { useLiveSocketState } from "../../api/cache/live-socket";
 import {
   connectionDotConnected,
   connectionDotFailed,

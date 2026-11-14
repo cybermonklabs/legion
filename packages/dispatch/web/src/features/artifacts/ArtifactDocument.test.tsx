@@ -1,7 +1,5 @@
 import { beforeEach, expect, spyOn, test } from "bun:test";
 import { ID_AMBIGUOUS, itemFromSearch } from "@legion/contracts";
-import type { QueryClient } from "@tanstack/react-query";
-import { QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http } from "msw";
@@ -17,6 +15,7 @@ import {
   createQueryClient,
   decisionsAndReadMarkHandlers,
 } from "../../__tests__/proof-document";
+import { type QueryClient, QueryClientProvider } from "../../api/cache/test-client";
 import { ApiError, api } from "../../api/client";
 import type { Artifact, Ask, AskRead, Comment, InboxRow, IssueAskRow } from "../../api/types";
 import { DocumentRuntime } from "../doc/runtime";

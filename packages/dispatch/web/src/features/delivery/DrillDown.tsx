@@ -1,7 +1,6 @@
-import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useRef } from "react";
 import { Link } from "react-router-dom";
-
+import { useShownQuery } from "../../api/cache/shown-query";
 import { deliveryRunQuery } from "../../api/queries";
 import type {
   DeliveryComponent,
@@ -141,7 +140,7 @@ function PRDetail({
 
 /** Every job of the run, with each result, read once the drill-down opens. */
 function RunJobs({ runId, durations }: { runId: number; durations: boolean }): ReactNode {
-  const detail = useQuery(deliveryRunQuery(runId));
+  const detail = useShownQuery(deliveryRunQuery(runId));
   if (detail.isPending) return <div className={`text-sm ${textMutedOnSurface}`}>Loading…</div>;
   if (detail.isError) {
     return <div className={`text-sm ${textMutedOnSurface}`}>The run's jobs could not be read.</div>;

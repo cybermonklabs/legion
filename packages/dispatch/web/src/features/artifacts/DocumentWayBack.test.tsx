@@ -1,11 +1,12 @@
 import { expect, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { answerArtifactRemovals, answerArtifactRenames } from "../../__tests__/send-answers";
+import { QueryClient, QueryClientProvider, useQuery } from "../../api/cache/test-client";
 import { ApiError, api } from "../../api/client";
 import type { Artifact } from "../../api/types";
 import type { DocumentToolbar } from "../doc/ProofDocument";
@@ -108,7 +109,7 @@ test("the correction sends the rename and shows the new title with no reload", a
   const listArtifacts = spyOn(api, "listArtifacts").mockImplementation(() =>
     Promise.resolve([stored])
   );
-  const renameArtifact = spyOn(api, "renameArtifact").mockImplementation((_id, input) => {
+  const renameArtifact = answerArtifactRenames().mockImplementation((_id, input) => {
     stored = { ...stored, name: input.name };
     return Promise.resolve(stored);
   });
@@ -146,7 +147,7 @@ test("the correction sends the rename and shows the new title with no reload", a
 test("a refused correction shows the server's own sentence", async () => {
   const user = userEvent.setup();
   const listArtifacts = spyOn(api, "listArtifacts").mockResolvedValue([document()]);
-  const renameArtifact = spyOn(api, "renameArtifact").mockRejectedValue(
+  const renameArtifact = answerArtifactRenames().mockRejectedValue(
     new ApiError(409, {
       code: "ARTIFACT_NAME_TAKEN",
       error: "CORE-1 already holds a document named Launch notes",
@@ -181,7 +182,7 @@ test("the removal sends the delete and leaves the person on the gone document's 
   const listArtifacts = spyOn(api, "listArtifacts").mockImplementation(() =>
     Promise.resolve(stored)
   );
-  const deleteArtifact = spyOn(api, "deleteArtifact").mockImplementation(() => {
+  const deleteArtifact = answerArtifactRemovals().mockImplementation(() => {
     stored = [];
     return Promise.resolve();
   });
@@ -191,7 +192,9 @@ test("the removal sends the delete and leaves the person on the gone document's 
     await screen.findByRole("heading", { name: "Lauch notes" });
     await user.click(screen.getByRole("button", { name: "Remove" }));
 
-    await waitFor(() => expect(deleteArtifact).toHaveBeenCalledWith("artifact-1", keyedAttempt));
+    await waitFor(() =>
+      expect(deleteArtifact).toHaveBeenCalledWith("artifact-1", undefined, keyedAttempt)
+    );
     await waitFor(() => expect(screen.getByTestId("location").textContent).toBe(documentPath));
     // The list read moved, and it no longer holds the document.
     await waitFor(() => expect(screen.queryByRole("heading", { name: "Lauch notes" })).toBeNull());
@@ -207,7 +210,7 @@ test("the removal sends the delete and leaves the person on the gone document's 
 test("a refused removal shows the server's own sentence", async () => {
   const user = userEvent.setup();
   const listArtifacts = spyOn(api, "listArtifacts").mockResolvedValue([document()]);
-  const deleteArtifact = spyOn(api, "deleteArtifact").mockRejectedValue(
+  const deleteArtifact = answerArtifactRemovals().mockRejectedValue(
     new ApiError(409, {
       code: "ARTIFACT_NOT_UNTOUCHED",
       error:
@@ -236,8 +239,8 @@ test("a refused removal shows the server's own sentence", async () => {
 test("a closed issue refuses both ways back on the document's own page", async () => {
   const user = userEvent.setup();
   const listArtifacts = spyOn(api, "listArtifacts").mockResolvedValue([document()]);
-  const renameArtifact = spyOn(api, "renameArtifact").mockResolvedValue(document());
-  const deleteArtifact = spyOn(api, "deleteArtifact").mockResolvedValue(undefined);
+  const renameArtifact = answerArtifactRenames().mockResolvedValue(document());
+  const deleteArtifact = answerArtifactRemovals().mockResolvedValue(undefined);
   const view = renderPage(documentPath, true);
 
   try {

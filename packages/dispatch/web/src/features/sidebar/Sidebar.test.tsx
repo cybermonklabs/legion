@@ -1,11 +1,11 @@
 import { afterEach, expect, type Mock, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter, useLocation, useNavigate } from "react-router-dom";
 
-import { answerAgentStates } from "../../__tests__/send-answers";
+import { type AgentStateAnswer, answerAgentStates } from "../../__tests__/send-answers";
+import { cacheOf, QueryClient, QueryClientProvider } from "../../api/cache/test-client";
 import { api } from "../../api/client";
 import { whoAmIQuery } from "../../api/queries";
 import type { Agent, UserAgentStates } from "../../api/types";
@@ -69,7 +69,7 @@ function renderRail({
   agentState?: UserAgentStates;
   entries?: string[];
   listed?: Agent[];
-} = {}): { putAgentState: Mock<typeof api.putAgentState>; queryClient: QueryClient } {
+} = {}): { putAgentState: Mock<AgentStateAnswer>; queryClient: QueryClient } {
   spies.push(
     spyOn(api, "whoAmI").mockResolvedValue({ event_head: "0", kind: "user", login: "alice" }),
     spyOn(api, "getInbox").mockResolvedValue([]),
@@ -182,7 +182,7 @@ test("each row says what its live view is doing", async () => {
   const { queryClient } = renderRail({ agentState: pins });
 
   await waitFor(() => expect(rowTexts()).toHaveLength(3));
-  const views = liveViewsOf(queryClient);
+  const views = liveViewsOf(cacheOf(queryClient));
   views.show(PLANNER);
   views.show(REVIEWER);
   await waitFor(() => expect(rowTexts()[1]).toBe("Reviewerlive"));

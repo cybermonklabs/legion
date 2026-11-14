@@ -1,6 +1,6 @@
-import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useId, useRef, useState } from "react";
-
+import { useCache } from "../../api/cache/cache";
+import { useShownQuery } from "../../api/cache/shown-query";
 import { api, type CreateArtifactReviewInput, isCapExceeded } from "../../api/client";
 import { inboxQuery } from "../../api/queries";
 import type { Artifact, ArtifactApproval } from "../../api/types";
@@ -76,7 +76,7 @@ function ReviewsDialog({
   onClose: () => void;
 }): ReactNode {
   const dialog = useDialog<HTMLDivElement>({ onClose, open: true });
-  const reviews = useQuery({
+  const reviews = useShownQuery({
     queryFn: () => api.listArtifactReviews(artifactId),
     queryKey: ["artifact-reviews", artifactId],
   });
@@ -249,32 +249,33 @@ export function ApprovalChip({
   const { approval } = artifact;
   const [reviewsOpen, setReviewsOpen] = useState(false);
   const [requestChangesOpen, setRequestChangesOpen] = useState(false);
-  const queryClient = useQueryClient();
+  const cache = useCache();
   const submitGuard = useSubmitGuard();
 
   const review = useKeyedWrite({
     label: (input: CreateArtifactReviewInput) =>
       `${input.state === "approved" ? "Approval" : "Change request"} on ${artifact.name}`,
     onSettled: () => submitGuard.release(),
+    unlined: "a review names no row until Dispatch makes it",
     write: (input, bounds) => api.createArtifactReview(artifact.id, input, bounds),
     onSuccess: () => {
       setRequestChangesOpen(false);
       onReviewed?.();
-      void queryClient.invalidateQueries({ queryKey: ["artifact-reviews", artifact.id] });
-      void queryClient.invalidateQueries({ queryKey: ["artifact", artifact.id] });
-      void queryClient.invalidateQueries({ queryKey: inboxQuery().queryKey });
+      void cache.invalidate({ queryKey: ["artifact-reviews", artifact.id] });
+      void cache.invalidate({ queryKey: ["artifact", artifact.id] });
+      void cache.invalidate({ queryKey: inboxQuery().queryKey });
       if (artifact.issue_key === null) {
-        void queryClient.invalidateQueries({
+        void cache.invalidate({
           queryKey: ["project", artifact.project, "artifacts"],
         });
-        void queryClient.invalidateQueries({
+        void cache.invalidate({
           queryKey: ["artifact-ref", `${artifact.project}/${artifact.slug}`],
         });
         return;
       }
-      void queryClient.invalidateQueries({ queryKey: ["issue", artifact.issue_key] });
-      void queryClient.invalidateQueries({ queryKey: ["artifacts", artifact.issue_key] });
-      void queryClient.invalidateQueries({ queryKey: ["asks", artifact.issue_key] });
+      void cache.invalidate({ queryKey: ["issue", artifact.issue_key] });
+      void cache.invalidate({ queryKey: ["artifacts", artifact.issue_key] });
+      void cache.invalidate({ queryKey: ["asks", artifact.issue_key] });
     },
   });
 

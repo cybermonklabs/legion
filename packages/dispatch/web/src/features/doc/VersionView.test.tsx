@@ -1,12 +1,12 @@
 import { beforeAll, expect, jest, test } from "bun:test";
 import type { ChangeDecorations, DocumentJSON } from "@legion/proof-editor";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, waitFor, within } from "@testing-library/react";
 import type { Node as ProseMirrorNode } from "prosemirror-model";
 import { MemoryRouter } from "react-router-dom";
 
 import { fakeDocumentRuntime, markedText } from "../../__tests__/document-runtime";
 import { realClock, tick } from "../../__tests__/fake-clock";
+import { QueryClient, QueryClientProvider } from "../../api/cache/test-client";
 import type { AuthenticatedUser, DisplayTree } from "../../api/types";
 import { loadedEngine, warmMarkdownRenderer } from "../refs/markdown-engine";
 import { type ChangeBaseline, changeMarksAgainst } from "./change-marks";

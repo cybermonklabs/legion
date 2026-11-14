@@ -1,14 +1,19 @@
 import { expect, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
+import { prependEventToLog } from "../../api/cache/event-log";
+import {
+  answeredByDispatch,
+  cacheOf,
+  QueryClient,
+  QueryClientProvider,
+} from "../../api/cache/test-client";
+
 import { ApiError, api } from "../../api/client";
-import { prependEventToLog } from "../../api/event-feed";
 import type { Query } from "../../api/paths";
 import type { Agent, DispatchEvent, UserIssueState, UserState } from "../../api/types";
-import { writesOf } from "../writes/write-store";
 import { ActivityTab } from "./ActivityTab";
 
 // The writer of a frame is one of the kinds Dispatch writes, not the open `Actor` a route's
@@ -86,6 +91,42 @@ test("ActivityTab lists the issue's events under its own label and writes no rea
     view.unmount();
     getIssueEvents.mockRestore();
     putIssueState.mockRestore();
+  }
+});
+
+// The log's own rule keeps a streamed event a refetch predates (`mergeEventPages`): a rule about
+// Dispatch's answers for one issue, which must never carry one issue's events into another's when
+// the mounted tab is handed another issue.
+test("a reader moved between two issues shows the issue it is on: the event log", async () => {
+  const getIssueEvents = spyOn(api, "getIssueEvents").mockResolvedValue([]);
+  const queryClient = newQueryClient();
+  queryClient.setQueryData(["events", "CORE-1"], {
+    pageParams: [null],
+    pages: [[message(12), message(11)]],
+  });
+  queryClient.setQueryData(["events", "CORE-2"], {
+    pageParams: [null],
+    pages: [[message(3), message(2), message(1)]],
+  });
+  const tab = (issueKey: string) => (
+    <MemoryRouter>
+      <QueryClientProvider client={queryClient}>
+        <ActivityTab issueKey={issueKey} state={{}} />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  const view = render(tab("CORE-1"));
+  const rows = () =>
+    within(screen.getByRole("list", { name: "Issue activity" })).getAllByText("sent a message");
+
+  try {
+    await waitFor(() => expect(rows()).toHaveLength(2));
+    view.rerender(tab("CORE-2"));
+    expect(rows()).toHaveLength(3);
+    expect(getIssueEvents).not.toHaveBeenCalled();
+  } finally {
+    view.unmount();
+    getIssueEvents.mockRestore();
   }
 });
 
@@ -181,23 +222,23 @@ test("a pin the server refuses shows refused in the store, and Retry re-sends it
       if (refuse) {
         throw new ApiError(409, { code: "PIN_REFUSED", error: "refused" });
       }
-      return { ...issueState(9), dismissed, seq: input.seq ?? 1 };
+      return answeredByDispatch({ ...issueState(9), dismissed, seq: input.seq ?? 1 });
     };
     unmount = renderTab({ "CORE-1": issueState(9) }, queryClient).unmount;
     await user.click(await screen.findByRole("button", { name: "Pin" }));
 
     await waitFor(() =>
       expect(
-        writesOf(queryClient)
-          .rows()
+        cacheOf(queryClient)
+          .writes.rows()
           .map((write) => [write.label, write.status])
       ).toEqual([["Pin on CORE-1", "refused"]])
     );
     expect(screen.getByRole("button", { name: "Pin" })).not.toHaveAttribute("disabled");
 
     refuse = false;
-    act(() => writesOf(queryClient).retry(writesOf(queryClient).rows()[0]?.id ?? 0));
-    await waitFor(() => expect(writesOf(queryClient).rows()).toEqual([]));
+    act(() => cacheOf(queryClient).writes.retry(cacheOf(queryClient).writes.rows()[0]?.id ?? 0));
+    await waitFor(() => expect(cacheOf(queryClient).writes.rows()).toEqual([]));
     expect(writes).toEqual([["pinned_items:event:1"], ["pinned_items:event:1"]]);
   } finally {
     unmount?.();
@@ -277,7 +318,7 @@ test("an event arriving while the reader is in the history leaves their row wher
     const before = reading?.getBoundingClientRect().top;
 
     act(() => {
-      prependEventToLog(queryClient, message(13));
+      prependEventToLog(cacheOf(queryClient), answeredByDispatch(message(13)));
     });
     await waitFor(() => expect(document.querySelectorAll("[data-event-seq]")).toHaveLength(13));
 

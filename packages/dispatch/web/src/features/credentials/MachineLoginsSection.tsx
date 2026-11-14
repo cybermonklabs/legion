@@ -1,6 +1,6 @@
-import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ReactNode } from "react";
-
+import { useCache } from "../../api/cache/cache";
+import { useShownQuery } from "../../api/cache/shown-query";
 import { api } from "../../api/client";
 import type { LauncherCredentialResp } from "../../api/types";
 import { textSecondaryOnSurface } from "../../theme/classes";
@@ -54,8 +54,11 @@ const columns: readonly RevocableColumn<LauncherCredentialResp>[] = [
  * approver of a person's machine login. Rendered on the machine-login page.
  */
 export function MachineLoginsSection(): ReactNode {
-  const queryClient = useQueryClient();
-  const logins = useQuery({ ...machineLoginsQuery(), select: (data) => data.credentials ?? [] });
+  const cache = useCache();
+  const logins = useShownQuery({
+    ...machineLoginsQuery(),
+    select: (data) => data.credentials ?? [],
+  });
 
   return (
     <RevocableList
@@ -76,8 +79,8 @@ export function MachineLoginsSection(): ReactNode {
       headingId="machine-logins-heading"
       noun="machine logins"
       onRevoked={() => {
-        void queryClient.invalidateQueries({ queryKey: machineLoginsQuery().queryKey });
-        void queryClient.invalidateQueries({ queryKey: credentialGrantsQuery().queryKey });
+        void cache.invalidate({ queryKey: machineLoginsQuery().queryKey });
+        void cache.invalidate({ queryKey: credentialGrantsQuery().queryKey });
       }}
       query={logins}
       revoke={(login, bounds) => api.revokeMachineLogin(login.credential_id, bounds)}

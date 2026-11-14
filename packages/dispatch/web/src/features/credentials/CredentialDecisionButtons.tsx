@@ -1,5 +1,5 @@
-import type { UseMutationResult } from "@tanstack/react-query";
 import type { ReactNode } from "react";
+import type { MutationResult } from "../../api/cache/mutation";
 
 import { apiErrorMessage } from "../../api/client";
 import type { DecisionResponse, StateResponse } from "../../api/types";
@@ -26,8 +26,8 @@ export function CredentialDecisionButtons({
   deny,
   submitGuard,
 }: {
-  approve?: UseMutationResult<DecisionResponse | null, Error, void>;
-  deny: UseMutationResult<StateResponse | null, Error, void>;
+  approve?: MutationResult<DecisionResponse | null, Error, void, unknown>;
+  deny: MutationResult<StateResponse | null, Error, void, unknown>;
   submitGuard: SubmitGuard;
 }): ReactNode {
   const deciding = approve?.isPending === true || deny.isPending;

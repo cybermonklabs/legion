@@ -1,6 +1,5 @@
-import { useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
-
+import { useShownQuery } from "../../api/cache/shown-query";
 import { issueCoverageQuery } from "../../api/queries";
 import type { RequirementCoverage } from "../../api/types";
 import { EmptyState } from "../../components/EmptyState";
@@ -51,7 +50,7 @@ function Requirement({ requirement }: { requirement: RequirementCoverage }): Rea
  * list, which the document's own drawing has nowhere to put.
  */
 export function SpecRequirements({ issueKey }: { issueKey: string }): ReactNode {
-  const coverage = useQuery(issueCoverageQuery(issueKey));
+  const coverage = useShownQuery(issueCoverageQuery(issueKey));
 
   if (coverage.isPending) {
     return (

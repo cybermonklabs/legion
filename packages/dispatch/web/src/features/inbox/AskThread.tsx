@@ -1,9 +1,10 @@
-import type { UseQueryResult } from "@tanstack/react-query";
-import { useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, type ReactNode, useId, useState } from "react";
 
-import { type ArtifactOwner, api, type WriteBounds } from "../../api/client";
-import type { Ask, AskRead, Comment, CommentWithTrees, CreateCommentInput } from "../../api/types";
+import { useCache } from "../../api/cache/cache";
+import type { UseQueryResult } from "../../api/cache/keys";
+
+import { type ArtifactOwner, artifactCommentRequest, issueCommentRequest } from "../../api/client";
+import type { Ask, AskRead, CommentWithTrees } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
 import { submitOnModifiedEnter } from "../../hooks/submitOnModifiedEnter";
 import { useSending } from "../../hooks/useSending";
@@ -29,16 +30,8 @@ import { EarlierReplies } from "../threads/EarlierReplies";
 import { threadLayout } from "../threads/thread-layout";
 import type { ThreadOrder } from "../threads/thread-order";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
+import { askArtifactId } from "./owner-reads";
 import { clearReplyDraft, useReplyDraft } from "./reply-drafts";
-
-export type CreateReply = (
-  issueKey: string,
-  input: CreateCommentInput,
-  bounds: WriteBounds
-) => Promise<Comment>;
-
-const createReply: CreateReply = (issueKey, input, bounds) =>
-  api.createComment(issueKey, input, bounds);
 
 function AskReply({
   comment,
@@ -84,16 +77,14 @@ export type AskThreadQuery = UseQueryResult<AskRead, Error>;
  */
 export function AskReplyComposer({
   ask,
-  createReply: reply = createReply,
   uploadOwner,
 }: {
   ask: Ask;
-  createReply?: CreateReply;
   /** Where a file pasted or dropped into the reply goes: the ask's issue, or its document's
    *  project. Without one the field takes a paste as text. */
   uploadOwner?: ArtifactOwner;
 }): ReactNode {
-  const queryClient = useQueryClient();
+  const cache = useCache();
   // Each composer owns its field id so transient duplicate mounts during a responsive
   // transition cannot share an ask-id-derived id.
   const fieldId = `${useId()}-reply`;
@@ -106,21 +97,20 @@ export function AskReplyComposer({
   const uploading = upload.pending > 0;
   // The form shows a refused reply itself, with Retry, under the draft it kept.
   const submit = useKeyedWrite({
-    write: (text: string, bounds) => {
-      if (ask.issue_key === null) {
-        if (ask.artifact_id === null || ask.artifact_id === undefined) {
-          throw new Error("document ask is missing its artifact id");
-        }
-        return api.createArtifactComment(ask.artifact_id, { ask_id: ask.id, body: text }, bounds);
-      }
-      return reply(ask.issue_key, { ask_id: ask.id, body: text }, bounds);
-    },
     inline: true,
     label: () => `Reply on “${ask.question}”`,
+    request: (text: string) =>
+      ask.issue_key === null
+        ? artifactCommentRequest(askArtifactId(ask), { ask_id: ask.id, body: text })
+        : issueCommentRequest(ask.issue_key, { ask_id: ask.id, body: text }),
+    // A reply stands in the ask's own line with the answer, the decline, the hand-on, the
+    // snooze and the clarification (`useAskAnswerForm.ts`), so two writes of one ask reach
+    // Dispatch in press order.
+    target: () => `ask:${ask.id}`,
     mutationKey,
     onSuccess: (_comment, text) => {
       clearReplyDraft(ask.id, text);
-      void queryClient.invalidateQueries({ queryKey: ["ask-thread", ask.id] });
+      void cache.invalidate({ queryKey: ["ask-thread", ask.id] });
     },
   });
 
@@ -180,7 +170,6 @@ export interface AskThreadProps {
   ask: Ask;
   /** The shared ask-thread query AskCard owns; this component never requests thread data itself. */
   thread: AskThreadQuery;
-  createReply?: CreateReply;
   /** False where the caller renders the answered-ask composer itself: a collapsed thread
    *  (Conversation, decision blocks) puts it after its own Write a reply control. */
   showComposer?: boolean;
@@ -214,7 +203,6 @@ export interface AskThreadProps {
 export function AskThread({
   ask,
   thread,
-  createReply: reply = createReply,
   showComposer = true,
   embedded = false,
   uploadOwner,
@@ -268,7 +256,7 @@ export function AskThread({
   );
   const composer =
     showComposer && ask.state === "answered" ? (
-      <AskReplyComposer ask={ask} createReply={reply} uploadOwner={uploadOwner} />
+      <AskReplyComposer ask={ask} uploadOwner={uploadOwner} />
     ) : null;
 
   return (

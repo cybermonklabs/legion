@@ -1,6 +1,5 @@
-import { useQuery } from "@tanstack/react-query";
 import { useMemo } from "react";
-
+import { useShownQuery } from "../../api/cache/shown-query";
 import { isAgentListRefilling } from "../../api/client";
 import type { Agent } from "../../api/types";
 import { agentsQuery, EMPTY_AGENTS, useRegistryPolling } from "../refs/agent-registry";
@@ -28,7 +27,7 @@ export function useAgents(
   refilling: boolean;
 } {
   useRegistryPolling(enabled && refreshWhileOpen);
-  const { data, error, isError, isPending, refetch } = useQuery({
+  const { data, error, isError, isPending, refetch } = useShownQuery({
     ...agentsQuery(),
     enabled,
     // The poller refreshes what a polled caller reads; refetching it again on mount would put

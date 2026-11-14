@@ -2,7 +2,8 @@
 // live subscription of the page runs. The Delivery and Pipeline pages' live-owned queries
 // (`meta.live`, `api/queries.ts`'s three delivery reads) subscribe to their views (LEGION-690):
 // Dispatch answers each with a snapshot, the matching GET route's body, and from then on sends only
-// what changed, and this client writes both into the query cache with `setQueryData`, so the page
+// what changed, and this client writes both into the query cache (`Cache.setDispatched`, each
+// frame's body minted as Dispatch's answer as it is decoded, `answered.ts`), so the page
 // renders them as any read. The event feed (`subscribeEvents`) and each agent live view
 // (`subscribeAgent`) ride the same socket with handlers of their own. Nothing here reads on a
 // timer: a lost socket reconnects and resumes every subscription, a delivery view from the last
@@ -10,13 +11,13 @@
 // and Dispatch answers what changed since. Dispatch rotates every socket once it reaches its age
 // (close 4001); the page reopens at once and shows nothing of it.
 import { type AgentStreamResponder, LIVE_SOCKET_MAX_AGE_CLOSE } from "@legion/contracts";
-import { hashKey, type QueryClient, type QueryKey, useQueryClient } from "@tanstack/react-query";
+import { hashKey, type QueryKey } from "@tanstack/react-query";
 import { useSyncExternalStore } from "react";
 
-import { applyDelta, applyRevs } from "../features/delivery/lib/applyDelta";
-import type { DeliveryFreshness } from "../features/delivery/lib/freshness";
-import { ApiError } from "./client";
-import { reachable, unreachable } from "./reachability";
+import { applyDelta, applyRevs } from "../../features/delivery/lib/applyDelta";
+import type { DeliveryFreshness } from "../../features/delivery/lib/freshness";
+import { ApiError } from "../client";
+import { reachable, unreachable } from "../reachability";
 import type {
   DeliveryLiveBody,
   DeliveryLiveDelta,
@@ -29,7 +30,10 @@ import type {
   LiveError,
   LiveServerFrame,
   LiveSubscribe,
-} from "./types";
+} from "../types";
+import { answered } from "./answered";
+import { type Cache, useCache } from "./cache";
+import { clientOf } from "./client-handle";
 
 /** A socket that has carried no frame for this long, three of the server's 15 s heartbeats
  *  (`StreamHeartbeat`), is replaced. Any frame counts, `heartbeat` included: a browser never shows
@@ -223,7 +227,8 @@ function resubscribeDelayMs(refusals: number): number {
   return ceiling * (0.75 + Math.random() * 0.5);
 }
 
-export function createLiveSocket(queryClient: QueryClient): LiveSocket {
+export function createLiveSocket(page: Cache): LiveSocket {
+  const queryClient = clientOf(page);
   const cache = queryClient.getQueryCache();
   const subs = new Map<string, Subscription>();
   const byHash = new Map<string, DeliverySubscription>();
@@ -329,7 +334,7 @@ export function createLiveSocket(queryClient: QueryClient): LiveSocket {
     if (sub === undefined) return;
     sub.seq = frame.seq;
     sub.revs = frame.revs;
-    queryClient.setQueryData(sub.queryKey, frame.body);
+    page.setDispatched(sub.queryKey, answered(frame.body));
     sub.pending?.resolve(frame.body);
     sub.pending = null;
     noteChange(frame.seq, frame.changed_at);
@@ -342,9 +347,11 @@ export function createLiveSocket(queryClient: QueryClient): LiveSocket {
       console.error("live socket: a delta arrived before its subscription's snapshot", frame);
       return;
     }
-    queryClient.setQueryData<DeliveryLiveBody>(
+    page.setDispatched(
       sub.queryKey,
-      (data: DeliveryLiveBody | undefined) => (data === undefined ? data : applyDelta(data, frame))
+      answered(frame),
+      (data: DeliveryLiveBody | undefined, delta) =>
+        data === undefined ? data : applyDelta(data, delta)
     );
     sub.seq = frame.seq;
     sub.revs = applyRevs(sub.revs, frame.revs);
@@ -759,21 +766,21 @@ export function createLiveSocket(queryClient: QueryClient): LiveSocket {
   };
 }
 
-const sockets = new WeakMap<QueryClient, LiveSocket>();
+const sockets = new WeakMap<Cache, LiveSocket>();
 
-/** The one live socket of `queryClient`, created on first use. */
-export function liveSocketFor(queryClient: QueryClient): LiveSocket {
-  let live = sockets.get(queryClient);
+/** The one live socket of `cache`, created on first use. */
+export function liveSocketFor(cache: Cache): LiveSocket {
+  let live = sockets.get(cache);
   if (live === undefined) {
-    live = createLiveSocket(queryClient);
-    sockets.set(queryClient, live);
+    live = createLiveSocket(cache);
+    sockets.set(cache, live);
   }
   return live;
 }
 
 /** The live socket's whole state, for the freshness row, which shows the last change time. */
 export function useLiveSocketState(): LiveSocketState {
-  const live = liveSocketFor(useQueryClient());
+  const live = liveSocketFor(useCache());
   return useSyncExternalStore(live.onState, live.state);
 }
 
@@ -783,7 +790,7 @@ export type LiveSocketPill = "none" | "reconnecting" | "stuck";
 /** The connection pill's one value of the socket's state. The shell reads it rather than the
  *  whole state, so a change time that moves with every delivery delta re-renders nothing there. */
 export function useLiveSocketPill(): LiveSocketPill {
-  const live = liveSocketFor(useQueryClient());
+  const live = liveSocketFor(useCache());
   return useSyncExternalStore(live.onState, () => {
     const { stuck, state } = live.state();
     if (stuck) return "stuck";

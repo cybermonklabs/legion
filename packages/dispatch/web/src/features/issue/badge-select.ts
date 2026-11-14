@@ -8,9 +8,11 @@ export const badgeSelectWrapper = `${badgeSelectFrame} md:min-h-8 has-focus-visi
 /** The same wrapper in the issue header's details rail (the repository), 28 px from `md` like
  *  the rail's other controls, so it never makes the rail's row taller. */
 export const badgeSelectRailWrapper = `${badgeSelectFrame} md:min-h-7 has-focus-visible:ring-2 ${hasFocusVisibleRing}`;
-/** The visible badge; the caller appends its tone's `bg` and `text`. */
+/** The visible badge; the caller appends its tone's `bg` and `text`. It is a block rather than
+ *  a flex box so that a caller reserving a width (`reserved-width.ts`) cuts a longer value with
+ *  an ellipsis, which `text-overflow` never draws for a flex container's own text. */
 export const badgeSelectBadge =
-  "inline-flex items-center rounded-sm px-1.5 py-0.5 text-xs font-semibold";
+  "inline-block truncate rounded-sm px-1.5 py-0.5 text-xs font-semibold";
 /** The native select laid over the badge, invisible but the thing that receives the pick. */
 export const badgeSelectOverlay =
   "absolute inset-0 size-full cursor-pointer appearance-none opacity-0 disabled:cursor-not-allowed";

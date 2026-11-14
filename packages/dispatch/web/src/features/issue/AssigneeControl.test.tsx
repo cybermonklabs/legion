@@ -1,11 +1,12 @@
 import { expect, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: this file keeps fireEvent for the focus that arms the lazy read of who has signed in, which user-event has no form for
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerIssuePatches } from "../../__tests__/send-answers";
+import { useShownQuery } from "../../api/cache/shown-query";
+import { cacheOf, QueryClient, QueryClientProvider } from "../../api/cache/test-client";
 import { ApiError, api } from "../../api/client";
 import { projectDefaultAssigneesQuery } from "../../api/queries";
 import type { InboxRow, Issue, IssueDetails, IssueSummary } from "../../api/types";
@@ -127,7 +128,7 @@ const listKey = ["issues", "project", issue.project] as const;
 const inboxKey = ["inbox"] as const;
 
 function CachedControl(): ReactNode {
-  const cached = useQuery<IssueDetails>({
+  const cached = useShownQuery<IssueDetails>({
     queryKey: detailKey,
     queryFn: () => Promise.reject(new Error("the test seeds this query")),
     staleTime: Number.POSITIVE_INFINITY,
@@ -208,14 +209,14 @@ test("AssigneeControl reassigns optimistically on every surface and merges the s
     await user.selectOptions(select(), "bob");
     await waitFor(() => expect(select().value).toBe("bob"));
     expect(patchIssue).toHaveBeenCalledWith("CORE-1", { assignee: "bob" }, keyedAttempt);
-    expect(queryClient.getQueryData<IssueSummary[]>(listKey)?.[0]?.assignee).toBe("bob");
-    expect(queryClient.getQueryData<InboxRow[]>(inboxKey)?.[0]?.issue?.assignee).toBe("bob");
+    expect(cacheOf(queryClient).shown<IssueSummary[]>(listKey)?.[0]?.assignee).toBe("bob");
+    expect(cacheOf(queryClient).shown<InboxRow[]>(inboxKey)?.[0]?.issue?.assignee).toBe("bob");
 
     act(() => {
       save.resolve({ ...issue, assignee: "bob", last_seq: 2 });
     });
     await waitFor(() =>
-      expect(queryClient.getQueryData<IssueDetails>(detailKey)?.last_seq).toBe(2)
+      expect(cacheOf(queryClient).shown<IssueDetails>(detailKey)?.last_seq).toBe(2)
     );
   } finally {
     unmount();
@@ -279,7 +280,7 @@ test.each([
     );
 
     // The save is still in flight: what the rows hold is the optimistic write alone.
-    const rows = queryClient.getQueryData<InboxRow[]>(inboxKey) ?? [];
+    const rows = cacheOf(queryClient).shown<InboxRow[]>(inboxKey) ?? [];
     expect(rows.map((row) => [row.id, row.issue?.assignee, row.waiting_on_person])).toEqual([
       ["ask-1", null, person],
       ["ask-2", null, "bob"],
@@ -290,7 +291,7 @@ test.each([
       await save.promise;
     });
     await waitFor(() =>
-      expect(queryClient.getQueryData<IssueDetails>(detailKey)?.assignee).toBeNull()
+      expect(cacheOf(queryClient).shown<IssueDetails>(detailKey)?.assignee).toBeNull()
     );
   } finally {
     unmount();
@@ -298,7 +299,7 @@ test.each([
   }
 });
 
-test("AssigneeControl rolls back and shows the server's refusal when the person has not signed in", async () => {
+test("AssigneeControl shows the assignee Dispatch last gave and the server's refusal when the person has not signed in", async () => {
   const patchIssue = answerIssuePatches().mockRejectedValue(
     new ApiError(400, {
       code: "ASSIGNEE_NOT_ALLOWED",
@@ -314,8 +315,8 @@ test("AssigneeControl rolls back and shows the server's refusal when the person 
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent('"bob" has not signed in to Dispatch');
     expect(select().value).toBe("alice");
-    expect(queryClient.getQueryData<IssueSummary[]>(listKey)).toEqual([summary]);
-    expect(queryClient.getQueryData<InboxRow[]>(inboxKey)).toEqual([inboxRow]);
+    expect(cacheOf(queryClient).shown<IssueSummary[]>(listKey)).toEqual([summary]);
+    expect(cacheOf(queryClient).shown<InboxRow[]>(inboxKey)).toEqual([inboxRow]);
   } finally {
     unmount();
     patchIssue.mockRestore();
@@ -355,7 +356,7 @@ test("AssigneeControl keeps focus while a save is in flight and saves a pick mad
       await second.promise;
     });
     await waitFor(() =>
-      expect(queryClient.getQueryData<IssueDetails>(detailKey)?.assignee).toBeNull()
+      expect(cacheOf(queryClient).shown<IssueDetails>(detailKey)?.assignee).toBeNull()
     );
     expect(select()).toHaveFocus();
   } finally {

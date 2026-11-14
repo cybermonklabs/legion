@@ -1,6 +1,6 @@
-import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
+import { useShownQuery } from "../../api/cache/shown-query";
 import { advancesIssuesQuery, prioritiesQuery } from "../../api/queries";
 import { DisclosureToggle } from "../../components/DisclosureToggle";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
@@ -41,8 +41,11 @@ const OWNER_FIELD = "priority-owner";
  */
 export function PriorityPage(): ReactNode {
   const { id = "" } = useParams();
-  const priorities = useQuery(prioritiesQuery());
-  const work = useQuery({ ...advancesIssuesQuery({ advances: id }, true), enabled: id !== "" });
+  const priorities = useShownQuery(prioritiesQuery());
+  const work = useShownQuery({
+    ...advancesIssuesQuery({ advances: id }, true),
+    enabled: id !== "",
+  });
   const [open, setOpen] = useState(true);
   const { canWrite, patch } = usePriorityWrites();
   // The way out of this scope, in the issue table's own shape: the issues advancing this
@@ -129,13 +132,17 @@ export function PriorityPage(): ReactNode {
                 <InPlaceField
                   id={OWNER_FIELD}
                   label="Owner"
-                  onSave={(owner) =>
+                  onSave={(next) => {
+                    // Dispatch stores the owner trimmed, so the change the page shows over its
+                    // answer is the trimmed text too, and leaves an answer that carries it alone.
+                    const owner = next.trim();
+                    if (owner === item.priority.owner) return;
                     patch.mutate({
                       id,
                       input: { owner },
                       label: `Owner of the priority “${title}”`,
-                    })
-                  }
+                    });
+                  }}
                   options={owners}
                   placeholder="Who holds it"
                   value={item.priority.owner}

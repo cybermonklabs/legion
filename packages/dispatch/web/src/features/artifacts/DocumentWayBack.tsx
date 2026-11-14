@@ -1,7 +1,12 @@
-import { type QueryClient, useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, type ReactNode, useState } from "react";
+import { type Cache, useCache } from "../../api/cache/cache";
 
-import { type ArtifactOwner, api, apiErrorMessage } from "../../api/client";
+import {
+  type ArtifactOwner,
+  apiErrorMessage,
+  artifactDeleteRequest,
+  artifactRenameRequest,
+} from "../../api/client";
 import type { Artifact } from "../../api/types";
 import { RefusableButton } from "../../components/RefusableButton";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
@@ -40,10 +45,10 @@ function artifactOwner(artifact: Artifact): ArtifactOwner {
  * (`api/event-refresh.ts`), which is how one reader's correction reaches another's page; this is
  * what makes the writer's own page move whether or not that stream is up.
  */
-function refreshArtifact(queryClient: QueryClient, artifact: Artifact): void {
-  refreshOwnerArtifacts(queryClient, artifactOwner(artifact));
-  void queryClient.invalidateQueries({ queryKey: ["artifact", artifact.id] });
-  void queryClient.invalidateQueries({
+function refreshArtifact(cache: Cache, artifact: Artifact): void {
+  refreshOwnerArtifacts(cache, artifactOwner(artifact));
+  void cache.invalidate({ queryKey: ["artifact", artifact.id] });
+  void cache.invalidate({
     queryKey: ["artifact-ref", `${artifact.project}/${artifact.slug}`],
   });
 }
@@ -67,16 +72,19 @@ export function CorrectTitle({
 }): ReactNode {
   const [correcting, setCorrecting] = useState(false);
   const [title, setTitle] = useState(artifact.name);
-  const queryClient = useQueryClient();
+  const cache = useCache();
   const submitGuard = useSubmitGuard();
+  // A correction and a removal are writes of the document, so they stand on its line
+  // (`document:<id>`), with the decisions writes of a document, and go out in press order.
   const rename = useKeyedWrite({
     inline: true,
     label: (name: string) => `Rename ${artifact.name} to ${name}`,
-    write: (name: string, bounds) => api.renameArtifact(artifact.id, { name }, bounds),
+    request: (name: string) => artifactRenameRequest(artifact.id, { name }),
+    target: () => `document:${artifact.id}`,
     onSettled: () => submitGuard.release(),
     onSuccess: () => {
       setCorrecting(false);
-      refreshArtifact(queryClient, artifact);
+      refreshArtifact(cache, artifact);
     },
   });
   const submit = (event: FormEvent<HTMLFormElement>) => {
@@ -169,17 +177,18 @@ export function RemoveDocument({
   readonly onRemoved?: () => void;
   readonly refusal?: string | null;
 }): ReactNode {
-  const queryClient = useQueryClient();
+  const cache = useCache();
   const submitGuard = useSubmitGuard();
   const remove = useKeyedWrite({
     inline: true,
     // The document's name is what the press is of, as the indicator names it; the route takes
     // its id, so a retry of one press keeps that press's key (`sameVariables`).
     label: (name: string) => `Remove ${name}`,
-    write: (_name: string, bounds) => api.deleteArtifact(artifact.id, bounds),
+    request: (_name: string) => artifactDeleteRequest(artifact.id),
+    target: () => `document:${artifact.id}`,
     onSettled: () => submitGuard.release(),
     onSuccess: () => {
-      refreshArtifact(queryClient, artifact);
+      refreshArtifact(cache, artifact);
       onRemoved?.();
     },
   });

@@ -1,4 +1,4 @@
-import type { QueryClient } from "@tanstack/react-query";
+import type { Cache } from "../../api/cache/cache";
 
 import { inboxQuery, projectsQuery } from "../../api/queries";
 import type { Ask } from "../../api/types";
@@ -21,14 +21,14 @@ export function askArtifactId(ask: Ask): string {
  * those surfaces showing the person or the turn from before it until the `ask.*` event landed.
  * `useAskAnswerForm` (an answer, a clarification) and `useAskHandOn` (a hand-on) share it.
  */
-export function invalidateOwnerReads(queryClient: QueryClient, ask: Ask): void {
-  void queryClient.invalidateQueries({ queryKey: inboxQuery().queryKey });
+export function invalidateOwnerReads(cache: Cache, ask: Ask): void {
+  void cache.invalidate({ queryKey: inboxQuery().queryKey });
   if (ask.issue_key === null) {
-    void queryClient.invalidateQueries({ queryKey: ["artifact", askArtifactId(ask)] });
-    void queryClient.invalidateQueries({ queryKey: projectsQuery().queryKey });
+    void cache.invalidate({ queryKey: ["artifact", askArtifactId(ask)] });
+    void cache.invalidate({ queryKey: projectsQuery().queryKey });
     return;
   }
-  void queryClient.invalidateQueries({ queryKey: ["asks", ask.issue_key] });
-  void queryClient.invalidateQueries({ queryKey: ["issue", ask.issue_key] });
-  void queryClient.invalidateQueries({ queryKey: ["issues"] });
+  void cache.invalidate({ queryKey: ["asks", ask.issue_key] });
+  void cache.invalidate({ queryKey: ["issue", ask.issue_key] });
+  void cache.invalidate({ queryKey: ["issues"] });
 }

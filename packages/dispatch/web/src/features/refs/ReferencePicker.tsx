@@ -1,6 +1,5 @@
-import { useQueries, useQuery } from "@tanstack/react-query";
 import { type KeyboardEvent, type ReactNode, useState } from "react";
-
+import { useShownQueries, useShownQuery } from "../../api/cache/shown-query";
 import { api } from "../../api/client";
 import { issueQuery } from "../../api/queries";
 import {
@@ -30,11 +29,11 @@ export function ReferencePicker({ issueKey, onClose, onSelect }: ReferencePicker
   const [filter, setFilter] = useState("");
   const [expandedIssues, setExpandedIssues] = useState<Set<string>>(new Set());
   const dialog = useDialog<HTMLDivElement>({ onClose, open: true });
-  const currentIssue = useQuery(issueQuery(issueKey));
-  const issues = useQuery({
-    enabled: currentIssue.data !== undefined,
+  const currentIssue = useShownQuery(issueQuery(issueKey));
+  const issues = useShownQuery({
     queryKey: ["issues", currentIssue.data?.project],
     queryFn: () => api.listIssues({ project: currentIssue.data?.project }),
+    enabled: currentIssue.data !== undefined,
   });
   const needle = filter.trim().toLowerCase();
   const filtered = (issues.data ?? []).filter(
@@ -43,7 +42,7 @@ export function ReferencePicker({ issueKey, onClose, onSelect }: ReferencePicker
       issue.key.toLowerCase().includes(needle) ||
       issue.title.toLowerCase().includes(needle)
   );
-  const artifactQueries = useQueries({
+  const artifactQueries = useShownQueries({
     queries: filtered.map((issue) => ({
       enabled: expandedIssues.has(issue.key),
       queryKey: ["artifacts", issue.key],

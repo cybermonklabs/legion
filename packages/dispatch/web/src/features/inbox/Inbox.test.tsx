@@ -1,5 +1,4 @@
 import { expect, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: this file keeps the row hold's bare pointerover/pointerout with a relatedTarget, a blur naming no target, and the Enter presses whose survival only fireEvent reports.
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { UserEvent } from "@testing-library/user-event";
@@ -10,8 +9,16 @@ import { MemoryRouter, Route, Routes, useLocation, useNavigate } from "react-rou
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { type FakeEditor, fakeDocumentRuntime } from "../../__tests__/document-runtime";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
-import { answerAskSnoozes, answerIssuePatches } from "../../__tests__/send-answers";
+import {
+  answerAskAnswers,
+  answerAskHandOns,
+  answerAskSnoozes,
+  answerAskUnsnoozes,
+  answerIssueComments,
+  answerIssuePatches,
+} from "../../__tests__/send-answers";
 import { wholeText } from "../../__tests__/whole-text";
+import { notifyManager, QueryClient, QueryClientProvider } from "../../api/cache/test-client";
 import { ApiError, api } from "../../api/client";
 import type {
   Artifact,
@@ -1006,7 +1013,7 @@ test("the reader's own Ask back keeps the row under Waiting on you, unscrolled, 
   }));
   // The server records the clarification: the turn is the agent's, and the inbox says so on
   // the next refetch.
-  const createComment = spyOn(api, "createComment").mockImplementation(async (issueKey, input) => {
+  const createComment = answerIssueComments().mockImplementation(async (issueKey, input) => {
     const reply: Comment = {
       anchor: null,
       ask_id: input.ask_id ?? null,
@@ -1195,7 +1202,7 @@ test("the reader's own answer leaves the Inbox at once, even though their focus 
     route_status_reason: null,
     replies: [],
   }));
-  const answerAsk = spyOn(api, "answerAsk").mockImplementation(async () => {
+  const answerAsk = answerAskAnswers().mockImplementation(async () => {
     inboxRows = [askA];
     return {
       ...askB,
@@ -1258,7 +1265,7 @@ test("after the reader's own answer fails, an answer from elsewhere still holds 
     route_status_reason: null,
     replies: [],
   }));
-  const answerAsk = spyOn(api, "answerAsk").mockRejectedValue(new Error("offline"));
+  const answerAsk = answerAskAnswers().mockRejectedValue(new Error("offline"));
   const queryClient = new QueryClient({
     defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
   });
@@ -1854,7 +1861,7 @@ test("a refused hand-on keeps its row in the reader's own list, with the reason 
   const firstHandOn = Promise.withResolvers<InboxRow>();
   let attempts = 0;
   const handedBack = { ...mine, asked_of: null, waiting_on_person: "bob" };
-  const handAskTo = spyOn(api, "handAskTo").mockImplementation(async () => {
+  const handAskTo = answerAskHandOns().mockImplementation(async () => {
     attempts += 1;
     return attempts === 1 ? firstHandOn.promise : handedBack;
   });
@@ -1865,7 +1872,9 @@ test("a refused hand-on keeps its row in the reader's own list, with the reason 
       within(rowOf("ask-mine")).getByLabelText("Hand this question to"),
       "bob"
     );
-    await waitFor(() => expect(handAskTo).toHaveBeenCalledWith("ask-mine", "bob", keyedAttempt));
+    await waitFor(() =>
+      expect(handAskTo).toHaveBeenCalledWith("ask-mine", { asked_of: "bob" }, keyedAttempt)
+    );
     // Handed on optimistically, the row waits on somebody else - and stays.
     await waitFor(() => expect(screen.getByText("Handing on…")).toBeTruthy());
     expect(rowIds()).toEqual(["ask-mine"]);
@@ -1894,6 +1903,210 @@ test("a refused hand-on keeps its row in the reader's own list, with the reason 
     unmount();
     handAskTo.mockRestore();
     people.mockRestore();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+  }
+});
+
+// The same hold when Dispatch refuses at once, under TanStack's own scheduler, which hands its
+// observers their news a task later (the suite runs it synchronously, `__tests__/setup.ts`). The
+// hand-on is composed over the Inbox's read as its write joins the store, before the card hears
+// its own press is pending, so the card registers with the list at the press: a registration a
+// commit later would come after the row had left the list with the card that wrote.
+test("a hand-on refused at once keeps its row and its reason in the reader's own list", async () => {
+  const user = userEvent.setup();
+  const mine = issueAsk({
+    asked_of: "alice",
+    id: "ask-mine",
+    issue: { assignee: "bob", key: "CORE-4", title: "Bob's issue" },
+    issue_key: "CORE-4",
+    question: "Hand this on?",
+  });
+  const rows = [mine];
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const getAsk = mockAskReads(rows);
+  const people = mockPeople();
+  const handAskTo = answerAskHandOns().mockRejectedValue(
+    new ApiError(409, {
+      code: "ASK_NOT_OPEN",
+      error: "only open asks may be handed to another person",
+    })
+  );
+  const { unmount } = renderInbox("/");
+  try {
+    await screen.findByText("Hand this on?");
+    const control = within(rowOf("ask-mine")).getByLabelText("Hand this question to");
+    notifyManager.setScheduler((callback) => setTimeout(callback, 0));
+    await user.selectOptions(control, "bob");
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("only open asks may be handed to another person");
+    expect(rowIds()).toEqual(["ask-mine"]);
+  } finally {
+    notifyManager.setScheduler((callback) => callback());
+    unmount();
+    handAskTo.mockRestore();
+    people.mockRestore();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+  }
+});
+
+// The Inbox bands its rows by priority, so a row's own priority pick moves the row to another
+// band the moment the pick is composed over the Inbox's read - and a row in another band is
+// another element, whose fresh control never failed. So the row registers its pick with the list
+// at the press, and the list holds it in the band it stood in while the pick is live and while
+// its refusal is shown: the refusal and its Retry stay in the control the reader used. Under
+// TanStack's own scheduler, which hands the control its own press a task after the store has
+// composed it (the suite runs it synchronously, `__tests__/setup.ts`).
+test("a priority pick refused at once keeps its row where it stood, with the reason and Retry", async () => {
+  const user = userEvent.setup();
+  const rows = [
+    inboxIssue("ask-a", "CORE-1", "Which approach?", { priority: 1 }),
+    inboxIssue("ask-b", "CORE-2", "Which format?", { priority: 2 }),
+  ];
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const getAsk = mockAskReads(rows);
+  const getIssue = mockIssueReads();
+  const patchIssue = answerIssuePatches().mockRejectedValue(
+    new ApiError(403, { code: "FORBIDDEN", error: "not your project" })
+  );
+  const { unmount } = renderInbox("/");
+  try {
+    await screen.findByText("Which approach?");
+    expect(rowIds()).toEqual(["ask-a", "ask-b"]);
+    const control = within(rowOf("ask-a")).getByLabelText("Priority of CORE-1");
+    notifyManager.setScheduler((callback) => setTimeout(callback, 0));
+    await user.selectOptions(control, "P2");
+    const alert = await waitFor(() => within(rowOf("ask-a")).getByRole("alert"));
+    expect(alert).toHaveTextContent("Could not update the priority of CORE-1.");
+    expect(within(alert).getByRole("button", { name: /Retry/ })).toBeTruthy();
+    expect(rowIds()).toEqual(["ask-a", "ask-b"]);
+  } finally {
+    notifyManager.setScheduler((callback) => callback());
+    unmount();
+    patchIssue.mockRestore();
+    getIssue.mockRestore();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+  }
+});
+
+// R7 of dispatch://INFRA-299 under that hold: the row is held where it stood only while its pick
+// is live, so a pick Dispatch makes lets it go, and the row moves to the band of its priority.
+test("a priority pick that lands moves its row to the band it picked", async () => {
+  const user = userEvent.setup();
+  const rows = [
+    inboxIssue("ask-a", "CORE-1", "Which approach?", { priority: 1 }),
+    inboxIssue("ask-b", "CORE-2", "Which format?", { priority: 2 }),
+  ];
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const getAsk = mockAskReads(rows);
+  const getIssue = mockIssueReads();
+  const save = Promise.withResolvers<Issue>();
+  const patchIssue = answerIssuePatches().mockImplementation(() => save.promise);
+  const { unmount } = renderInbox("/");
+  try {
+    await screen.findByText("Which approach?");
+    expect(headings()).toEqual(["P1 (1)", "P2 (1)"]);
+    await user.selectOptions(within(rowOf("ask-a")).getByLabelText("Priority of CORE-1"), "P2");
+    // Live, the row stands where it stood, showing the priority it picked.
+    expect(headings()).toEqual(["P1 (1)", "P2 (1)"]);
+    expect(within(rowOf("ask-a")).getByLabelText("Priority of CORE-1")).toHaveValue("2");
+
+    getInbox.mockResolvedValue([{ ...rows[0], priority: 2 } as InboxRow, rows[1] as InboxRow]);
+    await act(async () => {
+      save.resolve({ ...narrowIssueOf(rows[0] as InboxRow, "alice"), priority: 2 });
+      await save.promise;
+    });
+    await waitFor(() => expect(headings()).toEqual(["P2 (2)"]));
+    expect(rowIds()).toEqual(["ask-a", "ask-b"]);
+  } finally {
+    unmount();
+    patchIssue.mockRestore();
+    getIssue.mockRestore();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+  }
+});
+
+// Under a priority filter a pick of another priority takes its row out of the list the moment it
+// is composed. Nothing but the pick holds the row, as when a keyboard makes the pick, so the pick
+// itself does: the row stays listed while the pick is live and while its refusal is shown, and
+// the refusal and its Retry stay in the control that wrote. With that hold off, this row fails.
+test("a priority pick out of a priority filter, refused, keeps its row with the reason and Retry", async () => {
+  const user = userEvent.setup();
+  const rows = [
+    inboxIssue("ask-a", "CORE-1", "Which approach?", { priority: 1 }),
+    inboxIssue("ask-c", "CORE-3", "Which name?", { priority: 1 }),
+  ];
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const getAsk = mockAskReads(rows);
+  const getIssue = mockIssueReads();
+  const save = Promise.withResolvers<Issue>();
+  const patchIssue = answerIssuePatches().mockImplementation(() => save.promise);
+  const { unmount } = renderInbox("/?priority=P1");
+  try {
+    await screen.findByText("Which approach?");
+    expect(rowIds()).toEqual(["ask-a", "ask-c"]);
+    await user.selectOptions(within(rowOf("ask-a")).getByLabelText("Priority of CORE-1"), "P2");
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
+    // Live: the row is still listed, showing the priority it picked.
+    expect(rowIds()).toEqual(["ask-a", "ask-c"]);
+    expect(within(rowOf("ask-a")).getByLabelText("Priority of CORE-1")).toHaveValue("2");
+
+    await act(async () => {
+      save.reject(new ApiError(403, { code: "FORBIDDEN", error: "not your project" }));
+      await save.promise.catch(() => undefined);
+    });
+    const alert = await waitFor(() => within(rowOf("ask-a")).getByRole("alert"));
+    expect(alert).toHaveTextContent("Could not update the priority of CORE-1.");
+    expect(within(alert).getByRole("button", { name: /Retry/ })).toBeTruthy();
+    expect(rowIds()).toEqual(["ask-a", "ask-c"]);
+  } finally {
+    unmount();
+    patchIssue.mockRestore();
+    getIssue.mockRestore();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+  }
+});
+
+// An answer takes its row out of the Inbox the moment it is composed, and the row the reader's
+// hand is in is held where they saw it. When that row was the only one of its band, the band has
+// gone with it, and a row held in a band no longer drawn was drawn nowhere, so the card that
+// wrote - and its refusal - went with it. The held row brings its band with it.
+test("a refused answer of the only row of its band keeps the card, its draft and its refusal", async () => {
+  const user = userEvent.setup();
+  const rows = [
+    inboxIssue("ask-a", "CORE-1", "Which approach?", { priority: 1 }),
+    inboxIssue("ask-b", "CORE-2", "Which format?", { priority: 2 }),
+  ];
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const getAsk = mockAskReads(rows);
+  const getIssue = mockIssueReads();
+  const answerAsk = answerAskAnswers().mockRejectedValue(new Error("offline"));
+  const { unmount } = renderInbox("/");
+  try {
+    const card = await screen.findByTestId("ask-ask-a");
+    expect(headings()).toEqual(["P1 (1)", "P2 (1)"]);
+    const field = within(card).getByLabelText("Your answer");
+    await user.click(field);
+    await user.paste("JSON");
+    const answer = within(card).getByRole("button", { name: "Answer" });
+    answer.focus();
+    await user.click(answer);
+    await waitFor(() => expect(answerAsk).toHaveBeenCalledTimes(1));
+    const alert = await waitFor(() => within(screen.getByTestId("ask-ask-a")).getByRole("alert"));
+    expect(alert).toBeTruthy();
+    expect(
+      within(screen.getByTestId("ask-ask-a")).getByLabelText<HTMLTextAreaElement>("Your answer")
+        .value
+    ).toBe("JSON");
+    expect(rowIds()).toEqual(["ask-a", "ask-b"]);
+  } finally {
+    unmount();
+    answerAsk.mockRestore();
+    getIssue.mockRestore();
     getAsk.mockRestore();
     getInbox.mockRestore();
   }
@@ -1955,7 +2168,7 @@ test("a sibling ask of the same issue leaving the list does not drop an in-fligh
       within(rowA() as HTMLElement).getByRole("button", { name: "Assign CORE-3 to me" })
     ).toBeTruthy();
 
-    // The server refuses: A rolls back, and its own control shows the reason.
+    // The server refuses: A's assignment is drawn no more, and its own control shows the reason.
     await act(async () => {
       save.reject(
         new ApiError(409, { code: "ISSUE_CLOSED", error: "CORE-3 is closed; reopen it first" })
@@ -2042,7 +2255,7 @@ test("Snooze folds a row into Later until the reader un-snoozes it", async () =>
     served = served.map((row) => (row.id === id ? { ...row, snoozed_until: until } : row));
     return { snoozed_until: until };
   });
-  const unsnoozeAsk = spyOn(api, "unsnoozeAsk").mockImplementation(async (id) => {
+  const unsnoozeAsk = answerAskUnsnoozes().mockImplementation(async (id) => {
     served = served.map((row) => (row.id === id ? { ...row, snoozed_until: null } : row));
   });
   const getAsk = mockAskReads([askA, askB]);
@@ -2075,7 +2288,7 @@ test("Snooze folds a row into Later until the reader un-snoozes it", async () =>
       within(later as HTMLElement).getByRole("button", { name: "Un-snooze CORE-2: Which format?" })
     );
     await waitFor(() => expect(headings()).toEqual(["Waiting on you (2)"]));
-    expect(unsnoozeAsk).toHaveBeenCalledWith("ask-b", keyedAttempt);
+    expect(unsnoozeAsk).toHaveBeenCalledWith("ask-b", undefined, keyedAttempt);
     expect(rowIds()).toEqual(["ask-a", "ask-b"]);
     expect(screen.getByText(/Blocked on you: 2 items/)).toBeTruthy();
   } finally {
@@ -2641,7 +2854,7 @@ test("the reader's own answer takes its row off the list and selects the next on
   const getInbox = spyOn(api, "getInbox").mockImplementation(async () => served);
   const getAsk = mockAskReads([first, second]);
   const getIssue = mockIssueReads();
-  const answerAsk = spyOn(api, "answerAsk").mockImplementation(async () => {
+  const answerAsk = answerAskAnswers().mockImplementation(async () => {
     served = [second];
     return {
       ...first,
@@ -2687,7 +2900,7 @@ test("an answer the server refuses keeps its question in the column, and a retry
   const getAsk = mockAskReads([first, second]);
   const getIssue = mockIssueReads();
   const refusal = Promise.withResolvers<never>();
-  const answerAsk = spyOn(api, "answerAsk").mockImplementation(() => refusal.promise);
+  const answerAsk = answerAskAnswers().mockImplementation(() => refusal.promise);
   const { unmount } = renderInbox();
 
   try {
@@ -3658,7 +3871,7 @@ test("an answer given from the column drops the record: Escape lands on the ques
   const getInbox = spyOn(api, "getInbox").mockImplementation(async () => served);
   const getAsk = mockAskReads(rows);
   const getIssue = mockIssueReads();
-  const answerAsk = spyOn(api, "answerAsk").mockImplementation(async () => {
+  const answerAsk = answerAskAnswers().mockImplementation(async () => {
     served = rows.filter((row) => row.id !== "ask-b");
     return {
       ...second,
@@ -4393,7 +4606,7 @@ test("a refused hand-on from the column's decision block keeps the row, with the
     rows.map((row) => ({ ...row, last_reply: null }))
   );
   const handOn = Promise.withResolvers<InboxRow>();
-  const handAskTo = spyOn(api, "handAskTo").mockImplementation(() => handOn.promise);
+  const handAskTo = answerAskHandOns().mockImplementation(() => handOn.promise);
   const { unmount } = renderInbox("/?item=ask-mine", { runtime: fake.runtime });
 
   try {
@@ -4415,7 +4628,9 @@ test("a refused hand-on from the column's decision block keeps the row, with the
     const card = await within(pane).findByTestId("ask-ask-mine");
 
     await user.selectOptions(within(card).getByLabelText("Hand this question to"), "bob");
-    await waitFor(() => expect(handAskTo).toHaveBeenCalledWith("ask-mine", "bob", keyedAttempt));
+    await waitFor(() =>
+      expect(handAskTo).toHaveBeenCalledWith("ask-mine", { asked_of: "bob" }, keyedAttempt)
+    );
     // Handed on optimistically, the row waits on somebody else - and the column keeps the card
     // the reader pressed, which is the only surface the server's answer can reach.
     await waitFor(() => expect(within(card).getByText("Handing on…")).toBeTruthy());
@@ -4487,7 +4702,7 @@ test("a refused hand-on from a Reply-thread card leaves the reader's own list as
     total: 1,
   });
   const handOn = Promise.withResolvers<InboxRow>();
-  const handAskTo = spyOn(api, "handAskTo").mockImplementation(() => handOn.promise);
+  const handAskTo = answerAskHandOns().mockImplementation(() => handOn.promise);
   const { unmount } = renderInbox("/");
   try {
     const row = await waitFor(() => {
@@ -4501,7 +4716,7 @@ test("a refused hand-on from a Reply-thread card leaves the reader's own list as
     // Handed back to the assignee of its own issue, from the thread card.
     await user.selectOptions(control, "carol");
     await waitFor(() =>
-      expect(handAskTo).toHaveBeenCalledWith("ask-theirs", "carol", keyedAttempt)
+      expect(handAskTo).toHaveBeenCalledWith("ask-theirs", { asked_of: "carol" }, keyedAttempt)
     );
     await waitFor(() => expect(within(row).getByText("Handing on…")).toBeTruthy());
     expect(rowIds()).toEqual(["reply:ask-theirs"]);
@@ -4664,6 +4879,142 @@ test("a snooze the column's head writes keeps that column on its row, in flight 
     getInbox.mockRestore();
     getIssue.mockRestore();
     snoozeAsk.mockRestore();
+  }
+});
+
+// The browser's row (`e2e/inbox.e2e.ts`, "a refused snooze wraps beside its own control"): the
+// list holds the one question, the reader snoozes it from the column's head and Dispatch refuses
+// it at once. The snooze is composed over the Inbox's read the moment its write joins the store,
+// before TanStack has told the control its own press is pending - TanStack hands its observers
+// their news a task later, which this row restores for the press in place of the suite's
+// synchronous scheduler (`__tests__/setup.ts`) - so the list must hear that the row is held from
+// the press itself: an effect a commit later comes after the row has left the bands, the
+// selection with it, and the head's refusal is unmounted with the control that wrote.
+test("a snooze of the only row, refused at once, keeps its refusal and Retry in the column's head", async () => {
+  const user = userEvent.setup();
+  const narrow = widenToReadingPane();
+  const rows = [inboxIssue("ask-a", "CORE-1", "Which approach?")];
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const snoozeAsk = answerAskSnoozes().mockRejectedValue(
+    new ApiError(400, { code: "INVALID_SNOOZE", error: "snoozed_until must be in the future" })
+  );
+  const getAsk = mockAskReads(rows);
+  const getIssue = mockIssueReads();
+  const { unmount } = renderInbox("/");
+
+  try {
+    const pane = await screen.findByTestId("inbox-pane");
+    notifyManager.setScheduler((callback) => setTimeout(callback, 0));
+    await user.selectOptions(
+      within(pane).getByLabelText("Snooze CORE-1: Which approach?"),
+      "tomorrow"
+    );
+    const head = await waitFor(() => within(screen.getByTestId("inbox-pane")).getByRole("alert"));
+    expect(head).toHaveTextContent("snoozed_until must be in the future");
+    expect(
+      within(screen.getByTestId("inbox-pane")).getByRole("button", { name: "Retry" })
+    ).toBeTruthy();
+    expect(selectedIds()).toEqual(["ask-a"]);
+  } finally {
+    notifyManager.setScheduler((callback) => callback());
+    unmount();
+    narrow();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+    getIssue.mockRestore();
+    snoozeAsk.mockRestore();
+  }
+});
+
+// The column's head writes the row the column shows. Under a priority filter a pick of another
+// priority takes that row out of the list the moment the store composes it, and the column
+// follows the list, so the head would go with it and its refusal with the head. The head
+// registers the pick with the list at the press, as a row's own control does, and the list
+// keeps the row - and so the column and the head that wrote - while the pick is live and while
+// its refusal is shown.
+test("a priority pick in the column's head, out of a priority filter, keeps its refusal and Retry there", async () => {
+  const user = userEvent.setup();
+  const narrow = widenToReadingPane();
+  const rows = [
+    inboxIssue("ask-a", "CORE-1", "Which approach?", { priority: 1 }),
+    inboxIssue("ask-b", "CORE-2", "Which format?", { priority: 1 }),
+  ];
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const getAsk = mockAskReads(rows);
+  const getIssue = mockIssueReads();
+  const save = Promise.withResolvers<Issue>();
+  const patchIssue = answerIssuePatches().mockImplementation(() => save.promise);
+  const { unmount } = renderInbox("/?priority=P1");
+  try {
+    const pane = await screen.findByTestId("inbox-pane");
+    await waitFor(() => expect(selectedIds()).toEqual(["ask-a"]));
+    await user.selectOptions(within(pane).getByLabelText("Priority of CORE-1"), "P2");
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
+    expect(selectedIds()).toEqual(["ask-a"]);
+
+    await act(async () => {
+      save.reject(new ApiError(403, { code: "FORBIDDEN", error: "not your project" }));
+      await save.promise.catch(() => undefined);
+    });
+    const alert = await waitFor(() => within(screen.getByTestId("inbox-pane")).getByRole("alert"));
+    expect(alert).toHaveTextContent("Could not update the priority of CORE-1.");
+    expect(within(alert).getByRole("button", { name: /Retry/ })).toBeTruthy();
+    expect(selectedIds()).toEqual(["ask-a"]);
+  } finally {
+    unmount();
+    narrow();
+    patchIssue.mockRestore();
+    getIssue.mockRestore();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+  }
+});
+
+// The same for the head's "Assign to me" under the Unassigned filter, which the optimistic
+// assignment takes the row out of: the head tells the list, not only itself, so the column stays
+// on the row and the head's refusal is read where the reader pressed.
+test("an Assign to me in the column's head, under the Unassigned filter, keeps its refusal and Retry there", async () => {
+  const user = userEvent.setup();
+  const narrow = widenToReadingPane();
+  const nobodys = (id: string, key: string, question: string) =>
+    issueAsk(
+      { id, issue: { assignee: null, key, title: `${key} title` }, issue_key: key, question },
+      null
+    );
+  const rows = [
+    nobodys("ask-a", "CORE-1", "Which approach?"),
+    nobodys("ask-b", "CORE-2", "Which format?"),
+  ];
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const getAsk = mockAskReads(rows);
+  const getIssue = mockIssueReads();
+  const save = Promise.withResolvers<Issue>();
+  const patchIssue = answerIssuePatches().mockImplementation(() => save.promise);
+  const { unmount } = renderInbox("/?assignee=unassigned");
+  try {
+    const pane = await screen.findByTestId("inbox-pane");
+    await waitFor(() => expect(selectedIds()).toEqual(["ask-a"]));
+    await user.click(within(pane).getByRole("button", { name: "Assign CORE-1 to me" }));
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
+    expect(selectedIds()).toEqual(["ask-a"]);
+
+    await act(async () => {
+      save.reject(
+        new ApiError(409, { code: "ISSUE_CLOSED", error: "CORE-1 is closed; reopen it first" })
+      );
+      await save.promise.catch(() => undefined);
+    });
+    const alert = await waitFor(() => within(screen.getByTestId("inbox-pane")).getByRole("alert"));
+    expect(alert).toHaveTextContent("CORE-1 is closed; reopen it first");
+    expect(within(alert).getByRole("button", { name: /Retry/ })).toBeTruthy();
+    expect(selectedIds()).toEqual(["ask-a"]);
+  } finally {
+    unmount();
+    narrow();
+    patchIssue.mockRestore();
+    getIssue.mockRestore();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
   }
 });
 

@@ -1,9 +1,9 @@
-import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useMemo, useState } from "react";
 import { useLocation } from "react-router-dom";
-
+import { useCache } from "../../api/cache/cache";
+import { useShownQuery } from "../../api/cache/shown-query";
 import { api, type WriteBounds } from "../../api/client";
-import { inboxQuery, userStateQuery } from "../../api/queries";
+import { commentsQueryKey, inboxQuery, issueQuery, userStateQuery } from "../../api/queries";
 import type {
   Actor,
   Anchor,
@@ -321,15 +321,12 @@ export function useMarginItems(
     readonly held?: ReadonlySet<string>;
   } = {}
 ) {
-  const queryClient = useQueryClient();
+  const cache = useCache();
   const issueKey = owner?.kind === "issue" ? owner.key : undefined;
-  const commentsQueryKey =
-    owner?.kind === "issue"
-      ? ["comments", owner.key]
-      : owner?.kind === "document"
-        ? ["artifact", owner.artifactId, "comments"]
-        : ["comments", undefined];
-  const asks = useQuery(inboxQuery());
+  const commentsKey = commentsQueryKey(
+    owner?.kind === "document" ? { artifact: owner.artifactId } : { issue: owner?.key }
+  );
+  const asks = useShownQuery(inboxQuery());
   const inboxOpenAsks = useMemo(
     () =>
       (asks.data ?? []).filter(
@@ -343,9 +340,8 @@ export function useMarginItems(
       ),
     [asks.data, owner]
   );
-  const comments = useQuery({
-    enabled: owner !== undefined,
-    queryKey: commentsQueryKey,
+  const comments = useShownQuery({
+    queryKey: commentsKey,
     queryFn: () => {
       if (owner === undefined) {
         throw new Error("Margin comments require an owner.");
@@ -354,12 +350,13 @@ export function useMarginItems(
         ? api.listArtifactComments(owner.artifactId)
         : api.listComments(owner.key);
     },
+    enabled: owner !== undefined,
   });
-  const userState = useQuery({ ...userStateQuery(), enabled: owner?.kind === "issue" });
+  const userState = useShownQuery({ ...userStateQuery(), enabled: owner?.kind === "issue" });
   const dismissed =
     owner?.kind === "issue" ? (userState.data?.[owner.key]?.dismissed ?? NO_PINS) : NO_PINS;
   const pinnedIds = pinnedEventIds(dismissed);
-  const pinned = useQuery({
+  const pinned = useShownQuery({
     enabled: owner?.kind === "issue" && tab === "pinned" && pinnedIds.length > 0,
     queryKey: ["events", issueKey, "margin-pinned", pinnedIds],
     queryFn: () => {
@@ -378,7 +375,7 @@ export function useMarginItems(
     () => pinnedMarkers.filter((marker) => marker.kind === "message").map((marker) => marker.id),
     [pinnedMarkers]
   );
-  const pinnedMessages = useQuery({
+  const pinnedMessages = useShownQuery({
     enabled: owner?.kind === "issue" && tab === "pinned" && pinnedMessageIds.length > 0,
     queryKey: ["issue-messages", issueKey, "margin-pinned", pinnedMessageIds],
     queryFn: () => {
@@ -486,7 +483,7 @@ export function useMarginItems(
   // once that spec is on screen, since the issue page keeps it mounted under the Conversation.
   const showsDecisions =
     owner?.kind === "issue" && visibleArtifact?.primary === true && documentShown;
-  const decisionsView = useQuery(issueDecisionsQuery(issueKey ?? "", showsDecisions));
+  const decisionsView = useShownQuery(issueDecisionsQuery(issueKey ?? "", showsDecisions));
   const decisions = useMemo<DecisionMarginItem[]>(() => {
     if (!showsDecisions) return [];
     const decisionItems = (decisionsView.data?.decisions ?? []).flatMap((decision) => {
@@ -534,44 +531,44 @@ export function useMarginItems(
     () => [...needsYou.map((ask) => ({ ask, kind: "ask" as const })), ...items],
     [items, needsYou]
   );
-  const { actionFailure, mutateItem, pendingActionIds, retryItem } = useCommentActionQueue<{
-    previous: Comment[] | undefined;
-  }>({
-    onError: (_error, _input, context) => {
-      queryClient.setQueryData(commentsQueryKey, context?.previous);
-      void queryClient.invalidateQueries({ queryKey: commentsQueryKey });
-    },
-    onMutate: async ({ id, kind }) => {
-      await queryClient.cancelQueries({ queryKey: commentsQueryKey });
-      const previous = queryClient.getQueryData<Comment[]>(commentsQueryKey);
-      queryClient.setQueryData<Comment[]>(commentsQueryKey, (current) =>
-        current?.map((comment) => {
-          if (comment.id !== id) {
-            return comment;
-          }
-          if (kind === "reopen") {
-            return { ...comment, resolved: false, resolved_at: null, resolved_by: null };
-          }
-          if (kind === "resolve") {
-            return { ...comment, resolved: true };
-          }
-          return comment.suggestion === null
-            ? comment
-            : {
-                ...comment,
-                resolved: true,
-                suggestion: { ...comment.suggestion, accepted: kind === "accept" },
-              };
-        })
-      );
-      return { previous };
-    },
+  // A refused action stops being composed: the comments are what Dispatch last gave them, every
+  // other live action over them, read again (R10 of dispatch://INFRA-299).
+  const { actionFailure, mutateItem, pendingActionIds, retryItem } = useCommentActionQueue({
+    // A read already out was asked before this action went out.
+    onMutate: () => cache.cancel({ queryKey: commentsKey }),
+    /** The comment as the action leaves it, written over the list as it stands, so an answer
+     *  this is shown over again carries the resolve, reopen, accept or reject while every other
+     *  comment that answer brought stays as the server has it (R7). */
+    shows:
+      ({ id, kind }) =>
+      (shown) => {
+        shown.on<Comment[]>(commentsKey, (current) =>
+          current.map((comment) => {
+            if (comment.id !== id) {
+              return comment;
+            }
+            if (kind === "reopen") {
+              return { ...comment, resolved: false, resolved_at: null, resolved_by: null };
+            }
+            if (kind === "resolve") {
+              return { ...comment, resolved: true };
+            }
+            return comment.suggestion === null
+              ? comment
+              : {
+                  ...comment,
+                  resolved: true,
+                  suggestion: { ...comment.suggestion, accepted: kind === "accept" },
+                };
+          })
+        );
+      },
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: commentsQueryKey });
+      void cache.invalidate({ queryKey: commentsKey });
       if (owner?.kind === "issue") {
-        void queryClient.invalidateQueries({ queryKey: ["issue", owner.key] });
+        void cache.invalidate({ queryKey: issueQuery(owner.key).queryKey });
       } else if (owner?.kind === "document") {
-        void queryClient.invalidateQueries({ queryKey: ["artifact", owner.artifactId] });
+        void cache.invalidate({ queryKey: ["artifact", owner.artifactId] });
       }
     },
   });
@@ -599,7 +596,7 @@ export function useMarginItems(
       bounds: WriteBounds
     ) => {
       const saved = await api.editComment(id, { body, ...carried }, bounds);
-      void queryClient.invalidateQueries({ queryKey: commentsQueryKey });
+      void cache.invalidate({ queryKey: commentsKey });
       return saved;
     },
     items,

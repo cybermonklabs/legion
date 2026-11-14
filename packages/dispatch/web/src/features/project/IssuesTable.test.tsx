@@ -1,17 +1,22 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
+import { answerIssueCreates, answerIssuePatches } from "../../__tests__/send-answers";
+import {
+  answeredByDispatch,
+  cacheOf,
+  QueryClient,
+  QueryClientProvider,
+} from "../../api/cache/test-client";
 import { ApiError, api } from "../../api/client";
-import { boardMoveMutationKey, projectIssuesQuery } from "../../api/queries";
+import { projectIssuesQuery } from "../../api/queries";
 import type { CreateIssueInput, Issue, IssueDetails, IssueSummary } from "../../api/types";
 import { readSelectedIssues } from "../search/bar-scope";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { useKeymapScope } from "../shell/keymap";
 import { SendStoppedError } from "../writes/keyed-write";
-import { writesOf } from "../writes/write-store";
 import { IssuesTable } from "./IssuesTable";
 import type { IssueListing } from "./issues-table-data";
 import { ISSUE_TABLE_COLUMNS } from "./issues-table-model";
@@ -61,6 +66,11 @@ function savedIssue(key: string): Issue {
     plan_artifact_id: "",
     verification_artifact_id: "",
   };
+}
+/** `savedIssue` as `api.send` answers it, minted as Dispatch's answer, for a spy standing in
+ *  for the client's own `send`. */
+function sentIssue(key: string) {
+  return answeredByDispatch(savedIssue(key));
 }
 function Route(): ReactNode {
   useKeymapScope("project");
@@ -251,9 +261,9 @@ test("a table rank write is held by the durable store on the issue's write line"
   restores.push(() => send.mockRestore());
   await user.click(await screen.findByRole("checkbox", { name: "Select CORE-2" }));
   await user.click(within(screen.getByRole("toolbar")).getByRole("button", { name: "Start next" }));
-  await waitFor(() => expect(writesOf(client).rows().length).toBe(1));
-  expect(writesOf(client).rows()[0]?.target).toBe("issue:CORE-2");
-  expect(writesOf(client).rows()[0]?.login).toBe("alice");
+  await waitFor(() => expect(cacheOf(client).writes.rows().length).toBe(1));
+  expect(cacheOf(client).writes.rows()[0]?.target).toBe("issue:CORE-2");
+  expect(cacheOf(client).writes.rows()[0]?.login).toBe("alice");
   response.resolve(
     new Response(JSON.stringify(savedIssue("CORE-2")), {
       status: 200,
@@ -269,10 +279,10 @@ test("a table rank write is held by the durable store on the issue's write line"
 
 test("an epic creation committed without an answer never sends parent writes to an unknown issue", async () => {
   const user = userEvent.setup();
-  const create = spyOn(api, "createIssue").mockRejectedValue(
+  const create = answerIssueCreates().mockRejectedValue(
     new ApiError(409, { code: "KEY_COMMITTED", error: "already made" })
   );
-  const send = spyOn(api, "send").mockRejectedValue(new Error("Unexpected parent write"));
+  const send = answerIssuePatches().mockRejectedValue(new Error("Unexpected parent write"));
   const named = nameTheEpic(user, "Made once");
   table([issue("CORE-1")]);
   restores.push(() => {
@@ -296,7 +306,7 @@ test("an epic creation committed without an answer never sends parent writes to 
 test("a possible duplicate offers an explicit force choice rather than forcing the first create", async () => {
   const user = userEvent.setup();
   const calls: CreateIssueInput[] = [];
-  const create = spyOn(api, "createIssue").mockImplementation(async (input) => {
+  const create = answerIssueCreates().mockImplementation(async (input) => {
     calls.push(input);
     if (!input.force)
       throw new ApiError(409, {
@@ -305,7 +315,7 @@ test("a possible duplicate offers an explicit force choice rather than forcing t
       });
     return savedIssue("CORE-9");
   });
-  const send = spyOn(api, "send").mockResolvedValue(savedIssue("CORE-1"));
+  const send = answerIssuePatches().mockResolvedValue(savedIssue("CORE-1"));
   const named = nameTheEpic(user, "Existing epic");
   table([issue("CORE-1")]);
   restores.push(() => {
@@ -331,9 +341,8 @@ test("a stopped epic creation retries its committed request under the same key",
   const created = new Map<string, Issue>();
   const keys: string[] = [];
   let stopped = false;
-  const create = spyOn(api, "createIssue").mockImplementation(async (input, bounds) => {
+  const create = answerIssueCreates().mockImplementation(async (_input, bounds) => {
     keys.push(bounds.key);
-    bounds.sent?.({ method: "POST", path: "/api/v1/issues", body: input });
     if (!created.has(bounds.key)) {
       const epic = savedIssue("CORE-9");
       created.set(bounds.key, epic);
@@ -345,10 +354,10 @@ test("a stopped epic creation retries its committed request under the same key",
     }
     return created.get(bounds.key) as Issue;
   });
-  const send = spyOn(api, "send").mockImplementation(async (request) => {
-    const row = rows.find((value) => request.path.endsWith(value.key));
+  const send = answerIssuePatches().mockImplementation(async (key, body) => {
+    const row = rows.find((value) => value.key === key);
     if (!row) throw new Error("Missing issue");
-    Object.assign(row, request.body);
+    Object.assign(row, body);
     return { ...savedIssue(row.key), ...row } as never;
   });
   const named = nameTheEpic(user, "Committed once");
@@ -361,12 +370,12 @@ test("a stopped epic creation retries its committed request under the same key",
   await user.click(screen.getByRole("button", { name: "New epic from these" }));
   await named;
   await screen.findByRole("alert");
-  const refused = writesOf(client)
-    .rows()
+  const refused = cacheOf(client)
+    .writes.rows()
     .find((write) => write.status === "refused");
   expect(refused).toBeDefined();
   if (!refused) throw new Error("The stopped creation was dropped");
-  writesOf(client).retry(refused.id);
+  cacheOf(client).writes.retry(refused.id);
   await waitFor(() => expect(keys).toHaveLength(2));
   expect(keys[1]).toBe(keys[0]);
   expect(created.size).toBe(1);
@@ -395,7 +404,7 @@ test("dismissing an interrupted action preserves layout and sends none of its fu
       },
     })
   );
-  const send = spyOn(api, "send").mockResolvedValue(savedIssue("CORE-1") as never);
+  const send = spyOn(api, "send").mockResolvedValue(sentIssue("CORE-1") as never);
   restores.push(() => send.mockRestore());
   table([issue("CORE-1")]);
   const recovery = await screen.findByRole("region", { name: "Interrupted table action" });
@@ -405,32 +414,6 @@ test("dismissing an interrupted action preserves layout and sends none of its fu
   expect(saved.action).toBeUndefined();
   expect(saved.sizing.title).toBe(360);
   expect(send).not.toHaveBeenCalled();
-});
-
-test("the open table read waits behind an unanswered Board move", async () => {
-  const { client, listing } = table([issue("CORE-1")]);
-  await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
-  const gate = Promise.withResolvers<void>();
-  const started = Promise.withResolvers<void>();
-  const move = client
-    .getMutationCache()
-    .build(client, {
-      mutationKey: boardMoveMutationKey("CORE"),
-      mutationFn: () => {
-        started.resolve();
-        return gate.promise;
-      },
-    })
-    .execute(undefined);
-  await started.promise;
-  const calls = listing.mock.calls.length;
-  const reading = client.fetchQuery(projectIssuesQuery("CORE", [], true));
-  await Promise.resolve();
-  expect(listing.mock.calls.length).toBe(calls);
-  gate.resolve();
-  await move;
-  await reading;
-  expect(listing.mock.calls.length).toBe(calls + 1);
 });
 
 test("a failed project listing can be retried without navigating away", async () => {
@@ -472,7 +455,7 @@ test("Title and Columns popovers allow internal Tab, dismiss on an outside press
 test("a partially refused batch keeps selection and identifies the writes already saved", async () => {
   const user = userEvent.setup();
   const send = spyOn(api, "send")
-    .mockResolvedValueOnce(savedIssue("CORE-1"))
+    .mockResolvedValueOnce(sentIssue("CORE-1"))
     .mockRejectedValueOnce(new ApiError(403, { error: "refused", code: "FORBIDDEN" }));
   table([issue("CORE-1"), issue("CORE-2")]);
   restores.push(() => send.mockRestore());
@@ -546,7 +529,7 @@ test("an epic's Start all includes queued siblings hidden by a priority filter",
   const send = spyOn(api, "send").mockImplementation(async (request) => {
     const key = request.path.split("/").at(-1) ?? "";
     written.push(key);
-    return savedIssue(key) as never;
+    return sentIssue(key) as never;
   });
   table(
     [
@@ -574,7 +557,7 @@ test("a refused bulk operation retries independently while the other operations 
       refused = true;
       throw new ApiError(403, { error: "refused", code: "FORBIDDEN" });
     }
-    return savedIssue(key) as never;
+    return sentIssue(key) as never;
   });
   restores.push(() => send.mockRestore());
   const { client, listing } = table([issue("CORE-1"), issue("CORE-2"), issue("CORE-3")]);
@@ -586,18 +569,18 @@ test("a refused bulk operation retries independently while the other operations 
   await screen.findByRole("alert");
   expect(sent).toEqual(["CORE-1", "CORE-2", "CORE-3"]);
   expect(
-    writesOf(client)
-      .rows()
+    cacheOf(client)
+      .writes.rows()
       .map((write) => write.label)
   ).toEqual(["Update CORE-2 from the issues table"]);
   expect(listing.mock.calls.length - before).toBe(1);
-  const retry = writesOf(client)
-    .rows()
+  const retry = cacheOf(client)
+    .writes.rows()
     .find((write) => write.status === "refused");
   if (!retry) throw new Error("The refused operation was lost");
-  writesOf(client).retry(retry.id);
+  cacheOf(client).writes.retry(retry.id);
   await waitFor(() => expect(sent).toEqual(["CORE-1", "CORE-2", "CORE-3", "CORE-2"]));
-  await waitFor(() => expect(writesOf(client).rows()).toHaveLength(0));
+  await waitFor(() => expect(cacheOf(client).writes.rows()).toHaveLength(0));
   await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
   expect(
     within(screen.getByRole("region", { name: "Project issues" })).getByRole("status").textContent
@@ -638,8 +621,8 @@ test("a late Done listing applies the requested URL page instead of clamping it 
 
 test("parent-changing actions skip closed selections and New epic refuses an all-closed selection", async () => {
   const user = userEvent.setup();
-  const send = spyOn(api, "send").mockResolvedValue(savedIssue("CORE-1"));
-  const create = spyOn(api, "createIssue").mockRejectedValue(new Error("Unexpected create"));
+  const send = answerIssuePatches().mockResolvedValue(savedIssue("CORE-1"));
+  const create = answerIssueCreates().mockRejectedValue(new Error("Unexpected create"));
   restores.push(() => {
     send.mockRestore();
     create.mockRestore();
@@ -649,7 +632,7 @@ test("parent-changing actions skip closed selections and New epic refuses an all
   await user.click(screen.getByRole("checkbox", { name: "Select CORE-2" }));
   await user.click(screen.getByRole("button", { name: "Take out of epic" }));
   await screen.findByText(/Skipped 1 closed issue/);
-  expect(send.mock.calls.map(([request]) => request.path)).toEqual(["/api/v1/issues/CORE-1"]);
+  expect(send.mock.calls.map(([key]) => key)).toEqual(["CORE-1"]);
   await user.click(screen.getByRole("checkbox", { name: "Select CORE-2" }));
   await user.click(screen.getByRole("button", { name: "New epic from these" }));
   expect((await screen.findByRole("alert")).textContent).toContain(
@@ -688,7 +671,7 @@ test("a refused merge move leaves the source open and does not post the close re
   const send = spyOn(api, "send").mockImplementation(async (request) => {
     requests.push({ path: request.path, body: request.body });
     if (request.path.endsWith("CORE-3")) throw new ApiError(403, { error: "Move refused" });
-    return savedIssue("CORE-4") as never;
+    return sentIssue("CORE-4") as never;
   });
   const message = spyOn(api, "createMessage").mockRejectedValue(
     new Error("Unexpected close reason")
@@ -761,7 +744,7 @@ test("Start next stops at a refused predecessor and names every issue that did n
     "Did not move up: CORE-3, CORE-2"
   );
   expect(sent).toEqual(["/api/v1/issues/CORE-3"]);
-  expect(writesOf(client).rows()).toHaveLength(1);
+  expect(cacheOf(client).writes.rows()).toHaveLength(1);
 });
 
 test("x selects the focused issue and the bar is told, in the order the table lists them", async () => {
@@ -885,7 +868,7 @@ test("a bulk action keeps at most eight writes in flight", async () => {
     gates.push(gate.resolve);
     await gate.promise;
     running -= 1;
-    return savedIssue(request.path.split("/").at(-1) ?? "CORE-1") as never;
+    return sentIssue(request.path.split("/").at(-1) ?? "CORE-1") as never;
   });
   restores.push(() => send.mockRestore());
   const keys = Array.from({ length: 20 }, (_, index) => `CORE-${index + 1}`);
@@ -926,7 +909,7 @@ test("a browser that refuses storage still renders the table and runs an action"
     refuse(key);
     write.call(this, key, value);
   });
-  const send = spyOn(api, "send").mockResolvedValue(savedIssue("CORE-2"));
+  const send = spyOn(api, "send").mockResolvedValue(sentIssue("CORE-2"));
   restores.push(() => {
     getItem.mockRestore();
     setItem.mockRestore();
@@ -1022,7 +1005,7 @@ test("an epic left with no children is still a row while grouped by epic", async
   ];
   const send = spyOn(api, "send").mockImplementation(async () => {
     rows[1] = issue("CORE-2");
-    return savedIssue("CORE-2") as never;
+    return sentIssue("CORE-2") as never;
   });
   restores.push(() => send.mockRestore());
   table(rows, "?group=epic");
@@ -1165,7 +1148,7 @@ test("Start all its queued issues next moves the epic's queued children and repo
   const sent: { path: string; body: unknown }[] = [];
   const send = spyOn(api, "send").mockImplementation(async (request) => {
     sent.push({ path: request.path, body: request.body });
-    return savedIssue("CORE-3") as never;
+    return sentIssue("CORE-3") as never;
   });
   restores.push(() => send.mockRestore());
   table(
@@ -1204,7 +1187,7 @@ test("Finish retries a refused action's writes eight at a time", async () => {
     held.push(holding.resolve);
     await holding.promise;
     inFlight -= 1;
-    return savedIssue("CORE-1") as never;
+    return sentIssue("CORE-1") as never;
   });
   restores.push(() => send.mockRestore());
   const children = Array.from({ length: 20 }, (_, index) =>
@@ -1236,8 +1219,8 @@ test("Finish retries a refused action's writes eight at a time", async () => {
   await screen.findByRole("alert");
   refuse = false;
   expect(
-    writesOf(client)
-      .rows()
+    cacheOf(client)
+      .writes.rows()
       .filter((write) => write.status === "refused").length
   ).toBeGreaterThan(8);
   const interrupted = await screen.findByRole("region", { name: "Interrupted table action" });
@@ -1427,18 +1410,18 @@ test("a retried Move reports in the ordinary wording while an action waits to be
       refused = true;
       throw new ApiError(403, { error: "refused", code: "FORBIDDEN" });
     }
-    return savedIssue(request.path.split("/").at(-1) ?? "CORE-1") as never;
+    return sentIssue(request.path.split("/").at(-1) ?? "CORE-1") as never;
   });
   restores.push(() => send.mockRestore());
   const { client } = table([issue("CORE-1"), issue("CORE-2", { labels: ["legion"] })]);
   await user.click(await screen.findByRole("checkbox", { name: "Select CORE-1" }));
   await user.click(screen.getByRole("button", { name: "Take out of epic" }));
   await screen.findByRole("alert");
-  const retry = writesOf(client)
-    .rows()
+  const retry = cacheOf(client)
+    .writes.rows()
     .find((write) => write.status === "refused");
   if (!retry) throw new Error("The refused move was lost");
-  writesOf(client).retry(retry.id);
+  cacheOf(client).writes.retry(retry.id);
   await waitFor(() =>
     expect(
       within(screen.getByRole("region", { name: "Project issues" })).getByRole("status").textContent
@@ -1454,7 +1437,7 @@ test("a resumed merge posts no second reason when the source already holds it", 
   const paths: string[] = [];
   const send = spyOn(api, "send").mockImplementation(async (request) => {
     paths.push(request.path);
-    return savedIssue("CORE-1") as never;
+    return sentIssue("CORE-1") as never;
   });
   const messages = spyOn(api, "listIssueMessages").mockResolvedValue([
     { message: { body: "Merged into CORE-2 (“Target”) from the issues table." } },
@@ -1497,7 +1480,7 @@ test("a resumed merge whose discarded reason never landed posts it before closin
     paths.push(request.path);
     if (refuseReason && request.path.endsWith("/messages"))
       throw new ApiError(403, { error: "Message refused", code: "FORBIDDEN" });
-    return savedIssue("CORE-1") as never;
+    return sentIssue("CORE-1") as never;
   });
   const messages = spyOn(api, "listIssueMessages").mockResolvedValue([]);
   restores.push(() => {
@@ -1525,11 +1508,11 @@ test("a resumed merge whose discarded reason never landed posts it before closin
     })
   );
   await screen.findByRole("alert");
-  const refused = writesOf(client)
-    .rows()
+  const refused = cacheOf(client)
+    .writes.rows()
     .find((write) => write.status === "refused");
   if (!refused) throw new Error("The merge reason was not refused");
-  writesOf(client).discard(refused.id);
+  cacheOf(client).writes.discard(refused.id);
   refuseReason = false;
   await waitFor(() =>
     expect(
@@ -1568,7 +1551,7 @@ test.each([
 // two destructive selects may write on one, so each stages a value for a button to commit.
 test("an arrow key on the move or merge select writes nothing", async () => {
   const user = userEvent.setup();
-  const send = spyOn(api, "send").mockResolvedValue(savedIssue("CORE-3") as never);
+  const send = spyOn(api, "send").mockResolvedValue(sentIssue("CORE-3") as never);
   restores.push(() => send.mockRestore());
   table(
     [
@@ -1603,7 +1586,7 @@ test("an arrow key on the move or merge select writes nothing", async () => {
 // B2: Start next over a selection the reader cannot see all of says how many it will move.
 test("Start next on a selection larger than the page asks first", async () => {
   const user = userEvent.setup();
-  const send = spyOn(api, "send").mockResolvedValue(savedIssue("CORE-1") as never);
+  const send = spyOn(api, "send").mockResolvedValue(sentIssue("CORE-1") as never);
   restores.push(() => send.mockRestore());
   const rows = [
     // Ahead of the queue and out of this view's filter, so the selection has somewhere to move.
@@ -1652,7 +1635,7 @@ test.each([
   const paths: string[] = [];
   const send = spyOn(api, "send").mockImplementation(async (request) => {
     paths.push(request.path);
-    return savedIssue("CORE-1") as never;
+    return sentIssue("CORE-1") as never;
   });
   const messages = spyOn(api, "listIssueMessages").mockResolvedValue([
     { message: { body: "Merged into CORE-2 (“Payments”) from the issues table." } },
@@ -1742,7 +1725,7 @@ test.each([
 // F7: the steps of a start-next are known before the first write, so the store is written once.
 test("Start next writes the store once for the whole batch", async () => {
   const user = userEvent.setup();
-  const send = spyOn(api, "send").mockResolvedValue(savedIssue("CORE-1") as never);
+  const send = spyOn(api, "send").mockResolvedValue(sentIssue("CORE-1") as never);
   restores.push(() => send.mockRestore());
   const rows = Array.from({ length: 10 }, (_, index) =>
     issue(`CORE-${index + 1}`, { labels: ["legion"], rank: String(index).padStart(3, "0") })
@@ -1766,7 +1749,7 @@ test("Start next writes the store once for the whole batch", async () => {
 // O8: a record a tab left behind a day ago is not this reader's unfinished work.
 test("an action record older than a day is gone, and a new action may begin", async () => {
   const user = userEvent.setup();
-  const send = spyOn(api, "send").mockResolvedValue(savedIssue("CORE-1") as never);
+  const send = spyOn(api, "send").mockResolvedValue(sentIssue("CORE-1") as never);
   restores.push(() => send.mockRestore());
   localStorage.setItem(
     "dispatch.project-table.CORE",
@@ -1801,7 +1784,7 @@ test("Finish completes when a refused write was retried from Pending changes", a
   let refuse = true;
   const send = spyOn(api, "send").mockImplementation(async () => {
     if (refuse) throw new ApiError(403, { error: "refused", code: "FORBIDDEN" });
-    return savedIssue("CORE-2") as never;
+    return sentIssue("CORE-2") as never;
   });
   restores.push(() => send.mockRestore());
   const { client } = table([
@@ -1815,17 +1798,55 @@ test("Finish completes when a refused write was retried from Pending changes", a
   );
   await screen.findByRole("alert");
   refuse = false;
-  const refused = writesOf(client)
-    .rows()
+  const refused = cacheOf(client)
+    .writes.rows()
     .find((write) => write.status === "refused");
   if (!refused) throw new Error("The rank write was not refused");
   // The reader retries it themselves, so Finish finds a write already on its way.
-  writesOf(client).retry(refused.id);
+  cacheOf(client).writes.retry(refused.id);
   const recovery = await screen.findByRole("region", { name: "Interrupted table action" });
   await user.click(within(recovery).getByRole("button", { name: "Finish" }));
   await waitFor(() =>
     expect(screen.queryByRole("region", { name: "Interrupted table action" })).toBeNull()
   );
+});
+
+// A write the store lets go of says nothing of what became of it - a sign-out landing, another
+// tab's, another login taking over (`Writes.#take`) - so Finish waits on its rows as well as its
+// outcomes, and says the write was not made rather than waiting for an answer that never comes.
+test("Finish says a write the store let go of while it waited was not made", async () => {
+  const user = userEvent.setup();
+  let refuse = true;
+  const held = Promise.withResolvers<never>();
+  const send = spyOn(api, "send").mockImplementation(async () => {
+    if (refuse) throw new ApiError(403, { error: "refused", code: "FORBIDDEN" });
+    return held.promise;
+  });
+  restores.push(() => send.mockRestore());
+  const { client } = table([
+    issue("CORE-1", { labels: ["epic"], title: "Epic" }),
+    issue("CORE-2", { labels: ["legion"], rank: "b" }),
+    issue("CORE-3", { labels: ["legion"], rank: "a" }),
+  ]);
+  await user.click(await screen.findByRole("checkbox", { name: "Select CORE-2" }));
+  await user.click(
+    within(screen.getByRole("toolbar")).getByRole("button", { name: /^Start next$/ })
+  );
+  await screen.findByRole("alert");
+  refuse = false;
+  const refused = cacheOf(client)
+    .writes.rows()
+    .find((write) => write.status === "refused");
+  if (!refused) throw new Error("The rank write was not refused");
+  // Retried, and held out, so Finish finds a write on its way and waits on it.
+  cacheOf(client).writes.retry(refused.id);
+  const recovery = await screen.findByRole("region", { name: "Interrupted table action" });
+  await user.click(within(recovery).getByRole("button", { name: "Finish" }));
+  await waitFor(() => expect(send).toHaveBeenCalledTimes(2));
+  // The person signs out: the store lets every write go, and tells no outcome of any of them.
+  act(() => cacheOf(client).writes.clear());
+  expect(await screen.findByText(/ was not made\.$/)).toBeDefined();
+  expect(within(recovery).getByRole("button", { name: "Finish" })).toBeDefined();
 });
 
 // A collapsed group keeps its heading however few of its rows the page holds: the heading is

@@ -1,14 +1,17 @@
 import { expect, test } from "bun:test";
-import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: this file keeps fireEvent for the bare mouse, pointer and touch presses a draggable parent must not see, which user-event has no form for
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, renderHook, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerIssuePatches } from "../../__tests__/send-answers";
+import { useShownQuery } from "../../api/cache/shown-query";
+import { cacheOf, QueryClient, QueryClientProvider } from "../../api/cache/test-client";
 import type { InboxRow, Issue, IssueDetails, IssueSummary } from "../../api/types";
 import { issuePriority } from "./issue-priority";
 import { PriorityControl } from "./PriorityControl";
+import { useIssueAssignee } from "./useIssueAssignee";
+import { useIssuePriority } from "./useIssuePriority";
 
 const issue: Issue = {
   advances: [],
@@ -127,7 +130,7 @@ const inboxKey = ["inbox"] as const;
 
 /** Renders the control the way every surface does: with the priority it reads from the cache. */
 function CachedControl(): ReactNode {
-  const cached = useQuery<IssueDetails>({
+  const cached = useShownQuery<IssueDetails>({
     queryKey: detailKey,
     queryFn: () => Promise.reject(new Error("the test seeds this query")),
     staleTime: Number.POSITIVE_INFINITY,
@@ -187,18 +190,20 @@ test("PriorityControl saves the picked priority, shows it before the server answ
     // the picker stays enabled while the request is in flight.
     expect(select().disabled).toBe(false);
     expect(select()).toHaveFocus();
-    expect(queryClient.getQueryData<IssueSummary[]>(listKey)).toEqual([
+    expect(cacheOf(queryClient).shown<IssueSummary[]>(listKey)).toEqual([
       { ...summary, priority: 2 },
       otherSummary,
     ]);
-    expect(queryClient.getQueryData<InboxRow[]>(inboxKey)).toEqual([{ ...inboxRow, priority: 2 }]);
+    expect(cacheOf(queryClient).shown<InboxRow[]>(inboxKey)).toEqual([
+      { ...inboxRow, priority: 2 },
+    ]);
 
     await act(async () => {
       save.resolve({ ...issue, priority: 2 });
       await save.promise;
     });
     await waitFor(() =>
-      expect(queryClient.getQueryData<IssueDetails>(detailKey)?.priority).toBe(2)
+      expect(cacheOf(queryClient).shown<IssueDetails>(detailKey)?.priority).toBe(2)
     );
     expect(select()).toHaveFocus();
   } finally {
@@ -238,8 +243,8 @@ test("PriorityControl rolls every surface back and offers Retry when the save fa
     await screen.findByRole("alert");
     expect(select().value).toBe("1");
     expect(select().disabled).toBe(false);
-    expect(queryClient.getQueryData<IssueSummary[]>(listKey)).toEqual([summary, otherSummary]);
-    expect(queryClient.getQueryData<InboxRow[]>(inboxKey)).toEqual([inboxRow]);
+    expect(cacheOf(queryClient).shown<IssueSummary[]>(listKey)).toEqual([summary, otherSummary]);
+    expect(cacheOf(queryClient).shown<InboxRow[]>(inboxKey)).toEqual([inboxRow]);
 
     patchIssue.mockResolvedValue({ ...issue, priority: 0 });
     await user.click(screen.getByRole("button", { name: "Retry" }));
@@ -286,7 +291,7 @@ test("PriorityControl saves a pick made during the first save once that save set
       await second.promise;
     });
     await waitFor(() =>
-      expect(queryClient.getQueryData<IssueDetails>(detailKey)?.priority).toBe(2)
+      expect(cacheOf(queryClient).shown<IssueDetails>(detailKey)?.priority).toBe(2)
     );
     expect(patchIssue).toHaveBeenCalledTimes(2);
   } finally {
@@ -295,7 +300,7 @@ test("PriorityControl saves a pick made during the first save once that save set
   }
 });
 
-test("a queued pick that fails rolls back to the priority the server last confirmed, not the pick", async () => {
+test("a queued pick that fails leaves the priority the server last confirmed, not the pick", async () => {
   const first = Promise.withResolvers<Issue>();
   const second = Promise.withResolvers<Issue>();
   const patchIssue = answerIssuePatches()
@@ -322,12 +327,245 @@ test("a queued pick that fails rolls back to the priority the server last confir
     });
     await screen.findByRole("alert");
     expect(select().value).toBe("0");
-    expect(queryClient.getQueryData<IssueSummary[]>(listKey)).toEqual([
+    expect(cacheOf(queryClient).shown<IssueSummary[]>(listKey)).toEqual([
       { ...summary, priority: 0 },
       otherSummary,
     ]);
-    expect(queryClient.getQueryData<InboxRow[]>(inboxKey)).toEqual([{ ...inboxRow, priority: 0 }]);
+    expect(cacheOf(queryClient).shown<InboxRow[]>(inboxKey)).toEqual([
+      { ...inboxRow, priority: 0 },
+    ]);
   } finally {
+    unmount();
+    patchIssue.mockRestore();
+  }
+});
+
+// R6 of dispatch://INFRA-299. A pick replaces a pick of the same field that is still waiting its
+// turn: the two picks that have not gone out are one request, the newest, and the engine shows
+// the person nothing for the one it took out - no error, no Retry, and no roll-back of the
+// control or the lists, since the engine, not the server, is what dropped it.
+test("a pick replaces a pick of the same priority control still waiting its turn, quietly", async () => {
+  const first = Promise.withResolvers<Issue>();
+  const second = Promise.withResolvers<Issue>();
+  const patchIssue = answerIssuePatches()
+    .mockImplementationOnce(() => first.promise)
+    .mockImplementationOnce(() => second.promise);
+  const { queryClient, unmount, user } = renderControl();
+  try {
+    await user.selectOptions(select(), "0");
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { priority: 0 }, keyedAttempt)
+    );
+    await user.selectOptions(select(), "3");
+    await user.selectOptions(select(), "2");
+
+    // P3 never went out and never will: the person sees their newest pick and nothing of the
+    // one it replaced.
+    expect(select().value).toBe("2");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+    expect(cacheOf(queryClient).shown<IssueSummary[]>(listKey)).toEqual([
+      { ...summary, priority: 2 },
+      otherSummary,
+    ]);
+    expect(cacheOf(queryClient).shown<InboxRow[]>(inboxKey)).toEqual([
+      { ...inboxRow, priority: 2 },
+    ]);
+
+    await act(async () => {
+      first.resolve({ ...issue, priority: 0 });
+      await first.promise;
+    });
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(2));
+    // Two picks that had not gone out, one request: the newest.
+    expect(patchIssue.mock.calls.map(([, update]) => update.priority)).toEqual([0, 2]);
+    expect(select().value).toBe("2");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+  } finally {
+    await act(async () => {
+      second.resolve({ ...issue, priority: 2 });
+      await second.promise;
+    });
+    unmount();
+    patchIssue.mockRestore();
+  }
+});
+
+// R6 of dispatch://INFRA-299. The server refuses an older pick while a newer one stands in the
+// line: the screen keeps the newer value, the control reports the refusal, and no Retry is
+// offered, because a Retry joins the back of the line and would store the older pick last.
+test("a refused pick is reported with no Retry while a newer pick stands in the line", async () => {
+  const first = Promise.withResolvers<Issue>();
+  const second = Promise.withResolvers<Issue>();
+  const patchIssue = answerIssuePatches()
+    .mockImplementationOnce(() => first.promise)
+    .mockImplementationOnce(() => second.promise);
+  const { queryClient, unmount, user } = renderControl();
+  try {
+    await user.selectOptions(select(), "0");
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { priority: 0 }, keyedAttempt)
+    );
+    await user.selectOptions(select(), "2");
+    expect(select().value).toBe("2");
+
+    act(() => {
+      first.reject(new Error("offline"));
+    });
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Could not update the priority of CORE-1."
+    );
+    expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+    expect(select().value).toBe("2");
+    expect(cacheOf(queryClient).shown<IssueSummary[]>(listKey)).toEqual([
+      { ...summary, priority: 2 },
+      otherSummary,
+    ]);
+  } finally {
+    await act(async () => {
+      second.resolve({ ...issue, priority: 2 });
+      await second.promise;
+    });
+    unmount();
+    patchIssue.mockRestore();
+  }
+});
+
+// R10 of dispatch://INFRA-299. A refused save stops being composed, so the screen shows the value
+// the server last confirmed, which is not the pick before it when the server refused that one
+// too: the first refusal changes nothing on screen, because a newer pick stands in the line and
+// is composed over it, so the second refusal is what puts the screen right, and the screen it
+// leaves reaches past the pick the server never took.
+test("a refused pick after another refused pick leaves the server's value, not the first pick", async () => {
+  const first = Promise.withResolvers<Issue>();
+  const second = Promise.withResolvers<Issue>();
+  const patchIssue = answerIssuePatches()
+    .mockImplementationOnce(() => first.promise)
+    .mockImplementationOnce(() => second.promise);
+  const { queryClient, unmount, user } = renderControl();
+  try {
+    await user.selectOptions(select(), "0");
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { priority: 0 }, keyedAttempt)
+    );
+    await user.selectOptions(select(), "2");
+    expect(select().value).toBe("2");
+
+    act(() => {
+      first.reject(new Error("offline"));
+    });
+    await screen.findByRole("alert");
+    expect(select().value).toBe("2");
+
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { priority: 2 }, keyedAttempt)
+    );
+    act(() => {
+      second.reject(new Error("offline"));
+    });
+    await waitFor(() => expect(select().value).toBe(String(issue.priority)));
+    expect(cacheOf(queryClient).shown<IssueSummary[]>(listKey)).toEqual([summary, otherSummary]);
+    expect(cacheOf(queryClient).shown<InboxRow[]>(inboxKey)).toEqual([inboxRow]);
+  } finally {
+    unmount();
+    patchIssue.mockRestore();
+  }
+});
+
+// R10 of dispatch://INFRA-299. A pick that replaces one still waiting its turn, once refused,
+// leaves the screen on what it held before the pick it replaced was shown: that pick was never
+// sent, so the server never had it, and the screen must not come back to it.
+test("a refused pick that replaced a waiting pick leaves the screen past the pick it replaced", async () => {
+  const first = Promise.withResolvers<Issue>();
+  const second = Promise.withResolvers<Issue>();
+  const patchIssue = answerIssuePatches()
+    .mockImplementationOnce(() => first.promise)
+    .mockImplementationOnce(() => second.promise);
+  const { queryClient, unmount, user } = renderControl();
+  try {
+    await user.selectOptions(select(), "0");
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { priority: 0 }, keyedAttempt)
+    );
+    await user.selectOptions(select(), "3");
+    await user.selectOptions(select(), "2");
+    expect(select().value).toBe("2");
+
+    await act(async () => {
+      first.resolve({ ...issue, priority: 0 });
+      await first.promise;
+    });
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { priority: 2 }, keyedAttempt)
+    );
+    act(() => {
+      second.reject(new Error("offline"));
+    });
+    await screen.findByRole("alert");
+    // The server holds P0, the pick it took; P3 never went out.
+    expect(select().value).toBe("0");
+    expect(cacheOf(queryClient).shown<IssueSummary[]>(listKey)).toEqual([
+      { ...summary, priority: 0 },
+      otherSummary,
+    ]);
+    expect(cacheOf(queryClient).shown<InboxRow[]>(inboxKey)).toEqual([
+      { ...inboxRow, priority: 0 },
+    ]);
+    expect(cacheOf(queryClient).shown<IssueDetails>(detailKey)?.priority).toBe(0);
+  } finally {
+    unmount();
+    patchIssue.mockRestore();
+  }
+});
+
+// R7 of dispatch://INFRA-299. One issue's writes go out one at a time, so the answer of an
+// earlier save of another field always predates a pick waiting behind it: the engine merges
+// that answer into the caches, and the store shows the waiting pick again over the merge, so
+// the person's pick stays on screen while it is out.
+test("a pick waiting behind another field's save stays shown over that save's merged answer", async () => {
+  const assigned = Promise.withResolvers<Issue>();
+  const prioritised = Promise.withResolvers<Issue>();
+  const patchIssue = answerIssuePatches()
+    .mockImplementationOnce(() => assigned.promise)
+    .mockImplementationOnce(() => prioritised.promise);
+  const queryClient = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  queryClient.setQueryData(detailKey, details);
+  queryClient.setQueryData(listKey, [summary, otherSummary]);
+  queryClient.setQueryData(inboxKey, [inboxRow]);
+  const { result, unmount } = renderHook(
+    () => ({ assignee: useIssueAssignee(issue.key), priority: useIssuePriority(issue.key) }),
+    {
+      wrapper: ({ children }: { children: ReactNode }) => (
+        <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+      ),
+    }
+  );
+  try {
+    act(() => result.current.assignee.submit("bob"));
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
+    act(() => result.current.priority.submit(2));
+    expect(cacheOf(queryClient).shown<IssueDetails>(detailKey)?.priority).toBe(2);
+
+    await act(async () => {
+      assigned.resolve({ ...issue, assignee: "bob" });
+      await assigned.promise;
+    });
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { priority: 2 }, keyedAttempt)
+    );
+    // The assignee's answer is merged, and the priority pick, still out, is shown over it.
+    expect(cacheOf(queryClient).shown<IssueDetails>(detailKey)).toMatchObject({
+      assignee: "bob",
+      priority: 2,
+    });
+  } finally {
+    await act(async () => {
+      prioritised.resolve({ ...issue, assignee: "bob", priority: 2 });
+      await prioritised.promise;
+    });
     unmount();
     patchIssue.mockRestore();
   }

@@ -1,17 +1,6 @@
 import { DISPATCH_LOGIN_CHANGED } from "@legion/contracts";
-import { type QueryClient, useQueryClient } from "@tanstack/react-query";
-import { useRef, useSyncExternalStore } from "react";
-
-import {
-  ApiError,
-  api,
-  type WriteBounds,
-  type WriteMethod,
-  type WriteRequest,
-} from "../../api/client";
-import type { AuthenticatedUser } from "../../api/types";
-import { newSendKey } from "../../lib/send-key";
-import { indexedDbFiles, type KeptFiles } from "./kept-files";
+import { hashKey, type Query, type QueryClient, type QueryKey } from "@tanstack/react-query";
+import { indexedDbFiles, type KeptFiles } from "../../features/writes/kept-files";
 import {
   KEYED_SEND_ATTEMPT_MS,
   retriesUnderItsKey,
@@ -19,7 +8,7 @@ import {
   SendStoppedError,
   WriteDiscardedError,
   writeUnderKey,
-} from "./keyed-write";
+} from "../../features/writes/keyed-write";
 import {
   KEPT_SEND_RESUME_MS,
   type KeptState,
@@ -33,7 +22,13 @@ import {
   type Shape,
   type WriteStorage,
   writeStorage,
-} from "./write-storage";
+} from "../../features/writes/write-storage";
+import { newSendKey } from "../../lib/send-key";
+import { ApiError, api, type WriteBounds, type WriteMethod, type WriteRequest } from "../client";
+import type { AuthenticatedUser } from "../types";
+import type { Cache } from "./cache";
+import { clientOf } from "./client-handle";
+import { readsOnePage } from "./query-client";
 
 /** Where a write stands: waiting its turn behind an earlier write to its target (`queued`), out
  *  within its deadline (`sending`), out past it (`late`, `stopping` once the reader pressed Stop
@@ -112,10 +107,11 @@ export type Attempt<T> = (bounds: WriteBounds) => Promise<T>;
 
 /**
  * A kind of write: what its record is (`D`) and how it is kept (`K`), checked as a reload reads it
- * (`kept`), and what the store does for it beyond making it. Every kind is defined once
- * (`defineWriteKind`), so a reload finds any kept write's kind by its `name`.
+ * (`kept`), what its attempts answer (`A`, which its `landed` is handed), and what the store does
+ * for it beyond making it. Every kind is defined once (`defineWriteKind`), so a reload finds any
+ * kept write's kind by its `name`.
  */
-export interface WriteKind<D, K = D> {
+export interface WriteKind<D, K = D, A = unknown> {
   readonly name: string;
   readonly kept: Shape<K>;
   /** The record as it is kept; left out, the record itself. */
@@ -125,19 +121,16 @@ export interface WriteKind<D, K = D> {
   /** One attempt of a write of this kind a reload took up, from its record and the request it
    *  last went out as; left out, that request verbatim. `undefined` has nothing to make, and the
    *  write is let go. */
-  readonly resume?: (detail: D, request: WriteRequest | null) => Attempt<unknown> | undefined;
+  readonly resume?: (detail: D, request: WriteRequest | null) => Attempt<A> | undefined;
   /** What a write of this kind that landed refreshes, whether or not a surface awaits it:
-   *  `answer` is Dispatch's, `null` for a landing it had no answer to give for, and `awaited`
-   *  says whether the surface that made it is still waiting for it. Left out, every query is read
-   *  again for a write no surface awaits and for a landing without an answer. */
-  readonly landed?: (
-    client: QueryClient,
-    write: Write<D>,
-    answer: unknown,
-    awaited: boolean
-  ) => void;
+   *  `answer` is Dispatch's, as the kind's attempts answer it (`A`: `Answered` where they are a
+   *  client method's, so the kind can write it into a cache), `null` for a landing it had no
+   *  answer to give for, and `awaited` says whether the surface that made it is still waiting for
+   *  it. Left out, every query is read again for a write no surface awaits and for a landing
+   *  without an answer. */
+  readonly landed?: (cache: Cache, write: Write<D>, answer: A | null, awaited: boolean) => void;
   /** What a write of this kind undoes once it is refused, discarded or dropped. */
-  readonly undone?: (client: QueryClient, write: Write<D>) => void;
+  readonly undone?: (cache: Cache, write: Write<D>) => void;
   /** What a kind lets go of once whoever is signed in changes, or the person signs out: what it
    *  remembered of their answers, which the next person's writes must not build on. */
   readonly reset?: () => void;
@@ -147,7 +140,7 @@ export interface WriteKind<D, K = D> {
   /** Told each time a write of this kind joins its line - its press, a Retry, a reload - with
    *  what settles once it lands or is refused, and whether it is past its deadline already. */
   readonly started?: (
-    client: QueryClient,
+    cache: Cache,
     write: Write<D>,
     settled: Promise<unknown>,
     late: boolean
@@ -155,19 +148,21 @@ export interface WriteKind<D, K = D> {
 }
 
 // biome-ignore lint/suspicious/noExplicitAny: each write's record is read only by its own kind.
-type AnyKind = WriteKind<any, any>;
+type AnyKind = WriteKind<any, any, any>;
 
 const kinds = new Map<string, AnyKind>();
 
 /** Defines a kind of write, once, so a reload finds it by name. */
-export function defineWriteKind<D, K = D>(kind: WriteKind<D, K>): WriteKind<D, K> {
+export function defineWriteKind<D, K = D, A = unknown>(
+  kind: WriteKind<D, K, A>
+): WriteKind<D, K, A> {
   kinds.set(kind.name, kind);
   return kind;
 }
 
 /** `write` as a write of `kind`, with its record typed, or `undefined` for another kind's. A
  *  write's record is only ever made by its own kind (`run`, `resume`). */
-export function ofKind<D, K>(write: Write, kind: WriteKind<D, K>): Write<D> | undefined {
+export function ofKind<D, K, A>(write: Write, kind: WriteKind<D, K, A>): Write<D> | undefined {
   return write.kind === kind.name ? (write as Write<D>) : undefined;
 }
 
@@ -180,10 +175,64 @@ export const plainWrite = defineWriteKind<null>({
   name: "write",
 });
 
-/** One write to make: its kind and record, what the indicator names it, where it shows, the
- *  target it is ordered on, and how it is made - from its request alone, or by an attempt of its
+/** The line a write is ordered on, or the reason it is on none: a write names the row it writes
+ *  (`target`) or says, in its own value, why it names none (`unlined`). One of the two is
+ *  required, so a write written later cannot leave the line out in silence, and `Writes.run`
+ *  refuses one carrying neither (a page bug a `.js` caller could still reach). */
+export type WriteLine =
+  | {
+      /** The row this write writes, as `<row type>:<row id>` - `issue:<KEY>`, `pin:<KEY>`,
+       *  `comment:<id>`, `ask:<id>`, `project:<KEY>` for a write that adds a row to a project -
+       *  or, for a read mark, `read:` and that row's own name. Writes to one target go out in
+       *  press order: a later one waits while an earlier one is still being tried. A write of a
+       *  kind that is made again from its request (no `resume`) is made from its `request` alone
+       *  when it names a target. The sends that name no row (`broadcast`, `session:<id>`,
+       *  `role:<role>`) carry their own names here. */
+      readonly target: string;
+      readonly unlined?: undefined;
+    }
+  | {
+      readonly target?: undefined;
+      /** Why this write is on no line, in the words of whoever wrote it: it names no row (a
+       *  sign-out, a lookup, a send to a session), or the row it writes is one Dispatch names
+       *  as it makes it. */
+      readonly unlined: string;
+    };
+
+/**
+ * The caches one change is composed on, and the one way a write shows itself: a change names each
+ * cache it shows itself on, and every read of that cache composes it over the data Dispatch last
+ * gave it while the write is live (R7 of dispatch://INFRA-299), and, once Dispatch has made the
+ * write, over each cache it named until that cache answers a read begun after the landing
+ * (`Writes.overlay`). Every change is a function of the cache as it stands, never of a value read
+ * before it: `change` is handed Dispatch's data - an answer that may or may not carry the write
+ * already - with every change pressed before it over it, and answers with the data the person's
+ * change leaves, the same whether or not that data holds the change. A cache holding nothing is
+ * left holding nothing: there is no row there to change, and the answer that fills it is composed
+ * over in its turn.
+ */
+export interface Shown {
+  /** Shows the change on the cache at `key`. `made`, where given, is what the store composes on
+   *  that cache once Dispatch has made the write, until that cache answers a read begun after the
+   *  landing, for a change whose composition holds more than its own write: the unread count's,
+   *  held under the bound of every press still out, of which Dispatch made this press's drop
+   *  alone. Left out, the change itself. */
+  on<T>(key: QueryKey, change: (data: T) => T, made?: (data: T) => T): void;
+  /** Shows it on every cache whose key starts with `key` - a project's issue lists, the Inbox's
+   *  reads - including one read for the first time after the press, since the answer that fills
+   *  it is composed over too. */
+  under<T>(key: QueryKey, change: (data: T) => T): void;
+}
+
+/** A change a write shows: the same call for every read of a cache it names, until the write
+ *  settles. A write that shows nothing names none. */
+export type WriteChange = (shown: Shown) => void;
+
+/** One write to make: its kind and record, what the indicator names it, where it shows, the line
+ *  it is ordered on, and how it is made - from its request alone, or by an attempt of its
  *  own. */
-export type WriteSpec<T, D, K> = WriteSpecBase<D, K> &
+export type WriteSpec<T, D, K, A = unknown> = WriteSpecBase<D, K, A> &
+  WriteLine &
   (
     | {
         /** The request the write makes, as its press names it: every attempt of the write is
@@ -203,16 +252,12 @@ export type WriteSpec<T, D, K> = WriteSpecBase<D, K> &
       }
   );
 
-interface WriteSpecBase<D, K> {
-  readonly kind: WriteKind<D, K>;
+interface WriteSpecBase<D, K, A> {
+  readonly kind: WriteKind<D, K, A>;
   readonly detail: D;
   readonly label: string;
   readonly presentation: Presentation;
   readonly inline?: boolean;
-  /** Writes to one target go out in press order: a later one waits while an earlier one is still
-   *  being tried. A write of a kind that is made again from its request (no `resume`) is made
-   *  from its `request` alone when it names a target. */
-  readonly target?: string;
   /** The key of a write the surface makes again after it ended without Dispatch's verdict (the
    *  reader stopped it): that write's own, so Dispatch answers it with what the first did. Left
    *  out, the press gets a key of its own. */
@@ -223,14 +268,36 @@ interface WriteSpecBase<D, K> {
    *  done what it was for: the write lands, with no answer, rather than being held for the next
    *  sign-in. */
   readonly endsWithSession?: boolean;
+  /** Why this write's answer carries something shown once and never again - the agent-token
+   *  mint's secret - in the words of whoever wrote it, for a write of that kind. It is kept for
+   *  its order while the page lives, as every write is, and a reload drops it rather than sending
+   *  it again, as it drops a `DELETE` on a line (`droppedOnReload`): a repeat Dispatch took would
+   *  make what its answer shows with no press left to take that answer. */
+  readonly answerShownOnce?: string;
+  /** The change this write shows, for a write that shows one. The store shows it from the press,
+   *  before anything goes out, and keeps it on the screen while the write is live - over each
+   *  answer that lands on a cache it names, and again as a Retry puts it back in its line - by
+   *  composing it over Dispatch's data at every read of such a cache (`Writes.overlay`), never
+   *  by writing it into the cache; a write that leaves its line without landing simply stops
+   *  being composed. A write that lands goes on being composed over each cache it named until
+   *  that cache answers a read begun after the landing, or is removed: a read sent before
+   *  Dispatch made the write may answer after it with the row as it stood. A change its surface
+   *  composed from the press, before the write could join the store, is named here as what
+   *  `Writes.fromPress` handed back, and the write takes it over where it stands. A write that
+   *  shows nothing - a read mark, a create that only asks for a list again - leaves it out. */
+  readonly shows?: WriteChange | FromPress;
 }
 
-/** What became of a write: it landed (with Dispatch's answer, `null` for none), was refused, or
- *  the reader discarded its refusal. */
+/** What became of a write, told once the store's rows say so: it landed (with Dispatch's
+ *  answer, `null` for none), was refused, the reader discarded it, or the store let it go
+ *  before Dispatch answered (`taken`) - a sign-out, another person's sign-in, a refusal for
+ *  another login, a quiet write past its time (`Writes.#take`). Every write that leaves its line
+ *  tells one, so a wait on a write ends on its outcome alone. */
 export type WriteOutcome =
   | { readonly kind: "landed"; readonly write: Write; readonly answer: unknown }
   | { readonly kind: "refused"; readonly write: Write; readonly refusal: Error }
-  | { readonly kind: "discarded"; readonly write: Write };
+  | { readonly kind: "discarded"; readonly write: Write }
+  | { readonly kind: "taken"; readonly write: Write };
 
 /** How a joined write starts once its turn comes: within its deadline, past it, or past it and
  *  stopped. */
@@ -286,23 +353,158 @@ interface Entry {
    *  land on this page, as it does in a browser with no IndexedDB. */
   unkept: boolean;
   readonly endsWithSession: boolean;
+  /** Why its answer is shown once (`WriteSpec.answerShownOnce`), kept with it so a reload drops
+   *  it; nothing for any other write. */
+  readonly answerShownOnce: string | undefined;
+  /** The change this write shows, and nothing for one that shows none. A write that shows its
+   *  change when its turn comes rather than at the press names it then (`Writes.shows`). */
+  showing: Showing | undefined;
 }
+
+/** A change on the screen: the call that shows it, the caches it names, and its place among the
+ *  changes composed on them. */
+interface Showing {
+  readonly change: WriteChange;
+  /** Where it is composed among the live changes on a cache: the store's order (`joined`), so
+   *  the last to be pressed is the last to be seen. A change composed from its press before its
+   *  write joined keeps its press's place (`Writes.fromPress`); a Retry moves it to the back. */
+  order: number;
+  /** The caches it names by key (`Shown.on`), hashed as TanStack hashes a key. */
+  readonly exact: ReadonlySet<string>;
+  /** The key every cache it names by prefix starts with (`Shown.under`). */
+  readonly under: readonly QueryKey[];
+  /** Once its write landed, the caches it is still composed on - each it named that the page
+   *  held as the write landed, by hash - each with the count of that cache's fetches begun by
+   *  then (`Writes.#fetches`); a cache leaves as it answers a fetch begun later, or is removed
+   *  (`Writes.#release`). Nothing while its write has not landed. */
+  landed: Map<string, number> | undefined;
+}
+
+/** `change` in place `order`, with the caches it names read off it once: what a refusal reads
+ *  again and what a landing holds it on. */
+function showingOf(change: WriteChange, order: number): Showing {
+  const exact = new Set<string>();
+  const under: QueryKey[] = [];
+  change({
+    on: (key) => {
+      exact.add(hashKey(key));
+    },
+    under: (key) => {
+      if (!under.some((head) => hashKey(head) === hashKey(key))) under.push(key);
+    },
+  });
+  return { change, exact, landed: undefined, order, under };
+}
+
+/** A change a surface composed from its press for a write that joins the store only later
+ *  (`Writes.fromPress`), which that write names as its change (`WriteSpec.shows`). */
+export interface FromPress {
+  /** Stops composing the change, for a press whose write never joined the store; nothing once
+   *  the write has taken it over. */
+  readonly release: () => void;
+}
+
+/** Whether `showing` names the cache at `key` (hashed `hash`), by key or by prefix - or, once its
+ *  write landed, whether it is still composed there. */
+function names(showing: Showing, key: QueryKey, hash: string): boolean {
+  if (showing.landed !== undefined) return showing.landed.has(hash);
+  return showing.exact.has(hash) || showing.under.some((head) => startsWith(key, head));
+}
+
+/** Whether `showing` names `query`'s cache. */
+function wrote(showing: Showing, query: Query): boolean {
+  return names(showing, query.queryKey, query.queryHash);
+}
+
+/** The overlay of a cache no live change names: Dispatch's data as it is. One function for every
+ *  such cache, whatever the store composes elsewhere. */
+const AS_DISPATCHED = (data: unknown): unknown => data;
+
+/** The overlay the store holds for the cache at `key`, with the changes it composes there. */
+interface HeldOverlay {
+  readonly compose: (data: unknown) => unknown;
+  readonly key: QueryKey;
+  readonly named: readonly Showing[];
+}
+
+/** Whether `entry`'s change is on the screen as its press made it: a live write that shows one,
+ *  whether or not a press still waits for it. One that is not live is composed as a live change
+ *  nowhere; one that landed is held on the caches it named instead (`Writes.#holdLanded`). */
+function shownLive(entry: Entry): entry is Entry & { readonly showing: Showing } {
+  return entry.showing !== undefined && liveWrite(entry.write);
+}
+
+/** Whether `write` may still reach Dispatch, which is while its change is composed as pressed:
+ *  waiting its turn, out, or late - `stopping` among them, since the attempt already out may
+ *  still land.
+ *  A refused write is not, nor a made one, and a discarded write is held no longer. The one rule
+ *  every engine that reads the store's rows asks it by, and a view of a write - a broadcast's
+ *  row in the send strip (`broadcastRows`) - is decided by it where the view is made. */
+export function liveWrite(write: Write): boolean {
+  return write.status === "queued" || write.status === "sending" || write.status === "late";
+}
+
+/** Whether `key` starts with `head`, compared as TanStack compares two keys. */
+function startsWith(key: QueryKey, head: QueryKey): boolean {
+  return key.length >= head.length && hashKey(key.slice(0, head.length)) === hashKey(head);
+}
+
+/** A `Shown` that runs each change it is handed for the cache at `key` (hashed `hash`) alone,
+ *  through `apply` - as it is composed while its write is live, or, `made`, as it is left once
+ *  Dispatch made the write - and passes over every change named for another cache. */
+function onlyOn(
+  key: QueryKey,
+  hash: string,
+  made: boolean,
+  apply: (change: (data: unknown) => unknown) => void
+): Shown {
+  return {
+    on: <T>(named: QueryKey, change: (data: T) => T, left?: (data: T) => T) => {
+      const applied = made ? (left ?? change) : change;
+      if (hashKey(named) === hash) apply(applied as (data: unknown) => unknown);
+    },
+    under: <T>(head: QueryKey, change: (data: T) => T) => {
+      if (startsWith(key, head)) apply(change as (data: unknown) => unknown);
+    },
+  };
+}
+
+/** `data`, the data of the cache at `key`, with the part of `showing` named for that cache over
+ *  it - as it is composed, or, `made`, as Dispatch's making of its write leaves it (`Shown.on`).
+ *  A cache holding nothing is left holding nothing: there is no row there to change. */
+function shownOn(
+  key: QueryKey,
+  hash: string,
+  showing: Showing,
+  data: unknown,
+  made: boolean
+): unknown {
+  let shown = data;
+  showing.change(
+    onlyOn(key, hash, made, (change) => {
+      if (shown !== undefined) shown = change(shown);
+    })
+  );
+  return shown;
+}
+
+const NO_SHOWINGS: readonly Showing[] = Object.freeze([]);
 
 const NO_WRITES: readonly Write[] = Object.freeze([]);
 
 /** The login of the person `client`'s app is signed in as (`["whoami"]`), which every write is
  *  stamped with at its press; undefined while no one is signed in. */
-export function signedInLogin(client: QueryClient): string | undefined {
+function signedInLogin(client: QueryClient): string | undefined {
   return client.getQueryData<AuthenticatedUser>(["whoami"])?.login;
 }
 
 /** Told of each store as it is made: nothing in the app, which holds no store but its own
- *  (`writesOf`), and the unit tests' preload, which stops every one after each test
+ *  (`Cache.writes`), and the unit tests' preload, which stops every one after each test
  *  (`watchWriteStores`). */
 let watcher: ((store: Writes) => void) | undefined;
 
 /**
- * Every write the page makes, one per press, beside the app's `QueryClient` (`writesOf`), above
+ * Every write the page makes, one per press, beside the app's cache (`Cache.writes`), above
  * the router, so leaving the page that made one never drops it: a composer's send, a broadcast, a
  * pin, a read mark, a status, an answer, a form's save. Each is made under a key minted at the
  * press and tried under it until Dispatch decides it (`writeUnderKey`), whether or not the browser
@@ -331,6 +533,7 @@ export class Writes {
    *  kept for as long as the page lives, since what went out under it never stops having gone
    *  out. */
   readonly #carried = new Map<string, WriteMethod>();
+  readonly #cache: Cache;
   readonly #client: QueryClient;
   readonly #kept: WriteStorage;
   readonly #files: KeptFiles;
@@ -362,13 +565,44 @@ export class Writes {
    *  Dispatch still named them (`releaseUnsettled`), each with the time until which a lapse of
    *  theirs is that sign-out landing late rather than a lapse. */
   readonly #unsettledSignOuts = new Map<string, number>();
+  /** The changes surfaces composed from their presses whose writes have not joined yet
+   *  (`fromPress`). */
+  readonly #pressed = new Map<FromPress, Showing>();
+  /** Every change composed: each live change, and each landed one still composed on a cache it
+   *  named (`#made`), in the store's order (`joined`): what every read of a cache composes
+   *  over Dispatch's data. One array until a change starts or stops being composed. */
+  #live: readonly Showing[] = NO_SHOWINGS;
+  /** The changes whose writes landed and that are still composed on a cache they named, until
+   *  each such cache answers a fetch begun after the landing or is removed (`#holdLanded`,
+   *  `#release`): a read sent before Dispatch made the write can answer after it with the row as
+   *  it stood. One leaves once no cache holds it. */
+  readonly #made = new Set<Showing>();
+  /** How many whole reads of each cache, by hash, have begun since the store began counting:
+   *  the order a landing is compared with (`Showing.landed`). Counted from the cache's own
+   *  `fetch` action, while a landed change is held and only then (`#countFetches`); a page read
+   *  (`fetchNextPage`, `fetchPreviousPage`) is none. */
+  readonly #fetches = new Map<string, number>();
+  /** What each counted cache's fetch out reads, by hash: every page the cache holds (`whole`), or
+   *  one page beside those it holds (`page`). None while the cache is idle. */
+  readonly #reading = new Map<string, "page" | "whole">();
+  /** Each held cache whose whole read a page read cancelled (`fetchNextPage`'s
+   *  `cancelRefetch`), read again as the page read settles (`#countFetches`). */
+  readonly #owed = new Set<string>();
+  /** Stops counting fetches; nothing while none are counted. */
+  #stopCounting: (() => void) | undefined;
+  /** The overlay of each cache some composed change names, by its hash, with the changes it
+   *  composes: each holds the last data it composed and what it composed, so a tree prediction
+   *  or a row filter runs once per answer and per composition, not once per reader and per
+   *  render. One is kept while the changes naming its cache are the same ones (`#compose`). */
+  readonly #overlays = new Map<string, HeldOverlay>();
 
   constructor(
-    client: QueryClient,
+    cache: Cache,
     kept: WriteStorage = writeStorage(),
     files: KeptFiles = indexedDbFiles()
   ) {
-    this.#client = client;
+    this.#cache = cache;
+    this.#client = clientOf(cache);
     this.#kept = kept;
     this.#files = files;
     watcher?.(this);
@@ -376,6 +610,12 @@ export class Writes {
 
   /** Every write held, in press order: one array until a write changes. */
   readonly rows = (): readonly Write[] => this.#rows;
+
+  /** The id of the write made under `key`, as `run` has just left it in the rows: what a surface
+   *  that pressed a write of its own reads to tell that press from another surface's, and to
+   *  take it out again (`discard`). No write of that key is held under none. */
+  readonly idOf = (key: string): number | undefined =>
+    this.#rows.find((row) => row.key === key)?.id;
 
   readonly subscribe = (listener: () => void): (() => void) => {
     this.#listeners.add(listener);
@@ -388,32 +628,287 @@ export class Writes {
     return () => this.#outcomes.delete(listener);
   };
 
+  /**
+   * What every read of the cache at `key` hands the page in place of the cache's own data:
+   * Dispatch's data - the cache holds nothing else - with every live change named for that cache
+   * composed over it in the store's order (`joined`), so the last pressed is the last seen (R7 of
+   * dispatch://INFRA-299). Each change is the same call its press made, run over the data as the
+   * changes before it leave it, so what is composed is the change itself and never a value
+   * computed before it. Nothing is written into the cache, so an answer that lands is simply
+   * the data the next read composes over, a page a fetch-more reads is built from Dispatch's own
+   * pages, and a write that leaves its line without landing simply stops being composed (R10):
+   * nothing is put back, because nothing was overwritten. A write that lands is composed on,
+   * as its making leaves it (`Shown.on`'s `made`), over each cache it named until that cache
+   * answers a fetch begun after the landing: a read sent before Dispatch made it can answer
+   * after it with the row as it stood, and the person's change stays over that answer.
+   *
+   * The function is one value for as long as the changes naming the cache are the same ones -
+   * one value for every cache no change names (`AS_DISPATCHED`), whatever starts or stops being
+   * composed elsewhere - and hands back the same value for the same data. So a hook read, which
+   * reads it through `useSyncExternalStore` (`shown-query.ts`), renders again
+   * only when its own composition changes, and the compose step runs once for every reader of
+   * the cache.
+   */
+  overlay(key: QueryKey): (data: unknown) => unknown {
+    if (this.#live.length === 0) return AS_DISPATCHED;
+    const hash = hashKey(key);
+    const held = this.#overlays.get(hash);
+    if (held !== undefined) return held.compose;
+    const named = this.#live.filter((showing) => names(showing, key, hash));
+    if (named.length === 0) return AS_DISPATCHED;
+    let last: { readonly data: unknown; readonly shown: unknown } | undefined;
+    const compose = (data: unknown): unknown => {
+      if (data === undefined) return data;
+      if (last !== undefined && Object.is(last.data, data)) return last.shown;
+      const shown = named.reduce(
+        (over: unknown, showing) => shownOn(key, hash, showing, over, showing.landed !== undefined),
+        data
+      );
+      last = { data, shown };
+      return shown;
+    };
+    this.#overlays.set(hash, { compose, key, named });
+    return compose;
+  }
+
+  /** Composes the cache at `key` again, for a change whose rule reads more than the cache - the
+   *  unread count's bounds, once a refused press has left them (`refusedUnreadDrop`). Every
+   *  other cache keeps its overlay, and its readers render nothing. */
+  recompose(key: QueryKey): void {
+    if (!this.#overlays.delete(hashKey(key))) return;
+    for (const listener of this.#listeners) listener();
+  }
+
+  /** Takes the composed changes afresh - each live write's that shows one, each composed from a
+   *  press, and each landed one still held - in the store's order. A set that differs from the
+   *  one held lets go of each overlay whose cache it names otherwise. Says whether it did. */
+  #compose(): boolean {
+    const live = [...this.#pressed.values(), ...this.#made];
+    for (const entry of this.#entries.values()) {
+      if (shownLive(entry)) live.push(entry.showing);
+    }
+    live.sort((a, b) => a.order - b.order);
+    const held = this.#live;
+    if (live.length === held.length && live.every((one, at) => one === held[at])) {
+      return false;
+    }
+    this.#live = live.length === 0 ? NO_SHOWINGS : live;
+    for (const [hash, overlay] of this.#overlays) {
+      const named = live.filter((showing) => names(showing, overlay.key, hash));
+      if (
+        named.length !== overlay.named.length ||
+        named.some((one, at) => one !== overlay.named[at])
+      ) {
+        this.#overlays.delete(hash);
+      }
+    }
+    return true;
+  }
+
+  /** `#compose`, telling every listener of a new composition. */
+  #recompose(): void {
+    if (!this.#compose()) return;
+    for (const listener of this.#listeners) listener();
+  }
+
+  /**
+   * Composes `change` from the press of a write that joins the store only later, and hands back
+   * what that write names as its change (`WriteSpec.shows`): the board's drop, whose write waits
+   * behind the board's mutation scope (R8 of dispatch://INFRA-299) for the drop before it. The
+   * change is composed from the press, in the press's place among the live changes and over
+   * every answer that lands meanwhile, and the write takes it over where it stands as it joins.
+   * A press whose write never joined lets it go (`FromPress.release`).
+   */
+  fromPress(change: WriteChange): FromPress {
+    const showing = showingOf(change, this.#nextJoin());
+    const pressed: FromPress = {
+      release: () => {
+        if (this.#pressed.delete(pressed)) this.#recompose();
+      },
+    };
+    this.#pressed.set(pressed, showing);
+    this.#recompose();
+    return pressed;
+  }
+
+  /** The change `shows` names for a write joining in place `joined`: a change of its own,
+   *  composed in that place, or one composed from its press, taken over where it stands -
+   *  nothing where its surface let that go first. */
+  #showingOf(shows: WriteChange | FromPress | undefined, joined: number): Showing | undefined {
+    if (shows === undefined) return undefined;
+    if (typeof shows === "function") return showingOf(shows, joined);
+    const pressed = this.#pressed.get(shows);
+    this.#pressed.delete(shows);
+    return pressed;
+  }
+
+  /**
+   * Holds the change of `entry`, which Dispatch has just made, on every cache it names that the
+   * page holds, as it goes on being composed there (`Shown.on`'s `made` where one names it) until
+   * that cache answers a fetch begun after this landing, or is removed (`#release`). The cache
+   * holds only Dispatch's answers, and nothing is written into it: a read sent before Dispatch
+   * made the write - an event's refresh, another surface's - can answer after the landing with
+   * the row as it stood, and the person's change stays over that answer rather than the old row
+   * showing until the next read. The order is the cache's own count of fetches begun
+   * (`#fetches`), never a clock and never when an answer arrived. A cache the page first holds
+   * after the landing is not held: every fetch of it begins after Dispatch made the write.
+   */
+  #holdLanded(entry: Entry): void {
+    const { showing } = entry;
+    if (showing === undefined) return;
+    const caches = new Map<string, number>();
+    for (const query of this.#client.getQueryCache().findAll()) {
+      if (!wrote(showing, query)) continue;
+      const hash = query.queryHash;
+      caches.set(hash, this.#fetches.get(hash) ?? 0);
+      // A fetch out from before the store began counting: what it reads is its `fetchMeta`.
+      if (query.state.fetchStatus !== "idle" && !this.#reading.has(hash)) {
+        this.#reading.set(hash, readsOnePage(query.state.fetchMeta) ? "page" : "whole");
+      }
+    }
+    if (caches.size === 0) return;
+    showing.landed = caches;
+    this.#made.add(showing);
+    // Each overlay it is in composes it now as its making leaves it, and on the caches it holds.
+    for (const [hash, overlay] of this.#overlays) {
+      if (overlay.named.includes(showing)) this.#overlays.delete(hash);
+    }
+    this.#countFetches();
+  }
+
+  /**
+   * Counts each cache's whole reads as they begin (`#fetches`), and lets a landed change go from
+   * a cache that answers a whole read begun after its landing, or that is removed, while any
+   * landed change is held. A fetch that fails lets nothing go, and nor does a page read
+   * (`fetchNextPage`, `fetchPreviousPage`: a `fetch` action whose `meta` names `fetchMore`,
+   * `readsOnePage`): it builds its page on the pages the cache holds, which may have been read
+   * before the landing, and hands them back with it. A page read pressed while a whole read of a
+   * held cache is out cancels that read (`cancelRefetch`); the store reads the cache again as the
+   * page read settles, so a whole read still follows.
+   */
+  #countFetches(): void {
+    if (this.#stopCounting !== undefined) return;
+    this.#stopCounting = this.#client.getQueryCache().subscribe((event) => {
+      const { query } = event;
+      const hash = query.queryHash;
+      if (event.type === "removed") {
+        this.#fetches.delete(hash);
+        this.#reading.delete(hash);
+        this.#owed.delete(hash);
+        this.#release(hash, undefined);
+        return;
+      }
+      if (event.type !== "updated") return;
+      const { action } = event;
+      if (action.type === "fetch" && readsOnePage(action.meta)) {
+        if (this.#reading.get(hash) === "whole" && this.#holds(hash)) this.#owed.add(hash);
+        this.#reading.set(hash, "page");
+      } else if (action.type === "fetch") {
+        this.#owed.delete(hash);
+        this.#reading.set(hash, "whole");
+        this.#fetches.set(hash, (this.#fetches.get(hash) ?? 0) + 1);
+      } else if (
+        action.type === "success" &&
+        action.manual !== true &&
+        this.#reading.get(hash) !== "page"
+      ) {
+        this.#release(hash, this.#fetches.get(hash) ?? 0);
+      }
+      if (query.state.fetchStatus !== "idle") return;
+      this.#reading.delete(hash);
+      if (!this.#owed.delete(hash)) return;
+      // After the fetch that settled has run to its end, so the read begins on an idle cache.
+      queueMicrotask(() => {
+        if (this.#client.getQueryCache().get(hash) !== query || !this.#holds(hash)) return;
+        void this.#client.invalidateQueries({ exact: true, queryKey: query.queryKey });
+      });
+    });
+  }
+
+  /** Whether a landed change is still held on the cache hashed `hash`. */
+  #holds(hash: string): boolean {
+    for (const showing of this.#made) {
+      if (showing.landed?.has(hash) === true) return true;
+    }
+    return false;
+  }
+
+  /** Lets every landed change go from the cache hashed `hash`: one whose landing came before
+   *  the fetch numbered `fetched`, which has just answered, or, `undefined`, every one - the
+   *  cache is gone. A change no cache holds leaves the store, and once none is held the store
+   *  stops counting fetches. */
+  #release(hash: string, fetched: number | undefined): void {
+    let released = false;
+    for (const showing of this.#made) {
+      const at = showing.landed?.get(hash);
+      if (at === undefined || (fetched !== undefined && fetched <= at)) continue;
+      showing.landed?.delete(hash);
+      if (showing.landed?.size === 0) this.#made.delete(showing);
+      released = true;
+    }
+    if (!released) return;
+    if (this.#made.size === 0) this.#stopCountingFetches();
+    this.#overlays.delete(hash);
+    this.#compose();
+    for (const listener of this.#listeners) listener();
+  }
+
+  #stopCountingFetches(): void {
+    this.#stopCounting?.();
+    this.#stopCounting = undefined;
+    this.#fetches.clear();
+    this.#reading.clear();
+    this.#owed.clear();
+  }
+
+  /** Shows `change` for the write `id`, and holds it with that write: a surface that shows its
+   *  change when the write's turn comes rather than at its press - a comment action, which waits
+   *  for the actions pressed before it - names it here, and the store composes it in that
+   *  write's place among the live changes until the write settles. A write the store no longer
+   *  holds shows nothing. */
+  shows(id: number, change: WriteChange): void {
+    const entry = this.#entries.get(id);
+    if (entry === undefined) return;
+    entry.showing = showingOf(change, entry.write.joined);
+    this.#recompose();
+  }
+
   /** Makes `spec`'s write, stamped with the person signed in now, and answers with Dispatch's 2xx,
    *  `null` for a write that landed with no answer to give, or rejects with its refusal - or
    *  `SendStoppedError` once the reader stops it. A write that names its request is made from it
-   *  alone (`api.send`). A write on a line of a kind made again from its request that names none
-   *  is a page bug, refused at once: waiting its turn, it could not be kept for a reload without
+   *  alone (`api.send`). A write that names neither the row it writes (`target`) nor a reason it
+   *  names none (`unlined`) is a page bug, refused at once with nothing sent: the types ask every
+   *  write for one of the two, so a write of a row cannot reach Dispatch outside a line without
+   *  someone saying why. A write on a line of a kind made again from its request that names no
+   *  request is a page bug too: waiting its turn, it could not be kept for a reload without
    *  running an attempt, and the request kept could differ from the one sent. A sign-out
    *  (`endsWithSession`) holds every other write of its person until Dispatch answers it, as
    *  another tab's does (`holdFor`): refused, they go on; landed, they wait for the page to let
    *  them go (`clear`). */
-  run<T, D, K>(spec: WriteSpec<T, D, K>): Promise<T | null> {
-    const { request } = spec;
-    if (spec.target !== undefined && request === undefined && spec.kind.resume === undefined) {
+  run<T extends A, D, K, A = unknown>(spec: WriteSpec<T, D, K, A>): Promise<T | null> {
+    const { label, request } = spec;
+    if (spec.target === undefined && spec.unlined === undefined) {
       return Promise.reject(
         new TypeError(
-          `${spec.label}: a write on a line is made from its request (WriteSpec.request)`
+          `${label}: a write names the row it writes (WriteSpec.target) or why it names none (WriteSpec.unlined)`
         )
+      );
+    }
+    if (spec.target !== undefined && request === undefined && spec.kind.resume === undefined) {
+      return Promise.reject(
+        new TypeError(`${label}: a write on a line is made from its request (WriteSpec.request)`)
       );
     }
     const press = Promise.withResolvers<unknown>();
     const login = signedInLogin(this.#client);
     const key = spec.key ?? newSendKey();
+    const joined = this.#nextJoin();
     if (spec.endsWithSession === true && login !== undefined) {
       this.#signingOut.add(login);
       this.#holdWritesOf(login);
     }
     const entry: Entry = {
+      answerShownOnce: spec.answerShownOnce,
       attempt: request === undefined ? spec.write : (bounds) => api.send(request, bounds),
       endsWithSession: spec.endsWithSession ?? false,
       expiry: undefined,
@@ -422,6 +917,7 @@ export class Writes {
       keeping: undefined,
       press,
       request: request ?? null,
+      showing: this.#showingOf(spec.shows, joined),
       stop: new AbortController(),
       turn: undefined,
       unkept: false,
@@ -429,7 +925,7 @@ export class Writes {
         detail: spec.detail,
         id: this.#nextId(),
         inline: spec.inline ?? false,
-        joined: this.#nextJoin(),
+        joined,
         key,
         kind: spec.kind.name,
         label: spec.label,
@@ -452,6 +948,9 @@ export class Writes {
     if (spec.file !== undefined && login !== undefined) {
       this.#keepFile(entry, key, login, spec.file, () => this.#keep(entry));
     }
+    // The change is shown here, before anything goes out and in the task the press ran in, so
+    // the person sees it at once: the entry joins its line and every read of a cache the change
+    // names composes it from now on (`overlay`), until this write settles.
     this.#join(entry, "sending");
     return press.promise as Promise<T | null>;
   }
@@ -504,7 +1003,9 @@ export class Writes {
   }
 
   /** Puts the refused `entry` back in its target's line under `key`, at the back, to be made
-   *  again: `sent` says whether something has already gone out under that key. */
+   *  again: `sent` says whether something has already gone out under that key. It is live again,
+   *  so its change is shown again as it rejoins, as at its press, rather than left off the screen
+   *  until it lands. */
   #retryUnder(entry: Entry, key: string, sent: boolean): void {
     entry.stop = new AbortController();
     entry.write = {
@@ -517,6 +1018,7 @@ export class Writes {
       status: "queued",
       uploaded: undefined,
     };
+    if (entry.showing !== undefined) entry.showing.order = entry.write.joined;
     this.#join(entry, "sending");
   }
 
@@ -551,19 +1053,25 @@ export class Writes {
    *  one waiting its turn that was never sent, whose press is refused (`WriteDiscardedError`). A
    *  write that is out, or that went out before and waits to go again, is not the reader's to
    *  drop: it may have reached Dispatch, so it stays until Dispatch answers or the reader stops
-   *  it. */
+   *  it. A waiting one still shows its change, press or not, and its press is refused with no
+   *  failure to show - its surface may not even be on screen - so the store stops composing that
+   *  change, every cache it named reads as Dispatch's data with every other live change over it
+   *  - a pick that replaced it among them - and the store reads them again (`#undo`), so a read
+   *  that fails leaves no discarded change on the screen. A refused one stopped being composed
+   *  as it was refused. */
   discard(id: number): boolean {
     const entry = this.#entries.get(id);
     if (entry === undefined) return false;
     const waiting = entry.write.status === "queued" && !entry.write.sent;
     if (entry.write.status !== "refused" && !waiting) return false;
+    const shown = shownLive(entry);
     const discarded = new WriteDiscardedError();
     entry.press?.reject(discarded);
     entry.press = undefined;
     entry.turn?.settled.reject(discarded);
     entry.turn = undefined;
     this.#remove(entry);
-    kinds.get(entry.write.kind)?.undone?.(this.#client, entry.write);
+    this.#undo(entry, entry.write, shown);
     this.#emit({ kind: "discarded", write: entry.write });
     this.#advance(entry.write.target);
     return true;
@@ -588,7 +1096,7 @@ export class Writes {
 
   /** Writes `change` over the record of the refused write `id`, a write of `kind`: what the
    *  reader wrote over a refusal, which its Retry sends and a reload restores. */
-  amend<D, K>(id: number, kind: WriteKind<D, K>, change: (detail: D) => D): void {
+  amend<D, K, A>(id: number, kind: WriteKind<D, K, A>, change: (detail: D) => D): void {
     const entry = this.#entries.get(id);
     const write = entry === undefined ? undefined : ofKind(entry.write, kind);
     if (entry === undefined || write?.status !== "refused") return;
@@ -641,6 +1149,11 @@ export class Writes {
    *  included: the person who made them signed out. */
   clear(): void {
     this.#take([...this.#entries.values()]);
+    // Nothing of the person who signed out is composed any more, made or not.
+    for (const showing of this.#made) showing.landed = undefined;
+    this.#made.clear();
+    this.#stopCountingFetches();
+    this.#recompose();
     this.#signingOut.clear();
     this.#resetKinds();
     void this.#files.keepOnly(undefined);
@@ -782,8 +1295,10 @@ export class Writes {
   #resume(kept: KeptWrite, kind: AnyKind, detail: unknown, now: number, file?: File): void {
     const request = kept.request === null ? null : (requestFrom(kept.request, file) ?? null);
     let attempt: Attempt<unknown> | undefined;
-    if (kind.resume !== undefined) attempt = kind.resume(detail, request);
-    else if (request !== null) attempt = (bounds) => api.send(request, bounds);
+    if (!droppedOnReload(kept, request)) {
+      if (kind.resume !== undefined) attempt = kind.resume(detail, request);
+      else if (request !== null) attempt = (bounds) => api.send(request, bounds);
+    }
     const out = kept.state.status !== "refused";
     const onItsOwn = out && resumesOnItsOwn(kept.pressedAt, now);
     if (attempt === undefined || (kept.presentation === "quiet" && !onItsOwn)) {
@@ -791,7 +1306,11 @@ export class Writes {
       if (file !== undefined) void this.#files.delete(kept.key);
       return;
     }
+    // A reload shows nothing again: the page that showed this write's change is gone, and the
+    // change was a call of the surface that pressed it, which no record holds. The write still
+    // goes out, in its line, and Dispatch's answer is what the page then reads.
     const entry: Entry = {
+      answerShownOnce: kept.answerShownOnce,
       attempt,
       endsWithSession: false,
       expiry: undefined,
@@ -800,6 +1319,7 @@ export class Writes {
       keeping: undefined,
       press: undefined,
       request,
+      showing: undefined,
       stop: new AbortController(),
       turn: undefined,
       unkept: false,
@@ -856,7 +1376,7 @@ export class Writes {
     this.#update(entry, entry.write);
     kinds
       .get(entry.write.kind)
-      ?.started?.(this.#client, entry.write, settled.promise, from !== "sending");
+      ?.started?.(this.#cache, entry.write, settled.promise, from !== "sending");
     this.#advance(entry.write.target);
   }
 
@@ -999,12 +1519,14 @@ export class Writes {
       .finally(() => clearTimeout(deadline));
   }
 
-  /** Stops `entry`'s trying for a lapsed session: one out ends after the attempt in flight, whose
-   *  answer is still its own, and goes back in its line (`#rejoin`); a queued one waits where it
-   *  is, and one the reader was stopping ends as they asked. A sign-out has landed instead: the
-   *  session it was to end has ended, so its press settles as a landing with no answer, and its
-   *  surface discards what the person chose to discard rather than leaving it held for a sign-in
-   *  (`app.tsx`). */
+  /** Stops `entry`'s trying for a lapsed session, or for a sign-out of its person's that is out:
+   *  one out ends after the attempt in flight, whose answer is still its own, and goes back in
+   *  its line (`#rejoin`) - an attempt still waiting before its request goes out gives up at
+   *  once (`WriteBounds.signal`), so nothing of it is sent while it is held; a queued one waits
+   *  where it is, and one the reader was stopping ends as they asked. A sign-out has landed
+   *  instead: the session it was to end has ended, so its press settles as a landing with no
+   *  answer, and its surface discards what the person chose to discard rather than leaving it
+   *  held for a sign-in (`app.tsx`). */
   #hold(entry: Entry): void {
     if (entry.endsWithSession) {
       entry.stop.abort();
@@ -1033,13 +1555,16 @@ export class Writes {
     this.#join(entry, late ? "late" : "sending");
   }
 
-  /** The write `entry` landed with `answer` (`null` for a landing with none): it leaves, or stays
-   *  made for its kind to show, and its kind refreshes what it wrote. */
+  /** The write `entry` landed with `answer` (`null` for a landing with none): its change goes on
+   *  being composed on the caches it named until each answers a read begun after the landing
+   *  (`#holdLanded`), it leaves, or stays made for its kind to show, and its kind refreshes what
+   *  it wrote. */
   #landed(entry: Entry, answer: unknown): void {
     const kind = kinds.get(entry.write.kind);
     const awaited = entry.press !== undefined;
     entry.press?.resolve(answer);
     entry.press = undefined;
+    this.#holdLanded(entry);
     if (kind?.keepsMade === true && answer !== null) {
       clearTimeout(entry.expiry);
       this.#forget(entry);
@@ -1047,7 +1572,7 @@ export class Writes {
     } else {
       this.#remove(entry);
     }
-    if (kind?.landed !== undefined) kind.landed(this.#client, entry.write, answer, awaited);
+    if (kind?.landed !== undefined) kind.landed(this.#cache, entry.write, answer, awaited);
     else if (!awaited || answer === null) void this.#client.invalidateQueries();
     this.#emit({ answer, kind: "landed", write: entry.write });
     this.#advance(entry.write.target);
@@ -1057,8 +1582,11 @@ export class Writes {
    *  refusal itself or it is never shown - and the next write of its target goes. One Dispatch
    *  refused because someone else is signed in goes with every write of its login, and the page
    *  reads who is signed in again. A refused sign-out leaves its person signed in, so every write
-   *  of theirs it held goes on. */
+   *  of theirs it held goes on. Whether or not a press still waits for it, the store stops
+   *  composing its change and reads the caches it named again (`#undo`); no surface rolls it
+   *  back itself. */
   #refused(entry: Entry, refusal: Error): void {
+    const shown = shownLive(entry);
     entry.press?.reject(refusal);
     entry.press = undefined;
     if (
@@ -1074,7 +1602,7 @@ export class Writes {
     const write: Write = { ...baseOf(entry.write), refusal, status: "refused" };
     if (entry.write.inline || entry.write.presentation === "quiet") this.#remove(entry);
     else this.#update(entry, write);
-    kinds.get(write.kind)?.undone?.(this.#client, write);
+    this.#undo(entry, write, shown);
     this.#emit({ kind: "refused", refusal, write });
     this.#advance(write.target);
     if (
@@ -1095,11 +1623,14 @@ export class Writes {
 
   /** Takes every one of `entries` out of the store first, then lets each go wherever it stood: its
    *  trying stops, its press is refused, nothing of it is kept, and its kind undoes what it showed
-   *  of it. Starts nothing, and answers the targets whose lines it took writes from. */
+   *  of it - the store reading again the caches of a change still on the screen, which stops
+   *  being composed (`#undo`). Once the rows no longer hold them, it tells each one's outcome
+   *  (`taken`). Starts nothing, and answers the targets whose lines it took writes from. */
   #take(entries: readonly Entry[]): Set<string | undefined> {
     const taken = entries.filter((entry) => this.#entries.get(entry.write.id) === entry);
     for (const entry of taken) this.#entries.delete(entry.write.id);
     for (const entry of taken) {
+      const shown = shownLive(entry);
       clearTimeout(entry.expiry);
       entry.stop.abort();
       entry.press?.reject(new SendStoppedError());
@@ -1107,10 +1638,27 @@ export class Writes {
       entry.turn?.settled.reject(new SendStoppedError());
       entry.turn = undefined;
       this.#forget(entry);
-      kinds.get(entry.write.kind)?.undone?.(this.#client, entry.write);
+      this.#undo(entry, entry.write, shown);
     }
     if (taken.length > 0) this.#publish();
+    for (const entry of taken) this.#emit({ kind: "taken", write: entry.write });
     return new Set(taken.map((entry) => entry.write.target));
+  }
+
+  /** Undoes what `entry` showed as it leaves its line - refused, discarded or taken - as `write`:
+   *  its kind's `undone`, then, for a change still on the screen (`shown`), a read of every cache
+   *  it named. The change stops being composed as the store's rows let it go, so every such cache
+   *  reads as Dispatch's data with every other live change over it - what the person sees until
+   *  the read again answers, and goes on seeing where it fails, offline or a 5xx (R10 of
+   *  dispatch://INFRA-299). Nothing is put back: the change was never written into the cache.
+   *  The one place the three exits pair the two. */
+  #undo(entry: Entry, write: Write, shown: boolean): void {
+    kinds.get(write.kind)?.undone?.(this.#cache, write);
+    if (!shown || entry.showing === undefined) return;
+    const { showing } = entry;
+    // Dispatch's answer takes in what changed meanwhile - a thread that arrived, another
+    // device's pick - but the screen depends on it for nothing.
+    void this.#client.invalidateQueries({ predicate: (query) => wrote(showing, query) });
   }
 
   #remove(entry: Entry): void {
@@ -1159,6 +1707,7 @@ export class Writes {
     }
     const kind = kinds.get(write.kind);
     this.#kept.keep({
+      answerShownOnce: entry.answerShownOnce,
       carried: this.#carried.get(write.key) ?? null,
       detail: kind?.keep === undefined ? write.detail : kind.keep(write.detail),
       key: write.key,
@@ -1181,11 +1730,14 @@ export class Writes {
     if (this.#entries.get(write.id) === entry) this.#publish();
   }
 
+  /** Takes the rows afresh, and the live changes with them (`#compose`), and tells every
+   *  listener. */
   #publish(): void {
     const rows = [...this.#entries.values()]
       .map((entry) => entry.write)
       .sort((a, b) => a.id - b.id);
     this.#rows = rows.length === 0 ? NO_WRITES : rows;
+    this.#compose();
     for (const listener of this.#listeners) listener();
   }
 
@@ -1210,6 +1762,23 @@ function resumedFrom(state: KeptState): From {
   return "sending";
 }
 
+/** Whether a kept write a reload takes up is dropped rather than made again. Two kinds are, each
+ *  kept for its order while the page lived and ending with that page. Every `DELETE` on a line,
+ *  whichever one it is - the claim release, the session unsubscribe, the ask un-snooze, the
+ *  agent-token revoke, the repository-mapping removal, the architecture-source removal: such a
+ *  route carries no idempotency key (`goesUnderKey` sends one on a `POST` and a `PATCH` alone),
+ *  so a repeat could undo what another person did in between. A `PUT` carries no key either and
+ *  is made again, as the pin is, because it names the state it wants rather than a change to it.
+ *  And every write whose answer carries something shown once and never again, which says so with
+ *  its reason (`WriteSpec.answerShownOnce`) - today the agent-token mint: one that never reached
+ *  Dispatch would be made by the repeat with no press left to take its answer, so its secret is
+ *  shown on no page and the person holds a live token they must find and revoke. */
+function droppedOnReload(kept: KeptWrite, request: WriteRequest | null): boolean {
+  return (
+    kept.answerShownOnce !== undefined || (kept.target !== null && request?.method === "DELETE")
+  );
+}
+
 /** How `write`'s state is kept, or `undefined` for one that is made and so kept no longer. */
 function keptState(write: Write): KeptState | undefined {
   switch (write.status) {
@@ -1225,18 +1794,6 @@ function keptState(write: Write): KeptState | undefined {
   }
 }
 
-const stores = new WeakMap<QueryClient, Writes>();
-
-/** The writes that live with `client`: one store per app, as there is one client. */
-export function writesOf(client: QueryClient): Writes {
-  let store = stores.get(client);
-  if (store === undefined) {
-    store = new Writes(client);
-    stores.set(client, store);
-  }
-  return store;
-}
-
 /** Has `watch` told of every store made from now on (none when `undefined`), for the unit tests'
  *  preload, which stops each one's trying after every test (`Writes.clear`). A store outlives the
  *  test that made it, and a write it left out goes on retrying on its backoff once the test's spies
@@ -1245,40 +1802,4 @@ export function writesOf(client: QueryClient): Writes {
  *  running when the retry reaches the network. */
 export function watchWriteStores(watch: ((store: Writes) => void) | undefined): void {
   watcher = watch;
-}
-
-export function useWrites(): Writes {
-  return writesOf(useQueryClient());
-}
-
-/**
- * What `select` picks out of every write the store holds, re-rendering only when that changes:
- * the pick is made again only when a write changes or `key` - what the pick is of, by name - does,
- * and handed back as the same value while it holds the same items (an array) or is the same value.
- */
-export function useWriteSelection<R>(key: string, select: (rows: readonly Write[]) => R): R {
-  const store = useWrites();
-  const last = useRef<{
-    readonly key: string;
-    readonly rows: readonly Write[];
-    readonly picked: R;
-  }>(undefined);
-  const pick = useRef(select);
-  pick.current = select;
-  return useSyncExternalStore(store.subscribe, () => {
-    const rows = store.rows();
-    const before = last.current;
-    if (before?.rows === rows && before.key === key) return before.picked;
-    const picked = pick.current(rows);
-    const same =
-      before !== undefined &&
-      (Object.is(before.picked, picked) ||
-        (Array.isArray(before.picked) &&
-          Array.isArray(picked) &&
-          before.picked.length === picked.length &&
-          before.picked.every((item, index) => Object.is(item, picked[index]))));
-    const kept = same ? before.picked : picked;
-    last.current = { key, picked: kept, rows };
-    return kept;
-  });
 }

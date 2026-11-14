@@ -13,10 +13,10 @@
  * address bar, and an item opened again moves back to the head of the list. `RECENT_LIMIT` of
  * them are kept, the rest fall off the end.
  */
-import { useQuery } from "@tanstack/react-query";
+
 import { useEffect } from "react";
 import { useLocation } from "react-router-dom";
-
+import { useShownQuery } from "../../api/cache/shown-query";
 import { issueQuery, whoAmIQuery } from "../../api/queries";
 import { useProjectArtifact } from "../document/useProjectArtifact";
 import { buildIssuePath, buildProjectPath, parseIssuePath } from "../refs/routes";
@@ -96,12 +96,12 @@ export function recordRecent(login: string | undefined, item: RecentItem): void 
  * either answers.
  */
 export function useRecordRecents(): void {
-  const login = useQuery(whoAmIQuery()).data?.login;
+  const login = useShownQuery(whoAmIQuery()).data?.login;
   const location = useLocation();
   const issueRoute = parseIssuePath(location.pathname, location.search);
   const issueKey = issueRoute?.key;
   const documentRoute = documentRouteOf(location.pathname, location.search);
-  const issue = useQuery({ ...issueQuery(issueKey), enabled: issueKey !== undefined });
+  const issue = useShownQuery({ ...issueQuery(issueKey), enabled: issueKey !== undefined });
   const artifact = useProjectArtifact(documentRoute);
   const issueTitle = issue.data?.title;
   const documentName = artifact.data?.name;

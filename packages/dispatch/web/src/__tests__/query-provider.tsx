@@ -1,6 +1,6 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { type RenderOptions, type RenderResult, render } from "@testing-library/react";
 import type { ReactElement, ReactNode } from "react";
+import { QueryClient, QueryClientProvider } from "../api/cache/test-client";
 
 /**
  * `render` with a query client around what it draws. Every Markdown surface reads what its text

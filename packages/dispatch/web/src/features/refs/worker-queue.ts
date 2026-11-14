@@ -34,12 +34,12 @@ export interface WorkerJob {
 /**
  * What a worker of this folder posts, which is the one protocol both of them speak: the ready
  * handshake, once its imports have loaded and before it answers anything, and then one answer
- * per job, naming the job by the id it was posted under. `Answered` is what the worker has to
+ * per job, naming the job by the id it was posted under. `Said` is what the worker has to
  * say about a job, which its owner's policy turns into the answer the page keeps
  * (`WorkerQueuePolicy.answerOf`); the queue itself reads nothing of a reply but `ready` and
  * `id`.
  */
-export type WorkerReply<Answered> = { ready: true } | ({ id: number } & Answered);
+export type WorkerReply<Said> = { ready: true } | ({ id: number } & Said);
 
 /** One render's place on a job: the waiter its answer goes to, and whether the render that
  *  asked has gone while the worker held the job (`keepIfPosted`). A kept place is worth the
@@ -68,7 +68,7 @@ function anyoneIsWaiting<Job extends WorkerJob, Answer>(entry: Queued<Job, Answe
 }
 
 /** What a queue does that its two owners do differently. */
-export interface WorkerQueuePolicy<Job extends WorkerJob, Answered, Answer> {
+export interface WorkerQueuePolicy<Job extends WorkerJob, Said, Answer> {
   /**
    * Terminates the worker holding a job nobody waits for any more, rather than letting it
    * finish. True where the work the worker is doing costs more than a fresh worker does, false
@@ -83,7 +83,7 @@ export interface WorkerQueuePolicy<Job extends WorkerJob, Answered, Answer> {
   /** `job`'s answer as the worker's reply carries it, which the policy caches. The queue has
    *  already matched the reply to `job` by its id, so what is left is the owner's own reading of
    *  it; an owner that cannot take the answer answers as it does without the worker. */
-  answerOf(job: Job, reply: { id: number } & Answered): Answer;
+  answerOf(job: Job, reply: { id: number } & Said): Answer;
   /** `job`'s answer where the worker that held it gave none: its deadline ran out, which has
    *  terminated that worker first, so the jobs behind it go to a fresh one. */
   withoutTheWorker(job: Job): Answer;
@@ -100,8 +100,8 @@ export interface WorkerQueuePolicy<Job extends WorkerJob, Answered, Answer> {
   settled?(): void;
 }
 
-export class WorkerQueue<Job extends WorkerJob, Answered, Answer> {
-  private readonly policy: WorkerQueuePolicy<Job, Answered, Answer>;
+export class WorkerQueue<Job extends WorkerJob, Said, Answer> {
+  private readonly policy: WorkerQueuePolicy<Job, Said, Answer>;
   /** The jobs waiting to be posted, oldest first; the one in flight is not among them. */
   private queued: Queued<Job, Answer>[] = [];
   /** The job the worker is holding: posted and not answered. Nothing else is posted until it is
@@ -118,7 +118,7 @@ export class WorkerQueue<Job extends WorkerJob, Answered, Answer> {
   private dropQueued = false;
   private lastId = 0;
 
-  constructor(policy: WorkerQueuePolicy<Job, Answered, Answer>) {
+  constructor(policy: WorkerQueuePolicy<Job, Said, Answer>) {
     this.policy = policy;
   }
 
@@ -264,7 +264,7 @@ export class WorkerQueue<Job extends WorkerJob, Answered, Answer> {
     }
     this.worker = started;
     this.ready = false;
-    started.addEventListener("message", (event: MessageEvent<WorkerReply<Answered>>) => {
+    started.addEventListener("message", (event: MessageEvent<WorkerReply<Said>>) => {
       this.answered(started, event.data);
     });
     started.addEventListener("error", (event) => {
@@ -274,7 +274,7 @@ export class WorkerQueue<Job extends WorkerJob, Answered, Answer> {
     });
   }
 
-  private answered(from: Worker, reply: WorkerReply<Answered>): void {
+  private answered(from: Worker, reply: WorkerReply<Said>): void {
     // An answer from a worker since replaced says nothing about the job a fresh one holds.
     if (from !== this.worker) {
       return;

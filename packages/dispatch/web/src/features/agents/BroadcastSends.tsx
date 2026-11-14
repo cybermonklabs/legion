@@ -1,7 +1,7 @@
-import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useId, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-
+import { useWriteSelection, useWrites } from "../../api/cache/cache";
+import { useShownQuery } from "../../api/cache/shown-query";
 import { api } from "../../api/client";
 import type { BroadcastCreated } from "../../api/types";
 import { RefusableButton } from "../../components/RefusableButton";
@@ -19,7 +19,6 @@ import {
 import { MarkdownPreview } from "../refs/MarkdownPreview";
 import { SendExpiredError, SendInterruptedError, SendStoppedError } from "../writes/keyed-write";
 import { StopTrying } from "../writes/StopTrying";
-import { useWriteSelection, useWrites } from "../writes/write-store";
 import {
   type BroadcastSend,
   type BroadcastSendRow,
@@ -174,8 +173,7 @@ export function BroadcastSends({
                 className={row.status === "failed" ? dangerText : textSecondaryOnSurface}
                 role="status"
               >
-                {row.signingOutElsewhere &&
-                (row.status === "queued" || row.status === "sending" || row.status === "late") ? (
+                {row.signingOutElsewhere ? (
                   `Waiting for a sign-out in another tab: to ${count}`
                 ) : row.status === "queued" ? (
                   `Queued: to ${count}`
@@ -263,7 +261,7 @@ export function BroadcastSends({
  * is a write still unconfirmed.
  */
 function SentBroadcast({ created }: { created: BroadcastCreated }): ReactNode {
-  const read = useQuery({
+  const read = useShownQuery({
     initialData: created,
     queryFn: () => api.getBroadcast(created.id),
     queryKey: ["broadcast", created.id],
