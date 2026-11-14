@@ -24,11 +24,13 @@ import (
 // waiting on something the test does not hold.
 const batchLockWait = 30 * time.Second
 
-// The steps of the store's lock order, as the lock order on api/inbox_read.go's
-// markInboxReadThreads states them, with the two steps a writer under the revision fence adds
-// after the owner row: the document's document_block_versions row, and the projection rows it
-// reads again under those two locks, `for update`, before it writes anything (heldBlockRows,
-// heldBlockRefRows). A failure names the step a hold stands for with these words.
+// The steps a hold stands for, named as a failure names them: the owner row; the two steps a
+// writer under the revision fence (R23) adds after it, the document's document_block_versions row
+// and the projection rows it reads again under those two locks, `for update`, before it writes
+// anything (heldBlockRows, heldBlockRefRows); the node rows; the tuple append; the projection rows
+// a batch writes; and the project of an event. requireTheStoreLockOrder holds the order a run
+// takes them in to the invariants on api/inbox_read.go's markInboxReadThreads, not to one sequence
+// of these steps.
 const (
 	stepOwner      = "the owner row"
 	stepFence      = "the revision fence's document_block_versions row"
@@ -39,9 +41,10 @@ const (
 	stepEvent      = "the project of the event"
 )
 
-// storeLockOrder is the steps in the order a writer takes them. A writer may leave steps out, and
-// never takes one before a step that comes ahead of it here.
-var storeLockOrder = []string{stepOwner, stepFence, stepHeld, stepNode, stepTuple, stepProjection, stepEvent}
+// fencedSteps are the steps whose rows the revision fence guards: a writer under it takes the
+// document's document_block_versions row before it reads a projection row again under it, or
+// writes a node, a tuple or a projection row.
+var fencedSteps = []string{stepHeld, stepNode, stepTuple, stepProjection}
 
 // TestEveryBackfillBatchTakesTheStoreLockOrder is the backfill's half of dispatch://INFRA-1149's
 // c-lock-order for the three batches backfill_fence_test.go does not prove: writeBlockRefBatch,
@@ -54,11 +57,11 @@ var storeLockOrder = []string{stepOwner, stepFence, stepHeld, stepNode, stepTupl
 // Backfill on a connection of its own (startBackfill). It lets go of each hold the run's backend
 // queues behind, one at a time, and reads the order the run queued in (followTheBackfill). Each
 // time the run queues it also reads, in pg_stat_activity, the statement the run waits at and, in
-// pg_locks, the tables the run's transaction holds a lock on, so a step the run took too early
-// shows as a lock on that step's table. The run must never queue behind a step's row the batch does
-// not take, must take every step it does take, must take them in the order storeLockOrder lists
-// them in, and must take its node rows in ascending (kind, id) (requireTheStoreLockOrder). The
-// subtest then reads what the run wrote, so the run it followed is the one that committed.
+// pg_locks, the tables the run's transaction holds a lock on, so a step the run took ahead of one
+// an invariant puts first shows as a lock on that step's table. The run must never queue behind a
+// step's row the batch does not take, must take every step it does take, and must take them as the
+// invariants on markInboxReadThreads have them (requireTheStoreLockOrder). The subtest then reads
+// what the run wrote, so the run it followed is the one that committed.
 func TestEveryBackfillBatchTakesTheStoreLockOrder(t *testing.T) {
 	t.Run("writeBlockRefBatch takes the owner row, the fence, its block_refs rows, then the tuple append, and no node row", requireTheBlockRefBatchLockOrder)
 	t.Run("writeCommentBatch takes no owner row, then every node row ascending, then the tuple append and the comments rows", requireTheCommentBatchLockOrder)
@@ -74,8 +77,7 @@ func TestEveryBackfillBatchTakesTheStoreLockOrder(t *testing.T) {
 //
 // The batch's block_refs row is held, so the run queues behind it where it reads the row again;
 // from there the run holds the row itself, and the update that names the node on it waits for
-// nothing. That the update comes after the tuple append shows in the tables: the update's foreign
-// key reads graph_nodes, and the run holds no lock on graph_nodes while it waits at the tuple.
+// nothing. Where the tuple append falls against that update no invariant says, and it is not read.
 //
 // The block's node row is held `for no key update`, the level the store's own writer takes a node
 // row at. The projection's foreign key reads that row `for key share`, which does not conflict with
@@ -114,12 +116,10 @@ func requireTheBlockRefBatchLockOrder(t *testing.T) {
 	row := holdRow(t, database, &batchHold{
 		name: "the block_refs row", step: stepHeld, taken: true,
 		statement: "select r.artifact_id::text, r.block_id, r.kind, r.to_kind, r.to_id from block_refs r",
-		unlocked:  []string{"graph_nodes", "graph_tuples"},
 	}, `select 1 from block_refs where artifact_id = $1::uuid and block_id = 'only' for no key update`, document.artifactID)
 	tuple := holdWrite(t, database, &batchHold{
 		name: "the reference's mentions tuple", step: stepTuple, taken: true,
 		statement: "insert into graph_tuples (",
-		unlocked:  []string{"graph_nodes"},
 	}, nil, []graphstore.Tuple{{
 		FromKind: refs.BlockNodeKind, FromID: block, Kind: "mentions", ToKind: "issue", ToID: "CORE-1",
 		At: time.Now(), Who: backfillActor, SourceEvent: sourceSeq, Asserted: true,
@@ -161,8 +161,11 @@ func requireTheBlockRefBatchLockOrder(t *testing.T) {
 // than the sentinel and so a repeat key a hold can stand on. Their ids order them c1, c2, c3, which
 // is the order the batch reads them in, and their authors are a session, zed and amy, so the order
 // the batch reads its authors in is the reverse of ascending (kind, id): person amy, person zed,
-// session. Every node row has to be taken before the first tuple: a batch that appended its
-// comments' tuples before it wrote its authors' nodes would queue behind a tuple first.
+// session. What the invariants hold the batch to is its node rows in ascending (kind, id) and
+// comment c1's node row before the comments row whose foreign key names it. Where its tuples fall
+// among its node rows they leave to the batch: a batch that appended its comments' tuples before
+// it wrote its authors' nodes, as the comment path appends its comment's tuples before its
+// author's node (graphstore.Authored), passes as well.
 func requireTheCommentBatchLockOrder(t *testing.T) {
 	ctx := context.Background()
 	writes := newAddressingWrites(t)
@@ -219,7 +222,6 @@ func requireTheCommentBatchLockOrder(t *testing.T) {
 		return holdWrite(t, database, &batchHold{
 			name: name, step: stepNode, taken: true, kind: kind, id: id,
 			statement: "with incoming as (",
-			unlocked:  []string{"graph_tuples", "comments"},
 		}, []graphstore.Node{node}, nil)
 	}
 
@@ -238,7 +240,6 @@ func requireTheCommentBatchLockOrder(t *testing.T) {
 	state := holdWrite(t, database, &batchHold{
 		name: "comment c1's state tuple", step: stepTuple, taken: true,
 		statement: "insert into graph_tuples (",
-		unlocked:  []string{"comments"},
 	}, nil, []graphstore.Tuple{{
 		FromKind: commentNodeKind, FromID: c1.id, Kind: tupleState, ToKind: graphstore.KindValue, ToID: graphstore.StateLive,
 		At: now, Who: c1.by, SourceEvent: c1.event, Asserted: true,
@@ -246,13 +247,12 @@ func requireTheCommentBatchLockOrder(t *testing.T) {
 	amyAuthored := holdWrite(t, database, &batchHold{
 		name: "comment c3's authored_by tuple", step: stepTuple, taken: true,
 		statement: "insert into graph_tuples (",
-		unlocked:  []string{"comments"},
 	}, nil, []graphstore.Tuple{{
 		FromKind: commentNodeKind, FromID: c3.id, Kind: graphstore.TupleAuthoredBy, ToKind: graphstore.KindPerson, ToID: "amy",
 		At: now, Who: c3.by, SourceEvent: c3.event, Asserted: true,
 	}})
 	row := holdRow(t, database, &batchHold{
-		name: "comment c1's comments row", step: stepProjection, taken: true,
+		name: "comment c1's comments row", step: stepProjection, taken: true, names: firstComment,
 		statement: "update comments c set node_kind",
 	}, `select 1 from comments where id = $1::uuid for no key update`, c1.id)
 
@@ -339,6 +339,226 @@ func requireTheRoleBatchLockOrder(t *testing.T) {
 	}
 }
 
+// The two documents the owner-order tests seed, one on each of two issues, whose ids sort the other
+// way round from their owner keys: issue:ACME-1 sorts before issue:CORE-1, and CORE-1's document's
+// id before ACME-1's.
+const (
+	coreDocumentID = "00000000-0000-4000-8000-0000000000d1"
+	acmeDocumentID = "00000000-0000-4000-8000-0000000000d2"
+)
+
+// TestTheBlockBatchTakesEveryOwnerRowBeforeAnyFenceRow holds writeBlockBatch over two documents of
+// two issues to the order lockBlockDocuments takes their rows in: both owner rows first, in
+// ascending owner key, the order the erase takes several owner rows in, and only then each
+// document's document_block_versions row, in document id order. The documents' ids sort the other
+// way round from their issues' keys, so a batch that took one document's owner row and fence row
+// before the next document's owner row, in document id order, would take issue CORE-1's row first
+// and its document's fence row before issue ACME-1's row.
+//
+// Each of the four rows is held in a transaction of its own while the real Backfill runs
+// (followTheBackfill), and the order the run queues behind them in is held to the invariants
+// (requireTheStoreLockOrder): the owner rows first and in ascending owner key, the fence rows
+// before the rows they guard and in document id order. The test then reads that both blocks name
+// their nodes, so the run it followed is the one that committed.
+func TestTheBlockBatchTakesEveryOwnerRowBeforeAnyFenceRow(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := context.Background()
+	core := seedIssueDocument(t, database, "CORE", coreDocumentID, "Written before the store existed.")
+	acme := seedIssueDocument(t, database, "ACME", acmeDocumentID, "Written before the store existed.")
+	seedPreStoreBlock(t, database, core, "only")
+	seedPreStoreBlock(t, database, acme, "only")
+
+	ownerHold := func(issue string) *batchHold {
+		return holdRow(t, database, &batchHold{
+			name: "issue " + issue + "'s row", step: stepOwner, taken: true, kind: "issue", id: issue,
+			statement: "select closed_at is null from issues where key = $1 for no key update",
+			unlocked:  []string{"document_block_versions", "document_blocks", "graph_nodes", "graph_tuples"},
+		}, `select 1 from issues where key = $1 for update`, issue)
+	}
+	fenceHold := func(document preStoreDocument) *batchHold {
+		return holdRow(t, database, &batchHold{
+			name: document.refKey + "'s document_block_versions row", step: stepFence, taken: true,
+			kind: "document", id: document.artifactID,
+			statement: "select 1 from document_block_versions where artifact_id = $1 for no key update",
+			unlocked:  []string{"document_blocks", "graph_nodes", "graph_tuples"},
+		}, `select 1 from document_block_versions where artifact_id = $1::uuid for update`, document.artifactID)
+	}
+	holds := []*batchHold{ownerHold("ACME-1"), ownerHold("CORE-1"), fenceHold(core), fenceHold(acme)}
+
+	report := followTheBackfill(t, database, "writeBlockBatch", holds)
+
+	var named int64
+	if err := database.Pool.QueryRow(ctx, `
+		select count(*) from document_blocks
+		where artifact_id = any($1::uuid[]) and block_id = 'only' and node_kind = $2 and node_address is not null
+	`, []string{core.artifactID, acme.artifactID}, refs.BlockNodeKind).Scan(&named); err != nil {
+		t.Fatalf("read the two blocks back: %v", err)
+	}
+	if named != 2 {
+		t.Errorf("%d of the two blocks name their node, want both: the run the test followed is not one that committed", named)
+	}
+	if done := reportedKind(t, report, refs.BlockNodeKind); done.Rows != 2 {
+		t.Errorf("the backfill reports %#v for blocks, want 2 rows", done)
+	}
+}
+
+// TestTheBlockBatchAndAnEraseOverTwoIssuesBothFinish is the deadlock the owner order spares a block
+// batch and an erase that share two documents of two issues. The erase is of a comment on issue
+// CORE-1's document whose text a version of issue ACME-1's document quotes, so it writes under both
+// owner rows and takes them in owner-key order, ACME-1's first (lockInStoreOrder); the batch
+// backfills a block of each document. Another transaction holds CORE-1's document's
+// document_block_versions row while the batch starts, so the batch stops there holding what it
+// took before it; the erase then starts and queues behind the batch. Once that row is let go both
+// have to finish.
+//
+// A batch that took the documents' rows document by document, in id order, would stop at that row
+// holding CORE-1's row alone; the erase would take ACME-1's row and wait for CORE-1's, and the
+// batch, let go, would wait for ACME-1's, each holding the row the other waits for, until Postgres
+// ended one of them with `deadlock detected`. Taking both owner rows first, in the erase's order,
+// the batch holds both while it waits, and the erase waits behind it holding neither.
+func TestTheBlockBatchAndAnEraseOverTwoIssuesBothFinish(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := context.Background()
+	core := seedIssueDocument(t, database, "CORE", coreDocumentID, "Written before the store existed.")
+	var comment string
+	if err := database.Pool.QueryRow(ctx, `
+		insert into comments (artifact_id, author, body, anchor)
+		values ($1::uuid, '{"kind":"user","id":"alice"}', 'A remark on the spec.', jsonb_build_object('artifact_id', $1::text))
+		returning id::text
+	`, core.artifactID).Scan(&comment); err != nil {
+		t.Fatalf("write the comment on %s: %v", core.refKey, err)
+	}
+	acme := seedIssueDocument(t, database, "ACME", acmeDocumentID, "Alice wrote: A remark on the spec.")
+	// The first run gives the comment its node, which the erase needs; the blocks are written
+	// after it, so the run under test has them to backfill.
+	if _, err := Backfill(ctx, database, io.Discard); err != nil {
+		t.Fatalf("backfill the comment: %v", err)
+	}
+	seedPreStoreBlock(t, database, core, "only")
+	seedPreStoreBlock(t, database, acme, "only")
+
+	fence := holdRow(t, database, &batchHold{name: core.refKey + "'s document_block_versions row", step: stepFence},
+		`select 1 from document_block_versions where artifact_id = $1::uuid for update`, core.artifactID)
+	backfillPID, backfilled := startBackfill(t, database)
+	if early, done := storetest.WaitForQueuedBehind(t, fence.tx, backfillPID, backfilled, batchLockWait); done {
+		t.Fatalf("the backfill answered (err %v) without waiting on %s's document_block_versions row, which another transaction held", early.err, core.refKey)
+	}
+	t.Logf("the backfill waits behind %s at %q, holding locks on %v", fence.name,
+		waitingStatement(t, database, backfillPID), tablesLockedBy(t, ctx, database, backfillPID))
+	erasePID, erased := startErase(t, database, commentNodeKind, comment)
+	waitBlockedBy(t, ctx, database, erasePID, backfillPID, erased)
+	t.Logf("the erase waits behind the backfill at %q", waitingStatement(t, database, erasePID))
+	fence.release()
+
+	deadline := time.After(batchLockWait)
+	for backfilled != nil || erased != nil {
+		select {
+		case answer := <-backfilled:
+			if answer.err != nil {
+				t.Errorf("the backfill failed once %s was let go: %v", fence.name, answer.err)
+			}
+			backfilled = nil
+		case answer := <-erased:
+			if answer.err != nil {
+				t.Errorf("the erase failed once %s was let go: %v", fence.name, answer.err)
+			} else if !answer.erasure.Applied {
+				t.Errorf("the erase removed nothing once %s was let go: %+v", fence.name, answer.erasure)
+			}
+			erased = nil
+		case <-deadline:
+			t.Fatalf("the backfill and the erase did not both answer within %s of the release of %s", batchLockWait, fence.name)
+		}
+	}
+	if t.Failed() {
+		return
+	}
+	var named, commentStands int64
+	if err := database.Pool.QueryRow(ctx, `
+		select (select count(*) from document_blocks
+		        where artifact_id = any($1::uuid[]) and block_id = 'only' and node_kind = $2 and node_address is not null),
+		       (select count(*) from comments where id::text = $3)
+	`, []string{core.artifactID, acme.artifactID}, refs.BlockNodeKind, comment).Scan(&named, &commentStands); err != nil {
+		t.Fatalf("read what the two runs left: %v", err)
+	}
+	if named != 2 || commentStands != 0 {
+		t.Errorf("after both runs %d of the two blocks name their node and %d comment row(s) stand, want both blocks and none", named, commentStands)
+	}
+}
+
+// seedIssueDocument writes project, its issue <project>-1, and one document of that issue under id
+// at version 1 holding markdown. The version carries markdown, so migration 0122's trigger gives
+// the document its document_block_versions row, as a version gives one in production.
+func seedIssueDocument(t *testing.T, database *store.Store, project, id, markdown string) preStoreDocument {
+	t.Helper()
+	ctx := context.Background()
+	issue := project + "-1"
+	if _, err := database.Pool.Exec(ctx, `
+		insert into projects (key, name, default_assignee) values ($1, $1, 'alice')
+	`, project); err != nil {
+		t.Fatalf("seed project %s: %v", project, err)
+	}
+	if _, err := database.Pool.Exec(ctx, `
+		insert into issues (key, project_key, number, title, created_by, rank)
+		values ($1, $2, 1, 'One', '{"kind":"user","id":"alice"}', 'U')
+	`, issue, project); err != nil {
+		t.Fatalf("seed issue %s: %v", issue, err)
+	}
+	document := preStoreDocument{artifactID: id}
+	if err := database.Pool.QueryRow(ctx, `
+		insert into artifacts (id, issue_key, project_key, slug, name, kind, is_primary, created_by)
+		values ($1::uuid, $2, $3, 'spec', 'spec.md', 'doc', false, '{"kind":"user","id":"alice"}')
+		returning ref_key
+	`, id, issue, project).Scan(&document.refKey); err != nil {
+		t.Fatalf("create %s's document: %v", issue, err)
+	}
+	if _, err := database.Pool.Exec(ctx, `
+		insert into artifact_versions (artifact_id, number, markdown, authors)
+		values ($1::uuid, 1, $2, '[{"kind":"user","id":"alice"}]')
+	`, id, markdown); err != nil {
+		t.Fatalf("write version 1 of %s: %v", document.refKey, err)
+	}
+	return document
+}
+
+// seedPreStoreBlock writes block blockID of document as a document_blocks row naming no node,
+// which is what the backfill reads.
+func seedPreStoreBlock(t *testing.T, database *store.Store, document preStoreDocument, blockID string) {
+	t.Helper()
+	if _, err := database.Pool.Exec(context.Background(), `
+		insert into document_blocks (artifact_id, block_id, node_id, type, text_sha256, excerpt, changed_version, changed_at)
+		values ($1::uuid, $2, $3, 'paragraph', '', $4, 1, now())
+	`, document.artifactID, blockID, document.refKey+"#"+blockID, "Block "+blockID+"."); err != nil {
+		t.Fatalf("write block %s of %s: %v", blockID, document.refKey, err)
+	}
+}
+
+// waitBlockedBy waits until backend waiter waits on a lock backend blocker holds, which
+// pg_blocking_pids answers, and fails the test if the waiter's run answers first or the wait
+// passes batchLockWait.
+func waitBlockedBy(t *testing.T, ctx context.Context, database *store.Store, waiter, blocker uint32, answered <-chan eraseAnswer) {
+	t.Helper()
+	deadline := time.Now().Add(batchLockWait)
+	for {
+		select {
+		case answer := <-answered:
+			t.Fatalf("the erase answered (err %v) without waiting on the backfill", answer.err)
+		default:
+		}
+		var blocked bool
+		if err := database.Pool.QueryRow(ctx,
+			`select $2::int = any(pg_blocking_pids($1::int))`, int32(waiter), int32(blocker)).Scan(&blocked); err != nil {
+			t.Fatalf("read what backend %d waits on: %v", waiter, err)
+		}
+		if blocked {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("backend %d did not wait on backend %d within %s", waiter, blocker, batchLockWait)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+}
+
 // batchHold is one row of a step of the store's lock order, held in a transaction of its own while
 // the backfill runs, and what the test expects of the run while it waits behind it.
 type batchHold struct {
@@ -347,8 +567,12 @@ type batchHold struct {
 	// taken is whether the batch takes the row. A row it does not take is held for the whole run,
 	// and the run must never queue behind it.
 	taken bool
-	// kind and id are a node step's node, which orders it among the batch's other node rows.
+	// kind and id order the row among the run's other rows of its step: a node's kind and id, an
+	// owner row's owner key split at its colon ("issue", "CORE-1"), a fence row's document id.
 	kind, id string
+	// names is, for a projection row the run writes, the hold of the node row its foreign key
+	// names, when the run writes that node, and nil otherwise.
+	names *batchHold
 	// statement is how the statement the run waits at behind this hold starts, lower-cased with its
 	// whitespace collapsed: the statement that takes the step.
 	statement string
@@ -495,13 +719,29 @@ func requireStoppedAt(t *testing.T, ctx context.Context, database *store.Store, 
 	}
 }
 
-// requireTheStoreLockOrder holds the order the run queued behind holds in to the store's lock
-// order. A row of a step the batch does not take must never be queued behind: the owner row comes
-// first or not at all, and a batch that queued behind it took it after a step it had already
-// taken. Every row of a step the batch takes must be queued behind once, or the step was not shown
-// to be taken while it was held. Each step comes after every step storeLockOrder lists ahead of
-// it, so every node row comes before the first tuple and every tuple before the projection rows,
-// and the node rows are taken in ascending (kind, id).
+// requireTheStoreLockOrder holds the order the run queued behind holds in to the invariants written
+// on api/inbox_read.go's markInboxReadThreads, as api's requireTheWrittenOrderAdmits holds that
+// package's writers to them, and not to one sequence of steps: those invariants leave a tuple
+// append wherever its writer puts it, before a node row of the same write as the comment path puts
+// its comment's tuples before its author's node, or after a projection row. It holds the run to:
+//
+//   - no row of a step the batch does not take queued behind: the owner row comes first or not at
+//     all, and a batch that queued behind one took it after a step it had already taken;
+//   - every row of a step the batch takes queued behind once, or the step was not shown to be
+//     taken while it was held;
+//   - the owner row first: no row of another step taken before an owner row;
+//   - the revision fence's row (R23) after the owner row, which the rule before says, and before
+//     the rows it guards (fencedSteps);
+//   - a node's row before the projection row whose foreign key names it (batchHold.names);
+//   - the project of the event last;
+//   - several rows of one step in ascending order: node rows in ascending (kind, id), and owner
+//     rows in ascending owner key and fence rows in document id order, the order every writer of
+//     several documents takes them in (lockBlockDocuments, the erase's lockInStoreOrder,
+//     events.lockOwners).
+//
+// The third invariant, the event before the tuples it causes, holds of a batch with nothing to
+// read: a batch appends no event, and every cause its tuples carry is an event the log already
+// holds.
 func requireTheStoreLockOrder(t *testing.T, batch string, holds, queued []*batchHold) {
 	t.Helper()
 	order := holdNames(queued)
@@ -518,33 +758,55 @@ func requireTheStoreLockOrder(t *testing.T, batch string, holds, queued []*batch
 				batch, hold.name, hold.step, order)
 		}
 	}
-	// A step that has to come before another and was never queued behind at all did not come
-	// before it either, so it counts as taken after it.
-	for _, hold := range queued {
+	// before fails the run when it queued behind later, a row it takes, without having queued
+	// behind earlier, another row it takes, first: the invariant rule puts earlier first. A row of
+	// a step the run takes and never queued behind at all did not come first either, so it counts
+	// as taken after.
+	before := func(earlier, later *batchHold, rule string) {
+		t.Helper()
+		first, second := at(earlier), at(later)
+		if second >= 0 && (first < 0 || first > second) {
+			t.Errorf("%s took %s (%s) before %s (%s): %s (queued in order: %s)",
+				batch, later.name, later.step, earlier.name, earlier.step, rule, order)
+		}
+	}
+	for _, hold := range holds {
 		if !hold.taken {
 			continue
 		}
-		position, rank := at(hold), slices.Index(storeLockOrder, hold.step)
-		for _, earlier := range holds {
-			if !earlier.taken || slices.Index(storeLockOrder, earlier.step) >= rank {
+		for _, other := range holds {
+			if !other.taken || other.step == hold.step {
 				continue
 			}
-			if before := at(earlier); before < 0 || before > position {
-				t.Errorf("%s took %s (%s) before %s (%s): the store's lock order takes %s before %s (queued in order: %s)",
-					batch, hold.name, hold.step, earlier.name, earlier.step, earlier.step, hold.step, order)
+			switch {
+			case hold.step == stepOwner:
+				before(hold, other, "the owner row comes first")
+			case hold.step == stepFence && slices.Contains(fencedSteps, other.step):
+				before(hold, other, "the revision fence's row comes before the rows it guards")
+			case other.step == stepEvent:
+				before(hold, other, "the project of the event comes last")
 			}
 		}
+		if hold.names != nil && hold.names.taken {
+			before(hold.names, hold, "a node's row comes before the projection row whose foreign key names it")
+		}
 	}
-	var previous *batchHold
-	for _, hold := range queued {
-		if !hold.taken || hold.step != stepNode {
-			continue
+	for _, ascending := range []struct{ step, rule string }{
+		{stepOwner, "several owner rows are taken in ascending owner key"},
+		{stepFence, "several documents' fence rows are taken in document id order"},
+		{stepNode, "several node rows are taken in ascending (kind, id)"},
+	} {
+		var previous *batchHold
+		for _, hold := range queued {
+			if !hold.taken || hold.step != ascending.step {
+				continue
+			}
+			if previous != nil && (hold.kind < previous.kind || hold.kind == previous.kind && hold.id < previous.id) {
+				t.Errorf("%s took %s before %s: %s, so %s %s before %s %s (queued in order: %s)",
+					batch, previous.name, hold.name, ascending.rule, hold.kind, hold.id, previous.kind, previous.id, order)
+			}
+			previous = hold
 		}
-		if previous != nil && (hold.kind < previous.kind || hold.kind == previous.kind && hold.id < previous.id) {
-			t.Errorf("%s took %s before %s: %s are taken in ascending (kind, id), so %s %s before %s %s (queued in order: %s)",
-				batch, previous.name, hold.name, stepNode, hold.kind, hold.id, previous.kind, previous.id, order)
-		}
-		previous = hold
 	}
 }
 

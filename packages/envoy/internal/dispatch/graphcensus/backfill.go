@@ -3,11 +3,11 @@ package graphcensus
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"slices"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -322,19 +322,48 @@ func writeBlockBatch(ctx context.Context, database *store.Store, batch []blockRo
 	return held, int64(len(tuples)) + 2*int64(len(nodes)), nil
 }
 
-// lockBlockDocuments takes, for each of documents, the two rows the fence's writers hold while
-// they write a document's blocks or its block references, in the order R23 gives and docs'
-// indexOwedDocument takes them:
-// the document's owner row (lockDocumentOwner), then its document_block_versions row
-// `for no key update`. The documents go in id order, the order the erase takes the locks of
-// several documents in (Erasure.readDocuments), so two writers that each hold more than one
-// document cannot each hold a row the other waits for. It sorts documents in place.
+// lockBlockDocuments takes the rows the fence's writers hold while they write a document's blocks
+// or its block references, in the order R23 gives and docs' indexOwedDocument takes them for one
+// document: the document's owner row, then its document_block_versions row `for no key update`.
+//
+// Over several documents it takes every owner row first, each once, in the order of its owner
+// key (lockOwnerRows, which takes each through lockDocumentOwner): the one order over owner rows,
+// in which the erase takes the owner rows it writes under (lockInStoreOrder) and events.lockOwners
+// the owners of several events, "artifact:<id>" for a document no issue owns before
+// "issue:<key>". Only then does it take each document's document_block_versions row, in document
+// id order. Taking one document's owner and fence rows before the next document's owner would
+// put an issue at a different place for each set of its documents: a batch over two documents of
+// two issues whose ids sort the other way round from their owner keys, and an erase writing under
+// both, could each hold the owner row the other waits for.
+//
+// A document deleted since its batch was read has no owner row left to take, and its block rows
+// and its document_block_versions row went with it (each cascades from artifacts), so there is
+// nothing of it to lock. It sorts documents in place.
 func lockBlockDocuments(ctx context.Context, tx pgx.Tx, documents []string) error {
 	slices.Sort(documents)
-	for _, document := range slices.Compact(documents) {
-		if err := lockDocumentOwner(ctx, tx, document); err != nil {
-			return err
-		}
+	documents = slices.Compact(documents)
+	rows, err := tx.Query(ctx, `
+		select id::text, coalesce(issue_key, '') from artifacts where id = any($1::uuid[])
+	`, documents)
+	if err != nil {
+		return fmt.Errorf("load the owners of a batch's documents: %w", err)
+	}
+	owned, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) ([2]string, error) {
+		var document [2]string
+		err := row.Scan(&document[0], &document[1])
+		return document, err
+	})
+	if err != nil {
+		return fmt.Errorf("load the owners of a batch's documents: %w", err)
+	}
+	owners := erasedOwners{}
+	for _, document := range owned {
+		owners.add(document[1], document[0], "document "+document[0])
+	}
+	if err := lockOwnerRows(ctx, tx, owners); err != nil {
+		return err
+	}
+	for _, document := range documents {
 		if _, err := tx.Exec(ctx, `
 			select 1 from document_block_versions where artifact_id = $1 for no key update
 		`, document); err != nil {
@@ -344,33 +373,27 @@ func lockBlockDocuments(ctx context.Context, tx pgx.Tx, documents []string) erro
 	return nil
 }
 
-// lockDocumentOwner takes a document's owner row with the statements docs' lockArtifactOwner
-// runs, which the version write and the reconciliation tick take it with: its issue's row, or a
-// project document's own artifact row, `for no key update`. This package cannot import docs
-// (Stores says why), so the statements are written here again, and a change to how that
-// function locks is a change to make here too. A document deleted since its batch was read has
-// no owner row left to take, and its block rows went with it (document_blocks cascades from
-// artifacts), so there is nothing of it to lock.
-func lockDocumentOwner(ctx context.Context, tx pgx.Tx, artifactID string) error {
-	var issueKey *string
-	switch err := tx.QueryRow(ctx, `select issue_key from artifacts where id = $1`, artifactID).Scan(&issueKey); {
-	case errors.Is(err, pgx.ErrNoRows):
-		return nil
-	case err != nil:
-		return fmt.Errorf("load the owner of document %s: %w", artifactID, err)
-	}
-	if issueKey == nil {
+// lockDocumentOwner takes one owner row, named by its owner key (erasedOwners), with the
+// statements docs' lockArtifactOwner runs, which the version write and the reconciliation tick
+// take it with: an issue's row, or a project document's own artifact row while no issue owns it,
+// `for no key update`. what is what stands under it, for an error to name. This package cannot
+// import docs (Stores says why), so the statements are written here again, and a change to how
+// that function locks is a change to make here too. A row gone since its key was read, or a
+// document an issue has taken since, locks nothing.
+func lockDocumentOwner(ctx context.Context, tx pgx.Tx, owner, what string) error {
+	if issue, ok := strings.CutPrefix(owner, "issue:"); ok {
 		if _, err := tx.Exec(ctx, `
-			select true from artifacts where id = $1 and issue_key is null for no key update
-		`, artifactID); err != nil {
-			return fmt.Errorf("lock document %s: %w", artifactID, err)
+			select closed_at is null from issues where key = $1 for no key update
+		`, issue); err != nil {
+			return fmt.Errorf("lock issue %s, the owner of %s: %w", issue, what, err)
 		}
 		return nil
 	}
+	artifact := strings.TrimPrefix(owner, "artifact:")
 	if _, err := tx.Exec(ctx, `
-		select closed_at is null from issues where key = $1 for no key update
-	`, *issueKey); err != nil {
-		return fmt.Errorf("lock the issue of document %s: %w", artifactID, err)
+		select true from artifacts where id = $1 and issue_key is null for no key update
+	`, artifact); err != nil {
+		return fmt.Errorf("lock document %s, the owner of %s: %w", artifact, what, err)
 	}
 	return nil
 }

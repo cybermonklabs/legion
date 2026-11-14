@@ -347,9 +347,10 @@ const eraseOwnerAttempts = 3
 // The owner rows are taken each once, in the order of their owner keys, as events.lockOwners
 // takes the owners of several events: "artifact:<id>" for a document no issue owns, before
 // "issue:<key>". That is the one order over every owner row, an issue whose own comment is erased
-// included; an order by document, which the backfill's lockBlockDocuments takes, puts one issue
-// at a different place for each set of its documents, so two writers taking two sets of them
-// could each hold the owner the other waits for.
+// included, and the backfill's batches take their documents' owner rows in it too
+// (lockBlockDocuments). An order by document would put one issue at a different place for each
+// set of its documents, so two writers taking two sets of them could each hold the owner the
+// other waits for.
 //
 // Which owners those are is read before they are locked, so it is read again under them, and
 // the run goes on with that second read (read): every document it lists, deletes a version of or
@@ -616,9 +617,11 @@ func (e *Erasure) embeddedOwners(ctx context.Context, tx pgx.Tx, texts []string,
 	return slices.Sorted(maps.Keys(keys)), nil
 }
 
-// erasedOwners are the owner rows the erase writes under, each by its owner key as
+// erasedOwners are owner rows a write of this package takes, each by its owner key as
 // events.lockOwners keys an event's owner - "issue:<key>", or "artifact:<id>" for a document no
-// issue owns - with the first thing read standing under it, which a refusal names.
+// issue owns - with the first thing read standing under it, which an error or a refusal names:
+// the owner rows the erase writes under (Erasure.read), and the owners of a backfill batch's
+// documents (lockBlockDocuments).
 type erasedOwners map[string]string
 
 // add records the owner of what: issue when an issue owns it, and otherwise the document
@@ -639,7 +642,7 @@ func (o erasedOwners) add(issue, artifact, what string) {
 // nodeOwners reads the owner row each projection row of the node stands under: an issue's own
 // comment stands under the issue, and every other row under the owner of the document it belongs
 // to, which is that document's issue or, for a document no issue owns, the document's own
-// artifacts row - the owner docs' lockArtifactOwner and this package's lockDocumentOwner find.
+// artifacts row - the owner docs' lockArtifactOwner finds and this package's lockDocumentOwner takes.
 // A node no row projects stands under none.
 func nodeOwners(ctx context.Context, tx pgx.Tx, kind, id string) (erasedOwners, error) {
 	arms := make([]string, len(projectedTables))
@@ -672,26 +675,16 @@ func nodeOwners(ctx context.Context, tx pgx.Tx, kind, id string) (erasedOwners, 
 	return owners, nil
 }
 
-// lockOwnerRows takes each owner row `for no key update`, in the order of its owner key, with
-// the statements docs' lockArtifactOwner and this package's lockDocumentOwner take it with: an
-// issue's row, or a document's own artifacts row while no issue owns it. A row gone since it was
-// read, or a document an issue has taken since, locks nothing here, and the read under the locks
-// finds what it stands under now.
+// lockOwnerRows takes each of owners `for no key update`, once, in the order of its owner key,
+// through lockDocumentOwner, which holds the statements docs' lockArtifactOwner takes it with: an
+// issue's row, or a document's own artifacts row while no issue owns it. The erase takes its owner
+// rows through it (lockOwnersThenNode), and so does a backfill batch (lockBlockDocuments). A row
+// gone since it was read, or a document an issue has taken since, locks nothing here; the erase's
+// read under the locks finds what it stands under now.
 func lockOwnerRows(ctx context.Context, tx pgx.Tx, owners erasedOwners) error {
 	for _, key := range slices.Sorted(maps.Keys(owners)) {
-		if issue, ok := strings.CutPrefix(key, "issue:"); ok {
-			if _, err := tx.Exec(ctx, `
-				select closed_at is null from issues where key = $1 for no key update
-			`, issue); err != nil {
-				return fmt.Errorf("lock issue %s, the owner of %s: %w", issue, owners[key], err)
-			}
-			continue
-		}
-		artifact := strings.TrimPrefix(key, "artifact:")
-		if _, err := tx.Exec(ctx, `
-			select true from artifacts where id = $1 and issue_key is null for no key update
-		`, artifact); err != nil {
-			return fmt.Errorf("lock document %s, the owner of %s: %w", artifact, owners[key], err)
+		if err := lockDocumentOwner(ctx, tx, key, owners[key]); err != nil {
+			return err
 		}
 	}
 	return nil

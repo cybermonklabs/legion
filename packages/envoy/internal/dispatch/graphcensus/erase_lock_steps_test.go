@@ -78,7 +78,7 @@ func TestTheEraseTakesTheStoreLockOrder(t *testing.T) {
 		unlocked:  untouchedBeforeTheNode,
 	}, `select 1 from graph_nodes where kind = $1 and id = $2 for update`, commentNodeKind, seeded.comment)
 	projection := holdRow(t, database, &batchHold{
-		name: "the comment's comments row", step: stepProjection, taken: true,
+		name: "the comment's comments row", step: stepProjection, taken: true, names: node,
 		statement: commentLockStatement,
 		unlocked:  untouchedBeforeTheNode,
 	}, `select 1 from comments where id = $1::uuid for update`, seeded.comment)
@@ -364,7 +364,7 @@ func TestTheEraseTakesTheOwnersOfABlockAndAWindowQuotingItBeforeItsNode(t *testi
 		unlocked:  untouchedBeforeTheNode,
 	}, `select 1 from graph_nodes where kind = $1 and id = $2 for update`, commentNodeKind, seeded.comment)
 	comment := holdRow(t, database, &batchHold{
-		name: "the comment's comments row", step: stepProjection, taken: true,
+		name: "the comment's comments row", step: stepProjection, taken: true, names: node,
 		statement: commentLockStatement,
 		unlocked:  untouchedBeforeTheNode,
 	}, `select 1 from comments where id = $1::uuid for update`, seeded.comment)
