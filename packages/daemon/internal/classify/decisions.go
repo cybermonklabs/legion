@@ -1129,9 +1129,26 @@ const (
 // at that version, read again (record.EventMark.Same), keeps the fuller of the two marks
 // (record.EventMark.Merged), so a read that gave only its time never takes the sequence the live
 // event gave.
+//
+// A step that stands open on an ancestor's approval, or waits on an ancestor's request
+// (record.DesignGate.Basis), changes as a step a person approved at the version registered
+// changes (R3 of dispatch://INFRA-3320): a newer version of the issue's own document, and a
+// review of it at the version registered or a later one, end the basis (record.CloseBasis,
+// record.EndPendingBasis) before the event applies as it does to any step. So a newer version
+// closes the step and falls back to the person's own approval the basis kept, never to the
+// version the basis opened; a changes request closes it and clears that approval too; and a
+// person's approval opens the step on that approval and leaves no basis behind. A review of an
+// earlier version, delivered late or twice, and a version the step already holds change nothing.
 func ApplyDesignGateEvent(gate record.DesignGate, kind DesignGateEventKind, version int, mark record.EventMark) record.DesignGate {
+	registered := gate.LatestVersion
 	if version > gate.LatestVersion {
 		gate.LatestVersion = version
+	}
+	if gate.Basis != nil {
+		if version < registered || kind == DesignGateVersion && version == registered {
+			return gate
+		}
+		gate = record.EndPendingBasis(record.CloseBasis(gate))
 	}
 	switch kind {
 	case DesignGateApproved:
@@ -1152,28 +1169,34 @@ func clearChangesTold(gate record.DesignGate) record.DesignGate {
 	return gate
 }
 
-// LatestReview is the review the gate has applied last and the document version it reviewed: the
-// approval it records, else the changes request it records as told. The two never stand together
-// (ApplyDesignGateEvent), so whichever is set is the gate's newest applied review. ok is false
-// when the gate records no review at all.
+// LatestReview is the review a person gave of the issue's own document that the gate has applied
+// last, and the document version it reviewed: the person's approval it records
+// (record.DesignGate.ApprovedByPerson), else the changes request it records as told. The two never
+// stand together (ApplyDesignGateEvent), so whichever is set is the gate's newest applied review.
+// A step a basis opened records no review of the root's document by its approval: the person's
+// approval it kept apart (KeptPerson) is read instead, never the basis's version or its mark,
+// which is a place in the ancestor's event log. ok is false when the gate records no review at
+// all.
 func LatestReview(gate record.DesignGate) (record.EventMark, int, bool) {
-	switch {
-	case gate.ApprovedVersion != nil:
-		return gate.ApprovedMark, *gate.ApprovedVersion, true
-	case gate.ToldChangesVersion != nil:
+	if approval := gate.ApprovedByPerson(); approval != nil {
+		return approval.Mark, approval.Version, true
+	}
+	if gate.ToldChangesVersion != nil {
 		return gate.ToldChangesMark, *gate.ToldChangesVersion, true
 	}
 	return record.EventMark{}, 0, false
 }
 
 // StaleReview reports whether a review of version at mark is older than the review the gate has
-// already applied at that version: the person reviewed again after it, so this one changes no gate
-// state. It covers an approval delivered after the changes request that superseded it, and a
-// changes request delivered after a newer approval. A review Dispatch placed neither by sequence
-// nor by time against the recorded one is not stale (record.EventMark.After), which keeps the
-// earlier behaviour for marks a Dispatch did not give, and neither is the recorded review itself
-// (record.EventMark.Same): a read that gave only its time and the live event that carries its
-// sequence are one review, and the sequenced one completes what the gate records of it.
+// already applied at that version (LatestReview): the person reviewed again after it, so this one
+// changes no gate state. It covers an approval delivered after the changes request that
+// superseded it, and a changes request delivered after a newer approval. A review Dispatch placed
+// neither by sequence nor by time against the recorded one is not stale
+// (record.EventMark.After), which keeps the earlier behaviour for marks a Dispatch did not give,
+// and neither is the recorded review itself (record.EventMark.Same): a read that gave only its
+// time and the live event that carries its sequence are one review, and the sequenced one
+// completes what the gate records of it. On a step a basis opened, the review it is read against
+// is the person's own (KeptPerson) or the told changes request, never the basis.
 func StaleReview(gate record.DesignGate, version int, mark record.EventMark) bool {
 	recorded, reviewed, ok := LatestReview(gate)
 	return ok && reviewed == version && !mark.Same(recorded) && !mark.After(recorded)
@@ -1213,22 +1236,25 @@ func RecordChangesTold(gate record.DesignGate, version int, reason string, mark 
 	return gate
 }
 
-// ApprovalFollows reports whether the gate records an approval given after a review of version at
-// mark: an approval of a later version, or one of that version the review does not come after
-// (record.EventMark.After). A changes request that such an approval followed was answered by the
-// person's own approval, so nothing of it is left to tell.
+// ApprovalFollows reports whether the gate records a person's approval given after a review of
+// version at mark: an approval of a later version, or one of that version the review does not
+// come after (record.EventMark.After). A changes request that such an approval followed was
+// answered by the person's own approval, so nothing of it is left to tell. The approval read is
+// the person's (record.DesignGate.ApprovedByPerson): a basis's version is no answer a person
+// gave.
 func ApprovalFollows(gate record.DesignGate, version int, mark record.EventMark) bool {
-	if gate.ApprovedVersion == nil {
+	approval := gate.ApprovedByPerson()
+	if approval == nil {
 		return false
 	}
-	approved := *gate.ApprovedVersion
-	return approved > version || approved == version && !mark.After(gate.ApprovedMark)
+	return approval.Version > version || approval.Version == version && !mark.After(approval.Mark)
 }
 
-// DesignGateOpen reports whether a human approved the gate's current document version. It
-// answers one step's question; the deployment's whole list is DesignGatesOpen. It is
-// record.GateOpen, where the rule lives because the record package needs it too and may not read
-// this one, and it keeps its name here because every decision in this file is named this way.
+// DesignGateOpen reports whether an approval stands on the gate's current document version: a
+// human's, or the ancestor's approval a basis opened the step on. It answers one step's
+// question; the deployment's whole list is DesignGatesOpen. It is record.GateOpen, where the rule
+// lives because the record package needs it too and may not read this one, and it keeps its name
+// here because every decision in this file is named this way.
 func DesignGateOpen(gate record.DesignGate) bool {
 	return record.GateOpen(gate)
 }

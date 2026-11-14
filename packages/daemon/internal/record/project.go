@@ -610,9 +610,11 @@ func ReadLineFacts(ctx context.Context, tx pgx.Tx, store Store, project string, 
 	return LineFacts{Lifecycles: lifecycles, Gates: gates, Parents: parents, Roots: roots, Owed: owed, OwedRows: rows}, nil
 }
 
-// GateOpen is whether a person's approval stands on the gate's current document version: the one
-// statement of it, which classify.DesignGateOpen and Store.PutGate's own write both call.
-// internal/classify reads this package, so the rule lives here, where every reader can reach it.
+// GateOpen is whether an approval stands on the gate's current document version: a person's, or
+// the ancestor's approval a basis opened the step on, which sets ApprovedVersion to the version the
+// root registered (OpenOnBasis), so this one rule reads both. It is the one statement of it, which
+// classify.DesignGateOpen and Store.PutGate's own write both call. internal/classify reads this
+// package, so the rule lives here, where every reader can reach it.
 func GateOpen(gate DesignGate) bool {
 	return gate.ApprovedVersion != nil && *gate.ApprovedVersion == gate.LatestVersion
 }
@@ -648,10 +650,11 @@ type TreeGate struct {
 	Rows  map[DesignStep]DesignGate
 }
 
-// Open is whether the gate lets the tree's work run: a person's approval stands on the current
-// document version of every required step (GateOpen). A required step with no row holds the
-// work, as an unregistered gate always has, so a root with no row at all is held too. It is the
-// one rule for the question, which classify.DesignGatesOpen reads it through.
+// Open is whether the gate lets the tree's work run: an approval stands on the current document
+// version of every required step (GateOpen), a person's or the one a basis opened the step on. A
+// required step with no row holds the work, as an unregistered gate always has, so a root with no
+// row at all is held too. It is the one rule for the question, which classify.DesignGatesOpen
+// reads it through.
 func (g TreeGate) Open() bool {
 	for _, step := range RequiredSteps(g.Steps) {
 		if row, registered := g.Rows[step]; !registered || !GateOpen(row) {
@@ -676,20 +679,23 @@ func (g TreeGate) EverOpened() bool {
 }
 
 // OpenedAt is when a root's work came back to it through its design gate: the moment the last of
-// its required steps was approved (DesignGate.ApprovedMark), zero for a gate that is not open.
-// It is the waiting line's ordering key for a root whose own first phase can start, merged on
-// the same time axis as an owed start row's creation and an answered root's answer. A step whose
-// approval carries no moment — one a registration read from Dispatch rather than from an event —
-// gives the zero time, which puts that root at the head of its part when it is the only step:
-// the line knows its work came back and not when, and the alternative, dropping it to the back
-// by rank, loses what it does know.
+// its required steps opened, zero for a gate that is not open. A step a person's approval opened
+// gives where Dispatch recorded that approval (DesignGate.ApprovedMark); a step a basis opened
+// gives the daemon's own time of the registration (GateBasis.RegisteredAt), never a zero time,
+// since the ancestor's approval is a place in another issue's event log. It is the waiting line's
+// ordering key for a root whose own first phase can start, merged on the same time axis as an
+// owed start row's creation and an answered root's answer. A step whose approval carries no
+// moment — one a registration read from Dispatch rather than from an event — gives the zero
+// time, which puts that root at the head of its part when it is the only step: the line knows
+// its work came back and not when, and the alternative, dropping it to the back by rank, loses
+// what it does know.
 func (g TreeGate) OpenedAt() time.Time {
 	if !g.Open() {
 		return time.Time{}
 	}
 	var at time.Time
 	for _, step := range RequiredSteps(g.Steps) {
-		at = later(at, g.Rows[step].ApprovedMark.At)
+		at = later(at, g.Rows[step].openedAt())
 	}
 	return at
 }

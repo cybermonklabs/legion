@@ -213,6 +213,12 @@ type Issue struct {
 	// that queues the notice, and PutIssue keeps the stored value as it does for moved_at: every
 	// pass that records an issue holds a copy read before its own telling.
 	TreeStalledToldAt *time.Time
+	// ViewOf is the ancestor whose requirement blocks the issue's spec is a view on (the view
+	// fact of dispatch://INFRA-3320 R4): the nearest reviewed ancestor that marks requirement
+	// blocks, written at each registration of the issue's spec step, "" where there is none. It
+	// belongs to the issue whose documents were read, so a step a hand-over carries to a child
+	// carries none.
+	ViewOf string
 }
 
 // Repository is the repository the record names (Repo) in the spelling the record keeps: what
@@ -1049,6 +1055,16 @@ func StepWords() string {
 // reason. An approval clears the told record and a changes request clears the approval, so the two
 // marks never stand together: the one that is set is the gate's newest applied review
 // (classify.LatestReview).
+//
+// A step can also stand open on an ancestor's approval rather than on a person's approval of the
+// issue's own document (dispatch://INFRA-3320, R1 to R3), or wait, closed, on an ancestor's open
+// approval request: Basis records either. While a basis stands, ApprovedVersion is the version the
+// root registered and ApprovedMark is empty, so every reader of whether the step is open
+// (GateOpen) reads it open with no rule of its own; a person's approval of an earlier version of
+// the issue's own document is held apart in KeptPerson, and every reader that names a person's
+// approval reads ApprovedByPerson rather than ApprovedVersion. The transitions are written once,
+// in gate_basis.go (OpenOnBasis, PendOnBasis, OpenPendingBasis, CloseBasis, EndPendingBasis) and
+// in classify.ApplyDesignGateEvent, and no caller sets the three fields itself.
 type DesignGate struct {
 	Issue string
 	// Step is the document of Issue this gate holds, and the second half of the record's key: one
@@ -1061,8 +1077,9 @@ type DesignGate struct {
 	ToldChangesVersion *int
 	ToldChangesReason  string
 	ToldChangesMark    EventMark
-	// EverOpened records that a human approved the gate's document version at some point in this
-	// generation of the issue, whether or not the gate stands open now. Nothing else remembers it:
+	// EverOpened records that the gate's document version was approved at some point in this
+	// generation of the issue, by a human or by the ancestor's approval a basis opened it on,
+	// whether or not the gate stands open now. Nothing else remembers it:
 	// classify.DesignGateOpen is point-in-time, reading the approval against LatestVersion as both
 	// stand, and a changes request clears ApprovedVersion, so a gate that opened and was sent back
 	// reads exactly like one that never opened. Under the children-first rule a root stays at
@@ -1072,6 +1089,68 @@ type DesignGate struct {
 	// root's architect writes its spec again: the mark belongs to the generation whose approval it
 	// records.
 	EverOpened bool
+	// Basis is the ancestor's approval the step stands open on (OnBasis), or, while its Pending is
+	// set, the ancestor's approval request the step waits on with the step closed
+	// (PendingOnBasis). It is nil for a step no basis opened or waits on, which is every step
+	// registered without one, and for a step whose basis has ended.
+	Basis *GateBasis
+	// KeptPerson is a person's approval of an earlier version of the issue's own document, held
+	// apart while a basis stands, so no reader shows that person's review beside a version they
+	// did not approve. It is what the step falls back to when the basis ends (CloseBasis), and nil
+	// whenever no basis stands.
+	KeptPerson *PersonApproval
+	// RestsOn is the ancestor a basis first opened this step on in this generation, "" for a step
+	// no basis has opened: the ancestor's sign-off waits on the issue from then until the
+	// generation ends, whether the step is open or closed later (R8). Only a re-admission takes
+	// it away, by clearing the generation's rows, and Store.PutGate keeps the first one written.
+	// A step pending on an ancestor rests on that ancestor through its basis instead, and stops
+	// resting on it when the wait ends without opening (RestsOnIssue).
+	RestsOn string
+}
+
+// GateBasis is an ancestor's approval that a step of a root stands open on, or the ancestor's
+// approval request the step waits on while Pending is set: what the root's architect registered
+// (register_gate's basis) and the daemon's own time of that registration.
+type GateBasis struct {
+	// Issue is the ancestor, and ArtifactID its primary document.
+	Issue      string
+	ArtifactID string
+	// Version is the version of the ancestor's document a person approved, or, while pending, the
+	// version the open request asks a person to approve.
+	Version int
+	// Approval is where Dispatch recorded the person's approval of Version in the ancestor's own
+	// event log, and Approver who gave it as Dispatch names an actor (`user:<login>`). Both are
+	// zero while the basis is pending. The mark is a place in another issue's log than the root's
+	// own reviews, so no rule compares the two (classify.LatestReview reads KeptPerson instead).
+	Approval EventMark
+	Approver string
+	// Serves is the ancestor's requirement references the root's checks serve, as the
+	// registration named them (`dispatch://<KEY>/spec#b-<id>@v<N>`); nil for none.
+	Serves []string
+	// Reason is the architect's reason for the registration, and Session the architect session
+	// that made it.
+	Reason  string
+	Session string
+	// RegisteredAt is the daemon's own time of the registration: the moment the waiting line
+	// takes for a step a basis opened (TreeGate.OpenedAt). It is never zero (Store.PutGate refuses
+	// a basis without it).
+	RegisteredAt time.Time
+	// Pending is the open approval request the step waits on, nil for a basis that stands.
+	Pending *PendingBasis
+}
+
+// PendingBasis is the ancestor's open approval request a step waits on: Ask is its id, which the
+// request's close finds the step by (Store.GatesByPendingAsk).
+type PendingBasis struct {
+	Ask string
+}
+
+// PersonApproval is a person's approval of one version of an issue's own document and where
+// Dispatch recorded it in that issue's event log (DesignGate.ApprovedByPerson,
+// DesignGate.KeptPerson).
+type PersonApproval struct {
+	Version int
+	Mark    EventMark
 }
 
 // SpecGate is the DesignStepSpec row of gates, nil when the issue holds none. Every reader that
@@ -1540,8 +1619,21 @@ type Store interface {
 	// GatesForArtifact is every gate registered on artifactID, in issue order: the document owner's
 	// gate and each copy a hand-over carried to a child of its tree. Each row carries its own step.
 	GatesForArtifact(ctx context.Context, tx pgx.Tx, artifactID string) ([]DesignGate, error)
+	// GatesForBasisArtifact is every gate whose basis names artifactID as the ancestor's document,
+	// in issue and then step order: the steps it stands open on and the steps pending on a request
+	// of it, of every tree. A step whose basis has ended is not among them.
+	GatesForBasisArtifact(ctx context.Context, tx pgx.Tx, artifactID string) ([]DesignGate, error)
+	// GatesByPendingAsk is every gate pending on ask, the ancestor's open approval request, in
+	// issue and then step order, of every tree.
+	GatesByPendingAsk(ctx context.Context, tx pgx.Tx, ask string) ([]DesignGate, error)
+	// GatesRestingOn is every gate that rests on ancestor in this generation
+	// (DesignGate.RestsOnIssue), in issue and then step order, of every tree: each a basis on
+	// ancestor opened at some point, and each whose basis names ancestor now, standing or pending.
+	GatesRestingOn(ctx context.Context, tx pgx.Tx, ancestor string) ([]DesignGate, error)
 	// PutGate writes one gate row, keyed by its issue and its step. A gate built with no step is
-	// written as DesignStepSpec (Postgres.PutGate).
+	// written as DesignStepSpec (Postgres.PutGate). A basis it carries names its ancestor, the
+	// ancestor's document and version and the daemon's time of the registration, and a pending
+	// one its request, or the write is refused.
 	PutGate(ctx context.Context, tx pgx.Tx, gate DesignGate) error
 	// RootAsk is the mirror row of ask on issue, nil when it has none.
 	RootAsk(ctx context.Context, tx pgx.Tx, issue, ask string) (*RootAsk, error)
