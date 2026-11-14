@@ -745,6 +745,76 @@ describe("the dispatch CLI", () => {
     expect(requests).toEqual([]);
   });
 
+  // `--run -` would send the one character "-" where the caller meant stdin, so a text flag's bare
+  // `-` is a usage error before any request, dry run included. When nothing else is wrong, the
+  // refusal names the `-file` twin of each such flag and lists no flags.
+  test("a bare - given to text flags is refused, one line per flag, listing no flags", async () => {
+    const argv = [
+      "result",
+      "--issue",
+      "DSP-1",
+      "--check",
+      "k1",
+      "--role",
+      "implementer",
+      "--verdict",
+      "pass",
+      "--commit",
+      "1111111111111111111111111111111111111111",
+      "--run",
+      "-",
+      "--observed",
+      "-",
+      "--negative-control",
+      "-",
+    ];
+    const refusal = [
+      "dispatch result was not called: 3 problems",
+      '- --run - sends the one character "-". --run-file <path> reads --run from a file, and --run-file - reads it from stdin. One flag of a call may read stdin.',
+      '- --observed - sends the one character "-". --observed-file <path> reads --observed from a file, and --observed-file - reads it from stdin. One flag of a call may read stdin.',
+      '- --negative-control - sends the one character "-". --negative-control-file <path> reads --negative-control from a file, and --negative-control-file - reads it from stdin. One flag of a call may read stdin.',
+      "- Example: dispatch result --issue DSP-1 --check k1 --role implementer --verdict pass --commit 1111111111111111111111111111111111111111",
+      "",
+    ].join("\n");
+    for (const call of [argv, [...argv, "--dry-run"]]) {
+      expect(await run(call, omp), call.join(" ")).toEqual({
+        code: 2,
+        stdout: refusal,
+        stderr: "",
+      });
+    }
+    expect(requests).toEqual([]);
+
+    expect(await run(["issue", "--project", "DSP", "--title", "-"], omp)).toEqual({
+      code: 2,
+      stdout: [
+        "dispatch issue was not called: 1 problem",
+        '- --title - sends the one character "-". --title-file <path> reads --title from a file, and --title-file - reads it from stdin. One flag of a call may read stdin.',
+        "- Example: dispatch issue --project DSP --title 'Native workspace'",
+        "",
+      ].join("\n"),
+      stderr: "",
+    });
+    expect(requests).toEqual([]);
+  });
+
+  test("a bare - beside an unknown flag is refused with both, listing the flags", async () => {
+    const { code, stdout } = await run(
+      ["issue", "--project", "DSP", "--title", "-", "--titel", "x"],
+      omp
+    );
+    expect(code).toBe(2);
+    const lines = stdout.split("\n");
+    expect(lines.slice(0, 3)).toEqual([
+      "dispatch issue was not called: 2 problems",
+      '- --title - sends the one character "-". --title-file <path> reads --title from a file, and --title-file - reads it from stdin. One flag of a call may read stdin.',
+      "- unknown flag --titel",
+    ]);
+    expect(lines[3]).toStartWith("- Allowed flags: --project, ");
+    expect(lines[4]).toStartWith("- Example: dispatch issue ");
+    expect(requests).toEqual([]);
+  });
+
   // `skill://dispatch` says "Exit 1 is a refusal, 2 a usage error", so a call Dispatch never saw
   // because an argument is missing exits 2: a script reading the code alone tells it from a write
   // Dispatch refused (a near copy, an AskGate block), which exits 1.

@@ -252,7 +252,15 @@ export async function runDispatchCli(
           [`dispatch: ${parsed.problems.join("\n")}`, "Run dispatch --help."].join("\n"),
           USAGE
         )
-      : refuse(new ToolInputError(parsed.tool, parsed.problems).message, USAGE, parsed.tool);
+      : refuse(
+          new ToolInputError(
+            parsed.tool,
+            parsed.problems,
+            parsed.aboutAFlag === false ? { aboutAFlag: false } : undefined
+          ).message,
+          USAGE,
+          parsed.tool
+        );
   }
 
   const hostName =

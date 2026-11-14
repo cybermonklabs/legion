@@ -12,7 +12,9 @@ import { messageFor } from "./errors";
  * derived from each spec's JSON schema, so a new field or tool needs no edit here.
  *
  * A field's kind decides its flags:
- * - string or enum: `--<field> <value>`, and `--<field>-file <path>` (`-` reads stdin);
+ * - string or enum: `--<field> <value>`, and `--<field>-file <path>` (`-` reads stdin, and one
+ *   flag of a call may read it); `--<field> -` is refused, except `dispatch artifact --path`,
+ *   whose value names a local file;
  * - integer or number: `--<field> <n>`;
  * - boolean: `--<field>` (true) and `--no-<field>` (false);
  * - nullable: `--clear-<field>` sends null;
@@ -84,7 +86,13 @@ export type ParsedCommand =
       readonly dryRun: boolean;
     }
   | { readonly kind: "help"; readonly tool?: string }
-  | { readonly kind: "refused"; readonly tool?: string; readonly problems: string[] };
+  | {
+      readonly kind: "refused";
+      readonly tool?: string;
+      readonly problems: string[];
+      /** False when every problem is the value a flag carries, so the refusal lists no flags. */
+      readonly aboutAFlag?: false;
+    };
 
 export interface CommandFlagRow {
   /** The flag as written, with its value placeholder: `--issue <text>`. */
@@ -95,6 +103,13 @@ export interface CommandFlagRow {
 const STDIN = "-";
 const BARE_WORD = /^[A-Za-z0-9_./:@%+=,-]+$/;
 const OPTION_SEPARATOR = ": ";
+
+/**
+ * The one text field whose value names a local file, so `--path -` names a file and is not
+ * refused: `artifactCommand` in `packages/envoy-client/src/dispatch-commands/documents.ts`
+ * uploads the file `--path` names.
+ */
+const LOCAL_FILE_FIELD = { tool: "dispatch_artifact", field: "path" } as const;
 
 /** `dispatch_issue_update` → `issue-update`. */
 export function commandName(tool: string): string {
@@ -377,6 +392,8 @@ export function parseCommand(
   const args: Record<string, unknown> = {};
   const setBy = new Map<string, string>();
   const problems: string[] = [];
+  // The flags refused for a bare `-`, each named once however often it is given.
+  const bareDashes = new Set<string>();
   let help = false;
   let dryRun = false;
   let stdinFlag: string | undefined;
@@ -498,6 +515,20 @@ export function parseCommand(
         const claimed = claim(field, flag, false);
         const parsed = info.kind === "number" ? number(flag, value) : value;
         if (claimed && parsed !== undefined) args[field] = parsed;
+        // A bare `-` meant as stdin would go out as the one character, so it is refused, naming
+        // the `-file` twin that reads stdin. It is still claimed and stored above, so a later
+        // bare issue key reads `--issue is already -`.
+        if (
+          info.kind === "string" &&
+          value === STDIN &&
+          !(tool === LOCAL_FILE_FIELD.tool && field === LOCAL_FILE_FIELD.field) &&
+          !bareDashes.has(flag)
+        ) {
+          bareDashes.add(flag);
+          problems.push(
+            `${flag} - sends the one character "-". ${flag}-file <path> reads ${flag} from a file, and ${flag}-file - reads it from stdin. One flag of a call may read stdin.`
+          );
+        }
         break;
       }
       case "file": {
@@ -525,7 +556,12 @@ export function parseCommand(
   }
 
   if (help) return { kind: "help", tool };
-  if (problems.length > 0) return { kind: "refused", tool, problems };
+  if (problems.length > 0) {
+    // When every problem is a bare `-`, the refusal is about values and lists no flags.
+    return problems.length === bareDashes.size
+      ? { kind: "refused", tool, problems, aboutAFlag: false }
+      : { kind: "refused", tool, problems };
+  }
   return { kind: "call", tool, args, dryRun };
 }
 
