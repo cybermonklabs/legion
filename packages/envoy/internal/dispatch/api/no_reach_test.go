@@ -554,6 +554,7 @@ func seededProbePath(pattern string, owned crossProject) string {
 		{"/messages/{id}", "/messages/" + owned.message},
 		{"/artifacts/{id}", "/artifacts/" + owned.document},
 		{"/documents/{id}", "/documents/" + owned.document},
+		{"/priorities/{id}", "/priorities/" + owned.priority},
 		{"{block_id}", owned.documentBlock},
 	} {
 		path = strings.ReplaceAll(path, replacement.from, replacement.to)
@@ -607,11 +608,14 @@ type crossProject struct {
 	// message is an issue message, and document a project document, with its slug and one of
 	// its blocks: the objects a route of the project's own documents and messages reads.
 	message, document, documentSlug, documentBlock string
+	// priority is the id of a priority. A priority belongs to no project, so no project's key
+	// addresses it, and only the probe that reads each object at its own address reads it.
+	priority string
 }
 
 // seedTwoProjects writes one project with an issue, a document, a comment, an ask, a message, a
 // project document and a block of each document, and a second project the probe addresses them
-// under.
+// under; and one priority, which belongs to neither project and is read at its own id.
 func seedTwoProjects(t *testing.T, handler http.Handler) crossProject {
 	t.Helper()
 	createDuplicateTestProject(t, handler, "OTH")
@@ -650,6 +654,10 @@ func seedTwoProjects(t *testing.T, handler http.Handler) crossProject {
 	document := createProjectDocument(t, handler, "TEST", "Notes", "# Notes\n\nA passage of the project's own document.\n")
 	owned.document, owned.documentSlug = document.ID, document.Slug
 	owned.documentBlock = firstBlockOf(t, handler, document.ID)
+	// A priority is written through its own route, as a person writes one, because its history
+	// answers a row only for a priority the store holds: at a placeholder id it answers 404, and
+	// its traversal probe would read nothing.
+	owned.priority = createTestPriority(t, handler, map[string]any{"title": "A priority of the deployment"}, "alice").ID
 	return owned
 }
 
