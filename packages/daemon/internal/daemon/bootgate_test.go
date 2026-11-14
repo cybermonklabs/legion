@@ -889,6 +889,27 @@ func TestRunGatesThePluginUnderThePaneEnvironmentBeforeItBoots(t *testing.T) {
 	}
 }
 
+// The plugin gate waits out host load for as long as that lasts (pluginGate), so no budget bounds
+// it, and the boot's steps after it — the claims' half of the layout fence, Migrate, and what
+// follows them — run on a budget that starts once it has passed (bootTimeout). A gate slower than
+// that budget still boots a daemon that answers /healthz: a budget started above the gate ran out
+// under it and refused the boot with `apply migration 0001_init.up.sql: context deadline exceeded`.
+func TestAPluginGateSlowerThanTheBootBudgetStillBoots(t *testing.T) {
+	cfg := testConfig(t)
+	o := fakeRuntime(fake.NewRuntime(), &built{})
+	slow := bootTimeout + 2*time.Second
+	o.gate = func(ctx context.Context) error {
+		select {
+		case <-time.After(slow):
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+
+	startDaemonWithin(t, cfg, o, quietLogger(), slow+10*time.Second)
+}
+
 // The tmux gate asks the load probe for the skills and task agents the daemon's role prompts name,
 // beside the plugin's own: legion-controller is loaded by roles/controller-root.md alone.
 func TestTheTmuxGateAsksForWhatTheRolePromptsName(t *testing.T) {

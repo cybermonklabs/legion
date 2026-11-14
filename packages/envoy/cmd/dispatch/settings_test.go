@@ -567,8 +567,9 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			"DISPATCH_LEGION_DAEMON_TOKEN_FILE": writeFile(t, "legion-daemon-token", token),
 		})
 		database := storetest.Open(t)
-		// Main's projects name a person who has signed in (projects.default_assignee, NOT NULL),
-		// so the project is seeded beside its person rather than created by a browser's write.
+		// Main's projects name a default assignee (projects.default_assignee, NOT NULL), so the
+		// project is seeded with one rather than created by a browser's write; the column takes a
+		// login and no person row.
 		if _, err := database.Pool.Exec(context.Background(),
 			`insert into projects (key, name, default_assignee) values ('LGN', 'Legion', 'alice')`); err != nil {
 			t.Fatalf("seed the project: %v", err)

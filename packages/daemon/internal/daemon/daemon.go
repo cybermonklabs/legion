@@ -63,10 +63,12 @@ import (
 const (
 	// bootTimeout bounds the work between the plugin gate passing and the API listening: an
 	// unreachable Postgres refuses in milliseconds, but a reachable one that never answers must
-	// not leave the daemon hanging with nothing on stderr. The gate is not bounded by it — it waits
-	// out host load for as long as that lasts (pluginGate) — nor are the GitHub App tokens' mint
-	// and the image probe, which wait out GitHub's and the cluster's transient trouble within
-	// retries of their own (appMintRetry, imageProbeRetry); the work after each has a budget anew.
+	// not leave the daemon hanging with nothing on stderr. The cluster fence and the store's open
+	// and restore, which come before the gate, each have a budget of their own of that length. The
+	// gate is not bounded by it — it waits out host load for as long as that lasts (pluginGate) —
+	// nor are the GitHub App tokens' mint and the image probe, which wait out GitHub's and the
+	// cluster's transient trouble within retries of their own (appMintRetry, imageProbeRetry); the
+	// work after each has a budget anew.
 	bootTimeout = 30 * time.Second
 	// catchUpAttemptBound bounds one attempt of the boot's catch-up of the roots that run or wait on
 	// a person. Each root has bootTimeout of its own and the roots finished survive a retry, so this
@@ -222,10 +224,11 @@ type Build struct {
 	Revision string
 }
 
-// Run is the daemon. It refuses what it cannot run on before it touches anything — the
-// configuration first, then, under tmux, the plugin gate, which holds the Oh My Pi plugin every
-// pane will load to this daemon's contract — then opens the store (refusing by the host it could
-// not reach), migrates, takes its API listener and its worker stream, builds the runtime (under
+// Run is the daemon. It refuses what it cannot run on before it migrates anything — the
+// configuration first, then the cluster fence, then the store's open (refusing by the host it
+// could not reach) with the settings route's stored changes laid back over the file, then, under
+// tmux, the plugin gate, which holds the Oh My Pi plugin every pane will load to this daemon's
+// contract — then migrates, takes its API listener and its worker stream, builds the runtime (under
 // kubernetes, once Agent Sandbox's install check passes), proves the worker image under
 // kubernetes, records the boot, supervises every claim the store holds, serves the API, and blocks
 // until ctx is done. Then it stops: it says so, cancels the decisions it makes itself, drains the
@@ -289,15 +292,16 @@ func run(ctx context.Context, live *config.Live, build Build, log *slog.Logger, 
 	// installed, and no per-claim Sandbox of the layout before issue pods may remain. They are
 	// read-only and build nothing, and they run against the file's own configuration, which is
 	// all the daemon holds until its store is open (clusterFence). An operator whose cluster
-	// still carries that layout is told so, rather than shown whatever the daemon met next.
-	boot, cancelBoot := bootBudget(ctx)
-	defer cancelBoot()
+	// still carries that layout is told so, rather than shown whatever the daemon met next. The
+	// fence has a budget of its own, as the store's open and restore below have theirs.
+	fencing, cancelFencing := bootBudget(ctx)
+	defer cancelFencing()
 	fence, err := clusterFence(*live.Snapshot(), o, log)
 	if err != nil {
 		return err
 	}
 	if fence != nil {
-		if err := fence(boot); err != nil {
+		if err := fence(fencing); err != nil {
 			return err
 		}
 	}
@@ -353,6 +357,11 @@ func run(ctx context.Context, live *config.Live, build Build, log *slog.Logger, 
 		}
 	}
 
+	// The boot's next budget starts once the plugin gate has passed, which no budget bounds
+	// (bootTimeout). The loops the boot starts take marks of their own, since they run beside each
+	// other (store.ForConcurrentWorker).
+	boot, cancelBoot := bootBudget(ctx)
+	defer cancelBoot()
 	// The claims' half of the layout fence, before the schema is migrated: no stored claim may
 	// still carry a per-claim Sandbox locator.
 	if plan.claimsCheck != nil {
@@ -798,8 +807,9 @@ type plan struct {
 	// boot and read again where the configuration names it. A test that hands the daemon its
 	// runtime answers that one for every configuration.
 	runtimeFor func(cfg config.Config) (runtimeFactory, error)
-	// gate is the plugin gate run before anything is opened (pluginGate); nil under a runtime with
-	// no host Oh My Pi, and for a replaced runtime without one.
+	// gate is the plugin gate, run once the store is open and before the schema is migrated
+	// (pluginGate), on no boot budget; nil under a runtime with no host Oh My Pi, and for a
+	// replaced runtime without one.
 	gate func(ctx context.Context) error
 	// probe proves the runtime's worker image once the runtime is built and before the boot is
 	// recorded, answering what its OK line reported of the image; nil under tmux, and for a
