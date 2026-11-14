@@ -781,7 +781,10 @@ operator's sign-in with a sign-in directory of its own, under every configuratio
 `AGENT_SECRETS_SIGNIN_DIR` to `<state_dir>/controller-signins`, keeps that directory empty, and
 refuses to start when the directory holds an entry. So the controller's Dispatch credential, and
 its Envoy credential where no Envoy bearer is set, trade the machine. Any other value of the
-variable is refused, naming it: `DISPATCH_TOKEN_BROKER is "<value>" and takes 1 …`.
+variable is refused, naming it: `DISPATCH_TOKEN_BROKER is "<value>" and takes 1 …`. The start also
+sets the controller's `AGENT_SECRETS_KEY_DIR` to `<state_dir>/controller-keys`, a key directory of
+its own for the Go `agent-secrets` command the controller runs for its secret reads; no client
+here reads that variable. `docs/kubernetes.md` says which identity those reads use.
 
 ### The `dispatch` command
 

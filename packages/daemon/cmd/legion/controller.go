@@ -81,10 +81,12 @@ func runControllerStart(ctx context.Context, args []string, stdout, stderr io.Wr
 // `dispatch_url` whose file names neither of the two Dispatch credentials, a secrets broker that
 // refuses this machine's identity under `dispatch_token_broker` (controllerDispatchBroker) and a
 // blank or unreadable Dispatch token file under `dispatch_token_file`, an instructions file that
-// is missing or blank, an Oh My Pi invocation that does not resolve, and a sign-in directory of
+// is missing or blank, an Oh My Pi invocation that does not resolve, a sign-in directory of
 // the controller's own (`<state_dir>/controller-signins`, its AGENT_SECRETS_SIGNIN_DIR) that
 // holds any entry, which is otherwise made, or kept, 0700 and empty before anything runs under
-// the controller's environment (controllerSignIns says why);
+// the controller's environment (controllerSignIns says why), and a path at its key directory
+// (`<state_dir>/controller-keys`, its AGENT_SECRETS_KEY_DIR) that is no directory, which is
+// otherwise made, or kept with what it holds, 0700 (controllerKeys says why);
 // then probe that Oh My Pi as the controller will run it — the launch prefix, the invocation, the
 // controller's whole environment, in
 // `<state_dir>/controller`, created for it, at the operator's terminal — and refuse a
@@ -110,7 +112,7 @@ func runControllerStart(ctx context.Context, args []string, stdout, stderr io.Wr
 // as LEGION_CONTROLLER_START_MESSAGE in its environment for that pi-legion command to send as the
 // first turn — in the foreground with the same environment, and answer
 // its exit code. A refusal before the secret is written removes the directories made for the
-// probe and the sign-in directory, so the state directory is as it was.
+// probe, the sign-in directory and the key directory, so the state directory is as it was.
 func controllerStart(ctx context.Context, configPath, daemonURL string, stderr io.Writer) (int, error) {
 	absolute, err := filepath.EvalSymlinks(configPath)
 	if err == nil {
@@ -135,10 +137,10 @@ func controllerStart(ctx context.Context, configPath, daemonURL string, stderr i
 		return 0, errors.New("stdin is not a terminal: Oh My Pi would run headless print mode, running the controller start command after the daemon's mint had revoked the running controller; run `legion controller start` at a terminal")
 	}
 	// Every check this machine can make on its own comes before the fetch, and none of them writes
-	// under the state directory but the probe's own directory and the controller's sign-in
-	// directory, both removed again on a refusal: the daemon mints a fresh capability on every
-	// request and revokes the incumbent controller's, so a failure found here never cuts the
-	// running controller off for nothing.
+	// under the state directory but the probe's own directory and the controller's sign-in and key
+	// directories, each removed again on a refusal where the start made it: the daemon mints a
+	// fresh capability on every request and revokes the incumbent controller's, so a failure found
+	// here never cuts the running controller off for nothing.
 	if cfg.EnvoyTokenFile != "" {
 		if _, err := config.ReadSecretPointer("envoy_token_file", cfg.EnvoyTokenFile); err != nil {
 			return 0, err
@@ -210,9 +212,11 @@ func controllerStart(ctx context.Context, configPath, daemonURL string, stderr i
 	// turns Dispatch off saying so when it can trade none (dispatch-config.ts, dispatchTarget).
 	// That route trades a person's sign-in where the machine holds one, so the set also carries
 	// AGENT_SECRETS_SIGNIN_DIR under every configuration, naming the empty directory of the
-	// controller's own that controllerSignIns keeps and says why. The one difference between
-	// the probed and the launched environment is GH_CONFIG_DIR, which names the default owner's
-	// directory only once the credential fetch after the mint has named that owner.
+	// controller's own that controllerSignIns keeps and says why, and AGENT_SECRETS_KEY_DIR,
+	// naming the key directory of its own that controllerKeys keeps and says why. The one
+	// difference between the probed and the launched environment is GH_CONFIG_DIR, which names
+	// the default owner's directory only once the credential fetch after the mint has named that
+	// owner.
 	env := processEnvironment()
 	delete(env, natsauth.DaemonSeedVariable)
 	delete(env, natsauth.DaemonSeedFileVariable)
@@ -226,16 +230,21 @@ func controllerStart(ctx context.Context, configPath, daemonURL string, stderr i
 	for _, pair := range controllerEnvironment(cfg, stateDir, runtime.SecretFilePath(stateDir, token), gh) {
 		env[pair[0]] = pair[1]
 	}
-	// The sign-in directory first, since its refusal comes before any directory is made, and
-	// before the probe, which runs Oh My Pi under this environment; then the probe's own
-	// directory. A refusal from here to the mint removes what either made (removeDirs), deepest
-	// first.
+	// The sign-in directory first, since its refusal comes before any directory is made, then the
+	// key directory, both before the probe, which runs Oh My Pi under this environment; then the
+	// probe's own directory. A refusal from here to the mint removes what any of them made
+	// (removeDirs), deepest first.
 	created, err := controllerSignIns(controllerSignInDir(stateDir))
 	if err != nil {
 		return 0, err
 	}
-	made, err := makeDirs(controllerDir)
+	made, err := controllerKeys(controllerKeyDir(stateDir))
 	if err != nil {
+		removeDirs(created)
+		return 0, err
+	}
+	created = append(created, made...)
+	if made, err = makeDirs(controllerDir); err != nil {
 		removeDirs(created)
 		return 0, err
 	}
@@ -349,8 +358,9 @@ func controllerStart(ctx context.Context, configPath, daemonURL string, stderr i
 // trade nothing turns Dispatch off saying so rather than falling back to a person's token.
 // AGENT_SECRETS_SIGNIN_DIR names `<state_dir>/controller-signins` (controllerSignInDir) under
 // every configuration, a sign-in directory of the controller's own that controllerStart keeps
-// empty, for the reason controllerSignIns gives. Later pairs replace any inherited value of the
-// same name.
+// empty, for the reason controllerSignIns gives, and AGENT_SECRETS_KEY_DIR names
+// `<state_dir>/controller-keys` (controllerKeyDir), a key directory of its own, for the reason
+// controllerKeys gives. Later pairs replace any inherited value of the same name.
 func controllerEnvironment(cfg config.ControllerConfig, stateDir, secretFile, gh string) [][2]string {
 	bin := workerbin.LauncherDir(stateDir)
 	env := [][2]string{
@@ -373,6 +383,7 @@ func controllerEnvironment(cfg config.ControllerConfig, stateDir, secretFile, gh
 		{"LEGION_GH_PATH", gh},
 		{"LEGION_CONTROLLER_START_MESSAGE", daemon.ControllerStartMessage},
 		{brokerclient.SignInDirVar, controllerSignInDir(stateDir)},
+		{"AGENT_SECRETS_KEY_DIR", controllerKeyDir(stateDir)},
 	}
 	if cfg.DispatchURL != "" {
 		env = append(env, [2]string{"DISPATCH_URL", cfg.DispatchURL})
@@ -541,6 +552,54 @@ func controllerSignIns(dir string) ([]string, error) {
 	if err := os.Chmod(dir, 0o700); err != nil {
 		removeDirs(created)
 		return nil, fmt.Errorf("make the controller's sign-in directory %s 0700: %w", dir, err)
+	}
+	return created, nil
+}
+
+// controllerKeyDir is the controller's own agent-secrets key directory within stateDir, its
+// AGENT_SECRETS_KEY_DIR (controllerEnvironment), which controllerKeys makes 0700.
+func controllerKeyDir(stateDir string) string {
+	return filepath.Join(stateDir, "controller-keys")
+}
+
+// controllerKeys makes dir, the controller's key directory (controllerKeyDir), 0700, keeping
+// what it holds, and answers the directories it created (makeDirs) for a refusal to remove.
+//
+// Why a directory of its own: the controller's session runs `agent-secrets` for its secret reads
+// (a Slack thread's, skill://legion-controller). With no key.pem in its key directory, no sign-in
+// (controllerSignIns) and no helper running, that command registers a machine session for a
+// machine that proves an identity of its own and writes its key, enrollment and marker into the
+// key directory, AGENT_SECRETS_KEY_DIR else $XDG_RUNTIME_DIR/agent-secrets (packages/envoy's
+// cmd/agent-secrets, keyDir and selectSigner). In the operator's key directory, every later
+// `agent-secrets` call in the operator's own shells would then sign as that session. So the
+// controller's reads sign as the helper's session where a helper runs, as a machine session of
+// the controller's own, kept here, where AGENT_SECRETS_MACHINE_IDENTITY is set and no helper runs,
+// and otherwise fail with `no session identity`. Neither a key.pem in the operator's key
+// directory (an agent box's, or a pod's that ran `agent-secrets enroll --pod`) nor the operator's
+// sign-in signs them, which is intended: either would make the controller sign as a session or a
+// person it is not.
+//
+// What the directory holds is kept: it is that session, from an earlier start, which the command
+// uses first while it is here. A path there that is no directory, a symbolic link included, which
+// could name the operator's key directory, is refused; a directory of another mode is made 0700,
+// the mode the command makes a key directory with. Every refusal here comes before the probe and
+// before the mint, which revokes the running controller (controllerStart).
+func controllerKeys(dir string) ([]string, error) {
+	var created []string
+	info, err := os.Lstat(dir)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		if created, err = makeDirs(dir); err != nil {
+			return nil, err
+		}
+	case err != nil:
+		return nil, fmt.Errorf("the controller's key directory %s could not be read: %w", dir, err)
+	case !info.IsDir():
+		return nil, fmt.Errorf("the controller's key directory %s is not a directory (mode %v): it is the controller's AGENT_SECRETS_KEY_DIR, which this start makes 0700 so that the controller's agent-secrets session is kept apart from the operator's own; remove it and start again", dir, info.Mode())
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		removeDirs(created)
+		return nil, fmt.Errorf("make the controller's key directory %s 0700: %w", dir, err)
 	}
 	return created, nil
 }
