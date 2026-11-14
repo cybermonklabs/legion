@@ -47,21 +47,25 @@ mark "job.sh $mode: source $source_dir at $commit, scale ${EVALBENCH_SCALE:-1}, 
 
 # Postgres, its data on the run's own volume. pg_stat_statements is the instrument (track_utility
 # off, so a transaction's begin and commit are not statements of their own), and the jsonlog file
-# holds each statement the instrument turns the log on for, with its query id and parameters. The
-# durability settings only speed the load; nothing the measurement reads depends on them.
+# holds each statement the instrument turns the log on for, with its query id and parameters. Its
+# timestamps are in UTC (log_timezone), the zone the instrument reads them in: Go reads a zone
+# abbreviation it does not know at offset 0, so a log in another zone would shift each statement
+# away from the read it ran in (capture.go's readStatementLog). The durability settings only speed
+# the load; nothing the measurement reads depends on them. The trap is set before Postgres starts,
+# so every exit from here on stops it.
+stop_postgres() { "$PGBIN/pg_ctl" --pgdata "$work/pg" --wait --mode fast stop >/dev/null 2>&1 || true; }
+trap stop_postgres EXIT
 "$PGBIN/initdb" --pgdata "$work/pg" --username postgres --auth=trust --encoding=UTF8 --no-sync >"$work/initdb.log"
 "$PGBIN/pg_ctl" --pgdata "$work/pg" --log "$work/pg-server.log" --wait --timeout 300 --options "-p $port -k $work/sock \
   -c listen_addresses=127.0.0.1 -c max_connections=200 -c shared_buffers=${EVALBENCH_SHARED_BUFFERS:-1GB} \
   -c shared_preload_libraries=pg_stat_statements -c pg_stat_statements.track=top -c pg_stat_statements.track_utility=off \
   -c compute_query_id=on -c logging_collector=on -c log_destination=jsonlog -c log_directory=$work/pglog \
-  -c log_filename=postgres.log -c log_rotation_age=0 -c log_rotation_size=0 \
+  -c log_filename=postgres.log -c log_rotation_age=0 -c log_rotation_size=0 -c log_timezone=UTC \
   -c fsync=off -c full_page_writes=off -c synchronous_commit=off -c wal_level=minimal -c max_wal_senders=0 \
   -c max_wal_size=4GB -c huge_pages=off -c dynamic_shared_memory_type=mmap -c jit=off" start
 database_url="postgres://postgres@127.0.0.1:$port/evalbench?sslmode=disable"
 psql "postgres://postgres@127.0.0.1:$port/postgres" -Atc 'select version()'
 psql "postgres://postgres@127.0.0.1:$port/postgres" -Atc 'create database evalbench'
-stop_postgres() { "$PGBIN/pg_ctl" --pgdata "$work/pg" --wait --mode fast stop >/dev/null 2>&1 || true; }
-trap stop_postgres EXIT
 
 # The generator and the instrument are this head's in both modes; the server is the mode's.
 cd "$source_dir/packages/envoy"

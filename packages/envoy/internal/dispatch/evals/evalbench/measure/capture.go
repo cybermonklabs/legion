@@ -263,9 +263,12 @@ func (e *explainer) planOf(ctx context.Context, tx pgx.Tx, query string) (string
 // errUtility is explain's answer for a statement it cannot explain.
 var errUtility = fmt.Errorf("a utility statement, which explain does not run")
 
+// executionTimeLine matches a plan's `Execution Time` line, with its milliseconds.
+var executionTimeLine = regexp.MustCompile(`Execution Time: ([0-9.]+) ms`)
+
 // executionTime is a plan's `Execution Time`, in milliseconds.
 func executionTime(plan string) float64 {
-	match := regexp.MustCompile(`Execution Time: ([0-9.]+) ms`).FindStringSubmatch(plan)
+	match := executionTimeLine.FindStringSubmatch(plan)
 	if match == nil {
 		return -1
 	}
@@ -276,6 +279,10 @@ func executionTime(plan string) float64 {
 // scannedRelation matches each scan of a relation in a plan: the scan, the index it uses if any,
 // and the relation's name.
 var scannedRelation = regexp.MustCompile(`((?:Parallel )?(?:Seq Scan|Index Scan|Index Only Scan|Bitmap Heap Scan|Tid Scan|Tid Range Scan|Sample Scan))(?: Backward)?(?: using (\S+))? on (\S+)`)
+
+// namedJobCondition matches a plan whose index condition names the jobs it reads (`name =
+// ANY`): the run-jobs read that names the judged jobs in SQL.
+var namedJobCondition = regexp.MustCompile(`Index Cond: .*\bname = ANY`)
 
 // relations is each relation a plan scans, with the scans of it.
 func relations(plan string) map[string][]string {
@@ -301,10 +308,13 @@ func usesIndex(plan, index string) bool {
 	return strings.Contains(plan, "using "+index+" ") || strings.Contains(plan, "Bitmap Index Scan on "+index)
 }
 
+// measuredNumbers matches a plan node's measured numbers: its cost, its actual time and rows, or
+// its "never executed".
+var measuredNumbers = regexp.MustCompile(`\s*\((?:cost|actual|never)[^)]*\)`)
+
 // planShape is a plan's nodes and conditions with every measured number taken out, which two runs
 // of one plan share: what "the same plan" compares.
 func planShape(plan string) string {
-	measured := regexp.MustCompile(`\s*\((?:cost|actual|never)[^)]*\)`)
 	var shape []string
 	for _, line := range strings.Split(plan, "\n") {
 		trimmed := strings.TrimSpace(line)
@@ -313,7 +323,7 @@ func planShape(plan string) string {
 			keep = keep || strings.HasPrefix(trimmed, condition)
 		}
 		if keep && !strings.HasPrefix(trimmed, "Planning") && !strings.HasPrefix(trimmed, "Execution") {
-			shape = append(shape, measured.ReplaceAllString(line, ""))
+			shape = append(shape, measuredNumbers.ReplaceAllString(line, ""))
 		}
 	}
 	return strings.Join(shape, "\n")

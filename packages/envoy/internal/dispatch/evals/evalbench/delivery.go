@@ -211,15 +211,22 @@ func planPullRequests(spec Spec, history infraHistory) []plannedPR {
 	return prs
 }
 
-// planRuns draws the runs of the last runDays days: deployRuns deploy runs a day on main of the
-// deploy repository and checkRuns PR-checks runs a day of its pull requests, ten times each under
-// TenTimes, in creation order.
-func planRuns(spec Spec, prs []plannedPR) []plannedRun {
-	rng := newRand(spec.Seed, "runs")
+// dailyRuns is how many deploy runs and PR-checks runs planRuns draws a day: deployRuns and
+// checkRuns at the spec's scale, ten times each under TenTimes. The history holds runDays days of
+// them, whose run ids are firstRunID on, in creation order.
+func (s Spec) dailyRuns() (deploys, checks int) {
 	rate := 1
-	if spec.TenTimes {
+	if s.TenTimes {
 		rate = 10
 	}
+	return s.scaled(deployRuns, 1) * rate, s.scaled(checkRuns, 1) * rate
+}
+
+// planRuns draws the runs of the last runDays days (dailyRuns a day): deploy runs on main of the
+// deploy repository and PR-checks runs of its pull requests, in creation order.
+func planRuns(spec Spec, prs []plannedPR) []plannedRun {
+	rng := newRand(spec.Seed, "runs")
+	deploys, checks := spec.dailyRuns()
 	start := spec.Now.Add(-runDays * 24 * time.Hour)
 	var deployPRs []plannedPR
 	for _, pr := range prs {
@@ -231,10 +238,10 @@ func planRuns(spec Spec, prs []plannedPR) []plannedRun {
 	var runs []plannedRun
 	for day := range runDays {
 		from := start.AddDate(0, 0, day)
-		for range spec.scaled(deployRuns, 1) * rate {
+		for range deploys {
 			runs = append(runs, plannedRun{kind: delivery.DeliveryRunKindDeploy, created: from.Add(within(rng, 24*time.Hour)), draw: rng.Uint64()})
 		}
-		for range spec.scaled(checkRuns, 1) * rate {
+		for range checks {
 			created := from.Add(within(rng, 24*time.Hour))
 			// A pull request of the deploy repository merged within three days of the run.
 			low := sort.Search(len(deployPRs), func(i int) bool { return !deployPRs[i].merged.Before(created.Add(-72 * time.Hour)) })

@@ -93,7 +93,7 @@ func main() {
 	flags := flag.NewFlagSet(command, flag.ExitOnError)
 	var o options
 	flags.StringVar(&o.mode, "mode", "head", "head, this head's first paint, or base, the base head's")
-	flags.StringVar(&o.database, "database", os.Getenv("DATABASE_URL"), "the Postgres URL the server reads, as a superuser: the instrument resets pg_stat_statements and sets the statement log")
+	flags.StringVar(&o.database, "database", "", "the Postgres URL the server reads, as a superuser (required): the instrument resets pg_stat_statements and sets the statement log")
 	flags.StringVar(&o.url, "url", "", "the server's base URL")
 	flags.StringVar(&o.token, "token", "", "the server's agent token (DISPATCH_AGENT_TOKEN)")
 	flags.StringVar(&o.serverLog, "server-log", "", "the file the server's stderr is written to, which holds its access log")
@@ -111,7 +111,7 @@ func main() {
 		os.Exit(2)
 	}
 	if o.database == "" || o.url == "" {
-		fmt.Fprintln(os.Stderr, "measure: name the database with -database and the server with -url")
+		fmt.Fprintln(os.Stderr, "usage: measure wait|paint -mode head|base -database <url> -url <server> [flags]: name the database with -database and the server with -url")
 		os.Exit(2)
 	}
 	r := &report{prefix: "RESULT"}

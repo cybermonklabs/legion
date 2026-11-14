@@ -35,14 +35,10 @@ import {
   chartCompare,
   PENDING,
 } from "./Chart";
-import { formatMinutes, pct } from "./lib/format";
+import { formatMinutes, NO_VALUE, pct } from "./lib/format";
 import { TargetBadge } from "./TargetBadge";
 
 const UNOWNED_P0_SHOWN = 6;
-
-/** What a card shows for a measure the server answers no value of: the change failure rate while
- *  no failure source exists, or a run-success share with no concluded run. */
-const NO_VALUE = "n/a";
 
 /** The deploys-a-day card's chart: one bar a day against the target. */
 function deploySeries(response: DeliveryMeasuresResponse): ChartSeries[] {

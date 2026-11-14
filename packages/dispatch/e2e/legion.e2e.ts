@@ -7,7 +7,14 @@
 // rows (`legion-seed.ts`); the settings control is the one place that does call the daemon, through
 // Dispatch's relay, so that spec stands a fake daemon up and reads what reached it.
 import type { EvalListResponse } from "../web/src/api/types";
-import { baseUrl, createProject, userHeaders } from "./api";
+import {
+  baseUrl,
+  createProject,
+  listLegionSettings,
+  listProjectEvals,
+  putLegionSetting,
+  userHeaders,
+} from "./api";
 import { PIPELINE_SECTION_URL, seedPipelineFixture } from "./delivery-seed";
 import {
   LEGION_PROJECT,
@@ -400,23 +407,6 @@ test("every chart on the Delivery page shows its table, its graph again and a co
   }
 });
 
-/** One read of a project's Legion evals over `[from, to)`, or over the route's own default window
- *  where none is given, as `GET /api/v1/projects/{key}/evals?kind=legion` answers it. */
-async function readLegionEvals(
-  project: string,
-  window: { from: string; to: string } | null
-): Promise<EvalListResponse> {
-  const url = new URL(`/api/v1/projects/${encodeURIComponent(project)}/evals`, baseUrl);
-  url.searchParams.set("kind", "legion");
-  if (window !== null) {
-    url.searchParams.set("from", window.from);
-    url.searchParams.set("to", window.to);
-  }
-  const response = await fetch(url, { headers: await userHeaders("alice") });
-  if (!response.ok) throw new Error(`GET ${url.pathname} failed: ${response.status}`);
-  return (await response.json()) as EvalListResponse;
-}
-
 /** How long the Legion evals of a seeded history take to be built: the facts consumer's sweep,
  *  every 30 s whatever wakes it (`legionfacts.SweepEvery`), stores the issues' facts, the day-row
  *  refresher, ten seconds apart at most (`evals.RefresherGap`), folds them into day rows, and a
@@ -425,12 +415,15 @@ async function readLegionEvals(
 const legionEvalsBuilt = 150_000;
 
 /** The window from the first day the project's work-time eval holds data to the midnight after
- *  today, once its count over that window is `finished`: a window that starts before a series'
- *  first day reads no value at all (`evalSeriesOf`, api/evals.go), so the page is opened over the
- *  days the history holds. */
+ *  today, once the evals over it count `want.finished` issues finished and `want.filed` filings: a
+ *  window that starts before a series' first day reads no value at all (`evalSeriesOf`,
+ *  api/evals.go), so the page is opened over the days the history holds. The seeded tree's
+ *  filing is on the day its issues closed (`seedLegionFinishedTree`), so the first day of every
+ *  series the row checks, legion-splitting's `filed:<class>` among them, is the day this window
+ *  opens on: none of them starts after the window, and the filing is not before it. */
 async function legionWindow(
   project: string,
-  finished: number
+  want: { filed: number; finished: number }
 ): Promise<{ from: string; to: string }> {
   const today = new Date();
   const to = new Date(
@@ -444,14 +437,22 @@ async function legionWindow(
           read.items
             ?.find((item) => item.definition.slug === "legion-work-time")
             ?.series?.find((one) => one.series === "hours");
-        const since = hours(await readLegionEvals(project, null))?.data_since;
+        const since = hours(await listProjectEvals(project, { kind: "legion" }))?.data_since;
         if (since === null || since === undefined) return null;
         window = { from: `${since}T00:00:00Z`, to };
-        return hours(await readLegionEvals(project, window))?.window?.n ?? null;
+        const read = await listProjectEvals(project, { kind: "legion", ...window });
+        // Every class's filings in every issue: the series `filed:<class>`, with no cut after it.
+        const filings = read.items
+          ?.find((item) => item.definition.slug === "legion-splitting")
+          ?.series?.filter((one) => /^filed:[a-z_]+$/.test(one.series));
+        return {
+          filed: (filings ?? []).reduce((sum, one) => sum + (one.window?.issues ?? 0), 0),
+          finished: hours(read)?.window?.n ?? null,
+        };
       },
       { intervals: [2_000], timeout: legionEvalsBuilt }
     )
-    .toBe(finished);
+    .toEqual(want);
   return window;
 }
 
@@ -468,7 +469,7 @@ test("the Delivery page's Legion section draws the four metrics @legion", async 
   const daemon = await startFakeLegionDaemon({});
   await seedLegionFixture(daemon.url);
   await seedLegionFinishedTree();
-  const window = await legionWindow(LEGION_PROJECT, 2);
+  const window = await legionWindow(LEGION_PROJECT, { filed: 1, finished: 2 });
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
 
@@ -538,18 +539,13 @@ test("the Delivery page's Legion section draws the four metrics @legion", async 
   }
 });
 
-/** The Legion metrics route dispatch://INFRA-2916 deleted, which the row below refuses a request
- *  of. It is written by its segments so that a search of the repository for a caller of that
- *  path (k14) finds none, this guard against one included. */
-const DELETED_LEGION_METRICS = ["", "api", "v1", "legion", "metrics"].join("/");
-
 // dispatch://INFRA-2916's R14 (k14's browser half): the Legion section reads the eval routes and
 // draws one block for each project with a Legion setting, with no first-project default. Two
 // projects are made through the API, which seeds each one's evals, and each names a daemon; the
-// page's requests are recorded from before it opens. The base head read the deleted metrics
-// route (DELETED_LEGION_METRICS) for the first project alone, which this row refuses three ways:
-// a request naming that route, no request of GET /api/v1/evals, and fewer blocks than projects
-// with a setting.
+// page's requests are recorded from before it opens. Before the eval registry the section read
+// the deleted `GET /api/v1/legion/metrics` for the first project alone, which this row refuses
+// three ways: a request naming that route, no request of GET /api/v1/evals, and fewer blocks than
+// projects with a setting.
 // @pr: The Delivery page's Legion section is the one reader of the cross-project eval read, on a page a person reads.
 test("the Delivery page's Legion section reads the eval routes and draws one block for each project with a Legion setting @legion @pr", async ({
   browser,
@@ -557,17 +553,9 @@ test("the Delivery page's Legion section reads the eval routes and draws one blo
   const daemon = await startFakeLegionDaemon({});
   for (const key of ["ACME", "WIDGET"]) {
     await createProject({ key, name: key });
-    const named = await fetch(new URL(`/api/v1/settings/legion/${key}`, baseUrl), {
-      body: JSON.stringify({ state_url: daemon.url }),
-      headers: { "Content-Type": "application/json", ...(await userHeaders("alice")) },
-      method: "PUT",
-    });
-    expect(named.status).toBe(200);
+    await putLegionSetting(key, { state_url: daemon.url });
   }
-  const listed = await fetch(new URL("/api/v1/settings/legion", baseUrl), {
-    headers: await userHeaders("alice"),
-  });
-  const projects = ((await listed.json()) as { project: string }[]).map((one) => one.project);
+  const projects = (await listLegionSettings()).map((one) => one.project);
   expect([...projects].sort()).toEqual(["ACME", "WIDGET"]);
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
@@ -584,7 +572,9 @@ test("the Delivery page's Legion section reads the eval routes and draws one blo
       await expect(block.locator("[data-legion-metric]")).toHaveCount(4);
     }
 
-    expect(requested.filter((url) => url.pathname.startsWith(DELETED_LEGION_METRICS))).toEqual([]);
+    expect(requested.filter((url) => url.pathname.startsWith("/api/v1/legion/metrics"))).toEqual(
+      []
+    );
     const evals = requested.filter((url) => url.pathname === "/api/v1/evals");
     expect(evals.length).toBeGreaterThan(0);
     // Every read names every project with a setting and the Legion kind: no project is picked.

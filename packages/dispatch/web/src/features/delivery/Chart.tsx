@@ -155,8 +155,9 @@ export interface ChartProps {
   readonly rows?: ChartRows;
 }
 
-/** What a day with nothing measured reads as: never a zero. */
-const NOTHING = "\u2014";
+/** What a day with nothing measured reads as: never a zero. The Legion section's figures read
+ *  the same. */
+export const NOTHING = "\u2014";
 
 /** What a number whose read is still out reads as, as the measures panel's numbers do. */
 export const PENDING = "\u2026";

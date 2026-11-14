@@ -66,8 +66,9 @@ func serverBuild(ctx context.Context, url string) (string, error) {
 	if err := json.NewDecoder(response.Body).Decode(&health); err != nil {
 		return "", fmt.Errorf("read the server's health: %w", err)
 	}
-	if health.Commit == "" || strings.HasPrefix(health.Commit, "devel") {
-		return "", fmt.Errorf("the server answers commit %q: a binary with no stamped commit draws a new build at each start, so its restart would rebuild every family; build it with -ldflags \"-X main.buildCommit=<commit>\"", health.Commit)
+	// /healthz answers the stamped commit, and an empty one where the binary carries none.
+	if health.Commit == "" {
+		return "", fmt.Errorf("the server answers no commit: a binary with no stamped commit draws a new build at each start, so its restart would rebuild every family; build it with -ldflags \"-X main.buildCommit=<commit>\"")
 	}
 	return health.Commit, nil
 }

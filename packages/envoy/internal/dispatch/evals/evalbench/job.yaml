@@ -4,8 +4,11 @@
 # instrument and envoy-dispatch, loads the fixture at INFRA's stated rate and measures the first
 # paint. MODE is head (this commit's first paint, k2, k13, k16) or base (the base head 02a7b3c6's
 # first paint, k8's and k13's negative controls). The log is the evidence: judge it by its RESULT
-# and FAIL lines, never by the Job's phase. Fill the six ${…} variables (and only those, so the
-# script's own $HOME and $COMMIT are left for the shell), then:
+# and FAIL lines and its closing VERDICT line, never by the Job's phase. The container exits 0
+# once it has printed that verdict, FAIL lines or not, so a failed check never runs the hour-long
+# measurement again; only a pod that ends before its verdict (a lost machine, an eviction, a failed
+# clone) is retried. Fill the six ${…} variables (and only those, so the script's own $HOME and
+# $COMMIT are left for the shell), then:
 #   export COMMIT=<pushed sha> MODE=head SCALE=1 TEN_TIMES=0 OMP_SESSION=<id> OMP_SESSION_TITLE=<title>
 #   python3 -c 'import os, re, sys; sys.stdout.write(re.sub(r"\$\{(COMMIT|MODE|SCALE|TEN_TIMES|OMP_SESSION|OMP_SESSION_TITLE)\}", lambda m: os.environ[m[1]], sys.stdin.read()))' \
 #     < job.yaml > "$TMPDIR/job.yaml"
@@ -25,11 +28,13 @@ metadata:
     theorem.dev/branch: "legion/INFRA-2916"
     theorem.dev/head: "${COMMIT}"
 spec:
-  # A lost machine runs the measurement again from the start: it keeps nothing between pods.
+  # A pod that ends before its verdict runs the measurement again from the start: it keeps nothing
+  # between pods. The Job's deadline counts across every pod and ends the Job whatever
+  # backoffLimit allows, so it is the pod's own once per attempt: (backoffLimit + 1) x 7200 s.
   backoffLimit: 2
   podReplacementPolicy: Failed
   ttlSecondsAfterFinished: 86400
-  activeDeadlineSeconds: 7200
+  activeDeadlineSeconds: 21600
   template:
     metadata:
       labels:
@@ -84,7 +89,12 @@ spec:
             bash packages/envoy/internal/dispatch/evals/evalbench/job.sh "$MODE" 2>&1 | tee /scratch/out.txt || rc=${PIPESTATUS[0]}
           echo "MARK failures:"; grep '^FAIL' /scratch/out.txt || echo "MARK none"
           echo "MARK end $(date -u +%FT%TZ) rc=$rc"
-          exit "$rc"
+          # The verdict: a pass is job.sh exiting 0 with no FAIL line. The run is over once it is
+          # printed, so the container exits 0 and the Job retries no failed check.
+          failures=$(grep -c '^FAIL' /scratch/out.txt || true)
+          if [ "$rc" -eq 0 ] && [ "$failures" -eq 0 ]; then verdict=pass; else verdict=fail; fi
+          echo "VERDICT $verdict rc=$rc fail_lines=$failures"
+          exit 0
         resources:
           requests: {cpu: "8", memory: 24Gi, ephemeral-storage: 48Gi}
           limits: {cpu: "12", memory: 24Gi, ephemeral-storage: 48Gi}

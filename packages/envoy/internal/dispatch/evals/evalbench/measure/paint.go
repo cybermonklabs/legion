@@ -442,6 +442,9 @@ func judgePaint(r *report, o options, measured []measuredCase) {
 	}
 }
 
+// actorWord matches a statement that names an event's actor.
+var actorWord = regexp.MustCompile(`(?i)\bactor\b`)
+
 // eventsRead is how a statement reads events: whether it reads the table at all, and whether it
 // reads it only by the event id, through events_pkey, and names no actor. A read by id is the live
 // hub's own bookkeeping of where the event log stands; any other read of events, or one of an
@@ -456,7 +459,7 @@ func eventsRead(text, plan string) (reads, byID bool) {
 			return true, false
 		}
 	}
-	return true, !regexp.MustCompile(`(?i)\bactor\b`).MatchString(text)
+	return true, !actorWord.MatchString(text)
 }
 
 // checkFirstPaintReads is k13's first clause: no statement of this head's first paint resolves a
@@ -488,9 +491,15 @@ func checkFirstPaintReads(r *report, measured []measuredCase) {
 	}
 }
 
+// titleRead matches a statement that reads an event's actor out of events: a session title
+// resolved out of the event log.
+var titleRead = regexp.MustCompile(`(?is)\bactor\b.*\bfrom events\b`)
+
 // baseControls is k8's negative control and k13's at the base head: the base's first paint's
 // database time against this head's budget, its statements that read events other than by id
-// (where the base resolves session titles), and its run-jobs reads that name no job.
+// (where the base resolves session titles), and its run-jobs reads that name no job. A control
+// that examined nothing shows nothing of the base, so each fails then: k8's with no read
+// measured, k13's with no statement examined or none of them a read of delivery_run_jobs.
 //
 // The base's Legion facts consumer resolves session titles with the same statement its timeline
 // does, so that statement is in the background catalogue and out of each read's own time. The
@@ -498,19 +507,20 @@ func checkFirstPaintReads(r *report, measured []measuredCase) {
 // reads an event's actor out of events, and states the paint's time with everything in flight
 // beside its own.
 func baseControls(r *report, measured []measuredCase) {
-	total, inFlight, readsEvents, catalogued, unnamed, jobReads := 0.0, 0.0, 0, 0, 0, 0
-	titleRead := regexp.MustCompile(`(?is)\bactor\b.*\bfrom events\b`)
+	total, inFlight := 0.0, 0.0
+	examined, readsEvents, catalogued, unnamed, jobReads := 0, 0, 0, 0, 0
 	for _, one := range measured {
 		total += dbMs(one.own)
 		inFlight += dbMs(one.all)
 		for queryID, plan := range one.plans {
+			examined++
 			if reads, byID := eventsRead(one.statements[queryID], plan); reads && !byID {
 				readsEvents++
 				r.result("k13-control case=%s queryid=%d reads events other than by its id: %s", one.name, queryID, oneLine(one.statements[queryID]))
 			}
 			if _, reads := relations(plan)["delivery_run_jobs"]; reads {
 				jobReads++
-				if !regexp.MustCompile(`Index Cond: .*\bname = ANY`).MatchString(plan) {
+				if !namedJobCondition.MatchString(plan) {
 					unnamed++
 					r.result("k13-control case=%s queryid=%d reads delivery_run_jobs with no job name in its index condition: %s", one.name, queryID, oneLine(one.statements[queryID]))
 				}
@@ -523,6 +533,15 @@ func baseControls(r *report, measured []measuredCase) {
 			}
 		}
 	}
-	r.result("k8-control base_first_paint_db_ms=%.2f db_ms_everything_in_flight=%.2f this_heads_budget_ms=%d exceeds=%t", total, inFlight, budget84Ms, total > budget84Ms)
-	r.result("k13-control statements_reading_events_other_than_by_id=%d catalogued_title_reads=%d run_jobs_reads=%d run_jobs_reads_without_a_name=%d", readsEvents, catalogued, jobReads, unnamed)
+	r.result("k8-control base_first_paint_db_ms=%.2f db_ms_everything_in_flight=%.2f this_heads_budget_ms=%d exceeds=%t reads_measured=%d", total, inFlight, budget84Ms, total > budget84Ms, len(measured))
+	r.result("k13-control statements_examined=%d statements_reading_events_other_than_by_id=%d catalogued_title_reads=%d run_jobs_reads=%d run_jobs_reads_without_a_name=%d", examined, readsEvents, catalogued, jobReads, unnamed)
+	if len(measured) == 0 {
+		r.fail("k8-control: no read of the base's first paint was measured")
+	}
+	switch {
+	case examined == 0:
+		r.fail("k13-control: no statement of the base's first paint was examined")
+	case jobReads == 0:
+		r.fail("k13-control: no statement of the base's first paint reads delivery_run_jobs, so the run-jobs control examined nothing")
+	}
 }

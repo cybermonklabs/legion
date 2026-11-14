@@ -110,6 +110,9 @@ func writeReadings(ctx context.Context, database *store.Store, spec Spec, histor
 	batches := len(loggedEvals) * readingDays
 	start := spec.Now.Add(-readingDays * 24 * time.Hour)
 	start = time.Date(start.Year(), start.Month(), start.Day(), 0, 0, 0, 0, time.UTC)
+	// The runs the history holds at this scale and rate, whose ids a deploy or job reading names.
+	deploys, checks := spec.dailyRuns()
+	runs := int64(runDays * (deploys + checks))
 	previous := make([][]evals.Reading, len(loggedEvals))
 	written := 0
 	for day := range readingDays {
@@ -136,7 +139,7 @@ func writeReadings(ctx context.Context, database *store.Store, spec Spec, histor
 				}
 			}
 			for index := len(rows); index < count; index++ {
-				row, err := json.Marshal(drawReading(rng, eval, history, from, index, count))
+				row, err := json.Marshal(drawReading(rng, eval, history, runs, from, index, count))
 				if err != nil {
 					return fmt.Errorf("encode a reading of %s: %w", eval.slug, err)
 				}
@@ -186,10 +189,10 @@ func register(ctx context.Context, registry *evals.Store, eval loggedEval) error
 }
 
 // drawReading is reading index of count of one eval's batch on the day from: its row kind turns
-// with the index, its row key names a row of that kind (an INFRA issue, a pull request, a deploy
-// run, a job or the day), its time falls in the day in index order, and one in a hundred has no
-// value and says why.
-func drawReading(rng *rand.Rand, eval loggedEval, history infraHistory, from time.Time, index, count int) readingBody {
+// with the index, its row key names a row of that kind (an INFRA issue, a pull request, one of the
+// history's runs, whose ids are firstRunID up to firstRunID+runs, a job of one of them, or the
+// day), its time falls in the day in index order, and one in a hundred has no value and says why.
+func drawReading(rng *rand.Rand, eval loggedEval, history infraHistory, runs int64, from time.Time, index, count int) readingBody {
 	kind := RowKinds[(index+from.YearDay())%len(RowKinds)]
 	body := readingBody{Series: "value", RowKind: kind, Unit: eval.unit, Source: "evalbench",
 		MeasuredAt: from.Add(time.Duration((float64(index) + rng.Float64()) / float64(count) * float64(24*time.Hour)))}
@@ -210,10 +213,10 @@ func drawReading(rng *rand.Rand, eval loggedEval, history infraHistory, from tim
 		body.RowKey = repo + "#" + strconv.Itoa(1+rng.IntN(4000))
 		body.Attributes = map[string]any{"repo": repo}
 	case "deploy":
-		body.RowKey = strconv.FormatInt(firstRunID+rng.Int64N(16000), 10)
+		body.RowKey = strconv.FormatInt(firstRunID+rng.Int64N(runs), 10)
 		body.Attributes = map[string]any{"repo": Repos[0]}
 	default:
-		body.RowKey = strconv.FormatInt(firstRunID+rng.Int64N(16000), 10) + "/" + checkStages[rng.IntN(len(checkStages))].name
+		body.RowKey = strconv.FormatInt(firstRunID+rng.Int64N(runs), 10) + "/" + checkStages[rng.IntN(len(checkStages))].name
 		body.Attributes = map[string]any{"repo": Repos[0]}
 	}
 	if rng.Float64() < 0.01 {

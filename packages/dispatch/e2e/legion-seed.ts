@@ -114,19 +114,28 @@ export async function seedLegionFixture(stateUrl: string): Promise<void> {
   );
 }
 
-/** What the four metrics on the Delivery page count: one Legion tree that finished in the last
- *  two days, written as a fortnight of reading and of Dispatch's own event log would have left
- *  it. The facts consumer stores its issues' facts and the day-row refresher folds them into the
- *  project's Legion evals (`packages/envoy/internal/dispatch/legion/metrics`, `evals`), which is
- *  what the section reads.
+/** What the four metrics on the Delivery page count: one Legion tree whose two issues closed
+ *  yesterday (UTC), written as a fortnight of reading and of Dispatch's own event log would have
+ *  left it. The facts consumer stores its issues' facts and the day-row refresher folds them into
+ *  the project's Legion evals (`packages/envoy/internal/dispatch/legion/metrics`, `evals`), which
+ *  is what the section reads.
  *
  *  The root ACME-6 was designed by an architect and closed; its child ACME-7, which that
  *  architect filed while designing it, was implemented, reviewed, sent back, implemented again
  *  and closed by the merger. So every card has numbers: a work time for each of the two, hours
  *  on the architect, implementer, reviewer and merger bars, a review round and a send-back, and
  *  a filing in the tree at design. The two are in no column of the board — their phase is
- *  `done` — so the board's own specs read the same fixture as before. */
+ *  `done` — so the board's own specs read the same fixture as before.
+ *
+ *  Every time is an hour of yesterday's UTC day (`at`), the root's design reaching back into the
+ *  day before: the child is filed, worked and closed on that day and the root closes on it too.
+ *  A Legion series' first day is the first day it holds a row — a filing's day for
+ *  legion-splitting's `filed:<class>`, the close day for the others — and a window that starts
+ *  before that day reads no value of the series, so one day holding both the filing and the
+ *  closes is what lets one window draw every number the cards check. */
 export async function seedLegionFinishedTree(): Promise<void> {
+  const at = (hours: number) =>
+    `date_trunc('day', now(), 'UTC') - interval '1 day' + interval '${hours} hours'`;
   const session = (role: string, issue: string) =>
     `'{"kind":"session","id":"s-${role}","origin":{"session_title":"Legion ${role} · ${issue}"}}'`;
   const root = "ACME-6";
@@ -137,63 +146,49 @@ export async function seedLegionFinishedTree(): Promise<void> {
     type: string,
     actor: string,
     payload: string,
-    ago: string
+    hours: number
   ) =>
     `INSERT INTO events (issue_key, seq, type, actor, payload, notify, created_at)
-       VALUES ('${issue}', ${seq}, '${type}', ${actor}::jsonb, '${payload}'::jsonb, false, now() - interval '${ago}')`;
-  const observed = (issue: string, field: string, value: string, ago: string) =>
+       VALUES ('${issue}', ${seq}, '${type}', ${actor}::jsonb, '${payload}'::jsonb, false, ${at(hours)})`;
+  const observed = (issue: string, field: string, value: string, hours: number) =>
     `INSERT INTO legion_observations (project, issue_key, field, value, observed_at)
-       VALUES ('${LEGION_PROJECT}', '${issue}', '${field}', '${value}'::jsonb, now() - interval '${ago}')`;
+       VALUES ('${LEGION_PROJECT}', '${issue}', '${field}', '${value}'::jsonb, ${at(hours)})`;
   await sql(
     `INSERT INTO issues (key, project_key, number, title, status, priority, created_by, rank, created_at, closed_at) VALUES
-       ('${root}', '${LEGION_PROJECT}', 6, 'The finished root', 'done', 1, ${SEED_ACTOR}, 'Z', now() - interval '60 hours', now() - interval '20 hours'),
-       ('${child}', '${LEGION_PROJECT}', 7, 'The finished child', 'done', 2, ${SEED_ACTOR}, 'Za', now() - interval '50 hours', now() - interval '24 hours')`,
+       ('${root}', '${LEGION_PROJECT}', 6, 'The finished root', 'done', 1, ${SEED_ACTOR}, 'Z', ${at(-12)}, ${at(20)}),
+       ('${child}', '${LEGION_PROJECT}', 7, 'The finished child', 'done', 2, ${SEED_ACTOR}, 'Za', ${at(1)}, ${at(18)})`,
     `UPDATE issues SET parent_key = '${root}' WHERE key = '${child}'`,
     // The root's design, the child it filed while designing, and the root's own close.
-    event(root, 1, "comment.created", session("architect", root), "{}", "58 hours"),
+    event(root, 1, "comment.created", session("architect", root), "{}", -10),
     event(
       child,
       1,
       "issue.created",
       session("architect", root),
       `{"status":"triage","parent":"${root}"}`,
-      "50 hours"
+      1
     ),
-    event(root, 2, "issue.closed", session("architect", root), '{"status":"done"}', "20 hours"),
+    event(root, 2, "issue.closed", session("architect", root), '{"status":"done"}', 20),
     // The child's own workers, and the round it was sent back in.
-    event(child, 2, "comment.created", session("implementer", child), "{}", "48 hours"),
-    event(
-      child,
-      3,
-      "issue.updated",
-      session("reviewer", child),
-      '{"status":"needs_review"}',
-      "40 hours"
-    ),
-    event(
-      child,
-      4,
-      "issue.updated",
-      session("implementer", child),
-      '{"status":"in_progress"}',
-      "36 hours"
-    ),
-    event(child, 5, "issue.closed", session("merger", child), '{"status":"done"}', "24 hours"),
+    event(child, 2, "comment.created", session("implementer", child), "{}", 3),
+    event(child, 3, "issue.updated", session("reviewer", child), '{"status":"needs_review"}', 9),
+    event(child, 4, "issue.updated", session("implementer", child), '{"status":"in_progress"}', 12),
+    event(child, 5, "issue.closed", session("merger", child), '{"status":"done"}', 18),
     `INSERT INTO handoffs (issue_key, phase, version, body, author, created_at)
-       VALUES ('${child}', 'implement', 1, 'done', ${session("implementer", child)}::jsonb, now() - interval '42 hours'),
-              ('${child}', 'review', 1, 'accepted', ${session("reviewer", child)}::jsonb, now() - interval '30 hours')`,
+       VALUES ('${child}', 'implement', 1, 'done', ${session("implementer", child)}::jsonb, ${at(7)}),
+              ('${child}', 'review', 1, 'accepted', ${session("reviewer", child)}::jsonb, ${at(16)})`,
     // What the sampler recorded of the two while they ran.
-    observed(root, "phase", '"admitted"', "59 hours"),
-    observed(root, "slot", "2", "59 hours"),
-    observed(root, "phase", '"planning"', "52 hours"),
-    observed(root, "phase", '"done"', "20 hours"),
-    observed(child, "phase", '"implementing"', "48 hours"),
-    observed(child, "claim.implementer", '"working"', "48 hours"),
-    observed(child, "phase", '"reviewing"', "40 hours"),
-    observed(child, "claim.implementer", '"idle"', "40 hours"),
-    observed(child, "phase", '"implementing"', "36 hours"),
-    observed(child, "phase", '"merging"', "30 hours"),
-    observed(child, "phase", '"done"', "24 hours")
+    observed(root, "phase", '"admitted"', -11),
+    observed(root, "slot", "2", -11),
+    observed(root, "phase", '"planning"', -4),
+    observed(root, "phase", '"done"', 20),
+    observed(child, "phase", '"implementing"', 3),
+    observed(child, "claim.implementer", '"working"', 3),
+    observed(child, "phase", '"reviewing"', 9),
+    observed(child, "claim.implementer", '"idle"', 9),
+    observed(child, "phase", '"implementing"', 12),
+    observed(child, "phase", '"merging"', 16),
+    observed(child, "phase", '"done"', 18)
   );
 }
 

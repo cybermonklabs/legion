@@ -2,7 +2,7 @@
 // the server has migrated and nothing has written, and prints the rows it then holds, one table a
 // line:
 //
-//	go run ./internal/dispatch/evals/evalbench/cmd -database "$DATABASE_URL" \
+//	go run ./internal/dispatch/evals/evalbench/cmd -database <url> \
 //	  -built-by "$COMMIT" -seed 2916 -now 2026-11-13T00:00:00Z
 //
 // -base writes the base head's tables alone (no reading) into a database the base head
@@ -26,7 +26,7 @@ import (
 func main() {
 	var spec evalbench.Spec
 	var database, now string
-	flag.StringVar(&database, "database", os.Getenv("DATABASE_URL"), "the Postgres URL to write into, or $DATABASE_URL; the server must have migrated it")
+	flag.StringVar(&database, "database", "", "the Postgres URL to write into (required); the server must have migrated it")
 	flag.Uint64Var(&spec.Seed, "seed", 2916, "the seed of every random draw")
 	flag.Float64Var(&spec.Scale, "scale", 1, "the share of INFRA's stated rate to write, above 0 and at most 1")
 	flag.BoolVar(&spec.TenTimes, "ten-times", false, "write ten times the stated run rate")
@@ -43,7 +43,8 @@ func main() {
 		spec.Now = at.UTC()
 	}
 	if database == "" {
-		fail(fmt.Errorf("name the database to write with -database or $DATABASE_URL"))
+		fmt.Fprintln(os.Stderr, "usage: evalbench -database <url> [-built-by <commit>] [-seed <n>] [-scale <share>] [-ten-times] [-base] [-now <RFC 3339>]")
+		os.Exit(2)
 	}
 	ctx := context.Background()
 	opened, err := store.Open(ctx, database)

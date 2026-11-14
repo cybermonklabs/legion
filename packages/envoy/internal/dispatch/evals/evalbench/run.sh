@@ -121,11 +121,17 @@ measure() {
 
 start_server "$work/server-catchup.log"
 measure wait -timeout "${EVALBENCH_CATCHUP:-1h}"
+# status is 0 until the wait, so here it is the wait's own; stop_server sets it on a bad stop.
+waited=$status
 stop_server
-[ "$status" -eq 0 ] || {
+if [ "$waited" -ne 0 ]; then
   echo "FAIL run.sh: the consumers did not catch up, so no first paint is measured"
   exit 1
-}
+fi
+if [ "$status" -ne 0 ]; then
+  echo "FAIL run.sh: the server did not stop cleanly after the catch-up, so no first paint is measured"
+  exit 1
+fi
 
 start_server "$work/server-paint.log"
 measure paint -token "$token" -server-log "$work/server-paint.log" -pg-log "$EVALBENCH_PG_LOG" \
@@ -139,7 +145,14 @@ if [ "$mode" = head ]; then
     dispatch_src="$EVALBENCH_SOURCE/packages/envoy/internal/dispatch"
     read_path=("$dispatch_src/api/evals.go" "$dispatch_src/evals/reads.go" "$dispatch_src/evals/store.go"
       "$dispatch_src/evals/statistics.go" "$dispatch_src/evals/refresher.go")
-    hits=$(grep -n -i -E '\b(from|join)[[:space:]]+events\b' "${read_path[@]}" || true)
+    # grep exits 1 when no line matches and above 1 when it could not read a file, which would
+    # leave a file of the read path unread.
+    searched=0
+    hits=$(grep -n -i -E '\b(from|join)[[:space:]]+events\b' "${read_path[@]}") || searched=$?
+    if [ "$searched" -gt 1 ]; then
+      echo "FAIL k13 grep exited $searched, so a file of the read path was not read: ${read_path[*]}"
+      status=1
+    fi
     echo "RESULT k13 read_path_files=${#read_path[@]} lines_reading_events=$(printf '%s' "$hits" | grep -c . || true)"
     if [ -n "$hits" ]; then
       echo "FAIL k13 the read path names events:"
@@ -151,18 +164,22 @@ if [ "$mode" = head ]; then
     status=1
   fi
   # k16: the list route's query keys, from the route table's own OpenAPI document.
-  keys=$("$server_bin" openapi | python3 -c '
+  if keys=$("$server_bin" openapi | python3 -c '
 import json, sys
 operation = json.load(sys.stdin)["paths"]["/api/v1/projects/{key}/evals"]["get"]
-print(" ".join(sorted(p["name"] for p in operation.get("parameters", []) if p.get("in") == "query")))')
-  echo "RESULT k16 list_route_query_keys=[$keys]"
-  case " $keys " in
-    *" repo "*) ;;
-    *)
-      echo "FAIL k16 the list route takes no repo"
-      status=1
-      ;;
-  esac
+print(" ".join(sorted(p["name"] for p in operation.get("parameters", []) if p.get("in") == "query")))'); then
+    echo "RESULT k16 list_route_query_keys=[$keys]"
+    case " $keys " in
+      *" repo "*) ;;
+      *)
+        echo "FAIL k16 the list route takes no repo"
+        status=1
+        ;;
+    esac
+  else
+    echo "FAIL k16 the list route's query keys could not be read from $server_bin openapi"
+    status=1
+  fi
 fi
 
 if [ -n "${EVALBENCH_PG_RESTART:-}" ]; then

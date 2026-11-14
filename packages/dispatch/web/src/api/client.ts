@@ -1653,30 +1653,12 @@ export class DispatchApiClient {
     }
   }
 
-  /** One page of a project's evals, each with its current definition, each listed series'
-   *  statistics over `[from, to)` and over the compare range (`compare_from`, `compare_to`, both
-   *  or neither), the verdict of its target and the per-day array of each headline series: every
-   *  figure folded from the project's stored day rows, `null` where a range has no data. `kind`
-   *  keeps one kind, and `repo`, repeated, folds those repositories' rows. */
-  listProjectEvals(project: string, query: Query<"/api/v1/projects/{key}/evals", "get">) {
-    return this.read("/api/v1/projects/{key}/evals", { key: project }, query);
-  }
-
-  /** The evals of the projects `project` names, repeated, in the project read's shape, and of
-   *  every project where it names none: no project is picked for the caller. */
+  /** The evals of the projects `project` names, repeated, each with its current definition, each
+   *  listed series' statistics over `[from, to)` and over the compare range, and the verdict of its
+   *  target (the shape of `GET /api/v1/projects/{key}/evals`), and of every project where it names
+   *  none: no project is picked for the caller. */
   listEvals(query: Query<"/api/v1/evals", "get">) {
     return this.read("/api/v1/evals", {}, query);
-  }
-
-  /** One eval's versions, newest first, the newest with the window's values, and `doc_text`, the
-   *  method its section of the project's `evals-md` holds. An unknown slug is
-   *  `404 EVAL_NOT_FOUND`. */
-  getProjectEval(
-    project: string,
-    slug: string,
-    query: Query<"/api/v1/projects/{key}/evals/{slug}", "get">
-  ) {
-    return this.read("/api/v1/projects/{key}/evals/{slug}", { key: project, slug }, query);
   }
 
   /** The rows behind an eval's numbers, every row `{row_key, row_kind, cols, measured_at, source,
@@ -1688,34 +1670,6 @@ export class DispatchApiClient {
     query: Query<"/api/v1/projects/{key}/evals/{slug}/items", "get">
   ) {
     return this.read("/api/v1/projects/{key}/evals/{slug}/items", { key: project, slug }, query);
-  }
-
-  /** Logs one batch of readings of one eval, stored together or not at all under `bounds.key`,
-   *  which the write requires; a slug no eval holds registers its eval with the caller as owner.
-   *  A refused batch is `400` naming each refused row in `rows`. */
-  logEvalReadings(
-    project: string,
-    slug: string,
-    input: Body<"/api/v1/projects/{key}/evals/{slug}/readings", "post">,
-    bounds: WriteBounds
-  ) {
-    return this.post(
-      "/api/v1/projects/{key}/evals/{slug}/readings",
-      { key: project, slug },
-      input,
-      bounds
-    );
-  }
-
-  /** Registers an eval or writes the next version of its definition, every field the input leaves
-   *  out copied forward (`target: null` turns the target off); `doc_text` replaces its method in
-   *  the project's `evals-md`. */
-  registerEval(
-    project: string,
-    input: Body<"/api/v1/projects/{key}/evals", "post">,
-    bounds: WriteBounds
-  ) {
-    return this.post("/api/v1/projects/{key}/evals", { key: project }, input, bounds);
   }
 
   /** Creates a Delivery session group: its sessions' pull requests take it as their Parent agent.

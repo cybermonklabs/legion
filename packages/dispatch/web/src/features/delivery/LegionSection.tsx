@@ -3,16 +3,18 @@
 // to merge — the four metrics of the issues that finished in the page's window, one block for
 // each project with a Legion setting.
 //
-// Every number comes from the eval routes and nothing is computed here: the server holds the rules
-// (the work time less parked and queued hours, the seven bars and their five segments in their one
-// precedence, the review rounds and send-backs, the four classes of filing) and folds a window's
-// stored day rows through them, and this draws what it answers. The projects are the ones
-// `GET /api/v1/settings/legion` names, every one of them, and their Legion evals are one read
-// across them (`GET /api/v1/evals?project=…&kind=legion`); a card's list of issues is its eval's
-// items (`GET /api/v1/projects/{key}/evals/{slug}/items`). Each measure is three series, every
-// issue, the roots of their trees and the rest (`<series>`, `<series>:roots`,
-// `<series>:children`), and a card draws the cuts it needs beside one another: no toggle picks
-// one.
+// Every number comes from the eval routes: the server holds the rules (the work time less parked
+// and queued hours, the seven bars and their five segments in their one precedence, the review
+// rounds and send-backs, the four classes of filing) and folds a window's stored day rows through
+// them. The section adds up only what the routes answer apart: the four classes' filings into the
+// issues filed, and legion-splitting's per-day counts into the UTC weeks the card draws
+// (`weekOf`). The projects are the ones `GET /api/v1/settings/legion` names, every one of them,
+// and their Legion evals are one read across them (`GET /api/v1/evals?project=…&kind=legion`).
+// The work-time and the rework cards list the issues that finished in the range, one read of
+// legion-work-time's items (`GET /api/v1/projects/{key}/evals/{slug}/items`), which are
+// legion-rework's issues too. Each measure is three series, every issue, the roots of their trees
+// and the rest (`<series>`, `<series>:roots`, `<series>:children`), and a card draws the cuts it
+// needs beside one another: no toggle picks one.
 //
 // Each metric goes through `Chart` (`Chart.tsx`), so each has the graph-or-table toggle and the
 // compare range every chart of a measure over a range has; the comparison is the page's own, read
@@ -22,7 +24,7 @@
 // one window control and one compare range. The routes take two instants rather than the page's
 // preset, so a preset is resolved to a range once per choice (`metricsRange`).
 import { useQuery } from "@tanstack/react-query";
-import { type ReactNode, useMemo } from "react";
+import { memo, type ReactNode, useMemo } from "react";
 
 import { legionEvalItemsQuery, legionEvalsQuery, legionSettingsQuery } from "../../api/queries";
 import type {
@@ -43,21 +45,16 @@ import {
 import {
   Chart,
   type ChartCompare,
-  type ChartCompareSource,
   type ChartRange,
   type ChartSeries,
-  chartCompare,
   type DeliverySectionProps,
+  NOTHING,
   PENDING,
 } from "./Chart";
 import { formatDuration, pct } from "./lib/format";
 import { DAY_MS, liveWindow, type WindowChoice } from "./lib/window";
 
 const CARD = `flex min-w-0 flex-col gap-1.5 rounded border px-3 py-2 ${surfaceBg} ${borderDefault}`;
-
-/** What a figure with no value reads as — a window before the series' first day, or no issue to
- *  count: never a zero. */
-const NONE = "\u2014";
 
 /** The four Legion evals the cards draw, by slug (`packages/envoy/internal/dispatch/evals/
  *  legion_days.go`). */
@@ -112,9 +109,10 @@ const hours = (value: number): string => formatDuration(value * 60);
 
 const asCount = (value: number): string => `${value}`;
 
-/** A figure's text: the value as `format` writes it, or `NONE` where the answer holds none. */
+/** A figure's text: the value as `format` writes it, or `NOTHING` where the answer holds none — a
+ *  window before the series' first day, or no issue to count: never a zero. */
 const shown = (value: number | null, format: (value: number) => string): string =>
-  value === null ? NONE : format(value);
+  value === null ? NOTHING : format(value);
 
 /** The top of a run of bars: the largest value it draws, and 1 for a run of nothing, since a
  *  scale whose top is zero draws no bar at all. */
@@ -125,7 +123,7 @@ const topOf = (values: readonly (number | null)[]): number =>
  *  and a preset as its own days ending at `nowMs`. The routes take two instants, so a preset is
  *  resolved once per choice rather than on every render, which would read the routes again every
  *  time anything else on the page moved. */
-export function metricsRange(choice: WindowChoice, nowMs: number): ChartRange {
+function metricsRange(choice: WindowChoice, nowMs: number): ChartRange {
   const live = liveWindow(choice);
   if (!("preset" in live)) return { kind: "custom", from: live.from, to: live.to };
   return {
@@ -137,6 +135,9 @@ export function metricsRange(choice: WindowChoice, nowMs: number): ChartRange {
 
 /** One project's Legion evals of one answer, by slug. */
 type ProjectEvals = ReadonlyMap<string, EvalListItem>;
+
+/** The evals of a project the compare range's read holds none of. */
+const NO_EVALS: ProjectEvals = new Map();
 
 /** Each project's Legion evals in an answer of the cross-project read, by project key. */
 function evalsByProject(answer: EvalListResponse | undefined): ReadonlyMap<string, ProjectEvals> {
@@ -253,7 +254,7 @@ function issueRun(
 /** Metric 1's chart: each finished issue's work time, and the hours taken out of it — the time it
  *  sat parked and the time it sat back in the queue. One row per issue of legion-work-time's
  *  items. */
-export function workTimeSeries(rows: readonly EvalItemRow[]): ChartSeries[] {
+function workTimeSeries(rows: readonly EvalItemRow[]): ChartSeries[] {
   const issues = issuesOf(rows);
   const max = topOf(issues.map((issue) => issue.workHours));
   return [
@@ -273,7 +274,7 @@ export function workTimeSeries(rows: readonly EvalItemRow[]): ChartSeries[] {
  *  issues that bar holds hours for, which is what keeps a median of 0 readable as a population
  *  most issues are not in rather than as a false number. It counts the issues the bar holds
  *  hours for anywhere, so it qualifies the five segment rows as much as the median. */
-export function phaseTimeSeries(evals: ProjectEvals | undefined): ChartSeries[] {
+function phaseTimeSeries(evals: ProjectEvals | undefined): ChartSeries[] {
   // One bar per worker type of one statistic; the segments and the cuts' hours share the scale of
   // the bars' whole hours, and the median and the count each take their own.
   const run = (
@@ -309,8 +310,9 @@ export function phaseTimeSeries(evals: ProjectEvals | undefined): ChartSeries[] 
 }
 
 /** Metric 3's chart: each finished issue's review rounds, and the implementing and testing hours
- *  it spent after its first review. One row per issue of legion-rework's items. */
-export function reworkSeries(rows: readonly EvalItemRow[]): ChartSeries[] {
+ *  it spent after its first review. One row per issue of the range's one items read, whose
+ *  finished issues are legion-rework's as well as legion-work-time's. */
+function reworkSeries(rows: readonly EvalItemRow[]): ChartSeries[] {
   const issues = issuesOf(rows);
   const after = topOf(
     issues.flatMap((issue) => [issue.implementingAfterFirstReview, issue.testingAfterFirstReview])
@@ -349,7 +351,7 @@ export function weekOf(day: string): string {
  *  finished that week, and the issues that finished in the roots and the children cuts. One row
  *  per week, named by the Monday it begins on: each legion-splitting series' per-day counts
  *  added up by `weekOf`, a week with no day of a series holding no value of it. */
-export function splittingSeries(evals: ProjectEvals | undefined): ChartSeries[] {
+function splittingSeries(evals: ProjectEvals | undefined): ChartSeries[] {
   const weeks = (series: string) => {
     const counts = new Map<string, number | null>();
     for (const day of seriesOf(evals, SLUG.splitting, series)?.days ?? []) {
@@ -374,8 +376,10 @@ export function splittingSeries(evals: ProjectEvals | undefined): ChartSeries[] 
 
 /** The Delivery page's `#legion` section: one block for each project with a Legion setting, each
  *  the four Legion metrics of that project over the page's window. A deployment where no project
- *  names a Legion daemon says so and reads nothing. */
-export function LegionSection({
+ *  names a Legion daemon says so and reads nothing. Memoised, as the Pipeline section is: the page
+ *  re-renders on every timeline frame, and the section's props move only with the window and the
+ *  compare range. */
+export const LegionSection = memo(function LegionSection({
   compare,
   onCompare,
   window: chosen,
@@ -406,7 +410,14 @@ export function LegionSection({
     enabled: compare !== null && projects.length > 0,
   });
   const byProject = useMemo(() => evalsByProject(query.data), [query.data]);
-  const comparedByProject = useMemo(() => evalsByProject(compared.data), [compared.data]);
+  // A disabled query still answers what the cache holds under its key, and while nothing is
+  // compared that key is the window's own read, so the compare answer is read only while a
+  // compare range exists; undefined while its read is out.
+  const comparedAnswer = compare === null ? undefined : compared.data;
+  const comparedByProject = useMemo(
+    () => (comparedAnswer === undefined ? undefined : evalsByProject(comparedAnswer)),
+    [comparedAnswer]
+  );
 
   return (
     <section aria-labelledby="legion-heading" className="flex flex-col gap-3" id="legion">
@@ -436,48 +447,59 @@ export function LegionSection({
         ? null
         : projects.map((project) => (
             <LegionProject
-              compare={{
-                data: compared.data === undefined ? undefined : comparedByProject.get(project),
-                onRange: onCompare,
-                range: compare,
-              }}
+              compare={compare}
+              comparedEvals={
+                comparedByProject === undefined
+                  ? undefined
+                  : (comparedByProject.get(project) ?? NO_EVALS)
+              }
               evals={byProject.get(project)}
               key={project}
+              onCompare={onCompare}
               project={project}
               range={{ kind: "custom", from: query.data.window.from, to: query.data.window.to }}
             />
           ))}
     </section>
   );
-}
+});
 
-/** One project's block: its four cards over the answer's window, each card's list of issues read
- *  from its eval's items over the window and over the compare range. `compare` is the page's
- *  comparison, whose `data` is the project's evals of the compare range's read; a project that
- *  read holds no eval of is a block whose figures read no value. */
-export function LegionProject({
+/** One project's block: its four cards over the answer's window, the lists of issues of two of
+ *  them read once per range. `compare` and `onCompare` are the page's comparison, and
+ *  `comparedEvals` the project's evals in the compare range's read: undefined while that read is
+ *  out or nothing is compared, and empty where that read holds no eval of the project, whose
+ *  compare columns then read no value rather than a read still out. */
+function LegionProject({
   compare,
+  comparedEvals,
   evals,
+  onCompare,
   project,
   range,
 }: {
-  compare: ChartCompareSource<ProjectEvals | undefined>;
+  compare: ChartRange | null;
+  comparedEvals: ProjectEvals | undefined;
   evals: ProjectEvals | undefined;
+  onCompare: (next: ChartRange | null) => void;
   project: string;
   range: ChartRange;
 }): ReactNode {
-  const items = (slug: string, series: string, over: ChartRange | null) => ({
-    ...legionEvalItemsQuery(project, slug, {
+  // The issues that finished in a range, which the work-time and the rework lists both draw:
+  // the items route reads either eval's issues from the same closed issues' stored facts, every
+  // issue of the range, so one read of legion-work-time's serves both cards.
+  const finishedIn = (over: ChartRange | null) => ({
+    ...legionEvalItemsQuery(project, SLUG.workTime, {
       from: (over ?? range).from,
-      series,
+      series: "hours",
       to: (over ?? range).to,
     }),
     enabled: over !== null,
   });
-  const workTime = useQuery(items(SLUG.workTime, "hours", range));
-  const rework = useQuery(items(SLUG.rework, "review_rounds", range));
-  const workTimeCompared = useQuery(items(SLUG.workTime, "hours", compare.range));
-  const reworkCompared = useQuery(items(SLUG.rework, "review_rounds", compare.range));
+  const finished = useQuery(finishedIn(range));
+  const finishedCompared = useQuery(finishedIn(compare));
+  // As the section's compare read: the disabled query's cache is the window's own while nothing
+  // is compared.
+  const comparedIssues = compare === null ? undefined : finishedCompared.data;
 
   // What each card draws, and what the compare range's answers draw beside it: built once per
   // answer rather than on every render, since `Chart` builds its table of every number from the
@@ -485,27 +507,28 @@ export function LegionProject({
   const series = useMemo(
     () => ({
       phaseTime: phaseTimeSeries(evals),
-      rework: rework.data === undefined ? undefined : reworkSeries(rework.data),
+      rework: finished.data === undefined ? undefined : reworkSeries(finished.data),
       splitting: splittingSeries(evals),
-      workTime: workTime.data === undefined ? undefined : workTimeSeries(workTime.data),
+      workTime: finished.data === undefined ? undefined : workTimeSeries(finished.data),
     }),
-    [evals, rework.data, workTime.data]
+    [evals, finished.data]
   );
-  const comparedEvals = compare.data;
   const compared = useMemo(
     () => ({
       phaseTime: comparedEvals === undefined ? undefined : phaseTimeSeries(comparedEvals),
-      rework: reworkCompared.data === undefined ? undefined : reworkSeries(reworkCompared.data),
+      rework: comparedIssues === undefined ? undefined : reworkSeries(comparedIssues),
       splitting: comparedEvals === undefined ? undefined : splittingSeries(comparedEvals),
-      workTime:
-        workTimeCompared.data === undefined ? undefined : workTimeSeries(workTimeCompared.data),
+      workTime: comparedIssues === undefined ? undefined : workTimeSeries(comparedIssues),
     }),
-    [comparedEvals, reworkCompared.data, workTimeCompared.data]
+    [comparedEvals, comparedIssues]
   );
-  // Each chart's comparison: the page's range and callback, with the series of the read that
-  // chart's numbers come from.
-  const against = (data: unknown, drawn: readonly ChartSeries[] | undefined) =>
-    chartCompare({ data, onRange: compare.onRange, range: compare.range }, drawn);
+  // Each chart's comparison: the page's range and callback, with the compare range's series of
+  // that chart, undefined while the read it comes from is out.
+  const against = (drawn: readonly ChartSeries[] | undefined): ChartCompare => ({
+    onRange: onCompare,
+    range: compare,
+    series: drawn,
+  });
   const work = (series: string, name: string) => stat(evals, SLUG.workTime, series, name);
   const rounds = (series: string, name: string) => stat(evals, SLUG.rework, series, name);
   const split = (series: string, name: string) => stat(evals, SLUG.splitting, series, name);
@@ -538,9 +561,9 @@ export function LegionProject({
             title="Work time to merge"
           >
             <IssueChart
-              compare={against(workTimeCompared.data, compared.workTime)}
+              compare={against(compared.workTime)}
               label={label("Work time to merge")}
-              query={workTime}
+              query={finished}
               range={range}
               series={series.workTime}
             />
@@ -564,7 +587,7 @@ export function LegionProject({
             title="Phase time by worker type"
           >
             <Chart
-              compare={against(comparedEvals, compared.phaseTime)}
+              compare={against(compared.phaseTime)}
               label={label("Phase time by worker type")}
               range={range}
               rows={{ header: "Worker type", over: "worker type", pair: "name" }}
@@ -597,9 +620,9 @@ export function LegionProject({
             title="Rework"
           >
             <IssueChart
-              compare={against(reworkCompared.data, compared.rework)}
+              compare={against(compared.rework)}
               label={label("Rework")}
-              query={rework}
+              query={finished}
               range={range}
               series={series.rework}
             />
@@ -630,7 +653,7 @@ export function LegionProject({
             title="Splitting and follow-ups"
           >
             <Chart
-              compare={against(comparedEvals, compared.splitting)}
+              compare={against(compared.splitting)}
               label={label("Splitting and follow-ups")}
               range={range}
               rows={{ header: "Week", over: "UTC week", pair: "position" }}
@@ -643,8 +666,8 @@ export function LegionProject({
   );
 }
 
-/** A card's chart over its list of issues, once the items read that list comes from has landed:
- *  one row per issue, paired with the compare range's row of the same issue. */
+/** A card's chart over its list of issues, once the read of the range's finished issues has
+ *  landed: one row per issue, paired with the compare range's row of the same issue. */
 function IssueChart({
   compare,
   label,
@@ -652,7 +675,7 @@ function IssueChart({
   range,
   series,
 }: {
-  compare: ChartCompare | undefined;
+  compare: ChartCompare;
   label: string;
   query: { isError: boolean; isFetching: boolean; refetch: () => unknown };
   range: ChartRange;

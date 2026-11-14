@@ -11,6 +11,7 @@ import type {
   EvalSeriesValues,
   LegionSetting,
 } from "../../api/types";
+import type { ChartRange } from "./Chart";
 import { LegionSection, weekOf } from "./LegionSection";
 
 /** Every spy a test installed, put back when it ends. */
@@ -219,10 +220,11 @@ const LOGGED: EvalItemRow = {
   source: "a-notebook",
 };
 
-/** The section over a window the page already resolved, so the range it reads is this one. */
+/** The section over a window the page already resolved, so the range it reads is this one, and
+ *  beside it the compare range `compare` names (none by default). */
 async function renderSection(
   settings: LegionSetting[],
-  evals: (query: { offset: number; projects: readonly string[] }) => EvalListResponse,
+  evals: (query: { from: string; offset: number; projects: readonly string[] }) => EvalListResponse,
   items: (project: string, slug: string) => EvalItemRow[] = (project) => [
     issueRow(`${project}-1`, { parked_hours: 2, queued_hours: 1, work_hours: 30 }),
     issueRow(`${project}-2`, {
@@ -232,11 +234,14 @@ async function renderSection(
       work_hours: 18,
     }),
     LOGGED,
-  ]
+  ],
+  compare: ChartRange | null = null
 ) {
   const list = spyOn(api, "listLegionSettings").mockResolvedValue(settings);
   const listEvals = spyOn(api, "listEvals").mockImplementation((query) =>
-    Promise.resolve(evals({ offset: query.offset ?? 0, projects: query.project ?? [] }))
+    Promise.resolve(
+      evals({ from: query.from ?? "", offset: query.offset ?? 0, projects: query.project ?? [] })
+    )
   );
   const listItems = spyOn(api, "listProjectEvalItems").mockImplementation((project, slug) => {
     const rows = items(project, slug);
@@ -253,7 +258,11 @@ async function renderSection(
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
     <QueryClientProvider client={queryClient}>
-      <LegionSection compare={null} onCompare={() => {}} window={{ kind: "custom", ...WINDOW }} />
+      <LegionSection
+        compare={compare}
+        onCompare={() => {}}
+        window={{ kind: "custom", ...WINDOW }}
+      />
     </QueryClientProvider>
   );
   return { listEvals, listItems };
@@ -273,6 +282,19 @@ function card(project: string, metric: string): HTMLElement {
 
 function figure(project: string, metric: string, label: string): string {
   return card(project, metric).querySelector(`[data-legion-figure="${label}"]`)?.textContent ?? "";
+}
+
+/** The text of one cell of a chart's table: the row whose first cell reads `row`, in the column
+ *  headed `header`. */
+function cell(table: Element, row: string, header: string): string | null {
+  const headers = Array.from(table.querySelectorAll("thead th")).map((th) => th.textContent);
+  const column = headers.indexOf(header);
+  if (column < 0) throw new Error(`the table has no column ${header}: ${headers.join(", ")}`);
+  const line = Array.from(table.querySelectorAll("tbody tr")).find(
+    (tr) => tr.querySelector("td")?.textContent === row
+  );
+  if (line === undefined) throw new Error(`the table has no row ${row}`);
+  return line.querySelectorAll("td")[column]?.textContent ?? null;
 }
 
 /** The table of one chart, once the chart is drawn and its view control was switched to it. */
@@ -365,26 +387,21 @@ test("each card's headline numbers are the answer's own, with the roots and the 
   expect(figure("ACME", "splitting", "Median work time, roots without children")).toBe("\u2014");
 });
 
-test("a card's list of issues is its eval's items, and a logged reading is no issue of it", async () => {
+test("the work-time and the rework lists are one read of the range's finished issues, and a logged reading is no issue of them", async () => {
   const { listItems } = await renderSection([setting("ACME")], twoProjects);
 
   const table = await tableOf("ACME: Work time to merge");
   // Over the whole UTC days the evals answer folded (its `window`), so a list holds the issues
-  // the card's numbers count.
+  // the card's numbers count. legion-rework's items are the same finished issues as
+  // legion-work-time's, so the one read serves both lists.
   const days = { from: "2026-10-06T00:00:00Z", to: "2026-11-03T00:00:00Z" };
+  expect(listItems).toHaveBeenCalledTimes(1);
   expect(listItems).toHaveBeenCalledWith("ACME", "legion-work-time", {
     ...days,
     limit: 200,
     offset: 0,
     row_kind: "issue",
     series: "hours",
-  });
-  expect(listItems).toHaveBeenCalledWith("ACME", "legion-rework", {
-    ...days,
-    limit: 200,
-    offset: 0,
-    row_kind: "issue",
-    series: "review_rounds",
   });
   // One row per issue, with its work time and what was taken out of it.
   const row = Array.from(table.querySelectorAll("tr")).find((line) =>
@@ -395,6 +412,12 @@ test("a card's list of issues is its eval's items, and a logged reading is no is
   expect(row.textContent).toContain("120m");
   expect(table.textContent).toContain("ACME-2");
   expect(table.textContent).not.toContain("LOGGED-1");
+  // The rework list draws the same read's issues, by their review rounds.
+  const rework = await tableOf("ACME: Rework");
+  expect(cell(rework, "ACME-2", "Review rounds")).toBe("2");
+  expect(cell(rework, "ACME-1", "Review rounds")).toBe("0");
+  expect(rework.textContent).not.toContain("LOGGED-1");
+  expect(listItems).toHaveBeenCalledTimes(1);
 });
 
 // The median of a bar runs over every finished issue, one the role never worked counting as
@@ -418,13 +441,26 @@ test("the phase-time table names how many issues each bar holds hours for, and e
   expect(table.textContent).toContain("Issues with hours");
   expect(table.textContent).toContain("Hours, roots");
   expect(table.textContent).toContain("Hours, children");
-  const row = Array.from(table.querySelectorAll("tr")).find((line) =>
-    line.textContent?.startsWith("architect")
+  // The architect's count of issues with hours, and its five hours in the roots cut.
+  expect(cell(table, "architect", "Issues with hours")).toBe("3");
+  expect(cell(table, "architect", "Hours, roots")).toBe("5.0h");
+});
+
+// A project the compare range's read holds no eval of has nothing to compare: its compare
+// columns read no value, as a measure with no data does, and never the mark of a read still out.
+test("a compare range whose read holds no eval of a project reads no value in that project's compare columns", async () => {
+  const compare = { kind: "custom", from: "2026-09-08T00:00:00.000Z", to: WINDOW.from } as const;
+  await renderSection(
+    [setting("ACME")],
+    (query) => (query.from === compare.from ? answer([]) : answer(legionEvals("ACME"))),
+    undefined,
+    compare
   );
-  if (row === undefined) throw new Error("the table holds no architect row");
-  expect(row.textContent).toContain("3");
-  // The architect's five hours in the roots cut.
-  expect(row.textContent).toContain("5.0h");
+
+  await waitFor(() => expect(figure("ACME", "phase_time", "Idle share")).toBe("12.5%"));
+  const table = await tableOf("ACME: Phase time by worker type");
+  await waitFor(() => expect(cell(table, "architect", "Issues with hours compare")).toBe("\u2014"));
+  expect(cell(table, "architect", "Issues with hours")).toBe("2");
 });
 
 test("the splitting chart draws the filings and the finished issues by UTC week, as the card always has", async () => {

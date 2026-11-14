@@ -8,7 +8,6 @@ import (
 	"math"
 	"net/http"
 	"net/url"
-	"regexp"
 	"strings"
 	"time"
 
@@ -121,7 +120,7 @@ func (c *headChecks) k13() {
 		}
 		return err
 	}) {
-		named := regexp.MustCompile(`Index Cond: .*\bname = ANY`).MatchString(plan)
+		named := namedJobCondition.MatchString(plan)
 		c.r.result("k13 named_jobs runs=%d names=%q jobs=%d name_in_index_condition=%t", len(runIDs), names, jobs, named)
 		if !named {
 			c.r.fail("k13 the named-jobs read carries no job name in its index condition")
@@ -176,12 +175,19 @@ func (c *headChecks) k16() {
 	}
 	compared := 0
 	for _, fold := range folds {
-		project, _ := c.routeValue(ctx, w84, "", fold.slug, fold.series, fold.stat)
+		// The project's own answer, the loop's first read (repo ""), is what the repositories'
+		// rows partition; where that read failed, its FAIL line stands and there is no partition
+		// to judge.
+		var project *float64
+		projectRead := false
 		for _, repo := range append([]string{""}, evalbench.Repos...) {
 			route, err := c.routeValue(ctx, w84, repo, fold.slug, fold.series, fold.stat)
 			if err != nil {
 				c.r.fail("k16 %s.%s.%s repo=%q: %v", fold.slug, fold.series, fold.stat, repo, err)
 				continue
+			}
+			if repo == "" {
+				project, projectRead = route, true
 			}
 			hand, err := c.handFold(ctx, fold.hand+` where project_key = $1 and eval_id = $2 and series = $3 and repo = $4 and day >= $5 and day < $6`,
 				evals.EvalID(c.o.project, fold.slug), fold.series, repo, w84)
@@ -195,6 +201,9 @@ func (c *headChecks) k16() {
 			if !equal {
 				c.r.fail("k16 %s.%s.%s repo=%q: the route answers %s and the hand fold %s", fold.slug, fold.series, fold.stat, repo, show(route), show(hand))
 			}
+		}
+		if !projectRead {
+			continue
 		}
 		// The repositories partition the project's rows: a count sums, and a share or a quantile
 		// is the fold of the union of their parts.

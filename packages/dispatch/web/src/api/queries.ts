@@ -433,6 +433,28 @@ export const legionBoardQuery = (view: DeliveryLiveView & { kind: "legion" }) =>
  *  section reads each of its lists whole, a page this long at a time. */
 const EVAL_PAGE = 200;
 
+/** One page of a paged eval read: its rows, and how many rows the read holds in all. */
+interface EvalPage<Item> {
+  readonly items: readonly Item[] | null;
+  readonly total: number;
+}
+
+/** Every row of one paged eval read, read a page at a time from the first (`read` answers the
+ *  page at an offset), with the first page's answer: it stops at that page's total, or at a page
+ *  that answers no row, so rows written while it reads cannot keep it reading. */
+async function readEveryPage<Item, Page>(
+  read: (offset: number) => Promise<Page & EvalPage<Item>>
+): Promise<{ readonly first: Page; readonly items: Item[] }> {
+  const first = await read(0);
+  const items = [...(first.items ?? [])];
+  while (items.length < first.total) {
+    const page = (await read(items.length)).items ?? [];
+    if (page.length === 0) break;
+    items.push(...page);
+  }
+  return { first, items };
+}
+
 /** The Delivery page's Legion section, by GET: the Legion evals of every project named, over one
  *  range, in one read across the projects (`GET /api/v1/evals?project=…&kind=legion`), which
  *  picks no project when none is named. Not live — the section draws a window of closed issues
@@ -449,7 +471,7 @@ export const legionEvalsQuery = (query: {
   queryOptions({
     queryKey: ["legion", "evals", query],
     queryFn: async (): Promise<EvalListResponse> => {
-      const read = (offset: number) =>
+      const { first, items } = await readEveryPage((offset) =>
         api.listEvals({
           from: query.from,
           kind: "legion",
@@ -457,14 +479,8 @@ export const legionEvalsQuery = (query: {
           offset,
           project: [...query.projects],
           to: query.to,
-        });
-      const first = await read(0);
-      const items = [...(first.items ?? [])];
-      while (items.length < first.total) {
-        const page = (await read(items.length)).items ?? [];
-        if (page.length === 0) break;
-        items.push(...page);
-      }
+        })
+      );
       return { ...first, items };
     },
   });
@@ -480,18 +496,15 @@ export const legionEvalItemsQuery = (
   queryOptions({
     queryKey: ["legion", "eval-items", project, slug, query],
     queryFn: async (): Promise<EvalItemRow[]> => {
-      const rows: EvalItemRow[] = [];
-      for (;;) {
-        const page = await api.listProjectEvalItems(project, slug, {
+      const { items } = await readEveryPage((offset) =>
+        api.listProjectEvalItems(project, slug, {
           ...query,
           limit: EVAL_PAGE,
-          offset: rows.length,
+          offset,
           row_kind: "issue",
-        });
-        const items = page.items ?? [];
-        rows.push(...items);
-        if (items.length === 0 || rows.length >= page.total) return rows;
-      }
+        })
+      );
+      return items;
     },
   });
 

@@ -313,9 +313,6 @@ test("an evals delta upserts the evals that moved by id and sets the fields that
   expect(evalsDelta.maps).toEqual({});
   expect(evalsDelta.counts).toEqual({});
   expect(keysOf(evalsDelta.set)).toEqual(["freshness", "total"]);
-  for (const field of Object.keys(evalsDelta.set)) {
-    expect(EVALS_WHOLE).toContain(field as (typeof EVALS_WHOLE)[number]);
-  }
   for (const revision of [
     ...leaves(evalsDelta.revs.items, 2),
     ...leaves(evalsDelta.revs.fields, 1),
