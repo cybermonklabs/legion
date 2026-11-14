@@ -33,7 +33,9 @@ type Process struct {
 	Name string
 	// Exe is the target of the `exe` link, empty when the scan could not read it.
 	Exe string
-	// Args are the NUL-separated arguments of `cmdline`, nil for a process that shows none.
+	// Args are the NUL-separated arguments of `cmdline`, nil for a process that shows none: of its
+	// first rawCommandBytes+1 bytes alone, which is all the scan reads of it (argsCut), enough for
+	// a classifier, which reads a process's first arguments.
 	Args []string
 	// PIDNamespace is the target of the `ns/pid` link (`pid:[4026531836]`), empty when the scan
 	// could not read it.
@@ -42,6 +44,11 @@ type Process struct {
 	// for a dead process, both of which the scan leaves out unless other threads of the process
 	// still run (readProcess).
 	state byte
+	// argsCut is whether `cmdline` ran past rawCommandBytes, which the scan tells by reading one
+	// byte more and finding that byte there: then Args are what it read, the last of them perhaps
+	// part of an argument, and the command line masks no more than rawCommandBytes of them
+	// (commandLine).
+	argsCut bool
 }
 
 // Table is every process one scan read, keyed by pid. A process whose stat the scan read is in it
@@ -94,12 +101,13 @@ func scan(proc string) (*Table, error) {
 		return nil, err
 	}
 	t := &Table{proc: proc, byPID: map[int]*Process{}, children: map[int][]*Process{}, unread: map[int]error{}}
+	cmdline := make([]byte, rawCommandBytes+1)
 	for _, entry := range entries {
 		pid, err := strconv.Atoi(entry.Name())
 		if err != nil || pid <= 0 {
 			continue
 		}
-		p, err := readProcess(proc, pid)
+		p, err := readProcess(proc, pid, cmdline)
 		if err != nil {
 			if errors.Is(err, fs.ErrNotExist) || errors.Is(err, errExited) {
 				continue
@@ -125,15 +133,16 @@ func scan(proc string) (*Table, error) {
 // at a read after one of its other files failed (endedSince): it holds no memory.
 var errExited = errors.New("the process has exited")
 
-// readProcess reads one process's stat, exe, ns/pid and cmdline. A process whose stat reads it
-// exited (exited) answers errExited, and nothing more of it is read: what its other files answer
-// differs by kernel, and a zombie's exe link answers ENOENT on Linux and EACCES under gVisor,
-// measured in a gVisor pod on 2026-11-14, where the scan counted unread a pool worker the guard
-// had just ended and its parent had not reaped. Otherwise it answers the process with an error
-// when stat was read and exe or ns/pid was not (unreadOrEnded), so the caller keeps the process
-// in the tree and counts it unread, unless the process has ended since its stat was read. The
-// arguments are best read: a process that shows none is still a process.
-func readProcess(proc string, pid int) (*Process, error) {
+// readProcess reads one process's stat, exe, ns/pid and cmdline, the last into the start of buf
+// and no further (argsCut). A process whose stat reads it exited (exited) answers errExited, and
+// nothing more of it is read: what its other files answer differs by kernel, and a zombie's exe
+// link answers ENOENT on Linux and EACCES under gVisor, measured in a gVisor pod on 2026-11-14,
+// where the scan counted unread a pool worker the guard had just ended and its parent had not
+// reaped. Otherwise it answers the process with an error when stat was read and exe or ns/pid was
+// not (unreadOrEnded), so the caller keeps the process in the tree and counts it unread, unless
+// the process has ended since its stat was read. The arguments are best read: a process that
+// shows none is still a process.
+func readProcess(proc string, pid int, buf []byte) (*Process, error) {
 	dir := filepath.Join(proc, strconv.Itoa(pid))
 	stat, err := os.ReadFile(filepath.Join(dir, "stat"))
 	if err != nil {
@@ -147,8 +156,8 @@ func readProcess(proc string, pid int) (*Process, error) {
 		return nil, errExited
 	}
 	p.PID = pid
-	if cmdline, err := os.ReadFile(filepath.Join(dir, "cmdline")); err == nil {
-		p.Args = splitCmdline(cmdline)
+	if cmdline, err := readHead(filepath.Join(dir, "cmdline"), buf); err == nil {
+		p.Args, p.argsCut = splitCmdline(cmdline), len(cmdline) == len(buf)
 	}
 	exe, err := os.Readlink(filepath.Join(dir, "exe"))
 	if err != nil {
@@ -530,4 +539,19 @@ func readAll(path string, buf []byte) ([]byte, error) {
 			return buf, err
 		}
 	}
+}
+
+// readHead is the start of the file at path, read into buf and no further: the whole file when it
+// is shorter than buf, and buf full when it is not.
+func readHead(path string, buf []byte) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	n, err := io.ReadFull(f, buf)
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		err = nil
+	}
+	return buf[:n], err
 }

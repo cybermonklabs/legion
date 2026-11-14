@@ -289,6 +289,7 @@ type Guard struct {
 	scanMemfds  map[memfdID]bool
 	scanName    string
 	scanArgs    []string
+	scanCut     bool
 	scanCommand string
 }
 
@@ -539,8 +540,9 @@ func (g *Guard) act(now time.Time, s Settings, reading, limit uint64) {
 		_ = h.Close()
 		return
 	}
-	// A process that has exited and is not reaped yet keeps its stat and its start time, and the
-	// kill of it answers no error, so only its handle tells it from a live one.
+	// An exited process its parent has not reaped yet keeps its pid and its start time, so the
+	// check above passes it, and the kill of it answers no error. The handle is asked because it
+	// holds the very process the kill goes to, so its answer is of that process and of no other.
 	if h.Exited() {
 		_ = h.Close()
 		return
@@ -899,11 +901,13 @@ func (g *Guard) scanLargest(start time.Time, shmem uint64) {
 }
 
 // largestCommand is p's command as the hourly line carries it, made again only when p's name or
-// arguments differ from those of the last scan's largest process, since commandText reads nothing
-// else: the same agent found the largest scan after scan is not redacted again each time.
+// arguments, or whether they were cut (argsCut), differ from those of the last scan's largest
+// process, since commandText reads nothing else: the same agent found the largest scan after scan
+// is not redacted again each time.
 func (g *Guard) largestCommand(p *Process) string {
-	if g.scanCommand == "" || p.Name != g.scanName || !slices.Equal(p.Args, g.scanArgs) {
-		g.scanName, g.scanArgs, g.scanCommand = p.Name, p.Args, cut(commandText(p), logCommandBytes)
+	if g.scanCommand == "" || p.Name != g.scanName || p.argsCut != g.scanCut || !slices.Equal(p.Args, g.scanArgs) {
+		g.scanName, g.scanArgs, g.scanCut = p.Name, p.Args, p.argsCut
+		g.scanCommand = cut(commandText(p), logCommandBytes)
 	}
 	return g.scanCommand
 }

@@ -2,6 +2,7 @@ package memoryguard
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -18,6 +19,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/sjawhar/legion/daemon/internal/capabilities"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"golang.org/x/sys/unix"
@@ -1567,6 +1569,117 @@ func TestMemoryGuardMasksATokenAfterWhitespaceOrAControlSequence(t *testing.T) {
 			}
 			if k := h.killed()[0]; k.Command != tc.want {
 				t.Fatalf("the report's command is %q, want %q", k.Command, tc.want)
+			}
+		})
+	}
+}
+
+// A command line cut short shows no part of a credential that the whole line masks: for every
+// detail of the shared fixture (packages/contracts/fixtures/capability-redaction.json) as one
+// argument, cut at every bound short of its length, the line without its ellipsis is the first
+// words of the whole line, so each word the cut leaves is one the whole line shows, never the head
+// of a credential it masks. At the detail's own length nothing is cut, and the line is the whole.
+func TestMemoryGuardCutCommandShowsNoPartOfACredentialTheWholeLineMasks(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "..", "contracts", "fixtures", "capability-redaction.json"))
+	if err != nil {
+		t.Fatalf("read the fixture: %v", err)
+	}
+	var fixture struct {
+		Patterns []struct {
+			Pattern string `json:"pattern"`
+			Name    string `json:"name"`
+			Detail  string `json:"detail"`
+		} `json:"patterns"`
+	}
+	if err := json.Unmarshal(raw, &fixture); err != nil {
+		t.Fatalf("decode the fixture: %v", err)
+	}
+	cuts := 0
+	for _, tc := range fixture.Patterns {
+		whole := capabilities.RedactedLine(tc.Detail)
+		words := strings.Fields(whole)
+		p := &Process{Name: "sh", Args: []string{tc.Detail}}
+		if got := commandLine(p, len(tc.Detail)); got != whole {
+			t.Errorf("%s: %s: at its own length the line is %q, want the whole %q", tc.Pattern, tc.Name, got, whole)
+		}
+		for bound := 1; bound < len(tc.Detail); bound++ {
+			cuts++
+			line := commandLine(p, bound)
+			shown, cut := strings.CutSuffix(line, ellipsis)
+			if got := strings.Fields(shown); !cut || len(got) > len(words) || !slices.Equal(got, words[:len(got)]) {
+				t.Errorf("%s: %s: cut at %d bytes the line is %q, which is not the first words of the whole line %q, ending in %q",
+					tc.Pattern, tc.Name, bound, line, whole, ellipsis)
+			}
+		}
+	}
+	t.Logf("%d cuts of %d details", cuts, len(fixture.Patterns))
+}
+
+// timedClock is a fakeClock that keeps the wall time at which the guard starts each wait: it
+// starts the next once the reading before it, and all that reading led to, is done.
+type timedClock struct {
+	*fakeClock
+	startedMu sync.Mutex
+	started   []time.Time
+}
+
+func (c *timedClock) After(d time.Duration) <-chan time.Time {
+	c.startedMu.Lock()
+	c.started = append(c.started, time.Now())
+	c.startedMu.Unlock()
+	return c.fakeClock.After(d)
+}
+
+// The guard's work after a kill does not grow with the killed process's arguments, which it does
+// on its loop before the next reading: a linker's arguments run to a mebibyte, and with a colour
+// sequence among the first of them every credential rule reads the text four times over, yet the
+// decision that killed the linker ends well within the default interval of the kill, so the next
+// reading comes when it is due. Under the race detector that time is logged and not held
+// (raceEnabled says why). The kill line carries the start of the link line, cut and within its
+// bound.
+func TestMemoryGuardDecidesWithinAnIntervalOfKillingAProcessWithAMebibyteOfArguments(t *testing.T) {
+	for _, tc := range []struct{ name, output string }{
+		{"plain", "app"},
+		{"an escape early", "\x1b[1mapp"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pod := newFakePod(t)
+			pod.add(agent(2*gib), fakeProcess{pid: 900, ppid: 100, anon: 1500 * mib, args: []string{"/usr/bin/ld"}})
+			var cmdline strings.Builder
+			cmdline.WriteString("/usr/bin/ld\x00-o\x00" + tc.output + "\x00")
+			for i := 0; cmdline.Len() < 1<<20; i++ {
+				fmt.Fprintf(&cmdline, "build/obj/module%05d.o\x00", i)
+			}
+			pod.writeWhole(filepath.Join(pod.proc, "900", "cmdline"), cmdline.String())
+			pod.setAnon(3600 * mib)
+			h := newHarness(t, pod, protect("tester", 100))
+			clock := &timedClock{fakeClock: h.clock}
+			h.g.clock = clock
+			var killedAt time.Time
+			h.signal.onKill = func(int) bool {
+				killedAt = time.Now()
+				return false
+			}
+			h.run()
+			h.requireKilled(900)
+			clock.startedMu.Lock()
+			decided := clock.started[0]
+			clock.startedMu.Unlock()
+			took := decided.Sub(killedAt)
+			t.Logf("the decision ended %v after the kill", took)
+			if took >= Defaults().Interval && !raceEnabled {
+				t.Errorf("the decision ended %v after the kill, want under the interval of %v", took, Defaults().Interval)
+			}
+			ended := h.log.with("ended")
+			if len(ended) != 1 {
+				t.Fatalf("the kill lines are %q, want one", ended)
+			}
+			_, command, _ := strings.Cut(ended[0], ` command="`)
+			command = strings.TrimSuffix(command, `"`)
+			if !strings.HasPrefix(command, "/usr/bin/ld -o app build/obj/module00000.o build/obj/module00001.o ") ||
+				!strings.HasSuffix(command, ellipsis) || len(command) > logCommandBytes {
+				t.Errorf("the kill line's command is %q (%d bytes), want the link line's start cut with %q within %d bytes",
+					command, len(command), ellipsis, logCommandBytes)
 			}
 		})
 	}

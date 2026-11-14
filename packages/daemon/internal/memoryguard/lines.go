@@ -43,6 +43,13 @@ const (
 // hold its whole system prompt.
 const logCommandBytes = 512
 
+// rawCommandBytes is the most bytes of a process's arguments the guard masks (commandLine): eight
+// times logCommandBytes, so what is left fills a log line even where masking shortens it, and a
+// bound, so the work after a kill, which the guard's loop does before its next reading, does not
+// grow with the killed process's arguments. The scan reads one byte more of `cmdline`
+// (readProcess), so it can tell arguments that ran past it.
+const rawCommandBytes = 8 * logCommandBytes
+
 // ellipsis marks where a command was cut.
 const ellipsis = "…"
 
@@ -57,22 +64,54 @@ func roleName(role string) string {
 // stamp is t as a line writes it.
 func stamp(t time.Time) string { return t.UTC().Format(time.RFC3339) }
 
-// commandText is p's arguments as one printable line with no credential in it: joined by spaces,
-// made one line and redacted by the rules a capability report's detail is cleaned by
-// (capabilities.RedactCredentials: each run of whitespace one space, each control rune, control
-// sequence or byte that is not UTF-8 read away), since an argument can carry a token, and then
-// with each remaining rune that does not print, a `\u202e` that would reorder what follows it
-// among them, escaped. A process that shows no arguments is named by its stat name in brackets, as
-// ps names it. The text is whole; each reader cuts it to its own bound (cut), after the redaction,
-// so a cut never leaves part of a credential that the whole would have matched.
+// commandText is p's command line (commandLine, at rawCommandBytes) with each rune that does not
+// print escaped, a `\u202e` that would reorder what follows it among them. Each reader cuts it to
+// its own bound (cut) after the masking, so that cut never leaves part of a credential that the
+// line would have masked.
 func commandText(p *Process) string {
+	var b strings.Builder
+	escape(&b, commandLine(p, rawCommandBytes))
+	return b.String()
+}
+
+// commandLine is p's arguments as one line with no credential in it: joined by spaces and made
+// one line by the rules a capability report's detail is cleaned by (capabilities.RedactedLine:
+// each run of whitespace one space, each control rune, control sequence or byte that is not UTF-8
+// read away, every credential masked), since an argument can carry a token. A process that shows
+// no arguments is named by its stat name in brackets, as ps names it.
+//
+// Arguments that run past bound bytes (argsCut, or a joined text longer than bound) are cut to
+// their first bound bytes, on a character boundary, before they are masked, so the masking costs
+// no more for a linker's arguments or a long `python3 -c` script than for a short command. The
+// cut text then loses its last word twice, before the masking and after it, and the line ends
+// with an ellipsis, so that the cut shows nothing the whole line would have masked:
+//   - Before: the rules read a control rune as held, not as a space, and a credential runs across
+//     it, while the line shows it as a space, so one run of the text can be several words of the
+//     line. Every rule that needs something after its value to match (userinfo's `@`, a token's
+//     least length, a JWT's second dot, `AKIA`'s sixteen characters and `\b`) matches within one
+//     run with no whitespace in it, and the cut parts only the text's last run, which goes.
+//   - After: a rule whose value may hold a space (a quoted `password=`, an `Authorization` value,
+//     a JSON `api_key`) still matches a value the cut parts, since what closes it is optional, and
+//     masks it to the end of the line, where the whole line keeps the quote or bracket after its
+//     `***` and may read a scheme (`Bearer`) apart from the value: that is the line's last word.
+func commandLine(p *Process, bound int) string {
 	raw := "[" + p.Name + "]"
 	if len(p.Args) > 0 {
 		raw = strings.Join(p.Args, " ")
 	}
-	var b strings.Builder
-	escape(&b, capabilities.RedactCredentials(raw))
-	return b.String()
+	if !p.argsCut && len(raw) <= bound {
+		return capabilities.RedactedLine(raw)
+	}
+	if len(raw) > bound {
+		end := bound
+		for end > 0 && !utf8.RuneStart(raw[end]) {
+			end--
+		}
+		raw = raw[:end]
+	}
+	raw = raw[:max(strings.LastIndexFunc(raw, unicode.IsSpace), 0)]
+	line := capabilities.RedactedLine(raw)
+	return line[:max(strings.LastIndexByte(line, ' '), 0)] + ellipsis
 }
 
 // escape writes s to b with each control character, and each other character that does not

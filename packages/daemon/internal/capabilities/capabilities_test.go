@@ -303,11 +303,11 @@ func TestRedactCredentialsReachesAFixedPointWithinItsBound(t *testing.T) {
 	}
 }
 
-// RedactCredentials masks what a capability report's detail masks, since the memory guard prints
-// a process's arguments through it: every case of the shared fixture reads from it as the fixture
+// RedactedLine masks what a capability report's detail masks, since the memory guard prints a
+// process's arguments through it: every case of the shared fixture reads from it as the fixture
 // says, but those a pad pushes past MaxReportDetail, whose want is cleanDetail's cut, which
-// RedactCredentials does not make.
-func TestRedactCredentialsMasksEachUncutCaseOfTheSharedFixture(t *testing.T) {
+// RedactedLine does not make.
+func TestRedactedLineMasksEachUncutCaseOfTheSharedFixture(t *testing.T) {
 	var fixture struct {
 		Patterns []redactionCase `json:"patterns"`
 	}
@@ -320,8 +320,8 @@ func TestRedactCredentialsMasksEachUncutCaseOfTheSharedFixture(t *testing.T) {
 			continue
 		}
 		uncut++
-		if got, want := RedactCredentials(detail), padding+testCase.Want; got != want {
-			t.Errorf("%s: %s: RedactCredentials(%q) = %q\nwant %q", testCase.Pattern, testCase.Name, detail, got, want)
+		if got, want := RedactedLine(detail), padding+testCase.Want; got != want {
+			t.Errorf("%s: %s: RedactedLine(%q) = %q\nwant %q", testCase.Pattern, testCase.Name, detail, got, want)
 		}
 	}
 	t.Logf("%d of %d cases uncut", uncut, len(fixture.Patterns))

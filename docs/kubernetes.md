@@ -4668,6 +4668,8 @@ A dropped connection leaves the settings in force.
 **The lines.**
 Every line of the guard starts `launcher: memory guard: ` in the `roles` container's log and carries `key=value` fields (`packages/daemon/internal/memoryguard/lines.go`):
 sizes in bytes, times in RFC 3339 UTC, `wait` and `interval` as Go durations (`5s`, `100ms`), and a command last and in quotes, made one line (each run of whitespace one space, each control character or control sequence read away), each credential masked by the rules of a capability report's detail ([The deployment's capability report](#the-deployments-capability-report)), each other character that does not print escaped, and the text cut to 512 bytes with `…` where it was cut.
+The guard masks at most the first 4 KiB of a process's arguments and leaves the rest out, so the work after a kill does not grow with the arguments.
+When the arguments run past 4 KiB, it also leaves out the last word of that 4 KiB, before the masking and again after it, and ends the command with `…`, so a cut never shows part of a credential.
 The guard's own lines carry no role prefix, since it watches every role's processes and the launcher's together, and `role=none` names a process of no role.
 
 ```text
