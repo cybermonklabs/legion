@@ -104,7 +104,7 @@ func eraseBackend(t *testing.T, ctx context.Context, database *store.Store) uint
 	for {
 		var pid uint32
 		err := database.Pool.QueryRow(ctx,
-			`select pid from pg_stat_activity where application_name = $1 and pid <> pg_backend_pid() order by backend_start desc limit 1`,
+			`select pid from pg_stat_activity where application_name = $1 and datname = current_database() and pid <> pg_backend_pid() order by backend_start desc limit 1`,
 			eraseApplicationName).Scan(&pid)
 		if err == nil {
 			return pid
