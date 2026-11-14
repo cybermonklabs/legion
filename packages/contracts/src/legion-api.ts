@@ -390,8 +390,10 @@ const legionMergeWaitView = z.object({
    * on, and the head GitHub's answer is about. */
   waitsOn: nonEmptyString,
   /** The merge state the record holds for that head (`record.PullRequest.MergeState`), the same
-   * word `pullRequest.mergeState` carries. Absent while the state is unread: no read has answered
-   * for this head since the pull request was last opened or its head last moved. */
+   * word `pullRequest.mergeState` carries. Absent while the record holds no state for this head:
+   * beside no `stateReadAt` the record holds no read of this head, and beside a `stateReadAt` it
+   * holds a read whose answer carried no state (`record.PullRequest.StateReadAt` says when each is
+   * the case). */
   mergeState: legionMergeState.optional(),
   /** `record.PullRequest.StateReadAt`, the moment GitHub's last answer about this head was in
    * hand, a confirming answer included; that field's doc says who stamps it, what clears it and

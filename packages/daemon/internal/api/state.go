@@ -1229,8 +1229,9 @@ type MergeWaitView struct {
 	WaitsOn string `json:"waitsOn"`
 	// MergeState is the merge state the record holds for that head
 	// (record.PullRequest.MergeState), in GitHub's own spelling — `blocked`, `behind`, `draft`,
-	// `dirty`, `unknown`. It is absent while the state is unread: no read has answered for this
-	// head since the pull request was last opened or its head last moved.
+	// `dirty`, `unknown`. It is absent while the record holds no state for this head: beside no
+	// StateReadAt the record holds no read of this head, and beside a StateReadAt it holds a read
+	// whose answer carried no state (record.PullRequest.StateReadAt says when each is the case).
 	MergeState string `json:"mergeState,omitempty"`
 	// StateReadAt is record.PullRequest.StateReadAt, the moment GitHub's last answer about this
 	// head was in hand, a confirming answer included; that field's doc says who stamps it, what

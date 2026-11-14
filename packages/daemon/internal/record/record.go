@@ -696,8 +696,11 @@ type PullRequest struct {
 	//
 	// What clears it, always with MergeState: any fact that moves the head (classify's advance: a
 	// synchronize, a reopen or a close at another head), because the stamp would then be the time
-	// of a read about the head before; and a reopen at any head, which builds the record afresh
-	// (workflow's pullRequestOpened).
+	// of a read about the head before; a reopen at any head, which builds the record afresh
+	// (workflow's pullRequestOpened); and a step of an open head run, a push or a settlement, whose
+	// replay gives back the anchor's pair wherever the record holds no state (classify's
+	// withJudgement decides on MergeState, not on the stamp), so a stamp held beside no state goes
+	// with no head move and no reopen.
 	//
 	// What the zero time means: no read is recorded for this record since it was created or last
 	// cleared. That includes a row written before migration 20261112070503, which took the zero

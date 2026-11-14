@@ -971,27 +971,30 @@ func olderHead(a, b *time.Time) int {
 
 // mergeWaitsSummary is the one line an operator reads for the review rounds waiting on GitHub's
 // merge state for their head: how many, and the oldest head — its issue, pull request and head,
-// what GitHub last said of that head and when the daemon last read it. The line says "the oldest
+// and what the record holds of the daemon's last read of that head. The line says "the oldest
 // head" rather than "the oldest" because the order is the head's (`headUpdatedAt`, mergeWaits
 // above) and the only moment the line prints is the read's: a reader told "the oldest" takes the
 // time beside it for the reason the round was chosen, and the round named is routinely the one
 // read most recently. It is printed beside the open production checks because both are work that
 // has left the agents and stands on something outside Legion.
 //
-// What follows `GitHub said` is one value, chosen by the one switch below over whether the wait
+// What follows the head is one reading, chosen by the one switch below over whether the wait
 // carries a merge state and whether it carries the moment of the read, and that switch is the
-// whole model: there are four readings and no other. `<state>, read <time>` is the state GitHub
-// gave for this head and the moment of the daemon's last read that answered, in UTC. `<state>,
-// read time not recorded` is a state GitHub gave before the daemon recorded the moment of its
-// reads: migration 20261112070503 gave every row it found the zero time and kept its merge state,
-// which the daemon serves as no `stateReadAt`, so the time is what is missing, never the read.
-// `no answer yet, not read since last opened` is a wait holding neither: the daemon has read no
-// answer for this head since the pull request was last opened, and it says no more than that,
-// because a reopen builds the record afresh with neither state nor stamp, so a read made before
-// the close is not on record and "never read" would be false of it. `no merge state, read <time>`
-// is a read that answered with an empty `mergeable_state`, which the reader keeps as no state; it
-// is rare, but the daemon records whatever state and moment a read carries, so the line names the
-// read and says GitHub gave no state rather than claiming no answer came.
+// whole model: there are four readings and no other, and each says what the record holds rather
+// than what did or did not happen at GitHub, so only a reading with a state on record says
+// `GitHub said`. `GitHub said <state>, read <time>` is the state GitHub gave for this head and
+// the moment of the daemon's last read that answered, in UTC. `GitHub said <state>, read time not
+// recorded` is a state GitHub gave before the daemon recorded the moment of its reads: migration
+// 20261112070503 gave every row it found the zero time and kept its merge state, which the
+// daemon serves as no `stateReadAt`, so the time is what is missing, never the read. `read <time>
+// with no merge state` is a read on record whose answer carried no state: GitHub answered with an
+// empty `mergeable_state`, which the reader keeps as no state; it is rare, but the daemon records
+// whatever state and moment a read carries, so the line names the read rather than claiming no
+// answer came. `no read recorded for this head` is a wait holding neither: the record holds no
+// read for the head the wait names, as it does after the pull request was opened or reopened and
+// after its head moved, and since the record does not say which of those it was, the line names
+// none of them and says nothing of reads made before. `record.PullRequest.StateReadAt`'s doc is
+// the full account of when the read time is set and when it is cleared.
 //
 // The pull request number is the issue's own view of it. An issue that carries a merge wait and
 // no pull request view cannot happen — the daemon builds the wait from the pull request record,
@@ -1012,20 +1015,20 @@ func mergeWaitsSummary(waits []issueMergeWait) string {
 	if oldest.pull != nil {
 		number = strconv.Itoa(oldest.pull.Number)
 	}
-	var said string
+	var reading string
 	state, at := oldest.wait.MergeState, oldest.wait.StateReadAt
 	switch {
 	case state != "" && at != nil:
-		said = state + ", read " + at.UTC().Format(time.RFC3339)
+		reading = "GitHub said " + state + ", read " + at.UTC().Format(time.RFC3339)
 	case state != "":
-		said = state + ", read time not recorded"
+		reading = "GitHub said " + state + ", read time not recorded"
 	case at != nil:
-		said = "no merge state, read " + at.UTC().Format(time.RFC3339)
+		reading = "read " + at.UTC().Format(time.RFC3339) + " with no merge state"
 	default:
-		said = "no answer yet, not read since last opened"
+		reading = "no read recorded for this head"
 	}
-	return fmt.Sprintf("merge waits: %d; the oldest head, %s #%s, head %s, GitHub said %s",
-		len(waits), oldest.issue, number, head, said)
+	return fmt.Sprintf("merge waits: %d; the oldest head, %s #%s, head %s, %s",
+		len(waits), oldest.issue, number, head, reading)
 }
 
 // issueRound is one update round an issue has open, and the claims in it, by role: the round a
