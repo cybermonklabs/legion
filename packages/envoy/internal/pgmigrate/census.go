@@ -248,8 +248,10 @@ func Census(ctx context.Context, conn *pgx.Conn, migrations []Migration, version
 	}
 	// The catalog the classifier reads holds what every pending migration's names resolve to until
 	// one of them holds a statement not known to leave the names as they are; tableSizeExemption's
-	// laterReadsOff says it does, and from there on no migration reads the catalog. A recorded
-	// migration, which the loop skips, changes nothing.
+	// laterReadsOff says it does, and from there on no migration reads the catalog for what a name
+	// resolves to. The classifier still reads in tx, for every migration, whether a relation that a
+	// statement names is of pg_catalog or reads one, since that read resolves no name
+	// (catalogRelation). A recorded migration, which the loop skips, changes nothing.
 	catalogTrusted := true
 	// laterEventTrigger names the first pending migration that can create or enable an event
 	// trigger that the census does not see, or that does not parse, and says why
@@ -266,7 +268,7 @@ func Census(ctx context.Context, conn *pgx.Conn, migrations []Migration, version
 		if catalogTrusted {
 			catalog = tx
 		}
-		classified, err := tableSizeExemption(ctx, catalog, migration.SQL)
+		classified, err := tableSizeExemption(ctx, tx, catalog, migration.SQL)
 		if err != nil {
 			return nil, fmt.Errorf("census: %s: classify: %w", migration.Name, err)
 		}

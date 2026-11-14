@@ -2421,9 +2421,12 @@ It refuses:
   - `create event trigger` and `alter event trigger`, whatever the trigger's tags.
 
   - a statement that names a relation of `pg_catalog`, or a relation whose rules read one, as the list of statements that keep the catalog reads on counts them (above), whether the statement is on that list or not.
-    An `update pg_catalog.pg_event_trigger set evtenabled = 'O'` enables a disabled event trigger, as `alter event trigger … enable` does.
-    For a name without a schema, the census reads every relation of that name in the schemas that the `search_path` searches, `pg_catalog` and the temporary schema included, because a pending `drop table` or `drop view` can uncover another relation of the same name in a later schema.
-    Where the census reads no catalog for the statement, it counts only a name in `pg_catalog` and a name without a schema that starts with `pg_`, so there it does not see a view over a `pg_catalog` relation.
+    An `update pg_catalog.pg_event_trigger set evtenabled = 'O'` enables a disabled event trigger, as `alter event trigger … enable` does, and an `update` of a view over `pg_event_trigger` does the same.
+    For each relation name that a statement gives, the census reads every relation of that name in every schema, whatever schema the name gives and whatever the `search_path` is.
+    It makes this read in its own transaction, whether or not it reads the catalog for the migration.
+    A pending `set` of `search_path`, a `drop table`, a `drop view`, a rename or a `set schema` can change which relation the name finds, and the census reads the catalog before any of them applies.
+    So a statement that names a table counts when a view over a `pg_catalog` relation in another schema has the table's name, as the view `information_schema.columns` has the name `columns`.
+    A name that no relation has does not count, because the statement that creates the relation is judged itself.
     A statement on the list that stops the reads only because it creates a function, a table or a view whose name `pg_catalog` holds, or because it calls `set_config`, takes no exception away.
     A function that such a statement creates or replaces runs only when a statement calls it.
 

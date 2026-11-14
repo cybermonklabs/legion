@@ -104,7 +104,7 @@ func TestTableSizeExemptionReadsStatementsAsPostgresParsesThem(t *testing.T) {
 		"no text":                      {"", ""},
 		"a statement Postgres refuses": {"create trigger t after insert on things for each row", ""},
 	} {
-		if got, _ := tableSizeExemption(context.Background(), nil, tc.sql); got.exemption != tc.want {
+		if got, _ := tableSizeExemption(context.Background(), nil, nil, tc.sql); got.exemption != tc.want {
 			t.Errorf("%s: tableSizeExemption = %q, want %q", name, got.exemption, tc.want)
 		}
 	}
@@ -114,14 +114,13 @@ func TestTableSizeExemptionReadsStatementsAsPostgresParsesThem(t *testing.T) {
 	// reads and the census's Postgres 17 grammar does not, and a statement Postgres refuses. A
 	// migration that creates or alters an event trigger takes both away too, and so does one that
 	// holds a statement of a kind off the keep-on list, or a statement that names a relation of
-	// pg_catalog. Without a catalog the census reads every relation a statement names as a
-	// relation of pg_catalog for the reads, so an ALTER TABLE and a SELECT from things take the
-	// reads away here, while a SELECT that names no relation and calls no set_config leaves them
-	// on, and one that calls set_config takes them away. For the exemptions it counts, without a
-	// catalog, only a name of pg_catalog and an unqualified name that starts with pg_, so things
-	// takes no exemption away. The pass reads every statement for the exemptions, the ones after a
-	// SET of search_path or a set_config call included. Of two relation names, the words name the
-	// one that sorts first, on every run.
+	// pg_catalog. Without a transaction the census counts every relation name as one that can
+	// resolve to a relation of pg_catalog, so a statement that names any relation takes both away
+	// here. The tests of catalog_only_test.go read which relation names count, against a database.
+	// A SELECT that names no relation and calls no set_config leaves the reads on, and one that
+	// calls set_config takes them away and leaves the exemptions. The pass reads every statement for
+	// the exemptions, the ones after a SET of search_path or a set_config call included. Of two
+	// relation names, the words name the one that sorts first, on every run.
 	const eventTrigger = "creates or alters an event trigger"
 	const cannotSee = ", so the census cannot see whether it " + eventTrigger
 	const resolvesToCatalog = ", which can resolve to a relation of pg_catalog or to a relation whose rules read one" + cannotSee
@@ -133,8 +132,6 @@ func TestTableSizeExemptionReadsStatementsAsPostgresParsesThem(t *testing.T) {
 		"create trigger t after insert on things for each row":                 {true, "does not parse" + cannotSee},
 		"create event trigger et on ddl_command_start execute function f();":   {true, eventTrigger},
 		"select 1; alter event trigger et enable;":                             {true, eventTrigger},
-		"alter table things add column note text;":                             {true, ""},
-		"select count(*) from things;":                                         {true, ""},
 		"select set_config('search_path', 'public', false);":                   {true, ""},
 		"select 1;":           {false, ""},
 		"do $$ begin end $$;": {true, "runs a DO block" + cannotSee},
@@ -142,15 +139,13 @@ func TestTableSizeExemptionReadsStatementsAsPostgresParsesThem(t *testing.T) {
 		"create extension if not exists pgcrypto;":                                          {true, "creates or alters an extension" + cannotSee},
 		"alter extension vector update;":                                                    {true, "creates or alters an extension" + cannotSee},
 		"alter extension vector add function f();":                                          {true, "creates or alters an extension" + cannotSee},
-		"create table t as select 1;":                                                       {true, "holds a statement that is off the list of statements that keep the catalog reads on" + cannotSee},
-		"select 1 into t;":                                                                  {true, "holds a statement that is off the list of statements that keep the catalog reads on" + cannotSee},
 		"update pg_event_trigger set evtenabled = 'O';":                                     {true, `names "pg_event_trigger"` + resolvesToCatalog},
 		"insert into pg_catalog.pg_cast select * from pg_cast where false;":                 {true, `names "pg_cast"` + resolvesToCatalog},
 		"set search_path = other; update pg_catalog.pg_event_trigger set evtenabled = 'O';": {true, `names "pg_catalog"."pg_event_trigger"` + resolvesToCatalog},
 		"select set_config('search_path', 'other', false); select 1 from pg_event_trigger;": {true, `names "pg_event_trigger"` + resolvesToCatalog},
 		"select set_config('search_path', 'other', false); do $$ begin end $$;":             {true, "runs a DO block" + cannotSee},
 	} {
-		if got, err := tableSizeExemption(context.Background(), nil, sql); err != nil || got.exemption != "" || got.laterReadsOff != want.laterReadsOff || got.laterExemptionsOff != want.laterExemptionsOff {
+		if got, err := tableSizeExemption(context.Background(), nil, nil, sql); err != nil || got.exemption != "" || got.laterReadsOff != want.laterReadsOff || got.laterExemptionsOff != want.laterExemptionsOff {
 			t.Errorf("%q: tableSizeExemption = %+v, %v; want laterReadsOff %v and laterExemptionsOff %q", sql, got, err, want.laterReadsOff, want.laterExemptionsOff)
 		}
 	}
