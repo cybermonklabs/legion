@@ -51,26 +51,15 @@ func TestAGateOfOneDocumentSurvivesTheUpgrade(t *testing.T) {
 
 	steps := []record.DesignStep{record.DesignStepSpec}
 	records := record.NewStore()
-	var gates map[record.DesignStep]record.DesignGate
-	var news record.TreeNews
-	var told []record.DesignTold
+	var facts record.NewsFacts
 	if err := store.Tx(ctx, func(tx pgx.Tx) error {
 		var err error
-		if gates, err = records.GatesOf(ctx, tx, root); err != nil {
-			return err
-		}
-		members, err := records.TreeIssues(ctx, tx, root)
-		if err != nil {
-			return err
-		}
-		if told, err = records.TreeTold(ctx, tx, root); err != nil {
-			return err
-		}
-		news = record.OwedNews(record.NewsFacts{Steps: steps, Gates: gates, Members: members, Told: told})
-		return nil
+		facts, err = record.TreeNewsFacts(ctx, records, tx, steps, root)
+		return err
 	}); err != nil {
 		t.Fatalf("read the tree as the daemon reads it: %v", err)
 	}
+	gates, told, news := facts.Gates, facts.Told, record.OwedNews(facts)
 	if got := record.TreeSteps(steps, gates); !slices.Equal(got, steps) {
 		t.Fatalf("the steps the upgraded tree is gated on = %v, want spec alone", got)
 	}

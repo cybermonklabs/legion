@@ -127,23 +127,18 @@ func seedTestedMember(t *testing.T, pool *pgxpool.Pool, approved int) (*Engine, 
 var laterEntryTesterFails = intake.HandoffComplete{Generation: 1, Issue: laterEntryMember, Role: claim.RoleTester, Claim: "test-claim", Verdict: "fail",
 	HandoffRecord: "test-0", HandoffVersion: 1}
 
-// owedNewsOf is what record.OwedNews owes tree as the record holds it now.
+// owedNewsOf is what record.OwedNews owes tree as the record holds it now, over the facts every
+// reader of a tree's news reads (record.TreeNewsFacts).
 func owedNewsOf(t *testing.T, pool *pgxpool.Pool, engine *Engine, tree string) record.TreeNews {
 	t.Helper()
 	var news record.TreeNews
 	seedRecord(t, pool, func(tx pgx.Tx) error {
-		store := record.NewStore()
-		gates, err := store.GatesOf(t.Context(), tx, tree)
+		facts, err := record.TreeNewsFacts(t.Context(), record.NewStore(), tx, engine.cfg.Steps, tree)
 		if err != nil {
 			return err
 		}
-		members, err := store.TreeIssues(t.Context(), tx, tree)
-		if err != nil {
-			return err
-		}
-		told, err := store.TreeTold(t.Context(), tx, tree)
-		news = record.OwedNews(record.NewsFacts{Steps: engine.cfg.Steps, Gates: gates, Members: members, Told: told})
-		return err
+		news = record.OwedNews(facts)
+		return nil
 	})
 	return news
 }

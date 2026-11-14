@@ -125,6 +125,12 @@ func acceptingHolderNews() News {
 		Steps: newsSteps, Gates: newsGates(), Items: []NewsChange{specChanges(4)}}
 }
 
+// plannerHolderNews is the news of a child's planner, which took spec version 4.
+func plannerHolderNews() News {
+	return News{Audience: record.AudienceHolder, Tree: newsTree, Issue: "LEGION-218", Phase: phase.Planning,
+		Steps: newsSteps, Gates: newsGates(), Items: []NewsChange{specChanges(4)}}
+}
+
 // decisionOnlyHolderNews is the one news task of a version whose only difference is decision
 // blocks: the gate closed on it, its holder was told so, and a person approved it later, so the
 // opening is owed and nothing else is.
@@ -191,6 +197,7 @@ func everyNewsForm() map[string]string {
 		"the holder of the first approved version":           RenderNews(firstApprovalHolderNews()),
 		"the holder whose taken version could not be read":   RenderNews(unreadBaselineHolderNews()),
 		"the sub-architect of an accepting child":            RenderNews(acceptingHolderNews()),
+		"the planner of a child":                             RenderNews(plannerHolderNews()),
 		"the holder of a decision-only version":              RenderNews(decisionOnlyHolderNews()),
 		"the root architect's tree summary":                  RenderNews(treeSummaryNews()),
 		"the root architect of a merged root":                RenderNews(mergedRootSummaryNews()),
@@ -387,6 +394,24 @@ func TestNewsToTheArchitectHoldingAnAcceptingIssueEndsWithItsAnswer(t *testing.T
 	}
 	if strings.Contains(rule, "dispatch comment") {
 		t.Errorf("the accepting holder is told to answer as a phase worker does: %q", rule)
+	}
+}
+
+// Planning has no earlier phase to move back to, so a planner's news ends with the planner's own
+// answer, as its prompt gives it (prompts/go/planner.md): a stale plan is revised in place and its
+// plan review run again, and a current one gets a comment. No move back is named.
+func TestNewsToAPlannerEndsWithThePlannersAnswer(t *testing.T) {
+	text := RenderNews(plannerHolderNews())
+	t.Logf("the news of a planner:\n%s", text)
+	rule := lastParagraph(text)
+	for _, want := range []string{"read each named section and check at the new version", "Planning has no earlier phase",
+		"revise `plan.md` in place to match the new version of the design", "run the plan review again", "`dispatch comment` on LEGION-218"} {
+		if !strings.Contains(rule, want) {
+			t.Errorf("the planner's closing rule %q does not say %q", rule, want)
+		}
+	}
+	if strings.Contains(rule, "request_backward_move") {
+		t.Errorf("the planner is told to move back, which planning cannot do: %q", rule)
 	}
 }
 

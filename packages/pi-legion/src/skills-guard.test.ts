@@ -548,13 +548,27 @@ test("the worker skill tells a role to read the pull request's head after its ow
     '`jj -R "$LEGION_WORKSPACE" log -r legion/<issue>@origin --no-graph -T commit_id`',
     onlyInTheWorkerPrompt
   );
-  countedOncePerFile("Three waits stand rather than proceed", ["skills/legion-worker/SKILL.md"]);
+  countedOncePerFile("Four waits stand rather than proceed", ["skills/legion-worker/SKILL.md"]);
   countedOncePerFile("the empty commit that carries it there", [
     "packages/daemon/internal/prompts/roles/reviewer.md",
   ]);
   expect(collapsed(path.join(staged, "legion-worker", "SKILL.md"))).toContain(
     "When the last read still is not your commit, carry the pull request with a commit of its own, an empty one when your work is complete and an empty one just as much when `@` holds work of yours, since a push of a commit the branch already holds moves no ref; the push section of your role prompt gives the one `jj` recipe, which leaves `@` and everything in it where it is."
   );
+});
+
+// dispatch://INFRA-175: an architect sends an issue in `accepting` back to planning as well as to
+// implementing or testing, and the acceptance reference says so where it names that move. The
+// wording it replaced left planning out, so a reader that followed it would never send a stale
+// plan back to the planner. A folded read, since the sentence wraps across two lines.
+test("the acceptance reference names planning among the moves back from accepting", () => {
+  const acceptance = collapsed(
+    path.join(staged, "legion-architect", "references", "acceptance.md")
+  );
+  expect(acceptance).toContain(
+    "from `accepting` you send an issue back only to `planning`, `implementing` or `testing`"
+  );
+  expect(acceptance).not.toContain("only to `implementing` or `testing`");
 });
 
 // dispatch://INFRA-3204: a check carrying `ci_check` is proved by the CI run it names, so no role

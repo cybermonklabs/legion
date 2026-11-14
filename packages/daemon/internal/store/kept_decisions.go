@@ -2,7 +2,6 @@ package store
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
@@ -35,12 +34,12 @@ import (
 // loss. It inserts, held by this delivery, each decision the delivery names that has no
 // (issue, ref) row and whose issue stands in the claim's tree.
 //
-// Which write that is, is read from the row the write is about to replace: a delivery the claim
-// holds now with a confirmation on it. So this runs before the upsert, since afterwards nothing
-// says what the write undid, and the read takes that row's own lock, so no write of another
-// transaction lands between the two. A claim whose row holds no delivery at all — retired, or
-// never written — has no confirmation to take back, and a task that names nothing has nothing to
-// put back.
+// Which write that is, is read from the row the write is about to replace (putDelivery's
+// replacesConfirmed, given here as replaced): a delivery the claim holds now with a confirmation
+// on it. The read runs before the upsert, since afterwards nothing says what the write undid, and
+// it takes that row's own lock, so no write of another transaction lands between the two. A claim
+// whose row holds no delivery at all — retired, or never written — has no confirmation to take
+// back, and a task that names nothing has nothing to put back.
 //
 // Every other unconfirmed write — the queue, the mark as sent, a write-back, a send a refusal
 // took back — puts nothing back, because a row of theirs that is missing was told by somebody
@@ -50,19 +49,8 @@ import (
 // (dispatch://INFRA-2339). The send-time narrowing drops such a mark from the task (the daemon's
 // rootTask), but only at a send, and a task the root cannot hear yet is written many times
 // before one. An issue that left the claim's tree is never put back.
-func putBackARetakenConfirmation(ctx context.Context, tx pgx.Tx, token claim.Token, delivery string, kept []byte) error {
-	if len(kept) == 0 {
-		return nil
-	}
-	var confirmed bool
-	switch err := tx.QueryRow(ctx, `select confirmed_at is not null from pending_task_deliveries
-		where claim_token = $1 for update`, string(token)).Scan(&confirmed); {
-	case errors.Is(err, pgx.ErrNoRows):
-		return nil
-	case err != nil:
-		return fmt.Errorf("read whether the delivery %s holds was confirmed: %w", token, err)
-	}
-	if !confirmed {
+func putBackARetakenConfirmation(ctx context.Context, tx pgx.Tx, token claim.Token, delivery string, kept []byte, replaced bool) error {
+	if len(kept) == 0 || !replaced {
 		return nil
 	}
 	if _, err := tx.Exec(ctx, `insert into parked_decisions (issue, ref, decision, actor, at, held_by_claim, held_by_delivery)

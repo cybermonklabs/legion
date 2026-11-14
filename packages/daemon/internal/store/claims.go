@@ -538,26 +538,35 @@ func (s *Store) PutDelivery(ctx context.Context, token claim.Token, d supervise.
 // putDelivery writes a delivery through the caller's transaction: the one PutDelivery opens, or
 // the one that carries the claim the delivery is confirmed against. It takes a transaction
 // because it reads the row it is about to replace and holds that reading until it has written
-// (kept_decisions.go's putBackARetakenConfirmation, design_news_told.go's settleDesignNews), which
-// no autocommit statement can do. The rows the task names go with it: a delivery still unconfirmed
-// holds them, under this claim and this delivery id, taking each from the start row that claimed
-// it and from whatever id the claim's previous delivery held it under; the write that records the
-// confirmation tells them. So does the news it carries: the write that records the confirmation
-// raises each version it told as taken, and the write that takes the confirmation back lowers it
-// again. All of it is in the caller's transaction, so no row is ever held by a delivery the store
-// does not hold, and no confirmation commits without telling what it confirmed.
+// (replacesConfirmed), which no autocommit statement can do. The rows the task names go with it: a
+// delivery still unconfirmed holds them, under this claim and this delivery id, taking each from
+// the start row that claimed it and from whatever id the claim's previous delivery held it under;
+// the write that records the confirmation tells them. So does the news it carries: the write that
+// records the confirmation raises each version it told as taken, and the write that takes the
+// confirmation back lowers it again. All of it is in the caller's transaction, so no row is ever
+// held by a delivery the store does not hold, and no confirmation commits without telling what it
+// confirmed.
 func putDelivery(ctx context.Context, tx pgx.Tx, token claim.Token, d supervise.Delivery) error {
 	if d.Generation > math.MaxInt64 {
 		return fmt.Errorf("put delivery %s on %s: generation %d does not fit a bigint", d.ID, token, d.Generation)
 	}
 	kept, news := keptDecisions(d.Kept), designNews(d.News)
 	unconfirmed := d.ConfirmedAt.IsZero()
-	if unconfirmed {
-		if err := putBackARetakenConfirmation(ctx, tx, token, d.ID, kept); err != nil {
+	// Only a write that carries kept decisions unconfirmed, or news, reads the row it replaces:
+	// every other write has nothing to put back or raise.
+	var replaced bool
+	if unconfirmed && len(kept) > 0 || len(news) > 0 {
+		var err error
+		if replaced, err = replacesConfirmed(ctx, tx, token); err != nil {
 			return err
 		}
 	}
-	if err := settleDesignNews(ctx, tx, token, d, news); err != nil {
+	if unconfirmed {
+		if err := putBackARetakenConfirmation(ctx, tx, token, d.ID, kept, replaced); err != nil {
+			return err
+		}
+	}
+	if err := settleDesignNews(ctx, tx, token, d, news, replaced); err != nil {
 		return err
 	}
 	_, err := tx.Exec(ctx, `insert into pending_task_deliveries (claim_token, delivery_id, task,
@@ -591,6 +600,23 @@ func putDelivery(ctx context.Context, tx pgx.Tx, token claim.Token, d supervise.
 		return holdKeptDecisions(ctx, tx, token, d.ID, kept)
 	}
 	return tellKeptDecisions(ctx, tx, token, d.ID)
+}
+
+// replacesConfirmed says whether the row a write of token's delivery is about to replace holds a
+// confirmation, false where there is no row. It is the one read both settlements of a write take
+// their side from (putBackARetakenConfirmation, settleDesignNews), made before the upsert, since
+// afterwards nothing says what the write changed, and it takes that row's own lock, so no write of
+// another transaction lands between the read and the write.
+func replacesConfirmed(ctx context.Context, tx pgx.Tx, token claim.Token) (bool, error) {
+	var confirmed bool
+	switch err := tx.QueryRow(ctx, `select confirmed_at is not null from pending_task_deliveries
+		where claim_token = $1 for update`, string(token)).Scan(&confirmed); {
+	case errors.Is(err, pgx.ErrNoRows):
+		return false, nil
+	case err != nil:
+		return false, fmt.Errorf("read whether the delivery %s holds was confirmed: %w", token, err)
+	}
+	return confirmed, nil
 }
 
 // PutClaimAndDelivery writes a claim and its pending delivery in one transaction: a confirmation

@@ -212,22 +212,36 @@ func holderNews(news News) []string {
 // nothingChanged is the words that tell a holder an item's new version changed nothing its issue
 // holds: the two versions differ in decision blocks alone.
 func nothingChanged(item NewsChange) string {
-	return fmt.Sprintf("Nothing your issue holds changed since version %d, which your phase took. "+
-		"Version %d of its %s document (%s) differs from it only in decision blocks.",
-		item.Changes.From, item.Changes.To, item.Step, item.Changes.ArtifactID)
+	return fmt.Sprintf("%s Version %d of its %s document (%s) differs from it only in decision blocks.",
+		nothingChangedSince(item.Changes.From), item.Changes.To, item.Step, item.Changes.ArtifactID)
 }
 
-// holderRule is the closing sentence of a holder's news: the rule its role's prompt carries for
+// holderRule is the closing paragraph of a holder's news: the rule its role's prompt carries for
 // answering it. The architect holding an issue in accepting answers by its sign-off or a move
-// back; every phase worker by a move back when its work is stale, or a comment when it is current.
+// back (acceptingAnswer). The planner revises its plan when it is stale, since planning has no
+// earlier phase to move back to (prompts/go/planner.md), and comments when it is current. Every
+// other phase worker moves back when its work is stale, and comments when it is current.
 func holderRule(issue string, p phase.Phase) string {
-	if p == phase.Accepting {
-		return fmt.Sprintf("As your prompt says, read each named section and check at the new version, then sign %s off with `sign_off`, "+
-			"or call `request_backward_move` to move it back to planning, implementing or testing, with a reason that names the version and the change.", issue)
+	switch p {
+	case phase.Accepting:
+		return "As your prompt says, read each named section and check at the new version, then " + acceptingAnswer(issue) +
+			", with a reason that names the version and the change."
+	case phase.Planning:
+		return fmt.Sprintf("As your role's prompt says, read each named section and check at the new version. Planning has no earlier phase, "+
+			"so a stale plan does not move back. If your plan is stale, revise `plan.md` in place to match the new version of the design, "+
+			"then run the plan review again. If your plan is current, write a `dispatch comment` on %s that names the version and why.", issue)
 	}
 	return fmt.Sprintf("As your role's prompt says, read each named section and check at the new version: if your work is stale, "+
 		"call `request_backward_move` with a reason that names the version and the change; if it is current, write a `dispatch comment` "+
 		"on %s that names the version and why; an issue whose pull request has merged never moves back.", issue)
+}
+
+// acceptingAnswer is the answer an architect gives the news of an issue it holds in accepting,
+// named as subject: its sign-off, or a move back. It is written once for its two readers: the
+// closing rule of the holder form (holderRule) and the root architect's line for a member it
+// answers itself (memberWords).
+func acceptingAnswer(subject string) string {
+	return fmt.Sprintf("sign %s off with `sign_off`, or call `request_backward_move` to move it back to planning, implementing or testing", subject)
 }
 
 // architectNews is the root architect's summary after its gate sentence: each pair of versions
@@ -307,8 +321,7 @@ func memberWords(member NewsMember) string {
 	case NewsAtNextStart:
 		return fmt.Sprintf("%s; the next start of %s carries it.", owes, holder)
 	case NewsYouAnswer:
-		return fmt.Sprintf("%s. You hold it in accepting, so you answer it yourself: read what changed, then sign it off with `sign_off`, "+
-			"or call `request_backward_move` to move it back to planning, implementing or testing.", owes)
+		return fmt.Sprintf("%s. You hold it in accepting, so you answer it yourself: read what changed, then %s.", owes, acceptingAnswer("it"))
 	case NewsDecisionOnly:
 		return "told nothing: the approved version differs from the one it took only in decision blocks."
 	case NewsNotConcerned:
@@ -430,8 +443,7 @@ func ordinal(n int) string {
 
 // blockLines names the typed blocks of step's document that changed, one line for each type in
 // the order the types first appear: the checks of the Verification document (criteria), and
-// every other block of the spec and the decisions document, requirements first among them as
-// they come.
+// every other block of the spec and the decisions document.
 func blockLines(step record.DesignStep, blocks []record.BlockChange) []string {
 	var types []string
 	byType := map[string][]string{}

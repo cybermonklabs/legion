@@ -34,16 +34,11 @@ func TestToldRowsTakeOneBaselineAndOnlyRise(t *testing.T) {
 		}
 		must(t, records.PutGate(ctx, tx, DesignGate{Issue: root.Key, Step: DesignStepSpec, ArtifactID: "doc-spec", LatestVersion: 3, ApprovedVersion: new(3)}))
 		must(t, records.PutGate(ctx, tx, DesignGate{Issue: root.Key, Step: DesignStepCriteria, ArtifactID: "doc-criteria", LatestVersion: 2}))
-		wrote, err := records.BaselineTold(ctx, tx, child.Key, AudienceHolder, root.Key, at)
-		must(t, err)
-		if !wrote {
-			t.Fatalf("the first baseline of %s wrote nothing, want its row at the gate's approved versions", child.Key)
-		}
-		// The gate moves on, and a second baseline of the same holder is no baseline at all.
+		must(t, records.BaselineTold(ctx, tx, child.Key, AudienceHolder, root.Key, at))
+		// The gate moves on, and a second baseline of the same holder is no baseline at all: the
+		// row read back below keeps the first one's version and moment.
 		must(t, records.PutGate(ctx, tx, DesignGate{Issue: root.Key, Step: DesignStepSpec, ArtifactID: "doc-spec", LatestVersion: 4, ApprovedVersion: new(4)}))
-		if wrote, err := records.BaselineTold(ctx, tx, child.Key, AudienceHolder, root.Key, at.Add(time.Hour)); err != nil || wrote {
-			t.Fatalf("a second baseline of %s = %t, %v, want nothing written", child.Key, wrote, err)
-		}
+		must(t, records.BaselineTold(ctx, tx, child.Key, AudienceHolder, root.Key, at.Add(time.Hour)))
 	})
 	toldOf := func(issue string, audience DesignAudience) DesignTold {
 		t.Helper()

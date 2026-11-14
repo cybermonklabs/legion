@@ -18,7 +18,7 @@ const designNewsVersion = 20261113212423
 // (design_changes), and seeds the told rows from the gates the release before it left, so the
 // upgrade owes nobody news of what the record already shows as taken.
 //
-// The seed is read on six trees that release can leave: a tree whose spec gate stands open at
+// The seed is read on five trees that release can leave: a tree whose spec gate stands open at
 // version 4, with a member at work, a member held from implementing, a member held from admitted, a
 // member the gate released that has not started, and a member done; a tree whose gate a changes
 // request closed, which cleared its approved version (classify.ApplyDesignGateEvent), so what its

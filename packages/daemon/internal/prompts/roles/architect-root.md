@@ -110,9 +110,9 @@ it prints (`… (version N)`), or at the document's current version when the req
 both are already approved. The daemon registers at Dispatch's latest version in any case, the
 greater of the two.
 A `design-approved`, `design-changes-requested` or `carried-gate-opened` notice names a version
-and a reason, never the step it is of, so when your addressing line names more than one step,
-read `gatedSteps` in your own issue record (the `legion` tool's `read_record`) to see which step
-the review was of before you act on it.
+and a reason, never the step it is of, so when more than one step holds your tree (your addressing
+line names more than one, or you registered `criteria`), read `gatedSteps` in your own issue record
+(the `legion` tool's `read_record`) to see which step the review was of before you act on it.
 After approval, follow `skill://legion-architect`, section 1, for whether the root spec changes,
 when to repeat the two reviews, and when a rewrite means requesting approval again. After
 revival, the delivered `catch-up` notice is the authoritative wake-equivalent: when its design gate

@@ -127,7 +127,7 @@ func (r *newsRig) send(issue string, role claim.Role, news record.DeliveryNews) 
 	return task, &decoded
 }
 
-// item is the news of version to of step's document to issue's audience, which took from.
+// newsItem is the news of version to of step's document to issue's audience, which took from.
 func newsItem(issue string, audience record.DesignAudience, step record.DesignStep, artifact string, from, to int) record.DeliveryNewsItem {
 	return record.DeliveryNewsItem{Issue: issue, Audience: audience, Step: step, Artifact: artifact, From: new(from), To: to}
 }
@@ -240,6 +240,44 @@ func TestTheRootArchitectsSummaryNamesEachMemberAsTheRecordStandsAtItsSend(t *te
 	}
 	if carried == nil || len(carried.Items) != 1 || !carried.NewsOnly {
 		t.Fatalf("the summary still carries %+v, want its one standing item", carried)
+	}
+}
+
+// A member whose owed news is decision blocks alone is told nothing, and the summary says so: the
+// reconcile raises what its holder took and sends nothing. A member whose holder row also owes the
+// opening is sent a task with it, which says nothing its issue holds changed, so the summary names
+// that member as owed and how its holder is told, never as told nothing.
+func TestTheRootArchitectsSummaryNamesADecisionOnlyMemberOwedTheOpeningAsTold(t *testing.T) {
+	r := newNewsRig(t)
+	r.inTx(func(tx pgx.Tx) error {
+		return r.records.PutDesignChanges(r.ctx, tx, record.DesignChanges{
+			VersionPair: record.VersionPair{ArtifactID: "artifact-spec", From: 4, To: 5}, State: record.DesignChangesRead,
+			DecisionOnly: true, ReadAt: time.Now()})
+	})
+	const tested = "- LEGION-502, in testing: "
+	line := func(task string) string {
+		t.Helper()
+		for _, line := range strings.Split(task, "\n") {
+			if strings.HasPrefix(line, tested) {
+				return line
+			}
+		}
+		t.Fatalf("summary = %q, want a line for LEGION-502", task)
+		return ""
+	}
+
+	task, _ := r.send(newsRoot, claim.RoleArchitect, rootSummary())
+	if got, want := line(task), tested+"told nothing: the approved version differs from the one it took only in decision blocks."; got != want {
+		t.Fatalf("the tester's line, owed no opening = %q, want %q", got, want)
+	}
+
+	r.inTx(func(tx pgx.Tx) error {
+		return r.records.SetOpeningOwed(r.ctx, tx, newsTested, record.AudienceHolder, true)
+	})
+	task, _ = r.send(newsRoot, claim.RoleArchitect, rootSummary())
+	if got, want := line(task), tested+"owed version 5 of the spec document, since version 4, which its phase last took; "+
+		"the next start of its tester carries it."; got != want {
+		t.Fatalf("the tester's line, owed the opening = %q, want %q", got, want)
 	}
 }
 

@@ -41,7 +41,9 @@ type DesignTold struct {
 	// OpeningOwed says the opening sentence of the gate is owed to the audience: the gate opened
 	// while it was owed news, so its news carries the opening in place of the role message.
 	OpeningOwed bool
-	// ToldAt is when the row last rose, zero for a row that carries only the owed opening.
+	// ToldAt is when a write of its versions last touched the row: the baseline or the fill that
+	// wrote it, or the last raise, which sets it whether or not a version rose. A fill of a row
+	// already there keeps it. It is zero for a row that only the owed opening wrote.
 	ToldAt time.Time
 }
 
@@ -49,6 +51,18 @@ type DesignTold struct {
 func (t DesignTold) Took(step DesignStep) (int, bool) {
 	version, known := t.Versions[step]
 	return version, known
+}
+
+// ToldRow is issue's audience row among told, the zero row, which knows no version and owes no
+// opening, where there is none. The table is keyed by issue and audience, so at most one row
+// matches.
+func ToldRow(told []DesignTold, issue string, audience DesignAudience) DesignTold {
+	for _, row := range told {
+		if row.Issue == issue && row.Audience == audience {
+			return row
+		}
+	}
+	return DesignTold{Issue: issue, Audience: audience}
 }
 
 // VersionPair is two versions of one document, the earlier From and the later To: the key of a
@@ -67,7 +81,8 @@ const (
 	// DesignChangesRead is Dispatch's answer for the pair.
 	DesignChangesRead DesignChangesState = "read"
 	// DesignChangesUnavailable is a pair Dispatch could not answer: a release without the changes
-	// route (dispatch.ErrNoChangesRoute), or a bounded run of failed reads. Its Reason says which.
+	// route (dispatch.ErrNoChangesRoute), a document Dispatch no longer holds
+	// (dispatch.ErrDocumentNotFound), or a bounded run of failed reads. Its Reason says which.
 	DesignChangesUnavailable DesignChangesState = "unavailable"
 )
 
@@ -126,14 +141,18 @@ type TreeNews struct {
 	Architect []NewsItem
 }
 
-// MemberNews is what the holder of one member's phase is owed. HeldByArchitect says the member
-// stands in accepting, whose holder is the architect that owns the member — the tree's root
-// architect, or a sub-architect running for it — which the daemon resolves when it sends.
+// MemberNews is what the holder of one member's phase is owed.
 type MemberNews struct {
-	Issue           string
-	Phase           phase.Phase
-	HeldByArchitect bool
-	Items           []NewsItem
+	Issue string
+	Phase phase.Phase
+	Items []NewsItem
+}
+
+// HeldByArchitect says the member stands in accepting, whose holder is the architect that owns the
+// member — the tree's root architect, or a sub-architect running for it — which the daemon
+// resolves when it sends.
+func (m MemberNews) HeldByArchitect() bool {
+	return m.Phase == phase.Accepting
 }
 
 // NewsItem is one step whose approved version is news to its audience: the step's document, the
@@ -146,6 +165,25 @@ type NewsItem struct {
 	To         int
 }
 
+// Pair is the change set the item names, and whether it names one: from From to To. An item whose
+// told row knows no version of its step names none, until the reconcile resolves that version into
+// the row (Store.FillTold, from Dispatch's review history).
+func (i NewsItem) Pair() (VersionPair, bool) {
+	if i.From == nil {
+		return VersionPair{}, false
+	}
+	return VersionPair{ArtifactID: i.ArtifactID, From: *i.From, To: i.To}, true
+}
+
+// StepConcerns says whether step concerns issue, a member of tree: spec and decisions concern
+// every member, and criteria the tree root alone, since its checks are the root's to prove. It is
+// the one statement of that rule, read by what a member is owed (OwedNews), by the clause the
+// opened message adds (workflow's openingDelivery) and by why a member is told nothing (the
+// daemon's untoldReason), so a holder is never told that nothing changed while it is owed news.
+func StepConcerns(step DesignStep, issue, tree string) bool {
+	return step != DesignStepCriteria || claim.IsTreeRoot(issue, tree)
+}
+
 // OwedNews is the one rule for what a tree owes of its approved design. A member is owed news of
 // a step only when every one of these holds:
 //
@@ -155,8 +193,8 @@ type NewsItem struct {
 //     facts of one answer tells nothing and the second tells once;
 //   - the step's approved version is above the version the member's holder took, or the record
 //     does not know that version (DesignTold.Took);
-//   - the step concerns the member: spec and decisions concern every member, and criteria the
-//     tree root alone, since its checks are the root's to prove;
+//   - the step concerns the member (StepConcerns): spec and decisions concern every member, and
+//     criteria the tree root alone, since its checks are the root's to prove;
 //   - the member is in the workflow (InWorkflow), its tree does not linger (Issue.Lingers on the
 //     tree's root, as TreeLingers reads it), and its phase has a holder (phase.RoleFor): not
 //     admitted, awaiting_person, done, or held, which a restart moves back into its phase;
@@ -207,13 +245,11 @@ func OwedNews(facts NewsFacts) TreeNews {
 		if !InWorkflow(member) || phase.RoleFor(member.Phase) == "" || facts.Merged[member.Key] {
 			continue
 		}
-		root := claim.IsTreeRoot(member.Key, member.Tree)
 		items := owedItems(steps, facts.Gates, holders[member.Key], func(step DesignStep) bool {
-			return step != DesignStepCriteria || root
+			return StepConcerns(step, member.Key, member.Tree)
 		})
 		if len(items) > 0 {
-			news.Members = append(news.Members, MemberNews{Issue: member.Key, Phase: member.Phase,
-				HeldByArchitect: member.Phase == phase.Accepting, Items: items})
+			news.Members = append(news.Members, MemberNews{Issue: member.Key, Phase: member.Phase, Items: items})
 		}
 	}
 	news.Architect = owedItems(steps, facts.Gates, architect, func(DesignStep) bool { return true })

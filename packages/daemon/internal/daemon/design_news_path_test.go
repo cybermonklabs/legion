@@ -542,7 +542,9 @@ func TestATesterThatCompletesInTheTurnItsNewsWaitsBehindLeavesThatNewsToTheRevie
 
 	// The reconcile the move queued finds no claim to tell yet; the reviewer's phase start carries
 	// the news.
-	r.run(ofKind(record.OutboxKindDesignChanges))
+	if got := r.run(ofKind(record.OutboxKindDesignChanges)); len(got) != 1 {
+		t.Fatalf("design_changes rows after the move = %d, want the one the move queued", len(got))
+	}
 	if got := r.held(startOf(pathRoot, claim.RoleReviewer, true)); len(got) != 0 {
 		t.Fatalf("the reconcile after the move queued %d news-only starts of the reviewer, want none: its phase start carries the news", len(got))
 	}
@@ -796,13 +798,14 @@ func TestTheMergersStartIsHeldUntilTheChangeSetOfItsNewsIsRecorded(t *testing.T)
 	}
 }
 
-// oneDeliveryOfTheOpening is the architect's condition on departure 6, for the holder of role on
-// the rig's root, which is between turns on its phase's task: a decision-only version that closed
-// the gate, so the holder was told "closed" by the role message, and that a person then approved.
-// The holder is owed the opening and, of the work, nothing: so it gets exactly one delivery of the
-// opening, the news task leading with the opening sentence and saying that nothing its issue holds
-// changed, with no change list, and no role message beside it. Every outbox row and every delivery
-// addressed to the holder's claim or its role from the approval to the end of the case is counted.
+// oneDeliveryOfTheOpening is the condition of one delivery of the opening (workflow's
+// openingDelivery), for the holder of role on the rig's root, which is between turns on its
+// phase's task: a decision-only version that closed the gate, so the holder was told "closed" by
+// the role message, and that a person then approved. The holder is owed the opening and, of the
+// work, nothing: so it gets exactly one delivery of the opening, the news task leading with the
+// opening sentence and saying that nothing its issue holds changed, with no change list, and no
+// role message beside it. Every outbox row and every delivery addressed to the holder's claim or
+// its role from the approval to the end of the case is counted.
 func oneDeliveryOfTheOpening(t *testing.T, r *newsPathRig, role claim.Role) {
 	t.Helper()
 	token := mustClaimToken(t, pathRoot, role)
@@ -867,9 +870,8 @@ func oneDeliveryOfTheOpening(t *testing.T, r *newsPathRig, role claim.Role) {
 	r.wantTold("after the news task's confirmation", pathRoot, record.AudienceHolder, 5, false)
 }
 
-// The reviewer's half of the condition on departure 6 (oneDeliveryOfTheOpening): a reviewer
-// between turns on its review, told the gate closed, gets the decision-only opening once, as the
-// news task, and no role message.
+// The reviewer's half of oneDeliveryOfTheOpening: a reviewer between turns on its review, told the
+// gate closed, gets the decision-only opening once, as the news task, and no role message.
 func TestAReviewerToldTheGateClosedGetsOneDeliveryOfADecisionOnlyOpening(t *testing.T) {
 	r := newNewsPathRig(t, 4, pathMember{key: pathRoot, at: phase.Testing})
 	r.told(pathRoot, record.AudienceHolder, 4)
@@ -878,9 +880,9 @@ func TestAReviewerToldTheGateClosedGetsOneDeliveryOfADecisionOnlyOpening(t *test
 	oneDeliveryOfTheOpening(t, r, claim.RoleReviewer)
 }
 
-// The merger's half of the condition on departure 6 (oneDeliveryOfTheOpening): a merger waiting
-// between turns, told the gate closed, gets the decision-only opening that releases its merge once,
-// by its news-only start, and no role_message row is written for it.
+// The merger's half of oneDeliveryOfTheOpening: a merger waiting between turns, told the gate
+// closed, gets the decision-only opening that releases its merge once, by its news-only start, and
+// no role_message row is written for it.
 func TestAMergerToldTheGateClosedGetsOneDeliveryOfADecisionOnlyOpening(t *testing.T) {
 	r := newNewsPathRig(t, 4, pathMember{key: pathRoot, at: phase.Retro})
 	r.told(pathRoot, record.AudienceHolder, 4)

@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/wait"
+	"github.com/sjawhar/legion/daemon/internal/workflow"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
@@ -241,14 +242,9 @@ func (r *newsReconcileRig) toldOf(issue string, audience record.DesignAudience) 
 	return found
 }
 
-// newsStart is one news-only start row the outbox holds: its row and its request.
-type newsStart struct {
-	row     record.OutboxRow
-	request record.SuperviseRequest
-}
-
-// newsStarts is every news-only start the outbox holds (record.SuperviseRequest.News), oldest first.
-func (r *newsReconcileRig) newsStarts() []newsStart {
+// newsStarts is every news-only start the outbox holds (record.SuperviseRequest.News), oldest first,
+// each with its request.
+func (r *newsReconcileRig) newsStarts() []entryStartRow {
 	r.t.Helper()
 	rows, err := r.pool.Query(r.ctx, `select id, issue, payload from outbox where kind = 'supervise'
 		and coalesce((payload->>'news')::boolean, false) order by id`)
@@ -256,9 +252,9 @@ func (r *newsReconcileRig) newsStarts() []newsStart {
 		r.t.Fatalf("read the news-only starts: %v", err)
 	}
 	defer rows.Close()
-	var starts []newsStart
+	var starts []entryStartRow
 	for rows.Next() {
-		var start newsStart
+		var start entryStartRow
 		var payload []byte
 		if err := rows.Scan(&start.row.ID, &start.row.Issue, &payload); err != nil {
 			r.t.Fatalf("read the news-only starts: %v", err)
@@ -278,7 +274,7 @@ func (r *newsReconcileRig) newsStarts() []newsStart {
 }
 
 // startsTo is who each news-only start goes to, `<issue>/<role>@<phase>`, oldest first.
-func startsTo(starts []newsStart) []string {
+func startsTo(starts []entryStartRow) []string {
 	to := make([]string, len(starts))
 	for i, start := range starts {
 		to[i] = fmt.Sprintf("%s/%s@%s", start.row.Issue, start.request.Role, start.request.Phase)
@@ -306,8 +302,7 @@ func pendingNews(t *testing.T, machine *supervise.Machine) (string, record.Deliv
 
 // heldItem is the news of the spec from version from to version 5 to issue's holder.
 func heldItem(issue string, from int) record.DeliveryNewsItem {
-	return record.DeliveryNewsItem{Issue: issue, Audience: record.AudienceHolder, Step: record.DesignStepSpec, Artifact: reconcileDoc,
-		From: new(from), To: 5}
+	return newsItem(issue, record.AudienceHolder, record.DesignStepSpec, reconcileDoc, from, 5)
 }
 
 // The reconcile reads each pair of versions it needs once, whoever is owed it: two members that
@@ -356,6 +351,37 @@ func TestAPairADispatchWithoutTheChangesRouteCannotReadIsRecordedUnavailableWith
 	changes, held := r.recorded(reconcilePair)
 	if !held || changes.State != record.DesignChangesUnavailable || !strings.Contains(changes.Reason, "dispatch has no changes route") {
 		t.Fatalf("the recorded change set = %+v (held %t), want it unavailable with Dispatch's refusal as the reason", changes, held)
+	}
+	if len(r.client.changes) != 1 {
+		t.Fatalf("Dispatch was asked %d times, want once", len(r.client.changes))
+	}
+	if got := startsTo(r.newsStarts()); !reflect.DeepEqual(got, []string{reconcileRoot + "/reviewer@reviewing"}) {
+		t.Fatalf("the news-only starts = %v, want the reviewer's: an unavailable pair is told with its reason", got)
+	}
+}
+
+// A document Dispatch no longer holds answers the changes route 404 ARTIFACT_NOT_FOUND
+// (dispatch.ErrDocumentNotFound): a deleted document does not come back with a wait, so its pair is
+// recorded unavailable at once, as for a Dispatch without the route, with a reason that says the
+// document is gone and not that the route is missing. The row finishes without a retry, and the
+// news goes.
+func TestAPairOfADocumentDispatchNoLongerHoldsIsRecordedUnavailableWithNoRetry(t *testing.T) {
+	r := newNewsReconcileRig(t)
+	r.member(reconcileRoot, "", phase.Reviewing)
+	r.told(reconcileRoot, record.AudienceHolder, 4)
+	r.holder(reconcileRoot, claim.RoleReviewer, supervise.StateIdle, "", 1)
+	r.client.answer = func(record.VersionPair) (dispatch.ArtifactChanges, error) {
+		return dispatch.ArtifactChanges{}, fmt.Errorf("%w: GET /api/v1/artifacts/%s/changes: 404 ARTIFACT_NOT_FOUND: artifact not found",
+			dispatch.ErrDocumentNotFound, reconcileDoc)
+	}
+
+	if err := r.reconcile(0); err != nil {
+		t.Fatalf("reconcile for a document Dispatch no longer holds = %v, want the row finished: no retry brings it back", err)
+	}
+	changes, held := r.recorded(reconcilePair)
+	if !held || changes.State != record.DesignChangesUnavailable || !strings.Contains(changes.Reason, "dispatch holds no such document") ||
+		strings.Contains(changes.Reason, "changes route") {
+		t.Fatalf("the recorded change set = %+v (held %t), want it unavailable, its reason saying the document is gone", changes, held)
 	}
 	if len(r.client.changes) != 1 {
 		t.Fatalf("Dispatch was asked %d times, want once", len(r.client.changes))
@@ -557,6 +583,62 @@ func TestNoNewsOnlyStartGoesWhereTheRecordSaysNoNewsMay(t *testing.T) {
 			}
 			if calls := r.rt.Calls(); !tc.queued && len(calls) != 0 {
 				t.Fatalf("the news-only start made %d runtime calls, want none: it finishes without acting", len(calls))
+			}
+		})
+	}
+}
+
+// A claim whose worker has not yet taken the task it holds — a delivery pending with no
+// confirmation — takes no second task before it does: a news-only start queued then would only
+// wait behind it, retrying on its backoff. So the reconcile queues none, and the news stays owed
+// for the sweep's next reconcile or the phase's next start, which is what the root architect's
+// summary says of the member (workflow.NewsAtNextStart), never that a task tells it now. A claim
+// whose pending task a turn has taken is the control: its confirmation is recorded, the reconcile
+// queues its start, and the summary says a task tells it now.
+func TestNoNewsOnlyStartIsQueuedBehindATaskTheHolderHasNotTaken(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		confirmed bool
+	}{
+		{name: "a task not taken yet"},
+		{name: "a task a turn took", confirmed: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newNewsReconcileRig(t)
+			r.member(reconcileRoot, "", phase.Reviewing)
+			r.told(reconcileRoot, record.AudienceHolder, 4)
+			token := r.holder(reconcileRoot, claim.RoleReviewer, supervise.StateWorking, "", 1)
+			r.inTx(func(tx pgx.Tx) error {
+				_, err := tx.Exec(r.ctx, `insert into pending_task_deliveries (claim_token, delivery_id, task, queued_at, generation, phase, confirmed_at)
+					values ($1, 'outbox:7', 'Review the change.', now(), 1, 'reviewing', case when $2 then now() end)`, string(token), tc.confirmed)
+				return err
+			})
+
+			if err := r.reconcile(0); err != nil {
+				t.Fatalf("reconcile the tree's news: %v", err)
+			}
+			starts := r.newsStarts()
+			if queued := len(starts) == 1; queued != tc.confirmed || len(starts) > 1 {
+				t.Fatalf("the news-only starts = %v, want one queued: %t", startsTo(starts), tc.confirmed)
+			}
+			if took, _ := r.toldOf(reconcileRoot, record.AudienceHolder).Took(record.DesignStepSpec); took != 4 {
+				t.Fatalf("the reviewer's told version = %d, want 4: the news stays owed until a task carrying it is taken", took)
+			}
+			var drafts []memberDraft
+			r.inTx(func(tx pgx.Tx) error {
+				root, err := r.records.Issue(r.ctx, tx, reconcileRoot)
+				if err != nil {
+					return err
+				}
+				drafts, err = readTreeMembers(r.ctx, tx, r.records, config.DesignGateRootIssues.Steps(), *root)
+				return err
+			})
+			want := workflow.NewsAtNextStart
+			if tc.confirmed {
+				want = workflow.NewsSentNow
+			}
+			if len(drafts) != 1 || drafts[0].state != want {
+				t.Fatalf("the summary's members = %+v, want the reviewer's issue told %q", drafts, want)
 			}
 		})
 	}

@@ -226,6 +226,48 @@ func TestTwoSectionsOfOneHeadingAreToldApartByOccurrence(t *testing.T) {
 		[]servedSection{{Heading: "Step", Occurrence: 1, Change: "changed"}}, []servedBlockRef{})
 }
 
+// Every block the change set names carries an id its own stored version names. The parse gives a
+// block that repeats an earlier block's id a fresh id of its own, and a typed block that shares its
+// id with an ask before it is one such block, so a version that holds either is read with ids in
+// neither document. No block is named under such an id: named, it would be an addition and a
+// removal of blocks neither version holds. The block whose id the stored text does name is
+// compared under it as any other. The texts are compared as the route compares two stored
+// versions (compareVersions): no write path stores a repeated id, so none can be uploaded.
+func TestAChangeSetNamesNoBlockUnderAnIDNeitherStoredVersionCarries(t *testing.T) {
+	requirement := func(id, words string) string { return ":::requirement{#" + id + "}\n" + words + "\n:::\n\n" }
+	for _, tc := range []struct {
+		name          string
+		before, after string
+		want          []artifactBlockChange
+	}{
+		{
+			name: "a repeated requirement id",
+			before: "# Spec\n\n## Requirements\n\n" + requirement("r1", "The read succeeds.") +
+				requirement("r1", "The read is fast."),
+			after: "# Spec\n\n## Requirements\n\n" + requirement("r1", "The read succeeds at once.") +
+				requirement("r1", "The read is fast."),
+			want: []artifactBlockChange{{ID: "r1", Type: "requirement", Change: "changed"}},
+		},
+		{
+			name:   "a requirement that shares its id with an ask",
+			before: "# Spec\n\n## Decisions\n\n" + waveAsk + "\n" + requirement("wave", "The read succeeds."),
+			after: "# Spec\n\n## Decisions\n\n" + waveAsk + "\n" + requirement("wave", "The read succeeds at once.") +
+				requirement("r2", "The read is logged."),
+			want: []artifactBlockChange{{ID: "r2", Type: "requirement", Change: "added"}},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			changes, err := compareVersions(tc.before, tc.after)
+			if err != nil {
+				t.Fatalf("compare the two versions: %v", err)
+			}
+			if !reflect.DeepEqual(changes.Blocks, tc.want) {
+				t.Fatalf("the change set names the blocks %+v, want %+v: every id named must be one a stored version carries", changes.Blocks, tc.want)
+			}
+		})
+	}
+}
+
 // A pair whose from is not below its to is refused 400 INVALID_VERSION, as a version number that
 // is not positive is, and the refusal is the error envelope every artifact route answers.
 func TestTheChangeSetRefusesFromNotBelowTo(t *testing.T) {

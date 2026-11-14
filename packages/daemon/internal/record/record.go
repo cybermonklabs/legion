@@ -1552,9 +1552,9 @@ type Store interface {
 	// TreeTold is every told row of the issues of tree (DesignTold), by issue and then audience.
 	TreeTold(ctx context.Context, tx pgx.Tx, tree string) ([]DesignTold, error)
 	// BaselineTold writes issue's audience row at the approved versions root's gate rows hold in
-	// this transaction, when issue holds no such row, and reports whether it wrote one: the
-	// version work starts from (Postgres.BaselineTold).
-	BaselineTold(ctx context.Context, tx pgx.Tx, issue string, audience DesignAudience, root string, at time.Time) (bool, error)
+	// this transaction, when issue holds no such row: the version work starts from
+	// (Postgres.BaselineTold).
+	BaselineTold(ctx context.Context, tx pgx.Tx, issue string, audience DesignAudience, root string, at time.Time) error
 	// RaiseTold raises each step of versions on issue's audience row to the greater of what the
 	// row holds and the version given, writing the row when there is none; a step versions does
 	// not name keeps what the row holds.

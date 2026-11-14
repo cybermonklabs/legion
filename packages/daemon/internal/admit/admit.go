@@ -1373,7 +1373,7 @@ func (a *Admission) readmit(ctx context.Context, tx pgx.Tx, stored record.Issue,
 					return fmt.Errorf("carry gate to re-admitted orphan %s: %w", stored.Key, err)
 				}
 			}
-			if _, err := a.store.BaselineTold(ctx, tx, stored.Key, record.AudienceArchitect, stored.Key, a.now()); err != nil {
+			if err := a.store.BaselineTold(ctx, tx, stored.Key, record.AudienceArchitect, stored.Key, a.now()); err != nil {
 				return fmt.Errorf("take the baseline of re-admitted orphan %s's architect: %w", stored.Key, err)
 			}
 			// The carry binds this issue's steps to the old root's documents, so it moves the pairs

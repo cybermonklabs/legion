@@ -428,12 +428,14 @@ func (c *HTTPClient) Approval(ctx context.Context, artifactID string) (Approval,
 
 // ArtifactChanges reads GET /api/v1/artifacts/{id}/changes?from=&to=: what changed in the document
 // between versions from and to, both positive and from below to, as Dispatch answers them (a pair
-// from 0 has no earlier version to compare, and Dispatch refuses it). A 404 or 405 is
-// ErrNoChangesRoute wrapped around Dispatch's own refusal: a Dispatch whose release has no such
-// route answers its router's 404 or 405, and the caller records the pair unreadable rather than
-// waiting for an upgrade. Dispatch also answers 404 for a version the document does not have,
-// which the daemon does not ask for, since the versions it reads are the ones its gate recorded.
-// Every other failure is the request's own, which a caller rides out.
+// from 0 has no earlier version to compare, and Dispatch refuses it). A 404 ARTIFACT_NOT_FOUND is
+// ErrDocumentNotFound wrapped around Dispatch's own refusal: Dispatch holds no document of that
+// id, a document deleted since its gate recorded it. Any other 404, and a 405, is
+// ErrNoChangesRoute wrapped the same way: a Dispatch whose release has no such route answers its
+// router's 404 or 405. Either way the caller records the pair unreadable rather than waiting, for
+// an upgrade or for a document that does not come back. Dispatch also answers 404 for a version
+// the document does not have, which the daemon does not ask for, since the versions it reads are
+// the ones its gate recorded. Every other failure is the request's own, which a caller rides out.
 func (c *HTTPClient) ArtifactChanges(ctx context.Context, artifactID string, from, to int) (ArtifactChanges, error) {
 	query := url.Values{}
 	query.Set("from", fmt.Sprint(from))
@@ -441,7 +443,11 @@ func (c *HTTPClient) ArtifactChanges(ctx context.Context, artifactID string, fro
 	var changes ArtifactChanges
 	if err := c.request(ctx, http.MethodGet, "/api/v1/artifacts/"+url.PathEscape(artifactID)+"/changes?"+query.Encode(), nil, &changes); err != nil {
 		var refusal *Error
-		if errors.As(err, &refusal) && (refusal.Status == http.StatusNotFound || refusal.Status == http.StatusMethodNotAllowed) {
+		switch {
+		case !errors.As(err, &refusal):
+		case refusal.Status == http.StatusNotFound && refusal.Code == ArtifactNotFound:
+			return ArtifactChanges{}, fmt.Errorf("%w: %w", ErrDocumentNotFound, err)
+		case refusal.Status == http.StatusNotFound || refusal.Status == http.StatusMethodNotAllowed:
 			return ArtifactChanges{}, fmt.Errorf("%w: %w", ErrNoChangesRoute, err)
 		}
 		return ArtifactChanges{}, err

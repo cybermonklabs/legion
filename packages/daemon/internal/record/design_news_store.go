@@ -46,26 +46,25 @@ func (s *Postgres) TreeTold(ctx context.Context, tx pgx.Tx, tree string) ([]Desi
 }
 
 // BaselineTold writes issue's audience row at the approved version of each step whose gate row
-// root holds an approval, when issue holds no such row yet, and reports whether it wrote one. A
-// row already there is left as it stands: the baseline is the version the work started from, and
-// a later baseline would hide the news of every version approved since. A step whose row holds no
-// approval is left out, which is a version the record does not know (DesignTold.Took).
+// root holds an approval, when issue holds no such row yet. A row already there is left as it
+// stands: the baseline is the version the work started from, and a later baseline would hide the
+// news of every version approved since. A step whose row holds no approval is left out, which is
+// a version the record does not know (DesignTold.Took).
 //
 // The versions are read in the statement that writes them, from the rows the caller's transaction
 // holds, so the baseline is the gate as that transaction leaves it: the transition that starts the
 // work (workflow's Engine.enter), or the write that opens the tree's gate for the first time
 // (workflow's putGateTold).
-func (s *Postgres) BaselineTold(ctx context.Context, tx pgx.Tx, issue string, audience DesignAudience, root string, at time.Time) (bool, error) {
-	tag, err := tx.Exec(ctx, `insert into design_news_told (issue, audience, versions, opening_owed, told_at)
+func (s *Postgres) BaselineTold(ctx context.Context, tx pgx.Tx, issue string, audience DesignAudience, root string, at time.Time) error {
+	if _, err := tx.Exec(ctx, `insert into design_news_told (issue, audience, versions, opening_owed, told_at)
 		select $1::text, $2::text,
 			coalesce(jsonb_object_agg(step, approved_version) filter (where approved_version is not null), '{}'::jsonb),
 			false, $4::timestamptz
 		from design_gates where issue = $3::text
-		on conflict (issue, audience) do nothing`, issue, string(audience), root, at)
-	if err != nil {
-		return false, fmt.Errorf("write the baseline %s's %s takes from %s's gate: %w", issue, audience, root, err)
+		on conflict (issue, audience) do nothing`, issue, string(audience), root, at); err != nil {
+		return fmt.Errorf("write the baseline %s's %s takes from %s's gate: %w", issue, audience, root, err)
 	}
-	return tag.RowsAffected() == 1, nil
+	return nil
 }
 
 // RaiseTold raises each step of versions on issue's audience row to the greater of the version the
@@ -116,7 +115,7 @@ func (s *Postgres) SetOpeningOwed(ctx context.Context, tx pgx.Tx, issue string, 
 // the row holds. It is how a version the record did not know is resolved into it — the reconcile
 // reads it from Dispatch's review history (dispatch.Client.ApprovedVersionBefore) — so that every
 // later reader of the row names the same pair of versions, where a version read again at each send
-// could name another. A row already there keeps its owed opening and the moment it last rose.
+// could name another. A row already there keeps its owed opening and its ToldAt.
 func (s *Postgres) FillTold(ctx context.Context, tx pgx.Tx, issue string, audience DesignAudience, versions map[DesignStep]int, at time.Time) error {
 	if len(versions) == 0 {
 		return nil
@@ -137,8 +136,9 @@ func (s *Postgres) FillTold(ctx context.Context, tx pgx.Tx, issue string, audien
 // TreeNewsFacts is what OwedNews reads of tree, as tx finds the record: the deployment's steps, the
 // root's gate rows, every member with the root among them, their told rows, and whether each
 // member's pull request has merged, read from the pull request's own state whatever phase the
-// member stands in. Every reader of a tree's owed news reads its facts here, so the opening, a
-// phase move, the reconcile, a start, the merger's hold and the sweep weigh one rule over one read.
+// member stands in, in one read for the whole tree (Store.PullRequestsOf). Every reader of a tree's
+// owed news reads its facts here, so the opening, a phase move, the reconcile, a start, the
+// merger's hold, the sweep and the root architect's summary weigh one rule over one read.
 func TreeNewsFacts(ctx context.Context, store Store, tx pgx.Tx, steps []DesignStep, tree string) (NewsFacts, error) {
 	gates, err := store.GatesOf(ctx, tx, tree)
 	if err != nil {
@@ -152,13 +152,17 @@ func TreeNewsFacts(ctx context.Context, store Store, tx pgx.Tx, steps []DesignSt
 	if err != nil {
 		return NewsFacts{}, err
 	}
+	keys := make([]string, len(members))
+	for i, member := range members {
+		keys[i] = member.Key
+	}
+	requests, err := store.PullRequestsOf(ctx, tx, keys)
+	if err != nil {
+		return NewsFacts{}, err
+	}
 	merged := make(map[string]bool, len(members))
 	for _, member := range members {
-		pr, err := store.PullRequest(ctx, tx, member.Key)
-		if err != nil {
-			return NewsFacts{}, err
-		}
-		merged[member.Key] = pr != nil && pr.State == PullRequestMerged
+		merged[member.Key] = requests[member.Key].State == PullRequestMerged
 	}
 	return NewsFacts{Steps: steps, Gates: gates, Members: members, Told: told, Merged: merged}, nil
 }
@@ -264,9 +268,9 @@ func (s *Postgres) PutDesignChanges(ctx context.Context, tx pgx.Tx, changes Desi
 		on conflict (artifact_id, from_version, to_version) do update set state = excluded.state,
 			decision_only = excluded.decision_only, sections = excluded.sections, blocks = excluded.blocks,
 			reason = excluded.reason, read_at = excluded.read_at
-		where design_changes.state <> 'read'`,
+		where design_changes.state <> $10`,
 		changes.ArtifactID, changes.From, changes.To, string(changes.State), changes.DecisionOnly, sections, blocks,
-		changes.Reason, changes.ReadAt); err != nil {
+		changes.Reason, changes.ReadAt, string(DesignChangesRead)); err != nil {
 		return fmt.Errorf("record the change set of %+v: %w", changes.VersionPair, err)
 	}
 	return nil

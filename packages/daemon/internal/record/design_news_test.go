@@ -216,8 +216,8 @@ func TestOwedNewsOwesEachHolderTheVersionsItHasNotTaken(t *testing.T) {
 				Told: []DesignTold{architectTook(map[DesignStep]int{DesignStepSpec: 5}), holderTook(newsRoot, map[DesignStep]int{DesignStepSpec: 4}),
 					holderTook(child, map[DesignStep]int{DesignStepSpec: 4})}},
 			want: TreeNews{Members: []MemberNews{
-				{Issue: newsRoot, Phase: phase.Accepting, HeldByArchitect: true, Items: []NewsItem{specNews(new(4), 5)}},
-				{Issue: child, Phase: phase.Accepting, HeldByArchitect: true, Items: []NewsItem{specNews(new(4), 5)}},
+				{Issue: newsRoot, Phase: phase.Accepting, Items: []NewsItem{specNews(new(4), 5)}},
+				{Issue: child, Phase: phase.Accepting, Items: []NewsItem{specNews(new(4), 5)}},
 			}},
 		},
 		{

@@ -281,7 +281,8 @@ Facts about the request:
   and your call named none; the message names the steps it gates. Call again with `step` naming
   the one that document is for.
 - `register_gate` refused 409 `GATE_STEP_NOT_CONFIGURED` means the `step` you named is not one
-  this deployment gates; the message names the steps it does gate. Register those and no other.
+  this deployment gates; the message names the steps it does gate. Register those, and `criteria`
+  too where the line names `spec` and not `criteria`.
 - `register_gate` refused 409 `GATE_STEP_DOCUMENT_MISMATCH` means the document you named is not
   that step's document of that issue; the message names the step and the document it records.
   Register that step's own document, as the table in "Which steps are gated" says.

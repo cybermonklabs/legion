@@ -1234,10 +1234,6 @@ func ApprovalFollows(gate record.DesignGate, version int, mark record.EventMark)
 // is no longer the person's word. A new version that closed the gate since leaves it standing: the
 // gate keeps that approval as the version a person approved below the latest. It is named for the
 // design gate because ApprovalStands already answers the pull request's question of a review.
-//
-// An open pull request (cybermonklabs/legion#3712) renames ApprovalFollows to ReviewSuperseded
-// and gathers every sender of a task about a person's decision behind it; whichever of the two
-// lands second folds this one in as that function's approval case.
 func DesignApprovalStands(gate record.DesignGate, to int) bool {
 	return gate.ApprovedVersion != nil && *gate.ApprovedVersion == to
 }

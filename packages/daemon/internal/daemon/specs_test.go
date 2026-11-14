@@ -76,7 +76,7 @@ func TestARootArchitectIsToldTheGatedStepsAndWhatTheyAsk(t *testing.T) {
 				if err != nil {
 					t.Fatalf("SpawnSpec: %v", err)
 				}
-				check := " " + ProductionCheckFragment(config.Project{})
+				check := " " + ProductionCheckFragment("")
 				if told := strings.HasSuffix(spec.Prompt.Addressing, " "+deployment.line+check); told != tc.root || !tc.root && strings.Contains(spec.Prompt.Addressing, "Design gate steps") {
 					t.Fatalf("addressing %q; want it to end with %q: %t", spec.Prompt.Addressing, deployment.line+check, tc.root)
 				}
@@ -121,14 +121,14 @@ func TestEveryArchitectIsToldTheProjectsProductionCheck(t *testing.T) {
 		t.Fatalf("compose the shipped prompts: %v", err)
 	}
 	for _, setting := range []struct {
-		name    string
-		project config.Project
-		line    string
+		name  string
+		check claim.Role
+		line  string
 	}{
-		{"tester", config.Project{ProductionCheck: claim.RoleTester}, "Production check: tester."},
-		{"off", config.Project{}, "Production check: off."},
+		{"tester", claim.RoleTester, "Production check: tester."},
+		{"off", "", "Production check: off."},
 	} {
-		if got := ProductionCheckFragment(setting.project); got != setting.line {
+		if got := ProductionCheckFragment(setting.check); got != setting.line {
 			t.Errorf("ProductionCheckFragment(%s) = %q, want %q", setting.name, got, setting.line)
 		}
 		for _, tc := range []struct {
@@ -146,7 +146,7 @@ func TestEveryArchitectIsToldTheProjectsProductionCheck(t *testing.T) {
 					t.Fatal(err)
 				}
 				s := specs{stateDir: t.TempDir(), project: "s1", prompts: composer, designSteps: config.DesignGateRootIssues.Steps(),
-					projectSettings: setting.project, repositories: noRepositoriesView}
+					productionCheck: setting.check, repositories: noRepositoriesView}
 				spec, err := s.SpawnSpec(context.Background(), supervise.Claim{Token: token, Issue: tc.issue, Tree: "S1-1", Role: tc.role})
 				if err != nil {
 					t.Fatalf("SpawnSpec: %v", err)

@@ -1143,8 +1143,8 @@ merger_waits_after() {
 }
 until_true 900 "$root3's merger to end its turn on a WAITING line while the gate is closed" merger_waits_after "$marker_gate"
 # The merger's turn has ended, so nothing of that turn merges. The pull request is read after a
-# further minute, in which only the opening could release the merge, and once more as the person
-# approves, so the merge that follows is the approval's.
+# further minute, in which only the opening could release the merge, and that read is the last one
+# before the person approves, so the merge that follows is the approval's.
 sleep 60
 held=$(gh -R "$repo" pr view "${pr_of[$root3]}" --json state,autoMergeRequest,isInMergeQueue --jq '[.state, (.autoMergeRequest != null), .isInMergeQueue] | @tsv')
 [ "$held" = $'OPEN\tfalse\tfalse' ] ||
@@ -1154,10 +1154,9 @@ dispatch_human POST "artifacts/$gate_artifact/reviews" '{"state":"approved"}' >/
 until_true 180 "the person's approval of version $reclosed to open $root3's gate" sh -c \
   "'$work/legion' state --json --port '$port_daemon' | jq -e --arg issue '$root3' --argjson v '$reclosed' '.issues[\$issue].designGate.approvedVersion == \$v'"
 opening="The design gate of $root3 opened: a person approved version $reclosed"
-opening_reached() { { claim_session_text "$root3" merger || true; } | grep -qF -- "$opening"; }
-until_true 600 "the opening of version $reclosed to reach $root3's merger" opening_reached
+until_true 600 "the opening of version $reclosed to reach $root3's merger" session_contains "$root3" merger "$opening"
 how="a task"
-[ "$(notice_deliveries "$root3" merger "$opening")" = 0 ] || how="the opened role message"
+! notice_delivered "$root3" merger "$opening" || how="the opened role message"
 await_merger_merge "$repo" "${pr_of[$root3]}"
 wait_for_phase "$root3" "done" 600
 daemon_state >"$evidence/state-after-gated-merge.json" || true

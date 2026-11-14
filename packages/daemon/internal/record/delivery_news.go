@@ -30,6 +30,11 @@ type DeliveryNews struct {
 	Openings []DeliveryOpening `json:"openings,omitempty"`
 }
 
+// Empty says whether the news tells nothing: no item and no opening. A delivery carries no such news.
+func (n DeliveryNews) Empty() bool {
+	return len(n.Items) == 0 && len(n.Openings) == 0
+}
+
 // DeliveryNewsItem is one step whose approved version a delivery tells one audience of one issue:
 // its document (Artifact), the version that audience's told row held when the item was composed
 // (From, nil where the row did not know it), and the approved version it tells (To). Its

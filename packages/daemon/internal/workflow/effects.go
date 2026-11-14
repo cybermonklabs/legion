@@ -847,7 +847,7 @@ func (e *Engine) enter(ctx context.Context, tx pgx.Tx, issue record.Issue, role 
 	if err := e.store.PutPhase(ctx, tx, row); err != nil {
 		return 0, err
 	}
-	if _, err := e.store.BaselineTold(ctx, tx, issue.Key, record.AudienceHolder, issue.Tree, e.now()); err != nil {
+	if err := e.store.BaselineTold(ctx, tx, issue.Key, record.AudienceHolder, issue.Tree, e.now()); err != nil {
 		return 0, err
 	}
 	return row.Entry, nil

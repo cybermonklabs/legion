@@ -2,7 +2,6 @@ package store
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
@@ -29,32 +28,26 @@ import (
 
 // settleDesignNews raises or puts back what the delivery's news tells, and does so on two writes
 // alone: the one that records the delivery's confirmation, and the one that takes it back. Which
-// write this is, is read from the row the write is about to replace, as putBackARetakenConfirmation
-// reads it: the write carries a confirmation and the row it replaces holds none — or there is no row
-// — which is the write that records it; or the write carries none and the row it replaces holds
-// one, which is a prompt refused busy after a turn of the agent's own confirmed it, a late refusal,
-// or a turn its process died in, all of which send the task again. So it runs before the upsert,
-// since afterwards nothing says what the write changed, and the read takes that row's own lock.
+// write this is, is read from the row the write is about to replace (putDelivery's
+// replacesConfirmed, given here as replaced), as putBackARetakenConfirmation reads it: the write
+// carries a confirmation and the row it replaces holds none — or there is no row — which is the
+// write that records it; or the write carries none and the row it replaces holds one, which is a
+// prompt refused busy after a turn of the agent's own confirmed it, a late refusal, or a turn its
+// process died in, all of which send the task again. The read runs before the upsert, since
+// afterwards nothing says what the write changed, and it takes that row's own lock.
 //
 // Every other write changes no told row. A confirmed delivery written again — a write the machine
 // owed, made at its next decision — raises nothing a second time, which matters for the opening: the
 // gate can open again after the first write, and a second clear would lose the opening that later
 // news owes. A task that carries no news has nothing to raise.
-func settleDesignNews(ctx context.Context, tx pgx.Tx, token claim.Token, d supervise.Delivery, news []byte) error {
+func settleDesignNews(ctx context.Context, tx pgx.Tx, token claim.Token, d supervise.Delivery, news []byte, replaced bool) error {
 	if len(news) == 0 {
 		return nil
 	}
-	var confirmed bool
-	switch err := tx.QueryRow(ctx, `select confirmed_at is not null from pending_task_deliveries
-		where claim_token = $1 for update`, string(token)).Scan(&confirmed); {
-	case errors.Is(err, pgx.ErrNoRows):
-	case err != nil:
-		return fmt.Errorf("read whether the delivery %s holds was confirmed: %w", token, err)
-	}
 	switch {
-	case !d.ConfirmedAt.IsZero() && !confirmed:
+	case !d.ConfirmedAt.IsZero() && !replaced:
 		return tellDesignNews(ctx, tx, token, d.ID, news, d.ConfirmedAt)
-	case d.ConfirmedAt.IsZero() && confirmed:
+	case d.ConfirmedAt.IsZero() && replaced:
 		return untellDesignNews(ctx, tx, token, d.ID, news)
 	}
 	return nil

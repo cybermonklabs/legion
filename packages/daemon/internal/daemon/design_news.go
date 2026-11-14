@@ -21,10 +21,10 @@ import (
 
 // designChangesAttempts is how many attempts of one design_changes row read a pair's change set
 // from Dispatch before the pair is recorded unavailable with the last error: a failure Dispatch
-// may stop giving is ridden out on the row's backoff, and a run of three, about seven seconds of
-// it, is no longer a moment's fault. Recording the pair is what lets the news go, naming the
-// versions and why the change list could not be read, and what releases a merger held for it
-// (mergerWaitsForTheDesignGate).
+// may stop giving is ridden out on the row's backoff, and a run of three, with about three seconds
+// of backoff between the first and the last (retryBackoff), is no longer a moment's fault.
+// Recording the pair is what lets the news go, naming the versions and why the change list could
+// not be read, and what releases a merger held for it (mergerWaitsForTheDesignGate).
 const designChangesAttempts = 3
 
 // toldKey names one told row: an audience of one issue (record.DesignTold).
@@ -69,21 +69,26 @@ func owedNewsItems(news record.TreeNews, root string) []owedNewsItem {
 //     news says as a first approval, and Dispatch is not asked.
 //  3. In one write transaction, it records each change set it read (record.Store.PutDesignChanges)
 //     and each version it resolved (record.Store.FillTold). A Dispatch without the changes route,
-//     which answers 404 or 405 (dispatch.ErrNoChangesRoute), has its pair recorded unavailable at
-//     once, with Dispatch's refusal as the reason; any other failed read returns its error, so the
-//     row retries on its backoff, and the attempt that is the row's designChangesAttempts-th
-//     records the pair unavailable with the last error instead. A failed read of the review
-//     history is bounded the same way: until that attempt it is retried, and on it the step is
-//     filled with 0 and the pair from 0 recorded unavailable, its reason naming the failed read,
-//     which the news says as a version the daemon could not read (workflow.RenderNews) and never
-//     as a first approval. So every read this row makes ends within its bounded attempts, and a
-//     merger held for the news is released then (mergerWaitsForTheDesignGate).
+//     which answers 404 or 405 (dispatch.ErrNoChangesRoute), and a document Dispatch no longer
+//     holds, which it answers 404 ARTIFACT_NOT_FOUND (dispatch.ErrDocumentNotFound), each have
+//     their pair recorded unavailable at once, with Dispatch's refusal as the reason; any other
+//     failed read returns its error, so the row retries on its backoff, and the attempt that is
+//     the row's designChangesAttempts-th records the pair unavailable with the last error instead.
+//     A failed read of the review history is bounded the same way: until that attempt it is
+//     retried, and on it the step is filled with 0 and the pair from 0 recorded unavailable, its
+//     reason naming the failed read, which the news says as a version the daemon could not read
+//     (workflow.RenderNews) and never as a first approval. So every read this row makes ends
+//     within its bounded attempts, and a merger held for the news is released then
+//     (mergerWaitsForTheDesignGate).
 //  4. In one transaction under the fact lock (intake.SerializeFacts), it settles each owed member
 //     (settleNews).
 //  5. In that same transaction, it settles the tree root's architect row, and queues the root
 //     architect's news-only start when that row is owed.
 //
-// A root the record no longer holds owes nothing, and the row finishes.
+// A root the record no longer holds owes nothing, and the row finishes. So does a tree owed
+// nothing at the first step, with no lock taken: every write that leaves news owed queues a
+// reconcile of its own (record.QueueDesignNews), and this row, running, does not stand in for it
+// (record.Store.DesignNewsPending).
 func (r *outbox) designChanges(ctx context.Context, row record.OutboxRow) error {
 	if r.dispatch == nil {
 		return errors.New("design_changes executor has no Dispatch client")
@@ -106,6 +111,9 @@ func (r *outbox) designChanges(ctx context.Context, row record.OutboxRow) error 
 		return nil
 	}
 	items := owedNewsItems(owed, root.Tree)
+	if len(items) == 0 {
+		return nil
+	}
 	fills, pairs, unread, historyErr := r.resolveBaselines(ctx, row, items)
 	var recorded map[record.VersionPair]record.DesignChanges
 	if err := pgx.BeginTxFunc(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
@@ -150,48 +158,53 @@ func (r *outbox) designChanges(ctx context.Context, row record.OutboxRow) error 
 // end a read Dispatch keeps failing.
 func (r *outbox) resolveBaselines(ctx context.Context, row record.OutboxRow, items []owedNewsItem) (map[toldKey]map[record.DesignStep]int,
 	[]record.VersionPair, map[record.VersionPair]string, error) {
-	type asked struct {
+	type question struct {
 		artifact string
 		to       int
 	}
-	before := map[asked]int{}
-	failures := map[asked]error{}
+	type answer struct {
+		version int
+		err     error
+	}
+	// approvedBefore is Dispatch's answer to one question, read the first time it is asked
+	// (fresh) and taken from the answers after; a failed read answers version 0.
+	answers := map[question]answer{}
+	approvedBefore := func(asked question) (answer, bool) {
+		if got, read := answers[asked]; read {
+			return got, false
+		}
+		version, err := r.dispatch.ApprovedVersionBefore(ctx, asked.artifact, asked.to)
+		if err != nil {
+			version = 0
+		}
+		answers[asked] = answer{version: version, err: err}
+		return answers[asked], true
+	}
 	fills := map[toldKey]map[record.DesignStep]int{}
 	unread := map[record.VersionPair]string{}
 	var pairs []record.VersionPair
 	var failed error
 	for _, owed := range items {
 		item := owed.item
-		from := item.From
-		if from == nil {
-			question := asked{item.ArtifactID, item.To}
-			version, read := before[question]
-			err, failedBefore := failures[question]
-			if !read && !failedBefore {
-				if version, err = r.dispatch.ApprovedVersionBefore(ctx, item.ArtifactID, item.To); err != nil {
-					failures[question] = err
-				} else {
-					before[question] = version
+		pair, known := item.Pair()
+		if !known {
+			got, fresh := approvedBefore(question{item.ArtifactID, item.To})
+			switch {
+			case got.err != nil && row.Attempts+1 < designChangesAttempts:
+				if fresh {
+					failed = errors.Join(failed, fmt.Errorf("read the version of %s approved before version %d: %w", item.ArtifactID, item.To, got.err))
 				}
-			}
-			if err != nil {
-				if row.Attempts+1 < designChangesAttempts {
-					if !failedBefore {
-						failed = errors.Join(failed, fmt.Errorf("read the version of %s approved before version %d: %w", item.ArtifactID, item.To, err))
-					}
-					continue
-				}
-				version = 0
+				continue
+			case got.err != nil:
 				unread[record.VersionPair{ArtifactID: item.ArtifactID, To: item.To}] =
-					fmt.Sprintf("the version this issue last took could not be read from the review history: %v", err)
+					fmt.Sprintf("the version this issue last took could not be read from the review history: %v", got.err)
 			}
 			if fills[owed.told] == nil {
 				fills[owed.told] = map[record.DesignStep]int{}
 			}
-			fills[owed.told][item.Step] = version
-			from = &version
+			fills[owed.told][item.Step] = got.version
+			pair = record.VersionPair{ArtifactID: item.ArtifactID, From: got.version, To: item.To}
 		}
-		pair := record.VersionPair{ArtifactID: item.ArtifactID, From: *from, To: item.To}
 		if !slices.Contains(pairs, pair) {
 			pairs = append(pairs, pair)
 		}
@@ -203,9 +216,10 @@ func (r *outbox) resolveBaselines(ctx context.Context, row record.OutboxRow, ite
 // pairs that recorded does not hold, as it is to be recorded. A pair unread names — from 0, for a
 // version the review history could not give — is recorded unavailable with its reason. Any other
 // pair from version 0 is recorded read with nothing listed, and Dispatch is not asked. A Dispatch
-// without the changes route has the pair recorded unavailable at once; any other failure is
-// returned, beside every set that was read, until the row's designChangesAttempts-th attempt,
-// which records the pair unavailable with that failure as its reason.
+// without the changes route, and a document Dispatch no longer holds, have the pair recorded
+// unavailable at once; any other failure is returned, beside every set that was read, until the
+// row's designChangesAttempts-th attempt, which records the pair unavailable with that failure as
+// its reason.
 func (r *outbox) readChangeSets(ctx context.Context, row record.OutboxRow, pairs []record.VersionPair,
 	recorded map[record.VersionPair]record.DesignChanges, unread map[record.VersionPair]string) ([]record.DesignChanges, error) {
 	at := r.now().UTC()
@@ -227,7 +241,7 @@ func (r *outbox) readChangeSets(ctx context.Context, row record.OutboxRow, pairs
 		switch {
 		case err == nil:
 			read = append(read, changesFromDispatch(pair, answer, at))
-		case errors.Is(err, dispatch.ErrNoChangesRoute):
+		case errors.Is(err, dispatch.ErrNoChangesRoute), errors.Is(err, dispatch.ErrDocumentNotFound):
 			read = append(read, record.DesignChanges{VersionPair: pair, State: record.DesignChangesUnavailable, Reason: err.Error(), ReadAt: at})
 		case row.Attempts+1 >= designChangesAttempts:
 			read = append(read, record.DesignChanges{VersionPair: pair, State: record.DesignChangesUnavailable, ReadAt: at,
@@ -277,11 +291,12 @@ func settlementOf(items []record.NewsItem, recorded map[record.VersionPair]recor
 	versions := map[record.DesignStep]int{}
 	decisionsOnly := true
 	for _, item := range items {
-		if item.From == nil {
+		pair, known := item.Pair()
+		if !known {
 			return settleLater, nil
 		}
-		changes, known := recorded[record.VersionPair{ArtifactID: item.ArtifactID, From: *item.From, To: item.To}]
-		if !known {
+		changes, recordedSet := recorded[pair]
+		if !recordedSet {
 			return settleLater, nil
 		}
 		decisionsOnly = decisionsOnly && changes.State == record.DesignChangesRead && changes.DecisionOnly
@@ -297,11 +312,7 @@ func settlementOf(items []record.NewsItem, recorded map[record.VersionPair]recor
 func owedPairs(news record.TreeNews, root string) []record.VersionPair {
 	var pairs []record.VersionPair
 	for _, owed := range owedNewsItems(news, root) {
-		if owed.item.From == nil {
-			continue
-		}
-		pair := record.VersionPair{ArtifactID: owed.item.ArtifactID, From: *owed.item.From, To: owed.item.To}
-		if !slices.Contains(pairs, pair) {
+		if pair, known := owed.item.Pair(); known && !slices.Contains(pairs, pair) {
 			pairs = append(pairs, pair)
 		}
 	}
@@ -324,7 +335,8 @@ type newsHolderStart struct {
 //     versions raised directly (record.Store.RaiseTold), and nothing is sent;
 //   - otherwise a member's news goes to the holder of its phase by a news-only start
 //     (record.SuperviseRequest.News), queued as a row of its own on the member's issue, unless one
-//     is queued for that claim already, or the claim is one a news-only start may not reach
+//     is queued for that claim already, or the claim holds a task its worker has not taken yet
+//     (holdsUntakenTask), or the claim is one a news-only start may not reach
 //     (recordedClaimTakesNews): none, behind the entry its phases row names — owed its phase start,
 //     which carries the news — retired, failed, or suspended by an operator, each of which the
 //     start that revives the claim tells;
@@ -343,22 +355,18 @@ func (r *outbox) settleNews(ctx context.Context, row record.OutboxRow, tree stri
 	now := r.now().UTC()
 	var queued []newsHolderStart
 	raised := 0
-	scoped, committed := intake.WithCommitHooks(ctx)
-	if err := pgx.BeginFunc(scoped, r.pool, func(tx pgx.Tx) error {
-		if err := intake.SerializeFacts(scoped, tx); err != nil {
-			return fmt.Errorf("serialize the settlement with every fact: %w", err)
-		}
+	if err := r.settleUnderFacts(ctx, func(ctx context.Context, tx pgx.Tx) error {
 		queued, raised = nil, 0
-		root, err := r.records.Issue(scoped, tx, tree)
+		root, err := r.records.Issue(ctx, tx, tree)
 		if err != nil || root == nil {
 			return err
 		}
-		facts, err := record.TreeNewsFacts(scoped, r.records, tx, r.gatedSteps, root.Tree)
+		facts, err := record.TreeNewsFacts(ctx, r.records, tx, r.gatedSteps, root.Tree)
 		if err != nil {
 			return err
 		}
 		owed := record.OwedNews(facts)
-		recorded, err := r.records.DesignChangesOf(scoped, tx, owedPairs(owed, root.Tree))
+		recorded, err := r.records.DesignChangesOf(ctx, tx, owedPairs(owed, root.Tree))
 		if err != nil {
 			return err
 		}
@@ -374,7 +382,7 @@ func (r *outbox) settleNews(ctx context.Context, row record.OutboxRow, tree stri
 				architectOf[token] = member
 			}
 		}
-		held, err := r.records.RoleClaims(scoped, tx, architects)
+		held, err := r.records.RoleClaims(ctx, tx, architects)
 		if err != nil {
 			return err
 		}
@@ -383,18 +391,18 @@ func (r *outbox) settleNews(ctx context.Context, row record.OutboxRow, tree stri
 		owners := map[claim.Token]bool{}
 		for _, news := range owed.Members {
 			member := members[news.Issue]
-			settlement, versions := settlementOf(news.Items, recorded, toldRow(facts.Told, news.Issue, record.AudienceHolder).OpeningOwed)
+			settlement, versions := settlementOf(news.Items, recorded, record.ToldRow(facts.Told, news.Issue, record.AudienceHolder).OpeningOwed)
 			switch settlement {
 			case settleLater:
 				continue
 			case settleRaise:
-				if err := r.records.RaiseTold(scoped, tx, news.Issue, record.AudienceHolder, versions, now); err != nil {
+				if err := r.records.RaiseTold(ctx, tx, news.Issue, record.AudienceHolder, versions, now); err != nil {
 					return err
 				}
 				raised++
 				continue
 			}
-			if !news.HeldByArchitect {
+			if !news.HeldByArchitect() {
 				role := phase.RoleFor(member.Phase)
 				token, err := claim.NewToken(r.project, member.Key, role)
 				if err != nil {
@@ -418,10 +426,10 @@ func (r *outbox) settleNews(ctx context.Context, row record.OutboxRow, tree stri
 			return err
 		}
 		if len(owed.Architect) > 0 {
-			settlement, versions := settlementOf(owed.Architect, recorded, toldRow(facts.Told, root.Key, record.AudienceArchitect).OpeningOwed)
+			settlement, versions := settlementOf(owed.Architect, recorded, record.ToldRow(facts.Told, root.Key, record.AudienceArchitect).OpeningOwed)
 			switch settlement {
 			case settleRaise:
-				if err := r.records.RaiseTold(scoped, tx, root.Key, record.AudienceArchitect, versions, now); err != nil {
+				if err := r.records.RaiseTold(ctx, tx, root.Key, record.AudienceArchitect, versions, now); err != nil {
 					return err
 				}
 				raised++
@@ -430,7 +438,7 @@ func (r *outbox) settleNews(ctx context.Context, row record.OutboxRow, tree stri
 			}
 		}
 		for _, owner := range slices.Sorted(maps.Keys(owners)) {
-			if member, recorded := architectOf[owner]; recorded {
+			if member, ok := architectOf[owner]; ok {
 				starts = append(starts, newsHolderStart{issue: member, role: claim.RoleArchitect, token: owner})
 			}
 		}
@@ -438,19 +446,19 @@ func (r *outbox) settleNews(ctx context.Context, row record.OutboxRow, tree stri
 		for _, start := range starts {
 			keys = append(keys, record.RoleRunKey{Token: start.token, Issue: start.issue.Key, Role: start.role, Generation: start.issue.Generation})
 		}
-		roleRuns, err := r.records.RoleRuns(scoped, tx, keys)
+		roleRuns, err := r.records.RoleRuns(ctx, tx, keys)
 		if err != nil {
 			return err
 		}
 		for _, start := range starts {
 			run := roleRuns[start.token]
-			if newsStartQueued(run) {
+			if newsStartQueued(run) || holdsUntakenTask(run) {
 				continue
 			}
 			var entry int64
 			request := record.SuperviseRequest{Op: "start", Tree: start.issue.Tree, Role: start.role, Generation: start.issue.Generation, News: true}
 			if start.role != claim.RoleArchitect {
-				rows, err := r.records.Phases(scoped, tx, start.issue.Key)
+				rows, err := r.records.Phases(ctx, tx, start.issue.Key)
 				if err != nil {
 					return err
 				}
@@ -463,7 +471,7 @@ func (r *outbox) settleNews(ctx context.Context, row record.OutboxRow, tree stri
 			if err != nil {
 				return err
 			}
-			if err := r.records.Enqueue(scoped, tx, queue); err != nil {
+			if err := r.records.Enqueue(ctx, tx, queue); err != nil {
 				return err
 			}
 			queued = append(queued, start)
@@ -472,7 +480,6 @@ func (r *outbox) settleNews(ctx context.Context, row record.OutboxRow, tree stri
 	}); err != nil {
 		return fmt.Errorf("settle the news the tree of %s is owed: %w", tree, err)
 	}
-	committed()
 	for _, start := range queued {
 		r.log.Info("outbox design_changes queued a news-only start", "row", row.ID, "tree", tree, "issue", start.issue.Key, "role", start.role)
 	}
@@ -490,8 +497,19 @@ func newsStartQueued(run record.RoleRun) bool {
 	})
 }
 
-// newsClaimTakes is the one rule for whether a news-only start may hand its news to a claim, over
-// what says it: the claim exists; it was given the entry its role's phases row names (entry, 0 for
+// holdsUntakenTask says whether run's claim, as the record holds it, holds a task its worker has
+// not taken yet: a pending delivery with no confirmation. A news-only start queued behind it
+// would only wait, since the claim's machine takes no second task while one is pending
+// (supervise.ErrDeliveryPending), and its start would retry on its backoff until a turn takes the
+// first. So none is queued, and the news stays owed: the sweep queues the reconcile again
+// (queueOwedDesignNews), which queues the start once that task is taken, and the next start of
+// the phase carries the news itself.
+func holdsUntakenTask(run record.RoleRun) bool {
+	return run.Claim != nil && run.Claim.Pending != nil && run.Claim.Pending.ConfirmedAt.IsZero()
+}
+
+// newsClaimTakes is the one rule for whether a news-only start may hand its news to a claim the
+// caller holds, over what says it: it was given the entry its role's phases row names (entry, 0 for
 // an architect, which works no entry), since a claim behind that entry is owed its phase start,
 // which carries the news; it has not ended (claimEnded), since a failed or retired claim is
 // revived by its phase's own repair, whose start carries the news; and no operator holds it
@@ -499,18 +517,18 @@ func newsStartQueued(run record.RoleRun) bool {
 // that carries it wakes the claim as any start wakes one. Both readers state it through this: the
 // reconcile and the architect's summary over the claim the record holds (recordedClaimTakesNews),
 // and the start over the claim its machine holds (newsOnlyRefusal).
-func newsClaimTakes(exists bool, given, entry int64, state supervise.ClaimState, operatorHolds bool) bool {
-	return exists && given == entry && !claimEnded(state) && !operatorHolds
+func newsClaimTakes(given, entry int64, state supervise.ClaimState, operatorHolds bool) bool {
+	return given == entry && !claimEnded(state) && !operatorHolds
 }
 
 // recordedClaimTakesNews is newsClaimTakes over a claim as the record holds it (record.RoleClaim),
-// nil for a role the record holds no claim of.
+// nil for a role the record holds no claim of, which takes no news.
 func recordedClaimTakesNews(held *record.RoleClaim, entry int64) bool {
 	if held == nil {
 		return false
 	}
 	operator := held.State == supervise.StateSuspended && held.SuspendedBy == supervise.SuspendedByOperator
-	return newsClaimTakes(true, held.GivenEntry, entry, held.State, operator)
+	return newsClaimTakes(held.GivenEntry, entry, held.State, operator)
 }
 
 // newsOnlyRefusal is why a news-only start reaches no claim, as the claim's machine holds it when
@@ -524,7 +542,7 @@ func newsOnlyRefusal(machine *supervise.Machine, found bool, entry int64) string
 		return "no claim holds the role"
 	}
 	held := machine.Claim()
-	if newsClaimTakes(true, held.GivenEntry, entry, held.State, held.RuleHolds()) {
+	if newsClaimTakes(held.GivenEntry, entry, held.State, held.RuleHolds()) {
 		return ""
 	}
 	switch {
@@ -564,7 +582,7 @@ func (r *outbox) newsForStart(ctx context.Context, issue record.Issue, payload r
 		if carried.Items, carried.Openings, err = r.owedToClaim(ctx, tx, facts, issue, payload.Role, token); err != nil {
 			return err
 		}
-		if len(carried.Items) == 0 && len(carried.Openings) == 0 {
+		if carried.Empty() {
 			return nil
 		}
 		sent, err = readNewsAtSend(ctx, tx, r.records, r.gatedSteps, carried)
@@ -572,7 +590,7 @@ func (r *outbox) newsForStart(ctx context.Context, issue record.Issue, payload r
 	}); err != nil {
 		return startNews{}, fmt.Errorf("read the news the start of %s's %s carries: %w", issue.Key, payload.Role, err)
 	}
-	if len(sent.kept.Items) == 0 && len(sent.kept.Openings) == 0 {
+	if sent.kept.Empty() {
 		return startNews{task: payload.Task}, nil
 	}
 	news, err := json.Marshal(sent.kept)
@@ -600,13 +618,13 @@ func (r *outbox) owedToClaim(ctx context.Context, tx pgx.Tx, facts record.NewsFa
 			items = append(items, record.DeliveryNewsItem{Issue: key, Audience: audience, Step: item.Step, Artifact: item.ArtifactID,
 				From: item.From, To: item.To})
 		}
-		if open && toldRow(facts.Told, key, audience).OpeningOwed {
+		if open && record.ToldRow(facts.Told, key, audience).OpeningOwed {
 			openings = append(openings, record.DeliveryOpening{Issue: key, Audience: audience})
 		}
 	}
 	if role != claim.RoleArchitect {
 		for _, member := range owed.Members {
-			if member.Issue == issue.Key && !member.HeldByArchitect && phase.RoleFor(member.Phase) == role {
+			if member.Issue == issue.Key && !member.HeldByArchitect() && phase.RoleFor(member.Phase) == role {
 				tell(member.Issue, record.AudienceHolder, member.Items)
 			}
 		}
@@ -629,7 +647,7 @@ func (r *outbox) owedToClaim(ctx context.Context, tx pgx.Tx, facts record.NewsFa
 	}
 	runs := func(architect claim.Token) bool { return recordedClaimRuns(held[architect]) }
 	for _, member := range owed.Members {
-		if !member.HeldByArchitect {
+		if !member.HeldByArchitect() {
 			continue
 		}
 		if owner, err := owningArchitect(r.project, members, members[member.Issue], "", runs); err == nil && owner == token {
@@ -640,11 +658,11 @@ func (r *outbox) owedToClaim(ctx context.Context, tx pgx.Tx, facts record.NewsFa
 }
 
 // mergerNewsUnrecorded says whether issue's holder is owed news of the approved design that no
-// start can carry yet: an owed item whose earlier version the record does not know, or whose
-// change set is not recorded, read or unavailable. A merger released without it could merge before
-// it reads what changed, so its start waits (mergerWaitsForTheDesignGate). The wait ends within the
-// design_changes row's bounded attempts, since a pair Dispatch cannot read is recorded unavailable
-// (designChangesAttempts).
+// start can carry yet: the reconcile would leave it owed (settlementOf's settleLater), since an
+// owed item's earlier version is unknown to the record, or its change set is not recorded, read or
+// unavailable. A merger released without it could merge before it reads what changed, so its start
+// waits (mergerWaitsForTheDesignGate). The wait ends within the design_changes row's bounded
+// attempts, since a pair Dispatch cannot read is recorded unavailable (designChangesAttempts).
 func (r *outbox) mergerNewsUnrecorded(ctx context.Context, issue record.Issue) (bool, error) {
 	var unrecorded bool
 	if err := pgx.BeginTxFunc(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
@@ -656,23 +674,21 @@ func (r *outbox) mergerNewsUnrecorded(ctx context.Context, issue record.Issue) (
 			if member.Issue != issue.Key {
 				continue
 			}
-			var pairs []record.VersionPair
+			pairs := make([]record.VersionPair, 0, len(member.Items))
 			for _, item := range member.Items {
-				if item.From == nil {
+				pair, known := item.Pair()
+				if !known {
 					unrecorded = true
 					return nil
 				}
-				pairs = append(pairs, record.VersionPair{ArtifactID: item.ArtifactID, From: *item.From, To: item.To})
+				pairs = append(pairs, pair)
 			}
 			recorded, err := r.records.DesignChangesOf(ctx, tx, pairs)
 			if err != nil {
 				return err
 			}
-			for _, pair := range pairs {
-				if _, known := recorded[pair]; !known {
-					unrecorded = true
-				}
-			}
+			settlement, _ := settlementOf(member.Items, recorded, false)
+			unrecorded = settlement == settleLater
 		}
 		return nil
 	}); err != nil {

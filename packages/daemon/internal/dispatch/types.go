@@ -40,8 +40,9 @@ type Client interface {
 	EventsAfter(ctx context.Context, key string, after int64) ([]json.RawMessage, error)
 	Approval(ctx context.Context, artifactID string) (Approval, error)
 	// ArtifactChanges is what changed in a document between two of its stored versions, as
-	// Dispatch reads the two (GET /api/v1/artifacts/{id}/changes). A Dispatch that answers 404 or
-	// 405 there is ErrNoChangesRoute.
+	// Dispatch reads the two (GET /api/v1/artifacts/{id}/changes). A Dispatch that answers 404
+	// ARTIFACT_NOT_FOUND there is ErrDocumentNotFound, and any other 404 or a 405 is
+	// ErrNoChangesRoute.
 	ArtifactChanges(ctx context.Context, artifactID string, from, to int) (ArtifactChanges, error)
 	// ApprovedVersionBefore is the highest version of the document below version that a review
 	// approved (GET /api/v1/artifacts/{id}/reviews), 0 when no review approved one.
@@ -324,11 +325,27 @@ const (
 )
 
 // ErrNoChangesRoute is a Dispatch that cannot say what changed between two versions: it answered
-// GET /api/v1/artifacts/{id}/changes with 404 or 405, which is what a release without the route
-// answers. ArtifactChanges wraps it around Dispatch's own refusal, so errors.Is finds it and the
-// message keeps what Dispatch said. A caller records the pair as unreadable at once rather than
-// retrying it: the route arrives with a Dispatch release, not with a wait.
+// GET /api/v1/artifacts/{id}/changes with a 405, or a 404 that is not ARTIFACT_NOT_FOUND
+// (ErrDocumentNotFound), which is what a release without the route answers. ArtifactChanges wraps
+// it around Dispatch's own refusal, so errors.Is finds it and the message keeps what Dispatch said.
+// A caller records the pair as unreadable at once rather than retrying it: the route arrives with
+// a Dispatch release, not with a wait.
 var ErrNoChangesRoute = errors.New("dispatch has no changes route")
+
+// ErrDocumentNotFound is a Dispatch that holds no document of the id GET
+// /api/v1/artifacts/{id}/changes names: it answered 404 ARTIFACT_NOT_FOUND (ArtifactNotFound), a
+// document deleted since its gate recorded it. A release without the route answers its router's
+// own 404, whose code is not this one (IssueNotFound says how that answer reads), so the two stay
+// apart and the reason recorded says which it was. ArtifactChanges wraps it around Dispatch's own
+// refusal, as it wraps ErrNoChangesRoute, and a caller records the pair as unreadable at once in
+// the same way: a deleted document does not come back with a wait.
+var ErrDocumentNotFound = errors.New("dispatch holds no such document")
+
+// ArtifactNotFound is Dispatch's own spelling of the 404 its artifact routes answer for an id
+// that names no artifact (packages/envoy/internal/dispatch/api/artifacts.go,
+// scanArtifactOrNotFound). No mechanism shares a value between this module and Dispatch's, so the
+// spellings change together.
+const ArtifactNotFound = "ARTIFACT_NOT_FOUND"
 
 // Handoff is one phase handoff record Dispatch keeps on an issue, as a phase completion names it:
 // the issue carrying it, its phase word (plan, implement, test or review; phase.Handoff), its

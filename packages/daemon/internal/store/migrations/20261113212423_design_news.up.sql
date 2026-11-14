@@ -15,17 +15,19 @@
 -- know, and 0 is a step taken while no approved version of its document stood. opening_owed says
 -- the opening sentence of the gate is owed to that audience: the gate opened while the holder
 -- was owed news, so the news task carries the opening in place of the role message. told_at is
--- when the row last rose, null for a row that carries only the owed opening. A row goes with its
--- issue's generation (record.Postgres.clearGeneration), beside the issue's gate rows.
+-- when a write of the row's versions last touched it: the baseline or the fill that wrote it, or
+-- the last raise, which sets it whether or not a version rose. It is null for a row that carries
+-- only the owed opening. A row goes with its issue's generation (record.Postgres.clearGeneration),
+-- beside the issue's gate rows.
 --
 -- design_changes holds what changed in one document from one version to another, read from
 -- Dispatch (GET /api/v1/artifacts/{id}/changes). Two stored versions of a document never change,
 -- so a recorded change set never goes stale, and keeping it is no copy of a value its owner can
 -- move. state `read` is Dispatch's answer: decision_only, and the sections and typed blocks that
--- differ. state `unavailable` is a pair Dispatch could not answer, a release without the route or
--- a bounded run of failures, with the reason in reason; the news then names the two versions and
--- says why it names no change. from_version 0 is a pair whose document had no earlier approved
--- version.
+-- differ. state `unavailable` is a pair Dispatch could not answer, a release without the route, a
+-- document Dispatch no longer holds or a bounded run of failures, with the reason in reason; the
+-- news then names the two versions and says why it names no change. from_version 0 is a pair whose
+-- document had no earlier approved version.
 --
 -- pending_task_deliveries.design_news is the news items a delivery carries, each the issue, the
 -- audience, the step, the document and the version pair, and whether it carries the opening: what

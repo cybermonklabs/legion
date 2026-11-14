@@ -665,11 +665,19 @@ func TreeSteps(deployment []DesignStep, gates map[DesignStep]DesignGate) []Desig
 
 // JoinsByRegistration says whether step is one the deployment does not gate that still gates a
 // tree whose root registers it (TreeSteps): criteria, under a deployment that gates spec and not
-// criteria. It is the one statement of which step that is: register_gate reads it to take the
-// step (api's registeredStep), and the workflow reads it to gate the row from its first write
-// (Engine.gatesStep), so the registration and every reader of the rows agree on it.
+// criteria. It is the one statement of which step that is (TakesStep reads it), so the
+// registration and every reader of the rows agree on it.
 func JoinsByRegistration(deployment []DesignStep, step DesignStep) bool {
 	return step == DesignStepCriteria && slices.Contains(deployment, DesignStepSpec) && !slices.Contains(deployment, DesignStepCriteria)
+}
+
+// TakesStep says whether a root's registration of step holds its tree: a step the deployment
+// gates, or the one that joins the tree by its registration (JoinsByRegistration). It reads no
+// rows, so the step being registered counts in its own registration. Both sides read it:
+// register_gate takes such a step and refuses every other (api's registeredStep), and the workflow
+// gates its row from the first write (Engine.gatesStep).
+func TakesStep(deployment []DesignStep, step DesignStep) bool {
+	return slices.Contains(deployment, step) || JoinsByRegistration(deployment, step)
 }
 
 // TreeGate is one tree's design gate as every rule over it reads it: the steps the deployment

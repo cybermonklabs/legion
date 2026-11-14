@@ -3,7 +3,6 @@ package workflow
 import (
 	"context"
 	"fmt"
-	"slices"
 
 	"github.com/jackc/pgx/v5"
 
@@ -15,17 +14,16 @@ import (
 )
 
 // gatesStep says whether a person must approve step's document before the tree works: a step the
-// deployment gates, or the one that joins the tree whose root registers it
-// (record.JoinsByRegistration: criteria, under a deployment that gates spec and not criteria).
-// It reads no rows, so the step being registered counts as gated in its own registration: a
-// rule over the tree's rows (record.TreeSteps) would find no criteria row before the
-// registration writes one, approve it at once (gateRegistered's ungated branch), and let the
-// spec's approval alone open a tree whose Verification document a person has still to approve.
-// The two answers are the same rule, since a criteria row exists only by such a registration.
-// A row of any other step is kept and holds nothing: its registration opens it at once and no
-// artifact event moves it (artifactIgnored).
+// deployment gates, or the one that joins the tree whose root registers it (record.TakesStep:
+// criteria, under a deployment that gates spec and not criteria). It reads no rows, so the step
+// being registered counts as gated in its own registration: a rule over the tree's rows
+// (record.TreeSteps) would find no criteria row before the registration writes one, approve it at
+// once (gateRegistered's ungated branch), and let the spec's approval alone open a tree whose
+// Verification document a person has still to approve. The two answers are the same rule, since a
+// criteria row exists only by such a registration. A row of any other step is kept and holds
+// nothing: its registration opens it at once and no artifact event moves it (artifactIgnored).
 func (e *Engine) gatesStep(step record.DesignStep) bool {
-	return slices.Contains(e.cfg.Steps, step) || record.JoinsByRegistration(e.cfg.Steps, step)
+	return record.TakesStep(e.cfg.Steps, step)
 }
 
 // gateOfDocument is the gate of gates registered on document, nil when none is: the row an event
@@ -1070,32 +1068,25 @@ type openingWay struct {
 
 // openingDelivery is the one place the opening of a tree's design gate is decided for each holder
 // it reaches (tellGateMoved): the session holding a member's phase (audience holder, issue the
-// member) or the tree's root architect (audience architect, issue the tree root). It is so the one
-// place a merger's opening is decided, which is condition 1 of dispatch://INFRA-3522's R1 (spec
-// v6): one delivery of the opening per holder, decided in one function, by whichever of that
-// issue's branch and this one lands second.
+// member) or the tree's root architect (audience architect, issue the tree root). So a merger's
+// opening is decided here too: one delivery of the opening per holder, decided in one function,
+// which is condition 1 of dispatch://INFRA-3522's R1 (spec v6).
 //
 // A holder owed news (owed, record.OwedNews over the record the opening leaves: a member's holder
 // row, or the root architect's own row) is told the opening by the task that carries that news,
 // which leads with the opened sentence (RenderNews), so it is sent no role message beside it: for a
-// merger owed news, that task is the delivery of the opening INFRA-175 owes it, and nothing else of
-// the opening reaches it. Every other holder is sent the opened role message (opened,
-// gateOpenedSentence) with one clause more: that nothing its issue holds changed since the version
-// of step's document its phase took, or, for the architect, that nothing the tree holds changed
+// merger owed news, that task is its one delivery of the opening, and nothing else of the opening
+// reaches it. Every other holder is sent the opened role message (opened, gateOpenedSentence) with
+// one clause more: that nothing its issue holds changed since the version of step's document its
+// phase took (nothingChangedSince), or, for the architect, that nothing the tree holds changed
 // since the version it took. The clause is said only where the record shows it: the told row knows
 // a version of the step at or above the one approved now (version), or, for a member that is not
-// the tree root, knows one of criteria, whose checks are the root's alone. A holder the record
-// shows no such thing of — its pull request merged, its status out of the workflow, the version it
-// took unknown to the record — is sent the opened message alone.
+// the tree root, knows one of criteria, whose checks are the root's alone (record.StepConcerns). A
+// holder the record shows no such thing of — its pull request merged, its status out of the
+// workflow, the version it took unknown to the record — is sent the opened message alone.
 func openingDelivery(owed record.TreeNews, told []record.DesignTold, tree, issue string, audience record.DesignAudience,
 	opened string, step record.DesignStep, version int) openingWay {
-	var row record.DesignTold
-	for _, candidate := range told {
-		if candidate.Issue == issue && candidate.Audience == audience {
-			row = candidate
-		}
-	}
-	took, known := row.Took(step)
+	took, known := record.ToldRow(told, issue, audience).Took(step)
 	if audience == record.AudienceArchitect {
 		switch {
 		case len(owed.Architect) > 0:
@@ -1110,11 +1101,19 @@ func openingDelivery(owed record.TreeNews, told []record.DesignTold, tree, issue
 			return openingWay{byNews: true}
 		}
 	}
-	concerned := step != record.DesignStepCriteria || claim.IsTreeRoot(issue, tree)
-	if known && (took >= version || !concerned) {
-		return openingWay{message: fmt.Sprintf("%s Nothing your issue holds changed since version %d, which your phase took.", opened, took)}
+	if known && (took >= version || !record.StepConcerns(step, issue, tree)) {
+		return openingWay{message: opened + " " + nothingChangedSince(took)}
 	}
 	return openingWay{message: opened}
+}
+
+// nothingChangedSince is the sentence that tells a phase holder that nothing its issue holds
+// changed since version took, the version of the step's document its phase took. It is written
+// once, here, for its two senders: the opened role message to a holder owed nothing
+// (openingDelivery), and the news of a version whose only change is its decision blocks
+// (RenderNews).
+func nothingChangedSince(took int) string {
+	return fmt.Sprintf("Nothing your issue holds changed since version %d, which your phase took.", took)
 }
 
 // gateOpenedSentence is the sentence that tells a phase holder the design gate of tree opened at
@@ -1189,7 +1188,7 @@ func (e *Engine) putGateTold(ctx context.Context, tx pgx.Tx, gate record.DesignG
 	}
 	gates[step] = gate
 	if !released && (record.TreeGate{Steps: e.cfg.Steps, Rows: gates}).Open() {
-		if _, err := e.store.BaselineTold(ctx, tx, gate.Issue, record.AudienceArchitect, gate.Issue, e.now()); err != nil {
+		if err := e.store.BaselineTold(ctx, tx, gate.Issue, record.AudienceArchitect, gate.Issue, e.now()); err != nil {
 			return err
 		}
 	}

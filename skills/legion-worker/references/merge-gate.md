@@ -306,7 +306,9 @@ it there until that answer comes clean.
 - **An issue whose Verification document holds no `after_merge` check is a named gap.** The look
   has no check to record against. Record no result and write no check, since a closed issue
   refuses every new document. Name the gap in your pull-request comment and in your report, as a
-  named gap, never a failure: the gap alone never makes the verdict `fail`.
+  named gap, never a failure: the gap alone never makes the verdict `fail`. The verdict follows
+  the rest of the look: `pass` once production carries the merge and you drove each requirement
+  only the deploy can show and saw it met. `pending` and `fail` follow the rules above.
 - **Numbers the daemon holds are read with the `legion` tool.** Where the verdict rests on what a
   deployment's idle release has done, `read_release_records` answers a window of the daemon's own
   records of its releases, resumes and holds: its one argument `since` is the RFC 3339 instant

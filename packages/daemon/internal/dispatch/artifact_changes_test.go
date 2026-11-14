@@ -82,18 +82,22 @@ func TestArtifactChangesReadsADecisionOnlyChange(t *testing.T) {
 
 // A Dispatch whose release has no changes route answers 404 from its router, or 405 where the
 // path matches a route of another method; either is ErrNoChangesRoute, wrapped around Dispatch's
-// own refusal so the reason a caller records keeps what Dispatch said. A 500 is Dispatch failing
-// the read, which a caller rides out, and is not that error: read as one, an outage would be
-// recorded as a pair nobody can ever read.
+// own refusal so the reason a caller records keeps what Dispatch said. A 404 ARTIFACT_NOT_FOUND is
+// a document Dispatch no longer holds, which is ErrDocumentNotFound and never ErrNoChangesRoute, so
+// the reason recorded says the document is gone rather than that Dispatch lacks the route. A 500 is
+// Dispatch failing the read, which a caller rides out, and is neither: read as one, an outage would
+// be recorded as a pair nobody can ever read.
 func TestArtifactChangesNamesADispatchWithoutTheRoute(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		status  int
 		body    any
 		noRoute bool
+		gone    bool
 	}{
 		{name: "the router's 404", status: http.StatusNotFound, body: map[string]string{"code": "NOT_FOUND", "error": "no route for GET /api/v1/artifacts/doc-7/changes"}, noRoute: true},
 		{name: "a 405 for a path another method serves", status: http.StatusMethodNotAllowed, body: map[string]string{"error": "method not allowed"}, noRoute: true},
+		{name: "a document Dispatch no longer holds", status: http.StatusNotFound, body: map[string]string{"code": "ARTIFACT_NOT_FOUND", "error": "artifact not found"}, gone: true},
 		{name: "a 500", status: http.StatusInternalServerError, body: map[string]string{"code": "INTERNAL", "error": "the read failed"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -108,6 +112,9 @@ func TestArtifactChangesNamesADispatchWithoutTheRoute(t *testing.T) {
 			}
 			if got := errors.Is(err, ErrNoChangesRoute); got != tc.noRoute {
 				t.Fatalf("errors.Is(%v, ErrNoChangesRoute) = %t, want %t", err, got, tc.noRoute)
+			}
+			if got := errors.Is(err, ErrDocumentNotFound); got != tc.gone {
+				t.Fatalf("errors.Is(%v, ErrDocumentNotFound) = %t, want %t", err, got, tc.gone)
 			}
 			var refusal *Error
 			if !errors.As(err, &refusal) || refusal.Status != tc.status {

@@ -47,11 +47,10 @@ type specs struct {
 	// gates them, which a tree's root architect is told after its addressing
 	// (DesignGateFragment); empty for a deployment that gates no step.
 	designSteps []record.DesignStep
-	// projectSettings is the project's own block of the deployment's legion.yaml
-	// (cfg.Projects[cfg.Project]), of which a launch reads `production_check` alone: every
-	// architect is told it after its addressing (ProductionCheckFragment). The zero Project, a
-	// test's, holds the empty role, which reads `off`.
-	projectSettings config.Project
+	// productionCheck is the project's `production_check` (config.Project.ProductionCheck): every
+	// architect is told it after its addressing (ProductionCheckFragment). The empty role, a
+	// test's zero value, reads `off`.
+	productionCheck claim.Role
 	// slackChannels is the project's slack_channels, which the controller is told after the
 	// design gate steps (SlackChannelsFragment); its LEGION_SLACK_CHANNELS is the runtime's to set.
 	slackChannels []string
@@ -202,7 +201,7 @@ func (s specs) workerSpawnSpec(ctx context.Context, c supervise.Claim) (runtime.
 		addressing += " " + DesignGateFragment(s.designSteps)
 	}
 	if c.Role == claim.RoleArchitect {
-		addressing += " " + ProductionCheckFragment(s.projectSettings)
+		addressing += " " + ProductionCheckFragment(s.productionCheck)
 	}
 	spec.Prompt = runtime.PromptParts{
 		RolePromptPaths:            promptPaths,
@@ -491,18 +490,18 @@ func DesignGateFragment(steps []record.DesignStep) string {
 }
 
 // ProductionCheckFragment is the sentence every architect, the root's and a sub-architect's alike,
-// is told last in its addressing: the project's `production_check` as the file writes it
+// is told last in its addressing: the project's `production_check` (check) as the file writes it
 // (config.Project.ProductionCheckWord), the role that works the production check a merge closing
-// one of the project's issues opens, or `off`. It is the "Production check" line the architect
-// prompts read (prompts/roles/architect-root.md, prompts/roles/architect.md and
+// one of the project's issues opens, or `off` for the empty role. It is the "Production check" line
+// the architect prompts read (prompts/roles/architect-root.md, prompts/roles/architect.md and
 // prompts/go/architect-common.md): where it names a role, the architect writes one `after_merge`
 // check for that check in each Verification document it writes, while the issue is open, since a
 // closed issue takes no new document; where it reads `off`, it writes none (dispatch://INFRA-175
 // R7). A root architect is told it after the design gate steps, and a sub-architect, which is
 // told no steps, after its addressing. The controller writes no Verification document and is
 // told nothing of it.
-func ProductionCheckFragment(project config.Project) string {
-	return "Production check: " + project.ProductionCheckWord() + "."
+func ProductionCheckFragment(check claim.Role) string {
+	return "Production check: " + config.Project{ProductionCheck: check}.ProductionCheckWord() + "."
 }
 
 // SlackChannelsFragment names the project's Slack channels, the list the controller answers

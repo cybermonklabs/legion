@@ -45,17 +45,6 @@ func recordedDesignGates(t *testing.T, handler http.Handler, issueKey string) []
 	}](t, response).DesignGates
 }
 
-// designGatesJSON is a set of gates as the route writes it, which is how a failure names one: the
-// %#v of an entry prints its holds as an address rather than as what it says.
-func designGatesJSON(t *testing.T, gates []issueDesignGate) string {
-	t.Helper()
-	encoded, err := json.Marshal(gates)
-	if err != nil {
-		t.Fatalf("encode the gates: %v", err)
-	}
-	return string(encoded)
-}
-
 // setIssueStatus moves an issue to one status of the lifecycle, as a person moves it in the
 // dashboard; closeIssue is the `done` case of it, with the answer's own check beside it.
 func setIssueStatus(t *testing.T, handler http.Handler, issueKey, status string) {
@@ -491,10 +480,10 @@ func TestDesignGateRecordDecidesTheSupersededApprovalAdvice(t *testing.T) {
 			{Step: model.GatedStepSpec, ArtifactID: issue.PrimaryArtifactID, Holds: new(true)},
 		}
 		if published := publishDesignGates(t, handler, issue.Key, gates); !reflect.DeepEqual(published.Gates, gates) {
-			t.Fatalf("the publish answered %s, want %s", designGatesJSON(t, published.Gates), designGatesJSON(t, gates))
+			t.Fatalf("the publish answered %s, want %s", asJSON(t, published.Gates), asJSON(t, gates))
 		}
 		if got := recordedDesignGates(t, handler, issue.Key); !reflect.DeepEqual(got, gates) {
-			t.Fatalf("%s records %s, want %s", issue.Key, designGatesJSON(t, got), designGatesJSON(t, gates))
+			t.Fatalf("%s records %s, want %s", issue.Key, asJSON(t, got), asJSON(t, gates))
 		}
 		approved := approveAdviceDocument(t, handler, verification.Artifact.ID)
 
@@ -550,7 +539,7 @@ func TestDesignGateRecordDecidesTheSupersededApprovalAdvice(t *testing.T) {
 			{Step: model.GatedStepSpec, ArtifactID: issue.PrimaryArtifactID},
 		}
 		if got := recordedDesignGates(t, handler, issue.Key); !reflect.DeepEqual(got, stored) {
-			t.Fatalf("%s records %s after the older daemon's publish, want %s", issue.Key, designGatesJSON(t, got), designGatesJSON(t, stored))
+			t.Fatalf("%s records %s after the older daemon's publish, want %s", issue.Key, asJSON(t, got), asJSON(t, stored))
 		}
 
 		approvedSpec := approveAdviceDocument(t, handler, issue.PrimaryArtifactID)

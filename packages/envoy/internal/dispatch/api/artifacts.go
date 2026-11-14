@@ -1071,7 +1071,8 @@ type artifactChanges struct {
 	// "" and occurrence 0, so a change there is named too.
 	Sections []artifactSectionChange `json:"sections"`
 	// Blocks are the typed blocks whose text or any attribute differs, in the same order
-	// (cutTypedBlocks). No ask block is one of them.
+	// (cutTypedBlocks), each named by an id its own stored version carries. No ask block is one
+	// of them.
 	Blocks []artifactBlockChange `json:"blocks"`
 }
 
@@ -1095,11 +1096,14 @@ type artifactBlockChange struct {
 
 // getArtifactChanges answers what changed between versions from and to of one document
 // (artifactChanges). It reads the document as GET …/versions/{number} reads it: an authenticated
-// caller, and the artifact loaded as that route loads it, so a caller reads here exactly what it
-// may read there. An id that names no artifact is that route's 404 ARTIFACT_NOT_FOUND, and a
-// version the document does not have is its 404 NOT_FOUND. The artifact is read before the query
-// is, so an id that names nothing answers that 404 whatever the query holds, as idRoutes says it
-// does. Both numbers must be positive and from below to (400 INVALID_VERSION).
+// caller, and the artifact's own row by its id (loadArtifactRowByID), the row that route's read
+// finds and the 404 it answers, without the versions and the approval that read goes on to carry,
+// which this one uses neither of and which say nothing of who may read the document. So a caller
+// reads here exactly what it may read there. An id that names no artifact is that route's 404
+// ARTIFACT_NOT_FOUND, and a version the document does not have is its 404 NOT_FOUND. The artifact
+// is read before the query is, so an id that names nothing answers that 404 whatever the query
+// holds, as idRoutes says it does. Both numbers must be positive and from below to (400
+// INVALID_VERSION).
 //
 // It reads the two versions' stored markdown and parses it, never the block index, so it answers
 // for a large document as soon as both versions are stored, without waiting for the index's
@@ -1108,7 +1112,7 @@ func (s *server) getArtifactChanges(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
-	artifact, err := s.loadArtifactForRequest(r.Context(), s.deps.Store.Pool, r)
+	artifact, err := loadArtifactRowByID(r.Context(), s.deps.Store.Pool, r.PathValue("id"))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -1143,27 +1147,11 @@ func (s *server) getArtifactChanges(w http.ResponseWriter, r *http.Request) {
 }
 
 // twoVersionsMarkdown is the stored markdown of versions from and to of one document, in one
-// read. A version the document does not have is the 404 NOT_FOUND GET …/versions/{number}
-// answers for it, naming the version.
+// read (versionsMarkdown). A version the document does not have is the 404 NOT_FOUND GET
+// …/versions/{number} answers for it, naming the version.
 func (s *server) twoVersionsMarkdown(ctx context.Context, artifactID string, from, to int) (string, string, error) {
-	rows, err := s.deps.Store.Pool.Query(ctx, `
-		select number, coalesce(markdown, '') from artifact_versions
-		where artifact_id = $1::uuid and number = any($2::int[])
-	`, artifactID, []int{from, to})
+	markdown, err := s.versionsMarkdown(ctx, artifactID, []int{from, to})
 	if err != nil {
-		return "", "", err
-	}
-	defer rows.Close()
-	markdown := make(map[int]string, 2)
-	for rows.Next() {
-		var number int
-		var text string
-		if err := rows.Scan(&number, &text); err != nil {
-			return "", "", err
-		}
-		markdown[number] = text
-	}
-	if err := rows.Err(); err != nil {
 		return "", "", err
 	}
 	for _, number := range []int{from, to} {
@@ -1172,6 +1160,34 @@ func (s *server) twoVersionsMarkdown(ctx context.Context, artifactID string, fro
 		}
 	}
 	return markdown[from], markdown[to], nil
+}
+
+// versionsMarkdown is the stored markdown of each of numbers that the document has, by number, in
+// one read; a number the document has no version of has no entry. Both readers of named versions'
+// own text read it here: the change set (twoVersionsMarkdown) and the decisions of each named
+// version (decisionSumsAt).
+func (s *server) versionsMarkdown(ctx context.Context, artifactID string, numbers []int) (map[int]string, error) {
+	rows, err := s.deps.Store.Pool.Query(ctx, `
+		select number, coalesce(markdown, '') from artifact_versions
+		where artifact_id = $1::uuid and number = any($2::int[])
+	`, artifactID, numbers)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	markdown := make(map[int]string, len(numbers))
+	for rows.Next() {
+		var number int
+		var text string
+		if err := rows.Scan(&number, &text); err != nil {
+			return nil, err
+		}
+		markdown[number] = text
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return markdown, nil
 }
 
 // cutVersion is one stored version as a change set compares it: the text it cuts to once its
@@ -1223,7 +1239,7 @@ func compareVersions(before, after string) (artifactChanges, error) {
 		})
 	changesByKey(earlier.blocks, later.blocks,
 		func(block cutBlock) string { return block.id },
-		func(a, b cutBlock) bool { return a.node.Type == b.node.Type && a.node.Equal(b.node) },
+		func(a, b cutBlock) bool { return a.node.Equal(b.node) },
 		func(block cutBlock, change string) {
 			changes.Blocks = append(changes.Blocks, artifactBlockChange{ID: block.id, Type: block.node.Type, Change: change})
 		})
@@ -1244,7 +1260,7 @@ func readCutVersion(markdown string) (cutVersion, error) {
 	if err != nil {
 		return cutVersion{}, err
 	}
-	return cutVersion{text: text, sections: cutSections(cut, text, offsets), blocks: cutTypedBlocks(cut)}, nil
+	return cutVersion{text: text, sections: cutSections(cut, text, offsets), blocks: cutTypedBlocks(cut, markdown)}, nil
 }
 
 // cutSections cuts a version's cut text into its `##` sections by the rule decisionSums cuts a
@@ -1266,7 +1282,8 @@ func readCutVersion(markdown string) (cutVersion, error) {
 func cutSections(doc *pmdoc.Node, text string, offsets []pmdoc.BlockOffset) []cutSection {
 	headings := map[string]struct{}{}
 	for _, child := range doc.Children {
-		if id, _ := child.Attrs[pmdoc.BlockIDAttr].(string); child.Type == "heading" && id != "" {
+		if child.Type == "heading" {
+			id, _ := child.Attrs[pmdoc.BlockIDAttr].(string)
 			headings[id] = struct{}{}
 		}
 	}
@@ -1312,26 +1329,28 @@ func cutSections(doc *pmdoc.Node, text string, offsets []pmdoc.BlockOffset) []cu
 	return append([]cutSection{{key: sectionKey{}, text: strings.Join(outside, "\n\n")}}, sections...)
 }
 
-// cutTypedBlocks is every typed block of a cut tree, in document order: the cut left no ask block
-// in it, so these are its requirements, checks, plan tasks and callouts, and whatever other type
-// the block schema declares. A rendering can repeat an id, and only the first holder of one is
-// read, as typedBlocksIn reads one.
-func cutTypedBlocks(doc *pmdoc.Node) []cutBlock {
+// cutTypedBlocks is every typed block of a cut tree whose id its stored version carries (stored,
+// that version's markdown), in document order: the cut left no ask block in it, so these are its
+// requirements, checks, plan tasks and callouts, and whatever other type the block schema
+// declares.
+//
+// The parse gives every block an id of its own (pmdoc.EnsureBlockIDs): it keeps an id the stored
+// text names for the first block that names it, and mints a fresh one for each later block that
+// names the same id, an ask block among them, since the ask is cut only after the ids are
+// stamped. A minted id is in no stored version, so a change named under it would be an addition
+// and a removal of blocks neither document holds, which the daemon keeps for good. Such a block
+// is left out. The check is made on the stored text itself: a stored version is a rendering, so
+// it names each id the way the renderer writes a typed block's id (pmdoc.TypedBlockIDAttribute),
+// and an id the parse minted, a fresh random one, is in no stored text.
+func cutTypedBlocks(doc *pmdoc.Node, stored string) []cutBlock {
 	var blocks []cutBlock
-	seen := map[string]struct{}{}
 	pmdoc.Walk(doc, func(node *pmdoc.Node) bool {
 		if !pmdoc.IsTypedBlock(node.Type) {
 			return true
 		}
-		id, _ := node.Attrs[pmdoc.BlockIDAttr].(string)
-		if id == "" {
-			return true
+		if id, _ := node.Attrs[pmdoc.BlockIDAttr].(string); strings.Contains(stored, pmdoc.TypedBlockIDAttribute(id)) {
+			blocks = append(blocks, cutBlock{id: id, node: node})
 		}
-		if _, repeated := seen[id]; repeated {
-			return true
-		}
-		seen[id] = struct{}{}
-		blocks = append(blocks, cutBlock{id: id, node: node})
 		return true
 	})
 	return blocks

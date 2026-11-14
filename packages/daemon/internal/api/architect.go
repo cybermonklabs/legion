@@ -373,9 +373,9 @@ func (s *server) gateRegister(w http.ResponseWriter, r *http.Request) {
 // guessing.
 //
 // A deployment that gates spec and not criteria also takes criteria, for the root's Verification
-// document (record.JoinsByRegistration): that step is not one every root must register, and a
-// root that registers it is held on it as on the spec (record.TreeSteps), so one approval of
-// both documents opens the tree. Any other step the deployment does not gate is refused.
+// document (record.TakesStep): that step is not one every root must register, and a root that
+// registers it is held on it as on the spec (record.TreeSteps), so one approval of both documents
+// opens the tree. Any other step the deployment does not gate is refused.
 func (s *server) registeredStep(w http.ResponseWriter, named record.DesignStep) (record.DesignStep, bool) {
 	switch {
 	case len(s.steps) == 0:
@@ -386,7 +386,7 @@ func (s *server) registeredStep(w http.ResponseWriter, named record.DesignStep) 
 		writeFailure(w, http.StatusBadRequest, "GATE_STEP_REQUIRED", fmt.Sprintf(
 			"this deployment gates the design-gate steps %s; name the step this document is for", stepNames(s.steps)))
 		return "", false
-	case !slices.Contains(s.steps, named) && !record.JoinsByRegistration(s.steps, named):
+	case !record.TakesStep(s.steps, named):
 		writeFailure(w, http.StatusConflict, "GATE_STEP_NOT_CONFIGURED", fmt.Sprintf(
 			"this deployment does not gate the design-gate step %s; it gates %s", named, stepNames(s.steps)))
 		return "", false
