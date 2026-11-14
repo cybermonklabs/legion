@@ -345,8 +345,9 @@ func mintAtBoot(ctx context.Context, tokens appauth.Tokens, owner string, log *s
 
 // openWorkflow opens the workflow in the order a refusal names its cause: the configuration, the
 // Dispatch bearer prepare read, the project's repository mapping from Dispatch (each repository
-// checked for both GitHub Apps) into repos, the served repositories every role's gh bundle reads
-// its directories from, the Apps' logins, the App tokens minted on each served owner account, the
+// checked for both GitHub Apps) into repos, the owner accounts every role's gh bundle reads its
+// directories from, which each App's own installations give (appauth.InstalledOwners) and no
+// repository list decides, the Apps' logins, the App tokens minted on each served owner account, the
 // fill of any record written before the record carried its repository, then the deployment's
 // design-gate steps queued for the project's Dispatch row (queueGatedStepsPublish) and the
 // recorded gate of every issue Dispatch has not closed queued for its own

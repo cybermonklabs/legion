@@ -753,7 +753,7 @@ func TestTheStatesRepositoriesHoldTheOnesOnlyARecordNames(t *testing.T) {
 		t.Fatalf("the mapping's own entries = %+v, want acme/widgets and zeta/tools once each", view.Mapped)
 	}
 	if !slices.Equal(view.Owners, []string{"acme", "zeta"}) {
-		t.Fatalf("owners = %v, want the mapped repositories' own", view.Owners)
+		t.Fatalf("owners = %v, want the owners of the repositories the mapping names", view.Owners)
 	}
 }
 

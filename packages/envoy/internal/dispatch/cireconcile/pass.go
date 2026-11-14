@@ -186,8 +186,8 @@ func (r *Reconciler) Pass(ctx context.Context) {
 	r.report(&c, at, time.Since(started))
 }
 
-// reconcile is one pass over the mapped repositories from the cursor onwards, and the stop that
-// ended it early.
+// reconcile is one pass over the repositories covered() answers — the ones repo_projects maps and
+// the ones an issue names as its own — from the cursor onwards, and the stop that ended it early.
 //
 // The order is covered()'s, which is sorted, and within a repository its open pull requests by
 // number (headsQuery orders them, and the REST fallback sorts them): one order every pass
@@ -236,7 +236,7 @@ func (r *Reconciler) reconcile(ctx context.Context, writer Writer, c *counts) *s
 
 // visitRepository reads one repository of the order from the cursor the pass begins it at: the
 // checks every repository is read under -- the pass's own bound, the shared rate limits, and
-// what the mapped row resolves to -- and then the walk of its pages. It answers the ending that
+// what the covered name resolves to -- and then the walk of its pages. It answers the ending that
 // stopped the pass within this repository, and nil for a repository the pass read to the end
 // of, which includes one it passed over.
 func (r *Reconciler) visitRepository(ctx context.Context, writer Writer, from cursor, c *counts, read map[int64]struct{}) *ending {

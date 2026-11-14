@@ -23,7 +23,7 @@ type rowState struct {
 	id       int64
 }
 
-// reconciled is one mapped repository as a pass resolved it: the token its reads are made with
+// reconciled is one covered repository as a pass resolved it: the token its reads are made with
 // and the scopes they are budgeted under, and the owner, name and id GitHub itself gives it.
 // reconcile is false for a repository the pass reads no head of -- one it holds no token for,
 // one GitHub did not answer about, one another row naming the same repository was read under --
@@ -57,7 +57,7 @@ func (repository reconciled) head(number int64, sha string) pullHead {
 	}
 }
 
-// resolve reads one mapped row: the installation token it is read with, and the name and id
+// resolve reads one covered name, a mapping's or an issue's own (covered): the installation token it is read with, and the name and id
 // GitHub gives it. It answers the stop a rate limit ended the pass at, and
 // counts and names at WARN each repository it skips, every one of which is a repository nothing
 // within this pass can mend.

@@ -23,7 +23,7 @@ func TestEveryMappingIsReadWhenAnotherNamesARename(t *testing.T) {
 
 	repositories, err := h.reconciler.covered(h.ctx)
 	if err != nil {
-		t.Fatalf("read the mapped repositories: %v", err)
+		t.Fatalf("read the covered repositories: %v", err)
 	}
 
 	want := []string{rowRepository, unrenamedRow}

@@ -58,7 +58,8 @@
 //
 // One pass is bound at the interval its loop runs it on (Reconciler.PassTimeout), so it always
 // ends before the pass after it is due and always logs its one line. The pass walks one stable
-// order -- the mapped repositories, and within each its open pull requests by number -- from the
+// order -- the repositories covered() answers, the ones repo_projects maps and the ones an issue
+// names as its own, and within each its open pull requests by number -- from the
 // first repository to the last page of the last one, and keeps a cursor in it. A pass cut off by
 // its bound or by a rate limit leaves the cursor at the first page or REST head it did not
 // finish and the pass after it takes up there; a pass that reaches the end of the order ends

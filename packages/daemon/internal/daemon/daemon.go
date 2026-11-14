@@ -1063,8 +1063,9 @@ func treeMemoryGroup(st *store.Store) func(ctx context.Context, tree string) (bo
 // providerEnvDir, when set, is the `--provider-env-dir` beside it. The workflow's App tokens, when
 // the daemon has them, are every tree pane's gh bundle (appauth.GitHubCredential) and the
 // controller pane's own (appauth.ControllerCredential), which its refresh asks by the default
-// owner its launch recorded, both built over
-// repos (the project's mapping's served repositories), with gh, the real gh boot resolved
+// owner its launch recorded, both built over the
+// owner accounts each App is installed on, which the bundle reads from GitHub at every build and
+// no repository list bounds, with gh, the real gh boot resolved
 // (daemonTools), the one each pane's `legion gh` runs, and the repository each claim's issue
 // works (claimRepository over the workflow's repository), which a pane adopted after a restart
 // holds its write token for; a daemon with no GitHub Apps hands the runtime none, and its panes
