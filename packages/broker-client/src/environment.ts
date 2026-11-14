@@ -11,6 +11,7 @@ import { poolIdentity } from "./pool-identity";
 import { projectedToken } from "./projected-token";
 import {
   chooseSignIn,
+  PERSON_TRADE_VAR,
   PERSON_VAR,
   SIGNIN_CLIENT_ID_VAR,
   SIGNIN_CLIENT_SECRET_FILE_VAR,
@@ -56,10 +57,11 @@ export const IDENTITY_POOL = "pool";
  * The variables this package reads, by name: this module's, and those `signins.ts` reads to find
  * a person's sign-in on this machine and the client that renews it, whose names that module
  * holds (`SIGNIN_DIR_VAR`, `PERSON_VAR`, `SIGNIN_ISSUER_VAR`, `SIGNIN_CLIENT_ID_VAR` and
- * `SIGNIN_CLIENT_SECRET_FILE_VAR`), and `XDG_STATE_HOME` and `HOME`, which its directory is
- * read from when `SIGNIN_DIR_VAR` names none. A caller that keeps what this package made by the
- * environment that made it reads the names here, so a variable added to the package reaches its
- * key.
+ * `SIGNIN_CLIENT_SECRET_FILE_VAR`), `PERSON_TRADE_VAR`, which turns a person's trade off for a
+ * process whose own credentials are a service's, and `XDG_STATE_HOME` and `HOME`, which its
+ * directory is read from when `SIGNIN_DIR_VAR` names none. A caller that keeps what this package
+ * made by the environment that made it reads the names here, so a variable added to the package
+ * reaches its key.
  */
 export const BROKER_VARIABLES = [
   BROKER_URL_VAR,
@@ -73,6 +75,7 @@ export const BROKER_VARIABLES = [
   "XDG_STATE_HOME",
   "HOME",
   PERSON_VAR,
+  PERSON_TRADE_VAR,
   SIGNIN_ISSUER_VAR,
   SIGNIN_CLIENT_ID_VAR,
   SIGNIN_CLIENT_SECRET_FILE_VAR,
@@ -190,6 +193,11 @@ export interface MadeBrokerClient {
  * the machine's own client while a sign-in record is on the machine, so a session never writes
  * as the machine where a person signed in to act. The answer names the sign-in the client trades
  * ({@link MadeBrokerClient}'s `signIn`).
+ *
+ * The one exception is a process that turns the person trade off ({@link PERSON_TRADE_VAR} set to
+ * `off`): it trades the machine as when nobody signed in, even where a sign-in record is on the
+ * machine, because its own credentials are a service's — the controller `legion controller start`
+ * launches, whose operator's sign-in sits under the HOME it keeps.
  *
  * With no sign-in, it is the machine's own client. The key is this process's own and is made
  * here, once per client, so only its public half ever leaves the process, and the session is

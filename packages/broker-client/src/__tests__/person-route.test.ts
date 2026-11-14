@@ -4,7 +4,9 @@
 // that person, with this machine as the actor and the sign-in's box key as the proof's key, under
 // the caller's own session or the sign-in's name and never the machine's. With no sign-in it is
 // the machine's own client, with every field the factory always gave it. Anything that stops the
-// person's route is an error, never the machine's client in its place.
+// person's route is an error, never the machine's client in its place, except in a process that
+// turns the person trade off (`PERSON_SIGNIN_TRADE=off`), which is the machine's own client
+// whatever the sign-in store holds, and reads none of it.
 
 import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
 import { createPublicKey, generateKeyPairSync } from "node:crypto";
@@ -23,6 +25,7 @@ import {
 } from "../environment";
 import { METADATA_HOST_VAR } from "../metadata-identity";
 import {
+  PERSON_TRADE_VAR,
   PERSON_VAR,
   SIGNIN_CLIENT_ID_VAR,
   SIGNIN_CLIENT_SECRET_FILE_VAR,
@@ -275,4 +278,106 @@ test("a sign-in record that cannot be read is refused rather than passed over, a
   expect(refusal?.message).toContain(join(signins, "broken.json"));
   expect(refusal?.message).toContain(SIGNIN_COMMAND);
   expect(broker.trades).toHaveLength(0);
+});
+
+test("with PERSON_SIGNIN_TRADE=off, a machine with a sign-in trades itself: its own subject, no actor, tradeSession and a key of its own", async () => {
+  const { broker, issuer } = await stubs();
+  const record = await signedIn(PERSON, { client_id: CLIENT_ID });
+  const env = { ...(await box(broker.url, issuer.url, [record])), [PERSON_TRADE_VAR]: "off" };
+  const made = await brokerTokenClient(env);
+  const acting = await brokerTokenClient(env, " ses_01a9 ");
+  // The answer names no sign-in, as on a machine where nobody signed in.
+  expect(made?.signIn).toBeUndefined();
+  expect(acting?.signIn).toBeUndefined();
+  expect(made?.client.describe()).toContain("this machine's Google identity token");
+  await made?.client.token();
+  await acting?.client.token();
+  const [machine, own] = broker.trades;
+  expect(machine?.form.get("subject_token_type")).toBe(SUBJECT_TOKEN_TYPE_GOOGLE);
+  expect(machine?.form.get("subject_token")).toBe(MACHINE_TOKEN);
+  expect(machine?.form.has("actor_token")).toBe(false);
+  expect(machine?.form.has("actor_token_type")).toBe(false);
+  expect(machine?.form.get(FORM_LAUNCHER_CREDENTIAL)).toBe(FORM_LAUNCHER_CREDENTIAL_DECLINED);
+  // Under the name the machine trades under, never the sign-in's.
+  expect(machine?.form.get(FORM_SESSION)).toBe(MACHINE_SESSION);
+  expect(own?.form.get(FORM_SESSION)).toBe("ses_01a9");
+  expect(own?.form.get("subject_token_type")).toBe(SUBJECT_TOKEN_TYPE_GOOGLE);
+  // The proof is signed with a key this process made, never the sign-in's box key.
+  const jwk = machine?.proofHeader.jwk;
+  expect(jwk).toEqual(made?.client.key.publicJwk);
+  expect(await calculateJwkThumbprint(jwk as JWK)).not.toBe(record.thumbprint);
+  // Nobody's sign-in was renewed.
+  expect(issuer.requests).toHaveLength(0);
+});
+
+test("with PERSON_SIGNIN_TRADE=off, a store that refuses the person's trade refuses nothing: two sign-ins and nobody named, or a record that cannot be read", async () => {
+  const { broker, issuer } = await stubs();
+  const two = await box(broker.url, issuer.url, [
+    await signedIn(PERSON),
+    await signedIn("grace@example.com"),
+  ]);
+  const broken = await box(broker.url, issuer.url, []);
+  const signins = broken[SIGNIN_DIR_VAR] as string;
+  await mkdir(signins, { recursive: true, mode: 0o700 });
+  await writeFile(join(signins, "broken.json"), "{", { mode: 0o600 });
+  for (const env of [two, broken]) {
+    // With the person trade on, each store is refused.
+    expect(await refusalOf(env)).not.toBeNull();
+    const made = await brokerTokenClient({ ...env, [PERSON_TRADE_VAR]: "off" });
+    expect(made?.signIn).toBeUndefined();
+    await made?.client.token();
+  }
+  expect(
+    broker.trades.map((trade) => [
+      trade.form.get("subject_token_type"),
+      trade.form.has("actor_token"),
+      trade.form.get(FORM_SESSION),
+    ])
+  ).toEqual([
+    [SUBJECT_TOKEN_TYPE_GOOGLE, false, MACHINE_SESSION],
+    [SUBJECT_TOKEN_TYPE_GOOGLE, false, MACHINE_SESSION],
+  ]);
+  expect(issuer.requests).toHaveLength(0);
+});
+
+test("a PERSON_SIGNIN_TRADE that is neither off nor blank is refused naming the variable and its value, and nothing trades", async () => {
+  const { broker, issuer } = await stubs();
+  const env = await box(broker.url, issuer.url, [await signedIn(PERSON, { client_id: CLIENT_ID })]);
+  expect((await refusalOf({ ...env, [PERSON_TRADE_VAR]: "0" }))?.message).toBe(
+    `${PERSON_TRADE_VAR} is "0" and takes off or nothing: set it to off where this process's own credentials trade this machine and never a person signed in on it, and leave it unset where they trade the person signed in here`
+  );
+  for (const written of ["on", " OFF ", "false"]) {
+    const refusal = await refusalOf({ ...env, [PERSON_TRADE_VAR]: written });
+    expect(refusal?.message, written).toStartWith(
+      `${PERSON_TRADE_VAR} is "${written.trim()}" and takes off or nothing:`
+    );
+  }
+  // Refused as well where nobody signed in: the setting is read before the store.
+  const nobody = await box(broker.url, issuer.url, []);
+  expect((await refusalOf({ ...nobody, [PERSON_TRADE_VAR]: "on" }))?.message).toStartWith(
+    `${PERSON_TRADE_VAR} is "on"`
+  );
+  expect(broker.trades).toHaveLength(0);
+  expect(issuer.requests).toHaveLength(0);
+});
+
+test("a blank PERSON_SIGNIN_TRADE is unset: the person signed in here is traded as before", async () => {
+  const { broker, issuer } = await stubs();
+  const record = await signedIn(PERSON, { client_id: CLIENT_ID });
+  const env = await box(broker.url, issuer.url, [record]);
+  for (const blank of ["", "  "]) {
+    const made = await brokerTokenClient({ ...env, [PERSON_TRADE_VAR]: blank });
+    expect(made?.signIn).toEqual({ person: PERSON, thumbprint: record.thumbprint });
+    await made?.client.token();
+  }
+  expect(
+    broker.trades.map((trade) => [
+      trade.form.get("subject_token_type"),
+      trade.form.get("actor_token_type"),
+      trade.form.get(FORM_SESSION),
+    ])
+  ).toEqual([
+    [SUBJECT_TOKEN_TYPE_PERSON, ACTOR_TOKEN_TYPE_MACHINE, signInSessionName(record)],
+    [SUBJECT_TOKEN_TYPE_PERSON, ACTOR_TOKEN_TYPE_MACHINE, signInSessionName(record)],
+  ]);
 });

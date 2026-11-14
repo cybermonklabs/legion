@@ -4,13 +4,17 @@
 // when no bearer is configured at all), what it puts on a request, that it renews mid-session
 // with nothing restarted, and, where a person signed in on the machine, that it trades that
 // person under the right session name, remembers a sign-in refused for good, and never trades
-// the machine in its place.
+// the machine in its place, unless the process turned the person trade off.
 
 import { afterEach, expect, test } from "bun:test";
 import { writeFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import * as path from "node:path";
-import { type SignInRecord, signInSessionName } from "@legion/broker-client/signins";
+import {
+  PERSON_TRADE_VAR,
+  type SignInRecord,
+  signInSessionName,
+} from "@legion/broker-client/signins";
 import {
   type IssuerAnswer,
   signedIn,
@@ -19,7 +23,10 @@ import {
   thumbprintOf,
   writeSignIn,
 } from "@legion/broker-client/test/sign-ins";
-import { SUBJECT_TOKEN_TYPE_PERSON } from "@legion/broker-client/wire";
+import {
+  SUBJECT_TOKEN_TYPE_KUBERNETES,
+  SUBJECT_TOKEN_TYPE_PERSON,
+} from "@legion/broker-client/wire";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { consumerDelivery } from "../../test/subscribe-answer";
 import { brokerCredential, forgetBrokerClients, forgetBrokerSession } from "../broker-credential";
@@ -833,4 +840,40 @@ test("a sign-in the issuer has ended is remembered too: no trade at the broker, 
   expect(issuer.requests.filter((one) => one.path === "/token")).toHaveLength(refreshes);
   expect(broker.trades).toHaveLength(0);
   expect(dispatch.asked).toHaveLength(0);
+});
+
+test("a process that turns the person trade off writes Dispatch as the machine where a person signed in, and the same process without it as the person", async () => {
+  // `legion controller start` sets PERSON_SIGNIN_TRADE=off, so the controller, which keeps its
+  // operator's HOME and so finds the operator's sign-in, writes Dispatch as the service.
+  const broker = signInBroker();
+  const dispatch = stubDispatch();
+  const issuer = await issuerFor();
+  const record = await signedIn(PERSON, { client_id: CLIENT_ID });
+  const { env } = await signedInPod(broker.url, dispatch.url, issuer.url, [record]);
+
+  await dispatchOf({ ...env, [PERSON_TRADE_VAR]: "off" }, "ses_01a9").listAllIssues({});
+  // Nobody's sign-in was renewed for it.
+  expect(issuer.requests).toHaveLength(0);
+  // The setting is in the client's key, so the process without it is answered a client of its
+  // own, which trades the person.
+  await dispatchOf(env, "ses_01a9").listAllIssues({});
+
+  expect(
+    broker.trades.map((trade) => [
+      trade.form.get("subject_token_type"),
+      trade.form.get("subject_token"),
+      trade.form.has("actor_token"),
+      trade.form.get("session"),
+    ])
+  ).toEqual([
+    [SUBJECT_TOKEN_TYPE_KUBERNETES, "projected.service.account.token", false, "ses_01a9"],
+    [SUBJECT_TOKEN_TYPE_PERSON, issuer.idTokens[0], true, "ses_01a9"],
+  ]);
+  // The machine's proof is signed with a key of this process's, the person's with the box key.
+  expect(broker.trades[0]?.thumbprint).not.toBe(record.thumbprint);
+  expect(broker.trades[1]?.thumbprint).toBe(record.thumbprint);
+  expect(dispatch.asked.map((one) => one.authorization)).toEqual([
+    "DPoP broker-token-1",
+    "DPoP broker-token-2",
+  ]);
 });

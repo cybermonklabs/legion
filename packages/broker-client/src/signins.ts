@@ -28,6 +28,24 @@ export const SIGNIN_DIR_VAR = "AGENT_SECRETS_SIGNIN_DIR";
 /** Names which person a session acts for where the machine holds more than one sign-in (Go's
  *  `PersonVar`). */
 export const PERSON_VAR = "AGENT_SECRETS_PERSON";
+/**
+ * A setting of this process's own broker credentials that turns the person trade off: `off` is
+ * its one value, under which {@link chooseSignIn} answers no sign-in and the client trades this
+ * machine as where nobody signed in; unset or blank, the person trade is on. A process sets it
+ * where its own credentials are a service's and never a person's: `legion controller start` sets
+ * it (`packages/daemon/cmd/legion/controller.go`, `controllerPersonTradeVar`), so the
+ * controller's own Dispatch and Envoy credentials trade the machine and never the sign-in its
+ * operator made with {@link SIGNIN_COMMAND}, which the controller finds under the operator's
+ * HOME.
+ *
+ * It is read by this TypeScript client alone: Go's `agent-secrets` and `brokerclient` never read
+ * it, so the secrets a process reads through `agent-secrets` are signed as they would be without
+ * it. Its name lies outside `AGENT_SECRETS_*` because `agent-secrets NAME -- <cmd>` strips every
+ * variable of that prefix but a few from its child (`packages/envoy/cmd/agent-secrets/main.go`,
+ * `sessionIdentityVars` and `buildChildEnv`), and a `dispatch` command run that way would lose
+ * the setting and trade the person.
+ */
+export const PERSON_TRADE_VAR = "PERSON_SIGNIN_TRADE";
 /** The OpenID provider a person signs in at, Google's unless a dev stack says otherwise (Go's
  *  `SignInIssuerVar`). */
 export const SIGNIN_ISSUER_VAR = "AGENT_SECRETS_SIGNIN_ISSUER";
@@ -200,9 +218,27 @@ function namesOf(records: readonly SignInRecord[]): string {
 }
 
 /**
+ * Whether {@link PERSON_TRADE_VAR} turns the person trade off: true for `off`, false where it is
+ * unset or blank, and a refusal for any other value, which is a deployment that meant one of the
+ * two and wrote neither. The value is trimmed and its case kept, as `DISPATCH_TOKEN_BROKER`'s is
+ * (`packages/envoy-client/src/dispatch-config.ts`, `brokerRouteForced`).
+ */
+function personTradeOff(env: Environment): boolean {
+  const written = (env[PERSON_TRADE_VAR] ?? "").trim();
+  if (written === "") return false;
+  if (written === "off") return true;
+  throw new Error(
+    `${PERSON_TRADE_VAR} is "${written}" and takes off or nothing: set it to off where this process's own credentials trade this machine and never a person signed in on it, and leave it unset where they trade the person signed in here`
+  );
+}
+
+/**
  * The sign-in a session of this environment acts under, by the rules of Go's
  * `SignInStore.Choose`, with {@link PERSON_VAR} as the person named:
  *
+ * - {@link PERSON_TRADE_VAR} is `off`: undefined, a machine that trades as itself, with the
+ *   store not read at all, so a store that cannot be read or holds two records and names nobody
+ *   refuses nothing; any other value it holds is an error naming it;
  * - nobody signed in here: undefined, which is a machine that trades as itself;
  * - a person named: that person's record, whatever the case of the address, or an error naming
  *   who is signed in and {@link SIGNIN_COMMAND};
@@ -211,6 +247,7 @@ function namesOf(records: readonly SignInRecord[]): string {
  *   never acts as one colleague under another's name.
  */
 export async function chooseSignIn(env: Environment): Promise<SignInRecord | undefined> {
+  if (personTradeOff(env)) return undefined;
   const records = await listSignIns(signInDirectory(env));
   const person = (env[PERSON_VAR] ?? "").trim().toLowerCase();
   if (records.length === 0) return undefined;

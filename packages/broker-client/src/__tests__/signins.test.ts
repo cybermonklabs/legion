@@ -2,7 +2,8 @@
 //
 // A person's sign-in on this machine, read as the Go client reads it: the directory it lives in,
 // which record a session acts under, the refusals that stop a session acting as one colleague
-// under another's name, and the sign-in client a deployment configures.
+// under another's name, the setting that turns the person trade off for a process whose own
+// credentials are a service's, and the sign-in client a deployment configures.
 
 import { expect, test } from "bun:test";
 import { mkdir, writeFile } from "node:fs/promises";
@@ -13,6 +14,7 @@ import {
   chooseSignIn,
   DEFAULT_SIGNIN_ISSUER,
   listSignIns,
+  PERSON_TRADE_VAR,
   PERSON_VAR,
   SIGNIN_CLIENT_ID_VAR,
   SIGNIN_CLIENT_SECRET_FILE_VAR,
@@ -113,6 +115,33 @@ test("a person named who is not signed in here is refused naming who is", async 
   expect(refusal?.message).toBe(
     `${PERSON_VAR} names mallory@example.com, who is not signed in on this machine; signed in here: ada@example.com; run: ${SIGNIN_COMMAND}`
   );
+});
+
+test("with the person trade off, no sign-in is chosen and the store is not read", async () => {
+  const dir = join(makeDirectory(), "signins");
+  const ada = await signedIn("ada@example.com");
+  await writeSignIn(dir, ada);
+  expect(await chooseSignIn({ [SIGNIN_DIR_VAR]: dir, [PERSON_TRADE_VAR]: "off" })).toBeUndefined();
+  // Its whitespace is trimmed.
+  expect(
+    await chooseSignIn({ [SIGNIN_DIR_VAR]: dir, [PERSON_TRADE_VAR]: " off\n" })
+  ).toBeUndefined();
+  // A directory that is a file, which the store cannot read, refuses nothing either.
+  const notADirectory = join(makeDirectory(), "signins");
+  await writeFile(notADirectory, "not a directory\n");
+  expect(
+    (await refusalOf(() => chooseSignIn({ [SIGNIN_DIR_VAR]: notADirectory })))?.message
+  ).toStartWith("read this machine's sign-ins: ");
+  expect(
+    await chooseSignIn({ [SIGNIN_DIR_VAR]: notADirectory, [PERSON_TRADE_VAR]: "off" })
+  ).toBeUndefined();
+  // Blank is unset: the one record is chosen.
+  expect(await chooseSignIn({ [SIGNIN_DIR_VAR]: dir, [PERSON_TRADE_VAR]: " " })).toEqual(ada);
+  // Any other value is refused naming the variable and quoting the value, before the store.
+  const refusal = await refusalOf(() =>
+    chooseSignIn({ [SIGNIN_DIR_VAR]: notADirectory, [PERSON_TRADE_VAR]: "no" })
+  );
+  expect(refusal?.message).toStartWith(`${PERSON_TRADE_VAR} is "no" and takes off or nothing: `);
 });
 
 test("a record missing a person, a refresh token or a box key is refused naming its file", async () => {
