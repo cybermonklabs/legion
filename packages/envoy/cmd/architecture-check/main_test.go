@@ -20,6 +20,7 @@ import (
 	"strings"
 	"testing"
 	"testing/fstest"
+	"unicode"
 
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/dispatch/architecture/notes"
@@ -381,9 +382,14 @@ func TestTheBuiltBinary(t *testing.T) {
 			"architecture-check: " + dir + `: y\r::warning::forged.md: file name must be <slug>.md`,
 		}
 		lines := strings.Split(strings.TrimSuffix(got.stderr, "\n"), "\n")
-		if len(lines) != 1+len(refusals) || lines[0] != warning || !strings.HasPrefix(lines[1], refusals[0]) ||
-			!strings.HasPrefix(lines[2], refusals[1]) || !strings.HasPrefix(lines[3], refusals[2]) {
+		if len(lines) != 1+len(refusals) || lines[0] != warning {
 			t.Errorf("stderr %q, want the line %q and then one line starting with each of %q", got.stderr, warning, refusals)
+		} else {
+			for i, want := range refusals {
+				if !strings.HasPrefix(lines[i+1], want) {
+					t.Errorf("stderr line %q, want a line starting with %q", lines[i+1], want)
+				}
+			}
 		}
 		expectNoCommand(t, "stdout", got.stdout)
 		expectNoCommand(t, "stderr", got.stderr)
@@ -449,9 +455,9 @@ func expect(t *testing.T, got, want result) {
 }
 
 // expectNoCommand fails the test unless out holds no \r, no "##[" and no line that starts with
-// "::": a GitHub runner reads a workflow command in both forms, a "##[" anywhere in a line and a
-// line that starts with "::". The runner ends a line at \n and at \r alike, so out is split at
-// both.
+// "::" after its leading white space: a GitHub runner reads a workflow command in both forms, a
+// "##[" anywhere in a line and a line that starts with "::" once the runner trims its leading
+// white space. The runner ends a line at \n and at \r alike, so out is split at both.
 func expectNoCommand(t *testing.T, stream, out string) {
 	t.Helper()
 	if strings.Contains(out, "\r") {
@@ -461,7 +467,7 @@ func expectNoCommand(t *testing.T, stream, out string) {
 		t.Errorf("%s %q holds a ##[, which a runner reads as a workflow command", stream, out)
 	}
 	for _, line := range strings.FieldsFunc(out, func(r rune) bool { return r == '\n' || r == '\r' }) {
-		if strings.HasPrefix(line, "::") {
+		if strings.HasPrefix(strings.TrimLeftFunc(line, unicode.IsSpace), "::") {
 			t.Errorf("%s holds the line %q, which a runner reads as a workflow command", stream, line)
 		}
 	}

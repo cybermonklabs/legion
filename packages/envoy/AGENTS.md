@@ -2942,10 +2942,10 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   neither prints a count line.
   Each entry `notes.IsNote` rejects is a warning on stderr, `architecture-check: warning: <path>: not a note (<kind>); the importer passes over it`, and changes no exit status:
   the importer passes over such an entry in silence, and its author expects it to count.
-  Every line but the usage goes through `say`, which escapes the whole line with `printable`:
-  each control (Cc) and format (Cf) character as a Go string literal writes it (`\n`, `\u00ad`), each byte that is not UTF-8 as `\xNN`, and the `[` of every `##[` as `\x5b`.
-  A GitHub runner reads a workflow command from a line starting `::` and from a `##[` anywhere in a line, ends a line at `\n` and `\r`, and its matching can pass over a format character;
-  so text from the directory can neither start a `::` line nor hold a `##[` command.
+  Every line but the usage starts with fixed text, and `say` escapes it with `printable`:
+  each control character (Cc), since a GitHub runner ends a line at `\n` and `\r` and reads a command from a line starting `::` after its leading white space and from a `##[` anywhere;
+  the `[` of every `##[` as `\x5b`, since only a literal `##[` names a command: the runner's search can pass over an ignorable character, but reads the name three characters after the match's start;
+  and each format character (Cf, invisible or reordering text) and byte not UTF-8, for a log reader.
   `--allow-empty` reads a directory that holds no note, and one that does not exist, as the empty set, exit 0 with a count of 0, as the server reads a missing directory as the empty model;
   git keeps no empty directory, so a repository with no note yet has no directory at all.
   It opens no database and reaches no network.

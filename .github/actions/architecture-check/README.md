@@ -64,12 +64,27 @@ A caller sets `allow-empty: true` only while it has no note, and reads `count`.
 The check step exits with the status of the command.
 A status other than 0 fails the step and the job.
 Each line names the directory by its absolute path.
-A runner reads a workflow command in the log in two forms: a line that starts with `::`, and `##[` anywhere in a line.
-So the command escapes every control character, every format character (such as a soft hyphen or a zero-width joiner) and every byte that is not UTF-8 in each line that it prints, as `\n`, `\r`, `\x1b`, `\u00ad` or `\xff`.
-The runner matches text in a way that can pass over a format character, so `#`, a soft hyphen and `#[` can read as `##[`.
+
+The runner of the job reads each line of the log for workflow commands.
+It ends a line at `\n` and at `\r`.
+It reads a workflow command in two forms.
+The first form is a line that starts with `::` after the runner removes the white space at the start of the line.
+The second form is `##[` anywhere in a line.
+Each line starts with the fixed text of the command.
+The command writes every control character in each line that it prints as an escape, such as `\n`, `\r` or `\x1b`.
+So no line break from the directory gets into the log, and text from the directory cannot start a new line.
 The command also writes the `[` of every `##[` as `\x5b`.
-So text from the directory can neither start a `::` line nor hold a `##[` command.
+The escapes hold no `#` and no `[`, so no `##[` stays in a line.
+The runner finds `##[` with a search that can ignore some characters, such as U+034F.
+But it reads the command name at a fixed three characters after the start of the match, and it accepts only an exact name (`src/Runner.Common/ActionCommand.cs` in `actions/runner`).
+So if the match includes an ignored character, the name starts with `#`, `[` or that character, and no command has that name.
+Only a literal `##[` can start a command.
 A problem whose text has several lines prints on one line, with each line break as `\n`.
+
+The command also writes every format character as an escape, such as a soft hyphen as `\u00ad` or a zero-width joiner as `\u200d`.
+A format character is invisible or changes the order of the text, so it can make one name look like a different name in the log.
+This escape is for the person who reads the log, and it does not stop a command.
+The command also writes every byte that is not UTF-8 as an escape, such as `\xff`.
 
 - **Exit 0: the set is valid.**
   The log holds the line `architecture-check: <directory>: <n> notes, the set is valid`, with `note` for one note.

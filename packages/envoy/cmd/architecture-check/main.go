@@ -26,12 +26,17 @@
 // set, which the parser accepts: exit 0 with a count of 0, for a repository with no note yet.
 //
 // Every line the command prints, the usage aside, is written by say, which escapes the whole line
-// as printable does: each control character, each format character and each byte that is not
-// UTF-8 as an escape, and the "[" of every "##[" as \x5b. A GitHub runner reads a workflow command
-// in two forms, a line that starts with "::" and a "##[" anywhere in a line, so no text the
-// directory or an argument holds can start a "::" line or hold a "##[" command. A problem whose
-// text spans several lines, as yaml.v3's answer for an unknown key does, prints on one line with
-// each line break as \n.
+// as printable does. A GitHub runner ends a line of the log at \n and at \r, and reads a workflow
+// command in two forms: a line that starts with "::" once its leading white space is trimmed, and
+// a "##[" anywhere in a line. Every line starts with fixed text, "architecture-check: " or the
+// flag package's message for an argument it refuses, and printable writes each control character
+// as an escape, so no line break reaches the log and no text the directory or an argument holds
+// starts a line of its own. It writes the "[" of every "##[" as \x5b, and only a literal "##["
+// names a command, as printable's doc says, so no line holds a "##[" command. It also writes each
+// format character and each byte that is not UTF-8 as an escape, for a reader of the log: a
+// format character is invisible or reorders text, and can make one name read as another. A
+// problem whose text spans several lines, as yaml.v3's answer for an unknown key does, prints on
+// one line with each line break as \n.
 package main
 
 import (
@@ -225,22 +230,37 @@ func refuse(stdout, stderr io.Writer, dir string, held int, problems []error) in
 
 // say writes one line to w: format filled with args, the whole line escaped by printable. Every
 // line the command prints but the usage is written here, so no print site can leave an argument
-// unescaped, and a "##[" that an argument and the format text make together is escaped too.
+// unescaped, and a "##[" that an argument and the format text make together is escaped too. Each
+// line starts with fixed text, "architecture-check: " or the flag package's message for an
+// argument it refuses, and printable keeps the rest of the line on it, so no text of an argument
+// or of the directory starts a line.
 func say(w io.Writer, format string, args ...any) {
 	fmt.Fprintln(w, printable(fmt.Sprintf(format, args...)))
 }
 
-// printable is s as a line of the command prints it. A GitHub runner ends a line of the log at
-// \n and at \r alike, and reads a workflow command in two forms: a line that starts with "::",
-// and a "##[" anywhere in a line. It finds both with .NET's culture-sensitive string matching,
-// which can pass over a format character as if it were not there, so "#\u00ad#[" may read as
-// "##[". A file name or a front-matter value in a pull request is its author's text, so printable
-// writes each control character (Unicode category Cc: C0, DEL and C1) and each format character
-// (Cf: the soft hyphen, the zero-width joiner and non-joiner, the bidi controls, the byte order
-// mark) as a Go string literal writes it, `\n`, `\r`, `\x1b`, `\u00ad` or `\ufeff`, and each byte
-// that is not UTF-8 as `\xNN`. Then it writes the "[" of every "##[" as `\x5b`, so "###[" prints
-// as `###\x5b` and "##[##[" as `##\x5b##\x5b`. No escape holds a "#" or a "[", so no "##[" is
-// left. Text that is valid UTF-8 and holds none of these is s itself.
+// printable is s as a line of the command prints it. A file name or a front-matter value in a pull
+// request is its author's text, and a GitHub runner reads workflow commands from the log: it ends
+// a line at \n and at \r alike, and reads a command in two forms, a line that starts with "::" once
+// its leading white space is trimmed, and a "##[" anywhere in a line.
+//
+// printable writes each control character (Unicode category Cc: C0, DEL and C1) as a Go string
+// literal writes it, `\n`, `\r` or `\x1b`, so no line break of s reaches the log and no text of s
+// starts a line of its own: every line say writes starts with its fixed text.
+//
+// Then it writes the "[" of every "##[" as `\x5b`, so "###[" prints as `###\x5b` and "##[##[" as
+// `##\x5b##\x5b`. No escape holds a "#" or a "[", so no "##[" is left, and that keeps out every
+// command of the second form, since only a literal "##[" names one. The runner finds "##[" with a
+// culture-sensitive search, which can pass over an ignorable character such as U+034F or U+FE0F
+// as if it were not there. But it then reads the command name a fixed three characters after the
+// start of the match (actions/runner src/Runner.Common/ActionCommand.cs:146) and accepts only an
+// exact name, so in a match through an ignorable character the name starts inside the match, at a
+// "#", a "[" or that character, and is no command's name.
+//
+// printable also writes each format character (Cf: the bidi controls, the zero-width joiner and
+// non-joiner, the soft hyphen, the byte order mark) as `\u202e`, `\u200d`, `\u00ad` or `\ufeff`,
+// and each byte that is not UTF-8 as `\xNN`. That is for a reader of the log, not for the runner:
+// a format character is invisible or reorders the text around it, so it can make one name read
+// as another. Text that is valid UTF-8 and holds none of these is s itself.
 func printable(s string) string {
 	if !utf8.ValidString(s) || strings.ContainsFunc(s, escaped) {
 		var b strings.Builder
@@ -262,7 +282,8 @@ func printable(s string) string {
 }
 
 // escaped reports whether printable writes r as an escape: a control character (Unicode category
-// Cc) or a format character (Cf).
+// Cc), such as a line break or a terminal escape, or a format character (Cf), which is invisible
+// or reorders text.
 func escaped(r rune) bool {
 	return unicode.In(r, unicode.Cc, unicode.Cf)
 }
