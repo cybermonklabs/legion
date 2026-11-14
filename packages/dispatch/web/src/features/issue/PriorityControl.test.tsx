@@ -9,9 +9,10 @@ import { useShownQuery } from "../../api/cache/shown-query";
 import { cacheOf, QueryClient, QueryClientProvider } from "../../api/cache/test-client";
 import type { InboxRow, Issue, IssueDetails, IssueSummary } from "../../api/types";
 import { issuePriority } from "./issue-priority";
-import { PriorityControl } from "./PriorityControl";
+import { PriorityControl, PriorityEditor } from "./PriorityControl";
+import { reservedPriorityWidth } from "./reserved-width";
 import { useIssueAssignee } from "./useIssueAssignee";
-import { useIssuePriority } from "./useIssuePriority";
+import { type IssuePriorityWrite, useIssuePriority } from "./useIssuePriority";
 
 const issue: Issue = {
   advances: [],
@@ -171,6 +172,34 @@ test("PriorityControl shows the issue's priority and offers Unset and P0-P3", ()
     expect([...select().options].map((option) => option.value)).toEqual(["", "0", "1", "2", "3"]);
   } finally {
     unmount();
+  }
+});
+
+test("the priority badge keeps its value's own width outside the issue header and reserves its widest value in it", () => {
+  const reservation = reservedPriorityWidth.split(" ");
+  // The Inbox row and reading column head, the issues table and the board draw this control
+  // as `renderControl` does: no box of the header's, so the badge is as wide as its value.
+  const outside = renderControl();
+  try {
+    const badge = screen.getByText("P1", { selector: "span" });
+    expect(reservation.filter((token) => badge.classList.contains(token))).toEqual([]);
+  } finally {
+    outside.unmount();
+  }
+  // The issue header draws the editor with `reserve`, the one surface that holds the badge to
+  // the width of its widest value (dispatch://INFRA-299/spec#b-r5).
+  const idle: IssuePriorityWrite = {
+    failed: false,
+    pending: false,
+    retry: () => undefined,
+    submit: () => undefined,
+  };
+  const header = render(<PriorityEditor issueKey="CORE-1" priority={1} reserve write={idle} />);
+  try {
+    const badge = screen.getByText("P1", { selector: "span" });
+    expect(reservation.filter((token) => badge.classList.contains(token))).toEqual(reservation);
+  } finally {
+    header.unmount();
   }
 });
 

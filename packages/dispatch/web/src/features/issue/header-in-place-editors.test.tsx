@@ -14,6 +14,7 @@ import { inPlaceBoxRules } from "../../components/InPlaceEditBox";
 import { MarginProvider } from "../margin/margin-context";
 import { IssueHeader } from "./IssueHeader";
 import { stateForIssue } from "./pins";
+import { reservedPriorityWidth } from "./reserved-width";
 import type { IssuePriorityWrite } from "./useIssuePriority";
 
 /**
@@ -173,6 +174,21 @@ test("no in-place editor of the issue header keeps a box rule of its own", () =>
   // itself.
   for (const token of ["min-w-[20ch]", "absolute inset-x-0 top-0", "col-start-1", "row-start-1"]) {
     expect(source).not.toContain(token);
+  }
+});
+
+test("the issue header's priority badge reserves the width of its widest value", () => {
+  const { unmount } = renderHeader();
+  try {
+    // The badge drawn beside the select laid over it; outside the header the same control takes
+    // its value's own width (`PriorityControl.test.tsx`).
+    const badge = screen.getByRole("combobox", {
+      name: "Priority of CORE-1",
+    }).previousElementSibling;
+    const reservation = reservedPriorityWidth.split(" ");
+    expect(reservation.filter((token) => badge?.classList.contains(token))).toEqual(reservation);
+  } finally {
+    unmount();
   }
 });
 

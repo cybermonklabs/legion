@@ -1,9 +1,11 @@
 /**
- * The width a control whose text is its value reserves, so the value landing — a pick shown
- * before the server answers it, or a save putting its own word in the control — never changes
- * the control's box and never moves what sits beside it
+ * The width a control of the issue header whose text is its value reserves, so the value
+ * landing — a pick shown before the server answers it, or a save putting its own word in the
+ * control — never changes the control's box and never moves what sits beside it
  * (dispatch://INFRA-299/spec#b-r5). Each rule below names a floor and a cap that are the same
- * number, which is how a reader sees that no value can change the box.
+ * number, which is how a reader sees that no value can change the box. The reservation is the
+ * header's alone: the priority badge every other surface draws (`PriorityControl`) keeps its
+ * value's own width, and reserves only where the header passes `PriorityEditor`'s `reserve`.
  *
  * Both bound the content box (`box-content`), so the characters they name are the whole of the
  * bound whatever padding the control draws around them: the repository badge's fourteen are

@@ -524,6 +524,7 @@ export function IssueHeader({
             disabled={isClosed || updateIssue.isPending}
             issueKey={issue.key}
             priority={issuePriority(issue.priority)}
+            reserve
             write={priorityWrite}
           />
           <AssigneeControl

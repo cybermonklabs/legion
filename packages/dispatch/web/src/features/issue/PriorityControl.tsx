@@ -63,12 +63,14 @@ export function PriorityControl({
 /**
  * The single priority editor: shows the issue's priority as the `P0`–`P3` badge (a muted
  * "Priority" tag when unset) and, on click, tap, Enter or Space, opens a native `<select>` to
- * pick P0–P3 or Unset — the same picker on desktop and iPhone. The badge reserves the width of
- * its widest value (`reservedPriorityWidth`), so a pick shown before the server answers it
- * moves nothing beside the control. The select is laid invisibly over the badge so the tap
- * target stays 44 px (32 px from `md`) while the badge keeps its size, and the wrapper draws the
- * keyboard focus ring. `write` goes through `useIssuePriority`, so every surface shows the pick
- * at once, stops showing it if it is refused, and reads the lists again. The select stays
+ * pick P0–P3 or Unset — the same picker on desktop and iPhone. In the issue header (`reserve`)
+ * the badge reserves the width of its widest value (`reservedPriorityWidth`), so a pick shown
+ * before the server answers it moves nothing beside the control; everywhere else - a list row,
+ * a board card, an Inbox row or reading column - it takes its value's own width, as it always
+ * has. The select is laid invisibly over the badge so the tap target stays 44 px (32 px from
+ * `md`) while the badge keeps its size, and the wrapper draws the keyboard focus ring. `write`
+ * goes through `useIssuePriority`, so every surface shows the pick at once, stops showing it if
+ * it is refused, and reads the lists again. The select stays
  * enabled while a save is in flight: a disabled control drops the focus it holds and leaves the
  * tab order, and a pick made meanwhile is queued behind the save rather than refused. A press on
  * the select stays on the select: a board card is a drag activator, and a held tap on the badge
@@ -83,11 +85,15 @@ export function PriorityEditor({
   disabled = false,
   issueKey,
   priority,
+  reserve = false,
   write,
 }: {
   disabled?: boolean;
   issueKey: string;
   priority: IssuePriority | null;
+  /** Set only by the issue header, the one place dispatch://INFRA-299/spec#b-r5 holds the
+   *  badge to one box at every value. */
+  reserve?: boolean;
   write: IssuePriorityWrite;
 }): ReactNode {
   const tone = priority === null ? badgeLow : priorityBadge[priority];
@@ -96,7 +102,7 @@ export function PriorityEditor({
       <span className={`${badgeSelectWrapper} ${disabled ? "opacity-50" : ""}`}>
         <span
           aria-hidden="true"
-          className={`${badgeSelectBadge} ${reservedPriorityWidth} ${tone.bg} ${tone.text}`}
+          className={`${badgeSelectBadge} ${reserve ? reservedPriorityWidth : ""} ${tone.bg} ${tone.text}`}
         >
           {priority === null ? "Priority" : `P${priority}`}
         </span>
