@@ -303,6 +303,181 @@ func TestCensusExemptsNoMigrationTheRunnerReadsAsOtherStatements(t *testing.T) {
 	}
 }
 
+// storedCodeFixture is what TestCensusAndTheRunnerResolveNamesAlikeAfterStoredCodeChangesTheSession
+// adds to a database at version 1 of censusBase: the enum mood in public, the schema sp_1792 with
+// a domain of the same name, mood, which has a check, and four tables whose stored code calls
+// set_config to put sp_1792 first in the session's search_path. That code is the column default
+// of sp_default, the check constraint of sp_check, the check of the domain sp_domain that
+// sp_domained's column has, and the default of the domain sp_domdef that sp_domdefed's column
+// has. sp_default holds a row whose value is given, so that its default does not run, for the row
+// that sets that value to its default.
+const storedCodeFixture = `
+create type mood as enum ('calm', 'busy');
+create schema sp_1792;
+create domain sp_1792.mood as text check (value <> 'x');
+create table sp_default (id int, sp text default set_config('search_path', 'sp_1792, public', false));
+insert into sp_default (id, sp) values (0, 'given');
+create table sp_check (id int, constraint sp_check_sets check (set_config('search_path', 'sp_1792, public', false) is not null));
+create domain sp_domain as int check (set_config('search_path', 'sp_1792, public', false) is not null);
+create table sp_domained (v sp_domain);
+create domain sp_domdef as text default set_config('search_path', 'sp_1792, public', false);
+create table sp_domdefed (id int, sp sp_domdef);
+`
+
+// Stored code that a migration runs can change the session that the runner applies the next
+// migration on: a column default, a check constraint, or a domain's check or default that calls
+// set_config(…, false). The census does not read that code, and the runner applies each migration
+// on a connection of its pool, which keeps the session as the migration before left it. Each row
+// is a pending 0002 that runs such code and a pending 0003 that adds to things a column of type
+// mood with a constant default. The census judges 0003 by the enum public.mood and exempts it as
+// alter table. In five rows the code puts sp_1792 first in the search_path, and sp_1792 holds a
+// domain mood with a check. In the sixth, a column default sets session_authorization to a role
+// whose name is the name of a schema that holds such a domain, so "$user" in the search_path
+// names that schema. The runner gives session_authorization, role and search_path the values that
+// RESET gives them at the start of each migration (resetSettings in internal/pgmigrate), so 0003
+// resolves mood as the census did: the column has the type public.mood, and Postgres does not
+// rewrite things. Without that reset, mood names the domain, and Postgres rewrites things under
+// ACCESS EXCLUSIVE for a migration that the census exempted. The runner's pool holds one
+// connection, so 0003 runs on the connection that 0002 changed. The control applies 0002 alone to
+// a second database of the same fixture, on a pool of one connection too, and reads on that
+// connection the setting that the code changes: so each row shows that the code changes the
+// session.
+func TestCensusAndTheRunnerResolveNamesAlikeAfterStoredCodeChangesTheSession(t *testing.T) {
+	ctx := context.Background()
+	// sessionUser is the role that the sixth row's default gives session_authorization. It is a
+	// superuser, so that without the reset the runner goes on as that role and the column shows
+	// the failure, not a refused privilege. Its name is random, since a role spans the cluster that
+	// every test shares.
+	sessionUser := "sa_" + randomDatabaseSuffix(t)
+	const searchPathRead, searchPathChanged = "select current_setting('search_path')", "sp_1792, public"
+	for _, row := range []struct {
+		name string
+		// role, where it is not "", is a role the row creates before its databases and drops after.
+		role string
+		// fixture is SQL of the row's own that each database takes after storedCodeFixture.
+		fixture string
+		// write is 0002, which runs the stored code.
+		write string
+		// show reads, on the runner's connection, the setting that the stored code changes, and
+		// changed is its value after 0002.
+		show, changed string
+	}{
+		{name: "an insert that runs a column default", write: "insert into sp_default (id) values (1)", show: searchPathRead, changed: searchPathChanged},
+		{name: "an update that sets a column to its default", write: "update sp_default set sp = default", show: searchPathRead, changed: searchPathChanged},
+		{name: "an insert that runs a check constraint", write: "insert into sp_check values (1)", show: searchPathRead, changed: searchPathChanged},
+		{name: "an insert that runs a domain check", write: "insert into sp_domained values (1)", show: searchPathRead, changed: searchPathChanged},
+		{name: "an insert that runs a domain default", write: "insert into sp_domdefed (id) values (1)", show: searchPathRead, changed: searchPathChanged},
+		{
+			name: "an insert that runs a column default that sets session_authorization",
+			role: sessionUser,
+			fixture: "create schema " + sessionUser + "; create domain " + sessionUser + ".mood as text check (value <> 'x'); " +
+				"create table sp_session (id int, sp text default set_config('session_authorization', '" + sessionUser + "', false));",
+			write: "insert into sp_session (id) values (1)", show: "select session_user::text", changed: sessionUser,
+		},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			database := func() (*Store, string) {
+				t.Helper()
+				store, url := migratedToOne(t)
+				if _, err := store.Pool.Exec(ctx, "insert into things (id, kind) values (1, 'good'), (2, 'good'), (3, 'good');"+storedCodeFixture+row.fixture); err != nil {
+					t.Fatalf("load the fixture: %v", err)
+				}
+				return store, url
+			}
+			// runner is a store on a pool of one connection to url.
+			runner := func(url string) *Store {
+				t.Helper()
+				config, err := pgxpool.ParseConfig(url)
+				if err != nil {
+					t.Fatal(err)
+				}
+				config.MaxConns = 1
+				pool, err := pgxpool.NewWithConfig(ctx, config)
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(pool.Close)
+				return &Store{Pool: NewPool(pool)}
+			}
+			store, url := database()
+			if row.role != "" {
+				if _, err := store.Pool.Exec(ctx, "create role "+row.role+" nologin superuser"); err != nil {
+					t.Fatal(err)
+				}
+				// Registered before any runner connects, so every runner's pool closes first.
+				t.Cleanup(func() {
+					if _, err := store.Pool.Exec(context.Background(), "drop role "+row.role); err != nil {
+						t.Errorf("drop role %s: %v", row.role, err)
+					}
+				})
+			}
+			base := censusBase["migrations/0001_things.up.sql"]
+			write := &fstest.MapFile{Data: []byte(row.write)}
+			set := fstest.MapFS{
+				"migrations/0001_things.up.sql":      base,
+				"migrations/0002_stored_code.up.sql": write,
+				"migrations/0003_things_mood.up.sql": {Data: []byte("alter table things add column c mood default 'calm'")},
+			}
+			report, err := census(ctx, url, set, pgmigrate.CensusOptions{TableLimit: 1})
+			if err != nil {
+				t.Fatalf("census: %v", err)
+			}
+			i := slices.IndexFunc(report.Pending, func(entry pgmigrate.MigrationCensus) bool {
+				return entry.Migration.Name == "0003_things_mood.up.sql"
+			})
+			if i < 0 {
+				t.Fatalf("the census has no entry for 0003_things_mood.up.sql:\n%s", reportText(report))
+			}
+			if entry := report.Pending[i]; entry.TableSizeExemption != "alter table" || len(entry.Refusals) > 0 || !slices.ContainsFunc(entry.Tables, func(table pgmigrate.TableCensus) bool {
+				return table.Name == "things" && table.Bytes > 1
+			}) {
+				t.Fatalf("the census answered 0003 with exemption %q, refusals %v and tables %+v; want it exempt as alter table, with no refusal, on things above the 1-byte limit", entry.TableSizeExemption, entry.Refusals, entry.Tables)
+			}
+			relfilenode := func() uint32 {
+				t.Helper()
+				var node uint32
+				if err := store.Pool.QueryRow(ctx, "select relfilenode from pg_class where oid = 'public.things'::regclass").Scan(&node); err != nil {
+					t.Fatalf("read the relfilenode of things: %v", err)
+				}
+				return node
+			}
+			before := relfilenode()
+
+			if err := runner(url).migrate(ctx, set); err != nil {
+				t.Fatalf("migrate the set the census exempted: %v", err)
+			}
+			if version := schemaVersion(t, store); version != 3 {
+				t.Fatalf("schema version %d after the runner, want 3", version)
+			}
+			var columnType string
+			if err := store.Pool.QueryRow(ctx, `select format('%I.%I', n.nspname, t.typname) from pg_attribute a
+				join pg_type t on t.oid = a.atttypid join pg_namespace n on n.oid = t.typnamespace
+				where a.attrelid = 'public.things'::regclass and a.attname = 'c'`).Scan(&columnType); err != nil {
+				t.Fatalf("read the type of things.c: %v", err)
+			}
+			if columnType != "public.mood" {
+				t.Errorf("things.c has the type %s, want public.mood, the type the census read", columnType)
+			}
+			if after := relfilenode(); after != before {
+				t.Errorf("the relfilenode of things went from %d to %d: Postgres rewrote the table for a migration the census exempted", before, after)
+			}
+
+			_, controlURL := database()
+			control := runner(controlURL)
+			if err := control.migrate(ctx, fstest.MapFS{"migrations/0001_things.up.sql": base, "migrations/0002_stored_code.up.sql": write}); err != nil {
+				t.Fatalf("control: migrate 0002 alone: %v", err)
+			}
+			var value string
+			if err := control.Pool.QueryRow(ctx, row.show).Scan(&value); err != nil {
+				t.Fatalf("control: %s: %v", row.show, err)
+			}
+			if value != row.changed {
+				t.Errorf("control: after 0002 alone the runner's connection reads %q, want %q: the stored code did not change the session, so the row proves nothing", value, row.changed)
+			}
+		})
+	}
+}
+
 // A failed census never prints a row's value. A data exception's message quotes the value that
 // failed to cast (`invalid input syntax for type integer: "<value>"`), and Dispatch's tables hold
 // plain-text secrets, so the report names the census file and the SQLSTATE and nothing of the

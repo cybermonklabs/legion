@@ -430,6 +430,105 @@ func TestExecReadsAMigrationAsTheCensusReadsIt(t *testing.T) {
 	}
 }
 
+// Exec resolves a migration's names under the values that RESET gives session_authorization,
+// role and search_path (resetSettings), as the census resolves them, whatever the runner's
+// connection carries. An earlier migration can leave each of them changed on a pooled connection,
+// by a session SET or through stored code that calls set_config, and a name can then resolve to
+// another object than the census read: search_path lists the schemas a lookup searches, "$user"
+// in it names the schema of the session user, and the current user's privileges decide which
+// schemas a lookup can use. Each row changes one or all three for the session of the runner's
+// connection: a SET of search_path, a SET ROLE, and a superuser's SET SESSION AUTHORIZATION to
+// another role. The last row signs in as a login that is no superuser and makes the first two,
+// as a deployment's login can. The row's migration writes the search_path, current_user and
+// session_user it runs under into public.seen, and seen must hold the values that the connection
+// read when it was new, before the row's SETs: the values that RESET gives. The connection must
+// still carry the row's settings after the commit, since Exec's settings end with its
+// transaction.
+func TestExecResolvesNamesUnderTheValuesResetGives(t *testing.T) {
+	ctx := context.Background()
+	url := testpg.URL(t)
+	config, err := pgx.ParseConfig(url)
+	if err != nil {
+		t.Fatalf("parse the test database's URL: %v", err)
+	}
+	admin := connect(t, ctx, url)
+	// A role spans the cluster that every test shares, so each role takes the name of the test's
+	// own database, which is random. other and login are members of group. login signs in with a
+	// password, as a deployment's login does.
+	group, other, login := config.Database+"_group", config.Database+"_other", config.Database+"_login"
+	if _, err := admin.Exec(ctx, "create role "+group+"; create role "+other+" in role "+group+"; create role "+login+" login password 'exec-test' in role "+group+"; "+
+		"create schema x; create table seen (search_path text, current_user_name text, session_user_name text); grant insert on seen to public"); err != nil {
+		t.Fatal(err)
+	}
+	// Registered before any runner connects, so every runner's connection closes first.
+	t.Cleanup(func() {
+		if _, err := admin.Exec(context.Background(), "drop role "+other+", "+login+", "+group); err != nil {
+			t.Errorf("drop the test's roles: %v", err)
+		}
+	})
+	type names struct{ searchPath, currentUser, sessionUser string }
+	read := func(t *testing.T, conn *pgx.Conn) names {
+		t.Helper()
+		var got names
+		if err := conn.QueryRow(ctx, "select current_setting('search_path'), current_user::text, session_user::text").Scan(&got.searchPath, &got.currentUser, &got.sessionUser); err != nil {
+			t.Fatalf("read search_path, current_user and session_user: %v", err)
+		}
+		return got
+	}
+	for _, row := range []struct {
+		name string
+		// user is the login the runner's connection signs in as, "" for the test database's own.
+		user string
+		set  string
+	}{
+		{"a session set of search_path", "", "set search_path = x"},
+		{"a set role", "", "set role " + group},
+		{"a set session authorization", "", "set session authorization " + other},
+		{"all three", "", "set session authorization " + other + "; set role " + group + "; set search_path = x"},
+		{"a set role and a set of search_path on a login that is no superuser", login, "set role " + group + "; set search_path = x"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			runnerConfig := config.Copy()
+			if row.user != "" {
+				runnerConfig.User, runnerConfig.Password = row.user, "exec-test"
+			}
+			runner, err := pgx.ConnectConfig(ctx, runnerConfig)
+			if err != nil {
+				t.Fatalf("connect the runner: %v", err)
+			}
+			t.Cleanup(func() { runner.Close(context.Background()) })
+			reset := read(t, runner)
+			if _, err := runner.Exec(ctx, row.set); err != nil {
+				t.Fatalf("%s: %v", row.set, err)
+			}
+			changed := read(t, runner)
+			if changed == reset {
+				t.Fatalf("%s changed none of search_path, current_user and session_user (%+v), so the row proves nothing", row.set, changed)
+			}
+			tx, err := runner.Begin(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := Exec(ctx, tx, Migration{Version: 1, Name: "0001_seen.up.sql", SQL: "insert into public.seen select current_setting('search_path'), current_user, session_user"}, nil); err != nil {
+				t.Fatalf("Exec: %v", err)
+			}
+			if err := tx.Commit(ctx); err != nil {
+				t.Fatalf("commit: %v", err)
+			}
+			if after := read(t, runner); after != changed {
+				t.Fatalf("after the commit the runner's connection has %+v, want %+v, as the row set it", after, changed)
+			}
+			var seen names
+			if err := admin.QueryRow(ctx, "delete from seen returning search_path, current_user_name, session_user_name").Scan(&seen.searchPath, &seen.currentUser, &seen.sessionUser); err != nil {
+				t.Fatalf("read what the migration ran under: %v", err)
+			}
+			if seen != reset {
+				t.Errorf("the migration ran under %+v, want %+v, the values that RESET gives", seen, reset)
+			}
+		})
+	}
+}
+
 // stringConstants appends to found every string constant of a parse tree, read from libpg_query's
 // JSON: an A_Const writes one as {"sval": {"sval": "…"}}.
 func stringConstants(node any, found *[]string) {

@@ -166,10 +166,12 @@ func (r *Report) Refused() bool { return r.refusals() > 0 }
 // The classifier (tableSizeExemption) reads the catalog in the census's transaction where a form
 // needs it: an added column's type and default, whether the table a created index is built on is
 // new, and, for a statement on the list that keeps the catalog reads on, the relations it names
-// and the function, the table or the view it creates (keepsReadsOn). The census reads every
-// pending migration against the catalog as it stands before any of them applies, so from the
-// first pending migration that holds a statement the census does not know to leave names as they
-// are (catalogReadsOff), every later one is classified with no catalog, and its added columns and
+// and the function, the table or the view it creates (keepsReadsOn). The transaction resolves
+// names under the values that RESET gives session_authorization, role and search_path
+// (resetSettings), as the runner applies each migration. The census reads every pending
+// migration against the catalog as it stands before any of them applies, so from the first
+// pending migration that holds a statement the census does not know to leave names as they are
+// (catalogReadsOff), every later one is classified with no catalog, and its added columns and
 // created indexes are judged on size (catalogTrusted). From the first pending migration that can
 // create or enable an event trigger that the census does not see, or that does not parse, no
 // later one is exempt from the limit (laterExemptionsOff).
@@ -199,6 +201,12 @@ func Census(ctx context.Context, conn *pgx.Conn, migrations []Migration, version
 		return nil, fmt.Errorf("census: begin read-only transaction: %w", err)
 	}
 	defer tx.Rollback(ctx)
+	// The census resolves names under the values that RESET gives session_authorization, role
+	// and search_path (resetSettings), the values Exec and ExecNonTransactional apply each
+	// migration under, whatever the connection's session carries.
+	if _, err := tx.Exec(ctx, resetLocal); err != nil {
+		return nil, fmt.Errorf("census: set session_authorization, role and search_path to their reset values: %w", err)
+	}
 	// The text settings (textSettings says why each matters) make Postgres read the census's text
 	// as Load's check read it (censusTokens).
 	set, args := setConfig(true, withTextSettings(

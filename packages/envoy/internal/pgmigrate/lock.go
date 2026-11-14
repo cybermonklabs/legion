@@ -78,6 +78,44 @@ func withTextSettings(settings ...setting) []setting {
 	return append(settings, textSettings...)
 }
 
+// resetSettings are the settings by which Postgres resolves a name that a migration writes
+// without its schema. search_path lists the schemas a lookup searches, and its default, "$user",
+// public, starts with the schema named for the session user, which session_authorization sets.
+// role sets the current user, whose privileges decide which of those schemas a lookup can use.
+// A migration's text can change each of them with no SET that the census reads: stored code can
+// call set_config(name, value, false) in a column default, a check constraint, a domain's check
+// or default, a view's query, a rule and more places that the catalog holds, and the runner
+// applies the next migration on the same pooled connection. On PostgreSQL 18.6 a column default
+// that called set_config put a schema first in the search_path, and the next migration's added
+// column took a domain of that schema in place of the enum that the census read, and Postgres
+// rewrote the table. Exec and Census set each of them, transaction-local, and
+// ExecNonTransactional for the session, to the value that RESET gives it: the value of a
+// connection option, the role's default or the database's default, and never of a session SET.
+// So a migration resolves its names as the census resolved them, whatever an earlier migration
+// did to the session, while the census and the runner sign in as one login with the same
+// connection options. SET … TO DEFAULT gives each its value inside the server, so no value is
+// written into the text, and pg_settings, where a select could read the values, does not list
+// session_authorization or role. session_authorization comes first: setting it makes the session
+// user the current user and ends a SET ROLE, and role and "$user" both depend on it. Each site
+// takes them from this list, so the sites cannot drift.
+var resetSettings = []string{"session_authorization", "role", "search_path"}
+
+// resetLocal and resetSession are texts that set each of resetSettings, in the list's order, to
+// the value that RESET gives it: resetLocal for the current transaction alone, and resetSession
+// for the session. Each text holds one statement per setting. pgx sends a text with no argument
+// through the simple protocol, which runs every statement of the text.
+var resetLocal, resetSession = resetText("set local"), resetText("set")
+
+// resetText is the text that runs set (SET or SET LOCAL) for each of resetSettings with the
+// value DEFAULT.
+func resetText(set string) string {
+	var text strings.Builder
+	for _, name := range resetSettings {
+		fmt.Fprintf(&text, "%s %s to default;", set, name)
+	}
+	return text.String()
+}
+
 // setConfig is a select that gives each of settings its value with set_config, for the current
 // transaction alone when local is true and for the session when it is false, and the select's
 // arguments. Each name and value is a parameter, so no value is written into the text.
@@ -95,20 +133,20 @@ func setConfig(local bool, settings []setting) (string, []any) {
 	return query.String(), args
 }
 
-// currentSettings reads the session's value of each setting that settings names, in the same
-// order, so that a caller that sets them for the session can give each its value back.
-func currentSettings(ctx context.Context, conn *pgx.Conn, settings []setting) ([]setting, error) {
-	reads := make([]string, len(settings))
-	names := make([]any, len(settings))
-	current := make([]setting, len(settings))
-	values := make([]any, len(settings))
-	for i, s := range settings {
+// currentSettings reads the session's value of each setting that names holds, in the same order,
+// so that a caller that sets them for the session can give each its value back.
+func currentSettings(ctx context.Context, conn *pgx.Conn, names []string) ([]setting, error) {
+	reads := make([]string, len(names))
+	args := make([]any, len(names))
+	current := make([]setting, len(names))
+	values := make([]any, len(names))
+	for i, name := range names {
 		reads[i] = fmt.Sprintf("current_setting($%d)", i+1)
-		names[i] = s.name
-		current[i].name = s.name
+		args[i] = name
+		current[i].name = name
 		values[i] = &current[i].value
 	}
-	if err := conn.QueryRow(ctx, "select "+strings.Join(reads, ", "), names...).Scan(values...); err != nil {
+	if err := conn.QueryRow(ctx, "select "+strings.Join(reads, ", "), args...).Scan(values...); err != nil {
 		return nil, err
 	}
 	return current, nil
@@ -154,17 +192,20 @@ func RetryLockTimeouts(ctx context.Context, migration string, attempt func(conte
 	}
 }
 
-// Exec is how a runner applies one migration's statements in tx. It first sets tx's lock_timeout
-// to LockTimeout, so every migration a runner applies is bounded whatever the migration's file
-// says, and, in the same select, the text settings (textSettings), so Postgres reads the
-// migration's text as the census read it. All four are transaction-local: they end with tx, and
-// they apply whatever the connection's session carries, a setting an earlier migration left on a
-// pooled connection, a connection option or a database default. A setting the migration's own
-// statements change takes effect only after Postgres has read the text, since Postgres reads a
-// migration's whole text before it runs the first statement. Exec then runs the statements while a
-// watch reads what tx's backend waits for. A runner calls it once it holds its own advisory lock,
-// never before: a second process's runner waiting for that lock is waiting for the first to
-// finish, which queues no read or write behind it, since nothing but a runner takes that lock.
+// Exec is how a runner applies one migration's statements in tx. It first sets
+// session_authorization, role and search_path to the values that RESET gives them
+// (resetSettings), so the migration resolves its names as the census resolved them. Then it sets
+// tx's lock_timeout to LockTimeout, so every migration a runner applies is bounded whatever the
+// migration's file says, and, in the same select, the text settings (textSettings), so Postgres
+// reads the migration's text as the census read it. All seven are transaction-local: they end
+// with tx, and they apply whatever the connection's session carries, a setting an earlier
+// migration left on a pooled connection by a SET or through stored code that called set_config,
+// a connection option or a database default. A setting the migration's own statements change
+// takes effect only after Postgres has read the text, since Postgres reads a migration's whole
+// text before it runs the first statement. Exec then runs the statements while a watch reads
+// what tx's backend waits for. A runner calls it once it holds its own advisory lock, never
+// before: a second process's runner waiting for that lock is waiting for the first to finish,
+// which queues no read or write behind it, since nothing but a runner takes that lock.
 //
 // signIn is the BeforeConnect of the pool tx came from, nil when the pool has none: the watch's
 // own connection signs in as the pool's new connections do. A pool that signs in with a token
@@ -180,6 +221,9 @@ func RetryLockTimeouts(ctx context.Context, migration string, attempt func(conte
 func Exec(ctx context.Context, tx pgx.Tx, migration Migration, signIn func(context.Context, *pgx.ConnConfig) error) error {
 	if migration.NonTransactional || nonTransactionalHeader(migration.SQL) {
 		return fmt.Errorf("migration %s is non-transactional; this transactional runner cannot apply it", migration.Name)
+	}
+	if _, err := tx.Exec(ctx, resetLocal); err != nil {
+		return fmt.Errorf("migration %s: set session_authorization, role and search_path to their reset values: %w", migration.Name, err)
 	}
 	set, args := setConfig(true, withTextSettings(setting{"lock_timeout", lockTimeoutSetting}))
 	if _, err := tx.Exec(ctx, set, args...); err != nil {

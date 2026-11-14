@@ -35,7 +35,8 @@ import (
 // put sp_1792 first in the session's search_path, for the rows whose statement runs one of them,
 // and so do the column default of sp_default, the check constraint of sp_check, the check of the
 // domain sp_domain that sp_domained's column has, and the default of the domain sp_domdef that
-// sp_domdefed's column has.
+// sp_domdefed's column has, for the rows whose migration writes one of those tables and then
+// adds a column of type mood.
 const catalogOnlyFixtureSQL = `
 create table schema_migrations (version bigint primary key);
 insert into schema_migrations (version) values (1);
@@ -270,8 +271,9 @@ type refusedRow struct {
 	migrations []string
 	// first says the first migration is the one refused, not the last.
 	first bool
-	// searchPath, where it is not "", is the search_path of the census's connection for the row,
-	// and of the premise test's for its statement (underSearchPath).
+	// searchPath, where it is not "", is the search_path that the census's connection for the
+	// row, and the premise test's for its statement, take from a connection option
+	// (underSearchPath).
 	searchPath string
 	// says, where it is not "", is a text that the refusal on size must hold besides
 	// aboveTheLimit.
@@ -571,18 +573,21 @@ var refusedRows = []refusedRow{
 	// table under ACCESS EXCLUSIVE.
 	{name: "after a select of a view whose query calls set_config", migrations: []string{"select * from sp_view", "alter table big add column c mood default 'calm'"}},
 	{name: "after an insert into a table whose rule calls set_config", migrations: []string{"insert into sp_ruled values (1)", "alter table big add column c mood default 'calm'"}},
-	// An INSERT or an UPDATE also runs expressions that the catalog holds for the table it writes:
-	// a column's default, a check constraint, and a domain's check or default. Each of these in
-	// the fixture calls set_config, as sp_view's query does. On PostgreSQL 18.6, with
-	// artifact_versions at 1.2 GiB, the census exempted such an ADD COLUMN after an insert that ran
-	// a column default, a check constraint or a domain check that calls set_config. When the
-	// migrations applied, Postgres gave the column the domain and rewrote the table under ACCESS
-	// EXCLUSIVE.
-	{name: "after an insert that runs a column default that calls set_config", migrations: []string{"insert into sp_default (id) values (1)", "alter table big add column c mood default 'calm'"}},
-	{name: "after an update that sets a column to a default that calls set_config", migrations: []string{"update sp_default set sp = default", "alter table big add column c mood default 'calm'"}},
-	{name: "after an insert that runs a check constraint that calls set_config", migrations: []string{"insert into sp_check values (1)", "alter table big add column c mood default 'calm'"}},
-	{name: "after an insert that runs a domain check that calls set_config", migrations: []string{"insert into sp_domained values (1)", "alter table big add column c mood default 'calm'"}},
-	{name: "after an insert that runs a domain default that calls set_config", migrations: []string{"insert into sp_domdefed (id) values (1)", "alter table big add column c mood default 'calm'"}},
+	// A migration that holds an INSERT, an UPDATE, a DELETE, a MERGE, a SELECT or a COPY is never
+	// exempt, because none of these is a kind that catalogOnlyStatements admits. Such a statement
+	// can run stored code that the catalog holds for the table it writes: a column's default, a
+	// check constraint, or a domain's check or default. Each of these in the fixture calls
+	// set_config, so after the statement mood names the domain sp_1792.mood, and an added column
+	// of the same migration is judged on size all the same. These rows show that refusal, and
+	// they are no control for a rule of the census. The same statements in two migrations are
+	// TestCensusAndTheRunnerResolveNamesAlikeAfterStoredCodeChangesTheSession in
+	// internal/dispatch/store: there the runner gives search_path its reset value at the start of
+	// the second migration (resetSettings), so mood names the enum public.mood, as the census read.
+	{name: "an insert that runs a column default that calls set_config, beside an added column", migrations: []string{"insert into sp_default (id) values (1); alter table big add column c mood default 'calm'"}},
+	{name: "an update that sets a column to a default that calls set_config, beside an added column", migrations: []string{"update sp_default set sp = default; alter table big add column c mood default 'calm'"}},
+	{name: "an insert that runs a check constraint that calls set_config, beside an added column", migrations: []string{"insert into sp_check values (1); alter table big add column c mood default 'calm'"}},
+	{name: "an insert that runs a domain check that calls set_config, beside an added column", migrations: []string{"insert into sp_domained values (1); alter table big add column c mood default 'calm'"}},
+	{name: "an insert that runs a domain default that calls set_config, beside an added column", migrations: []string{"insert into sp_domdefed (id) values (1); alter table big add column c mood default 'calm'"}},
 }
 
 // censusOf runs one census, with the table limit at one byte, of sqls as pending migrations
@@ -605,22 +610,23 @@ func censusOf(t *testing.T, ctx context.Context, conn *pgx.Conn, sqls []string) 
 	return report.Pending
 }
 
-// underSearchPath sets conn's search_path to searchPath for the session, where searchPath is not
-// "", until the test ends, when a cleanup resets it to the connection's own. A reset that fails
-// is reported and does not stop the test.
-func underSearchPath(t *testing.T, ctx context.Context, conn *pgx.Conn, searchPath string) {
+// underSearchPath is conn where searchPath is "", and otherwise a new connection to conn's
+// database whose search_path is searchPath by a connection option, closed when the test ends.
+// Census resolves names under the search_path that RESET gives (resetSettings), and a connection
+// option sets that value, where a session SET of conn's would not reach the census.
+func underSearchPath(t *testing.T, ctx context.Context, conn *pgx.Conn, searchPath string) *pgx.Conn {
 	t.Helper()
 	if searchPath == "" {
-		return
+		return conn
 	}
-	if _, err := conn.Exec(ctx, "select set_config('search_path', $1, false)", searchPath); err != nil {
-		t.Fatalf("set search_path to %s: %v", searchPath, err)
+	config := conn.Config()
+	config.RuntimeParams["search_path"] = searchPath
+	under, err := pgx.ConnectConfig(ctx, config)
+	if err != nil {
+		t.Fatalf("connect with search_path %s: %v", searchPath, err)
 	}
-	t.Cleanup(func() {
-		if _, err := conn.Exec(context.Background(), "reset search_path"); err != nil {
-			t.Errorf("reset search_path: %v", err)
-		}
-	})
+	t.Cleanup(func() { under.Close(context.Background()) })
+	return under
 }
 
 // Each form this repository's migrations write that PostgreSQL runs in the catalog alone is
@@ -694,8 +700,7 @@ func TestCensusStillRefusesEveryFormThatReadsOrRewritesRows(t *testing.T) {
 	conn := catalogOnlyDatabase(t, ctx, 1)
 	for _, row := range refusedRows {
 		t.Run(row.name, func(t *testing.T) {
-			underSearchPath(t, ctx, conn, row.searchPath)
-			pending := censusOf(t, ctx, conn, row.migrations)
+			pending := censusOf(t, ctx, underSearchPath(t, ctx, conn, row.searchPath), row.migrations)
 			entry := pending[len(pending)-1]
 			if row.first {
 				entry = pending[0]
@@ -909,9 +914,15 @@ func TestEveryAdmittedFormReadsAndRewritesNoRow(t *testing.T) {
 			t.Fatalf("%s holds %d heap pages, want at least 1,000", table, pages)
 		}
 	}
-	if _, err := conn.Exec(ctx, "set max_parallel_workers_per_gather = 0; set max_parallel_maintenance_workers = 0"); err != nil {
-		t.Fatal(err)
+	// Parallel workers are off on every connection a statement runs on, since the counter misses
+	// their reads.
+	serial := func(t *testing.T, conn *pgx.Conn) {
+		t.Helper()
+		if _, err := conn.Exec(ctx, "set max_parallel_workers_per_gather = 0; set max_parallel_maintenance_workers = 0"); err != nil {
+			t.Fatal(err)
+		}
 	}
+	serial(t, conn)
 	// checkAdmitted holds a statement the classifier admits to the premise.
 	checkAdmitted := func(t *testing.T, run premiseRun) {
 		t.Helper()
@@ -951,8 +962,11 @@ func TestEveryAdmittedFormReadsAndRewritesNoRow(t *testing.T) {
 				continue
 			}
 			t.Run(row.name, func(t *testing.T) {
-				underSearchPath(t, ctx, conn, row.searchPath)
-				if run := runPremise(t, ctx, conn, row.migrations[0]); run.exemption != "" {
+				rowConn := underSearchPath(t, ctx, conn, row.searchPath)
+				if rowConn != conn {
+					serial(t, rowConn)
+				}
+				if run := runPremise(t, ctx, rowConn, row.migrations[0]); run.exemption != "" {
 					checkAdmitted(t, run)
 				}
 			})

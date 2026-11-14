@@ -668,8 +668,10 @@ func (c *classifier) catalogOnlyIndex(node json.RawMessage) (string, error) {
 //     a statement waits or runs. A SET LOCAL ends with the migration's transaction, so it turns
 //     off the reads of its own migration alone. A session SET, a RESET and a RESET ALL turn off
 //     the reads of their own migration and of every later one, because they outlive the
-//     migration: the runner applies each migration on a connection of its pool, which resets no
-//     session setting, so the next migration can take that connection with the setting on it;
+//     migration: the runner applies each migration on a connection of its pool, and it gives
+//     each migration only the text settings and the settings that resolve names
+//     (resetSettings), so the next migration can take that connection with any other setting
+//     on it. The pass does not tell those settings from the others, which only refuses more;
 //   - every other statement keeps them on only where it takes no exemption and keepsReadsOn
 //     names it, and turns them off for its own migration and every later one where it does not. A
 //     pending migration could drop an enum and create a domain with a constraint under its name,
@@ -692,7 +694,13 @@ func (c *classifier) catalogOnlyIndex(node json.RawMessage) (string, error) {
 // them, also takes the exemptions of every later pending migration, since the census cannot see
 // whether the code it runs creates or enables an event trigger. The census does not read the body
 // of a function, whether a statement, a view's query or a rule calls it, and it does not read a
-// trigger's body.
+// trigger's body. Nor does it read the other places where the catalog holds code that a
+// statement runs, such as a column's default, a check constraint, or a domain's check or
+// default. Such code can call set_config and change search_path, role or
+// session_authorization for the session. The runner gives those settings their reset values at
+// the start of each migration (resetSettings), so the change does not reach the names of a later
+// migration. What such code can do besides that, such as create a type or enable an event
+// trigger, the census does not see.
 func (c *classifier) catalogReadsOff(statements []statement) (here, later bool, exemptionsOff string, err error) {
 	for _, s := range statements {
 		if s.node == "VariableSetStmt" {
@@ -1118,7 +1126,7 @@ const (
 		where t.oid = to_regtype($1)`
 	// functionQuery, Catalog read 2, resolves a call of no arguments: its volatility, whether it
 	// is of pg_catalog, its kind (f for a plain function) and whether it returns a set. It also
-	// reads whether pg_catalog is the first schema of the session's search_path that is not a
+	// reads whether pg_catalog is the first schema of the census's search_path that is not a
 	// temporary one (current_schemas(true) lists the schemas a lookup searches, in order, the
 	// temporary one as pg_temp_N), and whether a routine outside pg_catalog has the function's
 	// name. No row means the name resolves to no function.

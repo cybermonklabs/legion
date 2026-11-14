@@ -81,23 +81,51 @@ func connect(t *testing.T, ctx context.Context, url string) *pgx.Conn {
 	return conn
 }
 
-// ExecNonTransactional builds the index with lock_timeout at LockTimeout and each text setting at
-// its value (textSettings), whatever the session set, and gives the session each setting back
-// after. The event trigger fails the build where one of the four differs, and the session sets
-// all four to other values first.
+// ExecNonTransactional builds the index with lock_timeout at LockTimeout, each text setting at its
+// value (textSettings), and session_authorization, role and search_path at the values that RESET
+// gives them (resetSettings), whatever the session set, and gives the session each setting back
+// after. The event trigger fails the build where one of them differs: it compares search_path,
+// role, current_user and session_user with what the connection read when it was new, before the
+// session set all seven to other values. The session sets session_authorization to the role
+// other and role to group, a role that other is a member of. Each role takes the name of the
+// test's own database, which is random, since a role spans the cluster that every test shares.
 func TestExecNonTransactionalBuildsAnIndexAndRestoresTimeout(t *testing.T) {
 	ctx := context.Background()
-	conn := connect(t, ctx, testpg.URL(t))
+	url := testpg.URL(t)
+	config, err := pgx.ParseConfig(url)
+	if err != nil {
+		t.Fatalf("parse the test database's URL: %v", err)
+	}
+	admin := connect(t, ctx, url)
+	group, other := config.Database+"_group", config.Database+"_other"
+	if _, err := admin.Exec(ctx, "create role "+group+"; create role "+other+" in role "+group); err != nil {
+		t.Fatal(err)
+	}
+	// Registered before conn connects, so conn closes first.
+	t.Cleanup(func() {
+		if _, err := admin.Exec(context.Background(), "drop role "+other+", "+group); err != nil {
+			t.Errorf("drop the test's roles: %v", err)
+		}
+	})
+	conn := connect(t, ctx, url)
+	// format writes into the event trigger's body the values that conn reads now, when it is new.
 	if _, err := conn.Exec(ctx, `create table things (kind text);
-		create function check_build_settings() returns event_trigger language plpgsql as $$
-		begin
-			if current_setting('lock_timeout') <> '5s' or current_setting('standard_conforming_strings') <> 'on'
-				or current_setting('backslash_quote') <> 'safe_encoding' or current_setting('client_encoding') <> 'UTF8' then
-				raise exception 'build ran without its session settings';
-			end if;
-		end $$;
+		create schema x;
+		do $do$ begin
+			execute format($f$create function check_build_settings() returns event_trigger language plpgsql as $fn$
+			begin
+				if current_setting('lock_timeout') <> '5s' or current_setting('standard_conforming_strings') <> 'on'
+					or current_setting('backslash_quote') <> 'safe_encoding' or current_setting('client_encoding') <> 'UTF8'
+					or current_setting('search_path') <> %L or current_setting('role') <> %L
+					or current_user <> %L or session_user <> %L then
+					raise exception 'build ran without its session settings: search_path %%, role %%, current_user %%, session_user %%',
+						current_setting('search_path'), current_setting('role'), current_user, session_user;
+				end if;
+			end $fn$$f$, current_setting('search_path'), current_setting('role'), current_user, session_user);
+		end $do$;
 		create event trigger check_build_settings on ddl_command_start when tag in ('CREATE INDEX') execute function check_build_settings();
-		set lock_timeout = '123ms'; set standard_conforming_strings = off; set backslash_quote = off; set client_encoding = 'SJIS'`); err != nil {
+		set lock_timeout = '123ms'; set standard_conforming_strings = off; set backslash_quote = off; set client_encoding = 'SJIS';
+		set session authorization `+other+`; set role `+group+`; set search_path = x`); err != nil {
 		t.Fatal(err)
 	}
 	migration := Migration{Name: "0001_index.up.sql", SQL: "create index concurrently if not exists things_kind on things (kind)", NonTransactional: true}
@@ -107,8 +135,9 @@ func TestExecNonTransactionalBuildsAnIndexAndRestoresTimeout(t *testing.T) {
 	if err := ExecNonTransactional(ctx, conn, migration, nil); err != nil {
 		t.Fatalf("idempotent retry: %v", err)
 	}
+	// The session's search_path is x again, so the index's name carries its schema.
 	var valid bool
-	if err := conn.QueryRow(ctx, "select indisvalid from pg_index where indexrelid = 'things_kind'::regclass").Scan(&valid); err != nil || !valid {
+	if err := conn.QueryRow(ctx, "select indisvalid from pg_index where indexrelid = 'public.things_kind'::regclass").Scan(&valid); err != nil || !valid {
 		t.Fatalf("index valid = %v, %v", valid, err)
 	}
 	for _, restored := range []setting{
@@ -116,11 +145,18 @@ func TestExecNonTransactionalBuildsAnIndexAndRestoresTimeout(t *testing.T) {
 		{"standard_conforming_strings", "off"},
 		{"backslash_quote", "off"},
 		{"client_encoding", "SJIS"},
+		{"session_authorization", other},
+		{"role", group},
+		{"search_path", "x"},
 	} {
 		var value string
 		if err := conn.QueryRow(ctx, "select current_setting($1)", restored.name).Scan(&value); err != nil || value != restored.value {
 			t.Errorf("%s = %q, %v; want %q, as the session set it", restored.name, value, err, restored.value)
 		}
+	}
+	var currentUser, sessionUser string
+	if err := conn.QueryRow(ctx, "select current_user::text, session_user::text").Scan(&currentUser, &sessionUser); err != nil || currentUser != group || sessionUser != other {
+		t.Errorf("current_user %q and session_user %q, %v; want %q and %q, as the session set them", currentUser, sessionUser, err, group, other)
 	}
 }
 

@@ -1324,6 +1324,19 @@ The runner needs a database whose encoding holds every character of the migratio
 With `client_encoding` at `UTF8`, Postgres converts the text of each migration to the database's encoding, and it stops at the first character that this encoding does not have.
 On PostgreSQL 18.6, `select 1 -- em dash —` fails on a `LATIN1` database with `character with byte sequence 0xe2 0x80 0x94 in encoding "UTF8" has no equivalent in encoding "LATIN1"`, and it runs on a `SQL_ASCII` database.
 
+At the start of each migration the runner also gives `session_authorization`, `role` and `search_path`, in that order, the values that `reset` gives them (`resetSettings` in `internal/pgmigrate/lock.go`): transaction-local in `pgmigrate.Exec`, or session-local and restored on return in `pgmigrate.ExecNonTransactional`.
+Postgres resolves a name that a migration writes without its schema by these three settings.
+`search_path` lists the schemas that a lookup searches, and its default starts with `"$user"`, the schema named for the session user, which `session_authorization` sets.
+`role` sets the current user, whose privileges decide which of those schemas a lookup can use.
+`session_authorization` comes first, because a change of it ends a `set role` and changes the user that `role` and `"$user"` depend on.
+An earlier migration can change each of the three for the session, with a `set` or through stored code that calls `set_config`, such as a column default, a check constraint, or a domain's check or default.
+Without this reset, on PostgreSQL 18.6, an insert ran a column default that put another schema first in the `search_path`.
+The next migration on that connection added a column of type `mood`, which then named that schema's domain `mood` in place of the enum that the census read, and Postgres rewrote the table.
+The census reads with the same three values ("Pre-deploy census" below), so a migration resolves its names as the census did, whatever an earlier migration did to the session.
+The value that `reset` gives comes from a connection option, the role's default or the database's default, and never from a session `set`.
+So the census and the runner must connect as the same login with the same connection options, which gives both the same values.
+In a deployment, both take `DATABASE_URL` from the same Secret.
+
 The notes below describe some of the migrations, numbered and timestamped alike; not every migration has one.
 A new migration describes itself in the header comment of its own `.up.sql`, as `0129_document_edit_notices.up.sql` does, and adds nothing here, so two pull requests that each add a migration do not edit this section.
 
@@ -2193,6 +2206,7 @@ For each it prints the tables the migration locks above ACCESS SHARE (`pgmigrate
 the transactions open longer than a minute anywhere in the database, and those whose age it cannot see (another role's without `pg_read_all_stats`, any with `track_activities` off, or a WAL sender's), which it tells from a session in no transaction by the virtual transaction id every transaction locks;
 and the count the migration's own census answers.
 Postgres reads `pg_stat_activity` once per transaction and serves that copy until the transaction ends, while `pg_locks` is read anew each time, so before each read of lock holders and of long transactions the census discards that copy (`pg_stat_clear_snapshot()`), and it measures a transaction's age at that read (`clock_timestamp()`), not at its own start.
+The transaction gives `session_authorization`, `role` and `search_path` the values that `reset` gives them, as the runner does for each migration ("Database migrations" above), so a name resolves for the census as it resolves for the runner.
 Those tables are:
 
 - the ones its statements name (`pgmigrate.TouchedTables`:
@@ -2342,12 +2356,14 @@ It refuses:
   - a migration that sets or resets any setting other than `lock_timeout` and `statement_timeout`, `set local` included, or runs `reset all`.
     A setting can make the migration's names resolve to other objects than the census's names do, as `search_path`, `role` and `session_authorization` can, since the default `search_path` starts with `"$user"`.
     A setting can also change how Postgres reads a migration's text, as `standard_conforming_strings` can.
-    The runner sets that setting and two others for each migration ("Database migrations" above), but the census cannot list every setting of either kind.
+    The runner sets that setting and two others for each migration, and it gives `search_path`, `role` and `session_authorization` their `reset` values ("Database migrations" above), but the census cannot list every setting of either kind.
     So the census lists the two settings that it knows to do neither: `lock_timeout` and `statement_timeout`, which bound how long a statement waits or runs.
     The census compares the setting's name without regard to case, as Postgres does, so `set "Search_Path" = public` stops the reads and `set "Lock_Timeout" = '1s'` does not.
 
   - every migration after a pending migration that sets or resets such a setting for the session, without `local`, or runs `reset all`.
     The runner applies each migration on a connection of its pool, and that connection keeps a session setting for the next migration it runs.
+    The runner sets the three text settings and the three settings that resolve names at the start of each migration, and no other setting.
+    The census does not tell those six settings from the others, which only refuses more.
     A `set local` ends with its migration's transaction, so the later migrations still read the catalog.
 
   - a migration that holds a statement that is not on the list below, and every migration after it.
@@ -2412,7 +2428,8 @@ It refuses:
   The census reads every statement that a pending migration's text shows, whoever may run it, a superuser included.
   It also reads the query of every view and every rule of a relation that a statement names, for a relation of `pg_catalog` and for a call of `set_config`.
   It does not read the body of a function, whether a statement, a view's query or a rule calls it, and it does not read a trigger's body.
-  Such code can, for example, create or enable an event trigger that the census does not see.
+  Nor does it read the code of a column default, a check or a domain, but that code changes no later migration's names ("Database migrations" above).
+  The limit is the rest of what stored code does, such as create a type or enable an event trigger.
 
   A marked single non-unique `CREATE INDEX CONCURRENTLY IF NOT EXISTS` has a separate size exception: its scans do not hold off ordinary writes, not because the build is catalog-only.
   The census still reports its table size, skips counting rows above the limit, and checks its holders and census as usual.
