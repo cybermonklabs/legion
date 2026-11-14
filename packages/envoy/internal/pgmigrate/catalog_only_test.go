@@ -18,9 +18,10 @@ import (
 // table they reference, and big3, which references big2, the table DROP TABLE drops. Autovacuum is
 // off on all three, so no vacuum holds a lock or reads a block while a row is measured. The types
 // and the functions are the ones the rows resolve: an enum, a composite type made by CREATE TYPE …
-// AS, a range, a domain with a constraint and one without, a function of another schema, and a
-// volatile cast to vol_target. vol_target_of is plpgsql because Postgres inlines a volatile sql
-// function in its place and then does not rewrite the table, so the cast would show nothing.
+// AS, a range, a domain with a constraint and one without, a function of another schema, a
+// volatile cast to vol_target, and an enum named serial4, a name PostgreSQL does not look up for a
+// column. vol_target_of is plpgsql because Postgres inlines a volatile sql function in its place
+// and then does not rewrite the table, so the cast would show nothing.
 const catalogOnlyFixtureSQL = `
 create table schema_migrations (version bigint primary key);
 insert into schema_migrations (version) values (1);
@@ -33,6 +34,7 @@ create type vol_target as (a int);
 create function vol_target_of(int) returns vol_target volatile language plpgsql
   as $$ begin return row($1)::vol_target; end $$;
 create cast (int as vol_target) with function vol_target_of(int) as assignment;
+create type serial4 as enum ('a');
 create schema other;
 create function other.one() returns int immutable language sql as 'select 1';
 create function spare_fn() returns int language sql as 'select 1';
@@ -204,9 +206,13 @@ type refusedRow struct {
 var refusedRows = []refusedRow{
 	{name: "default gen_random_uuid()", migrations: []string{"alter table big add column c uuid default gen_random_uuid()"}},
 	{name: "default clock_timestamp()", migrations: []string{"alter table big add column c timestamptz default clock_timestamp()"}},
-	// serial and bigserial are no types the catalog resolves.
+	// The census refuses the six serial names by name, before Catalog read 1. serial and bigserial
+	// resolve to no type, so the read would refuse them too.
 	{name: "serial column", migrations: []string{"alter table big add column c serial"}},
 	{name: "bigserial column", migrations: []string{"alter table big add column c bigserial"}},
+	// The fixture's enum named serial4 resolves in the catalog, and PostgreSQL still makes the
+	// column a serial, with a sequence and a nextval default that rewrites the table.
+	{name: "serial4 column beside a type named serial4", migrations: []string{"alter table big add column c serial4"}},
 	// other.one and abs are immutable: the schema refuses the one, the argument the other.
 	{name: "default calls a function of another schema", migrations: []string{"alter table big add column c int default other.one()"}},
 	{name: "default calls a pg_catalog function with an argument", migrations: []string{"alter table big add column c int default abs(-1)"}},
@@ -223,6 +229,10 @@ var refusedRows = []refusedRow{
 	{name: "after set session authorization", migrations: []string{"set session authorization postgres; " + addColumn}},
 	{name: "after reset role", migrations: []string{"reset role; " + addColumn}},
 	{name: "after reset all", migrations: []string{"reset all; " + addColumn}},
+	// Postgres finds a setting by its name without regard to case, and the parser keeps the case
+	// of a quoted name.
+	{name: "after set of a quoted Search_Path", migrations: []string{`set "Search_Path" = public; ` + addColumn}},
+	{name: "after reset of a quoted ROLE", migrations: []string{`reset "ROLE"; ` + addColumn}},
 	{name: "enum replaced by a domain", migrations: []string{"drop type mood; create domain mood as int check (value > 0)", "alter table big add column c mood"}},
 	{name: "check column", migrations: []string{"alter table big add column c int check (c > 0)"}},
 	{name: "unique column", migrations: []string{"alter table big add column c int unique"}},
@@ -278,6 +288,7 @@ var refusedRows = []refusedRow{
 	{name: "alter type add attribute", migrations: []string{"alter type pair add attribute c text; lock table big in access exclusive mode;"}},
 	// The pooled connection keeps a session setting for the next migration it runs (D1).
 	{name: "after a session set search_path", migrations: []string{"set search_path = public", addColumn}},
+	{name: "after a session set of a quoted Search_Path", migrations: []string{`set "Search_Path" = public`, addColumn}},
 	// The census cannot see what a migration it cannot parse changes (D2).
 	{name: "after a migration that does not parse", migrations: []string{"create tabel broken (id int)", addColumn}},
 
@@ -307,6 +318,16 @@ var refusedRows = []refusedRow{
 	{name: "after alter of a cast's function", migrations: []string{"alter function vol_target_of(int) stable", addColumn}},
 	{name: "after drop cascade", migrations: []string{"drop function spare_fn() cascade", addColumn}},
 	{name: "after replace of a cast's function", migrations: []string{"create or replace function vol_target_of(int) returns vol_target stable language plpgsql as $$ begin return row($1)::vol_target; end $$", addColumn}},
+	// A role holds the USAGE on a schema that each role it inherits from holds, so a change of a
+	// role's memberships can change which schemas its lookup finds names in, and a rename of a role
+	// changes which schema "$user" names. The roles other_owner_1792 and r_1792 need not exist
+	// either.
+	{name: "after grant of a role", migrations: []string{"grant other_owner_1792 to current_user", addColumn}},
+	{name: "after revoke of a role", migrations: []string{"revoke other_owner_1792 from current_user", addColumn}},
+	{name: "after create role in role", migrations: []string{"create role r_1792 in role other_owner_1792", addColumn}},
+	{name: "after alter role noinherit", migrations: []string{"alter role nobody_1792 noinherit", addColumn}},
+	{name: "after drop role", migrations: []string{"drop role nobody_1792", addColumn}},
+	{name: "after rename role", migrations: []string{"alter role nobody_1792 rename to nobody_1792b", addColumn}},
 	// A migration's own replace of a cast's function turns its own catalog reads off.
 	{name: "beside replace of a cast's function", migrations: []string{"create or replace function vol_target_of(int) returns vol_target stable language plpgsql as $$ begin return row($1)::vol_target; end $$; " + addColumn}},
 }
@@ -377,12 +398,12 @@ func sizesATableAboveTheLimit(entry MigrationCensus) bool {
 // subcommand, rename and statement kind the census does not admit. So is an added column whose
 // reading the census cannot trust: after the migration's own SET of search_path, role or
 // session_authorization, and after an earlier pending migration that changes a type, a domain, a
-// cast, a schema or an extension, sets one of those settings for the session, or does not parse,
-// because the census reads the catalog as it stands before any pending migration applies. The
-// census runs with the limit at one byte, so each refused migration is refused on the size of a
-// table it touches; a form that touches no table the census sizes shares its migration with an
-// added bigint column of big, which is admitted alone, so the refusal shows that the form cost
-// the migration its exemption.
+// cast, a schema, an extension or a role, sets one of those settings for the session, or does not
+// parse, because the census reads the catalog as it stands before any pending migration applies.
+// The census runs with the limit at one byte, so each refused migration is refused on the size of
+// a table it touches; a form that touches no table the census sizes shares its migration with an
+// added bigint column of big, which is admitted alone, so the refusal shows that the form cost the
+// migration its exemption.
 func TestCensusStillRefusesEveryFormThatReadsOrRewritesRows(t *testing.T) {
 	ctx := context.Background()
 	conn := catalogOnlyDatabase(t, ctx, 1)

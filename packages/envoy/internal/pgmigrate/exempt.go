@@ -265,7 +265,7 @@ func (c *classifier) catalogOnlyColumn(def json.RawMessage) (bool, error) {
 	if !ok {
 		return false, nil
 	}
-	typeName, ok := typeNameOf(column["typeName"])
+	typeName, serial, ok := typeNameOf(column["typeName"])
 	if !ok {
 		return false, nil
 	}
@@ -297,8 +297,9 @@ func (c *classifier) catalogOnlyColumn(def json.RawMessage) (bool, error) {
 			attribute = true
 		default:
 			// CHECK, UNIQUE, PRIMARY KEY, EXCLUDE, identity and a generated expression read or
-			// rewrite the table, as above. An explicit NULL reads nothing, but no column constraint
-			// is admitted beside NOT NULL and REFERENCES.
+			// rewrite the table, as above. An explicit NULL reads nothing, but no other column
+			// constraint is admitted beside NOT NULL, DEFAULT, and REFERENCES with its DEFERRABLE
+			// and INITIALLY clauses.
 			return false, nil
 		}
 	}
@@ -316,6 +317,16 @@ func (c *classifier) catalogOnlyColumn(def json.RawMessage) (bool, error) {
 	// that returns null at run time (inet_client_addr()) passes here, and Postgres then fails on
 	// the first row and the migration rolls back: a failed deploy, not a long lock.
 	if notNull && (columnDefault == nil || columnDefault.null) {
+		return false, nil
+	}
+	// PostgreSQL's transformColumnDefinition (parse_utilcmd.c) turns a column whose type name has
+	// one part, spelled smallserial, serial2, serial, serial4, bigserial or serial8, into an
+	// integer column with a sequence and a nextval default before it looks up any type, and that
+	// volatile default rewrites the table. Catalog read 1 would resolve a type of that name where
+	// one exists and admit the column, so the name alone refuses it, whatever the catalog holds.
+	// Postgres compares the folded name with strcmp, so "Serial" and pg_catalog.serial stay type
+	// names it looks up as it looks up any other.
+	if serial {
 		return false, nil
 	}
 	// Without the catalog every added column is judged on size, a text column included: an
@@ -412,7 +423,7 @@ func defaultPartsOf(expr json.RawMessage) (parts defaultParts, ok bool) {
 		if parts.null, ok = constant(cast.Arg); !ok {
 			return parts, false
 		}
-		parts.cast, ok = typeNameOf(cast.TypeName)
+		parts.cast, _, ok = typeNameOf(cast.TypeName)
 		return parts, ok
 	case "SQLValueFunction":
 		return parts, true
@@ -579,7 +590,7 @@ func (c *classifier) catalogOnlyIndex(node json.RawMessage) (string, error) {
 //     resets no session setting, so the next migration can take that connection with the setting
 //     on it, and every later migration loses the reads too. SET LOCAL ends with the migration's
 //     transaction;
-//   - after a statement that changes a type, a domain, a cast, a schema or an extension
+//   - after a statement that changes a type, a domain, a cast, a schema, an extension or a role
 //     (changesTypes): a pending migration could drop an enum and create a domain with a
 //     constraint under its name, and Postgres would then rewrite a table for a column the census
 //     admitted.
@@ -599,7 +610,11 @@ func (c *classifier) catalogReadsOff(statements []statement) (here, later bool, 
 			if json.Unmarshal(s.body, &set) != nil || set.Kind == "VAR_RESET_ALL" {
 				return true, true, nil
 			}
-			if set.Name == "search_path" || set.Name == "role" || set.Name == "session_authorization" {
+			// The parser keeps the case of a quoted name (set "Search_Path" = x gives Search_Path,
+			// reset "ROLE" gives ROLE), and Postgres finds a setting by its name without regard to
+			// case, so the name is compared folded to lower case. strings.ToLower folds more letters
+			// than Postgres does, and a name it folds to one of these only refuses more.
+			if name := strings.ToLower(set.Name); name == "search_path" || name == "role" || name == "session_authorization" {
 				// The pooled connection keeps a session setting for the next migration it runs.
 				if !set.IsLocal {
 					return true, true, nil
@@ -621,13 +636,25 @@ func (c *classifier) catalogReadsOff(statements []statement) (here, later bool, 
 
 // changesTypes says whether a statement creates, alters, renames or drops a type, a domain, a
 // cast, a schema or an extension, or moves an object to another schema, or has one of those
-// effects without naming it:
+// effects without naming it, or changes which schema a name resolves in:
 //
 //   - an extension's script creates types, casts and schemas the census cannot see;
 //   - a change of owner of a type, a domain or a schema, DROP OWNED, which drops every one a role
 //     owns, and REASSIGN OWNED: a new owner can take a role's USAGE on a schema away;
 //   - a GRANT or a REVOKE on a schema, a type or a domain: USAGE on a schema decides which of its
 //     names a role's lookup finds;
+//   - a GRANT or a REVOKE of a role's membership in another role (GrantRoleStmt), CREATE ROLE,
+//     whose IN ROLE, ROLE and ADMIN clauses grant memberships, ALTER ROLE, which changes them and
+//     the role's INHERIT attribute (ALTER GROUP … ADD USER and DROP USER parse as it too), and
+//     DROP ROLE, which removes them, USER or GROUP in place of ROLE included: a role holds the
+//     USAGE on a schema that each role it inherits from holds, so each of these can change which
+//     schemas a role's lookup finds names in, as a GRANT on a schema does. ALTER ROLE … SET and
+//     ALTER DATABASE … SET parse as nodes of their own (AlterRoleSetStmt, AlterDatabaseSetStmt)
+//     and stay off this list: they name no type, domain, cast or schema, and they are no SET the
+//     migration runs;
+//   - a rename of a role (RenameStmt of OBJECT_ROLE): the default search_path starts with
+//     "$user", the name of the role a session runs as, so the rename changes which schema that
+//     entry names for a session of the role;
 //   - a drop with CASCADE, which can drop a type, a domain or a cast it does not name;
 //   - an ALTER FUNCTION, or a CREATE OR REPLACE FUNCTION, of a function that may be a cast's
 //     (castFunction): either can make the cast's function volatile.
@@ -639,7 +666,7 @@ func (c *classifier) changesTypes(s statement) (bool, error) {
 	case "CreateEnumStmt", "CompositeTypeStmt", "CreateRangeStmt", "CreateDomainStmt", "CreateCastStmt",
 		"CreateSchemaStmt", "CreateExtensionStmt", "AlterEnumStmt", "AlterTypeStmt", "AlterDomainStmt",
 		"AlterExtensionStmt", "AlterExtensionContentsStmt", "DropOwnedStmt", "ReassignOwnedStmt",
-		"AlterObjectSchemaStmt":
+		"AlterObjectSchemaStmt", "GrantRoleStmt", "CreateRoleStmt", "AlterRoleStmt", "DropRoleStmt":
 		return true, nil
 	case "DefineStmt":
 		var define struct {
@@ -664,7 +691,7 @@ func (c *classifier) changesTypes(s statement) (bool, error) {
 	case "RenameStmt":
 		var rename renameStmt
 		return json.Unmarshal(s.body, &rename) != nil ||
-			slices.Contains([]string{"OBJECT_TYPE", "OBJECT_DOMAIN", "OBJECT_DOMCONSTRAINT", "OBJECT_ATTRIBUTE", "OBJECT_SCHEMA"}, rename.RenameType), nil
+			slices.Contains([]string{"OBJECT_TYPE", "OBJECT_DOMAIN", "OBJECT_DOMCONSTRAINT", "OBJECT_ATTRIBUTE", "OBJECT_SCHEMA", "OBJECT_ROLE"}, rename.RenameType), nil
 	case "DropStmt":
 		var drop dropStmt
 		return json.Unmarshal(s.body, &drop) != nil || drop.Behavior == "DROP_CASCADE" ||
@@ -857,18 +884,21 @@ func (n nameList) identifier() pgx.Identifier {
 // array's name. ok is false where the node holds a key other than names, typemod, typmods,
 // arrayBounds and location (%TYPE and SETOF among them), or a name of other than one or two
 // parts. A type modifier does not change the type a name resolves to, and array bounds do no more
-// than make it an array.
-func typeNameOf(node json.RawMessage) (name string, ok bool) {
+// than make it an array. serial says the name has one part that is exactly smallserial, serial2,
+// serial, serial4, bigserial or serial8, which a column definition does not look up as a type
+// (catalogOnlyColumn).
+func typeNameOf(node json.RawMessage) (name string, serial, ok bool) {
 	fields, ok := fieldsOnly(node, "names", "typemod", "typmods", "arrayBounds", "location")
 	var names nameList
 	if !ok || json.Unmarshal(fields["names"], &names) != nil || len(names) < 1 || len(names) > 2 {
-		return "", false
+		return "", false, false
 	}
+	serial = len(names) == 1 && slices.Contains([]string{"smallserial", "serial2", "serial", "serial4", "bigserial", "serial8"}, names[0].String.Sval)
 	name = names.identifier().Sanitize()
 	if fields["arrayBounds"] != nil {
 		name += "[]"
 	}
-	return name, true
+	return name, serial, true
 }
 
 // tableSizeExemption says why migration sql is exempt from CensusTableLimit: the kinds of its

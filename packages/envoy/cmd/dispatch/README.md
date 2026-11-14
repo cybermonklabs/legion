@@ -2248,7 +2248,8 @@ It refuses:
     Postgres then writes only the catalog, whatever the type, and stores a non-null default as the value every existing row reads.
     The census admits an array, an enum, a range and a composite type made with `create type … as`.
     The type name must have one or two parts.
-    `serial` and `bigserial` resolve to no type, so the census does not admit a column of either.
+    The census does not admit a column whose type name is one of the six serial names with one part (`smallserial`, `serial2`, `serial`, `serial4`, `bigserial`, `serial8`), whatever type of that name exists.
+    Postgres gives such a column a sequence and a `nextval` default, which rewrites the table.
     The census does not admit a domain, with constraints or without: Postgres rewrites the table for a domain with constraints, and the census reads only the type's kind (`typtype`) to refuse every domain.
     It does not admit the row type of a table, a view or another relation, since a pending `drop table` can uncover a domain of the same name in a later schema of the `search_path`.
     The census reads the catalog before any pending migration applies, so a type or a function that an `add column` uses must ship in an earlier release than the column.
@@ -2309,6 +2310,7 @@ It refuses:
 
   - a migration that sets or resets `search_path`, `role` or `session_authorization`, `set local` included, or runs `reset all`, or a migration that itself holds a statement of the list in the next item.
     Such a setting can make the migration's names resolve to other objects than the census's names do, since the default `search_path` starts with `"$user"`.
+    The census compares the setting's name without regard to case, as Postgres does, so `set "Search_Path" = public` stops the reads too.
 
   - every migration after a pending migration that does one of the things below, since the catalog that the later migration meets is then not the catalog the census reads:
 
@@ -2318,6 +2320,13 @@ It refuses:
 
     - changes the owner of a type, a domain or a schema, or the privileges on one (`grant`, `revoke`), or runs `drop owned` or `reassign owned`.
       `usage` on a schema decides which of its names a role's lookup finds, and `drop owned` drops every type, domain and schema that a role owns.
+
+    - grants or revokes membership in a role, or runs `create role`, `alter role` or `drop role` (or the same statement with `user` or `group` in place of `role`).
+      A role has the `usage` on a schema that each role it inherits from has, so these statements can change the schemas in which a role's lookup finds names.
+      `alter role … set` is not one of them: it stays among the statements the census does not see (below).
+
+    - renames a role.
+      The default `search_path` starts with `"$user"`, and the rename changes which schema that entry names.
 
     - moves an object to another schema.
 
