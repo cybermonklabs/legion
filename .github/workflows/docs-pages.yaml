@@ -122,6 +122,7 @@ on:
       - 'packages/daemon/internal/workflow/*'
       - 'packages/daemon/internal/workspace/*'
       - 'packages/envoy/brokerclient/*'
+      - 'packages/envoy/dispatchblocks/*'
       - 'packages/envoy/dispatchbody/*'
       - 'packages/envoy/internal/brokerclient/*'
       - 'packages/envoy/internal/contracts/*'
