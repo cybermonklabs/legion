@@ -54,9 +54,13 @@ test("an identity named with its variables missing is refused naming them", () =
   expect(() => machineIdentity({ [IDENTITY_VAR]: "metadata" })).toThrow(
     `${MACHINE_AUDIENCE_VAR} is required by ${IDENTITY_VAR}=metadata`
   );
-  expect(() => machineIdentity({ [IDENTITY_VAR]: "pool" })).toThrow("agent-secrets");
+  // A pool federates the projected token file, so it is the first variable it asks for; each of
+  // its four is held to its own refusal in pool-identity.test.ts.
+  expect(() => machineIdentity({ [IDENTITY_VAR]: "pool" })).toThrow(
+    `${MACHINE_TOKEN_FILE_VAR} is required by ${IDENTITY_VAR}=pool`
+  );
   expect(() => machineIdentity({ [IDENTITY_VAR]: "ec2" })).toThrow(
-    'AGENT_SECRETS_MACHINE_IDENTITY="ec2" names no identity this machine can prove'
+    'AGENT_SECRETS_MACHINE_IDENTITY="ec2" names no identity this machine can prove; it takes kubernetes, metadata or pool'
   );
 });
 
@@ -66,6 +70,9 @@ test("a client is built for the broker, the identity and the session the variabl
     [IDENTITY_VAR]: "kubernetes",
     [MACHINE_TOKEN_FILE_VAR]: "/var/run/secrets/exchange/token",
     AGENT_SECRETS_SESSION: "example-worker-session",
+    // Nobody has signed in here, so the client trades the machine (person-route.test.ts holds
+    // the client a sign-in makes).
+    AGENT_SECRETS_SIGNIN_DIR: join(makeDirectory(), "signins"),
   });
   expect(client?.describe()).toBe(
     "the projected service-account token /var/run/secrets/exchange/token"
@@ -75,11 +82,11 @@ test("a client is built for the broker, the identity and the session the variabl
   expect(Object.hasOwn(client?.key.publicJwk ?? {}, "d")).toBe(false);
 });
 
-test("a client this factory builds asks the broker for no launcher credential", async () => {
-  // Every TypeScript caller wants a Dispatch access token and nothing else, and a key is one
-  // process's and one session's: a trade that asked would leave a launcher_credentials row and
-  // an audit row behind for each `dispatch` call, hook run and session, on the operator's
-  // machine-logins list and removed by nothing.
+test("a machine's client this factory builds asks the broker for no launcher credential", async () => {
+  // Every TypeScript caller wants a Dispatch access token and nothing else, and a machine's key
+  // is one process's and one session's: a trade that asked would leave a launcher_credentials
+  // row and an audit row behind for each `dispatch` call, hook run and session, on the
+  // operator's machine-logins list and removed by nothing.
   const forms: URLSearchParams[] = [];
   const broker = Bun.serve({
     port: 0,
@@ -102,6 +109,7 @@ test("a client this factory builds asks the broker for no launcher credential", 
       [IDENTITY_VAR]: "kubernetes",
       [MACHINE_TOKEN_FILE_VAR]: file,
       AGENT_SECRETS_SESSION: "example-worker-session",
+      AGENT_SECRETS_SIGNIN_DIR: join(makeDirectory(), "signins"),
     });
     const token = await client?.token();
     expect(token?.credentialId).toBe("");

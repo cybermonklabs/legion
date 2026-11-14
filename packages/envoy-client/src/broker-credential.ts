@@ -14,7 +14,6 @@ import {
   BROKER_URL_VAR,
   type BrokerEnvironment,
   brokerTokenClient,
-  IDENTITY_POOL,
   IDENTITY_VAR,
   machineIdentity,
   tradeSession,
@@ -43,14 +42,9 @@ function sessionName(naming: BrokerSessionName | undefined): string {
 /**
  * Whether this machine can trade for one of the broker's access tokens — a broker to trade at
  * and an identity this client can prove — and, where it cannot, the phrase that says which of
- * the three is missing, as a refusal ends with. One pass answers both, so no caller decides the
+ * the two is missing, as a refusal ends with. One pass answers both, so no caller decides the
  * question a second time to say why. An identity named with its own variables missing throws
  * here, naming them, rather than reading as a machine that has none.
- *
- * `AGENT_SECRETS_MACHINE_IDENTITY=pool` is a machine with no TypeScript route rather than a
- * mistake: only the Go client federates at a workload identity pool (`agent-secrets`), and the
- * Go side of such a machine works. Reading it as an error here would turn Dispatch and Envoy off
- * on a machine whose listener asks for no credential at all.
  */
 export type BrokerRoute =
   | { readonly traded: true }
@@ -59,12 +53,6 @@ export type BrokerRoute =
 export function brokerRouteConfigured(env: BrokerEnvironment): BrokerRoute {
   if ((env[BROKER_URL_VAR] ?? "").trim() === "") {
     return { traded: false, gap: `${BROKER_URL_VAR} names no secrets broker to trade it at` };
-  }
-  if ((env[IDENTITY_VAR] ?? "").trim() === IDENTITY_POOL) {
-    return {
-      traded: false,
-      gap: `${IDENTITY_VAR}=${IDENTITY_POOL} is traded by the Go client alone (agent-secrets), never by this process`,
-    };
   }
   if (machineIdentity(env) === undefined) {
     return { traded: false, gap: `${IDENTITY_VAR} names no identity this machine proves` };

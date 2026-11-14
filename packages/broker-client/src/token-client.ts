@@ -187,13 +187,19 @@ export interface BrokerTokenClientOptions {
    * the key it proved ({@link FORM_LAUNCHER_CREDENTIAL}); true by default, as an absent
    * parameter is on the wire.
    *
-   * Every caller in this repository passes `false` (`brokerTokenClient`, ./environment.ts): the
+   * A machine's own client passes `false` (`brokerTokenClient`, ./environment.ts): the
    * TypeScript clients want a Dispatch access token and nothing else, and none of them reads
    * `credentialId`. Each trade that asks writes a `launcher_credentials` row keyed by the
    * machine and the key it proved and a `launcher_credential.token_login` audit row, and this
    * client makes a key per process and per session, so asking would put a row on an operator's
    * machine-logins list for every `dispatch` call, every hook run and every session of a
    * long-lived process — rows nothing removes.
+   *
+   * A person's client leaves it unset, because the broker refuses a person's trade that declines
+   * with `400 invalid_request` (`personDeclinesNothing`,
+   * `packages/envoy/internal/broker/oauth/exchange.go`): a sign-in holds its credential, and the
+   * revoke of the sign-in ends every token minted under it. So each person's trade writes one
+   * `launcher_credential.token_login` audit row, which the broker writes for every one of them.
    */
   readonly launcherCredential?: boolean | undefined;
   /** Overrides {@link DEFAULT_RENEW_BEFORE_MS}. Only a test shortens it. */

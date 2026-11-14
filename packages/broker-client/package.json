@@ -21,6 +21,10 @@
       "types": "./src/person-identity.ts",
       "bun": "./src/person-identity.ts"
     },
+    "./pool-identity": {
+      "types": "./src/pool-identity.ts",
+      "bun": "./src/pool-identity.ts"
+    },
     "./projected-token": {
       "types": "./src/projected-token.ts",
       "bun": "./src/projected-token.ts"

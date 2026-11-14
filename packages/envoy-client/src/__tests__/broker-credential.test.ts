@@ -178,10 +178,12 @@ test("told to hold a credential it cannot trade for, a session writes Dispatch w
     "AGENT_SECRETS_MACHINE_IDENTITY names no identity this machine proves"
   );
 
-  // A pool identity is the Go client's alone, so this process trades nothing with it; unforced it
-  // is a machine with no TypeScript route, forced it is a session that cannot write.
+  // A pool machine trades here too, so a pool named without its own variables says which one is
+  // missing, as every other identity does, rather than reading as a machine with no route.
   const pool = dispatchSettings({ ...env, AGENT_SECRETS_MACHINE_IDENTITY: "pool" }, noFile(env));
-  expect(pool.enabled === false && pool.error).toContain("traded by the Go client alone");
+  expect(pool.enabled === false && pool.error).toContain(
+    "AGENT_SECRETS_MACHINE_AUDIENCE is required by AGENT_SECRETS_MACHINE_IDENTITY=pool"
+  );
 
   // A named identity missing its own variables still says which variable.
   const halfNamed = dispatchSettings({ ...env, AGENT_SECRETS_MACHINE_TOKEN_FILE: "" }, noFile(env));
@@ -460,17 +462,25 @@ test("a session the host has left keeps no key and no renewing token", async () 
   expect(broker.sessions).toEqual(["session-one", "session-two", "session-one"]);
 });
 
-test("a pool identity is a machine with no TypeScript route, not an error", () => {
-  // Only the Go client federates at a workload identity pool. Reading this as a mistake would
-  // turn Envoy off on a machine whose listener asks for no credential at all.
+test("a pool machine has a route: Dispatch and the listener are given its broker credential", () => {
+  // This client federates at a workload identity pool as the Go client does
+  // (@legion/broker-client/pool-identity), so a pool machine with no bearer trades at the broker
+  // like any other, rather than reading as a machine with nothing to present.
   const broker = stubBroker(600);
   const env = {
     ...podEnvironment(broker.url, "http://listener.test"),
     AGENT_SECRETS_MACHINE_IDENTITY: "pool",
+    AGENT_SECRETS_MACHINE_AUDIENCE: "example-machine-client-id",
+    AGENT_SECRETS_POOL_AUDIENCE:
+      "//iam.googleapis.com/projects/000000000000/locations/global/workloadIdentityPools/example-pool/providers/example-provider",
+    AGENT_SECRETS_POOL_ACCOUNT: "example-fleet@example-project.iam.gserviceaccount.com",
   };
   const envoy = envoySettings(env, noFile(env), { nats: false, session: "session-one" });
   if (!envoy.enabled) throw new Error(`Envoy is off: ${envoy.error ?? envoy.notice}`);
-  expect(envoy.credential).toBeUndefined();
+  expect(envoy.credential?.scheme).toBe("DPoP");
+  const dispatch = dispatchSettings(env, noFile(env), { session: "session-one" });
+  if (!dispatch.enabled) throw new Error(`Dispatch is off: ${dispatch.error}`);
+  expect(dispatch.credential.scheme).toBe("DPoP");
 
   // An identity this client cannot prove at all is still a mistake in the deployment.
   const unknown = envoySettings(

@@ -14,9 +14,10 @@ export interface SubjectToken {
  * issuer — and a source that caches must cache for less than the token it answers lives.
  *
  * It mirrors the Go client's `Source` (`packages/envoy/internal/brokerclient/source.go`). The
- * implementations here are a machine's two identities a TypeScript caller holds, and a person's
- * sign-in on the machine (`person-identity.ts`). A machine that federates through a workload
- * identity pool trades through the Go client, which `agent-secrets` runs.
+ * implementations here are a machine's three identities — a pod's projected token
+ * (`projected-token.ts`), a Compute Engine machine's own Google identity token
+ * (`metadata-identity.ts`) and a Google identity token minted through a workload identity pool
+ * (`pool-identity.ts`) — and a person's sign-in on the machine (`person-identity.ts`).
  */
 export interface TokenSource {
   /**
@@ -26,6 +27,6 @@ export interface TokenSource {
    */
   read(signal?: AbortSignal): Promise<SubjectToken>;
   /** Names the identity in a refusal, without naming the token: the file read, the metadata
-   *  server asked, or the person whose sign-in it is. */
+   *  server asked, the pool federated at, or the person whose sign-in it is. */
   describe(): string;
 }
