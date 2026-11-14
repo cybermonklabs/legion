@@ -526,6 +526,17 @@ var refusedRows = []refusedRow{
 	// schemas of the search_path, the view among them, and not only the table that the name
 	// resolves to before the drop.
 	{name: "after a drop of a table that hides a view over pg_event_trigger, an update of the name", migrations: []string{"drop table public.evt_shadow", "update evt_shadow set evtenabled = 'O' where evtname = 'et_1792'", "alter table big alter column flag drop default"}, searchPath: "public, late", says: `the earlier pending migration 0003_row.up.sql names "evt_shadow", which can resolve to a relation of pg_catalog or to a relation whose rules read one, so the census cannot see whether it creates or alters an event trigger, which can run code of its own on them`},
+	// A SET or a RESET of a setting off the list, a set_config call and a create of a table whose
+	// name pg_catalog holds turn the catalog reads off for what follows and take no exemption. An
+	// UPDATE after one of them that names the fixture's view late.evt_shadow over pg_event_trigger
+	// enables an event trigger all the same, so it takes the later exemptions, as the same UPDATE
+	// does where the reads are on. On PostgreSQL 18.6, with artifact_versions at 1.2 GiB, the census
+	// exempted a DROP COLUMN after each of these pairs, and when the migrations applied, the trigger
+	// the UPDATE enabled counted every row of the table.
+	{name: "after a session set, an update of a view over pg_event_trigger", migrations: []string{"set work_mem = '64MB'", "update late.evt_shadow set evtenabled = 'O' where evtname = 'et_1792'", "alter table big alter column flag drop default"}},
+	{name: "after a set_config call, an update of a view over pg_event_trigger", migrations: []string{"select set_config('work_mem', '64MB', false)", "update late.evt_shadow set evtenabled = 'O' where evtname = 'et_1792'", "alter table big alter column flag drop default"}},
+	{name: "after a set local in the same migration, an update of a view over pg_event_trigger", migrations: []string{"set local work_mem = '64MB'; update late.evt_shadow set evtenabled = 'O' where evtname = 'et_1792'", "alter table big alter column flag drop default"}},
+	{name: "after a create of a table named like a pg_catalog type, an update of a view over pg_event_trigger", migrations: []string{"create table public.int8range (id int)", "update late.evt_shadow set evtenabled = 'O' where evtname = 'et_1792'", "alter table big alter column flag drop default"}},
 }
 
 // censusOf runs one census, with the table limit at one byte, of sqls as pending migrations
