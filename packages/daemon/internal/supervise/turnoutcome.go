@@ -131,6 +131,11 @@ func turnOutcome(m *Machine, ctx context.Context, ev Event) error {
 // finished must not touch the one that replaced it, and a worker whose plugin names no number has
 // its task finished by the end of the turn instead (finishAtTurnsEnd).
 //
+// A report can name the accepted take's number before this daemon saw that take's turn start:
+// the report comes over HTTP and the start over the worker stream, and nothing orders the two.
+// The turn ran all the same, so what its start does for the take is done first (startedUnseen),
+// and the task is then finished, or taken back, as the turn's report says.
+//
 // A report that beats the end of its turn finishes the task while the claim is still working,
 // and the end then runs what was held for the turn (turnEnded); one that follows the end runs it
 // here (afterTurn).
@@ -142,6 +147,11 @@ func (m *Machine) reportedTask(ctx context.Context, r RequestTurnOutcome) error 
 				"task", r.Task, "pending", pendingNumber(p))
 		}
 		return nil
+	}
+	if p.awaitsTurn() {
+		if err := m.startedUnseen(ctx); err != nil {
+			return err
+		}
 	}
 	if r.ProviderError != nil {
 		if err := m.providerErrored(ctx, *r.ProviderError); err != nil {
@@ -161,6 +171,28 @@ func (m *Machine) reportedTask(ctx context.Context, r RequestTurnOutcome) error 
 		return nil
 	}
 	return m.afterTurn(ctx)
+}
+
+// startedUnseen is the start of the accepted take's turn, done at that turn's report because the
+// report came first (reportedTask). The turn is the take's: its text goes and the claim and the
+// delivery are written with it (startTakesTurn), so the finish that follows earns the claim the
+// serving credit a finished take's turn earns (retireTask) rather than reading the task as never
+// run; the prompt budgets go to zero, as at any turn's start (R5); the round's answer is judged as
+// at that take's turn start (takeBackSignal), and this daemon can vouch for the turn's end
+// (takesTurnSeen), which the report is.
+//
+// The claim stays where it is, ready or idle: the report says the turn is over, and no turn's
+// times are written. The start frame still to come is this turn's, which the machine remembers
+// (Machine.reportedAhead), so its arrival names this task and starts no second turn of it
+// (turnStarted).
+func (m *Machine) startedUnseen(ctx context.Context) error {
+	p := m.claim.Pending
+	m.log.Info("supervise: a turn's report names the accepted take's task before its turn start was seen; the turn is the take's",
+		"task", p.Number)
+	m.resetPromptBudgets()
+	m.takeBackSignal(true)
+	m.takesTurnSeen, m.reportedAhead = p.Number, p.Number
+	return m.startTakesTurn(ctx)
 }
 
 // pendingNumber is the number of the task pending, 0 for none.

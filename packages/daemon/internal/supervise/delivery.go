@@ -417,7 +417,7 @@ func (m *Machine) queue(ctx context.Context, request RequestDeliver) error {
 	// unwritten, so its retry queues the task under the same number.
 	stored := m.stored()
 	stored.TaskWritten = d.Number
-	if epoch, revision, written := m.putValue(ctx, d, "queued"); written {
+	if epoch, revision, written := m.putValue(ctx, d, TaskValueQueued); written {
 		stored.TaskWrittenEpoch, stored.TaskWrittenRevision = epoch, revision
 	}
 	if request.Row > 0 {
@@ -901,7 +901,7 @@ func (m *Machine) interrupted(ctx context.Context, why string, outOfMemory bool)
 	}
 	*p = next
 	m.disarm(TimerFinish)
-	m.log.Info("supervise: a task was taken back", "task", p.Number, "cause", why)
+	m.log.Info(takenBackLine, "task", p.Number, "cause", why)
 	return nil
 }
 

@@ -216,8 +216,41 @@ type TakeAnswer struct {
 	Hold    string
 }
 
-// takeAnsweredLine is the line every answer to a take is logged under, at Info.
-const takeAnsweredLine = "supervise: a take was answered"
+// The lines of a task's way through the claim, each at Info, and each pinned as a constant for the
+// reason the turn lines are (turnStartedLine): an operator and the production check read them
+// whole, and the daemon's cost reading counts them (ReadTaskCost, costreading.go), so a message
+// reworded or extended at its call site would answer that reading with a part of the answer. What
+// differs between the call sites belongs in the attributes, never in the message:
+//
+//   - takeAnsweredLine is every answer to a take: the number, the revision it was asked at, the
+//     outcome, the hold a refusal names, and whether it repeats an accepted answer from the record
+//     (answerAgain), which a reading counts as no second take;
+//   - valueWrittenLine is every write of the claim's value (putValue): the number, the task's
+//     origin, whether the claim had finished the last task written to it in the session it runs
+//     (Claim.finishedLastTask), that session, the write's epoch and revision, and its cause;
+//   - valueDeletedLine is every delete of it (deleteValue), with the number and the cause;
+//   - takenBackLine is every take that goes while its task stays pending, with the cause, which
+//     is what opens a new time the record owes the number;
+//   - taskFinishedLine is every finish of a task (finishTask), naming what finished it.
+const (
+	takeAnsweredLine = "supervise: a take was answered"
+	valueWrittenLine = "supervise: a task value was written"
+	valueDeletedLine = "supervise: a task value was deleted"
+	takenBackLine    = "supervise: a task was taken back"
+	taskFinishedLine = "supervise: a task was finished"
+)
+
+// The causes a write of the claim's value is logged under (valueWrittenLine), beside TaskValueBoot
+// and TaskValueRepair: the task's first queue (queue), the end of a hold that refused a take
+// (offerPending), a task taken back in this same process that can be taken again (offerPending,
+// Machine.retaken), and the first bound passing over a value nobody reported seeing
+// (takeBoundOver).
+const (
+	TaskValueQueued    = "queued"
+	TaskValueHoldEnded = "hold-ended"
+	TaskValueRetake    = "retake"
+	TaskValueUnseen    = "unseen"
+)
 
 // taking is a take being answered (Machine.Take): the request, and its answer once it has one.
 // done closes when the answer is in, so a second take of the same claim that arrives meanwhile
@@ -351,11 +384,24 @@ func (m *Machine) takeDecided() takeDecision {
 	return decided
 }
 
-// answer records a take's answer for Machine.Take and logs it. Every take row ends here, so every
-// answer is logged once.
+// answer records a take's answer for Machine.Take and logs it. Every take row ends here or in
+// answerAgain, so every answer is logged once.
 func (m *Machine) answer(take RequestTake, answer TakeAnswer) error {
+	return m.answerAs(take, answer, false)
+}
+
+// answerAgain is answer for a take of a number the record holds accepted whose turn has not
+// started: a take sent again after its answer was lost, answered the text the record kept and
+// applying nothing (answeredFromRecord). Its line says it repeats (repeat), so a reading of the
+// log counts the number taken once for the take that applied it (ReadTaskCost).
+func (m *Machine) answerAgain(take RequestTake, answer TakeAnswer) error {
+	return m.answerAs(take, answer, true)
+}
+
+func (m *Machine) answerAs(take RequestTake, answer TakeAnswer, repeat bool) error {
 	m.decided = takeDecision{answer: answer}
-	m.log.Info(takeAnsweredLine, "task", take.Number, "revision", take.Revision, "outcome", string(answer.Outcome), "hold", answer.Hold)
+	m.log.Info(takeAnsweredLine, "task", take.Number, "revision", take.Revision, "outcome", string(answer.Outcome),
+		"hold", answer.Hold, "repeat", repeat)
 	return nil
 }
 
@@ -415,7 +461,7 @@ func (m *Machine) answeredFromRecord(request RequestTake) (bool, error) {
 	case request.Number == 0 || p == nil || p.Number != request.Number:
 		return true, m.answer(request, TakeAnswer{Outcome: TakeOutcomeRefused, Hold: HoldNotOwed})
 	case p.awaitsTurn():
-		return true, m.answer(request, TakeAnswer{Outcome: TakeOutcomeAccepted, Text: p.TakenText})
+		return true, m.answerAgain(request, TakeAnswer{Outcome: TakeOutcomeAccepted, Text: p.TakenText})
 	case p.taken():
 		return true, m.answer(request, TakeAnswer{Outcome: TakeOutcomeRefused, Hold: HoldInTurn})
 	}
@@ -560,7 +606,7 @@ func (m *Machine) refusedAdoption(ctx context.Context, request RequestTake, err 
 	switch {
 	case errors.Is(err, runtime.ErrAdoptRefused):
 		m.log.Warn("supervise: the shim refused to adopt the working copy; the take is refused", "task", p.Number, "error", err)
-		return m.chargePrompt(ctx, "the working copy was not adopted: "+err.Error())
+		return m.chargePrompt(ctx, WaitAdoption, "the working copy was not adopted: "+err.Error())
 	case errors.Is(err, runtime.ErrIdentityUnavailable):
 		m.log.Warn("supervise: the role's GitHub App identity could not be minted; the take is refused and the task waits",
 			"task", p.Number, "error", err)
@@ -715,12 +761,11 @@ func (m *Machine) claimHold() string {
 // A value the worker has not reported seeing at that revision is left alone: the worker has not
 // asked at it. A write the bucket refused is made here at the next chance, whatever the worker
 // asked (valueUnwritten).
-func (m *Machine) offerPending(ctx context.Context) error { return m.offerValue(ctx, "hold-ended") }
-
-// offerValue is offerPending with the cause its write is logged under: "hold-ended" for the end
-// of a hold, and "retake" for a task taken back in this same process that can be taken again —
-// the second wait's take-back (turnStartBoundOver).
-func (m *Machine) offerValue(ctx context.Context, cause string) error {
+//
+// The write's cause is TaskValueRetake where the task was taken back in this same process and
+// can be taken again now — after a provider error's wait, a compaction, the second wait
+// (Machine.retaken) — and TaskValueHoldEnded for every other write here.
+func (m *Machine) offerPending(ctx context.Context) error {
 	p := m.claim.Pending
 	if p == nil || p.taken() {
 		return nil
@@ -734,6 +779,10 @@ func (m *Machine) offerValue(ctx context.Context, cause string) error {
 	hold, dropped, err := m.takeable(ctx)
 	if err != nil || dropped || hold != "" {
 		return err
+	}
+	cause := TaskValueHoldEnded
+	if m.retaken == p.Number {
+		cause = TaskValueRetake
 	}
 	return m.writeValue(ctx, cause)
 }
@@ -753,11 +802,16 @@ func (m *Machine) writeValue(ctx context.Context, cause string) error {
 }
 
 // putValue writes d's number as the claim's value, under the claim-write deadline, and reports
-// the write: a claim the daemon has no bucket for writes nothing and reports none.
+// the write: a claim the daemon has no bucket for writes nothing and reports none. The line it
+// logs (valueWrittenLine) is read off the claim before the write: whether the claim had finished
+// the last task written to it in the session it runs (Claim.finishedLastTask), which only the
+// queue of a new number can find true — a write of the number pending finds that number written
+// and not finished — and that session.
 func (m *Machine) putValue(ctx context.Context, d Delivery, cause string) (string, uint64, bool) {
 	if m.deps.TaskValues == nil || d.Number == 0 {
 		return "", 0, false
 	}
+	finished := m.claim.finishedLastTask()
 	var epoch string
 	var revision uint64
 	err := m.write(ctx, func(ctx context.Context) error {
@@ -771,10 +825,20 @@ func (m *Machine) putValue(ctx context.Context, d Delivery, cause string) (strin
 			"task", d.Number, "origin", d.Origin, "cause", cause, "error", err)
 		return "", 0, false
 	}
-	m.valueUnwritten, m.valueWrittenAt = false, m.deps.Clock.Now()
-	m.log.Info("supervise: a task value was written", "task", d.Number, "origin", d.Origin, "cause", cause,
-		"epoch", epoch, "revision", revision)
+	m.valueUnwritten, m.valueWrittenAt, m.retaken = false, m.deps.Clock.Now(), 0
+	m.log.Info(valueWrittenLine, "task", d.Number, "origin", d.Origin, "finished", finished,
+		"session", m.claim.Session, "epoch", epoch, "revision", revision, "cause", cause)
 	return epoch, revision, true
+}
+
+// finishedLastTask is whether the claim had finished the last task written to it, in the session
+// it runs now: the record has written it a task, the last task it finished is that one, and the
+// session it finished it in is the session it holds (dispatch://INFRA-2811 R7, the waited figure
+// of R9). A task written to such a claim is written to a worker whose phase stood waiting, which
+// is what the cost reading counts (ReadTaskCost); workflow's finishedInItsSession is the same
+// question asked of a claim that holds no task.
+func (c Claim) finishedLastTask() bool {
+	return c.TaskWritten != 0 && c.TaskFinished == c.TaskWritten && c.TaskFinishedSession == c.Session
 }
 
 // deleteValue deletes the claim's value: the record no longer owes the task it named. A delete
@@ -788,7 +852,7 @@ func (m *Machine) deleteValue(ctx context.Context, number uint64, cause string) 
 		m.log.Warn("supervise: the task value could not be deleted", "task", number, "cause", cause, "error", err)
 		return
 	}
-	m.log.Info("supervise: a task value was deleted", "task", number, "cause", cause)
+	m.log.Info(valueDeletedLine, "task", number, "cause", cause)
 }
 
 // dropPending retires the pending task because the record no longer owes it, and deletes its
@@ -879,11 +943,12 @@ func (m *Machine) owedAgainAfterTake() bool {
 }
 
 // takeBack returns a taken task to waiting under the number it has, for a reason that keeps the
-// process: a provider error's turn and a compaction. The take goes (ConfirmedAt, TakenText), so
-// the next take of the number is decided afresh and its text composed again with whatever note
-// the cause left (Delivery.message); the end of the task's turn is no longer awaited. The take
-// state the claim recorded stays, which is how the end of the cause's hold knows the worker asked
-// at this revision and writes the value again (offerPending).
+// process: a provider error's turn, a compaction, and the second wait. The take goes (ConfirmedAt,
+// TakenText), so the next take of the number is decided afresh and its text composed again with
+// whatever note the cause left (Delivery.message); the end of the task's turn is no longer
+// awaited. The take state the claim recorded stays, which is how the end of the cause's hold
+// knows the worker asked at this revision and writes the value again (offerPending), and the
+// machine remembers the number (Machine.retaken), so that write is logged as the retake it is.
 //
 // What the take-back establishes holds in memory at once, whether or not its write lands: a
 // write that fails leaves the delivery unsaved, and settle writes it again.
@@ -891,7 +956,8 @@ func (m *Machine) takeBack(ctx context.Context, cause string) error {
 	m.disarm(TimerFinish)
 	p := m.claim.Pending
 	p.ConfirmedAt, p.TakenText = time.Time{}, ""
-	m.log.Info("supervise: a task was taken back", "task", p.Number, "cause", cause)
+	m.retaken = p.Number
+	m.log.Info(takenBackLine, "task", p.Number, "cause", cause)
 	return m.saved(m.putDelivery(ctx, *p))
 }
 
@@ -929,7 +995,7 @@ func (m *Machine) finishTask(ctx context.Context, by string) error {
 		}
 		return err
 	}
-	m.log.Info("supervise: a task was finished", "task", number, "by", by)
+	m.log.Info(taskFinishedLine, "task", number, "by", by)
 	m.deleteValue(ctx, number, "finished")
 	return nil
 }

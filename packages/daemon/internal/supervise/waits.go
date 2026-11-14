@@ -21,7 +21,7 @@ import (
 //
 // The second wait is for a turn to start after an accepted take. When Timeouts.TurnStart passes
 // the worker is charged (why naming WaitTurnStart) and the task taken back under its number; the
-// value is written again once it can be taken again (offerValue).
+// value is written again once it can be taken again, as a retake (offerPending).
 //
 // A turn's start or end resets the count (resetPromptBudgets); a take does not, so a worker that
 // takes after every charge and never starts a turn is still retired at the third. A hold that
@@ -30,12 +30,16 @@ import (
 // daemon start built arms them again from the record at the worker's first act after that start
 // (Machine.awaitsAct), so the time the daemon was not serving counts toward neither bound.
 
-// The waits a charge names, as its why begins (chargePrompt).
+// The waits a charge names (chargePrompt): the wait attribute of its line, and the word the why of
+// each of R5's two begins with.
 const (
 	// WaitTake is R5's first wait: a value the worker reported seeing that it asked no take of.
 	WaitTake = "take"
 	// WaitTurnStart is R5's second wait: an accepted take whose turn did not start.
 	WaitTurnStart = "turn-start"
+	// WaitAdoption is no wait of R5's: a take whose adoption of the working copy the shim refused,
+	// charged at its answer (refusedAdoption).
+	WaitAdoption = "adoption"
 )
 
 // firstWait is what the first bound waits on: the latest revision the daemon wrote of the claim's
@@ -188,7 +192,7 @@ func takeBoundOver(m *Machine, ctx context.Context, _ Event) error {
 		m.unseenListed = true
 		m.log.Info("supervise: nobody reported seeing the claim's latest value within the first bound; it is written again under its number, and nobody is charged",
 			"task", p.Number, "epoch", now.epoch, "revision", now.revision, "bound", m.deps.Timeouts.Take)
-		return m.writeValue(ctx, "unseen")
+		return m.writeValue(ctx, TaskValueUnseen)
 	}
 	hold, dropped, err := m.takeable(ctx)
 	switch {
@@ -199,16 +203,16 @@ func takeBoundOver(m *Machine, ctx context.Context, _ Event) error {
 			"task", p.Number, "hold", hold)
 		return nil
 	}
-	return m.chargePrompt(ctx, fmt.Sprintf("%s: the worker reported seeing task %d at revision %d and asked no take of it within %s",
+	return m.chargePrompt(ctx, WaitTake, fmt.Sprintf("%s: the worker reported seeing task %d at revision %d and asked no take of it within %s",
 		WaitTake, p.Number, now.revision, m.deps.Timeouts.Take))
 }
 
 // turnStartBoundOver is the second bound passing (TimerTurnStart): the take of the pending task
 // was accepted and no turn started. The worker is charged, and the task is taken back under its
 // number, so the next take of it is decided afresh; where the charge left the process in place,
-// the value is written again (offerValue), since the worker asked at the revision it holds. A
-// charge that retired the process leaves the value to the relaunched worker, whose registration
-// reads it.
+// the value is written again (offerPending, which logs it as the retake it is), since the worker
+// asked at the revision it holds. A charge that retired the process leaves the value to the
+// relaunched worker, whose registration reads it.
 func turnStartBoundOver(m *Machine, ctx context.Context, _ Event) error {
 	armedFor := m.secondFor
 	m.secondFor = time.Time{}
@@ -219,7 +223,7 @@ func turnStartBoundOver(m *Machine, ctx context.Context, _ Event) error {
 	number := m.claim.Pending.Number
 	m.log.Warn("supervise: no turn started within the second bound after the accepted take; the worker is charged and the task taken back",
 		"task", number, "takenAt", takenAt, "bound", m.deps.Timeouts.TurnStart)
-	if err := m.chargePrompt(ctx, fmt.Sprintf("%s: the take of task %d was accepted and no turn started within %s",
+	if err := m.chargePrompt(ctx, WaitTurnStart, fmt.Sprintf("%s: the take of task %d was accepted and no turn started within %s",
 		WaitTurnStart, number, m.deps.Timeouts.TurnStart)); err != nil {
 		return err
 	}
@@ -232,7 +236,7 @@ func turnStartBoundOver(m *Machine, ctx context.Context, _ Event) error {
 	if m.claim.State != StateReady && m.claim.State != StateIdle {
 		return nil
 	}
-	return m.offerValue(ctx, "retake")
+	return m.offerPending(ctx)
 }
 
 // reconnectDeadline is the reconnect deadline of a claim a daemon start restored with its agent

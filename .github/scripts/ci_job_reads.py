@@ -313,6 +313,8 @@ RULES = {
         Read(f"{DAEMON}/cmd/legion/testdata/gh-help/**", "internal/runtime/tmux/tmux_real_test.go:1822")],
     f"{DAEMON}/internal/stream/integration_test.go": [legion_build("internal/stream/integration_test.go:130 go build .../daemon/cmd/legion")],
     f"{DAEMON}/internal/runtime/workerbin/workerbin_test.go": reads((f"{DAEMON}/docker/gh", "internal/runtime/workerbin/workerbin_test.go:58")),
+    f"{DAEMON}/internal/supervise/costreading_test.go": reads(
+        ("docs/site/src/content/docs/legion/task-delivery-cost.md", "internal/supervise/costreading_test.go:75 (TestDocExampleTaskCost)")),
     f"{DAEMON}/internal/testpg/file_copy_test.go": reads(
         (f"{DAEMON}/**", "internal/testpg/file_copy_test.go:22 walks every .go file under packages/daemon (../..)")),
     # --- envoy

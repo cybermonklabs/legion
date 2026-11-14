@@ -1198,6 +1198,20 @@ type Machine struct {
 	// what an update round's ask needs before its finish is the worker's answer (answerByTurnEnd).
 	// letGo clears it with the process, and it is memory only: a restart saw no turn start.
 	takesTurnSeen uint64
+	// reportedAhead is the number of the task a turn-outcome report finished, or took back for a
+	// provider error, before this daemon saw that take's turn start (reportedTask,
+	// startedUnseen): the report travels over HTTP and the turn's start over the worker stream,
+	// and nothing orders the two. The start frame still to come is that turn's, so turnStarted
+	// reads it as such — its line names this task, and nothing of the take is done a second time
+	// — and clears the mark. A turn's end with no start seen clears it too (blindTurnEnded): that
+	// start was lost and will not come. letGo clears it with the process, and it is memory only.
+	reportedAhead uint64
+	// retaken is the number of the task taken back in this process for a reason that keeps the
+	// process — a provider error's turn, a compaction, the second wait (takeBack) — until the
+	// value of it is written again: that write is logged as a retake (offerPending) rather than as
+	// a hold's end, and any write clears it (putValue). letGo clears it with the process, and it
+	// is memory only: a restart's own writes are its boot's (valueRead).
+	retaken uint64
 	// compacting is the compaction the claim is in (Machine.Compact), nil for none: the claim is
 	// working for as long as one runs, and this is what tells that working apart from a turn's —
 	// a turn that ends under a compaction leaves the claim where it is (turnEnded), and only
@@ -2721,7 +2735,7 @@ func (m *Machine) retire(ctx context.Context) error {
 	}
 	if p := m.claim.Pending; p != nil && p.awaitsTurn() {
 		p.ConfirmedAt, p.TakenText = time.Time{}, ""
-		m.log.Info("supervise: a task was taken back", "task", p.Number, "cause", "retired")
+		m.log.Info(takenBackLine, "task", p.Number, "cause", "retired")
 		return m.saved(m.owes("PutClaimAndDelivery", m.putClaimAndPending(ctx)))
 	}
 	return m.persist(ctx)
@@ -2757,7 +2771,7 @@ func (m *Machine) letGo() {
 	m.held = nil
 	m.staleRelaunch = nil
 	m.unseenTurn = false
-	m.turnsTask, m.takesTurnSeen = 0, 0
+	m.turnsTask, m.takesTurnSeen, m.reportedAhead, m.retaken = 0, 0, 0, 0
 	m.compacting = nil
 	m.processGone, m.goneOutOfMemory, m.goneCause, m.claim.DeathCharged = false, false, "", false
 	if enrollment := ClearEnrollment(&m.claim); enrollment != nil {

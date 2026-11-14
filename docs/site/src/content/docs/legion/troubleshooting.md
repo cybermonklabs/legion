@@ -1168,8 +1168,10 @@ On such a daemon, an update round or a message wake can take the author of the c
   behind, and its next decision will try again; one whose last line is `owed=false` has dropped
   the write, and nothing tries it again.
 - **`supervise: a turn started`** and **`supervise: a turn ended`** at Info, each with the claim
-  and its `generation`, and with `delivery=` where the turn is a task's, are how a reader tells a
-  turn that started from one the daemon never saw, and a turn that ended from one still running.
+  and its `generation`, and with `task=` where the turn is a task's (the number of the accepted
+  take it started for), are how a reader tells a turn that started from one the daemon never saw,
+  and a turn that ended from one still running. [Task delivery cost](/legion/legion/task-delivery-cost/)
+  counts them, with the daemon's other task lines, for a window of the log.
   A start with no end means the turn is running, or that it ended another way: look for
   `supervise: process died`, `supervise: the agent's turn has not ended; suspending it mid-turn`,
   `supervise: claim failed`, `supervise: the agent reported its exit`, `supervise: the process

@@ -750,7 +750,8 @@ jobs:
             # GitHub App helper internal/api/real_github_test.go:88 sources, and the examples and
             # docs its tests hold to the code (cmd/legion/config_example_test.go:24,
             # internal/config/controller_test.go:179, internal/config/kubernetes_test.go:1322,
-            # internal/runtime/sandbox/reclaim_doc_test.go:144). The root manifest, lockfile and
+            # internal/runtime/sandbox/reclaim_doc_test.go:144,
+            # internal/supervise/costreading_test.go:75). The root manifest, lockfile and
             # patches the packs resolve through are bun_install's.
             daemon_go_tests: &daemon_go_tests
               - *go_workspace
@@ -772,6 +773,7 @@ jobs:
               - 'deploy/kubernetes/daemon/legion.yaml.example'
               - 'deploy/kubernetes/operator-route/pod.yml'
               - 'docs/kubernetes.md'
+              - 'docs/site/src/content/docs/legion/task-delivery-cost.md'
 
             # `go vet -tags e2e ./...` in packages/daemon.
             typecheck:

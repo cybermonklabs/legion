@@ -1345,21 +1345,32 @@ func reprobe(m *Machine, ctx context.Context, _ Event) error {
 // the one observation that a woken pod's role came back and took work, whether or not the wake
 // carried a task for it to take: a wake for a notice or a phase-ended message carries none, and
 // its resume would otherwise never be measured (R5).
+//
+// One start is neither: the start of a turn whose turn-outcome report reached the daemon first and
+// already finished the take's task, or took it back for a provider error (Machine.reportedAhead,
+// startedUnseen). It is that take's turn, so its line names the task, and the turn's end names it
+// too; but the report already ran what the take's turn start does — the take's text gone, the
+// round's answer read, the serving credit earned — so none of it runs again, and the start of the
+// task's turn is counted once.
 func turnStarted(m *Machine, ctx context.Context, _ Event) error {
 	m.claim.State = StateWorking
 	m.claim.LastTurnStart = m.deps.Clock.Now()
 	m.resetPromptBudgets()
 	p := m.claim.Pending
-	own := p != nil && p.awaitsTurn()
 	m.unseenTurn = false
-	m.takeBackSignal(own)
 	// The write is the take's turn starting where this start is the pending task's turn, and the
 	// claim alone where it is a foreign one; the task is named in the start's line for the same
 	// reason, so both are decided in the one place that asks the question.
 	persist, task := m.persist, uint64(0)
-	if own {
+	switch ahead := m.reportedAhead; {
+	case ahead != 0:
+		m.reportedAhead, task = 0, ahead
+	case p != nil && p.awaitsTurn():
+		m.takeBackSignal(true)
 		persist, task = m.startTakesTurn, p.Number
 		m.takesTurnSeen = p.Number
+	default:
+		m.takeBackSignal(false)
 	}
 	// The start is logged before the write, never after it: the decision this line exists for is
 	// a turn start whose claim write failed, and a line written after the write would leave
@@ -1678,8 +1689,11 @@ func (m *Machine) afterTurn(ctx context.Context) error {
 // take into the turn the claim's agent was in — is offered again now (offerPending, which still
 // holds it back from a turn on another claim of its issue, so R6's fence stands). The end is the
 // worker's act whoever saw it begin, so it resets the prompt budgets as every turn's end does.
+// A start a turn-outcome report ran ahead of is not coming any more (Machine.reportedAhead): the
+// turn it would have started is over.
 func blindTurnEnded(m *Machine, ctx context.Context, _ Event) error {
 	m.log.Info("supervise: a turn this daemon never saw begin has ended")
+	m.reportedAhead = 0
 	if m.resetPromptBudgets() {
 		if err := m.persist(ctx); err != nil {
 			return err
