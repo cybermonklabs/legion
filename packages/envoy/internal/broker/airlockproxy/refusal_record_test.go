@@ -9,6 +9,7 @@
 package airlockproxy
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"net"
@@ -23,6 +24,8 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/airlock/airlocktest"
 	"github.com/sjawhar/envoy/internal/broker/answer"
 	"github.com/sjawhar/envoy/internal/broker/requests"
+	"github.com/sjawhar/envoy/internal/logging"
+	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/metrics"
 )
 
@@ -390,6 +393,79 @@ func TestTheAirlocksRefusalRecordCutsWhatTheCallerWrote(t *testing.T) {
 		if kept := fmt.Sprint(records[0].fields[field]); kept != want {
 			t.Errorf("the record's %s is %d bytes, want the first 256 of the caller's: %q", field, len(kept), kept)
 		}
+	}
+}
+
+// TestAnAirlockRefusalLineStaysUnderOneLogEntryWhateverHostTheCallerNames: a refusal's line on
+// the proxy port is the one record of that refusal, so it must fit one Cloud Logging entry,
+// 262,144 bytes, which Cloud Logging refuses past and GKE drops a jsonPayload entry past. Its
+// host field is cut to 256 bytes, and so must be every other field that holds the caller's host:
+// the reason of a CONNECT target that is no host and port, and of a name that does not resolve,
+// on a CONNECT and on a plain proxy request, names the host, and net/http hands the handler an
+// authority of up to a mebibyte. Each row writes its line through the broker's own JSON handler
+// (logging.NewCloudHandler), so its size is the entry's.
+//
+// The named revert: put the caller's whole host into the reason (r.Host and checkedAddresses'
+// error, as at 49bc87bc); each row's line is then about 300 KB and this test fails.
+func TestAnAirlockRefusalLineStaysUnderOneLogEntryWhateverHostTheCallerNames(t *testing.T) {
+	const entryLimit = 256 << 10
+	long := strings.Repeat("a", 300000)
+	driven := 0
+	for _, row := range []struct {
+		name   string
+		status int
+		send   func(r *rig) *http.Response
+	}{
+		{"a CONNECT target that does not resolve", http.StatusForbidden, func(r *rig) *http.Response {
+			answer, _, _ := r.connectRaw(long+":443", basic(workerPlaceholder))
+			return answer
+		}},
+		{"a CONNECT target that is no host and port", http.StatusBadRequest, func(r *rig) *http.Response {
+			answer, _, _ := r.connectRaw(long+"]", basic(workerPlaceholder))
+			return answer
+		}},
+		{"a plain proxy request to a host that does not resolve", http.StatusForbidden, func(r *rig) *http.Response {
+			answer, _ := r.get(r.client(workerPlaceholder), "http://"+long+"/")
+			return answer
+		}},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			driven++
+			r := newRig(t, Options{})
+			response := row.send(r)
+			id := response.Header.Get(answer.Header)
+			if response.StatusCode != row.status || id == "" {
+				t.Fatalf("the answer is %d with answer id %q, want %d with one", response.StatusCode, id, row.status)
+			}
+			var lines []string
+			for _, record := range r.logs.Records() {
+				if record.Message != answer.RefusalMessage {
+					continue
+				}
+				named := false
+				record.Attrs(func(a slog.Attr) bool {
+					named = named || (a.Key == "answer_id" && a.Value.String() == id)
+					return true
+				})
+				if !named {
+					continue
+				}
+				out := &logtest.Buffer{}
+				if err := logging.NewCloudHandler(out).Handle(context.Background(), record); err != nil {
+					t.Fatalf("write the refusal's line: %v", err)
+				}
+				lines = append(lines, out.String())
+			}
+			if len(lines) != 1 {
+				t.Fatalf("the refusal wrote %d lines naming its answer id, want 1", len(lines))
+			}
+			if size := len(lines[0]); size >= entryLimit {
+				t.Fatalf("the refusal's line is %d bytes, want under the %d bytes of one Cloud Logging entry", size, entryLimit)
+			}
+		})
+	}
+	if driven != 3 {
+		t.Fatalf("the table drove %d rows, want 3", driven)
 	}
 }
 
