@@ -508,18 +508,21 @@ func (e *Engine) restart(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 // It is exported for admission, which repairs a slot whose worker has no task with it
 // (resumeSlottedWorkers) and sweeps the claims left behind their role's entry: every other way
 // back into a phase is a transition with a task of its own. Its start carries no mark, which is
-// what a sweep's and a ready's start carry; a door that marks its start calls sendOwedEntry.
+// what a sweep's and a ready's start carry, and a phase start's origin; a door that marks its
+// start, or names an origin of its own, calls sendOwedEntry.
 func (e *Engine) SendOwedEntry(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, row record.PhaseRow) error {
-	return e.sendOwedEntry(ctx, tx, issue, role, row, startMarks{})
+	return e.sendOwedEntry(ctx, tx, issue, role, row, supervise.OriginPhaseStart, startMarks{})
 }
 
 // sendOwedEntry is the body SendOwedEntry, the boot's resume by rule (resume.go's booted) and
-// the silence repair (silence.go's repairSilence) share, with the marks of the door the start
-// comes through (startMarks). A mark names that door and not the task's text, so what a claim
-// behind its entry is sent is composed in one place however the start is made, and the boot's
-// resume of a claim the daemon suspended by rule goes on telling the outbox whose launch budget
-// is at risk. Whatever the door, the task is the work of a phase entry, so its origin is a phase
-// start's.
+// the silence repair (silence.go's repairSilence) share, with the origin and the marks of the
+// door the start comes through (startMarks). A mark names that door and not the task's text, so
+// what a claim behind its entry is sent is composed in one place however the start is made, and
+// the boot's resume of a claim the daemon suspended by rule goes on telling the outbox whose
+// launch budget is at risk. The origin is the door's too: the task is the work of a phase entry,
+// which admission's sends and the boot's resume name a phase start's (supervise.OriginPhaseStart),
+// and the silence repair names its own (supervise.OriginSilence), so the repair's writes are
+// counted apart from every other source's.
 //
 // Every start it writes is a re-assertion (startMarks.reasserts), whichever door it came
 // through: the admission pass's sweep of the claims behind their entry, on every pass and on the
@@ -534,13 +537,13 @@ func (e *Engine) SendOwedEntry(ctx context.Context, tx pgx.Tx, issue record.Issu
 // measure would never reach the bound on the stop it most needs to see. It is set here, once,
 // rather than by each door, so no door can send an owed entry as news.
 func (e *Engine) sendOwedEntry(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, row record.PhaseRow,
-	marks startMarks) error {
+	origin string, marks startMarks) error {
 	task := row.EntryTask
 	if task == "" {
 		task = ResumePhaseTask(issue)
 	}
 	marks.reasserts = true
-	return e.started(ctx, tx, issue, role, task, supervise.OriginPhaseStart, row.Entry, marks)
+	return e.started(ctx, tx, issue, role, task, origin, row.Entry, marks)
 }
 
 // StartPromotedWorker starts the phase worker of a mid-phase member a re-admitted tree's
@@ -615,8 +618,9 @@ type startMarks struct {
 // resume that hands the role no new work, which is the boot's resume and the silence repair of
 // a claim level with the entry its phases row names (booted, repairSilence) — and each of which
 // names its own marks and the origin of its task (record.SuperviseRequest.Origin): the phase's
-// resume task those two hand a level claim is a resume's (supervise.OriginResume), and every
-// other start here hands the role a phase entry's work, a phase start's
+// resume task the boot hands a level claim is a resume's (supervise.OriginResume), both starts of
+// the silence repair, whichever task they hand, are the repair's own (supervise.OriginSilence),
+// and every other start here hands the role a phase entry's work, a phase start's
 // (supervise.OriginPhaseStart). It is the one place a start of a phase worker is built, so a
 // reader asking what such a row carries reads this request and no other, and a field added here
 // reaches every one of those starts. It goes through startOrOwe, so the worker comes back on

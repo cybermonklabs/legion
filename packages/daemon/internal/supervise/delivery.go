@@ -73,7 +73,7 @@ type Delivery struct {
 	// and 0 for a task of none. A take names the number it takes, so a take of any other number is
 	// no take of this task.
 	Number uint64
-	// Origin is the source that queued this task — phase-start, resume, wake, notice,
+	// Origin is the source that queued this task — phase-start, resume, silence, wake, notice,
 	// update-round, operator, check-look or controller-start — and "" for a task queued before
 	// the record kept one (migration 20261113175649_task_numbers).
 	Origin string

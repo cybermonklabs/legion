@@ -293,7 +293,7 @@ func TestSilentPhaseWorkerGetsItsTaskAgainAfterAPodReplacement(t *testing.T) {
 	rig.sweepForSilence()
 
 	want := []record.SuperviseRequest{{Op: "start", Tree: podUpdateIssue, Role: worker, Generation: 1,
-		Phase: phase.Implementing, Task: workflow.ResumePhaseTask(rig.issue()), ResumeTask: true, NeedsSlot: true}}
+		Phase: phase.Implementing, Task: workflow.ResumePhaseTask(rig.issue()), Origin: supervise.OriginSilence, ResumeTask: true, NeedsSlot: true}}
 	if got := rig.starts(); len(got) != 1 || got[0] != want[0] {
 		t.Fatalf("the supervise rows of %s = %+v, want %+v: the worker comes back on one start row carrying its phase's resume task",
 			podUpdateIssue, got, want)
@@ -423,7 +423,7 @@ func TestSilentPhaseWorkerWhoseRepairTheRecordShapesOrRefuses(t *testing.T) {
 			t.Errorf("the notice's reason %q names an entry the phase row does not hold", notices[0].Reason)
 		}
 		want := []record.SuperviseRequest{{Op: "start", Tree: podUpdateIssue, Role: claim.RoleImplementer, Generation: 1,
-			Phase: phase.Implementing, Task: workflow.ResumePhaseTask(rig.issue()), ResumeTask: true, NeedsSlot: true}}
+			Phase: phase.Implementing, Task: workflow.ResumePhaseTask(rig.issue()), Origin: supervise.OriginSilence, ResumeTask: true, NeedsSlot: true}}
 		if got := rig.starts(); len(got) != 1 || got[0] != want[0] {
 			t.Fatalf("the supervise rows of %s = %+v, want %+v: a row naming no entry is resumed at none",
 				podUpdateIssue, got, want)

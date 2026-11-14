@@ -568,6 +568,66 @@ func TestWaitingWorkerAfterMigrationIsGivenNothingAtItsRelaunch(t *testing.T) {
 	}
 }
 
+// The silence repair writes origin `silence` in both of its branches, whatever task each writes
+// (repairSilence, decision 7 of INFRA-2811's plan): the work of the entry a silent claim stands
+// behind, and the phase's resume task for a claim level with its row. Neither names `resume`,
+// the origin R9 reads for writes to a worker that finished its last task, nor `phase-start`: the
+// repair is the backstop of a worker whose own report does not explain its quiet, and its writes
+// are counted apart. Each silent tester here is a waiting one, having finished its last task in
+// the session it runs, because that is the worker the two origins are told apart for; the level
+// start keeps its resume mark, which is the outbox's rule and no word on the source.
+//
+// The negative control is this test before the change: the level start names `resume` and the
+// behind start `phase-start`.
+func TestWaitingWorkerSilenceRepairWritesOriginSilenceInBothBranches(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// given is the entry the silent claim was last given work of (record.RoleClaim.GivenEntry).
+		given int64
+		// task is the task the repair's start must carry, entry its entry, and resume whether it
+		// is marked the phase's resume task.
+		task   func(record.Issue) string
+		entry  int64
+		resume bool
+	}{
+		{name: "behind the entry its row names", given: silenceEntry - 1,
+			task: func(record.Issue) string { return silenceEntryTask }, entry: silenceEntry},
+		{name: "level with the entry its row names", given: silenceEntry,
+			task: ResumePhaseTask, entry: 0, resume: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			rec := aSilentTester()
+			rec.given = tc.given
+			issue := seedSilence(t, pool, rec)
+			// seedSilence's claim runs session 'ses': it finished its last task, the second the
+			// record wrote it, in that same session.
+			if _, err := pool.Exec(t.Context(), `update claims set task_written = $2, task_taken = $2, task_finished = $2,
+				task_finished_session = session where token = $1`, string(silenceToken(t, claim.RoleTester)), int64(finishedTask)); err != nil {
+				t.Fatalf("record the silent tester's finished task: %v", err)
+			}
+
+			if err := applySilence(t, pool, testEngine(config.DesignGateRootIssues, nil), aSilenceOf(claim.RoleTester, 1)); err != nil {
+				t.Fatalf("apply the silence: %v", err)
+			}
+
+			starts := superviseRowsOf(t, pool, silenceIssue, "start")
+			if len(starts) != 1 {
+				t.Fatalf("the silence queued %+v, want the one start it writes for the silent claim", starts)
+			}
+			start := starts[0]
+			if start.Task != tc.task(issue) || start.Entry != tc.entry || start.ResumeTask != tc.resume {
+				t.Fatalf("the silence of a claim given entry %d sent %q at entry %d, resume task %t; want %q at entry %d, resume task %t",
+					tc.given, start.Task, start.Entry, start.ResumeTask, tc.task(issue), tc.entry, tc.resume)
+			}
+			if start.Origin != supervise.OriginSilence {
+				t.Fatalf("the silence repair's start names origin %q, want %q: neither %q nor %q, so its writes are counted apart",
+					start.Origin, supervise.OriginSilence, supervise.OriginResume, supervise.OriginPhaseStart)
+			}
+		})
+	}
+}
+
 // taskNumbersOf is token's task numbers as the store holds them, in one line a failure prints
 // whole.
 func taskNumbersOf(t *testing.T, pool *pgxpool.Pool, token claim.Token) string {

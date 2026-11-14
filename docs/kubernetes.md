@@ -2252,7 +2252,7 @@ The migration numbers what the release before it left as each claim's task 1 —
 It drops the push path's three marks on a pending task, which a task the worker takes has no use for:
 `pending_task_deliveries.delivered_at`, `marked_by` and `prompted`.
 
-To roll this release back to contract 98, stop the daemon and run the sixteen statements below, which leave the store at the earlier release's schema and at that release's own version, 20261112180548:
+To roll this release back to contract 111, stop the daemon and run the seventeen statements below, which leave the store at the earlier release's schema and at that release's own version, 20261112180548:
 every database this release migrated records 20261112180548 below this migration's own 20261113175649, and the block deletes no row but that one.
 
 ```sh
@@ -2261,6 +2261,7 @@ begin;
 alter table pending_task_deliveries add column if not exists delivered_at timestamptz;
 alter table pending_task_deliveries add column if not exists marked_by text not null default '';
 alter table pending_task_deliveries add column if not exists prompted boolean not null default false;
+update outbox set payload = payload - 'origin' where kind = 'supervise' and payload ? 'origin';
 alter table claims drop column if exists task_written;
 alter table claims drop column if exists task_taken;
 alter table claims drop column if exists task_finished;
@@ -2278,12 +2279,15 @@ commit;
 SQL
 ```
 
-It prints `BEGIN`, fifteen `ALTER TABLE`s, `DELETE 1` and `COMMIT`;
-a rerun prints a `NOTICE` for each of the fifteen columns it finds as it means to leave them, the same `ALTER TABLE`s, `DELETE 0` and `COMMIT`, and changes nothing.
+It prints `BEGIN`, three `ALTER TABLE`s, `UPDATE <n>` for the supervise rows whose payload carried the key, twelve more `ALTER TABLE`s, `DELETE 1` and `COMMIT`;
+a rerun prints a `NOTICE` for each of the fifteen columns it finds as it means to leave them, the same `ALTER TABLE`s, `UPDATE 0`, `DELETE 0` and `COMMIT`, and changes nothing.
 The three `add column`s come first because the earlier release cannot read the claims table without them:
-its claim read names `d.delivered_at`, `d.marked_by` and `d.prompted` (`claimSelect` in `internal/store/claims.go` at contract 98), so every claim read fails and its supervisor loads nothing, and its delivery write names all three.
+its claim read names `d.delivered_at`, `d.marked_by` and `d.prompted` (`claimSelect` in `internal/store/claims.go` at contract 111), so every claim read fails and its supervisor loads nothing, and its delivery write names all three.
 They come back at the defaults their own migrations gave them, which that release reads as a task it has queued and not yet sent:
 it sends an unconfirmed pending task at its claim's next ready, as it sends any task it queued itself, and reads a confirmed one as a turn under way.
+The `update` takes `origin` back out of every supervise row of the outbox, as the phase entry's block takes out `entry` and `resendEntry`:
+this release writes that key into every start a source queues (`record.SuperviseRequest.Origin`), and the earlier release knows no such key and decodes an outbox payload strictly (`record.DecodeOutboxPayload`), so a row still carrying it would fail to decode for ever, retried on the runner's backoff, and every admission pass of its issue would fail with it (`record.Postgres.RoleRuns`).
+The earlier release records no origin, so nothing it reads goes with the key, and the roll-forward reads a row that names none as a phase start where it names a phase and an operator's task otherwise (`originOf` in `internal/supervise/take.go`).
 The twelve drops and the deleted row are owed to the roll-forward rather than to the earlier release, which reads and writes none of the twelve columns:
 together they re-arm the migration, so the newer image's `Migrate` runs the file again (`versionRecorded` in `internal/store/store.go` decides each migration on its own row) and numbers what the earlier release left exactly as it numbered what the release before it left at the first upgrade.
 Left standing, the columns would be read as current when nothing kept them so: a task the earlier release queued carries number 0 under a claim whose `task_written` names an older task, and a task it finished leaves `task_finished` where it stood.
@@ -2291,14 +2295,16 @@ What the second fill costs is the numbering:
 every claim stands at task 1 again, or at 0, whatever number it stood at before the rollback, and nothing reads a number across the rollback, since the earlier release's worker takes no value and the epochs and revisions start empty again.
 The block needs no migration recorded after this one to build on the twelve columns it drops, and at this release none is recorded after it.
 A rollback past this release to contract 87, across 20261111225552_phase_entry, runs this block first and the phase entry's block above after it:
-the release before the phase entry reads the three marks as contract 98 does, and the phase entry's block leaves this migration's columns alone.
+the release before the phase entry reads the three marks as contract 111 does, and the phase entry's block leaves this migration's columns alone.
 The roll-forward after both applies the two migrations again in version order, the phase entry's first, so this migration's second fill reads the `served_entry` the phase entry's second fill wrote.
 The `20261113175649` is the identifier of `20261113175649_task_numbers.up.sql`, whose header carries this same block;
 where that file carries another identifier in the release you roll back from, use that one.
 The SQL was run on 2026-11-13 at 18:20Z against PostgreSQL 18.6, on a scratch database migrated to this release's head by `internal/store`'s own `Migrate`, which applied 134 migrations and left 134 versions recorded, the highest 20261113175649, and holding one claim at task 3 whose pending task its worker had taken.
-The first run printed `BEGIN`, fifteen `ALTER TABLE`s, `DELETE 1` and `COMMIT`, and the second printed the fifteen `NOTICE`s with their `ALTER TABLE`s, `DELETE 0` and the same `COMMIT`; both exited 0.
+That run was of the block before its `update` was added, sixteen statements:
+the first run printed `BEGIN`, fifteen `ALTER TABLE`s, `DELETE 1` and `COMMIT`, and the second printed the fifteen `NOTICE`s with their `ALTER TABLE`s, `DELETE 0` and the same `COMMIT`; both exited 0.
 After them the three marks stood, the pending task's at no acknowledgement, no marking prompt and no prompt sent, none of the twelve columns did, and `schema_version` held 133 rows with none of 20261113175649 and its highest at 20261112180548.
 Running `Migrate` again then applied that one migration a second time, reporting one migration applied: the claim stood at task 1 written and taken and not finished, its pending task was number 1 with no origin and no taken text, the three marks were dropped again, and `schema_version` held 134 rows, the highest 20261113175649.
+The seventeen statements as they stand are run twice, as the one transaction an operator runs, by `TestMigrationTaskNumbersWayBackLetsTheReleaseBeforeReadAndReArmsTheFill` in `internal/store`, over a store migrated to this release's head that holds a supervise start carrying `origin`: after them that row's payload carries no `origin` and keeps every other key.
 
 ### Contract discipline
 

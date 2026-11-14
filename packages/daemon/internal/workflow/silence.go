@@ -130,11 +130,18 @@ type phaseWorkerReading struct {
 // the role no number the record does not already name and moves no phases row, and resumeTask
 // is what keeps the outbox from delivering a second prompt to a claim that holds its phase's
 // task by the time the start runs (record.SuperviseRequest.ResumeTask). It is built through
-// Engine.started, so it waits for the issue's admission slot as the boot's level start does, and
-// its origin is a resume's. Unlike those two branches it is sent to a claim that finished its
-// last task in the session it runs too (finishedInItsSession): such a claim is silent past its
-// bound with no reminder ahead of it, and this repair is the backup of that very reminder
-// (ReportExplainsQuiet).
+// Engine.started, so it waits for the issue's admission slot as the boot's level start does.
+// Unlike those two branches it is sent to a claim that finished its last task in the session it
+// runs too (finishedInItsSession): such a claim is silent past its bound with no reminder ahead
+// of it, and this repair is the backup of that very reminder (ReportExplainsQuiet).
+//
+// Both starts name the repair's own origin (supervise.OriginSilence), whichever task they write,
+// rather than a phase start's or a resume's: the repair fires only where the worker's own report
+// does not explain its quiet, so it is the backstop of a waiting worker and not the relaunch's
+// resume that a worker which finished its last task in its session is given none of, and its
+// writes are counted apart from both (decision 7 of INFRA-2811's plan). The level start keeps its
+// resumeTask mark all the same: that mark is the outbox's rule about already-delivered work and
+// no word on the source.
 //
 // Neither start marks a movement of the issue (startMarks.reasserts). Both are the daemon
 // re-asserting work the record already owes the worker: nothing outside the daemon happened, and
@@ -152,10 +159,10 @@ func (e *Engine) repairSilence(ctx context.Context, tx pgx.Tx, issue, root recor
 	given := run.Claim.GivenEntry
 	behind := OwedEntry(run, root, row.Entry)
 	if behind {
-		if err := e.sendOwedEntry(ctx, tx, issue, fact.Role, row, startMarks{}); err != nil {
+		if err := e.sendOwedEntry(ctx, tx, issue, fact.Role, row, supervise.OriginSilence, startMarks{}); err != nil {
 			return err
 		}
-	} else if err := e.started(ctx, tx, issue, fact.Role, ResumePhaseTask(issue), supervise.OriginResume, 0,
+	} else if err := e.started(ctx, tx, issue, fact.Role, ResumePhaseTask(issue), supervise.OriginSilence, 0,
 		startMarks{resumeTask: true, reasserts: true}); err != nil {
 		return err
 	}

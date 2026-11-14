@@ -693,7 +693,7 @@ type SuperviseRequest struct {
 	Tree string      `json:"tree"`
 	Role claim.Role  `json:"role"`
 	Task string      `json:"task,omitempty"`
-	// Origin is the source that queued Task — phase-start, resume, wake, notice, operator,
+	// Origin is the source that queued Task — phase-start, resume, silence, wake, notice, operator,
 	// check-look — carried onto the claim's delivery (supervise.RequestDeliver.Origin), so a task's
 	// origin comes from the row that wrote it and never from its text. A row that names none is
 	// read as a phase start where it names a phase and an operator's task otherwise

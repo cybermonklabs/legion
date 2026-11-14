@@ -28,13 +28,13 @@ const taskNumbersVersion = 20261113175649
 // operator reads it at a rollback. The two paths are what a failure names, so a failing run names
 // the file to open. taskNumbersHeredoc opens the block in both and taskNumbersTerminator closes
 // it; taskNumbersWayBackStatements is how many statements stand between its begin and its commit,
-// which the header and the guide both call the sixteen.
+// which the header and the guide both call the seventeen.
 const (
 	taskNumbersFile              = "internal/store/migrations/20261113175649_task_numbers.up.sql"
 	taskNumbersGuide             = "docs/kubernetes.md"
 	taskNumbersHeredoc           = "psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'"
 	taskNumbersTerminator        = "SQL"
-	taskNumbersWayBackStatements = 16
+	taskNumbersWayBackStatements = 17
 )
 
 // taskNumbersReadMarks are the push path's three marks on a pending task, which the migration
@@ -314,7 +314,7 @@ func taskNumbersWayBackOfTheHeader(t *testing.T) string {
 
 // taskNumbersWayBack is the transaction of that block, what psql reads on its standard input. Its
 // statements are counted, so a block that lost one or grew one while the header and the guide
-// still call them the sixteen stops the test; the count splits on the semicolon, which no
+// still call them the seventeen stops the test; the count splits on the semicolon, which no
 // statement of this block carries inside a literal.
 func taskNumbersWayBack(t *testing.T, block string) string {
 	t.Helper()
@@ -335,7 +335,7 @@ func taskNumbersWayBack(t *testing.T, block string) string {
 			taskNumbersFile, recovery)
 	}
 	if held := len(statements) - 2; held != taskNumbersWayBackStatements {
-		t.Fatalf("the way back's block of %s holds %d statements between its begin and its commit, want the %d that file and %s call the sixteen:\n%s",
+		t.Fatalf("the way back's block of %s holds %d statements between its begin and its commit, want the %d that file and %s call the seventeen:\n%s",
 			taskNumbersFile, held, taskNumbersWayBackStatements, taskNumbersGuide, recovery)
 	}
 	return recovery
@@ -406,11 +406,13 @@ func TestMigrationTaskNumbersWayBackIsOneTextInTheHeaderAndTheGuide(t *testing.T
 // protocol, as psql sends it) over a store this release wrote, twice: the second run is the rerun
 // the header says changes nothing. After it the release before this one can read its claims and
 // write its deliveries again — the three read marks stand, at the defaults that read as a task it
-// has queued and not yet sent — and none of the twelve columns stands, nor this migration's
-// version row, while every other row stays recorded. The roll-forward then runs the migration
-// again, and its second fill numbers what it finds as the first fill numbered what an earlier
-// release left: the task the claim held under number 7 is task 1 again, and the claim that had
-// finished task 4 has finished task 1, in the session it holds.
+// has queued and not yet sent — and decode every supervise row of its outbox, the start this
+// release wrote having lost its `origin`, a key that release's strict decoder refuses, and kept
+// every other key; none of the twelve columns stands, nor this migration's version row, while
+// every other row stays recorded. The roll-forward then runs the migration again, and its second
+// fill numbers what it finds as the first fill numbered what an earlier release left: the task the
+// claim held under number 7 is task 1 again, and the claim that had finished task 4 has finished
+// task 1, in the session it holds.
 func TestMigrationTaskNumbersWayBackLetsTheReleaseBeforeReadAndReArmsTheFill(t *testing.T) {
 	ctx := context.Background()
 	store := migratedStore(t)
@@ -429,12 +431,28 @@ func TestMigrationTaskNumbersWayBackLetsTheReleaseBeforeReadAndReArmsTheFill(t *
 	if err := store.PutClaim(ctx, finished); err != nil {
 		t.Fatalf("put the claim that finished its task: %v", err)
 	}
+	const start = `{"op": "start", "tree": "LEGION-209", "role": "implementer", "task": "Implement the change.", "phase": "implementing", "origin": "phase-start", "generation": 4}`
+	const startWithoutOrigin = `{"op": "start", "tree": "LEGION-209", "role": "implementer", "task": "Implement the change.", "phase": "implementing", "generation": 4}`
+	var started int64
+	if err := store.pool.QueryRow(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error)
+		values ('supervise', 'LEGION-209', $1::jsonb, 0, now(), '') returning id`, start).Scan(&started); err != nil {
+		t.Fatalf("enqueue the start this release writes, naming its origin: %v", err)
+	}
 
 	recovery := taskNumbersWayBack(t, taskNumbersWayBackOfTheHeader(t))
 	for run := range 2 {
 		if _, err := store.pool.Exec(ctx, recovery, pgx.QueryExecModeSimpleProtocol); err != nil {
 			t.Fatalf("run %d of the way back's block of %s as the one transaction an operator runs: %v", run+1, taskNumbersFile, err)
 		}
+	}
+	var stripped, unstripped bool
+	if err := store.pool.QueryRow(ctx, `select payload = $2::jsonb, payload ? 'origin' from outbox where id = $1`,
+		started, startWithoutOrigin).Scan(&stripped, &unstripped); err != nil {
+		t.Fatalf("read the start after the way back: %v", err)
+	}
+	if !stripped || unstripped {
+		t.Fatalf("the start after the way back equals %s = %v and still names origin = %v; want origin taken out and every other key kept: the release before this one decodes a supervise payload strictly and refuses the key",
+			startWithoutOrigin, stripped, unstripped)
 	}
 
 	var deliveredAt *string

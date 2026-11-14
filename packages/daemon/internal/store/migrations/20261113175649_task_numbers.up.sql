@@ -41,7 +41,7 @@
 -- (packages/daemon/internal/store/claims.go, claimSelect), so every claim read fails and the
 -- supervisor loads nothing, and its delivery write names all three (putDelivery). Rolling the image
 -- back therefore needs the three columns back first. This directory keeps no down migrations —
--- migrations here are forward-only and no .down.sql file exists — so the way back is the sixteen
+-- migrations here are forward-only and no .down.sql file exists — so the way back is the seventeen
 -- statements below, run with the daemon stopped. docs/kubernetes.md carries the same block as the
 -- step an operator runs, beside the phase entry's, and the two say the same thing.
 --
@@ -50,6 +50,7 @@
 --   alter table pending_task_deliveries add column if not exists delivered_at timestamptz;
 --   alter table pending_task_deliveries add column if not exists marked_by text not null default '';
 --   alter table pending_task_deliveries add column if not exists prompted boolean not null default false;
+--   update outbox set payload = payload - 'origin' where kind = 'supervise' and payload ? 'origin';
 --   alter table claims drop column if exists task_written;
 --   alter table claims drop column if exists task_taken;
 --   alter table claims drop column if exists task_finished;
@@ -66,10 +67,11 @@
 --   commit;
 --   SQL
 --
--- The run prints BEGIN, fifteen ALTER TABLEs, DELETE 1 and COMMIT. A rerun prints a NOTICE for
--- each of the fifteen columns it finds as it means to leave them, the same ALTER TABLEs, DELETE 0
+-- The run prints BEGIN, three ALTER TABLEs, UPDATE <n> for the supervise rows whose payload
+-- carried the key, twelve ALTER TABLEs, DELETE 1 and COMMIT. A rerun prints a NOTICE for each of
+-- the fifteen columns it finds as it means to leave them, the same ALTER TABLEs, UPDATE 0, DELETE 0
 -- and COMMIT, and changes nothing. The transaction, the ON_ERROR_STOP and the if-exists clauses are
--- what make the sixteen one act that may be run twice, for the reason the phase entry's block
+-- what make the seventeen one act that may be run twice, for the reason the phase entry's block
 -- gives: run as bare statements in a psql without ON_ERROR_STOP, either half a failure leaves is a
 -- broken store — the drops taken while the delete fails leave this release a schema it reads by
 -- names that no longer stand, and the delete taken while a drop fails stops the roll-forward at
@@ -80,6 +82,17 @@
 -- the record of a task the older daemon has queued and not yet sent, so it sends an unconfirmed
 -- pending task at its claim's next ready as it sends any task it queued itself, and reads a
 -- confirmed one as a turn under way.
+--
+-- The fourth is the payload key this release writes, taken back out, as the phase entry's fourth
+-- takes out the two keys that release writes. This release writes origin into every supervise
+-- start a source queues (record.SuperviseRequest.Origin); the release before it knows no such key
+-- and decodes an outbox payload strictly (record.DecodeOutboxPayload, DisallowUnknownFields), and
+-- its record.Postgres.RoleRuns decodes every supervise row of every issue an admission pass reads,
+-- so a row carrying the key left in the table fails to decode for ever: the runner retries it on
+-- its backoff and every admission pass of its issue fails with it. Nothing that daemon reads is
+-- lost with the key, since it records no origin, and a row the roll-forward finds naming none is
+-- read as a phase start where it names a phase and an operator's task otherwise (supervise's
+-- originOf), as a row of the release before this one is.
 --
 -- The twelve drops and the deleted version row are for the roll-forward that follows the rollback
 -- rather than for the older daemon, which reads none of the twelve columns and writes none of them:

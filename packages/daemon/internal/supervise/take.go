@@ -62,10 +62,15 @@ type TaskValue struct {
 const TaskTakeContract = 120
 
 // The origins of a task: the source that queued it (Delivery.Origin). A request names its own
-// (RequestDeliver.Origin); one that names none is read as originOf says.
+// (RequestDeliver.Origin); one that names none is read as originOf says. OriginSilence is the
+// silence repair's (workflow's repairSilence), whichever task it writes — the work of an owed
+// entry or the phase's resume task — so its writes are counted apart from a resume's: the repair
+// is the backstop of a worker whose own report does not explain its quiet, not a relaunch's
+// resume (decision 7 of INFRA-2811's plan).
 const (
 	OriginPhaseStart      = "phase-start"
 	OriginResume          = "resume"
+	OriginSilence         = "silence"
 	OriginWake            = "wake"
 	OriginNotice          = "notice"
 	OriginUpdateRound     = "update-round"

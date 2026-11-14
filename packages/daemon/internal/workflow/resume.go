@@ -155,7 +155,7 @@ func (e *Engine) booted(ctx context.Context, tx pgx.Tx, _ intake.DaemonBooted) (
 		// of a claim the daemon suspended by rule — and not the task's text, so every start here
 		// carries it, the one that carries no task included.
 		if OwedEntry(run, root, row.Entry) {
-			if err := e.sendOwedEntry(ctx, tx, issue, role, row, startMarks{ruleResume: true}); err != nil {
+			if err := e.sendOwedEntry(ctx, tx, issue, role, row, supervise.OriginPhaseStart, startMarks{ruleResume: true}); err != nil {
 				return intake.Result{}, err
 			}
 			e.logOnCommit(ctx, "workflow: the boot starts a suspended claim behind the entry its phases row names on that entry's work",
