@@ -20,9 +20,13 @@ import "github.com/sjawhar/envoy/internal/dispatch/store"
 // until it exits, which is what it holds connections for. cmd/dispatch/connection_ceiling_test.go
 // refuses the start of one more process than this and names this constant.
 //
-// The value is that same count's peak over the cmd/dispatch test binaries the lanes run (no tag,
-// memory, multiprocess and twobuild), so it is what the guard holds rather than an estimate: a
-// binary that comes to run more is refused by name, and this number is raised to what it runs.
+// It is the limit the guard enforces, measured with that same count over the cmd/dispatch test
+// binaries whose rows ran: the twobuild binary reaches 4, in TestTwoBuildsAnswerEachOthersCLI, and
+// the binaries with no tag and with multiprocess reach 3. The memory binary's measured 1 is a floor,
+// not its peak: in a gVisor pod each of its rows fails at /proc/<pid>/clear_refs after its first
+// start, and its code bounds it at two, a writer and a reader (cmd/dispatch/memory_test.go,
+// TestTheHeaviestStoredDocumentsStayWithinTheMemoryBound). A binary that comes to run more is
+// refused by name, and this number is raised to what it runs.
 const MaxProcessesAtOnce = 4
 
 // RequiredConnections is what MaxProcessesAtOnce Dispatch processes may open together.
