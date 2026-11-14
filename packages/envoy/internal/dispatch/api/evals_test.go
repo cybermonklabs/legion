@@ -1065,6 +1065,62 @@ func TestTheFailingJobsItemsAreThePipelinesFailingJobs(t *testing.T) {
 		straddling.StartedAt.Format(time.RFC3339), straddling.CompletedAt.Format(time.RFC3339), straddleTo.Format(time.RFC3339))
 }
 
+// TestTheSlowestJobsItemsAreThePipelinesSlowestJobs: pr-ci's items with sort=median rank the jobs
+// GET /api/v1/delivery/pipeline ranks in pr_checks.slowest_jobs for the same from and to, one
+// ranking and two readers (R7: no read both families serve gets two answers), and they stay one
+// after a register write sets pr-ci's job series' min_n: here to the timed results of the Pipeline's
+// busiest slowest job, so a ranking that reads the registry keeps that job and drops the others,
+// and one that does not keeps them all.
+func TestTheSlowestJobsItemsAreThePipelinesSlowestJobs(t *testing.T) {
+	handler, database, deps := newTestServer(t, testServerOptions{})
+	ctx := t.Context()
+	fixture := deliverytest.Seed(t, database.Pool, deliverytest.Spec{Seed: 2916, OneProject: true, Days: 14})
+	registry := evals.New(database, deps.Docs, deps.Events)
+	for day := fixture.From; day.Before(fixture.To); day = day.AddDate(0, 0, 1) {
+		if _, err := registry.WriteDeliveryDay(ctx, fixture.Settings, day, "", testServerBuild); err != nil {
+			t.Fatalf("write the delivery rows of %s: %v", day.Format(time.DateOnly), err)
+		}
+	}
+	if _, err := registry.Ensure(ctx, fixture.Project); err != nil {
+		t.Fatalf("seed the evals of %s: %v", fixture.Project, err)
+	}
+	query := url.Values{"from": {fixture.From.AddDate(0, 0, 4).Format(time.RFC3339)}, "to": {fixture.From.AddDate(0, 0, 11).Format(time.RFC3339)}}.Encode()
+	ranked := func() (pipeline, items []string) {
+		t.Helper()
+		for _, job := range evalGet[deliveryPipelineResponse](t, handler, "/api/v1/delivery/pipeline?"+query).PRChecks.SlowestJobs {
+			pipeline = append(pipeline, job.Name)
+		}
+		for _, row := range evalGet[evalItemsResponse](t, handler, "/api/v1/projects/"+fixture.Project+"/evals/pr-ci/items?sort=median&limit=200&"+query).Items {
+			items = append(items, row.RowKey)
+		}
+		return pipeline, items
+	}
+	same := func(pipeline, items []string) bool {
+		return len(items) >= len(pipeline) && slices.Equal(items[:len(pipeline)], pipeline)
+	}
+	slowest := evalGet[deliveryPipelineResponse](t, handler, "/api/v1/delivery/pipeline?"+query).PRChecks.SlowestJobs
+	if len(slowest) < 2 {
+		t.Fatalf("the Pipeline ranks %d slowest jobs (%s), so no min_n can tell its ranking from another", len(slowest), query)
+	}
+	if pipeline, items := ranked(); !same(pipeline, items) {
+		t.Fatalf("before any register write the items rank %v, the Pipeline %v", items, pipeline)
+	}
+	busiest := 0
+	for _, job := range slowest {
+		busiest = max(busiest, job.Total.N)
+	}
+	registered := evalRequest(t, handler, http.MethodPost, "/api/v1/projects/"+fixture.Project+"/evals", map[string]any{
+		"slug": "pr-ci", "series": []any{map[string]any{"series": evals.SeriesJobs, "min_n": busiest}},
+	}, "pr-ci-min-n")
+	if registered.Code != http.StatusCreated && registered.Code != http.StatusOK {
+		t.Fatalf("set pr-ci's min_n to %d: status %d, body %s", busiest, registered.Code, registered.Body.String())
+	}
+	pipeline, items := ranked()
+	if !same(pipeline, items) {
+		t.Errorf("with pr-ci's job series' min_n at %d the items rank %v, the Pipeline %v; want one ranking", busiest, items, pipeline)
+	}
+}
+
 // TestEveryCatalogueSourceAnswersItsRows: every computed eval a project is seeded with names a
 // source the items route reads rows of (evalComputedItems), so no computed eval's items are its
 // readings and day rows alone by an omission. The folds' own table is held to the catalogue when
