@@ -420,6 +420,13 @@ func redactJWT(match string) string {
 	return match[:strings.Index(match, "eyJ")] + "***"
 }
 
+// RedactCredentials is text with every credential shape of credentialRules masked, for another
+// package that prints text a process chose: the launcher's memory guard prints a process's
+// arguments in its log and in the note to that process's role, and an argument can carry a token.
+// It is redactCredentials itself, so both hold to the one shared fixture; the caller escapes
+// control characters first, since the rules read a line with none in it.
+func RedactCredentials(text string) string { return redactCredentials(text) }
+
 // redactCredentials is text with every credentialRules match replaced, rule by rule, pass after
 // pass until a pass changes nothing: a replacement can remove what kept an earlier rule from
 // matching, as the Authorization rule removes the `/` that kept a userinfo's `@` out of reach.
