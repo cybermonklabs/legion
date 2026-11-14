@@ -1,0 +1,6 @@
+kind: Changed
+body: |-
+  The worker image pins the shared public leak check at `leak-check-v17`, the newest tag. Every
+  push a pod makes now runs it: `leak-check-v16` stops counting a path a push removes as a path it
+  adds, and `leak-check-v17`'s pre-push mode looks up held files only in the update line's remote
+  commit and the push's boundary commit.

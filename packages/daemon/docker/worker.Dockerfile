@@ -91,11 +91,11 @@ ARG GH_TOOL=gh@2.98.0
 # under the issue's scratch before any role's agent starts (packages/daemon/internal/leakguard's
 # Source and InstallServed). R5 of dispatch://INFRA-1527 requires the newest
 # `leak-check-v<n>` tag at the time the pin is written, never a number a spec fixed: this is the
-# newest, read with `gh api repos/theorem-labs/agent-infra/git/refs/tags` at 2026-11-09T23:45:49Z,
+# newest, read with `gh api repos/theorem-labs/agent-infra/git/refs/tags` at 2026-11-14T08:13:03Z,
 # and a bump reads that list again. The runtime stage exports it as LEGION_LEAK_CHECK_TAG, which
 # is where the launcher and each role's shim read it, so the version has this one home and no
 # copy of it lives in Go.
-ARG LEAK_CHECK_TAG=leak-check-v15
+ARG LEAK_CHECK_TAG=leak-check-v17
 # go.work's `go` line: the Go stage builds in workspace mode, and the golang image's GOTOOLCHAIN=local
 # fails the build if go.work moves past this. The toolchain stage ships the same release to the workers
 # (/opt/go), checked against GO_SHA256: the SHA-256 https://go.dev/dl/ publishes for
