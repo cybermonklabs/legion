@@ -46,10 +46,9 @@ func TestClusteredNatsHubListenerPodMatchesGolden(t *testing.T) {
 }
 
 // The Deployment runs one listener, wearing the listener's selector labels, in the hub's
-// namespace; it surges the new pod in before it stops the old one, so the durable the old pod
-// holds is free by the time the new one has waited its bind deadline out; the pod has 40 s to
-// stop; and it waits on its own ServiceAccount, and on the priority class's read where there is
-// one.
+// namespace; it surges the new pod in before it stops the old one, so the new pod stands by for
+// the delivery lease and takes over once the old pod stops; the pod has 40 s to stop; and it waits
+// on its own ServiceAccount, and on the priority class's read where there is one.
 func TestClusteredNatsHubListenerDeployment(t *testing.T) {
 	m := runClusteredHub(t, clusteredArgs())
 	r := m.Named(t, deploymentType, clusteredListenerName)
@@ -215,9 +214,7 @@ func TestClusteredNatsHubListenerProbes(t *testing.T) {
 // The kubelet spends the listener's preStop hook and its shutdown on SIGTERM inside the pod's one
 // grace period, and kills what is still running at its end: the 5 s hook, which holds the pod
 // open while its removal from its Service's endpoints reaches every node's proxy, and the 28 s
-// stop both fit in 40 s. The grace is also under the bind deadline a starting listener waits the
-// durable out for, which is necessary and not sufficient: what has to hold is the new pod's time
-// to its first /healthz answer plus this grace.
+// stop both fit in 40 s. No take-over deadline bounds the grace (listener_grace_test.go says why).
 func TestClusteredNatsHubListenerStopFitsItsGrace(t *testing.T) {
 	template := deploymentPodTemplate(t, runClusteredHub(t, clusteredArgs()), clusteredListenerName)
 	grace := template["spec"].(map[string]any)["terminationGracePeriodSeconds"].(float64)
@@ -227,7 +224,6 @@ func TestClusteredNatsHubListenerStopFitsItsGrace(t *testing.T) {
 	require.Equal(t, 5.0, wait, "the endpoint removal's reach")
 	require.Equal(t, 28, gcp.ClusteredHubListenerShutdownSeconds)
 	require.LessOrEqual(t, wait+float64(gcp.ClusteredHubListenerShutdownSeconds), grace, "the listener's wait and its shutdown")
-	require.Less(t, grace, listenerDurableBindDeadlineSeconds, "the grace stays under the deadline a starting listener waits the durable out for")
 }
 
 // No workload of the hub adopts another's pods: the hub pods', the tailnet entry's and the

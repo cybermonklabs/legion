@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -194,7 +195,7 @@ func TestARegistrationAfterAHandBackThatFreedNoClaimRenewsTheRoleNoFurther(t *te
 	for beat := range 2 {
 		for _, instance := range []string{holdingProcess, ""} {
 			rig.register(instance, rig.ownTopics())
-			if after := rig.stored(); after != stood {
+			if after := rig.stored(); !reflect.DeepEqual(after, stood) {
 				t.Fatalf("the claim after heartbeat %d by process %q is %+v, want it exactly as the hand-back left it, %+v: no registration renews a marked claim",
 					beat+1, instance, after, stood)
 			}

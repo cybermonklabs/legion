@@ -19,10 +19,15 @@ import (
 )
 
 // Build builds the main package in the test's working directory, its own command's, into a binary
-// named name that is removed when the test ends.
-func Build(t testing.TB, name string) string {
+// named name that is removed when the test ends, with the build tags tags when any are given (a
+// test of two builds builds one binary with a tag and one without).
+func Build(t testing.TB, name string, tags ...string) string {
 	t.Helper()
-	return BuildCommand(t, Command{Name: name})
+	var flags []string
+	if len(tags) > 0 {
+		flags = []string{"-tags", strings.Join(tags, ",")}
+	}
+	return BuildCommand(t, Command{Name: name, Flags: flags})
 }
 
 // BuildStamped is Build with the binary stamped with commit as the image build stamps it:

@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -209,7 +210,7 @@ func TestARefusedReleaseLeavesTheStoredClaimAtItsOwnRevision(t *testing.T) {
 		t.Fatalf("release every interest of %s: %v", holder, err)
 	}
 
-	if after := storedRoleClaim(t, reg, role); after != before {
+	if after := storedRoleClaim(t, reg, role); !reflect.DeepEqual(after, before) {
 		t.Fatalf("the claim is now %+v, want it exactly as it stood, %+v", after, before)
 	}
 }
@@ -417,9 +418,11 @@ func TestOnlyAHandBackStatingNoProcessMarksAClaimItCannotFree(t *testing.T) {
 				if claim.Revision == stood.Revision {
 					t.Fatalf("the claim still stands at revision %d: the mark never reached the bucket", claim.Revision)
 				}
-				want.HandedBack, want.Revision = true, claim.Revision
+				// Revision and Created belong to the entry rather than to the record, and the
+				// mark's own write moves both.
+				want.HandedBack, want.Revision, want.Created = true, claim.Revision, claim.Created
 			}
-			if claim != want {
+			if !reflect.DeepEqual(claim, want) {
 				t.Fatalf("the claim after the release is %+v, want %+v: a hand-back writes the mark alone, and every other release writes nothing", claim, want)
 			}
 		})
@@ -548,7 +551,7 @@ func TestAMarkThatRacesAFreshGrantByItsOwnProcessMarksNothing(t *testing.T) {
 	if granted.ClaimedAt <= seeded.ClaimedAt {
 		t.Fatalf("the grant was claimed at %d and the claim the release read at %d, want the grant's moment past it", granted.ClaimedAt, seeded.ClaimedAt)
 	}
-	if stood := storedRoleClaim(t, reg, role); stood != granted {
+	if stood := storedRoleClaim(t, reg, role); !reflect.DeepEqual(stood, granted) {
 		t.Fatalf("the claim after the hand-back is %+v, want the grant %+v untouched: the hand-back released no claim this grant made", stood, granted)
 	}
 	assertRoleHolder(t, reg, role, holder)
@@ -736,7 +739,7 @@ func TestAHandBackThatRacesAFreshGrantOverAClaimNamingNoProcessMarksNothing(t *t
 			if granted.ClaimedAt <= seeded.ClaimedAt {
 				t.Fatalf("the grant was claimed at %d and the claim the release read at %d, want the grant's moment past it", granted.ClaimedAt, seeded.ClaimedAt)
 			}
-			if stood := storedRoleClaim(t, reg, role); stood != granted {
+			if stood := storedRoleClaim(t, reg, role); !reflect.DeepEqual(stood, granted) {
 				t.Fatalf("the claim after the hand-back is %+v, want the grant %+v untouched and unmarked: the hand-back released no claim this grant made", stood, granted)
 			}
 			assertRoleHolder(t, reg, role, holder)

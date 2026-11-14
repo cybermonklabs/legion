@@ -2,17 +2,18 @@
 
 // The cases of the consumer cap that no server in this process can show, each against a real
 // nats-server image. packages/envoy/go.mod links nats-server v2.15.1, the server every in-process
-// test of this package runs, and it is the release the hub runs: the raise of an uncapped stream,
-// the keeper's restore of a cap an operator lowered or unset and the version read each pass makes
-// are therefore proved in process
+// test of this package runs, which is the version the hub runs: the raise of an uncapped
+// stream, the keeper's restore of a cap an operator lowered or unset and the version read each
+// pass makes are therefore proved in process
 // (TestAStartRaisesAnUncappedStreamAndTheKeeperPutsBackACapAnOperatorLoweredOrUnset). What is
-// left needs a server this binary cannot link. One is the copy of nats:2.10: it is older than
-// streamMaxConsumersFloor, so it refuses every update that changes MaxConsumers on a stream that
-// already exists (maxConsumersRefusal), and older than 2.15, so it caps no stream that sets no
-// cap and this binary leaves such a stream alone there (serverDefaultsAnUnsetCap), and both of
-// those cases are proved here. The other is the image the deployment itself runs,
-// nats:2.15.1-alpine, which the hub half below reconciles the stream on: only a real image is the
-// image the hub runs, and the issue's c-hub-reconcile check names it.
+// left needs a server this binary cannot link. One is the copy of nats:2.10
+// (testnats.LegacyImage): it is older than streamMaxConsumersFloor, so it refuses every update
+// that changes MaxConsumers on a stream that already exists (maxConsumersRefusal), and older
+// than 2.15, so it caps no stream that sets no cap and this binary leaves such a stream alone
+// there (serverDefaultsAnUnsetCap), and both of those cases are proved here. The other is the
+// image the deployment itself runs, nats:2.15.1-alpine, which the hub half below reconciles the
+// stream on: only a real image is the image the hub runs, and the issue's c-hub-reconcile check
+// names it.
 //
 // A real image needs a container runtime, which Envoy's agents do not have, so the file sits
 // behind the natslive tag, and the envoy-go CI job runs the tests that tag adds to this package,
@@ -161,7 +162,7 @@ func TestAnUncappedStreamIsCappedOnTheHubsServerAndLeftAloneOnTheOlderOneWhereAL
 		t.Run("a stream with no cap is left exactly as it is", func(t *testing.T) {
 			// Captured before the start, so every keeper pass of this subtest logs into it.
 			logs := captureLogs(t)
-			uri, js := liveServerJetStream(t, testnats.Image)
+			uri, js := liveServerJetStream(t, testnats.LegacyImage)
 			deployed := deployStreamWithCap(t, js, 0)
 			if deployed != -1 && deployed != 0 {
 				t.Fatalf("the deployed stream's consumer cap = %d, want the -1 or 0 a server answers for a stream deployed without one", deployed)
@@ -185,7 +186,7 @@ func TestAnUncappedStreamIsCappedOnTheHubsServerAndLeftAloneOnTheOlderOneWhereAL
 		})
 
 		t.Run("a deployed cap below the compiled one is raised, and the server refuses it", func(t *testing.T) {
-			uri, js := liveServerJetStream(t, testnats.Image)
+			uri, js := liveServerJetStream(t, testnats.LegacyImage)
 			if deployed := deployStreamWithCap(t, js, olderServerDeployedCap); deployed != olderServerDeployedCap {
 				t.Fatalf("the deployed stream's consumer cap = %d, want the %d it was deployed with", deployed, olderServerDeployedCap)
 			}

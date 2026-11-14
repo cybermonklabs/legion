@@ -11,7 +11,6 @@ package store
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -293,7 +292,7 @@ func (r *Registry) markRoleClaimHandedBack(ctx context.Context, sessionID, role 
 		send: func(claim RoleClaim) (uint64, error) {
 			marked := claim
 			marked.HandedBack = true
-			data, err := json.Marshal(marked)
+			data, err := encodeRoleClaim(marked)
 			if err != nil {
 				return 0, err
 			}
@@ -310,24 +309,49 @@ func (r *Registry) markRoleClaimHandedBack(ctx context.Context, sessionID, role 
 	return nil
 }
 
+// ReleaseExpiredRoleClaim reads role's claim and drops it only when sessionID remains its holder
+// and the claim has no grace left (releaseReadExpiredRoleClaim). The read waits no longer than
+// ctx (bus.Bounded), as the delete behind it does.
+func (r *Registry) ReleaseExpiredRoleClaim(ctx context.Context, role, sessionID string, sessionTTL time.Duration) (ExpiredRoleClaimRelease, error) {
+	claim, err := r.RoleClaim(ctx, role)
+	if err != nil {
+		return ExpiredRoleClaimRetained, fmt.Errorf("release role %s's expired claim held by %s: %w", role, sessionID, err)
+	}
+	if claim.Revision == 0 {
+		return ExpiredRoleClaimMissing, nil
+	}
+	if claim.HolderSessionID != sessionID {
+		return ExpiredRoleClaimSuperseded, nil
+	}
+	return r.releaseReadExpiredRoleClaim(ctx, role, claim, sessionTTL)
+}
+
 // releaseReadExpiredRoleClaim drops role, over a claim the caller has read already and found
-// expired, once a restored claim has exhausted sessionTTL. A listener restart therefore gives an
-// existing holder one sessionTTL to register again, while an already-expired holder cannot block
-// a new claimant forever. A claim its own holder handed back (RoleClaim.HandedBack) takes no
-// such grace: the first pass past its own renewal drops it.
+// expired, once the claim has no grace left. A claim the bucket held from before the machine's
+// service start (serviceStart) keeps its grace for one sessionTTL after that start, so a
+// listener restart, or a gap with no pod serving, gives an existing holder one sessionTTL to
+// register again, while an already-expired holder cannot block a new claimant forever. A claim
+// written since the service start gets none, and neither does a claim its own holder handed back
+// (RoleClaim.HandedBack): the first pass past its own renewal drops it. Every pod of a machine
+// reads one service start (WithServiceSince), so every pod answers one claim alike, whenever it
+// started.
+//
+// The claim's age is its KV entry's timestamp, the server's clock, and the window is measured on
+// this process's clock: a skew of seconds between the two, against a session TTL of minutes,
+// moves the window's end by that skew.
 //
 // The claim's own renewal is weighed by the caller and not here: the one caller
 // (ReapRoleClaims) skips a claim its holder still answers for before it reaches this call, over
 // this very claim value, so a claim that gets here is one no renewal keeps and no later instant
-// can make renewed again. sessionTTL is the other grant, and it is this call's own: the restart
-// grace, measured from this registry's own start and given only to a claim this registry
-// restored at that start. A sessionTTL of zero grants no restart grace, and neither does a
-// claim carrying the hand-back mark: the grace exists for a holder to register again after a
-// listener restart, and no registration renews a marked claim (Registry.renewRoleClaim), so
-// over such a claim the grace can do nothing but hold the role past the bound the reaper's own
-// rule states - one live window after the claim's last renewal and up to one reap interval.
-// That live window is untouched here, because it is the window a holder an older client's
-// hand-back marked wrongly claims the role again inside (ReapRoleClaims).
+// can make renewed again. sessionTTL is the other grant, and it is this call's own: the grace a
+// claim stored before the machine's service start keeps. A sessionTTL of zero grants no such
+// grace, and neither does a claim carrying the hand-back mark: the grace exists for a holder to
+// register again after a listener restart, and no registration renews a marked claim
+// (Registry.renewRoleClaim), so over such a claim the grace can do nothing but hold the role
+// past the bound the reaper's own rule states - one live window after the claim's last renewal
+// and up to one reap interval. That live window is untouched here, because it is the window a
+// holder an older client's hand-back marked wrongly claims the role again inside
+// (ReapRoleClaims).
 //
 // The holder it releases from is the one the claim names, and it is the caller that decided the
 // claim may be taken from that holder (ReapRoleClaims): either the holder's session is gone, or
@@ -355,10 +379,7 @@ func (r *Registry) releaseReadExpiredRoleClaim(ctx context.Context, role string,
 	if claim.Revision == 0 {
 		return ExpiredRoleClaimMissing, nil
 	}
-	r.mu.RLock()
-	restoredRevision, restored := r.restoredRoleRevisions[role]
-	r.mu.RUnlock()
-	if restored && restoredRevision == claim.Revision && !claim.HandedBack && sessionTTL > 0 && r.now().Sub(r.openedAt) < sessionTTL {
+	if since := r.serviceStart(); !claim.HandedBack && sessionTTL > 0 && claim.Created.Before(since) && r.now().Sub(since) < sessionTTL {
 		return ExpiredRoleClaimRetained, nil
 	}
 	epoch := r.roleViewEpoch()

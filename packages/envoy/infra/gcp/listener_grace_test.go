@@ -8,13 +8,6 @@ import (
 	"github.com/sjawhar/envoy/infra/gcp"
 )
 
-// listenerDurableBindDeadlineSeconds is durableBindDeadline, the listener's own
-// (packages/envoy/cmd/listener/durable.go:176), which this package cannot import: it is a
-// constant of package main. A hung pod holds its durable for the whole of its grace, so a
-// listener pod's grace has to stay under this deadline. That is necessary and not sufficient:
-// what has to hold is the replacement pod's time to its first /healthz answer plus that grace.
-const listenerDurableBindDeadlineSeconds = 135.0
-
 // One assertion spans two components here because the clustered hub's listener pod and
 // gcp:Dispatch's listener pod run the same binary with the same stop budget: the same preStop
 // wait and the same three deadlines of packages/envoy/cmd/listener/main.go. A shared constant
@@ -24,6 +17,17 @@ const listenerDurableBindDeadlineSeconds = 135.0
 // test holds them equal instead. It reads the app pod too, which keeps its own 35 s, coupled to
 // stopGrace in packages/envoy/cmd/dispatch/shutdown.go, so a change that moves every grace at
 // once fails here.
+//
+// A listener pod's grace answers to its stop alone: the preStop wait plus
+// ClusteredHubListenerShutdownSeconds, which is cmd/listener's stopBudget
+// (packages/envoy/cmd/listener/main.go) and which that package's
+// TestListenerPodGracesCoverTheStopBudget holds. It used to stay under the 135 s bind deadline at
+// which a starting listener gave up its start; no deadline of the listener's own bounds it now,
+// since a replacement stands by for the machine's delivery lease for as long as it runs
+// (cmd/listener/lease.go). The listener's durableTakeoverAlarmAfter (135 s,
+// cmd/listener/receive.go) times only the wait on a binding a listener from before
+// cybermonklabs/legion#2404 holds, during the first roll onto the lease, and the pod being
+// replaced then runs that older build's grace.
 func TestDispatchAndClusteredHubListenerPodsStopInsideTheirGrace(t *testing.T) {
 	hub := runClusteredHub(t, clusteredArgs())
 	dispatch, err := runDispatch(t, dispatchArgs(), true)
@@ -48,8 +52,6 @@ func TestDispatchAndClusteredHubListenerPodsStopInsideTheirGrace(t *testing.T) {
 			require.Equal(t, float64(gcp.ClusteredHubListenerGraceSeconds), grace, "%s carries the listener's grace", pod.name)
 			require.LessOrEqual(t, wait+float64(gcp.ClusteredHubListenerShutdownSeconds), grace,
 				"%s: its preStop wait and the listener's own stop", pod.name)
-			require.Less(t, grace, listenerDurableBindDeadlineSeconds,
-				"%s keeps its grace under the deadline a starting listener waits the durable out for", pod.name)
 		} else {
 			require.Equal(t, 35.0, grace, "%s keeps the app's own grace, the one stopGrace pins", pod.name)
 		}

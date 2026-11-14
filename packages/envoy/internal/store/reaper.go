@@ -154,9 +154,10 @@ type RoleClaimSweep struct {
 // interest reaper must not tear down a role during a listener restart grace window. A
 // claim this build cannot read (one stored under a key NATS refuses, too long or
 // outside its key alphabet, which bus.KeyValue.RefusesRead answers for the key
-// the scan handed over) no build can resolve or write again, so it is deleted
-// too; one it cannot delete either (a key outside the alphabet) is passed
-// over, uncounted, and the sweep goes on.
+// the scan handed over) no build can resolve, so it is deleted too, at the
+// revision the sweep's scan saw, which keeps a claim an earlier build without
+// the key check wrote there in the meantime; one it cannot delete either (a key
+// outside the alphabet) is passed over, uncounted, and the sweep goes on.
 //
 // What a pass weighs is the liveness of the session id a claim's holder registered under,
 // exactly as it did before a claim named the process holding it: a claim whose holder answered
@@ -199,19 +200,14 @@ type RoleClaimSweep struct {
 // reads ctx at each record delivered to it and ends at the first one after ctx has ended, so a
 // scan the bucket delivers nothing to ends at its own idle bound (kvwatch.ScanIdleTimeout) instead.
 //
-// The delete of a key this build cannot read is the tree's one unconditional abandoned delete,
-// and it argues from the key what every other caller argues from the revision it deletes at.
+// The delete of a key this build cannot read carries nats.LastRevision, the revision the pass's
+// scan saw the record at, as releaseReadRoleClaim and releaseReadExpiredRoleClaim do.
 // bus.Bounded's contract is that a call ctx abandoned runs on to its own end, so the delete may
-// land after this pass has answered; releaseReadRoleClaim and releaseReadExpiredRoleClaim each
-// say that is safe because the delete carries nats.LastRevision and so can take nothing but the
-// record their caller read. This one carries no revision, and is safe because nothing else can
-// ever be stored under that key: a key past the bound a direct get is refused at is past the
-// bound a write is refused at too, since a write must leave the key watchable and a watcher's
-// create request is the longest subject nats.go builds from a key (bus.KeyValue.write,
-// watchOverhead > getOverhead), so no build of this listener can write that key again and a
-// delete that lands late lands on the record the scan read or on nothing. The other kind of
-// refused key, one outside nats.go's key alphabet, is refused locally before anything is sent,
-// so its delete leaves nothing in flight to land at all.
+// land after this pass has answered, and the revision is what makes that safe: it can take
+// nothing but the record the scan read, and a claim an earlier build without the key check wrote
+// there in the meantime is kept, which the server reports as nats.ErrKeyExists and the pass logs.
+// The other kind of refused key, one outside nats.go's key alphabet, is refused locally before
+// anything is sent, so its delete leaves nothing in flight to land at all.
 //
 // A pass is that one streamed read of the role bucket, which carries each record's value and
 // revision, and then nothing per role but the deletes it owes: no Get of its own per key. One
@@ -265,7 +261,9 @@ func (r *Registry) ReapRoleClaims(ctx context.Context, isAlive func(string) bool
 	for _, scanned := range claims {
 		role := scanned.Role
 		if roles := r.roles(); roles.RefusesRead(role) != nil {
-			_, _, err := bus.Bounded(ctx, func() (struct{}, error) { return struct{}{}, roles.Delete(role) })
+			_, _, err := bus.Bounded(ctx, func() (struct{}, error) {
+				return struct{}{}, roles.Delete(role, nats.LastRevision(scanned.Claim.Revision))
+			})
 			if ended := ctx.Err(); err != nil && ended != nil {
 				return sweep, ended
 			}
@@ -273,6 +271,8 @@ func (r *Registry) ReapRoleClaims(ctx context.Context, isAlive func(string) bool
 			case err == nil:
 				r.logger().Warn("role reaper deleted a claim it cannot read", slog.Int("key_bytes", len(role)))
 				sweep.Reaped++
+			case errors.Is(err, nats.ErrKeyExists):
+				r.logger().Warn("role reaper kept a claim it cannot read, rewritten since its scan", slog.Int("key_bytes", len(role)))
 			case errors.Is(err, bus.ErrRefused):
 				r.logger().Warn("role reaper skipped a claim it cannot delete", slog.Int("key_bytes", len(role)), slog.String("error", err.Error()))
 			default:

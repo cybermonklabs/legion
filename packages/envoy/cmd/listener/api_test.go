@@ -2168,6 +2168,25 @@ func TestSubscribeHandlerFailsWhenSessionRegistryPutFails(t *testing.T) {
 	}
 }
 
+// An interest write that loses its compare-and-set on every attempt is a 503 with Retry-After, not
+// a 500: nothing was written and the caller may retry, which envoy-client's backoff reads from the
+// header (packages/envoy-client/src/dispatch-http.ts, retryAfterSeconds). Main's rewritten writer
+// (2af83d53fc, #2603) gives up with store.ErrInterestTopicsNotMerged where this branch's gave up with its own error, so
+// the row names the status and the header rather than either error's spelling. Its control: with
+// that error taken out of writeNATSError's case, the answer is the 500 the caller does not retry.
+func TestAnInterestWriteThatGivesUpIsRetryable(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	status := writeNATSError(recorder, fmt.Errorf("merge topics into %s's interest record: %w after %d attempts",
+		"ses_raced", store.ErrInterestTopicsNotMerged, 3), http.StatusInternalServerError, "write the interest record")
+	if status != http.StatusServiceUnavailable || recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("writeNATSError answered %d (recorder %d), want 503: a write that gave up is retryable",
+			status, recorder.Code)
+	}
+	if got := recorder.Header().Get("Retry-After"); got != "1" {
+		t.Fatalf("Retry-After = %q, want 1", got)
+	}
+}
+
 func TestUnsubscribeRequiresSessionIDAndReturnsRemovedTopics(t *testing.T) {
 	client := setupPublishTestClient(t)
 	registry, sessions := setupSessionsTest(t, map[string][]string{

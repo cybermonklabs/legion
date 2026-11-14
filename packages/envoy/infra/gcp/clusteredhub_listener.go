@@ -20,9 +20,10 @@ const (
 	clusteredHubListenerPreStopSeconds = 5
 	// clusteredHubListenerShutdownSeconds is the longest the session listener takes to stop on its
 	// SIGTERM: the HTTP server's 10 s, the role lane's 5 s (a 3 s drain of the lane's own client,
-	// and the 2 s receipt window for the forwards its handler handed over, roleLane.drain) and the
-	// NATS connection's 13 s drain, run one after another. The listener holds the three as
-	// stopHTTPGrace, stopLaneGrace and stopClientDrain, summed as stopBudget
+	// and the 2 s it waits for the stream to acknowledge the forwards its handler handed over,
+	// roleForwardTimeout, roleLane.drain) and the NATS connection's 13 s drain, run one after
+	// another. The listener holds the three as stopHTTPGrace, stopLaneGrace and stopClientDrain,
+	// summed as stopBudget
 	// (packages/envoy/cmd/listener/main.go); this module is a Go module of its own and cannot
 	// import them, so the number is written again here and the two listener pod goldens are held
 	// to stopBudget by the listener's own TestListenerPodGracesCoverTheStopBudget.
@@ -36,12 +37,10 @@ const (
 	// lane's drain and the NATS drain) are hard, and the process exits after them. So the margin
 	// covers the kubelet's own latency between the preStop hook's return and SIGTERM, the
 	// container's teardown and a late tick on a loaded node, and not a listener that runs over
-	// its own budget. A hung pod holds its durable for the whole grace, so the relation that
-	// matters is the replacement pod's time to its first /healthz answer plus this grace, under
-	// the 135 s bind deadline at which a starting listener gives up waiting for the durable this
-	// one holds (packages/envoy/cmd/listener/durable.go): at 40 s the start allowance is 95 s. A
-	// longer grace costs nothing on a normal stop, because the kubelet proceeds as soon as the
-	// container exits.
+	// its own budget. The replacement pod stands by for the machine's delivery lease for as long
+	// as it runs (packages/envoy/cmd/listener/lease.go), so no deadline of the listener's own ends
+	// its wait for the durable this one holds. A longer grace costs nothing on a normal stop,
+	// because the kubelet proceeds as soon as the container exits.
 	clusteredHubListenerGraceSeconds = clusteredHubListenerPreStopSeconds + clusteredHubListenerShutdownSeconds + 7
 
 	// The listener pod's seed volume and where its container mounts it: its NATS seed from the
@@ -148,12 +147,11 @@ func newClusteredHubListener(ctx *pulumi.Context, s clusteredHubSettings, classR
 		return err
 	}
 	pods := pulumi.ToStringMap(clusteredHubListenerSelector(s.name))
-	// One pod, and the component writes the count with no input behind it: until
-	// cybermonklabs/legion#2404 gives the listener a delivery lease, each further copy waits the
-	// listener's durable bind deadline for the subscription the first copy holds, gives up and
-	// restarts, for ever. The new pod is surged in before the old one goes, so the rollout is a
-	// handover rather than a gap, and the durable the old pod holds is free by the time the new
-	// one has waited its deadline out.
+	// One pod, and the component writes the count with no input behind it. A further copy of a
+	// listener with the delivery lease (cybermonklabs/legion#2404) stands by and takes delivery
+	// over within seconds of the first pod's stop, where one from before it waited the durable
+	// out, gave up and restarted; raising the count is the deployment's change. The new pod is
+	// surged in before the old one goes, so the rollout is a handover rather than a gap.
 	if _, err := appsv1.NewDeployment(ctx, name, &appsv1.DeploymentArgs{
 		Metadata: objectMeta(name, s.namespace),
 		Spec: appsv1.DeploymentSpecArgs{

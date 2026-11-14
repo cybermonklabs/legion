@@ -136,14 +136,14 @@ func TestTheFanoutReportsItsOwnRefusalsForTheSessionsItDeliversTo(t *testing.T) 
 			} else {
 				noException(t, probe)
 			}
-			if harness.config.dedupeCache.Seen(item.DedupeKey, sessionID) {
+			if ledgerDelivered(t, harness.config, item.DedupeKey, sessionID) {
 				t.Fatalf("the fan-out recorded %s as having taken a message it was refused", sessionID)
 			}
 			if logs := harness.logs.String(); !strings.Contains(logs, tc.wantLog) {
 				t.Fatalf("the fan-out never logged %q:\n%s", tc.wantLog, logs)
 			}
-			if got := harness.config.attemptCache.Seen(item.DedupeKey, sessionID); got != tc.wantAttempt {
-				t.Fatalf("an attempt record of %s is there: %t, want %t", sessionID, got, tc.wantAttempt)
+			if got := ledgerAttempted(t, harness.config, item.DedupeKey, sessionID); got != tc.wantAttempt {
+				t.Fatalf("an attempt of %s stands in the delivery ledger: %t, want %t", sessionID, got, tc.wantAttempt)
 			}
 		})
 	}
@@ -197,7 +197,8 @@ func TestTheFanoutRecordsARecipientItCannotReachBeforeItsException(t *testing.T)
 	if recipient := exceptionRecipient(t, assertDeliveryException(t, probe, item, "delivery_failed")); recipient != sessionID {
 		t.Fatalf("the exception names recipient %q, want %q", recipient, sessionID)
 	}
-	if !harness.config.attemptCache.Seen(item.DedupeKey, sessionID) {
+	// 2af83d53fc (#2603) added this row reading attemptCache.Seen; c1b7247f7f's ledger replaced that cache.
+	if !ledgerAttempted(t, harness.config, item.DedupeKey, sessionID) {
 		t.Fatalf("the fan-out published the exception of %s and recorded no attempt for it: every redelivery inside the window raises another", sessionID)
 	}
 
@@ -219,9 +220,9 @@ func TestTheFanoutRecordsARecipientItCannotReachBeforeItsException(t *testing.T)
 //
 // A session's relay publishes every frame unjudged (sessionRelays.relayNATS) and the plugin drops
 // a frame whose delivery mode it cannot read without a word, so a refusal left to that relay
-// would be reported by nobody. The fan-out records no attempt for it: it hands the message to
-// nobody, so a record would have the relay's own copy of the next event under that key skipped as
-// one already on its way (INFRA-594).
+// would be reported by nobody. The fan-out takes no ledger attempt for it: it hands the message
+// to nobody, so a record would have the relay's own copy of the next event under that key
+// skipped as one already on its way (INFRA-594).
 func TestTheFanoutReportsARefusalOfASessionOnConsumerDelivery(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -268,8 +269,8 @@ func TestTheFanoutReportsARefusalOfASessionOnConsumerDelivery(t *testing.T) {
 			if reasons := deliveryExceptionsFor(t, exceptions, relayed, 2*time.Second); len(reasons) != 1 || reasons[0] != "delivery_failed" {
 				t.Fatalf("the exception lanes carried %v for the session on consumer delivery, want one delivery_failed: its relay judges nothing, so the fan-out reports the refusal", reasons)
 			}
-			if rig.harness.config.attemptCache.Seen(item.DedupeKey, relayed) {
-				t.Fatalf("the fan-out recorded an attempt for %s, which it handed the message to nobody for", relayed)
+			if ledgerAttempted(t, rig.harness.config, item.DedupeKey, relayed) {
+				t.Fatalf("the fan-out left an attempt for %s in the delivery ledger, which it handed the message to nobody for", relayed)
 			}
 		})
 	}
@@ -302,7 +303,7 @@ func TestTheRelaySendsAFollowedTopicTheDurablePathAlsoReads(t *testing.T) {
 		t.Fatalf("store the message: %v", err)
 	}
 	awaitFanoutFinished(t, rig, durable, ack.Sequence)
-	if rig.harness.config.attemptCache.Seen(item.DedupeKey, relayed) || rig.harness.config.dedupeCache.Seen(item.DedupeKey, relayed) {
+	if ledgerAttempted(t, rig.harness.config, item.DedupeKey, relayed) || ledgerDelivered(t, rig.harness.config, item.DedupeKey, relayed) {
 		t.Fatalf("the fan-out recorded the message for %s, which it never sent it", relayed)
 	}
 
@@ -312,10 +313,10 @@ func TestTheRelaySendsAFollowedTopicTheDurablePathAlsoReads(t *testing.T) {
 }
 
 // A message on a topic the session that published it follows is skipped for that session as an
-// echo: the fan-out hands it back to nobody, reports no failure of it, and records neither a
-// dedupe key nor an attempt for it, so the next event under that key still reaches it. Every
-// other session following the topic is given the message as usual, by the relay of its own
-// consumer, which the fan-out records nothing for either (INFRA-594).
+// echo: the fan-out hands it back to nobody, reports no failure of it, and writes no ledger
+// record for it, so the next event under that key still reaches it. Every other session
+// following the topic is given the message as usual, by the relay of its own consumer, which
+// the fan-out records nothing for either (INFRA-594).
 //
 // Both sessions are on consumer delivery, the shape every live registration has, and the message
 // is stored, so the durable path's fan-out is the lane that reads it: the listener's core
@@ -351,8 +352,11 @@ func TestTheFanoutSkipsAMessageOnAFollowedTopicAsAnEchoOfTheSessionThatPublished
 	}
 	awaitFanoutFinished(t, rig, durable, ack.Sequence)
 
+	// This branch's row also asserted ledgerDelivered for the other session, "which took the message
+	// on its own subscription"; 2af83d53fc (#2603) removed that outcome, session.Resolve's
+	// `if entry.SelfSubscribed { ... return DeliveryResult{Skipped: true}, nil }`.
 	for _, sessionID := range []string{sender, other} {
-		if rig.harness.config.dedupeCache.Seen(item.DedupeKey, sessionID) || rig.harness.config.attemptCache.Seen(item.DedupeKey, sessionID) {
+		if ledgerDelivered(t, rig.harness.config, item.DedupeKey, sessionID) || ledgerAttempted(t, rig.harness.config, item.DedupeKey, sessionID) {
 			t.Fatalf("the fan-out recorded %s, which it handed the message to nobody for", sessionID)
 		}
 	}

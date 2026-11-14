@@ -226,7 +226,7 @@ func (claimedRole) EntryState(entry session.SessionEntry) session.State {
 	return session.StateOf(entry, time.Now(), session.LiveWindow, session.GoneHorizon)
 }
 
-func (claimedRole) LastSeen(string) int64 { return time.Now().UnixMilli() }
+func (claimedRole) LastSeen(context.Context, string) int64 { return time.Now().UnixMilli() }
 
 func (claimedRole) TTL() time.Duration { return 5 * time.Minute }
 

@@ -329,7 +329,7 @@ RULES = {
     f"{ENVOY}/cmd/dispatch/settings_test.go": reads(
         (f"{ENVOY}/cmd/dispatch/**", "cmd/dispatch/settings_test.go's environmentReads walks .go files"),
         (f"{ENVOY}/internal/dispatch/**", "cmd/dispatch/settings_test.go's environmentReads walks .go files")),
-    f"{ENVOY}/cmd/listener/api_test.go": reads((f"{FIX}/dispatch-targeted-delivery.json", "cmd/listener/api_test.go:191,436,480")),
+    f"{ENVOY}/cmd/listener/api_test.go": reads((f"{FIX}/dispatch-targeted-delivery.json", "cmd/listener/api_test.go reads dispatch-targeted-delivery.json")),
     f"{ENVOY}/cmd/listener/grace_margin_doc_test.go": reads(
         (f"{INFRA}/README.md", "cmd/listener/grace_margin_doc_test.go:18"),
         (f"{INFRA}/docs/nats-hub.md", "cmd/listener/grace_margin_doc_test.go:19"),
@@ -493,6 +493,11 @@ SOAK_STEP = "Server-change soak of the listener"
 SOAK_SCRIPT = f"""\
 pattern=$(../../{TAGGED_TESTS} serverchange ./cmd/listener)
 go test -tags serverchange -count=1 -timeout 15m -v -run "$pattern" ./cmd/listener"""
+# The two-process and two-build listener rows run by name rather than off a tag's test list: the
+# whole cmd/listener package compiles under the multiprocess tag, whichever tests the run
+# selects, and the quoted -run is outside the simple form, so this step too is pinned whole.
+LISTENER_MP_STEP = "Two-process and two-build tests of the listener"
+LISTENER_MP_SCRIPT = "go test -tags multiprocess -count=1 -timeout 20m -v -run '^Test(TwoPods|TwoBuilds)' ./cmd/listener"
 # The airlock-lean job's two runs of the model comparison. `-run`, `-fuzz` and `-fuzztime` are no
 # flags the simple form reduces, so each step is pinned whole; they move no closure, since both
 # runs compile the airlock package's tests, whichever cases they then drive.
@@ -1371,6 +1376,13 @@ GATES = [
         (TAGGED_TESTS, f"{at('dispatch-multiprocess', DISPATCH_MP_STEP)} takes its -run from it"),
     ) + setup_go("dispatch-multiprocess", f"{ENVOY}/go.mod") + CI_SELF),
 
+    gate("listener_multiprocess", "listener-multiprocess", exact=[
+        pinned_step("listener-multiprocess", LISTENER_MP_STEP, ENVOY, LISTENER_MP_SCRIPT, [
+            (ENVOY, ["./cmd/listener"], "go test -tags multiprocess ./cmd/listener", {"tags": "multiprocess"}),
+            (ENVOY, ["./cmd/listener"], "cmdtest.Build of the listener under the envoy_twobuild tag", {"tags": "envoy_twobuild", "mode": "build"}),
+        ]),
+    ], reads=setup_go("listener-multiprocess", f"{ENVOY}/go.mod") + CI_SELF),
+
     gate("listener_server_change", "listener-server-change", exact=[
         pinned_step("listener-server-change", SOAK_STEP, ENVOY, SOAK_SCRIPT, [
             (ENVOY, ["./cmd/listener"], "go test -tags serverchange ./cmd/listener", {"tags": "serverchange"}),
@@ -1640,6 +1652,8 @@ TAG_RUNS = [
            f"envoy-go's \"{UNIT_TEST_STEP}\" runs ./cmd/broker's untagged tests"),
     # envoy-go's unit step leaves /cmd/listener$ out, since the lane runs it under the detector.
     TagRun("listener_server_change", "listener-server-change", SOAK_STEP, "envoy_go_race", "envoy-go-race",
+           f"envoy-go-race's \"{RACE_JOBS['envoy-go-race'].step}\" runs ./cmd/listener's untagged tests"),
+    TagRun("listener_multiprocess", "listener-multiprocess", LISTENER_MP_STEP, "envoy_go_race", "envoy-go-race",
            f"envoy-go-race's \"{RACE_JOBS['envoy-go-race'].step}\" runs ./cmd/listener's untagged tests"),
     TagRun("envoy_go", "envoy-go", NATS_MATRIX_STEP, "envoy_go", "envoy-go",
            f"envoy-go's own \"{UNIT_TEST_STEP}\" runs ./internal/testnats's untagged tests"),

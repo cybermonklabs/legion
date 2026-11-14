@@ -242,11 +242,12 @@ func TestAPassKeepsALapsedClaimThatNamesNoProcessWhileItsHolderIsAlive(t *testin
 	assertRoleHolder(t, reg, role, "")
 }
 
-// restoredRoleClaimRegistry seeds the role bucket through the bucket's own handle and then
-// opens a registry over it, so every claim seed stores is one that registry restored at its own
-// start: the restart grace is given to no other claim (releaseReadExpiredRoleClaim). seed is
-// handed that handle and the moment the registry's clock starts at, and the advance returned
-// moves that clock that far past the start, as clockedColdRegistry's does.
+// restoredRoleClaimRegistry seeds the role bucket through the bucket's own handle and then opens
+// a registry whose machine began serving after that seed, so every claim seed stores is one the
+// bucket held from before the service start: no other claim is given the grace
+// (releaseReadExpiredRoleClaim). seed is handed that handle and the moment the registry's clock
+// starts at, and the advance returned moves that clock that far past the service start, as
+// clockedColdRegistry's does.
 func restoredRoleClaimRegistry(t *testing.T, seed func(roles natsgo.KeyValue, start time.Time)) (*Registry, func(time.Duration)) {
 	t.Helper()
 	conn, cleanup := connectNATS(t)
@@ -259,10 +260,19 @@ func restoredRoleClaimRegistry(t *testing.T, seed func(roles natsgo.KeyValue, st
 	if err != nil {
 		t.Fatalf("create the role bucket: %v", err)
 	}
-	start := time.Date(2026, 11, 6, 9, 30, 0, 0, time.UTC)
+	// The claims are seeded before the machine's service start, which is what gives a claim its
+	// grace here: the grace is counted from that start, which every pod of a machine reads from
+	// one delivery lease record (WithServiceSince), and it is given to a claim the bucket held
+	// from before it (releaseReadExpiredRoleClaim). The clock is anchored to that same start
+	// rather than to a date of its own, because the claim's age is its KV entry's timestamp, the
+	// server's clock, and the two are weighed against each other.
+	start := time.Now()
 	seed(raw, start)
+	serviceSince := time.Now()
 	var elapsed atomic.Int64
-	reg, err := Open(conn, WithReplicas(1), WithClock(func() time.Time { return start.Add(time.Duration(elapsed.Load())) }))
+	reg, err := Open(conn, WithReplicas(1),
+		WithClock(func() time.Time { return serviceSince.Add(time.Duration(elapsed.Load())) }),
+		WithServiceSince(func() time.Time { return serviceSince }))
 	if err != nil {
 		t.Fatalf("open a registry over the stored claims: %v", err)
 	}

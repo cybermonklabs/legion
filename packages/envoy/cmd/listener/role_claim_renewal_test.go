@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -165,7 +166,7 @@ func TestARegistrationFromAnotherProcessRenewsNothing(t *testing.T) {
 
 	rig.register(sessionID, secondProcess)
 
-	if stored := rig.stored(role); stored != seeded {
+	if stored := rig.stored(role); !reflect.DeepEqual(stored, seeded) {
 		t.Fatalf("the claim is now %+v, want it exactly as the holding process left it, %+v", stored, seeded)
 	}
 }
@@ -247,8 +248,9 @@ func TestARegistrationWhoseRenewalLosesItsCompareAndSwapStillRegisters(t *testin
 		t.Fatalf("the renewal made %d conditional updates, want exactly one: a lost renewal is never retried", racing.updates)
 	}
 	stored := rig.stored(role)
-	stored.Revision = 0
-	if stored != winner {
+	// Revision and Created belong to the entry the read answered, not to the stored record.
+	stored.Revision, stored.Created = 0, time.Time{}
+	if !reflect.DeepEqual(stored, winner) {
 		t.Fatalf("the claim is now %+v, want the claim that won the race, %+v", stored, winner)
 	}
 }

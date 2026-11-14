@@ -751,6 +751,50 @@ func TestAPullRequestsAgainAfterABatchAndAnExpiry(t *testing.T) {
 	}
 }
 
+// A pull whose connection reconnected ends at once: the server drops a pull request with the
+// connection it was sent on and delivers nothing for it, so a pull that waited for it would hand
+// its caller nothing until twice the idle heartbeat of silence ended it (ErrSessionPullStalled),
+// which is a 30 s stall of the relay of that session's consumer after an outage of 2 s.
+func TestAPullEndsAtOnceWhenItsConnectionReconnects(t *testing.T) {
+	owner, consumers := sessionConsumersOnStream(t)
+	ctx := context.Background()
+	const session = "ses_pull_reconnect"
+	agent := contracts.AgentSubject(session)
+	if _, err := consumers.Ensure(ctx, session, []string{agent}, 0); err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+	pull := pullSession(t, consumers, session)
+	before := publishStored(t, owner, agent, "before the reconnect")
+	msg := next(t, pull)
+	if msg.StreamSeq != before {
+		t.Fatalf("before the reconnect got %d, want %d", msg.StreamSeq, before)
+	}
+	if err := msg.Ack(); err != nil {
+		t.Fatalf("ack %d: %v", msg.StreamSeq, err)
+	}
+
+	if err := consumers.client.Conn.ForceReconnect(); err != nil {
+		t.Fatalf("reconnect in place: %v", err)
+	}
+	began := time.Now()
+	waited, cancel := context.WithTimeout(ctx, 2*sessionPullHeartbeat)
+	defer cancel()
+	if _, err := pull.Next(waited); !errors.Is(err, ErrSessionPullReconnected) {
+		t.Fatalf("Next after a reconnect = %v, want %v", err, ErrSessionPullReconnected)
+	}
+	if took := time.Since(began); took > 5*time.Second {
+		t.Fatalf("Next after a reconnect ended %s in, want it at the reconnect rather than at the %s of silence", took.Round(time.Millisecond), 2*sessionPullHeartbeat)
+	}
+	pull.Stop()
+
+	// The caller pulls again, on the connection that came back, and takes what was published
+	// while no pull request stood.
+	after := publishStored(t, owner, agent, "after the reconnect")
+	if msg := next(t, pullSession(t, consumers, session)); msg.StreamSeq != after {
+		t.Fatalf("after the reconnect got %d, want %d", msg.StreamSeq, after)
+	}
+}
+
 // The filters our code gives a consumer never overlap: Ensure reduces them first
 // (ReduceFilterSubjects), so a set that overlaps becomes the subject that covers it. Overlapping
 // filters cost no second delivery either - JetStream delivers a stored message to a consumer

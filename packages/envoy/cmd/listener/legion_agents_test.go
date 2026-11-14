@@ -352,9 +352,10 @@ func TestABatchFailureAnswersItsOwnStatusWithWhatItWrote(t *testing.T) {
 	}
 }
 
-// listenerGrant is a NATS configuration whose one user, listener, may subscribe to everything and
-// publish to everything but the subjects deny names.
-func listenerGrant(deny ...string) string {
+// listenerGrantConfig is a NATS configuration whose one user, listener, may subscribe to
+// everything and publish to everything but the subjects deny names. It is named apart from
+// listenerGrant (main.go), the name of the grant itself that the bucket lines carry.
+func listenerGrantConfig(deny ...string) string {
 	quoted := make([]string, len(deny))
 	for i, subject := range deny {
 		quoted[i] = strconv.Quote(subject)
@@ -378,7 +379,7 @@ authorization {
 // which opens the bucket, and the routes serve.
 func TestAListenerWithoutTheRegistryGrantServesAndAnswersItsRoutes503(t *testing.T) {
 	bucket := "KV_" + bus.LegionAgentBucket
-	server, uri := testnats.StartConfig(t, listenerGrant(
+	server, uri := testnats.StartConfig(t, listenerGrantConfig(
 		"$JS.API.STREAM.*."+bucket, "$JS.API.STREAM.*.*."+bucket,
 		"$JS.API.CONSUMER.*."+bucket, "$JS.API.CONSUMER.*."+bucket+".>",
 		"$JS.API.DIRECT.GET."+bucket+".>", "$KV."+bus.LegionAgentBucket+".>",
@@ -410,7 +411,7 @@ func TestAListenerWithoutTheRegistryGrantServesAndAnswersItsRoutes503(t *testing
 		t.Fatalf("%d ERROR records name the failed open, want 1:\n%s", count, listener.Output.String())
 	}
 
-	server.Restart(t, listenerGrant())
+	server.Restart(t, listenerGrantConfig())
 	deadline := time.Now().Add(30 * time.Second)
 	for {
 		status, answer := callListener(t, listener.port, http.MethodPut, "/v1/legion/agents/sessions/ses-tester", entry)

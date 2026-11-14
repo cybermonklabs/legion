@@ -17,7 +17,6 @@ package store
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -225,7 +224,7 @@ func (r *Registry) renewRoleClaim(ctx context.Context, role, sessionID, clientIn
 			renewed := claim
 			renewed.ClientInstanceID = clientInstanceID
 			renewed.RenewedAt = r.now().UnixMilli()
-			data, err := json.Marshal(renewed)
+			data, err := encodeRoleClaim(renewed)
 			if err != nil {
 				return 0, err
 			}
@@ -327,8 +326,13 @@ func (f *renewalFailures) get(key renewalFailureKey) (RenewalFailure, bool) {
 // prune removes every entry window old or older as of now: such an entry is outside the window
 // RenewalFailedWithin reads it in, so no reader at that window can be answered with it. The role
 // claim reaper's pass calls it (ReapRoleClaims), the one caller handed the deployment's live
-// window. An entry that passes the window between two passes only takes memory until the next,
-// since RenewalFailedWithin answers none older than the window it is asked about.
+// window, and so does RenewalFailedWithin at the window it is asked about. The reaper runs only
+// on the pod holding the machine's delivery lease (cmd/listener's holderLoops), while every pod
+// records failures and answers the grant guard, so a standby prunes at each grant-guard read it
+// answers; until one comes, or until it takes the lease, it keeps at most one entry per role and
+// session whose renewal failed on it. An entry that passes the window between two prunes only
+// takes memory until the next, since RenewalFailedWithin answers none older than the window it
+// is asked about.
 func (f *renewalFailures) prune(now time.Time, window time.Duration) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -376,8 +380,10 @@ func (r *Registry) RecordRenewalFailures(sessionID string, cause error) {
 // the session's later registrations do. A window of zero answers false, as ClaimRenewedWithin
 // keeps nothing at a zero window.
 func (r *Registry) RenewalFailedWithin(role, sessionID string, window time.Duration) (RenewalFailure, bool) {
+	now := r.now()
+	r.renewalFailures.prune(now, window)
 	failure, ok := r.renewalFailures.get(renewalFailureKey{role: role, sessionID: sessionID})
-	if !ok || r.now().Sub(failure.At) >= window {
+	if !ok || now.Sub(failure.At) >= window {
 		return RenewalFailure{}, false
 	}
 	return failure, true

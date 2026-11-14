@@ -10,7 +10,6 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
-	"github.com/sjawhar/envoy/internal/dedupe"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 )
@@ -95,11 +94,15 @@ func TestADrainThatFailedAForwardLeavesThatCopyAndTheRestToTheNextDrain(t *testi
 	}
 }
 
-// A drain that ended between its forward and its confirm costs the holder one more copy at most,
-// and the stream holds one copy of it on the holder's agent subject. The repeat carries the same
-// stable Nats-Msg-Id as the first forward (bus.ForwardMsgID of the forward's dedupe key and the
-// agent subject), so the stream's duplicate window collapses the two into the one stored copy the
-// holder's session is handed.
+// A drain that ended between its forward and its confirm costs the holder no second copy, and
+// the stream holds one copy of it on the holder's agent subject. The forward's whole answer is the
+// stream's acknowledgement of that copy, since #2603 (2af83d53fc) removed the receipt wait, so the
+// drain settles the forward delivered in the delivery ledger the machine's pods share before the
+// confirm it never makes (finishRoleForward), and the next drain - another pod's, reading that
+// ledger - passes the copy over rather than forwarding it again (keptRoleForwardAttempt). A repeat
+// would carry the same stable Nats-Msg-Id as the first forward (bus.ForwardMsgID of the forward's
+// dedupe key and the agent subject), so the stream's duplicate window would still keep one stored
+// copy.
 //
 // The drain's own context is ended inside its forward, after the stream has stored the copy: the
 // confirm it would write next reaches nothing, which is the same point in the drain as a listener
@@ -152,25 +155,25 @@ func TestADrainThatEndedBetweenItsForwardAndItsConfirmLeavesTheHolderOneStoredCo
 		t.Fatalf("the drain that ended after its forward reported no error, so this test no longer reaches the moment it is about")
 	}
 
-	// The listener that drains the role next, with guards and caches of its own, which is what a
-	// second process has: the first listener recorded the copy it forwarded in its dedupe cache
-	// (finishRoleForward), and inside one process that record is what stops a copy already handed
-	// over from being handed over again. It drains on a clock past bus.KeptRoleClaimWindow -
-	// which is roleKeepDrainWindow, the whole of a drain's life - so the claim the drain above
-	// left behind is one no drain can still be forwarding.
+	// The listener that drains the role next, with drain guards of its own, which is what a
+	// second pod of the machine has. The delivery ledger it reads is the machine's, which both
+	// pods share: the first drain's forward was stored, so it settled that attempt delivered
+	// (finishRoleForward) before the confirm it never made, and the ledger says the holder has
+	// this copy. It drains on a clock past bus.KeptRoleClaimWindow - which is roleKeepDrainWindow,
+	// the whole of a drain's life - so the claim the drain above left behind is one no drain can
+	// still be forwarding.
 	past := func() time.Time { return time.Now().Add(roleKeepDrainWindow + time.Minute) }
 	next := harness.config
 	next.roleKeepDrains = newRoleKeepGuards()
-	next.dedupeCache = dedupe.New(10 * time.Minute)
-	t.Cleanup(next.dedupeCache.Stop)
-	next.attemptCache = dedupe.New(5 * time.Minute)
-	t.Cleanup(next.attemptCache.Stop)
 	next.forwardRole = record(harness.config, func() {})
 	if err := drainKeptRole(ctx, next, role, past); err != nil {
 		t.Fatalf("the next drain of role %s's kept lane: %v", role, err)
 	}
-	if !slices.Equal(handed, []string{key, key}) {
-		t.Fatalf("the two drains forwarded %v, want the one copy under %s forwarded once by each: the copy is not lost, and at most one more is sent", handed, key)
+	if !slices.Equal(handed, []string{key}) {
+		t.Fatalf("the two drains forwarded %v, want the one copy under %s forwarded by the first drain alone: the ledger settled it delivered, so the next drain passes it over", handed, key)
+	}
+	if head, err := readKeptLaneHead(ctx, harness.client, role); err != nil || head.left {
+		t.Fatalf("role %s's kept lane after the next drain: copies left %v (%v), want none: the copy the ledger settled is passed over, not left on the lane", role, head.left, err)
 	}
 
 	first, err := harness.client.NextStoredMessage(ctx, subject, 1)

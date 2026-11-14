@@ -86,7 +86,7 @@ Each item below names a task and where its code is, then notes on it.
 - **Stream definition**: `internal/bus/stream.go`
 
   `ENVOY_NOTIFICATIONS` subjects, age and duplicate window, replicas, byte limit, consumer cap (`streamMaxConsumers`, 24000) and discard policy, and their reconciliation at start (`ensureStreamWithConfig`);
-  the names of the stores' KV buckets, listener and Dispatch durables, the Dispatch webhook-redelivery bucket, the listener role-lane queue, and the notification and exception topic prefixes, which envoy-infra's NATS grants are built from (`packages/envoy/infra/core/permissions.go`)
+  the names of the stores' KV buckets, the listener state bucket's key spaces (the machine's lease, its delivery ledger, the sessions' last-seen records), listener and Dispatch durables, the Dispatch webhook-redelivery bucket, the listener role-lane queue, and the notification and exception topic prefixes, which envoy-infra's NATS grants are built from (`packages/envoy/infra/core/permissions.go`)
 
 - **Stream and bucket copies, stream byte limit**:
   `internal/bus/settings.go` (`ParseNATSReplicas`, `ParseStreamMaxBytes`, `MaxReplicas`), `internal/bus/nats.go` (`ErrStreamFull`), `internal/config/config.go`, `cmd/dispatch/settings.go`, `internal/bus/kv.go` (`EnsureKeyValue`), `internal/bus/keeper.go`
@@ -3323,10 +3323,12 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
 
 - The role lane stays the transport for a role topic published straight onto NATS (a listener of an earlier release during a rollout, an operator's `nats pub`):
   each listener holds one core subscription to `notifications.role.>`, on a connection of its own (`bus.ConnectRoleLane`), in the queue group every listener shares, `envoy-roles` (`bus.RoleLaneQueue`), so NATS hands each role message to one listener of all of them.
+  Every pod of a machine id runs the lane, the lease holder and each standby alike, and every one of them is a member of that group, so no role message is forwarded twice whichever pods run.
   A server whose grant lacks that group refuses the subscription before the flush answers;
   the listener then logs it once and subscribes in its machine's group, `envoy-listener-<machine id>` (`bus.ListenerQueue`), as a listener of an earlier release does.
   The lane's pending limits are 1,000,000 messages and 1 GiB (`bus.RoleLanePendingMsgs`, `bus.RoleLanePendingBytes`), far above the backlog its handler builds while the role bucket answers -- the handler blocks on its forwards only once 4,096 are open and every one ends within its 2 s store window, so about 80 messages queue at the measured 40 a second -- so nats.go queues every role message however far the handler falls behind and drops none under any load the lane meets, while the buffer it may grow to stays bounded.
-  The handler also waits on each message's read of the role's claim record from `envoy_roles` (`resolveCoreRoleHolder`), up to 2 s when the bucket does not answer (`roleHolderReadTimeout`, which bounds that read alone, `roleLaneClaims`).
+
+- The handler also waits on each message's read of the role's claim record from `envoy_roles` (`resolveCoreRoleHolder`), up to 2 s when the bucket does not answer (`roleHolderReadTimeout`, which bounds that read alone, `roleLaneClaims`).
   That is one read per message, so while the bucket does not answer the handler takes at most about one message every 2 s, and at 40 a second the queue reaches 1,000,000 messages in about seven hours;
   `envoy_role_lane_slow_consumers` counts any slow-consumer error the connection still reports, and each change of the count is logged.
   The holder's session read has its own 2 s bound (`roleHolderSessions.Holder`), so a claim read answering just inside its bound, then a session read that runs to its own, holds the handler about 4 s.
@@ -3344,7 +3346,8 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   One the stream did not acknowledge storing (`bus.ErrForwardNotStored`), and one not known to have left this process (the publish failed, the flush timed out or failed on a stalled connection, or the server denied it under the listener's grant, `bus.ErrPublishDenied`), are both `delivery_failed`, as a stale holder and an unadvertised or unreadable delivery mode are (`finishRoleForward`); `no_holder` is no claim at all.
   There is no `receipt_timeout` reason here any more.
   `bus.confirmPublished` holds how an accepted forward is told from one that is not.
-  Of the lane's own two give-up branches, an unclaimed role keeps the message for the role's next holder first (`keepRoleLaneMessage`, `resolveCoreRoleHolder`), and a lapsed holder keeps nothing and is `delivery_failed`, since its claim stands and no claim follows for a kept copy to wait for (`roleKeepable`).
+
+- Of the lane's own two give-up branches, an unclaimed role keeps the message for the role's next holder first (`keepRoleLaneMessage`, `resolveCoreRoleHolder`), and a lapsed holder keeps nothing and is `delivery_failed`, since its claim stands and no claim follows for a kept copy to wait for (`roleKeepable`).
   A message that was kept publishes no delivery exception, because it is not lost, and it counts and logs as `kept`.
   A keep that failed leaves the unclaimed branch exactly as it was, `no_holder`.
   A claim read that did not answer keeps the message too, under the reason `claim_unread` (`roleClaimUnread`), and forwards nothing:
@@ -3357,12 +3360,24 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   Every other reason emits an exception.
   The lane reads no `keep` field, because a raw role publish carries none and the envelope has no such field:
   keeping is chosen on the publish route alone, and the senders that opt out of it - the Legion daemon's notice queue and a phase worker's stall reminder - publish through that route.
-  The lane's attempt cache holds an entry only while a forward is in flight and a failure rolls it back, while the dedupe cache, which the route shares, records a forward only once the stream stored it
-  — so a publish that re-uses a `dedupe_key` after a failure is forwarded again, while one after a stored forward is skipped.
-  An agent delivery this listener cannot place clears its own attempt entry before each NAK (`clearAttempt`, `agentSubjectDelivery`), because the redelivery that NAK asks for would otherwise find the entry still there and be dropped as `listener attempt-dedupe skip` before it reached the session at all.
+
+- The delivery ledger every pod of the machine shares (`internal/dedupe`, the `delivery.` keys of `envoy_listener`;
+  `cmd/listener/README.md`) holds an attempted record only while a forward is in flight and a failure clears it, and records a forward delivered only once the stream stored it
+  — so a publish that re-uses a `dedupe_key` after a failure is forwarded again, while one after a stored forward is skipped, whichever pod of the machine forwards it.
+  The kept lane's drain takes its forward's attempt from that same ledger (`walkKeptRole`), so a copy the role's new holder already took, or one another pod of the machine is forwarding to it, is passed over rather than forwarded a second time.
+  The route keeps a record of its own confirmations beside that ledger (`listenerDeps.confirmed`, the one a later send of the same key reads) and records each of them in the ledger too, so no lane forwards again what the route delivered.
+  An agent delivery this listener cannot place clears its own ledger attempt before each NAK (`settleClear`, `unplaceableAgentDelivery`), because the redelivery that NAK asks for would otherwise find the attempt still there and be dropped as `listener attempt-dedupe skip` before it reached the session at all.
+  `TestTwoPodsEveryQueuedMessageReachesTheSessionAtMostTwiceAcrossAReceiveLostTakeOver` (build tag `multiprocess`, `cmd/listener/multiprocess_state_test.go`) holds the lease and the relay to real pods together: the active pod delivers a session's messages from the relay of that session's consumer while every acknowledgement it sends is dropped, its receive connection is then cut, and the standby that takes the lease restarts the consumer at its ack floor, so those messages reach the session a second time under their own event ids while the messages published after the take-over reach it through that standby alone, each exactly once.
   The route's bounded retry inside its window is the one retry a role message gets:
   do not add a durable role consumer, or retry role messages anywhere else
   — the role lane stays core, and a holder's stored forward is its own session consumer's to deliver.
+
+- **A former holder's unresolved attempt** in that ledger (`dedupe.KVConfig.GoneBoot`, `lease.FormerHolder`): a boot that held the machine's lease before the current holder (the lease record's `former_boots`) is taken over without the 35 s wait another pod's attempt earns, but only once it can settle nothing more.
+  A holder taken over by force -- killed, its node lost, its record left to expire -- writes nothing again and is taken over at once.
+  One that released the record is alive, and its role lane has `roleForwardTimeout` to hear the stream's acknowledgement and record, clear or report the forward, so its attempt is deferred until `ledgerFormerSettle` (2.25 s) after this pod's acquisition (`lease.FormerHolder`), read on this pod's own monotonic clock from the start of its term.
+  A release is a soft hand-over, and the successor reads the former holder's answer for the pair -- delivered or cleared -- rather than forwarding a role message the holder may already have.
+  The relay of a session's consumer is gated apart, by `relayFormerSettle` (1 s, `lease.FormerSettleWait`): a released pod's stopped relay has `relaySettleGrace` to hear a frame's reply and ack it, and the successor restarts the session's consumer only after that ("A stopping relay's last frames" below).
+  `TestTwoPodsARelayedFrameInFlightWhenTheTermEndsIsNotSentAgainByTheSuccessor` and `TestTwoPodsARelayedFrameHeldPastTheStoppingRelaysSettleBoundIsRepeatedAtMostOnceWithItsId` (build tag `multiprocess`, `cmd/listener/multiprocess_relay_settle_test.go`) hold both sides to real pods.
 
 - Role ownership is durable in the `envoy_roles` JetStream KV bucket.
   Each role key records `holder_session_id`, `claimed_at` and `previous_session_id`, and, where the claimant named them, `client_instance_id`, the process that holds the claim, and `renewed_at`, the moment that process last answered for it.
@@ -3384,13 +3399,13 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
 - A holder that is `unresponsive` — past the live window, inside the gone horizon — keeps its claim and its `claimed_at` through any number of resolutions, and the paths that need a live holder report it instead:
   the publish route's and the lookup's 404 `holder_lapsed`, which carries `holder_state`, `last_seen` and `claim_released: false`, and a `delivery_failed` exception on the role lane.
   What still moves such a role is a successor's soft claim, which replaces the holder rather than releasing the claim (`roleSupersessionVerdict`; `/v1/roles/set` in the Listener API below).
-  A claim restored at a listener restart gets one live window from that listener's own start before its reaper may release it (the grace `store.Registry.ReapRoleClaims` holds a restored claim for, which `main.go` passes as the registry's live window), so a holder that registers again in time keeps its role — unless the hand-back marked that claim, which takes no grace at all.
+  A claim the bucket held before the machine's service start gets one live window from that start before its reaper may release it (the bullet on that grace below), so a holder that registers again in time keeps its role — unless the hand-back marked that claim, which takes no grace at all.
   The grace is there for a holder to register again, and no registration renews a marked claim (`store.Registry.releaseReadExpiredRoleClaim`), so over a marked claim it could do nothing but hold the role past the bound the reaper's own rule sets.
-  Every claim, restored or not, gets a second grant of that same window, measured against its own renewal rather than against the listener's start, and `main.go` passes the one live window for both.
+  Every claim, held from before that start or written since, gets a second grant of that same window, measured against its own renewal rather than against the service start, and `main.go` passes the one live window for both.
   A listener reads a claim from the role bucket itself
   — every role path does, the role lane's resolution of each message included, and none decides on the registry's watched copy of that bucket
   — but a holder's liveness from its cache of `envoy_sessions`, which trails that bucket, so a holder another listener registered and gave the role a moment ago is in both buckets before it is in this cache;
-  during a rolling deploy the old task resolves every claim the replacement accepts.
+  every pod of a machine id resolves claims another pod accepted, a standby those the active pod accepted and, during a rolling deploy, the old task those the replacement accepted.
   Nothing is taken from a holder on the cache's word:
   before the role reaper ends a claim, or a soft claim supersedes its holder, a holder the cache misses — or holds in a record that caller's own state test refuses — is read from the bucket itself (`liveSessionEntry`, `session.SessionRegistry.Refresh`; `cmd/listener/role_holder.go`).
 
@@ -3410,7 +3425,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   the claim read and the holder's session read each stop when it ends (`store.Registry`'s `RoleClaim` bounds its own bucket call by the context, through `bus.Bounded` in `internal/bus/kv.go`, since nats.go's KV calls take none;
   `liveSessionEntry` bounds the session read), so a role store that does not answer is reported inside the caller's attempt, as the bus-unavailable 503 with `Retry-After: 1` (a role send's later attempt that runs out of the window is its 504).
   That read is a direct get, so the listener's NATS user needs publish on `$JS.API.DIRECT.GET.KV_envoy_sessions.>`.
-  A session-addressed send and an agent delivery read the session they name through the same read-through (`liveSessionEntry`), each under its own bound - `sendSessionReadTimeout` (1 s, inside the send's own budget) and `deliverySessionReadTimeout` (2 s) - so neither needs any NATS permission beyond that same direct get.
+  A session-addressed send, a role claim's read of its claimant's registration (`POST /v1/roles/set`) and an agent delivery read the session they name through the same read-through (`liveSessionEntry`), each under its own bound - `sendSessionReadTimeout` (1 s, inside the send's own budget), `roleHolderReadTimeout` and `deliverySessionReadTimeout` (2 s) - so none needs any NATS permission beyond that same direct get.
 
 - The interest reaper decides a session's absence the same way:
   it asks each candidate's liveness outside every lock (`sessionMayBeLive`:
@@ -3418,32 +3433,31 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   a read that does not answer keeps the interest for the next cycle with a WARN.
   So a session the session cache has not read yet, before its first read or while it reads its bucket again, keeps its subscriptions.
 
-- The interest reaper (`Registry.Reap`, `internal/store/reaper.go`) deletes a dead session's interest only once its row was last written more than the grace window plus `store.InterestRefreshAge` (5 minutes) ago;
-  the listener passes `store.InterestReapGrace` (10 minutes), so a dead session's interest stays 15 minutes after its row's last write, and a row exactly that old is kept.
+- The interest reaper (`Registry.Reap`, `internal/store/reaper.go`), which only the machine's lease holder runs, deletes a gone session's interest only once its row was last written more than the grace window plus `store.InterestRefreshAge` (5 minutes) ago;
+  the listener passes `store.InterestReapGrace` (10 minutes), so a gone session's interest stays 15 minutes after its row's last write (`store.InterestReapAllowance`), and a row exactly that old is kept.
   The refresh allowance exists because a build that skips rewriting an unchanged interest row younger than `InterestRefreshAge` lets the row's `UpdatedAt` lag the session's last heartbeat by up to that age;
   adding it keeps a paused session's grace at least `InterestReapGrace` after its last heartbeat.
   Release order follows from it: no build that skips unchanged interest writes may run while any listener on the shared `envoy_interests` bucket still reaps at 10 minutes, and this build is one that skips them (`Registry.UpsertWithin`).
 
-- `store.Open` snapshots the revision of every stored claim (`roleRevisions`, `internal/store/roles.go`) so a restored claim keeps its grace only while the bucket still holds the revision the restart read, and a claim the hand-back marked keeps none of that grace whatever its revision.
-  It takes that snapshot from one watch over the bucket's existing keys, as the interest, session and CI caches read theirs (`internal/kvwatch`), so listener readiness costs one pass over the bucket rather than a round trip per claim (LEGION-360).
-  A scan that does not reach the end of the bucket fails the start rather than restoring part of it:
-  nats.go ends one early both by closing the updates channel and, on its own idle timeout, by sending the same nil marker a complete scan ends with, so the snapshot reads `Error()` at the marker.
-  The timer belongs to the watch, not to this reader
-  — `nats.KeyValue.Keys()` has it as well — so a build that lists the keys and reads each one back restores a partial snapshot just the same over a link that goes quiet for the JetStream `MaxWait` and then recovers.
-  Unlike those three, this one is a snapshot and not a live cache — the grace window is anchored to the moment `Open` returns — so nothing rewatches it.
-  The snapshot names no key, so it also carries a claim stored under a key this build cannot read (`bus.ErrRefused`:
-  too long, or outside nats.go's key alphabet);
-  that claim still gets no grace, because the release reads the claim itself first and cannot, and the role reaper deletes it, or skips it with a WARN every cycle when no KV call can delete it either, as with a key outside the alphabet, which an operator purges by hand (the command is in the bullet on refused keys below).
-  A start logs the snapshot it restored as one INFO line, `restored role claims`, with `restored` (the claims whose revision it read, a marked one among them though that one gets no grace) and `delete_markers` (tombstones streamed past) as disjoint fields;
-  a single total of the two reads as claims the restart failed to restore.
-  `internal/store` writes it, and both reaper cycles, through the logger the listener passes to `store.Open` (`store.WithLogger`), so they are JSON records with `machine_id`.
+- A role claim's grace counts from the machine's service start, not the process's (`ReleaseExpiredRoleClaim`, `internal/store/role_release.go`):
+  a claim whose KV entry predates the service start keeps its grace for one live window after that start, and one written since gets none.
+  A claim the hand-back marked keeps none of that grace whatever its age, since no registration renews a marked claim and the grace is there for a holder to register again.
+  The service start is `service_since` in the machine's delivery lease record (`store.WithServiceSince`;
+  `cmd/listener/README.md`, "State the pods share"), the server's time of the write that took the lease when no pod of the machine was serving, so every pod answers a claim alike whenever it started;
+  a listener running without the lease (its grant lacks `envoy_listener`) counts from its own start.
+  The window the reaper holds a claim for is the registry's live window, which `main.go` passes it, since that is how long a registration keeps a session live to every other reader.
+  `store.Open` reads no claim for that grace;
+  the only start-time read of the role bucket is the role claim view's watcher (below), which scans it in the background as every cache warm-up does.
+  A claim stored under a key this build cannot read (`bus.ErrRefused`:
+  too long, or outside nats.go's key alphabet) gets no grace, because `ReleaseExpiredRoleClaim` reads the claim itself first and cannot, and the role reaper deletes it at the revision its own scan saw, keeps it when a write landed since, or skips it with a WARN every cycle when no KV call can delete it either, as with a key outside the alphabet, which an operator purges by hand (the command is in the bullet on refused keys below).
+  `internal/store` writes both reaper cycles through the logger the listener passes to `store.Open` (`store.WithLogger`), so they are JSON records with `machine_id` and `instance`.
   The listener must not reach that by `slog.SetDefault`:
   that also routes `internal/bus` and the stdlib `log` package into the JSON handler, and the deployed CloudWatch metric filters for publish failures, webhook refusals and dropped stream subjects are space-delimited text patterns anchored on that package's date and time prefix, so three alarms would stop matching without anything failing.
 
-- The bucket's subject count is not its claim count, and sizing a restart from `nats stream info KV_envoy_roles` overstates it.
+- The bucket's subject count is not its claim count, and sizing the claims from `nats stream info KV_envoy_roles` overstates them.
   A limits-retention KV keeps a delete marker on the subject of every key ever deleted, and both `nats kv ls` and `nats.KeyValue.Keys()` hide them, so most of a long-lived bucket's subjects are markers of claims that ended.
   A marker is not a claim and gets no grace;
-  it costs one header-only message in the snapshot above, so readiness grows with the subject count at the link's bandwidth rather than by a round trip each.
+  every scan of the bucket (`nats kv ls`, a watch, the role claim watcher's warm-up at each listener start) streams one header-only message per marker.
   Nothing expires markers, and a KV `MaxAge` would expire claims with them;
   `nats kv compact envoy_roles` (`KeyValue.PurgeDeletes`) purges marker subjects alone and leaves live claims at their revisions, keeping markers under 30 minutes old.
 
@@ -3470,11 +3484,13 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   omitted rather than empty when unknown), `payload_summary`, the original machine `payload`, `dedupe_key`, `source`, and `source_session`;
   the exception lane is not recursively exceptional.
 
-- Each refusal of a session the refusing path delivers to records its recipient before publishing its exception, so an identical redelivery emits at most one exception during the attempt-cache window and never NAKs the original envelope.
+- Each refusal of a session the refusing path delivers to leaves its recipient's attempt in the delivery ledger before publishing its exception, so an identical redelivery emits at most one exception while that record holds and never NAKs the original envelope.
   A role message the role lane kept for the role's next holder raises no exception either, because it is not lost.
-  A refusal of a session whose own consumer holds the message records nothing, since this path handed that session nothing ("Session consumers"), so a second stored copy of the event -- the same dedupe key on another of the session's topics -- is judged and reported again rather than left under a record that would hold the session's copy for five minutes.
+  An exception's `event_id` and `dedupe_key` are derived from the source event id, the recipient session and the reason (`deliveryExceptionID`), not minted, so a redelivery that ends the same way, on any pod of the machine, publishes the same exception, and the stream, which takes a delivery exception it captures under a MsgId of that key, stores it once;
+  an exception about a stored message carries that message's own origin in its `Nats-Msg-Id` instead (`exception.<reason>.<origin>`, `exceptionOrigin`), so the stream stores one however many listeners raise it, each from its own durable.
+  A refusal of a session whose own consumer holds the message leaves no attempt, since this path handed that session nothing ("Session consumers"), so a second stored copy of the event -- the same dedupe key on another of the session's topics -- is judged and reported again rather than left under a record that would hold the session's copy for `dedupe.AttemptedAge`.
   The same holds for a refusal whose resolution of the recipient failed, a session whose entry is gone (`session.ErrNoSessionRecord`) among them.
-  The cost is that session's exception dedupe: a session on consumer delivery is sent one `delivery_failed` per stored copy of the event and per redelivery of each, up to the durable's `consumerMaxDeliver` (20), where a recorded refusal gives one per dedupe key per attempt window.
+  The cost is that session's exception dedupe: a session on consumer delivery is sent one `delivery_failed` per stored copy of the event and per redelivery of each, up to the durable's `consumerMaxDeliver` (20), where a kept attempt gives one per dedupe key per attempt window.
 
 - A role send through `/v1/messages/publish` answers its sender instead, with 202 for a role message it kept, with the unheld role's 404 when it kept nothing, and with 403 or 504 for a holder that did not take it (the Listener API);
   an ad-hoc topic raises none at all.
@@ -3501,7 +3517,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   When using the MCP bridge, Envoy should stay naive about the message content — the MCP server owns the domain logic.
 
 - Every Go job of `.github/workflows/ci.yaml` runs only when a file its own filter there names changes, the Envoy jobs this module's tagged and race suites run in among them:
-  `dispatch-memory` (`dispatch_memory`), `dispatch-multiprocess` (`dispatch_multiprocess`), `listener-server-change` (`listener_server_change`), `broker-multiprocess` (`broker_multiprocess`), `envoy-go-race` (`envoy_go_race`), `envoy-go-race-api` (`envoy_go_race_api`), `envoy-go-race-docs` and `envoy-go-docs-finalizers`, which share `envoy_go_race_docs`, and `envoy-infra-go` (`envoy_infra_go`).
+  `dispatch-memory` (`dispatch_memory`), `dispatch-multiprocess` (`dispatch_multiprocess`), `listener-multiprocess` (`listener_multiprocess`), `listener-server-change` (`listener_server_change`), `broker-multiprocess` (`broker_multiprocess`), `envoy-go-race` (`envoy_go_race`), `envoy-go-race-api` (`envoy_go_race_api`), `envoy-go-race-docs` and `envoy-go-docs-finalizers`, which share `envoy_go_race_docs`, and `envoy-infra-go` (`envoy_infra_go`).
   Each filter lists the packages the job's command compiles with its build tags, the packages of each binary its tests build, and the files its tests read.
   Any change that makes a job's command, or a binary its tests build, compile a new package or read a new file - production code included, not only a test - adds that package or file to that job's filter in the same pull request.
   `.github/scripts/check-ci-filters.sh` (ci.yaml's `ci-filters` job) recomputes each go command's package closure and fails naming a file a filter misses;
@@ -3713,31 +3729,42 @@ that is the rule and not a transitional measure, and it is what lets Dispatch de
 
 - Health endpoints reflect dependency health, not just process liveness, except `GET /livez`, which both `envoy-dispatch` and `envoy-listener` serve as liveness alone by design:
   it answers `204` reading nothing, so a liveness or startup probe never restarts a process for a slow or unreachable dependency, and readiness stays on `/healthz`.
-  `/healthz` returns `degraded` for a JetStream/KV probe that answered with a transient failure and `unhealthy` for NATS loss, a JetStream check that did not answer within its budget, a stopped interest, role claim, session or CI KV watcher, a missing durable consumer, or a durable consumer `not bound to this listener's subscription`, which a durable deleted and created again under the listener leaves.
+  The listener's `/healthz` is every pod's readiness (`cmd/listener/README.md`, "Readiness").
+  It answers `503 {"status":"starting"}` until the pod can serve (NATS connected, the webhook and `/v1` gates open over warm caches, the receive loop started and, with an OIDC issuer configured, its discovery succeeded), then `200` naming the pod's `role`:
+  `active` on the pod receiving the durable, with the durable's lag, and `standby` on every other, with `active_instance` when the lease record names one;
+  every answer comes within one 5 s deadline (`healthzDeadline`), past which it is `503`.
+  `/healthz` returns `degraded` for a JetStream/KV probe that answered with a transient failure, and for a pod that is the machine's deliverer and does not receive yet - it holds the lease, or runs without one, or has read no holder at all - which no answer of such a pod calls `healthy`, since nothing of the durable reaches a session until it receives;
+  and `unhealthy` for NATS loss, a JetStream check that did not answer within its budget, a role-lane subscription that is not valid, a stopped interest, role claim, session or CI KV watcher, and, on the active pod, an invalid subscription, a missing durable consumer, or a durable consumer `not bound to this listener's subscription`, which a durable deleted and created again under the listener leaves.
+  The role claim watcher is the interest registry's second (`store.Registry.Ping` and `WatchErr` read both), so its stop, and a role bucket recreated under it, are answered under the registry's dependency name, `interest KV watcher unavailable: role claims watcher stopped` or `interest KV watcher unavailable: role claims bucket envoy_roles was recreated under its watcher` (`interest KV unavailable: ...` from the request whose own ping finds the recreate), and the self-health monitor rebuilds it as it does the others.
+  A listener whose grant lacks the `envoy_listener` bucket adds `"lease": "unavailable: missing NATS grant for KV bucket envoy_listener"`.
+  A listener that mounts no GitHub webhook route keeps no CI cache, and its healthy answer carries `"ci_cache": "not_applicable"`.
 
 - A role claim view whose copy no read of the bucket has made servable yet is neither of those:
   nothing is wrong with the bucket or the watcher, and `/healthz` reports it as `200` with `"status":"degraded"` and `"error":"role claim view unavailable: the role claim view cannot be served: ..."` (`store.Registry.RoleViewErr`, the state `RolesHeldBy` itself reads, so the report and the routes cannot disagree) while `GET /v1/sessions` and `GET /v1/registry/<session_id>` answer their 503.
-  That check runs last, after every check that can answer `unhealthy`, so it hides none of them, and its answer keeps the healthy answer's fields (`session_cache_*`, `ci_cache`, `num_pending`, `num_ack_pending`);
+  Every pod of a machine serves those two routes, so it is read on an active pod's 200 and a standby's alike (`okAnswer`), after every check that can answer `unhealthy`, so it hides none of them, and its answer keeps the healthy answer's fields (`session_cache_*`, `ci_cache`, `num_pending`, `num_ack_pending`);
   a transient KV or durable info failure's `degraded` answer carries `status` and `error` alone and returns before the checks after it.
+  A pod that already reports a failure of its own keeps that report, with the view named after it, and the stall below named after both.
   It is `degraded` and no part of `Ping` or `WatchErr` on purpose:
   the view fills itself through that watcher's own re-read, so neither the load balancer nor the self-health monitor, which restarts the listener over a terminal failure its rebuilds do not clear, is to act on a state no rebuild completes a read for.
   A rewatch that keeps failing after a reconnect ends no watcher and clears no cache, so none of those checks finds it:
-  the handler reads the bus client's `HookStall` too, and a rebuild of the KV watches that has been due for `bus.RepairGrace` (a minute) with no run that succeeded is `200 {"status":"degraded","error":"KV watch rebuild unavailable: <last rewatch error> (no rebuild has succeeded for 1m0s)"}`, the stall alone when no run has failed behind it.
-  That answer is a 200 and not a refusal because the probes act on `/healthz` itself - the ECS container health check is `curl -sf` of it every 30 s with 3 retries on a service of one task, and GKE's readiness probe reads it too - so a refusal would replace, or unroute, the only listener there is, and its replacement would rebuild into the same failing rewatch with cold caches that warm up empty, whose fanout then acknowledges general-topic messages as unmatched and loses them, while the running task still serves from the caches it holds, stale but not empty;
+  the handler reads the bus client's `HookStall` too, last of all and below every refusal above (`okAnswer`), and a rebuild of the KV watches that has been due for `bus.RepairGrace` (a minute) with no run that succeeded is `200 {"status":"degraded","error":"KV watch rebuild unavailable: <last rewatch error> (no rebuild has succeeded for 1m0s)"}`, the stall alone when no run has failed behind it, on an active pod and a standby alike.
+  A pod that already reports a failure of its own - a failing takeover, a durable lag that could not be read - keeps that report, with the stall named after it, since both are the same `degraded`;
+  a pod any check above refuses is still `503`, however long its rebuild has stalled, since a pod that receives nothing is not the case the 200 is for.
+  That answer is a 200 and not a refusal because the probes act on `/healthz` itself - the ECS container health check is `curl -sf` of it every 30 s with 3 retries, and GKE's readiness probe reads it too - so a refusal would replace, or unroute, a pod whose caches still hold what they warmed up with, and its replacement would rebuild into the same failing rewatch with cold caches that warm up empty, whose fanout then acknowledges general-topic messages as unmatched and loses them, while a standby refused this way is one pod less to take the lease over;
   the state pages through the bus's own ERROR `envoy nats reconnect hooks have not succeeded` instead, which the AWS rendering counts as the `<N>-reconnect-hooks-stalled` alarm (`infra/aws/rendering/metricfilters.go`).
   A shorter stall is reported nowhere here, since the bus runs the hooks again within seconds and a listener would otherwise read as degraded over every reconnect.
   The role claim watcher is the interest registry's second (`store.Registry.Ping` and `WatchErr` read both), so its stop, and a role bucket recreated under it, are answered under the registry's dependency name, `interest KV watcher unavailable: role claims watcher stopped` or `interest KV watcher unavailable: role claims bucket envoy_roles was recreated under its watcher` (`interest KV unavailable: ...` from the request whose own ping finds the recreate), and the self-health monitor rebuilds it as it does the others.
   A role lane client that is not connected or holds no valid subscription (`bus.Client.CoreSubOK`) is `503 {"status":"unhealthy","error":"role lane subscription inactive"}`, since no role message is forwarded then.
   A listener that mounts no GitHub webhook route keeps no CI cache, and its healthy answer carries `"ci_cache": "not_applicable"`.
 
-- `/healthz` also reports how fresh the role claim copy is, under `role_claim_repair` (`roleClaimRepairHealth`), on the healthy answer and on every degraded one that keeps its fields:
+- `/healthz` also reports how fresh the role claim copy is, under `role_claim_repair` (`roleClaimRepairHealth`), on the healthy answer and on every degraded one that keeps its fields, an active pod's and a standby's alike (`okAnswer`):
   `completed_at` (RFC 3339, UTC) and `age_seconds` of the role claim watcher's last whole read of the role bucket, both `null` until one has completed, `bound_seconds` (120, `store.RoleClaimRepairBound`), and `put_back` and `took_out`, the claims that read put back into the copy and took out of it (`store.Registry.RoleClaimRepair`).
   A copy whose last whole read is older than that bound is `200` with `"status":"degraded"` and `"error":"role claim repair unavailable: ..."` (`store.RoleClaimRepairReport.Err`), judged after the role claim view and only while the view answers, since a view that cannot answer refuses every read of the copy whatever its age.
   It is never a `503`: a readiness probe that runs `curl -f` against `/healthz` takes the listener out of service on one (the dispatch-listener's does, in about ten seconds), and every listener runs this one binary.
   Meanwhile the scheduled read repairs the copy, `POST /v1/roles/set` refuses to take a role held under the claimant's own session id (`roleOwnSessionVerdict`), and `GET /v1/sessions` keeps answering from the copy.
   `/metrics` reports the same read beside `envoy_active_sessions` (`registerListGauges`): `envoy_role_claim_repair_completed_timestamp_seconds`, `envoy_role_claim_repair_put_back` and `envoy_role_claim_repair_took_out`, none with a sample before `/v1` opens or before the first read completes, so an alert reads the copy's freshness without a person.
 
-- `/healthz`'s bus checks - the flush, each cache's KV ping and the durable consumer's info read - share one 3 s budget taken from the request (`healthzBudget`), so a stall in JetStream alone, which the flush's core PING does not see, is answered inside it, not after the 10 s JetStream wait.
+- `/healthz`'s bus checks - the flush, each cache's KV ping and, on the active pod, the durable consumer's info read - share one 3 s budget taken from the 5 s deadline (`healthzBudget`), so a stall in JetStream alone, which the flush's core PING does not see, is answered inside it, not after the 10 s JetStream wait.
   A ping or info read that has not answered when the budget ends is `503 unhealthy` naming the dependency and `context deadline exceeded`, so the ECS container health check (`curl -sf`) still fails and replaces the task, as it did when that wait ran past the check's timeout;
   a check that answered with a failure keeps its answer.
   The self-health monitor's checks keep their own bounds.
@@ -3750,7 +3777,7 @@ that is the rule and not a transitional measure, and it is what lets Dispatch de
   A subscription nats.go re-sent on the reconnected connection is kept as it is; one on a replaced connection is bound again.
   Every reconnect recreates the interest, role claim, session and CI KV watchers on the reconnected connection, because a server restart loses their ordered consumers and nats.go would replace them only after missed heartbeats, and a connection the bus dials to replace a closed one moves them onto itself.
 
-- After each of those connection events a run of the reconnect hooks that do this begins that covers it, whatever re-subscribing returned, since a listener waiting out the task that holds its durable has that durable's re-subscribe refused by design while `/v1` and the role lane already read the caches.
+- After each of those connection events a run of the reconnect hooks that do this begins that covers it, whatever re-subscribing returned, since a re-subscribe can be refused by design (a client waiting out a push durable another process holds) while the caches are already read.
   A run covers every event counted before it began, so an event that lands between runs gets a run of its own and a burst of events that land before one begins gets one.
   Runs take turns (`bus.Client.rewatch`), so a recovery retrying that re-subscribe waits for a run in progress rather than starting a second beside it.
   A run that fails is run again by a recovery, the only way an event gets a second run:
@@ -3759,11 +3786,14 @@ that is the rule and not a transitional measure, and it is what lets Dispatch de
   under `bus.RepairGrace` (a minute) it is a WARN, `envoy nats reconnect hook failed; it is retried`, and at or past it an ERROR, `envoy nats reconnect hooks have not succeeded`, each with `name`, `error` and `stall_ms`;
   a run that fails once the client has stopped is the stop and not a failure, and the path the run was on reports it: the `stopped` guard in `bus.Client.onReconnect` logs the INFO `envoy nats reconnect hooks cancelled` with the hook's error, and the guard after each attempt in `bus.Client.recoverUntilHealthy` logs the INFO `envoy nats recovery cancelled` with that attempt's joined error (`errors.Join` of the connect-or-restore error and the hook error).
   A recovery reports its own failed run the same way rather than folding it into `envoy nats recovery resubscribe failed`.
-  Re-subscribing holds no lock across a bind's request, so a reconnect that lands while a bind is in flight, such as the listener's bind attempt, whose lookup the reconnect can lose for JetStream to wait out for 10 s, restores and runs the hooks without waiting for it:
+  Re-subscribing holds no lock across a bind's request, so a reconnect that lands while a bind is in flight, whose lookup the reconnect can lose for JetStream to wait out for 10 s, restores and runs the hooks without waiting for it:
   a registration has one bind at a time, so the restore leaves that registration to its bind, and the recovery the reconnect starts binds it should that bind fail.
   Nothing has failed there, so the restore logs it at INFO, `envoy nats resubscribe left to the bind in flight` with the `subject`, and `envoy nats resubscribe failed` and `envoy nats recovery resubscribe failed` stay ERRORs for binds that failed.
-  A disconnect runs the disconnect hooks (`bus.Client.AddDisconnectHook`, from nats.go's `DisconnectedErrCB`), and the listener's calls `Disconnected` on every cache, since nats.go keeps a watcher's subscription open through an outage and nothing else would say its copy stopped following the bucket.
-  While NATS is connected, the self-health monitor also rebuilds those watchers and a missing durable consumer when a probe finds a stopped watcher, a closed KV handle, a lost consumer, or a cache whose copy does not follow its bucket with no read under way to make it (`NeedsRead`, as when the reconnect hook's Rewatch failed while the old watcher survived).
+  The listener's durable takes no part in this:
+  the lease holder subscribes to the durable's deliver subject with a core subscription of its own and moves it onto the client's connection after a reconnect or a replacement (`durableReceiver.reconnected`), and a standby holds no subscription of the durable, so a NATS restart leaves it nothing to re-subscribe.
+
+- A disconnect runs the disconnect hooks (`bus.Client.AddDisconnectHook`, from nats.go's `DisconnectedErrCB`), and the listener's calls `Disconnected` on every cache, since nats.go keeps a watcher's subscription open through an outage and nothing else would say its copy stopped following the bucket.
+  While NATS is connected, the self-health monitor also rebuilds those watchers and, on the lease holder, a missing durable consumer when a probe finds a stopped watcher, a closed KV handle, a lost consumer, or a cache whose copy does not follow its bucket with no read under way to make it (`NeedsRead`, as when the reconnect hook's Rewatch failed while the old watcher survived).
   All four watchers share one lifecycle (`internal/kvwatch`), and the listener keeps its caches as one list (`listenerCaches`, which holds the CI cache only on a listener that mounts the GitHub webhook route;
   the interest registry's entry covers its interest and role claim watchers), which rewatch, self-health, `/healthz` and shutdown each loop over.
   The first start runs in the background.
@@ -3834,9 +3864,15 @@ that is the rule and not a transitional measure, and it is what lets Dispatch de
   the revision's creation time, or `updated_at` for the listener's own write-through, because JetStream delivers no event when `MaxAge` expires a key.
   Reads (`Get`, `List`, `LastSeen`, and `LiveCount`, which the `envoy_active_sessions` gauge counts with, without copying the cache) take the shared lock and change nothing:
   an entry past its deadline reads as absent.
-  The entry leaves the cache at that deadline, from a deadline heap one `time.AfterFunc` timer serves (`expireDue`), not on a read, and its final heartbeat moves to the `last_seen` record for the registry's last-seen retention (`session.WithLastSeenRetention`, `session.LastSeenMemory` (2 hours) by default and never less than one TTL), so `LastSeen` answers the same before and after the removal.
-  That default outlasts the gone horizon, so a caller told a session is gone can still say when it was last seen, and it outlasts the interest reaper's allowance (`store.InterestReapGrace` + `store.InterestRefreshAge`) as well, so `/v1/interests/` can give the last heartbeat of every row that reaper still holds; the listener shortens it to nothing of its own.
-  An id's revision fence leaves with that record, the retention after the id left the cache, expired or deleted, so the fence map holds only live ids and ids that left within the retention;
+  The entry leaves the cache at that deadline, from a deadline heap one `time.AfterFunc` timer serves (`expireDue`), not on a read;
+  a session's last heartbeat is recorded as its registration is written, with `envoy_listener` (`session.WithLastSeenBucket`) in that bucket's `seen.<session token>` record and, on a registry without that bucket, in a per-process record of its own.
+  With the bucket, a lapsed session's heartbeat is answered out of the shared record alone, so every pod of the fleet answers one session alike, a pod started after it lapsed included, and a pod that watched the session keeps no answer of its own;
+  `LastSeen` answers the same before and after the cache's removal.
+  Its read of the bucket waits no longer than the caller's context (`bus.Bounded`), so `GET /v1/interests/` keeps its own 3.5 s budget for the whole list and leaves a row it could not read without a heartbeat.
+  It answers a lapsed session for the registry's last-seen retention (`session.WithLastSeenRetention`, `session.LastSeenMemory` (2 hours) by default and never less than one TTL) past that registration's expiry.
+  That default outlasts the gone horizon, so a caller told a session is gone can still say when it was last seen, and it outlasts the interest reaper's allowance (`store.InterestReapGrace` + `store.InterestRefreshAge`, `store.InterestReapAllowance`) as well, so `/v1/interests/` can give the last heartbeat of every row that reaper still holds; the listener shortens it to nothing of its own.
+  The state bucket's `MaxAge` (`listenerStateMaxAge`, 20 minutes) bounds how long the shared record itself stands, and every open raises a bucket an earlier build created with a shorter age.
+  An id's revision fence leaves with its last-seen record, the retention after the id left the cache, expired or deleted, so the fence map holds only live ids and ids that left within the retention;
   since the retention is at least one TTL, a late delivery of an older revision then has a deadline already passed and is not cached.
   A non-positive TTL schedules nothing.
   The interest reaper (`store.Registry.Reap`) copies the session id and revision of each cached interest past its grace (the grace window plus `store.InterestRefreshAge`) under the interest registry's read lock and releases it, then calls the liveness check (`isAlive`, the session cache's `Get`) with no interest lock held, so a subscribe never waits on a pass's liveness checks.
@@ -3889,7 +3925,7 @@ that is the rule and not a transitional measure, and it is what lets Dispatch de
   The release and the delete of a key it cannot read are the calls an ended context can fail, so they are the arms that read it, each under `bus.Bounded` and each ending the pass where it failed on an ended context: a record this build cannot decode is no call at all and warns once per malformed record however the pass ends.
   Its `role claim reaper cycle` line carries `skipped` beside `reaped`.
 
-- Each listener collects the interest bucket's delete markers, because nothing else does:
+- Each machine's lease holder collects the interest bucket's delete markers, because nothing else does:
   every delete path leaves one (the reaper for each dead session, an unsubscribe-all, the admin delete), the bucket has no `MaxAge` and keeps one message per subject, and each marker is replayed by every restart's cache warm-up before that listener serves, so uncollected markers grow every restart's time with no deliveries (LEGION-374).
   A pass reads the stream (read 1), runs one MetaOnly scan of the bucket, takes the **floor** = the lowest revision that scan delivered as a PUT, reads the stream again (read 2), and sends one unfiltered `STREAM.PURGE` of everything below the floor.
   The floor comes from the stream, never from the cache:
@@ -3908,17 +3944,19 @@ that is the rule and not a transitional measure, and it is what lets Dispatch de
   A floor above `LastSeq` is the one value that makes the server's unfiltered purge compact the whole stream.
   One window cannot be guarded: `STREAM.PURGE` at 2.10 takes no expected-stream precondition, so a bucket deleted and created again between read 2 and the purge cannot be refused
   — that window is one round trip, which is why read 2 is taken immediately before the purge.
-  Every listener runs a pass after its interest cache's first warm-up and then on the reapers' five-minute cadence;
-  the purge is idempotent (a repeat purges 0), so there is no lock and no leader.
+
+- On each machine id the pod holding the delivery lease runs a pass as it starts receiving the durable and then on the reapers' five-minute cadence, and a standby runs none;
+  the purge is idempotent (a repeat purges 0), so the holders of different machine ids need no lock and no leader.
   The one capability it adds is publish on `$JS.API.STREAM.PURGE.KV_envoy_interests`:
   a NATS user without it leaves every marker where it was, logs `interest marker collection could not purge the bucket` once per process (the connection's own `envoy nats async error` names the permissions violation), and keeps serving.
 
 - Two independent counts bound how long the self-health monitor tolerates a failing probe before it self-terminates the listener for its runtime to restart.
-  A terminal failure (a stopped watcher, a closed KV handle, a missing durable consumer, or a durable the server reports `not bound to this listener's subscription`, which a durable deleted and created again under the listener leaves) that remains after three consecutive recovery intervals is one:
+  A terminal failure (a stopped watcher, a closed KV handle, and, on the lease holder alone, a missing durable consumer or a durable the server reports `not bound to this listener's subscription`, which a durable deleted and created again under the listener leaves) that remains after three consecutive recovery intervals is one:
   a rebuild that reports success is probed at once, and a healthy probe resets the count, so separate faults that each rebuild repairs (a bucket deleted and recreated, then another, then the durable) never add up to a restart, unless the probe right after a rebuild also fails:
   that failure, transient or terminal, keeps the count, and the terminal line names its error.
-  An unbound durable is read twice before it counts, a confirming read a quarter-second after the first, since the rebuild unsubscribes the live handle before it binds and a single stale answer taken during another rebuild would cost this listener a working subscription;
-  the rebuild binds the durable again and reports success only once the server itself reports this listener bound (`awaitDurableBound`), rather than once the subscribe call returned, so a rebind that never binds fails the rebuild instead of clearing the count.
+  A standby's probe checks its caches alone, so a standby runs on for as long as they answer, however long it waits for the lease.
+  An unbound durable is read twice before it counts, a confirming read a quarter-second after the first, since a single read can land in the receive loop's own resubscribe;
+  the rebuild subscribes the holder again to the durable's deliver subject, creating the durable when it is missing (`durableReceiver.resubscribe`).
   A listener bucket deleted and not recreated (the interest, session, CI or role bucket) fails every rebuild, because a rebuild opens a bucket and never creates one, so it ends in a restart, and the next start creates the bucket again;
   a missing bucket counts as terminal, and the role bucket's role claim watcher ending with it is a stopped watcher besides (`store.Registry.WatchErr`).
   The other is a client that reads as not connected (RECONNECTING or CLOSED) for twenty consecutive probes, ten minutes at the production thirty-second interval:
@@ -3927,8 +3965,13 @@ that is the rule and not a transitional measure, and it is what lets Dispatch de
   A cache copy that does not follow its bucket with no read under way (`kvCache.NeedsRead`, for instance after the reconnect hook's Rewatch failed while the old watcher survived) is a terminal failure too:
   its Ping answers, so `checkSelfHealth` reports it by name and the next connected tick's rebuild reads its bucket again.
 
-- Shutdown stops HTTP first (up to ten seconds), waits within that window for a self-health rebuild still running and for a pass of the two reapers or the interest marker collector still running (each lists its bucket through a watcher whose consumer nats.go creates and deletes;
-  `a KV bucket pass still running at shutdown` at WARN when the window ends first), drains the role lane's client before the main client (three seconds for a delivery still in its handler, and the forward window for the forwards it handed over, five seconds in all, `roleLane.drain`;
+- Shutdown stops the self-health monitor, then stops receiving the durable inside a ten-second budget the session relays' settle and the HTTP stop share (`durableReceiver.Stop`;
+  `cmd/listener/README.md`, "Graceful stop order"):
+  the lease holder's loops are told to stop and a pass of the two reapers or the interest marker collector still running is waited for up to five seconds from then (each lists its bucket through a watcher whose consumer nats.go creates and deletes;
+  `a holder-only loop was still running when receiving ended` at WARN when that ends first), the handler takes no more messages, the message in hand gets three seconds before its handling is cancelled, every message not handled is NAKed with a two-second delay for the next holder, and the lease is marked released and `unsettled`, so a standby takes it at its next poll and settles;
+  the subscription stays until the lease record names a holder that is `receiving` (three seconds at most, one second when no other pod takes the lease), and then drains.
+
+- It then gives each relay the term's end stopped up to `relaySettleGrace` (750 ms) to settle the frame it had unanswered, stops HTTP within what is left of the ten seconds, waits within that window for a self-health rebuild still running, drains the role lane's client before the main client (three seconds for a delivery still in its handler, and the forward window for the forwards it handed over, five seconds in all, `roleLane.drain`;
   core NATS retries nothing, so a delivery still blocked at that deadline is lost), retires the interest, role claim, session and CI KV watchers (`StopWatch`, final and without a server request, so a reconnect hook still running cannot arm one), and drains NATS through `bus.Client.Drain`, for thirteen seconds.
   The drain stops the client first, so it never reconnects, re-subscribes or registers a subscription, and lets deliveries already in their handlers finish, role-lane forwards included, within all but the last 3 s of its timeout (`drainHookReserve` keeps them for what follows, so a slow delivery cannot leave it no time;
   at the listener's thirteen seconds the deliveries keep the ten they had before the drain hooks).
@@ -3942,19 +3985,20 @@ that is the rule and not a transitional measure, and it is what lets Dispatch de
   `End` runs once: a second call, or one beside the first, waits for the first.
   Any other failed delete, and one still unanswered at the drain's deadline on a connection still up, is an ERROR, `<cache> watcher end failed`.
   Only then does it drain the connection.
-  It does not wait for a bind in flight: a subscription such a bind makes after the stop is drained with the rest, so the messages the server already routed to it reach its handler rather than being discarded, and the close ends a bind still in flight.
   It is bounded to thirteen seconds, and a connection that is reconnecting is closed at once, ending no watcher, since nothing it sends reaches the server.
   It logs completion and exits non-zero so Docker's restart policy can restore it.
-  A runtime must therefore allow about twenty-eight seconds after SIGTERM (ten for HTTP, five for the role lane, thirteen for NATS):
+  A runtime must therefore allow about twenty-eight seconds after SIGTERM (ten for the receive stop, the relays' settle and HTTP together, five for the role lane, thirteen for NATS):
   the compose files set `stop_grace_period: 30s` (`deploy/compose/listener.compose.yml`, `single-node.compose.yml`), the on-prem fleet's Pulumi a 30 s `stopTimeout` (`infra/host/listener.go`), the GCP hub's unit `docker stop -t 30` (`infra/gcp/cloudconfig.go`), and ECS's default `stopTimeout`, which the Fargate listener's task definition leaves unset, is 30 seconds.
 
 - The two Kubernetes listener pods, the clustered hub's (`infra/gcp/clusteredhub_listener.go`) and `gcp:Dispatch`'s (`infra/gcp/dispatch_kube.go`), ask for 40 s of grace, of which the preStop hook spends 5, so the stop above keeps 35.
   That is a margin of 7 seconds (`listenerGraceMargin`) over the stop's 28, and it covers the kubelet's own latency between that hook's return and SIGTERM, the container's teardown and a late tick on a loaded node; the grace stays under the listener's own 135 s bind deadline.
 
-- The listener refuses to bind its durable (`listener-<machine id>`) when the durable's idle heartbeat or ack policy differs from the listener's consumer policy (no heartbeat, explicit acks), because NATS cannot change either in place.
-  It checks the durable right after the NATS connect, before the cache warm-ups, logs `subscribe refused, shutting down`, naming the durable and every such setting it carries, and exits 1 at once rather than retrying a bind that cannot succeed.
-  Deleting the durable lets the next start recreate it at deliver policy `all`, which replays every message the stream retains (72 hours).
-  To keep its cursor instead, recreate it from its own config at one past its ack floor, while no listener runs for that machine:
+- The listener refuses to receive from its durable (`listener-<machine id>`) when the durable's idle heartbeat or ack policy differs from the listener's consumer policy (no heartbeat, explicit acks), because NATS cannot change either in place.
+  It checks the durable right after the NATS connect, before the cache warm-ups, logs `subscribe refused, shutting down`, naming the durable and every such setting it carries, and exits 1 at once rather than retrying a subscribe that cannot succeed;
+  a lease holder that reads such a durable later (an operator changed it since) logs the same line and stops in an ordered shutdown.
+  Deleting the durable lets the next lease holder recreate it at deliver policy `all`, which replays every message the stream retains (72 hours).
+  To keep its cursor instead, recreate it from its own config at one past its ack floor, while no pod of that machine id runs:
+  stop every pod first, the active pod and every standby, since a lease holder that finds the durable missing creates it at deliver policy `all`, and a standby takes the lease and does so the moment the active pod stops:
 
   ```bash
   d=listener-<machine id>
@@ -3964,21 +4008,67 @@ that is the rule and not a transitional measure, and it is what lets Dispatch de
   nats consumer add ENVOY_NOTIFICATIONS --config "$d.recreate.json"
   ```
 
-  The listener's next start stamps the rest of its policy onto the recreated durable and binds it.
+  The lease holder of the next start stamps the rest of its policy (the `>` filter, the 6 s ack wait) onto the recreated durable and subscribes to it.
   A message past the ack floor that was already acknowledged out of order is delivered again.
 
-- During a rolling deploy the replacement serves `/v1` and its role lane while the old task still holds the durable:
-  `/v1` opens once NATS is connected and the interest and session caches are warm (`envoy-listener /v1 open`, with `since_listening_ms`), and the role lane is a core-NATS queue subscription in the group every listener shares, `envoy-roles` (or the machine's group, `envoy-listener-<machine id>`, under a grant that lacks the shared one), which NATS hands each role message to one member of, so the overlap forwards no message twice.
+- The listener needs nats-server v2.15.0 or later, and the production hubs run v2.15.1 (the deployment's `nats:2.15.1-alpine`, and the clustered hub's chart 2.15.1); the Go tests link that same version, the one `go.mod` pins.
+  Its durable carries `MaxDeliver` (`consumerMaxDeliver`, 20), and with that set every nats-server from v2.10.29 through v2.14.x loses a message it is pushing to the durable's deliver subject as that subject's only subscriber goes, which a hand-over or a cut connection is: a push consumer's delivery loop reads the end of that subject's interest from a channel it does not read while it has messages to push and room under `MaxAckPending`, the server counts each write to the empty subject undelivered (`server/stream.go` `internalLoop`, `consumer.didNotDeliver`) and takes one off that message's delivery count, and the subtraction underflows a first delivery's count, which has no entry yet, to 2^64-1 (`decDeliveryCount`, v2.10.29 `server/consumer.go:3533-3538`).
+  `hasMaxDeliveries` (`:1738-1765`) then drops the message at the ack wait with no redelivery and no advisory, so no settle hold, hand-back or retry brings it back, and the pod's own logs hold nothing for it (the multiprocess rows' delivery journal reads a message the stream stored, no pod logged and the durable holds nothing for as exactly that loss).
+  v2.15.0 fixed that subtraction, and v2.15.1's `decDeliveryCount` (`server/consumer.go:4866-4883`) leaves a first delivery's count alone, so such a message comes back one ack wait (6 s) later like every other outstanding one.
+  `TestEveryBackloggedMessagePushedAtAVanishingSubscriberComesBackExactlyOnce` (`cmd/listener/durable_backlog_cut_test.go`) holds the linked server to it: it cuts the only subscriber of a machine's durable mid-push and requires every message of the backlog exactly once, which fails with messages missing on v2.10.29.
+
+- Every pod of a machine id serves `/v1`, the webhooks and its role lane, the lease holder and each standby alike:
+  `/v1` opens once NATS is connected and the interest and session caches are warm (`envoy-listener /v1 open`, with `since_listening_ms`), and the role lane is a core-NATS queue subscription in the group every listener shares, `envoy-roles` (or the machine's group, `envoy-listener-<machine id>`, under a grant that lacks the shared one), which NATS hands each role message to one member of, so two pods forward no message twice.
   Until then the closed `/v1` gate answers `503 service starting`, except to the two list reads, `GET /v1/sessions` and `GET /v1/interests/`, which get the refilling answer their routes give while a copy cannot be served (`writeListRefilling`), so a caller reads one answer for "the list is not ready" whichever gives it.
-  The replacement creates and updates session consumers for the registrations it answers, but relays none until it holds the durable (`sessionRelays.setOwned`):
-  among the tasks of one machine id, only the one holding the durable relays.
-  Gaining the durable starts the relay of every consumer-delivery session its cache holds for its machine, each restarted at its ack floor.
-  The durable's bind is polled every 2 s (`subscribe failed, retrying`, logged at the first refusal and then once per 30 s), so it binds within 2 s of the old task's exit (`durable bound`, with `attempts` and `waited_ms`);
-  a durable still held after 135 s ends the start with `subscribe failed after max attempts, shutting down`, as the backoff it replaced did.
-  `/healthz` answers 200 `starting` until the bind, so `starting` no longer means `/v1` is closed.
-  Every end of the bind wait other than the bind, that exhaustion, a refusal, a SIGTERM, is an ordered shutdown like any other, since `/v1` and the role lane already serve.
+  Every pod creates and updates session consumers for the registrations it answers, but relays none until it receives the machine's durable (`sessionRelays.setOwned`, set and cleared with the receive term):
+  among the pods of one machine id, only the one receiving relays, and gaining the durable starts the relay of every consumer-delivery session its cache holds for its machine, each restarted at its ack floor.
+
+- Only the holder of the machine's delivery lease (`lease.listener-<machine id>` in the `envoy_listener` bucket) receives the durable;
+  a standby takes over within about 2 to 3 s of a graceful stop, and waits for as long as the active pod runs without ever exiting for it (`cmd/listener/README.md`).
+  After a hard stop the new holder settles:
+  it subscribes at once and holds what it receives until the durable's `NumAckPending` is no more than what it holds, capped at one ack wait and a second (7 s) after it subscribed, then delivers in stream order, so it delivers about 5 to 6 s after the dead holder's last renewal when nothing was outstanding and about 12 to 13 s after it otherwise;
+  a pod that takes a released record carrying `stale_binding` or `unsettled` settles too, and ends that hold at the hand-back delay and a second (3 s) only when the record carries `unsettled` without `ack_wait_owed` and without `stale_binding` - which makes its term a hand-back candidate - and the stopping pod's clean-hand-back mark for the revision it replaced is in the bucket (`handback.<durable>.<revision>`, `bus.ListenerHandBackPrefix`:
+  the stopping pod writes it once its own release wrote that record, its term had no lost node's binding open, its linger read this pod receiving, the server confirmed its drain, and nothing of the term still held a message, and the hold reads it every settle poll rather than at the subscribe, since the mark lands after this pod is receiving), and at 7 s otherwise - no mark, a mark that cannot be read, a stop that fell short of any part of the hand-over, or a record carrying the debt or a stale binding (`ack_wait_owed` is the ack wait the releasing term still owed - every term that must settle owes one until its own settle hold ends, the mark-ended hold included, every release writes the debt as the term stands, and a release the lease's loop outlasts records it for the release that lands after the linger has let go).
+  A message waiting out a NAK delay (a retry) stays outstanding and holds the hold to its cap, then arrives after it.
+
+- During a roll from a build before INFRA-557, the new lease holder (taking an absent record, or a released one with neither flag) finds the old task's `nats.Bind` binding on the durable and waits for it to end (`/healthz` 200 `degraded` with `role` `standby` and `receive` `waiting for another subscriber's push binding to end`), subscribing within a second of its end;
+  past 135 s it logs `lease holder cannot deliver from the durable` at ERROR, again every five minutes, and never exits for it.
+  `/healthz` answers 503 `starting` until the pod serves `/v1`, and 200 on the active pod and on every standby once it does.
   Each request a starting gate refuses logs `request refused while starting` with `gate` (`webhook` or `v1`), `method` and `path`, the listener's only record of a caller it turned away.
   `packages/envoy/scripts/listener-deploy-probe.sh` watches a deploy from a client's seat (`packages/envoy/scripts/README.md`).
+
+- The delivery lease renews on a NATS connection of its own (`envoy-listener-lease <instance>`) while the durable is received on the pod's main client (`envoy-listener <instance>`), so renewing says nothing about receiving:
+  a holder whose main connection alone was lost renewed for as long as its lease connection was up, answered `/healthz` 503 `subscription inactive` and delivered nothing, and no standby took over until the self-health monitor killed the pod.
+  The receive loop gives the lease one signal for that state, the same one that makes the 503 (`durableReceiver.receiveUp`, `lease.SetReceiveSignal`):
+  the main client has a connected connection, and a term that is receiving is subscribed on that very connection (`bus.Client.ConnectedConn`);
+  a pod preparing the durable, waiting out a binding or settling before it has subscribed counts as receiving, as `/healthz` counts it a standby.
+  The term's connection is compared with the client's own, never with the receive loop's copy of it:
+  a run of the reconnect hooks stops at the first hook that fails and main registers the KV rewatch hook ahead of the receive loop's, so a rewatch that keeps failing left that copy and the term's subscription naming the same connection the client had replaced, which read against each other said this pod was receiving while it delivered nothing.
+  A reconnect in place keeps the connection and nats.go re-sends its subscriptions, so the signal reads up throughout one, its hooks included.
+  The receive loop's copy must name the client's connection too, term or no term: the loop subscribes on its copy, so a standby whose copy still names a replaced connection takes no lease.
+  The lease judges it once a round, for the holder and the standby alike (`lease.receiveDown`, called from `step`).
+
+- The signal loads atomics and nothing else, since the lease reads it from the loop that renews the record and so may wait on no lock a call into nats.go can hold:
+  nats.go holds its connection's lock across every reconnect dial and the connect init after it, which a route that drops this pod's packets leaves hanging for the 5 s connect timeout, and `durableReceiver.begin` holds the receive loop's own lock across the subscribe that waits for that lock.
+  The receive loop keeps its atomic current from each term's subscribe and end (`durableReceiver.begin`, `resubscribe`, `end`), and `bus.Client.Connected` reads a flag the connection's own connect, reconnect, disconnect and close callbacks keep (`Client.noteConnection`, the `state` callback of `internal/bus/connect.go`'s `options`), so no caller of it waits on a connection either.
+  Those events are the flag's only source: an install sets it from what its connection's events have reported so far, under the lock the events take (`Client.markConnected`), and never asks the connection, so no event that lands around an install is lost.
+  A late callback of a connection the client has replaced clears nothing, since each clear takes out only its own connection, and only an install sets the flag, so a connection the client dials and does not install never reaches it at all.
+  nats.go runs every callback of one connection one at a time on that connection's own goroutine, so the client hands a connection event's work - restoring the subscriptions and running the reconnect hooks, which make requests of the server - to a goroutine of its own (`Client.queueReconnect`, `workThroughReconnects`).
+  Run on the callback goroutine, that work held the next disconnect behind it and the flag read up for as long as it took, 12.19 s after a cut in a deep review.
+  The flag still moves on nats.go's goroutine alone, so a set and the clear of a later disconnect keep nats.go's own order and no stale set can override a later disconnect or a replacement.
+
+- A holder whose signal has been down for `leaseReceiveLost` (3 s:
+  comfortably past the ~1 s nats.go takes to reconnect after it declares a connection stale in 2 to 3 s, and short enough that the hand-over lands inside the 15 s a hard take-over is bounded at) stops renewing and releases the record, logging the WARN `listener lease released: the receive connection is down` with `down_ms`.
+  A message published as the connection was cut reaches its session in milliseconds, since the cut pod's session-consumer connection is up and its relay goes on until the term ends;
+  what waits is a message published in the gap between that term's end and the successor's first pull, which is bounded by the detection (up to 3 s), the holder's 1 s round before the lease reads the signal down (`leaseRenewEvery`), the 3 s bound and the standby's 0.5 s poll, and measured at **1.257 s at worst** over 20 runs of `TestTwoPodsReceiveConnectionLostHandsOverWithin15s` (288 messages a run, published every 100 ms through a cut the standby took the lease 6.1 s after).
+  The successor's settle hold is not on that path: a session's messages ride its own consumer, which the relay pulls from the moment the term begins.
+  That release carries `unsettled`, `ack_wait_owed` and `stale_binding` whatever the term's own flags stood at, so the standby that takes it at its next poll subscribes at once beside the lost connection's binding and holds the full 7 s settle cap, and no clean-hand-back mark vouches for it;
+  the receive loop ends the term as it ends any lost lease (`durableReceiver.endLost`), since nothing can be NAKed over a connection that is down.
+  No pod takes the lease while its own receive connection is down - no absent, released or expired record, and no resume after a lapse - so the cut pod does not take back what it released and stands by again once the connection is up;
+  a release the bucket does not take keeps the hold, leaving the record to expire as it did before this bound.
+  `TestTwoPodsReceiveConnectionLostHandsOverWithin15s` and `TestTwoPodsReceiveConnectionBackInsideTheBoundKeepsTheLease` (build tag `multiprocess`) cut one of a pod's two connections by the client name in its CONNECT frame (`mpLaneRelay`, `cmd/listener/multiprocess_harness_test.go`), and `TestTwoPodsReceiveConnectionLostToADroppingRouteReleasesTheLeaseWithin15s` holds every connection that pod opens next before its first byte, so its reconnect dials hang.
+  In process, `TestTheReceiveSignalAnswersWhileTheReceiveConnectionsLocksAreHeld` (`cmd/listener/receive_signal_test.go`) and `TestConnectedAnswersWhileAReconnectDialHangs` (`internal/bus/connected_test.go`) read the signal and the flag while nats.go holds its connection's lock across such a dial.
+  `TestAReplacedConnectionBehindAFailingHookReadsDownAndReleasesTheLease` (`cmd/listener/receive_signal_test.go`) replaces the connection behind a hook that keeps failing, and `TestConnectedReadsDownAtACutWhileTheReconnectHooksRun` (`internal/bus/connected_cut_during_hooks_test.go`) cuts the link while a hook runs.
 
 - An agent delivery (`notifications.agent.<session>`) reads the session it delivers to from the session bucket itself, bounded by `deliverySessionReadTimeout` (2 s), and one cause answers an unplaced attempt:
   no session record it could deliver through (`session.ErrNoSessionRecord`, logged and labelled `no_session_record`), which is no entry at all or an entry that records no way the session receives a message.
@@ -3996,24 +4086,24 @@ that is the rule and not a transitional measure, and it is what lets Dispatch de
 
 - The cap counts one set for the whole process (`unplaceableDeferrals`, `cmd/listener/unplaceable_delivery.go`):
   `main.go` makes it once, in its `deliveryConfig`, and every handler built from that config shares it
-  — the role lane's, the durable's, and the one the self-health rebind builds after a NATS flap
-  — so a rebind draws on the budget the handler it replaces was holding rather than opening a second 64 beside it, and `listenerDeliveryHandler` panics on a config without one rather than drawing a private set.
+  — the role lane's and the durable's, which the receive loop keeps across every resubscribe and every take-over of the lease
+  — so none opens a second 64 beside it, and `listenerDeliveryHandler` panics on a config without one rather than drawing a private set.
   The set is keyed on each message's JetStream stream sequence (`nats.MsgMetadata.Sequence.Stream`):
   a deferral takes that message's slot, and only that message's next delivery gives it back, so a redelivery this listener never deferred
   — the interest path's NAK, an expired AckWait — returns nothing.
-  Being this process's memory, it forgets its deferrals on a restart (the previous process's stay pending until each is redelivered, and twice the cap is still below 256), and it cannot see a message deferred and never delivered here again
+  Being this process's memory, it forgets its deferrals on a restart, and a pod that takes the lease over starts with none of its predecessor's (the previous holder's stay pending until each is redelivered, and twice the cap is still below 256), and it cannot see a message deferred and never delivered here again
   — one the stream dropped or purged, or whose redelivery reached another subscriber.
   Such a slot expires `unplaceableDeferralExpiry` (125 s:
-  `unplaceableRetryDelay` plus two of the durable's 60 s `consumerAckWait`) after the deferral that took it, the longest a deferred message can legitimately stay pending before a delivery of it reaches this handler, and the next deferral sweeps it out;
+  the 5 s `unplaceableRetryDelay`, or the durable's 6 s `consumerAckWait` after a lost NAK, then the redelivery's wait in the receive loop's local queue, kept alive by `InProgress`, behind handling of up to 30 s (`deliveryHandlingLimit`) or a settle hold, with margin) after the deferral that took it, the longest a deferred message can legitimately stay pending before a delivery of it reaches this handler, and the next deferral sweeps it out;
   a message still pending past that, behind a handler further behind than the margin allows, loses its slot early and the set undercounts by one until its delivery arrives.
   A message that arrives while the cap is reached is given up now, with the ordinary give-up record.
-  Each deferral clears the message's attempt-cache entry, or the redelivery would be dropped as `listener attempt-dedupe skip`, and logs INFO `listener agent delivery deferred` with `reason`, `attempt` and `window_deferrals`, the deferrals that message's cause is allowed;
+  Each deferral clears the message's ledger attempt (`dedupe.Ledger.Clear`), or the redelivery would be dropped as `listener attempt-dedupe skip`, and logs INFO `listener agent delivery deferred` with `reason`, `attempt` and `window_deferrals`, the deferrals the window buys;
   no `age_ms`, since the stream age bounds nothing.
   The give-up first counts `envoy_messages_delivered_total{delivery_status="unplaceable_no_record"}` and logs WARN `listener agent delivery given up` with the same `reason`, and only then publishes the `no_holder` delivery exception, once per message rather than once per attempt (`applyDeliveryOutcome`).
   The give-up is terminal whatever becomes of that notice:
   one that cannot be published — the notice embeds the original payload, so an envelope near the server's max payload has its notice refused `bus.ErrTooLarge` on every attempt
   — logs ERROR `listener exception publish failed` beside the give-up line and nothing else.
-  The message is not NAK'd, it keeps its attempt-cache entry, so a redelivery that a lost ACK brings is dropped as `listener attempt-dedupe skip` rather than delivered again, and it is ACKed.
+  The message is not NAK'd, it keeps its ledger attempt, so a redelivery that a lost ACK brings is dropped as `listener attempt-dedupe skip` on the same pod, or waits as `deferred` on another pod of the machine until that attempt can be taken over, rather than delivered again, and it is ACKed.
 
 - No path NAKs a message whose `no_holder` notice could not be published:
   an exception no publish took is logged `listener exception publish failed` and nothing else, and the one outcome that reads that failure is the fan-out's refusal, which clears the attempt record it had written (`exceptionFailureClearsAttempt`) and still acknowledges the message.
@@ -4024,7 +4114,7 @@ that is the rule and not a transitional measure, and it is what lets Dispatch de
   A fanout delivery that fails to a session that is live is NAK'd for retry (up to MaxDeliver attempts over the stream's MaxAge window);
   one whose session is not live is counted a dead delivery and acknowledged.
 
-- A durable message is settled once, by the handler that took it: `finalize` acknowledges it, or NAKs it after `durableRetryDelay` (30 s) when the path asks for a retry, and `finalizeAfter` NAKs it after the delay the path names (a deferral's `unplaceableRetryDelay`, 5 s).
+- A durable message is settled once, by the handler that took it: `finalize` acknowledges it, or NAKs it after `durableRetryDelay` (30 s) when the path asks for a retry, and `retryAfter` NAKs it after the delay the path names (a deferral's `unplaceableRetryDelay`, 5 s).
   Every path of the handler settles the message and returns, so no two settle one message, and a core or role-lane message is settled by nothing: nothing redelivers one.
 
 - CI settlements are published by the listeners that receive GitHub webhooks, which in production is the Fargate listener behind the webhook load balancer (its deployment sets `ENVOY_WEBHOOKS=github,slack`).
@@ -4099,7 +4189,7 @@ that is the rule and not a transitional measure, and it is what lets Dispatch de
   Every listener's durable takes that stored copy, and `listenerDeliveryHandler` acknowledges an envelope stored on an agent subject whose `topic` is not that subject without delivering it:
   the stored copy is the holder's own, relayed by the holder's session consumer, and fanning it out by its topic would deliver it a second time.
   The durable no longer needs the role forward mark for this; the mark stays for the sessions' dedupe.
-  A listener of an earlier release reads only the mark, so during a rollout it sends such a stored copy to `fanoutDelivery`, which delivers it to the sessions of its own that follow the topic, once per key (its dedupe cache).
+  A listener of an earlier release reads only the mark, so during a rollout it sends such a stored copy to `fanoutDelivery`, which delivers it to the sessions of its own that follow the topic, once per key (the delivery ledger).
 
 - A `bus.ConnectOwningStream` caller reconciles `ENVOY_NOTIFICATIONS`'s subjects by adding its own to the deployed list:
   the listener at start, and Dispatch's server, which connects in the background, on its first connection.
@@ -4170,8 +4260,8 @@ that is the rule and not a transitional measure, and it is what lets Dispatch de
   Dispatch's server, which connects in the background (`bus.WithConnectInBackground`), reconciles on its first connection, so the same refusal leaves it serving and logs that error as the reconnect hooks' own report (the bullet above):
   the WARN `envoy nats reconnect hook failed; it is retried` under `bus.RepairGrace` (a minute) and the ERROR `envoy nats reconnect hooks have not succeeded` at or past it;
   a refused bucket raise also names the bucket's stream, `raise KV_envoy_interests: ENVOY_NATS_REPLICAS=3: context deadline exceeded`, and a grant without `$JS.API.STREAM.UPDATE.KV_<bucket>` shows as that timeout after 10 seconds.
-  With one of three clustered servers stopped, nats-server v2.15.1, the Go tests' server, creates a new stream or bucket at 3 copies (one offline peer assigned) and the start succeeds, and the stopped member catches up once it starts (`TestOneServerStoppedACreateAtThreeCopiesLandsAndTheStoppedMemberCatchesUp`);
-  v2.10.29, the server the tests ran before it, refused that create.
+  With one of three clustered servers stopped, nats-server v2.15.1 creates a new stream or bucket at 3 copies (one offline peer assigned) and the start succeeds, and the stopped member catches up once it starts (`TestOneServerStoppedACreateAtThreeCopiesLandsAndTheStoppedMemberCatchesUp`);
+  v2.10.29, the server the tests ran before it, refused that create, and the Go tests link v2.15.1 itself.
 
 - Opening a bucket through `bus.EnsureKeyValue` is up to three steps, its lookup (`$JS.API.STREAM.INFO.KV_<bucket>`), where that answers "bucket not found" its create (the account info `$JS.API.INFO` nats.go sends first, then `$JS.API.STREAM.CREATE.KV_<bucket>`, and on "stream name already in use" a read of the stream and sometimes an update of it), and the open of the bucket's jetstream handle (`$JS.API.STREAM.INFO.KV_<bucket>` again, `wrapKeyValue`), and each step is sent again when the server leaves it unanswered, up to three sends (`sentAgain`, `internal/bus/stream.go`), since a request that drew no answer is never going to draw one.
   What that covers is a member answering none of the three while the metadata group is younger than `lostQuorumInterval`, ten seconds, or before it has seen its metadata leader go, and a member that is not an existing bucket's stream leader leaving its lookup unanswered while that stream's leader is gone: once a member sees the metadata leader gone it answers `JSClusterNotAvailError`, at once or half a second late for the lookup, which is an answer and not a silence, and the start ends on it as it always did; once it sees the stream's leader gone it answers the lookup itself.
@@ -4246,7 +4336,11 @@ Each item below names an endpoint and its method, then its contract, and an item
   `notifications.team.<name>` is the one namespace an agent names itself and the stream stores it (`bus.StreamSubjects`), so it is the topic such a caller wants.
   A role topic is answered once the stream stored the forward, or once 4 s from the request's arrival have passed (`publishDeliveryWindow`), and publishes no delivery exception: the sender has the answer.
   Only a store the route itself made counts:
-  the route keeps its own record of each session it stored a dedupe key for (`listenerDeps.confirmed`, 10 minutes), which a later send of the key reads, apart from the delivery handlers' dedupe cache.
+  the route keeps its own record of each session it stored a dedupe key for (`listenerDeps.confirmed`, 10 minutes), which a later send of the key reads.
+  Six deliveries ask the delivery ledger and no others do (`cmd/listener/README.md`, "State the pods share"):
+  a role-lane forward, the kept lane's drain, a fan-out refusal, an unplaceable agent delivery's give-up, an agent-subject delivery whose route to the session failed, and this route's confirmation that the stream stored its forward.
+  A ledger record can also come from another pod, or from another lane's forward, refusal or give-up, so the ledger cannot show that this route forwarded the key to this holder:
+  the route reads its own `confirmed` record rather than the ledger.
 
 - A topic that does not begin with `notifications.` is refused `400 {"error":"topic must begin with notifications.","expected":["topic"]}` and nothing is published, which closes the raw-subject route a bearer could otherwise use to write the listener's own key-value buckets
   — the role-claim records among them — and reach `$JS.API.*`.
@@ -4329,6 +4423,7 @@ Each item below names an endpoint and its method, then its contract, and an item
   The predecessor rule reads the claimant's instance from the request and falls back to the claimant's stored entry when the request states none, which is the route's one remaining use of the session record to tell one process from another.
   The predecessor's entry is read from the `envoy_sessions` bucket itself, never from this listener's trailing cache of it, and a predecessor read that did not answer is the bus-unavailable 503 with nothing changed.
   The claimant's own entry is read from the bucket too, and a claimant read that does not answer falls back to the cached entry, so a cache that trails without the claimant's id decides a claim that states no instance as the third case.
+  `client_instance_id` names the client, never the listener pod that took the registration, and both entries are read from the bucket every pod of the machine shares, so a session that registers or claims through another pod — a standby serves `/v1` too, and a take-over moves only the delivery lease — is answered exactly as the pod that registered its predecessor would have answered it.
   A claim carrying `if_claim_revision` is conditional: it lands only while the role's claim record is still at that revision, the one a `/v1/roles/<role>` lookup reported as `claim_revision`, and `0` names a role with no claim record at all, so such a claim lands only while none exists.
   Any other revision in the bucket, a record where the claim names none, or none where it names one is `409 {error, role, holder, claim_revision}`, where `claim_revision` is the revision the bucket does hold (`0` for no record) and `holder` the session its claim names (empty for none), and so is a claim that passed that check and then lost its conditional write to a claim that landed in between.
   **No claim record is written**, so the role keeps the holder the standing claim gave it: the precondition is weighed before the claimant's interest record is touched, and a claim that lost the conditional write rolls that record's topic back unless the winning claim names that same session, whose record then keeps the lane topic of the role it now holds (`store.Registry.SetRoleWithPrevious`, `store.ErrRoleClaimRevisionMismatch`).
@@ -4507,7 +4602,7 @@ Each item below names an endpoint and its method, then its contract, and an item
 
   Lists persisted interests, or the refilling `503` `/v1/sessions` gives while the interest copy cannot be served;
   `envoy_active_interests` counts the same listing and has no sample then.
-  Each row carries `last_seen` (Unix ms): its session's last heartbeat as this listener's session cache knows it, the live entry's `updated_at` while the session is live, else the final heartbeat the cache keeps after it left, omitted when unknown (a session that died before this listener started).
+  Each row carries `last_seen` (Unix ms): its session's last heartbeat, the live entry's `updated_at` while the session is live, else the session's `seen.` record in the listener state bucket, which every pod of the fleet answers alike for as long as the registry reports a lapsed session, omitted when unknown (no record was written, its age removed it, or it could not be read).
   The row's own `updated_at` can lag that heartbeat by up to `store.InterestRefreshAge`.
 
 - `/v1/interests/<session_id>` (GET, DELETE)
@@ -4566,7 +4661,7 @@ Each item below names an endpoint and its method, then its contract, and an item
   PUT records a batch, `{"entries":[…]}` of at most 256 entries in a body of at most 1 MiB (413 past either), every entry validated and checked against what is stored before the first write, so one bad entry refuses the batch with a 400 (or a 409) naming its index (`entries[3]: …`) and nothing written.
   A batch that fails after those checks answers `{"error":"…wrote <n> of <m> legion agents, then entries[<i>]: …","written":<n>}` with the failed entry's own status: a 503 with `Retry-After: 1` for a read or write the bucket did not answer, which the caller sends again (every write is idempotent); a 409 for a session another write claimed after the batch read it; a 400 or 413 for a key NATS refuses, as the single PUT answers it.
 
-The write routes - `POST /v1/interests/subscribe`, `POST /v1/interests/unsubscribe`, `POST /v1/roles/set`, `DELETE /v1/interests/<session_id>` and `DELETE /v1/sessions/<session_id>` - do every store read and write within one 3.5 s budget (`sendRequestBudget`) taken from the request's own context (`store.Registry.UpsertWithin`, `Remove`, `SetRoleWithPrevious`, `session.SessionRegistry.PutWithin` and `Delete`, each bucket call bounded by `bus.Bounded`), where a silent bus held them for the 10 s JetStream wait.
+The write routes - `POST /v1/interests/subscribe`, `POST /v1/interests/unsubscribe`, `POST /v1/roles/set`, `DELETE /v1/interests/<session_id>` and `DELETE /v1/sessions/<session_id>` - do every store read and write within one 3.5 s budget (`sendRequestBudget`) taken from the request's own context (`store.Registry.UpsertWithin`, `Remove`, `SetRoleWithPrevious`, `session.SessionRegistry.PutWithin`, `Amend` and `Delete`, each bucket call bounded by `bus.Bounded`), where a silent bus held them for the 10 s JetStream wait.
 Store work that did not answer, whatever it names, is `503 {"error":"envoy: the message bus did not answer: <reason>"}` with `Retry-After: 1` (`writeStoreError`).
 The store's own answers keep the answers they had:
 a refused key its 413 or 400, a held role its 409, no key, an undecodable record or a lost compare-and-swap the status the route always gave it;
@@ -4580,7 +4675,7 @@ role delivery, `/v1/sessions` and `/v1/registry/<id>` rows and the sender a send
 So a claim's two cleanups - the rollback of the claimant's topic when its claim did not land, and the removal of the role's topic from the old holder's record once it did - are best-effort tidying within the same budget.
 A claim that landed answers 200 whatever its old holder's cleanup did:
 a cleanup that failed is logged at WARN (`registry role claim old holder cleanup failed`), and one the budget's end cut short at INFO, and the topic either leaves behind gives nobody the role.
-`GET /v1/interests/` is cache-only, and `/healthz` keeps its own 3 s budget (`healthzBudget`).
+`GET /v1/interests/` answers from the interest cache and reads a lapsed session's last heartbeat from the listener state bucket within one `sendRequestBudget` for the whole list, and `/healthz` keeps its own 3 s budget (`healthzBudget`).
 
 `send` and `publish` accept optional `in_reply_to`, `supersedes`, `urgency`, `expects_reply`, and `expires_at`, and `publish` additionally `dedupe_key`; empty optional fields are omitted.
 `urgency` is `low`, `med`, `high`, or `blocking`; `expects_reply` is `false`, `optional`, or `required`, and the ingress also reads the old string `none` as `false`, which the comment at the parser in `internal/contracts/expects_reply.go` says what removes.
@@ -4749,11 +4844,11 @@ The session's own user, such as a `gcp:NatsHub`'s credential-free `sessionUser`,
   the consumer work between the plan and the write waits up to 5 s a bus call, and an unsubscribe landing in that window would otherwise have every topic it removed written back by the plan that read them, leaving a row that only grows.
   A consumer keeps its position when its filter changes, so a newly followed topic starts at that position.
 
-- **Owner:** the listener whose machine id is on the session's entry, and, among the tasks of one machine id, the task that holds the machine's durable binding (`sessionRelays.setOwned`).
+- **Owner:** the listener whose machine id is on the session's entry, and, among the tasks of one machine id, the task serving the machine's receive term (`sessionRelays.setOwned`).
   Each listener relays the entries of its watched session cache that name its machine and record `delivery: "consumer"` (`sessionRelays.wanted`).
   It stops relaying an entry that moves to another machine id at once, and at start it relays every such entry in its cache without waiting for a registration.
 
-- **Restart at the ack floor:** every start of a session's relay (the listener starts or gains the durable binding, the session registers with a new `epoch`, a paused relay's backoff ran out or its session registered, a consumer call or a pull failed) reads the consumer's ack floor, deletes the consumer and creates it again at the sequence after the floor with the current filter (`bus.SessionConsumers.RestartAtFloor`;
+- **Restart at the ack floor:** every start of a session's relay (the listener starts or gains the receive term, the session registers with a new `epoch`, a paused relay's backoff ran out or its session registered, a consumer call or a pull failed) reads the consumer's ack floor, deletes the consumer and creates it again at the sequence after the floor with the current filter (`bus.SessionConsumers.RestartAtFloor`;
   nats-server 2.10.29 has no consumer reset).
   So after any break the session takes its messages again in stream order, and its plugin's ledger drops the ones it already wrote.
   nats-server 2.10.29 reports a consumer's ack floor as 0 until an ack moves it, so the floor never reads below the consumer's start sequence minus one, and, while nothing awaits an ack, never below the last sequence delivered (`ackFloor`;
@@ -4768,14 +4863,20 @@ The session's own user, such as a `gcp:NatsHub`'s credential-free `sessionUser`,
   At most 32 relays of one listener restart at once (`relayRestartLimit`);
   the rest wait their turn, and a restart's 5 s call timeout starts only once it holds its turn and the session's lock.
   Registrations take no turn.
-  When the listener starts or gains the durable binding it reads every session consumer at once with the paged consumer list (`$JS.API.CONSUMER.LIST.ENVOY_NOTIFICATIONS`, 256 consumers a page;
+  When the listener starts or gains the receive term it reads every session consumer at once with the paged consumer list (`$JS.API.CONSUMER.LIST.ENVOY_NOTIFICATIONS`, 256 consumers a page;
   `bus.SessionConsumers.ListSessionConsumers`), and each relay of that burst whose listed consumer has nothing awaiting an ack, already carries the wanted filter and settings, and has no pending start takes no turn and sends no call before it pulls (`bus.SessionConsumers.KeepListed`);
   every other relay, and every relay started alone (a new `epoch`, a probe after a pause, a retry), restarts through `RestartAtFloor`.
   A grant without the list costs one log line and one info per session.
   Calls made at once share their reads of the stream's state (identity, first and last sequence):
   each waits for a read that began after it was made, so a gap is still reported exactly when a start lies below the stream's first sequence.
-  A pull sends its own pull requests (`$JS.API.CONSUMER.MSG.NEXT`, 1,024 messages, 30 s expiry, 15 s idle heartbeat) and costs no consumer info:
+
+- **A relay's pull:** a pull sends its own pull requests (`$JS.API.CONSUMER.MSG.NEXT`, 1,024 messages, 30 s expiry, 15 s idle heartbeat) and costs no consumer info:
   its first `Next` reports a missing consumer (`ErrSessionConsumerNotFound`), and a pull that hears nothing for 30 s ends (`ErrSessionPullStalled`) and the relay restarts.
+  A connection event of the session-consumer client ends every pull of it at once (`ErrSessionPullReconnected`, the channel `bus.Client.ConnectionChanged` hands each pull):
+  the server drops a pull request with the connection it was sent on, so a reconnect, a close and a replacement connection all end the pull and the relay restarts at the ack floor rather than waiting the 30 s of silence out, while a disconnect alone is waited past to the reconnect that follows it, as is an event that left the request's connection current and unreconnected (`bus.SessionPull.lostRequest`).
+  That restart waits out no retry backoff either, however far a run's earlier failures had doubled it (`relayReconnected`, `cmd/listener/session_relay.go`), and it puts that wait back to `relayRetryFirst`:
+  a pull request lost with its connection says nothing about the session or its consumer, and a run is never replaced while the session's epoch stands, so a reconnect would otherwise cost a long-lived run's session up to `relayRetryMax`, 30 s, every time.
+  A pull's `Stop` on a live connection waits, at most 2 s, for the server to confirm its unsubscribe (`bus.SessionPull.Stop`): a reconnect in place resends the old inbox's subscription, and a message stored while the unsubscribe was still on its way would otherwise go to the dropped request and wait out the consumer's 60 s ack wait, since the restart keeps a consumer with nothing awaiting an ack.
 
 - **Relay over NATS:** the owner pulls the consumer and publishes each message, in stream order, as a core frame on `notifications.envoy.deliver.<session id>` (`bus.DeliverSubject`, which the stream does not store).
   The frame's data is the stored message's bytes, and its headers are `Envoy-Subject`, `Envoy-Stream-Seq`, `Envoy-Stream-Id`, `Envoy-Delivered`, `Envoy-Stored-At` and, on the first frame after a restart below the stream's first sequence, `Envoy-Gap: true`.
@@ -4796,6 +4897,22 @@ The session's own user, such as a `gcp:NatsHub`'s credential-free `sessionUser`,
   The backoff starts at 2 s (`relayPauseFirst`) and doubles to 30 s (`relayPauseMax`, `relayRetryMax` again, and three times under the 90 s heartbeat that used to be the only resume);
   a frame the session answers puts it back to 2 s, and the session's next registration resumes the relay at once, whichever comes first.
   A pause is logged once an episode — the first one since the session last answered a frame — not once a probe.
+
+- **A stopping relay's last frames:** a term's end cancels the relay, and the frames it has not had `done` or `nak` for get `relaySettleGrace` (750 ms) more on the reply subscription and the session-consumer connection the pod still holds (`sessionRelays.settleStoppedFrames`):
+  a session that answers `done` inside the grace has its frame acked here, so the consumer's ack floor can move past that message - once nothing below it is still held - before the pod taking over restarts at that floor.
+  The pod taking a released holder's lease over waits `relayFormerSettle` (the grace and a 250 ms margin, `lease.FormerSettleWait`) before it restarts a session's consumer, so the grace always ends first;
+  a holder taken over by force - killed, its node lost, its record expired - settles nothing and is not waited for, and its successor restarts at once.
+  A frame the grace ends without a `done` is in doubt, whether or not the session answered it `received`:
+  `received` says the client decoded the frame, not that its host wrote the message, so only `done` says the session took it, and the stopping pod logs one WARN naming the frame (`session relay left a frame in doubt: its settle bound ended with the session's reply still out`, with the session, the topic, the event id, the frame's subject and its stream sequence).
+  Every restart of a session's consumer sends again every frame above its ack floor (`bus.SessionConsumers.RestartAtFloor`), each under its own event id (`cmd/listener/README.md`, "When a session can see a message twice"), and the session's client writes such a repeat once:
+  it joins a copy of a frame it still holds and drops one it has already written (`packages/envoy-client/src/consumer-delivery.ts`).
+  A frame the session answered `done` out of order above one it still holds comes again too, since the floor cannot move past the held frame.
+  `TestTwoPodsARelayedFrameReceivedButNotDoneAtAStopIsRepeatedAtMostOnceWithItsId` (build tag `multiprocess`, `cmd/listener/multiprocess_relay_settle_test.go`) holds that to two real pods.
+  A links drop is the same case:
+  a session's reply and the relay's ack of it ride the one connection, so a drop that loses the reply loses the ack with it, and the relay restarts at the ack floor and publishes the frame again under that id.
+  The relay asks the delivery ledger for none of this:
+  a session on its own consumer takes each message once from that consumer, and the consumer's ack floor is the record a push to a port once needed the ledger for.
+  The settle is paid on the shutdown path too, where `sessionRelays.stop` waits for it out of what the receive stop left of the shutdown's 10 s budget, and is cut short with a warning when that budget is already spent.
 
 - **No consumer:** the registration is refused and nothing is written -- no interest row, no session entry -- since a session nothing delivers to is not registered (`subscribeHandler`, which runs the decision before both writes).
   The refusal names its reason: `503 no_grant` for a listener whose consumer call the server refused for want of a grant (`bus.ErrConsumerNotGranted`), which logs one WARN for the episode and is then answered without a server call for 10 minutes (`noGrantBackoff`);
@@ -5727,10 +5844,16 @@ ADC of type `authorized_user` write as they are;
 under any other ADC - a service account key file, a workload identity federation credential (a dev box's own), a workforce identity federation sign-in, or a GCE/GKE metadata-server identity (GKE Workload Identity's too), whose ADC carries no JSON at all - it signs the backend in with the person's gcloud login, or with the lent raw token only when gcloud cannot supply that login, redialing Secret Manager under it (`signIn`) and leaving the machine's ADC as they are, unless `GOOGLE_APPLICATION_CREDENTIALS` named them, a choice it refuses rather than overrides.
 Reads under a machine's ADC run under it.
 On a write under that lent token, `gcpUserinfo` must name a `personAccount`; an empty email or service account is refused, and its lowercased email is `--owner me`.
-`create` requires its owner tag to equal that person. A lent token may only create a new secret it owns: `set`, both retag annotation paths, `delete`, and `restore` refuse before any Secret Manager call.
-After the `create` version add, a lent token re-reads the owner and destroys the exact returned version if the owner changed or that read failed, refusing the write and naming the left version if that undo fails. Because `AddSecretVersion` takes no Etag, that version can exist momentarily between its add and the undo.
-One race is accepted, not prevented: between `CreateSecret` and the version add, a second writer whose IAM grants already reach the new secret (a project-level role does) can add its own version and change the owner. The undo then destroys this create's version, the newest, so `versions/latest` names a destroyed version while the other writer's version stays enabled, and a read of `latest` fails. The window is the time between those two calls, and entering it takes permission to add versions and update the metadata of a secret that did not exist a moment earlier. A predefined role that grants both, such as Secret Manager Admin, also grants destroying versions; a custom role can separate them, and then the race lets that writer make `latest` unreadable: an availability loss, never a read of any value.
-A person who finds `latest` naming a destroyed version runs `agent-secrets secret show NAME` to list its versions, then re-adds the value with `agent-secrets secret set NAME` under their own gcloud sign-in (a lent token refuses `set`). The owner tag is Legion's rule, not Google's access control: its person can still have IAM rights independently.
+`create` requires its owner tag to equal that person.
+A lent token may only create a new secret it owns: `set`, both retag annotation paths, `delete`, and `restore` refuse before any Secret Manager call.
+After the `create` version add, a lent token re-reads the owner and destroys the exact returned version if the owner changed or that read failed, refusing the write and naming the left version if that undo fails.
+Because `AddSecretVersion` takes no Etag, that version can exist momentarily between its add and the undo.
+One race is accepted, not prevented: between `CreateSecret` and the version add, a second writer whose IAM grants already reach the new secret (a project-level role does) can add its own version and change the owner.
+The undo then destroys this create's version, the newest, so `versions/latest` names a destroyed version while the other writer's version stays enabled, and a read of `latest` fails.
+The window is the time between those two calls, and entering it takes permission to add versions and update the metadata of a secret that did not exist a moment earlier.
+A predefined role that grants both, such as Secret Manager Admin, also grants destroying versions; a custom role can separate them, and then the race lets that writer make `latest` unreadable: an availability loss, never a read of any value.
+A person who finds `latest` naming a destroyed version runs `agent-secrets secret show NAME` to list its versions, then re-adds the value with `agent-secrets secret set NAME` under their own gcloud sign-in (a lent token refuses `set`).
+The owner tag is Legion's rule, not Google's access control: its person can still have IAM rights independently.
 `gcloudLogin` borrows the login through gcloud's own interface, never its credential files:
 the first `gcloud` on PATH (`exec.LookPath`) lists its logins (`gcloud auth list --format=json`);
 a person's is an account named by a plain email the broker accepts as a person owner (`personAccount`:

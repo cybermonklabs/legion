@@ -39,7 +39,7 @@ name: CI
 # nothing about it, and a gate in
 # .github/scripts/ci_job_reads.py. An output an event must force is written in `changes`' outputs
 # rather than left to its filter, as every output's workflow_dispatch case is, and so is one an
-# event must hold back, as the eight slow suites' pull-request case is (the comment on them
+# event must hold back, as the nine slow suites' pull-request case is (the comment on them
 # below). The ci-filters job's .github/scripts/check-ci-filters.sh holds the filter to that gate,
 # CI_OK_SELECTED_BY to the `if:`s, the report step to every job, the ci-ok job's `needs:` to
 # every job of the file but the exempt ones, and the re-run term to every job but `ci-ok` and
@@ -176,6 +176,7 @@ env:
       "envoy-go-docs-finalizers": "envoy_go_race_docs",
       "dispatch-memory": "dispatch_memory",
       "dispatch-multiprocess": "dispatch_multiprocess",
+      "listener-multiprocess": "listener_multiprocess",
       "listener-server-change": "listener_server_change",
       "broker-multiprocess": "broker_multiprocess",
       "airlock-lean": "airlock_lean",
@@ -280,7 +281,7 @@ jobs:
       # says what each event gets.
       dispatch_browser: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.dispatch_browser }}
       claude_envoy: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.claude_envoy }}
-      # The eight slow suites, whose runner time dwarfs every other job's. The merge queue runs
+      # The nine slow suites, whose runner time dwarfs every other job's. The merge queue runs
       # them on the tree the change lands as, and that is where their result normally comes from;
       # a pull request runs them only when it carries the label `full-ci`. Each is false on a
       # pull-request run without that label, so the skip is one `changes` chose: ci-ok reads it as
@@ -295,12 +296,13 @@ jobs:
       # term, only the dispatched one above.
       envoy_go_checks: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.envoy_go_checks }}
       envoy_infra_go: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.envoy_infra_go }}
-      # Six slow suites, gated as the comment above `envoy_go` says.
+      # Seven slow suites, gated as the comment above `envoy_go` says.
       envoy_go_race: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter.outputs.envoy_go_race || 'false' }}
       envoy_go_race_api: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter.outputs.envoy_go_race_api || 'false' }}
       envoy_go_race_docs: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter.outputs.envoy_go_race_docs || 'false' }}
       dispatch_memory: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter.outputs.dispatch_memory || 'false' }}
       dispatch_multiprocess: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter.outputs.dispatch_multiprocess || 'false' }}
+      listener_multiprocess: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter.outputs.listener_multiprocess || 'false' }}
       listener_server_change: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.listener_server_change }}
       broker_multiprocess: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.broker_multiprocess }}
       # The Lean model's own job, which is minutes rather than tens of them: no `full-ci` term,
@@ -460,6 +462,7 @@ jobs:
               - 'packages/envoy/internal/ratelimit/*'
               - 'packages/envoy/internal/redact/*'
               - 'packages/envoy/internal/testnats/*'
+              - 'packages/envoy/internal/testnats/testdata/**'
               # storetest's DatabaseURL makes a test's own database with internal/testpg.
               - 'packages/envoy/internal/testpg/*'
               - 'packages/envoy/listenfd/*'
@@ -496,6 +499,7 @@ jobs:
               - 'packages/envoy/internal/bus/testdata/*'
               - 'packages/envoy/internal/cistore/*'
               - 'packages/envoy/internal/contracts/*'
+              - 'packages/envoy/internal/dedupe/*'
               - 'packages/envoy/internal/dispatch/accesslog/*'
               - 'packages/envoy/internal/dispatch/agentsecrets/*'
               - 'packages/envoy/internal/dispatch/agentstream/*'
@@ -688,7 +692,9 @@ jobs:
             # .go files cmd/dispatch/settings_test.go:137 walks, and the pod spec
             # cmd/dispatch/pod_grace_period_test.go:17 reads.
             # internal/roles and, through it, internal/store, internal/session and internal/kvwatch:
-            # the outbox's role forward resolves a role's holder with roles.ResolveHolder (#2395).
+            # the outbox's role forward resolves a role's holder with roles.ResolveHolder (#2395);
+            # internal/dedupe comes with internal/session, whose registry keeps its delivery
+            # ledger's records.
             dispatch_command_tests: &dispatch_command_tests
               - 'packages/envoy/cmd/dispatch/**'
               - 'packages/envoy/going/*'
@@ -706,6 +712,7 @@ jobs:
               - 'packages/envoy/internal/cistore/*'
               - 'packages/envoy/internal/cmdtest/*'
               - 'packages/envoy/internal/contracts/**'
+              - 'packages/envoy/internal/dedupe/*'
               - 'packages/envoy/internal/envconf/*'
               - 'packages/envoy/internal/githubappjwt/*'
               - 'packages/envoy/internal/googleidentity/*'
@@ -1429,7 +1436,7 @@ jobs:
               # TestTheCommittedOpenAPIDocumentIsWhatTheEmitterWrites reads the committed document,
               # so an edit of it alone must start this job.
               - 'packages/contracts/schemas/dispatch-openapi.json'
-              # Fixtures its Go tests read: cmd/listener/api_test.go:191,
+              # Fixtures its Go tests read: cmd/listener/api_test.go's dispatch-targeted-delivery.json,
               # internal/contracts/dedupe_test.go:14, golden_test.go:72,
               # internal/dispatch/api/delivery_live_diff_test.go:982,1011,
               # internal/dispatch/docs/approval_carry_test.go:26,
@@ -1501,6 +1508,7 @@ jobs:
               - 'packages/envoy/internal/githubtest/*'
               - 'packages/envoy/internal/logtest/*'
               - 'packages/envoy/internal/testnats/*'
+              - 'packages/envoy/internal/testnats/testdata/**'
               - 'packages/envoy/internal/testpg/*'
               - 'packages/envoy/internal/testwait/*'
               # The image pull before its tests, of the consts in testnats/nats.go and
@@ -1521,7 +1529,7 @@ jobs:
               # listener-server-change takes its -run from this script, and this is the job that
               # runs cmd/listener's untagged tests, so it must run whenever the script changes.
               - '.github/scripts/go-tagged-tests.sh'
-              # The fixture cmd/listener/api_test.go:191,436,480 reads.
+              # The fixture cmd/listener/api_test.go reads (dispatch-targeted-delivery.json).
               - 'packages/contracts/fixtures/dispatch-targeted-delivery.json'
             # The API race job. internal/dispatch/api's lock_level_test.go:120-133 walks every
             # non-test .go file under packages/envoy (event_insert_guard_test.go:32 and
@@ -1602,6 +1610,7 @@ jobs:
               - *dispatch_command_tests
               - 'packages/envoy/internal/githubtest/*'
               - 'packages/envoy/internal/testnats/*'
+              - 'packages/envoy/internal/testnats/testdata/**'
               - 'packages/envoy/internal/testwait/*'
               # The step takes the memory tag's test list from this script at run time.
               - '.github/scripts/go-tagged-tests.sh'
@@ -1612,9 +1621,108 @@ jobs:
               - *dispatch_command_tests
               - 'packages/envoy/internal/githubtest/*'
               - 'packages/envoy/internal/testnats/*'
+              - 'packages/envoy/internal/testnats/testdata/**'
               - 'packages/envoy/internal/testwait/*'
               # The step takes the multiprocess tag's test list from this script at run time.
               - '.github/scripts/go-tagged-tests.sh'
+            # The two-process and two-build tests (listener-multiprocess): `go test -tags
+            # multiprocess ./cmd/listener`, whose rows build real listener binaries, one of them
+            # under the envoy_twobuild tag, which adds only a file of internal/bus. The listener's
+            # own packages, and what its test binary compiles beyond them - the in-process NATS and
+            # Postgres helpers, the builder of the binaries it starts, and the Dispatch packages
+            # cmd/listener's tests drive - each package's testdata and embedded files included.
+            listener_multiprocess:
+              - '.github/workflows/ci.yaml'
+              - *go_workspace
+              - *listener_command
+              - 'packages/envoy/internal/broker/oauthwire/*'
+              # cmd/listener/multiprocess_machine_signin_test.go starts its pods behind the
+              # broker-token stand-in (internal/brokertoken/brokertokentest), which signs its
+              # proofs with the key and the transport a real caller holds.
+              - 'packages/envoy/internal/broker/proof/*'
+              # The relayed shapes internal/dispatch/api names (routes_shapes.go), which this run
+              # compiles with that package.
+              - 'packages/envoy/internal/broker/wire/*'
+              - 'packages/envoy/internal/brokerclient/**'
+              - 'packages/envoy/internal/brokertoken/*'
+              - 'packages/envoy/internal/brokertoken/brokertokentest/*'
+              - 'packages/envoy/internal/bus/bustest/*'
+              - 'packages/envoy/internal/cmdtest/*'
+              - 'packages/envoy/internal/contracts/testdata/**'
+              - 'packages/envoy/internal/dispatch/accesslog/*'
+              - 'packages/envoy/internal/dispatch/agentsecrets/*'
+              - 'packages/envoy/internal/dispatch/agentstream/*'
+              - 'packages/envoy/internal/dispatch/api/*'
+              - 'packages/envoy/internal/dispatch/api/testdata/**'
+              - 'packages/envoy/internal/dispatch/architecture/*'
+              - 'packages/envoy/internal/dispatch/architecture/notes/*'
+              - 'packages/envoy/internal/dispatch/asks/*'
+              - 'packages/envoy/internal/dispatch/auth/*'
+              # main's #2539 put a byte-bounded cache and the ask/document text trees under the
+              # Dispatch packages this run compiles (go list -deps ./cmd/listener names both).
+              - 'packages/envoy/internal/dispatch/bytelru/*'
+              # The API's CI-reconcile routes read cireconcile's own record, so this run compiles
+              # that package too (go list -deps ./cmd/listener).
+              - 'packages/envoy/internal/dispatch/cireconcile/*'
+              # cireconcile's capture_test.go replays answers captured from GitHub itself.
+              - 'packages/envoy/internal/dispatch/cireconcile/testdata/**'
+              - 'packages/envoy/internal/dispatch/delivery/**'
+              - 'packages/envoy/internal/dispatch/docs/*'
+              - 'packages/envoy/internal/dispatch/docs/crafted/*'
+              - 'packages/envoy/internal/dispatch/duty/*'
+              - 'packages/envoy/internal/dispatch/embed/*'
+              - 'packages/envoy/internal/dispatch/embedqueue/*'
+              - 'packages/envoy/internal/dispatch/envoy/*'
+              - 'packages/envoy/internal/dispatch/events/*'
+              - 'packages/envoy/internal/dispatch/files/*'
+              - 'packages/envoy/internal/dispatch/githubapp/*'
+              - 'packages/envoy/internal/dispatch/githubapp/ratelimit/*'
+              - 'packages/envoy/internal/dispatch/itemblocks/*'
+              - 'packages/envoy/internal/dispatch/identity/*'
+              - 'packages/envoy/internal/dispatch/model/*'
+              # cmd/listener/dispatch_kept_role_test.go drives Dispatch's outbox end to end, so the
+              # multiprocess run compiles this package: a change to it must re-run these rows.
+              - 'packages/envoy/internal/dispatch/outbox/*'
+              - 'packages/envoy/internal/dispatch/pmdoc/**'
+              - 'packages/envoy/internal/dispatch/prioritystore/*'
+              - 'packages/envoy/internal/dispatch/processes/*'
+              - 'packages/envoy/internal/dispatch/rank/*'
+              - 'packages/envoy/internal/dispatch/refs/*'
+              - 'packages/envoy/internal/dispatch/retry/*'
+              - 'packages/envoy/internal/dispatch/sessionanswers/*'
+              - 'packages/envoy/internal/dispatch/store/*'
+              - 'packages/envoy/internal/dispatch/store/migrations/**'
+              - 'packages/envoy/internal/dispatch/text/**'
+              - 'packages/envoy/internal/dispatch/texttrees/*'
+              - 'packages/envoy/internal/fixtureenv/*'
+              - 'packages/envoy/internal/githubappjwt/*'
+              # The fake timer cmd/listener's repair and grant-guard tests share.
+              - 'packages/envoy/internal/kvwatch/kvwatchtest/*'
+              - 'packages/envoy/internal/logtest/*'
+              - 'packages/envoy/internal/oidc/oidctest/*'
+              - 'packages/envoy/internal/pglisten/*'
+              - 'packages/envoy/internal/pgmigrate/*'
+              - 'packages/envoy/internal/ratelimit/*'
+              - 'packages/envoy/internal/testnats/*'
+              - 'packages/envoy/internal/testnats/testdata/**'
+              - 'packages/envoy/internal/testpg/*'
+              - 'packages/envoy/internal/testwait/*'
+              - 'packages/envoy/internal/webhook/testdata/**'
+              - 'packages/envoy/migrationid/*'
+              # The fixture cmd/listener/api_test.go reads, which this run compiles too.
+              - 'packages/contracts/fixtures/dispatch-targeted-delivery.json'
+              # The two listener pod specs cmd/listener/pod_grace_period_test.go reads: it holds
+              # each pod's grace, less its pre-stop wait, to the listener's stop budget.
+              - 'packages/envoy/infra/gcp/testdata/clustered-hub-listener-pod.golden'
+              - 'packages/envoy/infra/gcp/testdata/dispatch-listener-pod.golden'
+              # The documents cmd/listener/grace_margin_doc_test.go reads: each states the margin
+              # a listener pod grants, held to listenerGraceMargin.
+              - 'packages/envoy/AGENTS.md'
+              - 'packages/envoy/infra/README.md'
+              - 'packages/envoy/infra/docs/nats-hub.md'
+              # The infra module's copy of the stop budget, which
+              # cmd/listener/infra_stop_budget_test.go reads and holds to stopBudget.
+              - 'packages/envoy/infra/gcp/clusteredhub_listener.go'
             # The server-change soak (listener-server-change): `go test -tags serverchange
             # ./cmd/listener`. The listener's own packages, and what its test binary compiles
             # beyond them - the in-process NATS and Postgres helpers, the builder of the binary it
@@ -1702,11 +1810,12 @@ jobs:
               - 'packages/envoy/internal/ratelimit/*'
               - 'packages/envoy/internal/redact/*'
               - 'packages/envoy/internal/testnats/*'
+              - 'packages/envoy/internal/testnats/testdata/**'
               - 'packages/envoy/internal/testpg/*'
               - 'packages/envoy/internal/testwait/*'
               - 'packages/envoy/internal/webhook/testdata/**'
               - 'packages/envoy/migrationid/*'
-              # cmd/listener/api_test.go:191,436,480, which the soak's run compiles too.
+              # The fixture cmd/listener/api_test.go reads, which the soak's run compiles too.
               - 'packages/contracts/fixtures/dispatch-targeted-delivery.json'
               # The soak step takes the serverchange tag's test list from this script at run time.
               - '.github/scripts/go-tagged-tests.sh'
@@ -4358,12 +4467,12 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     # The NATS server extensions/card-delivery-omp.test.ts delivers Envoy cards and a person's Send
-    # through (LEGION_TEST_NATS_URL on the test step): the 2.10 image the envoy-client job pulls,
-    # pinned by digest as this file's other service images are.
+    # through (LEGION_TEST_NATS_URL on the test step): the copy of nats:2.15.1, the version the
+    # deployment runs, pinned by digest as this file's other service images are.
     services:
       nats:
-        # ghcr.io/cybermonklabs/legion/ci, the copy of nats:2.10 (.github/ci-images.yaml)
-        image: ghcr.io/cybermonklabs/legion/ci@sha256:5498ba57b9471840be3d15b033a4eec554d1c02fa6c2cc0ca2d888637f6c6e2f
+        # ghcr.io/cybermonklabs/legion/ci, the copy of nats:2.15.1 (.github/ci-images.yaml)
+        image: ghcr.io/cybermonklabs/legion/ci@sha256:023a08c46caa5aff878fb86841187bebfdad9a6e3c552ba5c1a1e18938bbf88a
         ports: ["4222:4222"]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -4467,11 +4576,12 @@ jobs:
     # dispatch://INFRA-2125 shortens the suite and is the fix; this line is the stopgap.
     timeout-minutes: 28
     # The NATS server the Envoy role claim of extensions/controller-start-omp.test.ts's controller
-    # needs (LEGION_TEST_NATS_URL on the test step), on the image the envoy-client job pulls.
+    # needs (LEGION_TEST_NATS_URL on the test step), on the copy of nats:2.15.1 the pi-envoy job's
+    # service runs.
     services:
       nats:
-        # ghcr.io/cybermonklabs/legion/ci, the copy of nats:2.10 (.github/ci-images.yaml)
-        image: ghcr.io/cybermonklabs/legion/ci@sha256:5498ba57b9471840be3d15b033a4eec554d1c02fa6c2cc0ca2d888637f6c6e2f
+        # ghcr.io/cybermonklabs/legion/ci, the copy of nats:2.15.1 (.github/ci-images.yaml)
+        image: ghcr.io/cybermonklabs/legion/ci@sha256:023a08c46caa5aff878fb86841187bebfdad9a6e3c552ba5c1a1e18938bbf88a
         ports: ["4222:4222"]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -4730,7 +4840,7 @@ jobs:
   # tests again in the merge queue, and the architecture-note check over this repository's own
   # .dispatch/architecture through the composite action .github/actions/architecture-check,
   # which other repositories call. The slow half below (the module's unit tests, the
-  # container-backed NATS matrix and the integration suite) is one of the eight slow suites,
+  # container-backed NATS matrix and the integration suite) is one of the nine slow suites,
   # which run in the merge queue and on a pull request labelled `full-ci`, while these checks
   # must come back on every push. No Postgres service: nothing here opens a database. It
   # restores go-envoy rather than go-envoy-test, which is the slow half's family alone (the test
@@ -4947,14 +5057,16 @@ jobs:
         run: |
           docker exec "${{ job.services.postgres.id }}" psql -U postgres -Atc "select current_setting('server_version_num'), coalesce((select default_version from pg_available_extensions where name = 'vector'), 'no vector')"
       # Every image the tests here start: testnats.Image and testnats.HubImage, which the
-      # natslive step below runs the two-image matrix on, and tests3.Image, pulled first for the
-      # reason the action gives.
+      # natslive step below runs the two-image matrix on, testnats.LegacyImage, the copy of
+      # nats:2.10 that step's two older-server rows of internal/bus run, and tests3.Image, pulled
+      # first for the reason the action gives.
       - name: Pull test container images
         uses: ./.github/actions/pull-test-images
         with:
           consts: |
             packages/envoy/internal/testnats/nats.go Image
             packages/envoy/internal/testnats/nats.go HubImage
+            packages/envoy/internal/testnats/nats.go LegacyImage
             packages/envoy/internal/tests3/seaweedfs.go Image
       # The tests the race detector makes impossible, which the race job of each of these packages
       # therefore cannot make, so envoy-go keeps a plain run of exactly them: internal/bus counts
@@ -4995,17 +5107,18 @@ jobs:
         run: go vet -tags modellive ./agentloop/
         working-directory: packages/envoy
       # internal/testnats runs its server in the test process, so the untagged step above starts
-      # no container. The two-image matrix, which proves a rendered authorization on nats:2.10 and
-      # on the image the hub runs, is the one thing an in-process server cannot reproduce: it sits
-      # behind the natslive tag, and this step is where it runs (INFRA-250). internal/bus has one
-      # test of its own on that matrix: the module links nats-server v2.15.1 in process, which
+      # no container. The two-image matrix, which proves a rendered authorization on nats:2.15.1
+      # and on the image the hub runs, is the one thing an in-process server cannot reproduce: it
+      # sits behind the natslive tag, and this step is where it runs (INFRA-250). internal/bus has
+      # one test of its own on that matrix: the module links nats-server v2.15.1 in process, which
       # caps a stream that sets no cap at a default of its own and takes a change of MaxConsumers
       # on a stream that already exists, so the raise of an uncapped ENVOY_NOTIFICATIONS to the
       # consumer cap this binary compiles and the keeper's restore of a cap an operator lowered or
       # unset are proved in process. What is left for a real image is the pair of 2.10 cases - the
       # stream with no cap the binary must leave alone, and the refusal of the raise of a lower
-      # cap, naming the field, the cap and the first server taking the change - and the hub's own
-      # reconcile on the nats:2.15.1-alpine image the deployment runs (INFRA-1384). Each
+      # cap, naming the field, the cap and the first server taking the change, each on the copy of
+      # nats:2.10 (testnats.LegacyImage) - and the hub's own reconcile on the nats:2.15.1-alpine
+      # image the deployment runs (INFRA-1384). Each
       # package runs only the tests its tag adds: `-tags natslive ./pkg` would re-run the
       # package's untagged tests, which already run elsewhere - internal/testnats in the unit step
       # above, and internal/bus in envoy-go-race, which the unit step's grep -Ev leaves out - so
@@ -5507,7 +5620,59 @@ jobs:
           pattern=$(../../.github/scripts/go-tagged-tests.sh multiprocess ./cmd/dispatch)
           go test -tags multiprocess -count=1 -timeout 20m -v -run "$pattern" ./cmd/dispatch
         working-directory: packages/envoy
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          changes: ${{ toJSON(needs.changes) }}
+          job-status: ${{ job.status }}
 
+  # The two-process and two-build tests of the listener (packages/envoy/cmd/listener/
+  # multiprocess_*_test.go and twobuild_test.go, INFRA-557): each row starts real cmd/listener
+  # binaries for one machine id - an active pod and a standby, which is what a machine runs once
+  # it has more than one - against one NATS, each behind a relay that can cut, freeze or slow its
+  # link, and drives them over real HTTP, the bus and their own logs. They take the delivery lease
+  # over through a reconnect in place, a SIGKILL, a lost node and a SIGTERM, check that no message is
+  # delivered twice or lost across each, that both pods answer registrations, sends and role lookups
+  # alike, and run a build with a stream subject more (the envoy_twobuild tag) beside the plain one.
+  #
+  # They build only under the `multiprocess` tag, so envoy-go's unit run leaves them out, and they
+  # could not run there in any case: that step runs under go test's default ten-minute package
+  # deadline, which the memory tests already took red at 600 s (run 37116639565), and the rows here
+  # wait out a lease, an ack wait, a 35 s attempt take-over and a 140 s standby, tens of seconds to
+  # minutes each. A job of their own rather than a step in dispatch-multiprocess, for the reason
+  # broker-multiprocess is: the listener rows compile their own import closure, so they get their
+  # own job and their own filter, `listener_multiprocess`, which gates this one. The run names the
+  # rows (TestTwoPods*, TestTwoBuilds*): the package's untagged tests are envoy-go's, and one of
+  # them needs the Postgres this job does not start. Each row's NATS runs in its own test process
+  # (internal/testnats), so neither a container runtime nor a Postgres service is here.
+  listener-multiprocess:
+    needs: changes
+    if: needs.changes.outputs.listener_multiprocess == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/envoy/go.mod
+          cache: false
+      # go-envoy: the test binary, and the listener binaries cmdtest.Build makes from the same
+      # packages, as listener-server-change builds them. ci-caches.yaml fills this family on a
+      # push to main; no job of this workflow writes a cache.
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-envoy-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ format('go-envoy-{0}-', runner.os) }}
+      - name: Two-process and two-build tests of the listener
+        run: go test -tags multiprocess -count=1 -timeout 20m -v -run '^Test(TwoPods|TwoBuilds)' ./cmd/listener
+        working-directory: packages/envoy
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
         uses: ./.github/actions/ci-ok-report
@@ -6516,6 +6681,7 @@ jobs:
       - envoy-go-docs-finalizers
       - dispatch-memory
       - dispatch-multiprocess
+      - listener-multiprocess
       - listener-server-change
       - broker-multiprocess
       - airlock-lean

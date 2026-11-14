@@ -589,6 +589,21 @@ func TestOneServerStoppedACreateAtThreeCopiesLandsAndTheStoppedMemberCatchesUp(t
 	}
 }
 
+// A create at more copies than the cluster has servers fails the start, and the error names the
+// replica setting, as a refused raise to the same count does (TestARefusedRaiseNamesTheReplicaSetting).
+func TestACreateAtFiveCopiesOnThreeServersFailsNamingTheSetting(t *testing.T) {
+	cluster := testnats.StartCluster(t, 3)
+	client, err := ConnectOwningStream(cluster.URLs(), WithReplicas(5))
+	if err == nil {
+		client.Close()
+		t.Fatal("a start created the stream at five copies on three servers")
+	}
+	var apiErr *nats.APIError
+	if !strings.HasPrefix(err.Error(), ReplicasEnvVar+"=5: ") || !errors.As(err, &apiErr) {
+		t.Fatalf("start error = %q, want the server's refusal naming %s=5", err, ReplicasEnvVar)
+	}
+}
+
 // A server's refusal of the stream names each setting the refused create or update carried, with
 // its value, and wraps the server's error (single server). A single nats-server v2.15.1 refuses a
 // create at more than one copy but takes an update to more, recording the count while it holds one

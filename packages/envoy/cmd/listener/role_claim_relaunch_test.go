@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -144,14 +145,14 @@ func TestARelaunchedRoleHolderReclaimsItsRoleAndItsOwnStopFreesIt(t *testing.T) 
 	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"deleted":true`) {
 		t.Fatalf("the clean stop of %s: status %d %s, want 200 reporting the registration deleted", sessionID, recorder.Code, recorder.Body.String())
 	}
-	if after := rig.stored(); after != claimed {
+	if after := rig.stored(); !reflect.DeepEqual(after, claimed) {
 		t.Fatalf("the claim after the clean stop = %+v, want %+v: the stop removes the registration and touches no claim", after, claimed)
 	}
 
 	// The relaunch registers the same session id as a process of its own. It renews nothing:
 	// the claim names the process that died.
 	rig.register(secondProcess)
-	if after := rig.stored(); after != claimed {
+	if after := rig.stored(); !reflect.DeepEqual(after, claimed) {
 		t.Fatalf("the claim after the relaunch's registration = %+v, want %+v: a registration renews only the claims its own process holds", after, claimed)
 	}
 
@@ -160,7 +161,7 @@ func TestARelaunchedRoleHolderReclaimsItsRoleAndItsOwnStopFreesIt(t *testing.T) 
 	if refused := rig.claim(secondProcess); refused.Code != http.StatusConflict {
 		t.Fatalf("the relaunch's re-claim while the dead process's claim is still renewed: status %d %s, want 409", refused.Code, refused.Body.String())
 	}
-	if after := rig.stored(); after != claimed {
+	if after := rig.stored(); !reflect.DeepEqual(after, claimed) {
 		t.Fatalf("the claim after the refused re-claim = %+v, want %+v: a refused claim writes nothing", after, claimed)
 	}
 

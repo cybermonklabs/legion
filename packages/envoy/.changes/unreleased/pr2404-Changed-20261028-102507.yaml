@@ -1,0 +1,18 @@
+kind: Changed
+body: |-
+    Session registrations, interests and role-claim releases and hand-backs are written by
+    compare-and-set at the revision the listener read, weighed or merged again over the bucket's
+    value on a conflict, then `503` with `Retry-After: 1` once a write's attempts are spent: 5 for
+    a session registration (`writeAttempts`), 3 for an interest (`interestWriteAttempts`) and 3 for
+    a role claim's release or hand-back (`roleClaimReleaseAttempts`). A role claim's renewal
+    (`renewRoleClaim`) makes one attempt: one a claim landed under is dropped and logged, the
+    registration still answers `200`, and the next registration renews the claim that stands. A
+    role claim itself is not retried by the store: a hard claim is an unconditional `Put`, so the
+    last write wins, and a soft claim, or one carrying `if_claim_revision`, that a claim landed
+    under is refused with `409` (`ErrRoleHeld`, `ErrRoleClaimRevisionMismatch`). Every
+    read-modify-write keeps the JSON fields a build does not know.
+    `/v1/messages/send` and `/v1/roles/set` read the session bucket before answering that a session
+    their pod's cache has not seen is unknown.
+time: 2026-10-28T10:25:07.958720478Z
+custom:
+    Issue: pr2404
