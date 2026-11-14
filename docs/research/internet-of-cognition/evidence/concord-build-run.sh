@@ -15,8 +15,11 @@ printf '%s\n' "IOC_CLONES=$IOC_CLONES"
 printf '%s\n' "cognition-protocols commit: $(git -C "$CP" rev-parse HEAD)"
 printf '%s\n' "our tree: $ROOT, read at 9542c6fbbecd184ccee73523ab3defa39d6cf23a"
 
-sec '$ uv pip install --python venv/bin/python $IOC_CLONES/cognition-protocols/packages/ioc-concord'
-uv pip install --python venv/bin/python "$CP/packages/ioc-concord" 2>&1
+# -b, the pinned build environment of ioc-concord, was added on 2026-11-14 after the run
+# that wrote concord-run.txt, so that a rerun fetches no unpinned hatchling; that
+# transcript's heading and uv's lines for this install predate it.
+sec '$ uv pip install --python venv/bin/python -b $IOC_EVID/build-constraints.txt $IOC_CLONES/cognition-protocols/packages/ioc-concord'
+uv pip install --python venv/bin/python -b "$HERE/build-constraints.txt" "$CP/packages/ioc-concord" 2>&1
 
 sec '$ ./venv/bin/python -c "import ioc_concord, sys; print(ioc_concord.__version__); print(sys.version.split()[0])"'
 $PY -c "import ioc_concord, sys; print(ioc_concord.__version__); print(sys.version.split()[0])"

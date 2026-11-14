@@ -301,7 +301,8 @@ case_result "a reference to a block at a version Dispatch does not hold is refus
 # 23. A constraints file pins what it lists and nothing beside it. At 25c02ddfcf one -c,
 # --constraint, -r or --requirement anywhere in a pip install exempted the whole command,
 # so `uv pip install -c c.txt requests` passed install-pinned with requests unpinned. The
-# honest form beside it, a local path installed under the same constraints file, passes.
+# honest form beside it, a local path installed under the same constraints file, passes;
+# it names a build constraint with -b, since a local source path is built (case 61).
 dir="$(fresh constraint-beside-package)"
 sed -i "s/\"command\":\"printf 'ran once/\"command\":\"true || uv pip install -c c.txt requests; printf 'ran once/" "$dir/repo/docs/research/internet-of-cognition/claims.jsonl"
 grep -qF 'uv pip install -c c.txt requests' "$dir/repo/docs/research/internet-of-cognition/claims.jsonl" || {
@@ -310,9 +311,9 @@ grep -qF 'uv pip install -c c.txt requests' "$dir/repo/docs/research/internet-of
 }
 case_result "a package beside a constraints file is held to its own version" install-pinned "$(fixture_run "$dir" --replay)"
 dir="$(fresh constraint-beside-local)"
-sed -i "s/\"command\":\"printf 'ran once/\"command\":\"true || uv pip install -c c.txt .\/local; printf 'ran once/" "$dir/repo/docs/research/internet-of-cognition/claims.jsonl"
-grep -qF 'uv pip install -c c.txt ./local' "$dir/repo/docs/research/internet-of-cognition/claims.jsonl" || {
-    printf 'FAIL the form uv pip install -c c.txt ./local could not be planted\n'
+sed -i "s/\"command\":\"printf 'ran once/\"command\":\"true || uv pip install -c c.txt -b b.txt .\/local; printf 'ran once/" "$dir/repo/docs/research/internet-of-cognition/claims.jsonl"
+grep -qF 'uv pip install -c c.txt -b b.txt ./local' "$dir/repo/docs/research/internet-of-cognition/claims.jsonl" || {
+    printf 'FAIL the form uv pip install -c c.txt -b b.txt ./local could not be planted\n'
     exit 1
 }
 out="$(fixture_run "$dir" --replay)"
@@ -805,18 +806,18 @@ refused_read path-assigned "d=\$(mktemp -d); cp /bin/true \"\$d/cat\"; PATH=\"\$
 # 58. install-pinned reads uv run's options from UV_RUN_OPTIONS, the classifier's own
 # table. At e9e39c35e5 its own walk stepped one word past --python, read 3.12 as the
 # program and stopped, so the --with after it was never read, in the shape all four
-# tc-run rows have. An unpinned --with in that shape is now refused; the real form, a
-# local path under $IOC_CLONES, passes.
+# tc-run rows have. An unpinned --with in that shape is now refused; the real form, the
+# wheel env.sh builds, $IOC_CONCORD_WHEEL, passes.
 dir="$(fresh uv-run-python-with)"
 sed -i "s#\"command\":\"printf 'ran once#\"command\":\"true || uv run --no-project --python 3.12 --with requests python -c 1; printf 'ran once#" "$dir/repo/docs/research/internet-of-cognition/claims.jsonl"
 case_result "an unpinned --with after uv run --python is refused" install-pinned "$(fixture_run "$dir" --replay)"
 dir="$(fresh uv-run-python-with-local)"
-sed -i "s#\"command\":\"printf 'ran once#\"command\":\"true || uv run --no-project --python 3.12 --with \$IOC_CLONES/cognition-protocols/packages/ioc-concord python -c 1; printf 'ran once#" "$dir/repo/docs/research/internet-of-cognition/claims.jsonl"
-grep -qF 'uv run --no-project --python 3.12 --with $IOC_CLONES/' "$dir/repo/docs/research/internet-of-cognition/claims.jsonl" || {
+sed -i "s#\"command\":\"printf 'ran once#\"command\":\"true || uv run --no-project --python 3.12 --with \$IOC_CONCORD_WHEEL python -c 1; printf 'ran once#" "$dir/repo/docs/research/internet-of-cognition/claims.jsonl"
+grep -qF 'uv run --no-project --python 3.12 --with $IOC_CONCORD_WHEEL' "$dir/repo/docs/research/internet-of-cognition/claims.jsonl" || {
     printf 'FAIL the honest uv run --with form could not be planted\n'
     exit 1
 }
-honest_result "a local path after uv run --python passes install-pinned" install-pinned "$(fixture_run "$dir" --replay)"
+honest_result "a built wheel after uv run --python passes install-pinned" install-pinned "$(fixture_run "$dir" --replay)"
 
 # 59. A row assigns only a name the rows assign: an assignment, alone or as a prefix, and
 # a for loop's variable are admitted to a name of ASSIGNED_NAMES alone, and every other
@@ -845,6 +846,30 @@ admitted_read assigned-loop "for f in once; do printf 'ran %s\\n' \"\$f\"; done"
 # prefix of its command or refused; written alone before its command, it passes.
 refused_read expect-status-before-prefix "IOC_EXPECT_STATUS=1 X=\$(cat /nonexistent-ioc 2>/dev/null) cat /dev/null; printf 'ran once\\n'" 'IOC_EXPECT_STATUS=1, IOC_EXPECT_STATUS before another prefix'
 admitted_read expect-status-last-prefix "IOC_EXPECT_STATUS=1 cat /nonexistent-ioc 2>/dev/null; printf 'ran once\\n'"
+
+# 61. A build backend is an install. Every local package the replay builds declares
+# build-system requires = ["hatchling"] with no version, so at 5466ea605d a uv pip install
+# of a local source path fetched whatever hatchling was newest, and so did a uv run --with
+# of one, which takes no build constraint at all. A uv pip install of a local source path
+# is now pinned only with -b on the same command, and a uv run --with of one is refused;
+# a built wheel needs no build and passes. plant_install <name> <command> plants one form
+# after true ||, so that nothing of it runs and only the reading of the command is read.
+plant_install() {
+    dir="$(fresh "$1")"
+    sed -i "s#\"command\":\"printf 'ran once#\"command\":\"true || $2; printf 'ran once#" "$dir/repo/docs/research/internet-of-cognition/claims.jsonl"
+    grep -qF "true || $2; printf" "$dir/repo/docs/research/internet-of-cognition/claims.jsonl" || {
+        printf 'FAIL the form %s could not be planted\n' "$2"
+        exit 1
+    }
+}
+plant_install build-unpinned "uv pip install -c c.txt ./local"
+case_result "a uv pip install of a local source path with no build constraint is refused" install-pinned "$(fixture_run "$dir" --replay)"
+plant_install build-pinned "uv pip install -c c.txt -b b.txt ./local"
+honest_result "a uv pip install of a local source path with -b passes install-pinned" install-pinned "$(fixture_run "$dir" --replay)"
+plant_install run-source "uv run --no-project --with ./local python -c 1"
+case_result "a uv run --with of a local source path is refused" install-pinned "$(fixture_run "$dir" --replay)"
+plant_install run-wheel "uv run --no-project --with ./local/pkg-0.1.0-py3-none-any.whl python -c 1"
+honest_result "a uv run --with of a built wheel passes install-pinned" install-pinned "$(fixture_run "$dir" --replay)"
 
 total=$((CASES_PASSED + CASES_FAILED))
 if [ "$CASES_FAILED" -eq 0 ]; then

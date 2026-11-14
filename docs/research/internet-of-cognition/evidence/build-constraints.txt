@@ -1,0 +1,15 @@
+# The build environment of every local package the replay builds, pinned. Each of them,
+# mas-lab's runtime, ctl, library-standard, library-skills and lab/components/core and
+# cognition-protocols' packages/ioc-concord, declares build-system requires = ["hatchling"]
+# with no version, and an editable build of mas-lab adds editables. The versions are the
+# output of `uv pip compile --universal --python-version 3.12` of hatchling and editables
+# (uv 0.13.5, 2026-11-14; the same for 3.13), and a verbose cold install of mas-lab installed
+# exactly these seven into its build environments. env.sh, the evidence scripts and the
+# rows pass this file to every `uv pip install` and `uv build` of a local source as -b.
+editables==0.6
+hatchling==1.33.0
+packaging==26.3
+pathspec==1.1.1
+pluggy==1.7.0
+tomlkit==0.15.2
+trove-classifiers==2026.9.21.13

@@ -14,6 +14,9 @@ export HF_HOME=$TMPDIR/infra3134/tm-cache/hf
 export XDG_CACHE_HOME=$TMPDIR/infra3134/tm-cache/xdg
 export VENV=$TMPDIR/infra3134/tm-venv
 OURS=/legion/workspaces/cybermonklabs/legion/infra-3134
+# The pinned build environment of every local package below, added on 2026-11-14 after
+# the run that wrote maslab-load.txt, so that a rerun fetches no unpinned hatchling.
+BUILD=$OURS/docs/research/internet-of-cognition/evidence/build-constraints.txt
 
 run() { echo; echo "\$ $*"; "$@" 2>&1; echo "exit=$?"; }
 
@@ -31,11 +34,11 @@ echo
 echo "### 1. the install, from the clone at the pinned commit (mas-lab 0.2.0 is on PyPI as well)"
 run uv venv --allow-existing "$VENV"
 cd "$IOC_CLONES/mas-lab" || exit 1
-VIRTUAL_ENV=$VENV run uv pip install ./runtime ./ctl ./library-standard
+VIRTUAL_ENV=$VENV run uv pip install -b "$BUILD" ./runtime ./ctl ./library-standard
 # A built wheel of mas-lab-ctl carries no docs/schemas, so validate falls back to
 # "no schema file for kind 'agent'". An editable install of ctl and of the lab core
 # component gives the validator the schemas and the registry it imports.
-VIRTUAL_ENV=$VENV run uv pip install -e ./ctl -e ./lab/components/core
+VIRTUAL_ENV=$VENV run uv pip install -b "$BUILD" -e ./ctl -e ./lab/components/core
 cd "$OUT" || exit 1
 
 echo
@@ -94,12 +97,12 @@ echo "### 8. what their validator does from a plain wheel install"
 WHEELVENV=$TMPDIR/infra3134/tm-venv-wheel
 run uv venv --allow-existing "$WHEELVENV"
 cd "$IOC_CLONES/mas-lab" || exit 1
-VIRTUAL_ENV=$WHEELVENV run uv pip install ./runtime ./ctl ./library-standard
+VIRTUAL_ENV=$WHEELVENV run uv pip install -b "$BUILD" ./runtime ./ctl ./library-standard
 cd "$OUT" || exit 1
 run "$WHEELVENV/bin/mas-ctl" validate legion-workflow.yaml
 # The same ctl from a source checkout, without the lab core component its validator imports.
 cd "$IOC_CLONES/mas-lab" || exit 1
-VIRTUAL_ENV=$WHEELVENV run uv pip install -e ./ctl
+VIRTUAL_ENV=$WHEELVENV run uv pip install -b "$BUILD" -e ./ctl
 cd "$OUT" || exit 1
 run "$WHEELVENV/bin/mas-ctl" validate legion-workflow.yaml
 

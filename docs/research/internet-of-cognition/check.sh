@@ -862,6 +862,21 @@ github_budget() {
 # is a local path. An option of a runner the reader does not know, a package written as
 # any other variable, and a command it cannot open are refused.
 #
+# A build backend is an install. A local path that is no wheel is built, and its build
+# backend and that backend's dependencies are fetched like any package: every local
+# package of this replay declares build-system requires = ["hatchling"] with no version.
+# So a pip install or uv pip install of a local source path is pinned only when the same
+# command names a build constraint, -b or --build-constraints, which here is always
+# evidence/build-constraints.txt, the seven packages of hatchling's build environment
+# each at ==version; and since uv run takes no build constraint, a uv run --with of a
+# local source path is refused. A wheel, a path ending in .whl or a variable env.sh sets
+# to one (WHEEL_VARIABLES, IOC_CONCORD_WHEEL), needs no build and is pinned as a local
+# path is. What the rule still does not cover is a package pinned at its top level alone,
+# whose own dependencies resolve to the newest release when they are installed: env.sh's
+# IOC_ENV_PY_PINS pins three of IOC_VENV's 66 packages, and uvx pyshacl==0.40.2 pins
+# pyshacl and not the seven packages it brings; evidence/tm-constraints.txt pins every
+# third-party package of the mas-lab environments, and ioc-concord depends on none.
+#
 # Every word in command position is read, and one this reader cannot resolve fails the
 # row and is named. Command position is the first word of a command after its assignments
 # and its keywords, the command a wrapper runs (env, nohup, nice, timeout, command, exec,
@@ -928,6 +943,16 @@ PROCESS = re.compile(r"subprocess|os\.system|os\.popen|os\.exec|os\.spawn|pty\.s
 
 def local(arg):
     return arg.startswith((".", "/", "~")) or re.match(r"\$\{?IOC_[A-Z_]+\}?(/|$)", arg) is not None
+
+# The variables env.sh sets to a wheel it built under evidence/build-constraints.txt, each
+# one file whose name ends in .whl, which env.sh's header names.
+WHEEL_VARIABLES = ("IOC_CONCORD_WHEEL",)
+
+def wheel(arg):
+    # True for a local path that is a built wheel, which is installed with no build: a
+    # file named *.whl, or a variable WHEEL_VARIABLES holds.
+    m = re.fullmatch(r"\$(?:\{([A-Z_]+)\}|([A-Z_]+))", arg)
+    return arg.endswith(".whl") or (m is not None and (m.group(1) or m.group(2)) in WHEEL_VARIABLES)
 
 def py_ok(arg):
     return local(arg) or PY_PIN.match(arg) is not None
@@ -1534,14 +1559,21 @@ def read_command(command, depth=0):
                 # uv run fetches each --with, which every one of them must pin. Its options
                 # are read from UV_RUN_OPTIONS, the classifier's own table, so --python's
                 # value is no program, and an option the table does not hold is refused.
+                # uv run takes no build constraint, so a --with that is a local source
+                # path, which uv run would build with whatever build backend is newest, is
+                # refused; a built wheel needs no build.
                 try:
                     options, _ = uv_run_program(w[i + 2:])
                 except Refused as why:
                     found.append(str(why))
                     options = []
                 for key, value in options:
-                    if key == "--with" and not py_ok(value):
+                    if key != "--with":
+                        continue
+                    if not py_ok(value):
                         found.append("uv run " + key + " " + value)
+                    elif local(value) and not wheel(value):
+                        found.append("uv run " + key + " " + value + " (a local source path uv run builds with no build constraint; run a wheel built under one)")
             elif name == "uv" and nxt == "add":
                 found.append("uv add (a form that installs and that this reader does not read)")
             elif name == "pipx" and nxt == "run":
@@ -1559,22 +1591,32 @@ def read_command(command, depth=0):
                 # Every argument is read. A constraints or requirements file pins what it
                 # lists and nothing else, so only the file it names is exempt, and env.sh's
                 # pinned list stands for its own packages; every other package is held to
-                # its own version or is a local path.
-                rest, j = w[i + 2:], 0
+                # its own version or is a local path. A local path that is no wheel is
+                # built, and its build backend is fetched like any package, so the command
+                # must name a build constraint with -b.
+                rest, j, sources, build_pinned = w[i + 2:], 0, [], False
                 while j < len(rest):
                     a = rest[j]
                     key = a.split("=", 1)[0]
                     if a[:1] in (">", "<") or re.match(r"[0-9]*[<>]", a):
                         break
-                    if key in ("-c", "--constraint", "-r", "--requirement", "--python", "-p",
-                               "--target", "--prefix", "--index-url", "--extra-index-url"):
+                    if key in ("-b", "--build-constraint", "--build-constraints"):
+                        build_pinned = True
+                        if option_value(a) is None:
+                            j += 1
+                    elif key in ("-c", "--constraint", "-r", "--requirement", "--python", "-p",
+                                 "--target", "--prefix", "--index-url", "--extra-index-url"):
                         if option_value(a) is None:
                             j += 1
                     elif a.startswith("-") or a in ("$IOC_ENV_PY_PINS", "${IOC_ENV_PY_PINS}"):
                         pass
                     elif not py_ok(a):
                         found.append("pip install " + a)
+                    elif local(a) and not wheel(a):
+                        sources.append(a)
                     j += 1
+                if sources and not build_pinned:
+                    found.append("pip install " + sources[0] + " (a local source path built with no build constraint; pass one with -b)")
     return found
 
 

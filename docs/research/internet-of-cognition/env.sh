@@ -40,6 +40,8 @@
 #   IOC_SCOPE_MAS_SHAPES  where the shapes generator of the scope clone writes
 #   IOC_TC_WORK     the working directory evidence/concord-build-run.sh runs in
 #   IOC_TC_PY       the python of that directory's venv
+#   IOC_CONCORD_WHEEL  the wheel of the clone's packages/ioc-concord, built once under
+#                   evidence/build-constraints.txt, which the tc-run rows run with uv run
 #   Each of IOC_PY, IOC_MASLAB_PY, IOC_MASLAB_CTL, IOC_MASLAB_WHEEL_CTL and IOC_TC_PY
 #   names one program, and they are the only variables a recorded command may run.
 #   IOC_REVIEWS     the review corpus of tc-corpus-1, fetched with gh. A review a reader
@@ -52,6 +54,17 @@
 #   IOC_TM_OVERLAY  the go overlay of tm-our-count, written for IOC_OUR_TREE
 #   ACCORD_SRC      the cognition-protocols clone, which similarity.py imports from
 #   UV_CACHE_DIR PIP_CACHE_DIR HF_HOME XDG_CACHE_HOME   every cache, under IOC_CACHE
+#
+# A build backend is an install. Every local package the replay builds, mas-lab's
+# workspace members and ioc-concord, declares build-system requires = ["hatchling"] with
+# no version, so each uv pip install and uv build of a local source here passes
+# evidence/build-constraints.txt as -b, and uv installs hatchling, editables and their
+# dependencies at the versions it pins. ioc-concord is built once into IOC_CONCORD_WHEEL,
+# because uv run takes no build constraint and a wheel needs no build. What is pinned at
+# its top level alone: IOC_ENV_PY_PINS pins three packages of IOC_VENV, whose other
+# dependencies (63 of its 66 packages) uv resolves to the newest release; the uvx rows pin
+# pyshacl alone, not its dependencies; evidence/tm-constraints.txt pins every third-party
+# package of IOC_MASLAB_VENV, and ioc-concord has none.
 #
 # It needs uv, git, jq, gh, python3 and dispatch, and it needs the three clones, which it
 # clones at the commits sources.json pins when they are missing. It refuses, with a line
@@ -212,22 +225,25 @@ print(snapshot_download('sentence-transformers/all-MiniLM-L6-v2', revision='$rev
 # mas-lab, installed from the clone the way evidence/tm-load.sh installed it: the three
 # workspace members, then ctl and the lab core component editable, because a built wheel
 # of ctl carries no schemas and its validator imports mas.lab. Its third-party
-# dependencies are held to the versions evidence/tm-constraints.txt records.
+# dependencies are held to the versions evidence/tm-constraints.txt records, and the
+# environment each member is built in to those evidence/build-constraints.txt records.
 ioc_env_maslab() {
     export IOC_MASLAB_VENV="$IOC_CACHE/tm-venv"
     export IOC_MASLAB_WHEEL_VENV="$IOC_CACHE/tm-venv-wheel"
     export IOC_MASLAB_PY="$IOC_MASLAB_VENV/bin/python" IOC_MASLAB_CTL="$IOC_MASLAB_VENV/bin/mas-ctl"
     export IOC_MASLAB_WHEEL_CTL="$IOC_MASLAB_WHEEL_VENV/bin/mas-ctl"
-    local clone="$IOC_CLONES/mas-lab" constraints="$IOC_EVID/tm-constraints.txt"
+    local clone="$IOC_CLONES/mas-lab" constraints="$IOC_EVID/tm-constraints.txt" build="$IOC_EVID/build-constraints.txt"
     [ -s "$constraints" ] ||
         ioc_env_refuse "IOC_MASLAB_VENV" "$constraints, the pinned dependencies of mas-lab, is missing" || return 1
+    [ -s "$build" ] ||
+        ioc_env_refuse "IOC_MASLAB_VENV" "$build, the pinned build environment, is missing" || return 1
     if ! { [ -x "$IOC_MASLAB_VENV/bin/mas-ctl" ] && "$IOC_MASLAB_VENV/bin/python" -c 'import mas.lab' >/dev/null 2>&1; }; then
         uv venv --allow-existing "$IOC_MASLAB_VENV" >&2 ||
             ioc_env_refuse "IOC_MASLAB_VENV" "uv venv $IOC_MASLAB_VENV failed" || return 1
         (
             cd "$clone" || exit 1
-            VIRTUAL_ENV="$IOC_MASLAB_VENV" uv pip install -c "$constraints" ./runtime ./ctl ./library-standard >&2 &&
-                VIRTUAL_ENV="$IOC_MASLAB_VENV" uv pip install -c "$constraints" -e ./ctl -e ./lab/components/core >&2
+            VIRTUAL_ENV="$IOC_MASLAB_VENV" uv pip install -c "$constraints" -b "$build" ./runtime ./ctl ./library-standard >&2 &&
+                VIRTUAL_ENV="$IOC_MASLAB_VENV" uv pip install -c "$constraints" -b "$build" -e ./ctl -e ./lab/components/core >&2
         ) || ioc_env_refuse "IOC_MASLAB_VENV" "uv pip install from $clone failed" || return 1
     fi
     { [ -x "$IOC_MASLAB_VENV/bin/mas-ctl" ] && "$IOC_MASLAB_VENV/bin/python" -c 'import mas.lab' >/dev/null 2>&1; } ||
@@ -237,6 +253,22 @@ ioc_env_maslab() {
         uv venv --allow-existing "$IOC_MASLAB_WHEEL_VENV" >&2 ||
             ioc_env_refuse "IOC_MASLAB_WHEEL_VENV" "uv venv $IOC_MASLAB_WHEEL_VENV failed" || return 1
     fi
+}
+
+# ioc-concord, built once into a wheel under evidence/build-constraints.txt. The tc-run
+# rows run it with uv run --with, which takes no build constraint, so they run this one
+# build rather than building the source again per row; a wheel needs no build.
+ioc_env_concord() {
+    local dir="$IOC_CACHE/wheels" build="$IOC_EVID/build-constraints.txt"
+    export IOC_CONCORD_WHEEL="$dir/ioc_concord-0.1.0-py3-none-any.whl"
+    [ -s "$build" ] ||
+        ioc_env_refuse "IOC_CONCORD_WHEEL" "$build, the pinned build environment, is missing" || return 1
+    if [ ! -s "$IOC_CONCORD_WHEEL" ]; then
+        uv build --wheel --python 3.12 -b "$build" --out-dir "$dir" "$ACCORD_SRC/packages/ioc-concord" >&2 ||
+            ioc_env_refuse "IOC_CONCORD_WHEEL" "uv build of $ACCORD_SRC/packages/ioc-concord failed" || return 1
+    fi
+    [ -s "$IOC_CONCORD_WHEEL" ] ||
+        ioc_env_refuse "IOC_CONCORD_WHEEL" "the build wrote no $IOC_CONCORD_WHEEL, the version 0.1.0 the tc-install-1 row reads"
 }
 
 # The shapes graph, assembled the way the scope clone's own verification.py assembles it:
@@ -363,6 +395,7 @@ ioc_env_main() {
     ioc_env_python || return 1
     ioc_env_model || return 1
     ioc_env_maslab || return 1
+    ioc_env_concord || return 1
     ioc_env_scope_shapes || return 1
     ioc_env_reviews || return 1
     ioc_env_our_tree || return 1
@@ -373,7 +406,7 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
     ioc_env_main || exit 1
     for ioc_env_name in IOC_CACHE IOC_CLONES IOC_EVID IOC_DESIGN IOC_COMMENT IOC_VENV IOC_PY \
         IOC_MODEL_DIR IOC_MASLAB_VENV IOC_MASLAB_WHEEL_VENV IOC_MASLAB_PY IOC_MASLAB_CTL IOC_MASLAB_WHEEL_CTL IOC_TC_PY IOC_SCOPE_SHAPES IOC_SCOPE_MAS_SHAPES \
-        IOC_TC_WORK IOC_REVIEWS IOC_OUR_TREE IOC_TM_OVERLAY ACCORD_SRC UV_CACHE_DIR PIP_CACHE_DIR HF_HOME \
+        IOC_TC_WORK IOC_CONCORD_WHEEL IOC_REVIEWS IOC_OUR_TREE IOC_TM_OVERLAY ACCORD_SRC UV_CACHE_DIR PIP_CACHE_DIR HF_HOME \
         XDG_CACHE_HOME; do
         printf '%s=%s\n' "$ioc_env_name" "${!ioc_env_name}"
     done
