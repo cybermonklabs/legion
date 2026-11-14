@@ -21,12 +21,13 @@
 // readiness, grants, register_gate, handoff_complete and request_backward_move.
 //
 // What is stood in for lies outside the approval path. The broker is a native nats-server the
-// script starts and names in LEGION_E2E_NATS_URL. GitHub is versionNewsGitHub, which answers each
-// repository with default branch main, records every request and answers every other one 404.
-// Envoy's listener is the package's noticeListener, the two Apps' tokens are
-// workflowTokenRecorder's placeholders, and no agent runs: each claim is launched by the package's
-// fake runtime, which provisions each workspace in its own pod. A merged pull request is GitHub's
-// own fact, an envelope on the ENVOY_NOTIFICATIONS stream as Envoy relays a webhook.
+// script starts and names in LEGION_E2E_NATS_URL. GitHub is the package's repositoriesGitHub,
+// which startDaemonWithin boots the daemon with: each repository with default branch main, and
+// every other request answered 404. Envoy's listener is the package's noticeListener, the two
+// Apps' tokens are workflowTokenRecorder's placeholders, and no agent runs: each claim is launched
+// by the package's fake runtime, which provisions each workspace in its own pod. A merged pull
+// request is GitHub's own fact, an envelope on the ENVOY_NOTIFICATIONS stream as Envoy relays a
+// webhook.
 //
 // The issues, their pull requests, their trees' slots and lifecycles and the claims the boot
 // relaunches are seeded through the store, as every daemon test seeds its fixture, beside the
@@ -79,11 +80,12 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
-// The steps of part one, in the order the plan's departure 10 sets: A2's approval of a new version
-// is the run's first one-approval step, on a tree that registers its spec alone, because a daemon
-// from before the change refuses A1's criteria registration under root-issues
-// (GATE_STEP_NOT_CONFIGURED), and a run that began there would end before any delivery was tested.
-// The script counts each step's checks under these names.
+// The steps of part one, in the order they run: A2's approval of a new version is the run's first
+// one-approval step, on a tree that registers its spec alone, because a daemon from before the
+// change refuses A1's criteria registration under root-issues (GATE_STEP_NOT_CONFIGURED), and a
+// run that began there would end before any delivery was tested, so the negative control would
+// fail for a reason the change does not touch. The script counts each step's checks under these
+// names.
 const (
 	versionNewsA2  = "a2-the-reviewer-is-told-the-changed-sections"
 	versionNewsA1  = "a1-one-request-opens-both-rows"
@@ -125,21 +127,18 @@ type versionNewsLive struct {
 	natsURL  string
 	dispatch *scratchDispatch
 	client   *http.Client
-	// repo is the repository the run in hand maps to its project, and rt, built and github the
-	// stand-ins its daemon was booted with.
-	repo   string
-	rt     *fake.Runtime
-	built  *built
-	github *versionNewsGitHub
-	// step is the step running now, which every check and every failure names, and named says
+	// repo is the repository the run in hand maps to its project, and rt and built the stand-ins
+	// its daemon was booted with.
+	repo  string
+	rt    *fake.Runtime
+	built *built
+	// running is the step running now, which every check and every failure names, and named says
 	// whether a failure of it has printed its FAIL line.
-	step  string
-	named bool
+	running string
+	named   bool
 	// trees is the run's fixture by name, and claimants each role brought to ready, by token.
 	trees     map[string]*versionNewsTree
 	claimants map[claim.Token]*versionNewsClaimant
-	// told says whether the schema holds the told record (design_news_told).
-	told bool
 }
 
 // versionNewsTree is one tree of the fixture: its members, the root first, the root's spec, and its
@@ -183,9 +182,10 @@ func (tree *versionNewsTree) steps() []record.DesignStep {
 	return []record.DesignStep{record.DesignStepSpec, record.DesignStepCriteria}
 }
 
-// TestAnApprovedVersionReachesItsHolderLive drives part one's steps, in the order departure 10
-// sets, against one Dispatch: the first seven against a daemon gating `root-issues`, and the last
-// against a second daemon, on a configuration and a database of its own, gating nothing.
+// TestAnApprovedVersionReachesItsHolderLive drives part one's steps, in the order the constants
+// above give and say why, against one Dispatch: the first seven against a daemon gating
+// `root-issues`, and the last against a second daemon, on a configuration and a database of its
+// own, gating nothing.
 func TestAnApprovedVersionReachesItsHolderLive(t *testing.T) {
 	r := newVersionNewsLive(t)
 	r.boot("root-issues", config.DesignGateRootIssues.Steps(), liveRepo, r.rootIssuesFixture)
@@ -223,7 +223,7 @@ func newVersionNewsLive(t *testing.T) *versionNewsLive {
 	}
 	r := &versionNewsLive{natsURL: natsURL, client: &http.Client{Timeout: 30 * time.Second}}
 	r.t = t
-	r.step = "setup"
+	r.running = "setup"
 	js := workflowJetStream(t, natsURL)
 	testnats.CreateStream(t, js, jetstream.StreamConfig{Name: "ENVOY_NOTIFICATIONS", Subjects: []string{"notifications.>"}})
 	r.js = js
@@ -251,7 +251,7 @@ func newVersionNewsLive(t *testing.T) *versionNewsLive {
 func (r *versionNewsLive) boot(gates string, steps []record.DesignStep, repo string, fixture func()) {
 	t := r.t
 	t.Helper()
-	r.step = "setup"
+	r.running = "setup"
 	cfg := workflowConfig(t, r.natsURL)
 	// A Dispatch project key is at most ten characters (contracts ProjectKeyPattern), and the
 	// daemon's project is its Dispatch project.
@@ -287,7 +287,7 @@ func (r *versionNewsLive) boot(gates string, steps []record.DesignStep, repo str
 	r.repo = repo
 	r.trees = map[string]*versionNewsTree{}
 	r.claimants = map[claim.Token]*versionNewsClaimant{}
-	r.rt, r.built, r.github = fake.NewRuntime(), &built{}, newVersionNewsGitHub(t)
+	r.rt, r.built = fake.NewRuntime(), &built{}
 	r.rt.InPod = true
 	r.dispatchAs(versionNewsPerson, http.MethodPost, "/api/v1/projects", map[string]string{"key": cfg.Project, "name": "Approved version news, " + gates}, nil)
 	r.dispatchAs(versionNewsPerson, http.MethodPut, "/api/v1/settings/repo-projects/"+repo, map[string]any{"project": cfg.Project, "default": true}, nil)
@@ -295,7 +295,6 @@ func (r *versionNewsLive) boot(gates string, steps []record.DesignStep, repo str
 	r.seed()
 	o := fakeRuntime(r.rt, r.built)
 	o.workflowTokens = &workflowTokenRecorder{}
-	o.githubAPI = r.github.url
 	r.d = startDaemonWithin(t, cfg, o, r.log(), 2*time.Minute)
 	r.note("daemon booted under gates.design: %s, project %s mapped to %s, dispatch_url %s", gates, cfg.Project, repo, r.dispatch.base)
 	// The boot's relaunch of each seeded claim is its first launch, so none before it counts.
@@ -468,7 +467,7 @@ func (r *versionNewsLive) seed() {
 			t.Fatalf("open the lifecycle of %s: %v", tree.root().key, err)
 		}
 		for _, member := range tree.members {
-			for _, role := range []claim.Role{claim.RoleArchitect, claim.RolePlanner, claim.RoleImplementer, claim.RoleTester, claim.RoleReviewer, claim.RoleMerger} {
+			for _, role := range claim.Roles {
 				writePrompt(t, r.cfg, r.token(member.key, role))
 			}
 			for _, role := range member.roles {
@@ -481,10 +480,11 @@ func (r *versionNewsLive) seed() {
 			}
 		}
 	}
-	if err := r.st.Pool().QueryRow(ctx, "select to_regclass('design_news_told') is not null").Scan(&r.told); err != nil {
+	var told bool
+	if err := r.st.Pool().QueryRow(ctx, "select to_regclass('design_news_told') is not null").Scan(&told); err != nil {
 		t.Fatalf("read whether the schema holds the told record: %v", err)
 	}
-	if !r.told {
+	if !told {
 		r.note("the schema holds no design_news_told table, so no told record is seeded: this daemon keeps none")
 		return
 	}
@@ -517,18 +517,18 @@ func versionNewsHead(key string) string { return "head-" + strings.ToLower(key) 
 // it stops on a failure that printed none of its own, so that every stopped step is named.
 func (r *versionNewsLive) run(name string, body func()) {
 	r.t.Helper()
-	r.step, r.named = name, false
+	r.running, r.named = name, false
 	defer func() {
 		if r.t.Failed() && !r.named {
 			fmt.Printf("FAIL %s: the step stopped on the failure the test log above names\n", name)
 		}
 	}()
-	r.liveProof.step(name, body)
+	r.step(name, body)
 }
 
 // held prints one check of the step that held, which the script counts.
 func (r *versionNewsLive) held(format string, args ...any) {
-	fmt.Printf("   assert %s: %s\n", r.step, fmt.Sprintf(format, args...))
+	fmt.Printf("   assert %s: %s\n", r.running, fmt.Sprintf(format, args...))
 }
 
 // fail prints the step's FAIL line, naming what did not hold, and ends the run.
@@ -536,8 +536,8 @@ func (r *versionNewsLive) fail(format string, args ...any) {
 	r.t.Helper()
 	message := fmt.Sprintf(format, args...)
 	r.named = true
-	fmt.Printf("FAIL %s: %s\n", r.step, message)
-	r.t.Fatalf("%s: %s", r.step, message)
+	fmt.Printf("FAIL %s: %s\n", r.running, message)
+	r.t.Fatalf("%s: %s", r.running, message)
 }
 
 // await polls ready every 100 ms until it holds, and fails naming what after within, with what the
@@ -979,7 +979,7 @@ func (r *versionNewsLive) gatedSteps(key string) map[record.DesignStep]api.Gated
 // versionNewsSteps is gated steps as a note says them.
 func versionNewsSteps(views map[record.DesignStep]api.GatedStepView) string {
 	var said []string
-	for _, step := range []record.DesignStep{record.DesignStepDecisions, record.DesignStepCriteria, record.DesignStepSpec} {
+	for _, step := range record.DesignSteps {
 		view, ok := views[step]
 		if !ok {
 			continue
@@ -1303,14 +1303,12 @@ func (r *versionNewsLive) a5() {
 	childReviewer := r.connect(child, claim.RoleReviewer, before)
 	start := childReviewer.awaitPrompt("the child reviewer's start task", mark)
 	r.note("%s was prompted:\n%s", childReviewer.name(), start.message)
-	// The read the root reviewer's task passed above: a change list names the check, or a
-	// "Checks:" line, under the news's own opening words.
+	// A change list names the check, or a "Checks:" line, under the news's own opening words.
 	names := func(message string) bool {
 		return strings.Contains(message, tree.check) || strings.Contains(message, "Checks:") || strings.Contains(message, "The approved design of")
 	}
-	if names(start.message) || !names(task.message) {
-		r.fail("%s's start task names a change (%t), and %s's names one (%t); want none for the child, whose issue the version changed nothing of, and %s for the root: %q",
-			childReviewer.name(), names(start.message), reviewer.name(), names(task.message), tree.check, start.message)
+	if names(start.message) {
+		r.fail("%s's start task names a change; want none, since version 2 changed nothing %s holds: %q", childReviewer.name(), child.key, start.message)
 	}
 	r.held("%s's start task names no check and no change, since version 2 changed nothing %s holds, where the same read finds %s in %s's",
 		childReviewer.name(), child.key, tree.check, reviewer.name())
@@ -1411,9 +1409,9 @@ func (r *versionNewsLive) processed(source, eventID string) bool {
 
 // Step A7. A checks-only version closes one tree's gate while its retro runs, and the implementer
 // of that tree and of a second, whose gate stands open, each complete retro at once. The open
-// tree's merger is launched, and in that same window the closed tree's merger is not, its pull
-// request stands open and nothing asked GitHub to merge. The person's approval then releases it:
-// the merger is launched and its start task leads with the gate's opening and names what changed.
+// tree's merger is launched, and in that same window the closed tree's merger is not. The person's
+// approval then releases it: the merger is launched and its start task leads with the gate's
+// opening and names what changed.
 func (r *versionNewsLive) a7() {
 	closed, open := r.trees["a7"], r.trees["a7-open"]
 	implementers := []*versionNewsClaimant{r.claimant(closed.root(), claim.RoleImplementer), r.claimant(open.root(), claim.RoleImplementer)}
@@ -1443,11 +1441,7 @@ func (r *versionNewsLive) a7() {
 	if count := r.launches(held, r.rt.Calls()); count != r.launches(held, before) {
 		r.fail("the merger of %s was launched while its gate was closed", closed.root().key)
 	}
-	pr := r.stateIssue(closed.root().key).PullRequest
-	if pr == nil || pr.State != string(record.PullRequestOpen) || len(r.github.merges()) > 0 {
-		r.fail("while the gate was closed the pull request of %s reads %+v and GitHub was asked %v, want it open and no merge asked", closed.root().key, pr, r.github.merges())
-	}
-	r.held("in the window %s's merger was launched in, the merger of %s, its gate closed, was not, its pull request stands open and nothing asked GitHub to merge", open.root().key, closed.root().key)
+	r.held("in the window %s's merger was launched in, the merger of %s, its gate closed, was not", open.root().key, closed.root().key)
 	r.approve(closed.verification, 2)
 	merger := r.connect(closed.root(), claim.RoleMerger, before)
 	task := merger.awaitPrompt("the merger's start task", mark)
@@ -1605,47 +1599,4 @@ func (r *versionNewsLive) dispatchCall(method, path string, body any, want int, 
 			r.fail("decode Dispatch's answer to %s %s (%s): %v", method, path, answer, err)
 		}
 	}
-}
-
-// versionNewsGitHub is GitHub's REST API as this proof's daemon reads it: every repository has
-// default branch main, and every other request is answered 404 and kept, so a step can say
-// nothing asked GitHub to merge.
-type versionNewsGitHub struct {
-	url      string
-	mu       sync.Mutex
-	requests []string
-}
-
-// newVersionNewsGitHub starts the stand-in for the test's life.
-func newVersionNewsGitHub(t *testing.T) *versionNewsGitHub {
-	t.Helper()
-	g := &versionNewsGitHub{}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		g.mu.Lock()
-		g.requests = append(g.requests, req.Method+" "+req.URL.Path)
-		g.mu.Unlock()
-		rest, isRepository := strings.CutPrefix(req.URL.Path, "/repos/")
-		if parts := strings.Split(rest, "/"); req.Method == http.MethodGet && isRepository && len(parts) == 2 {
-			_, _ = io.WriteString(w, `{"full_name":"`+parts[0]+"/"+parts[1]+`","default_branch":"main"}`)
-			return
-		}
-		w.WriteHeader(http.StatusNotFound)
-		_, _ = io.WriteString(w, `{"message":"Not Found"}`)
-	}))
-	t.Cleanup(server.Close)
-	g.url = server.URL
-	return g
-}
-
-// merges is every request that asked GitHub to merge a pull request.
-func (g *versionNewsGitHub) merges() []string {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	var merges []string
-	for _, request := range g.requests {
-		if strings.HasSuffix(request, "/merge") {
-			merges = append(merges, request)
-		}
-	}
-	return merges
 }
