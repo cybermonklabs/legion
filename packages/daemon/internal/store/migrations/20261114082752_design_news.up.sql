@@ -36,16 +36,19 @@
 -- which version of artifact_id a person approved before to_version, asked for a holder whose told
 -- row knows no version of that step. reason names the failed read. It is a state of its own, never
 -- a version: the told row keeps no version of the step, the news says that version could not be
--- read and why, and the next reconcile asks the history again. The daemon tells nothing from a row
--- while a design_changes row of the tree that asks it is still to run, since that reconcile
--- replaces it. The read that answers fills the told row and deletes the question's row in one
--- write. So a failure Dispatch stops giving is never kept, and from_version 0 is never written for
--- a history nobody read.
+-- read and why, and the next reconcile asks the history again. The daemon attaches nothing new
+-- from a row while a design_changes row of the tree that asks it is still to run, since that
+-- reconcile replaces it; a delivery it attached the row to already carries the row's reason and
+-- time, and is told by them. The read that answers fills the told row and deletes the question's
+-- row in one write. So a failure Dispatch stops giving is never kept, and from_version 0 is never
+-- written for a history nobody read.
 --
 -- pending_task_deliveries.design_news is the news items a delivery carries, each the issue, the
--- audience, the step, the document and the version pair, and whether it carries the opening: what
--- the confirmation of that delivery raises in design_news_told. It is null for a delivery that
--- carries no news, which is every delivery the release before this one queued.
+-- audience, the step, the document and the version pair, with the reason and time of the unread
+-- review history an item whose earlier version could not be read was attached with, and whether it
+-- carries the opening: what the confirmation of that delivery raises in design_news_told. It is
+-- null for a delivery that carries no news, which is every delivery the release before this one
+-- queued.
 --
 -- The outbox kind design_changes is the row that runs that reconcile for one tree. The check is
 -- one list, so it is rewritten whole naming every kind, as 20261110235320 did: the list of
@@ -58,11 +61,10 @@
 -- row. No release carries 20261113212423 and main never merged it, so no deployment's database
 -- records it. Only a database that a build of this branch migrated before the forward merge does,
 -- and such a database is a test's own: it would apply this file a second time and fail on the
--- first create table below, so make it again rather than upgrade it. No release carries
--- 20261114082752 either, and main has not merged it, so design_history_unread is written into this
--- file rather than a migration of its own. A database a build of this branch migrated before that
--- table was added records this version without the table, and it too is a test's own, to make
--- again.
+-- first create table below, so make it again rather than upgrade it. design_history_unread was
+-- added to this file before any release carried 20261114082752, so it is written here rather than
+-- in a migration of its own. A database a build of this branch migrated before the table was added
+-- records this version without it, and it too is a test's own, to make again.
 --
 -- Rolling the image back needs no restore of the schema. The release before this one names none
 -- of the three tables nor the new column in any statement, its pending_task_deliveries insert

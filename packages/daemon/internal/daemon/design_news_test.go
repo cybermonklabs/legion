@@ -1067,10 +1067,17 @@ func TestThreeFailedHistoryReadsRecordTheHistoryUnreadWithNoVersionAndReleaseThe
 			t.Fatalf("the merger's task = %q, want it to say %q", task, want)
 		}
 	}
+	if strings.Contains(task, "first version a person approved") || len(news.Items) != 1 || news.Items[0].HistoryUnread == nil ||
+		!news.Items[0].HistoryUnread.ReadAt.Equal(unread.ReadAt) {
+		t.Fatalf("the merger's task = %q carrying %+v, want no first approval and the item with no earlier version, carrying the unread history", task, news)
+	}
+	// The moment read back through the delivery's JSON is the recorded one; compare the rest whole.
+	news.Items[0].HistoryUnread.ReadAt = unread.ReadAt
 	unknown := heldItem(reconcileRoot, 0)
 	unknown.From = nil
-	if strings.Contains(task, "first version a person approved") || !reflect.DeepEqual(news.Items, []record.DeliveryNewsItem{unknown}) {
-		t.Fatalf("the merger's task = %q carrying %+v, want no first approval and the item with no earlier version", task, news)
+	unknown.HistoryUnread = &record.DeliveryHistoryUnread{Reason: unread.Reason, ReadAt: unread.ReadAt}
+	if !reflect.DeepEqual(news.Items, []record.DeliveryNewsItem{unknown}) {
+		t.Fatalf("the merger's task carries %+v, want the item with no earlier version and the unread history it was attached with", news.Items)
 	}
 
 	answers = true
@@ -1190,6 +1197,112 @@ func TestAPendingReconcileHoldsTheMergerOffAnUnreadHistoryUntilItReadsItAgain(t 
 	if !strings.Contains(task, "version 5, since version 3, which your phase last took") || strings.Contains(task, "could not be read") ||
 		strings.Contains(task, "502 BAD_GATEWAY") || !reflect.DeepEqual(news.Items, []record.DeliveryNewsItem{heldItem(reconcileRoot, 3)}) {
 		t.Fatalf("the merger's task = %q carrying %+v, want the spec from version 3, which the history gave, and no word of the old failure", task, news)
+	}
+}
+
+// A merger released on an unread review history carries the item its start attached until its
+// task is taken, with the history's reason (record.DeliveryNewsItem.HistoryUnread), and supervise
+// renders that task again from the record at its send (workflowRuntime.designNews). The record
+// moves before the send in one of two ways: Dispatch answers and a reconcile fills the told row and
+// records the pair, or a reconcile is queued while Dispatch still fails. Neither loses what the
+// start attached. Once the told row knows the version and the pair is recorded, the send tells
+// that pair and the delivery goes on carrying the item from that version; while it does not, the
+// send tells the unread history the start attached, with its reason, and the delivery keeps it.
+// The merger's task never goes as its bare text, with none of the news it was held for.
+func TestAMergerReleasedOnAnUnreadHistoryIsSentWhatItsStartAttached(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// answers says whether Dispatch answers the review history once the merger is released.
+		answers bool
+		says    []string
+		never   []string
+		// rekeyed says the send re-keys the item to version 3, the version the told row came to know.
+		rekeyed bool
+	}{
+		{name: "Dispatch answered and the pair is recorded", answers: true, rekeyed: true,
+			says:  []string{"version 5, since version 3, which your phase last took", `"Design" changed`},
+			never: []string{"could not be read", "502 BAD_GATEWAY"}},
+		{name: "a reconcile is pending while Dispatch still fails", answers: false,
+			says: []string{"version 5, since a version the daemon could not read",
+				"The version your phase last took could not be read: Dispatch failed 3 reads of the document's review history, the last with: dispatch: 502 BAD_GATEWAY."},
+			never: []string{"first version a person approved"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newNewsReconcileRig(t)
+			sends := &workflowRuntime{pool: r.pool, records: r.records, gatedSteps: r.runner.gatedSteps, dispatchProject: "LEGION", log: quietLogger()}
+			r.sup.deps.DesignNews = sends.designNews
+			r.member(reconcileRoot, "", phase.Merging)
+			r.told(reconcileRoot, record.AudienceHolder, -1)
+			r.holder(reconcileRoot, claim.RoleMerger, supervise.StateQueued, "", 0)
+			answers := false
+			r.client.before = func(string, int) (int, error) {
+				if !answers {
+					return 0, errors.New("dispatch: 502 BAD_GATEWAY")
+				}
+				return 3, nil
+			}
+			for attempts := range designChangesAttempts {
+				_ = r.reconcile(attempts)
+			}
+			const own = "Merge it."
+			if err := r.runner.execute(r.ctx, mustOutboxRow(t, reconcileRoot, record.SuperviseRequest{Op: "start", Tree: reconcileRoot,
+				Role: claim.RoleMerger, Generation: 1, Phase: phase.Merging, Entry: 1, Task: own}, time.Now())); err != nil {
+				t.Fatalf("the merger's start on the unread history = %v, want it released", err)
+			}
+			released, found := r.sup.Machine(mustClaimToken(t, reconcileRoot, claim.RoleMerger))
+			if !found {
+				t.Fatal("the merger's start created no claim")
+			}
+			if _, attached := pendingNews(t, released); len(attached.Items) != 1 || attached.Items[0].From != nil ||
+				attached.Items[0].HistoryUnread == nil || !strings.Contains(attached.Items[0].HistoryUnread.Reason, "502 BAD_GATEWAY") {
+				t.Fatalf("the merger's start attached %+v, want the item with no earlier version and the unread history's reason", attached.Items)
+			}
+
+			answers = tc.answers
+			if tc.answers {
+				if err := r.reconcile(0); err != nil {
+					t.Fatalf("reconcile once Dispatch answers: %v", err)
+				}
+				if took, _ := r.toldOf(reconcileRoot, record.AudienceHolder).Took(record.DesignStepSpec); took != 3 {
+					t.Fatalf("the merger's told version once Dispatch answered = %d, want 3: the case's own premise", took)
+				}
+			} else {
+				r.queueReconcile(0)
+			}
+
+			machine, conn := connectWorker(t, r.ctx, r.sup, reconcileRoot, claim.RoleMerger)
+			sent := deliveredTask(t, machine)
+			prompts := conn.Prompts()
+			if len(prompts) != 1 || prompts[0].DeliveryID != sent.ID {
+				t.Fatalf("the merger's prompts = %+v, want its task, once", prompts)
+			}
+			message := prompts[0].Message
+			if !strings.HasPrefix(message, own+"\n\n") {
+				t.Fatalf("the merger's task sent = %q, want its own text and the news its start attached, never the bare text", message)
+			}
+			for _, want := range tc.says {
+				if !strings.Contains(message, want) {
+					t.Fatalf("the merger's task sent = %q, want it to say %q", message, want)
+				}
+			}
+			for _, never := range tc.never {
+				if strings.Contains(message, never) {
+					t.Fatalf("the merger's task sent = %q, want no %q", message, never)
+				}
+			}
+			var carried record.DeliveryNews
+			if err := json.Unmarshal(sent.News, &carried); err != nil {
+				t.Fatalf("decode the news the sent delivery carries: %v", err)
+			}
+			switch item := carried.Items; {
+			case len(item) != 1:
+				t.Fatalf("the sent delivery carries %+v, want the one item", item)
+			case tc.rekeyed && (item[0].From == nil || *item[0].From != 3 || item[0].HistoryUnread != nil):
+				t.Fatalf("the sent delivery carries %+v, want the item re-keyed to version 3 with no unread history", item[0])
+			case !tc.rekeyed && (item[0].From != nil || item[0].HistoryUnread == nil || !strings.Contains(item[0].HistoryUnread.Reason, "502 BAD_GATEWAY")):
+				t.Fatalf("the sent delivery carries %+v, want the item as attached, with its unread history", item[0])
+			}
+		})
 	}
 }
 

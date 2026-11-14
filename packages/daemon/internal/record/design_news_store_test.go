@@ -2,7 +2,9 @@ package record
 
 import (
 	"context"
+	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -250,8 +252,13 @@ func TestAnUnreadReviewHistoryIsRecordedPerQuestionUntilItIsRead(t *testing.T) {
 	}
 
 	inTx(t, st, func(tx pgx.Tx) {
-		must(t, records.ClearDesignHistoryUnread(ctx, tx, question))
 		must(t, records.ClearDesignHistoryUnread(ctx, tx, other))
+	})
+	if got := recorded(); !reflect.DeepEqual(got, map[DesignHistoryQuestion]DesignHistoryUnread{question: later}) {
+		t.Fatalf("the unread histories after a clear of a question with none recorded = %+v, want the other question's row kept", got)
+	}
+	inTx(t, st, func(tx pgx.Tx) {
+		must(t, records.ClearDesignHistoryUnread(ctx, tx, question))
 	})
 	if got := recorded(); len(got) != 0 {
 		t.Fatalf("the unread histories after the read that answered = %+v, want none", got)
@@ -262,8 +269,12 @@ func TestAnUnreadReviewHistoryIsRecordedPerQuestionUntilItIsRead(t *testing.T) {
 			{DesignHistoryQuestion: other, ReadAt: at},
 			{DesignHistoryQuestion: DesignHistoryQuestion{ArtifactID: "doc-spec"}, Reason: "a failed read", ReadAt: at},
 		} {
-			if err := records.PutDesignHistoryUnread(ctx, tx, refused); err == nil {
+			err := records.PutDesignHistoryUnread(ctx, tx, refused)
+			if err == nil {
 				t.Fatalf("recording %+v was taken, want it refused", refused)
+			}
+			if named := fmt.Sprintf("%+v", refused.DesignHistoryQuestion); !strings.Contains(err.Error(), named) {
+				t.Fatalf("the refusal of %+v = %v, want it to name the question %s", refused, err, named)
 			}
 		}
 		if unread, err := records.DesignHistoryUnreadOf(ctx, tx, nil); err != nil || len(unread) != 0 {

@@ -35,12 +35,18 @@ import (
 //     still holds a version below To or none it knows; every other item is dropped from the text
 //     and from the news the delivery carries, so its confirmation raises only what was told;
 //   - an opening stands while the told row of its audience still owes it;
-//   - an item whose change set is not recorded yet is dropped as well: nothing else can say what
-//     changed, and the item stays owed for a later start, or the reconcile, to carry. So is an
-//     item whose told row knows no version of its step, unless the reconcile recorded its review
-//     history unread (record.DesignHistoryUnread) and no reconcile of its tree is pending, which
-//     would read that history again (readNewsRecorded): that item stands, and is said as a version
-//     the daemon could not read, with the reason, never as a first approval;
+//   - an item that names its pair (From) is told with that pair's change set, and is dropped as well
+//     where none is recorded yet: nothing else can say what changed, and the item stays owed for a
+//     later start, or the reconcile, to carry;
+//   - an item carried with no earlier version (From nil) is decided on what the delivery carries,
+//     never on whether the record still holds its history unread (carriedChange). Where its told
+//     row has come to know a version of its step since, the item is re-keyed to that version, and
+//     told as that pair once the pair's change set is recorded. Otherwise, where the start attached
+//     it with its review history unread (record.DeliveryNewsItem.HistoryUnread), it is told as that
+//     history, with the reason it was attached with, never as a first approval: a reconcile that has
+//     run or is pending since changes nothing a start already attached, so a re-send never loses it.
+//     An item carrying neither, which only a delivery written before that field was can hold, is
+//     read as a start reads the record (readNewsRecorded) and takes the unread history on;
 //   - the root architect's summary of a tree that lingers is dropped whole: linger holds every
 //     member where it stood, record.OwedNews owes such a tree nothing, and nothing goes to it.
 //
@@ -48,8 +54,10 @@ import (
 // phase start whose news is all dropped is sent as its own text alone, carrying no news; a task
 // queued for its news alone with nothing left to say — no item standing, and no opening owed while
 // the gate stands open — answers "", which the machine retires rather than sends. A task whose news
-// all stands is answered with the bytes it carries, so a send of a task the record has not moved
-// under writes nothing.
+// all stands as it is carried is answered with the bytes it carries, so a send of a task the record
+// has not moved under writes nothing; one whose items the send dropped, re-keyed or told by another
+// state than they carry is answered with its news encoded again, so its confirmation and any later
+// send read what this send told.
 //
 // An item dropped from the text and the delivery queues one design_changes row for its tree
 // (record.QueueDesignNews): the item no longer stands, or the record could not tell it yet, and
@@ -86,7 +94,7 @@ func (w *workflowRuntime) designNews(ctx context.Context, c supervise.Claim, d s
 	}
 	task := paragraphs(carried.Task, sent.text)
 	switch {
-	case len(sent.kept.Items) == len(carried.Items) && len(sent.kept.Openings) == len(carried.Openings):
+	case !sent.rewritten && len(sent.kept.Items) == len(carried.Items) && len(sent.kept.Openings) == len(carried.Openings):
 		return task, d.News, nil
 	case sent.kept.Empty():
 		return task, nil, nil
@@ -101,13 +109,16 @@ func (w *workflowRuntime) designNews(ctx context.Context, c supervise.Claim, d s
 // newsAtSend is what a delivery's news says at its send: the text that follows the start's own
 // (text), what of the news still stands (kept, which keeps the start's own text and whether it is
 // a news-only start), whether any of it is worth a task of its own (says): an item that stands,
-// or an opening owed while the gate stands open, and the tree of each item it dropped (dropped),
-// each once, whose reconcile the send queues.
+// or an opening owed while the gate stands open, whether it keeps an item otherwise than it was
+// carried (rewritten: re-keyed to the version its told row has come to know, or with its unread
+// review history taken on or let go, carriedChange), and the tree of each item it dropped
+// (dropped), each once, whose reconcile the send queues.
 type newsAtSend struct {
-	text    string
-	kept    record.DeliveryNews
-	says    bool
-	dropped []string
+	text      string
+	kept      record.DeliveryNews
+	says      bool
+	rewritten bool
+	dropped   []string
 }
 
 // newsListener is one audience of one issue a delivery speaks to: the items it tells that
@@ -168,12 +179,16 @@ type newsListened struct {
 // whose issue the record does not hold is dropped: nothing can say what the gate of a tree the
 // record does not know stands at. So is the architect of a tree that lingers, items, opening and
 // summary alike. Every other item it drops names its tree among the dropped, for the reconcile its
-// caller queues.
+// caller queues. An item that stands is decided on what the delivery carries (rekeyed,
+// carriedChange); the summary's members are read as a start reads the record (memberDraft.told).
 func readNewsAtSend(ctx context.Context, tx pgx.Tx, records record.Store, steps []record.DesignStep, carried record.DeliveryNews,
 	now func() time.Time) (newsAtSend, error) {
 	trees := map[string]*newsTree{}
 	var listened []newsListened
 	var asks newsAsks
+	// items is each carried item as this send reads it: re-keyed against its told row, then as the
+	// delivery goes on carrying it once told (carriedChange).
+	items := slices.Clone(carried.Items)
 	for _, listener := range listenersOf(carried) {
 		issue, err := records.Issue(ctx, tx, listener.issue)
 		if err != nil {
@@ -199,8 +214,12 @@ func readNewsAtSend(ctx context.Context, tx pgx.Tx, records record.Store, steps 
 			if !itemStands(item, tree.gates[item.Step], heard.told) {
 				continue
 			}
+			items[i] = rekeyed(item, heard.told)
 			heard.items = append(heard.items, i)
-			asks.add(issue.Tree, item.NewsItem())
+			// An item told by the unread history it carries asks the record nothing of it.
+			if items[i].From != nil || items[i].HistoryUnread == nil {
+				asks.add(issue.Tree, items[i].NewsItem())
+			}
 		}
 		heard.opening = listener.opening && heard.told.OpeningOwed
 		if listener.audience == record.AudienceArchitect && claim.IsTreeRoot(issue.Key, issue.Tree) {
@@ -224,10 +243,11 @@ func readNewsAtSend(ctx context.Context, tx pgx.Tx, records record.Store, steps 
 		news := workflow.News{Audience: heard.listener.audience, Tree: heard.issue.Tree, Issue: heard.issue.Key,
 			Phase: heard.issue.Phase, Steps: steps, Gates: heard.tree.gates, OpeningOwed: heard.opening}
 		for _, i := range heard.items {
-			change, ok := recorded.change(carried.Items[i].NewsItem())
+			change, kept, ok := recorded.carriedChange(items[i])
 			if !ok {
 				continue
 			}
+			items[i] = kept
 			keep[i] = true
 			news.Items = append(news.Items, change)
 		}
@@ -244,9 +264,10 @@ func readNewsAtSend(ctx context.Context, tx pgx.Tx, records record.Store, steps 
 		sent.says = sent.says || len(news.Items) > 0 || (heard.opening && open)
 		texts = append(texts, workflow.RenderNews(news))
 	}
-	for i, item := range carried.Items {
+	for i, item := range items {
 		if keep[i] {
 			sent.kept.Items = append(sent.kept.Items, item)
+			sent.rewritten = sent.rewritten || item.From != carried.Items[i].From || item.HistoryUnread != carried.Items[i].HistoryUnread
 		}
 	}
 	for _, heard := range listened {
@@ -293,6 +314,45 @@ func itemStands(item record.DeliveryNewsItem, gate record.DesignGate, told recor
 	}
 	took, known := told.Took(item.Step)
 	return !known || took < item.To
+}
+
+// rekeyed is a carried item as this send reads it against its audience's told row now: an item
+// carried with no earlier version takes the version the row has come to know since, where it has
+// (a reconcile filled it from the review history), so the send names the pair the row names and a
+// confirmation taken back restores that version; any other item is as carried.
+func rekeyed(item record.DeliveryNewsItem, told record.DesignTold) record.DeliveryNewsItem {
+	if item.From == nil {
+		if took, known := told.Took(item.Step); known {
+			item.From = &took
+		}
+	}
+	return item
+}
+
+// carriedChange is what a send tells of item, a carried item as re-keyed against its told row
+// (rekeyed), the item as the delivery goes on carrying it, and whether it stands. An item naming a
+// pair whose change set is recorded is told with it, and lets go any unread history it carried.
+// Otherwise an item carrying an unread review history is told by that history, as the start
+// attached it, whatever the record has done since: readNewsRecorded's rule that a pending
+// reconcile holds an unread row back is for what a start attaches, never for what a delivery
+// already carries, whose re-send must not lose it. An item carrying neither is read as a start
+// reads the record (change): one naming a pair not recorded does not stand, and one naming none
+// stands only where its history stands unread, which it then takes on.
+func (n newsRecorded) carriedChange(item record.DeliveryNewsItem) (workflow.NewsChange, record.DeliveryNewsItem, bool) {
+	if pair, known := item.NewsItem().Pair(); known {
+		if changes, recorded := n.changes[pair]; recorded {
+			item.HistoryUnread = nil
+			return workflow.NewsChange{Step: item.Step, Changes: changes}, item, true
+		}
+	}
+	if unread := item.Unread(); unread != nil {
+		return workflow.NewsChange{Step: item.Step, HistoryUnread: unread}, item, true
+	}
+	change, told := n.change(item.NewsItem())
+	if told && change.HistoryUnread != nil {
+		item.HistoryUnread = &record.DeliveryHistoryUnread{Reason: change.HistoryUnread.Reason, ReadAt: change.HistoryUnread.ReadAt}
+	}
+	return change, item, told
 }
 
 // memberDraft is one member of a tree as the root architect's summary reads it before the change

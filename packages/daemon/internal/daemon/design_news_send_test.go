@@ -213,14 +213,15 @@ func TestTheNewsATaskCarriesIsWhatTheRecordSaysAtItsSend(t *testing.T) {
 	}
 }
 
-// An item whose told row knows no version of its step carries no earlier version. At its send it
-// is dropped, as one whose change set is not recorded is, until the reconcile has recorded its
-// review history unread (record.DesignHistoryUnread): the send queues its tree's reconcile, which
-// asks the history again. An unread row recorded while that reconcile is still to run tells
-// nothing either, since the reconcile replaces it. Once the reconcile has run and the history
-// stands unread, the item stands: the text says the version the holder last took could not be
-// read, and why, never that the version is a first approval, and the delivery goes on carrying the
-// item with no earlier version.
+// An item whose told row knows no version of its step carries no earlier version. At its send, an
+// item that carries no unread review history either (record.DeliveryNewsItem.HistoryUnread) is read
+// as a start reads the record: it is dropped, as one whose change set is not recorded is, until the
+// reconcile has recorded its review history unread (record.DesignHistoryUnread), and the send
+// queues its tree's reconcile, which asks the history again. An unread row recorded while that
+// reconcile is still to run tells nothing either, since the reconcile replaces it. Once the
+// reconcile has run and the history stands unread, the item stands: the text says the version the
+// holder last took could not be read, and why, never that the version is a first approval, and the
+// delivery goes on carrying the item with no earlier version and that unread history.
 func TestAnItemWhoseReviewHistoryIsRecordedUnreadIsSentSoAndOneNotYetReadIsDropped(t *testing.T) {
 	r := newNewsRig(t)
 	r.inTx(func(tx pgx.Tx) error {
@@ -262,8 +263,71 @@ func TestAnItemWhoseReviewHistoryIsRecordedUnreadIsSentSoAndOneNotYetReadIsDropp
 	if strings.Contains(task, "first version a person approved") {
 		t.Fatalf("the tester's task = %q, want no first approval: the history was not read", task)
 	}
-	if carried == nil || !reflect.DeepEqual(carried.Items, []record.DeliveryNewsItem{unknown}) {
-		t.Fatalf("the tester's task still carries %+v, want the item with no earlier version", carried)
+	if carried == nil || len(carried.Items) != 1 || carried.Items[0].From != nil || carried.Items[0].HistoryUnread == nil ||
+		!strings.Contains(carried.Items[0].HistoryUnread.Reason, "502 BAD_GATEWAY") {
+		t.Fatalf("the tester's task still carries %+v, want the item with no earlier version and the unread history it takes on", carried)
+	}
+}
+
+// An item a delivery carries with its review history unread is told by what it carries at every
+// send, never by whether the record still holds that history unread: a reconcile pending to read
+// it again holds back what a start attaches, not what a delivery already carries, so a re-send
+// tells the reason it was attached with. Once the told row has come to know a version of the step,
+// the item is re-keyed to it; while that pair's change set is not recorded, the item is still told
+// as unread, and once it is, as that pair, and the delivery goes on carrying the item from that
+// version with no unread history.
+func TestAResendTellsAnItemByTheUnreadHistoryItCarriesUntilItsPairIsRecorded(t *testing.T) {
+	r := newNewsRig(t)
+	r.inTx(func(tx pgx.Tx) error {
+		_, err := tx.Exec(r.ctx, `update design_news_told set versions = '{}'::jsonb where issue = $1 and audience = 'holder'`, newsTested)
+		return err
+	})
+	const testerText = "Test the change. Issue: LEGION-502. Phase: testing."
+	const reason = "Dispatch failed 3 reads of the document's review history, the last with: dispatch: 502 BAD_GATEWAY"
+	attached := record.DeliveryNewsItem{Issue: newsTested, Audience: record.AudienceHolder, Step: record.DesignStepSpec, Artifact: "artifact-spec", To: 5,
+		HistoryUnread: &record.DeliveryHistoryUnread{Reason: reason, ReadAt: time.Date(2026, 11, 14, 9, 0, 0, 0, time.UTC)}}
+	tester := record.DeliveryNews{Task: testerText, Items: []record.DeliveryNewsItem{attached}}
+	unreadWords := "The version your phase last took could not be read: " + reason + "."
+
+	// A reconcile of the tree is queued, and the record holds no unread row: a start would attach
+	// nothing, but the delivery carries the item as it was attached.
+	r.inTx(func(tx pgx.Tx) error { return record.QueueDesignNews(r.ctx, r.records, tx, newsRoot, time.Now()) })
+	task, carried := r.send(newsTested, claim.RoleTester, tester)
+	if !strings.HasPrefix(task, testerText+"\n\n") || !strings.Contains(task, "version 5, since a version the daemon could not read") ||
+		!strings.Contains(task, unreadWords) {
+		t.Fatalf("the re-sent task with a reconcile pending = %q, want the unread history it carries, with its reason", task)
+	}
+	if carried == nil || !reflect.DeepEqual(carried.Items, []record.DeliveryNewsItem{attached}) {
+		t.Fatalf("the re-sent task carries %+v, want the item as attached", carried)
+	}
+
+	// The reconcile reads the history: the told row takes version 4, whose pair is not recorded yet.
+	r.inTx(func(tx pgx.Tx) error {
+		return r.records.FillTold(r.ctx, tx, newsTested, record.AudienceHolder, map[record.DesignStep]int{record.DesignStepSpec: 4}, time.Now())
+	})
+	task, carried = r.send(newsTested, claim.RoleTester, tester)
+	if !strings.Contains(task, unreadWords) || strings.Contains(task, "since version 4") {
+		t.Fatalf("the re-sent task with the pair from version 4 not recorded = %q, want the unread history it carries", task)
+	}
+	rekeyed := attached
+	rekeyed.From = new(4)
+	if carried == nil || !reflect.DeepEqual(carried.Items, []record.DeliveryNewsItem{rekeyed}) {
+		t.Fatalf("the re-sent task carries %+v, want the item re-keyed to version 4, its unread history kept", carried)
+	}
+
+	// The pair from version 4 is recorded: the re-send tells it, and lets the unread history go.
+	r.inTx(func(tx pgx.Tx) error {
+		return r.records.PutDesignChanges(r.ctx, tx, record.DesignChanges{
+			VersionPair: record.VersionPair{ArtifactID: "artifact-spec", From: 4, To: 5}, State: record.DesignChangesRead,
+			Sections: []record.SectionChange{{Heading: "Rollout", Change: "added"}}, ReadAt: time.Now()})
+	})
+	task, carried = r.send(newsTested, claim.RoleTester, *carried)
+	if !strings.Contains(task, "version 5, since version 4, which your phase last took") || !strings.Contains(task, `"Rollout" added`) ||
+		strings.Contains(task, "could not be read") {
+		t.Fatalf("the re-sent task with the pair from version 4 recorded = %q, want that pair told and no word of the unread history", task)
+	}
+	if carried == nil || !reflect.DeepEqual(carried.Items, []record.DeliveryNewsItem{newsItem(newsTested, record.AudienceHolder, record.DesignStepSpec, "artifact-spec", 4, 5)}) {
+		t.Fatalf("the re-sent task carries %+v, want the item from version 4 with no unread history", carried)
 	}
 }
 

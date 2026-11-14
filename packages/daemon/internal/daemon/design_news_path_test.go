@@ -412,13 +412,20 @@ func (r *newsPathRig) seenSince(mark int64, match func(pathRow) bool) []pathRow 
 // worker does. It answers the claim's machine and the connection the worker's prompts reach.
 func (r *newsPathRig) connect(issue string, role claim.Role) (*supervise.Machine, *fake.Conn) {
 	r.t.Helper()
-	token := mustClaimToken(r.t, issue, role)
-	machine, found := r.sup.Machine(token)
+	return connectWorker(r.t, r.ctx, r.sup, issue, role)
+}
+
+// connectWorker is the worker of role on issue, under sup, coming up on the process its start
+// launched (newsPathRig.connect), its connection registered on sup's fake connections.
+func connectWorker(t *testing.T, ctx context.Context, sup *supervisor, issue string, role claim.Role) (*supervise.Machine, *fake.Conn) {
+	t.Helper()
+	token := mustClaimToken(t, issue, role)
+	machine, found := sup.Machine(token)
 	if !found {
-		r.t.Fatalf("no claim of %s's %s to connect: its start created none", issue, role)
+		t.Fatalf("no claim of %s's %s to connect: its start created none", issue, role)
 	}
 	conn := fake.NewConn()
-	r.conns.Register(token, conn)
+	sup.deps.Conns.(*fake.Conns).Register(token, conn)
 	machine.Wait()
 	generation := machine.Claim().Generation
 	session := fmt.Sprintf("ses-%s-%s", strings.ToLower(issue), role)
@@ -428,8 +435,8 @@ func (r *newsPathRig) connect(issue string, role claim.Role) (*supervise.Machine
 			CapabilityHash: []byte("capability-of-" + session)},
 		supervise.RequestReady{Claim: token, Generation: generation, Session: session},
 	} {
-		if err := machine.Handle(r.ctx, ev); err != nil {
-			r.t.Fatalf("handle %T of %s: %v", ev, token, err)
+		if err := machine.Handle(ctx, ev); err != nil {
+			t.Fatalf("handle %T of %s: %v", ev, token, err)
 		}
 	}
 	return machine, conn
@@ -438,7 +445,13 @@ func (r *newsPathRig) connect(issue string, role claim.Role) (*supervise.Machine
 // delivered waits for the task machine holds to reach the agent, and answers it.
 func (r *newsPathRig) delivered(machine *supervise.Machine) supervise.Delivery {
 	r.t.Helper()
-	testwait.Eventually(r.t, "the task of "+string(machine.Claim().Token)+" to reach its agent", func() bool {
+	return deliveredTask(r.t, machine)
+}
+
+// deliveredTask waits for the task machine holds to reach the agent, and answers it.
+func deliveredTask(t *testing.T, machine *supervise.Machine) supervise.Delivery {
+	t.Helper()
+	testwait.Eventually(t, "the task of "+string(machine.Claim().Token)+" to reach its agent", func() bool {
 		p := machine.Claim().Pending
 		return p != nil && !p.DeliveredAt.IsZero()
 	})

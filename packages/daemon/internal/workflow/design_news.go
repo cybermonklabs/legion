@@ -429,21 +429,19 @@ func sinceWords(item NewsChange, taker string) string {
 
 // changeLines is what one item says, line by line: the sections and the blocks of its change set
 // that changed, or why the list could not be read, or, for an item whose review history could not
-// be read, why the version taker last took could not be read (historyUnreadLine); then the command
-// that prints the new version.
+// be read, why the version taker last took could not be read; then the command that prints the new
+// version. An empty taker, in the architect's summary, names each issue the item is owed to.
 func changeLines(tree string, item NewsChange, taker string) []string {
 	changes := item.Changes
 	var lines []string
 	switch {
 	case item.HistoryUnread != nil:
-		lines = append(lines, historyUnreadLine(*item.HistoryUnread, taker))
-	case changes.State == record.DesignChangesUnavailable:
-		reason := strings.TrimRight(changes.Reason, ". ")
-		if reason == "" {
-			lines = append(lines, "The change list could not be read.")
-		} else {
-			lines = append(lines, fmt.Sprintf("The change list could not be read: %s.", reason))
+		if taker == "" {
+			taker = "each issue owed it"
 		}
+		lines = append(lines, couldNotRead(fmt.Sprintf("The version %s last took", taker), item.HistoryUnread.Reason))
+	case changes.State == record.DesignChangesUnavailable:
+		lines = append(lines, couldNotRead("The change list", changes.Reason))
 	default:
 		if len(changes.Sections) > 0 {
 			lines = append(lines, sectionsLine(changes.Sections))
@@ -460,18 +458,14 @@ func changeLines(tree string, item NewsChange, taker string) []string {
 	return append(lines, fmt.Sprintf("Read it: `dispatch doc-read --issue %s --artifact %s --version %d`", tree, item.artifact(), item.to()))
 }
 
-// historyUnreadLine says why an item names no version its audience took: Dispatch's review history
-// could not say which, and why not. taker is whose taking it names, as sinceWords takes it; an
-// empty taker, in the architect's summary, names each issue the item is owed to.
-func historyUnreadLine(unread record.DesignHistoryUnread, taker string) string {
-	if taker == "" {
-		taker = "each issue owed it"
-	}
-	reason := strings.TrimRight(unread.Reason, ". ")
+// couldNotRead is the sentence that says subject could not be read, and why where reason says,
+// its own closing stop and spaces trimmed so the sentence ends with one.
+func couldNotRead(subject, reason string) string {
+	reason = strings.TrimRight(reason, ". ")
 	if reason == "" {
-		return fmt.Sprintf("The version %s last took could not be read.", taker)
+		return subject + " could not be read."
 	}
-	return fmt.Sprintf("The version %s last took could not be read: %s.", taker, reason)
+	return fmt.Sprintf("%s could not be read: %s.", subject, reason)
 }
 
 // sectionsLine names each `##` section that changed, by its heading, and how, in Dispatch's own

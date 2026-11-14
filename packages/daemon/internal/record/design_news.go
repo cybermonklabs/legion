@@ -95,9 +95,10 @@ type DesignHistoryQuestion struct {
 // again, and the read that answers fills the told row and deletes this row in one write
 // (Postgres.ClearDesignHistoryUnread), so a failure Dispatch stops giving is never kept as a fact.
 // For the same reason the row stands only while no reconcile of the tree that asks it is pending
-// (Store.DesignNewsPending): a pending one reads the history again and replaces the row, so
-// nothing is told from it, and no merger is released on it, until that reconcile has run (the
-// daemon's readNewsRecorded).
+// (Store.DesignNewsPending): a pending one reads the history again and replaces the row, so no
+// start attaches it, and no merger is released on it, until that reconcile has run (the daemon's
+// readNewsRecorded). A delivery a start already attached it to carries its reason and time
+// (DeliveryNewsItem.HistoryUnread), and each send of that delivery tells it as attached.
 type DesignHistoryUnread struct {
 	DesignHistoryQuestion
 	Reason string

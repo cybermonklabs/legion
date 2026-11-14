@@ -299,10 +299,10 @@ const (
 )
 
 // settlementOf is what the reconcile does for one told row owed items, given what is recorded:
-// settleLater while the record cannot tell any item (newsRecorded.change); settleRaise, with the
-// version of each step to raise to, when every pair changed decision blocks alone and the row owes
-// no opening; and settleSend otherwise. An item whose review history could not be read is sent,
-// never raised: nothing says what changed since the version its holder took. A decision-only
+// settleLater while the record cannot yet tell some item (newsRecorded.change); settleRaise, with
+// the version of each step to raise to, when every pair changed decision blocks alone and the row
+// owes no opening; and settleSend otherwise. An item whose review history could not be read is
+// sent, never raised: nothing says what changed since the version its holder took. A decision-only
 // change the row owes the opening with is sent, not raised: the gate closed on that version, the
 // holder was told it closed, and a person approved it later, so the holder is owed the opening as
 // a task, with the words that nothing its issue holds changed and no change list
@@ -367,9 +367,12 @@ type newsRecorded struct {
 // the row cleared, or, on its last attempt, a fresh unread row. Telling the row before then would
 // keep the failure it records, since the confirmation of a task that tells it raises the told
 // version past the item: so until that reconcile has run, the item is not recorded, the reconcile
-// leaves it owed, a merger waits for it, and a send drops it. The reconcile that runs holds a live
-// lease on its own row, so the row it records on its last attempt stands for its own settle. Only
-// a set that asks a question reads the clock and whether a reconcile is pending.
+// leaves it owed, a merger waits for it, the summary names it by nothing, and a start attaches
+// nothing of it. The rule is for what is built anew: an item a delivery already carries with its
+// history unread is told by what it carries (carriedChange), so a re-send never loses it. The
+// reconcile that runs holds a live lease on its own row, so the row it records on its last attempt
+// stands for its own settle. Only a set that asks a question reads the clock and whether a
+// reconcile is pending.
 func readNewsRecorded(ctx context.Context, tx pgx.Tx, records record.Store, asks newsAsks, now func() time.Time) (newsRecorded, error) {
 	changes, err := records.DesignChangesOf(ctx, tx, asks.pairs)
 	if err != nil {
@@ -683,9 +686,12 @@ type startNews struct {
 // gate is open, each rendered as a send renders it (readNewsAtSend). An item the record cannot tell
 // yet — its change set not recorded, or, where its told row knows no version, that version neither
 // read from the review history nor recorded unread with no reconcile of its tree pending
-// (readNewsRecorded) — is left out and stays owed, for the reconcile or a later start to carry.
-// The task is the start's own text (record.DeliveryNews.Task), a blank line, then the news; a
-// start that carries nothing delivers its own text.
+// (readNewsRecorded) — is left out and stays owed, for the reconcile or a later start to carry. An
+// item it attaches with its review history unread carries that history's reason and time
+// (record.DeliveryNewsItem.HistoryUnread), so every later send of the task tells it as attached,
+// whatever a reconcile does before then (carriedChange). The task is the start's own text
+// (record.DeliveryNews.Task), a blank line, then the news; a start that carries nothing delivers
+// its own text.
 func (r *outbox) newsForStart(ctx context.Context, issue record.Issue, payload record.SuperviseRequest, token claim.Token) (startNews, error) {
 	carried := record.DeliveryNews{Task: payload.Task, NewsOnly: payload.News}
 	var sent newsAtSend

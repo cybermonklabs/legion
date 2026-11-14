@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"maps"
+	"strings"
 	"testing"
 	"time"
 
@@ -88,12 +89,15 @@ func (r *toldRig) wantTold(why string, issue string, audience record.DesignAudie
 
 // newsTask is the reviewer's task carrying news: version 5 of the spec to the child's holder, which
 // took version 3, version 2 of the Verification document to the root's architect, whose row knows
-// no version of it, and the opening to the child's holder.
+// no version of it and whose review history could not say which (record.DeliveryHistoryUnread),
+// and the opening to the child's holder.
 func (r *toldRig) newsTask(id string) supervise.Delivery {
 	r.t.Helper()
 	news, err := json.Marshal(record.DeliveryNews{Task: "Review the change.", Items: []record.DeliveryNewsItem{
 		{Issue: toldChild, Audience: record.AudienceHolder, Step: record.DesignStepSpec, Artifact: "artifact-spec", From: new(3), To: 5},
-		{Issue: toldRoot, Audience: record.AudienceArchitect, Step: record.DesignStepCriteria, Artifact: "artifact-checks", To: 2},
+		{Issue: toldRoot, Audience: record.AudienceArchitect, Step: record.DesignStepCriteria, Artifact: "artifact-checks", To: 2,
+			HistoryUnread: &record.DeliveryHistoryUnread{Reason: "Dispatch failed 3 reads of the document's review history, the last with: 502 BAD_GATEWAY",
+				ReadAt: r.at}},
 	}, Openings: []record.DeliveryOpening{{Issue: toldChild, Audience: record.AudienceHolder}}})
 	if err != nil {
 		r.t.Fatal(err)
@@ -140,6 +144,10 @@ func TestAConfirmationRaisesWhatItsNewsToldInItsOwnTransaction(t *testing.T) {
 	}
 	if len(stored.Items) != 2 || len(stored.Openings) != 1 || stored.Task != "Review the change." {
 		t.Fatalf("the delivery read back carries %+v, want the news it was written with", stored)
+	}
+	if stored.Items[0].HistoryUnread != nil || stored.Items[1].HistoryUnread == nil || !stored.Items[1].HistoryUnread.ReadAt.Equal(r.at) ||
+		!strings.Contains(stored.Items[1].HistoryUnread.Reason, "502 BAD_GATEWAY") {
+		t.Fatalf("the delivery read back carries the items %+v, want the unread history on the architect's item alone, as written", stored.Items)
 	}
 
 	confirmed := task
