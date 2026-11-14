@@ -706,9 +706,11 @@ func stuckMergeStateReason(pr record.PullRequest) string {
 // (classify.ApprovalStands) and GitHub reports that head one the issue may advance on
 // (record.MergeState.Mergeable). An approval that stands with any other answer waits on GitHub's
 // next answer about that head, which is classify.RoundWaitsOnMergeState - the rule the state
-// build reads too, so the two never drift. An approval GitHub has given no answer for yet - the
-// state unread, or `unknown` while GitHub computes it - waits where it stands, and the read that
-// lands moves it (mergeability, the ladder behind daemon's readMergeState). So does an approval
+// build reads too, so the two never drift. An approval with no merge state on record for its
+// head - no read of the head on record, or a read whose answer carried no state
+// (record.PullRequest.StateReadAt) - or with `unknown` while GitHub computes it, waits where it
+// stands, and the read that lands moves it (mergeability, the ladder behind daemon's
+// readMergeState). So does an approval
 // whose head still has a check running: a check the base requires holds the head `blocked` while
 // it runs, which says nothing about the round. What tells the two apart is the head's own check
 // runs (classify.ChecksConcludedOnHead): the round reports a head only once GitHub has reported

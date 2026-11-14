@@ -870,9 +870,10 @@ func LetsImplementationMove(pr *PullRequest) bool {
 	return pr != nil && slices.Contains(implementationMoveStates, pr.State)
 }
 
-// Mergeability is GitHub's lazily computed verdict for whether a pull request's head can be
-// merged into its base without a conflict, decoded from GitHub's nullable `mergeable` field
-// (daemon.readIssuePullRequest). "" (the zero value) means the daemon has never read it.
+// Mergeability is GitHub's lazily computed verdict for whether a pull request's head can be merged
+// into its base without a conflict, decoded from GitHub's nullable `mergeable` field
+// (daemon.readIssuePullRequest). "" (the zero value) means the record holds no verdict for its
+// head: none has been read, or a head move cleared it (classify's advance).
 type Mergeability string
 
 const (
@@ -883,9 +884,10 @@ const (
 
 // MergeState is GitHub's merge state for a pull request's head, read from `mergeable_state` on
 // GitHub's /pulls/{number} answer (daemon.readIssuePullRequest). It is kept in GitHub's own
-// lowercase spelling rather than one of the daemon's: the state is GitHub's judgement, weighing
-// the repository's required checks and reviews, and the daemon only records what it read.
-// "" (the zero value) means the daemon has never read it, which no GitHub answer ever spells.
+// lowercase spelling rather than one of the daemon's: the state is GitHub's judgement, weighing the
+// repository's required checks and reviews, and the daemon only records what it read. "" (the zero
+// value) means the record holds no merge state for its head; PullRequest.StateReadAt's doc says
+// what that means beside a read time and beside none.
 type MergeState string
 
 // The eight states GitHub spells in `mergeable_state`: clean, which GitHub would merge now;

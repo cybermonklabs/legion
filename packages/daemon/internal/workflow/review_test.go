@@ -95,8 +95,9 @@ func TestTheReviewEventDecidesAndTheCompletionRecordsItsFindings(t *testing.T) {
 }
 
 // An approval moves the issue on only once GitHub reports the head one the issue may advance on
-// (record.MergeState.Mergeable). While GitHub has given no answer for the head - it has never been
-// read, or GitHub answers `unknown` because it is still computing the merge - the round waits
+// (record.MergeState.Mergeable). While the record holds no merge state for the head
+// (record.PullRequest.StateReadAt says what that means), or GitHub answers `unknown` because it is
+// still computing the merge, the round waits
 // where it stands and nobody is told: the answer is about GitHub, not about the head, and the
 // read that finds the state clean is what moves the issue to accepting.
 func TestAnApprovalWaitsWhileGitHubHasNotAnsweredForTheHead(t *testing.T) {
@@ -104,7 +105,7 @@ func TestAnApprovalWaitsWhileGitHubHasNotAnsweredForTheHead(t *testing.T) {
 		name  string
 		state record.MergeState
 	}{
-		{"never read", record.MergeStateUnread},
+		{"no merge state on record", record.MergeStateUnread},
 		{"GitHub still computing it", record.MergeStateUnknown},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

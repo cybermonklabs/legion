@@ -1125,13 +1125,13 @@ func CodeOnItsWay(pr record.PullRequest) bool {
 // the two would drift, and the state would then say the daemon waits on an answer it never asks
 // for, or stay silent about a round it does read for.
 //
-// It holds for the round waiting for a first answer and for the stuck round alike - the head
-// GitHub has given no answer for yet, the head whose own checks are still running, and the head
-// GitHub answered `blocked` or `behind` for and the architect was told of - because each of them
-// is waiting on GitHub's next answer about the same head: the state a head is in changes under
-// it, a base push clearing `behind` and a required check that runs clearing `blocked`, and a read
-// is the only thing that would ever say so. What tells those apart is read by the caller that
-// needs them apart (ChecksConcludedOnHead), never here.
+// It holds for the round waiting for a first answer and for the stuck round alike - the head the
+// record holds no merge state for, the head whose own checks are still running, and the head GitHub
+// answered `blocked` or `behind` for and the architect was told of - because each of them is
+// waiting on GitHub's next answer about the same head: the state a head is in changes under it, a
+// base push clearing `behind` and a required check that runs clearing `blocked`, and a read is the
+// only thing that would ever say so. What tells those apart is read by the caller that needs them
+// apart (ChecksConcludedOnHead), never here.
 //
 // It makes no test of the pull request being open: reviewRound makes none, the read the engine
 // asks for has its own (workflow's askMergeStateFor), and a caller that needs one makes it itself
