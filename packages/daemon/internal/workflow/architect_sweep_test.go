@@ -154,31 +154,63 @@ func TestArchitectSweepStartPendingHoldsTheRowBackWhileOneIsOnItsWay(t *testing.
 }
 
 // The start the sweep writes again is the start admission's queued-root branch writes: the same
-// row, with the task derived again from the record as it stands (ArchitectStartTask) rather than
-// read off the phases row, and the entry the row already names. It raises no entry, since the
-// work it sends is the work that entry already stands for, and it waits for no admission slot,
-// since the root holds the row the cap counts already.
+// row, at the entry the row already names. It raises no entry, since the work it sends is the work
+// that entry already stands for, and it waits for no admission slot, since the root holds the row
+// the cap counts already.
+//
+// What it carries turns on what raised the entry. A task the derivation wrote, which ends in its
+// tail, is derived again from the record as it stands (ArchitectStartTask) rather than read off
+// the row, since a text composed once and sent again can name a kept decision another telling has
+// already claimed. A task the resume of a person's answer wrote names the answer and no kept
+// decision, and the answer is the work that entry owes, so it is sent as written and claims
+// nothing.
 func TestArchitectSweepSendRederivesTheTaskAtTheEntryTheRowNames(t *testing.T) {
-	pool := migratedPool(t)
-	root := architectEntryRoot()
-	seedIssue(t, pool, root)
-	seedArchitectEntryRow(t, pool)
-	engine := testEngine(config.DesignGateRootIssues, nil)
-	gate := record.TreeGate{Steps: engine.GatedSteps()}
+	const resumed = "A person answered your ask ask-q on LEGION-208, or replied in its thread; read it. Continue."
+	for _, tc := range []struct {
+		name   string
+		stored string
+		// derived is whether the send must carry the derivation over the record as it stands,
+		// rather than the stored text.
+		derived bool
+	}{
+		{name: "an entry the derivation raised", stored: seededArchitectTask + architectStartTail, derived: true},
+		{name: "an entry the upgrade gave no task", stored: "", derived: true},
+		{name: "an entry a resume raised", stored: resumed, derived: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			root := architectEntryRoot()
+			seedIssue(t, pool, root)
+			row := record.PhaseRow{Issue: entryIssue, Role: claim.RoleArchitect, Claim: wakeToken(t, claim.RoleArchitect),
+				Entry: seededEntry, EntryTask: tc.stored, EntryRaisedAt: seededRaisedAt}
+			seedPhase(t, pool, row)
+			engine := testEngine(config.DesignGateRootIssues, nil)
+			gate := record.TreeGate{Steps: engine.GatedSteps()}
 
-	seedRecord(t, pool, func(tx pgx.Tx) error {
-		return engine.SendArchitectStart(t.Context(), tx, root, gate, seededEntry)
-	})
+			seedRecord(t, pool, func(tx pgx.Tx) error {
+				return engine.SendArchitectStart(t.Context(), tx, root, gate, row)
+			})
 
-	start := architectStartOf(t, pool)
-	want := ArchitectStartTask(ArchitectStart{Root: root, Gate: gate})
-	if start.Task != want {
-		t.Fatalf("the task the sweep sends = %q, want the derivation's own %q over the record as it stands: a task composed once and "+
-			"sent again can name a kept decision another telling has already claimed", start.Task, want)
+			start := architectStartOf(t, pool)
+			want := tc.stored
+			if tc.derived {
+				want = ArchitectStartTask(ArchitectStart{Root: root, Gate: gate})
+			}
+			if start.Task != want {
+				t.Fatalf("the task the sweep sends for a row whose task is %q = %q, want %q", tc.stored, start.Task, want)
+			}
+			if !tc.derived && start.Kept != nil {
+				t.Fatalf("the resume's task sent again claims %+v, want no kept decision: it names none", start.Kept)
+			}
+			if start.Entry != seededEntry || start.Phase != "" || start.NeedsSlot {
+				t.Fatalf("the start = entry %d, phase %q, needs slot %t; want entry %d, no phase and no wait for a slot: a root architect's start is none of the cap's",
+					start.Entry, start.Phase, start.NeedsSlot, seededEntry)
+			}
+			got := entryRow(t, pool, claim.RoleArchitect)
+			if got.Entry != seededEntry || got.EntryTask != tc.stored {
+				t.Fatalf("after the sweep's re-send the architect's row = entry %d, task %q; want the entry %d and task %q it stood at",
+					got.Entry, got.EntryTask, seededEntry, tc.stored)
+			}
+		})
 	}
-	if start.Entry != seededEntry || start.Phase != "" || start.NeedsSlot {
-		t.Fatalf("the start = entry %d, phase %q, needs slot %t; want entry %d, no phase and no wait for a slot: a root architect's start is none of the cap's",
-			start.Entry, start.Phase, start.NeedsSlot, seededEntry)
-	}
-	assertArchitectEntryUntouched(t, pool, "the sweep's re-send")
 }

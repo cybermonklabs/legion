@@ -3080,8 +3080,9 @@ func architectSlowBeforeGate(root record.Issue, gate record.TreeGate, admittedAt
 // start instead, which differs from a phase worker's in the two ways a root architect's start
 // differs: the row waits for no admission slot, since the root holds the one row the cap counts
 // from its promotion until its work passes its review and holds none after it (record.KeepsSlot),
-// so there is no slot for that row to wait for either way, and the task is derived again from
-// the record rather than taken off the row (workflow's SendArchitectStart). Where the root's
+// so there is no slot for that row to wait for either way, and a task the derivation wrote is
+// derived again from the record rather than taken off the row, while a task the resume of a
+// person's answer wrote is sent as written (workflow's SendArchitectStart). Where the root's
 // architect claim does not exist, that start is what creates it, exactly as admission's
 // queued-root branch does.
 //
@@ -3149,7 +3150,7 @@ func (a *Admission) resumeSlottedWorkers(ctx context.Context, tx pgx.Tx, issues 
 				continue
 			}
 		case role.Role == claim.RoleArchitect:
-			if err := a.engine.SendArchitectStart(ctx, tx, role.Issue, facts.Gates[role.Issue.Tree], role.Row.Entry); err != nil {
+			if err := a.engine.SendArchitectStart(ctx, tx, role.Issue, facts.Gates[role.Issue.Tree], role.Row); err != nil {
 				return fmt.Errorf("start the architect of slotted root %s again: %w", role.Issue.Key, err)
 			}
 		default:

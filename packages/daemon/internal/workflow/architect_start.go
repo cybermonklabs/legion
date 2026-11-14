@@ -234,10 +234,12 @@ func gatedDocuments(steps []record.DesignStep) string {
 }
 
 // CarriesArchitectStart says whether task is one ArchitectStartTask wrote, of any of its four
-// shapes. Its one reader is the narrowing a root architect's held task goes through when a
+// shapes. Two readers ask it. The narrowing a root architect's held task goes through when a
 // decision it named leaves the tree (NarrowRootTask): a task that carries the instruction keeps
-// it, and one that carries only what its tree was owed is rewritten from what it still names, as
-// it always was.
+// it, and one that carries only what its tree was owed is rewritten from what it still names. And
+// the sweep's send of an entry a start already raised (SendArchitectStart): a task the
+// derivation wrote is derived again, and one the resume of a person's answer wrote is sent as
+// written.
 func CarriesArchitectStart(task string) bool {
 	return strings.HasSuffix(task, architectStartTail)
 }

@@ -548,12 +548,11 @@ func (e *Engine) tellInPlace(ctx context.Context, tx pgx.Tx, root record.Issue, 
 // The resume hands the architect work it was not on, so it raises the architect's phase entry and
 // writes this task as the work of that entry (EnterArchitect), and the start carries the number
 // (record.SuperviseRequest.Entry) as a phase worker's start does. That is what makes a resume
-// survivable: the entry lives on the record, so a start row that reaches no claim leaves the
-// architect's claim below that entry, and the entry sweep sends it that entry's work. That send
-// derives the task again from the record (SendArchitectStart, ArchitectStartTask) rather than
-// sending this text, so the architect is given its tree's first act at its gate's state, and the
-// answer itself stays on the Dispatch ask it was given on. Both callers get it — the promotion
-// of an answered root (admit's record.LineAnswered branch) and tellInPlace, which gives a live
+// survivable: the entry and this task live on the record, so a start row that reaches no claim
+// leaves the architect's claim below that entry, and the entry sweep sends it that entry's work,
+// which is this text as written (SendArchitectStart): it names the answer and no kept decision,
+// so nothing it says can have been told by another start. Both callers get it — the promotion of
+// an answered root (admit's record.LineAnswered branch) and tellInPlace, which gives a live
 // architect this task where it stands.
 //
 // The resume starts the root's architect, which is a movement of the issue

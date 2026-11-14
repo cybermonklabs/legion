@@ -61,8 +61,12 @@ func TestTheArchitectSweepTickSendsARootArchitectTheWorkOfItsEntry(t *testing.T)
 		if err := records.PutSlot(ctx, tx, record.Slot{Issue: root.Key, Index: 0, AdmittedAt: time.Now().UTC()}); err != nil {
 			return err
 		}
+		// The raise of entry 2 stored a task the derivation wrote, for a generation the root does
+		// not stand at, so the sweep derives it again and the send is told apart from that text.
+		stored := workflow.ArchitectStartTask(workflow.ArchitectStart{
+			Root: record.Issue{Key: root.Key, Tree: root.Key, Phase: phase.Admitted, Generation: 99}})
 		return records.PutPhase(ctx, tx, record.PhaseRow{Issue: root.Key, Role: claim.RoleArchitect, Claim: token,
-			Entry: entry, EntryTask: "the text the raise of entry 2 stored", EntryRaisedAt: time.Now().UTC()})
+			Entry: entry, EntryTask: stored, EntryRaisedAt: time.Now().UTC()})
 	}); err != nil {
 		t.Fatalf("seed the root whose architect is behind its entry: %v", err)
 	}

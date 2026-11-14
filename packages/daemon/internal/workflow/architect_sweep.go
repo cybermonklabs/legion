@@ -81,25 +81,39 @@ func ArchitectStartPending(run record.RoleRun) (string, bool) {
 }
 
 // SendArchitectStart writes the start of root's architect again, for the entry its phases row
-// already names: the same row admission's queued-root branch writes, enqueued directly rather
-// than through StartOrOwe, so it waits for no admission slot and marks no movement (the root
-// holds the row the cap counts from its promotion until its work passes its review, and holds
-// none after it, record.KeepsSlot). It raises no entry, as no resume of the work an entry already
-// names does (enter, SendOwedEntry).
+// already names (row): the same row admission's queued-root branch writes, enqueued directly
+// rather than through StartOrOwe, so it waits for no admission slot and marks no movement (the
+// root holds the row the cap counts from its promotion until its work passes its review, and
+// holds none after it, record.KeepsSlot). It raises no entry, as no resume of the work an entry
+// already names does (enter, SendOwedEntry).
 //
-// The task is derived again from the record as it stands rather than taken from the row's
-// EntryTask, which is what every other role is sent. The reason is the kept decisions a root
-// architect's task names: a kept decision is claimed by the outbox row that names it, and
+// What it sends depends on what raised the entry, which the row's own task says. An entry the
+// derivation raised (admission's promotion, RaiseArchitectEntryAndStart) carries a task that
+// ends in architectStartTail (CarriesArchitectStart), and that task is derived again from the
+// record as it stands rather than sent as written. The reason is the kept decisions such a task
+// names: a kept decision is claimed by the outbox row that names it, and
 // record.Postgres.UnclaimedKept locks and reads only what nothing claims, so a text composed once
 // and sent again could name a decision another telling has already claimed. The derivation reads
 // what is still unclaimed now, and EnqueueNaming claims exactly what this row names in the same
 // transaction.
-func (e *Engine) SendArchitectStart(ctx context.Context, tx pgx.Tx, root record.Issue, gate record.TreeGate, entry int64) error {
+//
+// An entry the resume of a root a person answered raised (ResumeAwaitedRoot) carries the
+// resume's own task, which names the answer — which ask or which review, and where to read it —
+// and no kept decision, so that text is sent as written. The answer is the work that entry owes,
+// and the derivation cannot give it: its shapes are a tree's first act, which is false of a root
+// whose architect has run in this generation, and they end in "no message is coming", which is
+// false of a root whose person's answer stands (dispatch://INFRA-2614/comment/03dd9487-b44d-4508-bc0e-268fe951b17e).
+// An entry with no task, which the upgrade gives every architect of the release before, is
+// derived as an entry of the derivation's.
+func (e *Engine) SendArchitectStart(ctx context.Context, tx pgx.Tx, root record.Issue, gate record.TreeGate, row record.PhaseRow) error {
+	if row.EntryTask != "" && !CarriesArchitectStart(row.EntryTask) {
+		return e.enqueueArchitectStart(ctx, tx, root, row.EntryTask, nil, row.Entry)
+	}
 	task, kept, err := e.architectStartWork(ctx, tx, root, gate)
 	if err != nil {
 		return err
 	}
-	return e.enqueueArchitectStart(ctx, tx, root, task, kept, entry)
+	return e.enqueueArchitectStart(ctx, tx, root, task, kept, row.Entry)
 }
 
 // RaiseArchitectEntryAndStart hands root's architect work it was not already on: it raises that

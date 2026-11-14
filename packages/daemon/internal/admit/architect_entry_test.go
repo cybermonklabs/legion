@@ -29,15 +29,25 @@ func architectRow(t *testing.T, pool *pgxpool.Pool, root string) record.PhaseRow
 }
 
 // putArchitectRow records root's architect phases row as the transition that raised entry left
-// it: on that entry, carrying its work (seededEntryTask) and the moment raisedAt it was raised.
+// it: on that entry, carrying its work (seededArchitectTask) and the moment raisedAt it was raised.
 func putArchitectRow(t *testing.T, pool *pgxpool.Pool, root string, entry int64, raisedAt time.Time) {
 	t.Helper()
 	inTx(t, pool, func(tx pgx.Tx) {
 		if err := record.NewStore().PutPhase(context.Background(), tx, record.PhaseRow{Issue: root, Role: claim.RoleArchitect,
-			Claim: architectToken(t, root), Entry: entry, EntryTask: seededEntryTask(root), EntryRaisedAt: raisedAt}); err != nil {
+			Claim: architectToken(t, root), Entry: entry, EntryTask: seededArchitectTask(root), EntryRaisedAt: raisedAt}); err != nil {
 			t.Fatalf("record the architect's phases row of %s at entry %d: %v", root, entry, err)
 		}
 	})
+}
+
+// seededArchitectTask is the work a seeded architect entry carries: a task the derivation wrote,
+// as admission's promotion writes one, so the sweep's send derives it again rather than sending
+// it as written (workflow.Engine.SendArchitectStart). It is the derivation for a generation no
+// fixture's root stands at, so a send that derives again is told apart from one that sends the
+// row's text.
+func seededArchitectTask(root string) string {
+	return workflow.ArchitectStartTask(workflow.ArchitectStart{
+		Root: record.Issue{Key: root, Tree: root, Phase: phase.Admitted, Generation: 99}})
 }
 
 // architectStartsOf is every architect start the outbox holds for root, oldest first.

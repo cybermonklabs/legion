@@ -434,10 +434,10 @@ func TestTheArchitectSweepSendsTheTaskTheDerivationGivesOverTheRecord(t *testing
 // The lane then finishes the resume's start row without the task reaching the claim (runStart),
 // as the outbox's fences or a lost lane leave one. The claim stands one entry below its row, and
 // the sweep is the only thing left that sends the raised entry's work. One sweep writes one
-// architect start at the raised entry, carrying the task the derivation gives over the record as
-// it stands (workflow.Engine.SendArchitectStart) and not the resume's text stored on the row
-// (TestTheArchitectSweepSendsTheTaskTheDerivationGivesOverTheRecord says why). A second sweep,
-// while that row is still queued, writes no second row.
+// architect start at the raised entry, carrying the resume's own task as the row stores it
+// (workflow.Engine.SendArchitectStart): that task names the answer, which is the work the entry
+// owes, and no kept decision, so it is sent as written and claims nothing. A second sweep, while
+// that row is still queued, writes no second row.
 //
 // The control is the same resume with its start row left in the outbox: that row already carries
 // the raised entry (workflow.OwedEntry), so the sweep writes nothing beside it.
@@ -501,9 +501,9 @@ func TestTheArchitectSweepSendsTheEntryAResumeRaisedWhenItsStartWasLost(t *testi
 		if starts[0].entry != row.Entry {
 			t.Fatalf("the architect start of %s after the sweep = %+v, want it at the entry %d the resume raised", root, starts[0], row.Entry)
 		}
-		if want := architectStart(t, pool, admission, root, ""); starts[0].task != want || !workflow.CarriesArchitectStart(starts[0].task) {
-			t.Fatalf("the task the sweep sent %s = %q, want the derivation's %q over the record as it stands, not the resume's %q stored on the row",
-				root, starts[0].task, want, row.EntryTask)
+		if starts[0].task != row.EntryTask || workflow.CarriesArchitectStart(starts[0].task) {
+			t.Fatalf("the task the sweep sent %s = %q, want the resume's own %q stored on the row, which names the answer",
+				root, starts[0].task, row.EntryTask)
 		}
 		if after := architectRow(t, pool, root); after.Entry != row.Entry {
 			t.Fatalf("the architect row of %s after the sweep = entry %d, want the %d the resume raised: the sweep sends the work of an entry and raises none",
