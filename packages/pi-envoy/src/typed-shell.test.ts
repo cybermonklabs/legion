@@ -12,6 +12,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isShellCommandReport } from "@legion/contracts";
+import { until } from "@legion/test-fixtures/wait";
 import { procmgr } from "@oh-my-pi/pi-utils";
 import {
   runShellCommand,
@@ -29,19 +30,6 @@ import {
  *  session's is the one it ran in. */
 function scratch(): string {
   return mkdtempSync(join(tmpdir(), "typed-shell-test-"));
-}
-
-/** How long a row waits for something of this machine's own: a file a command wrote, a process
- *  of its group leaving the process table. */
-const DEADLINE_MS = 20_000;
-
-/** Polls `ready` until it holds or the deadline passes, and answers what it last read. The rows
- *  that use it watch a real child process and a real process group, which no fake clock drives,
- *  so they wait on the thing itself rather than on a delay guessed to cover it. */
-async function untilTrue(ready: () => boolean): Promise<boolean> {
-  const until = Date.now() + DEADLINE_MS;
-  while (!ready() && Date.now() < until) await Bun.sleep(10);
-  return ready();
 }
 
 /** Whether `pid` is still in this machine's process table. */
@@ -257,7 +245,7 @@ describe("running a person's command", () => {
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
-  }, 60_000);
+  });
 
   // The environment is the host's own for a child shell, not this process's: the host drops the
   // git location variables from it (`filterChildShellEnv`), because forwarding them makes `git`
@@ -371,7 +359,7 @@ describe("running a person's command", () => {
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
-  }, 20_000);
+  });
 
   test("cuts output past the bound and says so in each text", async () => {
     const directory = scratch();
@@ -388,7 +376,7 @@ describe("running a person's command", () => {
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
-  }, 30_000);
+  });
 
   // The module reads back `4 * SHELL_OUTPUT_MAX` bytes and says a command that prints without end
   // "costs the session this much memory and no more". It costs the session that much memory and
@@ -421,7 +409,7 @@ describe("running a person's command", () => {
       clearInterval(watch);
       rmSync(directory, { recursive: true, force: true });
     }
-  }, 30_000);
+  });
 
   // Dispatch cannot store U+0000 and refuses a whole reply that holds one (400 NUL_CHARACTER),
   // so `!head -c 64 /dev/urandom` or `!find . -print0` would leave the person with no answer at
@@ -438,7 +426,7 @@ describe("running a person's command", () => {
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
-  }, 20_000);
+  });
 
   // The session holds the kill of a running command's group, which is what a shutdown stops it
   // with: nothing it started is left running, and what it printed is still its answer. A real
@@ -448,19 +436,22 @@ describe("running a person's command", () => {
     const directory = scratch();
     const ready = join(directory, "ready");
     try {
+      // The wait is awaited after the run, so a marker that never appears fails here by name.
+      let marked: Promise<unknown> | undefined;
       const result = await runShellCommand(`printf early; touch ${ready}; sleep 600`, {
         cwd: directory,
         limitMs: 60_000,
         started: (stop) => {
-          void untilTrue(() => existsSync(ready)).then(stop);
+          marked = until("the command's marker file", () => existsSync(ready)).finally(stop);
         },
       });
+      await marked;
       expect(result.output).toBe("early");
       expect(result.status).toBe("The command was stopped.");
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
-  }, 60_000);
+  });
 
   // A `stop` the session hands in after the command has already ended is nothing: a command that
   // ended well is never reported as stopped, whichever moment a shutdown lands in. The row puts
@@ -482,6 +473,7 @@ describe("running a person's command", () => {
       }
     };
     try {
+      let reaped: Promise<unknown> | undefined;
       const result = await runShellCommand(
         `echo $$ > ${pidFile}; ${setsid} sh -c 'printf gone > ${escaped}; sleep 5' &` +
           ` while [ ! -f ${escaped} ]; do sleep 0.02; done; printf hi`,
@@ -493,19 +485,20 @@ describe("running a person's command", () => {
             // wait on it, so by the time a poll of this machine's table can see it gone the
             // command has ended here too: the stop below lands after that end and inside the
             // reads that follow it, which is the moment this row is about.
-            void untilTrue(() => {
+            reaped = until("the command's shell to leave the process table", () => {
               const pid = shellPid();
               return pid > 0 && !alive(pid);
-            }).then(stop);
+            }).finally(stop);
           },
         }
       );
+      await reaped;
       expect(result.output).toBe("hi");
       expect(result.status).toBeUndefined();
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
-  }, 60_000);
+  });
 
   // The command's group is its own, so nothing but this module's own kill ends it: an `/exit` or
   // a crash during `!while :; do :; done` must leave no process behind. Proved as the reviewer
@@ -539,11 +532,11 @@ describe("running a person's command", () => {
       expect(runs.exitCode).toBe(0);
       const pid = Number(readFileSync(pidFile, "utf8").trim());
       expect(Number.isInteger(pid)).toBe(true);
-      expect(await untilTrue(() => !alive(pid))).toBe(true);
+      await until("the command's process to leave the process table", () => !alive(pid));
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
-  }, 60_000);
+  });
 });
 
 describe("the texts a command becomes", () => {

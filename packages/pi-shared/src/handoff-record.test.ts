@@ -1052,8 +1052,7 @@ test.skipIf(withoutJj)(
         latestHandoff,
       })
     ).resolves.toEqual({ commit: fix });
-  },
-  60_000
+  }
 );
 
 // A git lock an interrupted git or jj left in the workspace fails every jj that snapshots a change
@@ -1083,6 +1082,5 @@ test.skipIf(withoutJj)(
       )
     );
     expect((await lstat(lock)).isFile()).toBe(true);
-  },
-  60_000
+  }
 );

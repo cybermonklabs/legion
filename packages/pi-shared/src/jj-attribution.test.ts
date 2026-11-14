@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { chmod, mkdir, mkdtemp, readdir, readFile, realpath, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { until } from "@legion/test-fixtures/wait";
 import {
   exportJjSessionAttribution,
   JJ_CONFIG_PATH_TIMEOUT_MS,
@@ -367,33 +368,29 @@ describe("userConfigChain", () => {
   afterEach(async () => {
     await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
   });
+  // The wrapper's pidfile and the kernel reaping its child are external OS state, which Bun's
+  // fake timers cannot advance, so each helper reads that state until it holds.
   /** The wrapper's child pid, once it has written it. */
   async function pidFrom(pidFile: string): Promise<number> {
-    const deadline = Date.now() + 3_000;
-    while (Date.now() < deadline) {
+    return await until(`the jj wrapper to write ${pidFile}`, async () => {
       const pid = await readFile(pidFile, "utf8")
         .then((value) => Number(value.trim()))
         .catch(() => 0);
-      if (Number.isInteger(pid) && pid > 0) return pid;
-      await Bun.sleep(10);
-    }
-    throw new Error(`jj wrapper did not write ${pidFile}`);
+      return Number.isInteger(pid) && pid > 0 ? pid : undefined;
+    });
   }
 
-  // Real-time polling is required here: the wrapper's pidfile and the kernel reaping its child
-  // are external OS state, which Bun's fake timers cannot advance.
-  /** The kernel has reaped the child once signal 0 says it no longer exists. */
+  /** True once signal 0 says the kernel has reaped the child; a child never reaped fails the wait
+   *  at the row's deadline, naming the pid. */
   async function stops(pid: number): Promise<boolean> {
-    const deadline = Date.now() + 3_000;
-    while (Date.now() < deadline) {
+    return await until(`process ${pid} to be reaped`, () => {
       try {
         process.kill(pid, 0);
+        return false;
       } catch {
         return true;
       }
-      await Bun.sleep(10);
-    }
-    return false;
+    });
   }
 
   it("chains the user config files jj prints, in order", async () => {

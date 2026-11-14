@@ -16,6 +16,7 @@ import {
 } from "@legion/envoy-client/consumer-delivery";
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer";
 import type { DeliveryAnswer } from "@legion/envoy-client/transport";
+import { settled, timeLeft, until } from "@legion/test-fixtures/wait";
 import { Terminal } from "@xterm/headless";
 import { linkOmpNatives } from "./omp-natives";
 
@@ -147,9 +148,7 @@ export interface RelayFrame {
   readonly storedAt?: string;
   /** Which delivery of the frame this is; the first by default. */
   readonly delivered?: number;
-  /** How long the frame is offered before this fails; 30 s by default. */
-  readonly withinMs?: number;
-  /** A run that ended: its error fails the wait at once, rather than at the deadline. */
+  /** A run that ended: its error fails the send at once, rather than at the deadline. */
   readonly stopped?: { readonly error?: unknown };
 }
 
@@ -209,18 +208,15 @@ function relayTakes(word: string): word is RelayTake {
   return relayAnswerMeaning(word)?.takes === true;
 }
 
-/** How long a send waits for a session to take its frame when the caller names no bound of its
- *  own: long enough for a real Oh My Pi to start and register, since most sends are made before
- *  the session subscribes its deliver subject. */
-const RELAY_SEND_DEFAULT_MS = 30_000;
-
 /**
  * Sends one frame as the listener's relay of a session's consumer sends it: the stored subject,
  * sequence, stream and time in its headers (`decodeRelayFrame`), on the session's deliver
  * subject. Sent as a request, whose answer is the session's own word: until that session has
  * subscribed the subject the server reports no responder, so the frame goes again, as the one
  * frame it is, and a copy of a frame the session already holds is answered and never shown twice
- * (`createConsumerDelivery`).
+ * (`createConsumerDelivery`). The sends end at the row's deadline (`@legion/test-fixtures/wait`),
+ * which is long enough for a real Oh My Pi to start and register, since most sends are made before
+ * the session subscribes its deliver subject; each request may wait as long as the row has left.
  *
  * Answers the word the session took the frame with, which is `RelayTake`, the take rows of
  * `relayFirstAnswers` derived from the table itself rather than named again here. What each word
@@ -229,45 +225,61 @@ const RELAY_SEND_DEFAULT_MS = 30_000;
  * dropped, or one it refused, as a frame it took.
  */
 export async function sendRelayFrame(frame: RelayFrame): Promise<RelayTake> {
-  // Read once, so the refusal below names the bound this send actually kept.
-  const within = frame.withinMs ?? RELAY_SEND_DEFAULT_MS;
-  const deadline = Date.now() + within;
-  for (;;) {
+  // The request in flight, read at each of the wait's asks rather than awaited by it, so a run
+  // that ended (`stopped`) fails the send at once even while a request waits; and the error the
+  // last request met, which a send that reaches the deadline names.
+  let inFlight: Promise<{ readonly answered: string } | { readonly error: unknown }> | undefined;
+  let reply: { readonly answered: string } | { readonly error: unknown } | undefined;
+  let lastError: unknown;
+  const send = () => {
     const headers = frame.newHeaders();
     headers.set(RelayHeader.subject, frame.subject);
     headers.set(RelayHeader.streamSeq, String(frame.seq));
     headers.set(RelayHeader.streamID, STANDIN_STREAM_ID);
     headers.set(RelayHeader.delivered, String(frame.delivered ?? 1));
     headers.set(RelayHeader.storedAt, frame.storedAt ?? new Date().toISOString());
-    let answered: string;
-    try {
-      const reply = await frame.connection.request(deliverSubject(frame.sessionID), frame.payload, {
-        timeout: 1_000,
-        headers,
-      });
-      answered = new TextDecoder().decode(reply.data);
-    } catch (error) {
-      if (frame.stopped?.error !== undefined) throw frame.stopped.error;
-      if (Date.now() > deadline) {
-        throw new Error(
-          `${frame.sessionID} took no relay frame on ${frame.subject} within ` +
-            `${within} ms: ${String(error)}`
-        );
-      }
-      // A real clock, deliberately: a session that has not yet subscribed its deliver subject
-      // emits no signal here — the server only answers the next send with no responder.
-      await Bun.sleep(100);
-      continue;
-    }
-    if (!relayTakes(answered)) {
-      const means =
-        relayAnswerMeaning(answered)?.means ?? "a word the relay protocol does not hold";
-      throw new Error(
-        `${frame.sessionID} answered ${JSON.stringify(answered)} on ${frame.subject}: ${means}, so it took no frame`
+    const request = frame.connection
+      .request(deliverSubject(frame.sessionID), frame.payload, { timeout: timeLeft(), headers })
+      .then(
+        (answer) => ({ answered: new TextDecoder().decode(answer.data) }),
+        (error: unknown) => ({ error })
       );
-    }
-    return answered;
+    inFlight = request;
+    void request.then((outcome) => {
+      if (inFlight === request) reply = outcome;
+    });
+  };
+  let taken: { readonly answered: string };
+  try {
+    taken = await until(`${frame.sessionID} to answer a relay frame on ${frame.subject}`, () => {
+      if (frame.stopped?.error !== undefined) throw frame.stopped.error;
+      if (reply === undefined) {
+        if (inFlight === undefined) send();
+        return undefined;
+      }
+      if ("answered" in reply) return reply;
+      // No responder yet: a session that has not subscribed its deliver subject emits no signal,
+      // and the server only answers the next send with none, so the frame goes again.
+      lastError = reply.error;
+      reply = undefined;
+      inFlight = undefined;
+      return undefined;
+    });
+  } catch (error) {
+    if (frame.stopped?.error !== undefined && error === frame.stopped.error) throw error;
+    const cause = inFlight === undefined ? String(lastError) : "its last send was still unanswered";
+    throw new Error(`${frame.sessionID} took no relay frame on ${frame.subject}: ${cause}`, {
+      cause: error,
+    });
   }
+  const answered = taken.answered;
+  if (!relayTakes(answered)) {
+    const means = relayAnswerMeaning(answered)?.means ?? "a word the relay protocol does not hold";
+    throw new Error(
+      `${frame.sessionID} answered ${JSON.stringify(answered)} on ${frame.subject}: ${means}, so it took no frame`
+    );
+  }
+  return answered;
 }
 
 /** One provider the stand-in serves and the models it offers under it. Every provider is the same
@@ -430,7 +442,7 @@ export function spawnRpc(
     },
     async end() {
       child.stdin.end();
-      await child.exited;
+      await settled("omp to exit once its stdin closed", child.exited);
     },
     closed,
     exited: child.exited,
@@ -1025,7 +1037,7 @@ export async function runLegionPane(
    * `quietMs` waits for the gateway to fall silent rather than for the frame.
    */
   const live = async (prompts: readonly string[], args: readonly string[]): Promise<void> => {
-    let settled = Promise.withResolvers<void>();
+    let runEnded = Promise.withResolvers<void>();
     const rpc = spawnRpc(
       binary,
       {
@@ -1066,33 +1078,32 @@ export async function runLegionPane(
             frame.type === "agent_end" &&
             !("isTerminal" in frame && frame.isTerminal === false)
           ) {
-            settled.resolve();
+            runEnded.resolve();
           }
         },
       },
       cleanup
     );
     for (const prompt of prompts) {
-      settled = Promise.withResolvers<void>();
+      runEnded = Promise.withResolvers<void>();
       lastAnsweredAt = Date.now();
       const started = served;
       rpc.send({ type: "prompt", message: prompt });
       if (options.quietMs === undefined) {
-        await Promise.race([settled.promise, rpc.closed]);
+        await settled(
+          "the run the prompt started to settle",
+          Promise.race([runEnded.promise, rpc.closed])
+        );
       } else {
+        // The proposition is that the real host started no further turn, and a host that does
+        // nothing emits no signal to await: only a spell of `quietMs` with no gateway answer, on
+        // the real clock, shows the absence.
         const quietMs = options.quietMs;
-        const deadline = Date.now() + 90_000;
         await Promise.race([
-          (async () => {
-            // A real clock, deliberately: the proposition is that the real host started no
-            // further turn, and a host that does nothing emits no signal to await. The whole
-            // point is to see the absence, and only elapsed time shows it.
-            while (Date.now() < deadline) {
-              await Bun.sleep(200);
-              if (served > started && Date.now() - lastAnsweredAt >= quietMs) return;
-            }
-            throw new Error(`the stand-in gateway never went quiet for ${quietMs} ms`);
-          })(),
+          until(
+            `the stand-in gateway to answer the prompt and then fall quiet for ${quietMs} ms`,
+            () => served > started && Date.now() - lastAnsweredAt >= quietMs
+          ),
           rpc.closed,
         ]);
       }

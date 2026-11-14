@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, setSystemTime, test } from "bun:test";
 import { logger } from "@oh-my-pi/pi-utils";
 import { matchInjectedUserTurn, noteInjectedUserTurn } from "./injected-user-turns";
 import {
@@ -171,11 +171,15 @@ describe("the Envoy plugin interface", () => {
     clearStartupTurn("ses_task_subagent");
     expect(iface.startupTurn).toEqual({ session: "ses_controller", sentAt: undefined });
 
-    const before = Date.now();
-    markStartupTurnSent("ses_controller");
-    expect(iface.startupTurn?.session).toBe("ses_controller");
-    expect(iface.startupTurn?.sentAt).toBeGreaterThanOrEqual(before);
-    expect(iface.startupTurn?.sentAt).toBeLessThanOrEqual(Date.now());
+    // The mark is stamped on `Date.now()`, held here at one moment so the stamp is read exactly.
+    const sentAt = Date.now();
+    setSystemTime(new Date(sentAt));
+    try {
+      markStartupTurnSent("ses_controller");
+    } finally {
+      setSystemTime();
+    }
+    expect(iface.startupTurn).toEqual({ session: "ses_controller", sentAt });
 
     clearStartupTurn("ses_controller");
     expect(iface.startupTurn).toBeUndefined();

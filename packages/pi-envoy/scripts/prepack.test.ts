@@ -136,7 +136,7 @@ describe("the dispatch CLI the package ships", () => {
       expect(
         Bun.spawnSync(["tar", "xzf", tarball, "-C", unpacked, "--strip-components=1"]).exitCode
       ).toBe(0);
-    }, 120_000);
+    });
 
     afterAll(() => {
       if (!distWasBuilt) rmSync(dist, { recursive: true, force: true });

@@ -138,18 +138,11 @@ readonly omp_pass_deadline_ms=30000
 # process that kept asking for it, and in neither did it go to a process while another was still
 # answering for the claim.
 readonly session_live_window=10s
-readonly live_window_seconds="${session_live_window%s}"
 readonly role_claim_reap_interval=2s
 readonly curl_max_time=20
-readonly client_reply_timeout=180
-readonly listener_wait_timeout=60
-# How long a refused Oh My Pi process is given to be granted the role once its holder stops
-# renewing the claim: the live window above, the heartbeat passes that ask again inside it, and
-# room for a loaded machine.
-readonly takeover_timeout=90
 # The live restart row's window (c-live-restart of dispatch://INFRA-2747/verification): from the
 # restarted process's first registration, the role lookup and the session listing have one
-# deployment heartbeat, 90 s, to name the same holder.
+# deployment heartbeat, 90 s, to name the same holder, read on the listener's own clock.
 readonly live_restart_window=90
 
 refuse() {
@@ -159,19 +152,6 @@ refuse() {
 
 note() {
   printf '[%s] %s\n' "$(date -u +%H:%M:%SZ)" "$*"
-}
-
-# now_ms: the wall clock in milliseconds, the clock the recording proxy stamps each request with
-# (`at`), so a time this script reads and one a client's log carries are read against each other.
-now_ms() {
-  local now=${EPOCHREALTIME/[.,]/}
-  printf '%s' "$((10#$now / 1000))"
-}
-
-# elapsed FROM_MS TO_MS: the time between two now_ms readings, in seconds to the millisecond.
-elapsed() {
-  local ms=$(($2 - $1))
-  printf '%d.%03ds' "$((ms / 1000))" "$((ms % 1000))"
 }
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -187,6 +167,11 @@ readonly channel_server="${repo_root}/packages/claude-envoy/bin/envoy-channel.ts
 local_stack_fail=refuse
 # shellcheck source=packages/pi-envoy/scripts/local-stack.sh
 source "${script_dir}/local-stack.sh"
+# Twice the longest green run on record, rounded up past a cold Go build: 124 green
+# envoy-session-stall jobs in ci.yaml's 150 newest green runs up to 2026-11-14, the longest "Role
+# takeover smoke" step 115 s (run 43571650830) with the job's Go cache restored. The build of natsd
+# and the listener is inside the guard.
+proof_guard 360
 
 # The listener's own HTTP surface: the raw calls every row drives a pre-INFRA-783 client with,
 # and the readers of the role lookup and the registry each row states its outcome in. It reads
@@ -305,13 +290,6 @@ trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-# wait_for SECONDS COMMAND...: polls COMMAND every 0.2 s; 1 once SECONDS have passed.
-wait_for() {
-  local seconds=$1
-  shift
-  poll_until "$seconds" 0.2 "$@"
-}
-
 # ---- the results -------------------------------------------------------------------------------
 # One row of R8's table (or one of A5's own claims), its outcome and the evidence for it. A failed
 # check never stops the run: every row is driven, so one run says which rows hold and which do not.
@@ -339,14 +317,18 @@ expect() {
   [[ -n "$current_failure" ]] || current_failure="$1 — got ${2:-<empty>}, want ${3}"
 }
 
-# expect_true WHAT COMMAND...: the same for a condition with no value to print.
+# expect_true WHAT COMMAND...: the same for a condition with no value to print. A wait_for that
+# gave up says why in wait_gave_up, which the failure carries, since this hides the command's
+# own output.
 expect_true() {
   local what="$1"
   shift
+  wait_gave_up=''
   if "$@" >/dev/null 2>&1; then
     note "   ok: ${what}"
     return 0
   fi
+  what="${what}${wait_gave_up:+ (${wait_gave_up})}"
   note "   FAILED: ${what}"
   [[ -n "$current_failure" ]] || current_failure="$what"
 }
@@ -418,7 +400,7 @@ set_natsd_argv "${work}/bin/natsd" "$nats_port" "$monitor_port" "${work}/nats-st
 (exec env -i PATH="$PATH" HOME="${work}/nats-home" "${natsd_argv[@]}") \
   >"${work}/logs/natsd.log" 2>&1 &
 service_pids+=($!)
-wait_for 60 natsd_serving "${work}/logs/natsd.log" ||
+wait_for "natsd to serve" natsd_serving "${work}/logs/natsd.log" ||
   refuse "natsd did not start: $(tail -n 5 "${work}/logs/natsd.log")"
 note "natsd serves ${nats_url} (monitoring 127.0.0.1:${monitor_port})"
 
@@ -432,7 +414,7 @@ listener_env+=(
 (exec env -i PATH="$PATH" HOME="${work}/listener-home" "${listener_env[@]}" \
   "$listener_exe") >"${work}/logs/listener.log" 2>&1 &
 service_pids+=($!)
-wait_for 90 listener_healthy "$envoy_url" ||
+wait_for "the listener to answer healthy" listener_healthy "$envoy_url" ||
   refuse "the listener did not become healthy: $(tail -n 5 "${work}/logs/listener.log")"
 note "the listener is healthy at ${envoy_url}"
 
@@ -478,7 +460,7 @@ row1_omp() {
   # claim, and only a claim the listener reads as unrenewed is the next instance's to take.
   start_omp omp-reload-2
   expect_true "nobody renewed the gone instance's claim inside the live window" \
-    wait_for "$listener_wait_timeout" role_unrenewed "$role"
+    wait_for "the listener to read ${role}'s claim unrenewed" role_unrenewed "$role"
   send omp-reload-2 "$(jq -nc --arg s "$session" --arg r "$role" '{op:"start",session:$s,roles:[$r]}')"
   second="$(instance_id omp-reload-2 "$session")"
   expect "the reloaded instance is another client instance" \
@@ -508,7 +490,7 @@ row1_claude() {
   state="${work}/r1cc-plugin-data"
   begin_row "R8 row 1 — a Claude Code channel server restart claims under the id that holds the role"
   start_claude cc-restart-1 "$session" "$state" "$claude_quiet_heartbeat_ms"
-  expect_true "the first channel server registered" wait_for "$listener_wait_timeout" registered "$session"
+  expect_true "the first channel server registered" wait_for "${session} to register" registered "$session"
   send cc-restart-1 "$(jq -nc --arg r "$role" '{op:"tool",name:"envoy_role_set",args:{role:$r}}')"
   expect "the first channel server holds the role" "$(role_holder "$role")" "$session"
   first="$(instance_id cc-restart-1 "$session")"
@@ -525,7 +507,7 @@ row1_claude() {
   start_claude cc-restart-2 "$session" "$state" "$claude_heartbeat_ms"
   # A listener that grants the claim and one that refuses it both answer it; a listener that
   # never sees one leaves the status below empty, which is the row's failure to report.
-  wait_for "$listener_wait_timeout" made_claim cc-restart-2 "$session" "$session" || true
+  wait_for "cc-restart-2 to claim ${session}" made_claim cc-restart-2 "$session" "$session" || true
   second="$(instance_id cc-restart-2 "$session")"
   expect "the restarted server is another client instance" \
     "$([[ -n "$second" && "$second" != "$first" ]] && echo different || echo same)" "different"
@@ -537,7 +519,7 @@ row1_claude() {
     [[ "$(claim_status cc-restart-2 "$session" "$session")" == "200" ]]
   }
   expect_true "a later heartbeat's claim is granted once the window has passed with nobody answering for the standing claim" \
-    wait_for "$takeover_timeout" claim_granted
+    wait_for "cc-restart-2's claim under ${session} to be granted" claim_granted
   expect "the session keeps the role" "$(role_holder "$role")" "$session"
   expect "the claim names the restarted server now" "$(role_instance "$role")" "$second"
   evidence "${session} kept ${role} across a channel server restart from client instance ${first} to ${second}: refused 409 naming ${session} inside the ${session_live_window} live window, asked again on each heartbeat, and granted once nobody had renewed ${first}'s claim"
@@ -607,11 +589,11 @@ row4_handoff() {
   state="${work}/r4-plugin-data"
   begin_row "R8 row 4 — a Claude Code /clear handoff gets the role"
   start_claude cc-handoff "$before" "$state" "$claude_quiet_heartbeat_ms"
-  expect_true "the channel server registered" wait_for "$listener_wait_timeout" registered "$before"
+  expect_true "the channel server registered" wait_for "${before} to register" registered "$before"
   send cc-handoff "$(jq -nc --arg r "$role" '{op:"tool",name:"envoy_role_set",args:{role:$r}}')"
   expect "the session before the /clear holds the role" "$(role_holder "$role")" "$before"
   send cc-handoff "$(jq -nc --arg s "$after" '{op:"clear",session:$s}')"
-  wait_for "$listener_wait_timeout" made_claim cc-handoff "$after" "$before" || true
+  wait_for "cc-handoff to claim ${after} naming ${before}" made_claim cc-handoff "$after" "$before" || true
   # What this row turns on is that the predecessor's entry is this process's own and goes, not
   # the body R7 added to say so; the body is in the evidence below.
   expect_true "the deregistration removed this process's own entry" unregistered "$before"
@@ -660,14 +642,14 @@ row5_omp() {
   # ticks no more for A. B's own registrations keep X live, so the lookup goes on naming X under
   # another process, which is the one refusal a heartbeat pass asks about again.
   # granted_after_asking: B's claim where it has been granted, and one more heartbeat pass where
-  # it has not. It is a predicate `poll_until` drives, so B asks again on every pass of the
-  # takeover budget until the claim lands.
+  # it has not. It is a predicate wait_for drives, so B asks again on every poll of the wait until
+  # the claim lands.
   granted_after_asking() {
     [[ "$(claim_status omp-b "$x" "")" == 200 ]] && return 0
     send omp-b '{"op":"heartbeat"}'
     return 1
   }
-  poll_until "$takeover_timeout" 1 granted_after_asking || true
+  wait_for "process B's claim under ${x} to be granted" granted_after_asking || true
   expect "process B's claim under X is granted" "$(claim_status omp-b "$x" "")" "200"
   expect "the role is still held under X" "$(role_holder "$role")" "$x"
   expect "the listener names B's process as the one holding it now" "$(role_instance "$role")" "$instance_b"
@@ -681,7 +663,7 @@ row5_omp() {
   # itself: the process whose claim is gone leaves, and the live holder is untouched by it.
   send omp-a "$(jq -nc --arg s "$left" '{op:"switch",session:$s,reason:"new",roles:[null]}')"
   expect_true "process A handed the role topic back" \
-    wait_for "$listener_wait_timeout" released omp-a "$x" "$topic"
+    wait_for "process A to hand ${topic} back" released omp-a "$x" "$topic"
   expect "the listener took the release" "$(release_status omp-a "$x" "$topic")" "200"
   expect "the release named A's process" "$(release_instance omp-a "$x" "$topic")" "$instance_a"
   expect "A's deregistration of X removed nothing either" "$(delete_answer omp-a "$x" deleted)" "false"
@@ -753,7 +735,7 @@ row6_predecessor() {
   begin_row "A5 — after the holder exits, the refused Oh My Pi process takes the role on its next session event"
   send omp-d '{"op":"shutdown"}'
   expect_true "process D's session left the registry when it shut down" \
-    wait_for "$listener_wait_timeout" unregistered "$p"
+    wait_for "${p} to leave the registry" unregistered "$p"
   send omp-c "$(jq -nc --arg s "$z2" --arg r "$role" '{op:"tree",session:$s,roles:[$r]}')"
   expect "the claim the refused process makes now is granted" "$(claim_status omp-c "$z2" "")" "200"
   expect "the refused process now holds the role" "$(role_holder "$role")" "$z2"
@@ -776,7 +758,7 @@ row5_claude() {
   record="${state}/roles/${x}.json"
   begin_row "INFRA-783 — a second Claude Code channel server in the live holder's session is refused the role"
   start_claude cc-a "$x" "$state" "$claude_quiet_heartbeat_ms"
-  expect_true "process A's channel server registered" wait_for "$listener_wait_timeout" registered "$x"
+  expect_true "process A's channel server registered" wait_for "${x} to register" registered "$x"
   send cc-a "$(jq -nc --arg r "$role" '{op:"tool",name:"envoy_role_set",args:{role:$r}}')"
   expect "process A holds the role under X" "$(role_holder "$role")" "$x"
   instance_a="$(instance_id cc-a "$x")"
@@ -787,7 +769,7 @@ row5_claude() {
   # B shares A's plugin data directory, as two `claude` processes of one user do, so it reads the
   # role record A wrote for X and claims it back under that same id as it boots.
   start_claude cc-b "$x" "$state" "$claude_heartbeat_ms"
-  wait_for "$listener_wait_timeout" made_claim cc-b "$x" "$x" || true
+  wait_for "cc-b to claim ${x}" made_claim cc-b "$x" "$x" || true
   # A answers for its claim again, now that B has made its first: B asks again on each heartbeat
   # from here, and this row is what happens while the holder is still answering — the role stays
   # with A's process, and B's asking changes nothing.
@@ -809,13 +791,13 @@ row5_claude() {
   registered_last() {
     [[ "$(registered_at cc-b "$x")" -gt "$(registered_at cc-a "$x")" ]]
   }
-  expect_true "process B registered X last" wait_for "$listener_wait_timeout" registered_last
+  expect_true "process B registered X last" wait_for "process B to register ${x} last" registered_last
   send cc-a "$(jq -nc --arg s "$x2" '{op:"clear",session:$s}')"
   # A listener that refuses the handoff's claim leaves the process holding a role it no longer
   # has, which its re-assertion then asks about; one that grants it makes no re-assertion at all,
   # and the empty status below is this row's failure to report.
-  wait_for "$listener_wait_timeout" made_claim cc-a "$x2" "$x" || true
-  wait_for 15 made_claim cc-a "$x2" "" || true
+  wait_for "cc-a to claim ${x2} naming ${x}" made_claim cc-a "$x2" "$x" || true
+  wait_for "cc-a to claim ${x2} again, naming nobody" made_claim cc-a "$x2" "" || true
   expect "process B's entry stayed: A's deregistration of X removed nothing" "$(delete_answer cc-a "$x" deleted)" "false"
   expect "the listener said why it stayed" "$(delete_answer cc-a "$x" reason)" "the registration belongs to another client instance"
   expect "process A registered its new id" \
@@ -874,9 +856,9 @@ row7_handback_mark() {
   }
   renew_omp omp-handback "$session"
   expect_true "the holder claimed the role again on that heartbeat" \
-    wait_for "$listener_wait_timeout" claimed_again
+    wait_for "the holder to claim ${role} again" claimed_again
   expect "that claim is granted" "$(claim_status omp-handback "$session" "")" "200"
-  expect_true "the lookup no longer reports the mark" wait_for "$listener_wait_timeout" unmarked
+  expect_true "the lookup no longer reports the mark" wait_for "the lookup to drop ${role}'s mark" unmarked
   expect "the holder's own process holds the role" "$(role_instance "$role")" "$instance"
   expect "a message on the role lane reaches that holder" \
     "$(listener_post /v1/messages/publish "$(jq -nc --arg t "$topic" \
@@ -912,7 +894,7 @@ row8_handback_frees() {
     [[ "$(role_instance "$role")" == "$instance" ]]
   }
   expect_true "that registration adopted the claim for its own process" \
-    wait_for "$listener_wait_timeout" adopted
+    wait_for "the old client's registration to adopt ${role}'s claim" adopted
   expect "the hand-back of the role's lane topic is taken" "$(old_handback "$session" "$topic")" "200"
   expect "it removed no topic: the claim names a process this release cannot be" \
     "$(jq -c '.removed' "${work}/answer.json")" "[]"
@@ -920,16 +902,16 @@ row8_handback_frees() {
   expect "the role is still held meanwhile" "$(role_holder "$role")" "$session"
 
   # free_after_registering: the role where the lookup already reports no claim on it, and one
-  # more registration from this client where it does not. It is a predicate `poll_until` drives,
-  # so the client keeps registering for as long as the wait runs: its session is live throughout
-  # and only the claim's own renewal — which no registration moves now — decides.
+  # more registration from this client where it does not. It is a predicate wait_for drives, so
+  # the client keeps registering for as long as the wait runs: its session is live throughout and
+  # only the claim's own renewal — which no registration moves now — decides.
   free_after_registering() {
     [[ "$(role_reason "$role")" == "unclaimed" ]] && return 0
     old_register "$session" "$instance" >/dev/null
     return 1
   }
   expect_true "the role came free a live window and up to one reap interval after the hand-back" \
-    poll_until "$takeover_timeout" 1 free_after_registering
+    wait_for "${role} to come free" free_after_registering
   expect "the lookup answers a role no record claims" "$(role_reason "$role")" "unclaimed"
   expect "it names no holder" "$(role_holder "$role")" ""
   expect_true "the old client is registering still" registered "$session"
@@ -942,8 +924,17 @@ row8_handback_frees() {
 # registration that states none renews exactly the claims of its own session that name none, so
 # the role stands through live window after live window of such registrations. Nothing adopts
 # the claim meanwhile, because an absent instance names no process to adopt it with.
+#
+# What would take the role is the claim's renewal lapsing past the live window, which no answer
+# of the listener's reports until it has happened. So each window's end is read off a later
+# claim's lapse instead: a control session registers once, stating no process either, claims a
+# role of its own after this session's claim, and registers no more, so the listener reads that
+# control claim unrenewed once a whole live window has passed since it was made. While each
+# control lapses this session goes on registering, as an old client heartbeats, and the holder of
+# its role is read at every registration; a claim those registrations did not renew would have
+# lapsed before the control's did.
 row9_no_instance() {
-  local role session held index
+  local role session held window control_role control_session
   role="$(role_for r9)"
   session="$(session_for r9)"
   begin_row "INFRA-783 — a client that states no process keeps its role across several live windows"
@@ -951,16 +942,26 @@ row9_no_instance() {
   expect "its claim, which states no process either, is granted" "$(old_claim "$session" "$role" "")" "200"
   expect "the claim names no process" "$(role_instance "$role")" ""
   held=held
-  for ((index = 0; index < 3 * live_window_seconds; index++)); do
+  # registering_until_lapsed CONTROL: one more registration of this session, the holder read
+  # after it, and whether the control claim has lapsed.
+  registering_until_lapsed() {
     old_register "$session" "" >/dev/null
-    sleep 1
     [[ "$(role_holder "$role")" == "$session" ]] || held=lost
+    role_unrenewed "$1"
+  }
+  for window in 1 2 3; do
+    control_session="$(session_for "r9control${window}")"
+    control_role="$(role_for "r9control${window}")"
+    expect "control ${window}'s client registers once" "$(old_register "$control_session" "")" "200"
+    expect "control ${window}'s claim is granted" "$(old_claim "$control_session" "$control_role" "")" "200"
+    expect_true "control ${window}'s claim lapsed, a live window on, while ${session} kept registering" \
+      wait_for "${control_role}'s claim to lapse" registering_until_lapsed "$control_role"
   done
-  expect "the role was held at every second of three live windows" "$held" "held"
+  expect "the role was held at every registration of three live windows" "$held" "held"
   expect "the role is still this session's" "$(role_holder "$role")" "$session"
   expect "its claim still names no process" "$(role_instance "$role")" ""
   expect "no hand-back marked it" "$(role_handed_back "$role")" ""
-  evidence "${session} held ${role} through $((3 * live_window_seconds))s, three ${session_live_window} live windows, of registrations that state no client_instance_id at all, its claim naming no process throughout"
+  evidence "${session} held ${role} through three ${session_live_window} live windows, each ended by a control claim's lapse, of registrations that state no client_instance_id at all, its claim naming no process throughout"
   end_row
 }
 
@@ -972,6 +973,10 @@ row9_no_instance() {
 # listing have the live restart window to name the same holder, or both to name none. The two
 # read different things: the lookup reads the claim record, and the listing reads the listener's
 # copy of the role claims, so a copy that lost the claim shows as the holder listed with no role.
+# The window is read on the listener's own clock: from its record of the session's last
+# registration (the registry's last_seen, which nothing renews in this row after the new
+# process's start, since its heartbeat is this script's to tick) to the Date of the listing
+# answer that first named the same holder as the lookup.
 #
 # The lookup's holder is read off its 200 and off its 404 alike: once the row stops driving the
 # process nothing renews the claim, so ten seconds on its holder is lapsed — past the live
@@ -987,9 +992,9 @@ row9_no_instance() {
 # the copy. The comparison starts once the drop has answered, inside the same window, and what
 # can put the role back inside it is then the listener's own repair of its copy alone.
 row10_live_restart() {
-  local role session first second registered deadline writes=0 dropped=0 drop_status
-  local lookup_status lookup_holder list_status listed now agreed=0 reads=0 verdict
-  local metrics since_drop=""
+  local role session first second registered writes=0 dropped=0 drop_status
+  local lookup_status lookup_holder list_status listed answered_at agreed_after="" verdict
+  local metrics
   role="$(role_for r10)"
   session="$(session_for r10)"
   begin_row "INFRA-2747 — after a restart under the holder's own id, the role lookup and the session listing name the same holder within ${live_restart_window}s"
@@ -1005,12 +1010,14 @@ row10_live_restart() {
 
   start_omp omp-restart-2
   expect_true "nobody renewed the killed process's claim inside the live window" \
-    wait_for "$listener_wait_timeout" role_unrenewed "$role"
+    wait_for "the listener to read ${role}'s claim unrenewed" role_unrenewed "$role"
   send omp-restart-2 "$(jq -nc --arg s "$session" --arg r "$role" '{op:"start",session:$s,roles:[$r]}')"
   second="$(instance_id omp-restart-2 "$session")"
-  registered="$(first_registered_at omp-restart-2 "$session")"
-  deadline=$((registered + live_restart_window * 1000))
-  expect_true "the new process registered the session" test "$registered" -gt 0
+  expect "the listener has the new process's registration of the session" \
+    "$(listener_get "/v1/registry/${session}")" "200"
+  # The listener's own record of that registration, in whole seconds of its clock.
+  registered="$(jq -r '.last_seen // 0' "${work}/answer.json" 2>/dev/null || echo 0)"
+  ((registered < 100000000000)) || registered=$((registered / 1000))
   expect "the new process is another client instance" \
     "$([[ -n "$second" && "$second" != "$first" ]] && echo different || echo same)" "different"
   expect "its claim under the holder's own id is granted" "$(claim_status omp-restart-2 "$session" "")" "200"
@@ -1025,7 +1032,7 @@ row10_live_restart() {
   if ((drop_role_from_copy == 1)); then
     writes="$(claim_writes omp-restart-2 "$session")"
     drop_status="$(listener_post "/debug/role-copy/drop?role=${role}" '{}')"
-    dropped="$(now_ms)"
+    dropped=1
     expect "the listener serves POST /debug/role-copy/drop and took the role out of its copy of the role claims" \
       "$([[ "$drop_status" == 2?? ]] && echo 2xx || echo "$drop_status")" "2xx"
     if [[ "$drop_status" != 2?? ]]; then
@@ -1034,42 +1041,43 @@ row10_live_restart() {
       end_scenario
       return 0
     fi
-    note "   the drop answered $(elapsed "$registered" "$dropped") after the new process's first registration"
     list_status="$(listener_get "/v1/sessions?include=unresponsive")"
     listed="$(listed_holders)"
     expect "the drop took the role out of the session listing" \
       "${list_status} naming ${listed:-nobody}" "200 naming nobody"
   fi
 
-  # One reading: the lookup, whose holder is read off its answer before the listing overwrites
-  # that, and then the listing.
-  while :; do
+  # same_holder: one reading, the lookup, whose holder is read off its answer before the listing
+  # overwrites that, and then the listing, whose answer headers keep the listener's Date.
+  same_holder() {
     lookup_status="$(listener_get "/v1/roles/${role}")"
     lookup_holder=""
     if [[ "$lookup_status" == 200 || "$lookup_status" == 404 ]]; then
       lookup_holder="$(jq -r '.holder // ""' "${work}/answer.json" 2>/dev/null || true)"
     fi
-    list_status="$(listener_get "/v1/sessions?include=unresponsive")"
+    list_status="$(curl -sS -D "${work}/listing.headers" -o "${work}/answer.json" -w '%{http_code}' \
+      --max-time "$curl_max_time" "${envoy_url}/v1/sessions?include=unresponsive" 2>/dev/null || printf '000')"
     listed=""
     [[ "$list_status" != 200 ]] || listed="$(listed_holders)"
-    now="$(now_ms)"
-    reads=$((reads + 1))
-    if [[ ("$lookup_status" == 200 || "$lookup_status" == 404) && "$list_status" == 200 &&
-      "$lookup_holder" == "$listed" ]]; then
-      ((now > deadline)) || agreed=$now
-      break
-    fi
-    ((now < deadline)) || break
-    sleep 1
-  done
-  if ((agreed > 0)); then
+    printf 'lookup %s naming %s, listing %s naming %s\n' "$lookup_status" "${lookup_holder:-nobody}" \
+      "$list_status" "${listed:-nobody}"
+    [[ ("$lookup_status" == 200 || "$lookup_status" == 404) && "$list_status" == 200 &&
+      "$lookup_holder" == "$listed" ]]
+  }
+  if wait_for "the role lookup and the session listing to name the same holder" same_holder; then
+    answered_at="$(date -u -d "$(sed -n 's/^[Dd]ate: *//p' "${work}/listing.headers" | tr -d '\r')" +%s 2>/dev/null || echo 0)"
+    agreed_after=$((answered_at - registered))
     verdict="the same holder"
-    ((dropped == 0)) || since_drop=" and $(elapsed "$dropped" "$agreed") after the drop"
-    note "   the lookup (${lookup_status}) and the listing (${list_status}) named ${lookup_holder:-nobody} $(elapsed "$registered" "$agreed") after the new process's first registration${since_drop}, at reading ${reads}"
+    if ((registered == 0 || answered_at == 0)); then
+      verdict="the same holder, at a moment the listener's answers did not say (last_seen ${registered}, Date ${answered_at})"
+    elif ((agreed_after > live_restart_window)); then
+      verdict="the same holder, ${agreed_after}s after the listener's record of the registration"
+    fi
+    note "   the lookup (${lookup_status}) and the listing (${list_status}) named ${lookup_holder:-nobody} in the listener's answer ${agreed_after}s after its record of the new process's registration"
   else
-    verdict="lookup ${lookup_status} naming ${lookup_holder:-nobody} and listing ${list_status} naming ${listed:-nobody} $(elapsed "$registered" "$now") after the first registration"
+    verdict="lookup ${lookup_status} naming ${lookup_holder:-nobody} and listing ${list_status} naming ${listed:-nobody}: ${wait_gave_up}"
   fi
-  expect "the role lookup and the session listing name the same holder within ${live_restart_window}s of the new process's first registration" \
+  expect "the role lookup and the session listing name the same holder within ${live_restart_window}s of the new process's first registration, on the listener's clock" \
     "$verdict" "the same holder"
   ((dropped == 0)) ||
     expect "the restarted process sent no registration and no claim after the drop" \
@@ -1082,9 +1090,9 @@ row10_live_restart() {
     grep '^envoy_role_claim_repair_' | paste -sd ';' - || true)"
   note "   its /metrics: ${metrics:-no envoy_role_claim_repair_* sample}"
   if ((dropped == 0)); then
-    evidence "${session} restarted from client instance ${first} to ${second}, which took ${role} back once the live window passed; $(elapsed "$registered" "$agreed") after that process's first registration the lookup (${lookup_status}) and the listing (${list_status}) both named ${lookup_holder:-nobody}"
+    evidence "${session} restarted from client instance ${first} to ${second}, which took ${role} back once the live window passed; ${agreed_after:-?}s after the listener's record of that process's registration its lookup (${lookup_status}) and its listing (${list_status}) both named ${lookup_holder:-nobody}"
   else
-    evidence "${session} restarted from client instance ${first} to ${second}, which took ${role} back once the live window passed; the row then took ${role} out of the listener's copy and sent that process nothing more, and $(elapsed "$registered" "$agreed") after its first registration ($(elapsed "$dropped" "$agreed") after the drop) the lookup (${lookup_status}) and the listing (${list_status}) both named ${lookup_holder:-nobody}"
+    evidence "${session} restarted from client instance ${first} to ${second}, which took ${role} back once the live window passed; the row then took ${role} out of the listener's copy and sent that process nothing more, and ${agreed_after:-?}s after the listener's record of its registration the lookup (${lookup_status}) and the listing (${list_status}) both named ${lookup_holder:-nobody}"
   fi
   end_row
   end_scenario

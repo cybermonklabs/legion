@@ -20,6 +20,7 @@ import {
   spawnRpc,
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
+import { settled } from "@legion/test-fixtures/wait";
 
 // What people wrote to a session, on every request of the real Oh My Pi's main loop
 // (src/session-answers-context.ts), and on none of the other requests its
@@ -391,7 +392,7 @@ async function runSession(
   // a quiet delivery (an RPC prompt that runs a command) at their RPC response; a /btw once its
   // side turn was served.
   let settle: ((frame: object) => boolean) | undefined;
-  let settled = Promise.withResolvers<void>();
+  let stepSettled = Promise.withResolvers<void>();
   const rpc = spawnRpc(
     binary,
     {
@@ -403,7 +404,7 @@ async function runSession(
       onFrame: (frame) => {
         if (settle?.(frame)) {
           settle = undefined;
-          settled.resolve();
+          stepSettled.resolve();
         }
       },
     },
@@ -419,10 +420,13 @@ async function runSession(
       sideTurnServed = Promise.withResolvers<void>();
       sentAt.push(performance.now());
       rpc.send({ type: "btw", question: step.btw });
-      await Promise.race([sideTurnServed.promise, rpc.closed]);
+      await settled(
+        "the stand-in to serve the side turn",
+        Promise.race([sideTurnServed.promise, rpc.closed])
+      );
       continue;
     }
-    settled = Promise.withResolvers<void>();
+    stepSettled = Promise.withResolvers<void>();
     const command =
       "compact" in step
         ? "compact"
@@ -457,10 +461,12 @@ async function runSession(
             }
           : { type: command }
     );
-    await Promise.race([settled.promise, rpc.closed]);
+    await settled("the step to settle in omp", Promise.race([stepSettled.promise, rpc.closed]));
     if (commandError !== undefined) throw new Error(`omp refused the ${command}: ${commandError}`);
   }
-  if (options.until !== undefined) await Promise.race([options.until, rpc.closed]);
+  if (options.until !== undefined) {
+    await settled("the case's own condition", Promise.race([options.until, rpc.closed]));
+  }
   await rpc.end();
 
   return {
@@ -528,8 +534,7 @@ test.skipIf(skipped)(
     const list = lastListOf(second as Seen);
     expect(list).toBe(renderSessionAnswers([item], { now: Date.now() }));
     expect(list).toContain(item.text);
-  },
-  180_000
+  }
 );
 
 test.skipIf(skipped)(
@@ -553,8 +558,7 @@ test.skipIf(skipped)(
     expect(third_).not.toContain("First question.");
     expect(third_).toContain(session.summary);
     expect(listOf(third as Seen)).toBe(renderSessionAnswers([item], { now: Date.now() }));
-  },
-  180_000
+  }
 );
 
 test.skipIf(skipped)(
@@ -582,8 +586,7 @@ test.skipIf(skipped)(
       new Set([`/api/v1/agents/${parentID}/answers`])
     );
     expect(answersBefore(session.seen, first).path).toBe(`/api/v1/agents/${parentID}/answers`);
-  },
-  180_000
+  }
 );
 
 test.skipIf(skipped)(
@@ -635,8 +638,7 @@ test.skipIf(skipped)(
     const list = listOf(first as Seen);
     expect(list).toBe(renderSessionAnswers(items, { now: Date.now() }));
     for (const item of items) expect(list).toContain(item.text);
-  },
-  180_000
+  }
 );
 
 test.skipIf(skipped)(
@@ -669,8 +671,7 @@ test.skipIf(skipped)(
       )
     ).toBe(true);
     expect(list).toBe(renderSessionAnswers(items, { now: Date.now() }));
-  },
-  180_000
+  }
 );
 
 // The wait each reading measures is the deadline the extension gives Dispatch
@@ -787,8 +788,7 @@ test.skipIf(skipped)(
       expect(carried).toBe(renderSessionAnswers([item], { now: Date.now(), cached: carriedCache }));
       return waitOf(sub, subFirst);
     });
-  },
-  360_000
+  }
 );
 
 test.skipIf(skipped)(
@@ -811,8 +811,7 @@ test.skipIf(skipped)(
     expect(textOf(messagesOf(second as Seen).at(-1))).toContain("Second question.");
     expect(session.answers).toHaveLength(1);
     expect((session.answers[0] as Seen).at).toBeLessThan((first as Seen).at);
-  },
-  180_000
+  }
 );
 
 test.skipIf(skipped)(
@@ -847,8 +846,7 @@ test.skipIf(skipped)(
     console.log(
       `(h) request N+1's last two messages: ${JSON.stringify(messagesOf(next).slice(-2))}`
     );
-  },
-  180_000
+  }
 );
 
 // A list that shows nothing new is no new turn: on the turns after the one it first went on, it
@@ -907,8 +905,7 @@ test.skipIf(skipped)(
     expect(bare(messagesOf(third).slice(0, anchor + 1))).toBe(
       bare(messagesOf(second).slice(0, anchor + 1))
     );
-  },
-  180_000
+  }
 );
 
 /** A request's messages as role and text, cache anchors aside. */
@@ -967,8 +964,7 @@ test.skipIf(skipped)(
     expect(rest).toEqual([]);
     expect(listOf(first as Seen)).toBe(renderSessionAnswers([item], { now: Date.now() }));
     expect(listOf(second as Seen)).toBe(renderSessionAnswers([item], { now: Date.now() }));
-  },
-  180_000
+  }
 );
 
 // The handoff converts `[...this.#e.agent.state.messages, {role: "user", content: [{type: "text",
@@ -1002,8 +998,7 @@ test.skipIf(skipped)(
     expect(rest).toEqual([]);
     expect(listOf(first as Seen)).toBe(renderSessionAnswers([item], { now: Date.now() }));
     expect(listOf(second as Seen)).toBe(renderSessionAnswers([item], { now: Date.now() }));
-  },
-  180_000
+  }
 );
 
 // Anthropic remote compaction (`buildLiveProviderContext`) converts the conversation up to its cut,
@@ -1051,8 +1046,7 @@ test.skipIf(skipped)(
     expect(carriesList(compaction)).toBe(false);
     expect(listOf(third)).toBe(renderSessionAnswers([item], { now: Date.now() }));
     expect(listOf(fourth)).toBe(renderSessionAnswers([item], { now: Date.now() }));
-  },
-  180_000
+  }
 );
 
 // The same compaction with its cut right after a delivered message, which is what every Envoy
@@ -1094,8 +1088,7 @@ test.skipIf(skipped)(
     expect(carriesList(compaction)).toBe(false);
     expect(listOf(delivered)).toBe(renderSessionAnswers([item], { now: Date.now() }));
     expect(listOf(fourth)).toBe(renderSessionAnswers([item], { now: Date.now() }));
-  },
-  180_000
+  }
 );
 
 // A remote compaction that keeps no tail: two delivered messages with no turn after a turn, the
@@ -1138,8 +1131,7 @@ test.skipIf(skipped)(
     expect(carriesList(compaction)).toBe(false);
     expect(listOf(first)).toBe(renderSessionAnswers([item], { now: Date.now() }));
     expect(listOf(second)).toBe(renderSessionAnswers([item], { now: Date.now() }));
-  },
-  180_000
+  }
 );
 
 // Two copies of this extension (a checkout's and an installed one, say) each run their own
@@ -1165,6 +1157,5 @@ test.skipIf(skipped)(
     console.log(`(l) the Messages request came ${ms.toFixed(0)} ms after the answers request`);
     expect(ms).toBeLessThan(1_000);
     expect(carriesList(first)).toBe(false);
-  },
-  180_000
+  }
 );
