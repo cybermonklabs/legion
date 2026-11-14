@@ -482,10 +482,9 @@ too: a credential error is the fleet's rather than this claim's work, so it clim
 any other and the controller's notice at six is what tells a person. A newer
 task for that claim replaces the one the error took back and is sent at once, so it does not wait
 out a ladder that reaches ten minutes a step; while that claim's session is being compacted it
-waits for the compaction's end instead, as everything the claim is owed does. An update round's
-question waits behind the owed task, as any other task does: the question needs a turn of the
-worker's own, and that turn would fail the way the task's did, so the pod's round waits until a
-turn of the owed task ends with no provider error.
+waits for the compaction's end instead, as everything the claim is owed does. An update round
+waits for none of this: the daemon publishes the round's message to the role's own topic, and the
+round ends at its bound whether or not a turn of that role succeeds.
 
 **One provider error does hold the issue**, for its architect: one whose HTTP status is a client
 error, 400 to 499, that is none of 401, 403, 408 and 429. A malformed request is
@@ -551,9 +550,9 @@ listing alone. What follows the colon says where to look:
 - `the daemon runs with no GitHub App, so it cannot read theorem-labs/agent-infra`, or `the daemon
   could not mint its read-only token for theorem-labs/agent-infra: …`: the daemon's GitHub App
   configuration, and the implement App's installation on theorem-labs.
-- `GitHub refused to narrow the daemon's implement App token to theorem-labs/agent-infra alone, …`:
-  the implement App's installation must reach theorem-labs/agent-infra. The daemon asks for no
-  wider token in its place.
+- `GitHub refused the daemon's implement App the reading permissions on theorem-labs, …`: what the
+  account grants the implement App's installation on theorem-labs. The read lease needs contents,
+  pull requests and metadata read. The daemon asks for no wider token in its place.
 - `GitHub answered the read of theorem-labs/agent-infra at <tag> with HTTP <status>…`, or `the
   tarball of theorem-labs/agent-infra at <tag> …`: check that the tag the worker image pins exists
   in that repository and holds its `leak-check` directory.

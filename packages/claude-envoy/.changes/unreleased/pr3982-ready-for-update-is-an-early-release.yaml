@@ -1,0 +1,4 @@
+kind: Changed
+custom:
+  Issue: pr3982
+body: The `legion` tool's `ready_for_update` answers the daemon's update message, which reaches the role on its own topic, and says that the pod is replaced when the round ends, at the moment the message names or earlier once every role has answered and no turn runs; no answer delays that moment, and the end of a turn is no answer.

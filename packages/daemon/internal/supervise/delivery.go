@@ -309,13 +309,6 @@ func pendingID(p *Delivery) string {
 // replaces the owed one). The newer task takes its place: it is work for this claim, queued
 // since, and R2 has the newer of the two go.
 //
-// An update round's own ask (updateRoundOf) takes no task's place, taken or owed: that ask exists
-// to catch the worker between turns, with its work pushed, so it waits for the turn in flight to
-// end rather than taking its place, and its post is re-made at the next tick. askForUpdate holds
-// that question back while the claim holds a task at all, whichever task that is, and the reason
-// it does is written there (table.go); the refusal here is what answers an ask that reaches this
-// far. Only the work of the issue displaces work the worker has finished with.
-//
 // The replaced task's row ends as any other retirement ends it, and the question a restart armed
 // for that task is answered in the same step, which is the one path both places a task replaces
 // an owed one take (replaceOwedTask): the delete releases what that task held of a person's
@@ -354,13 +347,7 @@ func (m *Machine) queue(ctx context.Context, request RequestDeliver) error {
 		if (id != "" && pending.ID == id && pending.Task == task) || queued {
 			return nil
 		}
-		_, asksUpdate := updateRoundOf(id)
 		switch {
-		case asksUpdate:
-			if err := m.sendPending(ctx); err != nil {
-				return err
-			}
-			return &RefusedError{State: m.claim.State, Request: "deliver", Err: ErrDeliveryPending}
 		case pending.ConfirmedAt.IsZero():
 			owed, attempt := pending.ID, pending.ProviderErrorRetries
 			replaced, err := m.replaceOwedTask(ctx)
@@ -416,18 +403,26 @@ func (m *Machine) queue(ctx context.Context, request RequestDeliver) error {
 }
 
 // answeredOpenRound is the hold an open update round puts on its claim: the round is open and
-// the worker has answered it (ready_for_update, or the turn's end of a worker that cannot call
-// it), so that worker has said its work is pushed and its process may be replaced at any moment.
+// the worker has answered it (ready_for_update), so that worker has said its work is pushed and
+// its process may be replaced at any moment. The answer stands for the round, whatever turn
+// starts after it, so the hold does too until the round ends (dispatch://INFRA-2981 R5, R9).
 // sendPending hands such a claim nothing, and NewMachine reads it through openRoundHoldsTask.
 func (c Claim) answeredOpenRound() bool {
 	return c.UpdateRound != "" && c.UpdateSignalledAt != nil
 }
 
 // openRoundHoldsTask is whether the claim's open round holds the task the claim has pending: the
-// hold above, over a task that is not an ask of the round itself (updatesRound), which the round
-// never holds back from the worker it is asking. It is built from sendPending's own hold rather
-// than written out again, so the restore that reads it (NewMachine) can never judge a task held
-// that sendPending would send, or the other way about.
+// hold above, over a task that is not an ask of this round (updatesRound). This daemon queues no
+// ask of a round as a task: it publishes the ask to the role's Envoy topic (record.UpdateAsk). A
+// task under an `update:` delivery id (updateTaskPrefix) is one an older daemon queued and left
+// in the store. An ask of this round is excepted, because that daemon may have sent it before
+// the worker answered, so the round's hold is not what keeps it from the worker: the restore
+// asks whether the agent holds it (askFirst), and no send of this daemon carries it
+// (sendPending drops it, and the round's end takes it back). An older daemon's ask of another
+// round, on a claim that answered its current round, is not excepted: the answered round holds
+// it, and the sendPending that runs after the round ends drops it. It is built from
+// sendPending's own hold rather than written out again, so the restore that reads it
+// (NewMachine) can never judge a task held that sendPending would send, or the other way about.
 func (c Claim) openRoundHoldsTask() bool {
 	return c.answeredOpenRound() && !updatesRound(c.Pending, c.UpdateRound)
 }
@@ -486,17 +481,21 @@ func (c Claim) openRoundHoldsTask() bool {
 // could be worked with. So such a task waits for the credit and then for the replacement
 // process's ready, which is the same wait every other task of that claim is already in.
 //
-// An ask the claim can no longer answer is dropped here rather than sent, and there are two of
-// them: an ask of a round another round has replaced, and an ask of a round whose pod the
-// claim's process no longer runs in (Claim.LeftPodRound). The worker that read either would be
-// asked to push its work for a pod replacement this daemon has already made, and it would
-// refuse the answer the ask asks for. An ask names the round it asked in its own delivery id,
-// and keeps it across every take-back (rotateTaskID), so the ask of a round a turn had
-// confirmed comes back under that round when the turn ends in a death or a provider error,
-// with the claim already in the round that replaced it. Sending it again would cost a model
-// turn and make the current round's question wait behind a question nobody wants. That drop
-// and the phase check's are one shape below, and both leave through the answer every drop of a
-// delivery gives the mark armed for it (answerAskFirstAfterDrop).
+// This daemon queues no ask of an update round as a task: it publishes the ask to the role's
+// Envoy topic (record.UpdateAsk). A task under an `update:` delivery id (updateTaskPrefix) is one
+// an older daemon queued, and a claim restored from the store can hold one. Such a task is
+// dropped here and never sent, whichever round it names, the round the claim is in now included.
+// Its text is the older daemon's, and that text can tell the worker that the daemon reads the end
+// of the turn as its answer. This daemon reads no end of a turn as an answer: only the worker's
+// ready_for_update call answers a round. A worker that read that text would end its turn and
+// take the end for its answer, so this daemon never sends it; a role that read it before the
+// deploy gets the round's Envoy ask as well. A claim that has answered its open round reaches no
+// drop here (answeredOpenRound): the task waits for the round's end, which takes back an ask of
+// that round (dropUpdateTask), and the send after the end drops an ask of any other round here.
+// The delivery id names the round, and keeps it across every take-back (rotateTaskID), so an ask
+// whose turn a death cut off comes back still an ask and is dropped here rather than sent again.
+// That drop and the phase check's are one shape below, and both leave through the answer every
+// drop of a delivery gives the mark armed for it (answerAskFirstAfterDrop).
 func (m *Machine) sendPending(ctx context.Context) error {
 	// A claim holding a suspension is handed nothing (holdSuspension), and neither is one whose
 	// paced launch is about to replace the process a send would reach (launchWaits).
@@ -539,18 +538,16 @@ func (m *Machine) sendPending(ctx context.Context) error {
 	// any other drop (answerAskFirstAfterDrop): a drop that returned of its own would
 	// leave the question a restart armed for that delivery standing (askFirst), and the next
 	// task would be confirmed by whatever turn is running and retired unsent. Nothing here
-	// sends, so the ask of a round this claim's process has left is still dropped before the
-	// connection carries anything to the worker that cannot answer it. The one drop that leaves
-	// elsewhere is a root architect's held task that names nothing any more (asksRoot's branch
-	// below, currentRootTask): that branch clears askFirst before anything else, so it leaves no
+	// sends, so an older daemon's ask of an update round is dropped before the connection
+	// carries anything of it to the worker. The one drop that leaves elsewhere is a root
+	// architect's held task that names nothing any more (asksRoot's branch below,
+	// currentRootTask): that branch clears askFirst before anything else, so it leaves no
 	// question armed and asks none.
 	//
-	// holds is whether the delivery is still the claim's to send; the ask of a round the claim
-	// is not in now never is, and its issue's phase is not asked about, since the round's words
-	// are what it is.
+	// holds is whether the delivery is still the claim's to send. An older daemon's ask of an
+	// update round never is, whichever round it names, and its issue's phase is not asked about.
 	round, asks := updateRoundOf(p.ID)
-	stale := asks && (round != m.claim.UpdateRound || m.claim.LeftPodRound(round))
-	holds := !stale
+	holds := !asks
 	if holds {
 		var err error
 		if holds, err = m.phaseHolds(ctx, *p); err != nil {
@@ -558,8 +555,8 @@ func (m *Machine) sendPending(ctx context.Context) error {
 		}
 	}
 	if !holds {
-		if stale {
-			m.log.Info("supervise: this task asks for a round the claim is not in now; it is dropped rather than sent",
+		if asks {
+			m.log.Info("supervise: this task is an ask an older daemon queued for an update round; it is dropped and never sent",
 				"delivery", p.ID, "asked", round, "round", m.claim.UpdateRound, "left", m.claim.UpdateLeftRound)
 		} else {
 			m.log.Info("supervise: the issue has left the phase this task was queued for; it is dropped rather than sent",
@@ -612,9 +609,6 @@ func (m *Machine) sendPending(ctx context.Context) error {
 		m.askFirst = false
 		if streaming, _ := m.streaming(ctx, conn); streaming {
 			m.claim.State = StateWorking
-			// The turn is the agent's own word, not an agent_start this daemon read, so nothing
-			// here knows what it has already done (Machine.unseenTurn).
-			m.unseenTurn = true
 			// The turn this claim is put in is logged before the write that records it, as
 			// turnStarted logs its own: a line written after the write would say nothing of the
 			// turn whose write failed.
@@ -730,8 +724,8 @@ func (m *Machine) currentRootTask(ctx context.Context) (bool, error) {
 
 // answerAskFirstAfterDrop answers the question a restart armed for a delivery that is now gone
 // (askFirst), and every drop of a delivery runs it in the same step as the drop: sendPending's
-// two — the task its issue's phase has left behind, and the ask of a round the claim is not in
-// now — the retirement's (machine.go's retire), and dropUpdateTask, which makes it of its own
+// two — the task its issue's phase has left behind, and an older daemon's ask of an update
+// round — the retirement's (machine.go's retire), and dropUpdateTask, which makes it of its own
 // for the three drops a round that is over makes through it (leaveRound, endPodUpdate,
 // openPodUpdate's round switch). The one drop that does not run it is
 // currentRootTask's retirement of a root architect's held task that names nothing any more:
@@ -741,13 +735,12 @@ func (m *Machine) currentRootTask(ctx context.Context) (bool, error) {
 // that turn's end — and the worker would never receive that task at all.
 //
 // It asks what a send would have asked, and confirms nothing: no delivery is left to confirm, so
-// an agent the ask finds in a turn only moves the claim to working, with the turn marked one this
-// daemon never saw begin (Machine.unseenTurn), and the claim written. The ask is worth making
-// with nothing pending because the claim's state is the daemon's record of whether its agent is
-// busy, and the drop does not make that record current: discarded instead, the claim stays ready
-// while its agent works, and the task that follows the dropped one is prompted into a busy agent
-// and refused at every send until that turn ends. The turn is nobody's task's either way, and the
-// next task waits for it to end.
+// an agent the ask finds in a turn only moves the claim to working, and the claim is written.
+// The ask is worth making with nothing pending because the claim's state is the daemon's record
+// of whether its agent is busy, and the drop does not make that record current: discarded
+// instead, the claim stays ready while its agent works, and the task that follows the dropped one
+// is prompted into a busy agent and refused at every send until that turn ends. The turn is
+// nobody's task's either way, and the next task waits for it to end.
 //
 // An agent that cannot say, and a claim whose shim is not connected, are taken as not streaming:
 // the mark goes all the same, since it is the dropped delivery's, and the busy refusal is what a
@@ -774,7 +767,7 @@ func (m *Machine) answerAskFirstAfterDrop(ctx context.Context) error {
 		return nil
 	}
 	m.log.Info("supervise: the agent is in a turn of its own after its task was dropped", "claim", m.claim.Token)
-	m.claim.State, m.unseenTurn = StateWorking, true
+	m.claim.State = StateWorking
 	// The guard above has already established that the claim holds no delivery, so this turn is
 	// no task's and the line names none. It goes before the write, as the other two do.
 	m.startTurn("")
@@ -799,7 +792,7 @@ func (m *Machine) phaseHolds(ctx context.Context, d Delivery) (bool, error) {
 
 // retirePending drops the pending delivery, and is the one place a delivery ends: settle calls
 // it for a delivery whose life is over, sendPending for a task the issue's phase has left
-// behind and for the ask of a round the claim is not in now, dropUpdateTask for the ask of a
+// behind and for an older daemon's ask of an update round, dropUpdateTask for the ask of a
 // round that is over, retire for the ask the claim ends with, and queue for the task a newer one
 // replaces. The claim keeps its state — the task is stale, not the agent.
 //
@@ -1212,7 +1205,9 @@ const outOfMemoryTask = "Your pod ran out of memory. Kubernetes ended the contai
 // outOfMemoryTask to what is sent; it is written on every call, true or false, so a second
 // interruption of the same task for another reason clears a note that no longer describes it.
 // The task is neither retired nor its run marked served, since the turn never finished. A task
-// with no turn running is left as it is: the relaunch sends it as it was.
+// with no turn running is left as it is: the relaunch sends it as it was. An older daemon's ask
+// of an update round is the one task the relaunch never sends: it keeps its round across the new
+// id (rotateTaskID), and sendPending drops it.
 //
 // The taken-back task becomes the claim's only once its write has landed. A write that fails
 // leaves the task confirmed in memory as in the store, and the process is still recorded, so the

@@ -19,14 +19,16 @@ import (
 // idleWaitingKinds are the outbox kinds that reach a role's own session, which is what "a task, a
 // notice, a message or a start waits for a role of the pod" means: a supervise row (a start, the
 // task it carries, a stop), an architect's notice, the message a phase's end sends the role
-// whose phase ended, and the words a hook fired on a move back puts in front of a role
-// (record.HookPrompt). The issue's board writes — its Dispatch status, its merge-queue packet —
+// whose phase ended, the words a hook fired on a move back puts in front of a role
+// (record.HookPrompt), and the ask an update round puts to a role of the pod (record.UpdateAsk).
+// The issue's board writes — its Dispatch status, its merge-queue packet —
 // reach no session and hold no pod. The same set is what the release's boundary is read over
 // (IssueRelease), so the rule that holds a pod and the rule that cancels its release never
 // disagree about which row speaks to a role. Every kind of the role-message lane belongs here:
 // one left out lets the daemon release the issue's pod out from under the prompt the firing just
-// wrote, and the role it was written for never reads it.
-var idleWaitingKinds = []string{"supervise", "notice", "phase_ended", "hook_prompt"}
+// wrote, and the role it was written for never reads it. An update ask holds the pod only while
+// its row is pending, which is one attempt where the publish goes through or finds no holder.
+var idleWaitingKinds = []string{"supervise", "notice", "phase_ended", "hook_prompt", "update_ask"}
 
 // IdleReleaseRow is one outbox row a release writes, encoded by its caller (record.NewOutboxRow),
 // in the order the issue's lifecycle lane runs them: the save of the workspace's unpushed work,
