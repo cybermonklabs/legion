@@ -672,11 +672,13 @@ type PullRequest struct {
 	// nullable `mergeable` field: MergeabilityUnknown while GitHub is still computing it (never a
 	// transient conflict - GitHub reports no checks run on a mergeability GitHub has not computed
 	// yet, either), MergeabilityMergeable once GitHub can merge the head automatically, and
-	// MergeabilityConflicting once it cannot. "" means the read has never run.
+	// MergeabilityConflicting once it cannot. "" means the record holds none for this head
+	// (StateReadAt below says when that is).
 	Mergeability Mergeability
 	// MergeState is GitHub's own merge state for this head, read from `mergeable_state` on the
 	// same /pulls/{number} answer Mergeability is decoded from (daemon.readIssuePullRequest), in
-	// GitHub's lowercase spelling; "" means the read has never run. It is kept beside
+	// GitHub's lowercase spelling; "" means the record holds none for this head (StateReadAt below
+	// says when that is). It is kept beside
 	// Mergeability because the tri-state cannot tell a head GitHub holds on the repository's own
 	// required checks or reviews (MergeStateBlocked) from one GitHub would merge now
 	// (MergeStateClean): GitHub answers `mergeable: true` for both.
@@ -694,19 +696,19 @@ type PullRequest struct {
 	// it, and that is what tells a head read a minute ago from one nothing has read for a day. No
 	// webhook stamps it, and a fact with no read time behind it writes none and erases none.
 	//
-	// What clears it, always with MergeState: any fact that moves the head (classify's advance: a
-	// synchronize, a reopen or a close at another head), because the stamp would then be the time
-	// of a read about the head before; and a reopen at any head, which builds the record afresh
-	// (workflow's pullRequestOpened).
+	// What clears it, always with MergeState and Mergeability: any fact that moves the head
+	// (classify's advance: a synchronize, a reopen or a close at another head), because the stamp
+	// would then be the time of a read about the head before; and a reopen at any head, which
+	// builds the record afresh (workflow's pullRequestOpened).
 	//
-	// What carries it: a replay of the head run moves it and MergeState as a pair (classify's
-	// replayRun and withJudgement), so a replay never pairs one read's state with another read's
-	// time. withJudgement decides on MergeState and not on the stamp: wherever the record holds no
-	// state, a replay puts in place of the record's pair the one the replayed run ends with, which
-	// is the anchor's pair as the run's steps leave it, a head step among them clearing it
-	// (advance). So a stamp held beside no state can go with no head move of the record and no
-	// reopen. A run anchored before migration 20261112070503 holds a state with no stamp, and a
-	// replay gives that pair back as it is.
+	// What carries it: a replay of the head run moves it with MergeState and Mergeability
+	// (classify's replayRun and withJudgement), so a replay never pairs one read's state with
+	// another read's time. withJudgement decides on MergeState and not on the stamp: wherever the
+	// record holds no state, a replay puts in place of the record's pair the one the replayed run
+	// ends with, which is the anchor's pair as the run's steps leave it, a head step among them
+	// clearing it (advance). So a stamp held beside no state can go with no head move of the record
+	// and no reopen. A run anchored before migration 20261112070503 holds a state with no stamp,
+	// and a replay gives that pair back as it is.
 	//
 	// What the zero time means, after any of those: the record holds no read time for its head.
 	// Beside a recorded MergeState it is a state whose read time the record does not hold, a row
@@ -873,7 +875,7 @@ func LetsImplementationMove(pr *PullRequest) bool {
 // Mergeability is GitHub's lazily computed verdict for whether a pull request's head can be merged
 // into its base without a conflict, decoded from GitHub's nullable `mergeable` field
 // (daemon.readIssuePullRequest). "" (the zero value) means the record holds no verdict for its
-// head: none has been read, or a head move cleared it (classify's advance).
+// head; PullRequest.StateReadAt's doc says when that is.
 type Mergeability string
 
 const (

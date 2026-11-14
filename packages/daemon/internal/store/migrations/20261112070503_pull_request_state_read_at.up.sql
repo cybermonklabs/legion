@@ -18,6 +18,5 @@
 -- nothing to derive, beside the merge_state its last read gave, which it keeps. Such a row carries
 -- no moment of that read and is read as one with no read time on record, rather than as read at the
 -- migration's own moment, which would date every upgraded row to the deploy and call knowledge that
--- may be a day old fresh. The daemon's next read of the pull request fills it. The column is
--- cleared with merge_state whenever the head moves or the pull request is reopened.
+-- may be a day old fresh. The daemon's next read of the pull request fills it.
 alter table pull_requests add column state_read_at timestamptz not null default '0001-01-01 00:00:00+00';
