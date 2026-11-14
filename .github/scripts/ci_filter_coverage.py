@@ -21,6 +21,7 @@ import secrets
 import subprocess
 import sys
 import tempfile
+import traceback
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -39,8 +40,13 @@ def escape_message(value: str) -> str:
     return value.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
 
 
+def escape_annotation_message(value: str) -> str:
+    """Also escape legacy runner commands, which recognize ##[ anywhere in a line."""
+    return escape_message(value).replace("##[", "%23%23%5B")
+
+
 def escape_property(value: str) -> str:
-    return escape_message(value).replace(":", "%3A").replace(",", "%2C")
+    return escape_annotation_message(value).replace(":", "%3A").replace(",", "%2C")
 
 
 @dataclass(frozen=True)
@@ -54,11 +60,54 @@ def error(file: str | None, message: str) -> Annotation:
     return Annotation("error", file, message)
 
 
+class RepositoryInputError(Exception):
+    """A repository file could not be read or parsed, with its path kept for the annotation."""
+
+    def __init__(self, path: str, cause: Exception):
+        super().__init__(str(cause))
+        self.path = path
+        self.cause = cause
+
+
+def repository_path(path: Path) -> str:
+    """The file property for a repository path, relative where that is possible."""
+    try:
+        return path.relative_to(REPO).as_posix()
+    except ValueError:
+        return str(path)
+
+
+def read_repository_text(path: Path) -> str:
+    """Read a repository file, retaining its path if the read or decoding fails."""
+    try:
+        return path.read_text()
+    except Exception as exc:
+        raise RepositoryInputError(repository_path(path), exc) from exc
+
+
+def load_repository_yaml(path: Path):
+    """Parse a repository YAML file, retaining its path if the parser refuses it."""
+    try:
+        return yaml.safe_load(read_repository_text(path))
+    except RepositoryInputError:
+        raise
+    except yaml.YAMLError as exc:
+        raise RepositoryInputError(repository_path(path), exc) from exc
+
+
+def load_repository_yaml_text(path: str, text: str):
+    """Parse YAML obtained from a repository file field, retaining that file's path."""
+    try:
+        return yaml.safe_load(text)
+    except yaml.YAMLError as exc:
+        raise RepositoryInputError(path, exc) from exc
+
+
 
 
 def print_annotation(annotation: Annotation) -> None:
     location = f" file={escape_property(annotation.file)}" if annotation.file else ""
-    print(f"::{annotation.severity}{location}::{escape_message(annotation.message)}")
+    print(f"::{annotation.severity}{location}::{escape_annotation_message(annotation.message)}")
 
 
 @dataclass(frozen=True)
@@ -378,8 +427,10 @@ def repo_files() -> list:
     for extra in ([], ["--others", "--exclude-standard"]):
         result = subprocess.run(["git", "ls-files", "-z", *extra], cwd=REPO, capture_output=True)
         if result.returncode != 0:
-            raise SystemExit("::error::" + escape_message(f"git ls-files failed in {REPO}: "
-                                                          f"{os.fsdecode(result.stderr).strip()}"))
+            raise RepositoryInputError(
+                repository_path(REPO),
+                RuntimeError(f"git ls-files failed in {REPO}: {os.fsdecode(result.stderr).strip()}"),
+            )
         out += os.fsdecode(result.stdout).split("\0")
     return sorted({f for f in out if f and (REPO / f).is_file()})
 
@@ -426,7 +477,7 @@ def changes_filters(document: dict, problems: list[Annotation]) -> tuple:
             problems.append(error(WORKFLOW, f"the changes job's paths-filter step {step.get('id')} has "
                                              f"predicate-quantifier {quantifier}, which this check does not model"))
             continue
-        for name, value in (yaml.safe_load(str(options.get("filters", ""))) or {}).items():
+        for name, value in (load_repository_yaml_text(WORKFLOW, str(options.get("filters", ""))) or {}).items():
             if name in filters:
                 problems.append(error(WORKFLOW, f"filter {name} is defined in two paths-filter steps"))
             filters[name], quantifiers[name] = flatten(value), quantifier
@@ -650,7 +701,7 @@ def step_holders(document: dict, jobs: dict, loaded: dict) -> list:
         if not path:
             continue
         if path not in loaded:
-            loaded[path] = (yaml.safe_load((REPO / path).read_text()) or {}) if (REPO / path).is_file() else {}
+            loaded[path] = load_repository_yaml(REPO / path) or {} if (REPO / path).is_file() else {}
         called = loaded[path]
         units += [(job_id, path, name, called, called_job or {})
                   for name, called_job in (called.get("jobs") or {}).items()]
@@ -821,11 +872,16 @@ def check_table(document: dict, data, filters: dict, files: set, problems: list[
         for r in g.runs:
             if not r.source:
                 continue
-            if not (r.source in files and squash(r.text) in squash((REPO / r.source).read_text())):
+            if r.source not in files:
                 problems.append(error(r.source, f"{r.source} no longer holds `{r.text}`, the go command "
                                                 f"gate {g.filter} lists; update or remove the Run"))
                 continue
-            lines = (REPO / r.source).read_text().split("\n")
+            source_text = read_repository_text(REPO / r.source)
+            if squash(r.text) not in squash(source_text):
+                problems.append(error(r.source, f"{r.source} no longer holds `{r.text}`, the go command "
+                                                f"gate {g.filter} lists; update or remove the Run"))
+                continue
+            lines = source_text.split("\n")
             held = [i for i, line in enumerate(lines) if r.text in line]
             reason = around_job(units, g.job) or ("" if held else "its text spans lines")
             for i in held:
@@ -845,7 +901,7 @@ def check_table(document: dict, data, filters: dict, files: set, problems: list[
     cited_documents = {WORKFLOW: document}
     for path, job_id, ref in CITED:
         if path not in cited_documents:
-            cited_documents[path] = (yaml.safe_load((REPO / path).read_text()) or {}) if (REPO / path).is_file() else None
+            cited_documents[path] = load_repository_yaml(REPO / path) or {} if (REPO / path).is_file() else None
         cited = cited_documents[path]
         if cited is None:
             problems.append(error(".github/scripts/ci_job_reads.py", f"a why cites step \"{ref}\" of job "
@@ -1066,7 +1122,7 @@ def check_ci_ok(document: dict, problems: list[Annotation]) -> None:
                 problems.append(error(WORKFLOW, f"job {job_id} calls {job['uses']} without "
                                                 f"`ci-ok-changes: {REPORT_CHANGES}`, so the called job cannot report to ci-ok"))
             called = REPO / str(job["uses"]).removeprefix("./")
-            called_jobs = ((yaml.safe_load(called.read_text()) or {}).get("jobs") or {}) if called.is_file() else {}
+            called_jobs = (load_repository_yaml(called) or {}).get("jobs") or {} if called.is_file() else {}
             # The job that reports is the called workflow's job whose last step is the report:
             # always() first, so it runs after a failed step too, and ended only by the call's own
             # condition (docs-site.yaml's input, worker-image.yaml's event).
@@ -1108,7 +1164,7 @@ def check_push_workflows(data, filters: dict, problems: list[Annotation]) -> lis
             problems.append(error(".github/scripts/ci_job_reads.py", f"PUSH_WORKFLOWS names {path} for filter "
                                                                       f"{name}, which is not in the repository"))
             continue
-        push = events(yaml.safe_load((REPO / path).read_text()) or {}).get("push")
+        push = events(load_repository_yaml(REPO / path) or {}).get("push")
         paths = push.get("paths") if isinstance(push, dict) else None
         if not (isinstance(paths, list) and paths and all(isinstance(p, str) for p in paths)):
             problems.append(error(path, f"{path} has no on.push.paths list, which must equal {WORKFLOW}'s "
@@ -1238,9 +1294,9 @@ def check_dead_patterns(data, filters: dict, expander: Expander, problems: list[
                                                                   f"the repository, so it holds its filter to nothing; correct the path or drop the read"))
 
 
-def main() -> int:
+def check() -> int:
     problems: list[Annotation] = []
-    document = yaml.safe_load((REPO / WORKFLOW).read_text())
+    document = load_repository_yaml(REPO / WORKFLOW)
     import ci_job_reads as data  # imported here so its at() citations land in this module's CITED
     # The rules of ci.yaml that read no filter and no go command's closure, in a module of their
     # own. It is imported here, not at the top, because it imports this module's constants and
@@ -1325,3 +1381,18 @@ def main() -> int:
     print(f"every ci.yaml filter matches every file its job reads ({len(data.GATES)} gates), and every "
           f"PUSH_WORKFLOWS workflow's on.push.paths equals its filter ({len(data.PUSH_WORKFLOWS)})")
     return 0
+
+
+def main() -> int:
+    """Run the checker without allowing repository text into an unprotected workflow log."""
+    try:
+        return check()
+    except RepositoryInputError as exc:
+        print_annotation(error(exc.path, f"cannot read repository input: {exc.cause}"))
+        return 1
+    except BaseException:
+        token = secrets.token_hex(16)
+        print(f"::stop-commands::{token}", flush=True)
+        traceback.print_exc(file=sys.stdout)
+        print(f"::{token}::", flush=True)
+        return 1

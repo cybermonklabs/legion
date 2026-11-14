@@ -259,6 +259,27 @@ check_report_section() {
   check "keeps report lines and command syntax inside the pair" "$(is "$outside" "")"
 }
 
+unescaped_workflow_commands() {
+  local line unsafe=
+  while IFS= read -r line; do
+    if [[ $line == *'##['* ]] ||
+      { [[ $line != ::error\ file=*::* ]] && [[ $line =~ ::[a-z-]+ ]]; }; then
+      unsafe+="$line"$'\n'
+    fi
+  done <<<"$out"
+  printf '%s' "$unsafe"
+}
+
+check_input_parse_error() {
+  local file=$1
+  check "fails" "$(is "$status" 1)"
+  check "emits one escaped input-error annotation" \
+    "$(is "$(grep -Fc -- "::error file=$file::cannot read repository input: " <<<"$out" || true)" 1)"
+  check "does not print a traceback for repository input" "$(is "$(contains "$out" 'Traceback')" false)"
+  check "keeps command syntax outside the input-error annotation" "$(is "$(unescaped_workflow_commands)" "")"
+}
+
+
 echo "case: the filter matches the job's closure, its test's read and its module files"
 root=$(fixture green)
 run_check "$root"
@@ -299,6 +320,23 @@ check "fails" "$(is "$status" 1)"
 expected='::error file=unsafe%3A%3A%0Dname.txt::app reads unsafe::%0Dname.txt, which its filter app does not match, so a change to it skips the job: the unsafe path'
 check "emits one annotation with a fully escaped file property" \
   "$(is "$(grep -Fxc -- "$expected" <<<"$out" || true)" 1)"
+
+echo "case: malformed ci.yaml cannot inject a legacy warning"
+root=$(fixture malformed-ci-legacy-warning)
+cat > "$root/.github/workflows/ci.yaml" <<'YAML'
+bad: "##[warning]forged
+YAML
+run_check "$root"
+check_input_parse_error ".github/workflows/ci.yaml"
+
+echo "case: malformed extra workflow cannot inject a command annotation"
+root=$(fixture malformed-workflow-command-warning)
+cat > "$root/.github/workflows/forged.yaml" <<'YAML'
+bad: "::warning file=x::forged
+YAML
+run_check "$root"
+check_input_parse_error ".github/workflows/forged.yaml"
+
 
 echo "case: a report path beginning with :: is not a command"
 root=$(fixture report-command-prefix)

@@ -26,10 +26,22 @@ import json
 import re
 from collections import defaultdict
 
-import yaml
 
-from ci_filter_coverage import (CACHE_WORKFLOW, REPO, REQUIRED_CHECKS, WORKFLOW, conditions, error, script_lines,
-                                squash, step_holders, where_if)
+from ci_filter_coverage import (
+    CACHE_WORKFLOW,
+    REPO,
+    REQUIRED_CHECKS,
+    WORKFLOW,
+    RepositoryInputError,
+    conditions,
+    error,
+    load_repository_yaml,
+    read_repository_text,
+    script_lines,
+    squash,
+    step_holders,
+    where_if,
+)
 from workflow_paths import events
 
 
@@ -188,7 +200,7 @@ def check_cache_round_trip(document: dict, problems: list) -> None:
     that is not in the repository saves nothing, and so has nothing to hold."""
     if not (REPO / CACHE_WORKFLOW).is_file():
         return
-    caches = yaml.safe_load((REPO / CACHE_WORKFLOW).read_text()) or {}
+    caches = load_repository_yaml(REPO / CACHE_WORKFLOW) or {}
     restores = restores_of(document)
     for job_id, family, given in cache_steps(caches, "save"):
         key, paths = str(given.get("key", "")).rstrip(), path_lines(given.get("path", ""))
@@ -265,7 +277,7 @@ def check_race_fill_packages(packages: list, problems: list) -> None:
     and nothing here imports it - the engine's names are all this module takes."""
     if not (REPO / CACHE_WORKFLOW).is_file():
         return
-    caches = yaml.safe_load((REPO / CACHE_WORKFLOW).read_text()) or {}
+    caches = load_repository_yaml(REPO / CACHE_WORKFLOW) or {}
     wanted = [f"./{package}/" for package in packages]
     builds = race_builds(caches)
     if not builds:
@@ -334,7 +346,7 @@ def check_workspace_table(workspaces: list, problems: list) -> None:
                                         f"nothing while every read it gives each Bun job names a manifest this tree does not have"))
         return
     try:
-        manifest = json.loads((REPO / MANIFEST).read_text())
+        manifest = json.loads(read_repository_text(REPO / MANIFEST))
     except json.JSONDecodeError as json_error:
         problems.append(error(MANIFEST, f"the root manifest is not valid JSON ({json_error.msg} at line "
                                         f"{json_error.lineno}), so its workspaces cannot be held to {TABLE}'s WORKSPACES"))
@@ -382,9 +394,13 @@ def check_one_merge_group_workflow(problems: list) -> None:
     merge_group workflow puts the early POST back in another suite, and nothing in ci.yaml would
     say so: the workflow that broke it is the new file. So the rule is about every other
     workflow, and names the file it found."""
-    for path in sorted(p for p in (REPO / WORKFLOW_DIR).iterdir() if p.suffix in WORKFLOW_SUFFIXES):
+    try:
+        workflows = sorted(p for p in (REPO / WORKFLOW_DIR).iterdir() if p.suffix in WORKFLOW_SUFFIXES)
+    except Exception as exc:
+        raise RepositoryInputError(WORKFLOW_DIR, exc) from exc
+    for path in workflows:
         name = f"{WORKFLOW_DIR}/{path.name}"
-        if name == WORKFLOW or MERGE_GROUP not in events(yaml.safe_load(path.read_text()) or {}):
+        if name == WORKFLOW or MERGE_GROUP not in events(load_repository_yaml(path) or {}):
             continue
         problems.append(error(name, f"{name} runs on {MERGE_GROUP}, which only {WORKFLOW} may: "
                                     f"ci-ok-report.sh POSTs the failing ci-ok of a merge-group run the reporting job's own "
