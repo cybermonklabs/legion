@@ -10,6 +10,7 @@ import type { Ask } from "../../api/types";
 import { AskBlockCard } from "../doc/AskBlockCard";
 import type { AskBlockHost } from "../doc/typed-block-drawing";
 import { AskCompletionCard } from "./AskCompletionCard";
+import { AskHeader, askStateLabel } from "./AskHeader";
 
 /** Every header here names a session, which reads the registry; no test turns on a live one. */
 const listAgents = spyOn(api, "listAgents");
@@ -87,7 +88,8 @@ function renderCard(node: ReactNode) {
   return view;
 }
 
-/** The one header a surface draws, which every assertion here reads by its own attributes. */
+/** The one header a surface draws, which every assertion here reads by its own attributes and
+ *  by the text it draws. */
 function header(container: HTMLElement): HTMLElement {
   const found = container.querySelectorAll<HTMLElement>("[data-ask-header]");
   expect(found).toHaveLength(1);
@@ -95,6 +97,32 @@ function header(container: HTMLElement): HTMLElement {
   if (one === undefined) throw new Error("no ask header");
   return one;
 }
+
+/** The state labels a header draws, as their text. */
+function labels(head: HTMLElement): string[] {
+  return [...head.querySelectorAll("[data-ask-state-label]")].map((label) => label.textContent);
+}
+
+test("the state label's words are one function of the state, and of a resolved ask's resolution", () => {
+  expect(askStateLabel("open", undefined)).toBe("Open");
+  expect(askStateLabel("answered", undefined)).toBe("Answered");
+  expect(askStateLabel("resolved", undefined)).toBe("Resolved");
+  const closing = { actor: asker, at: "2026-09-10T11:00:00Z", reason: "" };
+  expect(askStateLabel("resolved", { ...closing, kind: "withdrawn" })).toBe("Withdrawn");
+  expect(askStateLabel("resolved", { ...closing, kind: "declined" })).toBe("Declined");
+  expect(askStateLabel("closed", undefined)).toBe("Closed");
+});
+
+test("the Inbox card draws an open ask's state label as text", () => {
+  const view = renderCard(<AskHeader ask={ask} place="card" />);
+  try {
+    const head = header(view.container);
+    expect(head.dataset.askState).toBe("open");
+    expect(labels(head)).toEqual(["Open"]);
+  } finally {
+    view.unmount();
+  }
+});
 
 test("the answered record draws the urgency mark, the asker's name and the copy control", () => {
   const view = renderCard(
@@ -108,6 +136,7 @@ test("the answered record draws the urgency mark, the asker's name and the copy 
     expect(head.dataset.askAt).toBe("2026-09-10T09:00:00Z");
     expect(head.dataset.askCopy).toBe("dispatch://CORE-1/ask/ask-1");
     expect(within(head).getByText("BLOCKING")).toBeDefined();
+    expect(labels(head)).toEqual(["Answered"]);
     expect(within(head).getByRole("link", { name: "Architect for CORE-1" })).toBeDefined();
     expect(
       within(head).getByRole("button", { name: "Copy reference dispatch://CORE-1/ask/ask-1" })
@@ -130,6 +159,7 @@ test("the resolved record draws the urgency mark and the copy control beside its
     expect(head.dataset.askCopy).toBe("dispatch://CORE-1/ask/ask-1");
     expect(within(head).getByText("BLOCKING")).toBeDefined();
     expect(within(head).getByTestId("ask-resolution-badge").textContent).toBe("Resolved");
+    expect(labels(head)).toEqual(["Resolved"]);
     expect(
       within(head).getByRole("button", { name: "Copy reference dispatch://CORE-1/ask/ask-1" })
     ).toBeDefined();
@@ -218,6 +248,7 @@ test("a decision block with no ask row shows one header with the fields its attr
     expect(drawn.querySelector('[aria-label^="Copy reference"]')).toBeNull();
     expect(drawn.querySelector("[data-dispatch-ask-asked]")).toBeNull();
     expect(within(drawn).getByText("High")).toBeDefined();
+    expect(labels(drawn)).toEqual(["Answered"]);
     expect(drawn.textContent).toContain("Answered by bob");
     expect(getAsk).not.toHaveBeenCalled();
   } finally {

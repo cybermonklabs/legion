@@ -83,26 +83,37 @@ function conversationTurn(page: Page, askId: string): Locator {
     .filter({ has: page.getByTestId(`ask-${askId}`) });
 }
 
-/** Every `data-ask-*` field the headers inside `place` hold, with the place's own anchor quote.
- *  A decision block draws two headers - the block's own urgency and state, and the hosted card's,
- *  which adds the provenance and the reference - so the fields are collected across them. A field
- *  two headers of one place disagree about is reported as both values, which fails the row with
- *  the disagreement in it. */
+/** Every `data-ask-*` field the headers inside `place` hold, with the place's own anchor quote
+ *  and the state label as the reader sees it: the rendered text (`innerText`) of each label the
+ *  browser draws, so a label the place leaves out, or hides, is missing here whatever its
+ *  attributes say. A decision block draws two headers - the block's own urgency and state, and
+ *  the hosted card's, which adds the provenance, the reference and the label - so the fields are
+ *  collected across them. A field two headers of one place disagree about is reported as both
+ *  values, which fails the row with the disagreement in it. */
 async function headerFacts(place: Locator): Promise<Record<string, string | undefined>> {
   return place.evaluate((node) => {
     const names = ["urgency", "asker", "at", "copy", "state"];
     const held: Record<string, string | undefined> = {};
     const headers = [...node.querySelectorAll<HTMLElement>("[data-ask-header]")];
+    const joined = (values: readonly string[]) => {
+      const distinct = [...new Set(values)];
+      return distinct.length === 0 ? undefined : distinct.join(" ≠ ");
+    };
     for (const name of names) {
-      const values = [
-        ...new Set(
-          headers
-            .map((header) => header.dataset[`ask${name[0]?.toUpperCase()}${name.slice(1)}`])
-            .filter((value) => value !== undefined)
-        ),
-      ];
-      held[name] = values.length === 0 ? undefined : values.join(" ≠ ");
+      held[name] = joined(
+        headers
+          .map((header) => header.dataset[`ask${name[0]?.toUpperCase()}${name.slice(1)}`])
+          .filter((value) => value !== undefined)
+      );
     }
+    held.label = joined(
+      headers
+        .flatMap((header) => [...header.querySelectorAll<HTMLElement>("[data-ask-state-label]")])
+        .filter((label) =>
+          label.checkVisibility({ opacityProperty: true, visibilityProperty: true })
+        )
+        .map((label) => label.innerText.trim())
+    );
     const quote = node.querySelector("blockquote");
     held.anchor = quote?.textContent ?? undefined;
     return held;
@@ -148,11 +159,12 @@ test("one ask header says the same of an open, an answered and a resolved ask wh
     // row itself on a phone.
     await page.goto("/");
     const inboxFacts = await headerFacts(await askCard(page, open.id));
-    expect(inboxFacts).toMatchObject({
+    expect(inboxFacts, "the Inbox card's header").toMatchObject({
       anchor: quote,
       asker: "Planner",
       at: open.created_at,
       copy: `dispatch://${issue.key}/ask/${open.id}`,
+      label: "Open",
       state: "open",
       urgency: "med",
     });
@@ -165,29 +177,37 @@ test("one ask header says the same of an open, an answered and a resolved ask wh
       .click();
     const drawer = page.getByRole("dialog", { name: "Inbox" });
     await expect(drawer.getByTestId(`ask-${open.id}`)).toBeVisible();
-    expect(await headerFacts(drawer.getByTestId(`ask-${open.id}`))).toMatchObject(inboxFacts);
+    expect(
+      await headerFacts(drawer.getByTestId(`ask-${open.id}`)),
+      "the Inbox drawer card's header"
+    ).toMatchObject(inboxFacts);
     await page.keyboard.press("Escape");
 
     // The Conversation tab, where all three are drawn: the open card, the answered record and the
     // resolved record.
     await page.goto(`/issues/${issue.key}/conversation`);
     const conversation = page.locator("#issue-conversation-panel");
-    expect(await headerFacts(conversation.getByTestId(`ask-${open.id}`))).toMatchObject(inboxFacts);
+    expect(
+      await headerFacts(conversation.getByTestId(`ask-${open.id}`)),
+      "the Conversation tab's open card's header"
+    ).toMatchObject(inboxFacts);
     const answeredFacts = await headerFacts(conversation.getByTestId(`ask-${answeredAsk.id}`));
-    expect(answeredFacts).toMatchObject({
+    expect(answeredFacts, "the Conversation tab's answered record's header").toMatchObject({
       anchor: quote,
       asker: "Planner",
       at: answeredAsk.created_at,
       copy: `dispatch://${issue.key}/ask/${answeredAsk.id}`,
+      label: "Answered",
       state: "answered",
       urgency: "med",
     });
     const resolvedFacts = await headerFacts(conversation.getByTestId(`ask-${resolved.id}`));
-    expect(resolvedFacts).toMatchObject({
+    expect(resolvedFacts, "the Conversation tab's resolved record's header").toMatchObject({
       anchor: quote,
       asker: "Planner",
       at: resolved.created_at,
       copy: `dispatch://${issue.key}/ask/${resolved.id}`,
+      label: "Resolved",
       state: "resolved",
       urgency: "med",
     });
@@ -211,10 +231,11 @@ test("a decision block draws the same header fields as the ask's other places, w
     const page = await alice.newPage();
     await page.goto("/");
     const inboxFacts = await headerFacts(await askCard(page, blockAsk.id));
-    expect(inboxFacts).toMatchObject({
+    expect(inboxFacts, "the Inbox card's header").toMatchObject({
       asker: "alice",
       at: blockAsk.created_at,
       copy: `dispatch://${issue.key}/ask/${blockAsk.id}`,
+      label: "Open",
       state: "open",
       urgency: "high",
     });
@@ -225,7 +246,10 @@ test("a decision block draws the same header fields as the ask's other places, w
     const block = documentEditor(page).locator('[data-dispatch-ask-block="decide"]');
     await expect(block.locator("article[data-testid^=ask-]")).toBeVisible();
     const blockFacts = await headerFacts(block);
-    expect(blockFacts).toEqual({ ...inboxFacts, anchor: undefined });
+    expect(blockFacts, "the decision block's headers").toEqual({
+      ...inboxFacts,
+      anchor: undefined,
+    });
   } finally {
     await alice.close();
   }

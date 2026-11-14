@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 
-import type { Ask, AskUrgency, Comment } from "../../api/types";
+import type { Ask, AskResolution, AskUrgency, Comment } from "../../api/types";
 import { TruncatedText } from "../../components/TruncatedText";
 import {
   askBlockPill,
@@ -107,12 +107,14 @@ interface AskHeaderAsker {
  * session handles, the records' own sentences, the block's `Decision` and `Copied from` - come
  * in through `leading` and `trailing`.
  *
- * A state label is drawn where the place has one to draw: the resolved record's badge and a
- * decision block's pill. An open ask is in no state worth naming, and an answered record's whole
- * frame already says it. `data-ask-state` carries the value at every place all the same, beside
- * `data-ask-urgency`, `data-ask-asker`, `data-ask-at` and `data-ask-copy`: the five fields one
- * browser row reads to hold the four places to the same values. A field the place does not hold
- * carries no attribute at all.
+ * The state label is drawn at every place, as text, and its words are one function of where the
+ * ask stands (`askStateLabel`): `Open`, `Answered`, and for a resolved ask the word naming how it
+ * was resolved. A decision block reads its own attributes, which hold a state and no
+ * resolution, and a block whose footer draws a card leaves the label to that card's header, so
+ * one block draws one label; a malformed block, whose state cannot be read, draws none.
+ * `data-ask-state` carries the state beside `data-ask-urgency`, `data-ask-asker`, `data-ask-at`
+ * and `data-ask-copy`: the fields one browser row reads, with the label's own text, to hold the
+ * four places to the same values. A field the place does not hold carries no attribute at all.
  *
  * Naming an asker reads the agent registry, which is a query: a header with no asker to name -
  * a decision block in a body of text, which has no ask row at all - is drawn by a surface that
@@ -145,6 +147,26 @@ function NamedAskHeader(props: AskHeaderProps & { ask: Ask }): ReactNode {
       }}
     />
   );
+}
+
+/**
+ * The words of an ask's state label, the same wherever the ask is drawn: `Open`, `Answered`, and
+ * for a resolved ask the badge naming how it was resolved (`askResolutionBadge`), or `Resolved`
+ * where no resolution is known - a decision block's attributes hold none. A state this build
+ * does not know reads `Closed`, as a decision block has always drawn it: the ask is no longer
+ * open, and the label claims no more than that.
+ */
+export function askStateLabel(state: string, resolution: AskResolution | undefined): string {
+  switch (state) {
+    case "open":
+      return "Open";
+    case "answered":
+      return "Answered";
+    case "resolved":
+      return resolution === undefined ? "Resolved" : askResolutionBadge(resolution);
+    default:
+      return "Closed";
+  }
 }
 
 /**
@@ -204,24 +226,22 @@ function askHeaderFacts(
         {URGENCY_LABELS[askUrgency(ask.urgency)].toUpperCase()}
       </span>
     );
+  // A block reads its own attributes alone, so a later withdrawal never shows on a saved version;
+  // every other place reads the ask row, whose resolution names how a resolved ask ended.
+  const resolution = block === undefined ? ask?.resolution : undefined;
   const stateLabel =
-    place === "resolved" && ask?.resolution !== undefined ? (
+    state === undefined || carded || block?.malformed === true ? null : (
       <span
-        className={`mr-1.5 inline-block rounded-full px-2.5 py-1 text-xs font-medium ${badgeLow.bg} ${badgeLow.text}`}
-        data-testid="ask-resolution-badge"
+        className={`${place === "answered" || place === "resolved" ? "mr-1.5 " : ""}inline-block rounded-full px-2.5 py-1 text-xs font-medium ${badgeLow.bg} ${badgeLow.text}`}
+        data-ask-state-label=""
+        // The handle the rows that read how an ask ended have always found its badge by.
+        data-testid={
+          state === "resolved" && resolution !== undefined ? "ask-resolution-badge" : undefined
+        }
       >
-        {askResolutionBadge(ask.resolution)}
+        {askStateLabel(state, resolution)}
       </span>
-    ) : place === "block" &&
-      block !== undefined &&
-      !carded &&
-      !block.malformed &&
-      block.state !== "open" &&
-      block.state !== "answered" ? (
-      <span className={`${PILL_CLASS} ${badgeLow.bg} ${badgeLow.text}`}>
-        {block.state === "resolved" ? "Resolved" : "Closed"}
-      </span>
-    ) : null;
+    );
 
   return {
     askedAt: ask === undefined ? null : <Timestamp at={ask.created_at} />,
