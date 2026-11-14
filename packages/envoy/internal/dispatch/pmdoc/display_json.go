@@ -155,22 +155,24 @@ func DisplayTreeBuilds() uint64 { return displayTreeBuilds.Load() }
 // markTypes, which is the schema of what Dispatch keeps.
 const DisplayHighlightMark = "searchHighlight"
 
-// DisplaySnippetJSON is the display tree of a search hit's snippet: the headline balanced as the
-// cut left it (SearchSnippetMarkdown), read for display, with DisplayHighlightMark over every
-// range the sentinels start and stop named. The sentinels ride through the read rather than being
-// taken out before it, because they are private-use characters, which the parser reads as
-// ordinary word characters and leaves in the text nodes they fall in: a tree walk then has their
-// exact places, where an offset into the markdown would have had to survive both the balancing
-// and the parse.
+// DisplaySnippetJSON is the display tree of a search hit's snippet: markdown, the snippet already
+// read out of its source and balanced where it is a cut (SearchSnippet), read for display as it
+// stands, with DisplayHighlightMark over every range the sentinels start and stop named. It does
+// not balance the markdown again: SearchSnippet decided where the snippet is a cut and where it is
+// code, which no balancing of the snippet alone can see. The sentinels ride through the read
+// rather than being taken out before it, because they are private-use characters, which the
+// parser reads as ordinary word characters and leaves in the text nodes they fall in: a tree walk
+// then has their exact places, where an offset into the markdown would have had to survive both
+// the snippet's reading and the parse.
 //
 // The snippet is read fresh rather than from the cache: every query cuts its own headline, so a
 // cached snippet would be a tree nothing asks for again, taking the room of a body many readers
 // do share.
-func DisplaySnippetJSON(headline, start, stop string) json.RawMessage {
-	if headline == "" {
+func DisplaySnippetJSON(markdown, start, stop string) json.RawMessage {
+	if markdown == "" {
 		return nil
 	}
-	tree := ReadForDisplay(SearchSnippetMarkdown(headline), DisplayLatest)
+	tree := ReadForDisplay(markdown, DisplayLatest)
 	highlightSnippet(tree, start, stop, false)
 	encoded, err := json.Marshal(tree.toDisplayJSON())
 	if err != nil {

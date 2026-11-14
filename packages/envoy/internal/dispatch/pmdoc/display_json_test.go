@@ -63,9 +63,8 @@ func TestTheDisplayCacheHoldsItsBound(t *testing.T) {
 	}
 }
 
-// A search snippet's tree is the headline read for display with the match marked: the sentinels
-// are gone from the text, the words between them carry DisplayHighlightMark, and the cut's
-// unmatched delimiters were balanced away before the read.
+// A search snippet's tree is the snippet read for display with the match marked: the sentinels
+// are gone from the text and the words between them carry DisplayHighlightMark.
 func TestDisplaySnippetJSONMarksWhatTheQueryMatched(t *testing.T) {
 	const start, stop = "\uE000", "\uE001"
 	tree := DisplaySnippetJSON("Keep the "+start+"astrolabe"+stop+" here", start, stop)
@@ -102,12 +101,17 @@ func TestDisplaySnippetJSONMarksWhatTheQueryMatched(t *testing.T) {
 	}
 }
 
-// A headline the window cut is balanced before it is read, so the palette is shown no delimiter
-// the parser would have paired across the cut.
-func TestDisplaySnippetJSONBalancesACutHeadline(t *testing.T) {
+// A headline the window cut is balanced by SearchSnippet before DisplaySnippetJSON reads it, so
+// the palette is shown no delimiter the parser would have paired across the cut. The headline is
+// ts_headline's for this source (fragment_test.go, "a long body cut in the middle of prose").
+func TestDisplaySnippetJSONReadsTheBalancedSnippet(t *testing.T) {
 	const start, stop = "\uE000", "\uE001"
-	window := strings.Repeat("word ", 21) + start + "anchor" + stop + "** after the"
-	tree := DisplaySnippetJSON(window, start, stop)
+	source := "Some words open the comment before the bold part. **one two three four five six seven eight nine " +
+		"ten eleven twelve thirteen fourteen fifteen sixteen the new anchor build today** and then more words " +
+		"after it for the rest of the week until friday comes around again"
+	headline := "eight nine ten eleven twelve thirteen fourteen fifteen sixteen the new " + start + "anchor" + stop +
+		" build today** and then more words after it for the rest"
+	tree := DisplaySnippetJSON(SearchSnippet(headline, source, start, stop), start, stop)
 	if bytes.Contains(tree, []byte("**")) {
 		t.Errorf("the cut's unmatched delimiter reached the tree: %s", tree)
 	}

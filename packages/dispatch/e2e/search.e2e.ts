@@ -290,6 +290,63 @@ test("a search hit draws no reference the comment it quotes holds in code, and n
   }
 });
 
+// The same rule where Postgres's window cuts the text rather than trims a short one: a code span
+// and a worded link each longer than the 24-word window, with the match inside them, so
+// `ts_headline` starts and ends its fragment inside the construct (measured 2026-11-13:
+// `eleven ... twenty <b>CORE</b>-1 one ... twelve`, the backticks and brackets both outside it).
+// The server reads the fragment back out of the text it cut (`pmdoc.SearchSnippet`), so the hit
+// holds the code as code and the link as its writer's words; and a short body whose headline
+// lost the scheme of an address (`person/alice first`) reads the whole address again.
+// SLOW(>=2s): three seeded comments and three searches.
+test("a search hit cut inside a code span, a worded link or an address reads as the text it quotes", async ({
+  browser,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const cited = await createIssue({ project: "CORE", title: "Gyroscope alignment" });
+  const citing = await createIssue({ project: "CORE", title: "Bench work" });
+  const words =
+    "one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen " +
+    "sixteen seventeen eighteen nineteen twenty";
+  await createComment(citing.key, {
+    body: `Before it: \`${words} ${cited.key} tagcutspan ${words}\` after it.`,
+  });
+  await createComment(citing.key, {
+    body: `Before it: [${words} tagcutlink ${words}](dispatch://${cited.key}) after it.`,
+  });
+  await createComment(citing.key, { body: "Ask dispatch://person/alice first tagcutaddress." });
+  const context = await asUser(browser, "alice");
+
+  try {
+    const page = await context.newPage();
+    await openSearchFromRail(page, false);
+    const box = page.getByRole("combobox", { name: "Search" });
+    const dialog = page.getByRole("dialog", { name: "Search" });
+
+    await box.fill("tagcutspan");
+    const code = dialog.getByRole("option", { name: /tagcutspan/ });
+    await expect(code).toHaveCount(1);
+    await expect.soft(code.locator("code")).toContainText(`${cited.key} tagcutspan`);
+    await expect.soft(code.locator("[data-dispatch-ref]")).toHaveCount(0);
+    await expect.soft(code).not.toContainText(cited.title);
+
+    await box.fill("tagcutlink");
+    const worded = dialog.getByRole("option", { name: /tagcutlink/ });
+    await expect(worded).toHaveCount(1);
+    await expect
+      .soft(worded.locator(`[data-dispatch-ref="dispatch://${cited.key}"]`))
+      .toContainText("tagcutlink");
+    await expect.soft(worded).not.toContainText("](");
+    await expect.soft(worded).not.toContainText(cited.title);
+
+    await box.fill("tagcutaddress");
+    const address = dialog.getByRole("option", { name: /tagcutaddress/ });
+    await expect(address).toHaveCount(1);
+    await expect.soft(address).toContainText("Ask dispatch://person/alice first");
+  } finally {
+    await context.close();
+  }
+});
+
 // The same pass, held to what the link pass links, over Postgres's own marks. A mark grows over a
 // reference only where that reference names something and is drawn as a link: `ts_headline`
 // marks `<b>SHA</b>-256`, `<b>UTF</b>-8`, `#<b>general</b>`, `#<b>1234</b>`, `<b>COVID</b>-19`

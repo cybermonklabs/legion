@@ -278,11 +278,15 @@ func webDisplayJSON(t *testing.T, markdown string, mode DisplayMode) json.RawMes
 	return encoded
 }
 
-// webSnippetJSON is DisplaySnippetJSON's reading of a search hit's snippet: the balancing, the
-// read and the highlight are all the server's own.
+// webSnippetJSON is the server's reading of a search hit's snippet when ts_headline answered the
+// whole text, which is what each fixture text stands for: the snippet read out of its source
+// (SearchSnippet, the source being the text without the sentinels), then the read and the
+// highlight (DisplaySnippetJSON), all the server's own.
 func webSnippetJSON(t *testing.T, markdown string) json.RawMessage {
 	t.Helper()
-	tree := DisplaySnippetJSON(markdown, webSnippetStart, webSnippetStop)
+	source := strings.NewReplacer(webSnippetStart, "", webSnippetStop, "").Replace(markdown)
+	snippet := SearchSnippet(markdown, source, webSnippetStart, webSnippetStop)
+	tree := DisplaySnippetJSON(snippet, webSnippetStart, webSnippetStop)
 	if tree == nil {
 		t.Fatalf("the snippet of %q read into no tree", markdown)
 	}

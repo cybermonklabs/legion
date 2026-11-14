@@ -114,18 +114,56 @@ const (
 //     or a block of HTML ends carries on for this reader, so a run opened before one can be
 //     closed by a run after it.
 func codeRanges(body string) []codeRange {
+	ranges, _ := codeContexts(body)
+	return ranges
+}
+
+// CodeRange is one code context of a body, the half-open byte range [Start, End) codeRanges
+// reads (see there for what it reads and what it deliberately does not). Block is true for a
+// fenced or an indented code block, which runs from the first byte of its opening line,
+// containers' markers included, to the end of its last line, and false for a code span.
+type CodeRange struct {
+	Start int
+	End   int
+	Block bool
+}
+
+// CodeRanges is every code context of body, in order and never overlapping, each telling a block
+// from a span: what a reader outside this package needs to cut a body without cutting into its
+// code, which a search snippet does (pmdoc.SearchSnippet). It is the same walk codeRanges makes,
+// so a reference this package reads as written in code is in code for that reader too.
+func CodeRanges(body string) []CodeRange {
+	ranges, blocks := codeContexts(body)
+	exported := make([]CodeRange, len(ranges))
+	next := 0
+	for index, candidate := range ranges {
+		// blocks is a subsequence of ranges, in the same order, and no span overlaps a block, so
+		// the next block either is this range or stands after it.
+		block := next < len(blocks) && blocks[next] == candidate
+		if block {
+			next++
+		}
+		exported[index] = CodeRange{Start: candidate.start, End: candidate.end, Block: block}
+	}
+	return exported
+}
+
+// codeContexts is codeRanges' one walk of body: every code context in order, and the code blocks
+// among them, also in order, so CodeRanges can tell the two kinds apart without walking the body
+// again.
+func codeContexts(body string) (ranges, blocks []codeRange) {
 	blocks, breaks := codeBlocks(body)
 	if len(blocks) == 0 {
-		return appendCodeSpans(nil, body, 0, len(body), breaks)
+		return appendCodeSpans(nil, body, 0, len(body), breaks), nil
 	}
-	ranges := make([]codeRange, 0, 2*len(blocks)+1)
+	ranges = make([]codeRange, 0, 2*len(blocks)+1)
 	at := 0
 	for _, block := range blocks {
 		ranges = appendCodeSpans(ranges, body, at, block.start, breaks)
 		ranges = append(ranges, block)
 		at = block.end
 	}
-	return appendCodeSpans(ranges, body, at, len(body), breaks)
+	return appendCodeSpans(ranges, body, at, len(body), breaks), blocks
 }
 
 // inCode reports whether the byte at offset is inside one of ranges, which codeRanges wrote in

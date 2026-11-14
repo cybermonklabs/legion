@@ -361,11 +361,7 @@ select t.total, t.reachable, r.kind, case when r.owner_artifact_id is null then 
        r.issue_key, r.issue_title, r.issue_status,
        r.owner_project, r.owner_slug, r.owner_artifact_id::text, r.owner_name,
        ar.slug, ar.name, coalesce(ar.is_primary, false), r.id, r.block_id, hit.block_id, r.score::float8,
-       ts_headline('english',
-         search_text(case when q.term <> '' and strpos(lower(txt.text), lower(q.term)) > 0
-              then substr(txt.text, greatest(1, strpos(lower(txt.text), lower(q.term)) - 1500), 4000)
-              else left(txt.text, 4000) end),
-         q.tsq, $5) as headline
+       ts_headline('english', src.text, q.tsq, $5) as headline, src.text
   from totals t cross join q
   left join (page r left join artifacts ar on ar.id = r.artifact_id) on true
   -- Mirrors the kind arms in kinds above (issue/document/comment/ask/message -> table and text
@@ -382,6 +378,15 @@ select t.total, t.reachable, r.kind, case when r.owner_artifact_id is null then 
       when 'message' then (select m.body from messages m where m.id = r.id::uuid)
     end as text
   ) txt on true
+  -- The window of the text the headline is cut from: the 4000 characters from 1500 before the
+  -- query's first term, or the text's head. It is selected beside the headline as well, so the
+  -- scan has the very text ts_headline read and can set the headline back into it
+  -- (pmdoc.SearchSnippet).
+  left join lateral (
+    select search_text(case when q.term <> '' and strpos(lower(txt.text), lower(q.term)) > 0
+             then substr(txt.text, greatest(1, strpos(lower(txt.text), lower(q.term)) - 1500), 4000)
+             else left(txt.text, 4000) end) as text
+  ) src on true
   -- The block of r.covers that matched, if the row carries a window. Each covered block's own
   -- text comes from the table its indexer writes it to: a document's, a comment's and an ask's
   -- block texts are kept per version or revision, the latest being the current text. A message
@@ -1534,13 +1539,13 @@ const embeddingProjectKeysFilledLockWait = `set local lock_timeout = '200ms'`
 const embeddingProjectKeysFilledQuery = `select done from embeddings_project_key_backfill`
 
 // scanSearchRows reads searchQuery's and searchQueryMeaning's shared column shape - every column
-// through the headline - into a SearchResponse. q is the original query text, for each result's
-// href (searchHref's own query-string echo).
+// through the headline and the text it was cut from - into a SearchResponse. q is the original
+// query text, for each result's href (searchHref's own query-string echo).
 func scanSearchRows(rows pgx.Rows, q string, limit, offset int, trees bool) (model.SearchResponse, error) {
 	response := model.SearchResponse{Results: []model.SearchResult{}, Limit: limit, Offset: offset}
 	for rows.Next() {
 		var result model.SearchResult
-		var kind, ownerKind, id, headline *string
+		var kind, ownerKind, id, headline, source *string
 		var ownerKey, ownerTitle, ownerStatus, ownerProject, ownerSlug, ownerArtifactID, ownerName, slug, name *string
 		var primary bool
 		var blockID *string
@@ -1566,6 +1571,7 @@ func scanSearchRows(rows pgx.Rows, q string, limit, offset int, trees bool) (mod
 			&matchBlockID,
 			&rank,
 			&headline,
+			&source,
 		); err != nil {
 			return model.SearchResponse{}, err
 		}
@@ -1598,13 +1604,17 @@ func scanSearchRows(rows pgx.Rows, q string, limit, offset int, trees bool) (mod
 		// not a path a caller drives: deref costs nothing per row, and without it one row of a
 		// database somebody wrote by hand takes the process down for every search.
 		headlineText := deref(headline)
-		result.Snippet = markSnippet(headlineText)
+		// The snippet is the headline set back into the text ts_headline read and widened to the
+		// constructs it cut into (pmdoc.SearchSnippet), read once for both the HTML snippet and its
+		// tree, so the two show the same text.
+		snippet := pmdoc.SearchSnippet(headlineText, deref(source), markStart, markEnd)
+		result.Snippet = markSnippet(snippet)
 		// A snippet's tree is no stored tree and is never primed from the table or stored in it:
 		// it is one query's own headline, cut and marked for this search alone
 		// (pmdoc.DisplaySnippetJSON), so there is nothing two readers would share. A null
 		// headline is the empty snippet here too, for the reason above: the tree of no text.
 		if trees {
-			result.SnippetTree = model.DisplayTree(pmdoc.DisplaySnippetJSON(headlineText, markStart, markEnd))
+			result.SnippetTree = model.DisplayTree(pmdoc.DisplaySnippetJSON(snippet, markStart, markEnd))
 		}
 		result.Href = searchHref(result.Kind, result.Owner, result.Artifact, primary, result.ID, blockID, matchBlockID, q)
 		response.Results = append(response.Results, result)
