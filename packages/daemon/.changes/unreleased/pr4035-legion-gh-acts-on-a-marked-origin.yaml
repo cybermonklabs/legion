@@ -1,0 +1,13 @@
+kind: Changed
+body: |-
+  `legion gh` acts on `origin` in a fork checkout that marks `origin` as gh's default repository.
+  When the one `gh-resolved` line gh reads is `remote.origin.gh-resolved base`, and `origin`'s
+  fetch URL is a github.com URL that is not ssh, a command of the 14 groups gh resolves through
+  that marker (`api`, `pr`, `issue`, `repo` and the others) takes `origin`'s owner, as gh does.
+  Before, the wrapper refused it because the remotes name two owners. `repo set-default --view`
+  and `--unset` follow the marker too. `repo set-default <repo>`, the other groups and every other
+  marker shape are refused as before, with the same text.
+
+  `workspace-init provision`, and the tmux runtime's provision, write
+  `remote.origin.gh-resolved base` into an issue clone whose own configuration holds no
+  `gh-resolved` line. A clone that has a marker keeps it.
