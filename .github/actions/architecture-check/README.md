@@ -63,7 +63,7 @@ A caller sets `allow-empty: true` only while it has no note, and reads `count`.
 
 The check step exits with the status of the command.
 A status other than 0 fails the step and the job.
-Each line names the directory by its absolute path.
+Each line that the command prints about the directory or an entry of it names the directory by its absolute path.
 
 - **Exit 0: the set is valid.**
   The log holds the line `architecture-check: <directory>: <n> notes, the set is valid`, with `note` for one note.
@@ -91,7 +91,7 @@ It ends a line at `\n` and at `\r`.
 It reads a workflow command in two forms.
 The first form is a line that starts with `::` after the runner removes the white space at the start of the line.
 The second form is `##[` anywhere in a line.
-Each line of the check starts with the fixed text of the command.
+Each line that holds text from the directory starts with the fixed text of the command, `architecture-check: `.
 The command writes every control character in each line that it prints as an escape, such as `\n`, `\r` or `\x1b`.
 It also writes the line separator U+2028 as `\u2028` and the paragraph separator U+2029 as `\u2029`.
 The runner does not end a line at these two characters, because `ProcessInvoker` reads each line with `StreamReader.ReadLine` ([`src/Runner.Sdk/ProcessInvoker.cs`](https://github.com/actions/runner/blob/8cfa1049f86781d141056082d73802d56cd2b433/src/Runner.Sdk/ProcessInvoker.cs)).
@@ -126,7 +126,7 @@ That is one more reason to run the action in a job of its own, beside the reason
 
 The action installs the Go version that `packages/envoy/go.mod` of this repository names, with `actions/setup-go`.
 That action adds this Go to `PATH` and sets `GOTOOLCHAIN=local` for the rest of the caller's job.
-It also adds `$(go env GOPATH)/bin` to `PATH`, after the Go `bin`.
+When it has added the Go `bin`, it also adds `$(go env GOPATH)/bin` to `PATH`.
 The runner puts each new entry at the start of `PATH`, so this Go comes before a Go that an earlier step added, and `$(go env GOPATH)/bin` (by default `~/go/bin`) comes before the Go `bin` for the rest of the job.
 In `actions/setup-go` at commit `b7ad1dad31e06c5925ef5d2fc7ad053ef454303e`, `addBinToPath` calls `core.addPath` on `<GOPATH>/bin` after the install added `<installDir>/bin` ([`src/main.ts`](https://github.com/actions/setup-go/blob/b7ad1dad31e06c5925ef5d2fc7ad053ef454303e/src/main.ts)).
 It also adds the problem matcher with the owner `go` that [What the runner reads from the check's lines](#what-the-runner-reads-from-the-checks-lines) describes.
