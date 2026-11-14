@@ -99,6 +99,8 @@ type fakeProcess struct {
 	memfd     uint64
 	// unreadableExe makes exe a plain file, whose readlink fails as an unreadable link does.
 	unreadableExe bool
+	// zombie writes the process's stat in state Z: it has exited and its parent has not reaped it.
+	zombie bool
 }
 
 func (p *fakePod) add(fps ...fakeProcess) {
@@ -135,7 +137,11 @@ func (p *fakePod) write(fp fakeProcess) {
 	if err := os.MkdirAll(filepath.Join(dir, "ns"), 0o755); err != nil {
 		p.t.Fatal(err)
 	}
-	p.writeWhole(filepath.Join(dir, "stat"), statLine(fp.pid, fp.name, fp.ppid, fp.start))
+	stat := statLine(fp.pid, fp.name, fp.ppid, fp.start)
+	if fp.zombie {
+		stat = strings.Replace(stat, ") S ", ") Z ", 1)
+	}
+	p.writeWhole(filepath.Join(dir, "stat"), stat)
 	cmdline := ""
 	for _, arg := range fp.args {
 		cmdline += arg + "\x00"
@@ -1255,6 +1261,31 @@ func TestMemoryGuardDoesNotEndAProcessItCannotRead(t *testing.T) {
 		3700*mib, gib, 2*gib, 3700*mib-3*gib, podLimit)
 	if got := h.log.with("stopped"); !slices.Equal(got, []string{want}) {
 		t.Fatalf("the stopped lines are %q, want %q", got, want)
+	}
+}
+
+// A zombie has exited and holds no memory, whatever its exe link answers. Linux answers a zombie's
+// exe link with ENOENT, which the scan already takes for an ended process. gVisor answers EACCES,
+// because its procfs refuses the exe link of a task with no memory manager: in a gVisor pod on
+// 2026-11-14, the head's launcher, run as the container's first process, logged
+// `unread pid=5684 reason=read the exe: readlink /proc/5684/exe: permission denied` right after it
+// ended pid 5684, a pool worker whose parent had not reaped it yet, and the same for the next two
+// workers it ended. The guard leaves a zombie out of its scan whatever its exe link answers (a
+// plain file stands in for gVisor's refusal here), so it logs no unread line for one, and the
+// process it may end is still ended.
+func TestMemoryGuardLeavesAZombieOutWhateverItsExeLinkAnswers(t *testing.T) {
+	pod := newFakePod(t)
+	pod.add(
+		agent(gib),
+		fakeProcess{pid: 961, ppid: 100, args: []string{"python3", "pool.py"}, anon: 600 * mib},
+		fakeProcess{pid: 960, ppid: 961, args: []string{"python3", "pool.py"}, zombie: true, unreadableExe: true},
+	)
+	pod.setAnon(3700 * mib)
+	h := newHarness(t, pod, protect("tester", 100))
+	h.run()
+	h.requireKilled(961)
+	if unread := h.log.with("unread"); len(unread) != 0 {
+		t.Fatalf("the guard logged %q for a zombie, which holds no memory; the log:\n%s", unread, strings.Join(h.log.all(), "\n"))
 	}
 }
 
