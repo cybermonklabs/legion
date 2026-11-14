@@ -724,7 +724,7 @@ func TestTheMappingsViewCarriesTheRepositoryCaches(t *testing.T) {
 func TestTheStatesRepositoriesHoldTheOnesOnlyARecordNames(t *testing.T) {
 	repos := newRepositories("LEGION", ghrepo.Renames{})
 	repos.set([]mappedRepository{{Repo: ghrepo.MustParse("Acme/Widgets"), Default: true}}, nil)
-	repos.recordRepository(ghbranch.Repository{Name: ghrepo.MustParse("Zeta/Tools"), DefaultBranch: "main"})
+	repos.recordRepository("zeta/tools", ghbranch.Repository{Name: ghrepo.MustParse("Zeta/Tools"), DefaultBranch: "main"})
 	retained := time.Date(2026, 10, 23, 9, 0, 0, 0, time.UTC)
 	caches := []sandbox.CacheStatus{
 		{Repo: ghrepo.MustParse("zeta/tools"), Sandbox: "legion-legion-cache-zeta-tools-1b2c3d4e", State: "cloning"},
@@ -777,7 +777,7 @@ func TestResolveRepositoryAnswersAMappedRepositoryFromTheMappingsOwnRead(t *test
 	}
 	// What a preparation made while no mapping named the pair's old name kept: the name GitHub
 	// no longer holds the repository under, at the branch it had then.
-	w.repositories.recordRepository(ghbranch.Repository{Name: ghrepo.MustParse("acme/widgets-legacy"), DefaultBranch: "trunk"})
+	w.repositories.recordRepository("acme/widgets-legacy", ghbranch.Repository{Name: ghrepo.MustParse("acme/widgets-legacy"), DefaultBranch: "trunk"})
 	want := workflow.Resolution{Repo: "Acme/Widgets", DefaultBranch: "release/v7.1", GitHubRepo: "Acme/Widgets"}
 	for _, resolved := range []string{"acme/widgets", "Acme/Widgets"} {
 		got, err := w.ResolveRepository(resolved)
@@ -786,7 +786,7 @@ func TestResolveRepositoryAnswersAMappedRepositoryFromTheMappingsOwnRead(t *test
 		}
 	}
 
-	w.repositories.recordRepository(ghbranch.Repository{Name: ghrepo.MustParse("Zeta/Tools"), DefaultBranch: "main"})
+	w.repositories.recordRepository("zeta/tools", ghbranch.Repository{Name: ghrepo.MustParse("Zeta/Tools"), DefaultBranch: "main"})
 	unmapped := workflow.Resolution{Repo: "Zeta/Tools", DefaultBranch: "main", GitHubRepo: "Zeta/Tools"}
 	if got, err := w.ResolveRepository("zeta/tools"); err != nil || got != unmapped {
 		t.Fatalf("ResolveRepository of a repository no mapping names = %+v, %v; want its recorded read %+v", got, err, unmapped)

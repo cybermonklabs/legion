@@ -63,6 +63,14 @@ type repositories struct {
 	// repository a role App is not installed on is read again at the next preparation of an
 	// issue on it and recorded the moment GitHub answers installed.
 	//
+	// One read is held under two keys where GitHub answered the name an issue asked under with
+	// another: a repository GitHub itself renamed, whose old name it answers with a 301 the
+	// read follows (recordRepository). An issue keeps the name it resolves to for the whole of
+	// its preparation, so a read held under GitHub's name alone would be found by no lookup of
+	// that issue's own name, and the issue would stand unread for ever while GitHub answered
+	// every read it was asked. served is the one reader for which the two keys must not be two
+	// repositories, and it holds each entry under the name its read carries.
+	//
 	// An entry is never dropped, so a repository a role App is uninstalled from after its first
 	// preparation still reads as installed here, and in held, until the process starts again and
 	// builds the map from the preparations that follow it. That is kept rather than fixed:
@@ -311,7 +319,8 @@ type heldRepository struct {
 
 // held is the answer for the repository name names exactly, in any spelling: the mapping's, and
 // then the recorded set's, which holds GitHub's own answer for a repository no mapping names that
-// an issue was recorded on (recordRepository). Its caller holds the read lock.
+// an issue was recorded on, under GitHub's name for it and under the name the issue asked it
+// under (recordRepository). Its caller holds the read lock.
 func (r *repositories) held(name string) heldRepository {
 	key := strings.ToLower(name)
 	if mapped, ok := r.accepted[key]; ok {
@@ -330,10 +339,20 @@ func (r *repositories) held(name string) heldRepository {
 // its default branch — so that one repository is read once however many issues name it. The
 // preparation that read it calls this before the issue's fact is applied, and the apply reads it
 // back through lookup, which performs no I/O (workflowRuntime.ResolveRepository).
-func (r *repositories) recordRepository(read ghbranch.Repository) {
+//
+// asked is the name the preparation read GitHub under, which is the name the issue resolves to
+// and asks for again at its apply and at every later preparation. Where GitHub answered under
+// another name — the 301 of a repository GitHub renamed, which the read follows — the answer is
+// kept under that name too, so the asked name finds it: one repository's one read, reached by
+// either name, and served holds it once (recorded).
+func (r *repositories) recordRepository(asked string, read ghbranch.Repository) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.recorded[strings.ToLower(read.Name.String())] = read
+	named := strings.ToLower(read.Name.String())
+	r.recorded[named] = read
+	if key := strings.ToLower(asked); key != named {
+		r.recorded[key] = read
+	}
 }
 
 // recordedRead is GitHub's kept answer for the repository resolved names, in any spelling or
@@ -419,6 +438,12 @@ func (r *repositories) awaitingRead() []string {
 // wherever the daemon reports what it works in, and the mapping alone is what the intake, the
 // credentials and the caches read (Accepted).
 //
+// A recorded repository is held here under the name its own read carries, never under the key
+// it is recorded by: a repository GitHub renamed is recorded under two keys, GitHub's name and
+// the name an issue asked it under (recorded), and the two keys are one repository, which the
+// daemon serves once. GitHub's name is also the key the mapping's own entries are held under
+// (set), so the merge below is between the same names.
+//
 // A repository both sets hold, which is one the mapping gained after an issue was recorded on
 // it, is served once as the mapping's entry: that is the entry carrying the project's default,
 // and the recorded set holds no default at all.
@@ -426,8 +451,8 @@ func (r *repositories) served() []mappedRepository {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	all := make(map[string]mappedRepository, len(r.recorded)+len(r.accepted))
-	for key, read := range r.recorded {
-		all[key] = mappedRepository{Repo: read.Name}
+	for _, read := range r.recorded {
+		all[strings.ToLower(read.Name.String())] = mappedRepository{Repo: read.Name}
 	}
 	maps.Copy(all, r.accepted)
 	served := make([]mappedRepository, 0, len(all))
@@ -2372,6 +2397,14 @@ func (w *workflowRuntime) prepareUnrecorded(ctx context.Context, issue intake.Di
 // mapped repository whose installation read failed stands, so the event is applied and
 // acknowledged, its apply says nothing and records nothing, and the refresher's recovery takes
 // the issue once a later read answers.
+//
+// GitHub may answer the read under a name other than the one asked: a repository GitHub itself
+// renamed is answered with a 301 to the name it holds it under now, which the read follows,
+// while both role Apps answer installed on the old name, since an installation is the owner's.
+// The issue is recorded on GitHub's name and at GitHub's default branch, as R4 asks, and the
+// read is kept under the asked name too (repositories.recordRepository): the apply of this very
+// event, and every later preparation of an issue on it, ask under the name the issue resolves
+// to, which is the one GitHub renamed away from.
 func (w *workflowRuntime) prepareUnmapped(ctx context.Context, issue intake.DispatchIssue) (intake.DispatchIssue, error) {
 	if _, read := w.repositories.recordedRead(issue.ResolvedRepo); read {
 		return issue, nil
@@ -2406,7 +2439,7 @@ func (w *workflowRuntime) prepareUnmapped(ctx context.Context, issue intake.Disp
 		return issue, nil
 	}
 	w.readAnswered(repo)
-	w.repositories.recordRepository(read)
+	w.repositories.recordRepository(repo.String(), read)
 	return issue, nil
 }
 
@@ -2416,6 +2449,11 @@ func (w *workflowRuntime) prepareUnmapped(ctx context.Context, issue intake.Disp
 // a repository the recorded set names is answered with the read kept for it, which is the one
 // GitHub answer made for it however many issues name it. A served repository whose default
 // branch was never read is an error: its event's preparation (prepareRepository) did not run.
+//
+// A repository GitHub renamed, which the issue resolves to under the name GitHub renamed it away
+// from, is answered here under that old name: the recorded set holds the read under it as well
+// as under GitHub's own name (repositories.recordRepository), and the answer carries GitHub's
+// name and default branch, which is what the record keeps.
 //
 // The recorded set is read only for a repository no mapping names (mapsRepository), which is the
 // only kind of repository it is written for (prepareUnmapped), so that the two sets are read in
