@@ -1,7 +1,6 @@
 package workflow
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"log/slog"
@@ -19,6 +18,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/testlog"
 )
 
 // wakeAt is when every wake of these tests reaches the daemon, and wakeIssueGeneration the run
@@ -29,18 +29,19 @@ const wakeIssueGeneration = 7
 
 // wakeRig is a released pod the tests wake: a root LEGION-208 implementing at generation 7, its
 // pull request sjawhar/legion#42 open at head1, and its implementer and architect claims both
-// suspended with the source `released`, which is the state a release leaves a pod in.
+// suspended with the source `released`, which is the state a release leaves a pod in. The engine
+// logs to logged.
 type wakeRig struct {
 	pool   *pgxpool.Pool
 	engine *Engine
-	logged *bytes.Buffer
+	logged *testlog.Buffer
 	apply  func(id string, fact intake.Fact) intake.Result
 }
 
 func newWakeRig(t *testing.T) wakeRig {
 	t.Helper()
 	pool := migratedPool(t)
-	logged := &bytes.Buffer{}
+	logged := &testlog.Buffer{}
 	clock := &checkClock{now: wakeAt}
 	engine := New(record.NewStore(), Config{Project: "LEGION", Steps: config.DesignGateRootIssues.Steps(), Pods: wakePods(t, pool), Linger: time.Hour, ProductionCheckRole: claim.RoleTester, Clock: clock.Now},
 		slog.New(slog.NewTextHandler(logged, nil)))

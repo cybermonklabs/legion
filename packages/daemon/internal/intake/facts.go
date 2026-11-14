@@ -1241,6 +1241,24 @@ type WaitDeclared struct {
 
 func (WaitDeclared) isFact() {}
 
+// WaitNews is a phase worker's plugin reporting that news reached its session after the
+// declaration of the wait WaitID (POST /legion/v1/claims/wait-news, dispatch://INFRA-2040 R3's
+// second end): an Envoy delivery, a message to its role, or a person's message, answer or comment
+// routed to its session. Token is the claim the reporting session holds, on Issue's Role, as the
+// route's one read of the claim names them. The engine ends that wait of the claim, if it has no
+// end yet, in the fact's own transaction (workflow's waitNews), and answers whether this fact
+// ended it (Result.WaitEnded). The route applies none while the claim's update round is open,
+// since the round's own ask reaches the session as a role message (D9 of dispatch://INFRA-2040's
+// plan).
+type WaitNews struct {
+	Token  claim.Token
+	Issue  string
+	Role   claim.Role
+	WaitID string
+}
+
+func (WaitNews) isFact() {}
+
 // Handler changes the workflow record inside the caller-owned transaction.
 type Handler interface {
 	Apply(context.Context, pgx.Tx, Fact) (Result, error)
@@ -1252,10 +1270,15 @@ type Handler interface {
 // Unspent is a handler leaving the event unmarked, so the same id applies again when it is next
 // sent (ApplyFact). A handler sets it only for a refusal whose cause can clear while the fact's
 // id stays the same, and writes nothing where it sets it.
+//
+// WaitEnded is a WaitNews fact's answer: the wait it names ended in this fact. It is false for a
+// wait a newer declaration replaced or something already ended, and for a duplicate, which no
+// handler ran for: the first report of that wait is the one that ended it.
 type Result struct {
 	Refusal   *Refusal
 	Duplicate bool
 	Unspent   bool
+	WaitEnded bool
 }
 
 type commitHooksKey struct{}
@@ -1428,6 +1451,7 @@ func ApplyFact(ctx context.Context, pool Pool, source, eventID string, fact Fact
 			result.Refusal = candidate.Refusal
 		}
 		result.Unspent = result.Unspent || candidate.Unspent
+		result.WaitEnded = result.WaitEnded || candidate.WaitEnded
 	}
 	// A refused report of a production check leaves its event unmarked, so a report sent again —
 	// the same look and verdict, which is the same fact id its route mints (api's checkReport) —

@@ -42,6 +42,8 @@ import {
   LegionSignOffRequest,
   LegionStateResponse,
   LegionTurnOutcomeResponse,
+  LegionWaitNewsRequest,
+  LegionWaitNewsResponse,
   LegionWaitRequest,
   LegionWaitResponse,
   LegionWaveReleaseRequest,
@@ -76,6 +78,11 @@ const schemas: Record<string, z.ZodType> = {
   // What a phase worker's declared wait comes back as once the daemon recorded it: its id, its
   // text, its time and when the daemon recorded the declaration (`api.WaitResponse`).
   "wait.json": LegionWaitResponse,
+  // What a phase worker's plugin's report of news after the declaration comes back as
+  // (`api.WaitNewsResponse`): one that ended the wait, and one received while the claim's update
+  // round was open, which ended nothing and names the round.
+  "wait-news.json": LegionWaitNewsResponse,
+  "wait-news-round.json": LegionWaitNewsResponse,
   "register-controller.json": LegionControllerRegisterResponse,
   "controller-secret.json": LegionControllerSecretResponse,
   "controller-github-credential.json": LegionControllerCredentialResponse,
@@ -1161,6 +1168,15 @@ const waitRequest = {
   wakeAt: "2026-11-14T08:00:00Z",
 };
 
+/** A body `POST /legion/v1/claims/wait-news` accepts: the plugin's report of news after the
+ * declaration, naming the wait its answer gave, its claim first. */
+const waitNewsRequest = {
+  claimToken: "legion-legion-legion-208-implementer",
+  sessionId: "ses_implementer_208",
+  secret: "U3VwZXJ2aXNlZEJ5TGVnaW9u",
+  waitId: "3f6c2a9e-8b14-4d7a-9e25-1c0b7f4d2a68",
+};
+
 // What only a real body can prove, route by route: the body each route sends parses, and a body
 // missing a required field is refused. That a body carrying a key no schema names is refused is
 // held at every depth by the census above, for every request schema the module exports.
@@ -1265,6 +1281,8 @@ test("every request the plugin sends parses and names its required fields", () =
     ],
     // A phase worker's declared wait, authenticated by its claim as the activity report is.
     ["wait", LegionWaitRequest, waitRequest],
+    // The plugin's report of news after the declaration, authenticated as the wait is.
+    ["wait news", LegionWaitNewsRequest, waitNewsRequest],
   ];
 
   for (const [name, schema, request] of requests) {
@@ -1296,6 +1314,15 @@ test("a wait refuses an empty text and a time without seconds", () => {
   expect(
     LegionWaitRequest.safeParse({ ...waitRequest, wakeAt: "2026-11-14T08:00:00+01:00" }).success
   ).toBeTrue();
+});
+
+// A news report names the wait it is about, the id the declaration's answer gave: a body with no
+// wait id, or an empty one, is refused before it is sent.
+test("a news report refuses a body that names no wait", () => {
+  const nameless: Record<string, unknown> = { ...waitNewsRequest };
+  delete nameless.waitId;
+  expect(LegionWaitNewsRequest.safeParse(nameless).success).toBeFalse();
+  expect(LegionWaitNewsRequest.safeParse({ ...waitNewsRequest, waitId: "" }).success).toBeFalse();
 });
 
 test("a workflow refusal preserves its stable code and message", () => {

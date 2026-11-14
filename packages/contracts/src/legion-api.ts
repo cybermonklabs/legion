@@ -1180,6 +1180,35 @@ export const LegionWaitResponse = z.object({
 
 export type LegionWait = z.output<typeof LegionWaitResponse>;
 
+/** `api.WaitNewsRequest`, the body of `POST /legion/v1/claims/wait-news`: a phase worker's plugin
+ * reporting that news reached its session after the declaration of the wait `waitId` names — an
+ * Envoy delivery, a message to its role, or a person's message — so the daemon ends that wait.
+ * `waitId` is the `wait.id` the declaration's answer named. It is authenticated by the
+ * registration's secret, as `claims/wait` is, and the daemon holds it to the session the claim
+ * records. A daemon task is not news. */
+export const LegionWaitNewsRequest = z.strictObject({
+  claimToken: nonEmptyString,
+  sessionId: nonEmptyString,
+  secret: nonEmptyString,
+  waitId: nonEmptyString,
+});
+
+export type LegionWaitNewsRequestBody = z.output<typeof LegionWaitNewsRequest>;
+
+/** `api.WaitNewsResponse`, the body `POST /legion/v1/claims/wait-news` answers: `ended` is whether
+ * this report ended the wait it names, and `false` keeps the wait standing in the plugin. A report
+ * naming a wait a newer declaration replaced, or one already ended (a second report of the same
+ * wait among them), answers `false` and changes nothing. While the claim's update round is open a
+ * report ends nothing, answers `false` and names that round in `round`: the round's own ask
+ * reaches the session as a message to its role, which the plugin reports as news. The same report
+ * sent once the round has ended ends the wait. */
+export const LegionWaitNewsResponse = z.object({
+  ended: z.boolean(),
+  round: nonEmptyString.optional(),
+});
+
+export type LegionWaitNews = z.output<typeof LegionWaitNewsResponse>;
+
 /** `api.ReleaseRecord` — one issue pod the daemon released: the run it released, the roles whose
  * claims it suspended (sorted, as the store holds them), when the release completed, and the size
  * of the git bundle of unpushed work it saved, zero when the workspace held none. */

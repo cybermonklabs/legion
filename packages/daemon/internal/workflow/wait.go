@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
@@ -52,6 +53,16 @@ func WaitEndPhaseMoved(to phase.Phase) string { return "phase moved to " + strin
 // of the role's phases row (record.PhaseRow.Entry), naming that entry: the phase was started
 // again for the role, which hands it work it had not taken when it declared.
 func WaitEndEntryMoved(entry int64) string { return fmt.Sprintf("phase entry moved to %d", entry) }
+
+// WaitEndNews is the cause of a wait whose session's plugin reported news after its declaration
+// (the news route's fact, waitNews): R3's second end. It is no term of WaitStands: the news is an
+// event the record does not hold, so only its own report ends a wait for it.
+const WaitEndNews = "news reached the session"
+
+// WaitEndWoken is the cause of a wait its claim's wake of kind ended (endWokenWait), naming the
+// wake and its detail as the woken role's task names them (WakeTask): a CI settlement's head and
+// what it came to, the role topic a message was published to, or the session one was sent to.
+func WaitEndWoken(kind, detail string) string { return "woken: " + kind + " " + detail }
 
 // WaitStands is whether the claim's wait stands now, and that wait when it does (the zero wait
 // when it does not). It is the one rule every reader of a wait asks, so that what a wait does
@@ -363,7 +374,7 @@ func (e *Engine) EndStaleWaits(ctx context.Context, tx pgx.Tx, endedBy string) e
 		if cause == "" {
 			continue
 		}
-		if err := e.endWait(ctx, tx, *reading.Claim.Wait, cause, endedBy); err != nil {
+		if _, err := e.endWait(ctx, tx, *reading.Claim.Wait, cause, endedBy); err != nil {
 			return err
 		}
 	}
@@ -435,24 +446,96 @@ func (e *Engine) endHeldMergersWaits(ctx context.Context, tx pgx.Tx, key string,
 		if WaitEndCause(m.issue, root, record.PhaseRowOf(rows, claim.RoleMerger), record.RoleRun{Claim: held}, gate) != WaitEndDesignGateClosed {
 			continue
 		}
-		if err := e.endWait(ctx, tx, *held.Wait, WaitEndDesignGateClosed, endedBy); err != nil {
+		if _, err := e.endWait(ctx, tx, *held.Wait, WaitEndDesignGateClosed, endedBy); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// endWait ends wait with cause, ended by endedBy at the engine's now (record.Store.EndWait), and
-// logs `wait: ended` once the transaction commits, so a fact rolled back logs no end. A wait
-// another transaction ended first is left as that one ended it, and logged by it.
-func (e *Engine) endWait(ctx context.Context, tx pgx.Tx, wait record.ClaimWait, cause, endedBy string) error {
+// waitNews applies one intake.WaitNews, the plugin of the claim's session reporting news after the
+// declaration of the wait it names: R3's second end. It ends that wait of the claim with the cause
+// WaitEndNews, ended by this fact, if it has no end yet, and answers whether it did
+// (intake.Result.WaitEnded). The end is a compare-and-set on the claim and the wait's id
+// (record.Store.EndWait), so a report naming a wait a newer declaration replaced, or one already
+// ended, matches no row: it answers false and writes nothing. It refuses nothing.
+func (e *Engine) waitNews(ctx context.Context, tx pgx.Tx, fact intake.WaitNews) (intake.Result, error) {
+	project, err := claim.ProjectToken(e.cfg.Project)
+	if err != nil {
+		return intake.Result{}, err
+	}
+	wait := record.ClaimWait{ID: fact.WaitID, Project: project, Token: fact.Token, Issue: fact.Issue, Role: fact.Role}
+	ended, err := e.endWait(ctx, tx, wait, WaitEndNews, factEndedBy(ctx))
+	return intake.Result{WaitEnded: ended}, err
+}
+
+// wakeEndsWait is whether a wake of kind ends the wait of the claim it brings back: R3's third
+// end names a wake of the claim's released pod whose cause is a CI settlement (pods.WakeChecks), a
+// message to its role (pods.WakeRoleMessage) or a message to its session (pods.WakeAgentMessage),
+// each news the worker may wait on. The backstop's wake (pods.WakeBackstop) ends none: it is the
+// release's own timer, not news that reached the worker. A delivery's wake (pods.WakeDelivery) is
+// no wake of wakeReleased's: the delivery resumes the claim itself, and is judged at its send as
+// any task is.
+func wakeEndsWait(kind string) bool {
+	switch kind {
+	case pods.WakeChecks, pods.WakeRoleMessage, pods.WakeAgentMessage:
+		return true
+	default:
+		return false
+	}
+}
+
+// endWokenWait ends the wait of token, the released claim of role a wake of kind is bringing back,
+// in the wake's own transaction (wakeReleased): R3's third end, written with the cause WaitEndWoken
+// names and ended by the wake's fact, when wakeEndsWait names the kind and the wait stands
+// (WaitStands). issue and root are the claim's issue and its tree root as the wake read them.
+//
+// A wait whose terms an earlier event broke is not ended here under the wake's name, as
+// endHeldMergersWaits leaves such a wait: a session the claim replaced since the last fact is the
+// reconciler's to end at this fact's end, with that term's cause (WaitReconciler), and a merger
+// the design gate holds with no closing of it is its time's to end (D5 of dispatch://INFRA-2040's
+// plan).
+func (e *Engine) endWokenWait(ctx context.Context, tx pgx.Tx, issue, root record.Issue, token claim.Token, role claim.Role, kind, detail string) error {
+	if !wakeEndsWait(kind) {
+		return nil
+	}
+	claims, err := e.store.RoleClaims(ctx, tx, []claim.Token{token})
+	if err != nil {
+		return err
+	}
+	held := claims[token]
+	if held == nil || held.Wait == nil {
+		return nil
+	}
+	rows, err := e.store.Phases(ctx, tx, issue.Key)
+	if err != nil {
+		return err
+	}
+	gates, err := e.store.GatesOf(ctx, tx, issue.Tree)
+	if err != nil {
+		return err
+	}
+	wait, stands := WaitStands(issue, root, record.PhaseRowOf(rows, role), record.RoleRun{Claim: held},
+		record.TreeGate{Steps: e.cfg.Steps, Rows: gates})
+	if !stands {
+		return nil
+	}
+	_, err = e.endWait(ctx, tx, wait, WaitEndWoken(kind, detail), factEndedBy(ctx))
+	return err
+}
+
+// endWait ends wait with cause, ended by endedBy at the engine's now (record.Store.EndWait),
+// answers whether this call ended it, and logs `wait: ended` once the transaction commits, so a
+// fact rolled back logs no end. A wait another transaction ended first, or a newer declaration
+// replaced, is left as it was ended, and logged by what ended it.
+func (e *Engine) endWait(ctx context.Context, tx pgx.Tx, wait record.ClaimWait, cause, endedBy string) (bool, error) {
 	ended, err := e.store.EndWait(ctx, tx, wait.Project, wait.Token, wait.ID, cause, endedBy, e.now())
 	if err != nil || !ended {
-		return err
+		return false, err
 	}
 	e.logOnCommit(ctx, "wait: ended", "claim", wait.Token, "issue", wait.Issue, "role", wait.Role, "wait", wait.ID,
 		"cause", cause, "ended_by", endedBy)
-	return nil
+	return true, nil
 }
 
 // factEndedBy is how a wait's end names the fact whose transaction ctx scopes

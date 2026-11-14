@@ -1059,6 +1059,14 @@ func TestWaitResponseGolden(t *testing.T) {
 	}})
 }
 
+// The answers to a news report (POST /legion/v1/claims/wait-news): one that ended the wait it
+// names, and one the daemon received while the claim's update round was open, which ended nothing
+// and names that round. The round is left out of every answer outside a round.
+func TestWaitNewsResponseGolden(t *testing.T) {
+	golden(t, "wait-news.json", WaitNewsResponse{Ended: true})
+	golden(t, "wait-news-round.json", WaitNewsResponse{Round: "pod:7f0c2f9a-6a4b-4f2e-9a1c-2f0d5a3b7e11"})
+}
+
 // A session's report shows on its claim as the names it proved and the gaps it did not, each side
 // in the report's order, and both sides are arrays on the wire even when empty: a session that
 // proved every row has `"open": []`, not `null`, under the plugin's reader.

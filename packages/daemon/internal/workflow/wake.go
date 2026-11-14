@@ -216,6 +216,11 @@ func (e *Engine) podBackstopDue(ctx context.Context, tx pgx.Tx, fact intake.PodB
 // committed without one is what wedges a role, which is why the outbox's own delivery wake, which
 // resumes a claim in process instead, heals a refused wake (wakeForDelivery).
 //
+// A wake that takes the pod and whose cause is news — a CI settlement, a message to the role or one
+// to the session — ends the woken claim's wait in the same transaction, before its start row is
+// queued (endWokenWait): R3's third end, so the start row's task is the claim's new work and is
+// delivered. The backstop's wake ends none.
+//
 // One row would refuse a wake wrongly, and it is closed before the take rather than read out of a
 // refusal: the resume of a pod that has gone away. A release of a pod no claim of the issue can
 // use ends no wake and so closes no resume, and it still takes the pod, leaving a row that would
@@ -246,6 +251,9 @@ func (e *Engine) wakeReleased(ctx context.Context, tx pgx.Tx, released supervise
 	}
 	taken, err := e.cfg.Pods.TakePodWake(ctx, tx, issue.Key, released.Role, kind, at)
 	if err != nil || !taken {
+		return false, err
+	}
+	if err := e.endWokenWait(ctx, tx, *issue, *root, released.Token, released.Role, kind, detail); err != nil {
 		return false, err
 	}
 	e.log.Info("wake: a released pod is coming back", "issue", issue.Key, "role", released.Role, "kind", kind, "detail", detail)
