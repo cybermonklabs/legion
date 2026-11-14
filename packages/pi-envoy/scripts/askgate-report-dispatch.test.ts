@@ -117,8 +117,8 @@ const NO_DECISIONS = {
   cut: 0,
   partial: 0,
   unjudged: 0,
-  unmarkedBlock: 0,
-  unmarkedWarn: 0,
+  unmarkedRefused: 0,
+  unmarkedPosted: 0,
   unmarkedAsks: 0,
 };
 
@@ -456,8 +456,12 @@ describe("the Dispatch reader", () => {
     expect(text).toContain("rules calls with asks cut: 2 (pod 1, machine 1)");
     expect(text).toContain("rules calls judged on part of their asks: 0 (pod 0, machine 0)");
     expect(text).toContain("rules calls that judged none of their asks: 0 (pod 0, machine 0)");
-    expect(text).toContain("unmarked writes refused in block mode: 0 (pod 0, machine 0)");
-    expect(text).toContain("unmarked writes posted in warn mode: 0 (pod 0, machine 0)");
+    expect(text).toContain(
+      "unmarked writes refused, a review standing behind each: 0 (pod 0, machine 0)"
+    );
+    expect(text).toContain(
+      "unmarked writes posted, no review having seen them: 0 (pod 0, machine 0)"
+    );
     expect(text).toContain("asks those unmarked writes carried: 0 (pod 0, machine 0)");
     expect(text).toContain("rules error rate: 33.3% (pod 33.3%, machine 33.3%)");
   });
@@ -678,18 +682,22 @@ describe("the Dispatch reader", () => {
     expect(report.pod).toEqual({
       ...NO_DECISIONS,
       calls: 1,
-      unmarkedBlock: 1,
-      unmarkedWarn: 1,
+      unmarkedRefused: 1,
+      unmarkedPosted: 1,
       unmarkedAsks: 3,
     });
     expect(report.machine).toEqual({
       ...NO_DECISIONS,
-      unmarkedWarn: 1,
+      unmarkedPosted: 1,
       unmarkedAsks: 3,
     });
     const text = dispatchReportLines(report, false);
-    expect(text).toContain("unmarked writes refused in block mode: 1 (pod 1, machine 0)");
-    expect(text).toContain("unmarked writes posted in warn mode: 2 (pod 1, machine 1)");
+    expect(text).toContain(
+      "unmarked writes refused, a review standing behind each: 1 (pod 1, machine 0)"
+    );
+    expect(text).toContain(
+      "unmarked writes posted, no review having seen them: 2 (pod 1, machine 1)"
+    );
     expect(text).toContain("asks those unmarked writes carried: 6 (pod 3, machine 3)");
     // The one rules call is the pod's third record: the unmarked writes move no other count.
     expect(text).toContain("rules calls: 1 (pod 1, machine 0)");
@@ -697,9 +705,11 @@ describe("the Dispatch reader", () => {
     expect(text).toContain("overrides: 0 (pod 0, machine 0)");
     expect(text).toContain("rules error rate: 0.0% (pod 0.0%, machine n/a)");
     const json = JSON.parse(dispatchReportLines(report, true)[0] as string) as DispatchReport;
-    expect([json.total.unmarkedBlock, json.total.unmarkedWarn, json.total.unmarkedAsks]).toEqual([
-      1, 2, 6,
-    ]);
+    expect([
+      json.total.unmarkedRefused,
+      json.total.unmarkedPosted,
+      json.total.unmarkedAsks,
+    ]).toEqual([1, 2, 6]);
     expect(
       dispatchReportLines(report, false)
         .slice(0, text.indexOf(`project: ${PROJECT}`))

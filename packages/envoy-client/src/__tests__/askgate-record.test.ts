@@ -131,8 +131,25 @@ test("an owner names its pid namespace in its record and in its store's name", (
   expect(readdirSync(join(dir, "askgate"))).toEqual([`${process.pid}-${start}-${ns}.json`]);
   expect(
     JSON.parse(readFileSync(join(dir, "askgate", `${process.pid}-${start}-${ns}.json`), "utf8"))
-  ).toEqual({ v: 2, pid: process.pid, start, ns, store: owner.store, mode: "block" });
-  expect(askgateState(dir)).toEqual({ kind: "on", stores: [owner.store], mode: "block" });
+  ).toEqual({
+    v: 2,
+    pid: process.pid,
+    start,
+    ns,
+    store: owner.store,
+    mode: "block",
+    // What this gate does, so the CLI reads a fact rather than inferring one from an empty
+    // store: which verdict store it records refusals in, and which encoding its markers bind.
+    caps: { verdicts: "askgate-verdicts-v2", markers: "canonical" },
+  });
+  expect(askgateState(dir)).toEqual({
+    kind: "on",
+    stores: [owner.store],
+    mode: "block",
+    // The gate says what it does, so the CLI reads a fact rather than inferring one.
+    verdicts: true,
+    markers: ["canonical"],
+  });
 });
 
 // A bind removes another owner's file only when that owner is known gone: one of this pid

@@ -886,8 +886,9 @@ run_measure_before_ask() {
 # GitHub read, which `tried` runs first and the gh stand-in answers with its error for a call no
 # route matches (`gh: Not Found (HTTP 404)`). Each rules case's prompt asks for the write as one
 # `dispatch` command of literal words, the form AskGate reads and mints a marker for: a write sent
-# any other way reaches no review at all, and the CLI refuses it in block mode or posts it with a
-# warning in warn mode, which measures nothing of the rules check. A set
+# any other way reaches no review at all, and the CLI posts it with a warning in either mode,
+# holding it only where this session's own review refused that write, which measures nothing of
+# the rules check. A set
 # SKILL_SCENARIOS_ASKGATE_MODE is the pane's OMP_ASKGATE and <run>/mode.txt; unset, the pane gets
 # no OMP_ASKGATE, so AskGate's verdicts block and its marker checks warn.
 run_askgate() {

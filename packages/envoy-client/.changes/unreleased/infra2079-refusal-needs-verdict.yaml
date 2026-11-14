@@ -1,0 +1,114 @@
+kind: Fixed
+body: |-
+  A refusal of a Dispatch write by the `dispatch` CLI is now only ever the verdict of an AskGate
+  review that ran, and a write posts unreviewed only where the CLI can positively establish that
+  no verdict exists. Absence counts as a statement only when the store could answer for this
+  write: a verdict is read by name, so a store that cannot be listed but can be opened answers
+  every named read and an absence in it is certain, while one that refuses the named read makes
+  every write of that session uncertain.
+  A call the gate never read — from a subagent, a script, an eval cell, `xargs`, `python3 -c` or
+  any form outside the literal grammar — posts with a warning naming the call and why no review
+  ran, in every mode, where it used to be refused in `block`, provided the gate recording the
+  session says it records the writes its reviews refuse. Where it does not, or declares a
+  capability this version does not recognise, finding nothing states nothing and the write is
+  held in block mode until the Oh My Pi process restarts. A write AskGate's own review
+  refused is held in either mode, since a verdict is not a mode's to overrule, and it outranks
+  both a marker that does not cover the write and a store that cannot be read.
+  A verdict is identified by what the reviewer judged and nothing of how the command spelled it
+  (`writeIdentity`): the tool and every argument, canonically encoded with keys sorted at every
+  depth, arrays left in order and trailing whitespace dropped, with an upload's bytes standing in
+  for the path that named them. So flag order, `--issue=X` against `--issue X`, a here-document
+  body against the same text inline, and an upload's bytes resent through `--content` all meet
+  the same verdict, while a corrected file has a new identity and is free. An upload is reduced
+  to the digest of its bytes whether a `--path` named them or `--content` carried them, and the
+  digest is of the bytes themselves and never of a decoded string, so a file that is not valid
+  UTF-8 is not round-tripped; the one limit of the representation is that a file and an inline
+  send meet only where the file is valid UTF-8. The canonical encoding emits sorted key and
+  value pairs rather than assigning into an object, so an argument named `__proto__` is encoded
+  rather than swallowed. Verdicts live in the
+  session's own state directory, not the process's marker store, so one session's no never
+  refuses another's write and a restart of the gate does not drop it; they are never swept by
+  age, and go when a later review of the same write allows it or with the session.
+  A refusal consumes nothing: an expired marker is left for the sweep at the gate's next mint, so
+  the same call sent again meets the same answer. A marker of this call that is corrupt,
+  unreadable, a link or keyed to another argv, a store that cannot be listed, and a session
+  record that cannot be read are each `unknown` rather than absence. A session whose gate lost a
+  verdict it could not write down reads absence as `unknown` for the rest of its life.
+  Both AskGate warnings go to standard error as well as standard output, and where the session's
+  ledger could not record an unreviewed write the account is said again after the result, so that
+  neither a trailing `| head -n 1` nor `2>&1 | tail -n 1` — the stages AskGate's own grammar
+  blesses — can take the only record of it. The ledger line carries `askgate.chose`, the mode the
+  session set, beside `askgate.mode`, which says what became of the write.
+  A verdict of an encoding this version does not read is detected and never decoded: the store
+  directory carries the scheme (`askgate-verdicts-v2`), the current one is read with one
+  encoding and one identity, and any other such directory holding an entry, or one that cannot
+  be read, is unknown — which holds the write where the session chose block. A change to the
+  encoding is then a new directory. Reading an old verdict instead would oblige every version
+  to keep every encoding it has ever used exactly, which this change first attempted and could
+  not meet, so the decoder, both prior encoders, the scheme-prefixed filename and the marker's
+  prior-digest acceptance are removed rather than extended. Entries beginning with a dot do not
+  count as a verdict, so a probe file or an interrupted write's temporary left by a failed
+  removal cannot make a session that recorded nothing read as holding a foreign one.
+  A verdict an earlier scheme wrote is not preserved: it becomes unknown, which block mode
+  refuses and warn mode posts with the foreign-scheme warning, where the machinery this replaces
+  refused in both. Only ENOENT establishes absence anywhere on this path: a session directory
+  with search permission but no read, an EIO or a path component that is no directory each read
+  as unknown rather than as holding nothing, which is what let a stored rejection post.
+  An upload the gate would not review has its verdict read, and an uncertain answer holds it:
+  discarding everything but a refusal there posted a non-markdown suffix silently while the
+  identical bytes under `.md` were held, in a session that had merely lost a verdict. Every
+  artifact upload of such a session is now refused in block mode.
+  Advice is a lead and up to two clauses — one that works wherever the call ran, one that works
+  only by getting a marker bound to this write — and a refusal carries, on the clause and in
+  the state that make it true and nowhere else, the one thing that makes the advice true: a
+  task subagent cannot use the resend path, since the gate mints it an argv-only marker and an
+  argv-only marker answers no uncertainty. The field saying whether the session's own
+  uncertainty outlives the advice's repair is required, so a refusal added later cannot omit it
+  and default to the permissive reading. A changed file needs the caveat: `consumeMarker` reads
+  every marker of that argv in the store, and a task subagent shares its parent's, so a bound
+  marker the parent left behind reports the change against the subagent's call and only a bound
+  marker of its own would get it past. A message announcing that
+  the write posted never carries it, since nothing was refused and the resend it would forbid is
+  the one that works; nor does a clause that works whatever ran the call, such as sending a
+  corrected write. Repairing a fault the advice names and resending works in a healthy session
+  and not in one whose own uncertainty outlives the repair, so the renderer reads the state and
+  not the clause alone; and an expired marker, which the resend's own mint sweeps, is told apart
+  from one bound to other arguments, which it does not. The record-recovery
+  advice is a different case and says so: a subagent returns before the record is rewritten, so
+  only the main agent's next call repairs it.
+  Three reads on the decision path still answered a fault with a permission. A cross-namespace
+  owner whose marker store could not be stat'ed read as gone, which turned AskGate off for the
+  session and skipped the verdict lookup entirely, so a recorded refusal posted silently; only
+  ENOENT is a store that is gone, and anything else keeps the owner live for the state check to
+  call broken. An argv-only marker — which the gate mints for every task subagent's literal
+  write and for every review that times out — was consumed before the same scan reported that a
+  marker of this call could not be read, or that one did not cover it, so it posted past a
+  damaged, stale or expired marker; it now answers no uncertainty at all. And whether a verdict
+  was looked up for an upload was decided by the path's suffix, which the write's identity
+  deliberately ignores, so a copy of a refused `plan.md` named `plan.txt` posted the same bytes:
+  a verdict is now read for every upload, and the suffix decides only what a missing marker
+  means. An owner record's mode is read the way its capabilities are: absent is warn, a fact
+  about a version, while present and unrecognised takes the stricter reading.
+  A gate says what it does in its own owner record: which verdict store it records refusals in,
+  and which encoding its markers bind. Nothing on disk otherwise tells a gate that wrote no
+  verdict from one that cannot write them, and an empty store was read as proof that no review
+  had refused. A record with no capabilities is a gate from before them — it records no
+  verdicts, so every unmarked write of that session is unknown, and its markers bind the one
+  encoding that version used, so they are honoured rather than refused with the untrue reason
+  that the arguments differ — a check that in block mode had refused every reviewed literal
+  write for the session's life, since an old gate mints a fresh old-encoding marker on every
+  write and the sweep never catches up. An unrecognised capability is treated as not held, so a
+  verdict store this version does not know is unknown and a marker encoding it cannot compute
+  reads as stale; both fail closed. Only a capability field that is absent altogether infers
+  the historical encoding, because absence is a fact about a gate that predates the field,
+  where a value present and unrecognised is a claim this reader cannot evaluate. A marker bound to this very write outranks every such uncertainty,
+  since it is a verdict of allow for this write.
+  The cost is measured rather than bounded by a phrase: a session whose record carries no
+  verdict capability refuses every unmarked write in block mode for the rest of its life,
+  including a subagent's, a script's and an eval cell's, and sessions on this fleet run 22 to 50
+  hours. Restarting the Oh My Pi process clears it, since the capabilities come from the module loaded
+  there and a new session inside the same process writes another record without them; nothing
+  else does.
+  Replay protection at the CLI is weaker by one case: two concurrent calls of one argv used to
+  leave the loser refused, and now both post, one with the warning. A resent literal call is read
+  by the gate and reviewed afresh. dispatch://INFRA-2079, row 3.5.

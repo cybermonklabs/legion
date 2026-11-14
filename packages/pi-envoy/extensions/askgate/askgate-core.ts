@@ -19,10 +19,14 @@
 // written. For each literal call it lets run it mints one single-use marker
 // (`@legion/envoy-client/askgate-marker`), keyed by the argv the CLI will receive and, behind a
 // review or a deliberate pass (a rebuttal, a breaker trip), bound to the digest of the dry run's
-// arguments and to the sha256 of each file the argv names, as the gate read it for the review. The
-// CLI posts a gated write in a session whose record a live Oh My Pi process keeps (envoy.ts writes
-// it) only when it consumes such a marker, so a write sent in any other form, from a pipe, a
-// script, `python3 -c`, an eval cell's process or anything else, is refused when it runs. The
+// arguments and to the sha256 of each file the argv names, as the gate read it for the review. In
+// a session whose record a live Oh My Pi process keeps (envoy.ts writes it), the CLI consumes
+// that marker before it posts, and refuses the write where it finds a marker of this argv its
+// verdict does not cover — other arguments, a file changed since the review, a marker past its
+// age — and the session chose block. A write sent in any other form, from a pipe, a script,
+// `python3 -c`, an eval cell's process or anything else, carries no marker at all: no review ever
+// saw it, so the CLI posts it with a warning naming the call and refuses nothing
+// (dispatch://INFRA-2079, row 3.5), and envoy.ts records it as `unmarked`. The
 // CLI's check does not cover a direct HTTP request to Dispatch, an older or a different CLI, or a
 // same-user process that removes the record or a marker, acts as another session id or state
 // directory, or otherwise goes around the CLI. Precision comes first: the gate must not refuse a
@@ -95,12 +99,13 @@
 //     judged against failure 10 alone (askgate-upload.md), since a plan or a report is long by
 //     nature.
 //   - Any other call is not the gate's: a `bash` call in any other form, or an `eval` call, runs
-//     with no entry and no marker, and the CLI refuses a gated write it sends. The gate records
-//     the mode in its marker store at each main-agent `bash` or `eval` call (the CLI reads it:
-//     `warn` lets an unmarked write post with a warning), and envoy.ts records an `unmarked`
+//     with no entry and no marker, and the CLI posts a gated write it sends with a warning that
+//     no review ran for it. The gate records the mode in its marker store at each main-agent
+//     `bash` or `eval` call (the CLI reads it, and it decides only a write AskGate did review),
+//     and envoy.ts records an `unmarked`
 //     entry for each such write the CLI logged. When such a call's text holds a `dispatch` word
 //     and a gated write subcommand, the gate finds the first cause that puts it outside the
-//     grammar (`nonLiteralCause`) and, when the call's result holds the CLI's refusal of a write
+//     grammar (`nonLiteralCause`) and, when the call's result holds the CLI's line for a write
 //     with no marker, appends a note that names the cause and the literal form (`causeNote`).
 //   - `write xd://<device>` calls, seen on the nested `tool_call` event the device wrapper emits
 //     with `toolName = <device>` and the validated arguments, for dispatch_ask, dispatch_message,
@@ -242,19 +247,25 @@
 // while the gate still held it — its review is the await such an end falls in — is minted none
 // either, since nothing of it runs any more, and its entry says `mintSkipped: "call-ended"`. The
 // record starts after the mint, so it carries the decision the call finally got.
-import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { PICTURE_PLACEHOLDER } from "@legion/contracts";
 import {
+  argsDigest,
   bytesDigest,
+  clearVerdict,
   type FileDigest,
   type FileOperand,
   fileOperands,
   gatedWrite,
+  markVerdictsLost,
   mintMarker,
   operandPath,
+  readVerdict,
   uploadIsDocument,
+  verdictsUnkeepable,
+  writeIdentity,
+  writeVerdict,
 } from "@legion/envoy-client/askgate-marker";
 import type { DispatchSession } from "../../src/dispatch-session";
 import requestTemplate from "./askgate-request.md" with { type: "text" };
@@ -372,6 +383,16 @@ const UNREVIEWED_OUTCOMES: ReadonlyArray<GateEntry["outcome"]> = [
   "halted",
   "skipped",
 ];
+/**
+ * Whether a review of these very bytes stands behind the call's outcome. One question with one
+ * answer: the mint asks it to decide whether a marker binds the dry run's arguments, and the
+ * verdict store asks it to decide whether this outcome may record or clear anything at all. Two
+ * predicates for one question is how the store came to be written by outcomes no review
+ * produced — a halt or a timeout deleting a standing verdict, a call given up recording one.
+ */
+function reviewStandsBehind(outcome: GateEntry["outcome"]): boolean {
+  return !UNREVIEWED_OUTCOMES.includes(outcome);
+}
 export const GATE_CONTEXT_MAX_BYTES = 256 * 1024;
 const GATE_ARGS_MAX_BYTES = 64 * 1024;
 // The output of a `dispatch` run the gate quotes in a failure.
@@ -465,6 +486,13 @@ export interface GateEntry {
    * breaker last reset it (an allow, a rebuttal or a trip there), this call included when it is one.
    */
   revisesForKey: number;
+  /**
+   * The check mode the session had set, on an `unmarked` entry whose write did not get it: a
+   * write that posted with no review behind it in a session that chose `block`. Absent where
+   * the session's choice and the write's outcome agree, and on every entry the gate itself
+   * makes, whose `verdictMode` already is the session's.
+   */
+  sessionMode?: Mode;
   argsDigest: string;
   /** The call's breaker target in readable form: the tool, then each of the issue, ask, artifact, project and reply it names. */
   target?: string;
@@ -592,7 +620,7 @@ export interface DryRunResult {
   stderr: string;
   timedOut: boolean;
 }
-interface Deps {
+export interface Deps {
   env: Record<string, string | undefined>;
   home: string;
   now: () => number;
@@ -638,6 +666,15 @@ interface Deps {
    * and where the CLI consumes the marker.
    */
   markerStore: string;
+  /**
+   * The state directory of the session this process is bound to now, where that session's
+   * AskGate verdicts live (`@legion/envoy-client/askgate-marker`), or undefined for a process
+   * bound to none. Keyed to the session and not to this process, as `recordCheckMode` is: a
+   * verdict is a fact about content within one session's run, and the gate's halt, breaker and
+   * rebuttals all reset on a switch. Kept in the marker store it would leak to every session
+   * this process later served and die with a restart the session survived.
+   */
+  sessionDir: () => string | undefined;
   /**
    * Records the check mode of the session the process is bound to now, into that session's own
    * record, for the CLI. Keyed to the session, not the process, so a switch to a session in the
@@ -1500,7 +1537,8 @@ function fileInputs(
 /**
  * The `bash` command as a scoped `dispatch` call, or undefined for any other command. Only the
  * literal grammar of one call is read (`dispatchCommandHead`). A call in any other form is no
- * scoped call: it runs, and the CLI refuses a gated write in it, which carries no marker. The
+ * scoped call: it runs, and the CLI posts a gated write in it, which carries no marker, with a
+ * warning that no review ran for it. The
  * override comment that may stand where the call's line ends is read as overrides after the call's own
  * flags, and is left out of `command` and of the dry run, as an override flag is: the gate puts
  * every override back as one comment (`keepOverrideVisible`), so a rebutted command it handed
@@ -1757,7 +1795,7 @@ export function nonLiteralCause(
   return { cause: "other", detail: snippet(unread?.raw ?? command.slice(own[0]?.start ?? 0)) };
 }
 
-/** What the CLI prints when it refuses, or in warn mode posts, a gated write that has no marker. */
+/** What the CLI prints when it posts a gated write that has no marker, which it does in either mode. */
 const UNMARKED_WRITE =
   /AskGate is on for this session(?: in warn mode)?, and this call carries no AskGate marker/;
 
@@ -2132,20 +2170,35 @@ const NO_VERDICT_REFUSAL: Record<"abandoned" | "shutdown", string> = {
     "AskGate did not send this call: the session shut down before a verdict came back. Send it again from a live session if it is still wanted.",
 };
 /** The refusal for a call in a session where no model role the gate asks resolves. */
+/**
+ * The refusal for a session whose own state directory takes no file: neither this call's verdict
+ * nor the mark of a lost one could be written, which is the same fault that stops its ledger.
+ */
+const UNKEEPABLE_REFUSAL =
+  "AskGate did not send this call: this session's state directory takes no file, so AskGate can keep no record of what it reviews and the dispatch CLI would never see a write it refused. Nothing else of the session is being recorded either. Free the disk or repair the directory, then send the call again.";
 const NO_MODEL_ROLE_REFUSAL = `AskGate did not send this call: it reviews each Dispatch write before it posts, and this session has no model for it. Set modelRoles.askgate or modelRoles.default in the Oh My Pi settings, then send the call again. To turn AskGate off for this session, set askgate.enabled to false in the session's envoy.json.`;
 /**
  * The refusal for a write that no review stands behind and whose record could not be written.
- * Every such write is recorded, so that a reader of the session knows what went out unreviewed;
- * with no record the write does not go.
+ *
+ * The CLI, meeting the same failure, posts the write and says the record failed: there a hold
+ * costs a write that has to go out. Here it costs a resend that will work, because nothing of
+ * the call has run yet, so the gate holds and the CLI does not. That asymmetry is the decision,
+ * not an oversight; what is not true, and used to be written here, is that every unreviewed
+ * write is recorded (dispatch://INFRA-2079, row 3.5).
  */
 const recordFailureRefusal = (message: string, configFile: string) =>
-  `AskGate did not send this call: no review stands behind it, and AskGate could not record that in the session (${message}). Every Dispatch write that posts unreviewed is recorded, so AskGate holds this one back. Send it again once the session takes its entries. To turn AskGate off for this session, set askgate.enabled to false in ${configFile}.`;
-/** The refusal for a call whose marker could not be minted: the CLI would refuse it with none. */
+  `AskGate did not send this call: no review stands behind it, and AskGate could not record that in the session (${message}). Nothing of this call has run yet, so AskGate holds it rather than let a write go out that its session has no account of. Send it again once the session takes its entries. To turn AskGate off for this session, set askgate.enabled to false in ${configFile}.`;
+/**
+ * The refusal for a call whose marker could not be minted. The CLI would now post such a write
+ * with a warning rather than refuse it (dispatch://INFRA-2079, row 3.5), so this refusal is the
+ * gate's own: a review it could not carry to the CLI.
+ */
 const mintFailureRefusal = (message: string, configFile: string) =>
   `AskGate did not send this call: the dispatch CLI posts a Dispatch write in this session only with a marker AskGate mints for it, and AskGate could not mint one (${message}). Send the call again once the CLI's state directory takes files. To turn AskGate off for this session, set askgate.enabled to false in ${configFile}.`;
 /**
  * The refusal, in block mode, of a literal call whose final command gives the gate no argument
- * vector to key a marker by: the CLI would refuse it with no marker, naming a form it already has.
+ * vector to key a marker by. The gate reviewed nothing of it and can mint nothing for it; the
+ * CLI would post it with a warning, so this refusal too is the gate's own.
  */
 const UNKEYED_REFUSAL =
   "AskGate did not send this call: it could not read the arguments the dispatch CLI gets from the command that runs, so it could not mint the marker the CLI needs to post the write. Send the write again as one bash call of literal words.";
@@ -2314,10 +2367,10 @@ function renderUnreadable({ file }: UnreadableCommand, mode: Mode): string {
  * verdict. Only `askgate.enabled: false` turns AskGate off, so none is an off switch: each literal
  * write of the main agent the gate would review (`scopedCommand`, `scopedDevice`) is refused in
  * both modes, naming the error and the switch, and recorded as `load-failed`. It mints no marker
- * and records no mode, so every other gated write of a process that acts as the session, a
- * subagent's included, meets the CLI's marker check: refused where the session chose block
- * (`OMP_ASKGATE=block`, which `bindDispatchSession` writes beside the record), and at the warn
- * default posted with a warning and an `unmarked` entry. Every other call runs.
+ * and records no mode, and it writes down no verdicts either, so every other gated write of a
+ * process that acts as the session, a subagent's included, meets the CLI's check with nothing
+ * recorded against it and posts with a warning and an `unmarked` entry, whatever mode the
+ * session chose. Every other call runs.
  */
 export function loadFailureGate(
   error: unknown,
@@ -2412,6 +2465,20 @@ export function createAskGate(deps: Deps): (pi: Pi) => void {
     // the gate never saw go into one document per session, and the recorder holds each session's
     // document across the switches the state below resets on.
     const recordDecision = deps.recordDecision;
+    /**
+     * Set once this session's directory has taken neither a verdict nor the mark of a lost one,
+     * which is the same fault that stops its ledger: nothing of the session is being recorded.
+     * The gate then reviews no further gated write of it and refuses each, rather than reach
+     * verdicts it already knows it cannot keep.
+     *
+     * In memory, so it dies with the process, where the on-disk mark of a single lost verdict
+     * lives in the session's directory and survives a restart. That asymmetry is safe by
+     * recurrence rather than by optimism: the stop is only reached when the directory refuses a
+     * new file, so a restarted gate's next gated write tries the same two writes against the
+     * same directory, fails both again, and re-enters the stop before reviewing anything — a
+     * window of one call, and that call is refused on its own account. If the fault has in fact
+     * cleared, the session is healthy and should not stay stopped.
+     */
     let failures = 0;
     /** Rules calls in a row that ended without a rules verdict. */
     let ruleFailures = 0;
@@ -2522,10 +2589,10 @@ export function createAskGate(deps: Deps): (pi: Pi) => void {
     };
     /**
      * The cause each `bash` call outside the literal grammar that runs a gated write has, as the
-     * note its result gets (`causeNote`), by tool call id. The gate refuses nothing for it: the
-     * CLI refuses such a write, and cannot see the shell text that put it outside the grammar.
-     * So the note goes on the call's result only when that result holds the CLI's refusal (or
-     * warn mode's warning) of a write with no marker. At most NOTICE_CAP are kept.
+     * note its result gets (`causeNote`), by tool call id. The gate refuses nothing for it, and
+     * cannot see the shell text that put the call outside the grammar once it has run. So the
+     * note goes on the call's result only when that result holds the CLI's line for a write
+     * with no marker. At most NOTICE_CAP are kept.
      */
     const causes = new Map<string, string>();
     const rememberCause = (toolCallId: string, command: unknown) => {
@@ -2770,6 +2837,16 @@ export function createAskGate(deps: Deps): (pi: Pi) => void {
      * A session in which no model role the gate asks resolves: refused in both modes, since the write
      * would otherwise post unreviewed, and never toward the halt, which would let every later write out.
      */
+    /**
+     * A session whose state directory takes no file at all: AskGate can keep no verdict, so it
+     * reaches none. Refused in both modes, like a session with no model role, and never toward
+     * the halt, which would let every later write out.
+     */
+    const unkeepable: Decision = {
+      fields: { decision: "revise", outcome: "load-failed", reason: UNKEEPABLE_REFUSAL },
+      result: { block: true, reason: UNKEEPABLE_REFUSAL },
+      effect: "none",
+    };
     const noModelRole: Decision = {
       fields: {
         decision: "revise",
@@ -2991,6 +3068,21 @@ export function createAskGate(deps: Deps): (pi: Pi) => void {
       // Before any path that lets the write out: a session with no model role refuses in both
       // modes, and a rebuttal, a halt, a breaker trip or a shutdown is no exception, since none
       // of them is a review and the gate cannot review anything at all here.
+      // Before any review: a session whose directory has taken neither a verdict nor the mark
+      // of a lost one keeps no record of anything, its ledger included. Reviewing further would
+      // reach verdicts the CLI can never see, so every gated write of it is refused instead.
+      // Asked on every gated write and never remembered: a conclusion about this session now,
+      // not a latch that outlives its cause. It takes both the verdict store and the mark
+      // failing, which is the two-tier rule — a fault in the store alone degrades the session to
+      // strict and the mark records that — so a transient fault cannot stop a healthy session,
+      // and one that clears is noticed on the next write.
+      const here = deps.sessionDir();
+      if (here !== undefined && verdictsUnkeepable(here, deps.now())) {
+        deps.runtimeLogger.warn(
+          "askgate: this session's state directory takes no file, so AskGate can keep no verdict and sends no gated write of it until that changes"
+        );
+        return unkeepable;
+      }
       const resolved = resolveRole(ctx);
       if (resolved === undefined) return noModelRole;
       if (rebuttal !== undefined) {
@@ -3188,6 +3280,8 @@ export function createAskGate(deps: Deps): (pi: Pi) => void {
       | {
           args: Input;
           review: Input;
+          /** An upload's bytes as the gate read them; absent for every other write. */
+          bytes?: Buffer;
           files: FileDigest[];
           directory: () => Promise<string | undefined>;
         }
@@ -3320,6 +3414,8 @@ export function createAskGate(deps: Deps): (pi: Pi) => void {
       // these bytes, and the marker binds their digests, which the CLI checks before it posts.
       const files: FileDigest[] = [];
       let uploadText: string | undefined;
+      /** The upload's bytes as the gate read them, which its identity is taken over. */
+      let uploadRaw: Buffer | undefined;
       if (scoped.fileInputs.length > 0) {
         const relativeFile = scoped.fileInputs.find((file) => !path.isAbsolute(file.operand));
         let base = cwd;
@@ -3416,7 +3512,10 @@ export function createAskGate(deps: Deps): (pi: Pi) => void {
             };
           }
           files.push({ ...file, sha256: bytesDigest(bytes) });
-          if (file.flag === "--path") uploadText = bytes.toString("utf8");
+          if (file.flag === "--path") {
+            uploadText = bytes.toString("utf8");
+            uploadRaw = bytes;
+          }
         }
       }
 
@@ -3448,7 +3547,13 @@ export function createAskGate(deps: Deps): (pi: Pi) => void {
             file: { flag: "--path", path: args.path, reason: "was not read before review" },
           },
         };
-      return { args, review: { ...args, content: uploadText }, files, directory: commandDirectory };
+      return {
+        args,
+        review: { ...args, content: uploadText },
+        files,
+        directory: commandDirectory,
+        ...(uploadRaw === undefined ? {} : { bytes: uploadRaw }),
+      };
     };
 
     /** The fields every entry of a call carries; a gated call fills in its target's revise count and the digest. */
@@ -3467,7 +3572,8 @@ export function createAskGate(deps: Deps): (pi: Pi) => void {
      * vector of the command that runs, the final one the gate returns, bound to the dry run's
      * arguments and the digests of the files the gate read when a review or a deliberate pass
      * stands behind them (`bound`), argv-only otherwise. Undefined when it was minted; else the
-     * refusal of a mint that failed, since the CLI would refuse the call anyway. A command whose
+     * refusal of a mint that failed, which is the gate's own (the CLI would post the write with
+     * a warning). A command whose
      * argument vector the gate cannot read gets no marker: `block` mode refuses it, and `warn`
      * mode lets it run with a note, as the CLI then posts it with a warning.
      */
@@ -3507,7 +3613,11 @@ export function createAskGate(deps: Deps): (pi: Pi) => void {
       let revised: Input | undefined;
       // What the call's dry run printed and the digests of the files the gate read, which a
       // marker for the command it ran binds.
-      let dryRun: { args: Input; files: readonly FileDigest[] } | undefined;
+      // `review` is what the model judged: for an upload, the bytes rather than the path, which
+      // is what the write's identity is taken over on both sides of the hop.
+      let dryRun:
+        | { args: Input; review: Input; files: readonly FileDigest[]; bytes?: Buffer }
+        | undefined;
       // OMP_ASKGATE when it is a mode; else this session's latest experiments entry, read per call
       // because one binding serves every session the process switches to.
       let mode: Mode = envMode ?? "block";
@@ -3528,7 +3638,8 @@ export function createAskGate(deps: Deps): (pi: Pi) => void {
           mode = sessionMode(entries);
           checks = checkMode(envMode, entries);
         }
-        // The CLI reads the check mode from the store: every shell or cell could run it.
+        // The CLI reads the check mode from the record: every shell or cell could run it. It
+        // governs what the CLI does without a verdict, never what it does with one.
         if (event.toolName === "bash" || event.toolName === "eval") {
           try {
             recordMode(checks);
@@ -3536,8 +3647,9 @@ export function createAskGate(deps: Deps): (pi: Pi) => void {
             // A store that takes no mode leaves the CLI's default, warn.
           }
         }
-        // Only a `bash` call in the literal grammar is read. Any other call runs, and the CLI
-        // refuses a gated write in it, which carries no marker.
+        // Only a `bash` call in the literal grammar is read. Any other call runs, and a gated
+        // write in it carries no marker: the CLI posts it with a warning unless this session's
+        // own review refused that very write (dispatch://INFRA-2079, row 3.5).
         if (event.toolName === "bash") {
           const scoped = scopedCommand(event.input.command);
           if (scoped === undefined) return undefined;
@@ -3598,12 +3710,20 @@ export function createAskGate(deps: Deps): (pi: Pi) => void {
                   run.slow ? renderSlowDryRun(run.failure) : undefined
                 );
               else {
-                dryRun = { args: run.args, files: run.files };
+                // The bytes themselves, not the text decoded from them: a file that is not
+                // valid UTF-8 would otherwise be re-encoded here and hashed raw at the CLI, and
+                // an identical command would miss its own verdict.
+                dryRun = {
+                  args: run.args,
+                  review: run.review,
+                  files: run.files,
+                  ...(run.bytes === undefined ? {} : { bytes: run.bytes }),
+                };
                 const { key, label } = breakerKey(scoped.tool, run.review);
                 base = {
                   ...base,
                   revisesForKey: breaker.revises(key),
-                  argsDigest: createHash("sha256").update(JSON.stringify(run.review)).digest("hex"),
+                  argsDigest: argsDigest(run.review),
                   target: label,
                 };
                 decision = await decide({
@@ -3633,7 +3753,7 @@ export function createAskGate(deps: Deps): (pi: Pi) => void {
           base = {
             ...identity(event, mode),
             revisesForKey: breaker.revises(key),
-            argsDigest: createHash("sha256").update(JSON.stringify(event.input)).digest("hex"),
+            argsDigest: argsDigest(event.input),
             target: label,
           };
           const stop = openStop(event.toolCallId);
@@ -3707,10 +3827,12 @@ export function createAskGate(deps: Deps): (pi: Pi) => void {
       try {
         pi.appendEntry(ADVISOR_GATE_ENTRY_TYPE, entry);
       } catch (error) {
-        // A write no review stands behind posts only when the record of that is written: the
-        // record is the whole account of what went out unreviewed. So a record that fails
-        // refuses the call, in both modes. A write the model allowed was reviewed, and still
-        // posts; a call already refused keeps its own refusal.
+        // A write no review stands behind is held here when the record of it cannot be written,
+        // in both modes. Not because every unreviewed write is recorded — the CLI, meeting the
+        // same failure on its own ledger, posts and says so (dispatch://INFRA-2079, row 3.5) —
+        // but because nothing of this call has run yet, so the hold costs a resend that will
+        // work, where the CLI's would cost a write that has to go out. A write the model
+        // allowed was reviewed, and still posts; a call already refused keeps its own refusal.
         if (decision.fields.decision === "allow" && decision.fields.outcome !== "verdict") {
           notices.delete(event.toolCallId);
           refusal = {
@@ -3736,6 +3858,115 @@ export function createAskGate(deps: Deps): (pi: Pi) => void {
           outcome,
           checks
         );
+      }
+      // The verdict this call reached, written where the CLI looks for it — this session's own
+      // state directory, under the identity of the write the model judged rather than the words
+      // of the command (dispatch://INFRA-2079, row 3.5).
+      //
+      // Every source that decides records and clears, and the two go together. A review that
+      // rejects mints nothing, so without a record the CLI cannot tell a rejected write from one
+      // no review ever saw and the agent posts it by sending the same bytes in any form the gate
+      // does not read. A review that allows removes the no it replaces, or a write its reviewer
+      // has since passed stays refused. A rebuttal and a breaker trip clear too, although they
+      // bind no marker: they bind none because no review stands behind the bytes, but each is
+      // the agent's own sanctioned override, and a no that survives its own override is a trap.
+      // Nothing bounds how often an agent may rebut — that is the design, and every rebuttal is
+      // recorded and published — so a standing verdict is one deliberate, attributable override
+      // from gone.
+      //
+      // A device call records and clears on the same terms as a bash call: it posts through no
+      // CLI itself, but the identity it was judged under is the one a later command carries.
+      //
+      // What decides this is who supplied the decision, never the shape of the call's result.
+      // Branching on `block` applied the machinery to every outcome: a halt, a skip, a model
+      // error or a timeout deleted a standing verdict, and a call given up without one, or a
+      // session with no model role, recorded a refusal no review had made.
+      //
+      //   record  a review's verdict refused the call: a revise the session's mode held, or a
+      //           rules match, which refuses in either mode.
+      //   clear   a review's verdict passed the call, or the agent's own sanctioned override
+      //           sent it (a rebuttal, a breaker trip).
+      //   leave   everything else, which includes a warn-mode revise: the reviewer did not pass
+      //           these bytes, so it cannot clear, and warn mode's whole meaning is that a
+      //           revise does not hold the write, so recording one would have the CLI refuse
+      //           the very write the gate just let through.
+      //
+      // The recorded no exists to extend a refusal that actually happened, so where no refusal
+      // happened there is nothing to extend.
+      const session = deps.sessionDir();
+      const judged = dryRun?.review ?? (event.toolName === "bash" ? undefined : event.input);
+      // The same question the mint asks (`reviewStandsBehind`), and nothing may touch the store
+      // without it: a device call always has `event.input` to offer as `judged`, so an outcome
+      // this list names would otherwise let one flaky model call on a resend delete a standing
+      // verdict for the session's life, with no dry run run at all.
+      // A rules refusal is a review that ran and refused, whatever the charter did beside it:
+      // the two run side by side, and a rules match blocks the call in either mode. It asks
+      // nothing of the charter's outcome, because gating it behind one classified a completed
+      // rules refusal with a charter that timed out, errored or gave no verdict as no review at
+      // all — and a charter timeout at the default ceiling is the ordinary case, not a corner.
+      // Nothing was stored, and the same write through any other form posted the refused text
+      // with a warning that no review had seen it.
+      const ruledRefusal = decision.fields.rule !== undefined && decision.result?.block === true;
+      const stands = reviewStandsBehind(decision.fields.outcome);
+      const reviewed = stands && decision.fields.outcome === "verdict";
+      const refusedByReview =
+        ruledRefusal ||
+        (stands &&
+          decision.result?.block === true &&
+          reviewed &&
+          decision.fields.decision === "revise");
+      const passedByReview =
+        stands &&
+        ((reviewed && decision.fields.decision === "allow") ||
+          decision.fields.outcome === "rebuttal" ||
+          decision.fields.outcome === "breaker");
+      // One scheme, one name. A verdict of another scheme is never read or written, only
+      // detected (`readVerdict`), so there is no second name to keep in step.
+      const decided =
+        session !== undefined &&
+        judged !== undefined &&
+        base !== undefined &&
+        (refusedByReview || passedByReview)
+          ? writeIdentity(base.tool, judged, dryRun?.bytes)
+          : undefined;
+      if (decided !== undefined && session !== undefined) {
+        try {
+          if (refusedByReview)
+            writeVerdict(
+              session,
+              decided,
+              decision.fields.deliveredReason ?? decision.fields.reason ?? "no reason was recorded",
+              deps.now()
+            );
+          else clearVerdict(session, decided);
+        } catch (error) {
+          // A verdict the gate reached and could not write down is a no the CLI will never see,
+          // so the session is marked and reads absence as unknown from here on. The mark lives
+          // beside the session's record and ledger rather than inside the verdict store, since
+          // a detector kept inside the fault domain it reports cannot report that domain
+          // failing: measured, a `chmod 500` of the verdict store alone leaves the ledger, the
+          // CLI and the session healthy, and only the session's own directory refusing a new
+          // file takes the mark down with the verdict — the same fault that stops the ledger.
+          deps.runtimeLogger.warn(
+            `askgate: this call's verdict could not be recorded for the dispatch CLI: ${messageOf(error)}`
+          );
+          if (refusedByReview) {
+            try {
+              // A mark already there and readable says everything a new one would: the session
+              // reads absence as unknown from here on. Rewriting it is how a verdict store at
+              // 0500 beside a mark at 0400 reached the stop although nothing was missing.
+              if (readVerdict(session, decided).kind !== "lost")
+                markVerdictsLost(session, deps.now());
+            } catch (markError) {
+              // Neither the verdict nor the mark: the session's directory takes no new file, so
+              // its ledger is failing too. The next gated write concludes the same thing from
+              // the directory itself (`verdictsUnkeepable`) rather than from a flag set here.
+              deps.runtimeLogger.warn(
+                `askgate: this session's state directory takes no file, so AskGate can keep no verdict and will send no further gated write of it: ${messageOf(markError)}`
+              );
+            }
+          }
+        }
       }
       // The entry above reaches only this machine's disk, so a rules decision also goes to
       // Dispatch, where a session with no access to this machine counts it (`decision-record.ts`).

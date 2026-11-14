@@ -427,8 +427,10 @@ provider, a review that failed) checks no file, so its file posts as the CLI rea
 
 **Everything else runs, and the `dispatch` command enforces the review.** The gate reads no other
 form and refuses none: a call outside the literal grammar runs as written. What holds it back is
-the CLI. For each literal call it lets run, the gate mints a single-use marker; the CLI posts a
-gated write only when it consumes one, so a write sent any other way is refused in `block` mode:
+the CLI. For each literal call it lets run, the gate mints a single-use marker, and for each
+write its review refuses it records a verdict. A write sent any other way carries neither: the
+CLI posts it with a warning that no review saw it, and holds it only where this session's own
+review refused that very write (dispatch://INFRA-2079, row 3.5):
 
 - **The record.** While the gate is bound, pi-envoy keeps one owner-only file for its process in
   the `askgate/` directory of the CLI's state directory of each session id it binds
@@ -475,15 +477,56 @@ gated write only when it consumes one, so a write sent any other way is refused 
 - **The check.** After `--help`, `--dry-run` and the session and Dispatch settings, and before a
   gated write posts, the CLI reads the session's record. With a live one it reads each file the
   argv names once and consumes one matching marker by unlinking it: exactly one process wins, so a
-  marker posts one write and a replay finds none. In `block` mode a write with no matching marker
-  is refused (`dispatch <command> was not called: AskGate is on for this session, …`, which names
-  the form to send, or, for a file that changed after the review, says to send the call again in a
-  later message). In `warn` mode the CLI first records the write in the session's ledger, refuses
-  it when the ledger cannot take that line, and then posts it with a `dispatch: warning:` line.
-  Either way pi-envoy records an `advisor-gate` entry with outcome `unmarked`. A record that cannot
-  be read, or that names a store that is gone, is a refusal. A session no live record names needs
-  no marker: a terminal, CI, Claude Code, a pod without pi-envoy, a session with no Dispatch and
-  one with `askgate.enabled: false`.
+  marker posts one write and a replay finds none. A refusal here is only ever the verdict of a
+  review that ran (dispatch://INFRA-2079, row 3.5). AskGate reviewed the call, and the write is
+  not what its verdict covers — arguments that differ from the reviewed ones, a file whose bytes
+  changed after AskGate read them, a marker past its age — so in `block` mode the write is
+  refused (`dispatch <command> was not called: AskGate is on for this session, …`, which names
+  the form to send, or, for a changed file, says to send the call again in a later message), and
+  in `warn` mode it posts with a `dispatch: warning:` line. Everything else is a write no review
+  stands behind. One of those posts: a call with no marker at all, which the gate never read (a
+  subagent, a script, an eval cell, `xargs`, any form outside the literal grammar), in every
+  mode, with `dispatch: warning: dispatch <command> posted without review: …` naming the call
+  and why no review ran, on both the command's output and its standard error, since a trailing
+  `| tail` that the literal form itself blesses would otherwise take the only account of it.
+  The others do not: a record that cannot be read, a live record naming a store that is gone,
+  and a marker check that threw are each held in **both** modes, since what the gate would have
+  said cannot be told and the session's own mode is unreadable with its record. The
+  CLI records the write in the session's ledger before it sends, and a ledger that cannot take
+  that line no longer holds the write back: the warning says the record failed instead, and
+  pi-envoy then has no `advisor-gate` entry for it, the warnings being the whole account. Where
+  the ledger took the line, pi-envoy records an entry with outcome `unmarked`. A
+  session no live record names needs no marker: a terminal, CI, Claude Code, a pod without
+  pi-envoy, a session with no Dispatch and one with `askgate.enabled: false`.
+- **The verdict the gate writes down.** A review that rejects mints no marker, so the CLI could
+  not tell a rejected write from one no review ever saw, and the rejected write posted when it
+  was sent again in any form the gate does not read. The gate now writes each verdict of no into
+  the **session's own state directory**, beside its record and its ledger, under the identity of
+  the write the model judged: the tool and every argument, keys sorted at every depth, trailing
+  whitespace dropped, and an upload reduced to the digest of its bytes whether `--path`,
+  `--content` or `--content-file` carried them. So any spelling of the same write meets the same
+  no, while a corrected one has another identity and is free, and one session's no is nothing to
+  another. What may write there is decided by whether a review stands behind the outcome
+  (`reviewStandsBehind`, the question the mint already asks): a review's verdict that refused the
+  call records, one that passed it clears, a rebuttal or a breaker trip clears, and every other
+  outcome leaves the store alone — a warn-mode revise included, since the reviewer did not pass
+  those bytes and warn mode's whole meaning is that a revise does not hold the write. A verdict
+  is not spent by being read and is never swept: it goes when a later review of the same write
+  allows it, or with the session.
+- **Where the verdicts are, by name.** `<state>/sessions/<id>/askgate-verdicts-v2/` holds one
+  file per refused write, named by the write's identity, whose body is the reason the review
+  gave and when. The directory carries the scheme, so a change to the encoding is a new
+  directory: a verdict of another scheme is never decoded, only detected, and a session holding
+  one holds every gated write in block mode that no marker bound to it covers. A literal resend
+  **from the main agent** is reviewed and minted for and still posts; a task subagent's gets a
+  marker carrying no review, which is passed over, so it has no remedy of its own. A foreign
+  store outlives a restart, since it sits in the session's own directory. `<state>/sessions/<id>/askgate-verdicts-lost`
+  is the mark: its presence makes the session read a write it has nothing recorded against as
+  unknown rather than unreviewed, for the rest of that session's life, and it never clears. An
+  operator whose session refuses every unreviewed write should look for that file first — the
+  session is strict because a verdict was lost, and removing the file resumes the default while
+  giving up the knowledge that one is missing. Both go with the session directory at the daily
+  prune and are never swept by age.
 - **The cause note.** When a `bash` call outside the literal form holds a `dispatch` word and a
   gated subcommand, and its result holds the CLI's refusal (or warn-mode warning) of a write with
   no marker, the gate appends an `AskGate note:` to that result. It names the first cause it found
@@ -507,13 +550,14 @@ The gated writes are the same list for the gate and the CLI (`gatedWrite` in
 `artifact` that uploads a markdown document. `--help`, `--dry-run` and every other command need no
 marker. So a pipe to a program other than one trailing `head` or `tail`, a loop, a variable,
 `xargs`, an alias, a script, `python3 -c`, `node -e`, or a process an eval cell starts runs, and
-its gated write is refused by the CLI in `block` mode with the form to send; a call that holds no
-Dispatch write, such as a commit message or a search pattern that names one, runs and posts
-nothing. A literal call whose last command gives no argument vector is refused in `block` mode. A
-gate that did not load refuses each literal call at the hook, so those never reach the CLI; it
-writes the record and mints nothing, so every gated write that does reach the CLI — one outside the
-literal form, and a subagent's literal one — is refused where the session set `OMP_ASKGATE=block`,
-and at the warn default posts with a warning and an `unmarked` entry.
+its gated write posts with the CLI's warning, in either mode, unless AskGate's review had already
+refused that write — in which case the stored refusal holds it, in either mode. A call that holds
+no Dispatch write, such as a commit message or a search pattern that names one, runs and posts
+nothing. A literal call whose last command gives no argument vector is refused at the gate in
+`block` mode. A gate that did not load refuses each literal call at the hook, so those never
+reach the CLI; it writes the record and mints nothing, and it writes down no refusals either, so
+every gated write that does reach the CLI — one outside the literal form, and a subagent's
+literal one — posts with a warning and an `unmarked` entry.
 
 **Where the gate binds.** AskGate binds only in a session that has Dispatch, judged at load from
 the session's own envoy.json and the variables over it (`DISPATCH_URL` and the other Dispatch
@@ -538,10 +582,14 @@ AskGate on, and the start notice names the file.
 **The modes.** A model's revise verdict and the CLI's marker checks have separate defaults. A revise
 verdict blocks by default: the write does not post. `OMP_ASKGATE=warn`, or a session whose latest
 `experiments` entry turns its `askgate_block` arm off, lets the write post with the reason. The
-CLI's checks warn by default: a gated write with no matching marker, a file changed after the
-review, and a file missing when the gate ran each post with a warning and an `unmarked` or
-`unreadable` entry that the report counts. They refuse only when the session chose block
-explicitly: `OMP_ASKGATE=block`, or, with no such variable, an `experiments` entry whose arm is on.
+CLI's checks warn by default: a file changed after the review, a marker past its age and a file
+missing when the gate ran each post with a warning and an `unmarked` or `unreadable` entry that
+the report counts, and refuse only when the session chose block explicitly — `OMP_ASKGATE=block`,
+or, with no such variable, an `experiments` entry whose arm is on. A gated write with **no**
+marker is not one of them where the gate recording the session says it records its refusals: no
+review ever saw it, so it posts with a warning in either mode (dispatch://INFRA-2079, row 3.5).
+Where the record carries no such capability, or one this version does not recognise, absence
+states nothing and that write is held in block mode.
 AskGate ignores any other value of `OMP_ASKGATE`, `off` included, and the first review shows one
 notice that names `askgate.enabled` as the switch. The gate writes the checks' mode into the
 session's own record (not a process-wide file, so a process that binds two sessions keeps each
@@ -555,10 +603,11 @@ bind: only the loaded gate reads the arm, so a session that chose block through 
 no mode on disk until the gate's first main-agent `bash` or `eval` call, and none at all when the
 gate does not load — a write outside the literal form there posts with a warning. **An operator
 who selects block through the arm should also set `OMP_ASKGATE=block` for a hard guarantee**,
-which holds from the session's start and through a failed load. Three refusals follow neither
-mode: a match of the rules check (below), which refuses the write in both modes; no model role;
-and a gate that did not load, the last two refusing each literal call they would review in both
-modes, since neither can review anything.
+which holds from the session's start and through a failed load. Four refusals follow neither
+mode: a write this session's own review refused, which the CLI holds in either mode however it is
+sent again; a match of the rules check (below), which refuses the write in both modes; no model
+role; and a gate that did not load, the last two refusing each literal call they would review in
+both modes, since neither can review anything.
 
 **The rules check.** A call that opens a new ask for the person gets a second model call, beside
 the charter call and on the same chain, deadline and transcript. That call knows two rules
@@ -581,8 +630,8 @@ and only the blocks with no id are judged, so a re-upload of an unchanged docume
 refused for an ask block it already held.
 
 The rules check runs only on a call the gate reads, which is the literal form above. A call in
-any other form reaches no gate at all: the CLI refuses it in `block` mode and posts it with a
-warning in `warn` mode, and the rules check never sees it. Where such a write carries an ask, the
+any other form reaches no gate at all: the CLI posts it with a warning in either mode, holding
+it only where this session's own review refused that write, and the rules check never sees it. Where such a write carries an ask, the
 Dispatch record below counts it.
 
 A match refuses the call in `warn` mode and in `block` mode, so no part of the call posts and no
@@ -668,10 +717,13 @@ why. The note reaches a headless session too:
 | `unreadable` (warn mode) | a file the literal call names was missing or not a regular file when the gate ran |
 | `abandoned` (warn mode) | the call or the run ended before the review answered |
 | `shutdown` (warn mode) | the session shut down before the review answered |
-| `unmarked` (warn mode) | the CLI found no marker for a gated write sent in another form |
+| `unmarked` | the CLI found no marker for a gated write sent in another form |
 
 Where the mode that applies is `block` (the verdict's for `abandoned` and `shutdown`, the checks'
-for `unreadable` and `unmarked`), those outcomes refuse the call instead. Only
+for `unreadable`), those outcomes refuse the call instead. `unmarked` is not one of them: since
+dispatch://INFRA-2079 the CLI refuses such a write only where this session's own review refused
+it, or where the evidence it would read cannot be read, so the entry is `allow` in either mode
+for a write the gate never saw. Only
 `askgate.enabled: false`, and a session with no Dispatch, are silent. Each outcome after a failure
 runs the agent's own command as written: a gate that fails breaks no valid write.
 
@@ -740,8 +792,9 @@ rules check:
 `decision` is `revise` on a rules refusal in `warn` mode too. The gate refused a call exactly when
 `decision` is `revise` and one of these is true: `verdictMode` is `block`, `outcome` is
 `no-model-role` or `load-failed`, or `rule` is set. An `unreadable` or `unmarked` entry is a
-refusal in `block` mode only, where its `decision` is `revise`; in `warn` mode its `decision` is
-`allow`, and the write went out with the note that it was unreviewed. To find the refusals that
+refusal where its `decision` is `revise`; an `unmarked` entry carries the CLI's own outcome
+there, `revise` where the CLI refused and `allow` where the write posted, rather than the mode
+the session chose, which no longer decides it (dispatch://INFRA-2079, row 3.5). To find the refusals that
 the agent overrode, join each rules refusal to the next entry with the same `target`. The agent
 overrode the refusal when that entry's `outcome` is `rebuttal` or `breaker`.
 
@@ -750,11 +803,12 @@ reviews cost, a count for each outcome, every session that had a write the gate 
 with its counts, the markers it skipped, the outcomes and errors of the rules check, and the rules
 refusals that the agent overrode. The report counts a write as **sent back** when the gate did not
 pass it as sent: every entry whose decision is `revise` — a revise verdict, a rules refusal,
-`no-model-role`, and in block mode `abandoned`, `shutdown` and `unmarked` — and every
-`unreadable`, `unmarked` or `load-failed` entry, whatever its mode, counted over every gated call,
-since some of them never reach a review; as a **refusal** when the write did not post (one sent
-back in block mode, and `no-model-role`, `load-failed` and a rules refusal, which refuse in warn
-mode too); and as **unreviewed** when it posted with no review behind it, which is every `allow`
+`no-model-role`, in block mode `abandoned` and `shutdown`, and an `unmarked` write the CLI
+refused — and every `unreadable`, `unmarked` or `load-failed` entry, whatever its mode, counted
+over every gated call, since some of them never reach a review; as a **refusal** when the write
+did not post (one sent back in block mode, `no-model-role`, `load-failed` and a rules refusal,
+which refuse in warn mode too, and an `unmarked` write this session's review had refused, which
+the CLI holds in either mode); and as **unreviewed** when it posted with no review behind it, which is every `allow`
 whose outcome is no verdict (the table above, a rebuttal, a breaker trip and warn mode's
 `unreadable`, `unmarked`, `abandoned` and `shutdown` included).
 

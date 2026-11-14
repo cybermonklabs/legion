@@ -779,7 +779,11 @@ for longer than one call. A store an earlier pi-envoy named without a namespace 
 process's of another namespace, so the prune keeps it for 14 days
 (`UNNAMESPACED_STORE_MAX_AGE_MS`). `bindDispatchSession` also sets `DISPATCH_STATE_DIR` when it is
 unset, so a command that changes `HOME` or `XDG_STATE_HOME` still finds the record, and a record it
-cannot write after a switch is a UI notice at once. For each literal call it lets run, the gate
+cannot write after a switch is a UI notice at once. The record also carries what its gate does
+(`caps`): which verdict store it records its refusals in, and which encoding its markers bind.
+That is what decides whether finding no verdict for a write is a statement, so a record without
+it — a gate from before the field — makes absence state nothing, and a value this reader does
+not recognise holds neither capability. For each literal call it lets run, the gate
 mints one single-use marker in that store (`mintFor`): the argv the CLI gets, bound behind a review
 or a deliberate pass (a rebuttal, a breaker trip) to the dry run's arguments and to the sha256 of
 each file the argv names (`fileOperands`), as the gate read it in place; argv-only for a call no
@@ -787,10 +791,22 @@ verdict stands behind (`UNREVIEWED_OUTCOMES`, a halt and another account among t
 for a `task` subagent's literal call. A marker goes when its call ends or at shutdown, and the CLI
 refuses one older than two hours (`MARKER_MAX_AGE_MS`). The CLI reads each named file once,
 consumes one matching marker by unlinking it before it posts a gated write under a live record,
-sends an upload's bytes from that same read, and, when the session chose block, refuses a write
-with no matching marker (`gatedWrite`, the one predicate both sides use); a file that changed after
-the gate read it matches none and gets the advice to send the call again in a later message. In warn mode,
-the default for these checks, the CLI writes the ledger line before it posts. The gate writes the
+sends an upload's bytes from that same read, and refuses a write this session's own review
+refused, in either mode, reading that verdict by the write's identity rather than by the words of
+the command (dispatch://INFRA-2079, row 3.5). A write no review ever saw carries no marker and no
+verdict: where the gate recording the session says it records its refusals, that absence is a
+statement and the write posts with a warning in every mode, where the session's block choice
+used to refuse it. Where it does not — a gate from before the capability — absence states
+nothing and the write is held in block mode until the Oh My Pi process restarts; a literal
+resend from the main agent is reviewed and posts, while a task subagent's gets a marker carrying
+no review and so has no remedy of its own. A file that changed after the gate read it, other
+arguments, a marker past its age, and
+evidence that cannot be read fall between the two and are refused where the session chose block.
+A session's verdicts live in `<state>/sessions/<id>/askgate-verdicts-v2/`, one file per refused
+write named by the write's identity, the directory carrying the scheme that wrote it, and `<state>/sessions/<id>/askgate-verdicts-lost` marks a
+session whose gate reached a verdict it could not write down: while that file is there the
+session reads a write with nothing recorded against it as unknown rather than unreviewed, and it
+never clears on its own. The CLI writes the ledger line before it posts. The gate writes the
 checks' mode into the session's own record for the CLI (`checkMode`: block only when the session
 chose it; `setRecordMode` keys it per session, so a switch never changes another session's mode),
 apart from the verdict's mode (`sessionMode`, block by default); `envoy.ts` turns each write the

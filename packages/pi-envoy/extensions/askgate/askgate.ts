@@ -390,6 +390,13 @@ async function loadAskGate(
     dryRun: spawnDryRun,
     // The store envoy.ts names in the session's record: the CLI state root's, for this process.
     markerStore: self.store,
+    // The session this process is bound to now, whose own directory holds its AskGate verdicts.
+    // Resolved per call, like `recordCheckMode`: one binding serves every session the process
+    // switches to, and a verdict belongs to the session that reached it.
+    sessionDir: () => {
+      const id = process.env.DISPATCH_SESSION_ID;
+      return id === undefined || id === "" ? undefined : sessionDirectory(process.env, id);
+    },
     // Records the check mode into the record of the session this process is bound to now, which
     // envoy.ts named in DISPATCH_SESSION_ID. Keyed to the session, so a switch never changes
     // another session's mode; a process with no bound session (none to check) records nothing.

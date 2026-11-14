@@ -1,0 +1,59 @@
+kind: Fixed
+body: |-
+  AskGate writes down every verdict it reaches on a Dispatch write, so the `dispatch` CLI can
+  tell a rejected write from one no review ever saw. It mints no marker when it rejects, and the
+  CLI read that missing marker as "nobody looked": a write the model had refused posted when the
+  agent sent it again through any form the gate does not read.
+  What decides whether a verdict is recorded, cleared or left alone is which source supplied the
+  decision, never the shape of the call's result: branching on the latter had a halt, a skip, a
+  model error or a timeout delete a standing verdict, and a call given up without one, or a
+  session with no model role, record a refusal no review had made. Record when a review's
+  verdict refused the call; clear when a review's verdict passed it or the agent's own
+  sanctioned override sent it; leave the store untouched otherwise, which includes a warn-mode
+  revise — the reviewer did not pass those bytes, so it cannot clear, and warn mode's whole
+  meaning is that a revise does not hold the write, so recording one would have the CLI refuse
+  the very write the gate just let through. A rules refusal asks nothing of the charter's
+  outcome: the two checks run side by side and a rules match blocks in either mode, so a
+  completed rules refusal beside a charter that timed out, errored or gave no verdict is a
+  verdict and is recorded — a charter timeout at the default ceiling is the ordinary case.
+  Every digest over arguments is taken on one canonical encoding (`canonicalText`), type-tagged
+  so an object and an array cannot encode alike, and used by the write's identity, by the
+  marker's own `argsDigest` and by the gate entry's digest, which were three derivations of the
+  same question; the marker binding's latent order-sensitivity goes with it. One place knows how
+  an upload's bytes arrive (`uploadBytesOf`), reading them from the arguments rather than the
+  flags, so `--path`, `--content`, `--content-file` and `--path-file` are one write.
+  The gate asks on every gated write whether the session's state directory can hold a verdict at
+  all, by writing and removing one probe file, measured at 22.6 µs on a healthy session: it
+  otherwise learns it cannot persist only when it has something to persist, and an outcome no
+  review stands behind never gets that far, so a restarted gate on a still-faulty session minted
+  an unbound marker and the rejected write posted. The answer is concluded each time and never
+  remembered, so a transient fault cannot stop a healthy session for the life of the process and
+  a fault that clears is noticed; it takes the verdict store and the mark both failing to reach
+  the stop, and a readable mark already recording a lost verdict is sufficient, so a mark that
+  cannot be rewritten no longer reaches it.
+  Every source that decides records and clears. A review that rejects writes the verdict into
+  the session's own state directory, under the identity of the write the model judged rather than
+  the words of the command; a review that allows removes the verdict it replaces; and a rebuttal
+  or a breaker trip clears too, since each is the agent's own sanctioned override and a no that
+  survives its override is a trap. Device calls record and clear on the same terms as bash calls.
+  Nothing bounds how often an agent may rebut, which is the design: every rebuttal is recorded
+  and published, so a standing verdict is one deliberate, attributable override from gone.
+  A verdict the gate could not write down marks the session: for the rest of its life the CLI
+  reads a write it has nothing recorded against as unknown rather than as unreviewed. The mark
+  never clears, since the lost verdict stays lost. It lives in the session's directory beside
+  the record and the ledger rather than inside the verdict store, because a detector kept inside
+  the fault domain it reports cannot report that domain failing: measured, a `chmod 500` of the
+  verdict store alone leaves the ledger, the CLI and the session healthy, so that fault degrades
+  the session to strict, while only the session's own directory refusing a new file takes the
+  mark down with the verdict — the same fault that stops the ledger. In that second case alone
+  the gate reviews no further gated write of the session, since it would reach verdicts it
+  already knows it cannot keep; that stop is in memory and released by a restart, which is safe
+  because the fault recurs on the next write if it is still there.
+  A gated write the gate never read posts with the CLI's warning in every mode, and pi-envoy
+  records it as `unmarked` with `decision: allow` and `verdictMode: warn`, carrying `sessionMode`
+  where the session had chosen `block`. The operator report's two unmarked-write lines are
+  renamed to what they count: "unmarked writes refused, a review standing behind each" and
+  "unmarked writes posted, no review having seen them".
+  The in-process gate's decisions are unchanged: a review that runs and returns a revise still
+  blocks the call in block mode, a rules match still refuses in either mode, and a call given up
+  without a verdict is still held back. dispatch://INFRA-2079, row 3.5.

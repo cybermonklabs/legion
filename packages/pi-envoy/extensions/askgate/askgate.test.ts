@@ -324,6 +324,7 @@ function bind(opts: BindOptions = {}): BoundGate {
       return (opts.dryRun ?? core.spawnDryRun)(script, runOpts);
     },
     markerStore: store,
+    sessionDir: () => sessionDir,
     recordCheckMode: (mode) => setRecordMode(sessionDir, self, mode),
   })(pi as never);
   const roles = opts.roles ?? { askgate: MODEL };
@@ -628,7 +629,7 @@ describe("mode and model role (plan tests c-g)", () => {
       expect(g.notices).toHaveLength(0);
     }
   });
-  test("(g) a call outside the literal grammar is no call the gate refuses, with no role either: the CLI refuses its write", async () => {
+  test("(g) a call outside the literal grammar is no call the gate refuses, with no role either: the CLI posts its write with a warning", async () => {
     const g = bind({ env: { OMP_ASKGATE: "warn" }, roles: {} });
     expect(await g.bash("u", "cd $X && dispatch comment --issue X-1 --body b")).toBeUndefined();
     expect(g.entries).toHaveLength(0);
@@ -703,7 +704,7 @@ describe("mode and model role (plan tests c-g)", () => {
       expect(unreadable.entries.map((e) => e.outcome)).toEqual(["no-model-role"]);
       // No halt from any of them: a halt would let the next writes out.
       for (const g of [rebutted, closing, failing, unreadable]) expect(g.notices).toHaveLength(0);
-      // And no marker: the CLI refuses each of them too.
+      // And no marker: the CLI has no review of any of them to consume.
       for (const g of [rebutted, closing, failing, unreadable])
         expect(markersIn(g.store)).toEqual([]);
     }
@@ -1823,7 +1824,8 @@ console.log(JSON.stringify(args, null, 2));
         toolCallId: "b1",
         decision: "allow",
         outcome: "verdict",
-        argsDigest: createHash("sha256").update(JSON.stringify(args)).digest("hex"),
+        // The production digest, so a change to the canonical encoding cannot pass unseen.
+        argsDigest: argsDigest(args),
       },
     ]);
   });
@@ -1984,7 +1986,8 @@ console.log(JSON.stringify(args, null, 2));
     }
   });
   // X3's eval-cell examples, and the cells the old eval scan refused: the gate reads no cell. A
-  // process a cell starts carries no marker, so the CLI refuses a gated write it sends.
+  // process a cell starts carries no marker, so the CLI posts a gated write it sends with a
+  // warning that no review ran, unless this session's review refused that very write.
   test("an eval cell is not the gate's to refuse, whatever it runs", async () => {
     const cells: Array<[string, string]> = [
       ["py", `import os\nos.system("git commit -m 'dispatch comment fix'")`],
@@ -2044,8 +2047,8 @@ console.log(JSON.stringify(args, null, 2));
   });
   /**
    * A call the gate does not read, in both modes: it runs as written, and the gate runs no dry
-   * run, asks no model, records no entry and mints no marker, so the CLI refuses a gated write in
-   * it when it runs.
+   * run, asks no model, records no entry and mints no marker, so the CLI posts a gated write in
+   * it with a warning when it runs, unless this session refused that very write.
    */
   const expectUnread = async (command: string) => {
     for (const mode of ["warn", "block"]) {
@@ -2164,7 +2167,8 @@ console.log(JSON.stringify(args, null, 2));
     });
   // Outside review of #2159 at 31c5cca3b, finding 1: bash removes a backslash or empty quotes
   // inside the program word and runs `dispatch`. Such a call is outside the literal grammar and
-  // runs unread; the CLI it reaches refuses it, carrying no marker.
+  // runs unread, carrying no marker: the CLI posts its write with a warning that no review saw
+  // it, unless this session's own review refused that write.
   test("F1: a backslash or empty quotes inside the program name leave the call outside the grammar", async () => {
     for (const command of [
       "d\\ispatch comment --issue X-1 --body hi",
@@ -2458,7 +2462,8 @@ console.log(JSON.stringify(args, null, 2));
     expect(g.entries).toHaveLength(0);
   });
   // The attack review at 0cf9f1902: shells, runners and escapes the old scan followed. Each runs
-  // unread now, and the CLI it reaches refuses its write.
+  // unread now, so its write carries no marker and the CLI posts it with a warning, holding it
+  // only where this session's own review refused that write.
   for (const command of [
     `bash -c '"$0" "$1" --issue X-1 --body hi' "$P" "$S"`,
     `printf '%s\\n' '"$D" "$S" --issue X-1 --body hi' | bash`,
@@ -2959,8 +2964,8 @@ console.log(JSON.stringify({ argv: process.argv.slice(2), stdin }));
   });
   test("a head line ending in any other comment is still unreadable", async () => {
     // M's tokenizer reads only an override comment, so any other one leaves the call outside the
-    // literal grammar: the gate refuses nothing and records nothing, and the CLI refuses the write
-    // for want of a marker, with the note that names the cause.
+    // literal grammar: the gate refuses nothing and records nothing, and the CLI posts the write
+    // with the warning that it carries no marker, and the note that names the cause.
     for (const comment of [
       "# a note",
       "# --advisor-rebuttal 'r' and more",
@@ -3791,12 +3796,14 @@ console.log(JSON.stringify({ argv, consumed: consumeMarker([process.env.ASKGATE_
         expect(shell.stderr.toString()).toBe("");
         const run = JSON.parse(shell.stdout.toString()) as {
           argv: string[];
-          consumed: { ok: boolean };
+          consumed: { ok: boolean; bound?: boolean };
         };
         // The argv bash passed keys the marker the gate minted, and the marker is spent.
         expect(run.argv).not.toContain("--advisor-rebuttal");
         expect(minted?.argv).toBe(argvDigest(run.argv));
-        expect(run.consumed).toEqual({ ok: true });
+        // Bound, since a rebuttal's dry run read these very arguments: only a bound marker
+        // outranks the CLI's uncertainty about a refusal it cannot read.
+        expect(run.consumed).toEqual({ ok: true, bound: true });
         expect(markersIn(g.store)).toEqual([]);
       }
     }, 30_000);
@@ -4616,7 +4623,7 @@ describe("the literal grammar, widened to forms with no expansion", () => {
     );
   });
   // Each of these holds an expansion, or a stage or option the grammar does not take: still
-  // outside it, so no marker, and the CLI refuses the write.
+  // outside it, so no marker, and the CLI posts the write with its warning.
   const STILL_OUTSIDE = [
     'dispatch comment --issue X-1 --body "Done.\nSee $URL"',
     'dispatch comment --issue X-1 --body "Done.\nSee `cat url`"',
@@ -4761,17 +4768,19 @@ describe("the literal grammar, widened to forms with no expansion", () => {
     });
   });
 
-  /** What the CLI prints for a gated write with no marker, built on consumeMarker's own reason. */
-  const unmarked = (mode: "block" | "warn") => {
+  /**
+   * What the CLI prints for a gated write with no marker, built on consumeMarker's own reason.
+   * The gate never read the command that ran such a write, so no review stands behind it: the
+   * CLI posts it with this warning in either mode and refuses nothing (INFRA-2079, row 3.5).
+   */
+  const unmarked = () => {
     const spent = consumeMarker([], ["comment"], {}, [], Date.now());
     if (spent.ok) throw new Error("an empty store gave a marker");
-    return mode === "block"
-      ? `dispatch comment was not called: AskGate is on for this session, and ${spent.why}. Send the write again in that form.`
-      : `dispatch: warning: AskGate is on for this session in warn mode, and ${spent.why}, so this write posts unreviewed.`;
+    return `dispatch: warning: dispatch comment posted without review: AskGate is on for this session, and ${spent.why}. No review ran for this call, so AskGate refused nothing.`;
   };
   const textOf = (result: Result) =>
     (result?.content ?? []).map((block) => (typeof block.text === "string" ? block.text : ""));
-  test("the CLI's refusal of a call outside the grammar gets a note that names the cause, in both modes and in a subagent", async () => {
+  test("the CLI's warning on a call outside the grammar gets a note that names the cause, in both modes and in a subagent", async () => {
     for (const [mode, kind] of [
       ["block", "main"],
       ["warn", "main"],
@@ -4782,7 +4791,7 @@ describe("the literal grammar, widened to forms with no expansion", () => {
       expect(await g.bash("c1", command)).toBeUndefined();
       expect(g.entries).toHaveLength(0);
       expect(g.calls).toHaveLength(0);
-      const refusal = { type: "text", text: unmarked(mode === "block" ? "block" : "warn") };
+      const refusal = { type: "text", text: unmarked() };
       const result = await g.event("tool_result", { toolCallId: "c1", content: [refusal] });
       const [first, note] = textOf(result);
       expect(first).toBe(refusal.text);
@@ -4812,7 +4821,7 @@ describe("the literal grammar, widened to forms with no expansion", () => {
       });
       expect(g.entries).toHaveLength(0);
       expect(markersIn(g.store)).toEqual([]);
-      const refusal = { type: "text", text: unmarked("block") };
+      const refusal = { type: "text", text: unmarked() };
       const [, note] = textOf(
         await g.event("tool_result", { toolCallId: "c1", content: [refusal] })
       );
@@ -4839,7 +4848,7 @@ describe("the literal grammar, widened to forms with no expansion", () => {
     expect(
       await sub.event("tool_result", {
         toolCallId: "literal",
-        content: [{ type: "text", text: unmarked("block") }],
+        content: [{ type: "text", text: unmarked() }],
       })
     ).toBeUndefined();
   });
@@ -4877,7 +4886,7 @@ describe("the literal grammar, widened to forms with no expansion", () => {
 
 // The attack review at 0cf9f1902, A1: an eval cell that starts the CLI as a process of its own
 // posts with no `bash` call for the gate to see. The gate no longer reads cells: such a process
-// carries no marker, and the CLI refuses its gated write (the real-binary rows in
+// carries no marker, and the CLI posts its gated write with a warning (the real-binary rows in
 // askgate-omp.test.ts drive both languages).
 describe("eval cells that run the dispatch CLI (A1)", () => {
   /** Main's spec scorer fixture of an agent that ran the CLI from a Python cell (score.test.ts). */
@@ -5640,8 +5649,8 @@ describe("askgate.ts, the entry", () => {
       );
       expect(device?.block).toBe(true);
       // Not a write it reviews, a subagent's write, an upload that is no markdown document, and a
-      // call outside the literal grammar pass: the CLI refuses each gated write in them, since a
-      // gate that did not load mints no marker.
+      // call outside the literal grammar pass: a gate that did not load mints no marker and
+      // writes down no verdict, so the CLI posts each gated write in them with its warning.
       expect(await bash("dispatch comment --issue X-1 --body b | cat")).toBeUndefined();
       expect(await bash("ls -la")).toBeUndefined();
       expect(await bash("dispatch read --issue X-1")).toBeUndefined();
@@ -5946,7 +5955,7 @@ describe("a marker the gate mints, checked by the real dispatch CLI", () => {
   async function post(command: string, store: string) {
     // This test process stands in for Oh My Pi, whose record makes the CLI ask for a marker.
     openStore(store);
-    // The session chose block (gateEnv), so the CLI refuses a write that spends no marker.
+    // The session chose block (gateEnv), which governs a write no verdict stands behind.
     writeAskgateRecord(
       sessionDirectory(env, env.DISPATCH_SESSION_ID),
       { pid: process.pid, start: processStart(process.pid), ns: pidNamespace(), store },
@@ -6000,8 +6009,11 @@ describe("a marker the gate mints, checked by the real dispatch CLI", () => {
     expect(posted.stdout).not.toContain("was not called");
     expect(posted.code).toBe(0);
     expect(posted.sent).toEqual([{ path: "/api/v1/issues/DSP-1/artifacts", body: BRIEF }]);
-    // The marker is spent: the same call again is refused.
-    expect((await post(command, g.store)).code).toBe(1);
+    // The marker is spent: the same call again carries none, and posts with AskGate's warning
+    // rather than being refused, since no review stands behind that second write either.
+    const again = await post(command, g.store);
+    expect(again.code).toBe(0);
+    expect(again.stdout).toContain("posted without review");
   }, 30_000);
 
   // The independent review at 6fd926853, its blocker: the CLI takes a bare issue key only as the
