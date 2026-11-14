@@ -424,7 +424,9 @@ func TestARefusalsLineBoundsTheNamesItLists(t *testing.T) {
 // 128 names of 256 bytes lists all 128, with secrets_count 128 and no secrets_omitted, and one
 // naming 129 lists the first 128 and says it left one out. The first name past the bound ends the
 // list, so a short name after it that would still fit is left out too and the list stays a prefix
-// of what the request named. Each row notes its names in two notes, which the line reads as one.
+// of what the request named, whether the two come in one note or each in a note of its own, as a
+// release notes its grant's names (requests/machine_read.go). Each other row notes its names in
+// two notes, which the line reads as one.
 func TestARefusalsLineListsNamesUpToItsBound(t *testing.T) {
 	named := make([]string, 129)
 	for i := range named {
@@ -441,17 +443,26 @@ func TestARefusalsLineListsNamesUpToItsBound(t *testing.T) {
 		listed int
 		// omitted is the line's secrets_omitted, nil for a line that carries none.
 		omitted any
+		// eachAlone notes each name in a note of its own, rather than the names in two notes.
+		eachAlone bool
 	}{
-		{"128 names of 256 bytes", named[:128], 128, nil},
-		{"129 names of 256 bytes", named, 128, int64(1)},
-		{"a short name after the first name past the bound", shortAfter, 128, int64(2)},
+		{"128 names of 256 bytes", named[:128], 128, nil, false},
+		{"129 names of 256 bytes", named, 128, int64(1), false},
+		{"a short name after the first name past the bound", shortAfter, 128, int64(2), false},
+		{"a short name after the first name past the bound, each noted alone", shortAfter, 128, int64(2), true},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			driven++
 			r := newRig(t, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 				rec := answer.FromContext(req.Context())
-				rec.NoteSecrets(row.noted[:len(row.noted)/2]...)
-				rec.NoteSecrets(row.noted[len(row.noted)/2:]...)
+				if row.eachAlone {
+					for _, name := range row.noted {
+						rec.NoteSecrets(name)
+					}
+				} else {
+					rec.NoteSecrets(row.noted[:len(row.noted)/2]...)
+					rec.NoteSecrets(row.noted[len(row.noted)/2:]...)
+				}
 				writeJSON(w, http.StatusBadRequest, `{"code":"NAMES_REFUSED","error":"no"}`)
 			}))
 			r.serve(httptest.NewRequest(http.MethodPost, "/", nil))
@@ -471,8 +482,8 @@ func TestARefusalsLineListsNamesUpToItsBound(t *testing.T) {
 			}
 		})
 	}
-	if driven != 3 {
-		t.Fatalf("the table drove %d rows, want 3", driven)
+	if driven != 4 {
+		t.Fatalf("the table drove %d rows, want 4", driven)
 	}
 }
 

@@ -158,10 +158,14 @@ func TestARereadNamesTheKindItServes(t *testing.T) {
 // logs nothing for one, while a reread Secrets Manager itself fails for a caller still waiting is
 // still that 500 and that line. A request that ends during the value read of a kind secret's
 // version the pod has not decoded, once the metadata read has served the secret, ended before the
-// reread finished too: it is that 503, not a 200 answering for a value nobody checked.
+// reread finished too: it is that 503, not a 200 answering for a value nobody checked. That
+// reread has merged the tags it read into this pod's policy, though, so the other pods are told
+// to reread the name as on a 200, on a context of the handler's own; one whose request ended
+// during its metadata read merged nothing and tells nobody, nor does the 500.
 func TestARereadWhoseRequestEndedLogsNoError(t *testing.T) {
-	// route is the reread route over a policy of local whose Secrets Manager calls client makes.
-	route := func(local *secrets.Local, client secrets.SecretsManagerAPI) *http.ServeMux {
+	// route is the reread route over a policy of local whose Secrets Manager calls client makes,
+	// telling the other pods through notifier.
+	route := func(local *secrets.Local, client secrets.SecretsManagerAPI, notifier *recordingNotifier) *http.ServeMux {
 		loader := policytest.Loader(local)
 		loader.Store = policytest.StoreThrough(local, client)
 		cur, err := policy.NewCurrent(t.Context(), loader, time.Hour)
@@ -169,33 +173,39 @@ func TestARereadWhoseRequestEndedLogsNoError(t *testing.T) {
 			t.Fatal(err)
 		}
 		mux := http.NewServeMux()
-		api.Register(mux, api.Deps{Policy: cur, SecretsStore: secrets.StoreAWS, SecretsPrefix: policytest.Prefix, SecretsKMSKey: policytest.KeyARN})
+		api.Register(mux, api.Deps{Policy: cur, SecretsStore: secrets.StoreAWS, SecretsPrefix: policytest.Prefix, SecretsKMSKey: policytest.KeyARN, NotifyReread: notifier.notify})
 		return mux
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	local := secrets.NewLocal()
-	mux := route(local, abandoningDescriber{SecretsManagerAPI: local, cancel: cancel})
+	local, notifier := secrets.NewLocal(), &recordingNotifier{}
+	mux := route(local, abandoningDescriber{SecretsManagerAPI: local, cancel: cancel}, notifier)
 	valueCtx, cancelValue := context.WithCancel(context.Background())
 	defer cancelValue()
-	valueLocal := secrets.NewLocal()
-	valueMux := route(valueLocal, abandoningReader{SecretsManagerAPI: valueLocal, cancel: cancelValue})
+	valueLocal, valueNotifier := secrets.NewLocal(), &recordingNotifier{}
+	valueMux := route(valueLocal, abandoningReader{SecretsManagerAPI: valueLocal, cancel: cancelValue}, valueNotifier)
 	valueLocal.Put(policytest.KindSecret("APP_KEY", testApprover, policy.TierAgent, policy.KindGitHubApp, policytest.KindValue(policy.KindGitHubApp)))
 	logged := policytest.CaptureLog(t)
 
 	for _, ended := range []struct {
-		during string
-		mux    *http.ServeMux
-		ctx    context.Context
-		name   string
+		during   string
+		mux      *http.ServeMux
+		ctx      context.Context
+		name     string
+		notifier *recordingNotifier
+		// notified is what the other pods were told: nothing for a reread that merged nothing.
+		notified []string
 	}{
-		{"its metadata read", mux, ctx, "NEW_KEY"},
-		{"its value read", valueMux, valueCtx, "APP_KEY"},
+		{"its metadata read", mux, ctx, "NEW_KEY", notifier, nil},
+		{"its value read", valueMux, valueCtx, "APP_KEY", valueNotifier, []string{"APP_KEY"}},
 	} {
 		answer := httptest.NewRecorder()
 		ended.mux.ServeHTTP(answer, httptest.NewRequestWithContext(ended.ctx, http.MethodPost, "/v1/secrets/"+ended.name+"/reread", nil))
 		if answer.Code != http.StatusServiceUnavailable || decode[wireError](t, answer.Body.Bytes()).Code != "REQUEST_ENDED" || strings.Contains(logged.String(), "reread secret failed") {
 			t.Fatalf("a reread whose caller went away during %s: %d %s, logged %q; want 503 REQUEST_ENDED and no line", ended.during, answer.Code, strings.TrimSpace(answer.Body.String()), logged.String())
+		}
+		if got := ended.notifier.recorded(); !slices.Equal(got, ended.notified) {
+			t.Fatalf("a reread whose caller went away during %s notified %q, want %q", ended.during, got, ended.notified)
 		}
 	}
 
@@ -203,6 +213,9 @@ func TestARereadWhoseRequestEndedLogsNoError(t *testing.T) {
 	mux.ServeHTTP(failed, httptest.NewRequest(http.MethodPost, "/v1/secrets/NEW_KEY/reread", nil))
 	if failed.Code != http.StatusInternalServerError || !strings.Contains(logged.String(), "ERROR broker: reread secret failed") {
 		t.Fatalf("a reread Secrets Manager failed for a live caller: %d, logged %q; want 500 and the ERROR line", failed.Code, logged.String())
+	}
+	if got := notifier.recorded(); len(got) != 0 {
+		t.Fatalf("a reread Secrets Manager failed notified %q, want nobody", got)
 	}
 }
 

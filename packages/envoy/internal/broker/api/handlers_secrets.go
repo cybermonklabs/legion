@@ -78,8 +78,9 @@ type rereadResponse struct {
 // broker's, so it logs nothing, as the miss path logs nothing for one: anyone can end a request,
 // and the "broker: reread secret failed" line is the one an operator's alert counts.
 // Having reread it here, the handler tells every other pod serving the same database to reread it
-// too (Deps.NotifyReread), so one call reaches the whole fleet rather than the pod the load
-// balancer happened to pick.
+// too (notifyPeers), so one call reaches the whole fleet rather than the pod the load balancer
+// happened to pick: on the 200, and on the 503 of a reread whose request ended during its value
+// read alone (policy.ErrValueUnchecked), which has already put the tags it read in force here.
 func (s *server) rereadSecret(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	answer.FromContext(r.Context()).NoteSecrets(name)
@@ -92,49 +93,62 @@ func (s *server) rereadSecret(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "SECRET_NAME_INVALID", err.Error())
 		return
 	case err != nil && r.Context().Err() != nil:
+		// A reread that merged the tags it read before its value read was cut serves them here,
+		// so the peers hear of it as of a 200 (notifyPeers).
+		if errors.Is(err, policy.ErrValueUnchecked) {
+			s.notifyPeers(r, name)
+		}
 		writeError(w, http.StatusServiceUnavailable, "REQUEST_ENDED", "the request ended before the reread finished; send it again")
 		return
 	case err != nil:
 		writeInternal(w, "reread secret", err)
 		return
 	}
-	// Tell the other pods, on the 200 path alone: a reread that never happened - a name no secret
-	// can carry, a caller that went away, a store that failed, or the 429 refuseReread wrote
-	// before any work - is nothing for a peer to copy.
-	//
-	// It notifies on every 200, whether or not the broker now serves the name. Notifying only
-	// when the live answer changed would need RefreshOne to report a change it does not report,
-	// and would still leave a hole: a pod whose own five-minute reload had already caught the
-	// retag would answer "unchanged" and tell nobody, leaving its peers stale for up to a reload.
-	// Notifying always is also the arithmetic RereadOverallFor divides a store's fleet budget
-	// by, and a reread a notification drives takes no token from any of this package's buckets
-	// - the pod that served the original call already paid for it - so one accepted reread
-	// costs the fleet one store read per pod, and the fleet's whole store traffic is one pod's
-	// derived rate times the replica count squared, which is that budget again.
-	//
-	// The fan-out deliberately drops r's cancellation, which fires as soon as the answer is
-	// written and which a caller that hangs up mid-reread fires earlier still: the local reread
-	// has already succeeded and its answer stands, so that caller must not be able to stop the
-	// other pods from learning of it. It keeps every value on the request's context, as this
-	// repository's other detached work does (context.WithoutCancel): only the cancellation is in
-	// the way. The handler answers 200 whatever the fan-out does, since nothing about it changes
-	// what this pod now serves.
-	//
-	// Only this public route notifies; the call is deliberately not inside
-	// policy.Current.RefreshOne. RefreshOne's other caller is the miss path in
-	// requests/machine_state.go, which is bounded per enrollment and per process and already
-	// heals a new secret on first use; fanning that out would spend every peer a store read for
-	// a name that peer may never be asked for.
-	if s.deps.NotifyReread != nil {
-		ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), notifyRereadTimeout)
-		defer cancel()
-		s.deps.NotifyReread(ctx, name)
-	}
+	s.notifyPeers(r, name)
 	resp := rereadResponse{Name: name, Served: lk.Served, Reason: lk.Reason}
 	if lk.Served {
 		resp.Kind = lk.Secret.Kind()
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// notifyPeers tells the other pods to reread name (Deps.NotifyReread) once this pod's own reread
+// of it, the request r, has merged what it read into the live policy: on its 200, and on the 503
+// REQUEST_ENDED of a reread whose request ended during its value read alone
+// (policy.ErrValueUnchecked), which serves the tags it read here as a 200 would. A reread that
+// merged nothing - a name no secret can carry, a request that ended before or during the metadata
+// read, a store that failed, or the 429 refuseReread wrote before any work - is nothing for a
+// peer to copy, and rereadSecret calls it for none of them.
+//
+// It notifies on every 200, whether or not the broker now serves the name. Notifying only when
+// the live answer changed would need RefreshOne to report a change it does not report, and would
+// still leave a hole: a pod whose own five-minute reload had already caught the retag would
+// answer "unchanged" and tell nobody, leaving its peers stale for up to a reload. Notifying always
+// is also the arithmetic RereadOverallFor divides a store's fleet budget by, and a reread a
+// notification drives takes no token from any of this package's buckets - the pod that served the
+// original call already paid for it - so one accepted reread costs the fleet one store read per
+// pod, and the fleet's whole store traffic is one pod's derived rate times the replica count
+// squared, which is that budget again.
+//
+// The fan-out deliberately drops r's cancellation, which fires as soon as the answer is written
+// and which a caller that hangs up mid-reread fires earlier still: the local reread has already
+// merged what it read, and this pod serves it, so that caller must not be able to stop the other
+// pods from learning of it. It keeps every value on the request's context, as this repository's
+// other detached work does (context.WithoutCancel): only the cancellation is in the way. The
+// handler answers as it would whatever the fan-out does, since nothing about it changes what this
+// pod now serves.
+//
+// Only this public route notifies; the call is deliberately not inside policy.Current.RefreshOne.
+// RefreshOne's other caller is the miss path in requests/machine_state.go, which is bounded per
+// enrollment and per process and already heals a new secret on first use; fanning that out would
+// spend every peer a store read for a name that peer may never be asked for.
+func (s *server) notifyPeers(r *http.Request, name string) {
+	if s.deps.NotifyReread == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), notifyRereadTimeout)
+	defer cancel()
+	s.deps.NotifyReread(ctx, name)
 }
 
 // notifyRereadTimeout bounds the fan-out one reread sends: a single Postgres NOTIFY on the shared

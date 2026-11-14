@@ -5605,7 +5605,7 @@ the public `GET /v1/settings` answers the store (`store`:
 `secrets.StoreAWS` or `secrets.StoreGCP`), the prefix and, per store, the key ARN with its region and account (`secrets.AWSKeyARNParts`) or the Cloud KMS key name with the project number (`secrets.GCPProject`), the other store's fields omitted.
 
 That reread is fleet-wide.
-On its 200 path alone `rereadSecret` calls `Deps.NotifyReread`, which `cmd/broker` fills with `reread.Notifier(st.Pool, senderID)`:
+On its 200, and on the `503 REQUEST_ENDED` of a reread whose request ended during its value read alone (`policy.ErrValueUnchecked`: `RefreshOne` had already merged the tags it read), `rereadSecret` calls `Deps.NotifyReread` through `notifyPeers`, which `cmd/broker` fills with `reread.Notifier(st.Pool, senderID)`:
 one parameterized Postgres `NOTIFY` on `reread.Channel` (`broker_secret_reread`, `internal/broker/reread`, the one place the name is written, since `pglisten` splices a channel into its listen statement as written), carrying the secret's name and this process's own boot-minted sender id, under `notifyRereadTimeout` (5 s) on a context of its own, so a caller that hangs up cannot stop the other pods from learning of a reread that already happened.
 Every process runs `reread.Listener` for its whole life (started after the first policy load, and the bind then waits up to `rereadListenWait` (5 s) for its `OnConnected`, which `pglisten` runs only once the `LISTEN` statement itself has returned, so an address the load balancer can reach is an address a retag can reach;
 a pod whose dial or `LISTEN` failed waits the bound out, warns and serves anyway.
@@ -5616,7 +5616,7 @@ That whole order — the first policy load, the reread listener, the wait on its
 It runs on a context derived with `context.WithoutCancel` from the signal's, not on the signal's own, and so does the five-minute policy reload:
 a pod is sent requests for the whole of its drain, so a listener and a reload stopped at `SIGTERM` would leave the one pod the load balancer is still choosing serving the tags it read before the retag, with no backstop either.
 Both end after `srv.Shutdown` returns, where `st.Close` then releases the store; that order is `stop` in the same file, driven through a `brokerStop` of function fields for the same reason.
-The listener drops what carries its own sender id, and calls `Current.RefreshOne` under `refreshTimeout` (30 s) on the listener's one goroutine.
+The listener drops what carries its own sender id, and calls `Current.RefreshOne` under `refreshTimeout` (30 s) on the listener's one goroutine, through `peerReread` (`cmd/broker/main.go`), which takes `policy.ErrValueUnchecked` as a reread that ran, so the listener's "did not run" WARN names only a reread that merged nothing.
 It dials `store.Store.Listener`: a one-connection pool opened from `s.Pool.Config()` (so `BeforeConnect`'s RDS IAM minter still mints a token per redial) and hijacked, which costs one Postgres connection per pod outside `pool_max_conns`, held for the life of the process since a `LISTEN` ends when a pooled connection is recycled, and needs a session-mode path to Postgres, never a transaction pooler.
 A notification sent while a pod is redialing is lost and nothing is caught up (`onConnected`), deliberately:
 the catch-up available there is a whole-namespace read on every redial, and the pod's own `policyRefresh` already is the backstop, so the documented promise is "within seconds, except while a pod's listener is redialing".

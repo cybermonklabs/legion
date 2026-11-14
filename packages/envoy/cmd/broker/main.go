@@ -400,14 +400,7 @@ func main() {
 				Sender:      senderID,
 				Dial:        st.Listener,
 				OnConnected: onConnected,
-				Refresh: func(ctx context.Context, name string) error {
-					_, err := current.RefreshOne(ctx, name)
-					// A peer served the reread, so this pod's airlock proxy may be holding
-					// the old value of that name: dropped whatever the reread answered,
-					// since the reread of the name is the signal (dropAirlockName).
-					dropAirlockName(name)
-					return err
-				},
+				Refresh:     peerReread(current, dropAirlockName),
 			}).Run(serving)
 		},
 		Listen: listenTCP(cfg.ListenAddr),
@@ -598,7 +591,7 @@ func main() {
 	// logging it, because what a failed fan-out means is this program's decision, and the decision
 	// is one WARN and nothing else: the reread this pod was asked for has already happened and the
 	// answer it gives its caller stands, and the peers that did not hear reread this secret at
-	// their own next five-minute reload (policyRefresh) anyway. Neither the caller's 200 nor the
+	// their own next five-minute reload (policyRefresh) anyway. Neither the caller's answer nor the
 	// process is worth failing over a notification Postgres would not take.
 	notify := reread.Notifier(st.Pool, senderID)
 	// A Google caller's verifier is built only where the broker was told about Google, and it
@@ -621,10 +614,10 @@ func main() {
 		Approval:           page,
 		Draining:           draining.Load,
 		NotifyReread: func(ctx context.Context, name string) {
-			// This pod served the reread itself, on the 200 path alone, so the value behind
-			// the name may be a new version: dropped from the airlock proxy's own cache
-			// before the peers are told, since the reread of the name is the signal
-			// (dropAirlockName).
+			// This pod reread the name itself and merged what it read (the reread route's
+			// notifyPeers), so the value behind the name may be a new version: dropped from
+			// the airlock proxy's own cache before the peers are told, since the reread of the
+			// name is the signal (dropAirlockName).
 			dropAirlockName(name)
 			if err := notify(ctx, name); err != nil {
 				slog.Warn("broker: the other pods were not told to reread a secret", "secret", name, "error", err)
@@ -1012,6 +1005,24 @@ func airlockListen(cfg config.Config) func() (net.Listener, error) {
 		return nil
 	}
 	return listenTCP(cfg.AirlockListenAddr)
+}
+
+// peerReread is the reread listener's Refresh (reread.Listener): the reread of name another pod
+// told this one to make, current's RefreshOne. A peer served the reread, so this pod's airlock
+// proxy may be holding the old value of that name: dropAirlockName drops it whatever the reread
+// answered, since the reread of the name is the signal. A reread whose context ended during its
+// value read alone (policy.ErrValueUnchecked) has merged the tags it read, which this pod now
+// serves, so it is a reread that ran: it answers nil, and the next load reads the value again.
+// Any other error is a reread that did not run, which the listener logs.
+func peerReread(current *policy.Current, dropAirlockName func(string)) func(context.Context, string) error {
+	return func(ctx context.Context, name string) error {
+		_, err := current.RefreshOne(ctx, name)
+		dropAirlockName(name)
+		if errors.Is(err, policy.ErrValueUnchecked) {
+			return nil
+		}
+		return err
+	}
 }
 
 // metricsHandler is what the metrics port serves: registry's scrape at GET /metrics in the

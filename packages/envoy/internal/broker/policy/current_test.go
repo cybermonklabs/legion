@@ -400,41 +400,121 @@ func TestARereadWaitsForTheWriterLockOnlyWhileItsCallerDoes(t *testing.T) {
 	}
 }
 
-// abandonedRead is a secrets.Local whose GetSecretValue, while held is set, waits for its caller's
-// context to end and answers that context's error, as the SDK does: a value read its caller's
-// deadline cuts short.
+// abandonedRead is a secrets.Local whose GetSecretValue, once hold arms it, answers the reads hold
+// lets pass as Local does, and from then on waits for each caller's context to end and answers
+// that context's error, as the SDK does: a value read its caller's deadline cuts short.
 type abandonedRead struct {
 	*secrets.Local
-	held atomic.Bool
+	mu      sync.Mutex
+	holding bool
+	pass    int
+}
+
+// hold arms it: the next pass reads answer, and each read after them waits for its context.
+func (s *abandonedRead) hold(pass int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.holding, s.pass = true, pass
+}
+
+// release disarms it: every read answers again.
+func (s *abandonedRead) release() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.holding = false
 }
 
 func (s *abandonedRead) GetSecretValue(ctx context.Context, in *secretsmanager.GetSecretValueInput, opts ...func(*secretsmanager.Options)) (*secretsmanager.GetSecretValueOutput, error) {
-	if s.held.Load() {
+	s.mu.Lock()
+	held := s.holding && s.pass == 0
+	if s.holding && s.pass > 0 {
+		s.pass--
+	}
+	s.mu.Unlock()
+	if held {
 		<-ctx.Done()
 		return nil, ctx.Err()
 	}
 	return s.Local.GetSecretValue(ctx, in, opts...)
 }
 
+// TestAReloadWhoseContextEndsDuringItsValueReadsRecordsTheReadsItFinished: a reload whose context
+// ends while it reads values - the background reload's interval passing, or the broker shutting
+// down - records the reads it finished before then, waiting for the writer lock however that
+// context ends, since no caller waits on a reload: here a value the decoder refuses, with its one
+// RefusedMessage line. The read the context cut short records nothing, and the next load reads
+// that version alone again, since the version the reload finished reading is decoded.
+//
+// The named revert: record nothing once the reload's context has ended (answer at the first read
+// ctx cut short, or wait for the writer lock on ctx); FIRST_KEY is then still served after the
+// reload and this test fails.
+func TestAReloadWhoseContextEndsDuringItsValueReadsRecordsTheReadsItFinished(t *testing.T) {
+	local := secrets.NewLocal(
+		kindSecret("FIRST_KEY", policy.KindGitHubApp, policytest.KindValue(policy.KindGitHubApp)),
+		kindSecret("SECOND_KEY", policy.KindGitHubApp, policytest.KindValue(policy.KindGitHubApp)),
+	)
+	store := &abandonedRead{Local: local}
+	cur, registry, logged := bootThrough(t, local, store)
+	gained := logChecker(logged)
+	if got := gained(); got != "" {
+		t.Fatalf("the first load logged:\n%s", got)
+	}
+
+	// A new version of each that no decoder reads. The reload reads them in name order: FIRST_KEY's
+	// answers, and its context ends during SECOND_KEY's.
+	local.Put(kindSecret("FIRST_KEY", policy.KindGitHubApp, undecodable))
+	local.Put(kindSecret("SECOND_KEY", policy.KindGitHubApp, undecodable))
+	store.hold(1)
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	err := cur.Refresh(ctx)
+	store.release()
+	if err != nil {
+		t.Fatalf("a reload whose context ended during its value reads = %v, want nil: a value read fails no reload", err)
+	}
+	if n := valueReads(t, registry); n != 4 {
+		t.Fatalf("the policy has read %d values; want 4, the boot's two and the reload's two", n)
+	}
+	refusedAs(t, cur.Get(), "FIRST_KEY", policy.ReasonValueMalformed)
+	if _, served := cur.Get().Secrets["SECOND_KEY"]; !served {
+		t.Fatal("the reload refused SECOND_KEY, whose value read its context cut short")
+	}
+	if got, want := gained(), refusedLine(policytest.ID("FIRST_KEY"), policy.ReasonValueMalformed, kindOwner, false, ""); got != want {
+		t.Fatalf("the reload whose context ended during its second value read logged:\n%s\nwant:\n%s", got, want)
+	}
+
+	refresh(t, cur)
+	if n := valueReads(t, registry); n != 5 {
+		t.Fatalf("the policy has read %d values; want 5, the next load reading SECOND_KEY's version alone again", n)
+	}
+	refusedAs(t, cur.Get(), "FIRST_KEY", policy.ReasonValueMalformed)
+	refusedAs(t, cur.Get(), "SECOND_KEY", policy.ReasonValueMalformed)
+	if got, want := gained(), refusedLine(policytest.ID("SECOND_KEY"), policy.ReasonValueMalformed, kindOwner, false, ""); got != want {
+		t.Fatalf("the next load logged:\n%s\nwant:\n%s", got, want)
+	}
+}
+
 // TestARereadWhoseContextEndsBeforeItRecordsItsValueReadAnswersThatError: a reread that lists a
 // version of a kind secret this pod has not decoded, and whose context ends before it records that
 // version's value read - while the read is out, or while it waits for the writer lock a reload
-// stuck on its listing holds - has not finished. It answers its context's error, not the Lookup of
-// a reread that did, so the reread route answers 503 REQUEST_ENDED rather than a 200 for a value
-// nobody checked. It records nothing: it writes no line, the secret is still served, and the next
-// load reads that version again and refuses it.
+// stuck on its listing holds - has merged what it read and has not finished. It answers
+// ErrValueUnchecked wrapping its context's error, not the Lookup of a reread that did, so the
+// reread route answers 503 REQUEST_ENDED rather than a 200 for a value nobody checked, and can
+// tell it from a reread that merged nothing. It records nothing: it writes no line, the secret is
+// still served, and the next load reads that version again and refuses it.
 //
-// The named revert: RefreshOne drops readValues' answer (c.readValues(ctx, reads, false), then
-// return lk, nil); each reread then answers a nil error and this test fails.
+// The named revert: RefreshOne drops readValues' answer (c.readValues(ctx, ctx, reads, false),
+// then return lk, nil); each reread then answers a nil error and this test fails.
 func TestARereadWhoseContextEndsBeforeItRecordsItsValueReadAnswersThatError(t *testing.T) {
 	const deadline = 300 * time.Millisecond
 	// endedUnrecorded checks what a reread of APP_KEY whose deadline passed left: its error is
-	// that deadline's, nothing was written and APP_KEY is still served; and, once load has run,
-	// the version was read again - the boot's read, the reread's and the load's - and refused.
+	// ErrValueUnchecked and that deadline's, nothing was written and APP_KEY is still served; and,
+	// once load has run, the version was read again - the boot's read, the reread's and the
+	// load's - and refused.
 	endedUnrecorded := func(t *testing.T, cur *policy.Current, registry *metrics.Registry, gained func() string, err error, load func()) {
 		t.Helper()
-		if !errors.Is(err, context.DeadlineExceeded) {
-			t.Fatalf("RefreshOne(APP_KEY) whose deadline passed before it recorded its value read = %v, want context.DeadlineExceeded", err)
+		if !errors.Is(err, policy.ErrValueUnchecked) || !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("RefreshOne(APP_KEY) whose deadline passed before it recorded its value read = %v, want ErrValueUnchecked and context.DeadlineExceeded", err)
 		}
 		if got := gained(); got != "" {
 			t.Fatalf("a reread whose deadline passed before it recorded its value read logged:\n%s", got)
@@ -461,11 +541,11 @@ func TestARereadWhoseContextEndsBeforeItRecordsItsValueReadAnswersThatError(t *t
 			t.Fatalf("the first load logged:\n%s", got)
 		}
 		local.Put(kindSecret("APP_KEY", policy.KindGitHubApp, undecodable))
-		store.held.Store(true)
+		store.hold(0)
 		ctx, cancel := context.WithTimeout(context.Background(), deadline)
 		defer cancel()
 		_, err := cur.RefreshOne(ctx, "APP_KEY")
-		store.held.Store(false)
+		store.release()
 		endedUnrecorded(t, cur, registry, gained, err, func() { refresh(t, cur) })
 	})
 

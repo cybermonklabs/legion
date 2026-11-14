@@ -798,9 +798,9 @@ func TestTwoBrokers(t *testing.T) {
 	// A reread told to one process takes effect on the other. This is what the fan-out is for: a
 	// retag that narrows who may have a secret must be in force across the whole Deployment
 	// within seconds, rather than at each pod's own five-minute reload (policyRefresh in
-	// main.go). One POST rereads the pod it reached and, on its 200 path alone, tells every
-	// other pod serving the same database to do the same, over Postgres LISTEN/NOTIFY
-	// (internal/broker/reread).
+	// main.go). One POST rereads the pod it reached and, once that pod has merged the tags it
+	// read (its 200 here), tells every other pod serving the same database to do the same, over
+	// Postgres LISTEN/NOTIFY (internal/broker/reread).
 	//
 	// The row is the production story with its control placed before the act: the store is
 	// retagged, a fresh session is STILL granted the secret by B, and only then is A told to
