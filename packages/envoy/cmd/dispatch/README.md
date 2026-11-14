@@ -1314,6 +1314,13 @@ A migration that needs another bound sets its own `SET LOCAL lock_timeout`, whic
 The secrets broker's runner applies every migration in one transaction, so it does not try again:
 rolling one attempt back would roll back the migrations before it too.
 
+The runner also applies each migration with `standard_conforming_strings` on, `backslash_quote` at `safe_encoding` and `client_encoding` at `UTF8` (`textSettings` in `internal/pgmigrate/lock.go`), set in the statement that sets `lock_timeout`: transaction-local in `pgmigrate.Exec`, or session-local and restored on return in `pgmigrate.ExecNonTransactional`.
+So Postgres reads a migration's text as the census reads it ("Pre-deploy census" below), whatever a session setting, a connection option or a database default says.
+A session setting can come from an earlier migration: a `set` without `local` outlives its migration, and the next migration can run on the same connection.
+With `standard_conforming_strings` off, a backslash before a quote in a plain literal escapes that quote, so a text that the census reads as one statement can hold a second statement for Postgres.
+With `client_encoding` at `SJIS`, the last byte of a UTF-8 character and a backslash after it can be one character, so that backslash escapes nothing.
+With `backslash_quote` off, Postgres refuses a `\'` in an `E'…'` literal, which the census reads as an escaped quote.
+
 The notes below describe some of the migrations, numbered and timestamped alike; not every migration has one.
 A new migration describes itself in the header comment of its own `.up.sql`, as `0129_document_edit_notices.up.sql` does, and adds nothing here, so two pull requests that each add a migration do not edit this section.
 
@@ -2231,7 +2238,8 @@ It refuses:
 
   - `set` and `reset` of a run-time parameter, local or session, `set role` included:
     a setting takes no lock, reads no row and names no table, so a migration that bounds its own lock wait with `set local lock_timeout` keeps the exemption its other statements earn.
-    A `set` or `reset` of `search_path`, `role` or `session_authorization`, or a `reset all`, stops the catalog reads (below).
+    Only a `set` or `reset` of `lock_timeout` or `statement_timeout` keeps the catalog reads on.
+    Every other `set` or `reset`, and a `reset all`, stops them (below): a `set local` for its own migration alone, and any other for its own migration and every later one.
 
   - `alter table`, of a table, when the census admits each of its subcommands (`catalogOnlyAlterTable`):
     `drop constraint` and `drop column` without `cascade`, `add constraint … check … not valid`, `add constraint … foreign key … not valid`, `add column` under the rules of the next item, `alter column … set default` of any expression, `alter column … drop default`, `alter column … drop not null` and `alter column … drop expression`.
@@ -2329,11 +2337,14 @@ It refuses:
   For a `create or replace function`, the census also reads whether a cast calls a function of that name, since the answer decides whether that migration and the later ones read the catalog (below).
   The census reads no catalog to admit a statement of the migrations below, so it admits none of their added columns, `text` included, and none of their created indexes:
 
-  - a migration that sets or resets `search_path`, `role` or `session_authorization`, `set local` included, or runs `reset all`.
-    Such a setting can make the migration's names resolve to other objects than the census's names do, since the default `search_path` starts with `"$user"`.
-    The census compares the setting's name without regard to case, as Postgres does, so `set "Search_Path" = public` stops the reads too.
+  - a migration that sets or resets any setting other than `lock_timeout` and `statement_timeout`, `set local` included, or runs `reset all`.
+    A setting can make the migration's names resolve to other objects than the census's names do, as `search_path`, `role` and `session_authorization` can, since the default `search_path` starts with `"$user"`.
+    A setting can also change how Postgres reads a migration's text, as `standard_conforming_strings` can.
+    The runner sets that setting and two others for each migration ("Database migrations" above), but the census cannot list every setting of either kind.
+    So the census lists the two settings that it knows to do neither: `lock_timeout` and `statement_timeout`, which bound how long a statement waits or runs.
+    The census compares the setting's name without regard to case, as Postgres does, so `set "Search_Path" = public` stops the reads and `set "Lock_Timeout" = '1s'` does not.
 
-  - every migration after a pending migration that sets or resets one of these three settings for the session, without `local`, or runs `reset all`.
+  - every migration after a pending migration that sets or resets such a setting for the session, without `local`, or runs `reset all`.
     The runner applies each migration on a connection of its pool, and that connection keeps a session setting for the next migration it runs.
     A `set local` ends with its migration's transaction, so the later migrations still read the catalog.
 
@@ -2364,7 +2375,8 @@ It refuses:
       A volatile cast function makes Postgres rewrite the table for an added column with a default.
       The census matches such a function by its name, in any schema.
 
-    - `set` and `reset` of a setting other than `search_path`, `role` and `session_authorization`.
+    - `set` and `reset` of `lock_timeout` and `statement_timeout`.
+      A `set` or `reset` of any other setting stops the reads as the two items above say, so a `set local` stops them for its own migration alone.
 
     Every other statement stops the reads, for its own migration and for every later one.
     A `do` block, a `call`, an `alter function`, an `alter role … set` and an `alter database … set` stop them.
@@ -2465,7 +2477,7 @@ It runs as the service's own database role.
 The read-only transaction stops every write, and the census's statement is sent through the extended protocol whatever the connection string asks for, so it cannot carry a second statement (a `commit` of its own, then a write).
 Read-only does not stop `pg_terminate_backend` (which, as that role, ends the service's own sessions), `pg_cancel_backend`, advisory locks (`pg_try_advisory_*` included) or `pg_sleep`, nor a function that runs a query given as text (`query_to_xml` and its kin, `ts_stat`, `ts_rewrite`):
 `pgmigrate.Load` refuses a census naming any of them, bare or quoted and in any case, anywhere outside its comments and string literals, and refuses a Unicode escape (`U&"…"`, `U&'…'`) outright, since one can spell any name and no census needs it.
-`Load` finds the comments and literals as Postgres 18's lexer does (nested comments, `E'…'` escapes, continued and dollar-quoted literals), and the census runs with `standard_conforming_strings` on, so Postgres reads its literals the same way.
+`Load` finds the comments and literals as Postgres 18's lexer does (nested comments, `E'…'` escapes, continued and dollar-quoted literals), and the census runs with `standard_conforming_strings` on, `backslash_quote` at `safe_encoding` and `client_encoding` at `UTF8`, the settings the runner applies each migration with, so Postgres reads its literals the same way.
 Review is the control past that, since any non-zero integer a census answers is printed.
 
 **What the report prints:** counts, sizes (in KiB, MiB and GiB, or in bytes where a size above the limit would round to the limit's figure), versions, file names and session metadata (pid, role, application name, state, transaction age as Postgres measured it, to the microsecond, the figure the minute's bound is compared with;
