@@ -1,25 +1,28 @@
 //go:build e2e
 
-// What the three live proofs that drive real Oh My Pi panes share below the daemon: the constants
+// What the four live proofs that drive real Oh My Pi panes share below the daemon: the constants
 // each reads off the daemon, the run each one is (liveAgentProof) with its reads of a claim, of a
 // pane and of the daemon's own log, the database, the `legion` binary, the plugins and the pane
 // listener a run builds before the daemon boots, the model stand-in each pane talks to, the
 // provider answers those stand-ins write, the overlay writers that point a pane at one, and the
-// log handler those reads of the daemon's own decisions go through. The three are
+// log handler those reads of the daemon's own decisions go through. The four are
 // provider_error_retry_live_test.go, the driver of scripts/e2e/provider-error-retry.sh,
-// claim_compaction_live_test.go, the driver of scripts/e2e/claim-compaction.sh, and
-// role_prompt_rule_live_test.go, the driver of scripts/e2e/role-prompt-rule.sh. What belongs to
+// claim_compaction_live_test.go, the driver of scripts/e2e/claim-compaction.sh,
+// role_prompt_rule_live_test.go, the driver of scripts/e2e/role-prompt-rule.sh, and
+// late_completion_live_test.go, the driver of scripts/e2e/late-completion.sh. What belongs to
 // one proof stays in that proof's own file: its issues and their seed, its steps, and the Oh My
 // Pi profile and operator overlay its panes run under.
 //
-// A stand-in's handler belongs to the proof that decides an answer with it. Two have one: the
+// A stand-in's handler belongs to the proof that decides an answer with it. Three have one: the
 // retry proof's three stand-ins answer by the provider name each is given in the run's
-// models.yml, and the compaction proof's four answer by what the step before them set, a turn's
-// request apart from a compaction's summary request. The prompt-rule proof decides nothing by an
-// answer and writes no handler of its own: its two stand-ins are the compaction proof's
-// paneStandin at its default, which answers every turn alike. What every proof holds in common
-// is here: the HTTP server, the bodies they were sent, and the three answers they write — the
-// overloaded status, a refused request, and the Messages stream of a turn that ends.
+// models.yml, the compaction proof's four answer by what the step before them set, a turn's
+// request apart from a compaction's summary request, and the late-completion proof's two answer
+// the turn a step armed with a call of the `legion` tool and that tool's result with a WAITING
+// line. The prompt-rule proof decides nothing by an answer and writes no handler of its own: its
+// two stand-ins are the compaction proof's paneStandin at its default, which answers every turn
+// alike. What every proof holds in common is here: the HTTP server, the bodies they were sent,
+// and the answers they write — the overloaded status, a refused request, and the Messages stream
+// of one block, the text of a turn that ends or the tool call the late-completion proof makes.
 package daemon
 
 import (
@@ -78,8 +81,9 @@ var ladderDelays = []time.Duration{30 * time.Second, time.Minute, 2 * time.Minut
 // the reads such a proof makes: the runtime that started each pane, the daemon's own log as a
 // step reads it back, and the `legion` binary this checkout built, which is both the panes' shim
 // and the operator's command line. providerErrorLive, claimCompactionLive
-// (claim_compaction_live_test.go) and rolePromptRuleLive (role_prompt_rule_live_test.go) are each
-// one, so the three proofs read a claim, wait for a pane and run `legion claims` the same way.
+// (claim_compaction_live_test.go), rolePromptRuleLive (role_prompt_rule_live_test.go) and
+// lateCompletionLive (late_completion_live_test.go) are each one, so the four proofs read a
+// claim, wait for a pane and run `legion claims` the same way.
 type liveAgentProof struct {
 	liveProof
 	rt     *localRuntime
@@ -520,6 +524,17 @@ func anthropicRefusal(message string) string {
 // events the plugins' own pane harness scripts (packages/pi-shared/test/omp-harness.ts:383-448,
 // `messageStream`).
 func streamAnthropicText(w http.ResponseWriter, provider, text string) {
+	streamAnthropicBlock(w, provider, "end_turn", `{"type":"text","text":""}`,
+		fmt.Sprintf(`{"type":"text_delta","text":%q}`, text))
+}
+
+// streamAnthropicBlock answers one Anthropic Messages request with one content block, which opens
+// as block and is written whole by the one delta after it, and a message that stops for stop, as
+// that harness's `messageStream` writes either kind of block: a text block ends the turn
+// (streamAnthropicText), and a tool_use block stops for tool_use, which has the host run the tool
+// and send its result in the next request (late_completion_live_test.go's
+// streamAnthropicToolUse).
+func streamAnthropicBlock(w http.ResponseWriter, provider, stop, block, delta string) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.WriteHeader(http.StatusOK)
 	flusher, _ := w.(http.Flusher)
@@ -532,11 +547,10 @@ func streamAnthropicText(w http.ResponseWriter, provider, text string) {
 	event("message_start", fmt.Sprintf(`{"type":"message_start","message":{"id":"answered","type":"message","role":"assistant",`+
 		`"model":%q,"content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":1000,"output_tokens":1}}}`,
 		provider+standinModelID))
-	event("content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`)
-	event("content_block_delta", fmt.Sprintf(
-		`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":%q}}`, text))
+	event("content_block_start", fmt.Sprintf(`{"type":"content_block_start","index":0,"content_block":%s}`, block))
+	event("content_block_delta", fmt.Sprintf(`{"type":"content_block_delta","index":0,"delta":%s}`, delta))
 	event("content_block_stop", `{"type":"content_block_stop","index":0}`)
-	event("message_delta", `{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":16}}`)
+	event("message_delta", fmt.Sprintf(`{"type":"message_delta","delta":{"stop_reason":%q,"stop_sequence":null},"usage":{"output_tokens":16}}`, stop))
 	event("message_stop", `{"type":"message_stop"}`)
 }
 

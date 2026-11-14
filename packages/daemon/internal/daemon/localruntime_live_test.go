@@ -101,15 +101,15 @@ type localRuntime struct {
 	daemonURL string
 	envoyURL  string
 	natsURLs  []string
+	// dispatchURL and dispatchTokenFile are the Dispatch every pane is told as DISPATCH_URL and
+	// DISPATCH_TOKEN_FILE, as the tmux runtime tells a pane its daemon's configured Dispatch
+	// (tmux.Options.DispatchURL): both or neither, and with neither a pane's Dispatch is off.
+	dispatchURL, dispatchTokenFile string
 	// overlays answers the Oh My Pi overlay files one claim's pane is told, in PI_CONFIG_FILES
 	// order. A pane's overlays are the operator's (runtime.tmux.pi_config_files) and its role's
 	// (role_config_files) in production; this proof routes each claim to a stand-in of its own, and
 	// two claims of the proof share a role, so the choice is per claim here.
 	overlays func(claim.Token) []string
-	// dispatchURL and dispatchTokenFile are the Dispatch server and the bearer file a pane is told
-	// as DISPATCH_URL and DISPATCH_TOKEN_FILE, as the tmux runtime tells them from the daemon's own
-	// dispatch_url; empty tells none, which is every proof whose panes write nothing to Dispatch.
-	dispatchURL, dispatchTokenFile string
 	// environment is what a proof gives its panes beyond what a pane is told: the model key of a
 	// proof whose panes call a real model, which reaches the pane's process and nothing else.
 	environment []string
@@ -320,7 +320,7 @@ func (r *localRuntime) launch(ctx context.Context, spec runtime.SpawnSpec) (runt
 	seq := r.seq
 	r.mu.Unlock()
 
-	workDir := filepath.Join(r.stateDir, "workspaces", spec.Issue)
+	workDir := r.workDir(spec.Issue)
 	if err := os.MkdirAll(workDir, 0o700); err != nil {
 		return runtime.Locator{}, fmt.Errorf("spawn %s: make its working directory: %w", spec.Claim, err)
 	}
@@ -398,6 +398,12 @@ func (r *localRuntime) launch(ctx context.Context, spec runtime.SpawnSpec) (runt
 			Detail: "the worker's process group ended; its log is " + logPath})
 	}()
 	return pane.locator, nil
+}
+
+// workDir is the working directory of every pane of issue, which launch makes: the roles of one
+// issue share it, as they share the issue's jj workspace in a pod.
+func (r *localRuntime) workDir(issue string) string {
+	return filepath.Join(r.stateDir, "workspaces", issue)
 }
 
 // paneEnvironment is the child's whole environment: the variables a pane is told, the PATH a pane
