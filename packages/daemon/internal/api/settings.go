@@ -189,6 +189,11 @@ type KubernetesSettings struct {
 	// credential, and a role reads both to know whether its own pod may go away under it, so
 	// every pod may read them.
 	IdleRelease IdleReleaseSettings `json:"idle_release"`
+	// MemoryGuard is the settled `runtime.kubernetes.memory_guard`: whether each issue pod's
+	// launcher runs a memory guard, and the shares, wait and interval it runs by. None of it is a
+	// credential, and a role reads it to know when a process of its own may be ended under it, so
+	// every pod may read it.
+	MemoryGuard MemoryGuardSettings `json:"memory_guard"`
 }
 
 // IdleReleaseSettings is the settled `runtime.kubernetes.idle_release`. Zero `idle_minutes` is
@@ -196,6 +201,22 @@ type KubernetesSettings struct {
 type IdleReleaseSettings struct {
 	IdleMinutes     int `json:"idle_minutes"`
 	BackstopMinutes int `json:"backstop_minutes"`
+}
+
+// MemoryGuardSettings is the settled `runtime.kubernetes.memory_guard`, by the kind of pod a
+// guard runs in.
+type MemoryGuardSettings struct {
+	IssuePods MemoryGuardPodSettings `json:"issue_pods"`
+}
+
+// MemoryGuardPodSettings is one kind of pod's settled memory guard. `enabled` false is the guard
+// switched off, and the pod's launcher is then handed no settings at all.
+type MemoryGuardPodSettings struct {
+	Enabled              bool `json:"enabled"`
+	ActPercent           int  `json:"act_percent"`
+	FloorPercent         int  `json:"floor_percent"`
+	WaitSeconds          int  `json:"wait_seconds"`
+	IntervalMilliseconds int  `json:"interval_milliseconds"`
 }
 
 // SchedulingSettings is `runtime.kubernetes.scheduling`; the selector and the tolerations are `{}`
@@ -524,6 +545,13 @@ func kubernetesSettingsOf(block *config.Kubernetes) *KubernetesSettings {
 			IdleMinutes:     block.IdleRelease.IdleMinutes,
 			BackstopMinutes: block.IdleRelease.BackstopMinutes,
 		},
+		MemoryGuard: MemoryGuardSettings{IssuePods: MemoryGuardPodSettings{
+			Enabled:              block.MemoryGuard.IssuePods.Enabled,
+			ActPercent:           block.MemoryGuard.IssuePods.ActPercent,
+			FloorPercent:         block.MemoryGuard.IssuePods.FloorPercent,
+			WaitSeconds:          block.MemoryGuard.IssuePods.WaitSeconds,
+			IntervalMilliseconds: block.MemoryGuard.IssuePods.IntervalMilliseconds,
+		}},
 	}
 	maps.Copy(settings.Scheduling.NodeSelector, block.Scheduling.NodeSelector)
 	for i, toleration := range block.Scheduling.Tolerations {

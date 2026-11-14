@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -201,6 +202,17 @@ type Options struct {
 	// every process in it, so a server a role started would die with that generation and take
 	// every sibling role's test database with it.
 	TestPostgres bool
+	// MemoryGuard is what the memory guard in an issue pod's launcher runs by
+	// (runtime.kubernetes.memory_guard.issue_pods), handed to it on the daemon's answer to each
+	// of its roles' hellos (LauncherResolver). Nil is a deployment that turned the guard off, and
+	// the launcher reads the absent member as "run none", as it reads a daemon that does not know
+	// the guard. The controller's pod takes none however this is set: its settings are its own
+	// block's, which this runtime does not carry.
+	//
+	// It is no part of the pod shape a template records (podShapeRecord): nothing of a running
+	// pod is built from it, since a launcher is told it on every hello, a reconnect after a
+	// daemon restart included, so a changed setting reaches every pod without replacing one.
+	MemoryGuard *shimwire.LauncherMemoryGuard
 	// BootTimeout bounds each wait of a relaunch, its wait for the API server to answer one of its
 	// requests other than overloaded included (resend), and is how long a pod may stay unscheduled
 	// before it counts as gone (worker_boot_timeout_seconds).
@@ -274,6 +286,13 @@ type Options struct {
 	// neither restores nothing, which is what a pod whose issue was never released does anyway.
 	SavedWorkspaceBundle    runtime.SavedWorkspaceBundle
 	WorkspaceBundleRestored runtime.WorkspaceBundleRestored
+	// MemoryGuardKilled takes one process an issue pod's memory guard ended, as that pod's
+	// launcher reported it on the connection of the role whose process it was
+	// (runtime.MemoryGuardKilled): the daemon turns it into the note that tells that role why its
+	// process is gone. A runtime given none reads the frame, logs a warning naming where the
+	// daemon sets this field, and drops it; it never closes the connection on it, since the
+	// launcher would redial a second later and send its waiting reports into the same refusal.
+	MemoryGuardKilled runtime.MemoryGuardKilled
 	// LeakCheck reads the shared public leak check at the tag a pod's launcher names in its hello
 	// (shimwire.LauncherHello.LeakCheckTag), which the runtime pushes to that launcher before it
 	// starts any role of it (launchers.serveLeakCheck): the launcher installs the check once for

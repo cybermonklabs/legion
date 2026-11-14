@@ -371,6 +371,12 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		plan.taskConfirmed = workflow.taskConfirmed
 		plan.sessionLost, plan.sessionStoreFault = workflow.sessionLost, workflow.sessionStoreFault
 		plan.providerErrorRunReached = workflow.providerErrorRunReached
+		// The memory guards of this project's issue pods report their kills through the pool and
+		// the handlers the workflow has just built, which is what turns a process a guard ended
+		// into the note that tells the role whose process it was (memoryGuardKills).
+		if plan.memoryGuardKills != nil {
+			plan.memoryGuardKills.bind(workflow.pool, workflow.handlers)
+		}
 	}
 	if cfg.Runtime.Name == "tmux" {
 		executable, err := os.Executable()
@@ -684,6 +690,11 @@ type plan struct {
 	rootHears    func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (bool, error)
 	rootTask     func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (string, []byte, error)
 	treeClosable func(ctx context.Context, c supervise.Claim) (bool, error)
+	// memoryGuardKills is how the Kubernetes runtime's launcher sessions reach the fact path with
+	// one process an issue pod's memory guard ended (memoryGuardKills, prepareSandbox): a pointer,
+	// so the factory built before the workflow opens and the boot that fills it once it has hold
+	// the one holder. Nil under tmux, and for a replaced runtime, where no launcher reports.
+	memoryGuardKills *memoryGuardKills
 	// taskConfirmed tells the workflow each agent that took its task; nil without a workflow.
 	taskConfirmed func(c supervise.Claim)
 	// sessionLost and sessionStoreFault tell the workflow that a claim's recorded session is in no

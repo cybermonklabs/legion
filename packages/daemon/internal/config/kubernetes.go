@@ -24,6 +24,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
 
 // Kubernetes is the settled `runtime.kubernetes` block: where the Sandbox runtime runs its pods and
@@ -118,6 +119,12 @@ type Kubernetes struct {
 	// defaults apply when the file sets no block, so release is on for every Kubernetes
 	// deployment; `idle_minutes: 0` turns it off.
 	IdleRelease IdleReleaseConfig
+	// MemoryGuard is `runtime.kubernetes.memory_guard`, settled: what the memory guard in each
+	// issue pod's launcher process runs by. Every default applies when the file sets no block, so
+	// the guard is on for every Kubernetes deployment, as idle release is;
+	// `issue_pods.enabled: false` turns it off, and an issue pod's launcher is then handed no
+	// settings at all (sandbox.Options.MemoryGuard nil).
+	MemoryGuard MemoryGuardConfig
 }
 
 // RepositoryCacheConfig is `runtime.kubernetes.repository_cache`: the volume each repository's
@@ -178,6 +185,44 @@ var defaultIdleRelease = IdleReleaseConfig{IdleMinutes: 10, BackstopMinutes: 60}
 
 // DefaultIdleRelease is the idle release's settled configuration when the file sets none.
 func DefaultIdleRelease() IdleReleaseConfig { return defaultIdleRelease }
+
+// MemoryGuardConfig is `runtime.kubernetes.memory_guard`: the memory guard's settings, by the
+// kind of pod a launcher's guard runs in. IssuePods is every issue pod's; the mapping is keyed by
+// pod kind so the project controller's pod can have a block of its own beside it (INFRA-3531).
+type MemoryGuardConfig struct {
+	IssuePods MemoryGuardPodConfig
+}
+
+// MemoryGuardPodConfig is one kind of pod's memory guard: whether it runs at all, and the four
+// numbers it runs by (shimwire.LauncherMemoryGuard, which a launcher is handed on the answer to
+// its hello). The guard reads the pod's anonymous memory every IntervalMilliseconds; at
+// ActPercent of the container's memory limit it ends the largest process it may end, where those
+// processes hold at least FloorPercent of the limit between them, and after a kill it waits up to
+// WaitSeconds for the reading to fall before it ends another. Enabled false runs no guard, and the
+// pod's memory is then bounded by the kernel's kill of the whole container alone, as it was
+// before this work.
+type MemoryGuardPodConfig struct {
+	Enabled              bool
+	ActPercent           int
+	FloorPercent         int
+	WaitSeconds          int
+	IntervalMilliseconds int
+}
+
+// DefaultMemoryGuard is the memory guard's settled configuration when the file sets none: on for
+// issue pods, at the wire's own defaults (shimwire.MemoryGuardActDefault and its three siblings)
+// rather than copies of them. Those are also what a launcher's guard runs by before any
+// acknowledgement reaches it, so the one change a measurement may make to a default moves both
+// the launcher's start and every deployment's setting.
+func DefaultMemoryGuard() MemoryGuardConfig {
+	return MemoryGuardConfig{IssuePods: MemoryGuardPodConfig{
+		Enabled:              true,
+		ActPercent:           shimwire.MemoryGuardActDefault,
+		FloorPercent:         shimwire.MemoryGuardFloorDefault,
+		WaitSeconds:          shimwire.MemoryGuardWaitDefault,
+		IntervalMilliseconds: shimwire.MemoryGuardIntervalDefault,
+	}}
+}
 
 // PluginsConfig is `runtime.kubernetes.plugins`: the pi-legion and pi-envoy sources a
 // stale-plugin relaunch installs, each an exact semver version, an absolute tarball path, or an
@@ -504,7 +549,7 @@ func readKubernetes(value *yaml.Node) (*Kubernetes, error) {
 	fields, err := members(value, kubernetesKey, "namespace", "image", "storage_class", "issue_volume", "tree_volume",
 		"kubeconfig", "context", "scheduling", "resources", "gateway", "pod", "session_store", "session_dsn_secret",
 		"session_database", "role_profiles", "agent_secrets", "plugins", "repository_cache", "setup",
-		"skills_repository", "test_postgres", "idle_release")
+		"skills_repository", "test_postgres", "idle_release", "memory_guard")
 	if err != nil {
 		return nil, err
 	}
@@ -578,6 +623,9 @@ func readKubernetes(value *yaml.Node) (*Kubernetes, error) {
 		return nil, err
 	}
 	if block.IdleRelease, err = readIdleRelease(fields["idle_release"]); err != nil {
+		return nil, err
+	}
+	if block.MemoryGuard, err = readMemoryGuard(fields["memory_guard"]); err != nil {
 		return nil, err
 	}
 	return block, nil
@@ -733,6 +781,86 @@ func readIdleRelease(value *yaml.Node) (IdleReleaseConfig, error) {
 	if settled.BackstopMinutes < settled.IdleMinutes {
 		return IdleReleaseConfig{}, fmt.Errorf("%s.backstop_minutes (%d) is below %s.idle_minutes (%d): a backstop that short would wake a pod the daemon has only just released",
 			key, settled.BackstopMinutes, key, settled.IdleMinutes)
+	}
+	return settled, nil
+}
+
+// readMemoryGuard reads `runtime.kubernetes.memory_guard`, settled: a mapping by pod kind, of which
+// this release knows `issue_pods` alone (readMemoryGuardPod), and the default (DefaultMemoryGuard)
+// for every member the file leaves out, so the guard runs wherever the file says nothing. Any
+// other member is refused by name: `controller_pod` is INFRA-3531's to add, and a loader that
+// accepted it unread would let an operator believe the controller's pod guarded.
+func readMemoryGuard(value *yaml.Node) (MemoryGuardConfig, error) {
+	const key = kubernetesKey + ".memory_guard"
+	settled := DefaultMemoryGuard()
+	if value == nil || value.Tag == "!!null" {
+		return settled, nil
+	}
+	if value.Kind != yaml.MappingNode {
+		return MemoryGuardConfig{}, fmt.Errorf("%s must be a mapping", key)
+	}
+	fields, err := members(value, key, "issue_pods")
+	if err != nil {
+		return MemoryGuardConfig{}, err
+	}
+	if settled.IssuePods, err = readMemoryGuardPod(fields["issue_pods"], key+".issue_pods", settled.IssuePods); err != nil {
+		return MemoryGuardConfig{}, err
+	}
+	return settled, nil
+}
+
+// readMemoryGuardPod reads one pod kind's block of `runtime.kubernetes.memory_guard` under key:
+// each member the file sets and settled's for each it leaves out. `enabled` is read from the
+// settled default rather than from the key's presence, because the default is on: an operator
+// writing `enabled: true` back must get the guard, and a value that is no YAML boolean — `off`
+// and `yes` among them, which this loader's reader tags as strings — is refused rather than read
+// as a word nobody meant.
+//
+// Each number is held to the wire's own range (shimwire.MemoryGuardActMin and its siblings), which
+// the launcher's guard checks the settings against a second time on its side of the connection: a
+// range widened here alone would load cleanly and then be refused by every pod's guard, which
+// keeps the settings it ran by and logs the refusal instead (memoryguard's Guard.Apply). A refusal
+// names the whole key and both ends of its range, as the loader's other range refusals do
+// (agent_secrets' token_expiry_seconds).
+func readMemoryGuardPod(value *yaml.Node, key string, settled MemoryGuardPodConfig) (MemoryGuardPodConfig, error) {
+	if value == nil {
+		return settled, nil
+	}
+	if value.Kind != yaml.MappingNode {
+		return MemoryGuardPodConfig{}, fmt.Errorf("%s must be a mapping", key)
+	}
+	fields, err := members(value, key, "enabled", "act_percent", "floor_percent", "wait_seconds", "interval_milliseconds")
+	if err != nil {
+		return MemoryGuardPodConfig{}, err
+	}
+	if enabled := fields["enabled"]; enabled != nil {
+		var on bool
+		if enabled.Tag != "!!bool" || enabled.Decode(&on) != nil {
+			return MemoryGuardPodConfig{}, fmt.Errorf("%s.enabled must be true or false", key)
+		}
+		settled.Enabled = on
+	}
+	for _, number := range []struct {
+		field    string
+		min, max int
+		into     *int
+	}{
+		{"act_percent", shimwire.MemoryGuardActMin, shimwire.MemoryGuardActMax, &settled.ActPercent},
+		{"floor_percent", shimwire.MemoryGuardFloorMin, shimwire.MemoryGuardFloorMax, &settled.FloorPercent},
+		{"wait_seconds", shimwire.MemoryGuardWaitMin, shimwire.MemoryGuardWaitMax, &settled.WaitSeconds},
+		{"interval_milliseconds", shimwire.MemoryGuardIntervalMin, shimwire.MemoryGuardIntervalMax, &settled.IntervalMilliseconds},
+	} {
+		read, err := readInt(fields[number.field], key+"."+number.field)
+		if err != nil {
+			return MemoryGuardPodConfig{}, err
+		}
+		if read == nil {
+			continue
+		}
+		if *read < number.min || *read > number.max {
+			return MemoryGuardPodConfig{}, fmt.Errorf("%s.%s must be between %d and %d", key, number.field, number.min, number.max)
+		}
+		*number.into = *read
 	}
 	return settled, nil
 }

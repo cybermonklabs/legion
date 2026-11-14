@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/jackc/pgx/v5"
 
@@ -17,6 +18,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
 
 // Hook is one hook of the deployment as the engine runs it: its words are the text, never a
@@ -231,6 +233,8 @@ func (e *Engine) apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake
 		return e.sessionLost(ctx, tx, fact)
 	case intake.SessionStoreFault:
 		return e.sessionStoreFault(ctx, tx, fact)
+	case intake.MemoryGuardKill:
+		return e.memoryGuardKill(ctx, tx, fact)
 	case intake.RetryOrEscalate:
 		return e.retryOrEscalate(ctx, tx, fact)
 	case intake.RestartPhase:
@@ -1021,6 +1025,106 @@ func (e *Engine) sessionStoreFault(ctx context.Context, tx pgx.Tx, fact intake.S
 	e.warnOnCommit(ctx, "workflow: the session store could not be asked for a start", "issue", issue.Key, "role", fact.Role, "detail", fact.Detail)
 	return intake.Result{}, e.enqueue(ctx, tx, issue.Key, record.ControllerNotice(record.Notice{
 		Kind: "session-store-fault", Role: fact.Role, Phase: issue.Phase, Reason: told}))
+}
+
+// memoryGuardKill tells the role whose process an issue pod's memory guard ended why that
+// process is gone (intake.MemoryGuardKill): one role message on that role's own topic, enqueued
+// in the fact's transaction as every role message is (tellChecks, tellGateMoved), so a fact that
+// rolls back tells nobody and the outbox carries the telling across a restart. The topic is the
+// session's claim token, the role the launcher's connection authenticated for, and never one the
+// report named. A role whose session holds no topic when the row runs is told nothing, and the
+// outbox finishes the row (roleMessage); the guard's kill line in the pod's own log stays.
+//
+// An issue the daemon does not record has no role of the workflow's to tell, so the fact is
+// logged and dropped.
+func (e *Engine) memoryGuardKill(ctx context.Context, tx pgx.Tx, fact intake.MemoryGuardKill) (intake.Result, error) {
+	report := fact.Report
+	issue, err := e.store.Issue(ctx, tx, fact.Issue)
+	if err != nil {
+		return intake.Result{}, err
+	}
+	if issue == nil {
+		e.logOnCommit(ctx, "workflow: a memory guard kill names an issue the daemon does not record, so no role is told",
+			"issue", fact.Issue, "role", fact.Token, "pod", fact.PodUID, "guard", report.Guard, "sequence", report.Sequence, "pid", report.PID)
+		return intake.Result{}, nil
+	}
+	if err := e.enqueue(ctx, tx, issue.Key, record.RoleMessage{Role: string(fact.Token), Body: memoryGuardNote(report)}); err != nil {
+		return intake.Result{}, err
+	}
+	e.logOnCommit(ctx, "workflow: the role whose process the memory guard ended is told why",
+		"issue", issue.Key, "role", fact.Token, "pod", fact.PodUID, "guard", report.Guard, "sequence", report.Sequence, "pid", report.PID,
+		"sizeBytes", report.SizeBytes, "readingBytes", report.ReadingBytes, "limitBytes", report.LimitBytes)
+	return intake.Result{}, nil
+}
+
+// memoryGuardNote is what a role reads when the memory guard ended one of its processes: which
+// process, how much it held, how near the limit the pod was, that nothing else of the role
+// stopped, and where heavy work runs instead. The sizes are binary units a reader can compare at
+// a glance (binarySize); the command is the launcher's text, already redacted and cut to
+// shimwire.MemoryKillCommandBytes there, set as a code span nothing in it can end (codeSpan).
+func memoryGuardNote(report shimwire.LauncherMemoryKill) string {
+	return fmt.Sprintf("The launcher's memory guard stopped one of your processes with SIGKILL because the pod was near its memory limit: "+
+		"%s (pid %d) held %s of anonymous memory while the pod's anonymous memory read %s of its %s limit. "+
+		"The pod's other processes and your session go on. "+
+		"Heavy work — a build, a whole test suite, anything that needs much memory — runs where your deployment's instructions say, not in this pod: "+
+		"read skill://legion-worker/references/tools.md before you run it again.",
+		codeSpan(report.Command), report.PID, binarySize(report.SizeBytes), binarySize(report.ReadingBytes), binarySize(report.LimitBytes))
+}
+
+// codeSpan is text as one Markdown code span that nothing in text ends early or spreads over
+// lines. The fence is one backtick longer than the longest run of backticks text holds, so a
+// backtick in a command is text inside the span; text that begins or ends with a backtick, or
+// that begins and ends with a space, is padded with one space on each side, which a Markdown
+// reader strips, and empty text is one space, since two backticks alone are no span. Every
+// character that does not print is written as its Go escape (`\n`, `\x1b`, `\u202e`): the
+// launcher has escaped them already, but the note is read into an agent's prompt, so its shape
+// rests on this daemon and not on the sender being Legion's own launcher, as the session facts'
+// quoted details do (sessionLost).
+func codeSpan(text string) string {
+	var inner strings.Builder
+	longest, run := 0, 0
+	for _, r := range text {
+		if r == '`' {
+			run++
+			longest = max(longest, run)
+		} else {
+			run = 0
+		}
+		if !unicode.IsPrint(r) {
+			quoted := strconv.QuoteRune(r)
+			inner.WriteString(quoted[1 : len(quoted)-1])
+			continue
+		}
+		inner.WriteRune(r)
+	}
+	body := inner.String()
+	switch {
+	case body == "":
+		body = " "
+	case strings.HasPrefix(body, "`") || strings.HasSuffix(body, "`") ||
+		(strings.HasPrefix(body, " ") && strings.HasSuffix(body, " ")):
+		body = " " + body + " "
+	}
+	fence := strings.Repeat("`", longest+1)
+	return fence + body + fence
+}
+
+// binaryUnits are the units binarySize writes a size of a KiB or more in, smallest first.
+var binaryUnits = []string{"KiB", "MiB", "GiB", "TiB", "PiB", "EiB"}
+
+// binarySize is a size in bytes as a person reads one: in the largest binary unit it reaches, with
+// two decimals (3.13 GiB, 812.40 MiB), and in whole bytes below a KiB. A value that two decimals
+// would round up to 1024.00 is written in the next unit, as 1.00.
+func binarySize(bytes uint64) string {
+	if bytes < 1024 {
+		return fmt.Sprintf("%d B", bytes)
+	}
+	value, unit := float64(bytes)/1024, 0
+	for value >= 1023.995 && unit < len(binaryUnits)-1 {
+		value /= 1024
+		unit++
+	}
+	return fmt.Sprintf("%.2f %s", value, binaryUnits[unit])
 }
 
 // noticeFailure is the failure record the notices of fact carry: the cause the site that failed

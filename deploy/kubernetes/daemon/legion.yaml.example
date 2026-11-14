@@ -335,6 +335,15 @@ runtime:
     #   retain_hours: 168              # its repository leaving the mapping; and its one container's reservation,
     #   resources: { cpu: 1, memory: 4Gi, ephemeral_storage: 2Gi, ephemeral_storage_request: 1Gi }   # as a pod's.
     #                                  # These are the defaults. Issue pods reach the cache pods on port 8418.
+    # memory_guard:                    # the memory guard in each issue pod's launcher: when the pod's anonymous
+    #   issue_pods:                    # memory reaches act_percent (50 to 95) of the container's memory limit
+    #     enabled: true                # and the processes it may end hold at least floor_percent (1 to 50) of
+    #     act_percent: 85              # it, it ends the largest of them with SIGKILL and tells the role whose
+    #     floor_percent: 10            # process it was. Legion's own processes and each role's agent are never
+    #     wait_seconds: 5              # ended. After a kill it waits up to wait_seconds (1 to 60) for the
+    #     interval_milliseconds: 100   # reading to fall, and it reads every interval_milliseconds (50 to 5000).
+    #                                  # These are the defaults; enabled: false runs no guard, and a command that
+    #                                  # fills the limit then ends every role of the pod with the container.
     kubeconfig: ./kubeconfig           # the daemon's own identity
     context: legion-daemon
     # plugins:                         # the exact pi-legion/pi-envoy pair a stale-plugin relaunch installs

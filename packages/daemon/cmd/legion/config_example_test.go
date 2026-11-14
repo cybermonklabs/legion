@@ -178,6 +178,56 @@ func TestShippedLegionYAMLExampleRefusesAWorkerBackgroundAtTheSilenceBound(t *te
 	}
 }
 
+// memoryGuardExampleLines are the example's commented memory_guard block, line by line, as an
+// operator turning it on uncomments it.
+var memoryGuardExampleLines = []string{
+	"    # memory_guard:",
+	"    #   issue_pods:",
+	"    #     enabled: true",
+	"    #     act_percent: 85",
+	"    #     floor_percent: 10",
+	"    #     wait_seconds: 5",
+	"    #     interval_milliseconds: 100",
+}
+
+// The example's commented memory_guard block, uncommented, passes the same check and settles on
+// the guard on at the defaults the block states, which are the wire's own
+// (config.DefaultMemoryGuard): a default changed in the wire and not in the example would have the
+// example teach a number no daemon runs.
+func TestMemoryGuardTheShippedExamplesBlockPassesCheckConfig(t *testing.T) {
+	config := checkShippedExample(t, func(example string) string {
+		return uncommentExample(t, example, memoryGuardExampleLines...)
+	})
+	cfg, err := configpkg.LoadForValidation(config, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := cfg.Runtime.Kubernetes.MemoryGuard, configpkg.DefaultMemoryGuard(); got != want {
+		t.Errorf("the example's memory_guard block uncommented settles on %+v, want the defaults %+v", got, want)
+	}
+}
+
+// The example's memory_guard block, uncommented with act_percent one above the range it states, is
+// refused by the same check, which names the whole key and both ends of its range. The shipped
+// block is where an operator reads what each key takes, so a range it stated wrongly would be an
+// operator's file refused on their first check; here it is this test that fails instead. The block
+// stays commented in the file itself: its values are the defaults, which apply without it.
+func TestMemoryGuardTheShippedExampleRefusesAnActShareAboveItsRange(t *testing.T) {
+	config := stageShippedExample(t, func(example string) string {
+		example = uncommentExample(t, example, memoryGuardExampleLines...)
+		return strings.Replace(example, "act_percent: 85", "act_percent: 96", 1)
+	})
+
+	var out, errb bytes.Buffer
+	code := run(context.Background(), []string{"legion", "start", "--check-config", "--config", config}, &out, &errb)
+	t.Logf("legion start --check-config exited %d\nstdout:\n%s\nstderr:\n%s", code, out.String(), errb.String())
+
+	want := "legion start: runtime.kubernetes.memory_guard.issue_pods.act_percent must be between 50 and 95\n"
+	if code != 1 || out.Len() != 0 || errb.String() != want {
+		t.Fatalf("exit code = %d, stdout %q, stderr %q; want 1, nothing, and %q", code, out.String(), errb.String(), want)
+	}
+}
+
 // uncommentExample is the example with each named line uncommented, each line the start of one of
 // the example's own commented lines: the file comments a block out line by line, so turning it on
 // is one `# ` removed per line, and a line the example does not hold is the test's own mistake.
@@ -237,13 +287,15 @@ current-context: legion-daemon
 }
 
 // checkShippedExample runs `legion start --check-config` on the shipped example as edit leaves
-// it, beside the files it names, and answers the file's path.
+// it, beside the files it names, and answers the file's path. It logs the command's exit code,
+// stdout and stderr, so a `-v` run shows what the check printed for each edit of the example.
 func checkShippedExample(t *testing.T, edit func(string) string) string {
 	t.Helper()
 	config := stageShippedExample(t, edit)
 
 	var out, errb bytes.Buffer
 	code := run(context.Background(), []string{"legion", "start", "--check-config", "--config", config}, &out, &errb)
+	t.Logf("legion start --check-config exited %d\nstdout:\n%s\nstderr:\n%s", code, out.String(), errb.String())
 
 	want := "Config OK: project=WIDGETS design-gate-steps=spec\n" +
 		"projects.WIDGETS.production_check: tester — a merge that closes one of its issues opens a production check the tester works\n" +
