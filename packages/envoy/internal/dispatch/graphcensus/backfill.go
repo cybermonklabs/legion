@@ -271,7 +271,11 @@ func writeBlockBatch(ctx context.Context, database *store.Store, batch []blockRo
 		return nil, 0, fmt.Errorf("begin the block batch: %w", err)
 	}
 	defer tx.Rollback(ctx)
-	if err := lockBlockDocuments(ctx, tx, batch); err != nil {
+	documents := make([]string, 0, len(batch))
+	for _, row := range batch {
+		documents = append(documents, row.artifactID)
+	}
+	if err := lockBlockDocuments(ctx, tx, documents); err != nil {
 		return nil, 0, err
 	}
 	held, err := heldBlockRows(ctx, tx, batch)
@@ -318,17 +322,14 @@ func writeBlockBatch(ctx context.Context, database *store.Store, batch []blockRo
 	return held, int64(len(tuples)) + 2*int64(len(nodes)), nil
 }
 
-// lockBlockDocuments takes, for each document of the batch, the two rows the fence's writers
-// hold while they write a document's blocks, in the order R23 gives and docs' indexOwedDocument
-// takes them: the document's owner row (lockDocumentOwner), then its document_block_versions row
+// lockBlockDocuments takes, for each of documents, the two rows the fence's writers hold while
+// they write a document's blocks or its block references, in the order R23 gives and docs'
+// indexOwedDocument takes them:
+// the document's owner row (lockDocumentOwner), then its document_block_versions row
 // `for no key update`. The documents go in id order, the order the erase takes the locks of
 // several documents in (Erasure.readDocuments), so two writers that each hold more than one
-// document cannot each hold a row the other waits for.
-func lockBlockDocuments(ctx context.Context, tx pgx.Tx, batch []blockRow) error {
-	documents := make([]string, 0, len(batch))
-	for _, row := range batch {
-		documents = append(documents, row.artifactID)
-	}
+// document cannot each hold a row the other waits for. It sorts documents in place.
+func lockBlockDocuments(ctx context.Context, tx pgx.Tx, documents []string) error {
 	slices.Sort(documents)
 	for _, document := range slices.Compact(documents) {
 		if err := lockDocumentOwner(ctx, tx, document); err != nil {
@@ -459,6 +460,8 @@ type blockRefRow struct {
 // block_refs row is one link out of a block and its node is that block's, so this writes no
 // node of its own: it runs after the blocks, and a row whose block carries no node - a block
 // past the address bound, or one with no document_blocks row at all - is skipped and counted.
+// A row a version write deleted or wrote after its batch was read is not written
+// (writeBlockRefBatch), and is counted nowhere.
 //
 // The row's own source_seq is the event that stamped it, which is both the cause of its tuple
 // and that tuple's legacy_source_seq; a row with none takes the store's sentinel as its cause
@@ -486,11 +489,12 @@ func backfillBlockRefs(ctx context.Context, database *store.Store) (KindBackfill
 			writable = append(writable, row)
 		}
 		if len(writable) > 0 {
-			if err := writeBlockRefBatch(ctx, database, writable); err != nil {
+			written, err := writeBlockRefBatch(ctx, database, writable)
+			if err != nil {
 				return done, err
 			}
-			done.Rows += int64(len(writable))
-			done.Tuples += int64(len(writable))
+			done.Rows += written
+			done.Tuples += written
 		}
 		if len(batch) < backfillBatch {
 			break
@@ -537,24 +541,48 @@ func readBlockRefRows(ctx context.Context, database *store.Store, after []any) (
 	return batch, rows.Err()
 }
 
-// writeBlockRefBatch appends one batch's tuples and names the block's node on each row, in one
-// transaction. The nodes are already there - the blocks ran first - so this writes none, and
-// the call still goes through the store's own writer, which is what holds the two sides of a
-// projection in one transaction.
-func writeBlockRefBatch(ctx context.Context, database *store.Store, batch []blockRefRow) error {
+// writeBlockRefBatch appends the tuples of the rows of one batch that are still there and still
+// name no node, and names the block's node on each of them, in one transaction, and answers how
+// many rows it wrote, each of which is one tuple. The nodes are already there - the blocks ran
+// first - so this writes none, and the call still goes through the store's own writer, which is
+// what holds the two sides of a projection in one transaction.
+//
+// The batch was read outside this transaction, so a version write may have deleted one of its
+// references since, and a version write that deletes a reference states its tuple retracted
+// (refs' replaceBlockRefs). A tuple asserted for that row would be appended after the retraction
+// and so be the newest word on the link: the store would answer a mention no row holds. The
+// batch is therefore held to the revision fence as writeBlockBatch is: before it writes anything
+// it takes the locks a version write holds while it writes a document's references
+// (lockBlockDocuments), reads the batch's rows again under them (heldBlockRefRows), and writes
+// only the rows left.
+func writeBlockRefBatch(ctx context.Context, database *store.Store, batch []blockRefRow) (int64, error) {
 	tx, err := database.Pool.Begin(ctx)
 	if err != nil {
-		return fmt.Errorf("begin the block reference batch: %w", err)
+		return 0, fmt.Errorf("begin the block reference batch: %w", err)
 	}
 	defer tx.Rollback(ctx)
-	tuples := make([]graphstore.Tuple, 0, len(batch))
-	artifacts := make([]string, 0, len(batch))
-	blockIDs := make([]string, 0, len(batch))
-	kinds := make([]string, 0, len(batch))
-	toKinds := make([]string, 0, len(batch))
-	toIDs := make([]string, 0, len(batch))
-	addresses := make([]string, 0, len(batch))
+	documents := make([]string, 0, len(batch))
 	for _, row := range batch {
+		documents = append(documents, row.artifactID)
+	}
+	if err := lockBlockDocuments(ctx, tx, documents); err != nil {
+		return 0, err
+	}
+	held, err := heldBlockRefRows(ctx, tx, batch)
+	if err != nil {
+		return 0, err
+	}
+	if len(held) == 0 {
+		return 0, nil
+	}
+	tuples := make([]graphstore.Tuple, 0, len(held))
+	artifacts := make([]string, 0, len(held))
+	blockIDs := make([]string, 0, len(held))
+	kinds := make([]string, 0, len(held))
+	toKinds := make([]string, 0, len(held))
+	toIDs := make([]string, 0, len(held))
+	addresses := make([]string, 0, len(held))
+	for _, row := range held {
 		tuples = append(tuples, graphstore.Tuple{
 			FromKind: refs.BlockNodeKind, FromID: row.address, Kind: row.kind,
 			ToKind: row.toKind, ToID: row.toID,
@@ -569,7 +597,7 @@ func writeBlockRefBatch(ctx context.Context, database *store.Store, batch []bloc
 		addresses = append(addresses, row.address)
 	}
 	if err := graphstore.Write(ctx, tx, nil, tuples); err != nil {
-		return fmt.Errorf("append the tuples of a block reference batch: %w", err)
+		return 0, fmt.Errorf("append the tuples of a block reference batch: %w", err)
 	}
 	if _, err := tx.Exec(ctx, `
 		update block_refs r
@@ -579,9 +607,67 @@ func writeBlockRefBatch(ctx context.Context, database *store.Store, batch []bloc
 		where r.artifact_id = p.artifact_id::uuid and r.block_id = p.block_id
 		  and r.kind = p.kind and r.to_kind = p.to_kind and r.to_id = p.to_id
 	`, artifacts, blockIDs, kinds, toKinds, toIDs, addresses, refs.BlockNodeKind); err != nil {
-		return fmt.Errorf("name the nodes of a block reference batch on their rows: %w", err)
+		return 0, fmt.Errorf("name the nodes of a block reference batch on their rows: %w", err)
 	}
-	return tx.Commit(ctx)
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("commit a block reference batch: %w", err)
+	}
+	return int64(len(held)), nil
+}
+
+// heldBlockRefRows reads again, under the locks lockBlockDocuments took, which rows of the batch
+// are still there, still name no node and are still links out of a block whose row names the
+// node they are links out of, locks each of them `for update` in key order, and answers them in
+// the batch's own order. The rest of a row is what the batch read: a version write keeps a
+// surviving row's dates and source_seq, and a row it inserts names its node (refs'
+// replaceBlockRefs), so a row that still names no node is one no version has written since.
+func heldBlockRefRows(ctx context.Context, tx pgx.Tx, batch []blockRefRow) ([]blockRefRow, error) {
+	artifacts := make([]string, 0, len(batch))
+	blockIDs := make([]string, 0, len(batch))
+	kinds := make([]string, 0, len(batch))
+	toKinds := make([]string, 0, len(batch))
+	toIDs := make([]string, 0, len(batch))
+	for _, row := range batch {
+		artifacts = append(artifacts, row.artifactID)
+		blockIDs = append(blockIDs, row.blockID)
+		kinds = append(kinds, row.kind)
+		toKinds = append(toKinds, row.toKind)
+		toIDs = append(toIDs, row.toID)
+	}
+	rows, err := tx.Query(ctx, `
+		select r.artifact_id::text, r.block_id, r.kind, r.to_kind, r.to_id
+		from block_refs r
+		join unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::text[])
+			as p (artifact_id, block_id, kind, to_kind, to_id)
+			on r.artifact_id = p.artifact_id::uuid and r.block_id = p.block_id
+			and r.kind = p.kind and r.to_kind = p.to_kind and r.to_id = p.to_id
+		join document_blocks d on d.artifact_id = r.artifact_id and d.block_id = r.block_id
+		where r.node_kind is null and d.node_kind is not null and d.node_address = r.from_node
+		order by r.artifact_id, r.block_id, r.to_kind, r.to_id, r.kind
+		for update of r
+	`, artifacts, blockIDs, kinds, toKinds, toIDs)
+	if err != nil {
+		return nil, fmt.Errorf("read the block references of a batch again under their documents' locks: %w", err)
+	}
+	keys, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) ([5]string, error) {
+		var key [5]string
+		err := row.Scan(&key[0], &key[1], &key[2], &key[3], &key[4])
+		return key, err
+	})
+	if err != nil {
+		return nil, fmt.Errorf("scan the block references of a batch read again: %w", err)
+	}
+	still := make(map[[5]string]struct{}, len(keys))
+	for _, key := range keys {
+		still[key] = struct{}{}
+	}
+	held := make([]blockRefRow, 0, len(keys))
+	for _, row := range batch {
+		if _, ok := still[[5]string{row.artifactID, row.blockID, row.kind, row.toKind, row.toID}]; ok {
+			held = append(held, row)
+		}
+	}
+	return held, nil
 }
 
 // commentRow is one comments row the backfill reads: its id, its author as the row stored it,
@@ -599,7 +685,7 @@ type commentRow struct {
 // backfillComments writes a node and the facts its row is the projection of for every comment
 // written before the store existed: the two base attributes every node carries, the artifact
 // it is anchored to and the artifact that owns it where it has them (api's commentStored), and
-// the authored_by tuple of whoever wrote it with that author's own node (graphstore.Authored).
+// who wrote it, as graphstore.Authored states that (graphstore.AuthorFacts).
 func backfillComments(ctx context.Context, database *store.Store) (KindBackfill, error) {
 	done := KindBackfill{Kind: commentNodeKind}
 	after := "00000000-0000-0000-0000-000000000000"
@@ -669,23 +755,35 @@ func readCommentRows(ctx context.Context, database *store.Store, after string) (
 	return batch, rows.Err()
 }
 
-// writeCommentBatch writes one batch's comment nodes, the facts each row projects and each
-// author, in one transaction.
+// writeCommentBatch writes one batch's comment nodes, the facts each row projects and who wrote
+// each, in one transaction, and answers the nodes and the tuples it stated, as the upper bound
+// the report states: an author's node another write already made moves nothing, and a tuple
+// stated again under its event appends nothing.
 //
-// The authors go in after the comments and in ascending (kind, id), the order every write of
-// this store takes its node rows in (graphstore.writeNodes): a person sorts after a comment
-// and a session after a person, so the whole transaction takes its node rows in that one
-// order and cannot hold what another writer waits for.
+// Every node of the batch goes in its one store write, the comments' and their authors', so the
+// transaction takes every node row in ascending (kind, id) before it appends its first tuple, and
+// names the nodes on the comments rows only after both: the order of the lock order on
+// api/inbox_read.go's markInboxReadThreads. Who wrote a comment is what graphstore.Authored
+// states of it (graphstore.AuthorFacts): the author's node, made at the first comment of the
+// batch that names them, the comment's authored_by tuple and the aliases the server proved.
+// Write makes an author's node as Authored's arms make it and moves nothing on one that is
+// already there, since every writer of a person or a session node writes it as AuthorFacts does:
+// project-visible, live and carrying no attribute.
+//
+// The rows the batch read are still the rows it writes, so it reads none of them again: no route
+// deletes a comment or changes its owner, its author, its time or the artifact its anchor names,
+// and the erase deletes only a row that names its node, which no row of this batch does.
 func writeCommentBatch(ctx context.Context, database *store.Store, batch []commentRow) (int64, int64, error) {
 	tx, err := database.Pool.Begin(ctx)
 	if err != nil {
 		return 0, 0, fmt.Errorf("begin the comment batch: %w", err)
 	}
 	defer tx.Rollback(ctx)
-	nodes := make([]graphstore.Node, 0, len(batch))
+	nodes := make([]graphstore.Node, 0, 2*len(batch))
 	var tuples []graphstore.Tuple
 	ids := make([]string, 0, len(batch))
 	addresses := make([]string, 0, len(batch))
+	authors := map[[2]string]struct{}{}
 	for _, row := range batch {
 		node := graphstore.Node{
 			Kind: commentNodeKind, ID: row.id, Supertag: commentSupertag,
@@ -706,31 +804,20 @@ func writeCommentBatch(ctx context.Context, database *store.Store, batch []comme
 		states(tupleState, graphstore.KindValue, graphstore.StateLive)
 		states(tupleAnchoredTo, "artifact", row.anchor)
 		states(tupleOwnedBy, "artifact", row.owner)
+		// One write writes a node once, so an author several comments of the batch name is made
+		// by the first of them; each comment still states its own authored_by and aliases.
+		if author, facts, named := graphstore.AuthorFacts(commentNodeKind, row.id, row.author, row.createdAt, row.event); named {
+			if _, made := authors[[2]string{author.Kind, author.ID}]; !made {
+				authors[[2]string{author.Kind, author.ID}] = struct{}{}
+				nodes = append(nodes, author)
+			}
+			tuples = append(tuples, facts...)
+		}
 		ids = append(ids, row.id)
 		addresses = append(addresses, row.id)
 	}
 	if err := graphstore.Write(ctx, tx, nodes, tuples); err != nil {
 		return 0, 0, fmt.Errorf("write the nodes of a comment batch: %w", err)
-	}
-	authored := append([]commentRow(nil), batch...)
-	sort.Slice(authored, func(i, j int) bool {
-		leftKind, leftID, _ := graphstore.AuthorOf(authored[i].author)
-		rightKind, rightID, _ := graphstore.AuthorOf(authored[j].author)
-		if leftKind != rightKind {
-			return leftKind < rightKind
-		}
-		return leftID < rightID
-	})
-	var authors int64
-	for _, row := range authored {
-		if _, _, named := graphstore.AuthorOf(row.author); !named {
-			continue
-		}
-		if err := graphstore.Authored(ctx, tx, commentNodeKind, row.id, row.author,
-			row.createdAt, row.event); err != nil {
-			return 0, 0, err
-		}
-		authors++
 	}
 	if _, err := tx.Exec(ctx, `
 		update comments c
@@ -743,10 +830,7 @@ func writeCommentBatch(ctx context.Context, database *store.Store, batch []comme
 	if err := tx.Commit(ctx); err != nil {
 		return 0, 0, fmt.Errorf("commit a comment batch: %w", err)
 	}
-	// Each author costs a node the store may already hold and one authored_by tuple; the
-	// node count is the comments' own plus one per author written, as the upper bound the
-	// report states.
-	return int64(len(nodes)) + authors, int64(len(tuples)) + authors, nil
+	return int64(len(nodes)), int64(len(tuples)), nil
 }
 
 // roleRow is one role the store census holds to a node (addressedRoles) whose node or page the

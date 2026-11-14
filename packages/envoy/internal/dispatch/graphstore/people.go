@@ -109,10 +109,35 @@ func AuthorOf(actor model.Actor) (kind, id string, ok bool) {
 	return "", "", false
 }
 
+// AuthorFacts is what this store holds of who wrote one thing: the author's own node, made by
+// actor at at and caused by event as the write that first records them makes it, and the tuples
+// that write states with it - the authored_by tuple from the thing to its author, then the
+// aliases the server proved of them. named is false for an actor that names nobody (AuthorOf),
+// of whom nothing is held.
+//
+// It is the one statement of these facts. Authored writes them on their own; a writer that
+// writes the thing's own node in a write of its own puts this node beside that one and these
+// tuples beside its own, so the write takes every node row before it appends a tuple, as the
+// lock order on api/inbox_read.go's markInboxReadThreads has it (graphcensus's
+// writeCommentBatch).
+func AuthorFacts(kind, id string, actor model.Actor, at time.Time, event int64) (node Node, tuples []Tuple, named bool) {
+	authorKind, authorID, ok := AuthorOf(actor)
+	if !ok {
+		return Node{}, nil, false
+	}
+	tuples = []Tuple{{
+		FromKind: kind, FromID: id, Kind: TupleAuthoredBy,
+		ToKind: authorKind, ToID: authorID,
+		At: at, Who: actor, SourceEvent: event, Asserted: true,
+	}}
+	tuples = append(tuples, aliases(authorKind, authorID, actor, at, event)...)
+	return agentNode(authorKind, authorID, actor, at, event), tuples, true
+}
+
 // Authored writes who wrote one thing, inside the caller's transaction and beside the event that
 // stored it: the author's own node with the two base attributes every node carries, the aliases
-// the server proved of them, and the authored_by tuple from the thing to its author. A write
-// whose actor names nobody writes nothing.
+// the server proved of them, and the authored_by tuple from the thing to its author
+// (AuthorFacts). A write whose actor names nobody writes nothing.
 //
 // It goes through the same arms the publisher's record splices in (WriteArms), so an author's
 // node is made once, by the write that first records them, and a later write of the same person
@@ -123,18 +148,11 @@ func AuthorOf(actor model.Actor) (kind, id string, ok bool) {
 // role, and whether a run holds a role is resolved where the roles are read (outbox.recordBatch),
 // never here.
 func Authored(ctx context.Context, tx pgx.Tx, kind, id string, actor model.Actor, at time.Time, event int64) error {
-	authorKind, authorID, ok := AuthorOf(actor)
-	if !ok {
+	node, tuples, named := AuthorFacts(kind, id, actor, at, event)
+	if !named {
 		return nil
 	}
-	nodes := []Node{agentNode(authorKind, authorID, actor, at, event)}
-	tuples := []Tuple{{
-		FromKind: kind, FromID: id, Kind: TupleAuthoredBy,
-		ToKind: authorKind, ToID: authorID,
-		At: at, Who: actor, SourceEvent: event, Asserted: true,
-	}}
-	tuples = append(tuples, aliases(authorKind, authorID, actor, at, event)...)
-	arms, params, err := WriteArms(1, nodes, tuples, nil)
+	arms, params, err := WriteArms(1, []Node{node}, tuples, nil)
 	if err != nil {
 		return err
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -264,5 +266,102 @@ func TestTheBackfillHoldsTheOwnerRowWhileItWaitsForTheOwedRow(t *testing.T) {
 	}
 	if blocks := blockKind(t, awaitBackfill(t, answered)); blocks.Rows != 1 || blocks.Nodes != 1 {
 		t.Errorf("the backfill reports %#v for blocks once the owed row was released, want the one block written", blocks)
+	}
+}
+
+// R23 for the block references: a version write that drops a mention deletes its block_refs row
+// and states the mention's tuple retracted (refs' replaceBlockRefs), holding the document's owner
+// row and its owed row. The backfill reads its batch of references before it takes any lock, so
+// it can read a row such a write is deleting. A tuple it then asserted for that row would be
+// appended after the retraction, and the store's current read takes the newest tuple of a link:
+// it would answer a mention no row holds.
+//
+// The run builds that race. The block pass has run, so the block has its node, and the block holds
+// two references naming no node. A second transaction stands for the version write: it takes the
+// owner row and the owed row, deletes one reference's row and appends that mention's retraction.
+// The backfill starts while that transaction is open, so it reads both rows. The test reads the
+// backfill waiting at the owner row, lets the version write commit, and then reads the block's
+// current mentions, which must be the kept reference's alone.
+func TestTheBackfillStatesNoMentionAVersionDeletedWhileItWaited(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := context.Background()
+	document := seedPreStoreDocument(t, database, "only")
+	block := document.refKey + "#only"
+	if _, err := Backfill(ctx, database, io.Discard); err != nil {
+		t.Fatalf("backfill the block before its references exist: %v", err)
+	}
+	if _, err := database.Pool.Exec(ctx, `
+		insert into block_refs (artifact_id, block_id, from_node, to_kind, to_id, kind, created_version)
+		values ($1::uuid, 'only', $2, 'issue', 'CORE-1', 'mentions', 1),
+		       ($1::uuid, 'only', $2, 'issue', 'CORE-2', 'mentions', 1)
+	`, document.artifactID, block); err != nil {
+		t.Fatalf("write the block's two references: %v", err)
+	}
+
+	holder, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the version write: %v", err)
+	}
+	defer holder.Rollback(ctx)
+	for _, statement := range []struct {
+		what, sql string
+		args      []any
+	}{
+		{"take the owner row", `select closed_at is null from issues where key = $1 for no key update`, []any{"CORE-1"}},
+		{"take the owed row", `select 1 from document_block_versions where artifact_id = $1 for no key update`, []any{document.artifactID}},
+		{"delete the reference", `delete from block_refs where artifact_id = $1 and block_id = 'only' and to_id = 'CORE-1'`, []any{document.artifactID}},
+	} {
+		if _, err := holder.Exec(ctx, statement.sql, statement.args...); err != nil {
+			t.Fatalf("the version write could not %s: %v", statement.what, err)
+		}
+	}
+	if err := graphstore.Write(ctx, holder, nil, []graphstore.Tuple{{
+		FromKind: refs.BlockNodeKind, FromID: block, Kind: "mentions", ToKind: "issue", ToID: "CORE-1",
+		At: time.Now(), Who: model.Actor{Kind: "user", ID: "alice"}, SourceEvent: graphstore.NoEvent, Asserted: false,
+	}}); err != nil {
+		t.Fatalf("the version write could not retract the mention it dropped: %v", err)
+	}
+
+	pid, answered := startBackfill(t, database)
+	if early, done := storetest.WaitForQueuedBehind(t, holder, pid, answered, 30*time.Second); done {
+		t.Fatalf("the backfill answered (report %#v, err %v) without waiting on the version write's locks", early.report, early.err)
+	}
+	waited := waitingStatement(t, database, pid)
+	t.Logf("the backfill waits behind the version write at: %s", waited)
+	if err := holder.Commit(ctx); err != nil {
+		t.Fatalf("commit the version write: %v", err)
+	}
+	report := awaitBackfill(t, answered)
+
+	current, err := graphstore.CurrentOut(ctx, database.Pool, refs.BlockNodeKind, block, []string{"mentions"})
+	if err != nil {
+		t.Fatalf("read the block's current mentions: %v", err)
+	}
+	mentioned := make([]string, 0, len(current))
+	for _, tuple := range current {
+		mentioned = append(mentioned, tuple.ToKind+":"+tuple.ToID)
+	}
+	if !slices.Equal(mentioned, []string{"issue:CORE-2"}) {
+		t.Errorf("the block's current mentions are %v, want issue:CORE-2 alone: the mention of issue:CORE-1, whose row a version write deleted while the backfill waited, reads as current with no row behind it",
+			mentioned)
+	}
+	var nodeKind, nodeAddress *string
+	if err := database.Pool.QueryRow(ctx, `
+		select node_kind, node_address from block_refs
+		where artifact_id = $1::uuid and block_id = 'only' and to_id = 'CORE-2'
+	`, document.artifactID).Scan(&nodeKind, &nodeAddress); err != nil {
+		t.Fatalf("read the kept reference back: %v", err)
+	}
+	if nodeKind == nil || *nodeKind != refs.BlockNodeKind || nodeAddress == nil || *nodeAddress != block {
+		t.Errorf("the kept reference names (%v, %v), want (%s, %s)", nodeKind, nodeAddress, refs.BlockNodeKind, block)
+	}
+	// The report counts what the run wrote: the kept reference and its one tuple.
+	if done := reportedKind(t, report, "block_ref"); done.Rows != 1 || done.Tuples != 1 || !done.Complete {
+		t.Errorf("the backfill reports %#v for block references, want 1 row, 1 tuple and the cutover complete", done)
+	}
+	// The lock it waited at is the owner row, the first of the two R23 names, which is the one the
+	// version write took first.
+	if !strings.Contains(waited, "from issues") || !strings.Contains(waited, "for no key update") {
+		t.Errorf("the backfill waited behind the version write at %q, want the document's owner row (`from issues ... for no key update`)", waited)
 	}
 }
