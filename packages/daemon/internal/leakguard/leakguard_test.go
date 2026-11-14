@@ -330,6 +330,79 @@ func TestAPrivateOrInternalDestinationSkipsTheRules(t *testing.T) {
 	}
 }
 
+// A public visibility answer comes from GitHub once for a role's state directory, and a failed
+// read leaves no answer behind for a later call to mistake for a completed check.
+func TestVisibilityKeepsAnswersButNeverFailures(t *testing.T) {
+	t.Run("public", func(t *testing.T) {
+		var reads int
+		env := append(fixtureenv.Isolated(t.TempDir()), "XDG_STATE_HOME="+t.TempDir())
+		read := func(context.Context, string) (Visibility, error) {
+			reads++
+			return Public, nil
+		}
+		for range 2 {
+			visibility, err := New(Options{Visibility: read, Env: env}).Visibility(bound(t), "invented-org/invented-repo")
+			if err != nil || visibility != Public {
+				t.Fatalf("read visibility = %q, %v; want public", visibility, err)
+			}
+		}
+		if reads != 1 {
+			t.Errorf("the visibility was read %d times, want once", reads)
+		}
+	})
+
+	t.Run("failed", func(t *testing.T) {
+		var reads int
+		env := append(fixtureenv.Isolated(t.TempDir()), "XDG_STATE_HOME="+t.TempDir())
+		read := func(context.Context, string) (Visibility, error) {
+			reads++
+			if reads == 1 {
+				return "", errors.New("the read failed")
+			}
+			return Public, nil
+		}
+		if _, err := New(Options{Visibility: read, Env: env}).Visibility(bound(t), "invented-org/invented-repo"); err == nil {
+			t.Fatal("the first visibility read passed, want its failure")
+		}
+		if visibility, err := New(Options{Visibility: read, Env: env}).Visibility(bound(t), "invented-org/invented-repo"); err != nil || visibility != Public {
+			t.Fatalf("the second visibility read = %q, %v; want public", visibility, err)
+		}
+		if reads != 2 {
+			t.Errorf("the failed visibility read was kept: read %d times, want twice", reads)
+		}
+	})
+}
+
+// A push asks the same role-state visibility cache a preceding guarded call populated, so the
+// shared check still runs while the destination is not read from GitHub twice.
+func TestPushUsesTheRoleKeptVisibility(t *testing.T) {
+	state := t.TempDir()
+	env := append(fixtureenv.Isolated(t.TempDir()), "XDG_STATE_HOME="+state)
+	var reads int
+	read := func(context.Context, string) (Visibility, error) {
+		reads++
+		return Private, nil
+	}
+	if visibility, err := New(Options{Visibility: read, Env: env}).Visibility(bound(t), "invented-org/invented-repo"); err != nil || visibility != Private {
+		t.Fatalf("read visibility = %q, %v; want private", visibility, err)
+	}
+	err := New(Options{
+		Check:      leakguardtest.Write(t, t.TempDir(), passes),
+		Visibility: read,
+		Env:        env,
+	}).Push(bound(t), PushRequest{
+		Dir:    t.TempDir(),
+		Remote: "origin",
+		URL:    "https://github.com/invented-org/invented-repo.git",
+	})
+	if err != nil {
+		t.Fatalf("push after the visibility read: %v", err)
+	}
+	if reads != 1 {
+		t.Errorf("the visibility was read %d times, want once", reads)
+	}
+}
+
 // The two shared-check failures: no check resolves at all, and a check that exits 2. Each refuses
 // the write, and each says it is a failure of setup rather than of the text.
 func TestTheSharedChecksFailuresAreSetupFailures(t *testing.T) {
