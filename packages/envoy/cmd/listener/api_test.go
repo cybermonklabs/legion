@@ -2005,6 +2005,66 @@ func TestUnwiredRepositoryWarningSkipsWildcardRepositorySegment(t *testing.T) {
 	}
 }
 
+// subscribeWarnings registers the topics for one session through subscribeHandler and returns the
+// warnings its answer carries.
+func subscribeWarnings(t *testing.T, state *listenerDeps, topics ...string) []string {
+	t.Helper()
+	body := consumerRegistration("ses_subscriber", "e", topics...)
+	recorder := httptest.NewRecorder()
+	subscribeHandler(state, "test-machine", logging.New("test")).ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/interests/subscribe", strings.NewReader(body)))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("subscribe %v: status %d, body %s", topics, recorder.Code, recorder.Body.String())
+	}
+	var response struct {
+		Warnings []string `json:"warnings"`
+	}
+	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+	return response.Warnings
+}
+
+// A pull request's bare subject, `pr.<n>`, carries its lifecycle alone, so a session that follows
+// it and nothing that reaches the pull request's reviews hears no review, comment or check of it,
+// and the listener says so. The plugins register the bare subject beside every `pr.<n>.>`, and a
+// session may follow the repository's pull requests or the whole repository instead: none of
+// those is warned. Another pull request's family does not reach this one, and neither does a
+// subject that only starts the same way (`pr.70` is not `pr.7`).
+func TestSubscribeHandlerWarnsWhenAPullRequestSubscriptionCarriesOnlyItsLifecycle(t *testing.T) {
+	client := setupPublishTestClient(t)
+	registry, sessions := setupSessionsTest(t, nil, nil)
+	inspector := &fakeStreamInfo{info: &nats.StreamInfo{State: nats.StreamState{Subjects: map[string]uint64{"notifications.github.example-org.example-repo.pr.1": 1}}}}
+	state := &listenerDeps{client: client, registry: registry, sessions: sessions, consumers: setupSessionConsumers(t), streamName: "notifications", streamInfo: inspector}
+	const bare = "notifications.github.example-org.example-repo.pr.7"
+	want := bare + " carries only the pull request's opened, synchronize and closed events: subscribe to " + bare + ".> for its reviews, comments, mentions and checks as well"
+	for _, others := range [][]string{
+		nil,
+		{"notifications.github.example-org.example-repo.pr.8.>"},
+		{"notifications.github.example-org.example-repo.pr.70.>"},
+		{"notifications.github.example-org.example-repo.pr.7.checks"},
+	} {
+		if got := subscribeWarnings(t, state, append([]string{bare}, others...)...); len(got) != 1 || got[0] != want {
+			t.Errorf("subscribe %s beside %v: warnings %q, want [%q]", bare, others, got, want)
+		}
+	}
+	for _, covering := range []string{
+		bare + ".>",
+		bare + ".review",
+		"notifications.github.example-org.example-repo.pr.>",
+		"notifications.github.example-org.example-repo.>",
+		"notifications.github.example-org.example-repo.pr.*.review",
+	} {
+		if got := subscribeWarnings(t, state, bare, covering); len(got) != 0 {
+			t.Errorf("subscribe %s beside %s: warnings %q, want none", bare, covering, got)
+		}
+	}
+	for _, family := range []string{bare + ".comment", "notifications.github.example-org.example-repo.issue.7"} {
+		if got := subscribeWarnings(t, state, family); len(got) != 0 {
+			t.Errorf("subscribe %s: warnings %q, want none", family, got)
+		}
+	}
+}
+
 // A GitHub topic writes each dot in a repository's name as `_`, and the token after the name is
 // one of contracts.GithubTopicKinds, so a subscription whose token there is not a kind or a
 // wildcard would receive nothing, and the listener warns. When a kind follows the extra tokens,
@@ -2019,19 +2079,7 @@ func TestSubscribeHandlerWarnsWhenAGitHubTopicSpellsARepositoryWithADot(t *testi
 	state := &listenerDeps{client: client, registry: registry, sessions: sessions, consumers: setupSessionConsumers(t), streamName: "notifications", streamInfo: inspector}
 	warnings := func(t *testing.T, topic string) []string {
 		t.Helper()
-		body := consumerRegistration("ses_subscriber", "e", topic)
-		recorder := httptest.NewRecorder()
-		subscribeHandler(state, "test-machine", logging.New("test")).ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/interests/subscribe", strings.NewReader(body)))
-		if recorder.Code != http.StatusOK {
-			t.Fatalf("subscribe %s: status %d, body %s", topic, recorder.Code, recorder.Body.String())
-		}
-		var response struct {
-			Warnings []string `json:"warnings"`
-		}
-		if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
-			t.Fatal(err)
-		}
-		return response.Warnings
+		return subscribeWarnings(t, state, topic)
 	}
 	for _, kind := range append(append([]string{}, contracts.GithubTopicKinds...), "*", ">") {
 		topic := "notifications.github.example-org.example-repo." + kind
