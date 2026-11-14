@@ -127,6 +127,16 @@ func webFixtureTexts(t *testing.T) []webFixtureText {
 			"a-marked-link-to-a-reference",
 			"See [the " + webSnippetStart + "design" + webSnippetStop + "](dispatch://CORE-1).\n",
 		},
+		// A search for CORE over the link a document stores for the autolink
+		// `<dispatch://CORE-1>`: ts_headline marks the key in the link's words and in its address
+		// alike, `[dispatch://<b>CORE</b>-1](dispatch://<b>CORE</b>-1)` once SearchSnippet has
+		// widened the cut back to the whole link (measured 2026-11-14, INFRA-1702), and the
+		// snippet's tree keeps the mark on the words and the address as it was stored.
+		{
+			"a-marked-autolink-to-a-reference",
+			"See [dispatch://" + webSnippetStart + "CORE" + webSnippetStop + "-1](dispatch://" +
+				webSnippetStart + "CORE" + webSnippetStop + "-1) since Monday.\n",
+		},
 		{
 			"marks-inside-formatting",
 			"**" + webSnippetStart + "Bold" + webSnippetStop + "** " + webSnippetStart + "word" +

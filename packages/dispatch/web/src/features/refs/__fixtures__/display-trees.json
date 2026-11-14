@@ -1086,6 +1086,127 @@
     }
   },
   {
+    "name": "a-marked-autolink-to-a-reference",
+    "markdown": "See [dispatch://CORE-1](dispatch://CORE-1) since Monday.\n",
+    "latest": {
+      "type": "doc",
+      "content": [
+        {
+          "type": "paragraph",
+          "content": [
+            {
+              "type": "text",
+              "text": "See "
+            },
+            {
+              "type": "text",
+              "text": "dispatch://CORE-1",
+              "marks": [
+                {
+                  "type": "link",
+                  "attrs": {
+                    "href": "dispatch://CORE-1"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "text": " since Monday."
+            }
+          ]
+        }
+      ]
+    },
+    "version": {
+      "type": "doc",
+      "content": [
+        {
+          "type": "paragraph",
+          "content": [
+            {
+              "type": "text",
+              "text": "See "
+            },
+            {
+              "type": "text",
+              "text": "dispatch://CORE-1",
+              "marks": [
+                {
+                  "type": "link",
+                  "attrs": {
+                    "href": "dispatch://CORE-1"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "text": " since Monday."
+            }
+          ]
+        }
+      ]
+    },
+    "snippet": {
+      "type": "doc",
+      "content": [
+        {
+          "type": "paragraph",
+          "content": [
+            {
+              "type": "text",
+              "text": "See "
+            },
+            {
+              "type": "text",
+              "text": "dispatch://",
+              "marks": [
+                {
+                  "type": "link",
+                  "attrs": {
+                    "href": "dispatch://CORE-1"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "text": "CORE",
+              "marks": [
+                {
+                  "type": "link",
+                  "attrs": {
+                    "href": "dispatch://CORE-1"
+                  }
+                },
+                {
+                  "type": "searchHighlight"
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "text": "-1",
+              "marks": [
+                {
+                  "type": "link",
+                  "attrs": {
+                    "href": "dispatch://CORE-1"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "text": " since Monday."
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
     "name": "marks-inside-formatting",
     "markdown": "**Bold** word, see `code` here\n",
     "latest": {

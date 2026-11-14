@@ -157,6 +157,39 @@ test("a hit inside a dispatch:// reference keeps its highlight on the reference'
   }
 });
 
+test("a hit on a stored autolink's key reads as the reference it links to, its title marked whole", async () => {
+  const getIssueSummary = spyOn(api, "getIssueSummary").mockResolvedValue(issue);
+  // q=CORE over the link a document stores for the autolink `<dispatch://CORE-1>`, as Postgres
+  // answers it once the cut is widened back to the whole link: `See
+  // [dispatch://<b>CORE</b>-1](dispatch://<b>CORE</b>-1) since Monday.` - ts_headline marks the
+  // key in the address as well as in the words. The server keeps the mark on the words alone, so
+  // the link still points at CORE-1: a link whose words are its own address reads as the issue's
+  // name, and a title drawn in place of marked words is marked whole.
+  const hit = stored("a-marked-autolink-to-a-reference");
+  const { preview, view } = renderPreview({
+    highlightClassName: "hit",
+    lines: 2,
+    markdown: snippetSource(hit.markdown),
+    tree: hit.snippet,
+  });
+  try {
+    await waitFor(() => expect(preview()).toHaveTextContent("Design decision"));
+    const reference = preview().querySelector<HTMLElement>("[data-dispatch-ref]");
+    if (reference === null) throw new Error("the autolink did not render as a reference");
+    expect(reference.textContent).toBe("CORE-1 Design decision");
+    expect(reference.querySelector("mark")?.textContent).toBe("CORE-1 Design decision");
+    expect(marks(preview())).toEqual(["CORE-1 Design decision"]);
+    expect(preview().textContent).toBe("See CORE-1 Design decision since Monday.");
+    expect(preview().textContent).not.toContain("dispatch://");
+    await waitFor(() =>
+      expect(reference.closest("a")?.getAttribute("href")).toBe("/issues/CORE-1")
+    );
+  } finally {
+    view.unmount();
+    getIssueSummary.mockRestore();
+  }
+});
+
 test("a hit marks the word the server matched, not the same letters inside other words", async () => {
   // q=port: `Report the <mark>port</mark> number to the support team before we export`. The
   // server marks whole lexemes, and the preview draws the marks of the tree and adds none of

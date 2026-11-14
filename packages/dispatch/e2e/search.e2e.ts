@@ -516,6 +516,62 @@ test("a search mark inside a reference stays on the words as the server sent it,
   }
 });
 
+// The same rule over the link a document stores for the autolink `<dispatch://K>`,
+// `[dispatch://K](dispatch://K)`. `ts_headline` marks the key in the link's words and in its
+// address alike: searched for `CORE`, `See [dispatch://CORE-1](dispatch://CORE-1) since Monday.`
+// answers `<b>CORE</b>-1](dispatch://<b>CORE</b>-1) since Monday`, which the server widens back
+// to the whole link (`pmdoc.SearchSnippet`), and `See [the design](dispatch://CORE-1) since
+// Tuesday.` answers `design](dispatch://<b>CORE</b>-1) since Tuesday`, no word of the link marked
+// (measured on the pod's Postgres 18, 2026-11-14). The server keeps a mark on the words alone and
+// the address as stored (`pmdoc.DisplaySnippetJSON`), so the autolink is still a reference to
+// the issue and reads as its name, marked whole; and the worded link keeps its words, unmarked,
+// as a reference to the same issue. The palette is a `control` host, so neither is a live link.
+// SLOW(>=2s): two seeded project documents and a search answered by Postgres's headline.
+test("a search hit on a stored autolink's key reads as the issue it links to, and a worded link keeps its words", async ({
+  browser,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "Bench work" });
+  await createProjectDocument("CORE", {
+    content: `See <dispatch://${issue.key}> since Monday.\n`,
+    name: "Autolink notes",
+  });
+  await createProjectDocument("CORE", {
+    content: `See [the design](dispatch://${issue.key}) since Tuesday.\n`,
+    name: "Worded notes",
+  });
+  const context = await asUser(browser, "alice");
+
+  try {
+    const page = await context.newPage();
+    await openSearchFromRail(page, false);
+    await page.getByRole("combobox", { name: "Search" }).fill("CORE");
+    const dialog = page.getByRole("dialog", { name: "Search" });
+
+    const autolink = dialog.getByRole("option", { name: /^doc / }).filter({ hasText: "Monday" });
+    await expect(autolink).toHaveCount(1);
+    await expect(autolink.locator(`[data-dispatch-ref="dispatch://${issue.key}"]`)).toHaveText(
+      `${issue.key} Bench work`
+    );
+    await expect(autolink.locator("mark")).toHaveText([`${issue.key} Bench work`]);
+    await expect(autolink.locator("[data-dispatch-ref] mark")).toHaveCount(1);
+    await expect(autolink).toContainText(`See ${issue.key} Bench work since Monday.`);
+    await expect(autolink).not.toContainText("dispatch://");
+
+    const worded = dialog.getByRole("option", { name: /^doc / }).filter({ hasText: "Tuesday" });
+    await expect(worded).toHaveCount(1);
+    await expect(worded.locator(`[data-dispatch-ref="dispatch://${issue.key}"]`)).toHaveText(
+      "the design"
+    );
+    await expect(worded.locator("mark")).toHaveCount(0);
+    await expect(worded).toContainText("See the design since Tuesday.");
+    await expect(worded).not.toContainText("](");
+    await expect(worded).not.toContainText(issue.title);
+  } finally {
+    await context.close();
+  }
+});
+
 // SLOW(>=2s): a seeded project document, issue and message, and the two routes the palette's
 // hits open - a Conversation turn and the document, which mounts its editor.
 test("a project-document hit is grouped under the document and opens it; a message hit opens its Conversation turn", async ({
