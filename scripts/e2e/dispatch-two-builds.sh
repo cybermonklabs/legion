@@ -9,11 +9,12 @@
 #   DATABASE_URL=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
 #     bash scripts/e2e/dispatch-two-builds.sh --base-commit <rev>
 #
-# DATABASE_URL is required and must name a loopback host: the run drops and recreates its `public`
-# schema, so the base build migrates it from empty and this build migrates it forward, as a
-# deployment's upgrade does. --base-commit is required and names the commit the base build is
-# built from, which is the merge base with the default branch for a change under review; its tree
-# is taken with `git archive` into the run's own work directory, so the checkout is never touched.
+# DATABASE_URL is required and must name a loopback host: the run empties its `public` schema and
+# keeps the extensions it holds, so the base build migrates it from empty and this build migrates
+# it forward, as a deployment's upgrade does. --base-commit is required and names the commit the
+# base build is built from, which is the merge base with the default branch for a change under
+# review; its tree is taken with `git archive` into the run's own work directory, so the checkout
+# is never touched.
 # The ports are TWO_BUILDS_BASE_PORT (19071), TWO_BUILDS_HEAD_PORT (19072) and
 # TWO_BUILDS_ENVOY_PORT (19073), each refused when something already answers on it. The work
 # directory, under TMPDIR, holds the base tree, both binaries and every process's log: removed

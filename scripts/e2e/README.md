@@ -237,7 +237,10 @@ Each item below names a script, then what it proves.
   a closed issue takes a result for an `after_merge` check and still refuses a document write 409 `ISSUE_CLOSED`;
   a `default_branch` result stands at the branch for a commit the compare calls `behind` and at no basis for one it calls `diverged`;
   and a result whose issue resolves to a repository the installation lookup does not find is answered unknown, with the unreadable repository as the reason.
-  Run against a base binary (`DISPATCH_BIN`), it is the change's negative control
+  Three more cases run the `dispatch` command as a process against that server.
+  The command refuses a bare `-` given to any text flag its help lists but `dispatch artifact --path`, with exit 2 and a line that names the flag's `-file` twin.
+  It keeps every other value of a text flag byte for byte.
+  Run against a base binary (`DISPATCH_BIN`) or against the command of another tree (`VERIFICATION_RESULTS_E2E_DISPATCH_CLI`), it is the change's negative control
 
 - `child-adoption.sh`
 
@@ -3844,7 +3847,8 @@ Each item below names an input and its default, then what it means.
 - `DATABASE_URL` — required
 
   a scratch PostgreSQL database with `pgvector` available, on `127.0.0.1`, `localhost` or `::1`: [`lib/loopback-dsn.py`](#libloopback-dsnpy) asks libpq which host the DSN names, and the run refuses every other answer.
-  The run drops and recreates its `public` schema before the server migrates it, and leaves what it wrote there for inspection
+  The run empties its `public` schema with [`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s `empty_public_schema` before the server migrates it: every table, view, routine and type goes, and the extensions stay.
+  It leaves what it wrote there for inspection
 
 - `DISPATCH_BIN` — unset
 
@@ -3938,26 +3942,39 @@ DATABASE_URL=… DISPATCH_BIN="$TMPDIR/envoy-dispatch-base" bash scripts/e2e/dis
 
 ```sh
 DATABASE_URL=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
-  [DISPATCH_BIN=<envoy-dispatch>] bash scripts/e2e/verification-results.sh     # → "verification results e2e: PASS in <n>s", exit 0
+  [DISPATCH_BIN=<envoy-dispatch>] [VERIFICATION_RESULTS_E2E_DISPATCH_CLI=<bin/dispatch.ts>] \
+  bash scripts/e2e/verification-results.sh     # → "verification results e2e: PASS in <n>s", exit 0
 ```
 
 Runs on any Linux host with `go`, `bun`, `curl`, `psql`, `openssl` and `python3` (for [`lib/loopback-dsn.py`](#libloopback-dsnpy)) — no Docker.
 It proves `comparisonReader` (`packages/envoy/internal/dispatch/api/results_comparison.go`) and `recordPullRequestHead` (`packages/envoy/internal/dispatch/delivery/pull_request_heads.go`) on the wire:
 the real `envoy-dispatch` records each result and says where its commit stands against the commits and branches its check compares with, and the head a `before_merge` result is compared with moves only because a pull-request event reached the bus.
 Two of its cases prove the rest of that answer:
-the bases each check names, read through the `dispatch results` command of this checkout as well as through the API, and the attribution that decides which issue a pull request's head answers for (`packages/envoy/internal/dispatch/delivery/attribution.go`), the reconcile's re-judging of a stored row included.
+the bases each check names, read through the `dispatch results` command as well as through the API, and the attribution that decides which issue a pull request's head answers for (`packages/envoy/internal/dispatch/delivery/attribution.go`), the reconcile's re-judging of a stored row included.
+Three more cases prove the `dispatch` command itself (`parseCommand` in `packages/envoy-client/src/dispatch-command.ts`).
+It refuses a bare `-` given to any text flag its help lists, except `dispatch artifact --path`, whose value names a local file.
+It keeps every other value of a text flag byte for byte.
 
 Each item below names an input and its default, then what it means.
 
 - `DATABASE_URL` — required
 
   a scratch PostgreSQL database with `pgvector` available, on `127.0.0.1`, `localhost` or `::1`: [`lib/loopback-dsn.py`](#libloopback-dsnpy) asks libpq which host the DSN names, and the run refuses every other answer.
-  The run drops and recreates its `public` schema before the server migrates it, and leaves what it wrote there for inspection.
+  The run empties its `public` schema with [`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s `empty_public_schema` before the server migrates it: every table, view, routine and type goes, and the extensions stay.
+  In a Legion pod, a database that `createdb` makes on the server `LEGION_TEST_PG_DSN` names holds `vector`, so it serves.
+  The run leaves what it wrote there for inspection.
   The driver reads it too, as `VERIFICATION_RESULTS_E2E_DATABASE_URL`, for the one fixture no route of Dispatch can write: a stored pull request row of the attribution rule before this build's, since every write of this build stamps the rule it judges by
 
 - `DISPATCH_BIN` — unset
 
   a prebuilt `envoy-dispatch` to run; unset, the script builds `./cmd/dispatch` from this checkout's `packages/envoy`
+
+- `VERIFICATION_RESULTS_E2E_DISPATCH_CLI` — unset
+
+  the `bin/dispatch.ts` the driver runs in place of this checkout's `packages/envoy-client/bin/dispatch.ts`.
+  The script reads it before it drops the inherited variables, and refuses a value that is not a readable file.
+  The script makes the path absolute, because `dash-refused` runs the command in another directory.
+  A negative control names the command of another tree here, with no change to the checkout
 
 - `VERIFICATION_RESULTS_E2E_DISPATCH_PORT` — `19061`
 
@@ -3978,8 +3995,12 @@ The server also runs its delivery reconcile every two seconds, and its first pas
 the attribution case waits for one pass to re-judge two stored rows.
 
 The driver, `verification-results.ts`, acts as one session with the agent token (each write naming the session as `actor`) and as the person `alice` through `GET /auth/_dev/signin`.
-It reads two of its answers through the `dispatch` command of this checkout as well (`packages/envoy-client/bin/dispatch.ts` under `DISPATCH_HOST=omp`, the run's own `DISPATCH_URL` and token, and a scratch `HOME`), which is the surface a reviewer reads.
-Its setup seeds the fake GitHub with two repositories — `acme/verification-live`, whose default branch `main` holds three of the run's commits, and `acme/verification-hidden`, which the installation lookup answers 404 for — maps each as a project's default repository, and writes the one `delivery_settings` row the intake needs before it binds its durable.
+It also runs the `dispatch` command as a process: the `bin/dispatch.ts` that `VERIFICATION_RESULTS_E2E_DISPATCH_CLI` names, else this checkout's `packages/envoy-client/bin/dispatch.ts`.
+The setup line names the command the run uses.
+Each run gets `DISPATCH_HOST=omp`, the run's own session, `DISPATCH_URL` and token, and a scratch `HOME`, and the driver gives it a stdin and a working directory when a step needs them.
+The bases case reads two of its answers through the command, which is the surface a reviewer reads.
+The three cases of a bare `-` drive the command for every step, and judge each step by its exit code and what it printed.
+The driver's setup seeds the fake GitHub with two repositories — `acme/verification-live`, whose default branch `main` holds three of the run's commits, and `acme/verification-hidden`, which the installation lookup answers 404 for — maps each as a project's default repository, and writes the one `delivery_settings` row the intake needs before it binds its durable.
 `acme/verification-live`'s `commits` names every commit a case records at, since the record route asks GitHub whether the repository holds a result's commit and refuses one it does not; the one commit it names nowhere is what the refusal case drives.
 `commit_pulls` is empty on purpose:
 the record route's read-through asks GitHub which pull requests name a result's commit, so with no answer there the only thing that can teach Dispatch a head is the envelope a case publishes.
@@ -4045,6 +4066,47 @@ Each item below names a case and how it is driven, then what must hold for it to
   the third is on the child's own branch, so the person's link stands above it;
   and the last envelope moves a head without moving its attribution, which appends no event, so an event marks a change and never a pass
 
+- `dash-refused` — one issue with the `before_merge` check `k1`, and eight calls of the command, in order.
+  Step 1 is the reported call, `dispatch result --issue <issue> --check k1 --role implementer --verdict pass --commit <commit> --run - --observed - --negative-control -`, with a here-document on stdin.
+  Step 2 gives `--run=-` alone, and step 3 gives `--observed -` with `--dry-run`.
+  Step 4 is `dispatch comment --issue <issue> --body -`, and step 5 is `dispatch message --issue <issue> --body -`.
+  Step 6 is `dispatch issue --project VRF --title -`.
+  Step 7 is the call the refusal of step 1 leads to: `--run-file <file A>`, `--observed-file -` with the here-document, and `--negative-control-file <file B>`.
+  Step 8 is `dispatch artifact --issue <issue> --name dash.txt --path -`, in a directory that holds a file named `-`
+
+  step 1 exits 2, prints exactly the first text of R1 of dispatch://INFRA-2618/spec and a line feed, and prints nothing on stderr.
+  When step 1 exits 0, the failure names the `run`, `observed` and `negative_control` that `k1` then stores.
+  Steps 2 to 5 each exit 2.
+  Between the `was not called` line and the `- Example:` line, each prints exactly the one problem line for the flag it gives `-`, and none prints a `- Allowed flags:` line.
+  Step 6 exits 2 and prints exactly the second text of that requirement and a line feed.
+  The project holds as many issues after step 6 as before it, each count read over every page of `GET /api/v1/issues?project=VRF`.
+  After step 6, the issue holds no result, no comment and no message.
+  Step 7 exits 0, and `k1` then holds one result, whose `run`, `observed` and `negative_control` equal the bytes of file A, the here-document and file B.
+  Step 8 exits 0, and version 1 of `dash.txt`, read through `GET /api/v1/issues/{key}/artifacts/dash-txt/versions/1`, holds the bytes of the file named `-`
+
+- `dash-refused-every-flag` — `dispatch --help`, then `dispatch <command> --help` for each command it lists.
+  For each `--X-file <path>` row whose `--X` the help lists with a value other than `<json>`, the case calls `dispatch <command> --X - --dry-run`.
+  It leaves out `--path-file` of `dispatch artifact`, because `--path` names a local file to upload
+
+  each call exits 2, and its output holds, as a whole line, the problem line that R1 gives for `--X`.
+  The case reads the line as well as the exit code, because a dry run that lacks a required flag also exits 2.
+  The case stops at the first call that fails, and names its command, its flag, its exit code and its output.
+  It prints each command with the flags it called, then the two counts.
+  It fails when it called fewer than 28 commands or fewer than 112 flags
+
+- `values-kept` — one issue with three `before_merge` checks, and five steps.
+  Step 1 records a result for the first check with `--run "go test ./internal/workflow/ -run 'AppendOnly|Line|StartWrittenOverAnOwedRow' -count=1"`, with `--observed-file -` fed the two lines `--- PASS: TestAppendOnly (0.00s)` and `ok`, and with `--negative-control "-run 'A|B' with the guard taken out: 2 tests fail"`.
+  Step 2 records a result for the second check with `--observed='--- PASS: TestLine (0.00s)'`, and with `--negative-control-file` naming a file that holds the one character `-` and no line feed.
+  Step 3 records a result for the third check with `--observed-file -` fed the one character `-` and no line feed.
+  Step 4 gives the third check `--observed '--- PASS: TestLine (0.00s)'`, the value as a word of its own.
+  Step 5 reads `GET /api/v1/issues/{key}/results`
+
+  steps 1 to 3 each exit 0.
+  Step 4 exits 2 and prints the whole line `- --observed needs a value`, as the command did before this change.
+  In step 5 each check holds one result.
+  Each stored `run`, `observed` and `negative_control` equals byte for byte what its step gave, and the stdin text of step 1 keeps both its line feeds.
+  A field that a step did not send reads as the empty string
+
 Every case prints `== <case>`, what it read, and `ok <case>` or `FAIL <case>: <why>`; a summary follows, and any FAIL exits 1.
 The work directory, under `TMPDIR`, holds the binaries and the logs of natsd, the two fakes and the server:
 removed when the run passes, kept (without the binaries) and printed when it fails.
@@ -4060,6 +4122,39 @@ go -C "$TMPDIR/base-src/packages/envoy" build -o "$TMPDIR/envoy-dispatch-base" .
 DATABASE_URL=… DISPATCH_BIN="$TMPDIR/envoy-dispatch-base" bash scripts/e2e/verification-results.sh
 # → FAIL the-results-route-is-served: the record route answers 404 NOT_FOUND, no other case run,
 #   exit 1
+```
+
+The three cases of a bare `-` take their negative controls from `VERIFICATION_RESULTS_E2E_DISPATCH_CLI`, so the checkout does not change.
+For `dash-refused` and `dash-refused-every-flag`, the input names the command of a git worktree of the commit this change starts from:
+
+```sh
+git -C <checkout> worktree add --detach "$TMPDIR/<base tree>" <base commit>
+(cd "$TMPDIR/<base tree>" && bun install --frozen-lockfile)
+DATABASE_URL=… [DISPATCH_BIN=<envoy-dispatch>] \
+  VERIFICATION_RESULTS_E2E_DISPATCH_CLI="$TMPDIR/<base tree>/packages/envoy-client/bin/dispatch.ts" \
+  bash scripts/e2e/verification-results.sh
+# → FAIL dash-refused: step 1: dispatch result … --run - --observed - --negative-control - exited 0,
+#   want 2: k1 stores run "-", observed "-", negative_control "-"
+# → FAIL dash-refused-every-flag: step <n>: dispatch <command> <flag> - --dry-run exited <code>,
+#   want 2: its output holds no problem line for <flag>
+#   exit 1
+git -C <checkout> worktree remove --force "$TMPDIR/<base tree>"
+```
+
+For `values-kept`, the input names the command of a git worktree of this change's head, where the new rule refuses every value that starts with `-` and not the value `-` alone:
+
+```sh
+git -C <checkout> worktree add --detach "$TMPDIR/<head tree>" <head commit>
+(cd "$TMPDIR/<head tree>" && bun install --frozen-lockfile)
+# In "$TMPDIR/<head tree>/packages/envoy-client/src/dispatch-command.ts", the bare-`-` rule of
+# parseCommand tests `value === STDIN`: change that test to `value.startsWith(STDIN)`.
+DATABASE_URL=… [DISPATCH_BIN=<envoy-dispatch>] \
+  VERIFICATION_RESULTS_E2E_DISPATCH_CLI="$TMPDIR/<head tree>/packages/envoy-client/bin/dispatch.ts" \
+  bash scripts/e2e/verification-results.sh
+# → FAIL values-kept: step 1: dispatch result … exited 2, want 0, and its stdout holds the problem
+#   line for --negative-control
+#   exit 1
+git -C <checkout> worktree remove --force "$TMPDIR/<head tree>"
 ```
 
 ## child-adoption.sh
@@ -4806,7 +4901,8 @@ Two more cases pin a refusal of that mode: a password of bytes libpq reads as no
 
 The two helpers a proof that writes a PostgreSQL server reads its caller's DSN with, and the one copy of why they ask libpq.
 Both answers come from [`lib/loopback-dsn.py`](#libloopback-dsnpy), which this file addresses beside itself, so it needs nothing of its caller's.
-[`lib/rig.sh`](#librigsh) sources it, which is how seven of the eight proofs have it, and [`envoy-session-delivery.sh`](#envoy-session-deliverysh) sources it on its own, since that proof keeps an `await_port_file` and a `keep_port` of its own and sources no rig.
+A third helper, `empty_public_schema`, empties the database a run was given, so that a server migrates it from nothing.
+[`lib/rig.sh`](#librigsh) sources this file, which is how seven of the eight proofs have it, and [`envoy-session-delivery.sh`](#envoy-session-deliverysh) sources it on its own, since that proof keeps an `await_port_file` and a `keep_port` of its own and sources no rig.
 [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh) sources it on its own too, and calls `require_loopback_dsn` in `prerequisites` for the seven proofs that make its run.
 
 ```sh
@@ -4828,7 +4924,16 @@ Both answers come from [`lib/loopback-dsn.py`](#libloopback-dsnpy), which this f
   WHAT is what the run does on that server, in a few words.
   This mode refuses every DSN the guard refuses, and a value the rebuilt string cannot carry as well, so [`envoy-session-delivery.sh`](#envoy-session-deliverysh) and [`dispatch-session-settings.sh`](#dispatch-session-settingssh) call it in their setup step as their one read of the DSN, before any build or service
 
-Both helpers share one call to `lib/loopback-dsn.py`, which takes the DSN from the environment of a command substitution's own subshell, so no process list holds the password.
+- `empty_public_schema URL`
+
+  drops every table, view, routine and type of the `public` schema of the database URL names, and keeps the extensions that schema holds.
+  It returns the status of its `psql`, so the caller ends the run in its own words (`|| fail "could not empty the database's public schema"`).
+  The cluster's master role installs `vector` (`0072_embeddings_core.up.sql` takes it as given with `create extension if not exists`), and the role a run connects as need not be that role.
+  A `drop schema public cascade` would remove `vector` with the schema and leave a database no build can migrate.
+  A Legion pod's test server is one such case: every database made from its `template1` holds `vector`, and its login may not create it again.
+  [`verification-results.sh`](#verification-resultssh), [`dispatch-claimant-delivery.sh`](#dispatch-claimant-deliverysh) and [`lib/two-builds.sh`](#libtwo-buildssh)'s `two_builds_reset_database` call it
+
+`require_loopback_dsn` and `run_database_url` share one call to `lib/loopback-dsn.py`, which takes the DSN from the environment of a command substitution's own subshell, so no process list holds the password.
 
 ## lib/held-port.py
 
@@ -5561,7 +5666,7 @@ Each item below names a function, then what it does.
 
 - `two_builds_build NAME`, `two_builds_reset_database`, `two_builds_fake_envoy`
 
-  make the work directory under `TMPDIR` named for the proof NAME and build both binaries into it, empty the database's `public` schema so the base build migrates it from nothing and this build migrates it forward, and start the harness's fake Envoy listener
+  make the work directory under `TMPDIR` named for the proof NAME and build both binaries into it, empty the database's `public` schema with [`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s `empty_public_schema` so the base build migrates it from nothing and this build migrates it forward, and start the harness's fake Envoy listener
 
 - `two_builds_identity`
 

@@ -2,12 +2,18 @@
 // (the run's agent token, each write naming the session as `actor`) and one person (the dev
 // sign-in cookie), seeds the run's fake GitHub, publishes each pull-request event as the
 // normalized `pull_request` envelope on the run's own NATS, the one path Dispatch's delivery
-// intake reads, and reads two of its answers back through the `dispatch results` command of this
-// checkout as well as through the API.
+// intake reads, and reads two of its answers back through the `dispatch results` command as well
+// as through the API. Three more cases run the `dispatch` command as a process against the same
+// server: a bare `-` given to a text flag is refused, on every text flag the command's help
+// lists, and every other value of a text flag is kept byte for byte.
 //
 //   VERIFICATION_RESULTS_E2E_AGENT_TOKEN=<token> \
-//     VERIFICATION_RESULTS_E2E_DATABASE_URL=<dsn> bun scripts/e2e/verification-results.ts \
-//     <dispatch-url> <nats-url> <fake-github-url>
+//     VERIFICATION_RESULTS_E2E_DATABASE_URL=<dsn> \
+//     [VERIFICATION_RESULTS_E2E_DISPATCH_CLI=<bin/dispatch.ts>] \
+//     bun scripts/e2e/verification-results.ts <dispatch-url> <nats-url> <fake-github-url>
+//
+// The `dispatch` command is the bin/dispatch.ts VERIFICATION_RESULTS_E2E_DISPATCH_CLI names, an
+// absolute path the shell script made, else this checkout's packages/envoy-client/bin/dispatch.ts.
 //
 // The database URL is the run's own, which the shell script resets before the server migrates it.
 // The driver writes SQL for one fixture and reads it for one answer: a stored pull request row of
@@ -23,11 +29,20 @@
 // Each later case seeds the issue it drives, with the spec and the Verification document that
 // case needs. A step outside the cases that fails (the sign-in, the projects, the fake GitHub's
 // seed, the delivery settings, the probe issue) exits 2 naming it.
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { CheckBasis, CheckBlock, CheckResult, CheckResultRecorded } from "@legion/contracts";
+import type {
+  CheckBasis,
+  CheckBlock,
+  CheckResult,
+  CheckResultRecorded,
+  IssueSummaryPage,
+} from "@legion/contracts";
 import { connect, StringCodec } from "nats";
+// By path: the root package does not depend on @legion/contracts, so bun resolves no value from
+// it here. The type import above is erased before the driver runs.
+import { MAX_ISSUE_PAGE_LIMIT } from "../../packages/contracts/src/dispatch-api-limits";
 
 const [dispatchUrl, natsUrl, githubUrl] = process.argv.slice(2);
 const agentToken = process.env.VERIFICATION_RESULTS_E2E_AGENT_TOKEN ?? "";
@@ -116,6 +131,12 @@ const heldCommits = {
   attributionStoredOpen: "c6".repeat(20),
   /** The head of the stored merged row it re-judges with it. */
   attributionStoredMerged: "c7".repeat(20),
+  /** The commit the bare-`-` case records its results at: the result the refusal leads to, and
+   *  under a command built before the refusal, the result of the reported call, which would
+   *  otherwise be refused for its commit rather than stored with `-` in it. */
+  dashRefused: "d1".repeat(20),
+  /** The commit the case of the kept values records its three results at. */
+  valuesKept: "d2".repeat(20),
 };
 
 /** Every commit the cases name: the ones that repository holds, and three it does not.
@@ -335,52 +356,99 @@ function comparedOf(check: CheckBlock): string {
   return `nothing: ${check.compared_nothing ?? "no reason"}`;
 }
 
-/** The `dispatch` command of this checkout (packages/envoy-client/bin/dispatch.ts), which the
- *  bases case reads the same answers through: the surface a reviewer reads, beside the API the
- *  rest of the proof reads. */
-const dispatchCommand = join(import.meta.dir, "../../packages/envoy-client/bin/dispatch.ts");
+/** The input that names the `dispatch` command to run, empty when it is unset. The shell script
+ *  makes it an absolute path, since one case runs the command in a directory of its own. */
+const dispatchCommandInput = process.env.VERIFICATION_RESULTS_E2E_DISPATCH_CLI ?? "";
 
-/** Runs `dispatch results --issue <key> [--at <commit>]` against the run's own server, as the
- *  run's session, and answers what it printed. The command is given a home of its own and the
- *  three variables that name the server, so no envoy.json, token file or session state of the
- *  caller's is read. */
-async function resultsCommand(key: string, at?: string): Promise<string> {
+/** The `dispatch` command the cases run: the bin/dispatch.ts the input names, else this
+ *  checkout's (packages/envoy-client/bin/dispatch.ts). The bases case reads two of its answers
+ *  through it, beside the API the rest of the proof reads, and the cases of a bare `-` drive it
+ *  as a process. A negative control names another build's here, with no change to the checkout. */
+const dispatchCommand =
+  dispatchCommandInput === ""
+    ? join(import.meta.dir, "../../packages/envoy-client/bin/dispatch.ts")
+    : dispatchCommandInput;
+
+/** What one run of the `dispatch` command answered: its exit code and what it printed. */
+interface DispatchRun {
+  readonly code: number;
+  readonly stdout: string;
+  readonly stderr: string;
+}
+
+/** Runs the `dispatch` command with `argv` against the run's own server, as the run's session,
+ *  and answers its exit code and what it printed, whatever the code. The command is given a home
+ *  of its own and the variables that name its host, its session and the server, so no
+ *  envoy.json, token file or session state of the caller's is read. Its standard input holds
+ *  `stdin`, or nothing when that is absent, and it runs in `cwd`, or in the driver's own
+ *  directory when that is absent. */
+async function runDispatch(
+  argv: readonly string[],
+  { stdin, cwd }: { readonly stdin?: string; readonly cwd?: string } = {}
+): Promise<DispatchRun> {
   const home = mkdtempSync(join(tmpdir(), "verification-results-cli-"));
   try {
-    const child = Bun.spawn(
-      [
-        process.execPath,
-        dispatchCommand,
-        "results",
-        "--issue",
-        key,
-        ...(at === undefined ? [] : ["--at", at]),
-      ],
-      {
-        env: {
-          DISPATCH_HOST: "omp",
-          DISPATCH_SESSION_ID: session,
-          DISPATCH_TOKEN: agentToken,
-          DISPATCH_URL: dispatchUrl,
-          HOME: home,
-          PATH: process.env.PATH ?? "",
-        },
-        stderr: "pipe",
-        stdout: "pipe",
-      }
-    );
+    const child = Bun.spawn([process.execPath, dispatchCommand, ...argv], {
+      cwd,
+      env: {
+        DISPATCH_HOST: "omp",
+        DISPATCH_SESSION_ID: session,
+        DISPATCH_TOKEN: agentToken,
+        DISPATCH_URL: dispatchUrl,
+        HOME: home,
+        PATH: process.env.PATH ?? "",
+      },
+      stderr: "pipe",
+      stdin: stdin === undefined ? "ignore" : new Blob([stdin]),
+      stdout: "pipe",
+    });
     const [code, stdout, stderr] = await Promise.all([
       child.exited,
       new Response(child.stdout).text(),
       new Response(child.stderr).text(),
     ]);
-    if (code !== 0) {
-      throw new Error(`dispatch results --issue ${key} exited ${code}: ${stderr.trim()}`);
-    }
-    return stdout;
+    return { code, stderr, stdout };
   } finally {
     rmSync(home, { force: true, recursive: true });
   }
+}
+
+/** One word of a command line as a shell reads it back: bare when it holds no character a shell
+ *  reads, else in single quotes. */
+function shellWord(word: string): string {
+  return /^[A-Za-z0-9_./:@%+=,-]+$/.test(word) ? word : `'${word.replaceAll("'", "'\\''")}'`;
+}
+
+/** The failure of one step of a case that runs the `dispatch` command: the step's number, its
+ *  command line, the exit code it got and the one it wanted, what else went wrong when `why`
+ *  names it, then its stdout and its stderr as JSON strings, so every byte of them reads in the
+ *  FAIL line. */
+function stepFailed(
+  step: number,
+  argv: readonly string[],
+  run: DispatchRun,
+  wanted: number,
+  why?: string
+): string {
+  return [
+    `step ${step}: dispatch ${argv.map(shellWord).join(" ")} exited ${run.code}, want ${wanted}${why === undefined ? "" : `: ${why}`}`,
+    `stdout ${JSON.stringify(run.stdout)}`,
+    `stderr ${JSON.stringify(run.stderr)}`,
+  ].join("\n   ");
+}
+
+/** Runs `dispatch results --issue <key> [--at <commit>]` and answers what it printed. */
+async function resultsCommand(key: string, at?: string): Promise<string> {
+  const run = await runDispatch([
+    "results",
+    "--issue",
+    key,
+    ...(at === undefined ? [] : ["--at", at]),
+  ]);
+  if (run.code !== 0) {
+    throw new Error(`dispatch results --issue ${key} exited ${run.code}: ${run.stderr.trim()}`);
+  }
+  return run.stdout;
 }
 
 /** The head line the command prints for each check: `- <block id> (<when>). Compared with …`,
@@ -610,7 +678,7 @@ const probeIssue = String(
 );
 
 console.log(
-  `setup: person ${person}; session ${session}; probe issue ${probeIssue}; repositories ${repo} (default branch main) and ${hiddenRepo} (no installation). Each case seeds the issue it drives.`
+  `setup: person ${person}; session ${session}; probe issue ${probeIssue}; repositories ${repo} (default branch main) and ${hiddenRepo} (no installation); dispatch command ${dispatchCommand} (${dispatchCommandInput === "" ? "this checkout's" : "VERIFICATION_RESULTS_E2E_DISPATCH_CLI"}). Each case seeds the issue it drives.`
 );
 
 // --- cases ---------------------------------------------------------------------------------------
@@ -1557,6 +1625,434 @@ await runCase("k-attribution-what-decides-a-pull-request-issue", async () => {
   return afterPush.length === childMoves.length
     ? undefined
     : `${child} records ${afterPush.length} moves after the push, want ${childMoves.length}`;
+});
+
+// --- a bare `-` given to a text flag -----------------------------------------------------------
+//
+// The three cases of dispatch://INFRA-2618. Each runs the `dispatch` command as a process against
+// the run's own server (runDispatch) and judges each step by its exit code and what it printed.
+// Their negative controls name another build's bin/dispatch.ts in
+// VERIFICATION_RESULTS_E2E_DISPATCH_CLI (scripts/e2e/README.md, "Negative control").
+
+/** The first text of R1 of dispatch://INFRA-2618/spec, which `dispatch result` prints for the
+ *  reported call. Its example is the command's own help example, not a value of this run. It is
+ *  written out here and not built with the code it checks. */
+const reportedCallRefusal = `dispatch result was not called: 3 problems
+- --run - sends the one character "-". --run-file <path> reads --run from a file, and --run-file - reads it from stdin. One flag of a call may read stdin.
+- --observed - sends the one character "-". --observed-file <path> reads --observed from a file, and --observed-file - reads it from stdin. One flag of a call may read stdin.
+- --negative-control - sends the one character "-". --negative-control-file <path> reads --negative-control from a file, and --negative-control-file - reads it from stdin. One flag of a call may read stdin.
+- Example: dispatch result --issue DSP-1 --check k1 --role implementer --verdict pass --commit 1111111111111111111111111111111111111111`;
+
+/** The second text of that requirement, which `dispatch issue --title -` prints, written out the
+ *  same way. */
+const titleRefusal = `dispatch issue was not called: 1 problem
+- --title - sends the one character "-". --title-file <path> reads --title from a file, and --title-file - reads it from stdin. One flag of a call may read stdin.
+- Example: dispatch issue --project DSP --title 'Native workspace'`;
+
+/** The problem line that requirement gives for a bare `-` on the text flag `flag`, as a refusal
+ *  lists it. */
+function dashLine(flag: string): string {
+  return `- ${flag} - sends the one character "-". ${flag}-file <path> reads ${flag} from a file, and ${flag}-file - reads it from stdin. One flag of a call may read stdin.`;
+}
+
+/** The lines a refusal the command printed lists between its `was not called` line and its
+ *  `- Example:` line, or undefined when it printed no such pair. */
+function problemLines(printed: string): string[] | undefined {
+  const lines = printed.split("\n");
+  const head = lines.findIndex((line) => line.includes(" was not called: "));
+  const example = lines.findIndex((line) => line.startsWith("- Example: "));
+  return head === -1 || example <= head ? undefined : lines.slice(head + 1, example);
+}
+
+/** The three text fields of a result, in the words a case prints and compares. */
+function fieldsOf(result: Pick<CheckResult, "run" | "observed" | "negative_control">): string {
+  return `run ${JSON.stringify(result.run)}, observed ${JSON.stringify(result.observed)}, negative_control ${JSON.stringify(result.negative_control)}`;
+}
+
+/** How many issues `project` holds, counted over every page of
+ *  `GET /api/v1/issues?project=<key>&limit=&offset=`, up to the total the pages name. */
+async function issueCount(project: string): Promise<number> {
+  let counted = 0;
+  let offset = 0;
+  let total: number;
+  do {
+    const page = (await asSession(
+      "GET",
+      `/api/v1/issues?project=${encodeURIComponent(project)}&limit=${MAX_ISSUE_PAGE_LIMIT}&offset=${offset}`
+    )) as IssueSummaryPage;
+    counted += page.issues?.length ?? 0;
+    total = page.total;
+    offset += MAX_ISSUE_PAGE_LIMIT;
+  } while (offset < total);
+  return counted;
+}
+
+/** The bytes of one version of an issue's uploaded file, as
+ *  `GET /api/v1/issues/{key}/artifacts/{slug}/versions/{n}` serves them: under the file's own
+ *  content type, else `application/octet-stream`. `call` parses JSON, so it cannot read them. */
+async function artifactBytes(key: string, slug: string, version: number): Promise<Uint8Array> {
+  const path = issuePath(key, `/artifacts/${encodeURIComponent(slug)}/versions/${version}`);
+  const response = await fetch(new URL(path, dispatchUrl), {
+    headers: { Authorization: `Bearer ${agentToken}` },
+  });
+  if (!response.ok) throw new Error(`GET ${path}: ${response.status} ${await response.text()}`);
+  return new Uint8Array(await response.arrayBuffer());
+}
+
+// k-refused. The reported call and the other forms of a bare `-` are refused before any request:
+// none of them leaves a result, a comment, a message or an issue. The calls the refusal leads to
+// still record what a file and stdin hold, and `--path -` still uploads a local file named `-`.
+await runCase("dash-refused", async () => {
+  const issue = await seedIssue(
+    "VRF",
+    "A bare - given to a text flag is refused",
+    `:::check{#k1 serves="dispatch://%KEY%/spec#b-r1" surface="cli" run="bash scripts/e2e/verification-results.sh"}
+The command refuses a bare - given to a text flag, and records what a file or stdin holds.
+:::
+`
+  );
+  note(`${issue} holds the before_merge check k1`);
+  const result = [
+    "result",
+    "--issue",
+    issue,
+    "--check",
+    "k1",
+    "--role",
+    "implementer",
+    "--verdict",
+    "pass",
+    "--commit",
+    commits.dashRefused,
+  ];
+  // The here-document the reported call put its evidence in.
+  const hereDocument = "bun test packages/envoy-client\n412 pass\n0 fail\n";
+
+  // Step 1, the reported call. A command that takes it records a result with `-` in each of the
+  // three fields, which the failure names.
+  const reported = [...result, "--run", "-", "--observed", "-", "--negative-control", "-"];
+  const first = await runDispatch(reported, { stdin: hereDocument });
+  if (first.code === 0) {
+    const stored = ((await checkOf(issue, "k1")).results ?? []).map(fieldsOf);
+    return stepFailed(1, reported, first, 2, `k1 stores ${stored.join("; ") || "no result"}`);
+  }
+  if (first.code !== 2 || first.stdout !== `${reportedCallRefusal}\n` || first.stderr !== "") {
+    return stepFailed(
+      1,
+      reported,
+      first,
+      2,
+      "stdout must be the first text of R1, and stderr must be empty"
+    );
+  }
+  note("step 1, the reported call: exit 2, the first text of R1 exactly, and nothing on stderr");
+
+  // Steps 2 to 5: the other form of the flag, a dry run, and two other commands.
+  for (const [step, argv, flag] of [
+    [2, [...result, "--run=-"], "--run"],
+    [3, [...result, "--observed", "-", "--dry-run"], "--observed"],
+    [4, ["comment", "--issue", issue, "--body", "-"], "--body"],
+    [5, ["message", "--issue", issue, "--body", "-"], "--body"],
+  ] as const) {
+    const run = await runDispatch(argv);
+    const problems = problemLines(run.stdout);
+    if (
+      run.code !== 2 ||
+      problems?.length !== 1 ||
+      problems[0] !== dashLine(flag) ||
+      run.stdout.split("\n").some((line) => line.startsWith("- Allowed flags:"))
+    ) {
+      return stepFailed(
+        step,
+        argv,
+        run,
+        2,
+        `the refusal must list the one problem line for ${flag}, and no Allowed flags line`
+      );
+    }
+    note(
+      `step ${step}, dispatch ${argv.map(shellWord).join(" ")}: exit 2, the one problem line for ${flag}`
+    );
+  }
+
+  // Step 6, which would create an issue: the project holds as many issues after it as before.
+  const before = await issueCount("VRF");
+  const titled = ["issue", "--project", "VRF", "--title", "-"];
+  const sixth = await runDispatch(titled);
+  const after = await issueCount("VRF");
+  if (sixth.code !== 2 || sixth.stdout !== `${titleRefusal}\n` || after !== before) {
+    return stepFailed(
+      6,
+      titled,
+      sixth,
+      2,
+      `stdout must be the second text of R1, and VRF holds ${before} issues before the call and ${after} after it`
+    );
+  }
+  note(
+    `step 6, dispatch issue --project VRF --title -: exit 2, the second text of R1 exactly, and VRF holds ${after} issues before and after it`
+  );
+
+  const held = ((await checkOf(issue, "k1")).results ?? []).length;
+  // Go writes an empty list as null. Anything else that is not a list is no answer to count, so a
+  // read whose shape moved fails here rather than reading as none.
+  const listed = async (rest: string): Promise<unknown[]> => {
+    const answer = await asSession("GET", issuePath(issue, rest));
+    if (answer === null) return [];
+    if (!Array.isArray(answer)) throw new Error(`GET ${rest} of ${issue} answered no list`);
+    return answer;
+  };
+  const comments = await listed("/comments");
+  const messages = await listed("/messages");
+  const left = `${held} result(s) under k1, ${comments.length} comment(s) and ${messages.length} message(s)`;
+  note(`after steps 1 to 6, ${issue} holds ${left}`);
+  if (held + comments.length + messages.length > 0) {
+    return `after steps 1 to 6, ${issue} holds ${left}, want none`;
+  }
+
+  const scratch = mkdtempSync(join(tmpdir(), "verification-results-dash-"));
+  try {
+    // Step 7, the call the refusal of step 1 leads to: two files and the here-document.
+    const runText = "bun test packages/envoy-client/src/__tests__/dispatch-command.test.ts\n";
+    const controlText =
+      "The command built before the refusal takes the reported call and stores -.\n";
+    const runFile = join(scratch, "run.txt");
+    const controlFile = join(scratch, "negative-control.txt");
+    writeFileSync(runFile, runText);
+    writeFileSync(controlFile, controlText);
+    const led = [
+      ...result,
+      "--run-file",
+      runFile,
+      "--observed-file",
+      "-",
+      "--negative-control-file",
+      controlFile,
+    ];
+    const seventh = await runDispatch(led, { stdin: hereDocument });
+    if (seventh.code !== 0) return stepFailed(7, led, seventh, 0);
+    const stored = (await checkOf(issue, "k1")).results ?? [];
+    note(
+      `step 7, the call the refusal leads to: exit 0, and k1 holds ${stored.length} result(s): ${stored.map(fieldsOf).join("; ")}`
+    );
+    const wanted = { negative_control: controlText, observed: hereDocument, run: runText };
+    const [recorded] = stored;
+    if (
+      stored.length !== 1 ||
+      recorded?.run !== wanted.run ||
+      recorded.observed !== wanted.observed ||
+      recorded.negative_control !== wanted.negative_control
+    ) {
+      return stepFailed(7, led, seventh, 0, `k1 must hold one result, with ${fieldsOf(wanted)}`);
+    }
+
+    // Step 8: `--path` names a local file, so `--path -` uploads the file named `-` of the
+    // directory the command runs in.
+    const upload = join(scratch, "upload");
+    mkdirSync(upload);
+    const dashBytes = Buffer.from("The file named -, which dispatch artifact --path - uploads.\n");
+    writeFileSync(join(upload, "-"), dashBytes);
+    const uploaded = ["artifact", "--issue", issue, "--name", "dash.txt", "--path", "-"];
+    const eighth = await runDispatch(uploaded, { cwd: upload });
+    if (eighth.code !== 0) return stepFailed(8, uploaded, eighth, 0);
+    // dash-txt is the slug Dispatch gives the name dash.txt (artifactSlug,
+    // packages/envoy/internal/dispatch/api/artifacts.go).
+    const bytes = Buffer.from(await artifactBytes(issue, "dash-txt", 1));
+    note(
+      `step 8, dispatch ${uploaded.map(shellWord).join(" ")} beside a file named -: exit 0, and dash.txt version 1 holds ${JSON.stringify(bytes.toString())}`
+    );
+    return bytes.equals(dashBytes)
+      ? undefined
+      : stepFailed(
+          8,
+          uploaded,
+          eighth,
+          0,
+          `dash.txt version 1 must hold the bytes of the file named -, ${JSON.stringify(dashBytes.toString())}`
+        );
+  } finally {
+    rmSync(scratch, { force: true, recursive: true });
+  }
+});
+
+// k-every-flag. Every text flag the command's help lists refuses a bare `-`. The case finds the
+// flags as a reader does, from `dispatch --help` and each command's own `--help`: each
+// `--X-file <path>` row whose `--X` the help lists with a value other than `<json>`, which leaves
+// the JSON flags out, and not `--path-file` of `dispatch artifact`, whose `--path` names a local
+// file to upload. A dry run sends nothing. The case judges the line as well as the exit, since a
+// dry run that lacks a required flag exits 2 too.
+await runCase("dash-refused-every-flag", async () => {
+  // The floors k-every-flag names: a help that lists fewer text flags calls fewer of them.
+  const fewestCommands = 28;
+  const fewestFlags = 112;
+  let step = 0;
+  const listing = ["--help"];
+  step += 1;
+  const listed = await runDispatch(listing);
+  if (listed.code !== 0) return stepFailed(step, listing, listed, 0);
+  const commands = listed.stdout
+    .split("\n")
+    .flatMap((line) => /^ {2}([a-z][a-z0-9-]*) {2,}\S/.exec(line)?.[1] ?? []);
+  let commandsCalled = 0;
+  let flagsCalled = 0;
+  for (const command of commands) {
+    const helping = [command, "--help"];
+    step += 1;
+    const help = await runDispatch(helping);
+    if (help.code !== 0) return stepFailed(step, helping, help, 0);
+    // Each flag row of the help, with its value's placeholder: `--run <text>`, `--force`.
+    const rows = new Map(
+      help.stdout.split("\n").flatMap((line) => {
+        const row = /^ {2}(--[a-z0-9-]+)(?: (<[^>]*>))?$/.exec(line);
+        return row === null ? [] : [[String(row[1]), row[2] ?? ""] as const];
+      })
+    );
+    const called: string[] = [];
+    for (const [fileFlag, placeholder] of rows) {
+      if (placeholder !== "<path>" || !fileFlag.endsWith("-file")) continue;
+      const flag = fileFlag.slice(0, -"-file".length);
+      const value = rows.get(flag);
+      if (value === undefined || value === "<json>") continue;
+      if (command === "artifact" && fileFlag === "--path-file") continue;
+      const argv = [command, flag, "-", "--dry-run"];
+      step += 1;
+      const run = await runDispatch(argv);
+      const lined = run.stdout.split("\n").includes(dashLine(flag));
+      if (run.code !== 2 || !lined) {
+        return stepFailed(
+          step,
+          argv,
+          run,
+          2,
+          lined ? undefined : `its output holds no problem line for ${flag}`
+        );
+      }
+      called.push(flag);
+    }
+    if (called.length === 0) continue;
+    note(`dispatch ${command}: ${called.join(", ")}`);
+    commandsCalled += 1;
+    flagsCalled += called.length;
+  }
+  note(
+    `called ${flagsCalled} flags over ${commandsCalled} commands, of the ${commands.length} commands dispatch --help lists`
+  );
+  if (commandsCalled < fewestCommands || flagsCalled < fewestFlags) {
+    return `called ${flagsCalled} flags over ${commandsCalled} commands, want at least ${fewestFlags} flags over ${fewestCommands} commands`;
+  }
+  return undefined;
+});
+
+// k-roundtrip. Every other value of a text flag reaches the stored result byte for byte: a value
+// longer than `-` that starts with `-`, values that hold `|`, a value written
+// `--<field>=<value>`, and a `-` that a file or stdin gives. A value that starts with `--` and is
+// a word of its own still reads as a flag, as before.
+await runCase("values-kept", async () => {
+  const checkFor = (id: string, what: string): string =>
+    `:::check{#${id} serves="dispatch://%KEY%/spec#b-r1" surface="cli" run="bash scripts/e2e/verification-results.sh"}\n${what}\n:::\n`;
+  const issue = await seedIssue(
+    "VRF",
+    "Every other value of a text flag is kept",
+    [
+      checkFor("v1", "A value that starts with - and holds |, and two lines of stdin, are kept."),
+      checkFor("v2", "A value written --observed=<value>, and a - that a file holds, are kept."),
+      checkFor("v3", "A - that stdin gives is kept."),
+    ].join("\n")
+  );
+  note(`${issue} holds the before_merge checks v1, v2 and v3`);
+  const record = (check: string): string[] => [
+    "result",
+    "--issue",
+    issue,
+    "--check",
+    check,
+    "--role",
+    "implementer",
+    "--verdict",
+    "pass",
+    "--commit",
+    commits.valuesKept,
+  ];
+  const run =
+    "go test ./internal/workflow/ -run 'AppendOnly|Line|StartWrittenOverAnOwedRow' -count=1";
+  const lines = "--- PASS: TestAppendOnly (0.00s)\nok\n";
+  const control = "-run 'A|B' with the guard taken out: 2 tests fail";
+  const passLine = "--- PASS: TestLine (0.00s)";
+  const scratch = mkdtempSync(join(tmpdir(), "verification-results-kept-"));
+  try {
+    const dashFile = join(scratch, "dash");
+    writeFileSync(dashFile, "-");
+    // Steps 1 to 3, each with what its result must hold. A field a step does not send is empty.
+    const steps = [
+      {
+        argv: [
+          ...record("v1"),
+          "--run",
+          run,
+          "--observed-file",
+          "-",
+          "--negative-control",
+          control,
+        ],
+        check: "v1",
+        stdin: lines,
+        want: { negative_control: control, observed: lines, run },
+      },
+      {
+        argv: [...record("v2"), `--observed=${passLine}`, "--negative-control-file", dashFile],
+        check: "v2",
+        want: { negative_control: "-", observed: passLine, run: "" },
+      },
+      {
+        argv: [...record("v3"), "--observed-file", "-"],
+        check: "v3",
+        stdin: "-",
+        want: { negative_control: "", observed: "-", run: "" },
+      },
+    ];
+    for (const [index, step] of steps.entries()) {
+      const answered = await runDispatch(step.argv, { stdin: step.stdin });
+      if (answered.code !== 0) return stepFailed(index + 1, step.argv, answered, 0);
+      note(
+        `step ${index + 1}, dispatch ${step.argv.map(shellWord).join(" ")}${step.stdin === undefined ? "" : ` with ${JSON.stringify(step.stdin)} on stdin`}: exit 0`
+      );
+    }
+
+    // Step 4: the value as a word of its own starts with `--`, so it reads as a flag.
+    const split = [...record("v3"), "--observed", passLine];
+    const fourth = await runDispatch(split);
+    if (fourth.code !== 2 || !fourth.stdout.split("\n").includes("- --observed needs a value")) {
+      return stepFailed(
+        4,
+        split,
+        fourth,
+        2,
+        "the output must hold the line - --observed needs a value"
+      );
+    }
+    note(`step 4, dispatch ${split.map(shellWord).join(" ")}: exit 2, - --observed needs a value`);
+
+    // Step 5: each stored field, byte for byte.
+    const checks = await checksOf(issue);
+    for (const [index, step] of steps.entries()) {
+      const stored = checks.find((check) => check.block_id === step.check)?.results ?? [];
+      note(
+        `step 5: ${step.check} holds ${stored.length} result(s): ${stored.map(fieldsOf).join("; ")}`
+      );
+      const [result] = stored;
+      if (stored.length !== 1 || result === undefined) {
+        return `step 5: ${step.check} holds ${stored.length} results, want the one step ${index + 1} recorded`;
+      }
+      for (const field of ["run", "observed", "negative_control"] as const) {
+        if (result[field] !== step.want[field]) {
+          return `step 5: the ${field} of ${step.check}'s result reads ${JSON.stringify(result[field])}, want ${JSON.stringify(step.want[field])}, the bytes step ${index + 1} gave`;
+        }
+      }
+    }
+    return undefined;
+  } finally {
+    rmSync(scratch, { force: true, recursive: true });
+  }
 });
 
 summarise();
