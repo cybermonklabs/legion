@@ -9,13 +9,14 @@ body: |-
   `AGENT_SECRETS_SESSION`. With no sign-in on the machine, the session trades the machine as
   before.
 
-  While a sign-in record is on the machine, the client never trades the machine in its place. An
-  error fails the call, and a refusal that a new sign-in cures names `agent-secrets login`. A
-  final refusal of the sign-in is kept for the life of the process: later calls fail with the same
-  words and send nothing to the issuer or the broker until a new `agent-secrets login`. When
-  Dispatch answers `401 BROKER_TOKEN_NOT_ACTIVE`, the client trades again and sends the request
-  one more time. After `agent-secrets login`, start a new session rather than resume one that
-  traded at the broker as the machine: the broker holds a session name for one identity for 90
-  days.
+  While a sign-in record is on the machine, the client never trades the machine in its place. A
+  process whose environment sets `PERSON_SIGNIN_TRADE=off`, as `legion controller start` sets it
+  for the controller, trades the machine even where a person signed in. An error fails the call,
+  and a refusal that a new sign-in cures names `agent-secrets login`. A final refusal of the
+  sign-in is kept for the life of the process: later calls fail with the same words and send
+  nothing to the issuer or the broker until a new `agent-secrets login`. When Dispatch answers
+  `401 BROKER_TOKEN_NOT_ACTIVE`, the client trades again and sends the request one more time.
+  After `agent-secrets login`, start a new session rather than resume one that traded at the
+  broker as the machine: the broker holds a session name for one identity for 90 days.
 custom:
     Issue: pr4029

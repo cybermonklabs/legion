@@ -742,6 +742,19 @@ issuer or the broker. This stops when the store no longer holds that sign-in: a 
 `agent-secrets login` makes a new sign-in, with a new box key. A new process, such as the next
 `dispatch` command, keeps nothing and asks the broker again.
 
+The one exception is `PERSON_SIGNIN_TRADE=off` (`PERSON_TRADE_VAR` in `signins.ts`). A process
+sets it where its own credentials are a service's and never a person's. Under it, the client
+trades the machine as where nobody signed in, even where a sign-in record is on the machine, and
+it reads no sign-in at all. Unset or blank, the person trade is on. Any other value is refused
+with an error that names the variable. `legion controller start` sets it for the controller
+under every configuration. So the controller's own Dispatch credential, and its Envoy
+credential where no Envoy bearer is set, trade the machine even where the operator ran
+`agent-secrets login`, and the controller never writes or speaks in its operator's name. Only
+this client reads the setting, so the controller's `agent-secrets` secret reads are signed as
+they would be without it. Its name lies outside `AGENT_SECRETS_*` because
+`agent-secrets NAME -- <cmd>` strips most variables of that prefix from its child, so a
+`dispatch` command the controller runs under `agent-secrets NAME --` keeps it.
+
 Dispatch answers `401 BROKER_TOKEN_NOT_ACTIVE` for a token the broker no longer holds as live,
 such as one a revoke ended before it lapsed. `DispatchClient` then tells the credential
 (`stale`), presents the credential again, which trades at the broker, and sends the request one
@@ -776,15 +789,10 @@ than falling back to whatever bearer the box holds. The broker route includes a 
 on the machine, as above. A deployment sets the variable on a session whose Dispatch credential
 must be traded at the broker. The controller that `legion controller start` launches under
 `dispatch_token_broker` is such a session. It runs in the operator's own HOME, where that
-person's envoy.json holds their `dispatch.token`. The start keeps the controller off the
-operator's sign-in with a sign-in directory of its own, under every configuration: it sets
-`AGENT_SECRETS_SIGNIN_DIR` to `<state_dir>/controller-signins`, keeps that directory empty, and
-refuses to start when the directory holds an entry. So the controller's Dispatch credential, and
-its Envoy credential where no Envoy bearer is set, trade the machine. Any other value of the
-variable is refused, naming it: `DISPATCH_TOKEN_BROKER is "<value>" and takes 1 …`. The start also
-sets the controller's `AGENT_SECRETS_KEY_DIR` to `<state_dir>/controller-keys`, a key directory of
-its own for the Go `agent-secrets` command the controller runs for its secret reads; no client
-here reads that variable. `docs/kubernetes.md` says which identity those reads use.
+person's envoy.json holds their `dispatch.token`. Any other value of the variable is refused,
+naming it: `DISPATCH_TOKEN_BROKER is "<value>" and takes 1 …`. The start also sets
+`PERSON_SIGNIN_TRADE=off` for the controller, so its broker route trades the machine and never
+the operator's sign-in (above).
 
 ### The `dispatch` command
 
