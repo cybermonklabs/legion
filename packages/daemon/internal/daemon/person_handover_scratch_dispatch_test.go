@@ -260,9 +260,19 @@ func newPersonHandoverRig(t *testing.T, admissionCap int) *personHandoverRig {
 	// The NATS server is taken first: testnats.URL empties it of every stream, and Dispatch
 	// reconciles ENVOY_NOTIFICATIONS on it on its first connection, which the daemon then consumes
 	// from.
-	natsURL := testnats.URL(t)
-	baseURL, token := startScratchDispatchWithNATS(t, natsURL)
-	cfg := workflowConfig(t, natsURL)
+	return newPersonHandoverRigOn(t, scratchDispatchOptions{natsURL: testnats.URL(t)}, admissionCap)
+}
+
+// newPersonHandoverRigOn is newPersonHandoverRig over the scratch Dispatch board describes: the
+// NATS server it publishes its events on, which the daemon consumes from and which holds no stream
+// of an earlier run, the checkout it runs from, and where its output goes besides. A live proof
+// whose script owns the broker and runs the driver from the checkout's root
+// (register_gate_basis_live_test.go) names all three; every other proof takes newPersonHandoverRig.
+func newPersonHandoverRigOn(t *testing.T, board scratchDispatchOptions, admissionCap int) *personHandoverRig {
+	t.Helper()
+	scratch := startScratchDispatchOn(t, board)
+	baseURL := scratch.base
+	cfg := workflowConfig(t, board.natsURL)
 	// Dispatch takes a project key of at most ten characters; workflowConfig's is longer.
 	cfg.Project = "P" + randomSuffix(t)[:9]
 	cfg.Projects = map[string]config.Project{cfg.Project: {}}
@@ -275,7 +285,7 @@ func newPersonHandoverRig(t *testing.T, admissionCap int) *personHandoverRig {
 	// default, so every notice row the daemon queues stays in its outbox for the proof to count.
 	cfg.ControllerWakeInterval = time.Hour
 	cfg.DispatchURL = baseURL
-	if err := os.WriteFile(cfg.DispatchTokenFile, []byte(token+"\n"), 0o600); err != nil {
+	if err := os.WriteFile(cfg.DispatchTokenFile, []byte(scratch.token+"\n"), 0o600); err != nil {
 		t.Fatalf("write the scratch Dispatch bearer: %v", err)
 	}
 	dispatchCall(t, baseURL, http.MethodPost, "/api/v1/projects",
