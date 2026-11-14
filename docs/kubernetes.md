@@ -4563,8 +4563,8 @@ The rest of the pod goes on: the guard never ends a role's agent, its shim or it
 The guard is `packages/daemon/internal/memoryguard`, and the launcher runs it with the issue pod's rules (`serveMemoryGuard` and `podClassifier`, `packages/daemon/internal/launcher/memoryguard.go`).
 
 Measured on 2026-11-14 in gVisor test pods with memory limits of 4, 8 and 19 GiB (dispatch://INFRA-3557/artifact/wc-gvisor-jobs-md):
-with the guard off, the kernel stopped the sandbox when `AnonPages` was 95.6% to 99.3% of the limit;
-with the guard on at the defaults, each growing process — 64 MiB every 0.25 s, 256 MiB every 0.25 s, and shared anonymous memory — was ended when the reading was 85.1% to 86.5% of the limit, 7.6 to 14.3 ms after the guard's first reading at the mark, and the pod went on.
+with the guard off, the kernel stopped the sandbox when `AnonPages` was 95.4% to 99.4% of the limit;
+with the guard on at the defaults, each growing process — 64 MiB every 0.25 s, 256 MiB every 0.25 s, and shared anonymous memory — was ended when the reading was 85.0% to 89.2% of the limit, 6.7 to 36.9 ms after the guard's first reading at the mark, and the pod went on.
 
 **Where it runs.**
 Only a launcher that is its container's first process, PID 1, runs the guard: the `legion launcher` of an issue pod's `roles` container ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)).
@@ -4759,10 +4759,10 @@ A note can be lost in each of these cases, and in each the `ended` line stays in
   A reading that keeps crossing the mark has at most one such line a minute, with the stops left out counted in `left_out`, and a crossing at which the processes it may end hold the floor is still acted on at once.
 
 - It does not stop a fill faster than its margin.
-  Between the mark and the point where the kernel stops the sandbox, measured at 95.6% to 99.3% of the limit, the guard must take a reading at or above the mark and end the process.
+  Between the mark and the point where the kernel stops the sandbox, measured at 95.4% to 99.4% of the limit, the guard must take a reading at or above the mark and end the process.
   A process that crosses that margin inside one interval and the scan after it is not stopped in time: the container ends `OOMKilled` and every role's turn ends with it, as before the guard.
   A reading can also come late: in one gVisor test run at 8 GiB, of shared anonymous growth on 2026-11-14, the longest gap between two readings was 1082 ms against a usual 108 to 115 ms;
-  the kill still came at 85.23% of the limit, below every point at which the kernel was measured to stop the sandbox (95.6% to 99.3%).
+  the kill still came at 85.23% of the limit, below every point at which the kernel was measured to stop the sandbox (95.4% to 99.4%).
 
 - It does not see the memory of a process whose main thread alone has exited.
   Such a process reads `Z` in its `stat` while its other threads run on and hold all of its memory, and the guard reads it as a live process ("What it ends", above).
