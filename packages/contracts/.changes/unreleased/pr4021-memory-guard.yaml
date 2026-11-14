@@ -1,0 +1,7 @@
+kind: Changed
+custom:
+  Issue: pr4021
+body: |-
+  Daemon API contract 124: `launcher_hello_ack` carries the memory guard's settings
+  (`memoryGuard`), the new `launcher_memory_kill` frame reports each process the guard
+  ends, and the settings fixture (`state.json`) carries `runtime.kubernetes.memory_guard`.

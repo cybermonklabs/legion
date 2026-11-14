@@ -163,6 +163,13 @@ runtime:
       refresh_minutes: 15
       retain_hours: 48
       resources: {cpu: 500m, memory: 1Gi}
+    memory_guard:
+      issue_pods:
+        enabled: true
+        act_percent: 80
+        floor_percent: 15
+        wait_seconds: 8
+        interval_milliseconds: 250
 `
 
 // minimalSettingsFile is the smallest tmux legion.yaml that loads: every other setting is a

@@ -376,6 +376,11 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		plan.taskConfirmed = workflow.taskConfirmed
 		plan.sessionLost, plan.sessionStoreFault = workflow.sessionLost, workflow.sessionStoreFault
 		plan.providerErrorRunReached = workflow.providerErrorRunReached
+		// The memory guards' kill holder is filled here, once the workflow is open
+		// (memoryGuardKills).
+		if plan.memoryGuardKills != nil {
+			plan.memoryGuardKills.bind(workflow.pool, workflow.handlers)
+		}
 	}
 	if cfg.Runtime.Name == "tmux" {
 		executable, err := os.Executable()
@@ -702,6 +707,9 @@ type plan struct {
 	rootHears    func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (bool, error)
 	rootTask     func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (string, []byte, error)
 	treeClosable func(ctx context.Context, c supervise.Claim) (bool, error)
+	// memoryGuardKills is the memory guards' kill holder (memoryGuardKills); nil under tmux, and
+	// for a replaced runtime, where no launcher reports.
+	memoryGuardKills *memoryGuardKills
 	// taskConfirmed tells the workflow each agent that took its task; nil without a workflow.
 	taskConfirmed func(c supervise.Claim)
 	// sessionLost and sessionStoreFault tell the workflow that a claim's recorded session is in no

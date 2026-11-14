@@ -1630,6 +1630,27 @@ The earlier release never mounts a claim of this release's in any case:
 it names its claims `tree-legion-<project>-<root issue>-architect` (`TreeClaimName` in `names.go` at `legion-v10.0.0`), where this release gives an issue pod a disk of its own named `<pod>-issue`, and the controller's Sandbox and the repository caches' are left to the earlier release's sweep, which deletes them with their volumes:
 the controller's working root and the caches' clones, which hold no issue's work.
 
+#### Rolling back below the release that guards an issue pod's memory
+
+The release that added the memory guard in an issue pod's launcher ([The memory guard in an issue pod](#the-memory-guard-in-an-issue-pod)) is the one whose `packages/daemon/internal/api/version.go` carries the entry for `dispatch://INFRA-3557`.
+Name it by that entry rather than by its contract number, which a forward merge can move before the change merges.
+A rollback below it has one step of its own, and one effect on the pods that still run.
+
+**`runtime.kubernetes.memory_guard` must come out of `legion.yaml` first.**
+An earlier loader knows no such key and refuses the file by name (`unknown key runtime.kubernetes.memory_guard`), so its daemon does not start while the block stands.
+Take the block out before the earlier image is pinned, and `legion start --check-config` on the earlier image reads the file clean.
+A file that never set the block needs nothing.
+
+**A pod of this release's worker image runs with the guard off under an earlier daemon.**
+No launch replaces a running pod for an image change alone ([Pinning a release that drops what a running pod still uses](#pinning-a-release-that-drops-what-a-running-pod-still-uses)), so the pods this release made go on running after the earlier daemon starts.
+Each of their launchers starts its guard at the defaults, and the earlier daemon's answer to each hello carries no `memoryGuard` member, which the guard reads as "off" (`launcher: memory guard: off: the daemon's acknowledgement carries no settings`).
+From that answer on the guard ends nothing, and the launcher sends no `launcher_memory_kill` frame on that connection, since that daemon would close the connection on a frame it does not know: a report waiting then is dropped with a line.
+Such a pod is bounded by the kernel's stop of the whole container alone, as every pod was before this release, until a launch replaces it with a pod of the earlier image.
+
+**Nothing in the database needs a statement.**
+This release adds no store migration.
+The note a kill sends is a `role_message` outbox row (`record.RoleMessage`), a kind the release before it already decodes, so a note still queued at the rollback is delivered as any other role message.
+
 ### Cutting over to the pod-owned disk
 
 This section is for a deployment already running issue pods of the release before this one (`legion-v10.1.0` to `legion-v10.2.x`), where each issue's Sandbox owned an `issue` volume claim that outlived its pods.
@@ -2486,6 +2507,8 @@ runtime:
     skills_repository: <owner>/<name>   # optional: the Oh My Pi plugin marketplace every issue pod's roles install their skills from, cloned in an init container of the pod's own (below)
     setup: [/bin/sh, -c, '<command>']   # optional: run in every role's namespace before each start of its Oh My Pi (below)
     test_postgres: true         # optional, default false: every issue pod's roles container serves its own PostgreSQL for tests (A test database in the pod, above)
+    memory_guard:               # optional: the memory guard in each issue pod's launcher (The memory guard in an issue pod, below)
+      issue_pods: { enabled: true, act_percent: 85, floor_percent: 10, wait_seconds: 5, interval_milliseconds: 100 }   # the defaults
 bind: <the daemon host's own address, or 0.0.0.0 once advertise_host names one>
 advertise_host: <optional: a stable Service name, e.g. legion-daemon-<project>.<namespace>.svc, every pod dials instead of bind, at worker_stream_port>
 worker_stream_port: <the port advertise_host or bind serves it on>
@@ -2636,6 +2659,11 @@ an operator who knows the root volume raises `ephemeral_storage_request` so the 
 - a `repository_cache` that is not a mapping, or names a member but `volume`, `refresh_minutes`, `retain_hours` and `resources`;
   a `volume` that is not a positive Kubernetes quantity;
   a `refresh_minutes` or `retain_hours` that is not a positive integer; its `resources` take a reservation's six members and nothing else;
+
+- a `memory_guard` that is not a mapping, or names a member but `issue_pods` (`controller_pod` among them, which this release does not read);
+  an `issue_pods` that is not a mapping, or names a member but `enabled`, `act_percent`, `floor_percent`, `wait_seconds` and `interval_milliseconds`;
+  an `enabled` that is not `true` or `false` (`runtime.kubernetes.memory_guard.issue_pods.enabled must be true or false`);
+  a number that is not an integer, or one outside its range, 50 to 95 for `act_percent`, 1 to 50 for `floor_percent`, 1 to 60 for `wait_seconds` and 50 to 5000 for `interval_milliseconds` (`runtime.kubernetes.memory_guard.issue_pods.act_percent must be between 50 and 95`);
 
 - `gateway`, removed with LEGION-270: a pod's model route is the operator's `pod`;
 
@@ -3191,11 +3219,14 @@ architect, planner, implementer, tester, reviewer, merger):
    A line the launcher writes for no role (a panic, a failed reap) has no prefix, and when the container ends the daemon's detail for a role quotes that role's last 20 lines, its prefix dropped, then the container's last 20 unprefixed lines under `the container's own last
    lines, no role's:` (`roleLog` in `internal/runtime/sandbox/observe.go`), all read from the log's last 2,000 lines and at most 1 MiB.
    As the container's PID 1 the launcher reaps every orphan its PID namespace adopts (what a `kubectl exec` leaves behind), never a role's own generation, whose exit its role reads.
+   As that PID 1 it also runs the pod's memory guard: when the pod's anonymous memory nears the container's limit, the guard ends the largest process that is neither Legion's own nor an agent's own, before the kernel stops the whole container and every role's turn with it ([The memory guard in an issue pod](#the-memory-guard-in-an-issue-pod)).
+   Only as that PID 1 does it sweep the clone's stale git locks (item 5): a pass keeps a lock that a process of the container holds open and may remove one that none holds, and only PID 1 sees every role's processes.
+   A launcher started any other way, by hand inside a role among them, sees that role's processes alone and would remove a lock another role's git or jj holds, so it writes one `launcher: git lock sweep: off reason=the launcher is pid <n>, …` line and sweeps nothing (`serveGitLockSweep`).
    A generation whose role-init fails before it starts the shim, setting up the role's namespaces, exits 71 (`launcher.RoleInitSetupFailedExit`, a status role-init uses for nothing else) and is reported with the exit code `-2` (`shimwire.LauncherExitSetupFailed`), which no shim exits with, and the daemon's detail for it quotes the role's last lines, role-init's reason among them;
    a role-init that ends any other way without reporting its shim's status (a panic's
    2) is reported with that exit as it is.
 
-5. As well as the roles, the launcher sweeps the issue clone's stale git lock files (`<file>.lock`) for the life of the pod (`internal/launcher/gitlocks.go`).
+5. As well as the roles, the launcher, as the container's PID 1 alone (item 4), sweeps the issue clone's stale git lock files (`<file>.lock`) for the life of the pod (`internal/launcher/gitlocks.go`).
    The clone it sweeps is derived from the workspace's own path, through the layout provisioning laid that workspace out in (`workspace.WorkspaceOf`), and is never read from the workspace's `.jj/repo` or the repository's `store/git_target`, which every role of the pod can write:
    the container's restart policy is `Always` and its disk outlives it, so a launcher that read those files after a restart would read what the last container's roles left there, and would send its first pass, which removes at any age, wherever they point.
    A workspace that layout does not account for is a line naming that workspace and, where the layout can say it, the directory `Location` would have put it in — no clone was derived, so the line names none.
@@ -4522,6 +4553,230 @@ an init container at 11Gi is refused, `Max ephemeral-storage requested by init c
 The init containers carrying the pod's reservation add nothing against that cap, so a GKE deployment sets `issue: {ephemeral_storage: 10Gi, ephemeral_storage_request: 10Gi}`:
 the issue pod's whole 10Gi, shared by its six roles.
 
+### The memory guard in an issue pod
+
+An issue pod's six roles share one memory limit, and under gVisor the host kernel sees the pod's sandbox and not the processes in it:
+a container that passes its limit is stopped whole, `OOMKilled`, and every role's turn ends with it ([Liveness rules](#liveness-rules)).
+The memory guard in the pod's launcher, where the deployment runs it (it is on by default), acts before that point.
+When the pod's anonymous memory reaches a share of the limit, the guard ends with `SIGKILL` the largest process that is neither Legion's own nor an agent's own, and the daemon tells that process's role why, on the role's own topic.
+The rest of the pod goes on: the guard never ends a role's agent, its shim or its `role-init`, so no role's turn ends for the kill, and the command that was ended fails in the turn that ran it.
+The guard is `packages/daemon/internal/memoryguard`, and the launcher runs it with the issue pod's rules (`serveMemoryGuard` and `podClassifier`, `packages/daemon/internal/launcher/memoryguard.go`).
+
+Measured on 2026-11-14 in gVisor test pods with memory limits of 4, 8 and 19 GiB, over every run of the Jobs in dispatch://INFRA-3557/artifact/wc-gvisor-jobs-md, whose numbers are recorded in that issue's `wc-gvisor` results:
+with the guard off, the kernel stopped the sandbox when `AnonPages` was 95.4% to 99.4% of the limit;
+with the guard on at the defaults, each growing process — 64 MiB every 0.25 s, 256 MiB every 0.25 s, and shared anonymous memory — was ended when the reading was 85.0% to 89.2% of the limit, 6.7 to 36.9 ms after the guard's first reading at the mark, and the pod went on.
+
+**Where it runs.**
+Only a launcher that is its container's first process, PID 1, runs the guard: the `legion launcher` of an issue pod's `roles` container ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)).
+Only that process sees every process of the container, and every process that no `role-init` holds is its own; the rules below rest on both.
+A launcher started any other way writes one `off` line and runs no guard.
+The launcher of the controller's pod runs none either.
+
+**What it reads.**
+Each interval, `interval_milliseconds` (100 ms by default), the guard reads two files: `AnonPages` of `/proc/meminfo`, the pod's anonymous memory, which is its reading, and the cgroup's `memory.limit_in_bytes`, the container's limit.
+Each of the two reads took 0.025 to 0.044 ms at the median in the measured pods.
+The guard never acts on the cgroup's counter, `memory.usage_in_bytes`, because the counter also counts the pages of the files a process maps, which the kernel can take back:
+in the measured pods a file mapped and read raised the counter to 97% to 105% of the limit, and an LMDB map larger than the limit raised it to 107% to 135%, while `AnonPages` stayed under 12% and the guard ended neither process.
+One read of the counter took about 18 ms at the median in a running issue pod of six roles (0.04 ms in the test pods), so the guard reads it every 5 seconds for its hourly line and once at each kill, and never each interval.
+Where `AnonPages` or the limit cannot be read, where the limit reads as no limit (2^62 bytes or more), where the system has no `pidfd_open`, through which the guard ends a process, or where the guard cannot list the processes of `/proc`, the guard writes one `off` line and does nothing more while the launcher runs.
+
+**What it ends.**
+At or above the mark, `act_percent` of the limit (85 by default), the guard lists every process of the container and finds the ones it may end (below).
+The list leaves out a zombie or a dead process, state `Z` or `X` in its `stat`, whose `status` counts one thread or none:
+it holds no memory, and under gVisor its `exe` link answers `EACCES`, which would otherwise count it unread.
+A process in either state whose other threads still run is one whose main thread alone has exited, and the guard reads it as a live process ("What it does not do", below).
+It measures each process it may end from its `/proc/<pid>/smaps`: the sum of its `Anonymous:` lines, plus the resident size (`Rss:`) of each of its shared maps of memory-backed files, which are `/dev/zero (deleted)` (shared anonymous memory), `/memfd:…`, `/dev/shm/…` and `/SYSV…` (`smapsSize`, `proc.go`).
+Shared anonymous memory and a memfd raise `AnonPages` while their pages read 0 in `Anonymous:`, so without the second term a process that grows that way would not be seen.
+It also adds each memfd the process holds open by a file descriptor and has not mapped shared, at its size as `stat` reads it through that descriptor or the pod's `Shmem` reading at the decision, whichever is less (`heldMemfdBytes`, `proc.go`):
+ending the process frees that memfd's pages too, and no line of its smaps shows them.
+`Shmem`, the pages of the pod's memory filesystems and memfds, bounds those pages where the size does not: an unwritten memfd made large with `ftruncate` has its size and no pages, and under gVisor neither its size nor its block count shows its pages, so in an 8 GiB gVisor pod on 2026-11-14 the holder of an unwritten 16 GiB memfd, counted at that size, was ended first and freed nothing, and the kernel stopped the sandbox.
+A memfd counts once: one that a process the guard measures maps shared counts through that map's `Rss:` alone, and one that several of them hold by a descriptor counts for the largest of them by its smaps.
+A map of a file on disk adds nothing, which is why a process that maps a database is not ended for its map.
+A region that several processes map counts in each of them, since gVisor gives no `Pss` that would divide it.
+The guard acts only when the processes it may end hold at least `floor_percent` of the limit between them (10 by default): below that, the memory is mostly in processes it may not end, and ending one of the rest frees too little to matter.
+It then holds the largest through a pidfd, reads that process's start time again, and sends `SIGKILL` only when the start time is the one the scan read, so a pid that another process took after the scan is never signalled.
+Nor is a process that exited by itself after the scan, whether its parent has reaped it yet or not: its pidfd reads it as exited, and the guard writes no `ended` line and sends no report for it, since an exited process that is not reaped keeps its start time, and a kill of it answers no error.
+Of two processes of the same size it ends the newer, since of a parent and the child it forked, the child is the one started for the work.
+A process whose `stat`, `exe`, `ns/pid` or `smaps` the guard cannot read is not ended, is counted apart, and is logged once.
+When such a read fails, the guard reads the process's `stat` again first: a process that has ended meanwhile (gone, its pid taken by another, or now an exited zombie) is left out with no line, since under gVisor a read of a process that has just exited answers `EACCES` rather than `ENOENT`.
+A kill that fails, for a reason other than the end of the process, is logged once, that process counts as unread for as long as it lives, and the next reading ends the next largest.
+
+**After a kill: the rise rule.**
+After a kill the guard takes a reading each interval.
+The reading has fallen when it is below the reading at the kill by any amount, or when it is below the mark.
+When it has fallen and is still at or above the mark, the guard ends the next largest process once the killed one has exited or once the wait has passed, `wait_seconds` (5 by default).
+So a pool of forked workers, which share their parent's pages and each count them whole (`make -j`, `lake build`), is ended one worker at a time while the reading stays at the mark, rather than left for the kernel to stop the whole sandbox.
+When the wait passes and a kill has not lowered the reading at all, or when no process may be ended, the guard gives the rise up with a `stopped for this rise` line, which a stop that repeats writes at most once a minute ("The lines", below), and ends nothing more for that rise:
+it acts again only after the reading has gone below the mark.
+
+**What it protects, and why.**
+The guard never ends a process whose end would cost a role its turn, or cost every role theirs: ending an agent ends that role's turn, and ending a command the agent ran does not.
+The launcher knows each protected process by its place in the process tree first, and by its executable and its arguments second, so a program that copies a name (an `omp` or a `worker-shim` that a command starts) is not protected (`podClassifier`).
+Outside every role it protects:
+
+- the launcher itself, which serves every role;
+
+- each process the launcher runs for a step of its own (the test database's start script, and the jj and git of a workspace restore, which its `pidGuard` holds), with every process under it;
+
+- the test database's server, the launcher's direct child whose executable is `postgres` and whose working directory is the test database's data directory, with every backend under it:
+  ending one backend makes the server end and restart every backend, which stops every role's test database at once ([A test database in the pod](#a-test-database-in-the-pod)).
+
+In each role it protects:
+
+- the role's `role-init`, the init of the role's namespaces, and not the processes under it;
+
+- the role's shim, the oldest direct child of that `role-init` that is the launcher's own executable run as `worker-shim`;
+
+- every direct child of the shim: the agent, whether its start wrapper has run `exec` yet or not, the agent-secrets renewer, the jj of the working copy's adoption and the CodeGraph warm-up;
+
+- Oh My Pi's helpers, each reached from the agent through a chain of helpers:
+  a process that runs the agent's own executable with a first argument that starts `__omp_worker_`, except `__omp_worker_js_eval_process`, the kernel of Oh My Pi's JavaScript eval tool, which runs the code the agent writes, and whose parent is the agent or another such helper.
+  A helper starts helpers of its own: in an issue pod on 2026-11-14 the agent's `__omp_worker_daemon_broker` was the parent of `__omp_worker_lsp_mux`, which runs `gopls`;
+
+- for a role that runs Claude Code, `claude`, the child of `legion claude-bridge`, and Claude Code's MCP server, the child of `claude` whose first argument ends with `/claude-envoy/dist/envoy-channel.js`.
+
+Every other process may be ended: a command the agent ran and what that command started, a helper's name under such a command, which no chain of helpers reaches, what a helper runs that is no helper (`gopls`), a Python kernel, the JavaScript eval kernel wherever it runs and what it starts, and a shell that `kubectl exec` started with what it runs.
+A process is a role's when that role's `role-init` is its ancestor by the parent chain, and otherwise when it shares that `role-init`'s PID namespace; any other process is no role's, `role=none` in a line.
+The ancestor comes first because a process can make a PID namespace of its own inside a role, as a sandboxed Chromium does.
+
+**The settings.**
+
+```yaml
+runtime:
+  kubernetes:
+    memory_guard:
+      issue_pods:
+        enabled: true
+        act_percent: 85
+        floor_percent: 10
+        wait_seconds: 5
+        interval_milliseconds: 100
+```
+
+Those are the defaults, and the guard is on under `runtime: kubernetes` wherever the file says nothing.
+The ranges are 50 to 95 for `act_percent`, 1 to 50 for `floor_percent`, 1 to 60 for `wait_seconds` and 50 to 5000 for `interval_milliseconds`, and the loader refuses a value outside its range by its whole key (`runtime.kubernetes.memory_guard.issue_pods.act_percent must be between 50 and 95`).
+`issue_pods` is the one member this release reads: the mapping is keyed by the kind of pod so that dispatch://INFRA-3531 can add the controller's pod beside it, and until then the loader refuses `controller_pod` as it refuses any other unknown key.
+The launcher checks the settings against the same ranges on its own side, and settings outside them change nothing and write one `settings refused` line.
+
+The daemon hands the settings to the guard on its answer to each role's hello (`memoryGuard` in `launcher_hello_ack`), so a change reaches a running pod at its next connection, which every daemon restart gives it, and replaces no pod.
+The guard takes the settings of the newest answer of any role, and writes one `settings` line when they change.
+Before the first answer it runs at the defaults, so the pod is guarded while the daemon is away.
+Under `enabled: false` the daemon's answer carries no settings, the same answer a daemon built before the guard gives: the guard turns off with one line, and a later answer that carries settings turns it on again.
+Off, the guard still takes its readings and writes its hourly lines, and it ends nothing.
+A dropped connection leaves the settings in force.
+
+**The lines.**
+Every line of the guard starts `launcher: memory guard: ` in the `roles` container's log and carries `key=value` fields (`packages/daemon/internal/memoryguard/lines.go`):
+sizes in bytes, times in RFC 3339 UTC, `wait` and `interval` as Go durations (`5s`, `100ms`), and a command last and in quotes, made one line (each run of whitespace one space, each control character or control sequence read away), each credential masked by the rules of a capability report's detail ([The deployment's capability report](#the-deployments-capability-report)), each other character that does not print escaped, and the text cut to 512 bytes with `…` where it was cut.
+The guard masks at most the first 4 KiB of a process's arguments and leaves the rest out, so the work after a kill does not grow with the arguments.
+When the arguments run past 4 KiB, it also leaves out the last word of that 4 KiB, before the masking and again after it, and ends the command with `…`, so a cut never shows part of a credential.
+The guard's own lines carry no role prefix, since it watches every role's processes and the launcher's together, and `role=none` names a process of no role.
+
+```text
+launcher: memory guard: started act_percent=<n> floor_percent=<n> wait=<d> interval=<d> limit=<bytes> reading=<bytes>
+launcher: memory guard: settings act_percent=<n> floor_percent=<n> wait=<d> interval=<d>
+launcher: memory guard: off: the daemon's acknowledgement carries no settings
+launcher: memory guard: settings refused: <why>; nothing changes
+launcher: memory guard: ended pid=<pid> role=<role> size=<bytes> reading=<bytes> counter=<bytes> shmem=<bytes> limit=<bytes> command="<command>"
+launcher: memory guard: stopped for this rise reason=<not fallen|nothing to end> reading=<bytes> endable=<bytes> protected=<bytes> unread=<bytes> unheld=<bytes> limit=<bytes> left_out=<n>
+launcher: memory guard: hour start=<time> end=<time> reading_high=<bytes> reading_high_at=<time> reading_low=<bytes> counter_high=<bytes> counter_low=<bytes> largest_pid=<pid> largest_role=<role> largest_size=<bytes> largest_command="<command>"
+launcher: memory guard: off reason=<why>
+launcher: memory guard: unread pid=<pid> reason=<why>
+launcher: memory guard: kill failed pid=<pid> reason=<why>
+```
+
+`started` comes once, with the first reading, and `settings` once for each change of the settings.
+`ended` comes once for each kill: `counter` is the cgroup's counter at the kill and `shmem` the pod's `Shmem` of `/proc/meminfo`, the pages of its memory filesystems and memfds.
+`stopped for this rise` says where the reading's memory is: in the processes the guard may end, in the protected ones and in the ones it could not read, and `unheld` is the reading less those three.
+`endable` counts the processes the guard may end at the sizes it ranks them by, the memfds their descriptors hold included;
+`protected` and `unread` count their processes' smaps alone, since the line reads none of their descriptors.
+A positive `unheld` is memory no process holds, such as the pages of a memory filesystem, or that only a descriptor of a protected or unread process holds, such as a memfd it has not mapped, and a negative one is what the sizes counted more than once, such as the pages a parent shares with the child it forked.
+A stop that repeats
+— the rise given up, the reading below the mark and back above it, the rise given up again —
+writes this line at most once a minute by the guard's clock, and leaves the stops in between out of the log:
+the next line written carries in `left_out` how many stops it left out since the line before it, and `left_out=0` when it left out none.
+The sizes of the protected and unread processes, and after a kill that freed nothing the scan they are counted from, are read only for a line written, so a reading that keeps crossing the mark does not read them at every crossing;
+the process scan and the smaps of the processes the guard may end still run at every crossing, since they decide whether it acts.
+`hour` comes once an hour from the guard's start, with the highest and lowest readings and counters of that hour, the time of the highest reading, and the largest process the guard saw, protected processes included.
+The guard measures that largest process again, in a goroutine of its own that delays no reading, each time a new high of the hour is at least 1% of the limit above the high it last measured at.
+`off reason=` turns the guard off while the launcher runs, for one of the reasons in "What it reads" above, and a launcher that is not its container's first process writes it as `off reason=the launcher is pid <n>, not the container's first process, …`.
+`unread` comes once for each process the guard could not read, and `kill failed` once for each process a kill failed on.
+Read a pod's hourly lines with `kubectl logs <pod> -c roles | grep '^launcher: memory guard: hour '`.
+
+The launcher writes three lines of its own about the reports below, each behind the role's `<role>: ` prefix:
+
+```text
+<role>: launcher: memory guard: report dropped sequence=<n> pid=<pid> reason=32 reports already wait for a connection, the most a role keeps
+<role>: launcher: memory guard: report dropped sequence=<n> pid=<pid> reason=this connection's acknowledgement carries no memory guard settings, so the daemon behind it may not know the report
+<role>: launcher: memory guard: report unsent sequence=<n> pid=<pid> reason=<why>; the next connection carries it
+```
+
+**The report and the note.**
+For each process of a role that it ends, the guard gives a report to that role's part of the launcher, which sends it to the daemon as one `launcher_memory_kill` frame on the role's connection:
+the guard's own id, its count of kills, the pid, the command cut to 256 bytes, the process's size, the reading, the counter and the limit.
+The launcher sends a report only on a connection whose answer carried settings, since a daemon built before the guard closes a connection on a frame it does not know, and it drops a report waiting for any other connection with a line.
+Up to 32 reports wait while the role has no connection, and a 33rd drops the oldest with a line, or the next oldest while the oldest is being written.
+A process of no role has its `ended` line and no report.
+The daemon applies each report once, under the event id `memory-guard-kill:<guard>:<sequence>`, so a report sent twice tells the role once.
+It credits the report to the issue, the role and the pod that the connection authenticated as, and never to anything the report says.
+It then queues one message to that role's topic, `notifications.role.<role token>` (`memoryGuardNote`, `packages/daemon/internal/workflow/engine.go`), with the sizes in binary units (`3.13 GiB`):
+
+```text
+The launcher's memory guard stopped one of your processes with SIGKILL because the pod was near its memory limit: `<command>` (pid <pid>) held <size> of anonymous memory while the pod's anonymous memory read <reading> of its <limit> limit. The pod's other processes and your session go on. Heavy work — a build, a whole test suite, anything that needs much memory — runs where your deployment's instructions say, not in this pod: read skill://legion-worker/references/tools.md before you run it again.
+```
+
+A note can be lost in each of these cases, and in each the `ended` line stays in the container's log:
+
+- The launcher dropped the report, with one of its lines above:
+  32 reports already waited, or the connection's answer carried no settings.
+
+- The launcher wrote the report on a connection that the daemon then replaced:
+  the launcher counts a report as sent once it is written, and does not send it again.
+
+- The daemon dropped the report, with a warning in its own log, and kept the connection open:
+  a report that fails the frame's own checks, one from a launcher of no issue, and a valid report it could not record, because its store write failed or the bounded time it gives each report ran out.
+  The launcher counted the report as sent once it was written, so it does not send it again.
+
+- The workflow dropped the report, with a line in the daemon's log, because the daemon records no such issue.
+
+- The role's session held no topic when the outbox row ran, so the message was not delivered:
+  the outbox finishes the row with one log line (`roleMessage`, `packages/daemon/internal/daemon/outbox.go`).
+
+**What it does not do.**
+
+- It does not end memory that Oh My Pi holds in its own process, its embedded shell engine's included: that process is a role's agent, which the guard never ends.
+
+- It does not free the pages of the pod's memory filesystems (tmpfs): `AnonPages` counts them and no kill frees them, so they show in a `stopped for this rise` line as `unheld`.
+
+- It does not count a deleted file in `/dev/shm` that a process holds open by a descriptor and has not mapped shared.
+  Its pages raise `Shmem` and `AnonPages`, no smaps line shows them, and of a process's descriptors the guard reads only those that hold a memfd, so that memory shows in a `stopped for this rise` line as `unheld`.
+
+- It does not tell the pages of one held memfd from another's.
+  Where a process holds a written memfd and an unwritten one, or two processes hold different ones, each counts up to the whole `Shmem` reading, so their sizes may together count the same pages more than once.
+  The guard can then end a holder whose end frees less than its size said.
+
+- It does not act again while memory it may not end holds the pod above the mark, or after a kill that lowered the reading by nothing within the wait.
+  When the processes it may end hold less than the floor, it writes `reason=nothing to end`; when a kill freed nothing, `reason=not fallen`.
+  Either way it waits for the reading to fall below the mark, a process that grows in that wait is not ended, and the kernel can still stop the sandbox in that wait.
+  A reading that keeps crossing the mark has at most one such line a minute, with the stops left out counted in `left_out`, and a crossing at which the processes it may end hold the floor is still acted on at once.
+
+- It does not stop a fill faster than its margin.
+  Between the mark and the point where the kernel stops the sandbox, measured at 95.4% to 99.4% of the limit, the guard must take a reading at or above the mark and end the process.
+  A process that crosses that margin inside one interval and the scan after it is not stopped in time: the container ends `OOMKilled` and every role's turn ends with it, as before the guard.
+  A reading can also come late: in one gVisor test run at 8 GiB, of shared anonymous growth on 2026-11-14, the longest gap between two readings was 1082 ms against a usual 108 to 115 ms;
+  the kill still came at 85.23% of the limit, below every point at which the kernel was measured to stop the sandbox (95.4% to 99.4%).
+
+- It does not bound the reads of a decision by what a process holds.
+  Each decision walks the descriptors of every process the guard may end, to find the memfds they hold, at about 12.5 µs a descriptor in a gVisor pod (measured on 2026-11-14), so a process holding 20,000 descriptors adds about 250 ms to a decision, the one after a kill included.
+  It reads each such process's `smaps` whole as well, and under gVisor `vm.max_map_count` reads 2147483647, so the kernel's mapping limit does not bound that read either.
+  What it does bound is a process's arguments: it reads and masks at most their first 4 KiB ("The lines", above).
+
+- It does not see the memory of a process whose main thread alone has exited.
+  Such a process reads `Z` in its `stat` while its other threads run on and hold all of its memory, and the guard reads it as a live process ("What it ends", above).
+  On Linux, though, its `exe` and its `smaps`, read through the exited main thread, answer nothing, so the guard counts it as ended or as unread and never ends it.
+
+- It does not run in the controller's pod: a guard there is the work of dispatch://INFRA-3531.
+
 ### The disk dies with its pod
 
 An issue pod's disk is the pod's own: a generic ephemeral volume declared in its pod template (`issuePod.disk`, `podkind.go`), whose claim Kubernetes creates when the pod starts and deletes when the pod goes.
@@ -4970,6 +5225,7 @@ The daemon probes a pod by reading it and consulting the worker stream's live re
   — one role's process exiting is that role's **dead (gone)** alone, and changes nothing for its siblings.
   The `roles` container terminated (its PID 1 exited, `OOMKilled`, an eviction) ends every role of the issue:
   each is **dead (gone)**, its detail naming the container's reason and exit code and quoting that role's own last 20 `<role>: ` lines of the container's log, then the container's last 20 unprefixed lines (`roleLog`, `observe.go`).
+  The launcher's memory guard ends one process near the limit so that the container does not end `OOMKilled` ([The memory guard in an issue pod](#the-memory-guard-in-an-issue-pod)), and it never ends a role's `role-init`, shim or agent, so a role whose command it ended stays **alive** by these rules and is told of the kill on its role topic.
   No status at all for the container → **unknown**.
   A connected launcher reporting a child of the recorded generation for the role is **alive**, even when Kubernetes still shows the container's previous instance terminated for a moment after a restart:
   that one answer is asked first, and it alone outranks the terminated status.

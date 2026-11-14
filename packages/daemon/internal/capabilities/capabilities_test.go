@@ -303,6 +303,30 @@ func TestRedactCredentialsReachesAFixedPointWithinItsBound(t *testing.T) {
 	}
 }
 
+// RedactedLine masks what a capability report's detail masks, since the memory guard prints a
+// process's arguments through it: every case of the shared fixture reads from it as the fixture
+// says, but those a pad pushes past MaxReportDetail, whose want is cleanDetail's cut, which
+// RedactedLine does not make.
+func TestRedactedLineMasksEachUncutCaseOfTheSharedFixture(t *testing.T) {
+	var fixture struct {
+		Patterns []redactionCase `json:"patterns"`
+	}
+	readFixture(t, "capability-redaction.json", &fixture)
+	uncut := 0
+	for _, testCase := range fixture.Patterns {
+		padding := strings.Repeat("a", testCase.Pad)
+		detail := padding + testCase.Detail
+		if len(detail) > MaxReportDetail {
+			continue
+		}
+		uncut++
+		if got, want := RedactedLine(detail), padding+testCase.Want; got != want {
+			t.Errorf("%s: %s: RedactedLine(%q) = %q\nwant %q", testCase.Pattern, testCase.Name, detail, got, want)
+		}
+	}
+	t.Logf("%d of %d cases uncut", uncut, len(fixture.Patterns))
+}
+
 // cutBoundaryPads are the lengths of the run of letters a case whose cleaned text is `cleaned`
 // bytes long is pushed by, so that the MaxReportDetail cut lands at each boundary of that text in
 // turn. A sweep of every length between them cleans each case ten thousand times over and reads

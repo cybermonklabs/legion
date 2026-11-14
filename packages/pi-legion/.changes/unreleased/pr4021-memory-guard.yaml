@@ -1,0 +1,6 @@
+kind: Changed
+custom:
+  Issue: pr4021
+body: |-
+  The plugin declares daemon API contract 124, which adds the memory guard's settings to
+  `launcher_hello_ack` and the `launcher_memory_kill` frame.

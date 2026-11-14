@@ -1,0 +1,2004 @@
+package memoryguard
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"runtime"
+	"slices"
+	"strconv"
+	"strings"
+	"sync"
+	"syscall"
+	"testing"
+	"time"
+	"unicode/utf8"
+
+	"github.com/sjawhar/legion/daemon/internal/capabilities"
+	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
+	"golang.org/x/sys/unix"
+)
+
+const (
+	kib = uint64(1) << 10
+	mib = uint64(1) << 20
+	gib = uint64(1) << 30
+	// podLimit is the fake container's limit. At the default act share of 85% its mark is
+	// 3481.6 MiB, and at the default floor of 10% the floor is 409.6 MiB.
+	podLimit = 4 * gib
+)
+
+// fakePod is a /proc and a memory cgroup directory under t.TempDir(), written the way the kernel
+// writes them: meminfo, the limit and the counter in place, since the guard holds them open and
+// reads them from their start, and each process's files whole. Its files directory holds the files
+// its processes' descriptors lead to, a memfd among them named the way procfs names one, with the
+// directory standing for the root.
+type fakePod struct {
+	t                   *testing.T
+	proc, cgroup, files string
+	anon, shmem         uint64
+}
+
+func newFakePod(t *testing.T) *fakePod {
+	t.Helper()
+	root := t.TempDir()
+	p := &fakePod{t: t, proc: filepath.Join(root, "proc"), cgroup: filepath.Join(root, "cgroup"), files: filepath.Join(root, "files")}
+	for _, dir := range []string{p.proc, p.cgroup, p.files} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	p.setLimit(strconv.FormatUint(podLimit, 10))
+	p.setCounter(gib)
+	p.setAnon(gib)
+	return p
+}
+
+const meminfoFormat = "MemTotal:       20971520 kB\nMemFree:        10485760 kB\nMemAvailable:   12582912 kB\n" +
+	"Buffers:               0 kB\nCached:          2097152 kB\nActive:          4194304 kB\nInactive:        1048576 kB\n" +
+	"AnonPages:      %d kB\nMapped:          520372 kB\nShmem:          %d kB\nAnonHugePages:         0 kB\n"
+
+func (p *fakePod) setAnon(anon uint64) {
+	p.anon = anon
+	p.writeInPlace(filepath.Join(p.proc, "meminfo"), fmt.Sprintf(meminfoFormat, p.anon/kib, p.shmem/kib))
+}
+
+func (p *fakePod) setShmem(shmem uint64) {
+	p.shmem = shmem
+	p.setAnon(p.anon)
+}
+
+func (p *fakePod) setLimit(text string) {
+	p.writeInPlace(filepath.Join(p.cgroup, "memory.limit_in_bytes"), text+"\n")
+}
+
+func (p *fakePod) setCounter(n uint64) {
+	p.writeInPlace(filepath.Join(p.cgroup, "memory.usage_in_bytes"), strconv.FormatUint(n, 10)+"\n")
+}
+
+func (p *fakePod) writeInPlace(path, content string) {
+	p.t.Helper()
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		p.t.Fatal(err)
+	}
+}
+
+// fakeProcess is one process of a fakePod. Its smaps holds its program's text, which adds
+// nothing to its size, a heap of anon, a shared mapping of a file on disk of file (an LMDB map),
+// a shared anonymous map of shared, a memfd of memfd, a shared mapping of the pod's memfd mapped
+// with mappedRss of it resident, and a private mapping of a file under /dev/shm whose pages read
+// no Anonymous, which adds nothing either.
+type fakeProcess struct {
+	pid, ppid int
+	start     uint64
+	name, exe string
+	args      []string
+	ns        string
+	anon      uint64
+	file      uint64
+	shared    uint64
+	memfd     uint64
+	// unreadableExe makes exe a plain file, whose readlink fails as an unreadable link does.
+	unreadableExe bool
+	// zombie writes the process's stat in state Z: it has exited and its parent has not reaped it.
+	zombie bool
+	// fds are the files the process holds open by a descriptor, each a path under the pod's files
+	// (fakePod.memfd, fakePod.plainFile), written as fd/<n> links from descriptor 3 on.
+	fds []string
+	// unreadableFDs makes fd a plain file, whose listing fails as an fd directory's the guard
+	// may not read does.
+	unreadableFDs bool
+	mapped        *fakeMemfd
+	mappedRss     uint64
+	// threads, when above 0, writes a status whose Threads: line counts them, with the state its
+	// stat has; a process left at 0 writes no status.
+	threads int
+}
+
+func (p *fakePod) add(fps ...fakeProcess) {
+	p.t.Helper()
+	for _, fp := range fps {
+		if fp.pid == os.Getpid() {
+			p.t.Skipf("the test process's own pid %d is one this test fakes", fp.pid)
+		}
+		p.write(fp)
+	}
+}
+
+// addSelf adds fp under the test process's own pid, the one the guard never ends.
+func (p *fakePod) addSelf(fp fakeProcess) {
+	fp.pid = os.Getpid()
+	p.write(fp)
+}
+
+func (p *fakePod) write(fp fakeProcess) {
+	p.t.Helper()
+	if fp.start == 0 {
+		fp.start = uint64(fp.pid) * 10
+	}
+	if fp.name == "" && len(fp.args) > 0 {
+		fp.name = filepath.Base(fp.args[0])
+	}
+	if fp.exe == "" {
+		fp.exe = "/usr/bin/" + fp.name
+	}
+	if fp.ns == "" {
+		fp.ns = "pid:[4026531836]"
+	}
+	dir := filepath.Join(p.proc, strconv.Itoa(fp.pid))
+	if err := os.MkdirAll(filepath.Join(dir, "ns"), 0o755); err != nil {
+		p.t.Fatal(err)
+	}
+	stat := statLine(fp.pid, fp.name, fp.ppid, fp.start)
+	if fp.zombie {
+		stat = strings.Replace(stat, ") S ", ") Z ", 1)
+	}
+	p.writeWhole(filepath.Join(dir, "stat"), stat)
+	cmdline := ""
+	for _, arg := range fp.args {
+		cmdline += arg + "\x00"
+	}
+	p.writeWhole(filepath.Join(dir, "cmdline"), cmdline)
+	p.writeWhole(filepath.Join(dir, "smaps"), smapsOf(fp))
+	if fp.threads > 0 {
+		state := "S (sleeping)"
+		if fp.zombie {
+			state = "Z (zombie)"
+		}
+		p.writeWhole(filepath.Join(dir, "status"), fmt.Sprintf("Name:\t%s\nState:\t%s\nTgid:\t%d\nPid:\t%d\nPPid:\t%d\nThreads:\t%d\n",
+			fp.name, state, fp.pid, fp.pid, fp.ppid, fp.threads))
+	}
+	for _, link := range []struct{ name, target string }{{"exe", fp.exe}, {filepath.Join("ns", "pid"), fp.ns}} {
+		path := filepath.Join(dir, link.name)
+		_ = os.Remove(path)
+		if link.name == "exe" && fp.unreadableExe {
+			p.writeWhole(path, "")
+			continue
+		}
+		if err := os.Symlink(link.target, path); err != nil {
+			p.t.Fatal(err)
+		}
+	}
+	fds := filepath.Join(dir, "fd")
+	switch {
+	case fp.unreadableFDs:
+		_ = os.RemoveAll(fds)
+		p.writeWhole(fds, "no directory of open files\n")
+	case len(fp.fds) > 0:
+		_ = os.RemoveAll(fds)
+		if err := os.MkdirAll(fds, 0o755); err != nil {
+			p.t.Fatal(err)
+		}
+		for i, target := range fp.fds {
+			if err := os.Symlink(target, filepath.Join(fds, strconv.Itoa(3+i))); err != nil {
+				p.t.Fatal(err)
+			}
+		}
+	}
+}
+
+// fakeMemfd is a memfd of a fakePod: a file under the pod's files named the way procfs names a
+// memfd, so that the link of a descriptor that holds it reads as a memfd's (fakePod.memfdLink),
+// with the device and inode by which a smaps line of its mapping names it.
+type fakeMemfd struct {
+	name, path string
+	dev, ino   uint64
+}
+
+// memfd makes a memfd of size bytes named name, a sparse file so that a large one takes no room.
+func (p *fakePod) memfd(name string, size uint64) *fakeMemfd {
+	p.t.Helper()
+	path := p.memfdPath(name)
+	p.sparseFile(path, size)
+	info, err := os.Stat(path)
+	if err != nil {
+		p.t.Fatal(err)
+	}
+	st := info.Sys().(*syscall.Stat_t)
+	return &fakeMemfd{name: name, path: path, dev: uint64(st.Dev), ino: uint64(st.Ino)}
+}
+
+// memfdPath is the path of the pod's memfd named name, whether or not it exists: procfs's
+// `/memfd:<name> (deleted)` under the pod's files.
+func (p *fakePod) memfdPath(name string) string { return p.memfdLink() + name + " (deleted)" }
+
+// memfdLink is how the link of a descriptor that holds one of the pod's memfds starts: the
+// guard's memfdPrefix under the pod's files, which stand for the root.
+func (p *fakePod) memfdLink() string { return p.files + memfdPrefix }
+
+// plainFile makes an ordinary file of size bytes named name under the pod's files, a sparse one,
+// and answers its path.
+func (p *fakePod) plainFile(name string, size uint64) string {
+	p.t.Helper()
+	path := filepath.Join(p.files, name)
+	p.sparseFile(path, size)
+	return path
+}
+
+func (p *fakePod) sparseFile(path string, size uint64) {
+	p.t.Helper()
+	f, err := os.Create(path)
+	if err != nil {
+		p.t.Fatal(err)
+	}
+	defer f.Close()
+	if err := f.Truncate(int64(size)); err != nil {
+		p.t.Fatal(err)
+	}
+}
+
+// restart rewrites pid's stat with another start time, as a process that took the pid would
+// read.
+func (p *fakePod) restart(pid int, start uint64) {
+	p.writeWhole(filepath.Join(p.proc, strconv.Itoa(pid), "stat"), statLine(pid, "reused", 1, start))
+}
+
+func (p *fakePod) remove(pid int) {
+	p.t.Helper()
+	if err := os.RemoveAll(filepath.Join(p.proc, strconv.Itoa(pid))); err != nil {
+		p.t.Fatal(err)
+	}
+}
+
+// exitAsItsCmdlineIsRead has pid exit while a scan reads it, after the scan's read of its stat and
+// before its read of its exe: pid's cmdline, which the scan reads between the two, becomes a named
+// pipe, and once a reader has opened the pipe, pid's stat is replaced by a zombie's before the
+// arguments are written and the pipe closed. The scan so reads a running process's stat first and
+// a zombie's at any later read.
+func (p *fakePod) exitAsItsCmdlineIsRead(pid int) {
+	p.t.Helper()
+	dir := filepath.Join(p.proc, strconv.Itoa(pid))
+	stat, cmdline := filepath.Join(dir, "stat"), filepath.Join(dir, "cmdline")
+	running, err := os.ReadFile(stat)
+	if err != nil {
+		p.t.Fatal(err)
+	}
+	zombie := stat + ".zombie"
+	if err := os.WriteFile(zombie, []byte(strings.Replace(string(running), ") S ", ") Z ", 1)), 0o644); err != nil {
+		p.t.Fatal(err)
+	}
+	args, err := os.ReadFile(cmdline)
+	if err != nil {
+		p.t.Fatal(err)
+	}
+	if err := os.Remove(cmdline); err != nil {
+		p.t.Fatal(err)
+	}
+	if err := unix.Mkfifo(cmdline, 0o644); err != nil {
+		p.t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		w, err := os.OpenFile(cmdline, os.O_WRONLY, 0)
+		if err != nil {
+			done <- err
+			return
+		}
+		renamed := os.Rename(zombie, stat)
+		_, written := w.Write(args)
+		done <- errors.Join(renamed, written, w.Close())
+	}()
+	p.t.Cleanup(func() {
+		// The writer waits in its open until a reader opens the pipe; one that does not wait lets
+		// it go where no scan read the pipe.
+		r, err := os.OpenFile(cmdline, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+		if err == nil {
+			defer r.Close()
+		}
+		if err := <-done; err != nil {
+			p.t.Errorf("the exit of pid %d as its cmdline was read: %v", pid, err)
+		}
+	})
+}
+
+// writeWhole writes a process's file through a rename, so the guard's hourly scan, which reads
+// on a goroutine of its own, never reads half of one.
+func (p *fakePod) writeWhole(path, content string) {
+	p.t.Helper()
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, []byte(content), 0o644); err != nil {
+		p.t.Fatal(err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		p.t.Fatal(err)
+	}
+}
+
+// statLine is a stat line of the kernel's shape: the start time is field 22.
+func statLine(pid int, name string, ppid int, start uint64) string {
+	return fmt.Sprintf("%d (%s) S %d %d %d 0 -1 4194304 100 0 0 0 5 3 0 0 20 0 1 0 %d 123456789 2048 "+
+		"18446744073709551615 1 1 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0\n", pid, name, ppid, pid, pid, start)
+}
+
+func smapsOf(fp fakeProcess) string {
+	var b strings.Builder
+	mapping := func(header string, rss, anon uint64) {
+		fmt.Fprintf(&b, "%s\nSize:           %8d kB\nKernelPageSize:        4 kB\nMMUPageSize:           4 kB\n"+
+			"Rss:            %8d kB\nPss:            %8d kB\nShared_Clean:          0 kB\nShared_Dirty:          0 kB\n"+
+			"Private_Clean:         0 kB\nPrivate_Dirty:  %8d kB\nReferenced:     %8d kB\nAnonymous:      %8d kB\n"+
+			"AnonHugePages:         0 kB\nSwap:                  0 kB\nLocked:                0 kB\nVmFlags: rd wr mr mw me ac\n",
+			header, rss/kib, rss/kib, rss/kib, anon/kib, rss/kib, anon/kib)
+	}
+	mapping("00400000-00452000 r-xp 00000000 08:02 173521                             /usr/bin/"+fp.name, 300*kib, 0)
+	if fp.anon > 0 {
+		mapping("01a5c000-41a5c000 rw-p 00000000 00:00 0                                  [heap]", fp.anon, fp.anon)
+	}
+	if fp.file > 0 {
+		mapping("7f0000000000-7f0100000000 rw-s 00000000 08:02 4242                       /legion/scratch/state.lmdb/data.mdb", fp.file, 0)
+	}
+	if fp.shared > 0 {
+		mapping("7f2000000000-7f2100000000 rw-s 00000000 00:01 1025                       /dev/zero (deleted)", fp.shared, 0)
+	}
+	if fp.memfd > 0 {
+		mapping("7f3000000000-7f3100000000 rw-s 00000000 00:01 2048                       /memfd:pool (deleted)", fp.memfd, 0)
+	}
+	if fp.mapped != nil {
+		mapping(fmt.Sprintf("7f5000000000-7f5040000000 rw-s 00000000 %02x:%02x %-26d /memfd:%s (deleted)",
+			unix.Major(fp.mapped.dev), unix.Minor(fp.mapped.dev), fp.mapped.ino, fp.mapped.name), fp.mappedRss, 0)
+	}
+	mapping("7f4000000000-7f4000400000 rw-p 00000000 00:16 77                         /dev/shm/private", 4*mib, 0)
+	return b.String()
+}
+
+// fakeClock hands each wait the guard asks for to the test, which fires it: a reading is then a
+// step of the test, and an hour passes in one.
+type fakeClock struct {
+	mu    sync.Mutex
+	now   time.Time
+	waits chan fakeWait
+}
+
+type fakeWait struct {
+	d    time.Duration
+	fire chan time.Time
+}
+
+var testStart = time.Date(2026, 11, 14, 3, 0, 0, 0, time.UTC)
+
+func newFakeClock() *fakeClock {
+	return &fakeClock{now: testStart, waits: make(chan fakeWait, 16)}
+}
+
+func (c *fakeClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
+}
+
+func (c *fakeClock) After(d time.Duration) <-chan time.Time {
+	w := fakeWait{d: d, fire: make(chan time.Time, 1)}
+	c.waits <- w
+	return w.fire
+}
+
+func (c *fakeClock) advance(d time.Duration) time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.now = c.now.Add(d)
+	return c.now
+}
+
+// fakeSignal is a kill that ends nothing: it records each process the guard opened, tried to kill
+// and killed, and onOpen and onKill change the pod as a reused pid or a kill would, and killErr
+// refuses a kill as the kernel would.
+type fakeSignal struct {
+	mu      sync.Mutex
+	openErr error
+	onOpen  func(pid int)
+	// onKill changes the pod after pid's kill and answers whether pid has exited.
+	onKill func(pid int) bool
+	// killErr answers the error pid's kill fails with, nil for a kill that succeeds.
+	killErr func(pid int) error
+	tried   []int
+	killed  []int
+	open    int
+	handles []*fakeHandle
+	// exited holds each pid exit has marked: each handle of it reads exited, those Open builds
+	// later as well.
+	exited map[int]bool
+}
+
+type fakeHandle struct {
+	s      *fakeSignal
+	pid    int
+	exited bool
+	closed bool
+}
+
+func (s *fakeSignal) Open(pid int) (Handle, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.openErr != nil {
+		return nil, s.openErr
+	}
+	s.open++
+	if s.onOpen != nil && pid != os.Getpid() {
+		s.onOpen(pid)
+	}
+	h := &fakeHandle{s: s, pid: pid, exited: s.exited[pid]}
+	s.handles = append(s.handles, h)
+	return h, nil
+}
+
+func (s *fakeSignal) kills() []int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.killed)
+}
+
+func (s *fakeSignal) attempts() []int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.tried)
+}
+
+func (s *fakeSignal) held() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.open
+}
+
+// exit marks pid as a process that has exited, as its pidfd would read: each handle that holds it,
+// and each that Open builds for it from then on.
+func (s *fakeSignal) exit(pid int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.exited == nil {
+		s.exited = map[int]bool{}
+	}
+	s.exited[pid] = true
+	for _, h := range s.handles {
+		if h.pid == pid {
+			h.exited = true
+		}
+	}
+}
+
+func (h *fakeHandle) Kill() error {
+	h.s.mu.Lock()
+	defer h.s.mu.Unlock()
+	h.s.tried = append(h.s.tried, h.pid)
+	if h.s.killErr != nil {
+		if err := h.s.killErr(h.pid); err != nil {
+			return err
+		}
+	}
+	h.s.killed = append(h.s.killed, h.pid)
+	if h.s.onKill != nil {
+		h.exited = h.s.onKill(h.pid)
+	}
+	return nil
+}
+
+func (h *fakeHandle) Exited() bool {
+	h.s.mu.Lock()
+	defer h.s.mu.Unlock()
+	return h.exited
+}
+
+func (h *fakeHandle) Close() error {
+	h.s.mu.Lock()
+	defer h.s.mu.Unlock()
+	if !h.closed {
+		h.closed = true
+		h.s.open--
+	}
+	return nil
+}
+
+// lineLog keeps every line the guard logs.
+type lineLog struct {
+	mu    sync.Mutex
+	lines []string
+}
+
+func (l *lineLog) logf(format string, args ...any) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.lines = append(l.lines, fmt.Sprintf(format, args...))
+}
+
+func (l *lineLog) all() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return slices.Clone(l.lines)
+}
+
+// with is each line of the guard's that starts with what, after the prefix every line carries.
+func (l *lineLog) with(what string) []string {
+	var out []string
+	for _, line := range l.all() {
+		if strings.HasPrefix(line, linePrefix+what) {
+			out = append(out, line)
+		}
+	}
+	return out
+}
+
+// harness runs one guard over a fakePod with a fake clock and a fake kill, one reading at a time.
+type harness struct {
+	t       *testing.T
+	pod     *fakePod
+	clock   *fakeClock
+	signal  *fakeSignal
+	log     *lineLog
+	g       *Guard
+	mu      sync.Mutex
+	kills   []Kill
+	pending fakeWait
+	cancel  context.CancelFunc
+	done    chan struct{}
+	stopped sync.Once
+}
+
+func newHarness(t *testing.T, pod *fakePod, classify Classifier) *harness {
+	t.Helper()
+	h := &harness{t: t, pod: pod, clock: newFakeClock(), signal: &fakeSignal{}, log: &lineLog{}}
+	h.g = New(Config{
+		Proc: pod.proc, Cgroup: pod.cgroup, Classify: classify, Logf: h.log.logf,
+		Clock: h.clock, Signal: h.signal,
+		Sink: func(k Kill) {
+			h.mu.Lock()
+			defer h.mu.Unlock()
+			h.kills = append(h.kills, k)
+		},
+	})
+	// The pod's descriptors lead to files under its files directory, which stands for the root.
+	h.g.memfdLink = pod.memfdLink()
+	return h
+}
+
+// run starts the guard and returns once its first reading, and all it led to, is done.
+func (h *harness) run() *harness {
+	h.start()
+	h.pending = h.nextWait()
+	return h
+}
+
+func (h *harness) start() {
+	ctx, cancel := context.WithCancel(context.Background())
+	h.cancel, h.done = cancel, make(chan struct{})
+	go func() {
+		defer close(h.done)
+		h.g.Run(ctx)
+	}()
+	h.t.Cleanup(h.stop)
+}
+
+// nextWait is the guard's next wait: the reading before it, and any scan that reading started,
+// are done.
+func (h *harness) nextWait() fakeWait {
+	h.t.Helper()
+	select {
+	case w := <-h.clock.waits:
+		h.g.scans.Wait()
+		return w
+	case <-h.done:
+		h.t.Fatalf("Run returned before ctx ended; the log:\n%s", strings.Join(h.log.all(), "\n"))
+	case <-time.After(testwait.Bounded(h.t, time.Minute, time.Second)):
+		h.t.Fatalf("the guard never waited for its next reading; the log:\n%s", strings.Join(h.log.all(), "\n"))
+	}
+	return fakeWait{}
+}
+
+// tick lets the guard take its next reading, after the interval it waits for.
+func (h *harness) tick() { h.tickAfter(0) }
+
+// tickAfter lets the guard take its next reading extra after the interval it waits for, and
+// returns once that reading and all it led to are done.
+func (h *harness) tickAfter(extra time.Duration) {
+	h.t.Helper()
+	w := h.pending
+	w.fire <- h.clock.advance(w.d + extra)
+	h.pending = h.nextWait()
+}
+
+// stop ends Run and waits for it.
+func (h *harness) stop() {
+	h.stopped.Do(func() {
+		if h.cancel == nil {
+			return
+		}
+		h.cancel()
+		select {
+		case <-h.done:
+		case <-time.After(10 * time.Second):
+			h.t.Errorf("Run did not return after ctx ended")
+		}
+	})
+}
+
+func (h *harness) killed() []Kill {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return slices.Clone(h.kills)
+}
+
+// requireKilled fails unless the guard has killed exactly pids, in order, and reported each.
+func (h *harness) requireKilled(pids ...int) {
+	h.t.Helper()
+	got := h.signal.kills()
+	if !slices.Equal(got, pids) {
+		h.t.Fatalf("the guard killed %v, want %v; the log:\n%s", got, pids, strings.Join(h.log.all(), "\n"))
+	}
+	reported := h.killed()
+	if len(reported) != len(pids) {
+		h.t.Fatalf("the guard reported %d kills, want %d", len(reported), len(pids))
+	}
+	for i, k := range reported {
+		if k.PID != pids[i] || k.Sequence != uint64(i+1) || k.Guard != h.g.ID() {
+			h.t.Fatalf("report %d is %+v, want pid %d, sequence %d, guard %s", i, k, pids[i], i+1, h.g.ID())
+		}
+	}
+}
+
+// protect is a classifier that protects the given pids, of role, and gives every other process
+// role too.
+func protect(role string, pids ...int) Classifier {
+	return func(t *Table) map[int]Class {
+		out := map[int]Class{}
+		for _, p := range t.Processes() {
+			out[p.PID] = Class{Role: role, Protected: slices.Contains(pids, p.PID)}
+		}
+		return out
+	}
+}
+
+// exitFreeing is an onKill that frees freed of the reading and ends the process.
+func exitFreeing(pod *fakePod, freed uint64) func(int) bool {
+	return func(pid int) bool {
+		pod.setAnon(pod.anon - freed)
+		pod.remove(pid)
+		return true
+	}
+}
+
+// agent is a protected process that holds most of a pod's memory, as an agent does.
+func agent(anon uint64) fakeProcess {
+	return fakeProcess{pid: 100, ppid: 1, name: "omp", args: []string{"omp", "--mode", "rpc"}, anon: anon}
+}
+
+func TestMemoryGuardActsOnAnonPagesNotOnACounterAMappedFileRaises(t *testing.T) {
+	pod := newFakePod(t)
+	pod.add(agent(gib), fakeProcess{pid: 200, ppid: 100, args: []string{"python3", "load.py"}, anon: 600 * mib, file: 2560 * mib})
+	// A mapped database has the counter past the mark while AnonPages is far below it.
+	pod.setAnon(1700 * mib)
+	pod.setCounter(3900 * mib)
+	h := newHarness(t, pod, protect("tester", 100)).run()
+	h.tick()
+	h.tick()
+	h.requireKilled()
+
+	pod.add(fakeProcess{pid: 200, ppid: 100, args: []string{"python3", "load.py"}, anon: 2500 * mib, file: 2560 * mib})
+	pod.setAnon(3600 * mib)
+	h.tick()
+	h.requireKilled(200)
+}
+
+func TestMemoryGuardBelowTheMarkEndsNothing(t *testing.T) {
+	pod := newFakePod(t)
+	pod.add(fakeProcess{pid: 200, ppid: 1, args: []string{"python3", "grow.py"}, anon: 3000 * mib})
+	pod.setAnon(3481 * mib)
+	h := newHarness(t, pod, nil).run()
+	for range 5 {
+		h.tick()
+	}
+	h.requireKilled()
+	if lines := h.log.with("stopped"); len(lines) != 0 {
+		t.Fatalf("below the mark the guard gave up a rise: %q", lines)
+	}
+
+	pod.setAnon(3482 * mib)
+	h.tick()
+	h.requireKilled(200)
+	if lines := h.log.with("ended pid=200 role=none "); len(lines) != 1 {
+		t.Fatalf("the kill of a process no classifier names is %q, want one line naming role none", h.log.with("ended"))
+	}
+}
+
+func TestMemoryGuardRanksBySizeNotByRss(t *testing.T) {
+	pod := newFakePod(t)
+	pod.add(
+		agent(gib),
+		// The larger Rss, by a mapped file, and the smaller size.
+		fakeProcess{pid: 300, ppid: 100, args: []string{"pivot", "track"}, anon: 600 * mib, file: 2 * gib},
+		fakeProcess{pid: 301, ppid: 100, args: []string{"python3", "grow.py"}, anon: 900 * mib},
+	)
+	pod.setAnon(3600 * mib)
+	h := newHarness(t, pod, protect("tester", 100)).run()
+	h.requireKilled(301)
+	if k := h.killed()[0]; k.SizeBytes != 900*mib {
+		t.Fatalf("the killed process's size is %d, want %d (its Anonymous alone)", k.SizeBytes, 900*mib)
+	}
+}
+
+func TestMemoryGuardSeesASharedAnonymousMapAndAMemfdAtTheirSize(t *testing.T) {
+	pod := newFakePod(t)
+	pod.add(
+		agent(1536*mib),
+		fakeProcess{pid: 400, ppid: 100, args: []string{"python3", "shared.py"}, shared: gib},
+		fakeProcess{pid: 401, ppid: 100, args: []string{"python3", "memfd.py"}, memfd: 800 * mib},
+		fakeProcess{pid: 402, ppid: 100, args: []string{"python3", "heap.py"}, anon: 300 * mib},
+	)
+	pod.setAnon(3600 * mib)
+	h := newHarness(t, pod, protect("tester", 100))
+	h.signal.onKill = exitFreeing(pod, gib)
+	h.run()
+	h.requireKilled(400)
+
+	// The kill took the reading below the mark, so the next rise is acted on afresh.
+	h.tick()
+	h.signal.onKill = exitFreeing(pod, 800*mib)
+	pod.setAnon(3600 * mib)
+	h.tick()
+	h.requireKilled(400, 401)
+	kills := h.killed()
+	if kills[0].SizeBytes != gib || kills[1].SizeBytes != 800*mib {
+		t.Fatalf("the sizes are %d and %d, want the shared map's %d and the memfd's %d",
+			kills[0].SizeBytes, kills[1].SizeBytes, gib, 800*mib)
+	}
+}
+
+// A process that writes a memfd it never maps holds that memfd's pages by its descriptor alone:
+// its smaps shows none of them, and its end frees them all. The guard counts the memfd at its
+// size in that process's size, so it ends that process before one with more Anonymous memory, and
+// its kill line, its report and the hourly line all give that size.
+func TestMemoryGuardEndsTheHolderOfAnUnmappedMemfdAtItsSize(t *testing.T) {
+	pod := newFakePod(t)
+	pool := pod.memfd("pool", gib)
+	pod.add(
+		agent(gib),
+		fakeProcess{pid: 1100, ppid: 100, args: []string{"python3", "memfd.py"}, anon: 20 * mib, fds: []string{pool.path}},
+		fakeProcess{pid: 1101, ppid: 100, args: []string{"python3", "grow.py"}, anon: 600 * mib},
+	)
+	// The memfd's written pages raise Shmem by its size.
+	pod.setShmem(gib)
+	pod.setAnon(3700 * mib)
+	h := newHarness(t, pod, protect("tester", 100)).run()
+	h.requireKilled(1100)
+	size := gib + 20*mib
+	if k := h.killed()[0]; k.SizeBytes != size {
+		t.Fatalf("the killed process's size is %d, want %d (its Anonymous and the memfd it holds)", k.SizeBytes, size)
+	}
+	if got := h.log.with(fmt.Sprintf("ended pid=1100 role=tester size=%d ", size)); len(got) != 1 {
+		t.Fatalf("the kill lines are %q, want one with size=%d", h.log.with("ended"), size)
+	}
+
+	pod.setAnon(2000 * mib)
+	h.tickAfter(time.Hour)
+	largest := fmt.Sprintf(" largest_pid=1100 largest_role=tester largest_size=%d ", size)
+	if hours := h.log.with("hour"); len(hours) != 1 || !strings.Contains(hours[0], largest) {
+		t.Fatalf("the hourly lines are %q, want one naming%s", hours, largest)
+	}
+}
+
+// A memfd made large with ftruncate and never written has its size and no pages, so ending the
+// process that holds it frees nothing. In a gVisor pod on 2026-11-14, the head's launcher, run as
+// the container's first process, ended first a process that held a 16 GiB memfd made that way
+// (`ended pid=5584 ... size=17185095680`, twice the pod's 8 GiB limit), then ended nothing more,
+// and the kernel stopped the sandbox while a process beside it grew by about 1 GiB a second;
+// without the holder, the guard ended that grower and the pod lived. Under gVisor a descriptor's
+// stat gives no resident size (st_blocks reads the file's size) and lseek SEEK_DATA answers
+// EINVAL, while the sandbox's Shmem reading counts the pages every memfd holds. So a memfd a
+// descriptor holds counts at most that reading (W1 version 8): the grower, whose anonymous memory
+// is larger than Shmem, is ended first, and the holder counts its Anonymous and the Shmem reading
+// at most.
+func TestMemoryGuardDoesNotPickTheHolderOfAnUnwrittenMemfdBeforeALargerProcess(t *testing.T) {
+	pod := newFakePod(t)
+	hole := pod.memfd("hole", 16*gib)
+	pod.add(
+		agent(3*gib),
+		fakeProcess{pid: 1150, ppid: 100, args: []string{"python3", "sparse.py"}, anon: 20 * mib, fds: []string{hole.path}},
+		fakeProcess{pid: 1151, ppid: 100, args: []string{"python3", "grow.py"}, anon: 600 * mib},
+	)
+	pod.setShmem(32 * mib)
+	pod.setAnon(4050 * mib)
+	h := newHarness(t, pod, protect("tester", 100))
+	// 550 MiB freed, and 3500 MiB is still above the mark: the guard decides again on what is
+	// left, the holder alone, which holds less than the floor.
+	h.signal.onKill = exitFreeing(pod, 550*mib)
+	h.run()
+	h.requireKilled(1151)
+	h.tick()
+	h.requireKilled(1151)
+	endable := fmt.Sprintf(" endable=%d ", 20*mib+32*mib)
+	if stopped := h.log.with("stopped"); len(stopped) != 1 || !strings.Contains(stopped[0], endable) {
+		t.Fatalf("the stopped lines are %q, want one with%s (the holder's Anonymous and the Shmem reading at most); the log:\n%s",
+			stopped, endable, strings.Join(h.log.all(), "\n"))
+	}
+}
+
+// The hourly line's scan for the largest process, on a goroutine of its own, counts a memfd a
+// descriptor holds at most at the Shmem of the reading that started it, as an assessment does: a
+// process that holds an unwritten memfd larger than the pod's limit is named at its Anonymous and
+// that reading, and not at the memfd's size.
+func TestMemoryGuardHourlyLineCountsAnUnwrittenMemfdAtMostAtShmem(t *testing.T) {
+	pod := newFakePod(t)
+	hole := pod.memfd("hole", 16*gib)
+	pod.add(
+		agent(gib),
+		fakeProcess{pid: 1160, ppid: 100, args: []string{"python3", "sparse.py"}, anon: 1500 * mib, fds: []string{hole.path}},
+	)
+	pod.setShmem(32 * mib)
+	pod.setAnon(2000 * mib)
+	h := newHarness(t, pod, protect("tester", 100)).run()
+	h.tickAfter(time.Hour)
+	largest := fmt.Sprintf(" largest_pid=1160 largest_role=tester largest_size=%d ", 1500*mib+32*mib)
+	if hours := h.log.with("hour"); len(hours) != 1 || !strings.Contains(hours[0], largest) {
+		t.Fatalf("the hourly lines are %q, want one naming%s (its Anonymous and the Shmem reading at most)", hours, largest)
+	}
+}
+
+// A memfd that a process maps counts through that mapping's Rss alone, whichever process holds it
+// by a descriptor: a process that maps the memfd it holds counts it once, and a process that holds
+// by a descriptor alone a memfd another process maps counts nothing for it, so neither is ranked
+// above its due and the processes the guard may end sum to each memfd once.
+func TestMemoryGuardCountsAMappedMemfdThroughItsMappingAlone(t *testing.T) {
+	pod := newFakePod(t)
+	own := pod.memfd("own", gib)
+	theirs := pod.memfd("theirs", gib)
+	pod.add(
+		agent(2*gib),
+		// Its Anonymous and its own memfd once, through its mapping: 1074 MiB.
+		fakeProcess{pid: 1200, ppid: 100, args: []string{"python3", "shm.py"}, anon: 50 * mib, fds: []string{own.path}, mapped: own, mappedRss: gib},
+		// Its Anonymous alone, 100 MiB: 1203 maps the memfd it holds.
+		fakeProcess{pid: 1202, ppid: 100, args: []string{"python3", "reader.py"}, anon: 100 * mib, fds: []string{theirs.path}},
+		// Its Anonymous and what of the memfd it maps is resident: 522 MiB.
+		fakeProcess{pid: 1203, ppid: 100, args: []string{"python3", "writer.py"}, anon: 10 * mib, mapped: theirs, mappedRss: 512 * mib},
+	)
+	pod.setAnon(3800 * mib)
+	h := newHarness(t, pod, protect("tester", 100)).run()
+	h.requireKilled(1200)
+	if k := h.killed()[0]; k.SizeBytes != gib+50*mib {
+		t.Fatalf("the killed process's size is %d, want %d (its Anonymous and its memfd once)", k.SizeBytes, gib+50*mib)
+	}
+	// The kill lowers nothing, and the stop's line sums the sizes of the processes it may end.
+	h.tickAfter(5 * time.Second)
+	endable := gib + 50*mib + 100*mib + 522*mib
+	want := fmt.Sprintf("launcher: memory guard: stopped for this rise reason=not fallen reading=%d endable=%d protected=%d unread=0 unheld=%d limit=%d left_out=0",
+		3800*mib, endable, 2*gib, 3800*mib-endable-2*gib, podLimit)
+	if got := h.log.with("stopped"); !slices.Equal(got, []string{want}) {
+		t.Fatalf("the stopped lines are %q, want %q", got, want)
+	}
+}
+
+// A memfd that two processes hold by a descriptor, and that none maps, counts once, in the size of
+// the larger of the two by their sizes without it, however many of its descriptors hold it: the
+// larger is ended first, at its size with the memfd, and the processes the guard may end sum to
+// the memfd once.
+func TestMemoryGuardCountsAMemfdTwoProcessesHoldOnceForTheLarger(t *testing.T) {
+	pod := newFakePod(t)
+	shared := pod.memfd("shared", gib)
+	pod.add(
+		agent(gib),
+		fakeProcess{pid: 1300, ppid: 100, args: []string{"python3", "parent.py"}, anon: 300 * mib, fds: []string{shared.path, shared.path}},
+		fakeProcess{pid: 1301, ppid: 1300, args: []string{"python3", "child.py"}, anon: 200 * mib, fds: []string{shared.path}},
+		fakeProcess{pid: 1302, ppid: 100, args: []string{"python3", "grow.py"}, anon: 1100 * mib},
+	)
+	// The memfd's written pages raise Shmem by its size.
+	pod.setShmem(gib)
+	pod.setAnon(3700 * mib)
+	h := newHarness(t, pod, protect("tester", 100)).run()
+	h.requireKilled(1300)
+	if k := h.killed()[0]; k.SizeBytes != gib+300*mib {
+		t.Fatalf("the killed process's size is %d, want %d (its Anonymous and the memfd once)", k.SizeBytes, gib+300*mib)
+	}
+	h.tickAfter(5 * time.Second)
+	endable := gib + 300*mib + 200*mib + 1100*mib
+	want := fmt.Sprintf("launcher: memory guard: stopped for this rise reason=not fallen reading=%d endable=%d protected=%d unread=0 unheld=%d limit=%d left_out=0",
+		3700*mib, endable, gib, 3700*mib-endable-gib, podLimit)
+	if got := h.log.with("stopped"); !slices.Equal(got, []string{want}) {
+		t.Fatalf("the stopped lines are %q, want %q", got, want)
+	}
+}
+
+// A descriptor adds to a process's size only when it holds a memfd: one that holds an ordinary
+// file adds nothing however large the file is, and a descriptor closed under the read (a memfd
+// link that stat finds nothing at) or an fd directory the guard cannot list adds nothing either,
+// and leaves its process read, ranked by its smaps, and not unread.
+func TestMemoryGuardCountsNothingForAnOrdinaryFileOrADescriptorItCannotRead(t *testing.T) {
+	pod := newFakePod(t)
+	data := pod.plainFile("data.mdb", 2*gib)
+	pod.add(
+		agent(gib),
+		fakeProcess{pid: 1400, ppid: 100, args: []string{"python3", "load.py"}, anon: 100 * mib, fds: []string{data, pod.memfdPath("closed")}},
+		fakeProcess{pid: 1401, ppid: 100, args: []string{"python3", "grow.py"}, anon: 600 * mib},
+		fakeProcess{pid: 1402, ppid: 100, args: []string{"python3", "hidden.py"}, anon: 300 * mib, unreadableFDs: true},
+	)
+	pod.setAnon(3700 * mib)
+	h := newHarness(t, pod, protect("tester", 100)).run()
+	h.requireKilled(1401)
+	if k := h.killed()[0]; k.SizeBytes != 600*mib {
+		t.Fatalf("the killed process's size is %d, want %d (its Anonymous alone)", k.SizeBytes, 600*mib)
+	}
+	h.tickAfter(5 * time.Second)
+	if unread := h.log.with("unread"); len(unread) != 0 {
+		t.Fatalf("the unread lines are %q, want none", unread)
+	}
+	endable := 100*mib + 600*mib + 300*mib
+	want := fmt.Sprintf("launcher: memory guard: stopped for this rise reason=not fallen reading=%d endable=%d protected=%d unread=0 unheld=%d limit=%d left_out=0",
+		3700*mib, endable, gib, 3700*mib-endable-gib, podLimit)
+	if got := h.log.with("stopped"); !slices.Equal(got, []string{want}) {
+		t.Fatalf("the stopped lines are %q, want %q", got, want)
+	}
+}
+
+func TestMemoryGuardEndsNothingWhenWhatItMayEndIsUnderTheFloor(t *testing.T) {
+	pod := newFakePod(t)
+	pod.add(agent(3 * gib))
+	for i := range 10 {
+		pod.add(fakeProcess{pid: 500 + i, ppid: 100, args: []string{"sleep", "600"}, anon: 40 * mib})
+	}
+	pod.setAnon(3500 * mib)
+	h := newHarness(t, pod, protect("tester", 100)).run()
+	h.tick()
+	h.tick()
+	h.requireKilled()
+	want := fmt.Sprintf("launcher: memory guard: stopped for this rise reason=nothing to end reading=%d endable=%d protected=%d unread=0 unheld=%d limit=%d left_out=0",
+		3500*mib, 400*mib, 3*gib, 28*mib, podLimit)
+	if got := h.log.with("stopped"); !slices.Equal(got, []string{want}) {
+		t.Fatalf("the stopped lines are %q, want one: %q", got, want)
+	}
+}
+
+func TestMemoryGuardEndsTheNextLargestWhenAKillFallsAndTheReadingStaysAtTheMark(t *testing.T) {
+	pod := newFakePod(t)
+	pod.add(
+		agent(3*gib),
+		fakeProcess{pid: 600, ppid: 100, args: []string{"go", "test", "./..."}, anon: 600 * mib},
+		fakeProcess{pid: 601, ppid: 100, args: []string{"python3", "grow.py"}, anon: 450 * mib},
+	)
+	pod.setAnon(4050 * mib)
+	h := newHarness(t, pod, protect("tester", 100))
+	// 550 MiB freed, and 3500 MiB is still above the mark.
+	h.signal.onKill = exitFreeing(pod, 550*mib)
+	h.run()
+	h.requireKilled(600)
+	h.tick()
+	h.requireKilled(600, 601)
+}
+
+// A killed process whose memory has partly gone but which has not exited yet is waited on: the
+// rest of its memory can take the reading below the mark, and a second kill then would end a
+// process for nothing. Once it has exited, the guard ends the next largest.
+func TestMemoryGuardWaitsForAKilledProcessToExitBeforeItEndsAnother(t *testing.T) {
+	pod := newFakePod(t)
+	pod.add(
+		agent(3*gib),
+		fakeProcess{pid: 610, ppid: 100, args: []string{"go", "test", "./..."}, anon: 600 * mib},
+		fakeProcess{pid: 611, ppid: 100, args: []string{"python3", "grow.py"}, anon: 450 * mib},
+	)
+	pod.setAnon(4050 * mib)
+	h := newHarness(t, pod, protect("tester", 100))
+	h.signal.onKill = func(int) bool {
+		pod.setAnon(pod.anon - 550*mib)
+		return false
+	}
+	h.run()
+	h.requireKilled(610)
+	h.tick()
+	h.tick()
+	h.requireKilled(610)
+	h.signal.exit(610)
+	pod.remove(610)
+	h.tick()
+	h.requireKilled(610, 611)
+}
+
+// A pool of forked workers shares its parent's pages, so each worker's smaps reads the whole
+// 262 MiB while its kill frees only the 4 MiB it wrote itself. That small fall is a fall: with the
+// reading still at the mark, the guard ends the next worker, one at a time, until the reading is
+// below the mark.
+func TestMemoryGuardEndsTheNextForkedWorkerWhenAKillFreesLittle(t *testing.T) {
+	pod := newFakePod(t)
+	pod.add(
+		agent(3214*mib),
+		fakeProcess{pid: 700, ppid: 100, start: 5000, args: []string{"make", "-j4"}, anon: 262 * mib},
+		fakeProcess{pid: 701, ppid: 700, start: 5100, args: []string{"make", "-j4"}, anon: 262 * mib},
+		fakeProcess{pid: 702, ppid: 700, start: 5200, args: []string{"make", "-j4"}, anon: 262 * mib},
+		fakeProcess{pid: 703, ppid: 700, start: 5300, args: []string{"make", "-j4"}, anon: 262 * mib},
+	)
+	// The agent, the pool's 262 MiB once, and the 4 MiB each worker wrote: 3488 MiB, above the
+	// mark of 3481.6 MiB.
+	pod.setAnon(3488 * mib)
+	h := newHarness(t, pod, protect("tester", 100))
+	h.signal.onKill = exitFreeing(pod, 4*mib)
+	h.run()
+	// Of the equal sizes, the newest worker first.
+	h.requireKilled(703)
+	// 3484 MiB: 4 MiB fallen and still at the mark, so the next worker.
+	h.tick()
+	h.requireKilled(703, 702)
+	// 3480 MiB is below the mark: the rise is over.
+	for range 3 {
+		h.tick()
+	}
+	h.requireKilled(703, 702)
+	if lines := h.log.with("stopped"); len(lines) != 0 {
+		t.Fatalf("the guard gave up on a rise its kills lowered: %q", lines)
+	}
+}
+
+// A kill that lowers the reading by nothing within the wait freed nothing: the killed child held
+// only pages its parent keeps. The guard logs the stopped line once the wait passes and ends
+// nothing more until the reading has gone below the mark.
+func TestMemoryGuardStopsForARiseAKillDoesNotLower(t *testing.T) {
+	pod := newFakePod(t)
+	pod.add(
+		agent(3230*mib),
+		fakeProcess{pid: 700, ppid: 100, start: 5000, args: []string{"python3", "pool.py"}, anon: 262 * mib},
+		fakeProcess{pid: 701, ppid: 700, start: 5100, args: []string{"python3", "pool.py"}, anon: 262 * mib},
+		fakeProcess{pid: 702, ppid: 100, start: 5200, args: []string{"python3", "work.py"}, anon: 200 * mib},
+	)
+	pod.setAnon(3692 * mib)
+	h := newHarness(t, pod, protect("tester", 100))
+	h.signal.onKill = exitFreeing(pod, 0)
+	h.run()
+	h.requireKilled(701)
+	for range 3 {
+		h.tick()
+	}
+	h.requireKilled(701)
+	if lines := h.log.with("stopped"); len(lines) != 0 {
+		t.Fatalf("the guard gave up before its wait passed: %q", lines)
+	}
+	h.tickAfter(5 * time.Second)
+	h.requireKilled(701)
+	want := fmt.Sprintf("launcher: memory guard: stopped for this rise reason=not fallen reading=%d endable=%d protected=%d unread=0 unheld=%d limit=%d left_out=0",
+		3692*mib, 462*mib, 3230*mib, 0, podLimit)
+	if got := h.log.with("stopped"); !slices.Equal(got, []string{want}) {
+		t.Fatalf("the stopped lines are %q, want one: %q", got, want)
+	}
+	for range 3 {
+		h.tick()
+	}
+	h.requireKilled(701)
+}
+
+func TestMemoryGuardActsOnANewRiseOnlyAfterTheReadingFellBelowTheMark(t *testing.T) {
+	pod := newFakePod(t)
+	pod.add(agent(3 * gib))
+	for i := range 10 {
+		pod.add(fakeProcess{pid: 500 + i, ppid: 100, args: []string{"sleep", "600"}, anon: 40 * mib})
+	}
+	pod.setAnon(3500 * mib)
+	h := newHarness(t, pod, protect("tester", 100)).run()
+	if len(h.log.with("stopped")) != 1 {
+		t.Fatalf("the guard did not give the rise up: %q", h.log.all())
+	}
+	// Something it may end grows while the reading stays above the mark: still this rise.
+	pod.add(fakeProcess{pid: 520, ppid: 100, args: []string{"python3", "grow.py"}, anon: 500 * mib})
+	pod.setAnon(4000 * mib)
+	h.tick()
+	h.tick()
+	h.requireKilled()
+
+	pod.setAnon(3400 * mib)
+	h.tick()
+	h.requireKilled()
+	pod.setAnon(4000 * mib)
+	h.tick()
+	h.requireKilled(520)
+	if got := len(h.log.with("stopped")); got != 1 {
+		t.Fatalf("%d stopped lines, want the first rise's alone", got)
+	}
+}
+
+// underTheFloor is a pod at 3500 MiB, above the mark, whose processes the guard may end hold 400
+// MiB between them, under the floor: each crossing of the mark is a stop with nothing to end. Its
+// agent, pid 100, is the one protected process.
+func underTheFloor(t *testing.T) *fakePod {
+	t.Helper()
+	pod := newFakePod(t)
+	pod.add(agent(3 * gib))
+	for i := range 10 {
+		pod.add(fakeProcess{pid: 500 + i, ppid: 100, args: []string{"sleep", "600"}, anon: 40 * mib})
+	}
+	pod.setAnon(3500 * mib)
+	return pod
+}
+
+// A stop that repeats writes its line at most once a minute by the guard's clock. The reading
+// crosses the mark up and down within the minute with nothing to end: the first stop writes its
+// line and each later one is left out, and the first stop after the minute writes the line again,
+// counting the stops left out. Only a written line reads the smaps of the processes the guard may
+// not end; every crossing reads the smaps of those it may end, which decide whether it acts.
+func TestMemoryGuardWritesARepeatingStopsLineAtMostOnceAMinute(t *testing.T) {
+	h := newHarness(t, underTheFloor(t), protect("tester", 100))
+	var mu sync.Mutex
+	reads := map[int]int{}
+	h.g.smapsRead = func(pid int) {
+		mu.Lock()
+		defer mu.Unlock()
+		reads[pid]++
+	}
+	readsOf := func(pid int) int {
+		mu.Lock()
+		defer mu.Unlock()
+		return reads[pid]
+	}
+	stopped := func(leftOut int) string {
+		return fmt.Sprintf("launcher: memory guard: stopped for this rise reason=nothing to end reading=%d endable=%d protected=%d unread=0 unheld=%d limit=%d left_out=%d",
+			3500*mib, 400*mib, 3*gib, 28*mib, podLimit, leftOut)
+	}
+	h.run()
+	if got := h.log.with("stopped"); !slices.Equal(got, []string{stopped(0)}) {
+		t.Fatalf("the stopped lines are %q, want %q", got, stopped(0))
+	}
+	if agent, endable := readsOf(100), readsOf(500); agent != 1 || endable != 1 {
+		t.Fatalf("the first stop read the agent's smaps %d times and an endable process's %d, want once each", agent, endable)
+	}
+
+	const crossings = 4
+	for i := range crossings {
+		h.pod.setAnon(3400 * mib)
+		h.tick()
+		h.pod.setAnon(3500 * mib)
+		h.tick()
+		if got := h.log.with("stopped"); len(got) != 1 {
+			t.Fatalf("after crossing %d within the minute the stopped lines are %q, want the first alone", i+1, got)
+		}
+		if agent, endable := readsOf(100), readsOf(500); agent != 1 || endable != i+2 {
+			t.Fatalf("after crossing %d the agent's smaps were read %d times and an endable process's %d, want 1 and %d",
+				i+1, agent, endable, i+2)
+		}
+	}
+	if spent := h.clock.Now().Sub(testStart); spent >= stoppedEvery {
+		t.Fatalf("the crossings took %s, not within the minute", spent)
+	}
+
+	h.pod.setAnon(3400 * mib)
+	h.tick()
+	h.pod.setAnon(3500 * mib)
+	h.tickAfter(stoppedEvery)
+	if got, want := h.log.with("stopped"), []string{stopped(0), stopped(crossings)}; !slices.Equal(got, want) {
+		t.Fatalf("after the minute the stopped lines are\n%q\nwant\n%q", got, want)
+	}
+	if agent, endable := readsOf(100), readsOf(500); agent != 2 || endable != crossings+2 {
+		t.Fatalf("after the minute the agent's smaps were read %d times and an endable process's %d, want 2 and %d",
+			agent, endable, crossings+2)
+	}
+	h.requireKilled()
+}
+
+// A stop left out of the log changes nothing the guard does: within the minute of a written
+// stopped line, after a stop it left out, a crossing at which the processes it may end hold the
+// floor ends the largest of them at once.
+func TestMemoryGuardEndsAtOnceOnACrossingWithinTheMinuteOfAStoppedLine(t *testing.T) {
+	pod := underTheFloor(t)
+	h := newHarness(t, pod, protect("tester", 100)).run()
+	pod.setAnon(3400 * mib)
+	h.tick()
+	pod.setAnon(3500 * mib)
+	h.tick()
+	if got := h.log.with("stopped"); len(got) != 1 {
+		t.Fatalf("the stopped lines are %q, want the first alone", got)
+	}
+
+	// Something the guard may end grows below the mark, and the next crossing ends it.
+	pod.setAnon(3400 * mib)
+	pod.add(fakeProcess{pid: 520, ppid: 100, args: []string{"python3", "grow.py"}, anon: 500 * mib})
+	h.tick()
+	h.requireKilled()
+	pod.setAnon(4000 * mib)
+	h.tick()
+	h.requireKilled(520)
+	if spent := h.clock.Now().Sub(testStart); spent >= stoppedEvery {
+		t.Fatalf("the crossings took %s, not within the minute", spent)
+	}
+	if got := h.log.with("stopped"); len(got) != 1 {
+		t.Fatalf("the stopped lines are %q, want the first alone", got)
+	}
+}
+
+func TestMemoryGuardDoesNotKillAPidWhoseStartTimeChanged(t *testing.T) {
+	pod := newFakePod(t)
+	pod.add(agent(2600*mib), fakeProcess{pid: 800, ppid: 100, start: 7000, args: []string{"python3", "grow.py"}, anon: gib})
+	pod.setAnon(3700 * mib)
+	h := newHarness(t, pod, protect("tester", 100))
+	h.signal.onOpen = func(pid int) { pod.restart(pid, 9999) }
+	h.run()
+	h.requireKilled()
+	if lines := h.log.with("ended"); len(lines) != 0 {
+		t.Fatalf("the guard logged a kill it did not send: %q", lines)
+	}
+	if held := h.signal.held(); held != 0 {
+		t.Fatalf("the guard still holds %d processes after giving the kill up", held)
+	}
+}
+
+// A process can exit between the scan's read of its stat and the kill, and until its parent reaps
+// it, it keeps its stat and its start time: Open holds it, the start time reads unchanged, and the
+// kill answers no error. In a gVisor pod on 2026-11-14, pidfd_send_signal to a child that had
+// exited and that its parent had not reaped answered no error, and the child's pidfd read readable
+// about 1 ms after its exit. A guard that sent the kill would tell the role it had ended with
+// SIGKILL a process that ended on its own. The guard asks the handle first: it sends no kill, logs
+// no ended line, reports nothing and takes no sequence, and the next reading, whose scan leaves
+// the zombie out, ends the next largest as the first kill it reports.
+func TestMemoryGuardDoesNotKillOrReportAProcessThatExitedBeforeTheKill(t *testing.T) {
+	pod := newFakePod(t)
+	grow := fakeProcess{pid: 810, ppid: 100, start: 7000, args: []string{"python3", "grow.py"}, anon: gib}
+	load := fakeProcess{pid: 811, ppid: 100, start: 7100, args: []string{"python3", "load.py"}, anon: 600 * mib}
+	pod.add(agent(2600*mib), grow, load)
+	pod.setAnon(3700 * mib)
+	h := newHarness(t, pod, protect("tester", 100))
+	// Pid 810 exits once the scan has read it: at its Open its stat reads a zombie's, with the
+	// same start time, and its handle reads exited.
+	h.signal.exit(810)
+	h.signal.onOpen = func(pid int) {
+		if pid == 810 {
+			zombie := grow
+			zombie.zombie = true
+			pod.add(zombie)
+		}
+	}
+	h.run()
+	if tried := h.signal.attempts(); len(tried) != 0 {
+		t.Fatalf("the guard tried to kill %v, a process that had exited; the log:\n%s", tried, strings.Join(h.log.all(), "\n"))
+	}
+	h.requireKilled()
+	if lines := h.log.with("ended"); len(lines) != 0 {
+		t.Fatalf("the guard logged a kill it did not send: %q", lines)
+	}
+	if held := h.signal.held(); held != 0 {
+		t.Fatalf("the guard still holds %d processes after giving the kill up", held)
+	}
+
+	// Pid 810's memory went with its exit, and pid 811 grows the pod back to the mark.
+	load.anon = 1100 * mib
+	pod.add(load)
+	pod.setAnon(3700 * mib)
+	h.tick()
+	h.requireKilled(811)
+	if lines := h.log.with("ended"); len(lines) != 1 {
+		t.Fatalf("the ended lines are %q, want pid 811's alone", lines)
+	}
+}
+
+func TestMemoryGuardParsesAStatWhoseNameHoldsSpacesAndAParenthesis(t *testing.T) {
+	for _, tc := range []struct{ name string }{{"omp daemon brok"}, {"x) S 1 2 3 4 (y"}, {"a)"}} {
+		p, err := parseStat([]byte(statLine(42, tc.name, 7, 4242)))
+		if err != nil {
+			t.Fatalf("parseStat of the name %q: %v", tc.name, err)
+		}
+		if p.Name != tc.name || p.PPID != 7 || p.StartTime != 4242 {
+			t.Fatalf("parseStat of the name %q = %+v, want the name whole, parent 7 and start 4242", tc.name, *p)
+		}
+	}
+	// And through the scan, where the classifier reads it.
+	pod := newFakePod(t)
+	pod.add(fakeProcess{pid: 900, ppid: 7, start: 4242, name: "x) S 1 2 3 4 (y", exe: "/usr/bin/x", args: []string{"x"}})
+	table, err := scan(pod.proc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, ok := table.Get(900)
+	if !ok || p.Name != "x) S 1 2 3 4 (y" || p.PPID != 7 || p.StartTime != 4242 || p.Exe != "/usr/bin/x" ||
+		p.PIDNamespace != "pid:[4026531836]" || !slices.Equal(p.Args, []string{"x"}) {
+		t.Fatalf("the scan read %+v", p)
+	}
+	if kids := table.Children(7); len(kids) != 1 || kids[0].PID != 900 {
+		t.Fatalf("the children of 7 are %v", kids)
+	}
+}
+
+func TestMemoryGuardTurnsOffWithOneLineWhenItCannotRead(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		spoil func(pod *fakePod)
+		want  string
+	}{
+		{"no AnonPages", func(pod *fakePod) {
+			pod.writeInPlace(filepath.Join(pod.proc, "meminfo"), "MemTotal: 20971520 kB\nShmem: 32 kB\n")
+		}, "off reason=no AnonPages line in %s/meminfo"},
+		{"no limit", func(pod *fakePod) {
+			if err := os.Remove(filepath.Join(pod.cgroup, "memory.limit_in_bytes")); err != nil {
+				t.Fatal(err)
+			}
+		}, "off reason=no readable limit in %s/memory.limit_in_bytes: open "},
+		{"a limit of no limit", func(pod *fakePod) {
+			pod.setLimit("9223372036854771712")
+		}, "off reason=the limit 9223372036854771712 in %s/memory.limit_in_bytes is no limit"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pod := newFakePod(t)
+			pod.add(fakeProcess{pid: 200, ppid: 1, args: []string{"python3", "grow.py"}, anon: 3 * gib})
+			pod.setAnon(3900 * mib)
+			tc.spoil(pod)
+			h := newHarness(t, pod, nil)
+			h.start()
+			testwait.Eventually(t, "the off line", func() bool { return len(h.log.all()) > 0 })
+			h.stop()
+			dir := pod.proc
+			if tc.name != "no AnonPages" {
+				dir = pod.cgroup
+			}
+			lines := h.log.all()
+			if len(lines) != 1 || !strings.HasPrefix(lines[0], linePrefix+fmt.Sprintf(tc.want, dir)) {
+				t.Fatalf("the log is %q, want one line starting %q", lines, linePrefix+fmt.Sprintf(tc.want, dir))
+			}
+			if len(h.clock.waits) != 0 {
+				t.Fatalf("the guard waited for another reading after it turned off")
+			}
+			h.requireKilled()
+		})
+	}
+}
+
+func TestMemoryGuardTurnsOffWhenPidfdOpenIsUnsupported(t *testing.T) {
+	pod := newFakePod(t)
+	pod.setAnon(3900 * mib)
+	h := newHarness(t, pod, nil)
+	h.signal.openErr = os.NewSyscallError("pidfd_open", syscall.ENOSYS)
+	h.start()
+	testwait.Eventually(t, "the off line", func() bool { return len(h.log.all()) > 0 })
+	h.stop()
+	want := []string{"launcher: memory guard: off reason=pidfd_open is not supported here: pidfd_open: " + syscall.ENOSYS.Error()}
+	if got := h.log.all(); !slices.Equal(got, want) {
+		t.Fatalf("the log is %q, want %q", got, want)
+	}
+	h.g.Apply(&shimwire.LauncherMemoryGuard{ActPercent: 60, FloorPercent: 10, WaitSeconds: 5, IntervalMilliseconds: 100})
+	if got := h.log.all(); len(got) != 1 {
+		t.Fatalf("a guard that is off for good took settings: %q", got)
+	}
+}
+
+func TestMemoryGuardTakesSettingsInPlace(t *testing.T) {
+	pod := newFakePod(t)
+	pod.add(agent(gib), fakeProcess{pid: 200, ppid: 100, args: []string{"python3", "grow.py"}, anon: 1500 * mib})
+	// 63% of the limit: under the default mark, over a mark of 60%.
+	pod.setAnon(2600 * mib)
+	h := newHarness(t, pod, protect("tester", 100)).run()
+	h.tick()
+	h.requireKilled()
+	if h.pending.d != 100*time.Millisecond {
+		t.Fatalf("before any acknowledgement the guard waits %v, want the default 100ms", h.pending.d)
+	}
+
+	settings := &shimwire.LauncherMemoryGuard{ActPercent: 60, FloorPercent: 10, WaitSeconds: 5, IntervalMilliseconds: 200}
+	h.g.Apply(settings)
+	h.g.Apply(settings)
+	want := []string{"launcher: memory guard: settings act_percent=60 floor_percent=10 wait=5s interval=200ms"}
+	if got := h.log.with("settings"); !slices.Equal(got, want) {
+		t.Fatalf("the settings lines are %q, want %q", got, want)
+	}
+	h.tick()
+	h.requireKilled(200)
+	if h.pending.d != 200*time.Millisecond {
+		t.Fatalf("after the settings the guard waits %v, want 200ms", h.pending.d)
+	}
+	if got := len(h.log.with("started")); got != 1 {
+		t.Fatalf("%d start lines, want 1", got)
+	}
+}
+
+func TestMemoryGuardRefusesSettingsOutsideTheirRanges(t *testing.T) {
+	pod := newFakePod(t)
+	h := newHarness(t, pod, nil)
+	h.g.Apply(&shimwire.LauncherMemoryGuard{ActPercent: 96, FloorPercent: 10, WaitSeconds: 5, IntervalMilliseconds: 100})
+	want := []string{"launcher: memory guard: settings refused: shimwire: malformed frame: launcher_hello_ack memoryGuard.actPercent is 96, not between 50 and 95; nothing changes"}
+	if got := h.log.all(); !slices.Equal(got, want) {
+		t.Fatalf("the log is %q, want %q", got, want)
+	}
+	if s, on := h.g.current(); s != Defaults() || !on {
+		t.Fatalf("after a refusal the guard runs by %+v, on %v; want the defaults, on", s, on)
+	}
+}
+
+func TestMemoryGuardTurnsOffAndOnWithTheHourlyCountUnchanged(t *testing.T) {
+	pod := newFakePod(t)
+	pod.add(agent(gib), fakeProcess{pid: 200, ppid: 100, args: []string{"python3", "grow.py"}, anon: 2500 * mib})
+	pod.setAnon(2000 * mib)
+	h := newHarness(t, pod, protect("tester", 100)).run()
+
+	h.g.Apply(nil)
+	h.g.Apply(nil)
+	if got := h.log.with("off"); !slices.Equal(got, []string{"launcher: memory guard: off: the daemon's acknowledgement carries no settings"}) {
+		t.Fatalf("the off lines are %q, want one", got)
+	}
+	pod.setAnon(3700 * mib)
+	h.tickAfter(10 * time.Minute)
+	h.tick()
+	h.requireKilled()
+
+	h.g.Apply(&shimwire.LauncherMemoryGuard{ActPercent: 85, FloorPercent: 10, WaitSeconds: 5, IntervalMilliseconds: 100})
+	if got := h.log.with("settings"); len(got) != 1 {
+		t.Fatalf("the settings lines are %q, want the one that turned the guard on", got)
+	}
+	h.tick()
+	h.requireKilled(200)
+
+	pod.setAnon(2000 * mib)
+	h.tickAfter(time.Hour)
+	hours := h.log.with("hour")
+	if len(hours) != 1 || !strings.HasPrefix(hours[0], "launcher: memory guard: hour start=2026-11-14T03:00:00Z end=2026-11-14T04:00:00Z ") {
+		t.Fatalf("the hourly lines are %q, want one for the hour from the guard's start", hours)
+	}
+	if got := len(h.log.with("started")); got != 1 {
+		t.Fatalf("%d start lines, want 1", got)
+	}
+}
+
+func TestMemoryGuardHourlyLine(t *testing.T) {
+	pod := newFakePod(t)
+	python := fakeProcess{pid: 200, ppid: 100, args: []string{"python3", "-c", "work()"}, anon: 500 * mib}
+	pod.add(agent(gib), python)
+	pod.setAnon(2000 * mib)
+	pod.setCounter(2560 * mib)
+	h := newHarness(t, pod, protect("tester", 100)).run()
+
+	python.anon = 1500 * mib
+	pod.add(python)
+	pod.setAnon(3000 * mib)
+	pod.setCounter(3584 * mib)
+	h.tickAfter(10 * time.Minute)
+	highAt := h.clock.Now()
+
+	pod.setAnon(1200 * mib)
+	pod.setCounter(1536 * mib)
+	h.tickAfter(10 * time.Minute)
+
+	// The next hour: python has shrunk, and the agent is the largest.
+	python.anon = 200 * mib
+	pod.add(python)
+	pod.setAnon(2200 * mib)
+	pod.setCounter(2 * gib)
+	h.tickAfter(45 * time.Minute)
+	secondStart := h.clock.Now()
+	if !secondStart.After(testStart.Add(time.Hour)) {
+		t.Fatalf("the reading at %s is not in the second hour", secondStart)
+	}
+
+	pod.setAnon(2500 * mib)
+	pod.setCounter(3 * gib)
+	h.tickAfter(time.Hour)
+
+	want := []string{
+		fmt.Sprintf(`launcher: memory guard: hour start=2026-11-14T03:00:00Z end=2026-11-14T04:00:00Z reading_high=%d reading_high_at=%s reading_low=%d counter_high=%d counter_low=%d largest_pid=200 largest_role=tester largest_size=%d largest_command="python3 -c work()"`,
+			3000*mib, highAt.Format(time.RFC3339), 1200*mib, 3584*mib, 1536*mib, 1500*mib),
+		fmt.Sprintf(`launcher: memory guard: hour start=2026-11-14T04:00:00Z end=2026-11-14T05:00:00Z reading_high=%d reading_high_at=%s reading_low=%d counter_high=%d counter_low=%d largest_pid=100 largest_role=tester largest_size=%d largest_command="omp --mode rpc"`,
+			2200*mib, secondStart.Format(time.RFC3339), 2200*mib, 2*gib, 2*gib, gib),
+	}
+	if got := h.log.with("hour"); !slices.Equal(got, want) {
+		t.Fatalf("the hourly lines are\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+}
+
+func TestMemoryGuardLinesCarryTheirFieldsAndAnEscapedRedactedCutCommand(t *testing.T) {
+	token := "ghp_" + strings.Repeat("A1", 18)
+	pod := newFakePod(t)
+	pod.add(agent(2*gib), fakeProcess{pid: 900, ppid: 100, anon: 1500 * mib, args: []string{
+		"python3", "-c", "import os\nprint(1)", "\x1b[31mred", "\u202eabc", "--token", token, strings.Repeat("é", 400),
+	}})
+	pod.setShmem(64 * mib)
+	pod.setAnon(3600 * mib)
+	pod.setCounter(3900 * mib)
+	h := newHarness(t, pod, protect("tester", 100)).run()
+	h.requireKilled(900)
+
+	started := fmt.Sprintf("launcher: memory guard: started act_percent=85 floor_percent=10 wait=5s interval=100ms limit=%d reading=%d", podLimit, 3600*mib)
+	if got := h.log.with("started"); !slices.Equal(got, []string{started}) {
+		t.Fatalf("the start lines are %q, want %q", got, started)
+	}
+	// The newline is one space, the colour sequence is read away, and the right-to-left override,
+	// which is no control character and does not print, shows escaped.
+	prefix := `python3 -c import os print(1) red \u202eabc --token ghp_*** `
+	commandOf := func(max int) string {
+		return prefix + strings.Repeat("é", (max-len(prefix)-len(ellipsis))/2) + ellipsis
+	}
+	ended := fmt.Sprintf(`launcher: memory guard: ended pid=900 role=tester size=%d reading=%d counter=%d shmem=%d limit=%d command="%s"`,
+		1500*mib, 3600*mib, 3900*mib, 64*mib, podLimit, commandOf(logCommandBytes))
+	if got := h.log.with("ended"); !slices.Equal(got, []string{ended}) {
+		t.Fatalf("the kill lines are\n%q\nwant\n%q", got, ended)
+	}
+	k := h.killed()[0]
+	if k.Command != commandOf(shimwire.MemoryKillCommandBytes) || len(k.Command) > shimwire.MemoryKillCommandBytes || !utf8.ValidString(k.Command) {
+		t.Fatalf("the report's command is %q (%d bytes), want %q", k.Command, len(k.Command), commandOf(shimwire.MemoryKillCommandBytes))
+	}
+	want := Kill{LauncherMemoryKill: shimwire.LauncherMemoryKill{Guard: h.g.ID(), Sequence: 1, PID: 900, Command: k.Command,
+		SizeBytes: 1500 * mib, ReadingBytes: 3600 * mib, CounterBytes: 3900 * mib, LimitBytes: podLimit, At: testStart}, Role: "tester"}
+	if k != want {
+		t.Fatalf("the report is %+v, want %+v", k, want)
+	}
+	if !regexp.MustCompile(`^[0-9a-f]{16}$`).MatchString(k.Guard) {
+		t.Fatalf("the guard id is %q, want 16 hex digits", k.Guard)
+	}
+	if err := k.LauncherMemoryKill.Validate(); err != nil {
+		t.Fatalf("the kill does not make a valid report: %v", err)
+	}
+	for _, line := range h.log.all() {
+		if strings.Contains(line, token) || strings.ContainsAny(line, "\n\t\x1b\u202e") {
+			t.Fatalf("a line holds the token, a control character or a rune that does not print: %q", line)
+		}
+	}
+}
+
+// A token after any whitespace, or right after a control sequence, in a process's arguments is
+// masked in the kill's line and in its report. The arguments are made the line a capability
+// report's detail is made before the credential rules read it, each run of whitespace one space and
+// each control sequence read away, since the rules are written for that line: on the raw text a
+// tab after `Bearer` keeps the bearer rule from matching, and a colour sequence's final `m` joins
+// the token after it, so the GitHub rule finds no word boundary for it to start at.
+func TestMemoryGuardMasksATokenAfterWhitespaceOrAControlSequence(t *testing.T) {
+	token := "ghp_" + strings.Repeat("A1", 18)
+	bearer := "opaque" + strings.Repeat("Z9", 12)
+	for _, tc := range []struct {
+		name, script, want string
+	}{
+		{"newline", "echo hi\n" + token, `sh -c echo hi ghp_***`},
+		{"tab", "x\t" + token, `sh -c x ghp_***`},
+		{"space", "x " + token, `sh -c x ghp_***`},
+		{"bearer after a tab", "curl -H Bearer\t" + bearer, `sh -c curl -H Bearer ***`},
+		{"colour sequence", "echo \x1b[1m" + token, `sh -c echo ghp_***`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pod := newFakePod(t)
+			pod.add(agent(2*gib), fakeProcess{pid: 900, ppid: 100, anon: 1500 * mib, args: []string{"sh", "-c", tc.script}})
+			pod.setAnon(3600 * mib)
+			h := newHarness(t, pod, protect("tester", 100)).run()
+			h.requireKilled(900)
+			ended := h.log.with("ended")
+			if len(ended) != 1 || !strings.HasSuffix(ended[0], ` command="`+tc.want+`"`) {
+				t.Fatalf("the kill lines are %q, want one whose command is %q", ended, tc.want)
+			}
+			if k := h.killed()[0]; k.Command != tc.want {
+				t.Fatalf("the report's command is %q, want %q", k.Command, tc.want)
+			}
+		})
+	}
+}
+
+// A command line cut short shows no part of a credential that the whole line masks: for every
+// detail of the shared fixture (packages/contracts/fixtures/capability-redaction.json) as one
+// argument, cut at every bound short of its length, the line without its ellipsis is the first
+// words of the whole line, so each word the cut leaves is one the whole line shows, never the head
+// of a credential it masks. At the detail's own length nothing is cut, and the line is the whole.
+func TestMemoryGuardCutCommandShowsNoPartOfACredentialTheWholeLineMasks(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "..", "contracts", "fixtures", "capability-redaction.json"))
+	if err != nil {
+		t.Fatalf("read the fixture: %v", err)
+	}
+	var fixture struct {
+		Patterns []struct {
+			Pattern string `json:"pattern"`
+			Name    string `json:"name"`
+			Detail  string `json:"detail"`
+		} `json:"patterns"`
+	}
+	if err := json.Unmarshal(raw, &fixture); err != nil {
+		t.Fatalf("decode the fixture: %v", err)
+	}
+	cuts := 0
+	for _, tc := range fixture.Patterns {
+		whole := capabilities.RedactedLine(tc.Detail)
+		words := strings.Fields(whole)
+		p := &Process{Name: "sh", Args: []string{tc.Detail}}
+		if got := commandLine(p, len(tc.Detail)); got != whole {
+			t.Errorf("%s: %s: at its own length the line is %q, want the whole %q", tc.Pattern, tc.Name, got, whole)
+		}
+		for bound := 1; bound < len(tc.Detail); bound++ {
+			cuts++
+			line := commandLine(p, bound)
+			shown, cut := strings.CutSuffix(line, ellipsis)
+			if got := strings.Fields(shown); !cut || len(got) > len(words) || !slices.Equal(got, words[:len(got)]) {
+				t.Errorf("%s: %s: cut at %d bytes the line is %q, which is not the first words of the whole line %q, ending in %q",
+					tc.Pattern, tc.Name, bound, line, whole, ellipsis)
+			}
+		}
+	}
+	t.Logf("%d cuts of %d details", cuts, len(fixture.Patterns))
+}
+
+// timedClock is a fakeClock that keeps the wall time at which the guard starts each wait: it
+// starts the next once the reading before it, and all that reading led to, is done.
+type timedClock struct {
+	*fakeClock
+	startedMu sync.Mutex
+	started   []time.Time
+}
+
+func (c *timedClock) After(d time.Duration) <-chan time.Time {
+	c.startedMu.Lock()
+	c.started = append(c.started, time.Now())
+	c.startedMu.Unlock()
+	return c.fakeClock.After(d)
+}
+
+// The guard's work after a kill does not grow with the killed process's arguments, which it does
+// on its loop before the next reading: a linker's arguments run to a mebibyte, and with a colour
+// sequence among the first of them every credential rule reads the text four times over, yet the
+// decision that killed the linker ends well within the default interval of the kill, so the next
+// reading comes when it is due. Under the race detector that time is logged and not held
+// (raceEnabled says why). The kill line carries the start of the link line, cut and within its
+// bound.
+func TestMemoryGuardDecidesWithinAnIntervalOfKillingAProcessWithAMebibyteOfArguments(t *testing.T) {
+	for _, tc := range []struct{ name, output string }{
+		{"plain", "app"},
+		{"an escape early", "\x1b[1mapp"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pod := newFakePod(t)
+			pod.add(agent(2*gib), fakeProcess{pid: 900, ppid: 100, anon: 1500 * mib, args: []string{"/usr/bin/ld"}})
+			var cmdline strings.Builder
+			cmdline.WriteString("/usr/bin/ld\x00-o\x00" + tc.output + "\x00")
+			for i := 0; cmdline.Len() < 1<<20; i++ {
+				fmt.Fprintf(&cmdline, "build/obj/module%05d.o\x00", i)
+			}
+			pod.writeWhole(filepath.Join(pod.proc, "900", "cmdline"), cmdline.String())
+			pod.setAnon(3600 * mib)
+			h := newHarness(t, pod, protect("tester", 100))
+			clock := &timedClock{fakeClock: h.clock}
+			h.g.clock = clock
+			var killedAt time.Time
+			h.signal.onKill = func(int) bool {
+				killedAt = time.Now()
+				return false
+			}
+			h.run()
+			h.requireKilled(900)
+			clock.startedMu.Lock()
+			decided := clock.started[0]
+			clock.startedMu.Unlock()
+			took := decided.Sub(killedAt)
+			t.Logf("the decision ended %v after the kill", took)
+			if took >= Defaults().Interval && !raceEnabled {
+				t.Errorf("the decision ended %v after the kill, want under the interval of %v", took, Defaults().Interval)
+			}
+			ended := h.log.with("ended")
+			if len(ended) != 1 {
+				t.Fatalf("the kill lines are %q, want one", ended)
+			}
+			_, command, _ := strings.Cut(ended[0], ` command="`)
+			command = strings.TrimSuffix(command, `"`)
+			if !strings.HasPrefix(command, "/usr/bin/ld -o app build/obj/module00000.o build/obj/module00001.o ") ||
+				!strings.HasSuffix(command, ellipsis) || len(command) > logCommandBytes {
+				t.Errorf("the kill line's command is %q (%d bytes), want the link line's start cut with %q within %d bytes",
+					command, len(command), ellipsis, logCommandBytes)
+			}
+		})
+	}
+}
+
+func TestMemoryGuardHonoursTheClassifier(t *testing.T) {
+	const roleInit, shim, omp, kernel, eval = 110, 111, 112, 113, 114
+	pod := newFakePod(t)
+	pod.add(
+		fakeProcess{pid: roleInit, ppid: 1, exe: "/usr/local/bin/legion", args: []string{"legion", "role-init"}, ns: "pid:[4026532001]"},
+		fakeProcess{pid: shim, ppid: roleInit, exe: "/usr/local/bin/legion", args: []string{"legion", "worker-shim"}, ns: "pid:[4026532001]"},
+		// The agent holds the most memory of all, and is spared.
+		fakeProcess{pid: omp, ppid: shim, exe: "/opt/omp/bin/omp", args: []string{"omp"}, ns: "pid:[4026532001]", anon: 2 * gib},
+		fakeProcess{pid: kernel, ppid: omp, exe: "/usr/bin/python3", args: []string{"python3", "-m", "kernel"}, ns: "pid:[4026532001]", anon: 700 * mib},
+		fakeProcess{pid: eval, ppid: omp, exe: "/usr/bin/bun", args: []string{"bun", "eval.js"}, ns: "pid:[4026532001]", anon: 450 * mib},
+	)
+	// The guard's own process, which no classifier names, is never ended.
+	pod.addSelf(fakeProcess{ppid: 1, name: "legion", args: []string{"legion", "launcher"}, anon: 3 * gib})
+	pod.setAnon(3800 * mib)
+	// A classifier of the launcher's kind: the role by the role-init ancestor, the agent and
+	// Legion's own processes protected by their place in the tree and their executable.
+	classify := func(t *Table) map[int]Class {
+		out := map[int]Class{}
+		ri, ok := t.Get(roleInit)
+		if !ok {
+			return out
+		}
+		out[roleInit] = Class{Role: "tester", Protected: true}
+		for _, s := range t.Children(ri.PID) {
+			if s.Exe == ri.Exe && len(s.Args) > 1 && s.Args[1] == "worker-shim" {
+				out[s.PID] = Class{Role: "tester", Protected: true}
+				for _, a := range t.Children(s.PID) {
+					out[a.PID] = Class{Role: "tester", Protected: true}
+				}
+				break
+			}
+		}
+		for _, p := range t.Processes() {
+			for q := p; q != nil; {
+				if q.PID == roleInit {
+					if _, named := out[p.PID]; !named {
+						out[p.PID] = Class{Role: "tester"}
+					}
+					break
+				}
+				q, _ = t.Get(q.PPID)
+			}
+		}
+		return out
+	}
+	h := newHarness(t, pod, classify)
+	h.signal.onKill = exitFreeing(pod, 700*mib)
+	h.run()
+	h.requireKilled(kernel)
+	if k := h.killed()[0]; k.Role != "tester" {
+		t.Fatalf("the report's role is %q, want the role-init ancestor's", k.Role)
+	}
+	// The kill took the reading below the mark; the next rise is acted on afresh.
+	h.tick()
+	pod.setAnon(3800 * mib)
+	h.tick()
+	h.requireKilled(kernel, eval)
+}
+
+func TestMemoryGuardDoesNotEndAProcessItCannotRead(t *testing.T) {
+	pod := newFakePod(t)
+	pod.add(
+		agent(gib),
+		fakeProcess{pid: 950, ppid: 1, args: []string{"mystery"}, anon: 2 * gib, unreadableExe: true},
+		fakeProcess{pid: 951, ppid: 100, args: []string{"python3", "grow.py"}, anon: 600 * mib},
+	)
+	pod.setAnon(3700 * mib)
+	h := newHarness(t, pod, protect("tester", 100))
+	h.signal.onKill = exitFreeing(pod, 600*mib)
+	h.run()
+	h.requireKilled(951)
+	h.tick()
+	pod.setAnon(3700 * mib)
+	h.tick()
+	h.requireKilled(951)
+	unread := h.log.with("unread")
+	if len(unread) != 1 || !strings.HasPrefix(unread[0], "launcher: memory guard: unread pid=950 reason=read the exe: ") {
+		t.Fatalf("the unread lines are %q, want one for pid 950", unread)
+	}
+	want := fmt.Sprintf("launcher: memory guard: stopped for this rise reason=nothing to end reading=%d endable=0 protected=%d unread=%d unheld=%d limit=%d left_out=0",
+		3700*mib, gib, 2*gib, 3700*mib-3*gib, podLimit)
+	if got := h.log.with("stopped"); !slices.Equal(got, []string{want}) {
+		t.Fatalf("the stopped lines are %q, want %q", got, want)
+	}
+}
+
+// A zombie has exited and holds no memory, whatever its exe link answers. Linux answers a zombie's
+// exe link with ENOENT, which the scan already takes for an ended process. gVisor answers EACCES,
+// because its procfs refuses the exe link of a task with no memory manager: in a gVisor pod on
+// 2026-11-14, the head's launcher, run as the container's first process, logged
+// `unread pid=5684 reason=read the exe: readlink /proc/5684/exe: permission denied` right after it
+// ended pid 5684, a pool worker whose parent had not reaped it yet, and the same for the next two
+// workers it ended. The guard leaves a zombie out of its scan whatever its exe link answers (a
+// plain file stands in for gVisor's refusal here), so it logs no unread line for one, and the
+// process it may end is still ended.
+func TestMemoryGuardLeavesAZombieOutWhateverItsExeLinkAnswers(t *testing.T) {
+	pod := newFakePod(t)
+	pod.add(
+		agent(gib),
+		fakeProcess{pid: 961, ppid: 100, args: []string{"python3", "pool.py"}, anon: 600 * mib},
+		fakeProcess{pid: 960, ppid: 961, args: []string{"python3", "pool.py"}, zombie: true, unreadableExe: true},
+	)
+	pod.setAnon(3700 * mib)
+	h := newHarness(t, pod, protect("tester", 100))
+	h.run()
+	h.requireKilled(961)
+	if unread := h.log.with("unread"); len(unread) != 0 {
+		t.Fatalf("the guard logged %q for a zombie, which holds no memory; the log:\n%s", unread, strings.Join(h.log.all(), "\n"))
+	}
+}
+
+// A process whose main thread alone has exited (pthread_exit) while its other threads run reads
+// `Z` in its stat, its main thread's state, as a zombie does, yet it is alive and holds all of its
+// memory; its status counts the threads left. The guard reads a process in state Z whose status
+// counts more than one thread as a live one: the scan lists it, and the guard ends it as the
+// largest it may end.
+func TestMemoryGuardEndsAProcessInStateZWhoseOtherThreadsRun(t *testing.T) {
+	pod := newFakePod(t)
+	pod.add(
+		agent(gib),
+		fakeProcess{pid: 970, ppid: 100, args: []string{"python3", "threads.py"}, anon: 1500 * mib, zombie: true, threads: 3},
+		fakeProcess{pid: 971, ppid: 100, args: []string{"python3", "grow.py"}, anon: 600 * mib},
+	)
+	table, err := scan(pod.proc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p, ok := table.Get(970); !ok || p.Exe != "/usr/bin/python3" {
+		t.Fatalf("the scan read pid 970 as %+v, listed %v; want it listed with its exe", p, ok)
+	}
+	pod.setAnon(3700 * mib)
+	h := newHarness(t, pod, protect("tester", 100)).run()
+	h.requireKilled(970)
+	if k := h.killed()[0]; k.SizeBytes != 1500*mib {
+		t.Fatalf("the killed process's size is %d, want %d", k.SizeBytes, 1500*mib)
+	}
+	if unread := h.log.with("unread"); len(unread) != 0 {
+		t.Fatalf("the unread lines are %q, want none", unread)
+	}
+}
+
+// A process can exit between the scan's read of its stat and a later read of its files, and under
+// gVisor a zombie answers the read of its exe link with EACCES. The guard reads the stat of a
+// process whose exe, ns/pid or smaps it could not read again before it counts the process unread,
+// and leaves out one that has exited since: no unread line, and not among the processes it may
+// end. Here pid 980's stat reads S at the scan's first read and Z at any later one, and either its
+// exe link cannot be read (a plain file stands in for gVisor's refusal) or its smaps cannot (a
+// directory, whose read answers EISDIR). A process whose exe cannot be read while it runs still
+// counts unread (TestMemoryGuardDoesNotEndAProcessItCannotRead).
+func TestMemoryGuardLeavesOutAProcessThatExitsWhileItIsRead(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		unreadableExe bool
+		// listed is whether the scan lists pid 980: it does when the read that fails is assess's
+		// of the smaps, after the scan.
+		listed bool
+		exits  func(pod *fakePod, h *harness)
+	}{
+		{"its exe", true, false, func(pod *fakePod, _ *harness) { pod.exitAsItsCmdlineIsRead(980) }},
+		{"its smaps", false, true, func(pod *fakePod, h *harness) {
+			h.g.smapsRead = func(pid int) {
+				if pid != 980 {
+					return
+				}
+				dir := filepath.Join(pod.proc, strconv.Itoa(pid))
+				stat, err := os.ReadFile(filepath.Join(dir, "stat"))
+				if err != nil {
+					pod.t.Fatal(err)
+				}
+				pod.writeWhole(filepath.Join(dir, "stat"), strings.Replace(string(stat), ") S ", ") Z ", 1))
+				if err := os.Remove(filepath.Join(dir, "smaps")); err != nil {
+					pod.t.Fatal(err)
+				}
+				if err := os.Mkdir(filepath.Join(dir, "smaps"), 0o755); err != nil {
+					pod.t.Fatal(err)
+				}
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pod := newFakePod(t)
+			pod.add(
+				agent(gib),
+				fakeProcess{pid: 980, ppid: 100, args: []string{"python3", "pool.py"}, anon: 600 * mib, unreadableExe: tc.unreadableExe},
+				fakeProcess{pid: 981, ppid: 100, args: []string{"python3", "grow.py"}, anon: 500 * mib},
+			)
+			h := newHarness(t, pod, protect("tester", 100))
+			tc.exits(pod, h)
+			a, err := h.g.assess()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if unread := h.log.with("unread"); len(unread) != 0 {
+				t.Fatalf("the guard logged %q for a process that exited while it was read", unread)
+			}
+			if err, unread := a.table.unread[980]; unread {
+				t.Fatalf("pid 980 counts unread (%v), want it left out", err)
+			}
+			if _, listed := a.table.Get(980); listed != tc.listed {
+				t.Fatalf("pid 980 listed %v, want %v", listed, tc.listed)
+			}
+			var endable []int
+			for _, c := range a.endable {
+				endable = append(endable, c.PID)
+			}
+			if !slices.Equal(endable, []int{981}) {
+				t.Fatalf("the processes the guard may end are %v, want 981 alone", endable)
+			}
+		})
+	}
+}
+
+// A kill the kernel refuses for a reason other than the process having ended is logged once, and
+// the process counts unread from then on: the guard ends the next largest at its next reading and
+// never tries the refused process again, rather than picking it at every reading.
+func TestMemoryGuardMovesToTheNextLargestWhenAKillFails(t *testing.T) {
+	pod := newFakePod(t)
+	pod.add(
+		agent(2*gib),
+		fakeProcess{pid: 1000, ppid: 100, args: []string{"python3", "held.py"}, anon: gib},
+		fakeProcess{pid: 1001, ppid: 100, args: []string{"python3", "grow.py"}, anon: 600 * mib},
+	)
+	pod.setAnon(3800 * mib)
+	h := newHarness(t, pod, protect("tester", 100))
+	h.signal.killErr = func(pid int) error {
+		if pid == 1000 {
+			return os.NewSyscallError("pidfd_send_signal", syscall.EPERM)
+		}
+		return nil
+	}
+	h.signal.onKill = exitFreeing(pod, 600*mib)
+	h.run()
+	h.requireKilled()
+	want := []string{"launcher: memory guard: kill failed pid=1000 reason=pidfd_send_signal: " + syscall.EPERM.Error()}
+	if got := h.log.with("kill failed"); !slices.Equal(got, want) {
+		t.Fatalf("the kill failed lines are %q, want %q", got, want)
+	}
+	if held := h.signal.held(); held != 0 {
+		t.Fatalf("the guard still holds %d processes after a failed kill", held)
+	}
+
+	h.tick()
+	h.requireKilled(1001)
+	// The kill took the reading below the mark; the next rise finds nothing it may end but the
+	// refused process, which counts under unread.
+	h.tick()
+	pod.setAnon(3800 * mib)
+	h.tick()
+	h.tick()
+	h.requireKilled(1001)
+	if got := h.signal.attempts(); !slices.Equal(got, []int{1000, 1001}) {
+		t.Fatalf("the guard tried to kill %v, want 1000 once and then 1001", got)
+	}
+	if got := h.log.with("kill failed"); len(got) != 1 {
+		t.Fatalf("the kill failed lines are %q, want one", got)
+	}
+	if got := h.log.with("unread"); len(got) != 0 {
+		t.Fatalf("the refused process was logged unread as well: %q", got)
+	}
+	stopped := fmt.Sprintf("launcher: memory guard: stopped for this rise reason=nothing to end reading=%d endable=0 protected=%d unread=%d unheld=%d limit=%d left_out=0",
+		3800*mib, 2*gib, gib, 3800*mib-3*gib, podLimit)
+	if got := h.log.with("stopped"); !slices.Equal(got, []string{stopped}) {
+		t.Fatalf("the stopped lines are %q, want %q", got, stopped)
+	}
+}
+
+func TestMemoryGuardReadingAllocatesNothing(t *testing.T) {
+	pod := newFakePod(t)
+	h := newHarness(t, pod, nil)
+	if _, _, reason := h.g.sample(); reason != "" {
+		t.Fatal(reason)
+	}
+	allocs := testing.AllocsPerRun(100, func() {
+		if _, _, reason := h.g.sample(); reason != "" {
+			t.Fatal(reason)
+		}
+	})
+	if allocs != 0 {
+		t.Fatalf("a reading allocates %v times, want none", allocs)
+	}
+}
+
+// The pidfd kill itself, on a real process: it holds the process, ends it with SIGKILL, and says
+// when it has exited.
+func TestMemoryGuardPidfdKillEndsTheProcessItHolds(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the pidfd kill is Linux's")
+	}
+	cmd := exec.Command("sleep", "600")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	reaped := false
+	t.Cleanup(func() {
+		if !reaped {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+		}
+	})
+	h, err := defaultSignal().Open(cmd.Process.Pid)
+	if err != nil {
+		t.Fatalf("pidfd_open: %v", err)
+	}
+	defer h.Close()
+	if h.Exited() {
+		t.Fatal("a running process reads as exited")
+	}
+	if err := h.Kill(); err != nil {
+		t.Fatalf("pidfd_send_signal: %v", err)
+	}
+	testwait.Eventually(t, "the pidfd to read as exited", h.Exited)
+	err = cmd.Wait()
+	reaped = true
+	if status, ok := cmd.ProcessState.Sys().(syscall.WaitStatus); !ok || !status.Signaled() || status.Signal() != syscall.SIGKILL {
+		t.Fatalf("the process ended with %v, want SIGKILL", err)
+	}
+}

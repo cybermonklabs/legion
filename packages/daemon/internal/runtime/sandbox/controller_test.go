@@ -451,7 +451,7 @@ func TestTheLauncherResolverAcceptsTheControllersLauncherOnItsOwnPodOnly(t *test
 	token := string(g.secret(roleSecretName(name, claim.RoleController)).Data[LauncherTokenFile])
 	accept := g.r.LauncherResolver()
 	valid := shimwire.LauncherHello{Token: token, Sandbox: name, Role: string(claim.RoleController), PodUID: loc.Sandbox.PodUID, LauncherID: "l-1"}
-	if handler, reason := accept(valid); handler == nil {
+	if handler, _, reason := accept(valid); handler == nil {
 		t.Fatalf("the controller's own launcher was refused: %s", reason)
 	}
 	for label, edit := range map[string]func(*shimwire.LauncherHello){
@@ -465,7 +465,7 @@ func TestTheLauncherResolverAcceptsTheControllersLauncherOnItsOwnPodOnly(t *test
 		t.Run(label, func(t *testing.T) {
 			hello := valid
 			edit(&hello)
-			if handler, reason := accept(hello); handler != nil || reason == "" {
+			if handler, _, reason := accept(hello); handler != nil || reason == "" {
 				t.Fatalf("accepted %+v (reason %q)", hello, reason)
 			}
 		})

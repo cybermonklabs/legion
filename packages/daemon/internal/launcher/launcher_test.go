@@ -180,7 +180,14 @@ func acceptRole(t *testing.T, listener net.Listener) *roleConn {
 // acknowledge admits the connection's hello and reads the launcher's first state on it.
 func (g *roleConn) acknowledge() shimwire.LauncherState {
 	g.t.Helper()
-	g.send(shimwire.LauncherHelloAck{})
+	return g.acknowledgeWith(shimwire.LauncherHelloAck{})
+}
+
+// acknowledgeWith admits the connection's hello with ack, whatever memory guard settings it
+// carries, and reads the launcher's first state on it.
+func (g *roleConn) acknowledgeWith(ack shimwire.LauncherHelloAck) shimwire.LauncherState {
+	g.t.Helper()
+	g.send(ack)
 	state, ok := g.next().(shimwire.LauncherState)
 	if !ok {
 		g.t.Fatalf("after the acknowledgement: %#v, want the launcher's state", state)
@@ -586,6 +593,17 @@ func newFleet(t *testing.T, grace time.Duration, roles ...string) *fleet {
 // leak-check directory) besides the fields every fleet's launcher is given.
 func newFleetOf(t *testing.T, cfg Config, roles ...string) *fleet {
 	t.Helper()
+	f := launchFleet(t, cfg, roles...)
+	for _, conn := range f.conns {
+		conn.acknowledge()
+	}
+	return f
+}
+
+// launchFleet is newFleetOf up to every role's hello, which it leaves unacknowledged, for a test
+// whose acknowledgements carry something of their own.
+func launchFleet(t *testing.T, cfg Config, roles ...string) *fleet {
+	t.Helper()
 	scratch := namespaceScratch(t)
 	f := &fleet{
 		t: t, rolesDir: filepath.Join(scratch, "roles"), home: filepath.Join(scratch, "home"),
@@ -640,9 +658,6 @@ func newFleetOf(t *testing.T, cfg Config, roles ...string) *fleet {
 			t.Fatalf("role %s opened two connections", conn.hello.Role)
 		}
 		f.conns[conn.hello.Role] = conn
-	}
-	for _, conn := range f.conns {
-		conn.acknowledge()
 	}
 	return f
 }
