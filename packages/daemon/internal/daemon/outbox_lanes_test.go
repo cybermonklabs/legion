@@ -143,6 +143,7 @@ func (g *gatedPublisher) Publish(ctx context.Context, topic, message string, pay
 // postingDispatch is Dispatch as a message post meets it: the bodies posted, by issue, and no
 // message read back, so each row posts once. It is read while a lane posts.
 type postingDispatch struct {
+	noArtifacts
 	mu     sync.Mutex
 	posted map[string][]string
 }
@@ -216,6 +217,7 @@ func (d *postingDispatch) postsTo(issue string) int {
 // writes, applies each after, and keeps the statuses that landed in order. It is read while the
 // lane writes, which boardDispatch is not made for.
 type laneBoard struct {
+	noArtifacts
 	mu       sync.Mutex
 	status   string
 	failures int

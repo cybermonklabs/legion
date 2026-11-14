@@ -399,7 +399,44 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 	// It is decided here, after the line and `blocked` are both in hand, because three of the four
 	// states are read off them, and from the two judgements this pass still holds apart — the
 	// links and the children-first waits — which the published list has merged by now.
-	whyStates(&projected, own, stranded, rows, facts.ChildWaits)
+	//
+	// It reads the held list above for the sentence of most issues it answers, and it is not
+	// that list: the list says where every issue the daemon holds in the workflow stands and why
+	// nothing of it runs, and this answers why an issue is not working now. The two part at an
+	// issue whose work runs past its review, which the list names and this answers for not at
+	// all; where they part and why is written once, with the arm that parts them
+	// (atWorkPastReview).
+	//
+	// The running roots are the term that says an issue past its review is at work: it holds no
+	// slot since dispatch://INFRA-2560, so no list of the three places it and the answer turns
+	// on whether its tree runs at all (whyStates, atWorkPastReview). They are read from the
+	// records and the facts this pass already holds, so the reading costs no query, and they
+	// are the same roots record.LiveRoots is read from above — live is wider than running,
+	// and a parked root's tree is neither.
+	whyStates(&projected, own, record.RunningRoots(own, facts), stranded, rows, facts.ChildWaits)
+	// Every issue of a live tree carries that tree's quiet time (contract 111): `treeMovedAt`,
+	// the newest movement the daemon has seen anywhere in the tree, and `quietHours`, how long
+	// it has been still at the instant the rest of this state is measured at. The pair is the
+	// tree's, so every issue of one tree carries the same two values — a child past its own
+	// review, which holds no slot, and a done child recorded under the tree among them, since
+	// what has stopped is the tree and not the issue a reader happens to hold. A tree that is no
+	// longer live is measured for nobody: its root is in no `admission.trees` entry, there is
+	// nothing of the deployment's left to wait on, and each of its issues carries neither key.
+	//
+	// The measure is read once for the whole state (quietTrees), from the records and the claims
+	// this pass already holds, and a live root is always one of its trees whatever its own
+	// status says (record.QuietTrees), so the lookup below cannot miss.
+	quiet := quietTrees(own, claims, now)
+	for _, issue := range own {
+		if _, live := trees[issue.Tree]; !live {
+			continue
+		}
+		measure := quiet[issue.Tree]
+		movedAt, hours := measure.MovedAt, measure.Quiet.Hours()
+		view := projected.Issues[issue.Key]
+		view.TreeMovedAt, view.QuietHours = &movedAt, &hours
+		projected.Issues[issue.Key] = view
+	}
 	projected.PendingStatusWrites = make([]api.PendingStatusWrite, 0, len(pending))
 	for _, row := range pending {
 		if _, known := knownIssues[row.Issue]; !known {
@@ -424,6 +461,34 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 		}
 	}
 	return projected, nil
+}
+
+// quietTrees is the state's measure of its trees: how long each tree the state's own records
+// name has been still and whether any claim of it is at work (record.QuietTrees). It makes no
+// query of its own. own is the project's records, the same list the waiting line and the live
+// roots are judged from; claims are the claims Project was handed, read in its one snapshot
+// with those records, which carry each agent's state and step times already
+// (record.TreeClaimsOf), so the state never reads the claims a second time; now is the instant
+// the rest of the state is measured at.
+//
+// Where it is called from: Project, just past the live roots the measure answers for, which
+// writes each live tree's measure onto every issue of that tree (`treeMovedAt`, `quietHours`).
+// It stays a function of its own rather than a line of Project because its three arguments are
+// the three facts the measure may read and no others: a later reader of the same question takes
+// it from here and cannot quietly read a fourth. The admission pass measures the same thing
+// with the same statement, over the claims its own read gives it (admit's quietTrees), so the
+// two read one statement of the measure and neither keeps a rule of its own.
+//
+// One statement is what they share, and not one answer: the records each is handed differ.
+// This one is given `own`, every record of the project the state holds, a done one included,
+// while the pass is given record.Store.LiveIssues, which leaves out a done record holding no
+// slot. A root is a member of its tree whatever its own status says (record.TreeMember), so a
+// tree whose root is done is measured here from that root and is no tree of the pass's at all,
+// and the two can read one tree from different members. Nothing rests on their agreeing: the
+// state reports what it measures, and the pass tells the controller only of the trees it runs
+// (record.RunningRoots), which are trees whose records the live read holds.
+func quietTrees(own []record.Issue, claims []supervise.Claim, now time.Time) map[string]record.TreeQuiet {
+	return record.QuietTrees(own, record.TreeClaimsOf(claims), now)
 }
 
 // memoryDraw is one tree's memory draw as its root's record holds it (record.Issue.MemoryGroup,

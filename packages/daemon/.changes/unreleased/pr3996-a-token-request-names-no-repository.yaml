@@ -1,0 +1,18 @@
+kind: Changed
+body: |-
+  The daemon's GitHub App token request names no repository. A role's token reaches every
+  repository of its owner's installation, at the same permissions as before, and the daemon
+  serves an answer that lists any repositories. It still refuses an answer whose permissions are
+  wider than the ones it asked for.
+
+  A `token_command` gets `LEGION_GITHUB_OWNER` and `LEGION_GITHUB_READ_ONLY` and no other
+  `LEGION_GITHUB_` variable, also when the daemon inherited one. A command that expanded a
+  repository list without a guard must stop. With the secrets broker's documented command, a
+  write release now names only the owner, so its token holds every permission the installation
+  is granted, on every repository.
+
+  When GitHub refuses the provisioning read lease of an issue pod, the mint fails. The daemon no
+  longer falls back to the owner's write token, and the pod does not provision until the grant
+  is fixed.
+
+  The token exchange reads an answer of up to 16 MiB.

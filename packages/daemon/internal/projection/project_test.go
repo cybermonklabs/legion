@@ -550,7 +550,7 @@ func TestProjectShowsTheWaitingLineInTheLinesOwnOrder(t *testing.T) {
 		issues: []record.Issue{
 			lineIssue("LEGION-10", "LEGION-10", "in_progress", phase.Admitted, "M"),
 			lineIssue("LEGION-11", "LEGION-10", "todo", phase.Admitted, "N"),
-			lineIssue("LEGION-12", "LEGION-10", "retro", phase.Merging, "O"),
+			lineIssue("LEGION-12", "LEGION-10", "in_progress", phase.Implementing, "O"),
 			lineIssue("LEGION-20", "LEGION-20", "todo", phase.Admitted, "A"),
 			lineIssue("LEGION-30", "LEGION-30", "todo", phase.Admitted, "Z"),
 			lineIssue("LEGION-50", "LEGION-50", "todo", phase.Accepting, "B"),
@@ -846,11 +846,11 @@ func TestTheWaitingLinePlaceIsOnEachListedIssue(t *testing.T) {
 	}
 }
 
-// admission.active is every issue holding one of the cap's rows, which an issue now keeps from
-// the moment the daemon starts it until it is done or Dispatch takes it out of the workflow
-// (record.KeepsSlot). So a root waiting on a person, an issue in accepting and one in merging are
-// all named there, though no worker of any of them is running this second, and an issue whose
-// phase has left the workflow stands in neither list.
+// admission.active is every issue the slots table holds a row for: the projection names the row
+// holders it finds and reads no phase of its own. An issue holds one of the cap's rows from the
+// moment the daemon starts it until its work is past its review (record.KeepsSlot), so a root
+// waiting on a person is named there though no worker of it is running this second. An issue
+// with no row of its own waits for nothing here: it stands in neither list.
 func TestAdmissionActiveNamesTheIssuesHoldingARow(t *testing.T) {
 	waiting := lineIssue("LEGION-10", "LEGION-10", "in_progress", phase.AwaitingPerson, "A")
 	waiting.Awaiting = &record.Awaiting{Ask: "ask-q", Since: record.EventMark{Seq: 5, At: projectedAt.Add(-time.Hour)}}
@@ -875,7 +875,7 @@ func TestAdmissionActiveNamesTheIssuesHoldingARow(t *testing.T) {
 	}
 
 	if want := []string{"LEGION-10", "LEGION-11", "LEGION-12"}; !reflect.DeepEqual(got.Admission.Active, want) {
-		t.Fatalf("admission.active = %#v, want %#v: the root waiting on a person, the issue in accepting and the one in merging each hold a row",
+		t.Fatalf("admission.active = %#v, want %#v: each of the three the fixture gives a row holds one, the root waiting on a person among them",
 			got.Admission.Active, want)
 	}
 	if len(got.Admission.Waiting) != 0 {
@@ -920,6 +920,64 @@ func TestProjectShowsEachWorkerItsIssuesBackwardMoveCounts(t *testing.T) {
 	if len(workers[claim.RoleTester].BackwardMoves) != 0 {
 		t.Fatalf("the tester's view counts %v, want none: the counts are kept on the implementer's row alone",
 			workers[claim.RoleTester].BackwardMoves)
+	}
+}
+
+// Every issue of a live tree is served that tree's quiet time (contract 111): `treeMovedAt`, the
+// newest movement the daemon has seen anywhere in the tree, and `quietHours`, how long the tree
+// has been still at the instant the state is measured at. The pair is the tree's, so the root
+// and a child of it past its own review carry the same two values, though that child holds no
+// admission slot and the root holds one: what has stopped is the tree, and an issue past its
+// review is measured like every other member of it. The child's own record is the newest
+// movement here, which is what makes the two values the tree's rather than each issue's.
+//
+// An issue whose tree has left the workflow carries neither key: it is the root of no live tree,
+// there is nothing of the deployment's left waiting on it, and a quiet time for it would be the
+// age of a finished piece of work rather than a measure of anything that stopped.
+func TestTheStateReportsEachTreesQuietTime(t *testing.T) {
+	root := lineIssue("LEGION-10", "LEGION-10", "in_progress", phase.Implementing, "A")
+	root.MovedAt = projectedAt.Add(-3 * time.Hour)
+	child := lineIssue("LEGION-11", "LEGION-10", "retro", phase.Retro, "B")
+	child.MovedAt = projectedAt.Add(-90 * time.Minute)
+	left := lineIssue("LEGION-20", "LEGION-20", "done", phase.Done, "C")
+	left.MovedAt = projectedAt.Add(-10 * time.Minute)
+	store := projectionStore{
+		issues: []record.Issue{root, child, left},
+		// The one tree whose lifecycle stands open under the workflow, which is what makes it
+		// live; LEGION-20's closed with its issue, so no root of it is among the live ones.
+		lifecycles: []string{"LEGION-10"},
+		slots:      []record.Slot{{Issue: "LEGION-10", Index: 0, AdmittedAt: projectedAt.Add(-4 * time.Hour)}},
+	}
+
+	got, err := Project(context.Background(), nil, store, "LEGION", nil, nil, nil, nil, projectedAt)
+	if err != nil {
+		t.Fatalf("Project: %v", err)
+	}
+	if trees := got.Admission.Trees; !slices.Equal(trees, []string{"LEGION-10"}) {
+		t.Fatalf("admission.trees = %v, want LEGION-10 alone: the tree that left the workflow must be no live root, or this test proves nothing", trees)
+	}
+	if got.Issues["LEGION-10"].Slot == nil || got.Issues["LEGION-11"].Slot != nil {
+		t.Fatalf("the root holds slot %+v and the child past its review holds %+v, want a row on the root and none on the child; this test proves nothing",
+			got.Issues["LEGION-10"].Slot, got.Issues["LEGION-11"].Slot)
+	}
+	for _, key := range []string{"LEGION-10", "LEGION-11"} {
+		view := got.Issues[key]
+		if view.TreeMovedAt == nil || view.QuietHours == nil {
+			t.Fatalf("%s is served movement %v and quiet hours %v, want its tree's measure on both",
+				key, view.TreeMovedAt, view.QuietHours)
+		}
+		if !view.TreeMovedAt.Equal(child.MovedAt) {
+			t.Errorf("%s's movement = %s, want %s, the newest movement of its tree, which is the child's",
+				key, view.TreeMovedAt, child.MovedAt)
+		}
+		if *view.QuietHours != 1.5 {
+			t.Errorf("%s's quiet hours = %v, want 1.5, the hours between its tree's newest movement and this read",
+				key, *view.QuietHours)
+		}
+	}
+	if view := got.Issues["LEGION-20"]; view.TreeMovedAt != nil || view.QuietHours != nil {
+		t.Errorf("the issue whose tree left the workflow is served movement %v and quiet hours %v, want neither",
+			view.TreeMovedAt, view.QuietHours)
 	}
 }
 

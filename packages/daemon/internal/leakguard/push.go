@@ -172,17 +172,15 @@ func (g *Guard) pushRecords(ctx context.Context, req PushRequest) ([]Record, err
 	return records, nil
 }
 
-// commits are the commits one update would add to the destination, oldest first: the commits the
-// local side has that the destination is not known to hold. Two things say what it holds. A commit
-// on one of the repository's remote-tracking refs of the destination (of every remote, where the
-// request names none) has been fetched from the destination, so the push publishes nothing of it.
-// And where the repository holds the commit the destination's ref stands at, that commit and its
-// history are the destination's too. Both are left out wherever both are known, because the remote
-// sha alone is not enough: a branch the destination holds far behind its main, pushed again on
-// today's main, has every main commit between its old tip and its new one, and each would be read
-// as the push's own and refused for what an author of main wrote. Where the ref is new, or its
-// remote sha was never fetched, the remote-tracking refs alone say what the destination holds. A
-// deletion adds no commit at all.
+// commits are the commits one update would add to the destination, oldest first: the commits
+// the local side has, less the ones the destination is taken to hold already. It holds every
+// commit on one of the repository's remote-tracking refs (the named remote's, or every remote's
+// where the push names none): a commit there was fetched from the destination, so the push does
+// not publish it. Where the destination has a commit at the ref and the repository has it too,
+// it also holds that commit and everything before it. The remote-tracking refs count for a ref
+// the destination has as much as for a new one. Without them, a forward merge (the default
+// branch merged onto an older tip of the branch) would read every commit of the default branch
+// since that tip, not only the merge and the branch's own commits. A deletion adds no commit.
 func (g *Guard) commits(ctx context.Context, req PushRequest, update Update) ([]string, error) {
 	if update.LocalSHA == "" || zeroSHA(update.LocalSHA) {
 		return nil, nil
@@ -195,11 +193,11 @@ func (g *Guard) commits(ctx context.Context, req PushRequest, update Update) ([]
 	if held {
 		argv = append(argv, update.RemoteSHA)
 	}
+	remotes := "--remotes"
 	if req.Remote != "" {
-		argv = append(argv, "--remotes="+req.Remote)
-	} else {
-		argv = append(argv, "--remotes")
+		remotes += "=" + req.Remote
 	}
+	argv = append(argv, remotes)
 	out, err := g.git(ctx, req.Dir, argv...)
 	if err != nil {
 		return nil, err
@@ -209,7 +207,7 @@ func (g *Guard) commits(ctx context.Context, req PushRequest, update Update) ([]
 
 // holds is whether the repository has the commit sha names: false for a ref the push creates
 // (a sha of all zeros), and false for a remote sha this repository has never fetched, where the
-// remote-tracking refs alone say what the destination holds (Guard.commits).
+// remote-tracking refs alone say what the destination holds.
 func (g *Guard) holds(ctx context.Context, dir, sha string) (bool, error) {
 	if sha == "" || zeroSHA(sha) {
 		return false, nil

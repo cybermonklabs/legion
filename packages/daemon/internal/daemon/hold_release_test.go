@@ -245,7 +245,10 @@ type failingPositionReader struct {
 
 // pilotDispatch answers ListIssues with a fixed summary list, as workflowRuntime.reconcile reads
 // it, and refuses everything else this test does not need.
-type pilotDispatch struct{ summaries []dispatch.IssueSummary }
+type pilotDispatch struct {
+	noArtifacts
+	summaries []dispatch.IssueSummary
+}
 
 func (d *pilotDispatch) ListIssues(context.Context, string, []string) ([]dispatch.IssueSummary, error) {
 	return d.summaries, nil
@@ -296,7 +299,10 @@ func (d *pilotDispatch) PutDesignGates(context.Context, string, []dispatch.Desig
 // pilotDispatch above ignores that argument entirely, so it cannot catch a boot listing that
 // silently narrows its own status filter — only a stub that filters like Dispatch's real client
 // can.
-type filteringDispatch struct{ summaries []dispatch.IssueSummary }
+type filteringDispatch struct {
+	noArtifacts
+	summaries []dispatch.IssueSummary
+}
 
 func (d *filteringDispatch) ListIssues(_ context.Context, _ string, statuses []string) ([]dispatch.IssueSummary, error) {
 	if len(statuses) == 0 {
