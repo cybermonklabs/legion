@@ -32,6 +32,7 @@ import { ControlRow } from "../../components/ControlRow";
 import { CopyButton } from "../../components/CopyButton";
 import { ChevronIcon, DisclosureToggle } from "../../components/DisclosureToggle";
 import { EmptyState } from "../../components/EmptyState";
+import { useFocusPlace } from "../../components/focus-place";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { MultiSelect } from "../../components/MultiSelect";
 import { PanelTrigger } from "../../components/PanelTrigger";
@@ -1065,31 +1066,46 @@ function AgentFilterBar({
 /**
  * The list's select-all checkbox. Its 13 px inset lines it up with the rows' checkboxes (their
  * 1 px border plus 12 px padding). Matching means every row the filters match, folded sections
- * included, and `Clear selection` also empties the selected rows the filters hide.
+ * included, and `Clear selection` also empties the selected rows the filters hide. Clear
+ * selection goes with the selection it empties, and the focus it held goes to the select-all
+ * checkbox before it, else, while no row matches and that checkbox is disabled, to the search
+ * box (`useFocusPlace`).
  */
 function SelectionHeader({
   listed,
   matching,
   onClear,
   onToggle,
+  searchInputRef,
   selected,
 }: {
   listed: readonly Agent[];
   matching: readonly Agent[];
   onClear: () => void;
   onToggle: () => void;
+  searchInputRef: RefObject<HTMLInputElement | null>;
   selected: ReadonlySet<string>;
 }): ReactNode {
   const selection = matchingSelection(listed, matching, selected);
   const { state } = selection;
   const checkbox = useRef<HTMLInputElement>(null);
+  const header = useRef<HTMLDivElement>(null);
   const countId = useId();
   // `indeterminate` is a DOM property with no attribute, so React cannot render it.
   useLayoutEffect(() => {
     if (checkbox.current !== null) checkbox.current.indeterminate = state === "some";
   }, [state]);
+  const noteFocus = useFocusPlace(
+    () => header.current,
+    () => searchInputRef.current
+  );
   return (
-    <div className="mb-2 flex min-h-11 items-center gap-x-2 px-[13px] md:min-h-8">
+    // biome-ignore lint/a11y/noStaticElementInteractions: nothing here is made interactive - the handler only notes which control of the header took the focus, for the hand-off when a commit takes that control away (`useFocusPlace`), so the header needs no role of its own.
+    <div
+      className="mb-2 flex min-h-11 items-center gap-x-2 px-[13px] md:min-h-8"
+      onFocus={noteFocus}
+      ref={header}
+    >
       <input
         aria-describedby={countId}
         aria-label="Select all matching agents"
@@ -1787,6 +1803,7 @@ export function AgentsPage(): ReactNode {
             matching={matching}
             onClear={() => setSelected(() => new Set())}
             onToggle={() => setSelected((current) => toggleMatching(matching, current))}
+            searchInputRef={searchInputRef}
             selected={selected}
           />
           {matching.length === 0 && current ? (

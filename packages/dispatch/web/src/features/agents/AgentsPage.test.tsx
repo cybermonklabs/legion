@@ -3559,6 +3559,44 @@ test("the header checkbox follows the filters and its count never hides a select
   }
 });
 
+// A press that takes its own control away hands the focus on, never to the page's body (ruling
+// ff1a60f5): Clear selection goes with the selection it empties, and its focus goes to the
+// select-all checkbox before it, or to the search box while no row matches and that checkbox is
+// disabled.
+test("Clear selection hands its focus to the select-all checkbox, or to the search box while no row matches", async () => {
+  const user = userEvent.setup();
+  const page = renderAgents();
+
+  try {
+    const region = await screen.findByRole("region", { name: "Agents" });
+    const header = within(region).getByRole("checkbox", { name: "Select all matching agents" });
+    const search = within(region).getByRole("searchbox", { name: "Search agents" });
+    const clear = () => within(region).getByRole("button", { name: "Clear selection" });
+
+    await user.click(header);
+    clear().focus();
+    await user.keyboard("{Enter}");
+    expect(
+      within(region).queryByRole("button", { name: "Clear selection" })
+    ).not.toBeInTheDocument();
+    expect(header).toHaveFocus();
+
+    // Every row selected, then a search that matches none of them: the checkbox is disabled.
+    await user.click(header);
+    await type(user, search, "nothing matches this");
+    await waitFor(() => expect(header).toBeDisabled());
+    clear().focus();
+    await user.keyboard("{Enter}");
+    expect(
+      within(region).queryByRole("button", { name: "Clear selection" })
+    ).not.toBeInTheDocument();
+    expect(search).toHaveFocus();
+  } finally {
+    page.view.unmount();
+    page.restore();
+  }
+});
+
 test("the header checkbox selects a row a collapsed group hides, and the group says how many", async () => {
   const user = userEvent.setup();
   // Seen half a minute ago and never heard from by Dispatch: Idle.

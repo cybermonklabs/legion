@@ -1708,6 +1708,79 @@ test("a column filter press that sends the List off to read its issues leaves th
   expect(screen.getByRole("searchbox", { name: "Search issues" })).toHaveFocus();
 });
 
+// A notice's button that takes the notice away hands the focus on, never to the page's body
+// (ruling ff1a60f5): to the control now at its place among the List's notices, else the one
+// before it, else the toolbar's search box.
+test.each([
+  "Finish",
+  "Dismiss",
+])("the interrupted action's %s hands its focus to the search box", async (press) => {
+  const user = userEvent.setup();
+  localStorage.setItem(
+    "dispatch.project-table.CORE",
+    JSON.stringify({
+      action: {
+        id: "unfinished",
+        kind: "startNext",
+        project: "CORE",
+        keys: ["CORE-1"],
+        writes: {},
+      },
+    })
+  );
+  const send = spyOn(api, "send").mockResolvedValue(savedIssue("CORE-1") as never);
+  restores.push(() => send.mockRestore());
+  table([issue("CORE-1")]);
+  const recovery = await screen.findByRole("region", { name: "Interrupted table action" });
+  within(recovery).getByRole("button", { name: press }).focus();
+  await user.keyboard("{Enter}");
+  await waitFor(() =>
+    expect(screen.queryByRole("region", { name: "Interrupted table action" })).toBeNull()
+  );
+  expect(screen.getByRole("searchbox", { name: "Search issues" })).toHaveFocus();
+});
+
+test.each([
+  "Create anyway",
+  "Cancel new epic",
+])("the possible duplicate's %s hands its focus to the search box", async (press) => {
+  const user = userEvent.setup();
+  const create = spyOn(api, "createIssue").mockImplementation(async (input) => {
+    if (!input.force)
+      throw new ApiError(409, {
+        code: "POSSIBLE_DUPLICATE",
+        error: "Possible duplicate of CORE-9",
+      });
+    return savedIssue("CORE-9");
+  });
+  const send = spyOn(api, "send").mockResolvedValue(savedIssue("CORE-1"));
+  const named = nameTheEpic(user, "Existing epic");
+  table([issue("CORE-1")]);
+  restores.push(() => {
+    create.mockRestore();
+    send.mockRestore();
+  });
+  await user.click(await screen.findByRole("checkbox", { name: "Select CORE-1" }));
+  await user.click(screen.getByRole("button", { name: "New epic from these" }));
+  await named;
+  const duplicate = await screen.findByRole("alert");
+  within(duplicate).getByRole("button", { name: press }).focus();
+  await user.keyboard("{Enter}");
+  expect(screen.queryByRole("button", { name: press })).toBeNull();
+  const search = screen.getByRole("searchbox", { name: "Search issues" });
+  expect(search).toHaveFocus();
+  if (press === "Create anyway") {
+    // The write the press sent lands, and the focus stays where it went.
+    await waitFor(() =>
+      expect(
+        within(screen.getByRole("region", { name: "Project issues" })).getByRole("status")
+          .textContent
+      ).toContain("Made the epic")
+    );
+    expect(search).toHaveFocus();
+  }
+});
+
 // F3: the sentence a merge posted is kept with the record, so a target renamed or closed before
 // Finish cannot make the resume post a second one.
 test.each([

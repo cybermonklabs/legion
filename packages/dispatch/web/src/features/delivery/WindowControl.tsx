@@ -1,4 +1,4 @@
-import { type ReactNode, useId, useState } from "react";
+import { type ReactNode, type RefObject, useId, useState } from "react";
 
 import {
   borderStrong,
@@ -19,21 +19,50 @@ import {
 
 const fieldClass = `rounded border px-2 py-1 text-sm ${surfaceMutedBg} ${borderStrong} ${textPrimaryOnCanvas}`;
 
+/** The window a choice names, as one string: two choices of the same window give the same one. */
+function windowKey(value: WindowChoice): string {
+  return value.kind === "custom" ? `${value.from}|${value.to}` : value.preset;
+}
+
+/** The dates a window puts in the custom range's fields: its own days, else none. */
+function draftDates(value: WindowChoice): { from: string; to: string } {
+  return value.kind === "custom"
+    ? { from: utcDate(value.from), to: lastUtcDate(value.to) }
+    : { from: "", to: "" };
+}
+
 /** The Delivery page's window: a rolling preset (the last 7, 14, 28 or 84 days) or a custom range
  *  of whole UTC days. A custom range is applied only once both dates are set and it spans at most
  *  84 days, the server's limit; a longer one is refused here with the limit stated. */
 export function WindowControl({
   value,
   onChange,
+  selectRef,
 }: {
   value: WindowChoice;
   onChange: (next: WindowChoice) => void;
+  /** The Window select, which the page hands the focus to when a control beside it goes. */
+  selectRef?: RefObject<HTMLSelectElement | null>;
 }): ReactNode {
   const id = useId();
   const [custom, setCustom] = useState(value.kind === "custom");
-  const [fromDate, setFromDate] = useState(value.kind === "custom" ? utcDate(value.from) : "");
-  const [toDate, setToDate] = useState(value.kind === "custom" ? lastUtcDate(value.to) : "");
+  const [fromDate, setFromDate] = useState(() => draftDates(value).from);
+  const [toDate, setToDate] = useState(() => draftDates(value).to);
   const [refused, setRefused] = useState<string | null>(null);
+  // A new window - the control's own pick, or the address changing under it - starts the draft
+  // again from that window. It is set during render (React's pattern for state derived from
+  // props) rather than by a key on the control: a new key remounted the Window select under the
+  // keyboard reader who picked a preset with an arrow key, and dropped their focus on the body.
+  const key = windowKey(value);
+  const [seeded, setSeeded] = useState(key);
+  if (key !== seeded) {
+    const dates = draftDates(value);
+    setSeeded(key);
+    setCustom(value.kind === "custom");
+    setFromDate(dates.from);
+    setToDate(dates.to);
+    setRefused(null);
+  }
 
   const apply = () => {
     const range = customRange(fromDate, toDate);
@@ -64,6 +93,7 @@ export function WindowControl({
           setRefused(null);
           onChange({ kind: "preset", preset });
         }}
+        ref={selectRef}
         value={custom ? "custom" : value.kind === "preset" ? value.preset : "custom"}
       >
         {WINDOW_PRESETS.map((preset) => (

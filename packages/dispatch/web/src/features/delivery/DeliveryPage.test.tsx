@@ -835,6 +835,38 @@ test("the window control: a preset rolls and clears the brush, a custom range wr
   });
 });
 
+// A press that takes its own control away hands the focus on, never to the page's body (ruling
+// ff1a60f5). A preset picked on the Window select leaves that select, the same element, holding
+// the focus: the control stays mounted across a change of the window.
+test("a preset picked on the Window select keeps that select, and the focus on it", async () => {
+  const user = userEvent.setup();
+  renderPage();
+  const select = await screen.findByLabelText("Window");
+  select.focus();
+  await user.selectOptions(select, "84d");
+  await waitFor(() => expect(currentSearch().get("window")).toBe("84d"));
+  expect(screen.getByLabelText("Window")).toBe(select);
+  expect(select).toHaveFocus();
+});
+
+// Clear brush window goes with the brush it clears, and its focus goes to the Window select: the
+// line it sits in holds no other control.
+test("clear brush window hands its focus to the Window select", async () => {
+  const user = userEvent.setup();
+  renderPage(
+    `${DELIVERY_URL}&ws=${encodeURIComponent("2024-06-01T06:00:00.000Z")}&we=${encodeURIComponent("2024-06-01T12:00:00.000Z")}`
+  );
+  const socket = await openSocket();
+  const timeline = await subscription(socket, "timeline");
+  serve(socket, snapshotFrame(timeline.sub, emptyTimeline));
+  const clear = await screen.findByRole("button", { name: "clear brush window" });
+  clear.focus();
+  await user.keyboard("{Enter}");
+  await waitFor(() => expect(currentSearch().has("ws")).toBe(false));
+  expect(screen.queryByRole("button", { name: "clear brush window" })).toBeNull();
+  expect(screen.getByLabelText("Window")).toHaveFocus();
+});
+
 test("the freshness row says Live with the last change while the socket is open, and Reconnecting once it drops", async () => {
   const now = Date.now();
   const ago = (ms: number) => new Date(now - ms).toISOString();

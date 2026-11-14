@@ -179,16 +179,22 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
   };
   // A control of the table's head - a column filter, or the list it opened in a portal of its
   // own - goes with the table when a press in it sends the List back to its skeleton, and the
-  // focus it held goes to the search box rather than the page's body. Only the head is counted:
-  // the selection bar, the rows and the dialogs each hand the focus on themselves. The handler
-  // sits on the List's section, which stays in every branch.
+  // focus it held goes to the search box rather than the page's body. A notice's button under
+  // the toolbar goes with the notice it answers - the interrupted action's Finish and Dismiss, the
+  // possible duplicate's Create anyway and Cancel new epic - and its focus goes to the control now
+  // at its place among the notices, else the one before it, else the search box. Only the head
+  // and the notices are counted: the selection bar, the rows and the dialogs each hand the focus
+  // on themselves. The handler sits on the List's section, which stays in every branch.
   const sectionRef = useRef<HTMLElement>(null);
+  const noticesRef = useRef<HTMLDivElement>(null);
   const noteFocus = useFocusPlace(
     (element) => {
       const section = sectionRef.current;
       if (section === null) return null;
       // A portal's element is counted only where a control of the head was before it.
-      return section.contains(element) ? element.closest("thead") : section.querySelector("thead");
+      if (!section.contains(element)) return section.querySelector("thead");
+      const notices = noticesRef.current;
+      return notices?.contains(element) ? notices : element.closest("thead");
     },
     () => searchRef.current
   );
@@ -352,7 +358,7 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
         />
 
         {loaded ? (
-          <>
+          <div className="space-y-3" ref={noticesRef}>
             <p
               aria-live="polite"
               role={notice ? (notice.kind === "error" ? "alert" : "status") : undefined}
@@ -403,7 +409,7 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
                 </button>
               </div>
             ) : null}
-          </>
+          </div>
         ) : null}
       </div>
 

@@ -8,6 +8,7 @@ import { deliveryMeasuresQuery, deliveryTimelineQuery } from "../../api/queries"
 import type { DeliverySessionGroup, DeliveryTimelineWithMeasures } from "../../api/types";
 import { Chip } from "../../components/Chip";
 import { ControlRow } from "../../components/ControlRow";
+import { useFocusPlace } from "../../components/focus-place";
 import { MultiSelect } from "../../components/MultiSelect";
 import { PanelTrigger } from "../../components/PanelTrigger";
 import { QueryError } from "../../components/QueryError";
@@ -709,23 +710,33 @@ export function DeliveryPage(): ReactNode {
   if (query.fetchStatus === "idle" && isDeliveryNotConfigured(query.error) !== notConfigured) {
     setNotConfigured(!notConfigured);
   }
+  // The header's **clear brush window** goes with the brush it clears, and the focus it held goes
+  // to the control now at its place in the line it sits in, which holds no other, else to the
+  // Window select (`useFocusPlace`). The Window select itself stays mounted across a change of
+  // the window (`WindowControl`), so a pick keeps the focus where it was.
+  const windowSelect = useRef<HTMLSelectElement>(null);
+  const generatedLine = useRef<HTMLDivElement>(null);
+  const noteFocus = useFocusPlace(
+    (element) => (generatedLine.current?.contains(element) ? generatedLine.current : null),
+    () => windowSelect.current
+  );
   return (
     <section className="flex flex-col gap-3 xl:h-[calc(100dvh-3rem)]">
-      <header className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+      {/* biome-ignore lint/a11y/noStaticElementInteractions: nothing here is made interactive - the handler only notes which control of the header took the focus, for the hand-off when a commit takes that control away (`useFocusPlace`), so the header needs no role of its own. */}
+      <header
+        className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1"
+        onFocus={noteFocus}
+      >
         <h1 className={`text-xl font-bold ${textPrimaryOnCanvas}`}>Delivery timeline</h1>
         {notConfigured ? null : (
           <WindowControl
-            key={
-              state.window.kind === "custom"
-                ? `${state.window.from}|${state.window.to}`
-                : state.window.preset
-            }
             onChange={(window) => setState({ ...state, window, brush: null })}
+            selectRef={windowSelect}
             value={state.window}
           />
         )}
         {data === undefined ? null : (
-          <div className={`text-xs ${textMutedOnCanvas}`}>
+          <div className={`text-xs ${textMutedOnCanvas}`} ref={generatedLine}>
             Generated {new Date(answeredAt).toLocaleString()} · window{" "}
             {new Date(data.window.from).toLocaleDateString()}–
             {new Date(data.window.to).toLocaleDateString()}
