@@ -27,10 +27,10 @@ function withFutureBlock(creatable: boolean): BlockSchema {
 
 // The page presents the manifest it was built with: its version V, and R, the highest `since`
 // among the elements it may create (`creatable_since` V or less), as Go's `pmdoc.SchemaCreatable`
-// computes it. Today's manifest creates every element it reads, the three blocks version 3 adds
-// included, so its R is its version.
+// computes it. Today's manifest creates every element it reads, the newest of them included, so
+// its R is its version, whatever version that is: the numbers come from the manifest, never from
+// a literal here, so raising the manifest does not break this row.
 test("the compiled manifest is the page's own, and it creates everything it reads", () => {
-  expect(compiledBlockSchema.version).toBe(3);
   expect(compiledBlockSchema.nodes?.map(({ name }) => name)).toContain("paragraph");
   expect(compiledBlockSchema.types.map(({ name }) => name)).toEqual([
     "callout",
@@ -39,7 +39,7 @@ test("the compiled manifest is the page's own, and it creates everything it read
     "plan_task",
     "check",
   ]);
-  expect(schemaCreatable(compiledBlockSchema)).toBe(3);
+  expect(schemaCreatable(compiledBlockSchema)).toBe(compiledBlockSchema.version);
 });
 
 test("an element the page creates counts toward its creatable version, one it only reads does not", () => {
