@@ -154,7 +154,7 @@ Each item below names a task and where its code is, then notes on it.
 
   the listener durable's skip of a subject no session of this machine needs, before it decodes the message (the registry's subject index)
 
-- **Interest storage**: `internal/store/kv.go`, `internal/store/interest_cache.go`, `internal/store/interest_reads.go`, `internal/store/interest_writes.go`, `internal/store/roles.go`, `internal/store/role_renewal.go`, `internal/store/role_release.go`, `internal/store/reaper.go`, `internal/store/interest_markers.go`
+- **Interest storage**: `internal/store/kv.go`, `internal/store/interest_cache.go`, `internal/store/interest_reads.go`, `internal/store/interest_writes.go`, `internal/store/roles.go`, `internal/store/role_claim_repair.go`, `internal/store/role_renewal.go`, `internal/store/role_release.go`, `internal/store/reaper.go`, `internal/store/interest_markers.go`
 
   JetStream KV subscriptions and role claims:
   the registry, its buckets and its watcher (`kv.go`);
@@ -162,6 +162,7 @@ Each item below names a task and where its code is, then notes on it.
   read-through, `Match` and `List` (`interest_reads.go`);
   upsert and removal (`interest_writes.go`);
   role claims (`roles.go`);
+  the role claim copy's repair: what each whole read of the role bucket puts back into the copy and takes out of it, the minute between those reads, and the report and the bound `/healthz` and the grant guard read (`role_claim_repair.go`);
   a claim's renewal, which is its holder's own heartbeat, and this listener's record of the renewals that failed (`role_renewal.go`);
   the release of a session's claims, the mark a hand-back leaves on one it may not free, and the two sweeps a deregistration releases through (`role_release.go`);
   the interest and role-claim reapers (`reaper.go`);
@@ -173,14 +174,15 @@ Each item below names a task and where its code is, then notes on it.
   its validation (`Validate`, shared by both writes), its reads (every one a session key or a filtered listing of an issue's or role token's keys, no cache), and the replacement each read derives within a role token;
   key layout under "Legion agent registry" below
 
-- **KV cache watchers**: `internal/kvwatch/kvwatch.go`, `internal/kvwatch/options.go`, `internal/kvwatch/serving.go`, `internal/kvwatch/stream.go`, `internal/kvwatch/repair.go`, `internal/kvwatch/shutdown.go`, `internal/kvwatch/copy.go`, `internal/kvwatch/marks.go`, `internal/kvwatch/scan.go`, `internal/kvwatch/entry.go`
+- **KV cache watchers**: `internal/kvwatch/kvwatch.go`, `internal/kvwatch/options.go`, `internal/kvwatch/serving.go`, `internal/kvwatch/stream.go`, `internal/kvwatch/repair.go`, `internal/kvwatch/shutdown.go`, `internal/kvwatch/copy.go`, `internal/kvwatch/marks.go`, `internal/kvwatch/scan.go`, `internal/kvwatch/entry.go`, `internal/kvwatch/kvwatchtest/kvwatchtest.go`
 
   the interest, session and CI caches' one watch lifecycle:
   first start, readiness, rewatch and the read protocol's core (`kvwatch.go`, its options in `options.go`), recreated buckets (the stream probe, the confirmation gate and `Check`, `stream.go`), the watcher's own re-read, its scheduled read and the unrepaired-stop ERROR (`repair.go`), stop and end (`shutdown.go`);
   the read every watch starts (`Cache`: `BeginRead`, `Apply`, `CompleteRead`), whose rows, revision fence, marks and read epoch one `Copy` keeps per cache (`copy.go`, `marks.go`), so a re-read keeps a cache's rows and removes only what a completed read did not find;
   whether a copy can be served (`Servable`, `Following`, `NeedsRead`, `Disconnected`, the stale bound;
   `serving.go`); and the one-shot scan of a bucket's existing keys, or of those one filter names (`ScanExistingKeys`, which the Legion agent registry's listings use too);
-  every watch through nats.go's `jetstream` watcher with kvwatch's own scan idle timer, and `Entry`, the one record type the caches apply
+  every watch through nats.go's `jetstream` watcher with kvwatch's own scan idle timer, and `Entry`, the one record type the caches apply;
+  and, for tests, the stand-in for `time.AfterFunc` a test hands a watcher so that the test fires the watcher's scheduled read itself (`kvwatchtest.Waits`, `kvwatchtest/kvwatchtest.go`)
 
 - **Topic matching**: `internal/routing/match.go`
 
@@ -2450,7 +2452,8 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   `parseIssuePage` (`api/issue_page.go`) reads `limit` and `offset`, and a repeated, blank, non-integer or out-of-range value is `400 INVALID_QUERY` naming the parameter;
   so is `cursor`, which the listing does not page with, since answering it with the first page would hand back rows the caller cannot tell from the ones it asked for (LEGION-406:
   the route ignored all three and answered every row).
-  The page is cut by the statement that reads it, which counts in the same read what the filters match, so a page and its `total` cannot come from two readings of a moving table, and the six values each listed issue carries are resolved for that page's rows alone (`issueSummaryQuery`, `api/issue_queries.go`, writes the listing's four statement texts: paged and unpaged, each of them pinned or not).
+
+- A `GET /api/v1/issues` page is cut by the statement that reads it, which counts in the same read what the filters match, so a page and its `total` cannot come from two readings of a moving table, and the six values each listed issue carries are resolved for that page's rows alone (`issueSummaryQuery`, `api/issue_queries.go`, writes the listing's four statement texts: paged and unpaged, each of them pinned or not).
   A `route_status` request is the one exception: that filter runs in Go after the Envoy roster answers, so it reads the unpaged statement and its page is cut after the filter (`issuePage.of`), `total` counting what is left.
   `route_status` is judged against one stored listener answer, the `route_roster` row (migration `0159_route_roster`, `api/issue_route_status.go`), at most five seconds old by the database's clock and the same on every process, so which process serves a page does not change what the page holds.
   A paged request therefore answers 500 for a parent chain that is too deep or loops only when the bad issue is on the page it asked for, where the unpaged listing answers 500 for any issue it matches.
@@ -2500,7 +2503,8 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   The chain therefore ends on a person: an issue the shared token creates with no assignee named and no parent assignee lands on the project's default.
   Nothing back-fills issues already filed, and a daemon status PATCH (no `assignee` key) never touches it.
   A new issue therefore always has an assignee, whatever the create sends; the one way to an issue nobody holds is `PATCH /api/v1/issues/{key}` with `{"assignee": null}`, so a test that needs one creates the issue and then clears it.
-  A project's default is moved by a person alone, through `GET /api/v1/settings/project-default-assignees` (every project, since every project names one) and `PUT /api/v1/projects/{key}/default-assignee` `{assignee}` (an email of a row of `people`; nothing clears a default, so an absent, null or blank `assignee` is `400 INVALID_PROJECT`, a login nobody has signed in with `400 ASSIGNEE_NOT_ALLOWED`, and the write appends a `settings.project_default_assignee.updated` event naming both people it moved rows between);
+
+- A project's default assignee is moved by a person alone, through `GET /api/v1/settings/project-default-assignees` (every project, since every project names one) and `PUT /api/v1/projects/{key}/default-assignee` `{assignee}` (an email of a row of `people`; nothing clears a default, so an absent, null or blank `assignee` is `400 INVALID_PROJECT`, a login nobody has signed in with `400 ASSIGNEE_NOT_ALLOWED`, and the write appends a `settings.project_default_assignee.updated` event naming both people it moved rows between);
   `POST /api/v1/projects` takes the project's first default, `default_assignee`, else the person creating it, else the person its credential acts for, holds whichever answers to a row of `people` (`400 ASSIGNEE_NOT_ALLOWED`; a broker-issued token's owner comes from the broker, not from `people`), refuses a call that can name none with `400 INVALID_PROJECT`, and answers the project plus the `default_assignee` it took (`createdProject`); `GET /api/v1/projects` lists no default, so the person-scoped settings read above is the one source of it (`api/project_default_assignee.go`, `api/projects.go`).
   `GET /api/v1/users` (needs the `person` scope) returns everyone in `people`, sorted by email, as `{users: [{login}]}` — the picker's options;
   `GET /api/v1/whoami` (any auth) returns `{kind: "user", login, scopes}` (the person's lowercase email) for a cookie/header caller or `{kind: "agent", owner, scopes}` for a bearer (`owner` is the personal token's owner by lowercase email, null under the shared token; `scopes` is the OAuth scopes the credential holds, `[]` for one that holds none) — what `dispatch whoami` reports.
@@ -3274,10 +3278,11 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   A server whose grant lacks that group refuses the subscription before the flush answers;
   the listener then logs it once and subscribes in its machine's group, `envoy-listener-<machine id>` (`bus.ListenerQueue`), as a listener of an earlier release does.
   The lane's pending limits are 1,000,000 messages and 1 GiB (`bus.RoleLanePendingMsgs`, `bus.RoleLanePendingBytes`), far above the backlog its handler builds while the role bucket answers -- the handler blocks on its forwards only once 4,096 are open and every one ends within its 2 s store window, so about 80 messages queue at the measured 40 a second -- so nats.go queues every role message however far the handler falls behind and drops none under any load the lane meets, while the buffer it may grow to stays bounded.
-  The handler also waits on each message's read of the role's claim record from `envoy_roles` (`resolveCoreRoleHolder`), up to 2 s when the bucket does not answer (`roleHolderReadTimeout`, which that read shares with the holder's session read).
+  The handler also waits on each message's read of the role's claim record from `envoy_roles` (`resolveCoreRoleHolder`), up to 2 s when the bucket does not answer (`roleHolderReadTimeout`, which bounds that read alone, `roleLaneClaims`).
   That is one read per message, so while the bucket does not answer the handler takes at most about one message every 2 s, and at 40 a second the queue reaches 1,000,000 messages in about seven hours;
   `envoy_role_lane_slow_consumers` counts any slow-consumer error the connection still reports, and each change of the count is logged.
-  The handler only decodes the message, resolves the live holder (`roles.ResolveHolder`, which reads the role's claim record from `envoy_roles` itself and never the registry's watched copy of it, under a context of its own bounded by `roleHolderReadTimeout`) and hands the forward to `roleForwarder`, then returns:
+  The holder's session read has a 2 s bound of its own (`roleHolderSessions.Holder`), so one message can hold the handler for about 4 s when both reads stall.
+  The handler only decodes the message, resolves the live holder (`roles.ResolveHolder`, which reads the role's claim record from `envoy_roles` itself and never the registry's watched copy of it, under `context.Background()`, each of its two reads under its own bound as above) and hands the forward to `roleForwarder`, then returns:
   the forwarder publishes each holder's forwards in the order they arrived and waits for each one's outcome on a goroutine of its own, so a holder whose forward is slow to be stored, or never is, holds up no other role message.
   At most 4,096 forwards are queued or waiting at once (`roleForwardWaitLimit`, `envoy_role_forwards_outstanding`);
   at that bound the handler waits, which only holds role messages in the lane's queue, up to the pending limits above.
@@ -3291,14 +3296,16 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   One the stream did not acknowledge storing (`bus.ErrForwardNotStored`), and one not known to have left this process (the publish failed, the flush timed out or failed on a stalled connection, or the server denied it under the listener's grant, `bus.ErrPublishDenied`), are both `delivery_failed`, as a stale holder and an unadvertised or unreadable delivery mode are (`finishRoleForward`); `no_holder` is no claim at all.
   There is no `receipt_timeout` reason here any more.
   `bus.confirmPublished` holds how an accepted forward is told from one that is not.
-  The lane's own two give-up branches, an unclaimed role and a lapsed holder, keep the message for the role's next holder first (`keepRoleLaneMessage`, `resolveCoreRoleHolder`).
+  Of the lane's own two give-up branches, an unclaimed role keeps the message for the role's next holder first (`keepRoleLaneMessage`, `resolveCoreRoleHolder`), and a lapsed holder keeps nothing and is `delivery_failed`, since its claim stands and no claim follows for a kept copy to wait for (`roleKeepable`).
   A message that was kept publishes no delivery exception, because it is not lost, and it counts and logs as `kept`.
-  A keep that failed leaves its branch exactly as it was:
-  `no_holder` for an unclaimed role, `delivery_failed` for a lapsed holder.
+  A keep that failed leaves the unclaimed branch exactly as it was, `no_holder`.
   A claim read that did not answer keeps the message too, under the reason `claim_unread` (`roleClaimUnread`), and forwards nothing:
   a failed read is no evidence that the role has no holder, nor that it has the holder a copy of the bucket names, and the lane has no redelivery, so a kept copy is how the message waits for a read that answers.
-  The handover that keep starts forwards it to the holder the claim record names once a read answers, and the kept-role sweep does when that handover could not.
-  A keep that failed there is `delivery_failed`, as before.
+  The handover that keep starts resolves the holder again once a read answers and forwards the copy only to a live holder, and the kept-role sweep starts a handover when that one could not.
+  A holder that resolves lapsed ends that handover, and the one the sweep starts, with no outcome (`handOverKeptRole`):
+  the copy is not forwarded, no delivery exception is published for it, and it waits on the kept lane until a handover - a claim's, a keep's or the sweep's - finds a live holder, the holder answering again or a successor that claimed the role.
+  That handover forwards the copy while it is inside the one-hour keep window (`roleKeepWindow`) and drops it with a WARN once it is older.
+  A claim read whose keep failed is `delivery_failed`, as before.
   Every other reason emits an exception.
   The lane reads no `keep` field, because a raw role publish carries none and the envelope has no such field:
   keeping is chosen on the publish route alone, and the senders that opt out of it - the Legion daemon's notice queue and a phase worker's stall reminder - publish through that route.
@@ -3349,7 +3356,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   A holder no session can register as (a key `bus.KeyValue` refuses, one outside nats.go's key alphabet such as `ses:bad` among them) counts as gone.
   A read that does not answer within `roleHolderReadTimeout` (2 s, inside the 10 s HTTP write timeout) takes nothing from a holder either:
   a lookup and a soft claim answer 503, a role delivery whose claim read did not answer keeps the message under `claim_unread` and one whose holder's session read did not answer reports `delivery_failed`, and the reaper keeps the claim and logs a WARN.
-  The reapers and the role lane answer no caller, so they hold no request context and bound that read by `roleHolderReadTimeout` alone (`sessionMayBeLive`, and the role lane's `roles.ResolveHolder` under a context of its own with that bound, which its claim read and its holder's session read share).
+  The reapers and the role lane answer no caller, so they hold no request context and bound that read by `roleHolderReadTimeout` alone (`sessionMayBeLive`, and the role lane's `roles.ResolveHolder` under `context.Background()`, whose claim read `roleLaneClaims` bounds and whose holder's session read `roleHolderSessions.Holder` bounds, each by a `roleHolderReadTimeout` of its own).
   The two routes that resolve a holder, `GET /v1/roles/<role>` and a role send through the publish route (its first resolution within `sendRequestBudget`, its later attempts within `publishDeliveryWindow`;
   all through `roles.ResolveHolder`), and a soft claim (`POST /v1/roles/set`) also hold the whole resolution to the request's own context:
   the claim read and the holder's session read each stop when it ends (`store.Registry`'s `RoleClaim` bounds its own bucket call by the context, through `bus.Bounded` in `internal/bus/kv.go`, since nats.go's KV calls take none;
@@ -3677,7 +3684,7 @@ that is the rule and not a transitional measure, and it is what lets Dispatch de
 
 - `/healthz` also reports how fresh the role claim copy is, under `role_claim_repair` (`roleClaimRepairHealth`), on the healthy answer and on every degraded one that keeps its fields:
   `completed_at` (RFC 3339, UTC) and `age_seconds` of the role claim watcher's last whole read of the role bucket, both `null` until one has completed, `bound_seconds` (120, `store.RoleClaimRepairBound`), and `put_back` and `took_out`, the claims that read put back into the copy and took out of it (`store.Registry.RoleClaimRepair`).
-  A copy whose last whole read is older than that bound is `200` with `"status":"degraded"` and `"error":"role claim repair unavailable: ..."` (`store.Registry.RoleClaimRepairErr`), judged after the role claim view and only while the view answers, since a view that cannot answer refuses every read of the copy whatever its age.
+  A copy whose last whole read is older than that bound is `200` with `"status":"degraded"` and `"error":"role claim repair unavailable: ..."` (`store.RoleClaimRepairReport.Err`), judged after the role claim view and only while the view answers, since a view that cannot answer refuses every read of the copy whatever its age.
   It is never a `503`: a readiness probe that runs `curl -f` against `/healthz` takes the listener out of service on one (the dispatch-listener's does, in about ten seconds), and every listener runs this one binary.
   Meanwhile the scheduled read repairs the copy, `POST /v1/roles/set` refuses to take a role held under the claimant's own session id (`roleOwnSessionVerdict`), and `GET /v1/sessions` keeps answering from the copy.
   `/metrics` reports the same read beside `envoy_active_sessions` (`registerListGauges`): `envoy_role_claim_repair_completed_timestamp_seconds`, `envoy_role_claim_repair_put_back` and `envoy_role_claim_repair_took_out`, none with a sample before `/v1` opens or before the first read completes, so an alert reads the copy's freshness without a person.
@@ -3724,7 +3731,7 @@ that is the rule and not a transitional measure, and it is what lets Dispatch de
   A read that times out or ends before its end marker removes nothing:
   kvwatch reads a timed-out one again itself 5 s later (`rereadDelay`), and the reconnect hook or the self-health rebuild starts the read after a watcher that ended.
   A cache that asks for it (`kvwatch.WithScheduledRead`) is also read whole again a set time after each read that completed, by these same rules:
-  the role claim watcher asks, every minute (`roleClaimRepairInterval`, `internal/store/kv.go`), so its copy is repaired in both directions, a claim it lost put back and one the bucket no longer holds taken out, and the interest, session and CI caches ask for none.
+  the role claim watcher asks, every minute (`roleClaimRepairInterval`, `internal/store/role_claim_repair.go`), so its copy is repaired in both directions, a claim it lost put back and one the bucket no longer holds taken out, and the interest, session and CI caches ask for none.
   That read is the watcher's own re-read (`reread`) on a timer of its own (`scheduledTimer`, `armScheduledRead` in `repair.go`), so the copy has one reader: the read that completed arms it, every watch that installs, the current watcher's own end, a disconnect and `Stop` clear it, so it is never armed while a read is under way, and a rewatch that moved the generation first wins over it.
   It is not the re-read's timer (`rereadTimer`), which `NeedsRead` and the stream probe read as a re-read due now.
   Whether a copy can be served is kvwatch's (`Servable`):
@@ -4285,12 +4292,16 @@ Each item below names an endpoint and its method, then its contract, and an item
 - A soft claim of a role already held under the claimant's **own** session id is decided on the standing claim and never on the session record, which names whichever process registered that id last.
   The claim is granted where that claim names this very process, granted where nobody has answered for the claim inside the listener's configured live window (`store.Registry.ClaimRenewedWithin`, the window the role claim reaper weighs a renewal against too) and this listener can vouch that the holder stopped, and otherwise refused `409 {error, role, holder}` naming that session, logged once with the role, the session id, the holder's client instance and the claimant's.
   A renewal older than the window means the holder stopped only while this listener can vouch for it: nothing but a registration renews a claim, and the claim record reads the same whether its holder stopped registering or this listener failed to renew it.
-  So that renewal arm is the bus-unavailable 503 with `Retry-After: 1` naming the state (`writeBusUnavailable`, as for any other read that did not answer), nothing is claimed and nothing is written, and the claimant retries, in three states of this listener, none of which costs a bucket call (`roleOwnSessionVerdict`):
+  So in three states of this listener, none of which costs a bucket call (`roleOwnSessionVerdict`), that renewal arm answers 503 with `Retry-After: 1` naming the state, nothing is claimed and nothing is written, and the claimant retries:
   while the role claim view cannot be served (`store.Registry.RoleViewErr`), the state a listener restart leaves until its first read of the bucket completes, in which a renewal weighs the interest row's roles alone, and the only one of the three that refuses as soon as the watcher ends terminally;
-  while the copy's last whole read of the bucket is past `store.RoleClaimRepairBound` or none has completed (`store.Registry.RoleClaimRepairErr`), since that read is what puts back a claim the copy lost when the interest row does not name it either;
+  while the copy's last whole read of the bucket is past `store.RoleClaimRepairBound` or none has completed (`store.RoleClaimRepairReport.Err`), since that read is what puts back a claim the copy lost when the interest row does not name it either;
   and while this listener's own renewal of that role's claim for the holder failed inside the live window (`store.Registry.RenewalFailedWithin`).
+  The first is the bus-unavailable 503 (`writeBusUnavailable`), as every route answers a role claim view that cannot be served.
+  The other two are the grant guard's own (`roleGrantGuarded`): every read they rest on answered, so their body is `{"error":"envoy: the role grant guard refused the claim because this listener cannot vouch that its holder stopped renewing it: <state>"}` (`grantGuardPrefix`).
   A renewal failure is a claim read or write that did not answer or failed, a malformed claim and a key the bus refuses included, or a registration whose store work failed before its renewal ran (`store.Registry.RecordRenewalFailures`, from `subscribeHandler`);
-  a renewal of that claim for that holder that writes clears it, so this arm refuses only until the holder's next registration lands.
+  a renewal of that claim for that holder that writes clears it, so a failure of the process the claim names refuses until that process's next registration renews the claim.
+  The record is kept by role and holder session, not by process, though:
+  a failure another process of the session recorded - a restarted one whose registration or claim read failed while the claim still names the stopped process before it - is cleared by no renewal, since none of that claim can land, and refuses until it is one live window old.
   The record is this listener's own, in memory, and a restart loses it, and a grant may reach another listener, so the repair's bound and not this record is what bounds the harm.
   The arm above it is not gated: a claim from the process the standing claim names rests on no renewal at all, and it is that holder re-claiming its own role after a listener restart, which refusing would strand.
   A request that states no instance, and a claim record that names none, reach that renewal test rather than a case of their own, since an absent instance matches nothing.
@@ -4354,7 +4365,7 @@ Each item below names an endpoint and its method, then its contract, and an item
   A registration carrying no topic list at all is no case of its own, a lane topic a hand-back left on the row renews nothing, and a claim its holder gave up is renewed by nobody, its own process included.
   The renewal runs last, after the records this route owns are written, and can never fail the registration: a claim read or write that did not answer or failed, a claim record this build cannot read and a renewal that lost its compare-and-swap are each logged and passed over, since a heartbeat refused for any of them would take down the very sessions whose claims it keeps alive.
   Passed over is not forgotten: a claim read or write that did not answer or failed is recorded against its role and session (`store.Registry.RenewalFailedWithin`), and so is every role the session may hold when the registration fails before its renewal runs, at the interest record's read or write or the session entry's write (`store.Registry.RecordRenewalFailures`, over the copy's roles and the cached row's role topics, with no bucket call).
-  That record is what `/v1/roles/set` refuses on (above), a renewal of that claim that writes clears it, and the role claim reaper's pass prunes what is older than the live window.
+  That record is what `/v1/roles/set` refuses on (above), for one live window at most, after which the role claim reaper prunes it, and a renewal of that claim that writes clears it, which no renewal can do while the claim names a process of the session that has stopped.
   A lost compare-and-swap, a claim another session or process holds, a handed-back claim and a role with no claim record are no failure: the claim record said what stands.
   A refused renewal buys the session's claims nothing: the claim keeps the renewal it already carries, and the reaper weighs it exactly as it weighs any other.
   It costs one role-bucket read per role it weighs and one write per role the session holds, at every heartbeat.

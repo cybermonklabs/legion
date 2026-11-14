@@ -2,7 +2,7 @@ kind: Fixed
 body: |-
     The listener no longer decides any act from its in-memory copy of the role claims.
     A role message on the role lane, the kept-role sweep, the drain hold and the handover retry read the role's claim record.
-    A role message whose claim read fails is kept on the role's kept lane (`claim_unread`) and forwarded to the holder its claim record names once a read answers.
+    A role message whose claim read fails is kept on the role's kept lane (`claim_unread`) and forwarded to the role's holder once a read answers and that holder is live; while the holder is lapsed the copy waits, up to the 1 h keep window.
     A registration renews the roles of the interest row it stored and the roles the copy names, a deregistration releases the roles of the interest record read from the store and the roles the copy names, and the controller notice lane follows the controller's claim record.
     The listener reads the whole role claim store every minute and repairs its copy in both directions.
     `/healthz` reports `role_claim_repair` and answers `degraded` when the last whole read is older than 2 minutes, and `/metrics` has `envoy_role_claim_repair_completed_timestamp_seconds`, `envoy_role_claim_repair_put_back` and `envoy_role_claim_repair_took_out`.

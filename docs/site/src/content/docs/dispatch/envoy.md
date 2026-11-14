@@ -195,9 +195,11 @@ session answers. If the holder does not take the message's delivery mode, the re
 and if the stream has not stored the forward to a live holder within four seconds, it is `504`
 naming the holder, with the reason `delivery_failed`, and that message is not kept. A role
 message published straight onto NATS, not through the API, is kept the same way when no session
-claims the role; otherwise it is forwarded once, and if the stream stores no forward for the
-holder the listener publishes an exception naming the reason: `no_holder` or `delivery_failed`
-(which a holder that is not `live` gives). Either way the forward to the live holder is stored on
+claims the role, and also when the listener could not read the role's claim, in which case it is
+forwarded once a later read finds a `live` holder within the hour, with no exception meanwhile;
+otherwise it is forwarded once, and if the stream stores no forward for the holder the listener
+publishes an exception naming the reason: `no_holder` or `delivery_failed` (which a holder that is
+not `live` gives). Either way the forward to the live holder is stored on
 the holder's inbox, and it counts as delivered once the stream has stored it, so a holder that
 restarts or loses its connection gets the forward once when it is back. No session answers a
 receipt for one.
@@ -356,10 +358,12 @@ renew the claim: the claim reads the same either way. So that one grant answers 
 cannot read its own view of the role claims (a listener that has just restarted is still filling
 it), while that view's last full read of the role claims is more than 2 minutes old (see
 [Health and readiness](#health-and-readiness)), and while the listener's own renewal of that role
-for its holder failed inside the live window. A claim from the process the standing claim already
-names is granted in all three cases, since it takes the role from nobody. `GET /v1/roles/<role>`
-answers the holding process's `client_instance_id` beside the holder's session id where the claim
-names a process, and leaves
+for its holder failed inside the live window. In the first case it is the bus-unavailable `503`;
+in the other two NATS did answer, and the body opens with
+`envoy: the role grant guard refused the claim` and names which of the two it is. A claim from the
+process the standing claim already names is granted in all three cases, since it takes the role
+from nobody. `GET /v1/roles/<role>` answers the holding process's `client_instance_id` beside the
+holder's session id where the claim names a process, and leaves
 the field out where it names none, which is how a refused claimant tells its own session id
 held by another process from a different session.
 
