@@ -31,9 +31,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
-	"github.com/sjawhar/legion/daemon/internal/rescue"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
-	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
 const (
@@ -171,10 +169,17 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 	s.out.log = s.log
 	s.loop, s.stop = context.WithCancel(context.Background())
 	s.warm, s.stopWarm = context.WithCancel(s.loop)
-	// Deferred in this order so that they run in reverse: the loop ends, the renewer with it, and
-	// the warm-up — ended with the loop — is waited for last, inside the stop grace.
+	// The commands take the stop the shim was given, and end with the agent's own SIGTERM
+	// (terminate) and with the shim's loop as well, so that whichever of the three comes first
+	// ends them (s.commands).
+	s.commands, s.cancelCommands = context.WithCancel(ctx)
+	context.AfterFunc(s.loop, s.endCommands)
+	// Deferred in this order so that they run in reverse: the loop ends, which ends the commands
+	// the daemon asked for and which the wait behind it reaps; the renewer ends with the loop as
+	// well; and the warm-up — ended with the loop too — is waited for last, inside the stop grace.
 	defer s.drainWarmUp()
 	defer s.renewers.Wait()
+	defer s.drainCommands()
 	defer s.stop()
 	go s.watch(ctx)
 	return s.run()
@@ -206,6 +211,43 @@ type shim struct {
 	// started is when Run began: the launch the warm-up's success line reports its build against
 	// (Config.WarmCodegraph's launched).
 	started time.Time
+
+	// commands is what every git and jj the shim starts builds its budget on (runAdoption,
+	// runBundle, rescue), each keeping a budget of its own on top of it. Each of those commands
+	// runs in a process group of its own now (internal/procgroup), which is a group the SIGHUP a
+	// tmux kill-pane gives every process of the pane does not reach, so the shim's own end is what
+	// passes that stop on: a command left on context.Background() runs on against a clone every
+	// role of the issue shares until its own budget ends it, minutes after the pane it belonged to
+	// is gone.
+	//
+	// It ends at the first of the shim's three ends, because no one of them covers every way it
+	// goes. Run's own context alone never ends on the path the tmux runtime stops a pane by: the
+	// daemon sends `shutdown` first (internal/runtime/tmux's stop), fromDaemon answers it with
+	// terminate, the agent exits, reap's finish ends s.loop, and Run returns with the context it
+	// was given still live — leaving the command running in a process that is already exiting, and
+	// no SIGHUP to reach it afterwards. s.loop alone would end a command only once the shim had
+	// finished — once the agent, SIGTERMed and killed at the grace if it ignores that, had been
+	// reaped — which is a whole grace of that command running against the shared clone after the
+	// stop arrived. So terminate ends them too, beside the warm-up, and the command's own stop is
+	// spent inside the grace the agent is already being given rather than after it.
+	//
+	// Each of these commands is answered in a goroutine of its own (answer), so nothing of the
+	// shim waits on one while it runs; Run waits for them once this context has ended and before
+	// it returns, so procgroup's SIGTERM, grace and SIGKILL reach the group from a live process
+	// (drainCommands).
+	commands       context.Context
+	cancelCommands context.CancelFunc
+	// commandsEnded is when endCommands first ran, as a monotonic offset from s.started — the
+	// reading time.Since takes, never a wall-clock one, so a clock step during a stop can neither
+	// stretch the drain's wait nor skip it — and 0 before it has run: where drainCommands' bound
+	// starts counting.
+	commandsEnded atomic.Int64
+	// commandRuns is every goroutine answer started, which drainCommands waits for.
+	// commandsInFlight is how many of those goroutines have not returned yet — raised in answer,
+	// lowered in the goroutine's own defer — which is what decides whether there is anything to
+	// wait for (drainCommands).
+	commandRuns      sync.WaitGroup
+	commandsInFlight atomic.Int64
 
 	mu          sync.Mutex
 	child       *exec.Cmd
@@ -334,13 +376,13 @@ func (s *shim) fromDaemon(line []byte) {
 		s.terminate("the daemon's shutdown")
 		return
 	case shimwire.AdoptWorkingCopy:
-		go s.adopt(f)
+		s.answer(func() { s.adopt(f) })
 		return
 	case shimwire.BundleWorkspace:
-		go s.bundleWorkspace(f)
+		s.answer(func() { s.bundleWorkspace(f) })
 		return
 	case shimwire.RescueUnpushed:
-		go s.rescue(f)
+		s.answer(func() { s.rescue(f) })
 		return
 	case shimwire.AgentSecretsEnrollment:
 		s.enroll(f)
@@ -593,10 +635,13 @@ func (s *shim) watch(ctx context.Context) {
 
 // terminate SIGTERMs the child and kills it if it is still running when the grace runs out. The
 // bridge keeps running meanwhile, so what OMP says on its way out still reaches the daemon. The
-// warm-up's context ends here too (s.warm): its build has nothing left to serve once the agent is
-// on its way out, and ending it now rather than at the agent's exit keeps the stop inside the stop
-// grace whatever the agent does with its own. It reports false, having done nothing but settle
-// that no child will be spawned, when none was.
+// warm-up's context ends here too (s.warm), and so does the one every command the daemon asked
+// for runs on (s.commands): neither a build nor a jj against the issue's shared clone has
+// anything left to serve once the agent is on its way out, and ending them now rather than at the
+// agent's exit spends their own stops inside the grace the agent is being given rather than after
+// it — which is what keeps the whole stop inside the stop grace whatever the agent does with its
+// own. It reports false, having done nothing but settle that no child will be spawned, when none
+// was.
 func (s *shim) terminate(reason string) bool {
 	s.mu.Lock()
 	child := s.child
@@ -614,6 +659,7 @@ func (s *shim) terminate(reason string) bool {
 
 	s.log.Printf("[worker-shim] %s: sending SIGTERM to the wrapped process", reason)
 	s.stopWarm()
+	s.endCommands()
 	_ = child.Process.Signal(syscall.SIGTERM)
 	expired := s.clock.After(s.grace)
 	go func() {
@@ -634,107 +680,10 @@ func (s *shim) finish(code int, err error) {
 	})
 }
 
-// adopt answers `adopt-working-copy` (the adoption branch of createShimBridge's onLine,
-// worker-shim.ts). A request the shim cannot act on is answered with the reason when it names an
-// id to answer.
-func (s *shim) adopt(request shimwire.AdoptWorkingCopy) {
-	result := shimwire.AdoptWorkingCopyResult{ID: request.ID, OK: true}
-	if err := request.Validate(); err != nil {
-		if request.ID == "" {
-			s.log.Printf("[worker-shim] refusing an adopt-working-copy frame: %v", err)
-			return
-		}
-		result.OK, result.Error = false, err.Error()
-	} else if err := s.runAdoption(request); err != nil {
-		result.OK, result.Error = false, err.Error()
-	}
-	s.toDaemon(result)
-}
-
-// rescue answers `rescue-unpushed`: every workspace on the pod's disk is checked for work its
-// remote lacks, and that work is pushed to rescue branches, as this role and with its own
-// credential (internal/rescue). The disk is the one the shim's LEGION_WORKSPACE is on; a shim
-// without one (the project controller's) has no workspace and refuses.
-func (s *shim) rescue(request shimwire.RescueUnpushed) {
-	result := shimwire.RescueUnpushedResult{ID: request.ID, OK: true}
-	workspace := envValue(s.cfg.Env, "LEGION_WORKSPACE")
-	if err := request.Validate(); err != nil {
-		if request.ID == "" {
-			s.log.Printf("[worker-shim] refusing a rescue-unpushed frame: %v", err)
-			return
-		}
-		result.OK, result.Error = false, err.Error()
-	} else if workspace == "" {
-		result.OK, result.Error = false, "worker-shim: LEGION_WORKSPACE is not set; no disk to check"
-	} else {
-		timeout := time.Duration(request.TimeoutMs) * time.Millisecond
-		ctx, cancel := context.WithTimeout(context.Background(), timeout)
-		result.Workspaces = rescue.Run(ctx, rescue.Request{
-			StateDir: rescue.StateDirOf(workspace), Branch: request.Branch, Env: s.cfg.Env,
-			WorkspaceTimeout: time.Duration(request.WorkspaceTimeoutMs) * time.Millisecond,
-			Deadline:         time.Now().Add(timeout),
-		})
-		cancel()
-	}
-	s.toDaemon(result)
-}
-
-// adoptionArgs is the one adoption command both executors run (adoptWorkingCopyCommand,
-// packages/workspace/src/workspace.ts): the working copy's author becomes the identity in
-// the command's environment, and only while it is undescribed — a described working copy is a
-// previous phase's work and keeps its author.
-func adoptionArgs(jj, dir string) []string {
-	return []string{jj, "metaedit", "--update-author", "-r", `@ & description(exact:"")`, "-R", dir}
-}
-
-// describedArgs prints the working copy's commit id when it is described, and nothing otherwise.
-func describedArgs(jj, dir string) []string {
-	return []string{jj, "log", "-r", `@ ~ description(exact:"")`, "--no-graph", "-T", "commit_id", "-R", dir}
-}
-
-// runAdoption runs the adoption with PATH's jj — the one the pane's own shell runs, since no
-// runtime pins a jj on a pane or pod — on the workspace the shim's environment names in
-// LEGION_WORKSPACE, which the runtime sets on every pane, under the requested identity and
-// budget. Every role of an issue shares the workspace, so a working copy the previous role left
-// described (its pushed commit) is kept as it is, and the incoming role starts on a fresh one of
-// its own (`jj new`): otherwise its work would land in the previous role's commit, authored by the
-// previous role's App. One read decides which of the two changes the working copy needs, and only
-// that one runs. Both commands run in the workspace itself, never in the shim's own directory: jj
-// reads the repository of the directory it runs in, whatever -R names, and migrates that
-// repository's legacy configuration (workspace.RunCommand). A failure is reported the way the
-// shipped runner does (commandFailure, packages/workspace/src/workspace.ts): the daemon decides
-// what a failed adoption means. A shim without LEGION_WORKSPACE was not started by a runtime, and
-// refuses (runWorkingCopyAdoption, worker-shim.ts); a PATH without jj refuses naming jj and the
-// PATH searched.
-func (s *shim) runAdoption(request shimwire.AdoptWorkingCopy) error {
-	dir := envValue(s.cfg.Env, "LEGION_WORKSPACE")
-	if dir == "" {
-		return errors.New("worker-shim: LEGION_WORKSPACE is not set; no workspace to adopt")
-	}
-	jj, err := exec.LookPath("jj")
-	if err != nil {
-		return fmt.Errorf("worker-shim: jj is not on PATH (%s); no jj to adopt the working copy with", os.Getenv("PATH"))
-	}
-	budget := time.Duration(request.TimeoutMs) * time.Millisecond
-	ctx, cancel := context.WithTimeout(context.Background(), budget)
-	defer cancel()
-	env := append(slices.Clone(s.cfg.Env), "JJ_USER="+request.JJUser, "JJ_EMAIL="+request.JJEmail)
-	started := time.Now()
-	described, err := workspace.RunCommand(ctx, budget, started, env, dir, nil, describedArgs(jj, dir))
-	if err != nil {
-		return err
-	}
-	change := adoptionArgs(jj, dir)
-	if described != "" {
-		change = []string{jj, "new", "-R", dir}
-	}
-	_, err = workspace.RunCommand(ctx, budget, started, env, dir, nil, change)
-	return err
-}
-
 // toDaemonChunked sends a frame that may be larger than one line: under the limit it is one line,
 // and over it the rpc_chunk sequence the daemon's reader reassembles (shimwire.SplitChunks). The
-// bundle result is the one frame of this shim's that can be: everything else fits a line.
+// bundle result and the push check's result, whose report names every commit of each branch with
+// no bound on their number, are this shim's frames that can be: everything else fits a line.
 func (s *shim) toDaemonChunked(frame shimwire.Frame) {
 	line, err := json.Marshal(frame)
 	if err != nil {

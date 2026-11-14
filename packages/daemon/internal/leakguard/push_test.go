@@ -13,7 +13,7 @@ import (
 
 // A push's records are read from the commits it would add, out of a real repository: the
 // message, the author identity, each added line of each file, and the ref name are each read,
-// and a commit the destination already holds is read at all. Every case here pushes one commit
+// and a commit the destination already holds is not read at all. Every case here pushes one commit
 // that names something private in one of those places, and the last one names nothing anywhere
 // and is passed.
 func TestAPushsRecordsAreReadFromItsCommits(t *testing.T) {
@@ -254,6 +254,85 @@ func TestAMergesOwnResolutionIsRead(t *testing.T) {
 	want := []string{"resolution.md: " + theClass}
 	if refused := refusal(t, err); !slices.Equal(refused.Lines, want) {
 		t.Errorf("the report is %q, want %q", refused.Lines, want)
+	}
+}
+
+// A forward merge, the default branch merged onto an older tip of a branch the destination
+// holds, reads no commit the repository's remote-tracking refs hold. The default branch's commit
+// here adds a line the rules refuse, and origin/main holds it: it was fetched from the
+// destination, so the push of the merge does not publish it, whichever ref the push moves. A
+// commit that adds the same line on top of the merge is on no remote-tracking ref, so it is read
+// and refused, and it is the whole of the report.
+func TestAForwardMergeReadsNoCommitARemoteTrackingRefHolds(t *testing.T) {
+	home, root := t.TempDir(), t.TempDir()
+	remote, repo := filepath.Join(root, "remote.git"), filepath.Join(root, "repo")
+	fixture := fixturegit.Isolated(t, home)
+	fixture.Run(root, fixturegit.InitBare(remote, "main")...)
+	fixture.Run(root, fixturegit.InitWorkTree(repo, "main")...)
+	write := func(name, content string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(repo, name), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	commit := func(message string) string {
+		t.Helper()
+		fixture.Run(repo, "git", "add", "-A")
+		fixture.Run(repo, "git", "commit", "--quiet", "-m", message)
+		return fixture.Run(repo, "git", "rev-parse", "HEAD")
+	}
+	write("README.md", "one\n")
+	commit("the first commit")
+	fixture.Run(repo, "git", "checkout", "--quiet", "-b", "work")
+	write("work.md", "a line of the branch\n")
+	tip := commit("the branch's own commit")
+	fixture.Run(repo, "git", "checkout", "--quiet", "main")
+	write("main.md", "the runner answers at "+theHost+"\n")
+	commit("a commit of the default branch")
+	// The destination holds both branches, and so does this repository's origin/: origin/work
+	// is the old tip the push moves, and origin/main holds the default branch's commit.
+	fixture.Run(repo, "git", "remote", "add", "origin", remote)
+	fixture.Run(repo, "git", "push", "--quiet", "origin", "main", "work")
+	fixture.Run(repo, "git", "checkout", "--quiet", "work")
+	fixture.Run(repo, "git", "merge", "--quiet", "--no-ff", "-m", "merge main into work", "main")
+	merge := fixture.Run(repo, "git", "rev-parse", "HEAD")
+	if parents := fixture.Run(repo, "git", "rev-list", "--parents", "-n", "1", merge); len(strings.Fields(parents)) != 3 {
+		t.Fatalf("the fixture's merge is %q, want a commit of two parents", parents)
+	}
+	write("copy.md", "the runner answers at "+theHost+"\n")
+	onTop := commit("a commit no remote-tracking ref holds")
+
+	for _, tc := range []struct {
+		name string
+		head string
+		// want is the report, and nil where the push passes.
+		want []string
+	}{
+		{name: "the merge alone", head: merge},
+		{
+			name: "a commit of the same line on top of the merge",
+			head: onTop,
+			want: []string{"copy.md: " + theClass},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
+			err := guard.Push(bound(t), PushRequest{
+				Dir:     repo,
+				Remote:  "origin",
+				URL:     "https://github.com/invented-org/invented-repo.git",
+				Updates: []Update{{LocalRef: "refs/heads/work", LocalSHA: tc.head, RemoteRef: "refs/heads/work", RemoteSHA: tip}},
+			})
+			if tc.want == nil {
+				if err != nil {
+					t.Fatalf("the push of the merge alone: %v", err)
+				}
+				return
+			}
+			if refused := refusal(t, err); !slices.Equal(refused.Lines, tc.want) {
+				t.Errorf("the report is %q, want %q", refused.Lines, tc.want)
+			}
+		})
 	}
 }
 

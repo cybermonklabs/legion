@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/lookpath"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
@@ -158,8 +159,8 @@ func program(base []string, name string) string {
 }
 
 // run runs c under ctx and answers its exit status and everything it printed, out and err
-// together. The error is a child that could not be run at all, the caller's bound running out
-// among them: a status is an answer, and no status is not.
+// together. The error is a child that could not be run at all: one that did not start, or one the
+// end of ctx stopped, which is a *stoppedError. A status is an answer, and no status is not.
 func (g *Guard) run(ctx context.Context, c child) (int, string, error) {
 	// One read of the base environment for the child, which both the program lookup and the
 	// child's own environment are built from.
@@ -175,14 +176,59 @@ func (g *Guard) run(ctx context.Context, c child) (int, string, error) {
 	killed := procgroup.Configure(cmd)
 	var printed bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &printed, &printed
+	started := time.Now()
 	err := procgroup.Err(cmd.Run())
 	switch {
 	case killed():
-		return 0, printed.String(), fmt.Errorf("%s did not finish within the caller's bound", filepath.Base(c.argv[0]))
+		stopped := &stoppedError{
+			program:   filepath.Base(c.argv[0]),
+			ran:       time.Since(started),
+			cancelled: errors.Is(ctx.Err(), context.Canceled),
+		}
+		if deadline, ok := ctx.Deadline(); ok {
+			stopped.bound = deadline.Sub(started)
+		}
+		return 0, printed.String(), stopped
 	case err != nil:
 		return 0, printed.String(), err
 	}
 	return cmd.ProcessState.ExitCode(), printed.String(), nil
+}
+
+// stoppedError is a child that the end of the caller's context stopped before it exited: its
+// bound ran out, or the caller cancelled it. It carries how long the child ran and how long its
+// bound gave it, because "it did not finish" alone does not tell a person reading the line
+// whether the child was given too little time or hung.
+type stoppedError struct {
+	// program is the program argv[0] names, without its directory: bash, gh or git.
+	program string
+	// ran is how long the child ran before the stop.
+	ran time.Duration
+	// bound is how long the context's deadline gave the child from its start, and zero where the
+	// context has no deadline.
+	bound time.Duration
+	// cancelled is whether a cancel stopped the child rather than its deadline.
+	cancelled bool
+}
+
+func (s *stoppedError) Error() string {
+	return s.said(s.program)
+}
+
+// said is the stop as one sentence about name, in whole seconds: what ran, for how long, and the
+// bound or the cancel that stopped it. It is the one place the wording lives, so the error of a
+// child and the setup failure of the shared check say the same thing. A context with no deadline
+// can end only by a cancel, so it is said as one.
+func (s *stoppedError) said(name string) string {
+	if s.cancelled || s.bound == 0 {
+		return fmt.Sprintf("%s ran %d s and was stopped by a cancel", name, wholeSeconds(s.ran))
+	}
+	return fmt.Sprintf("%s ran %d s and was stopped by its bound of %d s", name, wholeSeconds(s.ran), wholeSeconds(s.bound))
+}
+
+// wholeSeconds is d rounded to the nearest second, as a count of seconds.
+func wholeSeconds(d time.Duration) int64 {
+	return int64(d.Round(time.Second) / time.Second)
 }
 
 // shared runs one shape of the shared check and reads its status: clean passes, 3 refuses with
@@ -192,9 +238,22 @@ func (g *Guard) run(ctx context.Context, c child) (int, string, error) {
 func (g *Guard) shared(ctx context.Context, what string, c child) error {
 	status, printed, err := g.run(ctx, c)
 	if err != nil {
-		return &SetupFailure{What: what, Why: "the shared public leak check could not be run", Err: err}
+		return sharedNotRun(what, err)
 	}
 	return readStatus(what, status, printed)
+}
+
+// sharedNotRun is the setup failure of a shape of the shared check that run answered no status
+// for. A check the caller's context stopped is said in the failure's own sentence, which names
+// the check, the time it ran and its bound, with nothing beneath it: the stop's own error would
+// say the same again, with the program's file name for its subject. Any other error stays
+// beneath the sentence that the check could not be run.
+func sharedNotRun(what string, err error) error {
+	var stopped *stoppedError
+	if errors.As(err, &stopped) {
+		return &SetupFailure{What: what, Why: stopped.said("the shared public leak check")}
+	}
+	return &SetupFailure{What: what, Why: "the shared public leak check could not be run", Err: err}
 }
 
 // readStatus is what a status of the shared check means, for a shape that has no further status

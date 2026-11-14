@@ -48,9 +48,9 @@ The work goes to whoever already owns that code. You file an issue only when nob
 3. Find the running tree whose code it is: a root in `admission.trees`, the live trees, whose
    repository and component match, read from `read_state` and `dispatch read`. Read it there
    rather than in `admission.active`, which holds the issues the daemon has started: an issue
-   takes its slot when the daemon starts it and keeps it
-   until it is done or leaves the workflow, and a tree runs whether or
-   not any issue of it holds one. When one matches, hand it over.
+   holds one of the cap's slots from the moment the daemon starts it until its work is past its
+   review, until it is done, or until Dispatch takes it out of the workflow, and a tree runs
+   whether or not any issue of it holds one. When one matches, hand it over.
    `envoy_publish` the defect, its evidence reference and the fix to that tree's architect topic,
    `notifications.role.<issues.<KEY>.architect.locator.claim>`. The architect decides whether it
    is a child of the tree or part of an open issue's work. Reply `Handed dispatch://<that KEY>`
