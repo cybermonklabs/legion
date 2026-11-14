@@ -208,45 +208,72 @@ type WorkspaceBundler interface {
 	BundleWorkspace(ctx context.Context, issue string, role claim.Role) (WorkspaceBundle, error)
 }
 
-// SavedWorkspaceBundle answers the bundle an issue's last release saved for the pod of podUID,
-// created at podCreated, to restore, and what that ask did to the bundle. It is the other half
-// of WorkspaceBundler: the save's own store (store.Store.TakeWorkspaceBundleForRestore), handed
-// to the runtime so that the runtime, which alone knows when a replacement pod's launcher is up,
-// can carry the saved work back into the new workspace before any role of that pod starts.
+// SavedWorkspaceBundle answers what the daemon holds of an issue's workspace for the pod of
+// podUID to restore, and what that ask did to each copy it holds
+// (store.Store.TakeWorkspaceCopyForRestore). An issue holds up to two: the bundle its last idle
+// release saved and the copy taken while its pod ran. It is the other half of WorkspaceBundler,
+// handed to the runtime so that the runtime, which alone knows when a replacement pod's launcher
+// is up, can carry the saved work back into the new workspace before any role of that pod starts.
 //
-// WorkspaceBundleNone is nothing to send and nothing recorded: an issue never released, one
-// whose restore the launcher confirmed, one whose release a wake cancelled, one whose bundle has
-// had its one attempt already, and the pod the work was taken off asking for its own workspace's
-// work back. The runtime calls this at every start of every role, and a release stops the roles
-// of the pod it is releasing, so a role relaunched in that pod before the teardown deletes it is
-// one of those calls; the store knows that pod by the uid the save recorded
-// (WorkspaceBundle.PodUID) and leaves the row untouched for the pod that replaces it.
+// It is one call, and the store answers it in one transaction, because the choice between the two
+// copies is one decision (DecideWorkspaceRestore): which copy is the newer, whether the running
+// copy is older than the newest push of the issue's branch the daemon recorded, whether either has
+// had its one attempt or came off the pod asking, and whether that pod first asked for a restore
+// before the copy it is offered was written. Made as several calls it could leave the store
+// half-changed — the older copy closed, the newer one's take failed, and the pod given neither.
+// The pod's first ask is the store's own record (the call records it the first time a pod asks),
+// so the caller passes nothing of the pod but its uid: every time the decision compares is the
+// store's clock.
+//
+// WorkspaceBundleNone, for a copy, is nothing sent and nothing recorded: an issue never released
+// and whose cadence took nothing, one whose release a wake cancelled, one whose copy has had its
+// one attempt already, and the pod the work was taken off, or the pod that restored it, asking
+// for its own workspace's work back. The runtime calls this at every start of every
+// role, and both the pod a release is stopping and the pod a cadence copies go on starting roles,
+// so such a start is one of those calls; the decision knows that pod by the uid the copy recorded
+// (WorkspaceBundle.PodUID), and the store leaves the row untouched for the pod that replaces it.
 //
 // WorkspaceBundleSend is the attempt, and the call is where it is spent: the store records
-// podUID against the bundle before answering the body, and answers no body for that bundle
-// again. A launcher holds its record of the restore it ran in memory, so a roles container that
-// restarts comes back to the pod's own disk with that record gone and the workspace hours of
-// work past the save; the daemon's record is what keeps the bundle from being applied over that
-// work.
+// podUID against the copy before answering the body, and answers no body for that copy again. A
+// launcher holds its record of the restore it ran in memory, so a roles container that restarts
+// comes back to the pod's own disk with that record gone and the workspace hours of work past the
+// copy; the daemon's record is what keeps the copy from being applied over that work.
 //
-// WorkspaceBundleRefusedOlder is that same one attempt, spent on a pod that was not created
-// after the save: nothing is sent, and no later pod is sent the bundle either. Such a pod is one
-// the release's teardown did not replace, or the replacement under a node clock running ahead of
-// the API server's; either way its roles go on working and pushing from the workspace its own
-// fetch provisioned, and a bundle the daemon kept open for the pod after it would be applied
-// over that work. The saved work stays in the database for a person to recover and holds the
-// issue's pod (workflow.IdleHoldBundleUnrestored).
-type SavedWorkspaceBundle func(ctx context.Context, issue, podUID string, podCreated time.Time) (WorkspaceBundle, WorkspaceBundleTake, error)
+// WorkspaceBundleLeftForNextPod is nothing sent and nothing recorded, of a copy written after
+// this pod first asked: the pod has been working since that ask, so the copy is not applied over
+// that work, and its one attempt is left for the next pod of the issue, which first asks after
+// the copy was written.
+//
+// WorkspaceBundleRefusedPushed, of a running copy alone, and WorkspaceBundleSuperseded spend the
+// attempt and send nothing, for the reasons DecideWorkspaceRestore gives. The work stays in the
+// database for a person to recover; a release bundle nothing restored also holds the issue's pod
+// (workflow.IdleHoldBundleUnrestored), and a running copy holds no pod, its work being on the disk
+// it was taken off.
+type SavedWorkspaceBundle func(ctx context.Context, issue, podUID string) (WorkspaceRestore, error)
 
-// WorkspaceBundleRestored is the runtime's confirmation that the pod replacing the released one
-// has put the issue's saved work back: its launcher ran the restore and reported that it
-// succeeded, naming the release whose save it restored. It drops that release's saved copy and no
-// other (store.Store.DeleteRestoredWorkspaceBundle), so it is called only on that report, and a
-// report that arrives after a later release has saved again finds nothing of its own to delete —
-// a bundle no launcher has restored, because none took it, because the restore failed, or because
-// its confirmation named a release the store no longer holds, stays in the daemon's database for
-// the issue's next pod.
-type WorkspaceBundleRestored func(ctx context.Context, issue string, release int64) error
+// WorkspaceBundleRestored is the runtime's confirmation that the pod of podUID, the pod replacing
+// the one the work came off, has put the issue's saved work back: its launcher ran the restore and
+// reported that it succeeded, naming by its restore id the copy it put back. It keeps that copy
+// and no other as the running copy of that pod (store.Store.KeepRestoredWorkspaceCopy), and it is
+// called only on that report.
+//
+// The copy is kept rather than dropped because the restoring pod's disk is from then on the one
+// place the work is, and a pod that does nothing takes no copy of its own: an agent relaunched
+// there comes up Ready rather than ending a turn, the cadence copies only an issue in a turn, and
+// the push copy needs a push. Kept as that pod's copy, the work is answered nothing to that pod,
+// whose workspace holds it (DecideWorkspaceRestore's source rule), and is offered to the pod after
+// it, so a second end from outside before any turn of the restoring pod still restores it.
+//
+// The id is all the runtime passes on of the copy, and all it knows: a launcher holds its report
+// until some connection carries it, so a report can reach a daemon that has restarted since the
+// send, and the id the slices carried is the only thing in it that is certain of its copy. The
+// daemon routes on it, since the two kinds of copy draw their ids from disjoint spaces
+// (store.MinRunningWorkspaceCopyRestoreID): one names a release's bundle, the other a running
+// copy, and one of neither kind changes nothing — a copy whose issue has saved again since is
+// another row, and the work it holds stays as it is. issue is the issue of the pod whose launcher
+// reported, and the daemon changes no copy of any other issue on that report; podUID is that
+// launcher session's own pod, the one the work is now on.
+type WorkspaceBundleRestored func(ctx context.Context, issue, podUID string, restore int64) error
 
 // RegistrationDeadline is the registration deadline's base Boot×RegistrationIntervals bound plus
 // grace: the supervisor's armRegistration calls it with ProvisionBound before a claim's hello and
@@ -387,6 +414,40 @@ const (
 	StaleAddress ObservationKind = "stale_address"
 )
 
+// PodEndReading is what a runtime read about the cause of the end of the pod a process ran in:
+// that something outside the pod ended it, or that an act of the daemon's own did. A runtime that
+// read neither carries the empty value, and an end of neither reading is charged exactly as it
+// was before this reading existed.
+//
+// It is one value with three states rather than a pair of bools because one charging policy takes
+// it as a row (INFRA-3136): an end is read once, in one place, and what the policy charges for it
+// is chosen by this value. Its members are named for the reading itself and never for what the
+// daemon does about it — a name like "uncharged" or "waived" would have to be renamed the first
+// time such an end is charged differently.
+type PodEndReading string
+
+const (
+	// PodEndNotOurs: something outside the pod ended it. The cluster evicted, preempted or shut
+	// down the pod (its DisruptionTarget condition, or one of the reasons the cluster gives such
+	// an end; the kubelet's `Evicted` counts only with the condition), or the pod was deleted
+	// under a deletion timestamp that no intent of the daemon's accounts for. The process did
+	// nothing the daemon can see wrong, so the supervisor continues each role of that pod in its
+	// own session, charging neither a death nor a launch failure, and sends each the task it owed
+	// again (supervise's judge, endedFromOutside, displaced) — until such ends come
+	// launch_failure_limit times in a row, with no turn completed between them on a ready agent
+	// or no ready between them while the agent starts, when the end is charged as the claim's own
+	// death (supervise.Budgets.PodEndsNotOurs and StartEndsNotOurs). It covers every claim the
+	// runtime observes, the project controller's included: the reading is of the cause of the
+	// end, not of the kind of pod.
+	PodEndNotOurs PodEndReading = "pod_end_not_ours"
+	// PodEndOurs: an act of the daemon's own ended the pod — an issue's close or an idle release's
+	// teardown, a tree's cleanup or the orphan sweep, an update round's replacement or a
+	// relaunch's. Such an end is charged exactly as it is without the reading: the daemon's own
+	// replacements already answer for themselves (Displaced), and a close or a cleanup has
+	// suspended or released the claim before its pod goes.
+	PodEndOurs PodEndReading = "pod_end_ours"
+)
+
 // Observation is one runtime fact about one process, with the moment it was observed and, for a
 // verdict that needs one, the detail an operator reads.
 type Observation struct {
@@ -413,6 +474,14 @@ type Observation struct {
 	// pod is the only thing the kubelet ends this way. It is a field rather than a shape of Detail
 	// for the reason Displaced is: Detail is prose for an operator and nothing else.
 	OutOfMemory bool
+	// PodEnd is what the runtime read about the cause of the end of the pod this process ran in,
+	// on a Gone or a NotRecordedProcess of a process that ran in one; "" on every other
+	// observation, and on an end the runtime read neither way. Only the Sandbox runtime reports
+	// it, since a pod is the only thing either reading is of. The words the reading was made from
+	// and the reason the cluster gave for it, where it gave one, are in Detail and in the one line
+	// the runtime logs for the pod's end; this field is what the supervisor decides on, a field
+	// rather than a shape of Detail for the reason Displaced is.
+	PodEnd PodEndReading
 }
 
 // GitIdentity is the author a worker's commits carry.

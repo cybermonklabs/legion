@@ -553,7 +553,7 @@ func withCauselessLeakCheck() rigOption {
 	return func(g *rig, _ *Options) { g.causelessLeakCheck = true }
 }
 
-// testLaunchers is a launchers of its own, outside any rig, with no saved workspace bundles to
+// testLaunchers is a launchers of its own, outside any rig, with no saved workspace copies to
 // carry: the tests that build one drive the launcher protocol itself.
 func testLaunchers() *launchers {
 	return newLaunchers(nil, nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
@@ -882,10 +882,10 @@ var servicesGVR = corev1.SchemeGroupVersion.WithResource("services")
 var podsGVR = corev1.SchemeGroupVersion.WithResource("pods")
 
 // createPod makes the pod a Running Sandbox stands for, as the controller and the API server
-// between them do: a uid of its own, and the creation instant the API server stamps, which the
-// runtime reads to decide whether a release's saved work is this pod's to restore
-// (launcherSession.podCreated). The rig's clock is that stamp, so a test that advances it before
-// a pod is replaced gets a replacement newer than the one it replaced.
+// between them do: a uid of its own, and the creation instant the API server stamps, by the rig's
+// clock. The restore reads no part of that instant: every time it compares is the store's
+// (store.TakeWorkspaceCopyForRestore), so the rig's clock, which runs months behind the
+// database's, says nothing of what a pod is sent.
 func (g *rig) createPod(s *sandbox) {
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
@@ -947,7 +947,7 @@ func (g *rig) reportLauncher(token claim.Token, state shimwire.LauncherState) {
 	if pod == nil {
 		g.t.Fatal("cannot report launcher state without its pod")
 	}
-	s := g.r.launchers.accept(token, launcherIssue(token), pod.CreationTimestamp.Time, shimwire.LauncherHello{LauncherID: "test-" + string(token), PodUID: string(pod.UID)})
+	s := g.r.launchers.accept(token, launcherIssue(token), shimwire.LauncherHello{LauncherID: "test-" + string(token), PodUID: string(pod.UID)})
 	s.mu.Lock()
 	s.state = state
 	close(s.ready)
@@ -1052,7 +1052,7 @@ func (g *rig) connect(token claim.Token) { g.connectRunning(token, 0) }
 func (g *rig) connectRunning(token claim.Token, running uint64) {
 	server, client := net.Pipe()
 	pod := g.pod(SandboxName(token))
-	session := g.r.launchers.accept(token, launcherIssue(token), pod.CreationTimestamp.Time, shimwire.LauncherHello{
+	session := g.r.launchers.accept(token, launcherIssue(token), shimwire.LauncherHello{
 		LauncherID: "test-" + string(token), PodUID: string(pod.UID),
 		LeakCheckTag: g.leakCheckTag, LeakCheckInstalled: g.leakCheckInstalled,
 	})

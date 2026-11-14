@@ -118,8 +118,8 @@ func TestTheIdleViewReadsTheUnrestoredBundleAndTheRunningHoldStreak(t *testing.T
 		t.Fatalf("view = %+v, want no stored bundle and no running streak", view)
 	}
 
-	if err := st.PutWorkspaceBundle(ctx, rootIssue, 7,
-		runtime.WorkspaceBundle{Bundle: []byte("PACK"), Head: "abc", At: now, PodUID: "pod-being-released"}); err != nil {
+	if err := st.PutWorkspaceBundle(ctx, rootIssue, 7, copyBegun(t, st),
+		runtime.WorkspaceBundle{Bundle: []byte("PACK"), Head: "abc", PodUID: "pod-being-released"}); err != nil {
 		t.Fatalf("save a bundle for %s: %v", rootIssue, err)
 	}
 	if err := st.RecordPodHold(ctx, PodHold{Project: "legion", Issue: rootIssue, Reason: "image", At: now}); err != nil {
@@ -137,6 +137,41 @@ func TestTheIdleViewReadsTheUnrestoredBundleAndTheRunningHoldStreak(t *testing.T
 	}
 	if view := idleViewOf(t, st, rootIssue); view.BundleUnrestored || view.Holding {
 		t.Fatalf("view = %+v, want the restored bundle and the ended streak gone from it", view)
+	}
+}
+
+// A running copy holds no pod, whatever became of its one restore attempt. The row that holds a
+// pod is the release bundle's (workspaceBundleUnrestored, workflow.IdleHoldBundleUnrestored),
+// because the work in it is in the database alone: the pod it came off is gone, and a release of
+// the pod that holds it instead would take a disk nothing put the work back on. A running copy is
+// the other way round — the work is on the disk it was copied from, and an idle release of that
+// pod saves it again as a bundle — so an issue whose only copy is a running one is released when
+// it goes idle, and a failed restore of that copy changes nothing: the row stays, its attempt is
+// spent, and no pod waits on it.
+func TestTheIdleViewHoldsNoPodForARunningWorkspaceCopy(t *testing.T) {
+	st := migratedStore(t)
+	ctx := context.Background()
+	openRunningTree(t, st)
+
+	taken := runtime.WorkspaceBundle{Bundle: []byte("PACK the work the cadence copied"), Head: "abc",
+		PodUID: "pod-still-running"}
+	if err := st.PutRunningWorkspaceCopy(ctx, rootIssue, copyBegun(t, st), taken); err != nil {
+		t.Fatalf("take the running copy of %s: %v", rootIssue, err)
+	}
+	if view := idleViewOf(t, st, rootIssue); view.BundleUnrestored {
+		t.Fatalf("view = %+v, want no hold: a running copy is not a bundle no pod restored", view)
+	}
+
+	// The pod that replaced the one the copy came off was sent it and its restore failed: the
+	// attempt is spent and the row stays, which is the state a hold would be read from.
+	if restore, err := st.TakeWorkspaceCopyForRestore(ctx, rootIssue, "pod-that-replaced-it"); err != nil || restore.Running.Take != runtime.WorkspaceBundleSend {
+		t.Fatalf("the replacement pod was answered %v (%v), want the running copy", restore.Running.Take, err)
+	}
+	if row := heldCopyRow(t, st, runningCopyCopies, rootIssue); !row.held {
+		t.Fatal("the failed restore took the running copy, want it kept")
+	}
+	if view := idleViewOf(t, st, rootIssue); view.BundleUnrestored {
+		t.Fatalf("view = %+v, want no hold: the idle rule reads the release bundles alone", view)
 	}
 }
 

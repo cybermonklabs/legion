@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"time"
 
@@ -345,13 +346,23 @@ const (
 )
 
 // BurstableLine names the Burstable pods and says every other pod is Guaranteed; "" when no pod
-// requests less than its limit. The resource-limits row's detail carries it, and `legion start
-// --check-config` prints it after Config OK.
+// requests less than its limit. Where the issue pod is one of them, one sentence more says what a
+// Burstable issue pod gives up beside its one class: the daemon leaves the Cluster Autoscaler's
+// safe-to-evict annotation off an issue pod whose cpu or memory request is below its limit
+// (sandbox's podKind.asksExtendedRunTime), so GKE Autopilot stops giving that pod a node of its
+// own. That is the thing an operator most needs to read before lowering a request, and it is the
+// issue pod's alone: a Burstable controller's pod keeps both stop-eviction annotations, so the
+// sentence would be false of it. The resource-limits row's detail carries the whole line, and
+// `legion start --check-config` prints it after Config OK.
 func (d Deployment) BurstableLine() string {
 	if len(d.BurstablePods) == 0 {
 		return ""
 	}
-	return "Burstable (a request below the limit): " + joinPods(d.BurstablePods) + "; every other pod is Guaranteed"
+	line := "Burstable (a request below the limit): " + joinPods(d.BurstablePods) + "; every other pod is Guaranteed"
+	if slices.Contains(d.BurstablePods, PodIssue) {
+		line += ". A Burstable issue pod also asks GKE Autopilot for no extended run time: it carries no cluster-autoscaler.kubernetes.io/safe-to-evict annotation, so it shares a node instead of holding one of its own"
+	}
+	return line
 }
 
 // joinPods is pods as a list joined by "and", in their order.

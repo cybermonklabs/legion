@@ -494,7 +494,7 @@ func requirements(key string, reservation config.Reservation) (corev1.ResourceRe
 // (repositories.serving, the mapping's own, so a configured rename's mint follows the owner
 // whose installation holds the repository now), with the workflow's mapping as the repositories
 // its repository caches follow (mapped), with the store's own workspace bundles as what a
-// replacement pod's launcher is sent and what its restore drops, and registers its launcher
+// replacement pod's launcher is sent and what its restore keeps, and registers its launcher
 // acceptor on the stream listener. A daemon with no GitHub Apps hands it neither tokens nor a
 // mapping, and sandbox.New's own refusal names what is missing. Boot has already run the cluster
 // check (plan.clusterCheck): Agent Sandbox is installed and no Sandbox of a layout before this
@@ -506,15 +506,21 @@ func sandboxRuntime(rc *rest.Config, opts sandbox.Options, repos func() []ghrepo
 	return func(ctx context.Context, listener *stream.Listener, address string, apps appauth.Tokens,
 		_ func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, mapped func() []ghrepo.Repository) (runtime.Runtime, error) {
 		opts.Conns, opts.StreamURL, opts.Store, opts.Mapped = listener, address, st, mapped
-		// The two halves of the release's saved work: an idle release puts the issue's unpushed
-		// work here (outbox's release), and the runtime hands it to the launcher of the pod that
-		// replaces the released one before any role of that pod starts. The confirmation deletes
-		// the bundle of the release the launcher's report names and no other, so a report that
-		// arrives late takes no newer release's work with it. The read is the bundle's one restore
-		// attempt: the first pod that is not the one the work came off takes it, whether the
-		// bundle is sent or that pod is refused as no newer than the save, and nothing is
-		// answered for that bundle again.
-		opts.SavedWorkspaceBundle, opts.WorkspaceBundleRestored = st.TakeWorkspaceBundleForRestore, st.DeleteRestoredWorkspaceBundle
+		// The restore of a new pod and the two copies of an issue workspace it chooses between:
+		// an idle release puts the issue's unpushed work in one (outbox's release) and the
+		// cadence of a running pod in the other. The take reads both and the newest push of the
+		// issue's branch the daemon recorded, offers the newer copy to the launcher of the pod
+		// that replaces the one the work came off before any role of that pod starts, refuses a
+		// running copy older than that push, and closes the older copy unsent, all in one
+		// transaction. Each copy's attempt is spent once: the first pod that is not the one the
+		// work came off spends it, whether the copy is sent or refused, and nothing is answered
+		// for that copy again.
+		opts.SavedWorkspaceBundle = st.TakeWorkspaceCopyForRestore
+		// A launcher's restore report keeps the copy it names as the restoring pod's own running
+		// copy, so the work outlives a second end of that pod before its first turn. Which of the
+		// two tables the report names is read off its id, and that rule belongs to the store that
+		// owns both (store.KeepRestoredWorkspaceCopy).
+		opts.WorkspaceBundleRestored = st.KeepRestoredWorkspaceCopy
 		// The shared public leak check each pod's launcher is pushed before any role of the pod
 		// starts, read with the implement App's read lease on the check's owner (leakCheckToken);
 		// a daemon with no Apps reads none, and the runtime refuses the start of a role whose

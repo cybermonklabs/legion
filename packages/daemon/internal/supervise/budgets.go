@@ -28,16 +28,58 @@ import (
 //     turn.
 //   - PromptRetires: processes retired because PromptFailures ran out. Reset by a started turn,
 //     never by the relaunch itself — a claim that keeps acknowledging and never turning runs out.
+//   - PodEndsNotOurs: the first of two runs of ends of the claim's pod that the runtime read as
+//     made by something outside the pod (runtime.PodEndNotOurs): the ends that found the claim's
+//     agent ready with work outstanding — a task, or a turn it had begun and not ended
+//     (endedFromOutside, workOutstanding) — with no turn of the claim completed between them. An
+//     end that finds a ready agent with no work outstanding, idle between assignments, counts in
+//     neither run. Each counted end is continued uncharged until this reaches the launch failure
+//     limit; from there every such end is charged as the claim's own death (died) until a turn
+//     completes (turnEnded) or the task it was counted against ends (retirePending, as Deaths
+//     does), either of which resets it. The agent's ready does not, as it does not reset Deaths:
+//     a relaunch completes no turn, and a turn a message started, which leaves the relaunched
+//     agent with no task and no turn, would otherwise start a new run at each relaunch and never
+//     reach the limit.
+//   - StartEndsNotOurs: the second run, of the same ends where they found the claim's agent not
+//     yet ready (unready), whatever work the claim holds, task or none. Such an end counts here
+//     alone, never in PodEndsNotOurs. Each is continued uncharged until this reaches the launch
+//     failure limit; from there every such end is charged as the claim's own death (died), which
+//     for an agent not yet ready is a launch failure (relaunchAfterFailure), and LaunchFailures
+//     then ends the loop. Reset by the agent's ready, as LaunchFailures is, and by nothing short
+//     of it: a start that reaches ready is one the cluster let finish, and a task that ends while
+//     the agent starts leaves the start exactly as it was.
+//
+// The ends from outside the pod are counted in two runs because one count cannot bound both
+// loops. Reset at the agent's ready, a single run would be one again at each relaunch after a
+// message's turn the cluster ended, and a claim whose messages keep ending its pod would never
+// reach the limit. Kept past the ready, it could not count the start of a claim with no task:
+// such a claim completes no turn, so the count would only grow, and a claim whose starts the
+// cluster ends now and then, each start reaching ready, would be charged for them. Left
+// uncounted, those ends let a claim with no task whose every start the cluster ends — an
+// architect a message woke, the controller, a phase worker between assignments — relaunch for
+// ever, charged nothing.
+//
+// Both runs are counted at all because a pod that uses more memory than it requested can drive
+// its own node into pressure, a pod's start (the workspace's restore and six agents starting at
+// once) as much as its work, and the eviction that follows carries DisruptionTarget exactly as a
+// neighbour's does, so the reading cannot tell the two apart; a claim whose start or work keeps
+// ending its pod that way would otherwise be relaunched for ever, which is the outcome every
+// other budget here exists to stop. Both are durable, as the other budgets are, so a daemon
+// restart between two such ends does not start a run again.
 type Budgets struct {
-	LaunchFailures int
-	Deaths         int
-	PromptFailures int
-	PromptRetires  int
+	LaunchFailures   int
+	Deaths           int
+	PromptFailures   int
+	PromptRetires    int
+	PodEndsNotOurs   int
+	StartEndsNotOurs int
 }
 
 // Limits are where each budget runs out: three launch failures, three prompt failures, and two
 // prompt retirements in the shipped daemon. The caller reads them from its configuration.
-// LaunchFailures bounds Deaths as well: both count processes that did not survive.
+// LaunchFailures bounds Deaths as well: both count processes that did not survive. It bounds
+// PodEndsNotOurs and StartEndsNotOurs too, which count the same thing for ends the daemon cannot
+// pin on the process.
 type Limits struct {
 	LaunchFailures int
 	PromptFailures int
@@ -139,18 +181,30 @@ func (m *Machine) relaunchAfterFailure(ctx context.Context, cause FailureCause) 
 // would be charged against it, failing a claim that is doing nothing wrong. Each death after
 // this one is judged on the turn it finds, as the first was.
 func (m *Machine) chargeDeath() bool {
-	if slices.Contains(unready, m.claim.State) {
+	if !m.workOutstanding() {
 		return false
 	}
 	open := m.turnOpen()
-	if m.claim.Pending == nil && !open {
-		return false
-	}
 	m.claim.Budgets.Deaths++
 	m.claim.LastTurnEnd = m.deps.Clock.Now()
 	m.log.Warn("supervise: the agent died with work outstanding", "deaths", m.claim.Budgets.Deaths,
 		"limit", m.deps.Limits.LaunchFailures, "pending", pendingID(m.claim.Pending), "turnOpen", open)
 	return m.claim.Budgets.Deaths >= m.deps.Limits.LaunchFailures
+}
+
+// workOutstanding is whether the claim's agent was ready with work outstanding — a task, or a turn
+// of its that was open at the end (turnOpen) — which is the one state a death is charged in
+// (chargeDeath): a process that ends before its agent is ready is a launch failure instead
+// (relaunchAfterFailure), and the death of an agent that holds no task and has no turn open is
+// the environment's, with no work for it to be about. An end from outside the pod that finds this
+// state counts in the first of its two runs (Budgets.PodEndsNotOurs); one that finds the agent not
+// yet ready counts in the second, whatever work the claim holds (Budgets.StartEndsNotOurs,
+// endedFromOutside).
+func (m *Machine) workOutstanding() bool {
+	if slices.Contains(unready, m.claim.State) {
+		return false
+	}
+	return m.claim.Pending != nil || m.turnOpen()
 }
 
 // turnOpen is whether the agent began a turn it has not ended: the claim is working, which is the

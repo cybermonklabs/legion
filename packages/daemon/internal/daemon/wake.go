@@ -324,16 +324,19 @@ func (r *outbox) takeOverRelease(ctx context.Context, issue string) {
 	}
 }
 
-// dropReleasedWork takes a released pod's issue over and deletes the workspace bundle its release
-// saved: the issue is done, or its tree is closing, so nothing will restore that bundle and
-// nothing should. A linger and a park keep theirs, because their issue comes back. A runner with
-// no tree store does nothing, as takeOverRelease says.
+// dropReleasedWork takes a released pod's issue over and deletes both saved copies of its
+// workspace, the bundle its release saved and the copy taken while its pod ran, in one
+// transaction (store.DeleteWorkspaceBundle): the issue is done, or its tree is closing, so
+// nothing will restore either and nothing should. A linger and a park keep theirs, because their
+// issue comes back. The two go together so that no failure can leave one behind, since a running
+// copy of a closed issue left in the table is the copy a later generation's pod would be sent. A
+// runner with no tree store does nothing, as takeOverRelease says.
 func (r *outbox) dropReleasedWork(ctx context.Context, issue string) {
 	r.takeOverRelease(ctx, issue)
 	if r.trees == nil {
 		return
 	}
 	if err := r.trees.DeleteWorkspaceBundle(ctx, issue); err != nil {
-		r.log.Warn("wake: could not delete the workspace bundle of a finished issue", "issue", issue, "error", err)
+		r.log.Warn("wake: could not delete the saved workspace copies of a finished issue", "issue", issue, "error", err)
 	}
 }

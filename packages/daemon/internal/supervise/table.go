@@ -1729,6 +1729,17 @@ func turnStartedWhileBusy(m *Machine, _ context.Context, _ Event) error {
 // says in its own words what became of the turn, and the pair of turn lines is the turn the
 // worker ran.
 //
+// The claim going idle is reported to the daemon as a durable transition of its own
+// (durableWrite, OnDurableState), as the turn's start is: the daemon takes the copy of the
+// issue's workspace that ends each turn from it (internal/daemon's copyWorkspaceAtTurnEnd), and
+// the work of a turn is in the workspace from the moment the turn ends. The report follows the
+// claim write, so a turn whose write the database did not take owes the report instead and makes
+// it when the write lands (oweDurableState, makeOwedReports); a copy taken of a turn the row
+// never recorded would tell the daemon a claim fact its store cannot say. Both writes of this
+// function that leave the claim idle go through it — the ordinary one and the fallback of a held
+// suspension whose stop the runtime refused, which leaves the claim idle holding that suspension
+// — because the claim is durably idle either way and the copy is owed either way.
+//
 // A claim working because its session is being compacted is left exactly where it is: a
 // compaction aborts whatever turn its session was running, so the agent_end of a background
 // turn can arrive under one, and taking that for the compaction's end would hand the claim its
@@ -1739,6 +1750,14 @@ func turnStartedWhileBusy(m *Machine, _ context.Context, _ Event) error {
 // return (endTurn), because the turn ended, and it closes a start line of its own: a turn that
 // starts under a compaction writes one too (turnStartedWhileBusy), so a reader counting starts
 // against ends finds the pair.
+//
+// A turn that completes ends the first of the claim's two runs of pod ends from outside it, the
+// run counted against a ready agent's work (Budgets.PodEndsNotOurs, endedFromOutside): the
+// process held a pod long enough to finish work, so the next such end is the first of a new run.
+// It is cleared before either write below, so the claim leaves this turn with the reset stored
+// whichever of the two writes it. A turn a compaction aborted completed nothing, and clears
+// nothing. The second run, of the ends of a start, is already over by then: the agent's ready
+// ended it (ready).
 func turnEnded(m *Machine, ctx context.Context, _ Event) error {
 	m.endTurn()
 	m.claim.LastTurnEnd = m.deps.Clock.Now()
@@ -1749,6 +1768,10 @@ func turnEnded(m *Machine, ctx context.Context, _ Event) error {
 		return nil
 	}
 	m.askFirst = false
+	if run := m.claim.Budgets.PodEndsNotOurs; run != 0 {
+		m.log.Info("supervise: a turn completed; the run of pod ends from outside the pod is over", "podEndsNotOurs", run)
+		m.claim.Budgets.PodEndsNotOurs = 0
+	}
 	if m.held != nil {
 		if err := m.suspendHeld(ctx); err != nil {
 			if m.held == nil {
@@ -1757,12 +1780,12 @@ func turnEnded(m *Machine, ctx context.Context, _ Event) error {
 				return err
 			}
 			m.claim.State = StateIdle
-			return errors.Join(err, m.persist(ctx))
+			return errors.Join(err, m.durableWrite(ctx, StateIdle, m.persist))
 		}
 		return nil
 	}
 	m.claim.State = StateIdle
-	if err := m.persist(ctx); err != nil {
+	if err := m.durableWrite(ctx, StateIdle, m.persist); err != nil {
 		return err
 	}
 	if err := m.settle(ctx); err != nil {
@@ -2019,12 +2042,27 @@ func reregister(m *Machine, ctx context.Context, ev Event) error {
 // ready is the agent saying it can be prompted. The time is kept on the claim (Claim.LastReady),
 // since it is what dates the two causes beside it — a death and a failed start are both older
 // than the agent that is running now (machine.go's Claim).
+//
+// The ready resets the launch failures, and with them the second of the two runs of pod ends from
+// outside the pod, the run of ends that found the agent not yet ready (Budgets.StartEndsNotOurs):
+// a start that reaches ready is one the cluster let finish, so the next start the cluster ends is
+// the first of a new run. It does not reset the first run, of ends that found the ready agent
+// with work outstanding (Budgets.PodEndsNotOurs), which outlives it as the deaths do: a relaunch
+// completes no turn, so only a turn that completes or the end of the task the run was counted
+// against resets it (turnEnded, retirePending). An agent relaunched after a turn a message
+// started comes up with no task and no turn, and a run ended here would be one again at each such
+// turn the cluster ends, never reaching the limit. One run cannot do both, which is why there are
+// two (endedFromOutside): kept past the ready, the run of a start's ends could not count a claim
+// with no task, which completes no turn and would see its count only grow.
 func ready(m *Machine, ctx context.Context, _ Event) error {
 	m.claim.State = StateReady
 	m.claim.LastReady = m.deps.Clock.Now()
 	// The pending cause goes with the launch failures it names: the episode they measure ended
-	// when this agent came up (Claim.PendingCause).
+	// when this agent came up (Claim.PendingCause). The run of the start's ends from outside the
+	// pod ends with them, since the start it counted is over and a launch failure is what its
+	// limit charges (Budgets.StartEndsNotOurs).
 	m.claim.Budgets.LaunchFailures, m.claim.PendingCause = 0, ""
+	m.claim.Budgets.StartEndsNotOurs = 0
 	m.disarm(TimerRegistration)
 	if m.held != nil {
 		return m.suspendHeld(ctx)

@@ -387,11 +387,11 @@ func TestDeploymentRowsArePresentDecidedOrOpen(t *testing.T) {
 		{"tmux sets no limits", Deployment{Runtime: "tmux"}, ResourceLimits, StatusOpen, "the tmux runtime sets no requests or limits on a pane"},
 		{"every pod reserved", satisfied, ResourceLimits, StatusPresent, "every pod has CPU and memory requests and limits under runtime.kubernetes.resources, each request equal to its limit, so every pod is Guaranteed"},
 		{"the issue pod burstable", Deployment{Runtime: "kubernetes", BurstablePods: []Pod{PodIssue}}, ResourceLimits, StatusPresent,
-			"every pod has CPU and memory requests and limits under runtime.kubernetes.resources; Burstable (a request below the limit): the issue pod; every other pod is Guaranteed"},
+			"every pod has CPU and memory requests and limits under runtime.kubernetes.resources; Burstable (a request below the limit): the issue pod; every other pod is Guaranteed" + noExtendedRunTime},
 		{"the controller's pod burstable", Deployment{Runtime: "kubernetes", BurstablePods: []Pod{PodController}}, ResourceLimits, StatusPresent,
 			"every pod has CPU and memory requests and limits under runtime.kubernetes.resources; Burstable (a request below the limit): the controller's pod; every other pod is Guaranteed"},
 		{"both pods burstable", Deployment{Runtime: "kubernetes", BurstablePods: []Pod{PodIssue, PodController}}, ResourceLimits, StatusPresent,
-			"every pod has CPU and memory requests and limits under runtime.kubernetes.resources; Burstable (a request below the limit): the issue pod and the controller's pod; every other pod is Guaranteed"},
+			"every pod has CPU and memory requests and limits under runtime.kubernetes.resources; Burstable (a request below the limit): the issue pod and the controller's pod; every other pod is Guaranteed" + noExtendedRunTime},
 		{"pods without a reservation", Deployment{Runtime: "kubernetes", UnreservedPods: []Pod{PodIssue, PodController}}, ResourceLimits, StatusOpen, "no CPU and memory requests and limits under runtime.kubernetes.resources for the issue pod and the controller's pod"},
 		{"a decided limits gap", Deployment{Runtime: "tmux", Decided: decided}, ResourceLimits, StatusDecided, "the tmux runtime sets no requests or limits on a pane"},
 
@@ -416,6 +416,38 @@ func TestDeploymentRowsArePresentDecidedOrOpen(t *testing.T) {
 			}
 			if got.Decision != wantDecision || got.ConfigLine != wantLine {
 				t.Fatalf("%s carries decision %q and config line %q, want %q and %q", tc.row, got.Decision, got.ConfigLine, wantDecision, wantLine)
+			}
+		})
+	}
+}
+
+// noExtendedRunTime is the sentence BurstableLine adds for a Burstable issue pod and for no other
+// pod: the annotation the daemon leaves off such a pod and what GKE Autopilot does about it
+// (the sandbox renderer's podKind.asksExtendedRunTime). It is written out here rather than read
+// from the line it pins, so a change to the wording an operator reads shows as a diff in this
+// file.
+const noExtendedRunTime = ". A Burstable issue pod also asks GKE Autopilot for no extended run time: it carries no cluster-autoscaler.kubernetes.io/safe-to-evict annotation, so it shares a node instead of holding one of its own"
+
+// BurstableLine, which `legion start --check-config` prints after its OK line, names the Burstable
+// pods, and says what a Burstable issue pod gives up beside its class whenever the issue pod is
+// one of them. A deployment whose pods are all Guaranteed prints nothing at all, and one whose
+// controller's pod alone is Burstable prints no such sentence: that pod keeps both stop-eviction
+// annotations, so it loses no run time.
+func TestBurstableLineSaysAnIssuePodAsksForNoExtendedRunTime(t *testing.T) {
+	for name, tc := range map[string]struct {
+		pods []Pod
+		want string
+	}{
+		"every pod Guaranteed": {nil, ""},
+		"the issue pod alone":  {[]Pod{PodIssue}, "Burstable (a request below the limit): the issue pod; every other pod is Guaranteed" + noExtendedRunTime},
+		"the controller's pod alone": {[]Pod{PodController},
+			"Burstable (a request below the limit): the controller's pod; every other pod is Guaranteed"},
+		"both pods": {[]Pod{PodIssue, PodController},
+			"Burstable (a request below the limit): the issue pod and the controller's pod; every other pod is Guaranteed" + noExtendedRunTime},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := (Deployment{Runtime: "kubernetes", BurstablePods: tc.pods}).BurstableLine(); got != tc.want {
+				t.Errorf("BurstableLine() = %q, want %q", got, tc.want)
 			}
 		})
 	}

@@ -1317,7 +1317,9 @@ func TestStartCheckConfigReportsTheConfigurationsCapabilityGaps(t *testing.T) {
 		{"a broker configured, whose login is boot's", issueSet + "    agent_secrets: {url: https://secrets.internal.example, token_file: /var/run/legion/agent-secrets-token/token}\n", ""},
 		{"secrets decided", "capabilities:\n  decided:\n    secrets: \"dispatch://LEGION-205 enrolls pods later\"\n", ""},
 		{"the issue pod requesting less memory than its limit", "    resources: {issue: {memory: 32Gi, memory_request: 8Gi}}\n",
-			secretsGap + "resources: Burstable (a request below the limit): the issue pod; every other pod is Guaranteed\n"},
+			secretsGap + "resources: Burstable (a request below the limit): the issue pod; every other pod is Guaranteed." +
+				" A Burstable issue pod also asks GKE Autopilot for no extended run time: it carries no cluster-autoscaler.kubernetes.io/safe-to-evict annotation," +
+				" so it shares a node instead of holding one of its own\n"},
 		{"the controller requesting less cpu than its limit", "    resources: {controller: {cpu: 2, cpu_request: 500m}}\ncontroller: daemon\n",
 			secretsGap + "resources: Burstable (a request below the limit): the controller's pod; every other pod is Guaranteed\n"},
 	} {

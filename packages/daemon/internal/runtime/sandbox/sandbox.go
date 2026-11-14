@@ -180,6 +180,15 @@ type Runtime struct {
 	// its record would read the same before a strand and after its unstrand; a write for another
 	// issue's name costs a read of this one an Uncertain, answered again a tick later.
 	strandedGen uint64
+	// intendedEnds is, by pod uid, the act of the daemon's own that is about to end that pod
+	// (meanToEndPod), written before the Sandbox patch or delete that carries it out. podEnds is,
+	// by pod uid, what the daemon read about the cause of a pod's end (capturePodEnd), captured
+	// where the informer delivers that end because neither fact it rests on can be read once the
+	// end is final. The first is consumed by the second (takeIntendedEnd) and both expire
+	// (podEndRecordLife), so neither grows without bound and neither answers for an end it is not
+	// of. Every read and write of both runs under mu.
+	intendedEnds map[string]intendedEnd
+	podEnds      map[string]podEnd
 	// occupiedCaches are the cache names RepositoryCache found held by another repository's cache and
 	// has logged, so each is logged once.
 	occupiedCaches map[string]bool
@@ -371,6 +380,7 @@ func configureProber(opts Options) (*Runtime, error) {
 		gitHubDirs: opts.GitHubDirs,
 		store:      opts.Store, conns: opts.Conns, now: opts.Now, log: opts.Log,
 		changed: make(chan struct{}), watch: map[claim.Token]runtime.Locator{}, podTurns: map[string]chan struct{}{}, stranded: map[string]string{},
+		intendedEnds: map[string]intendedEnd{}, podEnds: map[string]podEnd{},
 		cacheConfig: opts.RepositoryCache, mapped: opts.Mapped,
 		cacheDial: (&net.Dialer{}).DialContext, occupiedCaches: map[string]bool{}, cacheBearers: map[string]string{},
 	}
@@ -383,9 +393,9 @@ func configureProber(opts Options) (*Runtime, error) {
 	if r.log == nil {
 		r.log = slog.Default()
 	}
-	// The launchers carry the shared public leak check and one pod's saved workspace bundle to it
-	// before any of its roles start, and log what they could not carry, so they are built once the
-	// runtime's log is settled.
+	// The launchers carry the shared public leak check and the newer of one pod's two saved
+	// workspace copies to it before any of its roles start, and log what they could not carry, so
+	// they are built once the runtime's log is settled.
 	r.launchers = newLaunchers(opts.LeakCheck, opts.SavedWorkspaceBundle, opts.WorkspaceBundleRestored, r.log)
 	// Last, after the logger a failed encoding is reported through: every input is settled above
 	// and none is written again, so each kind's shape is encoded here and only read afterwards.
@@ -480,9 +490,9 @@ func (r *Runtime) startInformers(ctx context.Context, c runtimeClients) error {
 		})
 	for _, informer := range []cache.SharedIndexInformer{r.sandboxes, r.pods, r.services} {
 		if _, err := informer.AddEventHandler(cache.ResourceEventHandlerFuncs{
-			AddFunc:    func(obj any) { r.notify(obj) },
-			UpdateFunc: func(_, obj any) { r.notify(obj) },
-			DeleteFunc: func(obj any) { r.notify(obj) },
+			AddFunc:    func(obj any) { r.notify(obj, false) },
+			UpdateFunc: func(_, obj any) { r.notify(obj, false) },
+			DeleteFunc: func(obj any) { r.notify(obj, true) },
 		}); err != nil {
 			return fmt.Errorf("sandbox runtime: %w", err)
 		}
@@ -591,15 +601,22 @@ func (r *Runtime) synced() bool {
 }
 
 // notify wakes every wait and marks every watched claim whose Sandbox or pod changed for the
-// running Observe. A pod is named after its Sandbox, so one name finds both.
-func (r *Runtime) notify(obj any) {
+// running Observe, and reads what ended a pod the informer delivers ending (capturePodEnd). A pod
+// is named after its Sandbox, so one name finds both.
+//
+// gone says the event is the informer's delete: the object has left the store, which for a pod is
+// its end whatever the copy the event carries says. That is why the pod's end is read here at all
+// — the mapping reads a pod being deleted as a live pod, and the object is out of the store by the
+// time its claims are judged — and why the delete is told from an add or an update.
+func (r *Runtime) notify(obj any, gone bool) {
 	if tombstone, ok := obj.(cache.DeletedFinalStateUnknown); ok {
 		obj = tombstone.Obj
 	}
 	var name string
+	var pod *corev1.Pod
 	switch o := obj.(type) {
 	case *corev1.Pod:
-		name = o.Name
+		name, pod = o.Name, o
 	case *corev1.Service:
 		name = o.Name
 	case *unstructured.Unstructured:
@@ -611,6 +628,9 @@ func (r *Runtime) notify(obj any) {
 	defer r.mu.Unlock()
 	close(r.changed)
 	r.changed = make(chan struct{})
+	if pod != nil {
+		r.capturePodEnd(pod, gone)
+	}
 	if r.observer == nil {
 		return
 	}
@@ -894,10 +914,34 @@ func (r *Runtime) stopFrame(generation uint64) shimwire.LauncherStop {
 }
 
 // setMode sets the Sandbox's operating mode, fenced to the Sandbox read (a JSON patch whose first
-// operation tests the uid): a Sandbox replaced in between is never written.
+// operation tests the uid): a Sandbox replaced in between is never written. A mode that is not
+// Suspended ends nothing and records nothing; a suspension is written through suspending.
 func (r *Runtime) setMode(ctx context.Context, s *sandbox, mode string) error {
-	_, err := r.patch(ctx, s, jsonPatchOp{Op: "add", Path: "/spec/operatingMode", Value: mode})
+	op := jsonPatchOp{Op: "add", Path: "/spec/operatingMode", Value: mode}
+	if mode == modeSuspended {
+		op = r.suspending(s, "the daemon suspended the pod's sandbox")
+	}
+	_, err := r.patch(ctx, s, op)
 	return err
+}
+
+// suspending is the JSON patch operation that suspends the Sandbox s, and it records first that the
+// daemon means to end the pod s owns (meanToEndPodOf), naming act as the reason. Suspending is the
+// daemon ending that pod, and an end with no record reads as pod_end_not_ours, which continues
+// every claim of that pod uncharged. For a pod whose init container keeps failing that is the
+// relaunch-for-ever the initFailed reading exists to stop.
+//
+// Every JSON patch the daemon writes to suspend a Sandbox takes its operation from here, so no such
+// patch can end a pod with no record. Those patches are setMode's, for an issue's close or idle
+// release (SuspendIssue), a launch that found a pod it cannot use and is not live enough to displace
+// (relaunch), the suspension of a failed launch (suspendFailedLaunch) and a repository cache's own
+// (reconcileCachePod), and ensureSandbox's relabel of a Sandbox its issue's old tree left Running,
+// which suspends it in the same patch. A suspension that replaces a live pod is a merge patch
+// that writes its own record beside the annotation naming the pod (suspendDisplacing), and the two
+// deletes write theirs (deleteSandbox, deleteFenced).
+func (r *Runtime) suspending(s *sandbox, act string) jsonPatchOp {
+	r.meanToEndPodOf(s, act)
+	return jsonPatchOp{Op: "add", Path: "/spec/operatingMode", Value: modeSuspended}
 }
 
 // Release is a claim-scoped operation: it ends at most the recorded role process and forgets the
@@ -1018,6 +1062,15 @@ var _ runtime.WorkspaceBundler = (*Runtime)(nil)
 // the role's process: the idle release's save is a row of its own ahead of its role stops
 // (record.IssueBundle, the daemon's idleReleaseRows), and asking after them refuses with "holds
 // no role process to bundle it".
+//
+// The shim is given the caller's own budget where that is the shorter one (workspaceBundleBound),
+// so the daemon's wait and the shim's build are one budget and never two. A caller that stopped
+// waiting while the shim went on building would leave that bundler holding the workspace into
+// the next ask for it, and two runs of it in one workspace share the ref prefix
+// `refs/legion-bundle/`, so one run's delete lands inside the other's `git bundle create`. The
+// copies the daemon takes while the pod runs are asked under a budget of four minutes
+// (internal/daemon's runningCopyBudget); the release's save passes no deadline of its own and
+// gets the whole of runtime.WorkspaceBundleTimeout, as it always did.
 func (r *Runtime) BundleWorkspace(ctx context.Context, issue string, role claim.Role) (runtime.WorkspaceBundle, error) {
 	token, err := claim.NewToken(r.project, issue, role)
 	if err != nil {
@@ -1046,17 +1099,34 @@ func (r *Runtime) BundleWorkspace(ctx context.Context, issue string, role claim.
 	if !ok {
 		return runtime.WorkspaceBundle{}, fmt.Errorf("bundle %s's workspace: %s has no connection to ask over", issue, token)
 	}
-	bundle, err := conn.BundleWorkspace(ctx, issue, runtime.WorkspaceBundleTimeout)
+	bound := workspaceBundleBound(ctx)
+	if bound <= 0 {
+		return runtime.WorkspaceBundle{}, fmt.Errorf("bundle %s's workspace over %s: %w", issue, token, context.DeadlineExceeded)
+	}
+	bundle, err := conn.BundleWorkspace(ctx, issue, bound)
 	if err != nil {
 		return runtime.WorkspaceBundle{}, fmt.Errorf("bundle %s's workspace over %s: %w", issue, token, err)
 	}
 	// The shim knows nothing of the pod it runs in, and the row the save writes has to: the pod
 	// this work came off is the one pod the restore refuses by name, so that a role relaunched
 	// in it before the teardown is answered nothing and leaves the bundle's one attempt for the
-	// pod that replaces it (store.TakeWorkspaceBundleForRestore). It is the pod checked above,
+	// pod that replaces it (store.TakeWorkspaceCopyForRestore). It is the pod checked above,
 	// the running pod the claim's locator records.
 	bundle.PodUID = loc.Sandbox.PodUID
 	return bundle, nil
+}
+
+// workspaceBundleBound is how long the shim is given to build a workspace's bundle: the shorter
+// of runtime.WorkspaceBundleTimeout, the runtimes' own budget for the request, and what is left
+// of the caller's deadline. The far side then stops when the caller stops waiting, which is what
+// keeps one workspace from holding two runs of the bundler, and a caller with no deadline — the
+// idle release's save — is bounded by the request's budget alone.
+func workspaceBundleBound(ctx context.Context) time.Duration {
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return runtime.WorkspaceBundleTimeout
+	}
+	return min(runtime.WorkspaceBundleTimeout, time.Until(deadline))
 }
 
 // ReconcileOrphans deletes the project's Sandboxes nothing owns, once older than grace. An issue
@@ -1272,6 +1342,9 @@ func (r *Runtime) deleteFenced(ctx context.Context, s *sandbox, msg string, attr
 	if err := r.guardSessionVolumeReap(ctx, s); err != nil {
 		return err
 	}
+	// The pod this Sandbox owns goes with it — the orphan sweep's, a released controller claim's,
+	// a repository cache's — so that end is the daemon's own (meanToEndPod).
+	r.meanToEndPodOf(s, "the daemon deleted the pod's sandbox")
 	name, uid, version := s.Name, s.UID, s.ResourceVersion
 	policy := metav1.DeletePropagationForeground
 	fence := metav1.Preconditions{UID: &uid, ResourceVersion: &version}

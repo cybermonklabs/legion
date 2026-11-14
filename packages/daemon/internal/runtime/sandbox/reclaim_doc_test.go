@@ -1,14 +1,13 @@
 package sandbox
 
 import (
-	"os"
 	"path"
-	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/testdoc"
 )
 
 // The reclaim paragraph of docs/kubernetes.md is an operator's whole remedy for an issue volume
@@ -138,30 +137,12 @@ func issueVolumeDirectories(issue string, role claim.Role) []string {
 // stand in for a bullet that is missing.
 func reclaimParagraphLists(t *testing.T) (deleted, exempt map[string]bool) {
 	t.Helper()
-	// The document is at the repository root, five directories above this package. Read it, and fail
-	// when it cannot be read: a skip here would be an absence that reads exactly like a pass, and
-	// this check exists because a silent absence is what the paragraph kept shipping.
-	doc, err := os.ReadFile(filepath.Join("..", "..", "..", "..", "..", "docs", "kubernetes.md"))
-	if err != nil {
-		t.Fatalf("read docs/kubernetes.md: %v", err)
-	}
-	lines := strings.Split(string(doc), "\n")
-	// The markers are prose and the document is hard-wrapped, so they straddle line ends: find them
-	// in a flattened copy and carry the match back to the line it starts on. The lists themselves are
-	// read from the lines, because a bullet is a shape of a line and flattening would erase it.
-	flat, lineOf := flattenKeepingLines(lines)
-	startOffset := strings.Index(flat, reclaimParagraphStart)
-	if startOffset < 0 {
-		t.Fatalf("docs/kubernetes.md has no %q: the reclaim paragraph was reworded, and this check "+
-			"stops checking the moment it cannot find it", reclaimParagraphStart)
-	}
-	endOffset := strings.Index(flat[startOffset:], reclaimParagraphEnd)
-	if endOffset < 0 {
-		t.Fatalf("docs/kubernetes.md has no %q after %q: the reclaim paragraph's end moved, and an "+
-			"unbounded search would pass on a mention anywhere in the document",
-			reclaimParagraphEnd, reclaimParagraphStart)
-	}
-	region := lines[lineOf[startOffset] : lineOf[startOffset+endOffset]+1]
+	// Region fails rather than skipping when the document or a marker is gone: a skip here would be
+	// an absence that reads exactly like a pass, and this check exists because a silent absence is
+	// what the paragraph kept shipping. The lists are read from the region's lines, because a bullet
+	// is a shape of a line and the flattened text erases it.
+	region, _ := testdoc.Region(t, "docs/kubernetes.md", "docs/kubernetes.md's reclaim paragraph",
+		reclaimParagraphStart, reclaimParagraphEnd)
 
 	deleted, exempt = map[string]bool{}, map[string]bool{}
 	var into map[string]bool
@@ -227,27 +208,6 @@ func bulletPath(bullet string, whole bool) (string, bool) {
 		return "", false
 	}
 	return named, true
-}
-
-// flattenKeepingLines collapses the document's whitespace so prose that was hard-wrapped reads as
-// one line, and records for every byte of the result the line it came from, which is what turns a
-// marker found in the flat text back into a bound on the lines the lists live in.
-func flattenKeepingLines(lines []string) (string, []int) {
-	var flat strings.Builder
-	lineOf := make([]int, 0, len(lines)*8)
-	for i, line := range lines {
-		for _, field := range strings.Fields(line) {
-			if flat.Len() > 0 {
-				flat.WriteByte(' ')
-				lineOf = append(lineOf, i)
-			}
-			flat.WriteString(field)
-			for range len(field) {
-				lineOf = append(lineOf, i)
-			}
-		}
-	}
-	return flat.String(), lineOf
 }
 
 // namesPathOrAncestor accepts a directory a list covers by naming a parent of it, which is how the

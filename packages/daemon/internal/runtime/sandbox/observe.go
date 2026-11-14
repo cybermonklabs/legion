@@ -71,7 +71,9 @@ func (r *Runtime) Probe(ctx context.Context, loc runtime.Locator) (runtime.Obser
 
 // evaluate is one observation of loc's process from the stores: Uncertain while they cannot answer
 // (view), otherwise the verdict the mapping reads from them, said Displaced when the daemon's own
-// replacement of the recorded pod is what ended the process (displaced).
+// replacement of the recorded pod is what ended the process (displaced), and carrying what the
+// daemon read about the cause of the pod's end where the process ended with its pod
+// (runtime.Observation.PodEnd, capturePodEnd).
 //
 // The pod store and the Sandbox store are fed by two informers nothing orders, so a pod's end can
 // reach the runtime before the Suspended patch that named it does. A final verdict (ends) whose
@@ -130,6 +132,15 @@ func (r *Runtime) evaluate(ctx context.Context, loc runtime.Locator) runtime.Obs
 		obs.Displaced = true
 		obs.Detail += fmt.Sprintf("; the daemon replaced pod %s to launch another role there", loc.Sandbox.PodUID)
 	}
+	// What ended the pod the process ran in, as the informer saw that end (capturePodEnd): the one
+	// value the supervisor decides the end on, read here for every claim of the pod and for every
+	// kind of pod, since the reading is of the cause of the end and not of the kind of pod.
+	if endsProcess(obs.Kind) {
+		if end, ok := r.podEndOf(loc.Sandbox.PodUID); ok {
+			obs.PodEnd = end.reading
+			obs.Detail += "; " + end.detail()
+		}
+	}
 	return obs.Observation
 }
 
@@ -166,7 +177,16 @@ type observation struct {
 // ends reports whether obs is a final verdict the daemon's own replacement of a pod can account
 // for: a Gone or NotRecordedProcess, never one a failed init container made.
 func ends(obs observation) bool {
-	return (obs.Kind == runtime.Gone || obs.Kind == runtime.NotRecordedProcess) && !obs.initFailed
+	return endsProcess(obs.Kind) && !obs.initFailed
+}
+
+// endsProcess reports whether kind is a final verdict on the recorded process: it is not running
+// and nothing of it will run again, whatever ended it. It is what ends reads before excluding the
+// ends a failed init container made, and what the reading of a pod's end is attached to
+// (evaluate): a pod the cluster ended under its init containers ended through no fault of the
+// roles in it either.
+func endsProcess(kind runtime.ObservationKind) bool {
+	return kind == runtime.Gone || kind == runtime.NotRecordedProcess
 }
 
 // names reports whether s names loc's recorded pod as the live pod a relaunch replaced

@@ -26,7 +26,7 @@ import (
 
 // releasedPodUID is the pod the rig's release takes its bundle off: the pod of the issue whose
 // roles are suspended and whose disk goes with it. The store keeps it on the row and answers
-// that pod no restore of its own work (store.TakeWorkspaceBundleForRestore).
+// that pod no restore of its own work (store.TakeWorkspaceCopyForRestore).
 const releasedPodUID = "pod-being-released"
 
 // releaseRuntime is the fake runtime with the two things an idle release asks of a Kubernetes
@@ -53,6 +53,10 @@ type releaseRuntime struct {
 	// and the teardown's own read has already answered, which is where production's second
 	// answer can differ from its first. A test sets it before the drain.
 	beforeAuthorize func()
+	// beforeBundle runs inside the save's BundleWorkspace before it answers, with the issue's
+	// place in the cadence's single flight held (runningCopies.hold): a test sets it to make
+	// something happen while the save is building its bundle.
+	beforeBundle func()
 }
 
 func (r *releaseRuntime) IssuePodRunsConfiguredImage(string) bool {
@@ -72,9 +76,14 @@ func (r *releaseRuntime) IssueSandbox(string) (string, bool) {
 
 func (r *releaseRuntime) BundleWorkspace(_ context.Context, _ string, role claim.Role) (runtime.WorkspaceBundle, error) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	r.bundled = append(r.bundled, role)
-	return r.bundle, r.bundleErr
+	hook := r.beforeBundle
+	bundle, err := r.bundle, r.bundleErr
+	r.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
+	return bundle, err
 }
 
 func (r *releaseRuntime) SuspendIssue(ctx context.Context, _, _ string, authorize func(context.Context) (bool, error)) error {
@@ -192,18 +201,20 @@ func newIdleRig(t *testing.T) *idleRig {
 		t.Fatalf("seed the listener's report: %v", err)
 	}
 
-	// The drain runs a minute after whatever the release queued, so every row of it is due.
-	runner := &outbox{
-		pool: pool, records: records, project: "legion", dispatchProject: "LEGION", supervisor: sup, trees: st,
-		notices: &outboxPublisher{}, log: quietLogger(),
-		now: func() time.Time { return time.Now().Add(time.Minute) },
-	}
 	// The rig's issue records carry the Dispatch project key and its claims the claim token's
 	// spelling, as a deployment's do, and the two passes read the two: the candidate answer of
 	// the rule for a pod no claim owns reads issues.project (dispatchProject), everything else
 	// reads the claims' (projectID).
 	w := &workflowRuntime{pool: pool, projectID: "legion", dispatchProject: "LEGION", log: quietLogger(),
 		idleStore: st, idleRuntime: rt, idlePeriod: 10 * time.Minute}
+	// The drain runs a minute after whatever the release queued, so every row of it is due. The
+	// release's save takes its place in the workflow's own single flight, as the daemon's does
+	// (newOutbox).
+	runner := &outbox{
+		pool: pool, records: records, project: "legion", dispatchProject: "LEGION", supervisor: sup, trees: st,
+		copies: &w.copies, notices: &outboxPublisher{}, log: quietLogger(),
+		now: func() time.Time { return time.Now().Add(time.Minute) },
+	}
 	return &idleRig{pool: pool, st: st, issues: records, runner: runner, sup: sup, rt: rt, w: w,
 		issue: issue, token: token, machine: machine}
 }
@@ -558,8 +569,8 @@ func TestAnIdleIssuesPodIsReleasedWithItsClaimsKeepingTheirPhaseAndTask(t *testi
 // process of the pod, and until it has run a delivery for a role of the pod cancels the
 // release: one queued below the release's own rows was in flight when the mark was written,
 // one above them arrived while every role still ran. Either way the roles go on in the same
-// pod, nothing is suspended, no Sandbox is torn down and the bundle the save stored goes with
-// the release, since the pod keeps that work in its own workspace.
+// pod, nothing is suspended, no Sandbox is torn down and the bundle the save stored leaves the
+// bundle table, whose row would hold the issue's pod, to stand as the pod's running copy.
 func TestADeliveryThePodIsGivenAroundTheMarkCancelsTheRelease(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -600,6 +611,9 @@ func TestADeliveryThePodIsGivenAroundTheMarkCancelsTheRelease(t *testing.T) {
 			}
 			if rig.bundled(t) {
 				t.Fatal("the cancelled release left its bundle behind")
+			}
+			if !rig.copied(t) {
+				t.Fatal("the cancelled release kept no running copy of the work its save stored")
 			}
 			if rig.marked(t) {
 				t.Fatal("the release's mark outlived it")
@@ -642,7 +656,7 @@ func (t bundleDeleteRefused) DeleteWorkspaceBundle(context.Context, string) erro
 // off, so it is answered nothing and spends nothing, and the row held the issue's pod
 // (workflow.IdleHoldBundleUnrestored) rather than being replaced by another release. P's roles
 // worked and pushed for hours. Then some later pod of the issue — an eviction's, an update
-// round's replacement, a park and unpark's — asked for the bundle, was created after the save,
+// round's replacement, a park and unpark's — asked for the bundle, first asked after the save,
 // and was sent it: `jj bookmark set --allow-backwards` and `jj edit` over a workspace
 // provisioned from the branch those hours had been pushed to.
 //
@@ -680,14 +694,26 @@ func TestACancelWhoseBundleDeleteFailsStillLeavesNoBundleForALaterPod(t *testing
 		t.Fatal("the cancel left its bundle behind when the store refused a delete of its own")
 	}
 
-	// The pod an eviction or an update round makes hours later, with the resumed roles' work
-	// pushed in between: it is sent nothing at all.
-	later, take, err := rig.st.TakeWorkspaceBundleForRestore(ctx, rig.issue.Key, "pod-after-an-eviction", time.Now().UTC().Add(time.Hour))
-	if err != nil || take != runtime.WorkspaceBundleNone {
-		t.Fatalf("a pod created after the cancelled release's save was answered %q (%v, %v), want nothing", later.Bundle, take, err)
+	// The resumed roles push their work, and the daemon records the push, after the cancel kept
+	// the release's work as the pod's running copy.
+	engine := workflow.New(rig.issues, workflow.Config{Project: "LEGION", Pushes: rig.st}, quietLogger())
+	push := intake.Push{Repo: rig.issue.GitHubRepo, Branch: "legion/" + rig.issue.Key, Before: "c0", After: "c2"}
+	if _, err := intake.ApplyFact(ctx, rig.pool, "github", "push-webhook:c0..c2", push, engine); err != nil {
+		t.Fatalf("apply the push of c0..c2: %v", err)
 	}
-	if len(later.Bookmarks) != 0 {
-		t.Fatalf("that pod was answered the bookmarks %v, which a restore would move back over everything pushed since the cancel", later.Bookmarks)
+
+	// The pod an eviction or an update round makes hours later, with the resumed roles' work
+	// pushed in between: it is sent nothing of the work the release saved. The bundle's row is
+	// gone, and the copy the cancel kept of that work as the pod's running copy is older than the
+	// push, which refuses it (runtime.WorkspaceBundleRefusedPushed).
+	restore, err := rig.st.TakeWorkspaceCopyForRestore(ctx, rig.issue.Key, "pod-after-an-eviction")
+	later := restore.ReleaseBundle
+	if err != nil || later.Take != runtime.WorkspaceBundleNone || restore.Running.Take == runtime.WorkspaceBundleSend {
+		t.Fatalf("a pod created after the cancelled release's save was answered %v of %q and %v of the running copy (%v), want nothing sent",
+			later.Take, later.Bundle.Bundle, restore.Running.Take, err)
+	}
+	if len(later.Bundle.Bookmarks) != 0 {
+		t.Fatalf("that pod was answered the bookmarks %v, which a restore would move back over everything pushed since the cancel", later.Bundle.Bookmarks)
 	}
 }
 
@@ -844,5 +870,75 @@ func TestACancelOfAnIssueThatLeftTheWorkflowLetsItsCloseDeleteTheSandbox(t *test
 	if got := rig.machine.Claim(); got.State != supervise.StateSuspended || got.SuspendedBy != supervise.SuspendedByDaemon {
 		t.Fatalf("the implementer = %s by %s, want it suspended by the close that took its pod",
 			got.State, got.SuspendedBy)
+	}
+}
+
+// A release bundle older than a push the daemon recorded after it is restored, so the issue's pod
+// is released when it next goes idle. Every idle release of a workspace with unpushed work saves a
+// bundle while its roles are idle, before it stops them, and a push recorded while the release
+// runs — GitHub's "Update branch", a person's push, a webhook the per-issue read rebuilt late — is
+// newer than it. Were the bundle refused for that push, nothing would be sent, its row would stay,
+// and the idle rule would hold every later pod of the issue on it
+// (workflow.IdleHoldBundleUnrestored), as the pass before the restore shows. The push goes through
+// the workflow's push handler as the daemon wires it, with the daemon's store as its record, and
+// the restore's confirmation is the keep the launcher's report runs
+// (store.KeepRestoredWorkspaceCopy).
+func TestAReleaseBundleOlderThanARecordedPushIsRestoredAndItsIssueIsReleasedWhenIdle(t *testing.T) {
+	rig := newIdleRig(t)
+	ctx := context.Background()
+	bundle := runtime.WorkspaceBundle{Bundle: []byte("PACK the work the release saved"), Head: "c1",
+		Tips: []string{"c1"}, PodUID: releasedPodUID}
+	begun, err := rig.st.BeginWorkspaceCopy(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := rig.st.PutWorkspaceBundle(ctx, rig.issue.Key, 1, begun, bundle); err != nil {
+		t.Fatalf("save the release's bundle: %v", err)
+	}
+	rig.w.releaseIdlePod(ctx, rig.issue.Key)
+	if holds := rig.records(t).Holds; len(holds) != 1 || holds[0].Reason != workflow.IdleHoldBundleUnrestored.String() {
+		t.Fatalf("holds while no pod has restored the bundle = %+v, want the one %s", holds, workflow.IdleHoldBundleUnrestored)
+	}
+
+	engine := workflow.New(rig.issues, workflow.Config{Project: "LEGION", Pushes: rig.st}, quietLogger())
+	push := intake.Push{Repo: rig.issue.GitHubRepo, Branch: "legion/" + rig.issue.Key, Before: "c0", After: "c2"}
+	if _, err := intake.ApplyFact(ctx, rig.pool, "github", "push-webhook:c0..c2", push, engine); err != nil {
+		t.Fatalf("apply the push of c0..c2: %v", err)
+	}
+	var pushed time.Time
+	if err := rig.pool.QueryRow(ctx, `select pushed_at from issue_pushes where issue = $1`, rig.issue.Key).Scan(&pushed); err != nil {
+		t.Fatalf("read the push record of %s: %v", rig.issue.Key, err)
+	}
+
+	// The pod that replaces the released one is sent the bundle against the push it read, and
+	// its launcher's report of the restore moves the row out of the bundle table.
+	restore, err := rig.st.TakeWorkspaceCopyForRestore(ctx, rig.issue.Key, "pod-that-replaces-it")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !restore.Push.At.Equal(pushed) || restore.Push.Head != "c2" {
+		t.Fatalf("the restore read the push %+v, want c2 at %s", restore.Push, pushed)
+	}
+	sent := restore.ReleaseBundle
+	if sent.Take != runtime.WorkspaceBundleSend || string(sent.Bundle.Bundle) != string(bundle.Bundle) {
+		t.Fatalf("the release bundle taken before the push was answered %v with %q, want it sent whole", sent.Take, sent.Bundle.Bundle)
+	}
+	if err := rig.st.KeepRestoredWorkspaceCopy(ctx, rig.issue.Key, "pod-that-replaces-it", sent.Bundle.Release); err != nil {
+		t.Fatalf("confirm the restore: %v", err)
+	}
+	if rig.bundled(t) {
+		t.Fatal("the confirmed restore left the bundle standing")
+	}
+
+	rig.w.releaseIdlePod(ctx, rig.issue.Key)
+	if got := rig.rows(t); len(got) != 3 || got[0] != "issue_bundle" || got[1] != "supervise:release" || got[2] != "issue_release" {
+		t.Fatalf("queued rows = %v, want the save, the role stop and the teardown: the restored bundle holds the pod no longer", got)
+	}
+	rig.drain(t)
+	if releases := rig.records(t).Releases; len(releases) != 1 {
+		t.Fatalf("releases = %+v, want the one this idle pass made", releases)
+	}
+	if _, suspended := rig.rt.reads(); suspended != 1 {
+		t.Fatalf("Sandbox teardowns = %d, want the one this release made", suspended)
 	}
 }

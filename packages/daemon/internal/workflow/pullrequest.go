@@ -267,7 +267,26 @@ func (e *Engine) pullRequestSynchronized(ctx context.Context, tx pgx.Tx, fact in
 	return intake.Result{}, nil
 }
 
+// Pushes is the daemon's record of the newest push of each issue's branch, written in the push
+// fact's own transaction (Config.Pushes, store.Store.RecordIssuePush). It is given both heads of
+// the push, the one it replaced and the one it left, and no time: the record stamps the push with
+// the store's own clock, the one every time the restore compares is read by
+// (runtime.DecideWorkspaceRestore). That time cannot order two pushes — every push is recorded at
+// the store's now, a redelivery and a late webhook included — and the record orders them by the
+// heads it has seen instead. It answers whether the push moved the record, which a redelivery, a
+// late webhook behind the newest push and a branch's deletion do not.
+type Pushes interface {
+	RecordIssuePush(ctx context.Context, tx pgx.Tx, issue, before, after string) (bool, error)
+}
+
+// push applies a push of a branch. It records the push of an issue's branch first and on its
+// own (recordPush), and only then reads the pull request the push moves, from which everything
+// else here follows: with no pull request recorded on the branch the push is recorded and the
+// rest is nothing.
 func (e *Engine) push(ctx context.Context, tx pgx.Tx, fact intake.Push) (intake.Result, error) {
+	if err := e.recordPush(ctx, tx, fact); err != nil {
+		return intake.Result{}, err
+	}
 	pr, err := e.pullRequestByBranch(ctx, tx, fact.Repo, fact.Branch)
 	if err != nil || pr == nil {
 		return intake.Result{}, err
@@ -309,6 +328,42 @@ func (e *Engine) push(ctx context.Context, tx pgx.Tx, fact intake.Push) (intake.
 		return intake.Result{}, nil
 	}
 	return intake.Result{}, e.reaskRound(ctx, tx, *issue, pr, prior)
+}
+
+// recordPush records a push of `legion/<KEY>` on the repository KEY is recorded on in the record
+// of that issue's branch's newest push (Config.Pushes), with both of its heads, at the store's own
+// clock, and asks for a copy of the issue's workspace once the fact commits
+// (Config.PushRecorded) when the push moved that record. The branch alone names the issue
+// (issueForBranch), so the record is made whether or not the issue has a pull request: a branch
+// is pushed before its pull request opens, and an issue with no pull-request record is the one a
+// record kept beside the pull request would have missed — the one a stale copy of its workspace
+// would then have been sent for, putting the workspace back behind what GitHub holds. Every push
+// is recorded, whoever pushed: a copy older than any of them is behind that push.
+//
+// The copy is asked for on commit and not here, as every effect of a fact is: a fact that rolls
+// back has recorded no push, and a copy is a `git bundle create` in a workspace a role is working
+// in, which the daemon takes for a push it holds and for none it might not. It is asked for only
+// when the push moved the record, because only such a push refuses a copy the restore would
+// otherwise send: a redelivered webhook, a late one behind the newest push and a branch's deletion
+// move nothing, and a copy asked for any of them would discard the copy in flight as overtaken
+// (the daemon's runningCopies.pushed) and bundle the workspace again for nothing.
+func (e *Engine) recordPush(ctx context.Context, tx pgx.Tx, fact intake.Push) error {
+	if e.cfg.Pushes == nil {
+		return nil
+	}
+	issue, err := e.issueForBranch(ctx, tx, fact.Repo, fact.Branch)
+	if err != nil || issue == nil {
+		return err
+	}
+	moved, err := e.cfg.Pushes.RecordIssuePush(ctx, tx, issue.Key, fact.Before, fact.After)
+	if err != nil {
+		return err
+	}
+	if recorded := e.cfg.PushRecorded; recorded != nil && moved {
+		key := issue.Key
+		intake.OnCommit(ctx, func() { recorded(key) })
+	}
+	return nil
 }
 
 // reaskRound re-asks issue's review round (settleRound) after a push, or after the head it left

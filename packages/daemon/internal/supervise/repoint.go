@@ -2,6 +2,8 @@ package supervise
 
 import (
 	"context"
+	"errors"
+	"slices"
 
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
@@ -41,10 +43,14 @@ func (m *Machine) repoint(ctx context.Context, observation runtime.Observation) 
 }
 
 // displaced is the claim's process found gone, or found to be some other process, through no
-// fault of its own (runtime.Observation.Displaced): the daemon itself replaced its pod while it ran,
-// to launch another role there, or it was another runtime's process — a Sandbox role process a
-// daemon running the project under kubernetes recorded — that this daemon takes over
-// (`runtime.tmux.take_over`) and cannot see. The observation's detail names which. The process did
+// fault of its own: the daemon itself replaced its pod while it ran, to launch another role there
+// (runtime.Observation.Displaced); something outside the pod ended the pod it ran in — the
+// cluster evicted, preempted or shut that pod down, or something deleted it that no act of the
+// daemon's accounts for (runtime.PodEndNotOurs, which endedFromOutside sends here until such ends
+// run out their count); or it was another runtime's process — a Sandbox role process a daemon
+// running the project under kubernetes recorded — that this daemon takes over
+// (`runtime.tmux.take_over`) and cannot see. The
+// observation's detail names which. The process did
 // nothing wrong, so it is recovered as repoint recovers a stale one: nothing is charged, neither a
 // launch failure nor a death with work outstanding, and the claim's session is relaunched at once
 // (replaceProcess). A turn the process was in is lost, and its task goes back to waiting, sent
@@ -54,6 +60,9 @@ func (m *Machine) repoint(ctx context.Context, observation runtime.Observation) 
 // end's note (runtime.Observation.OutOfMemory), since a pod the daemon replaced can also have run
 // out of memory before the replacement landed, and the role whose turn that end cut off is told
 // so wherever the end is recovered.
+//
+// Every claim the runtime observes is recovered this way, the project controller's included: what
+// decides the recovery is the cause of the end and never the kind of pod or the role in it.
 func (m *Machine) displaced(ctx context.Context, observation runtime.Observation) error {
 	// Guarded as repoint's own read is, and for the reason its comment gives
 	// (backstopStalledTurn, noProcessRecorded).
@@ -61,10 +70,95 @@ func (m *Machine) displaced(ctx context.Context, observation runtime.Observation
 	if loc := m.claim.Locator; loc != nil {
 		incarnation, process = loc.Incarnation, loc.Label()
 	}
-	m.log.Warn("supervise: the process was displaced through no fault of its own, its pod replaced by the daemon or it another runtime's process this daemon takes over; relaunching it uncharged",
-		"incarnation", incarnation, "process", process, "observed", string(observation.Kind), "detail", observation.Detail)
-	_, err := m.replaceProcess(ctx, "the process was displaced mid-turn, its pod replaced by the daemon or it another runtime's process this daemon takes over", observation.OutOfMemory)
+	m.log.Warn("supervise: the process was displaced through no fault of its own, its pod replaced by the daemon, its pod ended by something outside it, or it another runtime's process this daemon takes over; relaunching it uncharged",
+		"incarnation", incarnation, "process", process, "observed", string(observation.Kind),
+		"podEnd", string(observation.PodEnd), "detail", observation.Detail)
+	_, err := m.replaceProcess(ctx, "the process was displaced mid-turn, its pod replaced by the daemon, its pod ended by something outside it, or it another runtime's process this daemon takes over", observation.OutOfMemory)
 	return err
+}
+
+// endedFromOutside is the claim's process gone with a pod the runtime read as ended by something
+// outside it (runtime.PodEndNotOurs): an eviction, a preemption, a node going down, or a delete no
+// act of the daemon's accounts for. Such an end is continued uncharged (displaced) and counted in
+// one of two runs, by whether the claim's agent was ready when its pod ended. At
+// launch_failure_limit ends in a run the end is charged as the claim's own death (died), and so
+// is every end of that run after it until the run is reset: a pod that uses more memory than it
+// requested can drive its own node into pressure, and that eviction carries the same
+// DisruptionTarget condition a neighbour's does. An outcome the daemon cannot read is charged,
+// and a claim that keeps ending its own pod that way is bounded as a crash loop is, rather than
+// relaunched for ever.
+//
+// The first run (Budgets.PodEndsNotOurs) counts the ends that find the agent ready with work
+// outstanding (workOutstanding): a task the claim holds, or a turn open on that agent. At the
+// limit its end is charged a death, which reads the same condition (chargeDeath). A turn that
+// completes resets it (turnEnded), and so does the end of the task it was counted against
+// (retirePending); nothing else does. The agent's ready does not (ready), as it resets nothing of
+// the deaths: a turn a message started — the turns of an architect and of the controller, which
+// messages start — is counted against the open turn alone, and the agent relaunched after it
+// comes up with no task and no turn. Reset there, the run would be one again at every such turn
+// the cluster ends, and a claim whose messages keep ending its pod would be relaunched for ever,
+// never reaching the limit. An end that finds a ready agent with no work outstanding — idle,
+// holding no task, in no turn — is counted in neither run and charged nothing: it is displaced as
+// it always was. Such a claim completes no turn, so a count it could raise would only grow, and a
+// pod the cluster repacks once a week would cost it a launch failure and a backoff from its third
+// repacking on, for work it was not doing.
+//
+// The second run (Budgets.StartEndsNotOurs) counts the ends that find the agent not yet ready
+// (unready), whatever work the claim holds, and such an end counts in it alone. A pod's own start
+// — the workspace's restore and six agents starting at once in a Burstable pod — can drive its
+// node into memory pressure, and that eviction carries DisruptionTarget, so a start that keeps
+// ending its own pod would otherwise be relaunched for ever, whether it holds a task it never
+// reaches or holds none, as an architect a message woke, the controller and a phase worker
+// between assignments do. At the limit such an end goes to died as any other does, and died
+// charges an agent not yet ready a launch failure rather than a death (chargeDeath reads
+// workOutstanding): the launch failures then bound the loop. The agent's ready resets this run,
+// as it resets the launch failures (ready): a start that reaches ready is one the cluster let
+// finish, so the ends of starts that each reach ready charge nothing.
+//
+// The two are separate runs because one count cannot bound both loops. Without the ready's reset
+// a run could not count the start of a claim with no task — that claim completes no turn, so its
+// count would only grow and charge it for starts the cluster ends now and then — and those ends
+// went uncounted, a start loop nothing bounded. With the reset, the run of a message's turns
+// would be cleared by each relaunch's ready and never reach the limit.
+//
+// One ended process is counted once, however often the runtime reports it gone, by the record
+// died keeps for the same purpose (Claim.DeathCharged): the report that counts the end writes
+// it, and a later report of that same process — the orphan sweep's, over a claim whose relaunch
+// the lifecycle refused or the wake pacing parked — counts nothing. The count and the record are
+// written before the relaunch, as died writes its charge, because a parked relaunch writes
+// nothing until its turn; a write the store would not take is owed and the relaunch goes on under
+// it (died states why). At the limit the charge is died's whole, so a second report of the end it
+// charged is died's second report and charged nothing more.
+//
+// An end counted in the first run ends the turn it interrupted (Claim.LastTurnEnd), as a charged
+// death does (chargeDeath), for the reason chargeDeath gives: the agent that turn belonged to is
+// gone and never ends it, so without that record every later end of the relaunched agent, idle
+// with nothing pending, would find the dead turn open and be counted against it. An agent not yet
+// ready was in no turn, so an end counted in the second run records none. At the limit the turn
+// is left for died's charge to end, since that charge reads the same open turn.
+func (m *Machine) endedFromOutside(ctx context.Context, observation runtime.Observation) error {
+	starting := slices.Contains(unready, m.claim.State)
+	run := &m.claim.Budgets.PodEndsNotOurs
+	switch {
+	case starting:
+		run = &m.claim.Budgets.StartEndsNotOurs
+	case !m.workOutstanding():
+		return m.displaced(ctx, observation)
+	}
+	if !m.claim.DeathCharged {
+		*run++
+	}
+	if *run >= m.deps.Limits.LaunchFailures {
+		m.log.Warn("supervise: the claim's pod ended from outside it again and its run of such ends reached the limit; charging this end as the claim's own death, a launch failure while its agent starts",
+			"podEndsNotOurs", m.claim.Budgets.PodEndsNotOurs, "startEndsNotOurs", m.claim.Budgets.StartEndsNotOurs,
+			"limit", m.deps.Limits.LaunchFailures, "starting", starting, "detail", observation.Detail)
+		return m.died(ctx, observation)
+	}
+	m.claim.DeathCharged = true
+	if !starting {
+		m.claim.LastTurnEnd = m.deps.Clock.Now()
+	}
+	return errors.Join(m.persist(ctx), m.displaced(ctx, observation))
 }
 
 // ProcessEnd is what a replacement did to the claim's process (replaceProcess): the end the

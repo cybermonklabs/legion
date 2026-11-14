@@ -325,8 +325,11 @@ type Claim struct {
 	// DeathCharged is whether the death of the process this claim records has been charged, or
 	// found to have nothing to charge: the decision died makes for one dead process, and the
 	// record that keeps a second report of that same process from being charged a second death.
-	// The rule it keeps is written where it is applied (died); what leaves a claim to be
-	// reported twice is ProcessGone's two windows above.
+	// An end of that process's pod from outside it is decided once in the same way: endedFromOutside
+	// counts it in one of its two runs (Budgets.PodEndsNotOurs, Budgets.StartEndsNotOurs) and
+	// writes this, so a second report of the one end counts nothing more. The rule it keeps is
+	// written where it is applied (died, endedFromOutside); what leaves a claim to be reported
+	// twice is ProcessGone's two windows above.
 	//
 	// It is durable, and it is the one of these marks that is: a restart restores the claim a
 	// refused or parked relaunch left standing over its dead process, and the sweep's first
@@ -1717,10 +1720,11 @@ func (m *Machine) unlock() {
 }
 
 // OnDurableState installs the daemon callback for the durable transitions it acts on: ready,
-// working and failed. Two of them are terminal for the workflow and one, working, is not: the
-// daemon reads a turn starting to stamp a woken pod's first turn. The callback runs after the
-// transition's claim write has succeeded, and a machine keeps one, so a daemon that observes
-// more than one of them observes them in that one callback.
+// working, idle and failed. Two of them are terminal for the workflow, and two are not: the
+// daemon reads a turn starting to stamp a woken pod's first turn, and a turn ending to take a
+// copy of the issue workspace's unpushed work. The callback runs after the transition's claim
+// write has succeeded, and a machine keeps one, so a daemon that observes more than one of them
+// observes them in that one callback.
 func (m *Machine) OnDurableState(callback func(Claim, ClaimState)) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -1742,10 +1746,10 @@ func (m *Machine) report(c Claim, state ClaimState) {
 // one order: the report follows the write, and a write the store did not take reports nothing
 // and owes the report instead, for whatever claim write lands next to make (oweDurableState,
 // settleOwedWrite). Every decision that reports a durable transition goes through here — the
-// turn that starts, the claim that is ready, the claim that failed — because the order is the
-// point and the owing works only on the error of the write it belongs to: a fourth caller that
-// wrote the three steps out itself and left the owing off would lose its report in silence,
-// which is the fault the mark exists to end.
+// turn that starts, the turn that ends, the claim that is ready, the claim that failed — because
+// the order is the point and the owing works only on the error of the write it belongs to: a
+// fifth caller that wrote the three steps out itself and left the owing off would lose its
+// report in silence, which is the fault the mark exists to end.
 //
 // write is the decision's own claim write: persist for most of them, and confirm for a turn
 // start that confirms the delivery whose turn it is.
@@ -2765,8 +2769,18 @@ func (m *Machine) judge(ctx context.Context, observation runtime.Observation, al
 		// below can be one the wake pacing parks, which writes nothing of the claim and so
 		// leaves its end nothing else to read.
 		m.compactionLostProcess()
+		// The daemon's own replacement of a pod is no fault of the process (Displaced). An end
+		// something outside the pod made is read in one place, here, and goes to the one site
+		// that decides what it costs (endedFromOutside): uncharged, until such ends come
+		// launch_failure_limit times in one of its two runs — with no turn completed between
+		// them, or with no ready between them while the agent starts. An end the daemon itself
+		// made, and one the runtime read neither way, are charged exactly as they were before
+		// the reading existed.
 		if observation.Displaced {
 			return m.displaced(ctx, observation)
+		}
+		if observation.PodEnd == runtime.PodEndNotOurs {
+			return m.endedFromOutside(ctx, observation)
 		}
 		return m.died(ctx, observation)
 	case runtime.StaleAddress:
