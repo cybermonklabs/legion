@@ -167,8 +167,18 @@ Where a host's git wrapper runs `bin/git` again, as a wrapper that searches `PAT
 `git` can, that second run goes on past each `git` the first runs ran, a script or a compiled
 program, and adds nothing, so the loop ends. Where the `git` programs on `PATH` only run one
 another and `bin/git`, it stops them with exit 127 and says so.
-The trailers need git 2.32 or later, the first git with `git commit --trailer`, and a commit
-through an older git gets neither line.
+The trailers need git 2.32 or later, the first git with `git commit --trailer`.
+`legion git` reads the version of one `git`: the first `git` on `PATH` after `bin/` that is a
+compiled program and not a script. When that `git` is older than 2.32, the commit gets neither
+line.
+A host's git wrapper script can run a different `git`, and `legion git` does not read the version
+of that `git`. When that different `git` is older than 2.32, it refuses the two `--trailer`
+options with its unknown-option error, so the commit fails, although the same commit succeeds
+without `bin/git`.
+Every `git` command of a pane runs through `legion git`, so `git` dies of SIGTERM, SIGPIPE,
+SIGQUIT, SIGUSR1 or SIGUSR2 even when the caller of `git` ignores that signal.
+The Go runtime handles these five signals, and the exec sets each handled signal back to its
+default action (an ignored SIGINT or SIGHUP stays ignored).
 `legion controller start` writes the same `git` into the `bin/` of its own state directory, by the
 same rule, for the operator's controller.
 The two lines record which session and which role made a commit, and they guard nothing.

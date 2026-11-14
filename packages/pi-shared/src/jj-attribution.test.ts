@@ -50,54 +50,39 @@ describe("exportJjSessionAttribution", () => {
   afterEach(async () => {
     await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
   });
-  /** The unscoped table the writer composes, written out line by line: the pair is the session
-   * line, then the role line when `role` is given. */
-  function unscopedTable(role?: string): string {
-    const pair: [string, string][] = [["Omp-Session", ROOT_ID]];
-    if (role !== undefined) pair.push(["Legion-Role", role]);
-    return [
-      "[templates]",
-      `commit_trailers = '"${pair.map(([key, value]) => `${key}: ${value}`).join("\\n")}"'`,
-      "revert_description = '''",
-      "concat(",
-      `  'Revert "' ++ description.first_line() ++ '"' ++ "\\n",`,
-      `  "\\n",`,
-      `  "This reverts commit " ++ commit_id ++ ".\\n",`,
-      `  "\\n",`,
-      ...pair.map(([key, value]) => `  "${key}: ${value}\\n",`),
-      ")",
-      "'''",
-      "duplicate_description = '''",
-      "concat(",
-      "  description,",
-      "  if(description, concat(",
-      `    if(!trailers, "\\n"),`,
-      ...pair.map(
-        ([key, value]) =>
-          `    if(!trailers.any(|t| t.key() == "${key}" && t.value() == "${value}"), "${key}: ${value}\\n"),`
-      ),
-      "  )),",
-      ")",
-      "'''",
-      "",
-    ].join("\n");
+  /** The overlay the writer wrote under `dir`. */
+  async function overlayText(dir: string): Promise<string> {
+    return await readFile(path.join(dir, `omp-attribution-${ROOT_ID}.toml`), "utf8");
   }
-  /** The overlay with the session line alone: no role and no scope. */
-  const sessionOnlyOverlay = unscopedTable();
+  /** The overlay the writer wrote under `dir`, cut where its `[[--scope]]` table starts: the
+   * unscoped `[templates]` table, then the scope, or undefined when the overlay has none. */
+  async function overlayTables(
+    dir: string
+  ): Promise<[unscoped: string, scope: string | undefined]> {
+    const text = await overlayText(dir);
+    const at = text.indexOf("[[--scope]]");
+    return at < 0 ? [text, undefined] : [text.slice(0, at), text.slice(at)];
+  }
+  /** Checks that the overlay under `dir` gives the session line alone: each of the three templates
+   * holds the session line, the `commit_trailers` line holds nothing more, no line names
+   * `Legion-Role` or `Dispatch`, and there is no scope. */
+  async function expectSessionLineAlone(dir: string): Promise<void> {
+    const [unscoped, scope] = await overlayTables(dir);
+    expect(scope).toBeUndefined();
+    const lines = unscoped.split("\n");
+    expect(lines).toContain(`commit_trailers = '"Omp-Session: ${ROOT_ID}"'`);
+    expect(lines).toContain(`  "Omp-Session: ${ROOT_ID}\\n",`);
+    expect(lines).toContain(
+      `    if(!trailers.any(|t| t.key() == "Omp-Session" && t.value() == "${ROOT_ID}"), "Omp-Session: ${ROOT_ID}\\n"),`
+    );
+    expect(unscoped).not.toContain("Legion-Role");
+    expect(unscoped).not.toContain("Dispatch");
+  }
   /** A real directory to scope an overlay to, under a scratch directory the afterEach removes. */
   async function workspace(name = "ws"): Promise<string> {
     const dir = path.join(await stateDir("jj-attribution-ws-"), name);
     await mkdir(dir, { recursive: true });
     return await realpath(dir);
-  }
-  /** The overlay the writer composes: the unscoped table, then the scope carrying the pair and the
-   * issue line. `inToml` is the workspace path as a TOML basic string's body, escapes included. */
-  function scopedOverlay(inToml: string, issueKey: string, role?: string): string {
-    const roleLine = role === undefined ? "" : `\\nLegion-Role: ${role}`;
-    return (
-      `${unscopedTable(role)}\n[[--scope]]\n--when.workspaces = ["${inToml}"]\n[--scope.templates]\n` +
-      `commit_trailers = '"Omp-Session: ${ROOT_ID}${roleLine}\\nDispatch: ${issueKey}"'\n`
-    );
   }
 
   it("writes the trailer overlay and chains it after the resolved user config", async () => {
@@ -111,7 +96,7 @@ describe("exportJjSessionAttribution", () => {
     const overlay = path.join(dir, `omp-attribution-${ROOT_ID}.toml`);
     expect(chain).toBe(`/u/a.toml:/u/b.toml:${overlay}`);
     expect(env.JJ_CONFIG).toBe(chain);
-    expect(await readFile(overlay, "utf8")).toBe(sessionOnlyOverlay);
+    await expectSessionLineAlone(dir);
   });
 
   // The whole text, written out once: the session line, then the role line, in each template.
@@ -122,7 +107,7 @@ describe("exportJjSessionAttribution", () => {
       env: {},
       resolveBase: async () => "/u/base.toml",
     });
-    const text = await readFile(path.join(dir, `omp-attribution-${ROOT_ID}.toml`), "utf8");
+    const text = await overlayText(dir);
     expect(text).toBe(
       [
         "[templates]",
@@ -150,7 +135,6 @@ describe("exportJjSessionAttribution", () => {
         "",
       ].join("\n")
     );
-    expect(text).toBe(unscopedTable("tester"));
   });
 
   it("scopes the pair, then the Dispatch line, to the pane's workspace", async () => {
@@ -163,10 +147,20 @@ describe("exportJjSessionAttribution", () => {
       env: {},
       resolveBase: async () => "/u/base.toml",
     });
-    const text = await readFile(path.join(dir, `omp-attribution-${ROOT_ID}.toml`), "utf8");
-    expect(text).toBe(scopedOverlay(ws, "ACME-7", "tester"));
-    expect(text).toEndWith(
-      `\n[--scope.templates]\ncommit_trailers = '"Omp-Session: ${ROOT_ID}\\nLegion-Role: tester\\nDispatch: ACME-7"'\n`
+    const [unscoped, scope] = await overlayTables(dir);
+    expect(unscoped.split("\n")).toContain(
+      `commit_trailers = '"Omp-Session: ${ROOT_ID}\\nLegion-Role: tester"'`
+    );
+    expect(unscoped).not.toContain("Dispatch");
+    // The scope, written out once: the pair, then the issue line, for this workspace alone.
+    expect(scope).toBe(
+      [
+        "[[--scope]]",
+        `--when.workspaces = ["${ws}"]`,
+        "[--scope.templates]",
+        `commit_trailers = '"Omp-Session: ${ROOT_ID}\\nLegion-Role: tester\\nDispatch: ACME-7"'`,
+        "",
+      ].join("\n")
     );
   });
 
@@ -178,10 +172,13 @@ describe("exportJjSessionAttribution", () => {
       env: {},
       resolveBase: async () => "/u/base.toml",
     });
-    const text = await readFile(path.join(dir, `omp-attribution-${ROOT_ID}.toml`), "utf8");
-    expect(text).toBe(unscopedTable("controller"));
-    expect(text).toContain(
+    const lines = (await overlayText(dir)).split("\n");
+    expect(lines).toContain(
       `commit_trailers = '"Omp-Session: ${ROOT_ID}\\nLegion-Role: controller"'`
+    );
+    expect(lines).toContain(`  "Legion-Role: controller\\n",`);
+    expect(lines).toContain(
+      `    if(!trailers.any(|t| t.key() == "Legion-Role" && t.value() == "controller"), "Legion-Role: controller\\n"),`
     );
   });
 
@@ -200,9 +197,7 @@ describe("exportJjSessionAttribution", () => {
       env: {},
       resolveBase: async () => "/u/base.toml",
     });
-    expect(await readFile(path.join(dir, `omp-attribution-${ROOT_ID}.toml`), "utf8")).toBe(
-      sessionOnlyOverlay
-    );
+    await expectSessionLineAlone(dir);
   });
 
   // Containment, as for the issue key: the role is interpolated into a jj template inside a TOML
@@ -218,9 +213,7 @@ describe("exportJjSessionAttribution", () => {
       env: {},
       resolveBase: async () => "/u/base.toml",
     });
-    expect(await readFile(path.join(dir, `omp-attribution-${ROOT_ID}.toml`), "utf8")).toBe(
-      sessionOnlyOverlay
-    );
+    await expectSessionLineAlone(dir);
   });
 
   it("scopes the Dispatch line to the pane's workspace for a key of the accepted shape", async () => {
@@ -233,9 +226,11 @@ describe("exportJjSessionAttribution", () => {
       env,
       resolveBase: async () => "/u/base.toml",
     });
-    expect(await readFile(path.join(dir, `omp-attribution-${ROOT_ID}.toml`), "utf8")).toBe(
-      scopedOverlay(ws, "ACME-7")
-    );
+    const [unscoped, scope] = await overlayTables(dir);
+    expect(unscoped).not.toContain("Dispatch");
+    const scoped = scope?.split("\n");
+    expect(scoped).toContain(`--when.workspaces = ["${ws}"]`);
+    expect(scoped).toContain(`commit_trailers = '"Omp-Session: ${ROOT_ID}\\nDispatch: ACME-7"'`);
   });
 
   // Without a workspace there is nothing to scope the key to, and an unscoped key would stamp
@@ -248,9 +243,7 @@ describe("exportJjSessionAttribution", () => {
       env,
       resolveBase: async () => "/u/base.toml",
     });
-    expect(await readFile(path.join(dir, `omp-attribution-${ROOT_ID}.toml`), "utf8")).toBe(
-      sessionOnlyOverlay
-    );
+    await expectSessionLineAlone(dir);
   });
 
   // jj resolves a workspace root before it matches a scope, so the link's own path would match
@@ -267,9 +260,8 @@ describe("exportJjSessionAttribution", () => {
       env,
       resolveBase: async () => "/u/base.toml",
     });
-    expect(await readFile(path.join(dir, `omp-attribution-${ROOT_ID}.toml`), "utf8")).toBe(
-      scopedOverlay(real, "ACME-7")
-    );
+    const [, scope] = await overlayTables(dir);
+    expect(scope?.split("\n")).toContain(`--when.workspaces = ["${real}"]`);
   });
 
   it("writes no scope for a workspace path that does not exist", async () => {
@@ -281,9 +273,7 @@ describe("exportJjSessionAttribution", () => {
       env,
       resolveBase: async () => "/u/base.toml",
     });
-    expect(await readFile(path.join(dir, `omp-attribution-${ROOT_ID}.toml`), "utf8")).toBe(
-      sessionOnlyOverlay
-    );
+    await expectSessionLineAlone(dir);
   });
 
   // The path goes into a TOML basic string inside an array; a raw quote would end that string
@@ -298,8 +288,10 @@ describe("exportJjSessionAttribution", () => {
       env,
       resolveBase: async () => "/u/base.toml",
     });
-    expect(await readFile(path.join(dir, `omp-attribution-${ROOT_ID}.toml`), "utf8")).toBe(
-      scopedOverlay(ws.replaceAll("\\", "\\\\").replaceAll('"', '\\"'), "ACME-7")
+    // The last name of the path, `ws "quoted\odd`, with its `"` and its `\` escaped for TOML.
+    const [, scope] = await overlayTables(dir);
+    expect(scope?.split("\n")).toContain(
+      `--when.workspaces = ["${path.dirname(ws)}/ws \\"quoted\\\\odd"]`
     );
   });
 
@@ -318,9 +310,7 @@ describe("exportJjSessionAttribution", () => {
       env,
       resolveBase: async () => "/u/base.toml",
     });
-    expect(await readFile(path.join(dir, `omp-attribution-${ROOT_ID}.toml`), "utf8")).toBe(
-      sessionOnlyOverlay
-    );
+    await expectSessionLineAlone(dir);
   });
 
   // Containment as much as correctness: the value is interpolated into a jj template inside a
@@ -344,9 +334,7 @@ describe("exportJjSessionAttribution", () => {
       env,
       resolveBase: async () => "/u/base.toml",
     });
-    expect(await readFile(path.join(dir, `omp-attribution-${ROOT_ID}.toml`), "utf8")).toBe(
-      sessionOnlyOverlay
-    );
+    await expectSessionLineAlone(dir);
   });
 
   it("carries a state directory holding a space and a single quote whole", async () => {
@@ -361,7 +349,7 @@ describe("exportJjSessionAttribution", () => {
     });
     const overlay = path.join(dir, `omp-attribution-${ROOT_ID}.toml`);
     expect(chain).toBe(`/u/base.toml:${overlay}`);
-    expect(await readFile(overlay, "utf8")).toBe(scopedOverlay(ws, "ACME-7"));
+    expect(await readFile(overlay, "utf8")).toStartWith("[templates]\n");
   });
 
   it("strips stale attribution overlays from an inherited JJ_CONFIG, keeping user layers", async () => {

@@ -235,6 +235,19 @@ export async function userConfigChain(
   }
 }
 
+/** What a pane adds to its overlay beyond the session line. Leave out a field that has no value,
+ * and do not set it to undefined: claude-envoy type-checks this file under
+ * `exactOptionalPropertyTypes`, which refuses undefined in an optional field. */
+export interface PaneAttribution {
+  /** The issue key for the `Dispatch:` line. */
+  readonly issueKey?: string;
+  /** The real, absolute path of the pane's workspace (`resolvedWorkspace`): the one workspace
+   * whose commits get the `Dispatch:` line. */
+  readonly workspace?: string;
+  /** The pane's role, for the `Legion-Role:` line. */
+  readonly role?: string;
+}
+
 /** Writes the overlay for `sessionId` under `stateDir` and returns the chain it exported into
  * `env.JJ_CONFIG`, or undefined when it exported none: a session id that is not one
  * (`SESSION_ID_PATH_SEGMENT`: the id reaches both the TOML literal and the overlay's file name,
@@ -248,10 +261,7 @@ export async function userConfigChain(
 export async function exportJjSessionAttribution(
   sessionId: string,
   stateDir: string,
-  options: {
-    issueKey?: string;
-    workspace?: string;
-    role?: string;
+  options: PaneAttribution & {
     env?: NodeJS.ProcessEnv;
     resolveBase?: () => Promise<string | undefined>;
   } = {}
@@ -306,15 +316,8 @@ export async function exportJjSessionAttribution(
  *
  * The role is `LEGION_ROLE`, only when it names a role a commit may carry (`isTrailerRole`: a
  * Legion role, or the controller's). Any other value is no role, and the pair is the session line
- * alone. This is the one place that reads the role for the overlay.
- *
- * Each is left out rather than passed undefined, so the result is the options object of a caller
- * type-checked under `exactOptionalPropertyTypes` (claude-envoy's). */
-export function paneAttributionOptions(env: NodeJS.ProcessEnv): {
-  issueKey?: string;
-  workspace?: string;
-  role?: string;
-} {
+ * alone. This is the one place that reads the role for the overlay. */
+export function paneAttributionOptions(env: NodeJS.ProcessEnv): PaneAttribution {
   // biome-ignore-start lint/complexity/useLiteralKeys: claude-envoy's tsconfig refuses dot access
   const issueKey = env["LEGION_ISSUE_TRAILER"];
   const workspace = resolvedWorkspace(env["LEGION_WORKSPACE"]);

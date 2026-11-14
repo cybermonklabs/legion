@@ -389,7 +389,11 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
   It then runs the real git (`--real`) or the next git on PATH after the directory (`--after`), a host's own git wrapper included, and it runs every other command unchanged.
   Where a host's git wrapper runs the `--after` form again, that second run goes on past each git the earlier runs ran, a script or a compiled program, and adds nothing, so the loop ends.
   Where the git programs on PATH only run one another and the `--after` form, it stops them with exit 127 and says so.
-  The trailers need git 2.32 or later (`git commit --trailer`), and a commit through an older git gets neither line.
+  The trailers need git 2.32 or later (`git commit --trailer`).
+  `legion git` reads the version of one git: the real git (`--real`), or the first git on PATH after the directory that is a compiled program and not a script (`--after`).
+  When that git is older than 2.32, the commit gets neither line.
+  A host's git wrapper script can run a different git, and `legion git` does not read the version of that git.
+  When that different git is older than 2.32, it refuses the two `--trailer` options with its unknown-option error, so the commit fails, although the same commit succeeds without `legion git`.
 
 - `legion git-credential get|store|erase`
 

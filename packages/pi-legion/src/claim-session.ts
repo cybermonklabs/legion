@@ -2,6 +2,7 @@ import { claimFirstTurnBoundMs } from "@legion/pi-shared/claim-first-turn-bound"
 import type { LegionDaemonClient } from "@legion/pi-shared/daemon-client";
 import {
   exportJjSessionAttribution,
+  type PaneAttribution,
   paneAttributionOptions,
   sessionIdFromTranscript,
 } from "@legion/pi-shared/jj-attribution";
@@ -42,12 +43,9 @@ export interface ClaimSession {
 export function attributionInputs(
   sessionFile: string,
   env: NodeJS.ProcessEnv
-): {
+): PaneAttribution & {
   readonly sessionId: string | undefined;
   readonly stateDir: string;
-  readonly issueKey?: string;
-  readonly workspace?: string;
-  readonly role?: string;
 } {
   return {
     sessionId: sessionIdFromTranscript(sessionFile),
