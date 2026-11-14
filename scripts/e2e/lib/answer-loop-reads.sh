@@ -562,11 +562,15 @@ passed_to_controller() {
 controller_questions() {
   legion_cmd state --json | jq --arg r "$1" '[.questionsForController[]? | select(.reason == $r)] | length'
 }
-# tree_claims_parked CLAIMS TREE: every claim of TREE in `legion claims list --json` stands
-# suspended or retired, so nothing of the tree started (A1). A listing that is no listing says
-# nothing of the kind.
+# tree_claims_parked CLAIMS TREE: the listing `legion claims list --json` printed holds at least
+# one claim of TREE, and every claim of TREE in it stands suspended or retired, so nothing of the
+# tree started (A1). The claim it must hold is what makes the rest mean anything: jq's `all` over
+# no claims is true, so a listing of nothing, or of other trees alone, would pass having examined
+# no claim of TREE. A listing that is no listing says nothing of the kind.
 tree_claims_parked() {
-  jq -e --arg t "$2" 'type == "object" and all(.claims[]? | select(.tree == $t); .state | IN("suspended", "retired"))' <<<"${1:-null}" >/dev/null 2>&1
+  jq -e --arg t "$2" 'type == "object"
+    and any(.claims[]?; .tree == $t)
+    and all(.claims[]? | select(.tree == $t); .state | IN("suspended", "retired"))' <<<"${1:-null}" >/dev/null 2>&1
 }
 
 # ---- A13: branch against base ------------------------------------------------------------------------

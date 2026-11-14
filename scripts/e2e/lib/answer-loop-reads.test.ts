@@ -915,12 +915,17 @@ describe("the daemon's own record and state", () => {
     });
   });
 
-  test("tree_claims_parked holds only while every claim of the tree is stopped", () => {
+  test("tree_claims_parked holds only while the tree has a claim and every one of them is stopped", () => {
     const parked = `{"claims":[{"tree":"ALX-1","state":"suspended"},{"tree":"ALX-1","state":"retired"},{"tree":"ALX-9","state":"idle"}]}`;
     const started = `{"claims":[{"tree":"ALX-1","state":"suspended"},{"tree":"ALX-1","state":"idle"}]}`;
     expect(run(`tree_claims_parked '${parked}' ALX-1`).code).toBe(0);
     expect(run(`tree_claims_parked '${started}' ALX-1`).code).toBe(1);
-    expect(run(`tree_claims_parked '{"claims":[]}' ALX-1`).code).toBe(0);
+    // A listing that holds no claim of the tree examined nothing of it: jq's `all` over no claims
+    // is true, which is what the read's first clause is there to catch.
+    expect(run(`tree_claims_parked '{"claims":[]}' ALX-1`).code).toBe(1);
+    expect(
+      run(`tree_claims_parked '{"claims":[{"tree":"ALX-9","state":"suspended"}]}' ALX-1`).code
+    ).toBe(1);
     expect(run(`tree_claims_parked '' ALX-1`).code).toBe(1);
   });
 });
