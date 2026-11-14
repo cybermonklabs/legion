@@ -5,7 +5,6 @@ import (
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/phase"
-	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 )
 
 const (
@@ -199,18 +198,11 @@ func TestAnAbandonedSessionsSentenceIsToldAtConfirmation(t *testing.T) {
 	h.abandonSession(refusal)
 	h.registerFresh()
 	base := len(h.prompts())
-	names := func(prompt fake.Prompt, which string) {
-		t.Helper()
-		for _, want := range []string{session, "abandoned", refusal, "legion/LEGION-209"} {
-			if !strings.Contains(prompt.Message, want) {
-				t.Fatalf("%s does not name %q:\n%s", which, want, prompt.Message)
-			}
-		}
-	}
+	says := []string{session, "abandoned", refusal, "legion/LEGION-209"}
 
 	h.must(RequestDeliver{Claim: h.token, Task: "Continue Workflow. Issue: LEGION-209. Phase: implementing."})
 	first := h.wantPrompts(base + 1)[base]
-	names(first, "the fresh session's first task")
+	wantSays(t, first.Message, says...)
 	h.wantAbandonedToldBy("", "at the acknowledgement")
 
 	h.must(StreamLateRefusal{Claim: h.token, DeliveryID: first.DeliveryID, Error: busyAnswer})
@@ -218,7 +210,7 @@ func TestAnAbandonedSessionsSentenceIsToldAtConfirmation(t *testing.T) {
 
 	h.mustQuiet(StreamTurnEnd{Claim: h.token})
 	second := h.wantPrompts(base + 2)[base+1]
-	names(second, "the task the agent's own turn end sent")
+	wantSays(t, second.Message, says...)
 	h.must(StreamTurnStart{Claim: h.token})
 	h.wantAbandonedToldBy(second.DeliveryID, "once the task's turn began")
 
@@ -231,7 +223,7 @@ func TestAnAbandonedSessionsSentenceIsToldAtConfirmation(t *testing.T) {
 
 	h.mustQuiet(StreamTurnEnd{Claim: h.token})
 	third := h.wantPrompts(base + 3)[base+2]
-	names(third, "the task sent after the other input's turn")
+	wantSays(t, third.Message, says...)
 	h.must(StreamTurnStart{Claim: h.token})
 	h.wantAbandonedToldBy(third.DeliveryID, "once the task's own turn began")
 	h.must(StreamTurnEnd{Claim: h.token})

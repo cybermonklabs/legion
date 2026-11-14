@@ -205,10 +205,9 @@ func (d Delivery) Relaunch() bool { return relaunchTask(d.ID) }
 // every ready and only logs a refusal of it (the daemon's controllerKeeper.ready), so a delivery
 // queued here would make the start procedure wait behind a sentence; the start message is a
 // delivery, which carries the sentence in front of it instead. A claim whose fresh session has not
-// yet told the session it abandoned (Claim.Abandoned) is given one as any other is: the record of
-// the old session's process was ended where the session was abandoned (forgetSession, where that
-// rule is written), so a record that tells here is one of the fresh session's own processes, and
-// the delivery carries the abandoned session's sentence and then the record's (Delivery.message).
+// yet told the session it abandoned (Claim.Abandoned) is given one as any other is: a record that
+// tells here is one of the fresh session's own processes (forgetSession), and the delivery carries
+// the abandoned session's sentence and then the record's (Delivery.message).
 func (m *Machine) queueRelaunch(ctx context.Context) error {
 	ended := m.claim.EndedWork
 	if !ended.Tells() || m.claim.Pending != nil || m.claim.Role == claim.RoleController {

@@ -363,12 +363,11 @@ func (m *Machine) endHeld(ctx context.Context) error {
 // no process finished it. It carries the note of a pod that ran out of memory where the report
 // that found the process gone said so (goneOutOfMemory), and the claim keeps that report's
 // account of the death for the operator's listing and a failed claim's notices (goneCause,
-// Claim.LastDeathCause), as died keeps the death it judges. What the task is sent again saying is
-// the record of that death, written below once the take-back lands. A take-back the store will
-// not write stops everything — nothing is stopped, nothing is sent and the claim is left as it
-// stands, its last death's cause put back, as died leaves it — so the caller's next request takes
-// it back then, rather than this leaving a suspended claim holding a task settle would retire as
-// a finished turn.
+// Claim.LastDeathCause), as died keeps the death it judges. A take-back the store will not write
+// stops everything — nothing is stopped, nothing is sent and the claim is left as it stands, its
+// last death's cause put back, as died leaves it — so the caller's next request takes it back
+// then, rather than this leaving a suspended claim holding a task settle would retire as a
+// finished turn.
 //
 // The clean stop of the dead process's Envoy session is sent once that write has landed, and
 // before the process is let go (sessionGone, letProcessGoFor). Sent before the write, a write

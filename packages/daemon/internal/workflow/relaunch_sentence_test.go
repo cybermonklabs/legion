@@ -118,13 +118,11 @@ func TestARelaunchDeliveryHoldsNoRootsWaitOnAPersonOverTheStore(t *testing.T) {
 				t.Fatalf("seed the architect's delivery %s: %v", tc.id, err)
 			}
 			var run record.RoleRun
-			if err := pgx.BeginFunc(t.Context(), pool, func(tx pgx.Tx) error {
+			seedRecord(t, pool, func(tx pgx.Tx) error {
 				var err error
 				run, err = record.NewStore().RoleRun(t.Context(), tx, token, "LEGION-208", claim.RoleArchitect, 1)
 				return err
-			}); err != nil {
-				t.Fatalf("read the architect's role run: %v", err)
-			}
+			})
 			if run.Claim == nil || run.Claim.Pending == nil {
 				t.Fatalf("the store read the role run's claim as %+v, want it holding the delivery %s", run.Claim, tc.id)
 			}

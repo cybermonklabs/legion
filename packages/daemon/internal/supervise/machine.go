@@ -1193,13 +1193,12 @@ type Machine struct {
 	// carried is which of the claim's two untold records a prompt this machine sent to the claim's
 	// current process carried the sentence of (sentences, Delivery.message): the session the claim
 	// abandoned, and what its last let-go ended, each marked only where the prompt's text carries
-	// that record's own sentence. It is what confirm reads to mark each record
-	// told, so a turn whose prompt went out before a record existed — the takeover of a process
-	// another runtime still runs, whose relaunch the pacing parks — tells nothing of it. It is set
-	// where the send goes out (startSend), and goes with the process (letGo) and, for the record of
-	// the let-go, with that record (recordEnd), since a newer record is words no earlier prompt
-	// carried. It is memory only: a daemon restarted inside the turn of such a prompt reads none,
-	// so the next prompt carries the sentence again — told twice rather than not at all.
+	// that record's own sentence. It is what confirm reads to mark each record told, so a turn
+	// whose prompt went out before a record existed — the takeover of a process another runtime
+	// still runs, whose relaunch the pacing parks — tells nothing of it. It is set where the send
+	// goes out (startSend), and goes with the process (letGo) and, for the record of the let-go,
+	// with that record (recordEnd), since a newer record is words no earlier prompt carried. It is
+	// memory only: a daemon restarted inside the turn of such a prompt reads none (confirm).
 	carried sentences
 	// compacting is the compaction the claim is in (Machine.Compact), nil for none: the claim is
 	// working for as long as one runs, and this is what tells that working apart from a turn's —
@@ -2667,13 +2666,9 @@ type AbandonedSession struct {
 	At          time.Time `json:"at"`
 	// Told is whether the agent that replaced the session has been told of it, so it is told in
 	// the first task it actually takes and in no later one, and ToldBy is the delivery whose
-	// confirmation told it. Both follow the one rule confirm states for the two records a prompt
-	// tells: told at the confirmation of a prompt that carried the sentence, and back to untold
-	// when that confirmation is taken back (moveTelling, untellInFlight). A prompt the agent
-	// refused, or acknowledged and then answered busy, reached nobody, so the fresh session is
-	// still told of its predecessor in whatever prompt does reach it (dispatch://INFRA-714); a
-	// sentence told twice is the harmless way round, where losing it strands a worker reading an
-	// empty transcript as a fresh start.
+	// confirmation told it, as confirm states. A sentence told twice is the harmless way round,
+	// where losing it strands a worker reading an empty transcript as a fresh start
+	// (dispatch://INFRA-714).
 	Told   bool   `json:"told,omitempty"`
 	ToldBy string `json:"toldBy,omitempty"`
 }

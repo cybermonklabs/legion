@@ -1364,10 +1364,8 @@ func reprobe(m *Machine, ctx context.Context, _ Event) error {
 // acknowledges a prompt at its admission, before its pre-turn work, and its turn is the session's
 // next whenever it starts, so a late start confirms the task (turnStarted) and the prompt's own
 // result settles it (fence, promptResulted).
-// It tells nothing of what the prompt carried, the abandoned session's sentence or the record of
-// the last let-go: an acknowledgement at admission can still be answered busy, so each is told at
-// the confirmation of the prompt that carried it (confirm, where the rule is), and this writes
-// the delivery alone, as for every other prompt.
+// It tells nothing of what the prompt carried, as confirm states, and so writes the delivery
+// alone, as for every other prompt.
 func acked(m *Machine, ctx context.Context, _ Event) error {
 	m.helloDuringSend = false
 	p := m.claim.Pending

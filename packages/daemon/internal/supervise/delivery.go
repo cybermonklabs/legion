@@ -211,8 +211,8 @@ func (d Delivery) StillWorked(generation uint64, p phase.Phase, state ClaimState
 // sentences is which of the claim's two untold records a prompt carries the sentence of: the
 // session the claim abandoned (AbandonedSession, abandonedTask), and what the last let-go of its
 // process ended (EndedWork, relaunchSentence). Delivery.message answers it beside the prompt it
-// composes, so what a prompt is marked as telling is what its text holds (Machine.carried), and a
-// record is told at the confirmation of a prompt that carried it (confirm, where the rule is).
+// composes, so what a prompt is marked as telling is what its text holds (Machine.carried, which
+// confirm reads).
 type sentences struct{ abandoned, ended bool }
 
 // message is the prompt a delivery is sent as, and which of the claim's two untold records it
@@ -220,18 +220,17 @@ type sentences struct{ abandoned, ended bool }
 // became of the agent's earlier work, and then the provider's. In order:
 //
 //   - The first task the agent that replaced an abandoned session is given names that session
-//     (abandonedTask), and says that everything of the old session is gone. The record of what
-//     the old session's process ended was ended where the session was abandoned (forgetSession,
-//     where that rule is written), so a record that still tells beside it is one of the fresh
-//     session's own processes, and that record's sentence follows the abandoned session's (the
-//     next item): the prompt tells both. What the abandoned session's sentence stands in place of
-//     is the old session's turn: the note of an interruption (interruptedTask) and the
-//     out-of-memory note behind it, which a task taken back from a turn of the old session's
-//     process still carries. A turn of the fresh process that was cut off on this task is the
-//     fresh process's own, and the record that tells says so (EndedWork.TaskTurn): the let-go
-//     that wrote it took the task back from that turn and wrote its interruption anew
-//     (recordEnd, interrupted). So the record's sentence says that turn was interrupted, and the
-//     out-of-memory note follows it as it does where no session was abandoned.
+//     (abandonedTask), and says that everything of the old session is gone. A record that still
+//     tells beside it is one of the fresh session's own processes (forgetSession), and that
+//     record's sentence follows the abandoned session's (the next item): the prompt tells both.
+//     What the abandoned session's sentence stands in place of is the old session's turn: the
+//     note of an interruption (interruptedTask) and the out-of-memory note behind it, which a
+//     task taken back from a turn of the old session's process still carries. A turn of the
+//     fresh process that was cut off on this task is the fresh process's own, and the record
+//     that tells says so (EndedWork.TaskTurn): the let-go that wrote it took the task back from
+//     that turn and wrote its interruption anew (recordEnd, interrupted). So the record's
+//     sentence says that turn was interrupted, and the out-of-memory note follows it as it does
+//     where no session was abandoned.
 //   - While the claim's record of what its last let-go ended is untold (EndedWork.Tells), every
 //     prompt carries that record's sentence in front of its task (relaunchSentence): the cause,
 //     the turn and the background work that let-go cut off, whatever the task. It also says what
@@ -244,8 +243,7 @@ type sentences struct{ abandoned, ended bool }
 //     last death's words. With an abandoned session still to tell, that turn was the old
 //     session's, and the abandoned session's sentence stands in its place (the first item).
 //
-// Each record a prompt tells is told at the confirmation of that prompt (confirm), never here: a
-// prompt composed is not a prompt read.
+// Composing a prompt tells nothing (confirm).
 //
 // Behind the interruption, when its end was the pod running out of memory, comes outOfMemoryTask
 // — the agent reads that its turn was interrupted, then why, then the task. A task a provider
@@ -574,10 +572,8 @@ func (c Claim) openRoundHoldsTask() bool {
 // A third drop takes the same shape: the daemon's own delivery of a relaunch's record
 // (Delivery.Relaunch, queueRelaunch) whose record no longer tells. Its text is that record's
 // sentence and nothing else, so once the record is told it has nothing to say. The claim holds
-// one in that state when its session is abandoned before the delivery's turn — forgetSession
-// ends the old session's record, and the abandoned session's sentence says that work is gone —
-// and sending it would tell the fresh agent the old session's record in the text it was queued
-// with.
+// one in that state when its session is abandoned before the delivery's turn (forgetSession), and
+// sending it would tell the fresh agent the old session's record in the text it was queued with.
 //
 // A drop that leaves the claim holding nothing while its record of the last let-go still tells
 // gives it the daemon's own delivery of that record and sends it (relaunchAfterDrop): the ready
@@ -1067,12 +1063,10 @@ func (m *Machine) streaming(ctx context.Context, conn runtime.Conn) (streaming, 
 // startSend runs one prompt on its own goroutine and posts its outcome back to the machine. The
 // task is marked as put to the agent before the goroutine starts (Delivery.Prompted), whatever
 // the agent then answers: from here on, a prompt of it has gone out. Of the claim's two untold
-// records, the abandoned session and what the last let-go ended, this marks only which the prompt
-// carries the sentence of, as message composed it (Machine.carried), and tells neither: a prompt
-// that went out is not one that arrived, and each is told at the confirmation of the prompt that
-// carried it (confirm, where the rule is). Whether the send adopts the working copy first is
-// decided here, under the machine's lock, so the goroutine acts on the claim the hold in
-// sendPending was decided against.
+// records, this marks which the prompt carries the sentence of, as message composed it
+// (Machine.carried), and tells neither, as confirm states. Whether the send adopts the working
+// copy first is decided here, under the machine's lock, so the goroutine acts on the claim the
+// hold in sendPending was decided against.
 func (m *Machine) startSend(conn runtime.Conn, d Delivery) {
 	token, generation, role, loc := m.claim.Token, m.claim.Generation, m.claim.Role, m.claim.Locator
 	adopting := m.adopts(d)

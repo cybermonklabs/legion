@@ -4,7 +4,6 @@ import (
 	"errors"
 	"log/slog"
 	"reflect"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -595,14 +594,13 @@ func TestARelaunchRecordsTheWorkAnOlderReportSawOfAProcessThatDiesIdle(t *testin
 			h.advance(time.Second)
 			h.must(StreamTurnEnd{Claim: h.token})
 			h.wantState(StateIdle)
-			died := h.generation()
+			died, at := h.generation(), h.clock.Now()
 
 			h.observe(runtime.Gone)
 
+			h.wantEnded(EndedWork{At: at, Cause: endDied(deathCause(runtime.Observation{Kind: runtime.Gone})),
+				Generation: died, Background: len(row.kinds) > 0, Kinds: row.kinds, Reported: row.reported})
 			ended := h.claim().EndedWork
-			if ended.Generation != died || ended.Turn || ended.Background != (len(row.kinds) > 0) || !slices.Equal(ended.Kinds, row.kinds) || ended.Reported != row.reported {
-				t.Fatalf("the record of the idle process's end is %+v, want generation %d, no turn, the kinds %v and Reported %v", ended, died, row.kinds, row.reported)
-			}
 			sentence := RelaunchSentence(ended)
 			wantSays(t, sentence, row.says...)
 			wantSaysNot(t, sentence, row.saysNot...)

@@ -62,13 +62,8 @@ type EndedWork struct {
 	// (dispatch://INFRA-3276 R3, "unknown is not silence").
 	Reported bool `json:"reported"`
 	// Told is whether the record has been told to a later process, and ToldBy the delivery whose
-	// confirmation told it. Both follow the one rule confirm states for the two records a prompt
-	// tells: told at the confirmation of a prompt that carried the sentence, never at its
-	// acknowledgement, and back to untold when that confirmation is taken back (moveTelling),
-	// a let-go's take-back of one a turn took while its prompt's send was in flight among them
-	// (untellInFlight). The one record told anywhere else is an old session's, which the
-	// abandonment of that session ends by no delivery (forgetSession), since the fresh session is
-	// told everything of the old one is gone. A record not yet told is replaced by a newer one only
+	// confirmation told it, as confirm states, or "" for an old session's record the abandonment
+	// of that session ended (forgetSession). A record not yet told is replaced by a newer one only
 	// as the union of the two (joined), so what the earlier let-go ended is not lost before anyone
 	// reads it.
 	Told   bool   `json:"told,omitempty"`
@@ -201,9 +196,9 @@ func (m *Machine) recordEnd(ctx context.Context, cause string) {
 	}
 	// A report read before the claim's last turn began has said nothing about that turn
 	// (pods.IdleClaim.Reported), so it is no report of it, though the background work it saw is
-	// kept above. LastTurnStart is when this daemon, or the one before it, first learned that turn
-	// had begun: its agent_start (beginTurn), or the busy answer that recorded a turn whose start
-	// it never read (recordBusyTurn).
+	// kept above. LastTurnStart is the turn's agent_start as read (beginTurn), or, until that start
+	// is read, the busy answer that recorded the turn (recordBusyTurn); a daemon restarted under a
+	// working claim reads the one the daemon before it stored.
 	ended.Reported = reported && !(ranTurn && report.At.Before(m.claim.LastTurnStart))
 	if !ended.Turn && !ended.TaskTurn && !ended.Background && (ended.Reported || !ranTurn) {
 		return
