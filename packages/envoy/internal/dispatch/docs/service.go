@@ -1352,9 +1352,10 @@ func (s *Service) scheduleSettleLocked(room string, state *roomState) {
 }
 
 // scheduleSettleAfterLocked arms room's settlement to run after delay, in place of the timer armed
-// on state, if any. Its caller holds state.mu.
+// on state, if any. A closed issue's room is armed as an open one's is: its document settles
+// whether or not its issue is closed (settleRoomWithin). Its caller holds state.mu.
 func (s *Service) scheduleSettleAfterLocked(room string, state *roomState, delay time.Duration) {
-	if s.stopping.Load() || s.quiescing.Load() || s.shuttingDown(room) || state.closed || state.failed != nil {
+	if s.stopping.Load() || s.quiescing.Load() || s.shuttingDown(room) || state.failed != nil {
 		return
 	}
 	if state.liveWriter != nil {
@@ -1880,10 +1881,11 @@ func (s *Service) commitSettlement(ctx context.Context, tx pgx.Tx, ledger *Ledge
 // generation since owns the settlement (an armed timer, another close's reservation, a write), and
 // the reservation moves it, so of two settlements that meet the same refusal only one closes the
 // room. A room the close does not reach - live already retired or replaced - is left to whatever
-// holds the document, and the settlement is armed again on it. Every outcome is logged but a
-// service that is stopping and a room already closed or failed, which its close or failure
-// accounts for, so a refused settlement on a room still serving leaves a line naming what became
-// of its room.
+// holds the document, and the settlement is armed again on it. A closed issue's room is closed
+// and its settlement armed again as an open one's is, since its document settles whether or not
+// its issue is closed (settleRoomWithin). Every outcome is logged but a service that is stopping
+// and a room already failed, which its failure accounts for, so a refused settlement on a room
+// still serving leaves a line naming what became of its room.
 func (s *Service) reloadReplacedRoom(ctx context.Context, room string, state *roomState, generation uint64, live *crdt.Doc, refusal error) {
 	if s.shuttingDown(room) {
 		slog.Warn("dispatch: skip shutdown document settlement from a room whose stored history was replaced; the next process settles it",
@@ -1895,7 +1897,7 @@ func (s *Service) reloadReplacedRoom(ctx context.Context, room string, state *ro
 			"room", room, "reason", reason, "error", refusal)
 	}
 	state.mu.Lock()
-	if s.stopping.Load() || state.closed || state.failed != nil {
+	if s.stopping.Load() || state.failed != nil {
 		s.unlockState(room, state)
 		return
 	}
@@ -2617,6 +2619,13 @@ func (s *Service) recheckRemovedRooms(ctx context.Context) {
 // carries no instance (unrecordedClass): it takes no mark, and its close writes the record and
 // closes whatever room holds the name, as every close of the notification path does
 // (setRoomIssueOpen).
+//
+// A settlement whose room took such an update ends on it and calls here too, for the instance it
+// holds (endOnRefusedUpdate): its own store write of the room's updates met the refusal, or the
+// instance's mark was already taken. The settlement and the room's persistence worker take the one
+// mark, whichever meets the refusal first, so the room's close starts once. The goroutine serves
+// the settlement as it serves the worker: the settlement holds the document's advisory lock until
+// it returns, and the close waits for the room's persistence, whose appends take that lock.
 //
 // A refusal whose record has gone, or whose room is still loading and holds no record yet, closes
 // nothing and returns. A record is kept while its room is live (releaseIfUnusedLocked,

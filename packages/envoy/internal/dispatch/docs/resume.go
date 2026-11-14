@@ -43,16 +43,14 @@ func (s *Service) RunSettlementResumption(ctx context.Context, leases duty.Lease
 }
 
 // resumeOwedSettlements arms the settlement of each document whose pending-settlement row is at
-// least age old. A closed issue's documents are skipped: a closed issue's rooms settle nothing until
-// it reopens, so arming one would only fail.
+// least age old, whether or not its issue is closed: a closed issue's document settles as an open
+// one's does (settleRoomWithin).
 func (s *Service) resumeOwedSettlements(ctx context.Context, age time.Duration) error {
 	ctx = store.WithTransactionTracking(ctx)
 	rows, err := s.store.Pool.Query(ctx, `
 		select p.artifact_id::text
 		from doc_settlements_pending p
-		join artifacts a on a.id = p.artifact_id
-		left join issues i on i.key = a.issue_key
-		where p.marked_at <= now() - make_interval(secs => $1) and i.closed_at is null
+		where p.marked_at <= now() - make_interval(secs => $1)
 		order by p.marked_at
 	`, age.Seconds())
 	if err != nil {

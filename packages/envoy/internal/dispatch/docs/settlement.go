@@ -61,6 +61,13 @@ type settlement struct {
 		markdown         string
 		docUpdateVersion int64
 	}
+	// issueClosed is the document's issue row as this settlement's transaction locked it
+	// (lockArtifactOwner): true for a closed issue, false for an open one and for a document of
+	// no issue, so its zero value is open. A closed issue's document settles as an open one's
+	// does, and every rule of the settlement that differs on a closed issue goes by this row,
+	// never by the room's record of the issue (roomState.closed): a close this process has not
+	// heard of yet leaves that record open.
+	issueClosed bool
 	// first is the settlement's read of the room before its repairs, read at an exact commit
 	// position; read is that read's tree, and markdown, offsets and renderErr are what it renders
 	// as, which the version reuses when it is rendered from this same tree unchanged
@@ -118,6 +125,16 @@ type settlement struct {
 // Shutdown's do them (followUpSettlement), and a caller that runs it synchronously and answers for
 // its outcome itself reports the reason instead (settleOwedNow).
 //
+// A closed issue's document settles as an open one's does. Nothing that arms or runs a settlement
+// reads whether the issue is closed, and the issue's state the settlement goes by is the issue row
+// its transaction locks (issueClosed). The issue's close ends a settlement it finds armed or
+// running only as every move of the room's generation does (closeRecordLocked), and the document's
+// pending-settlement row leaves that settlement to resume. The one settlement a closed issue ends
+// besides is one whose room took an update the append gate refused because the issue closed more
+// than closeMargin before the room took it: that room holds text the store never will, so the
+// settlement saves nothing of it, fails no room and counts no failure, and the room's close and
+// the resumption after it settle the document from the store (endOnRefusedUpdate).
+//
 // The settlement runs in stages, each of which answers settleOn where the settlement goes on and
 // the step and outcome it ends on otherwise: it takes the room's live instance (take), reads the
 // document under the document's locks (readLocked), stamps the block ids the document lacks
@@ -130,8 +147,13 @@ func (s *Service) settleRoomWithin(parent context.Context, room string, generati
 	// stoppedShort is the outcome of a settlement that stopped short with err having written
 	// nothing into the room: a retry, unless parent has ended or Shutdown refused the write. The
 	// generation it counts that retry's failure against is the one the settlement stands at now,
-	// which its take reads again once the room is warm.
+	// which its take reads again once the room is warm. An err that is the append gate's refusal
+	// of an update the room took after its issue closed is no fault to retry: it ends the
+	// settlement (endOnRefusedUpdate).
 	settle.stoppedShort = func(err error) settleOutcome {
+		if errors.Is(err, ErrIssueClosed) {
+			return settle.endOnRefusedUpdate()
+		}
 		next := settleRetry
 		switch {
 		case parent.Err() != nil:
@@ -145,7 +167,7 @@ func (s *Service) settleRoomWithin(parent context.Context, room string, generati
 		s.beforeSettleStart(room)
 	}
 	state := s.lockState(room)
-	if s.stopping.Load() || state.closed || state.failed != nil || state.roomGeneration != generation {
+	if s.stopping.Load() || state.failed != nil || state.roomGeneration != generation {
 		s.unlockState(room, state)
 		return settleOutcome{}
 	}
@@ -173,10 +195,10 @@ func (s *Service) settleRoomWithin(parent context.Context, room string, generati
 	if err != nil {
 		return settle.stoppedShort(err)
 	}
-	if !open {
-		return settleOutcome{}
-	}
-	settle.owner = owner
+	// The issue's state is the row this transaction now holds locked, not the room's record of
+	// it: a close commits on that row, so a close this process has not heard of yet is read here,
+	// and no close commits until this settlement's transaction ends.
+	settle.owner, settle.issueClosed = owner, !open
 	// The owner row is read and locked in this transaction, so the repairs settlement injects
 	// below do not read it again: that read would be a second pooled connection taken while
 	// this transaction holds one, which is what deadlocks the pool.
@@ -219,25 +241,18 @@ func (st *settlement) take(parent context.Context, mayLoad bool) (settleStep, se
 		state.mu.Lock()
 		state.settleWarming = true
 		s.unlockState(room, state)
-		warmCtx := parent
+		// The warm-up carries the service's own mark (withOwnerVerified), so allowInject does not
+		// read the issue for it: it applies nothing, and a closed issue's document settles as an
+		// open one's does, so the refusal a closed issue makes of a caller's injection is not
+		// this load's to meet.
+		warmCtx := withOwnerVerified(parent)
 		if shuttingDown {
-			warmCtx = withShutdownLoad(parent)
+			warmCtx = withShutdownLoad(warmCtx)
 		}
 		err := s.srv.Apply(warmCtx, room, func(_ *crdt.Doc, _ func(func(*crdt.Transaction))) {})
 		state.mu.Lock()
 		state.settleWarming = false
 		s.unlockState(room, state)
-		if errors.Is(err, ErrIssueClosed) {
-			// The issue closed, and no room of this process holds the document, so no record
-			// here remembers the close (the state.closed settleRoomWithin reads before this
-			// stage, which ends a resident room's settlement): the warm-up's load read the
-			// issue instead (allowInject). A closed issue settles nothing, so this ends exactly
-			// as the closed owner row ends it after this stage, writing nothing and failing
-			// nothing. The document's pending-settlement row keeps the work, and the resumption
-			// arms it once the issue reopens (resumeOwedSettlements, which skips a closed
-			// issue).
-			return settleDone, settleOutcome{}
-		}
 		if err != nil && !errors.Is(err, websocket.ErrNoChanges) {
 			return settleDone, st.stoppedShort(fmt.Errorf("warm document for settlement: %w", err))
 		}
@@ -290,6 +305,14 @@ func (st *settlement) readLocked(ctx context.Context, parent context.Context) (s
 	}
 	if s.afterSettleLock != nil {
 		s.afterSettleLock(room)
+	}
+	// The first read of a refused update's second order (roomRefusedUpdate): the room's
+	// persistence worker met the append gate's refusal before this settlement took the
+	// document's advisory lock, so the room's tree holds an update no store write of this
+	// settlement will meet. Read once the lock is held, since from here to the commit no append
+	// of the room is refused.
+	if st.roomRefusedUpdate() {
+		return settleDone, st.endOnRefusedUpdate()
 	}
 	head, err := currentUpdateCursor(ctx, tx, room)
 	if err != nil {
@@ -414,13 +437,66 @@ func (st *settlement) finishSlots() {
 // A settlement that wrote nothing stops short as one that met any other fault does. Its
 // transaction rolls back, so the authors it read stay where they were, it marked no in-flight
 // credit, and the room updates it stored are left to the room's persistence.
+//
+// A store write the append gate refused because the document's issue closed (ErrIssueClosed) is
+// the first order of a refused update, and fails no room whether or not the settlement wrote
+// into it: the room closes for its issue instead (endOnRefusedUpdate).
 func (st *settlement) abandon(err error) settleOutcome {
+	if errors.Is(err, ErrIssueClosed) {
+		return st.endOnRefusedUpdate()
+	}
 	if len(st.slots) > 0 {
 		st.service.discardSuppressedPersistence(st.room, st.slots...)
 		st.service.failRoom(st.room, err)
 		return settleOutcome{next: settleRoomFailed, err: err}
 	}
 	return st.stoppedShort(err)
+}
+
+// endOnRefusedUpdate ends a settlement whose room took an update the append gate refused because
+// the document's issue closed more than closeMargin before the room took it (ErrIssueClosed,
+// observedBeforeClose). That update is in the room's tree and never in the store, so a version of
+// that tree would save text the closed issue refused. The settlement therefore saves nothing of
+// this room: it discards the updates it wrote into the room, fails no room, starts no retry and
+// counts no failure, and its transaction rolls back, which keeps the document's
+// pending-settlement row. The room closes for its issue (refuseClosedIssueAppend), so its
+// browsers reconnect read-only to a room loaded from the store, and the resumption settles the
+// document from there (resumeOwedSettlements).
+//
+// The refusal reaches a settlement in one of two orders. In the first, the settlement's own store
+// write meets it: its flush of the room's updates (Ledger.flushThrough, storeRepair) answers
+// ErrIssueClosed, and abandon or stoppedShort ends here. In the second, the room's persistence
+// worker met it first, took the room instance's mark (roomInstance.issueCloseStarted) and dropped
+// the update from the room's queue, so no flush of this settlement stores or refuses it, and the
+// settlement ends here on the mark (roomRefusedUpdate). Whichever meets the refusal first takes
+// that mark and starts the room's close; the call here starts nothing when the mark is taken.
+func (st *settlement) endOnRefusedUpdate() settleOutcome {
+	s := st.service
+	s.discardSuppressedPersistence(st.room, st.slots...)
+	s.refuseClosedIssueAppend(st.room, s.instanceOf(st.doc))
+	slog.Info("dispatch: document settlement ended on a room update its closed issue refused; the room closes and the document settles from the store",
+		"room", st.room)
+	return settleOutcome{}
+}
+
+// roomRefusedUpdate is whether the room instance this settlement holds took an update the append
+// gate refused because the document's issue closed (roomInstance.issueCloseStarted): the second
+// order of a refused update (endOnRefusedUpdate), in which the room's persistence worker met the
+// refusal first.
+//
+// The settlement reads it twice: once it holds the document's advisory lock (readLocked, after
+// lockSettlementCursor), and after its last store write, before its commit (commitVersion,
+// commitStamp). The worker's append takes that same lock, and the settlement holds it from the
+// first read to its commit, so no append of the room is refused between the two reads. A refusal
+// the worker made before the settlement took the lock is the one the first read can miss: the
+// worker takes the mark after its refused transaction has released the lock. But it takes the
+// mark before it drops the update from the room's queue (StoreUpdateContext, finishUpdateClass).
+// So when the settlement stores the room's updates, either that update is still queued, and the
+// gate refuses the settlement's own write (the first order), or it has gone, and its mark was
+// taken before, which the second read finds.
+func (st *settlement) roomRefusedUpdate() bool {
+	instance := st.service.instanceOf(st.doc)
+	return instance != nil && instance.issueCloseStarted.Load()
 }
 
 // commitFailed ends a settlement whose commit returned an error. Its outcome is unknown, and the
@@ -466,7 +542,7 @@ func (st *settlement) applyStamp(ctx context.Context) (settleStep, settleOutcome
 	// The authors the stamp carried are recorded durably in this transaction, the one that stores
 	// the stamp, whichever way it commits below (recordStampedAskAuthors).
 	st.carried = state.recordStampedAskBlocks(st.renamed)
-	if s.stopping.Load() || state.closed || state.failed != nil {
+	if s.stopping.Load() || state.failed != nil {
 		s.unlockState(room, state)
 		s.discardSuppressedPersistence(room, st.slots...)
 		return settleDone, settleOutcome{}
@@ -506,6 +582,12 @@ func (st *settlement) commitStamp(ctx context.Context) (settleStep, settleOutcom
 	s, room, tx := st.service, st.room, st.tx
 	if err := st.ledger.storeRepair(ctx, tx, room, st.cursor, st.stamp); err != nil {
 		return settleDone, st.abandon(fmt.Errorf("store superseded document identity update: %w", err))
+	}
+	// The second read of a refused update's second order (roomRefusedUpdate), after the last
+	// store write of this settlement and before its commit: the stamp was made on a tree that
+	// holds an update the room's closed issue refused, so none of it is committed or broadcast.
+	if st.roomRefusedUpdate() {
+		return settleDone, st.endOnRefusedUpdate()
 	}
 	identityUpdate, err := mergeUpdates(st.updates)
 	if err != nil {
@@ -663,13 +745,20 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 		return settleDone, st.abandon(err)
 	}
 
+	// The second read of a refused update's second order (roomRefusedUpdate), beside the reads of
+	// a stopping service and a failed room, after the last store write of this settlement and
+	// before its commit: what it would commit is rendered from a tree that holds an update the
+	// room's closed issue refused.
+	if st.roomRefusedUpdate() {
+		return settleDone, st.endOnRefusedUpdate()
+	}
 	state.mu.Lock()
 	// A settlement that wrote into the room commits what it wrote even when the document has moved
 	// since its read: the room and its peers hold those updates, and dropped here they would never
 	// reach the store. Its version is the document as it stood at its last read, after the repairs,
 	// every update of which this transaction stores; a move made after that read is in a later
 	// version.
-	if s.stopping.Load() || state.closed || state.failed != nil || (state.roomGeneration != st.generation && len(st.slots) == 0) {
+	if s.stopping.Load() || state.failed != nil || (state.roomGeneration != st.generation && len(st.slots) == 0) {
 		s.unlockState(room, state)
 		s.discardSuppressedPersistence(room, st.slots...)
 		return settleDone, settleOutcome{}

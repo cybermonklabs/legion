@@ -36,13 +36,15 @@ type connectionContextKey struct{}
 type ownerVerifiedContextKey struct{}
 
 // ownerVerifiedToken is installed only on the server's own calls, by a caller that already
-// knows the document's owner state: a settlement, which holds the owner row locked in its
-// transaction; the publish of a committed live write, whose transaction held that row until it
-// committed; the block-id backfill, which is a command run against a database nobody is
-// serving from; or one of a comment's anchor operations under WithCommentMarks, whose caller
-// holds the owner row locked and decided under it that the comment is written. Their injections
-// skip the issue read in allowInject - for the settlement that read would be a second pooled
-// connection taken while its transaction is open (store.ErrNestedAcquire), for the publish a
+// knows the document's owner state or has no use for it: a settlement, which holds the owner row
+// locked in its transaction, and its warm-up load, which applies nothing; the publish of a
+// committed live write, whose transaction held that row until it committed; the block-id
+// backfill, which is a command run against a database nobody is serving from; or one of a
+// comment's anchor operations under WithCommentMarks, whose caller holds the owner row locked
+// and decided under it that the comment is written. Their injections skip the issue read in
+// allowInject - for the settlement that read would be a second pooled connection taken while
+// its transaction is open (store.ErrNestedAcquire), for its warm-up a refusal its closed issue
+// does not make (a closed issue's document settles as an open one's does), for the publish a
 // read other writers' connections can starve (see publishLiveUpdate), for the backfill a
 // question already answered, and for a comment's anchor a refusal its closed issue does not make.
 type ownerVerifiedToken struct{ _ byte }
@@ -463,9 +465,9 @@ func (s *Service) refuseIfRebuilding(room string) error {
 }
 
 // allowInject decides whether ygo may apply an injection to a room. Its issue read goes
-// through the shared pool for a caller that need hold no connection of its own (the
-// settlement warm-up in settleRoom), and that is outside the pool's deadlock cycle only
-// because ygo runs OnInject before getOrCreateRoom (sjawhar/ygo v1.55.1-sami.2,
+// through the shared pool for a caller that need hold no connection of its own (the unmark of
+// a settled room's expired marks, unmarkExpired), and that is outside the pool's deadlock
+// cycle only because ygo runs OnInject before getOrCreateRoom (sjawhar/ygo v1.55.1-sami.2,
 // provider/websocket/inject.go:319-328): an injection refused here has published no room
 // placeholder for a connection-holder to park on, so nothing holding a connection is waiting
 // on this read. A vendored reordering of those two calls puts it back in the cycle.
@@ -657,19 +659,22 @@ func (s *Service) onLoadDocument(ctx context.Context, room string, doc *crdt.Doc
 		state.observeAskBlocks(askBlocks, nil)
 	}
 	// The document owes a settlement no settlement committed: one a shutdown's budget cut short,
-	// or one a room failure dropped (failRoomLocked). Its timer lived in the process or the room
-	// that is gone, so an open room settles once rather than waiting for an edit to arm one - unless
-	// the load is a settlement's own warm-up, which settles it next. Its authors are in the
-	// document's pending authors, which that settlement reads; the room restores only the latest
-	// edit source the settlement names. A closed room keeps the row; it settles only after its
-	// issue reopens. A room that failed again while this load ran leaves the row for its own
-	// replacement.
+	// one a room failure dropped (failRoomLocked), or one its issue's close stopped
+	// (closeRecordLocked). Its timer lived in the process or the room that is gone, so the room
+	// settles once, whether or not its issue is closed, rather than waiting for an edit to arm
+	// one - unless the load is a settlement's own warm-up, which settles it next. Its authors are
+	// in the document's pending authors, which that settlement reads; the room restores only the
+	// latest edit source the settlement names. A room that failed again while this load ran
+	// leaves the row for its own replacement.
 	//
 	// The row is that source as the store has it, so it replaces whatever the record held for a
 	// room that has gone (a forced close keeps the record, evictRoom): a row naming none - an edit
 	// any of several connected browsers could have made - leaves the settlement its own actor
 	// rather than the last source an earlier room saw, and no row leaves no source, as on a fresh
-	// record. The record keeps its own when the row may be older than it (rowIsCurrent).
+	// record. The record keeps its own when the row may be older than it (rowIsCurrent). A closed
+	// issue's record takes no source from the row either: the close moved the record's source to
+	// the row and left the record none, which the reopen restores from the row (restoreLastActor),
+	// and a settlement takes its actor from the row itself (settlementAuthors).
 	switch {
 	case !open || !mark.rowIsCurrent(state):
 	case owed && lastActor != nil:
@@ -679,7 +684,7 @@ func (s *Service) onLoadDocument(ctx context.Context, room string, doc *crdt.Doc
 		state.lastActor = nil
 		state.unsettled = false
 	}
-	if state.failed == nil && open && owed && !state.settleWarming {
+	if state.failed == nil && owed && !state.settleWarming {
 		s.scheduleSettleLocked(room, state)
 	}
 	s.unlockState(room, state)
