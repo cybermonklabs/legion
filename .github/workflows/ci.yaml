@@ -808,6 +808,9 @@ jobs:
               # test directory, and tsc puts four of its files in this job's program.
               - 'packages/envoy-client/test/**'
               - 'packages/pi-shared/src/**'
+              # tests/legion-tool.test.ts:8 imports the image-manifest mock both read_build cases
+              # share.
+              - 'packages/pi-shared/test/image-manifest.ts'
               # tests/ import @legion/test-fixtures.
               - 'packages/test-fixtures/src/**'
               # scripts/build.ts:115-128 generates legion/ from pi-legion's agents and the skills
