@@ -71,6 +71,19 @@
 # whose stamp differs is built again, so a venv or a wheel that predates the hashed files
 # is never used.
 #
+# The installed result of every environment is checked against the locks, not only the
+# command that built it. IOC_ENV_FROZEN names the environments env.sh builds, IOC_VENV,
+# the mas-lab venv, the mas-lab wheel venv and the tc-work venv, each with its lock and
+# the pinned clone whose own packages it may hold: IOC_VENV evidence/ioc-venv.lock, the two
+# mas-lab environments evidence/tm-constraints.txt and the mas-lab clone, the tc-work venv
+# evidence/ioc-venv.lock and the cognition-protocols clone. After it builds each one,
+# env.sh lists every package installed in it, with ioc_env_frozen, and refuses, naming the
+# environment, the package, its version and the lock, a package installed from an index
+# that the lock does not hold at that version, and a package installed from a path or a
+# URL that is not one its clone declares, by name and version, in a pyproject.toml at the
+# pinned commit, installed from a path inside that clone. check.sh runs the same function
+# on each of these environments after every row that installs into it.
+#
 # uv enforces the lock itself. env.sh exports, into the environment every row runs in, the
 # variables IOC_ENV_ENFORCED names: UV_REQUIRE_HASHES=1, under which uv pip install, uv pip
 # sync and uv build refuse any package with no hash, whatever -c or -r a command names;
@@ -79,14 +92,17 @@
 # pip. check.sh reserves these names, so no row assigns, unsets or re-points them, with one
 # exception it reads by its conditions: uv refuses every local source path under
 # UV_REQUIRE_HASHES=1 (a directory has no hash), so a uv pip install of local sources
-# alone, with -b of the hashed build constraint and -c of a hashed lock, is written with
-# the visible prefix UV_REQUIRE_HASHES=0; env.sh writes the same prefix on its own two
-# mas-lab installs, and evidence/concord-build-run.sh on its one. uv still checks every
-# hash that -c and -b carry there; a dependency the local package would fetch from an
-# index that its -c file does not list installs unchecked. uv run --with, uv tool run and
-# uvx read no UV_REQUIRE_HASHES, and uv run reads no UV_BUILD_CONSTRAINT either: what they
-# fetch is check.sh's reader's to hold, as check.sh's install-pinned header records with
-# the measured table.
+# alone into one of the environments above, with -b of the hashed build constraint and -c
+# of a hashed lock, is written with the visible prefix UV_REQUIRE_HASHES=0; env.sh writes
+# the same prefix on its own two mas-lab installs, and evidence/concord-build-run.sh on its
+# one. uv still checks every hash that -c and -b carry there, and a dependency the local
+# package fetches that its -c leaves out, which uv installs unchecked, is refused when the
+# environment is checked. What that check reads is a name, a version and where a package
+# was installed from: the bytes of a package are held by uv's hash check alone. uv run
+# --with, uv tool run and uvx read no UV_REQUIRE_HASHES, and uv run reads no
+# UV_BUILD_CONSTRAINT either; their environments are made for one run and checked by
+# nobody, so what they fetch is check.sh's reader's to hold, as check.sh's install-pinned
+# header records with the measured table.
 #
 # It needs uv, git, jq, gh, python3 and dispatch, and it needs the three clones, which it
 # clones at the commits sources.json pins when they are missing. It refuses, with a line
@@ -169,6 +185,172 @@ ioc_env_stamp() {
     printf '%s %s\n' "$commit" "$(sha256sum "$@" | cut -d' ' -f1 | tr '\n' ' ')"
 }
 
+# ioc_env_lock_py prints the one reader of a committed hashed lock, Python source that
+# ioc_env_frozen below and check.sh's reader_py both run, so the two read a lock alike.
+ioc_env_lock_py() {
+    cat <<'PY'
+import os, re
+
+def normalized(name):
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+def read_lock(path):
+    # The committed hashed lock at path, as ({normalized name: version}, {normalized
+    # name: the names of the lock's packages its "# via" lines say require it}, or None
+    # when the lock carries no such line), or None for a file that is missing, holds no
+    # requirement, holds a line that is no name==version, or holds a requirement that
+    # carries no hash.
+    try:
+        lines = open(path).read().splitlines()
+    except OSError:
+        return None
+    pins, via, hashed, current, in_via, annotated = {}, {}, set(), None, False, False
+    for line in lines:
+        pin = re.match(r"^([A-Za-z0-9][A-Za-z0-9._-]*)(?:\[[^]]*\])?==([^ ;\\]+)", line)
+        if pin:
+            current, in_via = normalized(pin.group(1)), False
+            pins[current] = pin.group(2)
+            via[current] = set()
+        elif re.match(r"^[A-Za-z0-9]", line):
+            return None
+        if "--hash=sha256:" in line and current:
+            hashed.add(current)
+        note = re.match(r"^\s+#\s+via\b(.*)$", line)
+        item = re.match(r"^\s+#\s+(\S+)\s*$", line)
+        if note and current:
+            in_via = annotated = True
+            item = re.match(r"^\s*(\S+)\s*$", note.group(1))
+        elif not (in_via and item):
+            in_via, item = False, None
+        if item and current and not item.group(1).startswith("-"):
+            via[current].add(normalized(item.group(1)))
+    if not pins or hashed != set(pins):
+        return None
+    return pins, (via if annotated else None)
+PY
+}
+
+# The environments env.sh builds, whose installed packages are checked after every build
+# and, by check.sh, after every row that installs into one. Each entry is
+# <label>:<its directory, written as the rows write it>:<the program variable of its
+# python>:<the committed hashed lock under evidence/ it is checked against>:<the pinned
+# clone whose own packages it may hold>. check.sh's reader reads the same list for the
+# environments a row may name as the target of an install.
+# shellcheck disable=SC2016
+IOC_ENV_FROZEN='IOC_VENV:$IOC_VENV:IOC_PY:ioc-venv.lock: IOC_MASLAB_VENV:$IOC_MASLAB_VENV:IOC_MASLAB_PY:tm-constraints.txt:mas-lab IOC_MASLAB_WHEEL_VENV:$IOC_MASLAB_WHEEL_VENV::tm-constraints.txt:mas-lab IOC_TC_WORK:$IOC_TC_WORK/venv:IOC_TC_PY:ioc-venv.lock:cognition-protocols'
+
+# ioc_env_frozen_path <label>; prints the directory of the environment IOC_ENV_FROZEN names
+# <label>, or nothing, with a non-zero status, when its variable is not set.
+ioc_env_frozen_path() {
+    local entry label dir variable
+    for entry in $IOC_ENV_FROZEN; do
+        IFS=: read -r label dir _ <<<"$entry"
+        [ "$label" = "$1" ] || continue
+        variable="${dir#\$}"
+        variable="${variable%%/*}"
+        [ -n "${!variable:-}" ] || return 1
+        printf '%s%s\n' "${!variable}" "${dir#\$"$variable"}"
+        return 0
+    done
+    return 1
+}
+
+# ioc_env_frozen <label> <locks directory>; checks the result of every install into the
+# environment IOC_ENV_FROZEN names <label>. It lists each package installed there, with
+# that environment's own python, and prints one line REFUSED<TAB><what> for each package
+# that fails, naming <label>, the package, its version and the lock: a package installed
+# from an index must be held at that version by the environment's committed hashed lock,
+# under <locks directory>; a package installed from a path or a URL must be one the
+# environment's pinned clone declares, by name and version, in a pyproject.toml at the
+# clone's commit, and its direct_url.json must name a path inside that clone. A lock that
+# is missing or carries a requirement with no hash is refused too. A last line
+# CHECKED<TAB><what> says how many packages it read, and it returns non-zero on any
+# refusal. env.sh reads it through ioc_env_check_frozen, and check.sh after each row that
+# installs into the environment.
+ioc_env_frozen() {
+    local entry label written dir lock clone python
+    for entry in $IOC_ENV_FROZEN; do
+        IFS=: read -r label written _ lock clone <<<"$entry"
+        [ "$label" = "$1" ] && break
+        label=""
+    done
+    if [ -z "$label" ]; then
+        printf 'REFUSED\t%s is no environment env.sh builds\n' "$1"
+        return 1
+    fi
+    if ! dir="$(ioc_env_frozen_path "$label")"; then
+        printf 'REFUSED\t%s cannot be checked: %s names no directory, since its variable is not set\n' "$label" "$written"
+        return 1
+    fi
+    python="$dir/bin/python"
+    if [ ! -x "$python" ]; then
+        printf 'REFUSED\t%s has no python at %s, so what it holds cannot be listed\n' "$label" "$python"
+        return 1
+    fi
+    {
+        ioc_env_lock_py
+        cat <<'PY'
+import json, subprocess, sys, tomllib
+label, python, lock, clone = sys.argv[1:5]
+refused, declared = [], {}
+name_of_lock = os.path.basename(lock)
+found = read_lock(lock)
+if found is None:
+    refused.append("%s was checked against %s, which is no committed hashed lock" % (label, lock))
+held = found[0] if found else {}
+if clone:
+    clone = os.path.realpath(clone)
+    paths = subprocess.run(["git", "-C", clone, "ls-files", "*pyproject.toml"], capture_output=True, text=True).stdout.split()
+    for path in paths:
+        text = subprocess.run(["git", "-C", clone, "show", "HEAD:" + path], capture_output=True, text=True).stdout
+        try:
+            project = tomllib.loads(text).get("project", {})
+        except tomllib.TOMLDecodeError:
+            continue
+        if project.get("name") and project.get("version"):
+            declared.setdefault(normalized(project["name"]), set()).add(project["version"])
+listing = subprocess.run([python, "-c",
+    "import importlib.metadata as m, json; print(json.dumps([[d.metadata['Name'], d.version, d.read_text('direct_url.json')] for d in m.distributions()]))"],
+    capture_output=True, text=True)
+if listing.returncode != 0:
+    print("REFUSED\t%s could not be listed by its own python: %s" % (label, " ".join(listing.stderr.split())[:200]))
+    sys.exit(1)
+installed = json.loads(listing.stdout)
+for name, version, direct in installed:
+    url = json.loads(direct).get("url", "") if direct else ""
+    if not url:
+        if held.get(normalized(name)) != version:
+            refused.append("%s holds %s==%s, which %s does not hold at that version" % (label, name, version, name_of_lock))
+        continue
+    path = os.path.realpath(url[len("file://"):]) if url.startswith("file://") else ""
+    inside = clone and path and (path + "/").startswith(clone + "/")
+    if not (inside and version in declared.get(normalized(name), ())):
+        refused.append("%s holds %s==%s, installed from %s, which is no path inside %s that declares it at that version" % (
+            label, name, version, url, ("the pinned clone " + os.path.basename(clone)) if clone else "a pinned clone"))
+for line in refused:
+    print("REFUSED\t" + line)
+print("CHECKED\t%s: %d packages checked against %s%s, %d refused" % (
+    label, len(installed), name_of_lock, (" and the clone " + os.path.basename(clone)) if clone else "", len(refused)))
+sys.exit(1 if refused else 0)
+PY
+    } | python3 - "$label" "$python" "$2/$lock" "${clone:+$IOC_CLONES/$clone}"
+}
+
+# ioc_env_check_frozen <label>; env.sh's own use of ioc_env_frozen, after it builds the
+# environment: each refusal is env.sh's refusal, and it stops the build.
+ioc_env_check_frozen() {
+    local out kind text status
+    out="$(ioc_env_frozen "$1" "$IOC_EVID")"
+    status=$?
+    while IFS=$'\t' read -r kind text; do
+        case "$kind" in
+        REFUSED) ioc_env_refuse "$1" "$text" ;;
+        CHECKED) printf '%s\n' "$text" >&2 ;;
+        esac
+    done <<<"$out"
+    return "$status"
+}
+
 # ioc_env_is_refusal <file>; true when what a dispatch read printed is Dispatch's refusal
 # rather than a record. A refusal is printed on stdout, so its text is read as well as
 # the status: "not found", a missing block, a missing document, an unreachable server.
@@ -246,7 +428,8 @@ ioc_env_python() {
     uv pip sync --python "$IOC_PY" --require-hashes "$lock" >&2 ||
         ioc_env_refuse "IOC_PY" "uv pip sync --require-hashes $lock failed" || return 1
     ioc_env_python_pinned ||
-        ioc_env_refuse "IOC_PY" "$IOC_PY does not import the four requirements of evidence/ioc-venv.in at those versions"
+        ioc_env_refuse "IOC_PY" "$IOC_PY does not import the four requirements of evidence/ioc-venv.in at those versions" || return 1
+    ioc_env_check_frozen IOC_VENV
 }
 
 # The weights, pinned by revision and by the checksum the row s-model-checksum carries.
@@ -310,11 +493,13 @@ ioc_env_maslab() {
     fi
     { [ -x "$IOC_MASLAB_VENV/bin/mas-ctl" ] && "$IOC_MASLAB_VENV/bin/python" -c 'import mas.lab' >/dev/null 2>&1; } ||
         ioc_env_refuse "IOC_MASLAB_VENV" "$IOC_MASLAB_VENV holds no mas-ctl that imports mas.lab" || return 1
+    ioc_env_check_frozen IOC_MASLAB_VENV || return 1
     # The two schema rows do their own installs into this one; it has to exist first.
     if [ ! -x "$IOC_MASLAB_WHEEL_VENV/bin/python" ]; then
         uv venv --allow-existing "$IOC_MASLAB_WHEEL_VENV" >&2 ||
             ioc_env_refuse "IOC_MASLAB_WHEEL_VENV" "uv venv $IOC_MASLAB_WHEEL_VENV failed" || return 1
     fi
+    ioc_env_check_frozen IOC_MASLAB_WHEEL_VENV
 }
 
 # ioc-concord, built once into a wheel under evidence/build-constraints.txt. The tc-run
@@ -403,6 +588,7 @@ ioc_env_reviews() {
         uv venv --python 3.12 "$IOC_TC_WORK/venv" >&2 ||
             ioc_env_refuse "IOC_TC_WORK" "uv venv $IOC_TC_WORK/venv failed" || return 1
     fi
+    ioc_env_check_frozen IOC_TC_WORK
 }
 
 # Our code as it stands at the pinned commit, written once with git archive and kept only

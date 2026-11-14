@@ -646,13 +646,15 @@ honest_result "a name that starts with _, \$_x, is a parameter and passes" repla
 # case asks for the refusal by name. Where the review wrote the read with ls, which no row
 # runs and the gate now refuses, the review's form is planted as it wrote it and again
 # with cat, so that the case tests the rule it plants. planted_run <name> <command>
-# [python|evid] plants a command into a fresh fixture and sets PLANTED_OUT to the gate's
-# --replay output, planting in this shell so that a command that cannot be planted stops
-# the run; with python the run sets IOC_PY, and with evid IOC_EVID, to the fixture's own
-# directory, each of which env.sh sets and the fixture does not.
-# refused_read <name> <command> <refusal, an extended regular expression> [python|evid]
-# plants one fault; admitted_read <name> <command> [python|evid] plants the honest form
-# beside it, which passes.
+# [python|evid|tcwork] plants a command into a fresh fixture and sets PLANTED_OUT to the
+# gate's --replay output, planting in this shell so that a command that cannot be planted
+# stops the run; with python the run sets IOC_PY, with evid IOC_EVID, to the fixture's own
+# directory, each of which env.sh sets and the fixture does not, and with tcwork IOC_EVID
+# and the variables of an empty tc-work environment and its clone, which freeze_world
+# (case 66) builds.
+# refused_read <name> <command> <refusal, an extended regular expression> [python|evid|tcwork]
+# plants one fault; admitted_read <name> <command> [python|evid|tcwork] plants the honest
+# form beside it, which passes.
 planted_run() {
     local dir
     dir="$(fresh "$1")"
@@ -660,6 +662,7 @@ planted_run() {
     case "${3:-}" in
     python) PLANTED_OUT="$(IOC_PY="$(command -v python3)" fixture_run "$dir" --replay)" ;;
     evid) PLANTED_OUT="$(IOC_EVID="$dir/repo/docs/research/internet-of-cognition" fixture_run "$dir" --replay)" ;;
+    tcwork) PLANTED_OUT="$(IOC_EVID="$dir/repo/docs/research/internet-of-cognition/evidence" IOC_TC_WORK="$FREEZE/empty" IOC_CLONES="$FREEZE/clones" fixture_run "$dir" --replay)" ;;
     *) PLANTED_OUT="$(fixture_run "$dir" --replay)" ;;
     esac
 }
@@ -932,10 +935,11 @@ install_passes editable-joined-lock "uv pip install -b \"\$IOC_EVID/build-constr
 # row assigns, unsets or re-points them. uv refuses every local source path under
 # UV_REQUIRE_HASHES=1, so one form clears it, visibly, as UV_REQUIRE_HASHES=0 before a uv
 # pip install of local sources alone with -b of the hashed build lock and -c of a hashed
-# lock. Each of its three conditions broken, one at a time, is refused by name, and so are
+# lock, into an environment env.sh builds, which the gate checks after the row (case 66).
+# Each of its four conditions broken, one at a time, is refused by name, and so are
 # another value, a statement of its own, and an assignment to the other two names; the
 # four real rows' form passes.
-EXEMPT='UV_REQUIRE_HASHES=0, which clears uv.s hash check, admitted only as UV_REQUIRE_HASHES=0 before a uv pip install of local sources alone with -b .IOC_EVID/build-constraints.txt and -c of a hashed lock: '
+EXEMPT='UV_REQUIRE_HASHES=0, which clears uv.s hash check, admitted only as UV_REQUIRE_HASHES=0 before a uv pip install of local sources alone with -b .IOC_EVID/build-constraints.txt and -c of a hashed lock, into an environment the gate checks: '
 refused_read exempt-registry "true || UV_REQUIRE_HASHES=0 uv pip install -c \"\$IOC_EVID/tm-constraints.txt\" -b \"\$IOC_EVID/build-constraints.txt\" ./local requests==2.32.3; printf 'ran once\\n'" "${EXEMPT}a package it installs is no local source path"
 refused_read exempt-no-build "true || UV_REQUIRE_HASHES=0 uv pip install -c \"\$IOC_EVID/tm-constraints.txt\" ./local; printf 'ran once\\n'" "${EXEMPT}it names no -b .IOC_EVID/build-constraints.txt"
 refused_read exempt-no-lock "true || UV_REQUIRE_HASHES=0 uv pip install -c c.txt -b \"\$IOC_EVID/build-constraints.txt\" ./local; printf 'ran once\\n'" "${EXEMPT}it names no hashed lock with -c"
@@ -943,7 +947,123 @@ refused_read exempt-other-value "true || UV_REQUIRE_HASHES=false uv pip install 
 refused_read exempt-statement "UV_REQUIRE_HASHES=0; printf 'ran once\\n'" 'UV_REQUIRE_HASHES=0, which clears uv.s hash check, admitted only .*: it is no prefix'
 refused_read build-constraint-assigned "true || UV_BUILD_CONSTRAINT=b.txt uv pip install -c \"\$IOC_EVID/tm-constraints.txt\" ./local; printf 'ran once\\n'" 'UV_BUILD_CONSTRAINT=b.txt, an assignment to UV_BUILD_CONSTRAINT, a name the gate records with'
 refused_read pip-hashes-assigned "true || PIP_REQUIRE_HASHES=0 pip install ./local; printf 'ran once\\n'" 'PIP_REQUIRE_HASHES=0, an assignment to PIP_REQUIRE_HASHES, a name the gate records with'
-admitted_read exempt-honest "true || UV_REQUIRE_HASHES=0 uv pip install -c \"\$IOC_EVID/tm-constraints.txt\" -b \"\$IOC_EVID/build-constraints.txt\" ./local; printf 'ran once\\n'"
+refused_read exempt-no-environment "true || UV_REQUIRE_HASHES=0 uv pip install -c \"\$IOC_EVID/tm-constraints.txt\" -b \"\$IOC_EVID/build-constraints.txt\" ./local; printf 'ran once\\n'" "${EXEMPT}it installs into no environment env.sh builds"
+
+# freeze_world; builds, once and offline, what an install into a checked environment
+# needs, under $FREEZE: wheels/, holding ioc-freeze-dep 1.0, a wheel built here;
+# clones/cognition-protocols, a git repository whose packages/ioc-freeze-pkg declares
+# ioc-freeze-pkg 0.1.0, which requires ioc-freeze-dep==1.0 and is built by a backend in its
+# own tree that needs no package; and empty/venv, an environment that holds nothing. It
+# sets FREEZE_DEP_HASH, the sha256 of the wheel, and returns non-zero when uv is missing
+# or a step fails, which the cases that need it report as a skip, never as a pass.
+FREEZE="$WORK/freeze"
+FREEZE_DEP_HASH=""
+freeze_world() {
+    [ -n "$FREEZE_DEP_HASH" ] && return 0
+    command -v uv >/dev/null 2>&1 || return 1
+    local clone="$FREEZE/clones/cognition-protocols" pkg
+    pkg="$clone/packages/ioc-freeze-pkg"
+    mkdir -p "$FREEZE/wheels" "$pkg" || return 1
+    cat >"$pkg/backend.py" <<'PY'
+import base64, hashlib, os, sys, zipfile
+
+def wheel(directory, name, version, requires):
+    dist = name.replace("-", "_")
+    info = "%s-%s.dist-info" % (dist, version)
+    files = {dist + "/__init__.py": "",
+             info + "/METADATA": "Metadata-Version: 2.1\nName: %s\nVersion: %s\n%s" % (
+                 name, version, "".join("Requires-Dist: %s\n" % r for r in requires)),
+             info + "/WHEEL": "Wheel-Version: 1.0\nGenerator: check.test.sh\nRoot-Is-Purelib: true\nTag: py3-none-any\n"}
+    filename = "%s-%s-py3-none-any.whl" % (dist, version)
+    record = []
+    with zipfile.ZipFile(os.path.join(directory, filename), "w") as z:
+        for path, text in files.items():
+            data = text.encode()
+            z.writestr(zipfile.ZipInfo(path, (2020, 1, 1, 0, 0, 0)), data)
+            digest = base64.urlsafe_b64encode(hashlib.sha256(data).digest()).rstrip(b"=").decode()
+            record.append("%s,sha256=%s,%d" % (path, digest, len(data)))
+        record.append(info + "/RECORD,,")
+        z.writestr(zipfile.ZipInfo(info + "/RECORD", (2020, 1, 1, 0, 0, 0)), "\n".join(record) + "\n")
+    return filename
+
+def get_requires_for_build_wheel(config_settings=None):
+    return []
+
+def build_wheel(wheel_directory, config_settings=None, metadata_directory=None):
+    return wheel(wheel_directory, "ioc-freeze-pkg", "0.1.0", ["ioc-freeze-dep==1.0"])
+
+if __name__ == "__main__":
+    print(wheel(sys.argv[1], "ioc-freeze-dep", "1.0", []))
+PY
+    cat >"$pkg/pyproject.toml" <<'TOML'
+[build-system]
+requires = []
+build-backend = "backend"
+backend-path = ["."]
+
+[project]
+name = "ioc-freeze-pkg"
+version = "0.1.0"
+dependencies = ["ioc-freeze-dep==1.0"]
+TOML
+    git -C "$clone" init -q && git -C "$clone" add -A &&
+        git -C "$clone" -c user.name=check.test.sh -c user.email=check.test.sh@invalid commit -qm fixture || return 1
+    python3 "$pkg/backend.py" "$FREEZE/wheels" >/dev/null || return 1
+    freeze_venv empty || return 1
+    FREEZE_DEP_HASH="$(sha256sum "$FREEZE/wheels/ioc_freeze_dep-1.0-py3-none-any.whl" | cut -d' ' -f1)"
+}
+# freeze_venv <name>; an environment that holds nothing, $FREEZE/<name>/venv.
+freeze_venv() {
+    UV_CACHE_DIR="$FREEZE/cache" UV_OFFLINE=1 uv venv -q --python "$(command -v python3)" "$FREEZE/$1/venv" >/dev/null 2>&1
+}
+if freeze_world; then
+    admitted_read exempt-honest "true || UV_REQUIRE_HASHES=0 uv pip install --python \"\$IOC_TC_WORK/venv/bin/python\" -c \"\$IOC_EVID/tm-constraints.txt\" -b \"\$IOC_EVID/build-constraints.txt\" ./local; printf 'ran once\\n'" tcwork
+else
+    printf 'SKIP the admitted form of UV_REQUIRE_HASHES=0: uv, or an environment it builds here offline, is missing\n'
+fi
+
+# 66. The installed result is checked, not only the command. Under UV_REQUIRE_HASHES=0 a
+# dependency the local package fetches that its -c leaves out installs unchecked, and at
+# da7af429a2 nothing read what the environment held afterwards. The gate now lists every
+# package of each environment env.sh builds that a row installs into, after the row, and
+# refuses one its lock does not hold at that version by name. The case plants a local
+# package of a pinned clone, ioc-freeze-pkg, whose dependency ioc-freeze-dep 1.0 the
+# fixture's ioc-venv.lock leaves out, installed with the visible prefix, -c of that lock
+# and -b of the build lock, as tc-install-1 installs ioc-concord; the honest form is the
+# same install after the fixture's lock holds ioc-freeze-dep 1.0 with its hash, which uv
+# checks. Both run offline: the dependency is a wheel built here, found under
+# UV_FIND_LINKS with no index, and the package's backend needs no package.
+FREEZE_INSTALL="UV_REQUIRE_HASHES=0 uv pip install --python \"\$IOC_TC_WORK/venv/bin/python\" -c \"\$IOC_EVID/ioc-venv.lock\" -b \"\$IOC_EVID/build-constraints.txt\" \"\$IOC_CLONES/cognition-protocols/packages/ioc-freeze-pkg\"; printf 'ran once\\n'"
+# freeze_run <dir> <environment name>; the gate's --replay of a fixture whose row installs
+# into $FREEZE/<environment name>/venv, offline.
+freeze_run() {
+    (
+        unset UV_REQUIRE_HASHES UV_BUILD_CONSTRAINT PIP_REQUIRE_HASHES UV_INDEX_URL UV_EXTRA_INDEX_URL
+        export UV_CACHE_DIR="$FREEZE/cache" UV_OFFLINE=1 UV_NO_INDEX=1 UV_FIND_LINKS="$FREEZE/wheels"
+        IOC_EVID="$1/repo/docs/research/internet-of-cognition/evidence" IOC_TC_WORK="$FREEZE/$2" IOC_CLONES="$FREEZE/clones" \
+            fixture_run "$1" --replay
+    )
+}
+if freeze_world && freeze_venv left-out && freeze_venv held; then
+    dir="$(fresh freeze-left-out)"
+    plant_behaviour "$dir" "$FREEZE_INSTALL" '{"contains":"ran once"}'
+    case_result "a dependency the -c of a local install leaves out is refused by the check of the environment" \
+        'install-pinned: f-behaviour-1 installed into IOC_TC_WORK, and what IOC_TC_WORK holds after it is refused: IOC_TC_WORK holds ioc-freeze-dep==1.0, which ioc-venv.lock does not hold at that version' \
+        "$(freeze_run "$dir" left-out)"
+    dir="$(fresh freeze-held)"
+    plant_behaviour "$dir" "$FREEZE_INSTALL" '{"contains":"ran once"}'
+    printf 'ioc-freeze-dep==1.0 \\\n    --hash=sha256:%s\n' "$FREEZE_DEP_HASH" >>"$dir/repo/docs/research/internet-of-cognition/evidence/ioc-venv.lock"
+    out="$(freeze_run "$dir" held)"
+    if printf '%s\n' "$out" | tail -1 | grep -q '^all [0-9]* assertions passed$'; then
+        CASES_PASSED=$((CASES_PASSED + 1))
+        printf 'PASS %s\n' "the same install with its dependency in the lock passes"
+    else
+        CASES_FAILED=$((CASES_FAILED + 1))
+        printf 'FAIL %s: %s\n' "the same install with its dependency in the lock passes" "$(printf '%s\n' "$out" | grep '^FAIL' | head -2 | tr '\n' ' ')"
+    fi
+else
+    printf 'SKIP the check of what an environment holds after a local install: uv, or an environment it builds here offline, is missing\n'
+fi
 
 total=$((CASES_PASSED + CASES_FAILED))
 if [ "$CASES_FAILED" -eq 0 ]; then
