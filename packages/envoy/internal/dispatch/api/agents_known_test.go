@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // The sessions knownSessionsFixture writes a record of, one kind of record each, and the two the
@@ -95,9 +96,9 @@ func knownSessionsFixture(t *testing.T, database *store.Store) {
 	}
 }
 
-// knownSessionsPath is the route's path asking about ids, one session parameter each.
+// knownSessionsPath is the route's path asking about ids, one id parameter each.
 func knownSessionsPath(ids ...string) string {
-	return "/api/v1/agents/known?" + url.Values{"session": ids}.Encode()
+	return "/api/v1/agents/known?" + url.Values{"id": ids}.Encode()
 }
 
 // askKnownSessions asks the route about ids as alice in her browser and answers what it said,
@@ -210,8 +211,9 @@ func TestKnownSessionsReadsTheWholeBatchInOneStatement(t *testing.T) {
 }
 
 // Every parameter is held to its rule before anything is read, each refusal 400 INVALID_QUERY
-// naming the parameter: a value that is no session id, no session at all, one more than the
-// bound, and a parameter the route does not take. The bound itself is admitted.
+// naming the parameter: a value that is no session id, one byte longer than any reference in
+// text names, no id at all, one more than the bound, and a parameter the route does not take.
+// Each bound itself is admitted, and so is the whole API's session parameter.
 func TestKnownSessionsRefusesAQueryOutsideItsRule(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
 	knownSessionsFixture(t, database)
@@ -220,31 +222,55 @@ func TestKnownSessionsRefusesAQueryOutsideItsRule(t *testing.T) {
 	for index := range overBound {
 		overBound[index] = fmt.Sprintf("s-%d", index)
 	}
+	longest := strings.Repeat("s", knownSessionIDMax)
 	for name, refusal := range map[string]struct {
 		path  string
 		names string
 	}{
-		"a value holding whitespace":          {knownSessionsPath("s one"), "session"},
-		"a value holding a slash":             {knownSessionsPath("agent/s1"), "session"},
-		"an empty value":                      {knownSessionsPath(""), "session"},
-		"no session at all":                   {"/api/v1/agents/known", "session"},
-		"one id more than the bound":          {knownSessionsPath(overBound...), "session"},
-		"a parameter the route does not take": {knownSessionsPath(knownTitled) + "&limit=5", "limit"},
-		"the parameter misspelled":            {"/api/v1/agents/known?sessions=" + knownTitled, "sessions"},
+		"a value holding whitespace":           {knownSessionsPath("s one"), "id"},
+		"a value holding a slash":              {knownSessionsPath("agent/s1"), "id"},
+		"an empty value":                       {knownSessionsPath(""), "id"},
+		"a value one byte past the longest id": {knownSessionsPath(knownTitled, longest+"s"), "id"},
+		"no id at all":                         {"/api/v1/agents/known", "id"},
+		"only the acting session":              {"/api/v1/agents/known?session=" + knownTitled, "id"},
+		"one id more than the bound":           {knownSessionsPath(overBound...), "id"},
+		"a parameter the route does not take":  {knownSessionsPath(knownTitled) + "&limit=5", "limit"},
+		"the parameter misspelled":             {"/api/v1/agents/known?ids=" + knownTitled, "ids"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			response := dispatchRequest(t, handler, http.MethodGet, refusal.path, nil, "alice")
 			body := decodeBody[refusalAnswer](t, response)
 			if response.Code != http.StatusBadRequest || body.Code != "INVALID_QUERY" {
-				t.Fatalf("status=%d body=%s, want 400 INVALID_QUERY", response.Code, response.Body.String())
+				t.Fatalf("status=%d body=%.400s, want 400 INVALID_QUERY", response.Code, response.Body.String())
 			}
 			if !strings.HasPrefix(body.Error, refusal.names+" ") {
-				t.Fatalf("refusal %q does not lead with the parameter %s", body.Error, refusal.names)
+				t.Fatalf("refusal %.400q does not lead with the parameter %s", body.Error, refusal.names)
 			}
 		})
 	}
 	if got := askKnownSessions(t, handler, overBound[:contracts.KnownSessionsMax]...); len(got) != 0 {
 		t.Fatalf("known sessions = %s, want none of the unheld ids", knownSessionsText(got))
+	}
+	if got := askKnownSessions(t, handler, longest); len(got) != 0 {
+		t.Fatalf("known sessions = %.400s, want none for an unheld id at the longest", knownSessionsText(got))
+	}
+	acting := dispatchRequest(t, handler, http.MethodGet, knownSessionsPath(knownTitled)+"&session=s-acting", nil, "alice")
+	if acting.Code != http.StatusOK || len(decodeBody[knownSessions](t, acting).Sessions) != 1 {
+		t.Fatalf("ask with the acting session named: status=%d body=%s, want 200 and the one session", acting.Code, acting.Body.String())
+	}
+}
+
+// The longest id the route answers for is the longest a dispatch://agent/<session id> reference
+// in text names: at it the text is a reference to that session, and one byte past it is none.
+func TestKnownSessionsLongestIDIsTheLongestAReferenceNames(t *testing.T) {
+	const server = "https://dispatch.test"
+	longest := strings.Repeat("s", knownSessionIDMax)
+	got := text.Extract("dispatch://agent/"+longest, server)
+	if len(got) != 1 || got[0].Kind != "session" || got[0].ID != longest {
+		t.Fatalf("the reference to a session id of %d bytes cites %.200v, want that session", len(longest), got)
+	}
+	if got := text.Extract("dispatch://agent/"+longest+"s", server); len(got) != 0 {
+		t.Fatalf("the reference to a session id of %d bytes cites %.200v, want nothing", len(longest)+1, got)
 	}
 }
 
@@ -252,7 +278,9 @@ func TestKnownSessionsRefusesAQueryOutsideItsRule(t *testing.T) {
 // /api/v1/agents/{session_id}/messages tells apart is answered by it exactly as that read
 // answers: no credential, a person's browser, a person's own token with and without the person
 // scope, the deployment's shared token, and the broker's tokens for a person, for one project, for
-// a service with no person, and for a machine login.
+// a service with no person, and for a machine login. Both read `session` as every person route
+// does, so the broker's token for a person, which proved a session, naming another there is
+// refused both, 403 ACTOR_SESSION_MISMATCH.
 func TestKnownSessionsAdmitsExactlyTheCallersTheConversationReadAdmits(t *testing.T) {
 	rig := newBrokerTokenRig(t)
 	knownSessionsFixture(t, rig.database)
@@ -310,6 +338,16 @@ func TestKnownSessionsAdmitsExactlyTheCallersTheConversationReadAdmits(t *testin
 			answerOf(rig.serve(caller.presenting(t, http.MethodGet, conversation, token, nil))),
 			answerOf(rig.serve(caller.presenting(t, http.MethodGet, known, token, nil))),
 		}
+	}
+	mismatched := "a broker token for a person, naming another session"
+	answers[mismatched] = [2]answer{
+		answerOf(rig.serve(caller.presenting(t, http.MethodGet, conversation+"?session=s-another",
+			brokerTokens["a broker token for a person"], nil))),
+		answerOf(rig.serve(caller.presenting(t, http.MethodGet, known+"&session=s-another",
+			brokerTokens["a broker token for a person"], nil))),
+	}
+	if refused := (answer{status: http.StatusForbidden, code: "ACTOR_SESSION_MISMATCH"}); answers[mismatched][1] != refused {
+		t.Errorf("%s: the known-sessions read answers %+v, want %+v", mismatched, answers[mismatched][1], refused)
 	}
 
 	admitted := 0

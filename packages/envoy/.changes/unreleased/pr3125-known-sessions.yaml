@@ -1,5 +1,5 @@
 kind: Added
-body: '`GET /api/v1/agents/known?session=<id>` takes up to 100 session ids and answers which of them Dispatch holds any record of, each with its registry title, in one statement. A session holds a record when the registry lists it or an event, a message, a delivery, an artifact or an ask it follows names it. The route takes the authorization `GET /api/v1/agents/{session_id}/messages` takes. A search hit''s `snippet` and `snippet_tree` are read out of the text the headline was cut from, so a code span, a worded link and an address keep their whole shape in a hit.'
+body: '`GET /api/v1/agents/known?id=<id>` takes up to 100 session ids, each at most 2048 bytes, the longest a `dispatch://agent/<id>` reference names, and answers which of them Dispatch holds any record of, each with its registry title, in one statement. A session holds a record when the registry lists it or an event, a message, a delivery, an artifact or an ask it follows names it. The route takes the authorization `GET /api/v1/agents/{session_id}/messages` takes, and reads `session` as that route does. A search hit''s `snippet` and `snippet_tree` are read out of the text the headline was cut from, so a code span, a worded link and an address keep their whole shape in a hit.'
 time: 2026-11-14T03:40:00Z
 custom:
     Issue: pr3125

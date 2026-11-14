@@ -5,10 +5,13 @@ import (
 	"strings"
 )
 
-// codeRange is a half-open byte range of a body, [start, end).
+// codeRange is a half-open byte range of a body, [start, end). block is true for a fenced or an
+// indented code block and false for a code span, set by codeRanges as it places the range, so
+// CodeRanges tells the two apart without working it out again.
 type codeRange struct {
 	start int
 	end   int
+	block bool
 }
 
 // container is one container open at the line being read - a block quote, a list item or a
@@ -114,8 +117,19 @@ const (
 //     or a block of HTML ends carries on for this reader, so a run opened before one can be
 //     closed by a run after it.
 func codeRanges(body string) []codeRange {
-	ranges, _ := codeContexts(body)
-	return ranges
+	blocks, breaks := codeBlocks(body)
+	if len(blocks) == 0 {
+		return appendCodeSpans(nil, body, 0, len(body), breaks)
+	}
+	ranges := make([]codeRange, 0, 2*len(blocks)+1)
+	at := 0
+	for _, block := range blocks {
+		ranges = appendCodeSpans(ranges, body, at, block.start, breaks)
+		block.block = true
+		ranges = append(ranges, block)
+		at = block.end
+	}
+	return appendCodeSpans(ranges, body, at, len(body), breaks)
 }
 
 // CodeRange is one code context of a body, the half-open byte range [Start, End) codeRanges
@@ -130,40 +144,16 @@ type CodeRange struct {
 
 // CodeRanges is every code context of body, in order and never overlapping, each telling a block
 // from a span: what a reader outside this package needs to cut a body without cutting into its
-// code, which a search snippet does (pmdoc.SearchSnippet). It is the same walk codeRanges makes,
-// so a reference this package reads as written in code is in code for that reader too.
+// code, which a search snippet does (pmdoc.SearchSnippet). It is codeRanges' own answer, each
+// range's kind included, so a reference this package reads as written in code is in code for that
+// reader too.
 func CodeRanges(body string) []CodeRange {
-	ranges, blocks := codeContexts(body)
+	ranges := codeRanges(body)
 	exported := make([]CodeRange, len(ranges))
-	next := 0
 	for index, candidate := range ranges {
-		// blocks is a subsequence of ranges, in the same order, and no span overlaps a block, so
-		// the next block either is this range or stands after it.
-		block := next < len(blocks) && blocks[next] == candidate
-		if block {
-			next++
-		}
-		exported[index] = CodeRange{Start: candidate.start, End: candidate.end, Block: block}
+		exported[index] = CodeRange{Start: candidate.start, End: candidate.end, Block: candidate.block}
 	}
 	return exported
-}
-
-// codeContexts is codeRanges' one walk of body: every code context in order, and the code blocks
-// among them, also in order, so CodeRanges can tell the two kinds apart without walking the body
-// again.
-func codeContexts(body string) (ranges, blocks []codeRange) {
-	blocks, breaks := codeBlocks(body)
-	if len(blocks) == 0 {
-		return appendCodeSpans(nil, body, 0, len(body), breaks), nil
-	}
-	ranges = make([]codeRange, 0, 2*len(blocks)+1)
-	at := 0
-	for _, block := range blocks {
-		ranges = appendCodeSpans(ranges, body, at, block.start, breaks)
-		ranges = append(ranges, block)
-		at = block.end
-	}
-	return appendCodeSpans(ranges, body, at, len(body), breaks), blocks
 }
 
 // inCode reports whether the byte at offset is inside one of ranges, which codeRanges wrote in

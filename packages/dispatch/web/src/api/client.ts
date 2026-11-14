@@ -1184,10 +1184,12 @@ export class DispatchApiClient {
 
   /** `GET /api/v1/agents/known`: which of `sessions` Dispatch holds any record of - listed in its
    *  registry copy, or named by an event, a message, a delivery, an artifact or an ask it follows
-   *  - each with its registry title when listed. At most `KNOWN_SESSIONS_MAX` ids per call;
-   *  `known-sessions.ts` batches a page's ids into one. */
+   *  - each with its registry title when listed, one `id=` per session. At most
+   *  `KNOWN_SESSIONS_MAX` ids per call, none longer than a `dispatch://agent/<session id>`
+   *  reference's target may be (`MAX_REFERENCE_TARGET_BYTES`); `known-sessions.ts` batches a
+   *  page's ids into one. */
   getKnownSessions(sessions: readonly string[]) {
-    return this.read("/api/v1/agents/known", {}, { session: [...sessions] });
+    return this.read("/api/v1/agents/known", {}, { id: [...sessions] });
   }
 
   createAsk(key: string, input: Body<"/api/v1/issues/{key}/asks", "post">, bounds: WriteBounds) {

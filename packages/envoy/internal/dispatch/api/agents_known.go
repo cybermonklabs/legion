@@ -24,10 +24,10 @@ type knownSessions struct {
 	Sessions []knownSession `json:"sessions"`
 }
 
-// knownSessionsQuery answers, in one statement, which of the session ids $1 names Dispatch holds
-// any record of, in the order of $1, with the title the registry copy holds. Each record is read
-// through an index keyed by the session, so a batch of a hundred ids costs a hundred probes of
-// each index and never a scan of a table that grows with use:
+// knownSessionsStatement answers, in one statement, which of the session ids $1 names Dispatch
+// holds any record of, in the order of $1, with the title the registry copy holds. Each record is
+// read through an index keyed by the session, so a batch of a hundred ids costs a hundred probes
+// of each index and never a scan of a table that grows with use:
 //
 //   - the registry copy: the route_roster row's sessions, the listener's last list of live and
 //     unresponsive sessions that GET /api/v1/agents lists (migration 0159), read whatever its age,
@@ -53,7 +53,7 @@ type knownSessions struct {
 // A session whose only trace is a live registration younger than the stored copy (at most
 // routeRosterTTL old) has no record here yet; a caller asks this route only for the sessions the
 // live registry, GET /api/v1/agents, does not list.
-const knownSessionsQuery = `
+const knownSessionsStatement = `
 	with listed as (
 		select distinct on (entry->>'session_id')
 		       entry->>'session_id' as id, nullif(entry->>'title', '') as title
@@ -74,51 +74,66 @@ const knownSessionsQuery = `
 	   or exists (select 1 from ask_followers f where f.session_id = asked.id)
 	order by asked.position`
 
+// knownSessionIDMax is the longest session id, in bytes, GET /api/v1/agents/known answers for. The
+// route exists to tell a page whether a dispatch://agent/<session id> reference it holds links,
+// and text names a session only while the reference's target id, which for a session is the id
+// itself (text.TargetID; the dashboard's routeTarget alike), holds at most text.MaxTargetBytes:
+// past that the text is no reference, so a longer id is one no page asks about.
+const knownSessionIDMax = text.MaxTargetBytes
+
 // listKnownSessions answers which of the sessions a page references Dispatch holds any record of,
 // so a dispatch://agent/<session id> reference links where its conversation exists - an ended
 // session's included, which the live registry no longer lists - and not where no agent ever held
-// the id. A page asks once for every such reference it holds (knownSessionsQuery reads them in
-// one statement), naming each in `session`, 1 to contracts.KnownSessionsMax times.
+// the id. A page asks once for every such reference it holds (knownSessionsStatement reads them
+// in one statement), naming each in `id`, 1 to contracts.KnownSessionsMax times.
 //
 // It answers only what its caller could already learn, so it admits exactly the callers GET
 // /api/v1/agents/{session_id}/messages admits: the `person` scope its row names (routeScopes),
-// and personCredential, the credential checks actingPerson makes there. That read already tells
-// such a caller whether a session has a conversation, one id per request.
+// and actingPerson, which that read opens with too. That read already tells such a caller whether
+// a session has a conversation, one id per request. So `session` means here what it means on
+// every route, the session the request acts for, and a credential that proved a session is
+// refused one naming another (403 ACTOR_SESSION_MISMATCH).
 //
-// Every parameter is held to its rule before anything is read, each refusal 400 INVALID_QUERY
-// naming the parameter, as the search routes refuse theirs: a parameter other than `session`, no
-// `session` at all, more than contracts.KnownSessionsMax of them (counted as sent, duplicates
-// included), and a value that is no session id by text.IsSessionID, the rule every route that
-// takes a session id applies.
+// Every other parameter is held to its rule before anything is read, each refusal 400
+// INVALID_QUERY naming the parameter, as the search routes refuse theirs: a parameter other than
+// `id` and `session`, no `id` at all, more than contracts.KnownSessionsMax of them (counted as
+// sent, duplicates included), a value that is no session id by text.IsSessionID, the rule every
+// route that takes a session id applies, and one longer than knownSessionIDMax.
 func (s *server) listKnownSessions(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.personCredential(w, r); !ok {
+	if _, ok := s.actingPerson(w, r); !ok {
 		return
 	}
 	query := r.URL.Query()
 	for _, key := range slices.Sorted(maps.Keys(query)) {
-		if key != "session" {
+		if key != "id" && key != "session" {
 			writeError(w, "INVALID_QUERY", http.StatusBadRequest, fmt.Sprintf(
-				"%s is not a query parameter of GET /api/v1/agents/known, which takes session alone", key))
+				"%s is not a query parameter of GET /api/v1/agents/known, which takes id and session alone", key))
 			return
 		}
 	}
-	asked := query["session"]
+	asked := query["id"]
 	switch {
 	case len(asked) == 0:
 		writeError(w, "INVALID_QUERY", http.StatusBadRequest, fmt.Sprintf(
-			"session is required: name each session id asked about in a session parameter of its own, 1 to %d of them",
+			"id is required: name each session id asked about in an id parameter of its own, 1 to %d of them",
 			contracts.KnownSessionsMax))
 		return
 	case len(asked) > contracts.KnownSessionsMax:
 		writeError(w, "INVALID_QUERY", http.StatusBadRequest, fmt.Sprintf(
-			"session names at most %d session ids (%d named)", contracts.KnownSessionsMax, len(asked)))
+			"id names at most %d session ids (%d named)", contracts.KnownSessionsMax, len(asked)))
 		return
 	}
 	ids := make([]string, 0, len(asked))
 	for _, id := range asked {
+		if len(id) > knownSessionIDMax {
+			writeError(w, "INVALID_QUERY", http.StatusBadRequest, fmt.Sprintf(
+				"id names a session id of %d bytes, and no reference in text names one longer than %d",
+				len(id), knownSessionIDMax))
+			return
+		}
 		if !text.IsSessionID(id) {
 			writeError(w, "INVALID_QUERY", http.StatusBadRequest, fmt.Sprintf(
-				"session %q is not a session id: one is not empty and holds no whitespace, no control "+
+				"id %q is not a session id: one is not empty and holds no whitespace, no control "+
 					"character and none of the characters that end a reference in text", id))
 			return
 		}
@@ -127,7 +142,7 @@ func (s *server) listKnownSessions(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	rows, err := s.deps.Store.Pool.Query(r.Context(), knownSessionsQuery, ids)
+	rows, err := s.deps.Store.Pool.Query(r.Context(), knownSessionsStatement, ids)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

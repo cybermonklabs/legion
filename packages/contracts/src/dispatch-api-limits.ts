@@ -77,7 +77,7 @@ export type MessageDeliveryMode = DeliveryCapability;
 export const MAX_BROADCAST_RECIPIENTS = 100;
 
 /**
- * The most session ids one `GET /api/v1/agents/known` names (`session`, repeated). A page asks
+ * The most session ids one `GET /api/v1/agents/known` names (`id`, repeated). A page asks
  * once for every agent reference it holds that the live registry does not list, so the bound is a
  * page's worth with room to spare, and a page holding more asks in batches of this size. Generated
  * into Go as `contracts.KnownSessionsMax`, which the server enforces with `400 INVALID_QUERY`, so

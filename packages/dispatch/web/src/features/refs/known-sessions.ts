@@ -1,4 +1,4 @@
-import { KNOWN_SESSIONS_MAX } from "@legion/contracts";
+import { KNOWN_SESSIONS_MAX, referenceTargetFits } from "@legion/contracts";
 import { queryOptions } from "@tanstack/react-query";
 
 import { api } from "../../api/client";
@@ -20,10 +20,11 @@ let batch: Map<string, Waiting[]> | undefined;
 
 /**
  * Asks Dispatch which of the session ids read since the last task are ones it holds a record of,
- * in one request per `KNOWN_SESSIONS_MAX` of them. Every reference a page draws mounts in one
- * commit, so the reads of every unlisted session it names start in one task and are answered by
- * one request (`GET /api/v1/agents/known`), whatever their number: a page naming many ended
- * sessions costs the read budget one read, not one each (`e2e/refetch-budget.e2e.ts`).
+ * in one request per `KNOWN_SESSIONS_MAX` of them, each id in an `id` parameter of its own. Every
+ * reference a page draws mounts in one commit, so the reads of every unlisted session it names
+ * start in one task and are answered by one request (`GET /api/v1/agents/known`), whatever their
+ * number: a page naming many ended sessions costs the read budget one read, not one each
+ * (`e2e/refetch-budget.e2e.ts`).
  */
 function flush(): void {
   const taken = batch;
@@ -55,6 +56,12 @@ function flush(): void {
 }
 
 function readKnownSession(session: string): Promise<KnownSessionAnswer> {
+  // The route refuses an id longer than a `dispatch://agent/<session id>` reference's target may
+  // be, since no reference in text names one, and that refusal would fail every read of its
+  // batch. So such an id is answered unknown here and never sent.
+  if (!referenceTargetFits(session)) {
+    return Promise.resolve({ known: false, title: undefined });
+  }
   if (batch === undefined) {
     batch = new Map();
     setTimeout(flush, 0);

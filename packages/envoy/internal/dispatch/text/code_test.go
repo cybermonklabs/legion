@@ -2,6 +2,7 @@ package text
 
 import (
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -62,5 +63,28 @@ func TestCodeRangesAreOrderedAndDisjoint(t *testing.T) {
 	}
 	if got := body[ranges[3].start:ranges[3].end]; !strings.HasPrefix(got, "    indented") {
 		t.Errorf("the indented range is %q", got)
+	}
+}
+
+// CodeRanges answers the ranges codeRanges reads, each a block exactly where codeBlocks read one:
+// the fenced and the indented block, and none of the three spans around them.
+func TestCodeRangesTellABlockFromASpan(t *testing.T) {
+	body := "`a` and `b`\n\n```\nfenced `x`\n```\n\n    indented `y`\n\nlast `z`"
+	blocks, _ := codeBlocks(body)
+	ranges := codeRanges(body)
+	exported := CodeRanges(body)
+	if len(exported) != len(ranges) || len(ranges) != 5 {
+		t.Fatalf("CodeRanges(%q) = %#v, want the five codeRanges reads", body, exported)
+	}
+	for index, candidate := range ranges {
+		block := slices.ContainsFunc(blocks, func(block codeRange) bool {
+			return block.start == candidate.start && block.end == candidate.end
+		})
+		if want := (CodeRange{Start: candidate.start, End: candidate.end, Block: block}); exported[index] != want {
+			t.Errorf("CodeRanges(%q)[%d] = %#v, want %#v", body, index, exported[index], want)
+		}
+	}
+	if got := []bool{exported[0].Block, exported[1].Block, exported[2].Block, exported[3].Block, exported[4].Block}; !reflect.DeepEqual(got, []bool{false, false, true, true, false}) {
+		t.Errorf("CodeRanges(%q) tells blocks %v, want the fenced and the indented block alone", body, got)
 	}
 }
