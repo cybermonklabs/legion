@@ -244,8 +244,10 @@ const (
 	// renewal of it that did not land, though every read it made answered: the role claim copy's
 	// last whole read is past the repair bound or none has completed, or this listener's own
 	// renewal of that claim failed inside the live window (roleOwnSessionVerdict). It comes with
-	// the error that names the arm, which the route answers under grantGuardPrefix
-	// (writeGrantGuardRefusal) rather than as a bus that did not answer.
+	// the error that names the arm. The route answers it as it answers roleHeldByAnotherProcess -
+	// the 409 naming the claimant's own session id as the holder, which the claimant waits out
+	// as it waits out a standing claim of another process - with that error under
+	// grantGuardPrefix (writeGrantGuardRefusal), and logs the refusal with the arm.
 	roleGrantGuarded
 	// roleUnclaimed: no claim stands for the role, so there is no holder to supersede and
 	// nothing to log. Only the route's own read of the claim answers it (roleSetHandler),
@@ -281,11 +283,14 @@ const (
 // of the roles named by the interest row its own write returned and by the role claim copy, each
 // as that claim's own record says (store.Registry.RenewRoleClaims). So, once the claim's renewal
 // is older than the window, three states of this listener refuse the claim, each with an error
-// that names it, nothing claimed and nothing written, and the claimant retries. None of the three
-// makes a bucket call. The first answers roleHolderUnread, which the route answers as the
+// that names it, nothing claimed and nothing written, and the claimant asks again. None of the
+// three makes a bucket call. The first answers roleHolderUnread, which the route answers as the
 // bus-unavailable 503, as every route answers a role claim view that cannot be served; the other
-// two are the grant guard's own and answer roleGrantGuarded, which the route answers with the same
-// 503 and Retry-After: 1 under grantGuardPrefix, since the bus answered every read they rest on.
+// two are the grant guard's own and answer roleGrantGuarded, which the route answers as it
+// answers roleHeldByAnotherProcess, with the 409 naming the claimant's own session id as the
+// holder, and with an error under grantGuardPrefix, since the bus answered every read they rest
+// on. The claimant waits that 409 out as it waits out a standing claim of another process
+// (writeGrantGuardRefusal, which says why it is no 503).
 //
 //   - The role claim view cannot be served (store.Registry.RoleViewErr): there is no watcher, its
 //     watcher ended terminally, or its copy is refilling - the state a listener restart leaves for
@@ -299,22 +304,12 @@ const (
 //     either, so past the bound such a claim may have gone unrenewed for as long as the live
 //     window leaves its holder.
 //   - This listener's own renewal of role's claim for the holder failed inside liveWindow
-//     (store.Registry.RenewalFailedWithin): a claim read or write that did not answer or failed,
-//     or a registration whose store work failed before its renewal could run
-//     (store.Registry.RecordRenewalFailures, from subscribeHandler). The record is kept by role
-//     and holder session, not by process, and a renewal of that claim for that holder that wrote
-//     clears it, so a failure of the process the claim names refuses until that process's next
-//     registration renews the claim. A failure another process of the same session recorded is
-//     under the same key, though: a restarted process whose registration or claim read failed
-//     while the claim still names the process before it, which has stopped. No renewal of that
-//     claim can land - its own process no longer registers, and no other process's renewal
-//     writes it - so nothing clears that record, and this arm refuses until one live window after
-//     the last failure. The record is this listener's own and is lost at a restart, and a claim
-//     may reach another listener, so the repair's bound and not this record is what bounds the
-//     harm. The record's error is quoted and not wrapped: it is an earlier renewal's failure, not
-//     this request's, so nothing that tells failures apart by their chain may take it for one of
-//     this request's reads - a key the bus refused that renewal, say, which writeNATSError
-//     answers as the caller's bad request.
+//     (store.Registry.RenewalFailedWithin, which says what clears that record and how long it
+//     stands): a claim read or write that did not answer or failed, or a registration whose
+//     store work failed before its renewal could run (store.Registry.RecordRenewalFailures,
+//     from subscribeHandler). The record is this listener's own and is lost at a restart, and a
+//     claim may reach another listener, so the repair's bound and not this record is what
+//     bounds the harm.
 func roleOwnSessionVerdict(registry *store.Registry, role string, claim store.RoleClaim, claimantInstanceID string, liveWindow time.Duration) (roleSupersession, error) {
 	if claim.HeldByProcess(claimantInstanceID) {
 		return roleTakenFromHolder, nil

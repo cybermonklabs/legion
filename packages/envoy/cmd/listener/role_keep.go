@@ -851,16 +851,15 @@ func roleKeepDrainHolds(ctx context.Context, cfg listenerDeliveryHandlerConfig, 
 	return claimed == holder, nil
 }
 
-// readRoleClaimHolder reads role's claim record from the role bucket (store.Registry.RoleClaim)
-// within ctx and roleHolderReadTimeout, whichever ends first, and returns the session it names,
-// empty for a role no record claims. It is the read the kept lane makes of who holds a role
-// outside a resolution - the handover's retry, the drain hold and the sweep - so each decides on
-// the record, and none on the registry's watched copy of the bucket, which can lack a claim the
-// bucket holds or keep one the bucket dropped.
+// readRoleClaimHolder reads role's claim record from the role bucket through the role lane's own
+// claim read (roleLaneClaims.RoleClaim, within ctx and roleHolderReadTimeout, whichever ends
+// first), and returns the session it names, empty for a role no record claims. It is the read the
+// kept lane makes of who holds a role outside a resolution - the handover's retry, the drain hold
+// and the sweep - so each decides on the record, and none on the registry's watched copy of the
+// bucket, which can lack a claim the bucket holds or keep one the bucket dropped. Reading through
+// roleLaneClaims keeps the bound on a claim read in one place for both lanes.
 func readRoleClaimHolder(ctx context.Context, cfg listenerDeliveryHandlerConfig, role string) (string, error) {
-	readCtx, cancel := context.WithTimeout(ctx, roleHolderReadTimeout)
-	defer cancel()
-	claim, err := cfg.registry.RoleClaim(readCtx, role)
+	claim, err := roleLaneClaims{cfg.registry}.RoleClaim(ctx, role)
 	if err != nil {
 		return "", err
 	}

@@ -288,7 +288,7 @@ func (c roleCache) Apply(entry kvwatch.Entry, _ kvwatch.Read) {
 }
 
 // CompleteRead removes every holder and fence entry the read found no evidence of: the bucket no
-// longer holds that role's claim. The sweep runs with the repair's sweeping flag on, so a read
+// longer holds that role's claim. The repair runs that sweep (roleClaimRepair.sweep), so a read
 // that repairs counts each holder the sweep removes as taken out (roleClaimRepair.swept), and no
 // removal outside the sweep is counted so. Every completed read, whether it repaired or filled the
 // copy, is recorded as the last on the registry's clock, with what it repaired
@@ -297,9 +297,7 @@ func (c roleCache) Apply(entry kvwatch.Entry, _ kvwatch.Read) {
 func (c roleCache) CompleteRead(read kvwatch.Read) {
 	r := c.r
 	r.holdersMu.Lock()
-	r.roleRepair.sweeping = true
-	r.roleHolders.CompleteRead()
-	r.roleRepair.sweeping = false
+	r.roleRepair.sweep(&r.roleHolders)
 	found := r.roleRepair.complete(read, r.now())
 	r.holdersMu.Unlock()
 	if found.putBack > 0 || found.tookOut > 0 {

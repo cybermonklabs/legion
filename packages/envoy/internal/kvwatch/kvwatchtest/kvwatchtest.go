@@ -5,8 +5,9 @@
 // waits the watcher arms, so the rule lives here once rather than in a copy per package that a
 // change to those waits must find twice. It is an ordinary package rather than a _test.go file
 // because Go cannot share test-only code across packages (see internal/cputest's identical
-// reasoning). kvwatch's own tests cannot import it, since it imports kvwatch, and keep fakes of
-// their own.
+// reasoning). kvwatch's own tests keep fakes of their own (armed in repair_test.go, pending in
+// probe_test.go) because those keep every wait the watcher arms, the short ones included, for the
+// test to fire, where Waits hands the short waits to time.AfterFunc.
 package kvwatchtest
 
 import (

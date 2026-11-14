@@ -49,10 +49,11 @@ type roleClaimRepair struct {
 	// is false between a completed read and the next begin, so a record the watcher delivers
 	// while following counts nothing.
 	repairing bool
-	// sweeping is on only while the copy sweeps at the read's completion (roleCache.CompleteRead),
-	// the one time an entry the copy removes is counted taken out by swept. The copy hands swept
-	// every entry a delivered record or an Evict removes too: delivered counts the first, and the
-	// second is this registry's own delete, which repairs nothing.
+	// sweeping is on only while sweep runs the copy's sweep at the read's completion
+	// (roleCache.CompleteRead), the one time an entry the copy removes is counted taken out by
+	// swept. The copy hands swept every entry a delivered record or an Evict removes too:
+	// delivered counts the first, and the second is this registry's own delete, which repairs
+	// nothing.
 	sweeping bool
 	// read is what the read under way has repaired so far.
 	read roleClaimRepairCounts
@@ -77,15 +78,12 @@ func (repair *roleClaimRepair) begin(read kvwatch.Read) {
 	repair.read = roleClaimRepairCounts{}
 }
 
-// delivered counts what one record the read delivered (roleCache.Apply) did to role's entry: held
-// and before are the entry before the record, holds and after the entry after it. A holder stored
-// where the copy held none or held another is put back, and an entry the record removed - a
-// delete marker, or a claim this build cannot read - is taken out. It counts nothing unless the
-// read under way repairs.
+// delivered counts what one record a repairing read delivered (roleCache.Apply, which calls it
+// only while the read under way repairs) did to role's entry: held and before are the entry before
+// the record, holds and after the entry after it. A holder stored where the copy held none or held
+// another is put back, and an entry the record removed - a delete marker, or a claim this build
+// cannot read - is taken out.
 func (repair *roleClaimRepair) delivered(role, before string, held bool, after string, holds bool) {
-	if !repair.repairing {
-		return
-	}
 	switch {
 	case holds && (!held || after != before):
 		repair.read.notePutBack(role)
@@ -101,6 +99,14 @@ func (repair *roleClaimRepair) swept(role, _ string) {
 	if repair.sweeping && repair.repairing {
 		repair.read.noteTookOut(role)
 	}
+}
+
+// sweep runs holders' sweep at a read's completion (kvwatch.Copy.CompleteRead) with sweeping on,
+// so swept counts what that sweep removes and nothing the copy removes at any other time.
+func (repair *roleClaimRepair) sweep(holders *kvwatch.Copy[string]) {
+	repair.sweeping = true
+	holders.CompleteRead()
+	repair.sweeping = false
 }
 
 // complete records read, whose sweep is done, as the last read that completed, at the moment at

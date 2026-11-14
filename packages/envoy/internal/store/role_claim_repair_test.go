@@ -425,6 +425,120 @@ func (c completionWatched) CompleteRead(read kvwatch.Read) {
 	c.completed(read)
 }
 
+// missedRoleClaims is a role claim cache that drops each record miss reports, as a copy that
+// missed that record's delivery while it followed the bucket leaves it (kvwatch.Cache).
+type missedRoleClaims struct {
+	kvwatch.Cache
+	miss func(entry kvwatch.Entry) bool
+}
+
+func (c missedRoleClaims) Apply(entry kvwatch.Entry, read kvwatch.Read) {
+	if c.miss(entry) {
+		return
+	}
+	c.Cache.Apply(entry, read)
+}
+
+// A repairing read counts a claim it took out of the copy once, and a claim this registry's own
+// release took out not at all. The delete is one the copy missed while it followed the bucket, so
+// the scheduled read's scan delivers its marker over a claim the copy still holds, and the read's
+// own count of what that record did counts it (roleClaimRepair.delivered). The release is this
+// registry's own delete of its own claim, made while the scan is held past both keys, which
+// removes the claim from the copy (forgetRoleHolder, an Evict) and repairs nothing. The copy hands
+// both removals to swept (Rows.Removed), as it hands the sweep's, so only the sweeping flag keeps
+// the delete from being counted twice and the release from being counted at all.
+func TestARepairCountsADeleteItDeliversOnceAndAReleaseNotAtAll(t *testing.T) {
+	const (
+		holder = "ses_repair_counts"
+		// deleted's claim is deleted from the bucket while the copy misses the delete.
+		deleted = "architect"
+		// released is this registry's own claim, released while the scheduled read is held.
+		released = "planner"
+		// passed is stored after both, so the scan delivers it last: the scheduled read is held
+		// there, past the other two keys.
+		passed = "reviewer"
+	)
+	logs := captureRegistryLogs(t)
+	rig := newRepairRig(t, nil)
+	claimRoleAs(t, rig.reg, holder, "m1", released, roleClaimInstance)
+	claimRoleAs(t, rig.reg, holder, "m1", deleted, roleClaimInstance)
+
+	var missing, scheduled atomic.Bool
+	missed := make(chan struct{})
+	reached := make(chan struct{})
+	gate := make(chan struct{})
+	var missOnce, reachOnce, openOnce sync.Once
+	open := func() { openOnce.Do(func() { close(gate) }) }
+	t.Cleanup(open)
+	cache := missedRoleClaims{
+		Cache: gatedRoleClaims{r: rig.reg, hold: func(key string) {
+			if scheduled.Load() && key == passed {
+				reachOnce.Do(func() { close(reached) })
+				<-gate
+			}
+		}},
+		miss: func(entry kvwatch.Entry) bool {
+			if !missing.Load() || entry.Key != deleted || entry.Op == kvwatch.OpPut {
+				return false
+			}
+			missOnce.Do(func() { close(missed) })
+			return true
+		},
+	}
+	rig.reg.roleWatcher.Stop()
+	rig.reg.roleWatcher = kvwatch.New("role claims", rig.reg.roles(), cache,
+		kvwatch.WithScheduledRead(roleClaimRepairInterval), kvwatch.WithAfterFunc(rig.waits.After))
+	rig.reg.roleWatcher.Start()
+	waitFor(t, 10*time.Second, func() bool { return servableView(rig.reg) })
+
+	missing.Store(true)
+	if err := rig.roles.Delete(deleted); err != nil {
+		t.Fatalf("delete %s's claim from the bucket: %v", deleted, err)
+	}
+	select {
+	case <-missed:
+	case <-time.After(10 * time.Second):
+		t.Fatalf("the watcher never delivered the delete of %s's claim", deleted)
+	}
+	missing.Store(false)
+	if got := holderOf(rig.reg, deleted); got != holder {
+		t.Fatalf("with the delete of %s's claim missed, the copy names %q for it, want %s", deleted, got, holder)
+	}
+	putRoleClaim(t, rig.roles, passed, "ses_other")
+	waitFor(t, 10*time.Second, func() bool { return holderOf(rig.reg, passed) == "ses_other" })
+
+	scheduled.Store(true)
+	report, fired := rig.fire(rig.due())
+	select {
+	case <-reached:
+	case <-time.After(10 * time.Second):
+		t.Fatalf("the scheduled read never reached %s's claim", passed)
+	}
+	if got := holderOf(rig.reg, deleted); got != "" {
+		t.Fatalf("with the scheduled read past %s's delete marker, the copy names %q for it, want nobody", deleted, got)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if stands, err := rig.reg.releaseRoleClaim(ctx, holder, released, releasedByItsProcess); err != nil || stands {
+		t.Fatalf("release %s's claim held by %s: stands %v, error %v; want it freed", released, holder, stands, err)
+	}
+	if got := holderOf(rig.reg, released); got != "" {
+		t.Fatalf("with its release answered, the copy names %q for %s, want nobody", got, released)
+	}
+
+	open()
+	repaired := rig.awaitRepair(report, fired)
+	t.Logf("the scheduled read's report: %+v", repaired)
+	if repaired.TookOut != 1 || repaired.PutBack != 0 {
+		t.Fatalf("the scheduled read's report = %+v, want one claim taken out and none put back: the delete it delivered counts once, and the release this registry made while it ran not at all", repaired)
+	}
+	for _, want := range []string{`msg="role claim repair put back 0 claims and took out 1"`, "took_out_roles=[" + deleted + "]"} {
+		if !strings.Contains(logs.String(), want) {
+			t.Fatalf("registry logs %q, want them to contain %q", logs.String(), want)
+		}
+	}
+}
+
 // A claim that neither the session's interest record nor the copy names is renewed again once the
 // scheduled read has put it back in the copy. The record is one this build cannot decode, so the
 // registration's write replaces it with the registration's own topics, none of them the role's;
