@@ -61,7 +61,8 @@ func assertTrailersAdded(t *testing.T, alone, wrapped string, lines []string) {
 // through the wrapper holds git alone's message with the expected lines added, none where the
 // wrapper adds none. The forms are every form of c-git-trailers steps 1 to 5 and 7, the refusals
 // git's empty-message rules make, each other source of a message, the option spellings git takes,
-// and the cases where the wrapper adds nothing although git commits.
+// the caller's own trailers and git's trailer configuration, and the cases where the wrapper adds
+// nothing although git commits.
 func TestGitWrapperTrailerAgreesWithGitOnEveryMessageForm(t *testing.T) {
 	git := trailerGit(t)
 	legion := trailerLegion(t)
@@ -89,8 +90,9 @@ func TestGitWrapperTrailerAgreesWithGitOnEveryMessageForm(t *testing.T) {
 		// args is the command after the setup, `git` left out.
 		args  []string
 		stdin string
-		// fifo runs the command under bash with ` <(printf x)` after args.
-		fifo bool
+		// fifo, when it is not empty, runs the command under bash with ` <(printf %s <fifo>)`
+		// after args.
+		fifo string
 		// env is the session's variables, the session pair where it is nil.
 		env []string
 		// commits is whether git alone commits, and lines what the wrapper adds then.
@@ -124,6 +126,14 @@ func TestGitWrapperTrailerAgreesWithGitOnEveryMessageForm(t *testing.T) {
 		{name: "a Signed-off-by line alone", args: []string{"commit", "--allow-empty", "-m", "Signed-off-by: x <x@x.invalid>"}},
 		{name: "-s -m ''", args: []string{"commit", "--allow-empty", "-s", "-m", ""}},
 		{name: "-s --cleanup=verbatim -m ''", args: []string{"commit", "--allow-empty", "-s", "--cleanup=verbatim", "-m", ""}, commits: true, lines: pair},
+		{name: "-s -m subject", args: []string{"commit", "--allow-empty", "-s", "-m", "subject"}, commits: true, lines: pair},
+		{name: "-s and a message with a trailer block", args: []string{"commit", "--allow-empty", "-s", "-m", "subject\n\nFoo: a"}, commits: true, lines: pair},
+		{name: "-s and a message whose last trailer is the -s line", commits: true, lines: pair,
+			args: []string{"commit", "--allow-empty", "-s", "-m", "subject\n\nFoo: a\nSigned-off-by: Legion test <legion-test@example.invalid>"}},
+		{name: "-s and a message that is the -s line", commits: true,
+			args: []string{"commit", "--allow-empty", "-s", "--allow-empty-message", "-m", "Signed-off-by: Legion test <legion-test@example.invalid>"}, lines: pair},
+		{name: "-s and a message that ends with a comment line under strip", args: []string{"commit", "--allow-empty", "-s", "--cleanup=strip", "-m", "subject\n#x"}, commits: true, lines: pair},
+		{name: "a comment line at the end under the whitespace cleanup adds nothing", args: []string{"commit", "--allow-empty", "-m", "subject\n#x"}, commits: true},
 		{name: "--cleanup=verbatim -m ' '", args: []string{"commit", "--allow-empty", "--cleanup=verbatim", "-m", " "}, commits: true, lines: pair},
 		{name: "-c commit.cleanup=verbatim -m ' '", args: []string{"-c", "commit.cleanup=verbatim", "commit", "--allow-empty", "-m", " "}, commits: true, lines: pair},
 		{name: "-t <file> and no message", files: files("template", "A template subject\n\n# A comment\n"), args: []string{"commit", "--allow-empty", "-t", "{files}/template"}},
@@ -139,7 +149,9 @@ func TestGitWrapperTrailerAgreesWithGitOnEveryMessageForm(t *testing.T) {
 		{name: "--fixup=amend: of an amend! commit with an empty body", setup: [][]string{{"commit", "--allow-empty", "-m", "amend! base"}},
 			args: []string{"commit", "--allow-empty", "--fixup=amend:HEAD"}},
 		{name: "--squash=HEAD", setup: base, args: []string{"commit", "--allow-empty", "--squash=HEAD"}, commits: true, lines: pair},
-		{name: "-F <(printf x), a FIFO", fifo: true, args: []string{"commit", "--allow-empty", "-F"}, commits: true, lines: pair},
+		{name: "-F <(printf x), a FIFO", fifo: "x", args: []string{"commit", "--allow-empty", "-F"}, commits: true, lines: pair},
+		{name: "-t <(printf 'msg\\n'), a FIFO that is the message", fifo: "msg\n", args: []string{"commit", "--allow-empty", "-t"}, commits: true},
+		{name: "-t /dev/stdin from a pipe, the message", stdin: "msg", args: []string{"commit", "--allow-empty", "-t", "/dev/stdin"}, commits: true},
 		{name: "-F /dev/stdin from a pipe", stdin: "x\n", args: []string{"commit", "--allow-empty", "-F", "/dev/stdin"}, commits: true, lines: pair},
 		{name: "a relative -F under git -C <dir>", setup: [][]string{{"sh", "-c", "mkdir sub && echo relative > sub/message"}},
 			args: []string{"-C", "sub", "commit", "--allow-empty", "-F", "message"}, commits: true, lines: pair},
@@ -154,6 +166,26 @@ func TestGitWrapperTrailerAgreesWithGitOnEveryMessageForm(t *testing.T) {
 		{name: "an option of no git commit", args: []string{"commit", "--allow-empty", "--bogus", "-m", "x"}},
 		{name: "--cleanup=scissors -e keeps a comment line", args: []string{"commit", "--allow-empty", "--cleanup=scissors", "-e", "-m", "#x"}, commits: true, lines: pair},
 		{name: "a cut line under -v adds nothing", args: []string{"commit", "--allow-empty", "-v", "-m", "a\n# ------------------------ >8 ------------------------\nb"}, commits: true},
+		{name: "--cleanup=verbatim and a message that ends inside a line adds nothing", files: files("unended", "x"),
+			args: []string{"commit", "--allow-empty", "--cleanup=verbatim", "-F", "{files}/unended"}, commits: true},
+		{name: "a configured trailer command adds nothing", setup: [][]string{
+			{"config", "trailer.sign.key", "Signed-off-by: "}, {"config", "trailer.sign.ifexists", "doNothing"},
+			{"config", "trailer.sign.command", `echo "A <a@x.invalid>"`},
+		}, args: []string{"commit", "--allow-empty", "-m", "x"}, commits: true},
+		{name: "an amend of trailers git would write again adds nothing", setup: [][]string{{"commit", "--allow-empty", "-m", "subject\n\nReviewed-by:Alice\nAcked-by :  Bob"}},
+			args: []string{"commit", "--amend", "--no-edit", "--allow-empty"}, commits: true},
+		{name: "the same amend under --cleanup=verbatim adds nothing", setup: [][]string{{"commit", "--allow-empty", "-m", "subject\n\nReviewed-by:Alice\nAcked-by :  Bob"}},
+			args: []string{"commit", "--amend", "--no-edit", "--allow-empty", "--cleanup=verbatim"}, commits: true},
+		{name: "a repeated trailer of the caller's with a key of the wrapper's", commits: true, lines: pair,
+			args: []string{"commit", "--allow-empty", "-m", "x", "--trailer", "Legion-Role: a", "--trailer", "Legion-Role: b", "--trailer", "Legion-Role: a"}},
+		{name: "an amend whose caller's trailer git keeps beside another of its key", setup: [][]string{{"commit", "--allow-empty", "-m", "subject\n\nLegion-Role: a\nFoo: b"}},
+			args: []string{"commit", "--amend", "--no-edit", "--allow-empty", "--trailer", "Legion-Role: a"}, commits: true, lines: pair},
+		{name: "a caller's trailer that is the wrapper's own line", commits: true, lines: []string{"Legion-Role: implementer"},
+			args: []string{"commit", "--allow-empty", "-m", "x", "--trailer", "Omp-Session: form-session"}},
+		{name: "a caller's trailer after a path", setup: [][]string{{"sh", "-c", "echo one > f"}, {"add", "f"}},
+			args: []string{"commit", "-m", "x", "f", "--trailer", "K: v"}, commits: true, lines: pair},
+		{name: "a caller's trailer before --", setup: [][]string{{"sh", "-c", "echo one > f"}, {"add", "f"}},
+			args: []string{"commit", "-m", "x", "--trailer", "K: v", "--", "f"}, commits: true, lines: pair},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -185,8 +217,8 @@ func TestGitWrapperTrailerAgreesWithGitOnEveryMessageForm(t *testing.T) {
 				}
 				var code int
 				var stderr string
-				if tc.fifo {
-					code, _, stderr = trailerRun(t, repo, env, tc.stdin, bash, append([]string{"-c", `"$@" <(printf x)`, "bash"}, command...)...)
+				if tc.fifo != "" {
+					code, _, stderr = trailerRun(t, repo, env, tc.stdin, bash, append([]string{"-c", `f=$1; shift; "$@" <(printf %s "$f")`, "bash", tc.fifo}, command...)...)
 				} else {
 					code, _, stderr = trailerRun(t, repo, env, tc.stdin, command[0], command[1:]...)
 				}
@@ -249,9 +281,10 @@ func TestGitWrapperTrailerTakesTheSessionDispatchActsAs(t *testing.T) {
 	}
 }
 
-// c-git-trailers steps 2, 3 and 7: an amend adds each of the two lines the message lacks and
-// nothing else. The same session and role add nothing, another role's pair goes after every line
-// of the message, and a message with other sessions' lines keeps them all.
+// c-git-trailers steps 1, 2, 3 and 7: the caller's trailers stay, and the wrapper's lines go after
+// them. An amend adds each of the two lines the message lacks and nothing else. The same session
+// and role add nothing, another role's pair goes after every line of the message, and a message
+// with other sessions' lines keeps them all.
 func TestGitWrapperTrailerAmendAddsOnlyTheLinesTheMessageLacks(t *testing.T) {
 	git := trailerGit(t)
 	legion := trailerLegion(t)
@@ -267,7 +300,7 @@ func TestGitWrapperTrailerAmendAddsOnlyTheLinesTheMessageLacks(t *testing.T) {
 
 	step1 := commit(implementer, "commit", "--allow-empty", "-m", "one",
 		"--trailer", "Co-authored-by: a <a@example.invalid>", "--trailer", "Co-authored-by: b <b@example.invalid>")
-	want := "one\n\nOmp-Session: implementer-session\nLegion-Role: implementer\nCo-authored-by: a <a@example.invalid>\nCo-authored-by: b <b@example.invalid>\n"
+	want := "one\n\nCo-authored-by: a <a@example.invalid>\nCo-authored-by: b <b@example.invalid>\nOmp-Session: implementer-session\nLegion-Role: implementer\n"
 	if step1 != want {
 		t.Fatalf("step 1: message = %q, want %q", step1, want)
 	}
@@ -324,8 +357,14 @@ func TestGitWrapperTrailerReadsCommitOptionsAsGitDoes(t *testing.T) {
 		{[]string{"-m", ""}, true, func(r commitRead) bool { return r.haveMessage && r.message == "" }},
 		{[]string{"-m", "a", "--no-message"}, true, func(r commitRead) bool { return !r.haveMessage && r.message == "" }},
 		{[]string{"-m", "--"}, true, func(r commitRead) bool { return r.message == "--\n" }},
-		{[]string{"path", "-m", "after a path"}, true, func(r commitRead) bool { return r.message == "after a path\n" }},
-		{[]string{"--", "-m", "x"}, true, func(r commitRead) bool { return !r.haveMessage }},
+		{[]string{"path", "-m", "after a path"}, true, func(r commitRead) bool { return r.message == "after a path\n" && r.end == 3 }},
+		{[]string{"--", "-m", "x"}, true, func(r commitRead) bool { return !r.haveMessage && r.end == 0 }},
+		{[]string{"-m", "x", "--end-of-options", "--trailer"}, true, func(r commitRead) bool { return r.end == 2 && len(r.trailers) == 0 }},
+		{[]string{"--trailer", "A: b", "--trai=C: d", "--trailer=E"}, true, func(r commitRead) bool {
+			return slices.Equal(r.trailers, []string{"A: b", "C: d", "E"}) && r.end == 4
+		}},
+		{[]string{"--no-status", "--status"}, true, func(r commitRead) bool { return r.statusWritten && r.includeStatus }},
+		{[]string{"--no-status"}, true, func(r commitRead) bool { return r.statusWritten && !r.includeStatus }},
 		{[]string{"--amen"}, true, func(r commitRead) bool { return r.amend }},
 		{[]string{"-F-"}, true, func(r commitRead) bool { return r.file == commitFile{set: true, value: "-", arg: 0, at: 2} }},
 		{[]string{"-q", "-F", "-"}, true, func(r commitRead) bool { return r.file == commitFile{set: true, value: "-", arg: 2, at: 0} }},
@@ -340,7 +379,7 @@ func TestGitWrapperTrailerReadsCommitOptionsAsGitDoes(t *testing.T) {
 		{[]string{}, true, func(r commitRead) bool { return r.verbose == -1 && r.edit == -1 }},
 		{[]string{"--no-verify", "--verify", "--no-no-verify"}, true, func(r commitRead) bool { return true }},
 		{[]string{"-Skey", "-uno", "-S", "--untracked-files"}, true, func(r commitRead) bool { return true }},
-		{[]string{"--short", "--no-long"}, true, func(r commitRead) bool { return !r.status }},
+		{[]string{"--short", "--no-long"}, true, func(r commitRead) bool { return !r.statusFormat }},
 		{[]string{"--cleanup=verbatim", "--no-cleanup"}, true, func(r commitRead) bool { return r.cleanupWritten && !r.cleanup.set }},
 		{[]string{"-t", "x", "--no-template"}, true, func(r commitRead) bool { return r.templateWritten && !r.template.set }},
 		{[]string{"--fixup=amend:HEAD"}, true, func(r commitRead) bool { return r.fixup == commitString{true, "amend:HEAD"} }},

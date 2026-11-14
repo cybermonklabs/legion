@@ -8,7 +8,6 @@ import (
 	"os"
 	"runtime"
 	"slices"
-	"strconv"
 	"strings"
 	"syscall"
 )
@@ -28,11 +27,14 @@ value is valid, and only when git alone would accept the commit's message.
                        (the form of the git first on a tmux pane's PATH)
 `
 
-// wrappedGitAt is the loop guard's variable. When the git that `legion git --after` runs is a
-// script, the variable holds `<index>:<path>` of that git on PATH. A host's git wrapper that runs
-// the git after its own PATH entry can run the tmux wrapper again, and the variable tells that run
-// to go on after the index and to add nothing. Its name starts with neither LEGION_ nor GIT_:
-// fixtureenv.Isolated drops both prefixes, and git reserves GIT_.
+// wrappedGitAt is the loop guard's variable. It holds the path, `<PATH entry>/git`, of each script
+// that `legion git --after` ran in this chain of runs, joined by `:`, which no PATH entry holds. A
+// host's git wrapper that runs the git after its own PATH entry can run the tmux wrapper again,
+// and a path of the variable that is still a git on PATH tells that run that it came back: it
+// goes on past every script the chain ran and adds nothing. Paths are compared, not PATH indexes,
+// since a host's wrapper may put an entry in front of PATH before it runs the next git. Its name
+// starts with neither LEGION_ nor GIT_: fixtureenv.Isolated drops both prefixes, and git reserves
+// GIT_.
 const wrappedGitAt = "WRAPPED_GIT_AT"
 
 // runGit is `legion git`. Both of Legion's git wrappers run it: the pod's /opt/legion/bin/git
@@ -51,7 +53,7 @@ func runGit(_ context.Context, args []string, _, stderr io.Writer) int {
 		return 2
 	}
 	gitArgs := args[3:]
-	choice := gitChoice{run: args[1], index: -1, helper: args[1]}
+	choice := gitChoice{run: args[1], helper: args[1]}
 	if args[0] == "--real" {
 		choice.script = isGitScript(choice.run)
 	} else {
@@ -77,7 +79,11 @@ func runGit(_ context.Context, args []string, _, stderr io.Writer) int {
 // gitSubcommand is the index of git's subcommand in args, or -1 when there is none: the first word
 // that is no global option. The options whose value is the next word are the list of the pod's
 // wrapper, packages/daemon/docker/git. Every other word that starts with `-` is an option of its
-// own, the `--opt=value` spellings included.
+// own, the `--opt=value` spellings included. A word that ends git's own options before any
+// subcommand (handle_options, git.c) ends the search with none: --help, -h, --version and -v,
+// which git runs as its help and version commands with what follows as their arguments, and
+// --exec-path without a value, --html-path, --man-path and --info-path, which print a path and
+// end git. So `git --help commit` is no commit.
 func gitSubcommand(args []string) int {
 	value := false
 	for i, arg := range args {
@@ -86,6 +92,9 @@ func gitSubcommand(args []string) int {
 			value = false
 		case slices.Contains([]string{"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env", "--attr-source", "--shallow-file"}, arg):
 			value = true
+		case slices.Contains([]string{"--help", "-h", "--version", "-v", "--html-path", "--man-path", "--info-path"}, arg),
+			strings.HasPrefix(arg, "--exec-path") && !strings.HasPrefix(arg, "--exec-path="):
+			return -1
 		case !strings.HasPrefix(arg, "-"):
 			return i
 		}
@@ -97,31 +106,33 @@ func gitSubcommand(args []string) int {
 type gitChoice struct {
 	// run is the git it replaces itself with.
 	run string
-	// index is run's index on PATH under --after, and -1 under --real.
-	index int
 	// script is whether run is a script: its first two bytes are `#!`.
 	script bool
 	// helper is the git that answers the reads of a commit (commitWithTrailers). It is no script
 	// under --after, so a host's wrapper never answers them. It is "" when there is none, and then
 	// no trailer is added.
 	helper string
-	// reentry is whether this run came back through a host's wrapper that the first run chose
+	// after is whether the form is --after, and chain, under --after, the loop guard's paths that
+	// run gets: the chain's scripts, run among them when it is a script.
+	after bool
+	chain []string
+	// reentry is whether this run came back through a host's wrapper that an earlier run chose
 	// (wrappedGitAt). Such a run adds nothing: the first run added the trailers.
 	reentry bool
 }
 
 // environment is the environment run gets: environ as received, with the loop guard's variable
-// set to run's PATH index and path when run is a script under --after, and taken out when run is
-// no script. Under --real a script gets the variable as received, since it has no PATH index.
+// set to the chain's paths when run is a script under --after, and taken out when run is no
+// script. Under --real a script gets the variable as received, since --real reads no PATH.
 func (c gitChoice) environment(environ []string) []string {
-	if c.script && c.index < 0 {
+	if c.script && !c.after {
 		return environ
 	}
 	env := slices.DeleteFunc(slices.Clone(environ), func(entry string) bool {
 		return strings.HasPrefix(entry, wrappedGitAt+"=")
 	})
 	if c.script {
-		env = append(env, wrappedGitAt+"="+strconv.Itoa(c.index)+":"+c.run)
+		env = append(env, wrappedGitAt+"="+strings.Join(c.chain, ":"))
 	}
 	return env
 }
@@ -133,11 +144,10 @@ func (c gitChoice) environment(environ []string) []string {
 // script is a candidate too, so a host's own git wrapper still runs. The helper is the first
 // candidate after own that is no script.
 //
-// A marker whose index names the same path on path is a re-entry: it runs the first candidate
-// after that index. A marker that names another path or no entry is stale and changes nothing.
-// ok is false when there is no git to run.
+// A marker that names a candidate is a re-entry: it runs the first candidate after own that the
+// marker does not name. A marker that names no candidate is stale and changes nothing, and a
+// script it runs starts a new chain. ok is false when there is no git to run.
 func gitAfter(own, path, marker string) (choice gitChoice, ok bool) {
-	entries := strings.Split(path, ":")
 	ownInfo, ownErr := os.Stat(own)
 	first := -1
 	type candidate struct {
@@ -145,7 +155,7 @@ func gitAfter(own, path, marker string) (choice gitChoice, ok bool) {
 		path  string
 	}
 	var candidates []candidate
-	for i, entry := range entries {
+	for i, entry := range strings.Split(path, ":") {
 		if entry == "" {
 			continue
 		}
@@ -162,21 +172,24 @@ func gitAfter(own, path, marker string) (choice gitChoice, ok bool) {
 			candidates = append(candidates, candidate{i, git})
 		}
 	}
-	after := first
-	if index, git, ok := parseWrappedGitAt(marker); ok && index < len(entries) && entries[index] != "" && entries[index]+"/git" == git {
-		after, choice.reentry = index, true
-	}
-	choice.index = -1
+	ran := slices.DeleteFunc(strings.Split(marker, ":"), func(p string) bool { return p == "" })
+	choice.after = true
+	choice.reentry = slices.ContainsFunc(candidates, func(c candidate) bool { return slices.Contains(ran, c.path) })
 	for _, c := range candidates {
-		if c.index > after {
-			choice.run, choice.index = c.path, c.index
+		if c.index > first && !(choice.reentry && slices.Contains(ran, c.path)) {
+			choice.run = c.path
 			break
 		}
 	}
-	if choice.index < 0 {
+	if choice.run == "" {
 		return choice, false
 	}
-	choice.script = isGitScript(choice.run)
+	if choice.script = isGitScript(choice.run); choice.script {
+		if choice.reentry {
+			choice.chain = ran
+		}
+		choice.chain = append(choice.chain, choice.run)
+	}
 	for _, c := range candidates {
 		if c.index > first && !isGitScript(c.path) {
 			choice.helper = c.path
@@ -184,19 +197,6 @@ func gitAfter(own, path, marker string) (choice gitChoice, ok bool) {
 		}
 	}
 	return choice, true
-}
-
-// parseWrappedGitAt reads the loop guard's `<index>:<path>`.
-func parseWrappedGitAt(marker string) (index int, path string, ok bool) {
-	digits, path, found := strings.Cut(marker, ":")
-	if !found || path == "" {
-		return 0, "", false
-	}
-	n, err := strconv.ParseUint(digits, 10, 31)
-	if err != nil {
-		return 0, "", false
-	}
-	return int(n), path, true
 }
 
 // isGitScript is whether path is a script: its first two bytes are `#!`. A file this process

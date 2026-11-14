@@ -56,6 +56,12 @@ legion=/opt/legion/bin/legion
 # `git --shallow-file X version` runs `version`, so `--shallow-file` is one of them. The
 # `--opt=value` spellings need nothing: they are one word, and this skips over them as it does
 # over any other option. ahead counts the words in front of the subcommand.
+#
+# Some words end git's own options before any subcommand (handle_options in git.c): `--help`,
+# `-h`, `--version` and `-v` make git run its help or version command with what follows as that
+# command's arguments, and `--exec-path` with no `=`, `--html-path`, `--man-path` and `--info-path`
+# make git print a path and stop. So `git --help push` is no push and `git --help commit` no
+# commit, and the pass stops there with neither: the real git gets "$@" as it came.
 push=0
 commit=0
 value=0
@@ -66,6 +72,9 @@ for arg; do
   else
     case "$arg" in
       -C | -c | --git-dir | --work-tree | --namespace | --config-env | --attr-source | --shallow-file) value=1 ;;
+      --help | -h | --version | -v | --html-path | --man-path | --info-path) break ;;
+      --exec-path=*) ;;
+      --exec-path*) break ;;
       -*) ;;
       push | send-pack) push=1; break ;;
       commit) commit=1; break ;;

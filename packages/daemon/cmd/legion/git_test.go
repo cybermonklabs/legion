@@ -170,11 +170,7 @@ func TestGitWrapperAfterRunsTheNextGitOnPathAScriptIncluded(t *testing.T) {
 		t.Fatalf("git commit through the pane's git = %d: %s", code, stderr)
 	}
 	calls := trailerCalls(t, log)
-	want := []string{
-		"-c", "trailer.Omp-Session.ifExists=addIfDifferent", "-c", "trailer.Legion-Role.ifExists=addIfDifferent",
-		"commit", "--trailer", "Omp-Session: after-session", "--trailer", "Legion-Role: implementer",
-		"--allow-empty", "-m", "one",
-	}
+	want := []string{"commit", "--allow-empty", "-m", "one", "--trailer", "Omp-Session: after-session", "--trailer", "Legion-Role: implementer"}
 	if len(calls) != 1 || !slices.Equal(calls[0], want) {
 		t.Fatalf("the host's git received %q, want one run with %q", calls, want)
 	}
@@ -195,7 +191,7 @@ func TestGitWrapperAfterRunsTheNextGitOnPathAScriptIncluded(t *testing.T) {
 		t.Fatalf("git commit through the pane's git = %d: %s", code, stderr)
 	}
 	calls = trailerCalls(t, log)[1:]
-	want = []string{"-c", "trailer.Omp-Session.ifExists=addIfDifferent", "commit", "--trailer", "Omp-Session: after-session", "--allow-empty", "-m", "two"}
+	want = []string{"commit", "--allow-empty", "-m", "two", "--trailer", "Omp-Session: after-session"}
 	if len(calls) != 2 || !slices.Equal(calls[0], []string{"status", "--short"}) || !slices.Equal(calls[1], want) {
 		t.Fatalf("the host's git received %q, want [status --short] and %q", calls, want)
 	}
@@ -244,9 +240,11 @@ const realGit = `real_git() {
 
 // A host's git wrapper that runs the git after its own PATH entry, as dotfiles' shim does, ends
 // when PATH names the pane's git twice around it, and when it names the host's wrapper twice
-// around the pane's git: the host's wrapper runs, and the commit carries each line once. Each
-// case runs `sh -c 'git commit …'` with the case's PATH in the command's environment, since
-// exec.Command("git") would look git up on the test process's own PATH.
+// around the pane's git: the host's wrapper runs, and the commit carries each line once. It ends
+// too when the host's wrapper puts a new entry in front of PATH before it runs the next git, which
+// moves every entry's index. Each case runs `sh -c 'git commit …'` with the case's PATH in the
+// command's environment, since exec.Command("git") would look git up on the test process's own
+// PATH.
 func TestGitWrapperAfterEndsAHostWrapperLoop(t *testing.T) {
 	git := trailerGit(t)
 	legion := trailerLegion(t)
@@ -259,19 +257,28 @@ func TestGitWrapperAfterEndsAHostWrapperLoop(t *testing.T) {
 		t.Fatal(err)
 	}
 	real := filepath.Dir(git)
+	paneAround := func(bin, shims string) string { return bin + ":" + shims + ":" + bin + ":" + real }
+	hostAround := func(bin, shims string) string { return shims + ":" + bin + ":" + shims + ":" + real }
 	for _, tc := range []struct {
-		name string
-		path func(bin, shims string) string
-		runs int
+		name    string
+		path    func(bin, shims string) string
+		prepend bool
+		runs    int
 	}{
-		{"the pane's git around the host's", func(bin, shims string) string { return bin + ":" + shims + ":" + bin + ":" + real }, 1},
-		{"the host's git around the pane's", func(bin, shims string) string { return shims + ":" + bin + ":" + shims + ":" + real }, 2},
+		{"the pane's git around the host's", paneAround, false, 1},
+		{"the host's git around the pane's", hostAround, false, 2},
+		{"the pane's git around a host's that puts an entry in front of PATH", paneAround, true, 1},
+		{"a host's git that puts an entry in front of PATH around the pane's", hostAround, true, 2},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			bin := trailerWrapperDir(t, legion)
 			shims := t.TempDir()
 			log := filepath.Join(t.TempDir(), "runs")
-			wrapper := "#!" + bash + "\nset -euo pipefail\nprintf 'run\\n' >> '" + log + "'\n" + realGit +
+			prepend := ""
+			if tc.prepend {
+				prepend = "PATH='" + t.TempDir() + "':\"$PATH\"\nexport PATH\n"
+			}
+			wrapper := "#!" + bash + "\nset -euo pipefail\nprintf 'run\\n' >> '" + log + "'\n" + prepend + realGit +
 				"_real=\"$(real_git)\"\nexec \"$_real\" \"$@\"\n"
 			if err := os.WriteFile(filepath.Join(shims, "git"), []byte(wrapper), 0o700); err != nil {
 				t.Fatal(err)
@@ -295,9 +302,10 @@ func TestGitWrapperAfterEndsAHostWrapperLoop(t *testing.T) {
 	}
 }
 
-// A WRAPPED_GIT_AT that names no entry of PATH is stale and no re-entry: the commit through the
+// A WRAPPED_GIT_AT that names no git on PATH is stale and no re-entry: the commit through the
 // pane's git carries both lines. The next git, the tests' compiled git, is no script, so the
-// pane's git takes the variable out, and an alias `!env` run through it prints none.
+// pane's git takes the variable out, and an alias `!env` run through it prints none. Among the
+// values are two that hold a number where a path goes.
 func TestGitWrapperAfterClearsAMarkerItDoesNotNeed(t *testing.T) {
 	git := trailerGit(t)
 	legion := trailerLegion(t)
@@ -305,7 +313,7 @@ func TestGitWrapperAfterClearsAMarkerItDoesNotNeed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, marker := range []string{"1:/nowhere/git", "7:/nowhere/git"} {
+	for _, marker := range []string{"/nowhere/git", "/nowhere/git:/elsewhere/git", "1:/nowhere/git", "7:/nowhere/git"} {
 		t.Run(marker, func(t *testing.T) {
 			bin := trailerWrapperDir(t, legion)
 			repo := trailerRepo(t, git)
@@ -380,11 +388,7 @@ func TestGitWrapperInstallsAPanesTrailers(t *testing.T) {
 		t.Fatalf("git commit through the installed git = %d: %s", code, stderr)
 	}
 	calls := trailerCalls(t, log)
-	want := []string{
-		"-c", "trailer.Omp-Session.ifExists=addIfDifferent", "-c", "trailer.Legion-Role.ifExists=addIfDifferent",
-		"commit", "--trailer", "Omp-Session: pane-session", "--trailer", "Legion-Role: tester",
-		"--allow-empty", "-m", "one",
-	}
+	want := []string{"commit", "--allow-empty", "-m", "one", "--trailer", "Omp-Session: pane-session", "--trailer", "Legion-Role: tester"}
 	if len(calls) != 1 || !slices.Equal(calls[0], want) {
 		t.Fatalf("the host's git received %q, want one run with %q", calls, want)
 	}
@@ -403,6 +407,43 @@ func TestGitWrapperInstallsAPanesTrailers(t *testing.T) {
 	}
 	if calls = trailerCalls(t, log); len(calls) != 2 || !slices.Equal(calls[1], []string{"status", "--short"}) {
 		t.Fatalf("the host's git received %q, want the commit and then [status --short]", calls)
+	}
+}
+
+// A word that ends git's own options before any subcommand makes git run its help or version
+// command, or print a path and end, whatever follows: `git --help commit` is no commit. legion git
+// hands git such a command as it came, under either form. Under --real the git it runs also
+// answers its reads, and that git runs once, so legion git read nothing first.
+func TestGitWrapperLeavesGitsHelpAndPathWordsAlone(t *testing.T) {
+	legion := trailerLegion(t)
+	for _, args := range [][]string{
+		{"--help", "commit", "-m", "x"},
+		{"-h", "commit"},
+		{"--version", "commit"},
+		{"-v", "commit"},
+		{"-C", "/", "--exec-path", "commit"},
+		{"--exec-pathx", "commit"},
+		{"--html-path", "commit"},
+		{"--man-path", "commit"},
+		{"--info-path", "commit"},
+	} {
+		for _, form := range []string{"--real", "--after"} {
+			dir := t.TempDir()
+			log := filepath.Join(dir, "calls")
+			writeTrailerScript(t, filepath.Join(dir, "git"), trailerLogging(log))
+			bin := t.TempDir()
+			value := filepath.Join(dir, "git")
+			if form == "--after" {
+				value = bin
+			}
+			env := trailerEnv(t, bin+":"+dir+":/usr/bin:/bin", "DISPATCH_HOST=omp", "DISPATCH_SESSION_ID=help-session", "LEGION_ROLE=implementer")
+			if code, _, stderr := trailerRun(t, dir, env, "", legion, append([]string{"git", form, value, "--"}, args...)...); code != 0 {
+				t.Fatalf("legion git %s -- %q = %d: %s", form, args, code, stderr)
+			}
+			if calls := trailerCalls(t, log); len(calls) != 1 || !slices.Equal(calls[0], args) {
+				t.Errorf("legion git %s -- %q ran git with %q, want one run with the arguments as they came", form, args, calls)
+			}
+		}
 	}
 }
 
