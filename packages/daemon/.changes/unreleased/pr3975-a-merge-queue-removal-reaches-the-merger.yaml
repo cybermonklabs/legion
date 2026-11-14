@@ -1,0 +1,29 @@
+kind: Fixed
+body: |-
+  When GitHub's merge queue takes the pull request of an issue in `merging` out of the queue, the
+  daemon tells the issue's merger. GitHub's `pull_request` event with the action `dequeued`, at
+  the head the record holds, makes the daemon read the pull request once. A merged answer applies
+  the merge and tells nobody. Any other answer sends the merger one message that names the pull
+  request and the head, and says that the event names no reason. While the reads fail, the daemon
+  reads the pull request up to five times in all, 30 seconds apart, and the message then says
+  that no read succeeded. The message wakes a merger whose pod the idle release took, and it
+  waits until the merger's session holds its role. It ends undelivered when the issue has left
+  `merging` at that head, or when the merger's claim failed or retired, and it wakes no released
+  merger while the design gate is closed. The daemon moves no phase and writes no slot for a
+  removal.
+
+  Step 5 of the merger's prompt watches the queue with `gh api graphql`, which the pod's gh
+  answers, in place of `gh pr view --json …,isInMergeQueue,…`, which it refuses, and it reads the
+  reason of each removal from GitHub's `RemovedFromMergeQueueEvent`, with what to do for each
+  reason.
+
+  The first boot of this release queues a start for each merger that the upgrade from a build
+  with the phase `awaiting_merge` left stopped: a merger whose pod the idle release took while
+  its issue waited in `awaiting_merge`, of an issue now in `merging` with its pull request open.
+  It gets the merging task through the start any merging phase owes, so it starts when the
+  tree's design gate allows it, and one message on the Dispatch issue says so. A later boot
+  repairs nothing again.
+
+  An earlier release cannot read the two new outbox kinds, `merge_queue_read` and
+  `merge_queue_removal`. Before you roll back to one, stop the daemon and delete those rows
+  (`docs/kubernetes.md`).
