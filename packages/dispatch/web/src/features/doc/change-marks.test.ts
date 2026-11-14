@@ -12,7 +12,7 @@ import {
   REMOVED_BLOCK_CLASS,
   REMOVED_WORDS_CLASS,
 } from "./change-marks";
-import { createEditor } from "./editor";
+import { constructEditor } from "./editor";
 import { blockSchemaCache } from "./schema";
 
 /** The document the editor would render for `markdown`: `changeMarksAgainst` reads the editor's
@@ -20,6 +20,15 @@ import { blockSchemaCache } from "./schema";
 function render(markdown: string): ProseMirrorNode {
   const doc = loadedEngine()?.parse(markdown);
   if (doc === undefined) throw new Error(`the engine rendered nothing for "${markdown}"`);
+  return doc;
+}
+
+/** The same source as a body renderer draws it (`MarkdownBody`, `rawHtml: "text"`): an HTML
+ *  comment draws as nothing there, so a comment on a line of its own is one block fewer than
+ *  the document the editor holds. Only the raw-HTML policy differs from `render` above. */
+function renderAsABody(markdown: string): ProseMirrorNode {
+  const doc = loadedEngine()?.parse(markdown, undefined, "text");
+  if (doc === undefined) throw new Error(`the engine drew nothing for "${markdown}"`);
   return doc;
 }
 
@@ -113,16 +122,19 @@ test("a paragraph replaced by a rule draws the words it lost in the editor", asy
   const lost = "The plan ships behind a flag today.";
   const root = document.body.appendChild(document.createElement("div"));
   const blockSchema = await blockSchemaCache.load(() => Promise.reject(new Error("no schema")));
-  const handle = await createEditor(root, {
-    awareness: null,
-    blockSchema,
-    // This row reads the editor's decorations, never its decision blocks.
-    onAskBlockHosts: () => {},
-    // No picture in this row's document, so nothing ever asks for a latest version.
-    watchPicture: () => () => {},
-    user: { color: "#f59e0b", name: "alice" },
-    ydoc: new Y.Doc(),
-  });
+  // The document is in hand, so the two phases run back to back (`constructEditor`).
+  const handle = await (
+    await constructEditor(root, {
+      awareness: null,
+      blockSchema,
+      // This row reads the editor's decorations, never its decision blocks.
+      onAskBlockHosts: () => {},
+      // No picture in this row's document, so nothing ever asks for a latest version.
+      watchPicture: () => () => {},
+      user: { color: "#f59e0b", name: "alice" },
+      ydoc: new Y.Doc(),
+    })
+  ).bind();
 
   try {
     handle.setMarkdown("# Plan\n\n---\n");
@@ -236,5 +248,40 @@ test("a baseline the engine refuses marks nothing", () => {
   expect(changeMarksAgainst(baselineOf(refused), render("# Plan\n\nThe only block.\n"))).toEqual({
     text: [],
     widgets: [],
+  });
+});
+
+// INFRA-341's raw-HTML policy is a parse option the body renderers pass; the version column
+// passes none, so a document's own baseline is parsed as it always was, with an HTML comment a
+// node of it, as it is a node of the document the editor holds. An unchanged version holding one
+// is therefore drawn with no marks at all.
+//
+// The empty marks alone cannot say that, whatever comment the version holds: an inline comment
+// adds no text to the paragraph it stands in, and a block comment a version column passing
+// `rawHtml: "text"` had dropped would leave the editor's own block unpaired, which
+// `changeMarksAgainst` draws nothing for. The second half of the row is what reads the policy:
+// against the draw a body makes of that same source, the block the body drops is marked
+// removed, and a version column that parsed as a body does would pair those two draws block for
+// block and mark nothing.
+test("an unchanged version holding an inline HTML comment keeps it in the baseline and marks nothing", () => {
+  const markdown =
+    "# Plan\n\nHeld <!-- legion: keep me --> here.\n\n<!-- legion: and me -->\n\nAfter.\n";
+  const baseline = render(markdown);
+  const comments: string[] = [];
+  baseline.descendants((node) => {
+    if (node.type.name === "html") comments.push(String(node.attrs.value ?? ""));
+    return true;
+  });
+
+  expect(comments).toEqual(["<!-- legion: keep me -->", "<!-- legion: and me -->"]);
+  expect(changeMarksAgainst(baselineOf(markdown), baseline)).toEqual({ text: [], widgets: [] });
+
+  // And the baseline is the document's own parse rather than a body's: a body holds one block
+  // fewer for this source, and the marks against that draw are the removed block it dropped.
+  const asABodyDrawsIt = renderAsABody(markdown);
+  expect(asABodyDrawsIt.childCount).toBe(baseline.childCount - 1);
+  expect(changeMarksAgainst(baselineOf(markdown), asABodyDrawsIt)).toEqual({
+    text: [],
+    widgets: [{ blockIndex: 2, className: REMOVED_BLOCK_CLASS, text: "" }],
   });
 });

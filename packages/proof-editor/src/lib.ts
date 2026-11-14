@@ -42,13 +42,14 @@ import { ParserState } from '@milkdown/transformer';
 import { commonmark } from '@milkdown/preset-commonmark';
 import { gfm } from '@milkdown/preset-gfm';
 import { history } from '@milkdown/plugin-history';
-import { collab, collabServiceCtx, type CollabService } from '@milkdown/plugin-collab';
+import { collab, collabServiceCtx, type CollabService, type YSyncOpts } from '@milkdown/plugin-collab';
 import { listener } from '@milkdown/plugin-listener';
 import { cursor } from '@milkdown/plugin-cursor';
 import { clipboard } from '@milkdown/plugin-clipboard';
 import { nord } from '@milkdown/theme-nord';
 import { yCursorPluginKey, ySyncPluginKey } from 'y-prosemirror';
 import { collabCursorPlugin } from './collab-cursor-plugin';
+import { buildTheDocumentInBatches, endOfTask } from './progressive-build';
 import type { Awareness } from 'y-protocols/awareness';
 import type * as Y from 'yjs';
 import type { EditorView } from '@milkdown/kit/prose/view';
@@ -98,6 +99,7 @@ import { registerPopoverHookInstance } from './dispatch-popover-hook';
 import { dispatchMarkEventsPlugin } from './dispatch-mark-events';
 import { remarkSoftBreakAsSpace } from './dispatch-soft-breaks';
 import { configureDispatchLinks } from './dispatch-links';
+import { caretAfterTypingPlugin } from './caret-after-typing';
 import { trailingNewlineInputPlugin } from './trailing-newline-input';
 import { recordMarkHistoryPlugin } from './record-mark-history';
 import {
@@ -144,6 +146,15 @@ export type {
   TypedBlockCommands,
   TypedBlockMenuItem,
 } from './typed-block-commands';
+
+/** How `focusMark` and `focusBlock` bring their target into view. The scroll does not animate:
+ *  a script scroll during a smooth one cuts it short, and the host corrects the landing as the
+ *  page paints under it (a diagram drawing above the target, a block the browser had skipped
+ *  painting at its own height instead of its estimate — `features/doc/refocus-when-settled.ts`
+ *  in Dispatch). Over a document of 400,000 characters an animated scroll was still being cut
+ *  short and restarted when the reader gave up: the link never landed
+ *  (dispatch://INFRA-341, requirement R11). */
+const FOCUS_SCROLL: ScrollIntoViewOptions = { behavior: 'auto', block: 'center' };
 
 export interface ProofEditorUser {
   name: string;
@@ -192,6 +203,36 @@ export interface CreateProofEditorOptions {
   /** The host's Mermaid renderer, which draws each mermaid code block's diagram. Without one a
    *  document's mermaid blocks show their source. */
   drawMermaid?: MermaidDrawer;
+  /**
+   * The host's own node views and plugins, installed on the view before the document is built.
+   *
+   * A host that installs them afterwards pays for the whole document twice: `view.setProps`
+   * with a new `nodeViews` map re-runs ProseMirror's view update over every node of the
+   * document, which destroys each node view the build made and creates the host's in its
+   * place. For Dispatch's typed blocks over a 406,319-character document, on a phone at 4x CPU
+   * throttling, that one task was 1,218 ms - longer than any batch of the build it followed
+   * (dispatch://INFRA-341, R11). Installed here, the build creates each node view once, inside
+   * the batch that builds its block, where the batches' own budget bounds it.
+   *
+   * The document is empty when this is called, so a node view installed here draws nothing yet
+   * and a plugin added here sees the build as it happens.
+   */
+  beforeBuild?: (view: EditorView) => void;
+  /**
+   * Hands the host each batch of the build as it lands, so its own draw of the same document
+   * gives way block by block (dispatch://INFRA-341, R11).
+   *
+   * It is called in the batch's own task, with the `data-block-id` of every block that batch is
+   * about to build, and what it answers - where it answers anything - is called in that same
+   * task once those blocks are in the editor. Nothing is painted between the two, so a host
+   * that takes its copies of those blocks off the page in the second half shows no frame
+   * holding one of them twice and none holding it nowhere.
+   *
+   * The editor's root is shown in the task its first batch lands in, and its blocks take edits
+   * that reach the Yjs document from that moment (`./progressive-build.ts`), so what this hands
+   * the host is a document the reader is already reading and writing.
+   */
+  onBatch?: (building: readonly string[]) => (() => void) | undefined;
 }
 
 /**
@@ -215,8 +256,10 @@ export interface ProofEditorHandle extends TypedBlockCommands {
    *  `Schema.nodeFromJSON` is not (./document-json.ts); throws for a node or mark type this
    *  editor has no schema for, which the host draws in place of the document. */
   setDocumentJSON(tree: DocumentJSON): void;
-  /** Top offset of each mark's first span relative to the library root. */
-  markOffsets(): Map<string, number>;
+  /** Top offset of each mark's first span relative to the library root, when `placed`; with
+   *  `placed` false each answers 0, so a host that places nothing against those pixels still
+   *  reads which marks the document draws without a forced layout of the whole document. */
+  markOffsets(placed: boolean): Map<string, number>;
   /** Changes what the reader may do with the document (`access`) post-construction. */
   setAccess(access: ProofEditorAccess): void;
   /** Apply mark metadata received from a peer, re-anchoring by quote. Unified
@@ -277,6 +320,17 @@ export interface ProofEditorHandle extends TypedBlockCommands {
   setReferences(references: EditorReferences | null): void;
   /** The stable id of the block containing the selection head, if any. */
   blockIdAtSelection(): string | null;
+  /**
+   * Shows the editor's root, for a root still hidden.
+   *
+   * A document of blocks shows itself: the root is shown in the task the build's first batch
+   * lands in, so the reader has the editor's own first block while the rest is built
+   * (`./progressive-build.ts`). What is left for this is a document of no blocks at all, whose
+   * build has nothing to show - a past version, which is drawn with `setMarkdown` after the
+   * build (`features/doc/VersionView.tsx` in Dispatch) - and the host's own last word at the
+   * end of a build, which costs nothing for a root already shown.
+   */
+  reveal(): void;
   /** Tears the editor and any collab binding down, the ProseMirror view first. Idempotent, and
    *  every write on this handle does nothing afterwards. The promise settles when the editor's
    *  own teardown, which runs after the view's, has finished; a host may ignore it, and a call
@@ -323,7 +377,16 @@ function installCollabCursorsWhenReady(
       const cursorPlugin = collabCursorPlugin(awareness);
       const nextPlugins = view.state.plugins.concat(cursorPlugin);
       ctx.set(prosePluginsCtx, nextPlugins);
+      // The peer cursors are installed over a document the reader may already be writing in,
+      // and ProseMirror draws it again for the new plugin set: that draw replaces the DOM
+      // their caret stands in, and since neither the document nor the editor's own selection
+      // changed by it, nothing writes the selection back
+      // (`progressive-build.ts`'s adoption says what that costs the reader). `focus()` is
+      // ProseMirror's own way to put it back from the editor's state, asked for only where
+      // the reader was in the editor to begin with.
+      const theReaderWasInIt = view.hasFocus();
       view.updateState(view.state.reconfigure({ plugins: nextPlugins }));
+      if (theReaderWasInIt && !view.isDestroyed) view.focus();
     } catch (error) {
       console.warn('[@sjawhar/proof-editor] failed to install yCursor plugin', error);
     }
@@ -370,11 +433,87 @@ function installSelfHealingParser(ctx: Ctx): void {
   });
 }
 
-export async function createProofEditor(
+/**
+ * An editor that has been constructed and has no document in it yet: everything the editor is
+ * made of that owes nothing to the document - Milkdown and its presets, the schema's typed
+ * blocks, every plugin's view, the host's own node views - is built and standing, and the
+ * document's blocks are not.
+ *
+ * It exists for a host whose document is still arriving: Dispatch's socket carries the whole
+ * state frame of a large document, and the construction cost 415 ms of the main thread for an
+ * 81,294-character document and 493 ms for a 406,319-character one, on a phone at 4x CPU
+ * throttling, after the sync rather than beside it (dispatch://INFRA-341, R11). Every editor
+ * Dispatch builds comes through here, a past version and the reading pane included
+ * (`features/doc/editor.ts`'s `constructEditor`); `createProofEditor` is the two phases in one
+ * call, which this package's own tests and Dispatch's `first-screen.live-editor.test.tsx` build
+ * with.
+ *
+ * The root is hidden for the whole of the construction, so the editor a host builds while its
+ * reader is reading the document's own draw puts no empty document on the screen in front of
+ * them; the first batch of `bind` shows it (`./progressive-build.ts`).
+ */
+export interface ProofEditorConstruction {
+  /** Binds the constructed editor to `opts.ydoc`'s fragment, builds the document into it a
+   *  batch of blocks at a time, and answers the handle. Call it once, when the document has
+   *  arrived. */
+  bind(): Promise<ProofEditorHandle>;
+  /** Changes what the reader may do with the document before the binding, for an admission
+   *  that lands while the socket is still syncing. The handle's `setAccess` is this same
+   *  call. */
+  setAccess(access: ProofEditorAccess): void;
+  /** Tears down a construction that will never be bound, and shows the root again. The handle's
+   *  `destroy` is this same call, and answers what that one answers: the editor's own teardown,
+   *  which runs after the view's. A caller that must know the view is gone before it draws
+   *  again awaits it; one that is only letting go need not. */
+  destroy(): Promise<void>;
+}
+
+/**
+ * The editor without its document: the first of the two phases, for the reason
+ * `ProofEditorConstruction` gives. What it answers binds the Yjs fragment and builds the
+ * document into it.
+ */
+export async function constructProofEditor(
   root: HTMLElement,
   opts: CreateProofEditorOptions,
-): Promise<ProofEditorHandle> {
+): Promise<ProofEditorConstruction> {
   root.classList.add('proof-editor');
+  // Hidden from here rather than from the first batch, because the construction now runs while
+  // the reader is reading the document's own draw: an editor standing empty in front of that
+  // draw for the length of a sync is a second document, blank, above the one they are reading.
+  //
+  // The hiding is an inline `display` this module sets and removes again, never a value read
+  // off the root and written back: a host builds its next editor in the same element, and an
+  // effect that re-runs while a construction is still standing hands that element to a second
+  // construction hidden. One that remembered what it found would remember `none` and give the
+  // reader a hidden editor, however the two finish (dispatch://INFRA-341, R11). Removing the
+  // property gives the root back to the stylesheet instead, so every path out - revealed,
+  // built, destroyed, or thrown - leaves it visible.
+  hide(root);
+  try {
+    return await theConstruction(root, opts);
+  } catch (error) {
+    // A root no editor ever stood in is the host's again.
+    show(root);
+    throw error;
+  }
+}
+
+/** Takes the editor's root off the screen, for as long as it holds no document to read. */
+function hide(root: HTMLElement): void {
+  root.style.setProperty('display', 'none');
+}
+
+/** Gives the root back to the stylesheet, which is where its `display` comes from. */
+function show(root: HTMLElement): void {
+  root.style.removeProperty('display');
+}
+
+/** The whole of a construction, under the root `constructProofEditor` has hidden. */
+async function theConstruction(
+  root: HTMLElement,
+  opts: CreateProofEditorOptions,
+): Promise<ProofEditorConstruction> {
   setCurrentActor(`human:${opts.user.name}`);
   let alive = true;
   const heatMapMode: HeatMapMode = opts.heatMapMode ?? 'background';
@@ -453,6 +592,8 @@ export async function createProofEditor(
     .use(tableKeyboardPlugin)
     // Firefox puts text typed over a code block's last line before its newline
     .use(trailingNewlineInputPlugin)
+    // A character the reader typed leaves their caret after it, whatever the browser left
+    .use(caretAfterTypingPlugin)
     // The composer's own record-mark writes are never undo steps
     .use(recordMarkHistoryPlugin)
     .use(editorHighlightsPlugin)
@@ -487,31 +628,24 @@ export async function createProofEditor(
   };
   applyAccess(opts.access ?? 'edit');
 
+  // The host's own node views and plugins, over the empty document, so every node view of the
+  // build is created once, in the batch that builds its block (`beforeBuild`).
+  opts.beforeBuild?.(view);
+
   // --- Collab binding -------------------------------------------------
   // Adapted from ProofEditorImpl's initFromShare() collab-activation block.
   // The awareness/yCursor plugin is intentionally installed *after* first
   // connecting without it: y-prosemirror's cursor plugin can throw (nodeSize
   // on undefined) if it evaluates awareness state before the ySync plugin's
   // mapping is populated.
-  editor.action((ctx) => {
-    const collabService = ctx.get(collabServiceCtx);
-    // Before the shared document renders: an ask two collaborators left off its content rule
-    // must not be deleted from it (see ./ask-content.ts).
-    relaxAskContentCheck(ctx.get(schemaCtx));
-    collabService.bindDoc(opts.ydoc);
-    collabService.mergeOptions({
-      yCursorOpts: { cursorBuilder: collabCursorBuilder, selectionBuilder: collabSelectionBuilder },
-    });
-    collabService.connect();
-
-    if (opts.awareness) {
-      // Mirrors CollabClient#setLocalUser: yCursorPlugin's cursor builder reads
-      // `awareness.getStates().get(clientId).user`.
-      opts.awareness.setLocalStateField('user', opts.user);
-      installCollabCursorsWhenReady(view, ctx, collabService, opts.awareness, () => alive);
-    }
+  const collabService = editor.ctx.get(collabServiceCtx);
+  // Before the shared document renders: an ask two collaborators left off its content rule
+  // must not be deleted from it (see ./ask-content.ts).
+  relaxAskContentCheck(editor.ctx.get(schemaCtx));
+  collabService.bindDoc(opts.ydoc);
+  collabService.mergeOptions({
+    yCursorOpts: { cursorBuilder: collabCursorBuilder, selectionBuilder: collabSelectionBuilder },
   });
-
   const unregisterPopoverHook = marginMode
     ? () => {}
     : registerPopoverHookInstance(view, opts.onMarkAction);
@@ -531,7 +665,7 @@ export async function createProofEditor(
   // other signal. A call before the first destroy, and every call after it, answers this.
   let torndown: Promise<void> = Promise.resolve();
 
-  return {
+  const handle: ProofEditorHandle = {
     view,
     insertTypedBlock(typeName, attrs) {
       return view.isDestroyed ? false : typedBlockCommands.insertTypedBlock(typeName, attrs);
@@ -576,12 +710,14 @@ export async function createProofEditor(
       const { state } = view;
       view.dispatch(state.tr.replaceWith(0, state.doc.content.size, document.content));
     },
-    markOffsets(): Map<string, number> {
+    markOffsets(placed: boolean): Map<string, number> {
       const offsets = new Map<string, number>();
-      const rootTop = root.getBoundingClientRect().top;
+      const rootTop = placed ? root.getBoundingClientRect().top : 0;
       for (const span of view.dom.querySelectorAll<HTMLElement>('[data-id]')) {
         const id = span.dataset.id;
-        if (id && !offsets.has(id)) offsets.set(id, span.getBoundingClientRect().top - rootTop);
+        if (id && !offsets.has(id)) {
+          offsets.set(id, placed ? span.getBoundingClientRect().top - rootTop : 0);
+        }
       }
       return offsets;
     },
@@ -620,14 +756,21 @@ export async function createProofEditor(
       const escaped = cssEscapeAttrValue(markId);
       const elements = view.dom.querySelectorAll<HTMLElement>(`[data-id="${escaped}"]`);
       if (elements.length === 0) return;
-      elements[0].scrollIntoView({ behavior: 'smooth', block: 'center' });
+      // The editor's own focus scroll, which does move the box carrying the document: it is the
+      // Proof editor placing its own selection inside its own DOM, and a host that keeps a
+      // reader's place records it as the page's own doing rather than as the reader taking that
+      // box over - Dispatch arms its landing correction around this call and stamps the scroll
+      // it makes (`focusInEditor` in `features/doc/ProofDocument.tsx`, `corrected()` in
+      // `features/doc/refocus-when-settled.ts`).
+      elements[0].scrollIntoView(FOCUS_SCROLL);
       pulseHighlight(view, 'mark', markId);
     },
     focusBlock(blockId: string): void {
       const escaped = cssEscapeAttrValue(blockId);
       const element = view.dom.querySelector<HTMLElement>(`[${BLOCK_ID_DOM_ATTR}="${escaped}"]`);
       if (element === null) return;
-      element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      // The editor's own focus scroll again, for a block.
+      element.scrollIntoView(FOCUS_SCROLL);
       pulseHighlight(view, 'block', blockId);
     },
     setActiveMarks(markIds: readonly string[]): void {
@@ -653,10 +796,17 @@ export async function createProofEditor(
       }
       return null;
     },
+    reveal(): void {
+      show(root);
+    },
     destroy(): Promise<void> {
       // Idempotent: a second call would ask a ctx that no longer holds `collabServiceCtx` for it.
       if (!alive) return torndown;
       alive = false;
+      // A root this editor never revealed is still hidden, and the host builds its next editor
+      // in the same element, which no longer takes this editor's edits.
+      show(root);
+      delete root.dataset.writePath;
       unregisterPopoverHook();
       editor.action((ctx) => {
         const collabService = ctx.get(collabServiceCtx);
@@ -675,6 +825,89 @@ export async function createProofEditor(
       return torndown;
     },
   };
+
+  const bind = async (): Promise<ProofEditorHandle> => {
+    // The document is built a batch of blocks at a time, each batch a task of its own, and the
+    // binding adopts the document and the mapping those batches made instead of drawing the
+    // whole document itself in one task (./progressive-build.ts, dispatch://INFRA-341 R11). The
+    // root has been hidden since the construction, and is shown in the task the first batch
+    // lands in: from there the reader has the editor's own first block and every block after it
+    // as it is built, and the host takes its own draw of each batch's blocks off the page in
+    // that same task (`onBatch`), so no frame holds a block twice. `data-write-path="live"` says
+    // the blocks on the screen take edits that reach the Yjs document - through the window onto
+    // the blocks already built until the last batch, through the binding after it - which is
+    // what a reader, and the measurement that times them (`e2e/large-documents-page.ts` in
+    // Dispatch), reads the editor's first usable block by.
+    try {
+      await buildTheDocumentInBatches({
+        // `mapping` is `ySyncPlugin`'s own option - the one `initProseMirrorDoc` exists to fill -
+        // and Milkdown's `YSyncOpts`, written before y-prosemirror had it, does not name it;
+        // CollabService passes the whole object through to the plugin (`#createPlugins`).
+        adopt: (mapping) => {
+          collabService.mergeOptions({ ySyncOpts: { mapping } as unknown as YSyncOpts });
+          collabService.connect();
+        },
+        fragment: opts.ydoc.getXmlFragment('prosemirror'),
+        live: () => {
+          show(root);
+          root.dataset.writePath = 'live';
+        },
+        onBatch: opts.onBatch,
+        schema: editor.ctx.get(schemaCtx),
+        view,
+      });
+    } catch (error) {
+      // Nothing will reveal a root whose editor was never answered.
+      show(root);
+      throw error;
+    }
+    // The third task: the peer cursors. Installing them reconfigures the editor's whole plugin
+    // set a second time, over a document that by now holds every block
+    // (`installCollabCursorsWhenReady`), and measured at a desktop width on a 986-block
+    // document that is 266 ms of main thread. It used to run in the task the host's swap runs
+    // in - the two together held the page for 465 ms of the build's last second, the longest
+    // task of the whole build - so the task boundary below is what keeps each of them its own
+    // (dispatch://INFRA-341, R11).
+    await endOfTask();
+
+    if (opts.awareness) {
+      // Mirrors CollabClient#setLocalUser: yCursorPlugin's cursor builder reads
+      // `awareness.getStates().get(clientId).user`.
+      opts.awareness.setLocalStateField('user', opts.user);
+      installCollabCursorsWhenReady(view, editor.ctx, collabService, opts.awareness, () => alive);
+      // The fourth task: the host's swap, which runs when this resolves, so it never joins the
+      // reconfigure above.
+      await endOfTask();
+    }
+
+    return handle;
+  };
+
+  return {
+    bind,
+    destroy: () => handle.destroy(),
+    setAccess: applyAccess,
+  };
+}
+
+/**
+ * The two phases in one call, for a caller whose document is already in hand.
+ *
+ * This package's own tests, and Dispatch's `first-screen.live-editor.test.tsx`, are those
+ * callers: Dispatch's app builds every editor it shows - the live document, a past version,
+ * the reading pane - through `constructProofEditor`, since even a host with its document in
+ * hand wants the editor's typed blocks on the view before the build
+ * (`features/doc/editor.ts`'s `constructEditor`). A host whose document is still arriving
+ * over a socket needs the two phases apart for a second reason: it constructs as the socket
+ * opens and binds when the state frame has been applied, so the construction runs beside the
+ * sync rather than after it.
+ */
+export async function createProofEditor(
+  root: HTMLElement,
+  opts: CreateProofEditorOptions,
+): Promise<ProofEditorHandle> {
+  const construction = await constructProofEditor(root, opts);
+  return construction.bind();
 }
 
 export default createProofEditor;

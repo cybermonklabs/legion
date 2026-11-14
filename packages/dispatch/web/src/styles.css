@@ -48,6 +48,57 @@ body {
   margin: 0;
 }
 
+/* Where the server's own draw of a document is laid out, before any script of the page has run.
+
+   A reader who opens an issue document is sent its opening blocks as HTML, in `#first-screen`
+   (`web/index.html`, `internal/dispatch/routes/first_screen.go`'s `servePageForDocument`). That
+   element is a child of `body`, after `#root`, so until React mounts there is no shell around
+   it and nothing holds the columns the shell will draw: the blocks were laid out across the
+   whole 1,280 px viewport and then re-wrapped to the 528 px the document keeps when the page
+   adopted them, measured at 1280x900 as `served=0..1280` on every frame to 1,478 ms and
+   `page=344..872` at 1,975 ms (dispatch://INFRA-341, R11). `MarginColumn`'s reservation cannot
+   reach this: it is mounted after `TheRouteIsDrawn`, which is a second after the paint these
+   blocks are already on the screen for. So the shell reserves the same columns here, in CSS the
+   browser has before it paints anything.
+
+   The numbers are the shell's own (`web/src/app.tsx`):
+     - the sidebar's column, `w-80`, and `<main>`'s `p-6` on each side;
+     - the margin's column, `DEFAULT_MARGIN_WIDTH`, which is `marginColumnWidth`'s answer for a
+       reader whose stored width is not known.
+       `web/src/features/margin/first-screen-reservation.test.ts` holds both to the modules
+       they were copied from, so they cannot drift;
+     - nothing below `xl`, where the margin is a sheet over the document rather than a column
+       beside it and the sidebar is not drawn at all: this query is the exact inverse of
+       `COMPACT_VIEWPORT_QUERY` (`features/shell/useDialog.ts`). At a compact width the blocks
+       are laid out across the viewport and inset by `<main>`'s padding when the page adopts
+       them - 1,279 px to 1,231 px, measured at 1279x900 - which is the page's own gutter and
+       not either column;
+     - nothing on a route that draws no margin, because the server writes this element on the
+       four issue document addresses alone (`documentAddress` in `routes/first_screen.go`), and
+       `routeHasMargin` answers true for every one of them. A page with no draw carries no
+       element with this attribute and no rule matches.
+
+   What the page's own bytes cannot name is which of those columns this reader drew last: the
+   margin's width, the margin they collapsed to its rail and the sidebar they hid are all kept
+   under keys named for the signed-in login (`features/shell/userPreference.ts`), which the
+   page learns only from `/auth/whoami`, so nothing here can even spell them. So the shell
+   writes the layout it draws a second time under one key for the whole browser
+   (`features/shell/last-shell-layout.ts`), and the head of `web/index.html` reads that before
+   these blocks are parsed and sets the two properties below. The defaults are what a browser
+   with nothing stored gets, and are the whole rule where storage cannot be read or holds
+   something this build did not write. With them, a reader whose margin is 520 px, whose margin
+   is a rail, or whose sidebar is a rail has the blocks laid out at the width they keep from
+   the first paint; without them they were laid out at 528 px and re-wrapped to 392 px, 856 px
+   and 792 px (measured at 1280x900). Where two logins share a browser the key holds whichever
+   drew last, so the other sees that one re-wrap until the shell writes their own layout, which
+   it does on that same load. */
+@media (min-width: 1280px) {
+  #first-screen > [data-first-screen-address] {
+    margin-left: var(--first-screen-sidebar-inset, calc(20rem + 1.5rem));
+    margin-right: var(--first-screen-margin-inset, calc(384px + 1.5rem));
+  }
+}
+
 button,
 a {
   transition:
@@ -209,6 +260,60 @@ a {
 .dispatch-doc .milkdown .editor {
   min-height: 24rem;
   max-width: none;
+}
+
+/* A document of 400,000 characters is a thousand top-level blocks, and a phone pays style,
+   layout and paint for every one of them before it draws the first. `content-visibility: auto`
+   leaves the browser to skip the blocks off the screen and do that work as the reader reaches
+   them; `contain-intrinsic-size: auto 24px` gives a block it has not drawn yet a height, and
+   `auto` makes the browser keep the real one once it has drawn it, so the scrollbar settles and
+   a block link still lands (dispatch://INFRA-341, R11).
+
+   24px is a line of the document's text, which is the least a top-level block stands, and the
+   estimate is a floor rather than a guess at an average block because the two kinds of error
+   are not alike. An estimate above what a block really stands collapses the document under a
+   reader the page has already placed: the browser draws the band of blocks nearest them, each
+   one gives back the difference, the page loses that height and the scroll is clamped to the
+   new end of it, which brings the next band near and takes the reader down again. Measured
+   here, a 52-paragraph version opened at a comment link in its last paragraph: 120px against
+   the 26px a one-line paragraph stands, and the landing at 6,884 px was clamped back nine
+   times to 3,372 px (`e2e/deep-links.e2e.ts`, "a past version's comment link lands on its
+   quote in a document with no diagram"). An estimate below it only grows the page, which moves
+   the scroll the other way: the browser's own scroll anchoring holds the words the reader is
+   on, and a focus the growth pushed down is run again once the drawing settles
+   (`features/doc/refocus-when-settled.ts`). So the page under-counts a document it has not
+   drawn and grows into its real height, rather than over-counting it and shrinking out from
+   under whoever is reading it.
+
+   Whatever stands beside the document. The rule used to stand down for a document the page was
+   measuring - the margin up beside it, or the block reference badges at its blocks - because a
+   per-element read of layout over the document was held to force each skipped block relevant one
+   at a time. It does, but only for a read inside a block, and that is not what the page reads
+   here. Measured on this pod, 1,000 paragraphs at 4x CPU throttling and a desktop width: a
+   `getBoundingClientRect` on each block itself, which is what the block placements and the
+   badges read (`features/doc/marks.ts`'s `blockOffsets`), costs 10 ms with the rule on against
+   26 ms with it off; a read of a span inside each block, which is what a record mark's placement
+   reads (`markOffsets`), forces its own block to render and costs 50 ms for ten marks, 285 ms
+   for fifty and 7.8 s for one in every block, and every read after the first is free, since a
+   block that rendered stays rendered. Turning the rule off instead costs a style and a layout of
+   every block of the document in one task: 623 ms for those 1,000 paragraphs, and 915 ms of
+   style with 1,837 ms of layout - one 3.3 s task - for the 406,319-character document R11
+   measures, at the moment its editor opened, which is where a desktop width paid ten times a
+   phone's longest task for a build (dispatch://INFRA-341, R11). So the rule stands, the page
+   pays for the marks it has rather than for every block it does not, and a card is placed at the
+   pixel its mark or block is read at in the DOM, which is what `ThreadList` and `DecisionCard`
+   take over the published offset anyway.
+
+   The rule is the live document's own and a past version's alike: both draw the same blocks, and
+   a version's one focus - a comment link's quote, a highlighted mark - reads that block's own box.
+
+   The document's own draw before its editor exists (`features/doc/DocumentPreview.tsx`) is the
+   same blocks of the same document, drawn in the same document, and is where the reader first
+   meets them, so it is skipped the same way. */
+.dispatch-doc .dispatch-doc-preview > *,
+.dispatch-doc .milkdown .editor > * {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 24px;
 }
 
 /* A document's own headings are content, not the page's identity. `@legion/proof-editor` sizes

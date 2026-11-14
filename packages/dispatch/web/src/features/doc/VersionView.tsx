@@ -9,6 +9,7 @@ import { whoAmIQuery } from "../../api/queries";
 import type { Ask, BlockSchema } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { watchPicturePath } from "../refs/reference-target";
+import type { DocumentOwner } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
 import { AskBlockCard } from "./AskBlockCard";
@@ -38,7 +39,7 @@ export interface VersionViewProps {
   createdAt: string | undefined;
   highlight: Highlight | undefined;
   /** The project document shown, for block asks with no issue to be referenced under. */
-  owner: { project: string; slug: string } | undefined;
+  owner: DocumentOwner | undefined;
   version: number;
 }
 
@@ -59,7 +60,7 @@ export function VersionView({
   const [editorHandle, setEditorHandle] = useState<EditorHandle | undefined>(undefined);
   const [highlightMissing, setHighlightMissing] = useState(false);
   const [renderError, setRenderError] = useState<string | undefined>(undefined);
-  const { createEditor } = useContext(DocumentRuntime);
+  const { constructEditor } = useContext(DocumentRuntime);
   const versionQuery = useQuery({
     queryKey: ["artifact", artifactId, "version", version],
     queryFn: () => api.getArtifactVersion(artifactId, version),
@@ -145,7 +146,10 @@ export function VersionView({
         return;
       }
       ydoc = doc;
-      const editor = await createEditor(parent, {
+      // A version's document is in hand before the editor exists - it is drawn with
+      // `setMarkdown` below, over a standalone Yjs document - so there is nothing to wait for
+      // between the two phases (`features/doc/editor.ts`).
+      const construction = await constructEditor(parent, {
         access: "read",
         awareness: null,
         blockSchema,
@@ -155,6 +159,7 @@ export function VersionView({
         watchPicture: (route, onPicture) => watchPicturePath(queryClient, route, onPicture),
         ydoc: doc,
       });
+      const editor = await construction.bind();
       handle = editor;
       if (!mounted) {
         editor.destroy();
@@ -179,6 +184,10 @@ export function VersionView({
       } else if (tree !== undefined) {
         editor.setDocumentJSON(tree);
       }
+      // The editor's root is hidden from the moment it is created until this
+      // (`@legion/proof-editor`'s `reveal`), so a version is drawn once, with its text in it,
+      // rather than as an empty editor that fills a task later.
+      editor.reveal();
       setHighlightMissing(highlighted !== undefined && embedded === undefined);
       // Once the version's text is in: its references are drawn over what it reads now.
       setEditorHandle(editor);
@@ -218,7 +227,7 @@ export function VersionView({
       ydoc?.destroy();
       setEditorHandle(undefined);
     };
-  }, [baseline, blockSchema, createEditor, highlighted, login, markdown, queryClient, tree]);
+  }, [baseline, blockSchema, constructEditor, highlighted, login, markdown, queryClient, tree]);
 
   if (versionQuery.isPending) {
     return <p>Loading version…</p>;

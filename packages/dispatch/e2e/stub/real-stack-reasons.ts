@@ -63,6 +63,8 @@ export const realStackReasons: Record<string, string> = {
   "architecture.e2e.ts":
     "a status write must move the server-computed bar; the server's import refusal is the assertion",
   "artifacts.e2e.ts": "uploads, version compare, document sockets and a 503 refetch",
+  "ask-answer-area.e2e.ts":
+    "Answer, Ask back and Reply are writes the rows re-read, the picked session's message is read back from the fake Envoy, and the decision-block rows answer inside the live document",
   "ask-blocks.e2e.ts":
     "decision answers the server records, and pastes in the live document editor",
   "ask-concurrent-edit.e2e.ts": "two editors crossing in one `/ws/doc` room",
@@ -82,6 +84,8 @@ export const realStackReasons: Record<string, string> = {
   "broker-approval.e2e.ts":
     "decisions made on the real broker, with sign-in and cross-origin refusals",
   "btw.e2e.ts": "delivery modes and sends asserted against the fake Envoy",
+  "build-typing.e2e.ts":
+    "every row types into the live document editor and reads back the markdown the server stored",
   "claim-refilling.e2e.ts": "the claim's lapse is the server's judgement against the agent list",
   "claim-unresponsive.e2e.ts":
     "unresponsive, takeable and a second agent's refusal are server decisions",
@@ -189,6 +193,30 @@ export const realStackReasons: Record<string, string> = {
     "the close commits a label write and the row waits for the server's answer to reach the header before it reads focus again",
   "labels.e2e.ts":
     "label writes and a server-filtered list; writes labels, then reloads and measures",
+  "large-documents-build-serves.e2e.ts":
+    "its row reads what the page serves while its editor is built - the page's own clock beside another person's words over the document socket - and runs one row at a time in `iphone-alone`",
+  "large-documents-build-serves.the-decision.e2e.ts":
+    "its row reads a decision answered while the page's editor is built, against the ask the server records, and runs one row at a time in `iphone-alone`",
+  "large-documents-build.e2e.ts":
+    "each row reads the document being built in its live editor, batch by batch, over the socket the server syncs it on",
+  "large-documents-desktop-build.e2e.ts":
+    "it reads the longest main-thread task of a build the server's sync begins, over the draw that server sent, one row at a time in `chromium-alone`",
+  "large-documents-first-screen.e2e.ts":
+    "the first block is the Go server's own draw in the page it sent, and the reads the page holds are the issue's own reads to that server",
+  "large-documents-first-screen.the-chrome.e2e.ts":
+    "the chrome it reads is drawn after the batch of an editor the server's document socket syncs, beside the server's own draw, and over an ask the server holds",
+  "large-documents-first-screen.the-keyboard.e2e.ts":
+    "its row tabs into the chrome the page holds while the server's document socket is held, over the server's own draw of the document",
+  "large-documents-fold.e2e.ts":
+    "the block it measures is the Go server's own draw, found by its id in the page that server sent for the document's address",
+  "large-documents-long-build.e2e.ts":
+    "its rows read a build the server's sync begins over the document it drew into the page it sent, and the edit row writes as another person on the document socket",
+  "large-documents-measured.e2e.ts":
+    "its two measurements are taken over a build the server's sync begins, in front of the draw that server sent, and run one row at a time in `iphone-measure-alone`",
+  "large-documents-reader.e2e.ts":
+    "the document is read in its live editor and the decisions in it are answered against the asks the server records; the reconnect row reads the frames the document's room answers a SyncStep1 with, and an edit's arrival in the server's `/text`",
+  "layout.e2e.ts":
+    "its two rows read a whole page load on each of the routes that draw a margin, and one of those is a project document, whose margin sits on the live document's room",
   "live-socket.e2e.ts": "the `/ws/live` socket's own behaviour",
   "live.e2e.ts": "live delivery of writes made after the page loaded",
   "machine-login.e2e.ts": "device grants decided on the real broker",

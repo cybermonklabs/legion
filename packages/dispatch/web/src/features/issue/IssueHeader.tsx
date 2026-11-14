@@ -1,4 +1,4 @@
-import { ISSUE_TITLE_MAX } from "@legion/contracts";
+import { ISSUE_TITLE_MAX } from "@legion/contracts/dispatch-constants";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   type FormEvent,
@@ -57,6 +57,7 @@ import {
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { ApprovalChip } from "../doc/ApprovalChip";
+import { ReaderIsHere, useAfterTheFirstBatch } from "../doc/first-batch";
 import { waitingOnHuman } from "../inbox/BlockedOnYou";
 import { issueStatuses, openIssueStatuses, statusLabel } from "../project/board-model";
 import { AgentName, useAgentText } from "../refs/AgentName";
@@ -72,6 +73,14 @@ import { GitHubLink } from "./GitHubLink";
 import { gatedStepEntries } from "./gated-steps";
 import { IssueComponentsLine } from "./IssueComponentsLine";
 import { IssueLabels } from "./IssueLabels";
+import {
+  issueClosedCalloutClassName,
+  issueHeaderFrameClassName,
+  issueKeyBadgeClassName,
+  issueStatusPillClassName,
+  issueStatusPillDotClassName,
+  issueTitleBoxClassName,
+} from "./issue-header-classes";
 import { issuePriority } from "./issue-priority";
 import { PriorityEditor } from "./PriorityControl";
 import { ProgressChips } from "./ProgressChips";
@@ -82,6 +91,7 @@ import {
   UnreachableRouteMarker,
   UnresponsiveRouteMarker,
 } from "./RouteReach";
+import { theChromeIsHere } from "./reaching-the-chrome";
 import { SubscribedAgents } from "./SubscribedAgents";
 import { type IssueUpdateInput, useIssueDrafts } from "./useIssueDrafts";
 import type { IssuePriorityWrite } from "./useIssuePriority";
@@ -120,6 +130,10 @@ export function IssueHeader({
   state: UserIssueState;
 }): ReactNode {
   const queryClient = useQueryClient();
+  // A key the reader pressed while the page was still holding this header is done here, in the
+  // commit that mounts the controls it was reaching for (`reaching-the-chrome.ts`). The layout
+  // phase, so the control it focuses or presses is theirs before this header is painted.
+  useLayoutEffect(() => theChromeIsHere("header"), []);
   const [editingTitle, setEditingTitle] = useState(false);
   const [routeEditing, setRouteEditing] = useState(false);
   const routeInputRef = useRef<HTMLInputElement>(null);
@@ -178,7 +192,12 @@ export function IssueHeader({
   const [subscribersOpen, setSubscribersOpen] = useState(false);
   const [referencesOpen, setReferencesOpen] = useState(false);
   const agentText = useAgentText();
+  // Who is subscribed is a panel of its own, shut until the reader opens it, and its count is
+  // a number beside that toggle: nothing the reader is waiting for while a document opens
+  // beneath it. So the read waits for the editor's first batch, and goes out at once for a
+  // reader who opens the panel first (`features/doc/first-batch.ts`).
   const subscribers = useQuery({
+    enabled: useAfterTheFirstBatch(subscribersOpen),
     queryKey: ["subscribers", issue.key],
     queryFn: () => api.getIssueSubscribers(issue.key),
   });
@@ -403,13 +422,16 @@ export function IssueHeader({
     // what keeps a child issue's row in the Children tab, which carries the same accessible
     // names, out of their reach.
     <header
-      className={`mb-3 min-w-0 rounded-xl border p-3 ${card}`}
+      className={`${issueHeaderFrameClassName} ${card}`}
       data-issue-header=""
       data-testid="issue-header"
     >
+      {/* The closed block, from the one place the space the page keeps for this header builds
+          it too (`issue-header-classes.ts`, `issue-page-skeleton.tsx`), so what stood there and
+          what lands here are the same block. */}
       {isClosed ? (
         <div
-          className={`mb-2 flex flex-wrap items-center justify-between gap-2 rounded-lg p-3 text-sm ${calloutWarningBorder} ${calloutWarningBg} ${calloutWarningText}`}
+          className={`${issueClosedCalloutClassName} ${calloutWarningBorder} ${calloutWarningBg} ${calloutWarningText}`}
         >
           <span>This issue is closed.</span>
           <button
@@ -428,7 +450,7 @@ export function IssueHeader({
         <div className="flex min-w-0 grow basis-full flex-col gap-2 sm:flex-row sm:items-start 2xl:basis-auto">
           <div className="flex shrink-0 items-center gap-1 self-start">
             <p
-              className={`rounded-md px-2.5 py-1.5 font-mono text-sm font-semibold ${badgePrimary.bg} ${badgePrimary.text}`}
+              className={`${issueKeyBadgeClassName} font-mono text-sm font-semibold ${badgePrimary.bg} ${badgePrimary.text}`}
             >
               {issue.key}
             </p>
@@ -442,7 +464,7 @@ export function IssueHeader({
               <input
                 aria-describedby={drafts.titleError === null ? undefined : "issue-title-help"}
                 aria-label="Issue title"
-                className={`min-w-0 flex-1 rounded-lg border px-2 py-1 text-[22px] leading-7 font-semibold tracking-tight outline-none md:py-0 ${borderTransparent} ${bgTransparent} ${textPrimaryOnSurface} ${borderStrongHover} ${focusBorder}`}
+                className={`${issueTitleBoxClassName} text-[22px] leading-7 font-semibold tracking-tight outline-none ${borderTransparent} ${bgTransparent} ${textPrimaryOnSurface} ${borderStrongHover} ${focusBorder}`}
                 disabled={isClosed}
                 maxLength={ISSUE_TITLE_MAX}
                 onBlur={() => {
@@ -500,11 +522,11 @@ export function IssueHeader({
           data-testid="issue-state-actions"
         >
           <label
-            className={`flex min-h-11 shrink-0 items-center gap-2 rounded-full border px-2 text-sm font-semibold uppercase tracking-wide sm:px-3 md:min-h-8 xl:px-2 ${borderDefault} ${statusPill.bg} ${statusPill.text}`}
+            className={`${issueStatusPillClassName} ${borderDefault} ${statusPill.bg} ${statusPill.text}`}
           >
             <span
               aria-hidden="true"
-              className={`hidden h-2 w-2 rounded-full sm:block ${statusPillDot}`}
+              className={`${issueStatusPillDotClassName} ${statusPillDot}`}
             />
             <select
               aria-label="Status"
@@ -727,11 +749,15 @@ export function IssueHeader({
           ))}
         </div>
         {referencesOpen ? (
-          <ReferencedBy
-            className="mt-1 w-full"
-            reference={issueReference}
-            toggle={{ id: referencesPanelId }}
-          />
+          // The reader opened this one, so its graph read goes out now rather than waiting for
+          // the editor's first batch (`features/doc/first-batch.ts`).
+          <ReaderIsHere value={true}>
+            <ReferencedBy
+              className="mt-1 w-full"
+              reference={issueReference}
+              toggle={{ id: referencesPanelId }}
+            />
+          </ReaderIsHere>
         ) : null}
       </div>
       <span className="sr-only" id="issue-route-hint">
@@ -850,11 +876,16 @@ export function IssueHeader({
         </span>
       ) : null}
       {subscribersOpen ? (
-        <SubscribedAgents
-          onUnsubscribe={(sessionId) => unsubscribe.mutate(sessionId)}
-          ownerLabel={issue.key}
-          subscribers={subscriberList}
-        />
+        // The reader is in this panel, so every read inside it - each chip's agent registry
+        // among them - goes out now rather than waiting for the editor's first batch
+        // (`features/doc/first-batch.ts`).
+        <ReaderIsHere value={true}>
+          <SubscribedAgents
+            onUnsubscribe={(sessionId) => unsubscribe.mutate(sessionId)}
+            ownerLabel={issue.key}
+            subscribers={subscriberList}
+          />
+        </ReaderIsHere>
       ) : null}
       {subscribers.isError ? (
         <QueryError

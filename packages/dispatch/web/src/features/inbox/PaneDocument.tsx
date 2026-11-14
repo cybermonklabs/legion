@@ -17,7 +17,13 @@ import type { Artifact, AuthenticatedUser } from "../../api/types";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { focusVisibleRing, quoteAccentBorder } from "../../theme/classes";
 import { BLOCK_ID_ATTRIBUTE } from "../doc/block-id";
-import { liveTextQueryOptions, ProofDocument, type ProofDocumentProps } from "../doc/ProofDocument";
+import { liveTextQueryOptions } from "../doc/live-text";
+import {
+  DOCUMENT_DRAWN_ATTRIBUTE,
+  ProofDocument,
+  type ProofDocumentProps,
+} from "../doc/ProofDocument";
+import { moveTheBox } from "../doc/readers-place";
 import { cancelBlockScroll, scrollBlockToTop, scrollElementToTop } from "../doc/scroll-block";
 import { holdSection, type SectionHold } from "./pane-placement";
 
@@ -166,8 +172,9 @@ export function PaneFrame({
 interface DocumentAtBlock {
   /** The document, once the read lands. */
   readonly artifact: Artifact | undefined;
-  /** Whether the editor has drawn the block the column is opened at; undefined while it has
-   *  drawn no block at all, and false once it has drawn a document holding no such block. */
+  /** Whether the editor has drawn the block the column is opened at; undefined until the editor
+   *  has drawn the whole document, and false once a whole document holding no such block is
+   *  drawn. */
   readonly blockFound: boolean | undefined;
   readonly content: RefObject<HTMLDivElement | null>;
   /** The document cannot be opened beside the list: the read failed, or its own admission did. */
@@ -214,9 +221,9 @@ function useDocumentAtBlock({
   const content = useRef<HTMLDivElement>(null);
   const [sectionBar, setSectionBar] = useState<SectionBar | undefined>(undefined);
   const [sectionBlockId, setSectionBlockId] = useState<string | undefined>(undefined);
-  // Whether the editor has drawn the block the column is opened at; undefined while it has drawn
-  // no blocks at all. A document that holds no such block is an anchor the column cannot place,
-  // which is what its host falls back from.
+  // Whether the editor has drawn the block the column is opened at; undefined until the whole
+  // document is drawn. A document that holds no such block is an anchor the column cannot
+  // place, which is what its host falls back from.
   const [blockFound, setBlockFound] = useState<boolean | undefined>(undefined);
   // This column's placement, while one is on: the hold on the column, and the item it was armed
   // for. The reading effect below arms one for each item the reader opens, the effect after it
@@ -276,12 +283,15 @@ function useDocumentAtBlock({
       const hold = placement.current?.hold;
       const block = blockElement(drawn, blockId);
       if (block === null) {
-        // Nothing drawn yet says nothing about the block; a drawn document without it does.
-        if (drawn.querySelector(`[${BLOCK_ID_ATTRIBUTE}]`) === null) {
+        // A document still being drawn says nothing about the block: the editor builds it a
+        // batch of blocks at a time, from the top, so a block deep in the document is missing
+        // for as long as the build has not reached it. Only the drawn document - every block
+        // of it in the editor - says the block is not there (`DOCUMENT_DRAWN_ATTRIBUTE`).
+        if (drawn.querySelector(`[${DOCUMENT_DRAWN_ATTRIBUTE}]`) === null) {
           return;
         }
-        // A block of this document stands in the column, which is what the clocks are of, even
-        // where it is not the one the column was opened at.
+        // The document stands drawn in the column, which is what the clocks are of, even where
+        // the block the column was opened at is not one of its blocks.
         hold?.drawing();
         setBlockFound(false);
         return;
@@ -303,7 +313,7 @@ function useDocumentAtBlock({
         // offset the question before it left. A section whose own heading is not drawn is
         // written not at all, as it is not today: the start of the document is not where it is.
         if (headingId === undefined) {
-          column.scrollTop = 0;
+          moveTheBox(column, -column.scrollTop);
         } else if (heading !== null) {
           scrollElementToTop(heading, column);
         }
@@ -341,8 +351,8 @@ function useDocumentAtBlock({
     return () => {
       placement.current?.hold.release();
       placement.current = undefined;
-      // "Skip to the answer" leaves a re-run that reads the reader on the window and lives up
-      // to three seconds. Dropped here, it cannot write the next item's column.
+      // "Skip to the answer" leaves a re-run that reads the reader on the window and lives as
+      // long as a document's build does. Dropped here, it cannot write the next item's column.
       cancelBlockScroll();
     };
   }, [item]);

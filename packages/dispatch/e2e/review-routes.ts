@@ -99,14 +99,29 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     // waits `DOCUMENT_SETTLE_MS` before it reads its document, so a page read on the heading
     // alone caught the head without that control in one run of the drift probe and with it in
     // the next. The column shows from the wide layout's width and nowhere narrower
-    // (`READING_PANE_QUERY`, `web/src/features/shell/useDialog.ts`), so the phone row, whose
-    // Inbox is the list of cards alone, has nothing there to wait for.
+    // (`READING_PANE_QUERY`, `web/src/features/shell/useDialog.ts`).
+    //
+    // And the last words this corpus fills the list with, on either width, because THE HEADING
+    // IS NOT THE PAGE. `app.tsx` draws it outside the `Suspense` that holds `InboxList`, whose
+    // fallback is `null`, so between the heading's commit and that chunk's the page is the
+    // header and the heading alone - 390 by 664 against a 390 by 3,965 baseline, which is what
+    // `visual-phone`'s `inbox` shot was in run 42815937548, and what a build of this tree three
+    // commits earlier gave twice in three runs: the race is older than that run and the
+    // baseline simply won it. The list's own first commit is not enough either, at 2,295 px of
+    // 3,988 with three of its six rows: its thread rows arrive on their own reads, and one
+    // measured run shot the page mid-fill. So this names something from the last of those
+    // reads - the Tester's reply to the @-mention on CORE-3 (`e2e/workspace.ts`) - after which
+    // the page does not move. It is the NARROW row's wait alone: at the wide layout that text
+    // is a card the reading pane holds rather than a row of the list, and it is not on the
+    // screen at all - a wait for it there is a wait for something the page never draws, which
+    // one run proved by timing out on it. The wide row needs none: its own control cannot draw
+    // before the list, since the column reads the document the selected row names.
     ready: (page) => {
       const heading = page.getByRole("heading", { exact: true, level: 1, name: "Inbox" });
       const wideEnoughForPane = wideLayout(page);
       return wideEnoughForPane
         ? [heading, page.getByRole("button", { name: "Skip to the answer" })]
-        : [heading];
+        : [heading, page.getByText("Re-ran: 2 passed.")];
     },
   },
   {
@@ -292,9 +307,20 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     path: (seed) => `/issues/${seed.issue}/artifacts/${seed.issueArtifactSlug}`,
     pattern: "/issues/:key/*",
     // The document's connection dot, as the issue-spec row reads it and for the same reason:
-    // `artifact-header` is drawn while the editor still says "Connecting to the document…",
-    // and `ArtifactHeader.tsx` draws the dot inside that header.
-    ready: (page) => [page.getByRole("status", { name: "connected" })],
+    // the header is drawn while the editor still says "Connecting to the document…", and
+    // `ArtifactHeader.tsx` draws the dot inside that header.
+    //
+    // And `artifact-header` itself, which that dot no longer proves. The chrome is held until
+    // the editor's first batch, and the space it is held in draws the same dot
+    // (`web/src/features/doc/AfterTheFirstBatch.tsx`, `ArtifactHeader.tsx`), so a page read on
+    // the dot alone can be a page read before its chrome is on it. The test id is on the
+    // chrome and on nothing else. It is also what the landing ring hangs on, so the page-wide
+    // wait for that ring to be gone (`waitForRouteSettled`) says nothing about this page until
+    // this locator is in: before the chrome there is no ring to have ended.
+    ready: (page) => [
+      page.getByRole("status", { name: "connected" }),
+      page.getByTestId("artifact-header"),
+    ],
   },
   {
     kind: "reviewed",
@@ -331,7 +357,16 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     // same `ArtifactHeader` over the same editor. It did not drift in the probe's two runs,
     // which says its socket was up both times, not that it must be - the race is the one the
     // other two rows lost, so the row is held to the same proof rather than to its luck.
-    ready: (page) => [page.getByRole("status", { name: "connected" })],
+    //
+    // And `artifact-header`, for the reason the issue-artifact row gives: the chrome is held
+    // behind the editor's first batch and the space it waits in draws the same dot, so the dot
+    // alone cannot say the chrome is on the page. Both of this page's baselines were taken with
+    // the chrome drawn - each shows the version picker and `Name version`, which the held space
+    // does not - so this changes no pixel of them and takes away the run where it would.
+    ready: (page) => [
+      page.getByRole("status", { name: "connected" }),
+      page.getByTestId("artifact-header"),
+    ],
   },
   {
     kind: "reviewed",
@@ -502,7 +537,24 @@ export const phoneShotRoutes: readonly ReviewedRoute[] = reviewed.filter((route)
  *  (`web/src/features/refs/MarkdownBody.tsx`, `MarkdownPreview.tsx`). A body that long holds
  *  its own literal text until the answer lands, so a page read in between is a page of
  *  unformatted source, and it is cheap to rule out for every row at once rather than to argue
- *  per row about which bodies cross the threshold.
+ *  per row about which bodies cross the threshold. `data-margin-pending` is the second of that
+ *  kind and reads the same way: the shell holds the margin's column open at the margin's own
+ *  width from the first frame and marks it while the margin's chunk is still on its way
+ *  (`web/src/features/margin/MarginColumn.tsx`), so a page still carrying it is a page whose
+ *  margin is an empty box. The column's width does not move when the margin lands in it - that
+ *  is what the reservation is for - but what is inside it does, and both layers want the real
+ *  margin rather than the box kept for it.
+ *
+ *  The landing highlight is the last of that page-wide half, and the only one of these that
+ *  ends on a clock rather than on an answer: an address that names an artifact rings that
+ *  artifact's header for two seconds, to tell the reader which thing on the page they
+ *  navigated to, and then the page drops the ring by itself
+ *  (`web/src/features/artifacts/ArtifactHeader.tsx`, which marks the header
+ *  `data-landing-ring` for exactly as long as the ring is painted). So a page still carrying
+ *  that attribute is a page still changing, and both layers wait it out here rather than in a
+ *  row: it belongs to no row, it is the artifact pages' alone to carry, and it costs every
+ *  other page one locator that matches nothing. The wait is for the mark itself and never for
+ *  two seconds of wall clock - a duration would be the same race run against a stopwatch.
  *
  *  Both layers wait on this, and for the same reason. The visual one would otherwise commit a
  *  baseline of a state that lasted a few hundred milliseconds and compare every later run
@@ -515,4 +567,6 @@ export async function waitForRouteSettled(page: Page, route: ReviewedRoute): Pro
     await expect(locator).toBeVisible();
   }
   await expect(page.locator("[data-markdown-pending]")).toHaveCount(0);
+  await expect(page.locator("[data-margin-pending]")).toHaveCount(0);
+  await expect(page.locator("[data-landing-ring]")).toHaveCount(0);
 }

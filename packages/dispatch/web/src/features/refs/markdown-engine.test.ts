@@ -1,22 +1,35 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
+import * as headlessModule from "@legion/proof-editor/headless";
 
 import serverBlockSchema from "../../../../../envoy/internal/dispatch/pmdoc/schema/blocks.json";
 import { fixture, type PmdocFixture } from "../../__tests__/pmdoc-fixtures";
 import type { BlockSchema } from "../../api/types";
 import * as schemaModule from "../doc/schema";
-import { type MarkdownRendering, renderWithEngine, warmMarkdownRenderer } from "./markdown-engine";
+import {
+  loadedEngine,
+  type MarkdownRendering,
+  parseAheadOfTheRender,
+  parsesInTheWorker,
+  type RawHtml,
+  renderWithEngine,
+  warmMarkdownRenderer,
+} from "./markdown-engine";
 import { markdownWorkerThreshold } from "./markdown-worker-threshold";
 import { flushTasks, installFakeParseWorker, restoreParseWorker } from "./parse-worker-fixture";
 
 const blockSchema = serverBlockSchema as unknown as BlockSchema;
 
-/** Renders `markdown` through the shared engine as a surface would, and answers the parsed
- *  document's plain text, or `undefined` where the engine answered nothing for it. */
-function parseThroughSharedEngine(markdown: string): Promise<string | undefined> {
+/** Renders `markdown` through the shared engine as a surface would, under `rawHtml` (`"refuse"`,
+ *  as a document takes it, by default), and answers the parsed document's plain text, or
+ *  `undefined` where the engine answered nothing for it. */
+function parseThroughSharedEngine(
+  markdown: string,
+  rawHtml: RawHtml = "refuse"
+): Promise<string | undefined> {
   const { promise, resolve } = Promise.withResolvers<string | undefined>();
   // A text Dispatch does not store carries no tree, so this is the parsing path.
-  renderWithEngine(markdown, undefined, "space", ({ engine }) => {
-    const doc = engine?.parse(markdown);
+  renderWithEngine(markdown, undefined, "space", rawHtml, ({ engine }) => {
+    const doc = engine?.parse(markdown, "space", rawHtml);
     resolve(doc === undefined ? undefined : doc.textBetween(0, doc.content.size, " ", " "));
   });
   return promise;
@@ -95,9 +108,15 @@ describe("the parse worker's threshold", () => {
     const overThreshold = "x".repeat(markdownWorkerThreshold + 1);
 
     const onThePage: MarkdownRendering[] = [];
-    const cancelOnThePage = renderWithEngine(atThreshold, undefined, "space", (rendering) => {
-      onThePage.push(rendering);
-    });
+    const cancelOnThePage = renderWithEngine(
+      atThreshold,
+      undefined,
+      "space",
+      "refuse",
+      (rendering) => {
+        onThePage.push(rendering);
+      }
+    );
     try {
       // The engine is loaded, so this body is answered in the caller's own commit, parsed, the
       // way every body was before the worker: nothing about it is pending.
@@ -113,9 +132,15 @@ describe("the parse worker's threshold", () => {
     }
 
     const inTheWorker: MarkdownRendering[] = [];
-    const cancelInTheWorker = renderWithEngine(overThreshold, undefined, "space", (rendering) => {
-      inTheWorker.push(rendering);
-    });
+    const cancelInTheWorker = renderWithEngine(
+      overThreshold,
+      undefined,
+      "space",
+      "refuse",
+      (rendering) => {
+        inTheWorker.push(rendering);
+      }
+    );
     try {
       // One character more, and the body is answered at once as pending, with no document: the
       // literal text is what a surface paints until the worker answers.
@@ -134,6 +159,156 @@ describe("the parse worker's threshold", () => {
       expect(answered.parsed?.textContent).toBe(overThreshold);
     } finally {
       cancelInTheWorker();
+    }
+  });
+});
+
+// The cache names a body's answer by the schema version, both parse policies and the source. Were
+// the raw-HTML policy left out of that name, the document's reading of a body holding the
+// `<!-- legion: … -->` footer - the footer drawn as the characters its author wrote - would be
+// served to the comment that asked for `text`, which draws it as nothing, and that comment would
+// show the footer for as long as the answer is kept. The worker's test double reads the
+// request's own fields, so only the cache can show this.
+describe("the answer cache and the raw-HTML policy", () => {
+  afterEach(restoreParseWorker);
+
+  test("a body parsed under one raw-HTML policy is never served to a caller that asked for the other", async () => {
+    await warmMarkdownRenderer();
+    const worker = installFakeParseWorker();
+    const words = "The deploy is held. ".repeat(110).trim();
+    const body = `${words}\n\n<!-- legion: {"session":"01HQ8F3K2M4N5P6Q7R8S9T0V","phase":"retro"} -->`;
+    expect(parsesInTheWorker(body)).toBe(true);
+
+    const asDocument: MarkdownRendering[] = [];
+    const cancelAsDocument = renderWithEngine(body, undefined, "space", "refuse", (rendering) => {
+      asDocument.push(rendering);
+    });
+    try {
+      await worker.answer(0);
+      await flushTasks();
+      expect(worker.requests[0].rawHtml).toBe("refuse");
+      // A document's policy draws the footer as the text it is, which is what the cache holds.
+      expect(asDocument.at(-1)?.pending).toBe(false);
+      expect(asDocument.at(-1)?.parsed?.textContent).toBe(words);
+      expect(asDocument.at(-1)?.parsed?.toString()).toContain("html");
+    } finally {
+      cancelAsDocument();
+    }
+
+    const asBody: MarkdownRendering[] = [];
+    const cancelAsBody = renderWithEngine(body, undefined, "space", "text", (rendering) => {
+      asBody.push(rendering);
+    });
+    try {
+      // The second policy is a parse of its own: `answer(1)` names a request the engine sends
+      // only where the cache told the two apart.
+      await worker.answer(1);
+      await flushTasks();
+      expect(worker.requests).toHaveLength(2);
+      expect(worker.requests[1].rawHtml).toBe("text");
+      expect(asBody.at(-1)?.pending).toBe(false);
+      expect(asBody.at(-1)?.parsed?.textContent).toBe(words);
+    } finally {
+      cancelAsBody();
+    }
+  });
+});
+
+// What the warm-up is for, and what it is not. It loads the schema and the headless chunk and
+// builds the engine from them, early, where nothing waits; it parses nothing. It used to take
+// a body of its own through the fresh engine, so that the first parse's parser build - 469 ms
+// of a React commit on a phone at 4x CPU throttling (dispatch://INFRA-341, R11) - was spent
+// off every commit. That parse is gone: a page that draws stored texts parses no markdown at
+// all now (`e2e/parse-count.e2e.ts` counts the parses of fifteen surfaces and holds every one
+// of them to zero), and the one body still parsed on R11's own path is parsed off the commit
+// by `parseAheadOfTheRender` below. This row is what keeps the load silent.
+describe("the engine's warm-up", () => {
+  test("builds the engine without parsing anything, so a page that draws trees parses nothing", async () => {
+    const built = headlessModule.createHeadlessProof;
+    const parsed: string[] = [];
+    const create = spyOn(headlessModule, "createHeadlessProof").mockImplementation(
+      async (options) => {
+        const proof = await built(options);
+        return {
+          ...proof,
+          parseMarkdown(markdown, softBreaks, rawHtml) {
+            parsed.push(markdown);
+            return proof.parseMarkdown(markdown, softBreaks, rawHtml);
+          },
+        };
+      }
+    );
+    // A schema version of its own, so the warm-up builds an engine rather than being answered
+    // with the one an earlier row left behind (`engines`, keyed by the schema's version).
+    const load = spyOn(schemaModule, "loadBlockSchema").mockResolvedValue({
+      ...blockSchema,
+      version: blockSchema.version + 1,
+    });
+    try {
+      await warmMarkdownRenderer();
+
+      expect(parsed).toEqual([]);
+      // And the engine it built is the one a render in this task draws with.
+      expect(loadedEngine()).toBeDefined();
+    } finally {
+      create.mockRestore();
+      load.mockRestore();
+    }
+  });
+});
+
+// The screenful a document opens with is under the worker's threshold, so the page parses it
+// itself - in the layout phase of the commit that mounts the issue page, which is the one task
+// that also renders the whole page. On a phone at 4x CPU throttling that parse was 294-545 ms
+// of a task already over the 500 ms a reader feels as a freeze (dispatch://INFRA-341, R11).
+// Parsed ahead, from the task the document's text arrives in, the commit reads the answer
+// instead of making it.
+describe("a body parsed ahead of the render", () => {
+  test("is rendered from the answer the page already has, and is not parsed a second time", async () => {
+    const built = headlessModule.createHeadlessProof;
+    const parsed: string[] = [];
+    const create = spyOn(headlessModule, "createHeadlessProof").mockImplementation(
+      async (options) => {
+        const proof = await built(options);
+        return {
+          ...proof,
+          parseMarkdown(markdown, softBreaks, rawHtml) {
+            parsed.push(markdown);
+            return proof.parseMarkdown(markdown, softBreaks, rawHtml);
+          },
+        };
+      }
+    );
+    // A schema version of its own, so this row builds an engine of its own rather than being
+    // answered with one an earlier row left behind (`engines`, keyed by the schema's version).
+    const load = spyOn(schemaModule, "loadBlockSchema").mockResolvedValue({
+      ...blockSchema,
+      version: blockSchema.version + 2,
+    });
+    const body = "# The lease ledger\n\nThe paragraph a reader meets first.\n";
+    try {
+      await parseAheadOfTheRender(body);
+      // Everything the engine has parsed so far, which is this body alone: its load parses
+      // nothing.
+      const before = parsed.length;
+      expect(parsed.at(-1)).toBe(body);
+
+      const renderings: MarkdownRendering[] = [];
+      const cancel = renderWithEngine(body, undefined, "space", "refuse", (rendering) =>
+        renderings.push(rendering)
+      );
+      try {
+        // Rendered in this task, from the answer, with no parse of its own.
+        expect(renderings).toHaveLength(1);
+        expect(renderings[0]?.pending).toBe(false);
+        expect(renderings[0]?.parsed?.textContent).toContain("The paragraph a reader meets first.");
+        expect(parsed).toHaveLength(before);
+      } finally {
+        cancel();
+      }
+    } finally {
+      create.mockRestore();
+      load.mockRestore();
     }
   });
 });

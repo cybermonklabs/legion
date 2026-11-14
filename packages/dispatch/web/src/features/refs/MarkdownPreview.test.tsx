@@ -334,6 +334,29 @@ test("a body the engine cannot parse shows its literal text, led, and never as H
   }
 });
 
+test("a body holding raw HTML shows its characters and never as HTML (INFRA-341)", async () => {
+  // A comment holding `<script>alert(1)</script> astrolabe <mark>x</mark>`: a text Dispatch has
+  // no stored reading of, so the preview parses it as a body. The raw HTML is the characters
+  // its author typed, and the body is not the fallback.
+  const source = "<script>alert(1)</script> astrolabe <mark>x</mark>";
+  const { preview, view } = renderPreview({
+    lead: "Replying to Planner — ",
+    lines: 2,
+    markdown: source,
+  });
+  try {
+    await waitFor(() => expect(preview().textContent).toBe(`Replying to Planner — ${source}`));
+    expect(preview().getAttribute("data-markdown-fallback")).toBeNull();
+    expect(preview().querySelector("script")).toBeNull();
+    // The author's own `<mark>` is text, not an element: nothing in the source drew as HTML,
+    // and only a run the server marked in a tree is a `<mark>` here.
+    expect(preview().querySelector("mark")).toBeNull();
+    expect(marks(preview())).toEqual([]);
+  } finally {
+    view.unmount();
+  }
+});
+
 test("the hover text is the whole text as plain words, never its source, and a preview not asked for one has none", async () => {
   const body = (fixtures as { name: string; markdown: string; latest: DisplayTree }[]).find(
     (fixture) => fixture.name === "a-two-block-title"

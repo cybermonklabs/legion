@@ -5,9 +5,12 @@ import { fileURLToPath } from "node:url";
 import {
   clockProjectNames,
   clockSpecNames,
+  clockSpecPattern,
   duplicateRows,
   type ListedRow,
   listedProjects,
+  phoneAloneSpecNames,
+  phoneAloneSpecPattern,
   projectConfigurations,
   projectsOnCommandLine,
   rowsOfListing,
@@ -36,19 +39,26 @@ const ambientProcessCount: Record<string, string> =
 // two-core runner. What that costs is read once in this file, at the `listingTimeout` it
 // justifies, below.
 //
-// The third names the three wall-clock projects (`clockProjectNames`, e2e/configurations.ts),
+// The third names the six `-alone` projects (`clockProjectNames`, e2e/configurations.ts),
 // which carry `default: false` since dispatch://INFRA-1280. A listing that names no project
 // holds no row of theirs, so without this one the accounting below would read the suite with
-// `agent-workspace-timing.e2e.ts`, `heavy-bodies.e2e.ts` and `nested-directive.e2e.ts` missing:
-// 54 rows, which is what this head's wall-clock listing holds.
+// `agent-workspace-timing.e2e.ts`, `heavy-bodies.e2e.ts`, `nested-directive.e2e.ts`,
+// `large-documents-measured.e2e.ts`, `large-documents-build-serves.e2e.ts`,
+// `large-documents-build-serves.the-decision.e2e.ts`, `large-documents-desktop-build.e2e.ts`
+// and the phone half of `large-documents-long-build.e2e.ts` missing: 59 rows in 8 files, which
+// is what this head's `-alone` listing holds.
 //
 // It is taken only where the run has one Dispatch process, because the ambient count reaches
 // these listings and two-process mode declares one project, the multiprocess one: measured at
-// this head, `--project=chromium-alone --project=firefox-alone --project=webkit-alone --list`
-// under DISPATCH_E2E_PROCESSES=2 exits 1 with `Error: Project(s) "chromium-alone",
-// "firefox-alone", "webkit-alone" not found. Available projects: "chromium"`. Both assertions
+// this head, `--project=chromium-alone --project=firefox-alone --project=webkit-alone
+// --project=iphone-alone --project=iphone-measure-alone --project=iphone-long-build-alone
+// --list` under DISPATCH_E2E_PROCESSES=2 exits 1 with
+// `Error: Project(s) "chromium-alone", "firefox-alone", "webkit-alone", "iphone-alone",
+// "iphone-measure-alone", "iphone-long-build-alone" not found. Available projects:
+// "chromium"`. All three assertions
 // that read it hold in that mode without it: the one project that mode declares owns rows of
-// the real listing, and it declares no wall-clock project to hold to its settings.
+// the real listing, and it declares no wall-clock project to hold to its settings or to its
+// rows.
 const realListing = retained(listing("e2e/playwright.config.ts", ambientProcessCount));
 const doubledListing = retained(
   listing("e2e/__tests__/fixtures/doubled-project.config.ts", ambientProcessCount)
@@ -71,9 +81,11 @@ function keyOfRow(configurations: Map<string, string>): (row: ListedRow) => stri
   return (row) => configurations.get(row.project) ?? `no configuration for project ${row.project}`;
 }
 
-/** Whether a project's own `testMatch` selects a wall-clock spec file, which is what makes a
- *  project a wall-clock one: these projects select by file, where `webkit` and `firefox` select
- *  by an engine tag (e2e/playwright.config.ts, above `aloneProjects`). The question is asked of
+/** Whether a project's own `testMatch` selects a file of one of the `-alone` legs, which is what
+ *  makes a project one of them: these projects select by file, where `webkit` and `firefox`
+ *  select by an engine tag (e2e/playwright.config.ts, above `aloneProjects`), and the files are
+ *  the config's own two lists - the wall-clock specs (`clockSpecNames`) and the specs whose phone
+ *  half runs alone (`phoneAloneSpecNames`, both e2e/configurations.ts). The question is asked of
  *  the config rather than of `clockProjectNames`, because whether a project is named in that
  *  list is exactly what the test below reads this answer to check.
  *
@@ -101,7 +113,7 @@ function selectsAClockSpec(
     }
     return pattern;
   });
-  return clockSpecNames.some((name) =>
+  return [...clockSpecNames, ...phoneAloneSpecNames].some((name) =>
     expressions.some((pattern) => pattern.test(`${name}.e2e.ts`))
   );
 }
@@ -134,11 +146,11 @@ test(
     // Every project of the configuration owns at least one row of those listings. The question
     // is asked of the rows and never of `listedProjects(report)`: Playwright reports every
     // project of the resolved configuration whatever the command selected - this head's
-    // wall-clock listing names three projects and reports all fifteen - so an assertion over
-    // the project list could not fail, and would pass with the wall-clock listing missing
-    // altogether. Measured at this head, the two listings hold 1,427 rows and every project
-    // owns some: the smallest is `firefox-download-navigation` with one, and the wall-clock
-    // three hold 23, 14 and 17.
+    // `-alone` listing names six projects and reports all eighteen - so an assertion over
+    // the project list could not fail, and would pass with the `-alone` listing missing
+    // altogether. Measured at this head, the two listings hold 1,557 rows and every project
+    // owns some: the smallest is `firefox-download-navigation` with one, and the `-alone`
+    // six hold 23, 13, 16, 2, 2 and 3.
     const projectsWithRows = new Set(rows.map((row) => row.project));
     const namedProjects = (realConfig.projects ?? [])
       .map((project) => project.name)
@@ -158,6 +170,114 @@ test(
     // file: `e2e/__tests__/fixtures/doubled-project.config.ts` is that project, and the test
     // below shows this assertion catches it.
     expect(duplicateRows(rows, keyOfRow(configurations))).toEqual([]);
+  },
+  listingTimeout
+);
+
+/** The rows each `-alone` project owns, by the file they stand in and how many of that file
+ *  it runs. This is the whole of what the six `-alone` legs run, written out.
+ *
+ *  It is a count per file, and not a list of titles, because the file is the selector: each of
+ *  these projects names its own files in its `testMatch` (`clockSpecsNamed` or
+ *  `phoneAloneSpecPattern`, e2e/configurations.ts), so a row's title moves it nowhere, and what
+ *  this has to say out loud is a row that left one of those files or arrived in it.
+ *  `firefox-alone` runs fewer rows of `heavy-bodies.e2e.ts` than `webkit-alone` because it
+ *  inverts the three that read a reader's place (`readersPlaceRows`, e2e/playwright.config.ts),
+ *  which is the one title left in that list and drops rows rather than taking them.
+ *
+ *  Measured at this head with `--list`, and the same numbers
+ *  `.github/workflows/dispatch-browser.yaml` and `packages/dispatch/AGENTS.md` print beside
+ *  them. Moving a wall-clock row to another file, or another project, is an edit of this
+ *  table in the same commit, which is what makes such a move something a reader decides on
+ *  rather than something a run goes quiet about. */
+const clockRowsOwned: Readonly<Record<string, Readonly<Record<string, number>>>> = {
+  "chromium-alone": {
+    "agent-workspace-timing.e2e.ts": 4,
+    "heavy-bodies.e2e.ts": 16,
+    "large-documents-desktop-build.e2e.ts": 1,
+    "nested-directive.e2e.ts": 2,
+  },
+  "firefox-alone": { "heavy-bodies.e2e.ts": 13 },
+  "iphone-alone": {
+    "large-documents-build-serves.e2e.ts": 1,
+    "large-documents-build-serves.the-decision.e2e.ts": 1,
+  },
+  "iphone-long-build-alone": { "large-documents-long-build.e2e.ts": 3 },
+  "iphone-measure-alone": { "large-documents-measured.e2e.ts": 2 },
+  "webkit-alone": { "heavy-bodies.e2e.ts": 16 },
+};
+
+// What a wall-clock row's quiet machine rests on, now that the file is the selector: that each
+// of those projects runs the rows of its own files, and that no other project runs any of
+// them. Until sjawhar/legion#2697 three of these projects picked their rows out of
+// `large-documents-measured.e2e.ts` by patterns over the titles, and the projects above them
+// inverted the same patterns, so a row renamed - or a row added to that file under a title no
+// pattern matched - ran four workers wide in `chromium` or `iphone` instead, where a reading
+// of the wall clock is a reading of the other three lanes, with every suite green and nothing
+// in this file to say so. The two halves below are that hole closed: the table above fails
+// when a row the wall-clock projects own stops being owned by them, and the filter under it
+// fails when a parallel project picks one up.
+test(
+  "each wall-clock project runs the rows of its own files, and no other project runs one",
+  async () => {
+    // No project of the default selection holds a row of a wall-clock file. This is read of
+    // the listing rather than of the config's `testIgnore`, so a project added later with no
+    // `testIgnore` of its own - which inherits this config's, holding no wall-clock file - is
+    // caught by the rows it lists.
+    const parallel = rowsOfListing(await realListing)
+      .filter((row) => clockSpecPattern.test(row.file))
+      .map((row) => `${row.project} runs ${row.file} › ${row.title}`)
+      .sort();
+    expect(
+      parallel,
+      "A project of the default selection lists a row of a wall-clock file. Those rows claim " +
+        "a wall-clock time and are read one at a time on a machine of their own, so a project " +
+        "that runs as wide as the run's own workers measures its own contention there. Every " +
+        "parallel project names `clockSpecPattern` in its `testIgnore` " +
+        "(e2e/playwright.config.ts); a project that names a `testIgnore` of its own replaces " +
+        "this config's, so it has to name that pattern too."
+    ).toEqual([]);
+
+    // The phone half of a file `iphone-long-build-alone` owns runs there and nowhere else: no
+    // project of the default selection in that project's configuration lists a row of it. Its
+    // desktop half is `chromium`'s, a configuration of its own, and stays in the listing. The
+    // duplicate check above would catch `iphone` taking it back as a repeat; this says which
+    // leg it was moved to and why.
+    const configurations = projectConfigurations(realConfig, harnessProcessCount);
+    const phoneLeg = configurations.get("iphone-long-build-alone");
+    const phoneHalf = rowsOfListing(await realListing)
+      .filter(
+        (row) =>
+          phoneAloneSpecPattern.test(row.file) &&
+          phoneLeg !== undefined &&
+          configurations.get(row.project) === phoneLeg
+      )
+      .map((row) => `${row.project} runs ${row.file} › ${row.title}`)
+      .sort();
+    expect(
+      phoneHalf,
+      "A project of the default selection lists the phone half of a file whose phone half is a " +
+        "leg of its own (`phoneAloneSpecNames`, e2e/configurations.ts). Those rows were the tail " +
+        "of the `iphone` listing and landed in the last shard together, which is what the leg " +
+        "took them out of: name `phoneAloneSpecPattern` in that project's `testIgnore`."
+    ).toEqual([]);
+
+    if (clockListing === undefined) return;
+    const owned: Record<string, Record<string, number>> = {};
+    for (const row of rowsOfListing(await clockListing)) {
+      owned[row.project] ??= {};
+      const files = owned[row.project] ?? {};
+      files[row.file] = (files[row.file] ?? 0) + 1;
+    }
+    expect(
+      owned,
+      "The rows the wall-clock projects run are not the rows `clockRowsOwned` above says they " +
+        "run. A file missing from a project, or a count short of its line, is a measurement " +
+        "nothing takes under a run that reports green - the row is somewhere else, or it is " +
+        "nowhere. Either move the row back into the file its project selects, or, where the " +
+        "move is the point, write the new file in `clockSpecNames` " +
+        "(e2e/configurations.ts), name it in the project's `testMatch` and say so here."
+    ).toEqual(clockRowsOwned);
   },
   listingTimeout
 );
@@ -194,7 +314,7 @@ test(
 // The four fields that give a wall-clock row its quiet machine and keep it out of a bare run,
 // and the list that is how every accounting of this suite finds those rows at all. Nothing else
 // in the suite reads them: `workers: 1` and `retries: 0` are what make a reading the page's own
-// work rather than the other workers', `default: false` is what keeps 54 rows out of a run that
+// work rather than the other workers', `default: false` is what keeps 59 rows out of a run that
 // names no project, and a `dependencies` is what pulled the whole suite in behind a file filter
 // until dispatch://INFRA-1280 (e2e/playwright.config.ts, above `aloneProjects`).
 //
@@ -249,7 +369,7 @@ test("the wall-clock projects are the one list, in its order, and run their rows
 
 // `bun run e2e:clock` is the one command that runs every wall-clock row, and it spells the
 // projects out on its own command line, where no test above reaches: the config and the list
-// could take a fourth wall-clock project and leave that script running three of four, green at
+// could take a sixth wall-clock project and leave that script running five of six, green at
 // every assertion of this file. This reads the script with the config's own reader of
 // `--project` (`projectsOnCommandLine`, e2e/configurations.ts), so both spellings of the option
 // are read as Playwright reads them.

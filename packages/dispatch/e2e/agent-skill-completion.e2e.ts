@@ -53,6 +53,23 @@ const COMMANDS = [
   { description: "Resume an older session", name: "resume", source: "builtin", terminalOnly: true },
 ];
 
+/**
+ * The delivery modes this session advertises, labelled as the list draws them and in the order
+ * the header's "Send as" select has them. They lead every list a `/` opens, wherever that `/`
+ * sits: the rows are keyed on the typed query alone, which is the key the popover caches a
+ * search under, so a set that changed with the offset would leave the matcher and the adapter
+ * disagreeing about what is open (`web/src/features/agent-view/AgentThread.tsx`, `slashListRows`).
+ */
+const MODES = ["Send", "Aside", "BTW"];
+
+/** Every row a bare `/` opens, in the order the list holds them: the three delivery modes, then
+ *  the session's own commands, the two only its terminal runs last (`matchingCommands`). The
+ *  list's length is these two sets and nothing else, so neither can grow unnoticed. */
+const MENU_ROWS = [
+  ...MODES.map((label) => new RegExp(`^${label}\\s*delivery mode`)),
+  ...COMMANDS.map((command) => new RegExp(`^/${command.name}`)),
+];
+
 /** The live session whose commands the composer completes. `last_seen` is taken when the row
  *  seeds, never at this module's scope, which a worker evaluates once and every later spec of
  *  that worker ages. */
@@ -211,7 +228,8 @@ test("Tab at the start of a message completes the command, and Send runs it as o
 });
 
 // R5. One list, wherever the `/` is: the session's commands do not change because the token sits
-// in a sentence rather than at the start of the message.
+// in a sentence rather than at the start of the message, and the delivery modes that lead the
+// list lead it in both places (`MODES`).
 // SLOW(>=2s): a live view opened on the session's replay, then the whole list read twice, once
 // for each place the `/` sits in.
 test("the menu offers the same list at the start of a message and inside a sentence", async ({
@@ -223,11 +241,11 @@ test("the menu offers the same list at the start of a message and inside a sente
   try {
     const input = await openComposer(page);
     await input.fill("/");
-    await expect(commandMenu(page).getByRole("option")).toHaveCount(COMMANDS.length);
+    await expect(commandMenu(page).getByRole("option")).toHaveText(MENU_ROWS);
     const atStart = await commandMenu(page).getByRole("option").allInnerTexts();
 
     await input.fill("please read /");
-    await expect(commandMenu(page).getByRole("option")).toHaveCount(COMMANDS.length);
+    await expect(commandMenu(page).getByRole("option")).toHaveText(MENU_ROWS);
     expect(await commandMenu(page).getByRole("option").allInnerTexts()).toEqual(atStart);
   } finally {
     await context.close();
@@ -250,7 +268,7 @@ test("a description longer than its row is shown whole, on more than one line @p
     const input = await openComposer(page);
     await input.fill("/");
     const options = commandMenu(page).getByRole("option");
-    await expect(options).toHaveCount(COMMANDS.length);
+    await expect(options).toHaveCount(MENU_ROWS.length);
 
     const row = options.filter({ hasText: `/${SKILL}` });
     await expect(row).toHaveCount(1);

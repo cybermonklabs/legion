@@ -48,6 +48,15 @@ func IsComponentID(value string) bool {
 	return componentIDPattern.MatchString(value)
 }
 
+// IsIssueKey reports whether value is an issue key as Dispatch mints one: a project key - an
+// uppercase letter and one to nine more uppercase letters or digits - a hyphen, and a number
+// with no leading zero. It is the grammar a reference is parsed by (issueKeyPattern), so a
+// caller that has to tell an issue key from any other word of a path or a body reads it here
+// rather than spelling the rule again.
+func IsIssueKey(value string) bool {
+	return issueKeyPattern.MatchString(value)
+}
+
 // IsSessionID reports whether value can own an artifact: an Envoy session id as the Agents page
 // shows it, which a reference carries as written. It is not empty and holds no `/`, `?` or `#`,
 // no whitespace or control character, and none of the characters that end a reference in text

@@ -584,7 +584,10 @@ test("two AskCard instances for the same ask keep independently labeled answer f
     const fields = view.getAllByLabelText("Your answer");
     expect(fields).toHaveLength(2);
     expect(fields[0]).not.toBe(fields[1]);
-    expect(fields[0].id).not.toBe(fields[1].id);
+    // Each box is named by the label it stands inside (`MentionField`), not by an id another
+    // card could hold too, so no label on this page reaches the other card's box.
+    expect(fields[0]?.closest("label")).not.toBe(fields[1]?.closest("label"));
+    expect(fields.every((field) => field.closest("label") !== null)).toBe(true);
   } finally {
     view.unmount();
   }
@@ -661,11 +664,14 @@ test("AskCard submits the selected single option with the revision the human rev
       "Answer in your own words, or ask a question back"
     );
     const submit = view.getByRole("button", { name: "Answer" });
-    expect(submit.hasAttribute("disabled")).toBe(true);
+    // A refused Answer stays in the tab order and says why (`RefusableButton`), so it is
+    // `aria-disabled` rather than `disabled` (INFRA-341, R3).
+    expect(submit.getAttribute("aria-disabled")).toBe("true");
+    expect(submit.getAttribute("title")).toBe("Pick an option or write an answer.");
 
     await user.click(await view.findByRole("radio", { name: "Ship" }));
     expect(answer).toHaveAttribute("placeholder", "Add a note (optional)");
-    expect(submit).not.toHaveAttribute("disabled");
+    expect(submit).not.toHaveAttribute("aria-disabled");
     await user.click(submit);
 
     await waitFor(() =>
@@ -881,10 +887,10 @@ test("AskCard submits a selected Other option with free text", async () => {
     const submit = view.getByRole("button", { name: "Answer" });
     const other = await view.findByRole("radio", { name: "Other" });
     await user.click(other);
-    expect(submit.hasAttribute("disabled")).toBe(true);
+    expect(submit).toHaveAttribute("aria-disabled", "true");
     await user.click(view.getByLabelText("Your answer"));
     await user.paste("Try a hybrid");
-    expect(submit).not.toHaveAttribute("disabled");
+    expect(submit).not.toHaveAttribute("aria-disabled");
     await user.click(submit);
 
     await waitFor(() =>
@@ -991,6 +997,81 @@ test("AskCard dismisses the question-shaped guard when the response becomes an a
     expect(view.getByRole("button", { name: "Answer" })).toBeTruthy();
   } finally {
     view.unmount();
+  }
+});
+
+// The pair a question-shaped answer offers - Ask back instead, Answer with it anyway - is two
+// more sends of this card, and a picture pasted while that pair stands is not in the draft yet:
+// both wait for it, as Answer and Ask back do. The upload landing is an edit of the draft, so
+// the card is back to its own buttons by then, and the answer it sends carries the picture.
+test("the question-shaped pair waits for a picture still uploading", async () => {
+  const user = userEvent.setup();
+  const submitted: AnswerAskInput[] = [];
+  const replyCalls: CreateCommentInput[] = [];
+  const { promise: landed, resolve: land } = Promise.withResolvers<void>();
+  const uploadArtifact = spyOn(api, "uploadArtifact").mockImplementation(async () => {
+    await landed;
+    return { artifact: { name: "shot.png", slug: "shot-png" }, version: { number: 1 } } as never;
+  });
+  const input = ask();
+  const { view } = renderCard(
+    <AskCard
+      answerAsk={async (_id, submission) => {
+        submitted.push(submission);
+        return answered(input, submission.selected, submission.text ?? null);
+      }}
+      ask={input}
+      createReply={async (_issueKey, replyInput) => {
+        replyCalls.push(replyInput);
+        return reply({ ask_id: replyInput.ask_id, body: replyInput.body });
+      }}
+      getAskThread={emptyThread(input)}
+    />
+  );
+
+  try {
+    const field = view.getByLabelText("Your answer") as HTMLTextAreaElement;
+    await user.click(field);
+    await user.paste("How does this fit the release?");
+    await user.click(view.getByRole("button", { name: "Answer" }));
+    const choice = await view.findByRole("group", { name: "Question-shaped answer" });
+    expect(submitted).toEqual([]);
+
+    // user-event's paste carries text, never the file this row uploads.
+    fireEvent.paste(field, { clipboardData: { files: [png("shot.png")] } });
+    await view.findByText("Uploading file…");
+    const anyway = within(choice).getByRole("button", { name: "Answer with it anyway" });
+    const askBack = within(choice).getByRole("button", { name: "Ask back instead" });
+    expect(anyway.hasAttribute("disabled")).toBe(true);
+    expect(askBack.hasAttribute("disabled")).toBe(true);
+    await user.click(anyway);
+    await user.click(askBack);
+    await Bun.sleep(20);
+    expect(submitted).toEqual([]);
+    expect(replyCalls).toEqual([]);
+
+    land();
+    const text =
+      "How does this fit the release? ![shot.png](dispatch://CORE-1/artifact/shot-png@v1)";
+    await waitFor(() => expect(field.value).toBe(text));
+    // The landed text is an edit of the draft, so the card is answering again rather than
+    // offering the pair; the words are still a question, so Answer offers it once more - this
+    // time with nothing holding it, and the answer it sends is the one the picture is in.
+    expect(view.queryByRole("button", { name: "Answer with it anyway" })).not.toBeInTheDocument();
+    await user.click(view.getByRole("button", { name: "Answer" }));
+    const choiceAgain = await view.findByRole("group", { name: "Question-shaped answer" });
+    const anywayAgain = within(choiceAgain).getByRole("button", { name: "Answer with it anyway" });
+    expect(anywayAgain.hasAttribute("disabled")).toBe(false);
+    expect(
+      within(choiceAgain).getByRole("button", { name: "Ask back instead" }).hasAttribute("disabled")
+    ).toBe(false);
+    await user.click(anywayAgain);
+    await waitFor(() =>
+      expect(submitted).toEqual([{ expected_edited_at: null, selected: [], text }])
+    );
+  } finally {
+    view.unmount();
+    uploadArtifact.mockRestore();
   }
 });
 
@@ -1164,13 +1245,13 @@ test("an approval-kind ask names the reason Request changes needs, focuses its f
     const reasonField = view.getByLabelText("Reason (required)");
     expect(reasonField).toHaveFocus();
     const submit = view.getByRole("button", { name: "Answer" });
-    expect(submit.hasAttribute("disabled")).toBe(true);
+    expect(submit).toHaveAttribute("aria-disabled", "true");
     expect(submit).toHaveAttribute("title", "Add a reason to send Request changes");
     expect(view.getByText("Add a reason to send Request changes")).toBeTruthy();
 
     await user.click(reasonField);
     await user.paste("Needs another pass");
-    expect(submit).not.toHaveAttribute("disabled");
+    expect(submit).not.toHaveAttribute("aria-disabled");
     expect(submit).not.toHaveAttribute("title");
     expect(view.queryByText("Add a reason to send Request changes")).not.toBeInTheDocument();
     await user.click(submit);
@@ -1210,7 +1291,7 @@ test("a Done / Can't question is an ordinary question: Other stays, Can't needs 
     expect(within(card).getByRole("radio", { name: "Other" })).toBeTruthy();
     expect(within(card).queryByLabelText("Reason (required)")).not.toBeInTheDocument();
     const answer = within(card).getByRole("button", { name: "Answer" });
-    expect(answer).not.toHaveAttribute("disabled");
+    expect(answer).not.toHaveAttribute("aria-disabled");
     expect(answer).not.toHaveAttribute("title");
     await user.click(answer);
     await waitFor(() =>
@@ -1235,17 +1316,19 @@ test("the compact card opens and focuses the reason field when Request changes i
     const card = view.getByTestId("ask-ask-1");
     await user.click(await within(card).findByRole("radio", { name: "Approve" }));
     expect(within(card).queryByLabelText(/Reason|Your answer/)).not.toBeInTheDocument();
-    expect(within(card).getByRole("button", { name: "Answer" })).not.toHaveAttribute("disabled");
+    expect(within(card).getByRole("button", { name: "Answer" })).not.toHaveAttribute(
+      "aria-disabled"
+    );
 
     await user.click(within(card).getByRole("radio", { name: "Request changes" }));
     const reason = within(card).getByLabelText("Reason (required)");
     expect(reason).toHaveFocus();
     const answer = within(card).getByRole("button", { name: "Answer" });
-    expect(answer.hasAttribute("disabled")).toBe(true);
+    expect(answer.getAttribute("aria-disabled")).toBe("true");
     expect(within(card).getByText("Add a reason to send Request changes")).toBeTruthy();
     await user.click(reason);
     await user.paste("Needs another pass.");
-    expect(answer).not.toHaveAttribute("disabled");
+    expect(answer).not.toHaveAttribute("aria-disabled");
 
     // Closing the disclosure unmounts the field; Request changes is still the picked radio, so
     // reopening the disclosure is what brings the field back, and it must take focus again.
@@ -1313,10 +1396,10 @@ test("AskCard requires text when Other is selected with real multiple options", 
     await user.click(await view.findByRole("checkbox", { name: "Docs" }));
     await user.click(view.getByRole("checkbox", { name: "Other" }));
     const answer = view.getByRole("button", { name: "Answer" });
-    expect(answer.hasAttribute("disabled")).toBe(true);
+    expect(answer).toHaveAttribute("aria-disabled", "true");
     await user.click(view.getByLabelText("Your answer"));
     await user.paste("Also update the guide.");
-    expect(answer).not.toHaveAttribute("disabled");
+    expect(answer).not.toHaveAttribute("aria-disabled");
     await user.click(answer);
 
     await waitFor(() =>
@@ -1448,7 +1531,7 @@ test("AskCard reloads a changed question, requires the human to reconfirm, and a
     await view.findByText(/This question changed while you were answering/);
     expect(view.getByText("Should we hold this release?")).toBeTruthy();
     expect(view.getByRole("radio", { name: "Hold" })).not.toHaveAttribute("checked");
-    expect(view.getByRole("button", { name: "Answer" }).hasAttribute("disabled")).toBe(true);
+    expect(view.getByRole("button", { name: "Answer" })).toHaveAttribute("aria-disabled", "true");
     expect(
       within(view.getByRole("alert")).queryByRole("button", { name: "Retry" })
     ).not.toBeInTheDocument();
@@ -2287,6 +2370,88 @@ test("a document ask links its project and document page", async () => {
   }
 });
 
+// R1: the same copy-link target everywhere. In the Inbox and the reading pane the document is
+// the row's own and the host passes no owner, and the ask read the answer leaves behind carries
+// none either, so the answered card drew no copy control at all (dispatch://INFRA-341).
+test("an answered project-document ask keeps its copy-link control", async () => {
+  const user = userEvent.setup();
+  const input = ask({
+    artifact_id: "artifact-1",
+    document: { name: "Design notes", project: "CORE", slug: "design-notes" },
+    issue_key: null,
+    options: [{ label: "Ship" }],
+  });
+  const { view } = renderCard(
+    <AskCard
+      ask={input}
+      answerAsk={async (_id, submission) => answered(input, submission.selected)}
+      getAskThread={emptyThread(input)}
+    />
+  );
+
+  try {
+    const reference = "dispatch://CORE/artifact/design-notes/ask/ask-1";
+    expect(view.container.querySelector(`[data-ask-copy="${reference}"]`)).not.toBeNull();
+    await user.click(await view.findByRole("radio", { name: "Ship" }));
+    await user.click(view.getByRole("button", { name: "Answer" }));
+    await waitFor(() => expect(view.getByText(/Answered by/)).toBeTruthy());
+
+    expect(view.container.querySelector(`[data-ask-copy="${reference}"]`)).not.toBeNull();
+    expect(view.getByRole("button", { name: `Copy reference ${reference}` })).toBeTruthy();
+  } finally {
+    view.unmount();
+  }
+});
+
+// R2: the ask's `@` lists the same sessions the Conversation tab's composer lists, by the same
+// rules. It read no collaborators, so the issue's Legion roles nobody is running were missing
+// from it while the composer under it on the same tab offered them (dispatch://INFRA-341).
+test("the ask's @ picker offers the issue's Not running roles", async () => {
+  const user = userEvent.setup();
+  const listAgents = spyOn(api, "listAgents").mockResolvedValue([]);
+  const collaborators = spyOn(api, "getIssueCollaborators").mockResolvedValue({
+    agents: [
+      {
+        kind: "session",
+        last_at: null,
+        legion: {
+          replaced_at: null,
+          replaced_by: null,
+          role: "reviewer",
+          role_token: "legion-p-core-1-reviewer",
+          started_at: "2026-10-26T02:00:00Z",
+        },
+        reasons: [],
+        session_id: "new-reviewer",
+        title: "New reviewer",
+      },
+    ],
+    issue_key: "CORE-1",
+    legion_registry: "ok",
+    people: [],
+  });
+  const input = ask();
+  const { view } = renderCard(<AskCard ask={input} getAskThread={emptyThread(input)} />);
+
+  try {
+    const field = await view.findByLabelText("Your answer");
+    await user.click(field);
+    await user.paste("@");
+    const listbox = await screen.findByRole("listbox", { name: "Mention suggestions" });
+    const stopped = await within(listbox).findByRole("group", { name: "Not running" });
+    expect(collaborators).toHaveBeenCalledWith("CORE-1");
+    expect(
+      within(stopped)
+        .getAllByRole("option")
+        .map((option) => option.getAttribute("aria-label"))
+    ).toEqual(["legion-p-core-1-reviewer"]);
+  } finally {
+    view.unmount();
+    collaborators.mockRestore();
+    listAgents.mockRestore();
+  }
+});
+
 test("answering a document ask invalidates the document and projects, not an issue", async () => {
   const user = userEvent.setup();
   const input = ask({
@@ -2449,13 +2614,15 @@ test("AskCard compact variant renders long options as the same wrapping choice r
 
     await user.click(first);
     expect((first as HTMLInputElement).checked).toBe(true);
-    expect(within(card).getByRole("button", { name: "Answer" })).not.toHaveAttribute("disabled");
+    expect(within(card).getByRole("button", { name: "Answer" })).not.toHaveAttribute(
+      "aria-disabled"
+    );
     expect(within(card).queryByLabelText("Your answer")).not.toBeInTheDocument();
 
     await user.click(within(options).getByRole("radio", { name: "Other" }));
     expect(await within(card).findByLabelText("Your answer")).toBeTruthy();
-    expect(within(card).getByRole("button", { name: "Answer" }).hasAttribute("disabled")).toBe(
-      true
+    expect(within(card).getByRole("button", { name: "Answer" }).getAttribute("aria-disabled")).toBe(
+      "true"
     );
   } finally {
     view.unmount();
@@ -2532,5 +2699,70 @@ test("AskCard compact variant hands focus to the row when Answer disables under 
     await view.findByRole("img", { name: "Selected" });
   } finally {
     view.unmount();
+  }
+});
+
+// The lone Answer a compact card draws over a closed note is held by the picture that note is
+// still taking: the upload is the card's own, above the disclosure, so the pick that closes the
+// note - picking an option with nothing typed - cannot leave that send ungated. The answer once
+// the upload lands carries the picture.
+test("the compact card's lone Answer waits for a picture its closed note is still taking", async () => {
+  const user = userEvent.setup();
+  const submitted: AnswerAskInput[] = [];
+  const { promise: landed, resolve: land } = Promise.withResolvers<void>();
+  const uploadArtifact = spyOn(api, "uploadArtifact").mockImplementation(async () => {
+    await landed;
+    return { artifact: { name: "shot.png", slug: "shot-png" }, version: { number: 1 } } as never;
+  });
+  const input = ask({ options: [{ label: "Ship" }, { label: "Hold" }] });
+  const { view } = renderCard(
+    <AskCard
+      answerAsk={async (_id, submission) => {
+        submitted.push(submission);
+        return answered(input, submission.selected, submission.text ?? null);
+      }}
+      ask={input}
+      getAskThread={emptyThread(input)}
+      variant="compact"
+    />
+  );
+
+  try {
+    const card = view.getByTestId("ask-ask-1");
+    await user.click(
+      await within(card).findByRole("button", { name: "Add a note or answer in your own words" })
+    );
+    const note = within(card).getByLabelText("Your answer");
+    // user-event's paste carries text, never the file this row uploads.
+    fireEvent.paste(note, { clipboardData: { files: [png("shot.png")] } });
+    await within(card).findByText("Uploading file…");
+
+    // Picking an option with nothing typed closes the note, taking the box the picture was
+    // pasted into off the screen; the lone Answer is all that is left to send by.
+    await user.click(within(card).getByRole("radio", { name: "Ship" }));
+    expect(within(card).queryByLabelText("Your answer")).not.toBeInTheDocument();
+    const answer = within(card).getByRole("button", { name: "Answer" });
+    expect(answer.hasAttribute("disabled")).toBe(true);
+    // What holds it is still on screen, though the box it was pasted into is not.
+    expect(within(card).getByText("Uploading file…")).toBeTruthy();
+    await user.click(answer);
+    await Bun.sleep(20);
+    expect(submitted).toEqual([]);
+
+    land();
+    await waitFor(() => expect(answer.hasAttribute("disabled")).toBe(false));
+    await user.click(answer);
+    await waitFor(() =>
+      expect(submitted).toEqual([
+        {
+          expected_edited_at: null,
+          selected: ["Ship"],
+          text: "![shot.png](dispatch://CORE-1/artifact/shot-png@v1)",
+        },
+      ])
+    );
+  } finally {
+    view.unmount();
+    uploadArtifact.mockRestore();
   }
 });

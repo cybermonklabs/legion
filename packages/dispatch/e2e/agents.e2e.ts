@@ -2,6 +2,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 
 import type { CreateBroadcastInput, Message } from "../web/src/api/types";
 import {
+  agentFilter,
   agentGroupToggle,
   agentRow,
   BROADCAST_REFUSED,
@@ -1571,6 +1572,9 @@ test("a selection over the broadcast limit says so and never asks the server", a
     const send = composer.getByRole("button", { name: "Send to 101" });
     await expect(send).toBeDisabled();
     await send.click({ force: true });
+    // A forced press lands on whatever the page leaves at that point, so it is read where it
+    // landed: a refused Send that holds the focus is the Send that was pressed.
+    await expect(send).toBeFocused();
     // A selection over the limit asks nothing of the server, and a request that never leaves
     // marks nothing to wait on: `ABSENCE_MARGIN_MS` is the window a POST made in the forced
     // click's own task would show in, taken in Node so the page's clock cannot skip it.
@@ -1991,6 +1995,87 @@ test("an agent row's directory is still shown beside the longest name in use, so
         `against ${Math.round(control?.width ?? 0)}px in the same row with a short name`
     ).toBeGreaterThan(0);
     await expect(directory).toBeVisible();
+  } finally {
+    await context.close();
+    await setLiveSessions([]);
+  }
+});
+
+test("the Agents filters fit a phone beside a 59-character machine name, and the Machine dropdown holds the whole name @phone", async ({
+  browser,
+}) => {
+  // The machine id the defect was measured against: a `<select>` sized to this one option was
+  // 591 px wide, and a 390 px phone zoomed out to 615 px to fit it. Counted here rather than
+  // trusted, since a shorter name would prove nothing about the strip's width.
+  const machine59 = "legion-pod-sjawhar-legion-infra-341-dispatch-web-builder-01";
+  expect(machine59).toHaveLength(59);
+
+  const onLongMachine: FakeSession = {
+    capabilities: ["aside", "btw"],
+    dir: "/workspaces/filters",
+    last_seen: Date.now(),
+    machine_id: machine59,
+    roles: ["implementer"],
+    session_id: "long-machine-session",
+    title: "Filter bar",
+  };
+  await setLiveSessions([onLongMachine]);
+
+  // A live session Dispatch has never heard from sits in the closed `No Dispatch activity` fold,
+  // so it comments once and its row - and the filter option its machine fills - is on the page.
+  await createProject({ key: "MACH", name: "Machines" });
+  const issue = await createIssue({ project: "MACH", title: "Agent filter widths" });
+  await createComment(
+    issue.key,
+    { body: `Working from ${onLongMachine.dir}.` },
+    { actor: { id: onLongMachine.session_id, kind: "session" }, as: "agent" }
+  );
+
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    await page.goto("/agents");
+    await expect(agentRow(page, onLongMachine.session_id)).toBeVisible();
+
+    // Nothing on the page is wider than the screen, so the browser never zooms out, and each
+    // filter fits inside that screen on its own. The three `<select>`s the defect was measured
+    // on are multi-selects now (R7): a trigger reads `Machine · 1` and never an option's own
+    // text, so what is measured here is the control and not what it holds.
+    await assertPageFits(page);
+    const viewport = page.viewportSize()?.width ?? 0;
+    for (const filter of ["machine", "role"] as const) {
+      const trigger = agentFilter(page, filter);
+      await expect(trigger).toBeVisible();
+      const box = await trigger.boundingBox();
+      expect(
+        Math.round(box?.width ?? 0),
+        `the ${filter} filter is ${Math.round(box?.width ?? 0)}px wide in a ${viewport}px viewport`
+      ).toBeLessThanOrEqual(viewport);
+    }
+
+    // The name the control's width cuts short is one hover away, inside it: the machine filter's
+    // own option carries the whole name, and the panel it is drawn in is still inside the screen,
+    // which is what the 591 px dropdown was not.
+    const machine = agentFilter(page, "machine");
+    await machine.click();
+    const option = page.getByRole("option", { exact: true, name: machine59 });
+    await expect(option).toBeVisible();
+    await expect(option.locator("[title]")).toHaveAttribute("title", machine59);
+    const drawn = await option.boundingBox();
+    const right = Math.round((drawn?.x ?? 0) + (drawn?.width ?? 0));
+    expect(
+      right,
+      `the machine option ends at ${right}px in a ${viewport}px viewport`
+    ).toBeLessThanOrEqual(viewport);
+    await assertPageFits(page);
+
+    // And picking it filters by that whole name while the trigger keeps its own width.
+    await option.click();
+    await expect(machine).toHaveText("Machine · 1");
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("listbox")).toHaveCount(0);
+    await expect(shownAgentRows(page)).toHaveCount(1);
+    await assertPageFits(page);
   } finally {
     await context.close();
     await setLiveSessions([]);

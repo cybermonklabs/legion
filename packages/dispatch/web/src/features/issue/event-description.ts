@@ -1,10 +1,12 @@
 import type { BlockInvalidEventPayload } from "@legion/contracts";
 import type { DispatchEvent } from "../../api/types";
+import { quotedQuestion } from "../activity/event-trees";
 import { capabilityLabel } from "../conversation/delivery";
 import { type AgentPart, askResolutionParts } from "../refs/AgentName";
 
 /** An event's line in the Pinned tab, as `AgentPart`s: an agent it names keeps its identity
- *  until `EventBody` draws it through `AgentName`. */
+ *  until `EventBody` draws it through `AgentName`, and a question it quotes is a part of its
+ *  own, drawn as the Markdown its author wrote rather than as that source. */
 export function eventDescription(event: DispatchEvent): AgentPart[] {
   const description = describe(event);
   return typeof description === "string" ? [description] : description;
@@ -57,18 +59,22 @@ function describe(event: DispatchEvent): string | AgentPart[] {
     case "ask.resolved":
       return askResolutionParts(event.payload.resolution);
     case "ask.answered":
-      return event.payload.previous_answer === undefined
-        ? `Ask answered: ${event.payload.question}`
-        : `Answer changed: ${event.payload.question}`;
+      return [
+        event.payload.previous_answer === undefined ? "Ask answered: " : "Answer changed: ",
+        quotedQuestion(event),
+      ];
     case "ask.edited":
-      return `Ask edited: ${event.payload.question}`;
+      return ["Ask edited: ", quotedQuestion(event)];
     case "ask.handed_back":
-      return `Ask handed back: ${event.payload.question}`;
+      return ["Ask handed back: ", quotedQuestion(event)];
     case "ask.asked_of":
       // Who the ask waits on now. The payload names no login where it was handed to the
       // assignee of its own issue: an ask with no `asked_of` waits on that assignee, or on its
       // project's default assignee while the issue holds nobody.
-      return `Ask handed to ${event.payload.asked_of ?? "the issue's assignee"}: ${event.payload.question}`;
+      return [
+        `Ask handed to ${event.payload.asked_of ?? "the issue's assignee"}: `,
+        quotedQuestion(event),
+      ];
     case "comment.resolved":
       return "Comment resolved";
     case "comment.reopened":
@@ -87,7 +93,7 @@ function describe(event: DispatchEvent): string | AgentPart[] {
     case "message.accepted":
       return "Message taken as the session's own turn";
     case "ask.opened":
-      return `Ask opened: ${event.payload.question}`;
+      return ["Ask opened: ", quotedQuestion(event)];
     case "ask.anchor_refreshed":
       return event.payload.anchor?.orphaned
         ? "Ask lost its quote"

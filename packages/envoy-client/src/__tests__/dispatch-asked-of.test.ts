@@ -269,6 +269,16 @@ const ALLOWED: readonly (readonly [string, string])[] = [
     "packages/dispatch/AGENTS.md",
     "or resolved elsewhere) or hands its turn the other way (their own ask-back, an agent's progress",
   ],
+  // The dashboard's loading notes, where an *address* asks for bytes: the subject is a URL and
+  // the chunks it needs, and neither line says anything about who a question waits on.
+  [
+    "packages/dispatch/AGENTS.md",
+    "every address that opens no document at all - asks for nothing there",
+  ],
+  [
+    "packages/dispatch/AGENTS.md",
+    "**And the address asks for the document's chunks before the page renders.**",
+  ],
   // The block-id repair in the server, which hands rows around, not asks.
   [
     "packages/envoy/AGENTS.md",

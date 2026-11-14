@@ -17,8 +17,9 @@ import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { borderDefault } from "../../theme/classes";
 import { versionsNewestFirst } from "../artifacts/ArtifactHeader";
 import { CHANGED_BLOCK_CLASS } from "../doc/change-marks";
+import { moveTheBox } from "../doc/readers-place";
 import { DocumentRuntime } from "../doc/runtime";
-import { loadBlockSchema } from "../doc/schema";
+import { blockSchemaQueryOptions } from "../doc/schema";
 import { scrollElementToTop } from "../doc/scroll-block";
 import { VersionView } from "../doc/VersionView";
 import { MarkdownBody } from "../refs/MarkdownBody";
@@ -164,11 +165,7 @@ function ApprovalBody({
   const approvedVersion = approval.approved?.version;
 
   const { blockSchema: runtimeBlockSchema } = useContext(DocumentRuntime);
-  const blockSchemaQuery = useQuery({
-    queryFn: loadBlockSchema,
-    queryKey: ["block-schema"],
-    staleTime: Number.POSITIVE_INFINITY,
-  });
+  const blockSchemaQuery = useQuery(blockSchemaQueryOptions());
   const blockSchema = runtimeBlockSchema ?? blockSchemaQuery.data;
   const user = useQuery(whoAmIQuery()).data;
   const artifactQuery = useQuery({ ...artifactQueryOptions(artifactId), enabled: settled });
@@ -250,8 +247,10 @@ function ApprovalBody({
     //
     // The start is written straight rather than through `scrollElementToTop`: that one measures
     // the move against the drawn rects, and where nothing is laid out every rect is zero and
-    // the move computes to nothing.
-    column.scrollTop = 0;
+    // the move computes to nothing. It goes through `moveTheBox` all the same, so the write is
+    // recorded as the page's own place-keeping and no landing correction watching this column
+    // reads it as the reader (`readers-place.ts`).
+    moveTheBox(column, -column.scrollTop);
     // Once for each request, and the hold is what says so: let go here, it answers no to every
     // later pass of this request - a new version of the document, or a read that failed and
     // recovered - and the next request the reader opens arms a hold of its own.

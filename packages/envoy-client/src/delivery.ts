@@ -537,6 +537,7 @@ export function carriedItem(
         ? ("message" as const)
         : undefined;
   if (resource === undefined || !isObject(event.payload)) return undefined;
+  // biome-ignore lint/complexity/useLiteralKeys: isObject narrows the payload to a record keyed by an index signature, and claude-envoy's typecheck refuses dot access on such a key.
   const id = event.payload["id"];
   if (typeof id !== "string" || id === "") return undefined;
   return { resource, id, issueKey: event.issue_key };
@@ -548,6 +549,7 @@ export function carriedItem(
  *  (`payload_omitted`). Either way the item itself answers the rest. */
 export function bodyWasCut(payload: unknown): boolean {
   return (
+    // biome-ignore lint/complexity/useLiteralKeys: isObject narrows payload to a record whose keys are all index-signature keys, and claude-envoy's typecheck refuses dot access on such a key.
     isObject(payload) && (payload["body_truncated"] === true || payload["payload_omitted"] === true)
   );
 }
@@ -563,6 +565,7 @@ function wholeItemRoute(item: CarriedItem): string {
 function carriedBodyNote(event: DispatchEvent): string | undefined {
   if (!bodyWasCut(event.payload)) return undefined;
   const what =
+    // biome-ignore lint/complexity/useLiteralKeys: payload_omitted is read off an index signature here too, and dot access would fail claude-envoy's typecheck.
     isObject(event.payload) && event.payload["payload_omitted"] === true
       ? "this event carries no body: it was too large for the bus"
       : "the body is its first part only";

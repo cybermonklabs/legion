@@ -10,7 +10,7 @@ import type {
   DocumentConnection,
 } from "../features/doc/connection";
 import {
-  type CreateEditor,
+  type ConstructEditor,
   type EditorHandle,
   type EditorOptions,
   editorAttributes,
@@ -33,6 +33,11 @@ export interface FakeEditor {
   focused: string[];
   markdown: string | undefined;
   focusedBlocks: string[];
+  /** The node views the host had installed when the fragment was first drawn into the root -
+   *  the real editor's first batch (`@legion/proof-editor`'s `beforeBuild`). A host that
+   *  installs them afterwards leaves this empty, and the real editor then re-creates every
+   *  node view of the built document in one task (dispatch://INFRA-341, R11). */
+  nodeViewsAtBuild: readonly string[];
   options: EditorOptions;
   remoteMarks: Record<string, StoredMark>[];
   root: HTMLElement;
@@ -40,6 +45,9 @@ export interface FakeEditor {
    *  undefined before it has handed it anything; the real plugin reads a block's text through
    *  `scan` and reports what it found through `onKeys`, which a test does in its place. */
   references: EditorReferences | null | undefined;
+  /** Whether the host has shown the editor's root (`reveal`), which the real editor keeps
+   *  hidden from before the first batch of its build until the host swaps it in. */
+  revealed: boolean;
   /** Whether the fake view's selection is empty (a caret); a test sets it to select text. */
   selectionEmpty: boolean;
   /** The innermost block with an id that holds the selection, as `blockIdAtSelection` answers;
@@ -58,7 +66,15 @@ interface FakeConnection extends DocumentConnection {
 export interface FakeDocumentRuntime {
   admit(readOnly: boolean): void;
   connections: FakeConnection[];
+  /** Every editor the host has built, in order, bound or not: the real one is constructed
+   *  while its socket syncs and bound when the state frame has been applied
+   *  (`features/doc/editor.ts`). */
+  constructions: FakeEditor[];
+  /** Those of them the host has bound to a document, in order. */
   editors: FakeEditor[];
+  /** The stubbed layer's answer: the current socket closes with `NO_DOCUMENT_SERVER_CLOSE_CODE`,
+   *  because nothing behind the page serves a document (`features/doc/connection.ts`). */
+  noDocumentServer(): void;
   pending(state: PendingState): void;
   /** The server refuses the current socket because the stored document is outside the Proof
    * schema; a destroyed provider hears nothing more, so earlier connections are not told. */
@@ -105,6 +121,7 @@ export function markedText(tree: DocumentJSON | undefined, type: string): string
 export function fakeDocumentRuntime(seed: { text?: string } = {}): FakeDocumentRuntime {
   const callbacks: ConnectionCallbacks[] = [];
   const connections: FakeConnection[] = [];
+  const constructions: FakeEditor[] = [];
   const editors: FakeEditor[] = [];
   const connect: ConnectDocument = (_artifactId, nextCallbacks) => {
     const doc = new Y.Doc();
@@ -129,10 +146,15 @@ export function fakeDocumentRuntime(seed: { text?: string } = {}): FakeDocumentR
     connections.push(connection);
     return connection;
   };
-  const createEditor: CreateEditor = async (root, options) => {
-    for (const [name, value] of Object.entries(editorAttributes)) {
-      root.setAttribute(name, value);
-    }
+  const constructEditor: ConstructEditor = async (root, options) => {
+    // The real editor's root is hidden from the moment it is constructed until the first batch
+    // of its build, and the host swaps it in after the last (`@legion/proof-editor`'s
+    // `constructProofEditor` and `reveal`), so the fake's is too: a host that never revealed
+    // its editor would otherwise be the only one with nothing to show for it. It is an inline
+    // `display` set and removed again, as the real one is, rather than a value read off the
+    // root and written back, which a second construction in the same element would read as
+    // `none`.
+    root.style.setProperty("display", "none");
     const editor: FakeEditor = {
       access: options.access ?? "edit",
       blockMarks: [],
@@ -142,15 +164,16 @@ export function fakeDocumentRuntime(seed: { text?: string } = {}): FakeDocumentR
       focused: [],
       focusedBlocks: [],
       markdown: undefined,
+      nodeViewsAtBuild: [],
       options,
       remoteMarks: [],
       references: undefined,
       root,
+      revealed: false,
       selectionEmpty: true,
       selectedBlock: null,
       viewProps: { nodeViews: {} },
     };
-    root.textContent = options.ydoc.getXmlFragment("prosemirror").toString();
     const handle = {
       applyRemoteMarks(metadata: Record<string, StoredMark>) {
         editor.remoteMarks.push(metadata);
@@ -164,6 +187,7 @@ export function fakeDocumentRuntime(seed: { text?: string } = {}): FakeDocumentR
       },
       destroy() {
         editor.destroyed = true;
+        root.style.removeProperty("display");
       },
       focusBlock(blockId: string) {
         editor.focusedBlocks.push(blockId);
@@ -181,6 +205,10 @@ export function fakeDocumentRuntime(seed: { text?: string } = {}): FakeDocumentR
       },
       retypeMark() {
         return { refused: "missing" as const };
+      },
+      reveal() {
+        editor.revealed = true;
+        root.style.removeProperty("display");
       },
       setActiveBlocks() {},
       setBlockMarks(marks: readonly BlockMark[]) {
@@ -222,9 +250,11 @@ export function fakeDocumentRuntime(seed: { text?: string } = {}): FakeDocumentR
         },
       },
     } as unknown as EditorHandle;
-    // The real `createEditor` installs Dispatch's node views once the editor library has
-    // loaded (`features/doc/editor.ts`); the fake stands in for that call too, so a test reads
-    // the same `viewProps.nodeViews` the host would.
+    // The real `constructEditor` installs Dispatch's node views once the editor library has
+    // loaded, and does it over the still-empty document, before the first batch of the build
+    // (`features/doc/editor.ts`; `@legion/proof-editor`'s `beforeBuild`). The fake stands in
+    // for that call and for the host's own `beforeBuild` after it, so what is on the view when
+    // it draws the fragment is what the build would have drawn with.
     installTypedBlocks(
       handle.view,
       options.blockSchema,
@@ -232,8 +262,26 @@ export function fakeDocumentRuntime(seed: { text?: string } = {}): FakeDocumentR
       options.watchPicture,
       options.anchoredBlock
     );
-    editors.push(editor);
-    return handle;
+    options.beforeBuild?.(handle.view);
+    editor.nodeViewsAtBuild = Object.keys(
+      (editor.viewProps.nodeViews ?? {}) as Record<string, unknown>
+    );
+    constructions.push(editor);
+    return {
+      // The document is drawn into the root here, and the editor wears its name from here, as
+      // the real one does: nothing of either is true of a construction that was never bound
+      // (`features/doc/editor.ts`).
+      bind: async () => {
+        for (const [name, value] of Object.entries(editorAttributes)) {
+          root.setAttribute(name, value);
+        }
+        root.textContent = options.ydoc.getXmlFragment("prosemirror").toString();
+        editors.push(editor);
+        return handle;
+      },
+      destroy: () => handle.destroy(),
+      setAccess: (access: FakeEditor["access"]) => handle.setAccess(access),
+    };
   };
 
   return {
@@ -243,7 +291,11 @@ export function fakeDocumentRuntime(seed: { text?: string } = {}): FakeDocumentR
       }
     },
     connections,
+    constructions,
     editors,
+    noDocumentServer() {
+      callbacks.at(-1)?.onNoDocumentServer();
+    },
     pending(state) {
       for (const callback of callbacks) {
         callback.onPending(state);
@@ -252,7 +304,11 @@ export function fakeDocumentRuntime(seed: { text?: string } = {}): FakeDocumentR
     refuse() {
       callbacks.at(-1)?.onOutsideSchema();
     },
-    runtime: { blockSchema, createEditor, loadTransport: async () => connect },
+    runtime: {
+      blockSchema,
+      constructEditor,
+      loadTransport: async () => connect,
+    },
     status(state) {
       for (const callback of callbacks) {
         callback.onStatus(state);
@@ -264,5 +320,27 @@ export function fakeDocumentRuntime(seed: { text?: string } = {}): FakeDocumentR
       }
     },
     text: seed.text ?? "",
+  };
+}
+
+/**
+ * `inner`, with `change` given each handle as it is bound: the shape a row takes when it reads
+ * or replaces what an editor answers, since the editor is built before its document arrives
+ * and only the binding has a handle (`features/doc/editor.ts`).
+ */
+export function changingEachHandle(
+  inner: ConstructEditor,
+  change: (handle: EditorHandle) => void
+): ConstructEditor {
+  return async (root, options) => {
+    const construction = await inner(root, options);
+    return {
+      ...construction,
+      bind: async () => {
+        const handle = await construction.bind();
+        change(handle);
+        return handle;
+      },
+    };
   };
 }

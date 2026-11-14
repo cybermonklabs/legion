@@ -32,10 +32,13 @@ import type {
   Subscriber,
   UserIssueState,
 } from "../../api/types";
+import { theFirstBatchIsAwaited } from "../doc/first-batch";
+import { thePageLeftItThere } from "../doc/readers-place";
 import { DocumentRuntime } from "../doc/runtime";
 import { MarginProvider } from "../margin/margin-context";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { IssuePage } from "./IssuePage";
+import { issueClosedCalloutClassName } from "./issue-header-classes";
 
 const issue = {
   route_status: null,
@@ -2548,5 +2551,510 @@ test("IssuePage shows its not-found view for an id prefix that names nothing", a
     getComment.mockRestore();
     getReferences.mockRestore();
     restore();
+  }
+});
+
+// The issue's header is drawn after the editor's first batch, and what it tells a reader
+// without being asked is not (dispatch://INFRA-341 R11, `issue-page-skeleton.tsx`): a press on
+// the box is how a reader reaches for a control, and nothing presses for one who was never
+// told there was anything to reach for.
+test("IssuePage's header box says a closed issue is closed, where it stands and what its spec's review decided", async () => {
+  const restore = stubIssuePage({
+    ...issue,
+    artifacts: [
+      {
+        ...issue.artifacts[0],
+        approval: { latest_version: 2, state: "changes_requested", version: 2 },
+      },
+    ],
+    closed_at: "2026-09-10T00:00:00Z",
+    status: "done",
+  });
+  // Armed before anything renders, as an address that opens a document arms it
+  // (`openDocumentEarly`): a part that reads the hold on its first render is held by it. The
+  // address is a tab whose panel is not the document, so nothing here builds an editor and
+  // ends the hold - the issue's own address holds its chrome exactly the same way.
+  theFirstBatchIsAwaited(true);
+  const view = renderIssuePage("/issues/CORE-1/children");
+
+  try {
+    const box = await screen.findByTestId("issue-header-box");
+    // The header itself is held, with its controls: no status pick, no Reopen, no review.
+    expect(screen.queryByTestId("issue-header")).toBeNull();
+    expect(screen.queryByRole("combobox", { name: "Status" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Reopen issue" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Request changes" })).toBeNull();
+    // What the header would have told the reader stands in its box meanwhile.
+    expect(within(box).getByText("This issue is closed.")).toBeTruthy();
+    expect(within(box).getByText("Done")).toBeTruthy();
+    // As text, not as a control: a press in this box replaces the box, so a chip drawn here as
+    // a button would swallow the press it was drawn for.
+    expect(within(box).getByText("Changes requested")).toBeTruthy();
+    expect(within(box).queryByRole("button", { name: "Changes requested" })).toBeNull();
+
+    // And the header says the same three things when the batch lets it through, once each.
+    act(() => theFirstBatchIsAwaited(false));
+    const header = await screen.findByTestId("issue-header");
+    expect(within(header).getByText("This issue is closed.")).toBeTruthy();
+    expect(screen.getAllByRole("button", { name: "Changes requested" })).toHaveLength(1);
+    // And its controls are there with it: the status is a pick again.
+    expect(await screen.findByRole("combobox", { name: "Status" })).toBeTruthy();
+  } finally {
+    theFirstBatchIsAwaited(false);
+    view.unmount();
+    restore();
+  }
+});
+
+// A reader with no pointer must be able to reach the chrome the page is holding. Tab is the one
+// way they have into the header's box, so something in it has to take focus: a `disabled`
+// placeholder takes none and `ChromeAfterTheFirstBatch`'s `onFocusCapture` never fires, which
+// left the header, the tab strip and every issue shortcut out of reach for as long as the hold
+// lasted - up to twenty seconds on a stalled load (dispatch://INFRA-341).
+test("IssuePage hands the held header to a reader who tabs into its box, and keeps their focus", async () => {
+  const user = userEvent.setup();
+  const restore = stubIssuePage(issue);
+  theFirstBatchIsAwaited(true);
+  const view = renderIssuePage("/issues/CORE-1/children");
+
+  try {
+    const box = await screen.findByTestId("issue-header-box");
+    const held = within(box).getByRole("button", { name: "Pin issue" });
+    expect(held).not.toHaveAttribute("disabled");
+    expect(held).toHaveAttribute("aria-disabled", "true");
+
+    // The reader's own Tab reaches it: nothing before the box in the page's order takes it
+    // away, so the box's own reach is where the first Tab of a held page lands, and it says
+    // what it brings.
+    await user.tab();
+    const header = await screen.findByTestId("issue-header");
+    expect(await screen.findByRole("combobox", { name: "Status" })).toBeTruthy();
+
+    // And the Tab that brought it did not cost them their place in the page. The control they
+    // stood on is gone - the space and the header are different elements in the same slot - so
+    // the box it stood in holds them, and their next Tab goes on into the header rather than
+    // starting again at the top of the page (dispatch://INFRA-341).
+    expect(document.activeElement).not.toBe(document.body);
+    expect(header.parentElement).toHaveFocus();
+  } finally {
+    theFirstBatchIsAwaited(false);
+    view.unmount();
+    restore();
+  }
+});
+
+// The tab strip's box is the other half of that reach. What it keeps is a row of `aria-hidden`
+// spans - the strip's own size standing there, read by nothing - so a reader with no pointer
+// tabbed from the header straight past the strip and into the document, with no way to ask for
+// the tabs at all (dispatch://INFRA-341).
+test("IssuePage hands the held tab strip to a reader who tabs into its box", async () => {
+  const restore = stubIssuePage(issue);
+  theFirstBatchIsAwaited(true);
+  const view = renderIssuePage("/issues/CORE-1/children");
+
+  try {
+    const box = await screen.findByTestId("issue-tabs-box");
+    expect(screen.queryByTestId("issue-tabs")).toBeNull();
+    const reach = within(box.parentElement ?? box).getByRole("button", {
+      name: "Show the issue tabs",
+    });
+
+    act(() => {
+      reach.focus();
+    });
+
+    const tabs = await screen.findByTestId("issue-tabs");
+    expect(await screen.findByRole("tab", { name: "Spec" })).toBeTruthy();
+    expect(tabs.parentElement).toHaveFocus();
+  } finally {
+    theFirstBatchIsAwaited(false);
+    view.unmount();
+    restore();
+  }
+});
+
+// A closed issue's header draws a block of its own above its three rows - the sentence and a
+// `min-h-11` Reopen button in a `mb-2 … p-3` callout - and the box has to keep that block.
+// Said as a pill inside the state row instead, it stood in the height the status pick already
+// kept, so the box held no pixel for it and about 76 px of header landed on a reader sitting
+// at the top of a closed issue, where `keepWhatStandsUnder` compensates nothing: it answers
+// only a box already scrolled above the top of the screen (dispatch://INFRA-341).
+test("IssuePage's header box keeps a closed issue's own block, Reopen's height and all", async () => {
+  const restore = stubIssuePage({
+    ...issue,
+    closed_at: "2026-09-10T00:00:00Z",
+    status: "done",
+  });
+  theFirstBatchIsAwaited(true);
+  const view = renderIssuePage("/issues/CORE-1/children");
+
+  try {
+    const box = await screen.findByTestId("issue-header-box");
+    const kept = within(box).getByTestId("issue-reopen-space");
+    expect(kept.className).toContain("min-h-11");
+    // In the block the header draws, beside the sentence, and not in the state row where the
+    // status pill already stands.
+    const notice = within(box).getByText("This issue is closed.");
+    expect(notice.parentElement).toBe(kept.parentElement);
+    expect(notice.parentElement?.className).toContain("mb-2");
+  } finally {
+    theFirstBatchIsAwaited(false);
+    view.unmount();
+    restore();
+  }
+});
+
+// And it keeps the header's own block rather than a copy of it. Both are drawn from
+// `issueClosedCalloutClassName` (`issue-header-classes.ts`), and this row reads the two class
+// strings against each other: written out in both files instead, a change to the padding or the
+// gap on one side left the other where it was, and the block the reader was given was not the
+// block they had been keeping - which the row above, reading `min-h-11` and `mb-2` alone, says
+// nothing about (dispatch://INFRA-341).
+test("the closed block the box keeps is the block the header lands with", async () => {
+  const restore = stubIssuePage({
+    ...issue,
+    closed_at: "2026-09-10T00:00:00Z",
+    status: "done",
+  });
+  theFirstBatchIsAwaited(true);
+  const view = renderIssuePage("/issues/CORE-1/children");
+
+  try {
+    const box = await screen.findByTestId("issue-header-box");
+    const kept = within(box).getByText("This issue is closed.").parentElement?.className;
+    expect(kept).toContain(issueClosedCalloutClassName);
+
+    act(() => theFirstBatchIsAwaited(false));
+    const header = await screen.findByTestId("issue-header");
+    const landed = within(header).getByText("This issue is closed.").parentElement?.className;
+
+    expect(landed).toBe(kept);
+  } finally {
+    theFirstBatchIsAwaited(false);
+    view.unmount();
+    restore();
+  }
+});
+
+// And the issue's own keys reach it too. Every binding resolves against a control only the real
+// header and tab strip render, so while the hold stands they would all be withheld: the press
+// is the reader reaching for the chrome, exactly as a pointer press on the box is, and it does
+// what it came for once the chrome it asked for is drawn.
+test("IssuePage's header shortcuts draw the held chrome and then act on it", async () => {
+  const user = userEvent.setup();
+  const restore = stubIssuePage(issue);
+  theFirstBatchIsAwaited(true);
+  const view = renderIssuePage("/issues/CORE-1/children");
+
+  try {
+    await screen.findByTestId("issue-header-box");
+    expect(screen.queryByRole("combobox", { name: "Status" })).toBeNull();
+
+    await user.keyboard("s");
+    const status = await screen.findByRole("combobox", { name: "Status" });
+    await waitFor(() => expect(document.activeElement).toBe(status));
+  } finally {
+    theFirstBatchIsAwaited(false);
+    view.unmount();
+    restore();
+  }
+});
+
+// And it waits for the chrome however long that takes, because what answers it is the commit
+// that mounts the chrome and not a budget of animation frames. The chunk the header is in and
+// the two commits behind it are the slow path on the phone this hold is written for, and a
+// press the frames ran out under was dropped with nothing said to the reader
+// (`reaching-the-chrome.ts`, dispatch://INFRA-341).
+test("IssuePage answers a press from the chrome's own commit, however late the chrome is", async () => {
+  const user = userEvent.setup();
+  const restore = stubIssuePage(issue);
+  theFirstBatchIsAwaited(true);
+  const view = renderIssuePage("/issues/CORE-1/children");
+
+  try {
+    await screen.findByTestId("issue-header-box");
+    expect(screen.queryByRole("combobox", { name: "Status" })).toBeNull();
+
+    // Every frame any budget could have given the press passes inside the keystroke itself,
+    // where no chunk can resolve and no commit can land: the press is still owed when the
+    // header finally arrives.
+    const frames = spyOn(globalThis, "requestAnimationFrame").mockImplementation((run) => {
+      run(0);
+      return 0;
+    });
+    try {
+      await user.keyboard("s");
+    } finally {
+      frames.mockRestore();
+    }
+
+    const status = await screen.findByRole("combobox", { name: "Status" });
+    await waitFor(() => expect(document.activeElement).toBe(status));
+  } finally {
+    theFirstBatchIsAwaited(false);
+    view.unmount();
+    restore();
+  }
+});
+
+/** The issue the two rows below move to: one the reader has already read, so opening it is a
+ *  commit rather than a load and its header mounts in the commit the page they leave unmounts
+ *  in. */
+const cachedSecondIssue: IssueDetails = {
+  ...issue,
+  artifacts: [
+    { ...issue.artifacts[0], id: "artifact-2", issue_key: "CORE-2", ref_key: "CORE-2/spec" },
+  ],
+  key: "CORE-2",
+  primary_artifact_id: "artifact-2",
+  title: "Second issue",
+};
+
+// A press belongs to the issue it was made on. It can outlive that issue's chrome: on a closed
+// issue the Status pick is disabled, so `usableControl` answers null, the press finds nothing
+// and it was still owed after the header had landed. The reader then opens an issue they
+// already have, whose header mounts in the very commit this page leaves in - and React runs an
+// arriving tree's layout effects before a leaving tree's passive cleanups, so a passive
+// `forgetTheReach` let go of the press after the next issue's header had already done it: `s`
+// on closed CORE-1 put the reader in CORE-2's Status pick, and a digit would have written
+// CORE-1's priority through a pick that had refused it (dispatch://INFRA-341).
+//
+// Two things let that press go, and this row holds either of them: CORE-1's header and tab
+// strip both mount here, so `theChromeIsHere` drops the press once both have mounted past it
+// (`reaching-the-chrome.ts`), and the page forgets it in the layout phase as it leaves
+// (`IssuePage.tsx`). The row stays green with either one gone and fails only with both. The
+// drop's own job - a press kept after both parts mounted, on the same issue - is
+// `reaching-the-chrome.test.ts`'s row, and the forget's own is the row below, where nothing of
+// CORE-1 mounts to drop anything.
+test("a key pressed on one issue is not run by the next issue's header", async () => {
+  const user = userEvent.setup();
+  const closedIssue: IssueDetails = {
+    ...issue,
+    closed_at: "2026-09-10T00:00:00Z",
+    status: "done",
+  };
+  const restore = stubIssuePage(closedIssue);
+  api.getIssue = async (key: string) => (key === "CORE-2" ? cachedSecondIssue : closedIssue);
+  api.getMyState = async () => ({
+    "CORE-1": { dismissed: [], last_read_seq: 0, pinned: false, seq: 0 },
+    "CORE-2": { dismissed: [], last_read_seq: 0, pinned: false, seq: 0 },
+  });
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  // CORE-2 is already read, as it is for a reader who has been there: the move to it is a
+  // commit, not a load, and its header is in that commit.
+  queryClient.setQueryData(["issue", "CORE-2"], cachedSecondIssue);
+  theFirstBatchIsAwaited(true);
+  const view = renderIssuePage(
+    "/issues/CORE-1/children",
+    "/issues/CORE-2/children",
+    undefined,
+    queryClient
+  );
+
+  try {
+    await screen.findByTestId("issue-header-box");
+    expect(screen.queryByRole("combobox", { name: "Status" })).toBeNull();
+
+    // The press asks for the chrome, and the whole of it comes - header and tab strip. Neither
+    // takes the press: a closed issue's Status pick refuses input, so nothing was focused.
+    await user.keyboard("s");
+    const closedStatus = (await screen.findByRole("combobox", {
+      name: "Status",
+    })) as HTMLSelectElement;
+    await screen.findByTestId("issue-tabs");
+    expect(closedStatus.disabled).toBe(true);
+    expect(closedStatus).not.toHaveFocus();
+
+    // The reader opens the issue they already have.
+    const link = screen.getByRole("link", { name: "Navigate to test route" });
+    await user.click(link);
+    await screen.findByRole("heading", { level: 1, name: "Second issue" });
+
+    // CORE-2's pick takes input, and the reader is not in it: the press they made on CORE-1
+    // went with CORE-1. Focus is where their own click put it.
+    const openStatus = (await screen.findByRole("combobox", {
+      name: "Status",
+    })) as HTMLSelectElement;
+    expect(openStatus.disabled).toBe(false);
+    expect(openStatus).not.toHaveFocus();
+    expect(document.activeElement).toBe(link);
+  } finally {
+    theFirstBatchIsAwaited(false);
+    view.unmount();
+    restore();
+  }
+});
+
+// The other half of that is a press whose issue drew no chrome at all. A reader presses `s` on
+// an issue that is still loading - the press is kept, because the page is holding everything it
+// would act on - then gives up on it and opens one they already have. Nothing of CORE-1 ever
+// mounted to find the press nothing was there for, so the page itself is what lets go of it, as
+// it leaves; and it has to do that in the layout phase, because that is the phase the next
+// issue's header answers a press from. React runs an arriving tree's layout effects before a
+// leaving tree's passive cleanups, so a passive forget here was a forget that came too late
+// (`IssuePage.tsx`, dispatch://INFRA-341).
+test("a key pressed on an issue that drew no chrome leaves with that issue", async () => {
+  const user = userEvent.setup();
+  const restore = stubIssuePage(issue);
+  // CORE-1's read is the one that never comes back while the reader waits on it.
+  const core1 = Promise.withResolvers<IssueDetails>();
+  api.getIssue = async (key: string) => (key === "CORE-2" ? cachedSecondIssue : core1.promise);
+  api.getMyState = async () => ({
+    "CORE-1": { dismissed: [], last_read_seq: 0, pinned: false, seq: 0 },
+    "CORE-2": { dismissed: [], last_read_seq: 0, pinned: false, seq: 0 },
+  });
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  queryClient.setQueryData(["issue", "CORE-2"], cachedSecondIssue);
+  // An issue read before this one, so the header's chunk is in this browser already, as it is
+  // for any reader who has been on an issue: CORE-2's header then mounts in the very commit
+  // CORE-1's page unmounts in rather than a commit or two behind it.
+  const read = renderIssuePage("/issues/CORE-2/children", undefined, undefined, queryClient);
+  await screen.findByTestId("issue-header");
+  read.unmount();
+  theFirstBatchIsAwaited(true);
+  const view = renderIssuePage(
+    "/issues/CORE-1/children",
+    "/issues/CORE-2/children",
+    undefined,
+    queryClient
+  );
+
+  try {
+    expect(await screen.findByText("Loading issue…")).toBeTruthy();
+
+    // The press asks for chrome this page has no part of, and keeps asking: there is no header
+    // here to take it and none on its way.
+    await user.keyboard("s");
+    expect(screen.queryByRole("combobox", { name: "Status" })).toBeNull();
+
+    const link = screen.getByRole("link", { name: "Navigate to test route" });
+    await user.click(link);
+    await screen.findByRole("heading", { level: 1, name: "Second issue" });
+
+    // CORE-2's header is not where a press made on CORE-1 is answered, and the reader is where
+    // their own click put them.
+    expect(await screen.findByRole("combobox", { name: "Status" })).not.toHaveFocus();
+    expect(document.activeElement).toBe(link);
+  } finally {
+    core1.resolve(issue);
+    theFirstBatchIsAwaited(false);
+    view.unmount();
+    restore();
+  }
+});
+
+// A reader returning to a tab lands where they left it, which is the page moving what it draws
+// rather than the reader moving themselves: it goes through the one call that records the write
+// (`putTheBoxAt`, `features/doc/readers-place.ts`), so a landing correction armed on this page
+// goes on watching (`refocus-when-settled.ts`).
+test("a tab put back where the reader left it is the page's own move", async () => {
+  const user = userEvent.setup();
+  const restore = stubIssuePage(issue);
+  const scrollY = Object.getOwnPropertyDescriptor(window, "scrollY");
+  const scrollTo = window.scrollTo;
+  let scrolled = 0;
+  Object.defineProperty(window, "scrollY", { configurable: true, get: () => scrolled });
+  window.scrollTo = ((options?: ScrollToOptions | number, y?: number) => {
+    const top = typeof options === "number" ? y : options?.top;
+    if (top !== undefined) scrolled = top;
+  }) as typeof window.scrollTo;
+  const view = renderIssuePage("/issues/CORE-1/activity");
+
+  try {
+    await screen.findByRole("tab", { name: "Activity", selected: true });
+    // The reader reads down the activity list, then opens another tab, which starts at its own
+    // top.
+    scrolled = 700;
+    await user.click(screen.getByRole("tab", { name: "Children" }));
+    await screen.findByRole("tab", { name: "Children", selected: true });
+    scrolled = 0;
+
+    await user.click(screen.getByRole("tab", { name: "Activity" }));
+
+    await waitFor(() => expect(window.scrollY).toBe(700));
+    expect(thePageLeftItThere(null)).toBe(true);
+
+    // The reader scrolls on from there, and the correction stops.
+    scrolled = 240;
+    expect(thePageLeftItThere(null)).toBe(false);
+  } finally {
+    view.unmount();
+    restore();
+    window.scrollTo = scrollTo;
+    if (scrollY === undefined) {
+      Reflect.deleteProperty(window, "scrollY");
+    } else {
+      Object.defineProperty(window, "scrollY", scrollY);
+    }
+  }
+});
+
+// The same page drawn in a reading column - an issue opened in a pane of its own - where the
+// window's offset is a number the reader never moves. A tab's place is read down the box that
+// scrolls the page and put back down the same box (`whereTheReaderIs` and `putTheBoxAt`,
+// `features/doc/readers-place.ts`); read from the window there, every tab would be recorded at
+// the same place and every return would land at the column's top. The row above is the same
+// page on its own page, where that box is the page itself and the numbers are unchanged.
+test("a tab's place is read down the column that scrolls the page, and put back down it", async () => {
+  const user = userEvent.setup();
+  const restore = stubIssuePage(issue);
+  const scrollY = Object.getOwnPropertyDescriptor(window, "scrollY");
+  Object.defineProperty(window, "scrollY", { configurable: true, get: () => 0 });
+  // happy-dom lays nothing out, computes no overflow and scrolls nothing, so what
+  // `whatScrolls` reads to find the box - its overflow and its content standing taller than it
+  // does - is stated here, as is the scroll it keeps.
+  let scrolled = 0;
+  const column = document.createElement("div");
+  column.style.overflowY = "auto";
+  Object.defineProperty(column, "clientHeight", { configurable: true, get: () => 600 });
+  Object.defineProperty(column, "scrollHeight", { configurable: true, get: () => 10_000 });
+  Object.defineProperty(column, "scrollTop", {
+    configurable: true,
+    get: () => scrolled,
+    set: (next: number) => {
+      scrolled = next;
+    },
+  });
+  column.scrollTo = ((options?: ScrollToOptions | number, y?: number) => {
+    const top = typeof options === "number" ? y : options?.top;
+    if (top !== undefined) scrolled = top;
+  }) as typeof column.scrollTo;
+  document.body.append(column);
+  const view = renderIssuePage("/issues/CORE-1/activity");
+  column.append(view.container);
+
+  try {
+    await screen.findByRole("tab", { name: "Activity", selected: true });
+    // The reader reads down the activity list in the column, then opens another tab, which
+    // starts at its own top.
+    scrolled = 700;
+    await user.click(screen.getByRole("tab", { name: "Children" }));
+    await screen.findByRole("tab", { name: "Children", selected: true });
+    scrolled = 0;
+
+    await user.click(screen.getByRole("tab", { name: "Activity" }));
+
+    await waitFor(() => expect(column.scrollTop).toBe(700));
+    // The page the column does not move stands where it stood, and the column's own move is
+    // recorded as the page's own doing.
+    expect(window.scrollY).toBe(0);
+    expect(thePageLeftItThere(column)).toBe(true);
+
+    // The reader scrolls on from there, and the correction stops.
+    scrolled = 240;
+    expect(thePageLeftItThere(column)).toBe(false);
+  } finally {
+    view.unmount();
+    column.remove();
+    restore();
+    if (scrollY === undefined) {
+      Reflect.deleteProperty(window, "scrollY");
+    } else {
+      Object.defineProperty(window, "scrollY", scrollY);
+    }
   }
 });

@@ -16,12 +16,20 @@ import {
   textPrimaryOnSurface,
   textSecondaryOnSurface,
 } from "../../theme/classes";
-import { type IssueStatus, statusLabel } from "../project/board-model";
+import { statusText } from "../project/board-model";
 import { AgentName } from "./AgentName";
 import { type BlockItemKind, itemOfBlock } from "./block-reference";
 import { MarkdownPreview } from "./MarkdownPreview";
 import { REF_PREVIEW_CARD_ID, refPreviewCardContains } from "./ref-preview-card";
-import { REF_PREVIEW_CLOSE_DELAY_MS, REF_PREVIEW_OPEN_DELAY_MS } from "./ref-preview-timing";
+import {
+  closeRefPreview,
+  inHoverZone,
+  type PreviewTarget,
+  previewState,
+  refPreview,
+  subscribeToPreview,
+  triggerOf,
+} from "./ref-preview-state";
 import {
   artifactTextQuery,
   blockText,
@@ -32,7 +40,6 @@ import {
   useReferencePath,
 } from "./reference-target";
 import {
-  buildDispatchReference,
   type DispatchReferenceRoute,
   isProjectRoute,
   parseNodeReference,
@@ -40,133 +47,6 @@ import {
 } from "./routes";
 import { referenceTargetKind } from "./target-id";
 import { type TextSource, textSourceOf } from "./text-references";
-
-/** Every hover-card trigger: a Markdown anchor `collectReferenceAnchors` tagged, a Proof link
- * mark (`data-dispatch-href`, the sanitized mark's real target), or a React link that set
- * `data-dispatch-ref` — see `referenceTriggerProps`. */
-const TRIGGER_SELECTOR = "[data-dispatch-ref],[data-dispatch-href]";
-
-interface PreviewTarget {
-  readonly anchor: HTMLElement;
-  readonly route: DispatchReferenceRoute;
-}
-
-interface PreviewState {
-  readonly phase: "pending" | "open";
-  readonly target: PreviewTarget;
-}
-
-let state: PreviewState | undefined;
-let openTimer = 0;
-let closeTimer = 0;
-const subscribers = new Set<() => void>();
-
-/** A new target, or none, cancels both timers, so a timer's callback always acts on the target
- * that armed it and no transition has to clear them for a target change. The comparison is by
- * object identity, and `hoverStart` and `focus` mint a fresh `PreviewTarget` on every call, so
- * keyboard focus landing on the very anchor the pointer just left still cancels that anchor's
- * close. A transition that re-arms a timer on the target already shown clears it itself, which
- * is `leave` alone. */
-function setState(next: PreviewState | undefined): void {
-  if (next?.target !== state?.target) {
-    window.clearTimeout(openTimer);
-    window.clearTimeout(closeTimer);
-  }
-  state = next;
-  for (const notify of subscribers) {
-    notify();
-  }
-}
-
-/** The one hover card's controller. Module-level on purpose: "one card at a time" is a single
- * piece of state, and `RefPreviewHost` drives it from document-level listeners. Each transition
- * has a precondition its one caller checks - `hoverStart`, `leave` and `reenter` the hover zone
- * (`attachTriggers` alone judges that), `focus` `:focus-visible`, `blur` that focus is not moving
- * into the card, and the scroll handler's `reposition` that the card's anchor holds focus - so
- * all of them are private and `closeRefPreview` below is the whole outside surface. */
-const refPreview = {
-  /** Hover began on an anchor outside the hover zone: open its card after the delay unless the
-   * pointer leaves first. */
-  hoverStart(anchor: HTMLElement, route: DispatchReferenceRoute): void {
-    const target: PreviewTarget = { anchor, route };
-    setState({ phase: "pending", target });
-    openTimer = window.setTimeout(
-      () => setState({ phase: "open", target }),
-      REF_PREVIEW_OPEN_DELAY_MS
-    );
-  },
-  /** The pointer left the hover zone: a card that has not opened yet is abandoned, and an open
-   * one closes after the bridge delay unless the pointer comes back. */
-  leave(): void {
-    if (state === undefined) {
-      return;
-    }
-    if (state.phase === "pending") {
-      setState(undefined);
-      return;
-    }
-    // Re-arming on the target already shown, which `setState` does not clear for: two pointers
-    // leaving the zone within the delay must leave one close timer, not two, or the first one
-    // closes the card under the pointer that came back.
-    window.clearTimeout(closeTimer);
-    closeTimer = window.setTimeout(() => setState(undefined), REF_PREVIEW_CLOSE_DELAY_MS);
-  },
-  /** The pointer came back into the hover zone before the bridge delay ran out. */
-  reenter(): void {
-    window.clearTimeout(closeTimer);
-  },
-  /** Keyboard focus opens the card at once. */
-  focus(anchor: HTMLElement, route: DispatchReferenceRoute): void {
-    setState({ phase: "open", target: { anchor, route } });
-  },
-  blur(anchor: HTMLElement): void {
-    if (state?.target.anchor === anchor) {
-      setState(undefined);
-    }
-  },
-  /** The anchor moved (the page scrolled under a keyboard-opened card): measure it again. */
-  reposition(): void {
-    if (state !== undefined) {
-      setState({ ...state });
-    }
-  },
-};
-
-/** Close the hover card. The one operation with no precondition, so it is the one this module
- * exports: a surface that takes the pointer over (the board's drag lift) closes the card rather
- * than driving the hover transitions itself. */
-export function closeRefPreview(): void {
-  setState(undefined);
-}
-
-function subscribe(notify: () => void): () => void {
-  subscribers.add(notify);
-  return () => {
-    subscribers.delete(notify);
-  };
-}
-
-/** The attribute a React-rendered link spreads to become a hover-card trigger; the Markdown and
- * Proof surfaces carry the same attributes on the anchors they render themselves. */
-export function referenceTriggerProps(route: DispatchReferenceRoute): {
-  "data-dispatch-ref": string;
-} {
-  return { "data-dispatch-ref": buildDispatchReference(route) };
-}
-
-function triggerOf(node: EventTarget | null): HTMLElement | null {
-  return node instanceof Element ? node.closest<HTMLElement>(TRIGGER_SELECTOR) : null;
-}
-
-/** The one region the pointer may roam without closing the card: the current target's anchor -
- * the open card's, or the one a pending hover is waiting on - and the card itself. Every pointer
- * transition is judged against this predicate, in the document listeners alone, so no close
- * depends on the order in which two event systems see one `pointerout`. */
-function inHoverZone(node: EventTarget | null): boolean {
-  return (
-    state !== undefined && (triggerOf(node) === state.target.anchor || refPreviewCardContains(node))
-  );
-}
 
 /** The route a trigger names, read as a node's reference whatever the length of its target id: a
  *  `data-dispatch-ref`, which the dashboard writes for a route it already holds, or a Proof link
@@ -178,50 +58,71 @@ function routeOf(trigger: HTMLElement): DispatchReferenceRoute | undefined {
   return reference === null ? undefined : parseNodeReference(reference);
 }
 
-/** How long after the reader's last input a boundary event or a scroll still counts as theirs.
+/** How long after the reader's last input a scroll still counts as theirs.
  *  A page that moves under a still pointer - a card above the reference settling its height, a
- *  picture landing, a long body formatting - slides the anchor out from under the pointer and
- *  scrolls the page under it, and the browser reports each with no input behind it. */
+ *  picture landing, a long body formatting - scrolls the page under the pointer, and the
+ *  browser reports that scroll with no input behind it. */
 const READER_INPUT_GRACE_MS = 100;
 
 /** `event.timeStamp` of the reader's last input that moves the pointer or the page: a pointer
  *  they moved, a wheel they turned, a key they pressed, a button they put down. Module-level
- *  beside the card's own state because two document listeners judge an event by it - the one
- *  that judges a boundary event (`attachTriggers`) and the one that judges a scroll
- *  (`RefPreviewHost`) - and the two must read the same answer. */
+ *  beside the card's own state because the listener that judges a scroll (`RefPreviewHost`)
+ *  reads it while the listeners of `attachTriggers` keep it: a boundary event is judged by
+ *  whether the pointer's own position changed (`theReaderMoved`) and never by this. */
 let lastInputAt = Number.NEGATIVE_INFINITY;
-
-/** Where `element` sits in the viewport, rounded, for telling an anchor that moved from a
- *  pointer that did. */
-function placeOf(element: HTMLElement): { left: number; top: number } {
-  const box = element.getBoundingClientRect();
-  return { left: Math.round(box.left), top: Math.round(box.top) };
-}
 
 /** Delegated hover/focus triggers for every reference trigger in the document, present or
  * future — React-rendered links and the anchors inside Markdown bodies and the Proof editor
  * alike, which come and go outside React's knowledge. Returns the detach function. */
 function attachTriggers(): () => void {
-  /** Where the hovered anchor sat when the pointer came to rest on it, so a boundary event can
-   *  say which of the two moved. A card the keyboard opened has none: nothing rested on it. */
-  let anchorWas: { anchor: HTMLElement; left: number; top: number } | undefined;
-  /** The page slid an open card's zone out from under a still pointer, and the card was kept.
-   *  The reader's next movement decides it: back in the zone it stays, anywhere else it goes. */
+  /** The page took the hover zone out from under a pointer that has not moved, and the request
+   *  was kept. The reader's next movement decides it: back in the zone it stays, anywhere else
+   *  it goes. True from the start for a request this host made for a pointer it never saw
+   *  arrive (the hover chain read below), since nothing of that pointer's has been seen to
+   *  move. */
   let keptUnderAStillPointer = false;
-  /** Where the pointer last was, so a `pointermove` the reader made can be told from the one the
-   *  engine makes itself: WebKit and Firefox both dispatch a move at the pointer's own place
-   *  after the page scrolls under it, to settle `:hover` on whatever is under it now
-   *  (sjawhar/legion#2519). The reader moving is the position changing. */
+  /** Where the pointer last was, so a pointer event the reader made can be told from one the
+   *  page made for them. A `pointermove` the engine sends itself is at the place the reader
+   *  left the pointer: WebKit and Firefox both send one after the page scrolls under it, to
+   *  settle `:hover` on whatever is under it now (sjawhar/legion#2519). A boundary event is the
+   *  same: the browser dispatches the pair at the pointer's own place when the page takes an
+   *  element out from under it, and at the new place - the one the `pointermove` right behind
+   *  it carries - when the reader moves away. The reader moving is the position changing. */
   let pointerWas: { x: number; y: number } | undefined;
-  /** Anything the reader did that moves the pointer or the page, so neither a boundary event nor
-   *  a scroll after it is read as the page moving by itself: a wheel they turned, a key they
-   *  pressed (a space or an arrow scrolls), a button they put down (a drag of the scrollbar). */
+  const theReaderMoved = (event: PointerEvent): boolean =>
+    pointerWas === undefined || event.clientX !== pointerWas.x || event.clientY !== pointerWas.y;
+  /** Whether `anchor` is what the pointer is on, asked the moment a request's delay runs out
+   *  and again on the movements after that. A request is kept through whatever the page does
+   *  to it (`onPointerOut`), so by the time the delay is up the reference may be anywhere: slid
+   *  out from under the reader, or under a dialog, the inbox peek or a menu the page opened
+   *  across it. A card drawn then previews a link that is not under their pointer, over
+   *  whatever is - so it waits for them instead, pending rather than dropped.
+   *
+   *  Both halves are asked: the box, that the reference is where the pointer is, and
+   *  `elementFromPoint`, that nothing of the page's stands over it there. Where this host has
+   *  never seen the pointer there is no place to ask about, and the card opens as it always
+   *  did - a pointer that rested on the reference before this host existed is on it by the
+   *  browser's own reckoning, which is what the hover chain read below has just said. */
+  const thePointerIsOn = (anchor: HTMLElement): boolean => {
+    if (pointerWas === undefined) {
+      return true;
+    }
+    const { x, y } = pointerWas;
+    const box = anchor.getBoundingClientRect();
+    if (x < box.left || x > box.right || y < box.top || y > box.bottom) {
+      return false;
+    }
+    const at = document.elementFromPoint(x, y);
+    return at !== null && (at === anchor || anchor.contains(at));
+  };
+  /** Anything the reader did that moves the pointer or the page, so a scroll after it is not
+   *  read as the page moving by itself: a wheel they turned, a key they pressed (a space or an
+   *  arrow scrolls), a button they put down (a drag of the scrollbar). */
   const onReaderInput = (event: Event) => {
     lastInputAt = event.timeStamp;
   };
   const onPointerMove = (event: PointerEvent) => {
-    const moved =
-      pointerWas === undefined || event.clientX !== pointerWas.x || event.clientY !== pointerWas.y;
+    const moved = theReaderMoved(event);
     pointerWas = { x: event.clientX, y: event.clientY };
     if (!moved) {
       // The engine's own move, at the place the reader left the pointer: it says only that the
@@ -229,13 +130,18 @@ function attachTriggers(): () => void {
       return;
     }
     lastInputAt = event.timeStamp;
-    if (!keptUnderAStillPointer) {
-      return;
+    if (keptUnderAStillPointer) {
+      keptUnderAStillPointer = false;
+      if (!inHoverZone(event.target)) {
+        refPreview.leave();
+        return;
+      }
     }
-    keptUnderAStillPointer = false;
-    if (!inHoverZone(event.target)) {
-      refPreview.leave();
-    }
+    // The movement that decides a request left standing when its delay ran out somewhere the
+    // reader was not pointing: where the reference is what they are on now, it waits that
+    // delay again from here - arriving on a reference from over something else is the hover
+    // the delay exists to tell from a reader passing through.
+    refPreview.startTheDelayAgain(thePointerIsOn);
   };
   const onPointerOver = (event: PointerEvent) => {
     // Inside the zone there is nothing to open: a pointer arriving from outside it only cancels
@@ -259,33 +165,69 @@ function attachTriggers(): () => void {
     const route = routeOf(trigger);
     if (route !== undefined) {
       keptUnderAStillPointer = false;
-      anchorWas = { anchor: trigger, ...placeOf(trigger) };
-      refPreview.hoverStart(trigger, route);
+      refPreview.hoverStart(trigger, route, thePointerIsOn);
     }
   };
   const onPointerOut = (event: PointerEvent) => {
     if (!inHoverZone(event.target) || inHoverZone(event.relatedTarget)) {
       return;
     }
-    // A card the reader is reading is not taken away because the page moved: where the anchor
-    // has slid out from under a pointer that never moved - a card above it settling its height,
-    // a picture landing, a long body formatting - the card stays, measured where the anchor is
-    // now, until the reader themselves moves away. The reader leaving is the reader doing
-    // something, and that is what tells the two apart. A hover that has not opened yet is
-    // abandoned as before: there is nothing on screen to protect.
-    const anchor = state?.phase === "open" ? state.target.anchor : undefined;
+    // A card the reader asked for is not taken away because the page moved: where the hover
+    // zone has slid out from under a pointer that never moved - a card above it settling its
+    // height, a picture landing, a long body formatting, the issue page's own header, tab strip
+    // and margin landing over the body they are pointing at - the card stays, measured where
+    // the anchor is now, until the reader themselves moves away.
+    //
+    // A hover still waiting out its delay is kept on the same terms as a card already drawn,
+    // because what is kept is the reader's request rather than the pixels it has put on the
+    // screen: they pointed at the reference and held still, and the page moved it out from
+    // under them before the delay was up. Abandoning it ended the hover for good - the pointer
+    // never moved, so no crossing is coming to start a second one, and the card the reader
+    // asked for never opened at all. That is `e2e/heavy-bodies.e2e.ts`'s hover card of a
+    // comment of 8,000 list items: the page whose body is slow enough to be worth a card is the
+    // page still drawing its header, its tab strip and its margin when the pointer reaches the
+    // reference, and in CI's runner all three land inside the delay (run 42597442001, red in
+    // chromium, firefox and webkit alike). `reposition` keeps the pending target, so the delay
+    // runs on and the card opens where the anchor is now.
+    //
+    // THE POINTER'S OWN PLACE IS WHAT SAYS WHICH OF THE TWO MOVED, and it is the only thing
+    // here that may say it. A clock cannot: a reader reaches a reference by moving onto it, so
+    // their own last movement is always milliseconds old when the page slides it away, and
+    // reading that arrival as a departure closed the card on the ordinary conversation page in
+    // CI's container, deterministically and on both attempts (run 42628596511, shard 2,
+    // `e2e/hover-preview.e2e.ts:72`). The ANCHOR'S MEASURED BOX cannot either: it says the page
+    // moved only while the page is still moving it, and a request made for an anchor the page
+    // has already moved - this host's chunk mounting in the very commit that lands the header,
+    // which is where run 42743455211's one red attempt of that row left it: the card's own
+    // reads went out 57 ms after the hover action, in the commit that landed the issue header
+    // and the margin and took the anchor 11 px up from under a pointer resting at its middle,
+    // leaving it 3 px below the reference, and no card ever opened - measures the same box
+    // twice and reads the page's own boundary event as the reader leaving.
+    //
+    // So the question asked is the reader's: the boundary event carries the pointer's place,
+    // and the page moving the zone away leaves that place exactly where the reader's last
+    // movement left it. `keptUnderAStillPointer` is the correction - their next movement closes
+    // a request kept over nothing, and a movement is what their own leaving always sends, since
+    // the browser dispatches the move at the new place after the boundary pair. A boundary
+    // event with nothing on the other side is not the page moving at all: the pointer has left
+    // the window, or the anchor has left the document, and the request goes with it.
+    //
+    // An open card is kept on one further condition: the reference is still what the pointer is
+    // on. A page that draws something over it - the palette's `fixed inset-0` backdrop, opened
+    // from the keyboard under a resting pointer - sends exactly this boundary pair with the new
+    // layer as its `relatedTarget`, and the card kept then stands above the dialog the reader
+    // asked for, taking the first Escape from it (dispatch://INFRA-341). `thePointerIsOn` asks
+    // both halves, the box and what is painted at that point, which is what tells the page
+    // moving the reference from the page covering it.
+    const kept = previewState();
     if (
-      anchor !== undefined &&
-      anchorWas?.anchor === anchor &&
-      event.timeStamp - lastInputAt > READER_INPUT_GRACE_MS
+      event.relatedTarget !== null &&
+      (keptUnderAStillPointer || !theReaderMoved(event)) &&
+      (kept?.phase !== "open" || thePointerIsOn(kept.target.anchor))
     ) {
-      const place = placeOf(anchor);
-      if (place.left !== anchorWas.left || place.top !== anchorWas.top) {
-        anchorWas = { anchor, ...place };
-        keptUnderAStillPointer = true;
-        refPreview.reposition();
-        return;
-      }
+      keptUnderAStillPointer = true;
+      refPreview.reposition();
+      return;
     }
     refPreview.leave();
   };
@@ -318,6 +260,40 @@ function attachTriggers(): () => void {
   document.addEventListener("wheel", onReaderInput, { capture: true, passive: true });
   document.addEventListener("keydown", onReaderInput, { capture: true, passive: true });
   document.addEventListener("pointerdown", onReaderInput, { capture: true, passive: true });
+  // The reader may already be on a trigger when these go up. This host is loaded beside the
+  // route rather than in the entry chunk (`features/shell/deferred-shell.ts`) and mounted once
+  // the route is drawn (`app.tsx`), so a page draws its references - and takes the reader's
+  // pointer and their focus - before the listeners above exist. Neither a pointer resting on a
+  // reference nor a focus already on one has a second event coming: the `pointerover` and the
+  // `focusin` that put them there fired before this call, and a reader who holds still waits on
+  // a card that never opens. A long body is where that window is widest, since the page the
+  // reader is pointing at is the one keeping this chunk waiting
+  // (`e2e/heavy-bodies.e2e.ts`'s hover card of a comment of 8,000 list items).
+  //
+  // So both are read where the browser keeps them: the hover chain, whose innermost element is
+  // what the pointer is over, and `document.activeElement`. The pointer is read only where one
+  // hovers at all - a touch screen leaves `:hover` on the last thing tapped, and a tap follows
+  // the link rather than opening a card - and it opens on the delay a crossing would have
+  // opened on, so a pointer merely passing over the reference is abandoned by its own
+  // `pointerout` exactly as ever.
+  if (window.matchMedia("(hover: hover)").matches) {
+    const hovered = document.querySelectorAll<HTMLElement>(":hover");
+    const resting = triggerOf(hovered.length === 0 ? null : hovered[hovered.length - 1]);
+    const restingRoute = resting === null ? undefined : routeOf(resting);
+    if (resting !== null && restingRoute !== undefined) {
+      // Nothing of this pointer has been seen to move, so the page taking the reference out
+      // from under it before the reader moves is the page's doing (`onPointerOut`).
+      keptUnderAStillPointer = true;
+      refPreview.hoverStart(resting, restingRoute, thePointerIsOn);
+    }
+  }
+  const focused = triggerOf(document.activeElement);
+  if (focused?.matches(":focus-visible") === true) {
+    const route = routeOf(focused);
+    if (route !== undefined) {
+      refPreview.focus(focused, route);
+    }
+  }
   return () => {
     document.removeEventListener("pointermove", onPointerMove);
     document.removeEventListener("pointerover", onPointerOver);
@@ -382,7 +358,7 @@ function IssuePreview({ route }: { route: DispatchReferenceRoute }): ReactNode {
         <span className={`ml-2 font-normal ${textPrimaryOnSurface}`}>{issue.title}</span>
       </Heading>
       <span className="mt-2 flex flex-wrap items-center gap-2">
-        <StatusPill>{statusLabel(issue.status as IssueStatus)}</StatusPill>
+        <StatusPill>{statusText(issue.status)}</StatusPill>
         {issue.priority === null ? null : (
           // Read-only on purpose: the card is a tooltip whose body is one link, so the editable
           // `PriorityControl` every other surface uses cannot live inside it.
@@ -646,7 +622,7 @@ function PreviewCard({ target }: { target: PreviewTarget }): ReactNode {
  * the anchor holds keyboard focus (focusing it may itself scroll it into view), in which case
  * the card follows the anchor instead. */
 export function RefPreviewHost(): ReactNode {
-  const current = useSyncExternalStore(subscribe, () => state);
+  const current = useSyncExternalStore(subscribeToPreview, previewState);
   const queryClient = useQueryClient();
 
   useEffect(() => {
@@ -655,7 +631,7 @@ export function RefPreviewHost(): ReactNode {
     // layer, so Escape dismisses it alone and leaves the dialog beneath (the search palette)
     // open. With no open card the key passes through untouched.
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && state?.phase === "open") {
+      if (event.key === "Escape" && previewState()?.phase === "open") {
         event.stopPropagation();
         closeRefPreview();
       }
@@ -664,7 +640,8 @@ export function RefPreviewHost(): ReactNode {
     // comes to rest on a link while the page is still settling (smooth scrolling, a
     // scrollIntoView), and the card is measured fresh when it opens anyway.
     const onScroll = (event: Event) => {
-      if (state?.phase !== "open") {
+      const open = previewState();
+      if (open?.phase !== "open") {
         return;
       }
       // The card follows its anchor rather than closing where the reader did nothing to move the
@@ -678,7 +655,7 @@ export function RefPreviewHost(): ReactNode {
       // leaving the zone closes the card itself. An anchor that holds keyboard focus keeps its
       // card either way: focusing it may itself scroll it into view.
       if (
-        document.activeElement === state.target.anchor ||
+        document.activeElement === open.target.anchor ||
         event.timeStamp - lastInputAt > READER_INPUT_GRACE_MS
       ) {
         refPreview.reposition();

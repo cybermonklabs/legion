@@ -29,6 +29,15 @@ const test = stubbed(async () => {
   await createProject({ key: "CORE", name: "Core" });
   await createProject({ key: "OPS", name: "Operations" });
   const issue = async (title: string) => (await createIssue({ project: "CORE", title })).key;
+  // The one issue with a document long enough to scroll its own page at 600 px, for the row
+  // that reads where the page stands while the palette is open over it.
+  const tall = await createIssue({
+    project: "CORE",
+    spec: Array.from({ length: 40 }, (_, index) => `Paragraph ${index + 1} of the spec.`).join(
+      "\n\n"
+    ),
+    title: "Page behind the palette",
+  });
   return {
     astrolabe: await issue("Astrolabe calibration"),
     compactMargin: await issue("Compact margin"),
@@ -36,6 +45,7 @@ const test = stubbed(async () => {
     failedSearch: await issue("Failed palette search"),
     longList: await issue("Long list"),
     openers: await issue("Openers"),
+    pageBehind: tall.key,
     panels: await issue("Panel toggles"),
     project: "CORE",
     railSearch: await issue("Rail search"),
@@ -581,4 +591,44 @@ test("a window that shrinks under an open palette keeps the highlighted row in v
   // No key is pressed after the resize: the list itself brings the row back into view.
   await page.setViewportSize({ height: 420, width: 1440 });
   await expect(active).toBeInViewport({ ratio: 1 });
+});
+
+test("the arrows scroll the palette's own list and leave the page behind it where it stood @pr", async ({
+  page,
+  scene,
+}) => {
+  // Under 1280px the page holds its own last 5rem clear of whatever a scroll lands content in
+  // (`html { scroll-padding-bottom: 5rem }`, web/src/styles.css, which keeps the fixed review
+  // sheet's height clear). The palette's list is inside its `fixed` wrapper
+  // (`fixed inset-x-0 top-12 bottom-0`, web/src/features/search/SearchPalette.tsx), and at a
+  // window this short the dialog can no longer hold its own foot above that band: measured in
+  // Chromium at 1024x300, the highlighted row rests with its bottom edge at 299, where the
+  // page's placing port ends at 220, so the page's own delta for that row is 79 px and not
+  // zero. No scroll of the page moves a fixed box, so a page scrolled for that row would leave
+  // it exactly where it stood and be asked for the same move again on the next arrow press and
+  // on every `ResizeObserver` call the palette makes (`placeInView`,
+  // web/src/features/doc/readers-place.ts).
+  await page.setViewportSize({ height: 300, width: 1024 });
+  await openIssue(page, scene.pageBehind, "Page behind the palette");
+  const stoodAt = await page.evaluate(() => {
+    window.scrollTo(0, 400);
+    return window.scrollY;
+  });
+  // The page this row needs: one with somewhere to scroll to, so a scroll written to it shows.
+  expect(stoodAt).toBe(400);
+
+  await page.keyboard.press("Control+k");
+  const dialog = page.getByRole("dialog", { name: "Search" });
+  const input = page.getByRole("combobox", { name: "Search" });
+  await expect(dialog.getByRole("group", { name: "Actions" })).toBeVisible();
+  // Down past the foot of the list, which is where the palette places the highlighted row by
+  // its own scroll and where the page's own delta for it stops being zero.
+  for (let step = 0; step < 14; step += 1) {
+    await input.press("ArrowDown");
+    const active = page.locator(`[id="${await input.getAttribute("aria-activedescendant")}"]`);
+    await expect(active).toBeInViewport({ ratio: 1 });
+  }
+
+  // The reader's own place on the page under the palette, untouched by placing a row of it.
+  expect(await page.evaluate(() => window.scrollY)).toBe(stoodAt);
 });

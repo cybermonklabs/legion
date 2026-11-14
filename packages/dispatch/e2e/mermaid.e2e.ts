@@ -27,6 +27,7 @@ import {
   failMermaidWorkersOnCall,
   holdMermaidWorkers,
   holdWorkerSource,
+  openCommentThread,
   recordMermaidWorkers,
   settledScrollTop,
   withoutScrollAnchoring,
@@ -58,40 +59,23 @@ const session = {
 };
 
 /** A document of `lead`, a vertical flowchart of 21 nodes in a chain (drawn taller than any
- *  project's viewport), 30 filler paragraphs and then the paragraph `target`, so `target` sits
- *  below the viewport when the page opens and the drawn diagram pushes it further down. */
+ *  project's viewport), 12 filler paragraphs and then the paragraph `target`, so `target` sits
+ *  below the viewport when the page opens and the drawn diagram pushes it further down.
+ *
+ *  Twelve rather than thirty: a diagram is drawn only once it is within one viewport height of
+ *  the reader (`MERMAID_DRAW_MARGIN`, dispatch://INFRA-341 requirement R11), and a link that
+ *  scrolls its target to the middle of the viewport leaves a diagram thirty paragraphs above it
+ *  outside that margin, where no reader of this page ever sees it and nothing draws it. These
+ *  rows are about where the link lands once a diagram above it draws, so the diagram has to be
+ *  one a reader at the target would be shown. */
 function tallDocument(lead: string, target: string): string {
   const chain = Array.from({ length: 20 }, (_, node) => `  n${node} --> n${node + 1}`);
-  const filler = Array.from({ length: 30 }, (_, index) => `Filler paragraph ${index + 1}.`);
+  const filler = Array.from({ length: 12 }, (_, index) => `Filler paragraph ${index + 1}.`);
   return `${lead}\n\n\`\`\`mermaid\ngraph TD\n${chain.join("\n")}\n\`\`\`\n\n${filler.join("\n\n")}\n\n${target}\n`;
 }
 
 function diagramIn(card: Locator): Locator {
   return card.getByRole("img", { exact: true, name: diagramName });
-}
-
-function conversationTurns(page: Page): Locator {
-  return page.getByRole("list", { name: "Conversation turns" });
-}
-
-/** The comment thread `rootId` opened in the Conversation, where its bodies render in full
- *  rather than as the collapsed card's preview. The turn shows `lead`, the root comment's first
- *  text, before it is expanded, so the click lands on a turn that has rendered. */
-async function openCommentThread(page: Page, rootId: string, lead: string): Promise<Locator> {
-  const turn = conversationTurns(page).locator(`:scope > li[data-turn="comment:${rootId}"]`);
-  await expect(turn).toContainText(lead);
-  const expand = turn.getByRole("button", { exact: true, name: "Expand thread" });
-  const opened = turn.getByRole("button", { exact: true, name: "Collapse thread" });
-  // Retried for the reason the reader's click on `Mermaid source` is below: the page moves
-  // while the turn's diagrams draw, so a click can land on whatever slid under the pointer and
-  // the thread never opens. Measured here on firefox, where the expand click was lost and the
-  // row waited out its budget for a `Collapse thread` that never appeared. The expand button is
-  // gone once the thread is open, so the retry clicks only while it is still there.
-  await expect(async () => {
-    if (await expand.isVisible()) await expand.click();
-    await expect(opened).toBeVisible({ timeout: 1_000 });
-  }).toPass({ timeout: 5_000 });
-  return turn;
 }
 
 /** Both halves of the control: `card` shows the drawn diagram holding `labels`, and its source
@@ -287,7 +271,7 @@ async function expectNothingHostile(
 // @pr: The diagram family's one row on the lane: a mermaid block in a comment draws, with its source behind Mermaid source.
 test("a comment holding a mermaid block draws a diagram, its source behind Mermaid source @pr", async ({
   browser,
-}) => {
+}, testInfo) => {
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "Comment diagram" });
   const comment = await createComment(issue.key, { body: flowchart("Flow:", "Start", "Finish") });
@@ -296,7 +280,7 @@ test("a comment holding a mermaid block draws a diagram, its source behind Merma
   try {
     const page = await alice.newPage();
     await page.goto(`/issues/${issue.key}/conversation`);
-    const card = await openCommentThread(page, comment.id, "Flow:");
+    const card = await openCommentThread(page, testInfo, comment.id, "Flow:");
     await expect(card).toContainText("Flow:");
     await expectDrawnDiagram(card, ["Start", "Finish"]);
   } finally {
@@ -318,7 +302,7 @@ test("a comment holding a mermaid block draws a diagram, its source behind Merma
 // credential is refused on an edit.
 test("a mermaid source a reader opened is open again when the comment is edited, and an edited diagram draws closed", async ({
   browser,
-}) => {
+}, testInfo) => {
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "Reopened source" });
   const drawn = await createComment(issue.key, {
@@ -331,7 +315,7 @@ test("a mermaid source a reader opened is open again when the comment is edited,
   try {
     const page = await alice.newPage();
     await page.goto(`/issues/${issue.key}/conversation`);
-    const card = await openCommentThread(page, drawn.id, "Reading this:");
+    const card = await openCommentThread(page, testInfo, drawn.id, "Reading this:");
     // Both halves of the control, ending in the reader's one click: the source is open.
     await expectDrawnDiagram(card, ["Opened", "Kept"]);
     const source = card.getByText("graph TD");
@@ -353,7 +337,7 @@ test("a mermaid source a reader opened is open again when the comment is edited,
     await expect(source).toBeHidden();
 
     // A source the renderer refuses is readable at once on every paint of it, edit or no edit.
-    const broken = await openCommentThread(page, refused.id, "Broken:");
+    const broken = await openCommentThread(page, testInfo, refused.id, "Broken:");
     const brokenSource = broken.locator("pre code").filter({ hasText: "A -->" });
     await expect(brokenSource).toBeVisible();
     await editComment(refused.id, { body: `Broken, still:\n\n${brokenFence}` });
@@ -374,7 +358,7 @@ test("a mermaid source a reader opened is open again when the comment is edited,
 // advanced clock would make a sample read its deadline for free.
 test("a diagram too large to draw in time shows the reason, and the page keeps responding", async ({
   browser,
-}) => {
+}, testInfo) => {
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "Large diagram" });
   const comment = await createComment(issue.key, { body: flowchart("Large:", "Start", "Finish") });
@@ -385,7 +369,7 @@ test("a diagram too large to draw in time shows the reason, and the page keeps r
     const holds = await holdWorkerSource(page);
     await page.clock.install();
     await page.goto(`/issues/${issue.key}/conversation`);
-    const card = await openCommentThread(page, comment.id, "Large:");
+    const card = await openCommentThread(page, testInfo, comment.id, "Large:");
     await expect(card).toContainText("Large:");
     const refusal = card
       .getByRole("status")
@@ -501,7 +485,7 @@ test("a document's mermaid diagram draws, styles nothing outside it, and fetches
 
 test("hostile diagram markup in a comment runs nothing and fetches nothing", async ({
   browser,
-}) => {
+}, testInfo) => {
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "Hostile comment diagram" });
   const comment = await createComment(issue.key, {
@@ -514,7 +498,7 @@ test("hostile diagram markup in a comment runs nothing and fetches nothing", asy
     const page = await alice.newPage();
     await feedHostileSvg(page);
     await page.goto(`/issues/${issue.key}/conversation`);
-    const card = await openCommentThread(page, comment.id, "Hostile:");
+    const card = await openCommentThread(page, testInfo, comment.id, "Hostile:");
     await expectNothingHostile(page, card, card.locator(".dispatch-mermaid-preview"), requested);
   } finally {
     await alice.close();

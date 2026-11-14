@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import * as Y from "yjs";
 
-import { bindRemoteMarks, createEditor, editorAttributes, type StoredMark } from "./editor";
+import { bindRemoteMarks, constructEditor, editorAttributes, type StoredMark } from "./editor";
 import { blockSchemaCache } from "./schema";
 
 test("editorAttributes expose the editor as a multiline textbox", () => {
@@ -47,16 +47,19 @@ test("bindRemoteMarks keeps an accepted suggestion's text when its projection ar
   const { browser, server } = linkedDocs();
   const root = document.body.appendChild(document.createElement("div"));
   const blockSchema = await blockSchemaCache.load(() => Promise.reject(new Error("no schema")));
-  const handle = await createEditor(root, {
-    awareness: null,
-    blockSchema,
-    // This row reads the marks binding, never the document's decision blocks.
-    onAskBlockHosts: () => {},
-    // No picture in this row's document, so nothing ever asks for a latest version.
-    watchPicture: () => () => {},
-    user: { color: "#f59e0b", name: "alice" },
-    ydoc: browser,
-  });
+  // The document is in hand, so the two phases run back to back (`constructEditor`).
+  const handle = await (
+    await constructEditor(root, {
+      awareness: null,
+      blockSchema,
+      // This row reads the marks binding, never the document's decision blocks.
+      onAskBlockHosts: () => {},
+      // No picture in this row's document, so nothing ever asks for a latest version.
+      watchPicture: () => () => {},
+      user: { color: "#f59e0b", name: "alice" },
+      ydoc: browser,
+    })
+  ).bind();
   let unbind = () => {};
   try {
     // The document holds a pending suggestion anchored on "brown", as the server leaves it.
@@ -83,6 +86,40 @@ test("bindRemoteMarks keeps an accepted suggestion's text when its projection ar
     expect(text.toString()).toBe("The quick red fox");
   } finally {
     unbind();
+    handle.destroy();
+    root.remove();
+  }
+});
+
+// A document is not a body: INFRA-341's raw-HTML policy is a parse option its body renderers
+// pass and the document path does not, so an HTML comment in a document is a node of it and is
+// written back exactly as its author typed it. A document that lost one on every save would lose
+// what it holds for a reader who never sees it.
+test("a document keeps an inline HTML comment byte for byte when another block is edited", async () => {
+  const root = document.body.appendChild(document.createElement("div"));
+  const blockSchema = await blockSchemaCache.load(() => Promise.reject(new Error("no schema")));
+  const handle = await (
+    await constructEditor(root, {
+      awareness: null,
+      blockSchema,
+      // This row reads what a save writes back, never the document's decision blocks.
+      onAskBlockHosts: () => {},
+      // No picture in this row's document, so nothing ever asks for a latest version.
+      watchPicture: () => () => {},
+      user: { color: "#f59e0b", name: "alice" },
+      ydoc: new Y.Doc(),
+    })
+  ).bind();
+  try {
+    handle.setMarkdown("Held <!-- legion: keep me --> here.\n\nThe second block.\n");
+    const { state } = handle.view;
+    // The edit is elsewhere: the last word of the other block.
+    handle.view.dispatch(state.tr.insertText(" today", state.doc.content.size - 2));
+
+    expect(handle.getMarkdown()).toBe(
+      "Held <!-- legion: keep me --> here.\n\nThe second block today.\n"
+    );
+  } finally {
     handle.destroy();
     root.remove();
   }

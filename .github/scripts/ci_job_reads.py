@@ -782,7 +782,7 @@ BROWSER_BINARIES_STEP = "Build the binaries the browser suite runs"
 BROWSER_BINARIES_SCRIPT = """\
 mkdir -p "$RUNNER_TEMP/dispatch-e2e-bin"
 CGO_ENABLED=0 go build -o "$RUNNER_TEMP/dispatch-e2e-bin/" ./cmd/dispatch ./cmd/broker ./cmd/dev-oidc-issuer ./internal/broker/brokertest/requestseed"""
-BROWSER_SHARD_SPECS = "Browser-test dispatch dashboard (shard ${{ matrix.shard }} of 4)"
+BROWSER_SHARD_SPECS = "Browser-test dispatch dashboard (shard ${{ matrix.shard }} of 5)"
 BROWSER_ALONE_SPECS = "Browser-test dispatch dashboard (${{ matrix.project }})"
 BROWSER_MP_SPECS = "Browser-test dispatch dashboard against two server processes"
 BROWSER_MP_SIGNIN = "Browser-test a sign-in across two server processes"
@@ -1106,7 +1106,7 @@ GATES = [
     # The dashboard's and the proof editor's fast checks (ci.yaml's comment on dispatch-ui says
     # what they are). No go command runs here.
     gate("dispatch_ui", "dispatch-ui", reads=reads(
-        ("packages/dispatch/**", f"{at('dispatch-ui', 'Lint dispatch dashboard')}, typecheck, test, build, check:classes and check:asset-sizes in packages/dispatch"),
+        ("packages/dispatch/**", f"{at('dispatch-ui', 'Lint dispatch dashboard')}, typecheck, test, build, check:classes, check:asset-sizes, check:entry-chunk and check:no-zod in packages/dispatch"),
         ("packages/proof-editor/**", f"{at('dispatch-ui', 'Lint proof editor')}, typecheck and test; packages/dispatch/web/vite.config.ts:127-147"),
         (CONTRACTS_SRC, 'packages/dispatch/web/vite.config.ts:117-126 aliases; tsc and bun read @legion/contracts through its "bun" export condition (src/)'),
         (f"{FIX}/live/**", "packages/dispatch/web/src/features/delivery/lib/applyDelta.test.ts:2-4, e2e/__tests__/delivery-live-probe.test.ts:8-12"),
@@ -1121,7 +1121,7 @@ GATES = [
         (TEST_FIXTURES_SRC, f"packages/dispatch's web and e2e/__tests__ suites import @legion/test-fixtures, and {at('dispatch-ui', 'Test dispatch dashboard')} runs them; packages/proof-editor/tests/build-upstream-tarball.test.ts imports its temporary-directories fixture, and {at('dispatch-ui', 'Test proof editor')} runs it"),
     ) + biome(at("dispatch-ui", "Lint dispatch dashboard")) + bun_job("dispatch-ui") + CI_SELF),
 
-    # The browser suite, every row of it: the binaries job, the shard legs, the three `-alone`
+    # The browser suite, every row of it: the binaries job, the shard legs, the six `-alone`
     # projects, the two-process job, the visual job and the merge job, all in
     # dispatch-browser.yaml, which ci.yaml's dispatch-browser job and the nightly both call
     # (at_browser cites their steps).

@@ -68,11 +68,14 @@
         "!packages/proof-editor/src/collab-cursor-plugin.ts",
         "!packages/proof-editor/src/editor-highlights.ts",
         "!packages/proof-editor/src/editor/schema/uuid.ts",
+        "!packages/proof-editor/src/caret-after-typing.ts",
         "!packages/proof-editor/src/trailing-newline-input.ts",
         "!packages/proof-editor/src/record-mark-history.ts",
         "!packages/proof-editor/src/record-mark-retype.ts",
         "!packages/proof-editor/src/record-mark-target.ts",
         "!packages/proof-editor/src/block-pointers.ts",
+        "!packages/proof-editor/src/progressive-build.ts",
+        "!packages/proof-editor/src/raw-html.ts",
         "!packages/proof-editor/src/read-only-directives.ts",
         "!packages/proof-editor/src/directive-container.ts",
         "!packages/proof-editor/src/mermaid-svg.ts",
@@ -99,6 +102,16 @@
               "options": {
                 "paths": {
                   "@legion/contracts": {
+                    "importNames": [
+                      "actorAttribution",
+                      "actorLabel",
+                      "actorName",
+                      "sessionLabel",
+                      "shortSessionId"
+                    ],
+                    "message": "An agent is shown only through features/refs/AgentName.tsx (AgentName, or useAgentText for an attribute or other plain string)."
+                  },
+                  "@legion/contracts/actor-label": {
                     "importNames": [
                       "actorAttribution",
                       "actorLabel",
@@ -140,6 +153,16 @@
               "options": {
                 "paths": {
                   "@legion/contracts": {
+                    "importNames": [
+                      "actorAttribution",
+                      "actorLabel",
+                      "actorName",
+                      "sessionLabel",
+                      "shortSessionId"
+                    ],
+                    "message": "An agent is shown only through features/refs/AgentName.tsx (AgentName, or useAgentText for an attribute or other plain string)."
+                  },
+                  "@legion/contracts/actor-label": {
                     "importNames": [
                       "actorAttribution",
                       "actorLabel",

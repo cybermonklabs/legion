@@ -3,6 +3,7 @@ import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import type { DeliveryPR } from "../../api/types";
+import { thePageLeftItThere } from "../doc/readers-place";
 import { OVERSCAN_ROWS, ROW_HEIGHT_PX, scrollTopToShowRow, visibleRowRange } from "./lib/prList";
 import { PRList } from "./PRList";
 
@@ -157,5 +158,38 @@ test("a deployed row's 'deployed' opens its deploy run, and the row's own click 
     expect(opened).toEqual([]);
   } finally {
     cleanup();
+  }
+});
+
+test("the list scrolling to the row it arrowed to is the page's own move", async () => {
+  const user = userEvent.setup();
+  const innerHeight = window.innerHeight;
+  window.innerHeight = 10 * ROW_HEIGHT_PX;
+  try {
+    renderList(prs(200));
+    const box = screen.getByRole("table").parentElement;
+    if (box === null) throw new Error("the list's own box is missing");
+    expect(thePageLeftItThere(box)).toBe(false);
+
+    // Arrowing past the last row on screen scrolls the list by as much as it takes to show the
+    // next one. That is the page moving what it draws, written through the one call that
+    // records it (`putTheBoxAt`, `features/doc/readers-place.ts`), so a landing correction
+    // watching the same box goes on watching rather than reading the list's own scroll as the
+    // reader taking it over (`refocus-when-settled.ts`).
+    document.querySelector<HTMLElement>("tbody tr[aria-rowindex]")?.focus();
+    for (let i = 0; i < 11; i += 1) {
+      await user.keyboard("{ArrowDown}");
+    }
+
+    // Three rows down: the eleventh row arrowed to stands below a viewport of ten and a header.
+    expect(box.scrollTop).toBe(ROW_HEIGHT_PX * 3);
+    expect(thePageLeftItThere(box)).toBe(true);
+
+    // A scrollbar drag of the reader's own: the box stands where the page did not leave it.
+    box.scrollTop = 900;
+    expect(thePageLeftItThere(box)).toBe(false);
+  } finally {
+    cleanup();
+    window.innerHeight = innerHeight;
   }
 });

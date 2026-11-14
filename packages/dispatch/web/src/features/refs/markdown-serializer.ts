@@ -5,7 +5,7 @@ import { DOMSerializer, Schema } from "prosemirror-model";
 import type { BlockSchema } from "../../api/types";
 import type { MarkdownEngine, RenderSpecWithAttrs } from "./markdown-engine";
 import type { DocumentJSON } from "./markdown-parse.worker";
-import { buildDispatchReference, buildReferencePath, pictureReference } from "./routes";
+import { buildDispatchReference, pictureReference, safeReferencePath } from "./routes";
 
 /**
  * The half of the Markdown engine written against ProseMirror's own classes, behind the same
@@ -51,12 +51,18 @@ function pictureSerializer(schema: Schema): DOMSerializer {
         if (named === undefined) {
           return ["a", { href: picture.source }];
         }
+        // The picture's address is the body's own text, so the path goes into the href only as
+        // a path of this app; one no such path is built from draws as the picture it is.
+        const path = safeReferencePath(route);
+        if (path === undefined) {
+          return image(node);
+        }
         return [
           "a",
           {
             "data-dispatch-picture": buildDispatchReference(route),
             "data-picture-caption": picture.caption,
-            href: buildReferencePath(route),
+            href: path,
           },
         ];
       },
@@ -111,9 +117,9 @@ export function buildEngine(proof: HeadlessProofEditor, blockSchema: BlockSchema
         return undefined;
       }
     },
-    parse(markdown, softBreaks = "space") {
+    parse(markdown, softBreaks = "space", rawHtml = "refuse") {
       try {
-        return proof.parseMarkdown(markdown, softBreaks);
+        return proof.parseMarkdown(markdown, softBreaks, rawHtml);
       } catch {
         return undefined;
       }

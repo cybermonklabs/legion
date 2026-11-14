@@ -1,11 +1,12 @@
 import {
+  ASK_URGENCIES,
   DEFAULT_ISSUE_PAGE_LIMIT,
   DEFAULT_ISSUE_READ_EVENTS,
   ISSUE_TITLE_MAX,
   MAX_ISSUE_BLOCKERS,
   MAX_ISSUE_PAGE_LIMIT,
   PROJECT_NAME_MAX,
-} from "./dispatch-api-limits";
+} from "./dispatch-constants";
 import type { SchemaApi, SchemaNode, ToolArgumentsShape } from "./tool-schema";
 
 export interface DispatchToolSpec {
@@ -412,9 +413,6 @@ function imagesArgument<E extends SchemaNode<E>>(z: SchemaApi<E>, owner: string)
     .optional();
 }
 
-/** Ask urgency levels the Dispatch server accepts, in ascending order. */
-export const ASK_URGENCIES = ["low", "med", "high", "blocking"] as const;
-
 /**
  * Longest one block of a comment, comment edit, message, broadcast or ask part may be, in UTF-16
  * code units as the Dispatch server counts them. Generated into Go as
@@ -545,7 +543,9 @@ const RESULT_SHAPE_RULE =
 function resultProblem(value: unknown): string | undefined {
   const input = value as Record<string, unknown>;
   const carried = RESULT_RECORD_FIELDS.filter((field) => input[field] !== undefined);
+  // biome-ignore lint/complexity/useLiteralKeys: input is a bare Record, so retract comes from its index signature, and claude-envoy compiles this file with noPropertyAccessFromIndexSignature, which refuses the dot form.
   if (typeof input["retract"] === "string") {
+    // biome-ignore lint/complexity/useLiteralKeys: reason comes from that same index signature, so the bracket form is the one that compiles.
     const reason = input["reason"];
     if (typeof reason !== "string" || reason.trim() === "") {
       return "retract needs reason, the words that say why the result is wrong.";
@@ -555,6 +555,7 @@ function resultProblem(value: unknown): string | undefined {
     }
     return undefined;
   }
+  // biome-ignore lint/complexity/useLiteralKeys: reason comes from the same index signature, so the bracket form is the one claude-envoy's typecheck accepts.
   if (input["reason"] !== undefined) {
     return "reason goes with retract, and this call carries no retract. Name the result to retract, or drop reason.";
   }

@@ -2,6 +2,7 @@ import { shortSessionId } from "@legion/contracts";
 
 import { AGENT_REGISTRY_POLL_MS } from "../web/src/features/refs/agent-registry";
 import {
+  agentGroupToggle,
   BROADCAST_REFUSED,
   broadcastSends,
   type FakeSession,
@@ -147,6 +148,42 @@ test("a broadcast lists recipient cards in the non-alphabetical order the sender
     const list = page.getByRole("region", { name: "Broadcasts" });
     await expect(list.getByText("Stand down and report status.")).toBeVisible();
     await expect(list.getByText("1 of 3 answered")).toBeVisible();
+  } finally {
+    await alice.close();
+  }
+});
+
+// The broadcast box is a multi-line input, so Enter writes a line in it and Ctrl/Cmd+Enter is
+// what sends - the rule every Dispatch-owned multi-line input keeps. This composer is no form,
+// so the key has nothing to submit and the box sends itself.
+test("the broadcast box writes a line on Enter and sends on Ctrl/Cmd+Enter", async ({
+  browser,
+}, testInfo) => {
+  test.skip(testInfo.project.name !== "chromium", "one browser proves the broadcast flow");
+  await setLiveSessions([planner, tester]);
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    await page.goto("/agents");
+    // Both sessions are live with no Dispatch activity of their own, so each sits under `Idle`
+    // (`web/src/features/agents/agent-groups.ts`), which the page draws open: there is no fold
+    // to open before the row's checkbox is reachable, and the heading counts both.
+    await expect(agentGroupToggle(page, "idle")).toHaveAccessibleName("Idle (2)");
+    await page.getByRole("checkbox", { name: "Select Planner for broadcast" }).check();
+    const composer = page.getByRole("region", { name: "Broadcast" });
+    const box = composer.getByRole("textbox", { name: "Broadcast message" });
+    await box.fill("First line");
+
+    // Enter writes a line and sends nothing: the regression guard for the key that sends.
+    await box.press("Enter");
+    await box.pressSequentially("Second line");
+    await expect(box).toHaveValue("First line\nSecond line");
+    expect(await listBroadcasts()).toEqual([]);
+
+    await box.press("ControlOrMeta+Enter");
+    await page.waitForURL(/\/agents\/broadcasts\/[0-9a-f-]+$/);
+    const [summary] = await listBroadcasts();
+    expect(summary?.body).toBe("First line\nSecond line");
   } finally {
     await alice.close();
   }

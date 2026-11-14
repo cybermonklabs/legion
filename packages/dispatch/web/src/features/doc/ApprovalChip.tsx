@@ -5,6 +5,7 @@ import { api, type CreateArtifactReviewInput, isCapExceeded } from "../../api/cl
 import { inboxQuery } from "../../api/queries";
 import type { Artifact, ArtifactApproval } from "../../api/types";
 import { approvalPillClassName } from "../../components/Pill";
+import { RefusableButton } from "../../components/RefusableButton";
 import { submitOnModifiedEnter } from "../../hooks/submitOnModifiedEnter";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
 import {
@@ -153,6 +154,10 @@ function RequestChangesDialog({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const dialog = useDialog<HTMLDivElement>({ initialFocusRef: textareaRef, onClose, open: true });
   const trimmed = reason.trim();
+  const refusalId = useId();
+  // An empty reason refuses the submit; the save already out is its `busy`, and nothing else
+  // holds it.
+  const refusal = trimmed === "" ? "Say what needs to change." : null;
 
   return (
     <>
@@ -196,6 +201,13 @@ function RequestChangesDialog({
               {isCapExceeded(error) ? error.message : "Could not request changes. Try again."}
             </p>
           )}
+          {/* The reason the submit refuses, on screen under the field it names, and the
+              description the button carries. */}
+          {refusal === null ? null : (
+            <p className={`text-xs ${textMutedOnSurface}`} id={refusalId}>
+              {refusal}
+            </p>
+          )}
           <div className="flex items-center justify-end gap-2">
             <button
               className={`rounded-lg border px-3 py-1.5 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}`}
@@ -205,14 +217,14 @@ function RequestChangesDialog({
             >
               Cancel
             </button>
-            <button
-              className={`rounded-lg px-3 py-1.5 text-sm font-medium ${primaryButtonBg} ${primaryButtonEnabledHoverBg} ${primaryButtonDisabled}`}
-              disabled={trimmed === "" || saving}
-              onClick={() => onSubmit(trimmed)}
-              type="button"
+            <RefusableButton
+              busy={saving ? "Submitting…" : undefined}
+              onPress={() => onSubmit(trimmed)}
+              refusal={refusal}
+              refusalShownBy={refusalId}
             >
-              {saving ? "Submitting…" : "Request changes"}
-            </button>
+              Request changes
+            </RefusableButton>
           </div>
         </div>
       </div>
@@ -227,6 +239,17 @@ export interface ApprovalChipProps {
   variant?: "header" | "list";
   /** The issue header exposes review actions only after an approval request exists. */
   showActions?: boolean;
+  /**
+   * The state alone, as text a reader cannot press: no reviews to open and no actions.
+   *
+   * For the space a host keeps while its header is still held back
+   * (`ChromeAfterTheFirstBatch`). A press inside that space replaces the space with the header
+   * it was keeping, in the same press, so a control drawn there swallows the press it was drawn
+   * for: the reader presses the chip and gets neither the reviews nor the chip. What the reader
+   * is owed there is the state, which they are never told otherwise, and the header a press
+   * brings carries the real chip.
+   */
+  asText?: boolean;
   /** `contents` lets a parent flex group place the state chip and actions independently. */
   layout?: "contents" | "inline";
   /** Called beside the chip's own refreshes once the server has recorded the reader's review, so
@@ -241,10 +264,11 @@ export interface ApprovalChipProps {
  */
 export function ApprovalChip({
   artifact,
+  asText = false,
   layout = "inline",
   onReviewed,
   variant = "list",
-  showActions = variant === "header",
+  showActions = variant === "header" && !asText,
 }: ApprovalChipProps): ReactNode {
   const { approval } = artifact;
   const [reviewsOpen, setReviewsOpen] = useState(false);
@@ -289,19 +313,32 @@ export function ApprovalChip({
     <div
       className={layout === "contents" ? "contents" : "inline-flex flex-wrap items-center gap-2"}
     >
-      <button
-        aria-haspopup="dialog"
-        className={approvalPillClassName(approval.state)}
-        onClick={() => setReviewsOpen(true)}
-        title={
-          approval.state === "stale"
-            ? `Approved at version ${approval.version}; the latest version is ${approval.latest_version}`
-            : undefined
-        }
-        type="button"
-      >
-        {approvalLabel(approval)}
-      </button>
+      {asText ? (
+        <span
+          className={approvalPillClassName(approval.state)}
+          title={
+            approval.state === "stale"
+              ? `Approved at version ${approval.version}; the latest version is ${approval.latest_version}`
+              : undefined
+          }
+        >
+          {approvalLabel(approval)}
+        </span>
+      ) : (
+        <button
+          aria-haspopup="dialog"
+          className={approvalPillClassName(approval.state)}
+          onClick={() => setReviewsOpen(true)}
+          title={
+            approval.state === "stale"
+              ? `Approved at version ${approval.version}; the latest version is ${approval.latest_version}`
+              : undefined
+          }
+          type="button"
+        >
+          {approvalLabel(approval)}
+        </button>
+      )}
       {variant === "header" && showActions ? (
         <>
           {approval.state === "approved" ? null : (
@@ -316,14 +353,15 @@ export function ApprovalChip({
               {approveLabel}
             </button>
           )}
-          <button
-            className={`min-h-11 rounded-lg border px-3 py-2 text-sm font-medium md:min-h-8 md:py-1 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}`}
-            disabled={review.isPending}
-            onClick={() => setRequestChangesOpen(true)}
-            type="button"
+          <RefusableButton
+            busy={review.isPending ? "Request changes" : undefined}
+            className="md:min-h-8 md:py-1"
+            look="secondary"
+            onPress={() => setRequestChangesOpen(true)}
+            refusal={null}
           >
             Request changes
-          </button>
+          </RefusableButton>
         </>
       ) : null}
       {reviewsOpen ? (

@@ -1,7 +1,8 @@
 /** The accessibility layer: every page of `e2e/review-routes.ts`'s scanned set, in light and in
- *  dark, read by axe at WCAG 2.0 and 2.1 level A and AA. The rows are untagged, so only the
- *  `chromium` project runs them and the pass reaches every pull request
- *  (e2e/playwright.config.ts).
+ *  dark, read by axe at WCAG 2.0 and 2.1 level A and AA. The rows are untagged, so the
+ *  `chromium` project runs them on the full lane - the merge queue, the nightly run and a pull
+ *  request carrying `full-ci` - and not on the pull-request lane, which runs `@pr` rows alone
+ *  (e2e/playwright.config.ts, .github/workflows/dispatch-browser.yaml).
  *
  *  A row fails on any serious or critical violation `e2e/accessibility-exclusions.ts` does not
  *  cover, and each (route, scheme) prints one `A11Y …` line to stdout, so the shard legs' own job
@@ -16,7 +17,7 @@ import { withAlice } from "./users";
 
 /** WCAG 2.0 and 2.1, levels A and AA: the tags the plan names, and the ones a reviewer of this
  *  dashboard is held to. Axe's best-practice rules are not in it, since a best practice is not a
- *  conformance failure and this gate refuses a pull request. */
+ *  conformance failure and this gate stands between a change and main. */
 const AXE_TAGS = ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"];
 
 /** Both schemes are read inside one row rather than in a row each. Measured on three routes of
@@ -32,8 +33,8 @@ type Impact = "critical" | "serious" | "moderate" | "minor";
  *  both: an entry whose route this process scanned, and which nothing matched, is stale, and a
  *  stale entry would hide the regression it once accepted.
  *
- *  The check is a hook and not a final row because no row can see the run. `--shard=N/4` splits
- *  this file's rows over four machines (.github/workflows/dispatch-browser.yaml's shard job) and
+ *  The check is a hook and not a final row because no row can see the run. `--shard=N/5` splits
+ *  this file's rows over five machines (.github/workflows/dispatch-browser.yaml's shard job) and
  *  the run's four workers split each shard again, so a final row would sit in one process and
  *  judge entries whose routes another process ran. `afterAll` runs once in each worker, after
  *  the rows that worker ran, which is exactly the set it can judge - and judging only the routes

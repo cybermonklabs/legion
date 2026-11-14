@@ -346,21 +346,21 @@ async function keepsTheColumn(browser: Browser, run: QuestionRun): Promise<void>
   }
 }
 
-// SLOW(>=2s): the 3 s bound waited out, then six drives and a read that fails and recovers.
+// SLOW(>=2s): the placement's bound waited out, then six drives and a read that fails and recovers.
 test("the question pane leaves the column where the reader put it, under a heading", async ({
   browser,
 }) => {
   await keepsTheColumn(browser, "heading");
 });
 
-// SLOW(>=2s): the 3 s bound waited out, then six drives and a read that fails and recovers.
+// SLOW(>=2s): the placement's bound waited out, then six drives and a read that fails and recovers.
 test("the question pane leaves the column where the reader put it, with no heading above the block", async ({
   browser,
 }) => {
   await keepsTheColumn(browser, "plain");
 });
 
-// SLOW(>=2s): the 3 s bound waited out, then six drives, a failed read and the late reply.
+// SLOW(>=2s): the placement's bound waited out, then six drives, a failed read and the late reply.
 test("the question pane leaves the column where the reader put it, for an anchored thread", async ({
   browser,
 }) => {
@@ -455,7 +455,7 @@ test("a second question with no heading above it opens at the start of the colum
   }
 });
 
-// SLOW(>=2s): the 3 s bound waited out between the two threads of one drawn document.
+// SLOW(>=2s): the placement's bound waited out between the two threads of one drawn document.
 test("a second thread anchored to the same block opens at that block's section", async ({
   browser,
 }) => {
@@ -548,7 +548,7 @@ test("Skip to the answer pressed while the placement runs leaves the column at t
   }
 });
 
-// SLOW(>=2s): the 3 s bound waited out before the held replies are served and read.
+// SLOW(>=2s): the placement's bound waited out before the held replies are served and read.
 test("a thread whose replies are served after the placement opens at its anchored section", async ({
   browser,
 }) => {

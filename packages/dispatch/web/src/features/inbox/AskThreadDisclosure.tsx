@@ -3,6 +3,7 @@ import { type ReactNode, useId, useState } from "react";
 import type { ArtifactOwner } from "../../api/client";
 import type { Ask } from "../../api/types";
 import { linkHoverText, linkText } from "../../theme/classes";
+import type { DocumentOwner } from "../refs/routes";
 import type { DwellRef } from "../shell/useDwell";
 import { composerFirst } from "../threads/thread-layout";
 import type { ThreadOrder } from "../threads/thread-order";
@@ -20,6 +21,9 @@ interface AskThreadDisclosureProps {
   markNewest?: DwellRef;
   /** The reply a deep link named (`AskThread`); only the Conversation passes one. */
   currentReplyId?: string;
+  /** The project document that owns a document ask, so each reply names its own reference
+   *  (`AskThread`). */
+  owner?: DocumentOwner;
   /** The order the thread reads in (`AskThread`), which also places this control and the
    *  composer it reveals: under the question in Newest first, at the foot in Oldest first. */
   order: ThreadOrder;
@@ -35,6 +39,7 @@ export function AskThreadDisclosure({
   uploadOwner,
   markNewest,
   currentReplyId,
+  owner,
   order,
   unread,
 }: AskThreadDisclosureProps): ReactNode {
@@ -73,6 +78,7 @@ export function AskThreadDisclosure({
         embedded={embedded}
         markNewest={markNewest}
         order={order}
+        owner={owner}
         showComposer={false}
         thread={thread}
         unread={unread}

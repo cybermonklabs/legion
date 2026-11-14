@@ -47,6 +47,7 @@ import { remarkHtmlBlockParagraphs, remarkStrictHtmlFlow } from './html-blocks.j
 import { remarkReadOnlyDirectives } from './read-only-directives.js';
 import { remarkUnfitTypedBlocks } from './typed-block-drawing.js';
 import { relaxAskContentCheck } from './ask-content.js';
+import { remarkRawHtmlAsText } from './raw-html.js';
 
 /**
  * What a single newline inside a paragraph (a CommonMark soft break) becomes. `'space'`, the
@@ -58,15 +59,29 @@ import { relaxAskContentCheck } from './ask-content.js';
  */
 export type SoftBreaks = 'space' | 'line';
 
+/**
+ * What raw HTML in the source becomes. Neither policy throws over it and neither draws it as
+ * HTML: the schema has no node for a block of raw HTML, so the parse draws that block as a
+ * paragraph of the same characters (`remarkHtmlBlockParagraphs`, ./html-blocks.ts), and an
+ * inline tag-shaped span stays the commonmark preset's `html` atom, whose DOM is a span of its
+ * own value as text. The two differ in the HTML comment alone. `'refuse'`, the default, is what
+ * a document means by it: a comment is kept as the characters its author wrote, which is how a
+ * document writes one back byte for byte. `'text'` is what a comment, message or reply body
+ * means by it: an HTML comment draws as nothing, as GitHub draws it (`remarkRawHtmlAsText`), so
+ * the `<!-- legion: … -->` footer an agent appends is not read back to a reader, while every
+ * other raw HTML still reads as the literal text its author typed.
+ */
+export type RawHtml = 'refuse' | 'text';
+
 export interface HeadlessProofEditor {
   schema: Schema;
   /**
    * Parses markdown into a document whose every block carries a `blockId`, reading a soft
-   * break as `softBreaks` says (`'space'` by default).
+   * break as `softBreaks` says (`'space'` by default) and raw HTML as `rawHtml` says
+   * (`'refuse'` by default).
    *
-   * Throws for a source the schema has no node for: a raw-HTML block or span (a bare
-   * tag-shaped substring outside a code span or fence, e.g. `<img src=x>`) and a mark span of
-   * a kind this schema does not carry. Outside read-only mode, with a `blockSchema`, it also
+   * Throws for a source the schema has no node for: a mark span of a kind this schema does not
+   * carry. Outside read-only mode, with a `blockSchema`, it also
    * throws for the parser's directive refusals (an unknown typed block, a refused attribute, a
    * paragraph line that opens like a directive), as the pmdoc fixture generators need to match
    * the document service, and draws a typed block whose content breaks its content rule as its
@@ -76,7 +91,7 @@ export interface HeadlessProofEditor {
    * which would make the next parses of unrelated text throw too, so the parser of that
    * policy is dropped and the next parse through it starts on a fresh one.
    */
-  parseMarkdown(markdown: string, softBreaks?: SoftBreaks): ProseMirrorNode;
+  parseMarkdown(markdown: string, softBreaks?: SoftBreaks, rawHtml?: RawHtml): ProseMirrorNode;
   serializeMarkdown(doc: ProseMirrorNode): string;
 }
 
@@ -157,9 +172,13 @@ export async function createHeadlessProof(options: HeadlessProofOptions = {}): P
 
   // Match the browser editor's GFM features (tables, task lists, strikethrough,
   // autolinks, ...), plus proof span and dispatchAsk span parsing. The schema and plugin list
-  // above are policy-independent and built once; only the soft-break transform differs, so a
-  // parser per policy is built the first time that policy is parsed with and reused.
-  const buildParser = (softBreaks: SoftBreaks): ((markdown: string) => ProseMirrorNode) => {
+  // above are policy-independent and built once; only the soft-break and raw-HTML transforms
+  // differ, so a parser per pair of policies is built the first time that pair is parsed with
+  // and reused.
+  const buildParser = (
+    softBreaks: SoftBreaks,
+    rawHtml: RawHtml,
+  ): ((markdown: string) => ProseMirrorNode) => {
     const parseProcessor = unified()
       .use(remarkParse)
       .use(remarkFrontmatter, ['yaml'])
@@ -167,7 +186,14 @@ export async function createHeadlessProof(options: HeadlessProofOptions = {}): P
       .use(remarkContainerDirectives)
       .use(remarkStrictHtmlFlow)
       .use(remarkProofMarks)
-      .use(remarkDispatchMarks)
+      .use(remarkDispatchMarks);
+    // Before `remarkHtmlBlockParagraphs`, and after the mark plugins for the same reason it is:
+    // under this policy an HTML comment draws as nothing, so its node goes before the wrap that
+    // would otherwise leave an empty paragraph standing where the comment was. It is also before
+    // the directive steps below, so raw HTML inside a typed block or a refused directive's
+    // content is read the same way as raw HTML beside it.
+    if (rawHtml === 'text') parseProcessor.use(remarkRawHtmlAsText);
+    parseProcessor
       // After the mark plugins, whose own block-level span is a pair of HTML blocks until they
       // have read it, and before the typed-block transforms, which check a block's content
       // against its rule: a block of HTML becomes a paragraph holding the same text, which the
@@ -196,13 +222,20 @@ export async function createHeadlessProof(options: HeadlessProofOptions = {}): P
     ) => ProseMirrorNode;
   };
 
-  const parsers = new Map<SoftBreaks, (markdown: string) => ProseMirrorNode>();
+  /** The parsers built so far, one per pair of policies: both decide what a parse reads, so a
+   *  parser built for one pair must never serve the other. */
+  const parsers = new Map<`${SoftBreaks} ${RawHtml}`, (markdown: string) => ProseMirrorNode>();
   const mint = options.blockId ?? mintBlockId;
-  const parseMarkdown = (markdown: string, softBreaks: SoftBreaks = 'space'): ProseMirrorNode => {
-    let parse = parsers.get(softBreaks);
+  const parseMarkdown = (
+    markdown: string,
+    softBreaks: SoftBreaks = 'space',
+    rawHtml: RawHtml = 'refuse',
+  ): ProseMirrorNode => {
+    const policy = `${softBreaks} ${rawHtml}` as const;
+    let parse = parsers.get(policy);
     if (parse === undefined) {
-      parse = buildParser(softBreaks);
-      parsers.set(softBreaks, parse);
+      parse = buildParser(softBreaks, rawHtml);
+      parsers.set(policy, parse);
     }
     try {
       // Beside `withBlockIds`, never inside it: that walk returns its input unchanged when no
@@ -211,7 +244,7 @@ export async function createHeadlessProof(options: HeadlessProofOptions = {}): P
     } catch (error) {
       // A throw leaves this ParserState's stack open, so its next parses would throw too. Drop
       // it; the next parse of this policy builds a fresh one (about 0.03 ms).
-      parsers.delete(softBreaks);
+      parsers.delete(policy);
       throw error;
     }
   };

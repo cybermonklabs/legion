@@ -7,14 +7,20 @@
  * draws later still, and every block landing above the heading pushes it down again, so the
  * placement is applied on every drawing pass rather than once. Both clocks start at the first of
  * those passes rather than at this call, because a column whose document has not drawn yet would
- * otherwise spend its bound waiting for the first block. The numbers are the document's own
- * re-run's (`features/doc/refocus-when-settled.ts`), so the two cannot drift apart.
+ * otherwise spend its bound waiting for the first block. The quiet is the document's own
+ * re-run's (`QUIET_MS`, `features/doc/refocus-when-settled.ts`), so the two cannot drift apart;
+ * the bound is the column's own, declared beside it and measured against the longest draw this
+ * pane serves (`COLUMN_LIMIT_MS`).
  *
  * The reader's press, scroll, touch or key is read on the column and not on the window: the list
  * beside it moves the selection with `j` and `k`, and a window-wide reading would end the next
- * item's placement before its document had drawn.
+ * item's placement before its document had drawn. The scroll the placement itself writes is
+ * nobody's press: it goes through the one call that records where the page's own place-keeping
+ * left a box (`moveTheBox`, `features/doc/readers-place.ts`), so the document's own landing
+ * correction, which watches the same column, reads it as the page holding the reader still
+ * rather than as the reader taking the column over.
  */
-import { LIMIT_MS, QUIET_MS } from "../doc/refocus-when-settled";
+import { COLUMN_LIMIT_MS, QUIET_MS } from "../doc/refocus-when-settled";
 import { mermaidDrawsWaiting } from "../refs/mermaid-diagrams";
 
 /** What a reader does to move on from where the column put them. */
@@ -36,14 +42,14 @@ export interface SectionHold {
  * Holds `column` at its section until its drawing settles, the limit passes, the reader presses,
  * scrolls, touches or types in it, or the hold is released.
  *
- * `bounds` is there for a row that proves the limit without waiting three seconds, as
+ * `bounds` is there for a row that proves the limit without waiting the column's bound out, as
  * `resetMermaidDiagrams(limitMs)` is for the worker's own.
  */
 export function holdSection(
   column: HTMLElement,
   bounds?: { limitMs?: number; quietMs?: number }
 ): SectionHold {
-  const limitMs = bounds?.limitMs ?? LIMIT_MS;
+  const limitMs = bounds?.limitMs ?? COLUMN_LIMIT_MS;
   const quietMs = bounds?.quietMs ?? QUIET_MS;
   let writes = true;
   let quiet: number | undefined;

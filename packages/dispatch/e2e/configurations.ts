@@ -248,8 +248,8 @@ export function tagged(tag: string): RegExp {
  *  project, so it is given the server and its stacks alike.
  *
  *  An empty list is a run that names no project, which is every DEFAULT project of its mode:
- *  the three wall-clock projects below carry `default: false` and are outside it, measured at
- *  this head as 1,373 rows in 191 files against the whole suite's 1,427 in 194. Every
+ *  the six `-alone` projects below carry `default: false` and are outside it, measured at
+ *  this head as 1,498 rows in 207 files against the whole suite's 1,557 in 214. Every
  *  `--project` of the whole line is read, and the values of every OTHER option are skipped over
  *  (`e2e/playwright-argv.ts`), because a token that reads like a flag of this run may be some
  *  option's value: `--output --project=stub` hands Playwright `--project=stub` as the output
@@ -278,46 +278,120 @@ export function projectsOnCommandLine(argv: readonly string[]): string[] {
   return named;
 }
 
-/** The projects whose rows are read from the wall clock: that a card's draw holds the main thread
- *  for less than a second, measured through `e2e/main-thread-hold.ts`, and what the agent
- *  surfaces cost in time, measured by `agent-workspace-timing.e2e.ts` itself. They run one row at
- *  a time so that a reading is the page's own work rather than what three other lanes took. They
- *  are named here rather than in the config for the reason `stubProjectNames` above gives: the
+/** The projects that run alone, one leg of the alone job apiece: the rows read from the wall
+ *  clock - that a card's draw holds the main thread for less than a second, measured through
+ *  `e2e/main-thread-hold.ts`, what the agent surfaces cost in time, measured by
+ *  `agent-workspace-timing.e2e.ts` itself, and the five rows of the four `large-documents-*`
+ *  files below that read a build's own cost from the page's clock - and the phone's half of
+ *  `large-documents-long-build.e2e.ts` (`phoneAloneSpecNames` below). They run one row at a time
+ *  so that a reading is the page's own work rather than what three other lanes took. They are
+ *  named here rather than in the config for the reason `stubProjectNames` above gives: the
  *  config selects its own projects with this list, a bun test holds each of them to the fields
  *  that keep them out of the default selection and at one row at a time, and the three modules
- *  that account for the whole suite list these projects beside the default ones, since a listing
- *  that names no project holds no row of theirs once they are out of the default selection. A
- *  fourth wall-clock project added to the config and missed here is a project no accounting sees.
- *  The order is the config's own. */
+ *  that account for the whole suite list these projects beside the default ones, since a
+ *  listing that names no project holds no row of theirs once they are out of the default
+ *  selection. A seventh such project added to the config and missed here is a project no
+ *  accounting sees. The order is the config's own.
+ *
+ *  `iphone-measure-alone` is the fifth: the two rows of `large-documents-measured.e2e.ts` that
+ *  measure a first editable block take three readings each and hold the median of them to R11's
+ *  targets, which is three times the wall clock they cost when each took one, so they are a leg
+ *  of their own in `.github/workflows/dispatch-browser.yaml` rather than three more minutes on
+ *  every other row `iphone-alone` runs (dispatch://INFRA-341). It is the same device profile as
+ *  `iphone-alone` and differs from it by the file it selects alone.
+ *
+ *  `iphone-long-build-alone` is the sixth and the newest: the three rows of
+ *  `large-documents-long-build.e2e.ts` on the phone, each a build of the 406,000-character
+ *  document under 4x CPU throttling, which cost 1.8 min, 51.8 s and 39.3 s in `shard (5)` of
+ *  run 43421318396, about 199 s of the 499 s that leg stood at against its 540 s. Playwright cuts
+ *  the shards by row count in listing order, so the `iphone` project's tail, where they sit,
+ *  always lands in the last shard; a leg of their own takes them out of it. */
 export const clockProjectNames: readonly string[] = [
   "chromium-alone",
   "firefox-alone",
   "webkit-alone",
+  "iphone-alone",
+  "iphone-measure-alone",
+  "iphone-long-build-alone",
 ];
 
-/** The three specs those projects run, each by the part of its file name that is its own:
- *  `agent-workspace-timing.e2e.ts`, `heavy-bodies.e2e.ts` and `nested-directive.e2e.ts`. A
- *  wall-clock file is spelled once here and read twice - by the pattern below, which is how the
- *  projects select their files, and by `clockFileOnCommandLine`, which is how a command that
- *  names one of those files with no project is refused - so a fourth such file is one edit of
- *  this list. */
+/** The specs the wall-clock projects run, each by the part of its file name that is its own.
+ *  Every row of these files is read from the wall clock, and every wall-clock row of the suite
+ *  is in one of them, because a wall-clock project selects whole files and never a row by its
+ *  title: the file a row is written in is what decides the project it runs in.
+ *
+ *  Four of them are `large-documents` files: `large-documents-measured.e2e.ts` is
+ *  `iphone-measure-alone`'s whole selection, `large-documents-build-serves.e2e.ts` and
+ *  `large-documents-build-serves.the-decision.e2e.ts` are `iphone-alone`'s, and
+ *  `large-documents-desktop-build.e2e.ts` is `chromium-alone`'s, beside the three specs that
+ *  project runs whole - and `heavy-bodies.e2e.ts` runs in three engines. Those five
+ *  `large-documents` rows were picked out of one file by patterns over their titles until
+ *  sjawhar/legion#2697: renaming one moved it into a parallel project, four workers wide,
+ *  where a reading is of the other three lanes, with every suite green. The file is the
+ *  selector now, and `e2e/__tests__/row-configurations.test.ts` holds each project to the rows
+ *  it owns.
+ *
+ *  A wall-clock file is spelled once here and read four times - by the pattern below, which is
+ *  the `testIgnore` of every parallel project; by `clockSpecsNamed`, which is how each
+ *  wall-clock project names its own files; by `clockFileOnCommandLine`, which is how a command
+ *  that names one of these files with no project is refused; and by that test - so an eighth
+ *  such file is one edit of this list. */
 export const clockSpecNames: readonly string[] = [
   "agent-workspace-timing",
   "heavy-bodies",
   "nested-directive",
+  "large-documents-measured",
+  "large-documents-build-serves",
+  "large-documents-build-serves.the-decision",
+  "large-documents-desktop-build",
 ];
 
-/** The files the wall-clock projects select, which is `chromium-alone`'s `testMatch` in
- *  `e2e/playwright.config.ts` and the `testIgnore` of the four parallel projects that would
+/** The files no parallel project may run, which is the `testIgnore` of the four that would
  *  otherwise see them - `chromium`, `iphone`, `webkit` and `firefox`: built from
  *  `clockSpecNames` rather than written a second time, so the two cannot drift apart. The
  *  `.e2e.ts` suffix is part of it, since `heavy-bodies.ts` and `heavy-bodies-page.ts` are
  *  modules those specs import and no project may select them as test files. */
 export const clockSpecPattern = new RegExp(`(${clockSpecNames.join("|")})\\.e2e\\.ts`);
 
+/** The `testMatch` of one wall-clock project: the files that project selects, each named in
+ *  `clockSpecNames` above. A name that list does not hold throws as the configuration
+ *  evaluates, rather than leaving a project whose selector matches no file - which is a
+ *  project that lists no row and measures nothing, under a run that reports green. */
+export function clockSpecsNamed(...names: readonly string[]): RegExp {
+  const unknown = names.filter((name) => !clockSpecNames.includes(name));
+  if (unknown.length > 0) {
+    throw new Error(
+      `${unknown.join(", ")}: no wall-clock spec of this suite is named that. A wall-clock ` +
+        "project selects whole files, and the files are `clockSpecNames` " +
+        `(e2e/configurations.ts): ${clockSpecNames.join(", ")}. Write the file's own name ` +
+        "there first."
+    );
+  }
+  return new RegExp(`(${names.join("|")})\\.e2e\\.ts`);
+}
+
+/** The specs whose phone half runs alone while their desktop half stays in `chromium`, each by
+ *  the part of its file name that is its own. Their rows read no number from the wall clock, so
+ *  they are not `clockSpecNames`, and `chromium` runs them four workers wide as it runs every
+ *  other row. What they cost on the phone is what puts them here: each builds the 406,000-
+ *  character document under 4x CPU throttling, and in the `iphone` project they were the tail of
+ *  the listing Playwright cuts its shards from, so all three landed in the last shard at once
+ *  (`shard (5)` of run 43421318396: 1.8 min, 51.8 s and 39.3 s of its 499 s).
+ *
+ *  Spelled once here and read twice - by the pattern below, which is `iphone`'s
+ *  `testIgnore` beside `clockSpecPattern` and `iphone-long-build-alone`'s `testMatch`, so the
+ *  files the one project drops are the files the other takes; and by
+ *  `e2e/__tests__/row-configurations.test.ts`, which holds that project to the rows it owns. */
+export const phoneAloneSpecNames: readonly string[] = ["large-documents-long-build"];
+
+/** The files whose phone half is a leg of its own: `iphone` ignores them and
+ *  `iphone-long-build-alone` selects them, both by this one value, built from
+ *  `phoneAloneSpecNames` rather than written a second time. */
+export const phoneAloneSpecPattern = new RegExp(`(${phoneAloneSpecNames.join("|")})\\.e2e\\.ts`);
+
 /** The wall-clock spec file a Playwright command names as a positional filter while naming no
  *  project, or `undefined` for every other command line. The configuration throws on an answer:
- *  the three wall-clock projects are out of the default selection, so no run that names no
+ *  the five wall-clock projects are out of the default selection, so no run that names no
  *  project holds a row of the file such a command named, whatever Playwright then does with the
  *  rest of the line - for example, answer "No tests found", or run the whole default selection,
  *  which is what a filter dropped after a `--` leaves (the post-dash drop below). No such answer
@@ -388,7 +462,7 @@ export const clockSpecPattern = new RegExp(`(${clockSpecNames.join("|")})\\.e2e\
  *  took that `--` as its value (`const dashDashIndex = process.argv.indexOf("--")`,
  *  `playwright/lib/program.js:51-53`). With one token after the `--` and one filter, as here,
  *  that keeps no filter. So `--list --output -- e2e/claim.e2e.ts` lists the whole default
- *  selection, 1,373 rows in 191 files, where `--list --output /tmp/o e2e/claim.e2e.ts` lists 1 -
+ *  selection, 1,498 rows in 207 files, where `--list --output /tmp/o e2e/claim.e2e.ts` lists 1 -
  *  the filter is dropped although `--output` swallowed the `--`, which `--list --output --
  *  --not-a-flag` shows it did, that line exiting 1 with `error: unknown option '--not-a-flag'`
  *  rather than the `error: option '--output <dir>' argument missing` of `--list --output`. What
@@ -396,7 +470,7 @@ export const clockSpecPattern = new RegExp(`(${clockSpecNames.join("|")})\\.e2e\
  *  'e2e/heavy.bodies.e2e.ts'`, written as a regex this reader does not answer for, reached the
  *  runner with no filter and a grep of `--` and exited 1 with `Error: No tests found` above
  *  `Total: 0 tests in 0 files`, and `--list --output -- 'e2e/heavy.bodies.e2e.ts'` lists the
- *  1,373 rows of the default selection. Neither run reaches the wall-clock file the person
+ *  1,498 rows of the default selection. Neither run reaches the wall-clock file the person
  *  named, so the refusal, and the command it prints, is the useful answer to both.
  *
  *  A reader that took any `--ui` of the whole argv for the mode would answer `undefined` for

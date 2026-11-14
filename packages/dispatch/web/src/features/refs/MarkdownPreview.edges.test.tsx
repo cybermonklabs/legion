@@ -239,8 +239,16 @@ test("search hits mark the runs the server matched, and a reference it matched i
   }
 });
 
-function Headline({ max, tree }: { max: number; tree: DisplayTree }): ReactNode {
-  const headline = useMarkdownHeadline(tree, max);
+function Headline({
+  markdown,
+  max,
+  tree,
+}: {
+  markdown?: string;
+  max: number;
+  tree?: DisplayTree;
+}): ReactNode {
+  const headline = useMarkdownHeadline(tree, max, markdown);
   return headline === undefined ? null : (
     <output data-cut={String(headline.cut)}>{headline.text}</output>
   );
@@ -268,6 +276,25 @@ test("a headline writes a reference as its short form, keeps one in code as writ
     expect(emoji?.getAttribute("data-cut")).toBe("true");
     // A tag-shaped run reads as the literal characters a rendered body shows for it.
     expect(html?.textContent).toBe("Use Array<string> here");
+  } finally {
+    view.unmount();
+  }
+});
+
+// A title or tooltip made from a body is that body projected to one line, so it reads the raw
+// HTML in one as the body does (INFRA-341 R5): the `<!-- legion: … -->` footer an agent appends
+// draws as nothing, where the whole headline used to read as the body's own source.
+test("a headline of a body holding the Legion footer reads its words with no comment in them", async () => {
+  const footer = '<!-- legion: {"session":"01HQ8F3K2M4N5P6Q7R8S9T0V","phase":"retro"} -->';
+  const view = render(<Headline markdown={`**Retro** complete.\n\n${footer}`} max={60} />);
+  try {
+    const headline = await waitFor(() => {
+      const output = view.container.querySelector("output");
+      expect(output).not.toBeNull();
+      return output as HTMLElement;
+    });
+    expect(headline.textContent).toBe("Retro complete.");
+    expect(headline.getAttribute("data-cut")).toBe("false");
   } finally {
     view.unmount();
   }

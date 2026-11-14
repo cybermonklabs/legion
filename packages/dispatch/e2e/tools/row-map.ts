@@ -75,17 +75,19 @@ function table(header: readonly string[], rows: readonly (readonly string[])[]):
 // The two `playwright test --list` subprocesses this map is read from, started together so the
 // second collects while the first does. Each runs through `e2e/__tests__/playwright-listing.ts`,
 // which holds the argv, the working directory, the environment floor and what a non-zero exit
-// says. Measured at this head on this two-core pod: the default listing alone takes about three
-// and a half seconds, the wall-clock one about one, and the two together about four.
+// says. Measured at this head on this two-core pod: the default listing alone takes about five
+// and a half seconds, the wall-clock one about two, and the two together about six.
 //
-// The second names the three wall-clock projects (`clockProjectNames`, e2e/configurations.ts).
+// The second names the six `-alone` projects (`clockProjectNames`, e2e/configurations.ts).
 // They carry `default: false` since dispatch://INFRA-1280, so a listing that names no project
 // holds no row of `agent-workspace-timing.e2e.ts`, `heavy-bodies.e2e.ts` or
-// `nested-directive.e2e.ts` - 54 rows of those three files in this head's wall-clock listing -
-// and with the default listing alone this generation refused outright: "the listing names no
-// real-stack row in them: heavy-bodies.e2e.ts, nested-directive.e2e.ts", measured by running
-// the tool before the second listing was added, when those two were the whole of the set.
-// Neither listing names a process count, so both run one Dispatch process, which is
+// `nested-directive.e2e.ts` - 51 rows of those three files in this head's `-alone` listing,
+// which holds 59 with the five rows of the three `large-documents` files the wall-clock
+// projects run whole and the three of `large-documents-long-build.e2e.ts`'s phone half - and with
+// the default listing alone this generation refused outright: "the listing names no real-stack
+// row in them: heavy-bodies.e2e.ts, nested-directive.e2e.ts", measured by running the tool
+// before the second listing was added, when those two were the whole of the set. Neither
+// listing names a process count, so both run one Dispatch process, which is
 // the only mode whose project list declares the wall-clock projects at all.
 const [defaultListing, clockListing] = await Promise.all([
   listing("e2e/playwright.config.ts", {}),

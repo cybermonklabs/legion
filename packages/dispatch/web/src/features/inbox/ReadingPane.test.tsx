@@ -6,7 +6,7 @@ import userEvent from "@testing-library/user-event";
 import type { Node as ProseMirrorNode } from "prosemirror-model";
 import { MemoryRouter } from "react-router-dom";
 
-import { fakeDocumentRuntime } from "../../__tests__/document-runtime";
+import { changingEachHandle, fakeDocumentRuntime } from "../../__tests__/document-runtime";
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { ApiError, api } from "../../api/client";
 import type {
@@ -22,7 +22,7 @@ import type {
   Version,
 } from "../../api/types";
 import { CHANGED_BLOCK_CLASS, type ChangeBaseline, changeMarksAgainst } from "../doc/change-marks";
-import type { CreateEditor, EditorHandle } from "../doc/editor";
+import type { EditorHandle } from "../doc/editor";
 import { DocumentRuntime } from "../doc/runtime";
 import { MarginProvider } from "../margin/margin-context";
 import { loadedEngine, warmMarkdownRenderer } from "../refs/markdown-engine";
@@ -163,10 +163,10 @@ function askNodeOf(markdown: string): ProseMirrorNode {
  *  write puts it there: a version draws the reading the server sent (`setDocumentJSON`), and one
  *  that arrived with no reading writes its own markdown instead (`setMarkdown`), which is the
  *  fallback this change gives the version view. Either replaces everything in the editor's
- *  root. */
-function drawAskBlock(markdown: string): (inner: CreateEditor) => CreateEditor {
-  return (inner) => async (root, options) => {
-    const handle: EditorHandle = await inner(root, options);
+ *  root, and the handle is the one the binding answers, which is the first moment the node
+ *  views are on the view (`changingEachHandle`, `__tests__/document-runtime.ts`). */
+function drawAskBlock(markdown: string): (handle: EditorHandle) => void {
+  return (handle) => {
     const nodeViews = handle.view.props.nodeViews as Record<
       string,
       (node: ProseMirrorNode) => { dom: HTMLElement; destroy(): void }
@@ -176,14 +176,13 @@ function drawAskBlock(markdown: string): (inner: CreateEditor) => CreateEditor {
     const writtenMarkdown = handle.setMarkdown;
     handle.setMarkdown = (text: string) => {
       writtenMarkdown(text);
-      root.append(construct(askNodeOf(markdown)).dom);
+      handle.view.dom.append(construct(askNodeOf(markdown)).dom);
     };
     const writtenDocument = handle.setDocumentJSON;
     handle.setDocumentJSON = (json) => {
       writtenDocument(json);
-      root.append(construct(askNodeOf(markdown)).dom);
+      handle.view.dom.append(construct(askNodeOf(markdown)).dom);
     };
-    return handle;
   };
 }
 
@@ -196,9 +195,8 @@ function recordMarks(
   markdown: string,
   drawn: ChangeDecorations[],
   { paintMarks = false }: { paintMarks?: boolean } = {}
-): (inner: CreateEditor) => CreateEditor {
-  return (inner) => async (root, options) => {
-    const handle: EditorHandle = await inner(root, options);
+): (handle: EditorHandle) => void {
+  return (handle) => {
     const state = handle.view.state as unknown as { doc: ProseMirrorNode };
     state.doc = renderedDocument(markdown);
     handle.setChangeDecorations = (decorations) => {
@@ -207,40 +205,39 @@ function recordMarks(
       const block = globalThis.document.createElement("p");
       block.className = CHANGED_BLOCK_CLASS;
       block.textContent = "The plan ships behind a canary today.";
-      root.append(block);
+      handle.view.dom.append(block);
     };
-    return handle;
   };
 }
 
 /** Gives the fake editor the blocks a real one would draw, each stamped with its block id as
  *  `@legion/proof-editor` stamps them: the pane reads its section off the drawn document. */
-function drawBlocks(blocks: string): (inner: CreateEditor) => CreateEditor {
-  return (inner) => async (root, options) => {
-    const handle: EditorHandle = await inner(root, options);
-    root.innerHTML = blocks;
-    return handle;
+function drawBlocks(blocks: string): (handle: EditorHandle) => void {
+  return (handle) => {
+    handle.view.dom.innerHTML = blocks;
   };
 }
 
 function renderPane({
   ask,
-  createEditor,
   seed = () => {},
+  whenBound,
 }: {
   ask: InboxRow;
-  createEditor?: (inner: CreateEditor) => CreateEditor;
   seed?: (client: QueryClient) => void;
+  /** Given each handle as the pane's editor binds it, for a row that reads or replaces what
+   *  that editor answers. */
+  whenBound?: (handle: EditorHandle) => void;
 }) {
   const fake = fakeDocumentRuntime({ text: "The live document" });
   /** Each document the column opened a room for, in the order it opened them. */
   const opened: string[] = [];
   const runtime = {
     ...fake.runtime,
-    createEditor:
-      createEditor === undefined
-        ? fake.runtime.createEditor
-        : createEditor(fake.runtime.createEditor),
+    constructEditor:
+      whenBound === undefined
+        ? fake.runtime.constructEditor
+        : changingEachHandle(fake.runtime.constructEditor, whenBound),
     loadTransport: async () => {
       const connect = await fake.runtime.loadTransport();
       return (artifactId: string, callbacks: Parameters<typeof connect>[1]) => {
@@ -347,7 +344,7 @@ test("a decision block draws the document in pane mode, with Skip to the answer 
 test("a decision block's column marks the section from its heading down to the block", async () => {
   const { runtime, view } = renderPane({
     ask: decisionAsk(),
-    createEditor: drawBlocks(
+    whenBound: drawBlocks(
       '<h1 data-block-id="title">Plan</h1><h2 data-block-id="rollout">Rollout</h2>' +
         '<p data-block-id="context">How it goes out.</p>' +
         '<section data-block-id="ship_it">Ship behind a flag?</section>'
@@ -367,7 +364,7 @@ test("a decision block's column marks the section from its heading down to the b
 test("a decision block before any heading sits in no section, so no bar is drawn", async () => {
   const { runtime, view } = renderPane({
     ask: decisionAsk(),
-    createEditor: drawBlocks(
+    whenBound: drawBlocks(
       '<p data-block-id="context">How it goes out.</p>' +
         '<section data-block-id="ship_it">Ship behind a flag?</section>' +
         '<h2 data-block-id="rollout">Rollout</h2>'
@@ -395,7 +392,7 @@ test("an approval draws the latest version marked against the version it follows
   const drawn: ChangeDecorations[] = [];
   const { view } = renderPane({
     ask: approvalAsk(EARLIER_APPROVAL),
-    createEditor: recordMarks(latest, drawn),
+    whenBound: recordMarks(latest, drawn),
     seed: (client) =>
       seedDocument(
         client,
@@ -432,7 +429,7 @@ test("an approval marks the version against a baseline answered with no reading"
   const drawn: ChangeDecorations[] = [];
   const { view } = renderPane({
     ask: approvalAsk(EARLIER_APPROVAL),
-    createEditor: recordMarks(latest, drawn, { paintMarks: true }),
+    whenBound: recordMarks(latest, drawn, { paintMarks: true }),
     seed: (client) => {
       seedDocument(
         client,
@@ -468,7 +465,7 @@ test("an approval of a document nobody has approved marks nothing and offers no 
   const drawn: ChangeDecorations[] = [];
   const { view } = renderPane({
     ask: approvalAsk(),
-    createEditor: recordMarks(latest, drawn),
+    whenBound: recordMarks(latest, drawn),
     seed: (client) =>
       seedDocument(
         client,
@@ -502,7 +499,7 @@ test("an approval whose version drew marks offers Next change", async () => {
   const drawn: ChangeDecorations[] = [];
   const { view } = renderPane({
     ask: approvalAsk(EARLIER_APPROVAL),
-    createEditor: recordMarks(latest, drawn, { paintMarks: true }),
+    whenBound: recordMarks(latest, drawn, { paintMarks: true }),
     seed: (client) =>
       seedDocument(
         client,
@@ -529,7 +526,7 @@ test("an approval whose baseline loaded but whose marks never drew offers no Nex
   const { view } = renderPane({
     ask: approvalAsk(EARLIER_APPROVAL),
     // The marks are computed and handed over, and nothing of them reaches the drawn document.
-    createEditor: recordMarks(latest, drawn),
+    whenBound: recordMarks(latest, drawn),
     seed: (client) =>
       seedDocument(
         client,
@@ -558,7 +555,7 @@ test("an approved document shows the approval it follows in place of the actions
   const drawn: ChangeDecorations[] = [];
   const { view } = renderPane({
     ask: approvalAsk(EARLIER_APPROVAL),
-    createEditor: recordMarks(latest, drawn),
+    whenBound: recordMarks(latest, drawn),
     seed: (client) =>
       seedDocument(
         client,
@@ -909,13 +906,13 @@ test("an approval draws the ask card of a question block in the version it shows
   const latest = '# Plan\n\n:::ask{urgency="high"}\nShip behind a flag?\n:::\n';
   const { view } = renderPane({
     ask: approvalAsk(),
-    createEditor: drawAskBlock(latest),
     seed: (client) =>
       seedDocument(
         client,
         document({ approval: { latest_version: 4, state: "awaiting" }, versions: [version(4)] }),
         { 4: latest }
       ),
+    whenBound: drawAskBlock(latest),
   });
 
   try {
@@ -939,7 +936,7 @@ test("an approval draws the ask card of a version answered with no reading", asy
   const latest = '# Plan\n\n:::ask{urgency="high"}\nShip behind a flag?\n:::\n';
   const { view } = renderPane({
     ask: approvalAsk(),
-    createEditor: drawAskBlock(latest),
+    whenBound: drawAskBlock(latest),
     seed: (client) => {
       seedDocument(
         client,
@@ -1056,7 +1053,7 @@ test("a project document's head names the project and the document, and opens it
       issue: undefined,
       issue_key: null,
     }),
-    createEditor: drawBlocks(
+    whenBound: drawBlocks(
       '<h2 data-block-id="rollout">Rollout</h2>' +
         '<section data-block-id="ship_it">Ship behind a flag?</section>'
     ),

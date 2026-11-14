@@ -5,12 +5,16 @@ import { act, render, waitFor, within } from "@testing-library/react";
 import type { Node as ProseMirrorNode } from "prosemirror-model";
 import { MemoryRouter } from "react-router-dom";
 
-import { fakeDocumentRuntime, markedText } from "../../__tests__/document-runtime";
+import {
+  changingEachHandle,
+  fakeDocumentRuntime,
+  markedText,
+} from "../../__tests__/document-runtime";
 import { realClock, tick } from "../../__tests__/fake-clock";
 import type { AuthenticatedUser, DisplayTree } from "../../api/types";
 import { loadedEngine, warmMarkdownRenderer } from "../refs/markdown-engine";
 import { type ChangeBaseline, changeMarksAgainst } from "./change-marks";
-import type { CreateEditor, EditorHandle } from "./editor";
+import type { EditorHandle } from "./editor";
 import { embedHighlight } from "./highlight";
 import { DocumentRuntime } from "./runtime";
 import { VersionView } from "./VersionView";
@@ -33,29 +37,31 @@ const signedIn: AuthenticatedUser = { event_head: "7", kind: "user", login: "ali
 
 function renderVersionView({
   changeBaseline,
-  createEditor,
   highlight,
   markdown,
   markdownTree,
+  whenBound,
   whoAmI = signedIn,
 }: {
   changeBaseline?: ChangeBaseline;
-  createEditor?: (inner: CreateEditor) => CreateEditor;
   highlight: { by: string; id: string; quote: string } | undefined;
   markdown: string;
   /** The server's reading of `markdown`, when a row needs the one it built itself; the page's
    *  own reading of that text otherwise, and `null` for an answer that carries no reading at
    *  all, which is what a pod of the build before this one sends. */
   markdownTree?: DisplayTree | null;
+  /** Given each handle as the version's editor binds it, for a row that reads or replaces
+   *  what that editor answers. */
+  whenBound?: (handle: EditorHandle) => void;
   /** The answer `/auth/whoami` holds before the first render; `null` leaves the key unset, for a
    *  row where the person arrives after the version's text. */
   whoAmI?: AuthenticatedUser | null;
 }) {
   const runtime = fakeDocumentRuntime();
-  if (createEditor !== undefined) {
+  if (whenBound !== undefined) {
     runtime.runtime = {
       ...runtime.runtime,
-      createEditor: createEditor(runtime.runtime.createEditor),
+      constructEditor: changingEachHandle(runtime.runtime.constructEditor, whenBound),
     };
   }
   const queryClient = createQueryClient();
@@ -242,15 +248,13 @@ test("VersionView reports an ambiguous or missing quote as changed text", async 
 
 test("VersionView shows what refused the version instead of an empty document", async () => {
   const { editors, view } = renderVersionView({
-    createEditor: (inner) => async (root, options) => {
-      const handle = await inner(root, options);
+    highlight: undefined,
+    markdown: "Some version text.",
+    whenBound: (handle) => {
       handle.setDocumentJSON = () => {
         throw new Error("this version cannot be drawn");
       };
-      return handle;
     },
-    highlight: undefined,
-    markdown: "Some version text.",
   });
 
   try {
@@ -296,17 +300,15 @@ test("VersionView draws a version whose answer carried no reading from its markd
 test("VersionView marks the highlighted quote of a version drawn from its markdown", async () => {
   const markdown = "# Plan\n\nThe plan ships behind a canary today.\n";
   const { editors, view } = renderVersionView({
-    createEditor: (inner) => async (root, options) => {
-      const handle: EditorHandle = await inner(root, options);
+    highlight: { by: "user:alice", id: "comment-1", quote: "canary" },
+    markdown,
+    markdownTree: null,
+    whenBound: (handle) => {
       const state = handle.view.state as unknown as { doc: ProseMirrorNode };
       // What `setMarkdown` leaves the real editor reading, which the fake's own state carries
       // nothing of: the document the quote is embedded in.
       state.doc = renderedDocument(markdown);
-      return handle;
     },
-    highlight: { by: "user:alice", id: "comment-1", quote: "canary" },
-    markdown,
-    markdownTree: null,
   });
 
   try {
@@ -355,13 +357,11 @@ function baselineOf(markdown: string): ChangeBaseline {
 function recordMarks(
   doc: ProseMirrorNode,
   drawn: ChangeDecorations[]
-): (inner: CreateEditor) => CreateEditor {
-  return (inner) => async (root, options) => {
-    const handle: EditorHandle = await inner(root, options);
+): (handle: EditorHandle) => void {
+  return (handle) => {
     const state = handle.view.state as unknown as { doc: ProseMirrorNode };
     state.doc = doc;
     handle.setChangeDecorations = (decorations) => drawn.push(decorations);
-    return handle;
   };
 }
 
@@ -371,9 +371,9 @@ test("VersionView draws the marks its baseline computes over the version it rend
   const drawn: ChangeDecorations[] = [];
   const { view } = renderVersionView({
     changeBaseline: baselineOf(baseline),
-    createEditor: recordMarks(renderedDocument(markdown), drawn),
     highlight: undefined,
     markdown,
+    whenBound: recordMarks(renderedDocument(markdown), drawn),
   });
 
   try {
@@ -394,10 +394,10 @@ test("VersionView draws nothing when it is given no baseline", async () => {
   const markdownTree = treeOf(markdown);
   const drawn: ChangeDecorations[] = [];
   const { editors, view } = renderVersionView({
-    createEditor: recordMarks(renderedDocument(markdown), drawn),
     highlight: undefined,
     markdown,
     markdownTree,
+    whenBound: recordMarks(renderedDocument(markdown), drawn),
   });
 
   try {
@@ -438,16 +438,15 @@ test("VersionView draws the version's tree and parses nothing, on either engine"
 
   const { editors, view } = renderVersionView({
     changeBaseline,
-    createEditor: (inner) => async (root, options) => {
-      const handle = await recordMarks(rendered, drawn)(inner)(root, options);
-      handle.setMarkdown = () => {
-        parses.push("editor");
-      };
-      return handle;
-    },
     highlight: { by: "user:alice", id: "comment-1", quote: "canary" },
     markdown,
     markdownTree,
+    whenBound: (handle) => {
+      recordMarks(rendered, drawn)(handle);
+      handle.setMarkdown = () => {
+        parses.push("editor");
+      };
+    },
   });
 
   try {

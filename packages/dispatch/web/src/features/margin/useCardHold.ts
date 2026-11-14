@@ -1,5 +1,6 @@
 import { type RefObject, useEffect, useRef } from "react";
 
+import { putTheBoxAt } from "../doc/readers-place";
 import { COMPACT_VIEWPORT_QUERY, useMediaQuery } from "../shell/useDialog";
 import type { MarginTab } from "./useMarginItems";
 
@@ -30,7 +31,7 @@ export function scrollMarginTo(
   padding = 0
 ): void {
   const top = bounds.top - containerBounds.top + container.scrollTop - padding;
-  container.scrollTo({ top: Math.max(0, top) });
+  putTheBoxAt(container, Math.max(0, top));
 }
 
 const marginGestures = ["keydown", "touchstart", "wheel"] as const;

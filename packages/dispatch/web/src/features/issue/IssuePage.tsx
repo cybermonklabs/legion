@@ -1,25 +1,41 @@
-import { type ReactNode, useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  type ComponentType,
+  lazy,
+  type ReactNode,
+  Suspense,
+  useCallback,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { Link, Navigate, useLocation, useNavigate } from "react-router-dom";
 
 import { ApiError } from "../../api/client";
-import type { Artifact, IssuePriority } from "../../api/types";
+import type { Artifact, IssueDetails, IssuePriority } from "../../api/types";
+import { chunkComponent } from "../../components/chunk-component";
 import { QueryError } from "../../components/QueryError";
 import { tabButtonId } from "../../components/Tabs";
 import {
+  borderDefault,
   dangerText,
   linkHoverText,
   linkText,
+  statusPill,
+  statusPillDot,
   textMutedOnCanvas,
   textPrimaryOnCanvas,
   textSecondaryOnCanvas,
 } from "../../theme/classes";
-import { ActivityTab } from "../activity/ActivityTab";
-import { ArtifactDocument } from "../artifacts/ArtifactDocument";
 import { ArtifactRoutePanel } from "../artifacts/ArtifactRoutePanel";
-import { ConversationTab } from "../conversation/ConversationTab";
+import { ChromeAfterTheFirstBatch } from "../doc/AfterTheFirstBatch";
+import { ApprovalChip } from "../doc/ApprovalChip";
+import { ConnectionDot } from "../doc/ConnectionDot";
+import { afterTheFirstBatch } from "../doc/first-batch";
 import type { DocumentToolbar } from "../doc/ProofDocument";
+import { putTheBoxAt, whatScrolls, whereTheReaderIs } from "../doc/readers-place";
 import { outsideAskCard } from "../inbox/ask-card";
-import { PlanTab } from "../plan/PlanTab";
+import { statusText } from "../project/board-model";
 import {
   buildReferencePath,
   documentRoute,
@@ -30,19 +46,93 @@ import {
 import { useKeymap, useKeymapScope } from "../shell/keymap";
 import { NotFoundPage } from "../shell/NotFoundPage";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
-import { VerificationTab } from "../verification/VerificationTab";
-import { ChildrenTab } from "./ChildrenTab";
-import { CollaboratorsTab } from "./CollaboratorsTab";
-import { DecisionsPanel } from "./DecisionsPanel";
-import { IssueHeader } from "./IssueHeader";
-import { IssueTabs } from "./IssueTabs";
 import { ItemMatchList } from "./ItemMatchList";
+import { issueStatusPillClassName, issueStatusPillDotClassName } from "./issue-header-classes";
+import { IssueHeaderSkeleton, IssueTabsSkeleton } from "./issue-page-skeleton";
+import { issueTabChunks } from "./issue-tab-list";
 import { stateForIssue } from "./pins";
-import { SpecRequirements } from "./SpecRequirements";
+import { forgetTheReach, reachingTheChrome } from "./reaching-the-chrome";
 import { SpecToolbar } from "./SpecToolbar";
 import { useIssueDetail } from "./useIssueDetail";
 import { useIssuePriority } from "./useIssuePriority";
 import { type ItemLanding, type ItemRoute, isItemRoute, useItemLanding } from "./useItemLanding";
+
+/**
+ * The parts of the issue page that are not its frame, each in a chunk of its own: the header
+ * and the tab strip behind a `Suspense` boundary of their own, and each tab panel drawn in
+ * the commit its chunk arrives in (`components/chunk-component.tsx`).
+ *
+ * There are two reasons, and they are different reasons.
+ *
+ * The first is the commit. The page used to mount in one commit - the header, the tab strip
+ * and the document surface together - and a commit cannot be interrupted, so that one commit
+ * held the main thread for about 0.7 s on a phone at 4x CPU throttling; this page's first
+ * render runs inside a transition, which makes it interruptible and leaves each commit whole
+ * (`app.tsx`'s `IssuePageInATransition` opens that transition, and the arrival of this
+ * module's own chunk opens one again where it lands after it, `chunkComponent`'s
+ * `inATransition`; dispatch://INFRA-341, R11). Each part here makes one commit of its own
+ * instead: the
+ * document's part commits first, with the two boxes the reader already has in front of them
+ * (`issue-page-skeleton.tsx`), and the header, the tabs and each side list land after it, one
+ * commit each.
+ *
+ * The second is the evaluation. A chunk and every chunk it statically imports evaluate in one
+ * main-thread task, so while this module imported the tab panels and the document surface
+ * statically, opening a document evaluated all of them in one task of 505 to 579 ms: the
+ * Conversation with the ask card and its composer, the Activity list with the margin's cards,
+ * the role documents with the contracts package's zod schemas - none of which a document
+ * address draws. Each `import()` below evaluates in a task of its own, and a panel the
+ * address does not open is a task that never runs at all; `web/src/entry-chunk-contents.ts`
+ * holds the build to that.
+ *
+ * The chunks a document address needs are downloaded beside the page's own, from the address
+ * (`DOCUMENT_ADDRESS_MODULES` in `web/vite.config.ts`), so the reader waits for no request
+ * here. What appears, and when, is unchanged: the header and tabs replace the skeleton the
+ * reader was already reading, and a side list draws under the document it belongs to, where
+ * nothing above it moves as it lands.
+ *
+ * A tab's panel is mounted only once that tab has been opened (`activatedTabs`), so its chunk
+ * is asked for then, as the reader asks for the tab.
+ */
+const IssueHeader = lazy(() =>
+  import("./IssueHeader").then((module) => ({ default: module.IssueHeader }))
+);
+const IssueTabs = lazy(() =>
+  import("./IssueTabs").then((module) => ({ default: module.IssueTabs }))
+);
+const SpecRequirements = lazy(() =>
+  import("./SpecRequirements").then((module) => ({ default: module.SpecRequirements }))
+);
+/** The document surface, which every tab that shows a document draws and which both addresses
+ *  that open a document preload. */
+const ArtifactDocument = lazy(() =>
+  import("../artifacts/ArtifactDocument").then((module) => ({
+    default: module.ArtifactDocument,
+  }))
+);
+/** The tab panels, each drawn in the commit its chunk arrives in, for the same reason: the
+ *  panel an address names is asked for from that address (`requestTheOpenPagesChunk` in
+ *  `app.tsx`, through this same map), and a reader who opens a tab is waiting for its panel
+ *  rather than for a space kept where it will be. */
+const ActivityTab = chunkComponent(() =>
+  issueTabChunks.activity().then((module) => module.ActivityTab)
+);
+const ChildrenTab = chunkComponent(() =>
+  issueTabChunks.children().then((module) => module.ChildrenTab)
+);
+const CollaboratorsTab = chunkComponent(() =>
+  issueTabChunks.collaborators().then((module) => module.CollaboratorsTab)
+);
+const ConversationTab = chunkComponent(() =>
+  issueTabChunks.conversation().then((module) => module.ConversationTab)
+);
+const DecisionsPanel = chunkComponent(() =>
+  issueTabChunks.decisions().then((module) => module.DecisionsPanel)
+);
+const PlanTab = chunkComponent(() => issueTabChunks.plan().then((module) => module.PlanTab));
+const VerificationTab = chunkComponent(() =>
+  issueTabChunks.verification().then((module) => module.VerificationTab)
+);
 
 export function IssuePage(): ReactNode {
   const { pathname, search } = useLocation();
@@ -95,6 +185,44 @@ function ItemLandingFailure({
 }
 
 /**
+ * What the issue's header tells a reader without being asked, inside the state row: where its
+ * work stands, and what a review of its spec has decided. It stands in the box the header
+ * keeps until the editor's first batch (`issue-page-skeleton.tsx`, dispatch://INFRA-341 R11).
+ * The third thing the header says unasked - that the issue is closed - is a block above these
+ * rows there and in the box too, so the box keeps its height: `IssueHeaderSkeleton`'s own
+ * `isClosed`.
+ *
+ * Every word of it is the issue and its primary document, both of which the page has read
+ * before it draws anything, so none of it is one of the reads the hold moved, and the header
+ * says the same three things when it lands. The controls that stand beside them there - Reopen,
+ * the status pick, Approve and Request changes - are not here: a press on this box is how a
+ * reader asks for a control, and it hands them the header itself.
+ */
+function WhatTheHeaderWouldSay({
+  artifact,
+  issue,
+}: {
+  artifact: Artifact;
+  issue: IssueDetails;
+}): ReactNode {
+  return (
+    <>
+      {/* The status pill at the size the header's own pick stands at, from the one place both
+          are built from (`issue-header-classes.ts`), so the pick landing in its place moves
+          nothing beside it. */}
+      <span
+        className={`${issueStatusPillClassName} ${borderDefault} ${statusPill.bg} ${statusPill.text}`}
+      >
+        <span aria-hidden="true" className={`${issueStatusPillDotClassName} ${statusPillDot}`} />
+        <span className="sr-only">Status</span>
+        {statusText(issue.status)}
+      </span>
+      <ApprovalChip artifact={artifact} asText variant="header" />
+    </>
+  );
+}
+
+/**
  * What the `issue` scope acts on. Every target is a control the header or the tablist already
  * renders, so a key does exactly what a click on it does. Scoping the lookup to
  * `[data-issue-header]` keeps a child issue's row in the Children tab - it carries the same
@@ -118,6 +246,32 @@ function usableControl(selector: string): HTMLElement | null {
   const disabled =
     (node instanceof HTMLButtonElement || node instanceof HTMLSelectElement) && node.disabled;
   return disabled ? null : node;
+}
+
+/** Focuses the header control `selector` names, answering whether there was one to focus. */
+function focusTheControl(selector: string): boolean {
+  const node = usableControl(selector);
+  node?.focus();
+  return node !== null;
+}
+
+/** Presses it, with the same answer. */
+function pressTheControl(selector: string): boolean {
+  const node = usableControl(selector);
+  node?.click();
+  return node !== null;
+}
+
+/**
+ * Whether the binding whose control `find` looks up is offered, which is one question asked of
+ * two pages. While this page is still holding its chrome every binding is offered: the press is
+ * how a reader with no pointer asks for that chrome, and `reachingTheChrome` draws it and then
+ * does what the press came for (`reaching-the-chrome.ts`). Once the chrome is there, a binding
+ * is offered exactly while its control would take a click, so the palette lists what a press
+ * would do and nothing else. Written here once, because every binding below asks it.
+ */
+function reachable(find: () => Element | null): boolean {
+  return !afterTheFirstBatch() || find() !== null;
 }
 
 /**
@@ -171,11 +325,11 @@ function RoleDocumentPanel({
   onVersionChange,
   tab,
 }: {
-  Tab: (props: {
+  Tab: ComponentType<{
     artifact: Artifact | undefined;
     children?: ReactNode;
     issueKey: string;
-  }) => ReactNode;
+  }>;
   activated: boolean;
   active: boolean;
   artifact: Artifact | undefined;
@@ -193,18 +347,20 @@ function RoleDocumentPanel({
       role="tabpanel"
     >
       {activated ? (
-        <Tab artifact={artifact} issueKey={issueKey}>
-          {artifact === undefined ? null : (
-            <ArtifactDocument
-              artifact={artifact}
-              isClosed={isClosed}
-              owner={{ key: issueKey, kind: "issue" }}
-              onVersionChange={(version) => onVersionChange(artifact, version)}
-              showDiff={false}
-              version={undefined}
-            />
-          )}
-        </Tab>
+        <Suspense fallback={null}>
+          <Tab artifact={artifact} issueKey={issueKey}>
+            {artifact === undefined ? null : (
+              <ArtifactDocument
+                artifact={artifact}
+                isClosed={isClosed}
+                owner={{ key: issueKey, kind: "issue" }}
+                onVersionChange={(version) => onVersionChange(artifact, version)}
+                showDiff={false}
+                version={undefined}
+              />
+            )}
+          </Tab>
+        </Suspense>
       ) : null}
     </div>
   );
@@ -229,6 +385,16 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
   const landing = useItemLanding(route, issue.data);
   const navigate = useNavigate();
   const panelScroll = useRef<Partial<Record<IssueTab, number>>>({});
+  const page = useRef<HTMLElement>(null);
+  /** The box that scrolls this page: the column of a reading pane, or the page itself (`null`)
+   *  where the page scrolls it. A tab's place is recorded down that box and put back down the
+   *  same one (`whereTheReaderIs`, `features/doc/readers-place.ts`); recorded from the window
+   *  in a column it would be a number the reader never moves, and every tab would come back at
+   *  the same place. */
+  const theBoxThatScrollsIt = useCallback(
+    () => (page.current === null ? null : whatScrolls(page.current)),
+    []
+  );
   const [specShowDiff, setSpecShowDiff] = useState(false);
   const [specToolbar, setSpecToolbar] = useState<DocumentToolbar | undefined>(undefined);
   const [artifactShowDiff, setArtifactShowDiff] = useState(false);
@@ -266,29 +432,40 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
       id: "status",
       keys: "s",
       label: "Focus the status",
-      run: () => usableControl(STATUS_SELECT)?.focus(),
-      when: () => usableControl(STATUS_SELECT) !== null,
+      run: () => reachingTheChrome(() => focusTheControl(STATUS_SELECT)),
+      when: () => reachable(() => usableControl(STATUS_SELECT)),
     },
     {
       id: "priority",
       keys: "p",
       label: "Focus the priority",
-      run: () => usableControl(PRIORITY_SELECT)?.focus(),
-      when: () => usableControl(PRIORITY_SELECT) !== null,
+      run: () => reachingTheChrome(() => focusTheControl(PRIORITY_SELECT)),
+      when: () => reachable(() => usableControl(PRIORITY_SELECT)),
     },
     {
       id: "set-priority",
       keys: ["0", "1", "2", "3"],
       label: "Set priority P0–P3",
-      run: (event) => priorityWrite.submit(Number(event.key) as IssuePriority),
-      when: () => usableControl(PRIORITY_SELECT) !== null && outsideInputsAndAskCards(),
+      run: (event) => {
+        // The key, not the event: the press may act a frame or two later, once the header this
+        // page was holding has been drawn.
+        const priority = Number(event.key) as IssuePriority;
+        reachingTheChrome(() => {
+          if (usableControl(PRIORITY_SELECT) === null) {
+            return false;
+          }
+          priorityWrite.submit(priority);
+          return true;
+        });
+      },
+      when: () => reachable(() => usableControl(PRIORITY_SELECT)) && outsideInputsAndAskCards(),
     },
     {
       id: "labels",
       keys: "l",
       label: "Edit labels",
-      run: () => usableControl(LABELS_TRIGGER)?.click(),
-      when: () => usableControl(LABELS_TRIGGER) !== null,
+      run: () => reachingTheChrome(() => pressTheControl(LABELS_TRIGGER)),
+      when: () => reachable(() => usableControl(LABELS_TRIGGER)),
     },
     {
       // The heading takes focus only while the issue is open: closed, its `tabIndex` is -1 and
@@ -296,15 +473,15 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
       id: "title",
       keys: "e",
       label: "Edit the title",
-      run: () => usableControl(TITLE_HEADING)?.focus(),
-      when: () => usableControl(TITLE_HEADING) !== null,
+      run: () => reachingTheChrome(() => focusTheControl(TITLE_HEADING)),
+      when: () => reachable(() => usableControl(TITLE_HEADING)),
     },
     {
       id: "pin",
       keys: "Shift+P",
       label: "Pin or unpin the issue",
-      run: () => usableControl(PIN_TOGGLE)?.click(),
-      when: () => usableControl(PIN_TOGGLE) !== null && outsideInputsAndAskCards(),
+      run: () => reachingTheChrome(() => pressTheControl(PIN_TOGGLE)),
+      when: () => reachable(() => usableControl(PIN_TOGGLE)) && outsideInputsAndAskCards(),
     },
     {
       // `s` and `p` put focus in a native select, where every single-key binding is suspended
@@ -325,17 +502,29 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
       id: `tab-${tab}`,
       keys,
       label,
-      run: () => document.getElementById(tabButtonId("issue", tab))?.click(),
-      when: () => document.getElementById(tabButtonId("issue", tab)) !== null,
+      run: () =>
+        reachingTheChrome(() => {
+          const button = document.getElementById(tabButtonId("issue", tab));
+          button?.click();
+          return button !== null;
+        }),
+      when: () => reachable(() => document.getElementById(tabButtonId("issue", tab))),
     })),
   ]);
+
+  // A press still waiting for chrome that never came goes with the page that took it
+  // (`reaching-the-chrome.ts`): the next page's own header is not what it was reaching for. The
+  // layout phase, because that is the phase the next page's header answers a press from: React
+  // runs a leaving tree's passive cleanups after the arriving tree's layout effects, so a
+  // passive forget here let issue B's header do what was pressed on issue A (dispatch://INFRA-341).
+  useLayoutEffect(() => forgetTheReach, []);
 
   useLayoutEffect(() => {
     const top = panelScroll.current[activeTab];
     if (top !== undefined) {
-      window.scrollTo({ top });
+      putTheBoxAt(theBoxThatScrollsIt(), top);
     }
-  }, [activeTab]);
+  }, [activeTab, theBoxThatScrollsIt]);
 
   // Once a panel's tab has ever been active, keep rendering its content even
   // while hidden — that is what keeps the Spec document connected and the Conversation's read
@@ -427,41 +616,99 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
     navigate(buildReferencePath(documentRoute(artifact, version ?? undefined)));
 
   return (
-    <section>
-      <IssueHeader
-        documentArtifact={primaryArtifact}
-        isClosed={isClosed}
-        issue={issue.data}
-        priorityWrite={priorityWrite}
-        state={issueState}
-      />
-      <IssueTabs
-        activeTab={activeTab}
-        artifactCount={(issue.data.artifacts ?? []).length}
-        issueKey={issueKey}
-        onBeforeTabChange={(current) => {
-          panelScroll.current[current] = window.scrollY;
-        }}
-        toolbar={
-          activeTab === "spec" && specToolbar !== undefined ? (
-            <SpecToolbar
-              isClosed={isClosed}
-              onShowDiffChange={setSpecShowDiff}
-              onVersionChange={(version) => {
-                setSpecShowDiff(false);
-                selectDocumentVersion(primaryArtifact, version);
-              }}
-              reference={documentRoute(
-                primaryArtifact,
-                isPrimaryArtifactRoute ? artifactRoute?.version : undefined
-              )}
-              showDiff={specShowDiff}
-              toolbar={specToolbar}
-              version={isPrimaryArtifactRoute ? artifactRoute?.version : undefined}
-            />
-          ) : undefined
+    <section ref={page}>
+      {/* What the header says about this issue stands in the header's own box until the header
+          lands, and in its box again while the header's chunk arrives: a reader is told the
+          issue is closed, where its work stands and what a review of its spec decided, without
+          having to press for it (`WhatTheHeaderWouldSay`). */}
+      <ChromeAfterTheFirstBatch
+        label="Show the issue header"
+        space={
+          <IssueHeaderSkeleton
+            isClosed={isClosed}
+            state={<WhatTheHeaderWouldSay artifact={primaryArtifact} issue={issue.data} />}
+          />
         }
-      />
+      >
+        <Suspense
+          fallback={
+            <IssueHeaderSkeleton
+              isClosed={isClosed}
+              state={<WhatTheHeaderWouldSay artifact={primaryArtifact} issue={issue.data} />}
+            />
+          }
+        >
+          <IssueHeader
+            documentArtifact={primaryArtifact}
+            isClosed={isClosed}
+            issue={issue.data}
+            priorityWrite={priorityWrite}
+            state={issueState}
+          />
+        </Suspense>
+      </ChromeAfterTheFirstBatch>
+      {/* The open document's connection dot stands in the strip's space until the strip itself
+          lands, and in the box again while the strip's chunk arrives. A reader whose edits are
+          in this browser alone is told so while the document is still connecting, which is
+          exactly when no first batch comes to draw the strip (`issue-page-skeleton.tsx`,
+          `features/doc/first-batch.ts`). */}
+      <ChromeAfterTheFirstBatch
+        label="Show the issue tabs"
+        space={
+          <IssueTabsSkeleton
+            artifactCount={(issue.data.artifacts ?? []).length}
+            trailing={
+              activeTab === "spec" && specToolbar !== undefined ? (
+                <ConnectionDot connection={specToolbar.connection} pending={specToolbar.pending} />
+              ) : undefined
+            }
+          />
+        }
+      >
+        <Suspense
+          fallback={
+            <IssueTabsSkeleton
+              artifactCount={(issue.data.artifacts ?? []).length}
+              trailing={
+                activeTab === "spec" && specToolbar !== undefined ? (
+                  <ConnectionDot
+                    connection={specToolbar.connection}
+                    pending={specToolbar.pending}
+                  />
+                ) : undefined
+              }
+            />
+          }
+        >
+          <IssueTabs
+            activeTab={activeTab}
+            artifactCount={(issue.data.artifacts ?? []).length}
+            issueKey={issueKey}
+            onBeforeTabChange={(current) => {
+              panelScroll.current[current] = whereTheReaderIs(theBoxThatScrollsIt());
+            }}
+            toolbar={
+              activeTab === "spec" && specToolbar !== undefined ? (
+                <SpecToolbar
+                  isClosed={isClosed}
+                  onShowDiffChange={setSpecShowDiff}
+                  onVersionChange={(version) => {
+                    setSpecShowDiff(false);
+                    selectDocumentVersion(primaryArtifact, version);
+                  }}
+                  reference={documentRoute(
+                    primaryArtifact,
+                    isPrimaryArtifactRoute ? artifactRoute?.version : undefined
+                  )}
+                  showDiff={specShowDiff}
+                  toolbar={specToolbar}
+                  version={isPrimaryArtifactRoute ? artifactRoute?.version : undefined}
+                />
+              ) : undefined
+            }
+          />
+        </Suspense>
+      </ChromeAfterTheFirstBatch>
       <div
         aria-hidden={activeTab !== "spec"}
         aria-labelledby="issue-spec-tab"
@@ -471,22 +718,26 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
       >
         {activatedTabs.spec && !(artifactRoute !== undefined && !isPrimaryArtifactRoute) ? (
           <div className="space-y-4">
-            <ArtifactDocument
-              artifact={primaryArtifact}
-              askId={askId}
-              commentId={commentId}
-              highlightTerm={highlightTerm}
-              isClosed={isClosed}
-              onToolbarChange={handleSpecToolbarChange}
-              owner={{ key: issueKey, kind: "issue" }}
-              onVersionChange={(version) => {
-                setSpecShowDiff(false);
-                selectDocumentVersion(primaryArtifact, version);
-              }}
-              showDiff={specShowDiff}
-              version={isPrimaryArtifactRoute ? artifactRoute?.version : undefined}
-            />
-            <SpecRequirements issueKey={issueKey} />
+            <Suspense fallback={null}>
+              <ArtifactDocument
+                artifact={primaryArtifact}
+                askId={askId}
+                commentId={commentId}
+                highlightTerm={highlightTerm}
+                isClosed={isClosed}
+                onToolbarChange={handleSpecToolbarChange}
+                owner={{ key: issueKey, kind: "issue" }}
+                onVersionChange={(version) => {
+                  setSpecShowDiff(false);
+                  selectDocumentVersion(primaryArtifact, version);
+                }}
+                showDiff={specShowDiff}
+                version={isPrimaryArtifactRoute ? artifactRoute?.version : undefined}
+              />
+            </Suspense>
+            <Suspense fallback={null}>
+              <SpecRequirements issueKey={issueKey} />
+            </Suspense>
           </div>
         ) : null}
       </div>
@@ -518,15 +769,17 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
         role="tabpanel"
       >
         {activatedTabs.conversation ? (
-          <ConversationTab
-            issueArtifacts={issueArtifacts}
-            focusItemId={conversationFocusItemId}
-            isClosed={isClosed}
-            issueKey={issueKey}
-            onFirstPlacement={forgetConversationScroll}
-            state={state.data}
-            visible={activeTab === "conversation"}
-          />
+          <Suspense fallback={null}>
+            <ConversationTab
+              issueArtifacts={issueArtifacts}
+              focusItemId={conversationFocusItemId}
+              isClosed={isClosed}
+              issueKey={issueKey}
+              onFirstPlacement={forgetConversationScroll}
+              state={state.data}
+              visible={activeTab === "conversation"}
+            />
+          </Suspense>
         ) : null}
       </div>
       <div
@@ -536,7 +789,11 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
         id="issue-children-panel"
         role="tabpanel"
       >
-        {activatedTabs.children ? <ChildrenTab issue={issue.data} /> : null}
+        {activatedTabs.children ? (
+          <Suspense fallback={null}>
+            <ChildrenTab issue={issue.data} />
+          </Suspense>
+        ) : null}
       </div>
       <ArtifactRoutePanel
         active={activeTab === "artifacts"}
@@ -551,21 +808,23 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
         toolbar={artifactToolbar}
       >
         {selectedArtifact?.kind === "doc" ? (
-          <ArtifactDocument
-            artifact={selectedArtifact}
-            askId={askId}
-            commentId={commentId}
-            highlightTerm={highlightTerm}
-            isClosed={isClosed}
-            onToolbarChange={handleArtifactToolbarChange}
-            owner={{ key: issueKey, kind: "issue" }}
-            onVersionChange={(version) => {
-              setArtifactShowDiff(false);
-              selectDocumentVersion(selectedArtifact, version);
-            }}
-            showDiff={artifactShowDiff}
-            version={artifactRoute?.version}
-          />
+          <Suspense fallback={null}>
+            <ArtifactDocument
+              artifact={selectedArtifact}
+              askId={askId}
+              commentId={commentId}
+              highlightTerm={highlightTerm}
+              isClosed={isClosed}
+              onToolbarChange={handleArtifactToolbarChange}
+              owner={{ key: issueKey, kind: "issue" }}
+              onVersionChange={(version) => {
+                setArtifactShowDiff(false);
+                selectDocumentVersion(selectedArtifact, version);
+              }}
+              showDiff={artifactShowDiff}
+              version={artifactRoute?.version}
+            />
+          </Suspense>
         ) : null}
       </ArtifactRoutePanel>
       <div
@@ -575,7 +834,11 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
         id="issue-activity-panel"
         role="tabpanel"
       >
-        {activatedTabs.activity ? <ActivityTab issueKey={issueKey} state={state.data} /> : null}
+        {activatedTabs.activity ? (
+          <Suspense fallback={null}>
+            <ActivityTab issueKey={issueKey} state={state.data} />
+          </Suspense>
+        ) : null}
       </div>
       <div
         aria-hidden={activeTab !== "decisions"}
@@ -585,11 +848,13 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
         role="tabpanel"
       >
         {activatedTabs.decisions ? (
-          <DecisionsPanel
-            artifacts={issue.data?.artifacts ?? []}
-            isClosed={isClosed}
-            issueKey={issueKey}
-          />
+          <Suspense fallback={null}>
+            <DecisionsPanel
+              artifacts={issue.data?.artifacts ?? []}
+              isClosed={isClosed}
+              issueKey={issueKey}
+            />
+          </Suspense>
         ) : null}
       </div>
       <div
@@ -599,7 +864,11 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
         id="issue-collaborators-panel"
         role="tabpanel"
       >
-        {activatedTabs.collaborators ? <CollaboratorsTab issueKey={issueKey} /> : null}
+        {activatedTabs.collaborators ? (
+          <Suspense fallback={null}>
+            <CollaboratorsTab issueKey={issueKey} />
+          </Suspense>
+        ) : null}
       </div>
     </section>
   );

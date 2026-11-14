@@ -4,7 +4,7 @@ import {
   type ThreadMessageLike,
   useExternalStoreRuntime,
 } from "@assistant-ui/react";
-import type { AgentStreamFrame } from "@legion/contracts";
+import type { AgentStreamFrame } from "@legion/contracts/agent-stream";
 import { cleanup, screen } from "@testing-library/react";
 import type { ReactNode } from "react";
 
@@ -62,12 +62,15 @@ function Harness({ messages }: { messages: KeyedMessage[] }): ReactNode {
         front
         held={false}
         initialPlace={null}
+        modes={["steer"]}
+        onPickMode={() => {}}
         onPlace={() => {}}
         ownSendCount={0}
         placeholder="Message the session…"
         replayCount={0}
         resetKey="session-1"
         sends={NO_SESSION_SENDS}
+        sessionId="session-1"
       />
     </AssistantRuntimeProvider>
   );

@@ -2,14 +2,7 @@ import type { QueryClient } from "@tanstack/react-query";
 
 import { inboxQuery, projectsQuery } from "../../api/queries";
 import type { Ask } from "../../api/types";
-
-/** A document ask's artifact; the server always sets it, so its absence is a contract error. */
-export function askArtifactId(ask: Ask): string {
-  if (ask.artifact_id === null || ask.artifact_id === undefined) {
-    throw new Error("document ask is missing its artifact id");
-  }
-  return ask.artifact_id;
-}
+import { askArtifactId } from "./ask-comment";
 
 /**
  * The reads that carry an ask besides its own thread: the Inbox, and the lists of whatever owns

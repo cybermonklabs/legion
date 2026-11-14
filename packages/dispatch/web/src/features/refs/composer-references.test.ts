@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
-import { DISPATCH_TEXT_REFERENCES } from "@legion/contracts";
+import { DISPATCH_TEXT_REFERENCES } from "@legion/contracts/dispatch-text-references";
 
-import { composerReferences } from "./routes";
+import { composerReferences, isSafeAppPath } from "./routes";
 
 const origin = "https://dispatch.test";
 
@@ -50,4 +50,38 @@ test.each([
   // loaded pod can fail it by being slow.
   expect(performance.now() - start).toBeLessThan(BACKTRACKING_BUDGET_MS);
   expect(cited).toEqual([...refs]);
+});
+
+// Every pill is a link, and what it links to is read out of text a person typed. The pill's
+// href is built from the route rather than from that text, and `isSafeAppPath` is what says so
+// at the sink: a path of this app, one leading slash and no second one, that the URL parser
+// resolves against a base to that same base. These bodies are the shapes that would matter if it
+// were not - a scheme, another origin, and a tag - and each either cites nothing or cites a place
+// inside the dashboard.
+test.each([
+  ["a javascript scheme", "see javascript:alert(1) here"],
+  ["a protocol-relative address", "see //evil.example/issues/CORE-1 here"],
+  ["another origin's dashboard address", "see https://evil.example/issues/CORE-1 here"],
+  ["a data URL", "see data:text/html,<script>alert(1)</script> here"],
+  ["a tag typed into the body", "see <img src=x onerror=alert(1)> here"],
+  ["a tag beside a real reference", "see <img src=x onerror=alert(1)> and dispatch://CORE-1"],
+] as const)("a body holding %s links only inside the app", (_name, body) => {
+  for (const { href } of composerReferences(body, origin)) {
+    expect(href.startsWith("/")).toBe(true);
+    expect(href.startsWith("//")).toBe(false);
+  }
+});
+
+test("a reference whose path is not this app's is no pill at all", () => {
+  // The guard itself, since no route builds such a path today: a path that is not the app's is
+  // dropped rather than drawn, which is what a route kind added later would meet.
+  expect(isSafeAppPath("/issues/CORE-1")).toBe(true);
+  expect(isSafeAppPath("/issues/CORE-1?v=2#b-b1")).toBe(true);
+  expect(isSafeAppPath("//evil.example/issues/CORE-1")).toBe(false);
+  expect(isSafeAppPath("javascript:alert(1)")).toBe(false);
+  expect(isSafeAppPath("https://evil.example/")).toBe(false);
+  // A browser reads this as `//evil.example/x`, since the URL parser takes the backslash for a
+  // slash; the leading-slash half of the guard passes it and the resolved origin refuses it.
+  expect(isSafeAppPath("/\\evil.example/issues/CORE-1")).toBe(false);
+  expect(new URL("/\\evil.example/issues/CORE-1", origin).origin).toBe("https://evil.example");
 });

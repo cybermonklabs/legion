@@ -1,12 +1,8 @@
-import {
-  ASK_URGENCIES,
-  decodeBlockId,
-  hasControlCharacter,
-  isSessionId,
-  itemFromSearch,
-  SESSION_ID_PATTERN,
-  shortSessionId,
-} from "@legion/contracts";
+import { shortSessionId } from "@legion/contracts/actor-label";
+import { decodeBlockId } from "@legion/contracts/dispatch-block-ref";
+import { ASK_URGENCIES } from "@legion/contracts/dispatch-constants";
+import { hasControlCharacter, itemFromSearch } from "@legion/contracts/dispatch-href";
+import { isSessionId, SESSION_ID_PATTERN } from "@legion/contracts/dispatch-text-rules";
 import { matchPath } from "react-router-dom";
 
 import type { ArtifactOwner } from "../../api/client";
@@ -646,10 +642,74 @@ function pageRoutes(
   return { block: id === undefined ? undefined : withBlock(route, id), page: route };
 }
 
-/** A reference a text cites: the `dispatch://` form and the dashboard path it opens. */
+/** A reference a text cites: the `dispatch://` form and the dashboard path it opens. The path
+ *  is always a path of this app (`isSafeAppPath`), since the pill it is drawn as is a link and
+ *  the text behind it is the reader's own; a reference whose path is not one is no reference
+ *  here. */
 export interface ComposerReference {
-  href?: string;
+  href: string;
   reference: string;
+}
+
+/** The base `isSafeAppPath` resolves a path against. It is never fetched, never shown and never
+ *  leaves that function: it stands in for "this app's own address" while the question is asked,
+ *  and `.invalid` is the name RFC 2606 reserves for a host that resolves nowhere, so a mistake
+ *  that let one of these strings out would reach no server. The page's own origin is not used,
+ *  because the question is whether the string is a path at all rather than which host it names,
+ *  and a page whose origin is opaque (a test's `about:blank`, a sandboxed frame) has no origin
+ *  to compare with. */
+const APP_PATH_BASE = "https://dispatch.invalid";
+
+/**
+ * Whether a path is a place inside this dashboard: one leading `/` and no second one, and a path
+ * the URL parser resolves against a base to that same base.
+ *
+ * The two halves catch different things, and neither alone is enough. The text these paths are
+ * read out of is the reader's own - a body they typed, a reference they pasted - so a `javascript:`
+ * or `data:` scheme and a `//elsewhere.example` address are what the leading-slash half refuses.
+ * A browser reads `/\elsewhere.example/x` as that second shape too, though, because the URL parser
+ * takes a backslash for a slash in an http(s) URL, and the leading-slash half passes it; resolving
+ * the path and comparing origins is what refuses that one, and anything else a parser reads
+ * otherwise than the characters suggest.
+ *
+ * Every builder below returns such a path for every route it knows, each segment of it encoded
+ * (`encodeURIComponent`), and this is what says so where a path built from a reference a reader
+ * wrote becomes a link they can press: `safeReferencePath` below asks it for a whole route, and
+ * `RefLink.tsx` asks it for the path its hook already resolved. The rule a new route kind has to
+ * keep is here, in front of the check, rather than spread over the builders where the next one
+ * would miss it.
+ */
+export function isSafeAppPath(path: string): boolean {
+  if (!path.startsWith("/") || path.startsWith("//")) {
+    return false;
+  }
+  try {
+    return new URL(path, APP_PATH_BASE).origin === APP_PATH_BASE;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The path `route` opens, or undefined when what the builders made is not a path of this app.
+ *
+ * A route is read out of text a reader wrote or out of an anchor the page already holds, and the
+ * path built from it is written into an `href`. Not every such place asks here: `RefLink.tsx`
+ * holds the path it writes to `isSafeAppPath` itself, and the sites that link a route the page
+ * already holds - an activity line, an artifact header, a decision card, a reference link, a
+ * Referenced-by row, an item match - call `buildReferencePath` and write what it answers. What
+ * makes those safe is the builders: every one of them encodes each segment it writes
+ * (`encodeURIComponent`), so no id or slug can open a path of another origin. This is the guard
+ * for the places that read a route out of a body's own text, and the rule a new route kind has
+ * to keep is stated at `isSafeAppPath` above, in front of the check, rather than spread over the
+ * builders where the next one would miss it.
+ */
+export function safeReferencePath(
+  route: DispatchReferenceRoute,
+  specSlug?: string
+): string | undefined {
+  const path = buildReferencePath(route, specSlug);
+  return isSafeAppPath(path) ? path : undefined;
 }
 
 /**
@@ -668,12 +728,17 @@ export function composerReferences(
     if (route === undefined) {
       continue;
     }
+    // The pill is a link, and the text behind this route is the reader's own.
+    const href = safeReferencePath(route);
+    if (href === undefined) {
+      continue;
+    }
     const reference = buildDispatchReference(route);
     if (seen.has(reference)) {
       continue;
     }
     seen.add(reference);
-    references.push({ href: buildReferencePath(route), reference });
+    references.push({ href, reference });
   }
   return references;
 }
@@ -824,13 +889,21 @@ export function pictureReference(attrs: {
   return { caption: alt === "" ? (named?.slug ?? "") : alt, named, route, source };
 }
 
+/** The project document an item with no issue belongs to: what `itemRoute` needs to name that
+ *  item's reference, and what every surface carrying one down to a header passes. One type
+ *  rather than a hand-written `{ project: string; slug: string }` at each of them. */
+export interface DocumentOwner {
+  readonly project: string;
+  readonly slug: string;
+}
+
 /** The route an ask or comment is referenced by: under its issue when it has one, else under the
  *  project document that owns it. Only Inbox rows carry `document`, so a caller showing a
  *  project document's items names that document; without either there is no reference. */
 export function itemRoute(
   kind: "ask" | "comment",
   item: { id: string; issue_key: string | null },
-  document: { project: string; slug: string } | undefined
+  document: DocumentOwner | undefined
 ): DispatchReferenceRoute | undefined {
   if (item.issue_key !== null) {
     return { id: item.id, key: item.issue_key, kind };
@@ -936,8 +1009,12 @@ export function buildReferencePath(route: DispatchReferenceRoute, specSlug?: str
     : `${buildIssuePath({ key: route.key, kind: "artifact", slug })}?v=${target.pin}`;
 }
 
+/** The key is encoded like every other part a route carries, though the shape a key is read
+ *  against (`[A-Z][A-Z0-9]{1,9}`, and an issue's number after it) leaves it as it stands: a path
+ *  these builders make then has no substring in it that went through no encoder, so nothing a
+ *  route holds can read as part of the path around it. */
 export function buildIssuePath(route: IssueRoute): string {
-  const issue = `/issues/${route.key}`;
+  const issue = `/issues/${encodeURIComponent(route.key)}`;
   if (route.kind === "issue") {
     return issue;
   }
@@ -962,8 +1039,9 @@ export function buildIssuePath(route: IssueRoute): string {
   return `${issue}/${segment}/${encodeURIComponent(route.id)}`;
 }
 
+/** The project key passes the same encoder, for the reason `buildIssuePath` gives. */
 export function buildProjectPath(route: ProjectRoute): string {
-  const project = `/projects/${route.project}`;
+  const project = `/projects/${encodeURIComponent(route.project)}`;
   if (route.kind === "project") {
     return project;
   }

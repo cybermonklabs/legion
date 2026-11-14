@@ -36,7 +36,8 @@ import { searchAnswer } from "../search/search-fixture";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import fixtures from "./__fixtures__/display-trees.json";
 import { warmMarkdownRenderer } from "./markdown-engine";
-import { closeRefPreview, RefPreviewHost, referenceTriggerProps } from "./RefPreview";
+import { RefPreviewHost } from "./RefPreview";
+import { closeRefPreview, referenceTriggerProps } from "./ref-preview-state";
 import { REF_PREVIEW_OPEN_DELAY_MS } from "./ref-preview-timing";
 import { Unfurl } from "./Unfurl";
 
@@ -155,12 +156,15 @@ function Transcript({ messages }: { messages: KeyedMessage[] }): ReactNode {
         front
         held={false}
         initialPlace={null}
+        modes={["steer"]}
+        onPickMode={() => {}}
         onPlace={() => {}}
         ownSendCount={0}
         placeholder="Message the session…"
         replayCount={0}
         resetKey="session-1"
         sends={NO_SESSION_SENDS}
+        sessionId="session-1"
       />
     </AssistantRuntimeProvider>
   );

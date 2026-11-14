@@ -857,6 +857,57 @@ test("a code span containing tag-shaped text renders the literal characters with
   }
 });
 
+// INFRA-341 R5. A body is not a document: its author writes what they like, and the parser
+// refusing the raw HTML in one used to send the whole body to the literal-text fallback, every
+// `**` showing. Of 1,481 comments measured on 2026-10-25, 14 read that way, and every one of
+// them held Legion's `<!-- legion: … -->` footer. A body now renders its Markdown: an HTML
+// comment draws as nothing, as GitHub draws it, and any other raw HTML as its own characters.
+const LEGION_FOOTER = '<!-- legion: {"session":"01HQ8F3K2M4N5P6Q7R8S9T0V","phase":"retro"} -->';
+
+for (const [what, markdown] of [
+  ["a block HTML comment", `**Retro** complete.\n\n${LEGION_FOOTER}`],
+  [
+    "a block of other raw HTML",
+    "**Retro** complete.\n\n<details>\n<summary>Logs</summary>\n</details>",
+  ],
+  ["an inline HTML comment", `**Retro** complete <!-- legion: done --> today.`],
+] as const) {
+  test(`a body holding ${what} renders its Markdown, with no comment text and no fallback`, async () => {
+    const view = render(<MarkdownBody markdown={markdown} />);
+
+    try {
+      expect(
+        await within(view.container).findByText("Retro", { selector: "strong" })
+      ).toBeDefined();
+      expect(fallbackMark(view.container)).toBeNull();
+      expect(view.container.textContent).not.toContain("<!--");
+      expect(view.container.textContent).not.toContain("legion");
+      expect(view.container.textContent).not.toContain("**");
+    } finally {
+      view.unmount();
+    }
+  });
+}
+
+test("a body of raw HTML shows its text literally, creates no element, and still formats", async () => {
+  const view = render(
+    <MarkdownBody markdown={"Before **it**:\n\n<img src=x onerror=alert(1)>\n\nAfter **it**."} />
+  );
+
+  try {
+    expect(await within(view.container).findByText("<img src=x onerror=alert(1)>")).not.toBeNull();
+    expect(view.container.querySelector("img")).toBeNull();
+    expect(view.container.querySelector("script")).toBeNull();
+    // The rest of the body around it is formatted, and no part of it fell back to its source.
+    expect(
+      Array.from(view.container.querySelectorAll("strong"), (strong) => strong.textContent)
+    ).toEqual(["it", "it"]);
+    await waitFor(() => expect(fallbackMark(view.container)).toBeNull());
+  } finally {
+    view.unmount();
+  }
+});
+
 test("raw unsupported HTML renders as literal text with no element created", async () => {
   // The engine draws a block of HTML as a paragraph whose one child is that block's text as
   // inline HTML (`remarkHtmlBlockParagraphs`), so a body that is nothing but a tag parses and the
@@ -1454,6 +1505,27 @@ describe("A long body parsed in the worker", () => {
     }
   });
 
+  // The worker parses every body past the threshold, so the raw-HTML policy has to reach it as
+  // the soft-break policy does: a retro's comment is longer than 2,000 characters far more often
+  // than it is shorter, and it is the body the footer is on.
+  test("renders the Markdown of a long body holding the Legion footer, with no comment in it", async () => {
+    const worker = installFakeParseWorker();
+    const markdown = `${longBody("A retro the worker is parsing")}\n${LEGION_FOOTER}\n`;
+    expect(markdown.length).toBeGreaterThan(markdownWorkerThreshold);
+    const view = render(<MarkdownBody markdown={markdown} />);
+
+    try {
+      await act(() => worker.answer(0));
+      await waitFor(() => expect(topItems(view.container)).toHaveLength(longItems));
+      await waitFor(() => expect(pendingMark(view.container)).toBeNull());
+      expect(fallbackMark(view.container)).toBeNull();
+      expect(view.container.textContent).not.toContain("legion");
+      expect(view.container.textContent).not.toContain("<!--");
+    } finally {
+      view.unmount();
+    }
+  });
+
   // The worker answers with the document as plain JSON, and the page builds a document of its own
   // schema from it. `Schema.nodeFromJSON` cannot: it checks each attribute against its type, and
   // the Markdown parser writes `title: null` for a picture with no title where the schema's
@@ -2037,6 +2109,77 @@ describe("A long body parsed in the worker", () => {
       expect(worker.requests).toHaveLength(1);
     } finally {
       later.unmount();
+    }
+  });
+
+  // Where a body formats after the commit that drew it, the reader must be left where they
+  // are, and the box that carries them is not always the window: the Inbox reads its document
+  // in a column of its own (`features/inbox/PaneDocument.tsx`). A keeper that scrolled the
+  // page instead moved nothing the reader could see and left the whole formatting of a body
+  // they had scrolled past on them. The page's own keeper is what runs here
+  // (`features/doc/readers-place.ts`), and it holds them against whatever scrolls the body.
+  test("holds the reader in the column a body formats in, and leaves the page alone", async () => {
+    const worker = installFakeParseWorker();
+    const markdown = longBody("A body the reader has scrolled past in a column");
+    const view = render(
+      <div data-testid="column">
+        <MarkdownBody markdown={markdown} />
+      </div>
+    );
+    const column = view.container.firstElementChild as HTMLElement;
+    const body = column.firstElementChild as HTMLElement;
+    // happy-dom lays nothing out, computes no overflow and scrolls nothing, so the column, its
+    // scroll and the two rectangles that matter are stated here, as `readers-place.test.ts`
+    // states them: a column 600 px tall standing 200 px down the page, scrolled 500 px, with
+    // the body at the top of its content - above the reader, with everything they are looking
+    // at under it. The body stands at its own text's height until its formatting lands and at
+    // 432 px after, which is the 332 px the reader must not be moved by.
+    let scrolled = 500;
+    Object.defineProperty(column, "clientHeight", { configurable: true, value: 600 });
+    Object.defineProperty(column, "scrollHeight", { configurable: true, value: 4_000 });
+    Object.defineProperty(column, "scrollTop", {
+      configurable: true,
+      get: () => scrolled,
+      set: (next: number) => {
+        scrolled = next;
+      },
+    });
+    column.style.overflowY = "auto";
+    const boxes = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(
+      function boxOf(this: Element): DOMRect {
+        if (this === column) {
+          return { bottom: 800, height: 600, top: 200 } as DOMRect;
+        }
+        if (this !== body) {
+          return { bottom: 0, height: 0, top: 0 } as DOMRect;
+        }
+        const height = body.children.length > 0 ? 432 : 100;
+        const top = 200 - scrolled;
+        return { bottom: top + height, height, top } as DOMRect;
+      }
+    );
+    const movedThePage = spyOn(window, "scrollBy").mockImplementation(() => {});
+
+    try {
+      // The marks and the blocks are read from the body itself: the element the container
+      // holds here is the column it stands in.
+      await waitFor(() => expect(body.getAttribute("data-markdown-pending")).toBe("true"));
+      expect(body.children).toHaveLength(0);
+
+      await act(() => worker.answer(0));
+      await waitFor(() =>
+        expect(body.querySelectorAll(":scope > ul > li")).toHaveLength(longItems)
+      );
+      await waitFor(() => expect(body.getAttribute("data-markdown-pending")).toBeNull());
+
+      // The column scrolled by exactly what the formatting added, so the words under the body
+      // stand on the line they stood on; the page itself was never asked to move.
+      expect(column.scrollTop).toBe(832);
+      expect(movedThePage).not.toHaveBeenCalled();
+    } finally {
+      movedThePage.mockRestore();
+      boxes.mockRestore();
+      view.unmount();
     }
   });
 });

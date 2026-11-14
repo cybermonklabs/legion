@@ -117,10 +117,12 @@ const SCHEMA_DERIVATIONS = 61;
 const TABLE_PAYLOAD_TYPES = ["Project"];
 
 /** Every module of the split, as one text with its whitespace collapsed, so a declaration Biome
- *  wrapped over several lines reads as the one line it is. */
+ *  wrapped over several lines reads as the one line it is. `dispatch-constants.ts` is one of
+ *  them: it is the zod-free module of the split, holding the closed lists and limits the
+ *  dashboard reads without loading zod, and the payload schemas read its lists with `z.enum`. */
 const MODULES = readdirSync(SOURCE).filter(
   (entry) =>
-    entry.startsWith("dispatch-api") &&
+    (entry.startsWith("dispatch-api") || entry === "dispatch-constants.ts") &&
     entry.endsWith(".ts") &&
     !entry.endsWith(".test.ts") &&
     !entry.endsWith(".generated.ts")

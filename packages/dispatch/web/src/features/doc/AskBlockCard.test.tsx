@@ -221,8 +221,10 @@ function renderCard({
       );
       return scoped.getByLabelText("Your answer") as HTMLTextAreaElement;
     },
+    /** The option rows of the record under the block, which a reply in the same footer - a
+     *  list item of its own - is no part of. */
     recordRows() {
-      return scoped
+      return within(scoped.getByRole("list", { name: "Options" }))
         .getAllByRole("listitem")
         .map((row) => [(row as HTMLElement).dataset.selected, row.textContent]);
     },
@@ -490,10 +492,12 @@ test("Other opens the composer; the words are the answer and no option is record
     await card.user.click(await card.footer.findByRole("radio", { name: "Other" }));
     const field = card.footer.getByLabelText("Your answer");
     const submit = card.footer.getByRole("button", { name: "Answer" });
-    expect((submit as HTMLButtonElement).disabled).toBe(true);
+    // A refused Answer keeps its place in the tab order and says why (`RefusableButton`), so it
+    // carries `aria-disabled` rather than `disabled` (INFRA-341, R3).
+    expect(submit).toHaveAttribute("aria-disabled", "true");
     await card.user.click(field);
     await card.user.paste("Neither, actually.");
-    expect((submit as HTMLButtonElement).disabled).toBe(false);
+    expect(submit).not.toHaveAttribute("aria-disabled");
     await card.user.click(submit);
     await waitFor(() => expect(answerAsk).toHaveBeenCalledTimes(1));
     expect(answerAsk.mock.calls[0]).toEqual([
@@ -521,10 +525,10 @@ test("with multiple choice, Other sits beside the options and both are sent", as
     expect(ship.checked).toBe(true);
     const submit = card.footer.getByRole("button", { name: "Answer" });
     // Other still needs words, even with an option ticked beside it.
-    expect((submit as HTMLButtonElement).disabled).toBe(true);
+    expect(submit).toHaveAttribute("aria-disabled", "true");
     await card.user.click(card.footer.getByLabelText("Your answer"));
     await card.user.paste("And a canary first.");
-    expect((submit as HTMLButtonElement).disabled).toBe(false);
+    expect(submit).not.toHaveAttribute("aria-disabled");
     await card.user.click(submit);
     await waitFor(() => expect(answerAsk).toHaveBeenCalledTimes(1));
     expect(answerAsk.mock.calls[0]).toEqual([
@@ -547,10 +551,10 @@ test("a decision with no options answers in words alone", async () => {
     expect(card.footer.queryByRole("radio")).not.toBeInTheDocument();
     const field = await card.openComposer();
     const submit = card.footer.getByRole("button", { name: "Answer" });
-    expect((submit as HTMLButtonElement).disabled).toBe(true);
+    expect(submit).toHaveAttribute("aria-disabled", "true");
     await card.user.click(field);
     await card.user.paste(" Go. ");
-    expect((submit as HTMLButtonElement).disabled).toBe(false);
+    expect(submit).not.toHaveAttribute("aria-disabled");
     // The answer form's own submit: user-event has no form for it.
     fireEvent.submit(card.section.querySelector("form") as HTMLFormElement);
     await waitFor(() => expect(answerAsk).toHaveBeenCalledTimes(1));
@@ -589,10 +593,10 @@ test("Ask back on an issue document's decision posts a clarification on the issu
     const field = await card.openComposer();
     const askBack = card.footer.getByRole("button", { name: "Ask back" });
     // Nothing to send yet.
-    expect((askBack as HTMLButtonElement).disabled).toBe(true);
+    expect(askBack).toHaveAttribute("aria-disabled", "true");
     await card.user.click(field);
     await card.user.paste("Ship to which environment?");
-    expect((askBack as HTMLButtonElement).disabled).toBe(false);
+    expect(askBack).not.toHaveAttribute("aria-disabled");
     getAsk.mockResolvedValue(threadRead(ask, [posted]));
     await card.user.click(askBack);
     await waitFor(() => expect(createComment).toHaveBeenCalledTimes(1));
@@ -707,8 +711,10 @@ test("an answered decision hosts the shared record: who answered and when, the c
       expect(within(record).getByText("Ship it after the fix lands.")).toBeDefined()
     );
     expect(await card.footer.findByText("Ship where?")).toBeDefined();
-    // The record has no metadata line, so the block header keeps the reference copy control.
-    expect(card.header.getByRole("button", { name: /^Copy reference/ })).toBeDefined();
+    // The record draws the ask's own header, reference copy control and all, so the block's
+    // header leaves it there rather than offering a second one.
+    expect(within(record).getByRole("button", { name: /^Copy reference/ })).toBeDefined();
+    expect(card.header.queryByRole("button", { name: /^Copy reference/ })).toBeNull();
   } finally {
     card.unmount();
   }
@@ -781,7 +787,7 @@ test("a read-only surface shows an open decision's options with nothing to answe
     expect(card.footer.queryByRole("button")).not.toBeInTheDocument();
     expect(card.recordRows().map(([selected]) => selected)).toEqual(["false", "false"]);
     expect(card.section.querySelector("[data-dispatch-ask-asked]")?.textContent).toBe(
-      "·asked by Architect for CORE-1 (for sjawhar)·3 minutes ago"
+      "Asked by Architect for CORE-1 (for sjawhar)·3 minutes ago"
     );
     expect(getAsk).not.toHaveBeenCalled();
   } finally {
@@ -797,7 +803,7 @@ test("a read-only block whose ask has no recorded author still says when it was 
   });
   try {
     expect(card.section.querySelector("[data-dispatch-ask-asked]")?.textContent).toBe(
-      "·asked3 minutes ago"
+      "Asked3 minutes ago"
     );
   } finally {
     card.unmount();

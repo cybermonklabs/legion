@@ -1205,14 +1205,14 @@ jobs:
               - 'scripts/e2e/lib/**'
               - *omp_install
             # The browser suite (dispatch-browser), which .github/workflows/dispatch-browser.yaml
-            # holds: the shards, the three `-alone` projects, the two-process job, the
+            # holds: the shards, the six `-alone` projects, the two-process job, the
             # fake-embedder job, the visual review and the merge
             # job. Every entry is something a browser row reads: the dashboard and its contracts,
             # the Dispatch server its harness builds, and the two workflow files that hold the
             # steps. The retired `dispatch` job's filter also held three fixture sets whose only
             # readers are the dashboard's and the proof editor's unit tests, and they are not here:
             # dispatch-ui's filter names all three, and with this output ungated on a pull request
-            # they would start four shard machines and the merge job for a fixture-only change.
+            # they would start five shard machines and the merge job for a fixture-only change.
             # The dispatch_browser gate in .github/scripts/ci_job_reads.py says what this suite
             # reads, and check-ci-filters.sh holds this filter to that gate - it refuses a filter
             # that misses a read, never one that is too wide, so a path is in this list because a
@@ -1548,6 +1548,8 @@ jobs:
               - 'packages/envoy/internal/dispatch/text/*'
               - 'packages/envoy/internal/dispatch/text/testdata/**'
               - 'packages/envoy/internal/dispatch/texttrees/*'
+              # first_sync_frames_test.go times the answer to a SyncStep1 through it.
+              - 'packages/envoy/internal/cputest/*'
               - 'packages/envoy/internal/explaintest/*'
               - 'packages/envoy/internal/githubappjwt/*'
               # room_recovery_test.go reads the goroutine dump through it.
@@ -2225,6 +2227,14 @@ jobs:
       # check asks each call for its own reason instead.
       - name: Check every fireEvent call of the Dispatch suite carries its own reason
         run: .github/scripts/check-fireevent-reasons.sh
+
+      # The other half of the same rule, for where a reader is. A surface that reads
+      # `window.scrollY` is right only while the page is the box that scrolls, and one that writes
+      # a scroll leaves no record for the landing correction to tell the page's own place-keeping
+      # from the reader, so both go through web/src/features/doc/readers-place.ts. Nothing in the
+      # type system says so: each is one plain line every element offers.
+      - name: Check every reading of a reader's place and every scroll write goes through one module
+        run: .github/scripts/check-readers-place.sh
 
       - name: Check the release workflows keep credentials out of jobs that run dependency code
         run: .github/scripts/check-release-credentials.sh
@@ -3848,6 +3858,9 @@ jobs:
       - name: Test the fireEvent reason check
         run: .github/scripts/check-fireevent-reasons.test.sh
 
+      - name: Test the reader's-place check
+        run: .github/scripts/check-readers-place.test.sh
+
       - name: Test the release credential check
         run: .github/scripts/check-release-credentials.test.sh
 
@@ -4584,6 +4597,17 @@ jobs:
       - name: Check dispatch dashboard asset sizes
         run: bun run check:asset-sizes
         working-directory: packages/dispatch
+      # The entry chunk is the first screen's download, and what it may hold is a list
+      # (web/src/entry-chunk-contents.ts): a deferred part pulled back into it, or a preload the
+      # page no longer writes, costs every first paint and nothing else fails. The second check
+      # holds the entry chunk to carrying no zod, the validator the SPA keeps out of its first
+      # download. Both read the build the step above produced, so they run here, after it.
+      - name: Check dispatch dashboard entry chunk
+        run: bun run check:entry-chunk
+        working-directory: packages/dispatch
+      - name: Check zod stays out of the dispatch dashboard entry chunk
+        run: bun run check:no-zod
+        working-directory: packages/dispatch
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
         uses: ./.github/actions/ci-ok-report
@@ -4592,7 +4616,7 @@ jobs:
           job-status: ${{ job.status }}
 
   # Every browser row of the Dispatch suite, which .github/workflows/dispatch-browser.yaml
-  # holds: the binaries job that builds the Go commands the lanes run, the shard legs, the three
+  # holds: the binaries job that builds the Go commands the lanes run, the shard legs, the six
   # `-alone` projects a machine each, the two-process job, the fake-embedder job that runs on both
   # lanes, the containerised visual review, and the merge job that joins the shard and alone
   # reports into one and posts this job's ci-ok report.
@@ -4601,7 +4625,7 @@ jobs:
   # `pull-request`, the two projects a change is held to (chromium and iphone), so such a run
   # proves those two rows and no more - it is not the run that proves the suite before main.
   # Every other run - the merge group, a workflow_dispatch and a pull request carrying `full-ci`
-  # - runs `full`: every project, the three `-alone` ones and the two-process job. So the merge
+  # - runs `full`: every project, the six `-alone` ones and the two-process job. So the merge
   # group is where a change meets the whole suite before it lands, and the nightly
   # (.github/workflows/dispatch-browser-nightly.yaml, which calls the same file with the full
   # lane, from main) runs it again on main's tip.

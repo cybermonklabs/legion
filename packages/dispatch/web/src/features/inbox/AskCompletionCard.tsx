@@ -1,4 +1,5 @@
-import { actorActText } from "@legion/contracts";
+import { actorActText } from "@legion/contracts/actor-label";
+import { answerSelected } from "@legion/contracts/dispatch-constants";
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 
@@ -10,7 +11,6 @@ import type {
   AskWithTrees,
 } from "../../api/types";
 import {
-  badgeLow,
   calloutSuccessBg,
   calloutSuccessBorder,
   calloutSuccessText,
@@ -24,14 +24,14 @@ import {
   textPrimaryOnSurface,
 } from "../../theme/classes";
 import { AgentName, AskResolutionLine } from "../refs/AgentName";
-import { askResolutionBadge, askResolutionReason } from "../refs/actor";
+import { askResolutionReason } from "../refs/actor";
 import { MarkdownBody } from "../refs/MarkdownBody";
-import { buildIssuePath } from "../refs/routes";
+import { buildIssuePath, type DocumentOwner } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
 import type { DwellRef } from "../shell/useDwell";
-import { AskAnchorHeader } from "./AskAnchorLink";
 import { AskApprovalLink } from "./AskApprovalLink";
+import { AskHeader, hasUrgencyNotch } from "./AskHeader";
 import { AskOptionList } from "./AskOptionList";
 
 export function AskEditHistory({ ask, edits }: { ask: Ask; edits: AskEditWithTrees[] }): ReactNode {
@@ -92,10 +92,10 @@ export function AskAnswerHistory({ answers }: { answers: AskAnswerWithTrees[] })
         </summary>
         <div className="mt-2 space-y-3">
           {earlier.map((previous) => {
-            const selected = previous.selected ?? [];
+            const chosen = answerSelected(previous);
             return (
               <div key={previous.at}>
-                {selected.length === 0 ? null : <p>{selected.join(", ")}</p>}
+                {chosen.length === 0 ? null : <p>{chosen.join(", ")}</p>}
                 {previous.text === null || previous.text === "" ? null : (
                   <MarkdownBody markdown={previous.text} tree={previous.text_tree} />
                 )}
@@ -151,6 +151,7 @@ function AnsweredAsk({
   frame,
   markRef,
   onChangeAnswer,
+  owner,
 }: {
   answers: AskAnswerWithTrees[];
   artifactSlug: string | undefined;
@@ -160,74 +161,79 @@ function AnsweredAsk({
   frame: AskFrame;
   markRef?: DwellRef;
   onChangeAnswer?: () => void;
+  owner: DocumentOwner | undefined;
 }): ReactNode {
   const { answer } = ask;
+  const chosen = answer === null ? [] : answerSelected(answer);
+  const inBlock = frame === "block";
   // A chosen "Other" answer carries no real option (answer.selected is empty) but still has
   // free text - render it under an Other label so the record reads as a chosen option, not an
   // unlabeled addendum. An ask with no options at all has no Other row to have chosen, so its
   // free text is always the plain answer instead.
   const otherText =
-    (ask.options ?? []).length > 0 && answer !== null && (answer.selected ?? []).length === 0
-      ? answer.text
-      : null;
+    (ask.options ?? []).length > 0 && answer !== null && chosen.length === 0 ? answer.text : null;
   return (
     <article
-      className={`rounded-xl p-4 text-sm ${frame === "block" ? "mt-3" : ""} ${calloutSuccessBorder} ${calloutSuccessBg} ${calloutSuccessText}`}
+      className={`relative rounded-xl p-4 text-sm ${inBlock || hasUrgencyNotch(ask, inBlock) ? "mt-3" : ""} ${calloutSuccessBorder} ${calloutSuccessBg} ${calloutSuccessText}`}
       data-testid={`ask-${ask.id}`}
       ref={markRef}
     >
-      <AskAnchorHeader ask={ask} inBlock={frame === "block"} tone="success" />
-      <OrphanedAnchorNotice artifactSlug={artifactSlug} ask={ask} />
-      {frame === "block" ? null : (
-        <div className={`font-medium ${textPrimaryOnSuccessCallout}`}>
-          <MarkdownBody
-            markdown={ask.question}
-            source={textSourceOf("ask", ask.id)}
-            tree={ask.question_tree}
-          />
-        </div>
-      )}
-      <p className={`mt-1 text-xs ${calloutSuccessTimestampText}`}>
-        <AgentName actor={ask.author} inline />
-      </p>
-      {ask.kind === "approval" && documentLink ? (
-        <p className={`mt-1 text-sm font-medium ${textPrimaryOnSuccessCallout}`}>
-          <AskApprovalLink ask={ask} />
-        </p>
-      ) : null}
-      <AskEditHistory ask={ask} edits={edits} />
-      <AskOptionList options={ask.options ?? []} selected={answer?.selected ?? []} />
-      {otherText !== null && otherText !== "" ? (
-        <div className="mt-2">
-          <p className={`text-sm font-medium ${textPrimaryOnSuccessCallout}`}>Other</p>
-          <div className="mt-1">
+      <AskHeader
+        ask={ask}
+        inBlock={inBlock}
+        owner={owner}
+        place="answered"
+        trailing={
+          answer === null ? null : (
+            <>
+              {" · "}
+              Answered by{" "}
+              <span className="font-semibold">
+                <AgentName actor={{ act: answer.act, id: answer.user, kind: "user" }} inline />
+              </span>{" "}
+              <Timestamp at={answer.at} />
+            </>
+          )
+        }
+      >
+        <OrphanedAnchorNotice artifactSlug={artifactSlug} ask={ask} />
+        {inBlock ? null : (
+          <div className={`font-medium ${textPrimaryOnSuccessCallout}`}>
             <MarkdownBody
-              markdown={otherText}
+              markdown={ask.question}
               source={textSourceOf("ask", ask.id)}
-              tree={answer?.text_tree}
+              tree={ask.question_tree}
             />
           </div>
-        </div>
-      ) : answer === null || answer.text === null || answer.text === "" ? null : (
-        <div className="mt-1">
-          <MarkdownBody
-            markdown={answer.text}
-            source={textSourceOf("ask", ask.id)}
-            tree={answer.text_tree}
-          />
-        </div>
-      )}
-      {answer === null ? (
-        <p className={`mt-2 text-xs ${calloutSuccessTimestampText}`}>
-          Asked <Timestamp at={ask.created_at} />
-        </p>
-      ) : (
-        <p className={`mt-2 text-xs ${calloutSuccessTimestampText}`}>
-          Asked <Timestamp at={ask.created_at} /> · Answered by{" "}
-          <span className="font-semibold">{actorActText(answer.user, answer.act)}</span>{" "}
-          <Timestamp at={answer.at} />
-        </p>
-      )}
+        )}
+        {ask.kind === "approval" && documentLink ? (
+          <p className={`mt-1 text-sm font-medium ${textPrimaryOnSuccessCallout}`}>
+            <AskApprovalLink ask={ask} />
+          </p>
+        ) : null}
+        <AskEditHistory ask={ask} edits={edits} />
+        <AskOptionList options={ask.options ?? []} selected={chosen} />
+        {otherText !== null && otherText !== "" ? (
+          <div className="mt-2">
+            <p className={`text-sm font-medium ${textPrimaryOnSuccessCallout}`}>Other</p>
+            <div className="mt-1">
+              <MarkdownBody
+                markdown={otherText}
+                source={textSourceOf("ask", ask.id)}
+                tree={answer?.text_tree}
+              />
+            </div>
+          </div>
+        ) : answer === null || answer.text === null || answer.text === "" ? null : (
+          <div className="mt-1">
+            <MarkdownBody
+              markdown={answer.text}
+              source={textSourceOf("ask", ask.id)}
+              tree={answer.text_tree}
+            />
+          </div>
+        )}
+      </AskHeader>
       <AskAnswerHistory answers={answers} />
       {onChangeAnswer === undefined ? null : (
         <button
@@ -247,60 +253,63 @@ function ResolvedAsk({
   documentLink,
   edits,
   frame,
+  owner,
 }: {
   ask: AskWithTrees & { resolution: AskResolution };
   documentLink: boolean;
   edits: AskEditWithTrees[];
   frame: AskFrame;
+  owner: DocumentOwner | undefined;
 }): ReactNode {
   const { resolution } = ask;
+  const inBlock = frame === "block";
   const reason = askResolutionReason(resolution);
   return (
     <article
-      className={`rounded-xl p-4 text-sm ${frame === "block" ? "mt-3" : ""} ${card}`}
+      className={`relative rounded-xl p-4 text-sm ${inBlock || hasUrgencyNotch(ask, inBlock) ? "mt-3" : ""} ${card}`}
       data-testid={`ask-${ask.id}`}
     >
-      <AskAnchorHeader ask={ask} inBlock={frame === "block"} tone="surface" />
-      {frame === "block" ? null : (
-        <div className={`font-medium ${textPrimaryOnSurface}`}>
-          <MarkdownBody
-            markdown={ask.question}
-            source={textSourceOf("ask", ask.id)}
-            tree={ask.question_tree}
-          />
-        </div>
-      )}
-      <span
-        className={`mt-2 inline-block rounded-full px-2.5 py-1 text-xs font-medium ${badgeLow.bg} ${badgeLow.text}`}
-        data-testid="ask-resolution-badge"
-      >
-        {askResolutionBadge(resolution)}
-      </span>
-      <p className={`mt-1 text-xs ${textMutedOnSurface}`}>
-        <AgentName actor={ask.author} inline />
-      </p>
-      {ask.kind === "approval" && documentLink ? (
-        <p className={`mt-1 text-sm ${linkText} ${linkHoverText}`}>
-          <AskApprovalLink ask={ask} />
-        </p>
-      ) : null}
-      <AskOptionList options={ask.options ?? []} selected={[]} />
-      <AskEditHistory ask={ask} edits={edits} />
-      <p className={`mt-2 text-xs ${textMutedOnSurface}`}>
-        Asked <Timestamp at={ask.created_at} /> · <AskResolutionLine resolution={resolution} />
-        {reason === undefined ? null : (
+      <AskHeader
+        ask={ask}
+        inBlock={inBlock}
+        owner={owner}
+        place="resolved"
+        trailing={
           <>
-            {" "}
-            -{" "}
-            <MarkdownBody
-              markdown={reason}
-              source={textSourceOf("ask", ask.id)}
-              tree={ask.resolution.reason_tree}
-              variant="inline"
-            />
+            {" · "}
+            <AskResolutionLine resolution={resolution} />
+            {reason === undefined ? null : (
+              <>
+                {" "}
+                -{" "}
+                <MarkdownBody
+                  markdown={reason}
+                  source={textSourceOf("ask", ask.id)}
+                  tree={ask.resolution.reason_tree}
+                  variant="inline"
+                />
+              </>
+            )}
           </>
+        }
+      >
+        {inBlock ? null : (
+          <div className={`font-medium ${textPrimaryOnSurface}`}>
+            <MarkdownBody
+              markdown={ask.question}
+              source={textSourceOf("ask", ask.id)}
+              tree={ask.question_tree}
+            />
+          </div>
         )}
-      </p>
+        {ask.kind === "approval" && documentLink ? (
+          <p className={`mt-1 text-sm ${linkText} ${linkHoverText}`}>
+            <AskApprovalLink ask={ask} />
+          </p>
+        ) : null}
+        <AskOptionList options={ask.options ?? []} selected={[]} />
+        <AskEditHistory ask={ask} edits={edits} />
+      </AskHeader>
     </article>
   );
 }
@@ -323,6 +332,9 @@ interface AskCompletionCardProps {
   markRef?: DwellRef;
   /** Shown only to the person who gave the current, non-approval answer. */
   onChangeAnswer?: () => void;
+  /** The project document that owns an ask with no issue, for the header's `dispatch://`
+   *  reference; mirrors `AskCardProps.owner`. */
+  owner?: DocumentOwner;
 }
 
 export function AskCompletionCard({
@@ -334,6 +346,7 @@ export function AskCompletionCard({
   frame = "card",
   markRef,
   onChangeAnswer,
+  owner,
 }: AskCompletionCardProps): ReactNode {
   if (ask.state === "resolved") {
     if (ask.resolution === undefined) {
@@ -345,6 +358,7 @@ export function AskCompletionCard({
         documentLink={documentLink}
         edits={edits}
         frame={frame}
+        owner={owner}
       />
     );
   }
@@ -358,6 +372,7 @@ export function AskCompletionCard({
       frame={frame}
       markRef={markRef}
       onChangeAnswer={onChangeAnswer}
+      owner={owner}
     />
   );
 }

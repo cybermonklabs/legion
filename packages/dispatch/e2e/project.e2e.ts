@@ -88,37 +88,46 @@ test("project table filters narrow issues; documents stay scoped to the project"
       "aria-selected",
       "true"
     );
+    // Every row below is named inside the issue list. An issue's title is on the page twice
+    // whenever a pointer rests on its row: the row's own link, and the reference preview card
+    // that link opens (`features/refs/RefPreview.tsx`, whose heading is the key and the title
+    // and whose link's accessible name is `CORE-1Triage work Triage`, the status pill with
+    // them). A press that leaves the pointer over a row - every filter press here, at the width
+    // where the controls sit above the table - opens that card, so an unscoped `getByText` names
+    // two elements and fails as a strict-mode violation rather than as a product fault.
+    const issues = page.getByRole("region", { name: "Project issues" });
+
     // Closed issues load when the Status filter lets Done through; the bar's own Done cell,
     // which only exists once they are loaded, then narrows to them.
     await pickFilterOption(page, "Status", "Done");
     await page.getByRole("button", { name: "Done 1", exact: true }).click();
-    await expect(page.getByText("Done work", { exact: true })).toBeVisible();
-    await expect(page.getByText("Child work", { exact: true })).toHaveCount(0);
+    await expect(issues.getByText("Done work", { exact: true })).toBeVisible();
+    await expect(issues.getByText("Child work", { exact: true })).toHaveCount(0);
     await page.getByRole("button", { name: "Testing 1", exact: true }).click();
-    await expect(page.getByText("Child work", { exact: true })).toBeVisible();
-    await expect(page.getByText("Backlog work", { exact: true })).toHaveCount(0);
+    await expect(issues.getByText("Child work", { exact: true })).toBeVisible();
+    await expect(issues.getByText("Backlog work", { exact: true })).toHaveCount(0);
     await pickFilterOption(page, "Status", "Triage");
-    await expect(page.getByText("Triage work", { exact: true })).toBeVisible();
-    await expect(page.getByText("Child work", { exact: true })).toBeVisible();
+    await expect(issues.getByText("Triage work", { exact: true })).toBeVisible();
+    await expect(issues.getByText("Child work", { exact: true })).toBeVisible();
     await expect(page).toHaveURL(/status=testing.*status=triage/);
     await filterPicker(page, "Status").click();
     await page.getByRole("button", { name: "Clear status", exact: true }).click();
     await page.keyboard.press("Escape");
-    await expect(page.getByText("Backlog work", { exact: true })).toBeVisible();
+    await expect(issues.getByText("Backlog work", { exact: true })).toBeVisible();
     await pickFilterOption(page, "Labels", "frontend");
-    await expect(page.getByText("Needs attention", { exact: true })).toBeVisible();
-    await expect(page.getByText("Backlog work", { exact: true })).toHaveCount(0);
+    await expect(issues.getByText("Needs attention", { exact: true })).toBeVisible();
+    await expect(issues.getByText("Backlog work", { exact: true })).toHaveCount(0);
     await filterPicker(page, "Labels").click();
     await page.getByRole("button", { name: "Clear labels", exact: true }).click();
     await page.keyboard.press("Escape");
     const search = page.getByRole("searchbox", { name: "Search issues" });
     await search.fill("backlog");
-    await expect(page.getByText("Backlog work", { exact: true })).toBeVisible();
-    await expect(page.getByText("Child work", { exact: true })).toHaveCount(0);
+    await expect(issues.getByText("Backlog work", { exact: true })).toBeVisible();
+    await expect(issues.getByText("Child work", { exact: true })).toHaveCount(0);
     await search.clear();
     await page.getByRole("button", { name: "Needs you", exact: true }).click();
-    await expect(page.getByText("Needs attention", { exact: true })).toBeVisible();
-    await expect(page.getByText("Backlog work", { exact: true })).toHaveCount(0);
+    await expect(issues.getByText("Needs attention", { exact: true })).toBeVisible();
+    await expect(issues.getByText("Backlog work", { exact: true })).toHaveCount(0);
 
     await page.getByRole("tab", { name: "Documents" }).click();
     await expect(page).toHaveURL("/projects/CORE/documents");

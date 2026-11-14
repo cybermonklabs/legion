@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { ASK_URGENCIES } from "./dispatch-tools";
+import type { ASK_URGENCIES } from "./dispatch-constants";
 import { GATED_STEPS } from "./legion-roles";
 
 /**
@@ -111,29 +111,8 @@ export const InboundBySchema = z
   .object({ kind: z.string(), id: z.string().optional() })
   .passthrough();
 
-/** How a verified service token's subject reads wherever an actor is shown.
- *
- *  A Kubernetes subject — exactly `system:serviceaccount:<namespace>:<name>` —
- *  renders `<namespace>/<name>`, because the namespace is the half that
- *  disambiguates: every namespace has a `default` service account, so the name
- *  alone names no one once a second namespace authenticates. Every other
- *  subject renders whole. Truncating a subject whose shape is unknown is the
- *  mistake this rule exists to undo, so the fallback shows all of it.
- *
- *  The persisted actor always carries the full subject; this is presentation. */
-export function serviceSubjectLabel(subject: string): string {
-  const parts = subject.split(":");
-  if (
-    parts.length === 4 &&
-    parts[0] === "system" &&
-    parts[1] === "serviceaccount" &&
-    parts[2] !== "" &&
-    parts[3] !== ""
-  ) {
-    return `${parts[2]}/${parts[3]}`;
-  }
-  return subject;
-}
+/** The service subject's label lives in `dispatch-constants.ts`, the module the dashboard reads
+ *  without loading zod (`serviceSubjectLabel`). */
 
 /** What a credential request's kind is, as the secrets broker names it: a secret an agent asked
  *  its person for, or a machine login a launcher asked to enrol. */

@@ -1,4 +1,4 @@
-import { expect, spyOn, test } from "bun:test";
+import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
@@ -174,6 +174,19 @@ function LocationLabel(): ReactNode {
   return <output aria-label="Current path">{pathname}</output>;
 }
 
+/** The width these rows read the margin at, unless one stubs its own. The margin is a column
+ *  from `xl` and a bottom sheet below it, and a shut sheet draws no card at all
+ *  (`MarginSheet`'s `covered`): a row about what the margin lists is about the column, and the
+ *  rows about the sheet open it themselves. Happy DOM's window is 1024 px wide, which is the
+ *  sheet, so without this every one of them would read a margin no reader can see. */
+let restoreTheMarginsWidth = () => {};
+beforeEach(() => {
+  restoreTheMarginsWidth = stubMatchMedia(false);
+});
+afterEach(() => {
+  restoreTheMarginsWidth();
+});
+
 test("clicking a document mark opens its thread in the margin and stays on the document", async () => {
   const user = userEvent.setup();
   const queryClient = new QueryClient({
@@ -251,14 +264,15 @@ test("focusItemForMark opens the matching thread in the compact sheet", async ()
   );
 
   try {
-    const card = await screen.findByTestId(`margin-comment-${comment.id}`);
+    // The shut sheet draws no card (`MarginSheet`'s `covered`), so the focus is what puts this
+    // comment's card on the screen - which is what the row is about.
+    expect(screen.queryByTestId(`margin-comment-${comment.id}`)).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Focus mark" }));
     await waitFor(() => {
       const phoneThread = screen.queryByRole("dialog", { name: "Thread" });
-      const focusedCard =
-        phoneThread === null
-          ? card
-          : within(phoneThread).getByTestId(`margin-comment-${comment.id}`);
+      const focusedCard = (phoneThread === null ? screen : within(phoneThread)).getByTestId(
+        `margin-comment-${comment.id}`
+      );
       expect(focusedCard).toHaveAttribute("aria-current", "true");
       expect(screen.getByTestId("margin-sheet")).toHaveAttribute("data-expanded", "true");
     });
@@ -570,6 +584,9 @@ test("Margin moves an answered anchored ask out of Needs you in place, without t
   // The inbox lists open asks, and this one has just been answered.
   const getInbox = spyOn(api, "getInbox").mockResolvedValue([]);
   const listIssueAsks = spyOn(api, "listIssueAsks").mockImplementation(() => refetched.promise);
+  // The count this row reads is the one beside `Review`, which only the compact sheet draws.
+  // A shut sheet draws no card (`MarginSheet`'s `covered`), so the reader opens it first.
+  const restoreMatchMedia = stubMatchMedia(true);
   const view = render(
     <MemoryRouter initialEntries={[buildIssuePath({ key: issue.key, kind: "issue" })]}>
       <QueryClientProvider client={queryClient}>
@@ -581,6 +598,7 @@ test("Margin moves an answered anchored ask out of Needs you in place, without t
   );
 
   try {
+    await user.click(screen.getByRole("button", { name: "Open review panel (1 open ask)" }));
     const needsYou = await marginAskCard(anchoredAsk.id, "needs-you");
     await user.click(await within(needsYou).findByRole("radio", { name: "Ship" }));
     await user.click(within(needsYou).getByRole("button", { name: "Answer" }));
@@ -601,7 +619,7 @@ test("Margin moves an answered anchored ask out of Needs you in place, without t
     await waitFor(() =>
       expect(screen.queryByRole("heading", { name: "Needs you" })).not.toBeInTheDocument()
     );
-    expect(screen.getByRole("button", { name: "Open review panel (0 open asks)" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Close review panel (0 open asks)" })).toBeTruthy();
     const decided = await marginAskCard(anchoredAsk.id, "decided");
     expect(decided).toBe(needsYou);
     expect(within(decided).getByTestId(`ask-${anchoredAsk.id}`)).toBe(answered);
@@ -609,6 +627,7 @@ test("Margin moves an answered anchored ask out of Needs you in place, without t
     view.unmount();
     answerAsk.mockRestore();
     listIssueAsks.mockRestore();
+    restoreMatchMedia();
     getAsk.mockRestore();
     getIssue.mockRestore();
     getInbox.mockRestore();

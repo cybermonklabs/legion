@@ -1,15 +1,19 @@
 import { afterEach, beforeEach, expect, jest, type Mock, spyOn, test } from "bun:test";
+import type {
+  AgentStreamCommand,
+  AgentStreamFrame,
+  AgentStreamSettingsReported,
+} from "@legion/contracts/agent-stream";
 import {
-  type AgentStreamCommand,
-  type AgentStreamFrame,
-  type AgentStreamSettingsReported,
   IDEMPOTENCY_KEY_TTL_MS,
   LIVE_SOCKET_MAX_AGE_CLOSE,
-} from "@legion/contracts";
+} from "@legion/contracts/dispatch-constants";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
   act,
   cleanup,
+  // biome-ignore lint/style/noRestrictedImports: user-event's paste carries text, never files, and the row below pastes a picture into the live composer
+  fireEvent,
   type RenderResult,
   render,
   screen,
@@ -34,6 +38,7 @@ import { AGENT_LIST_REFILLING, ApiError, api, NetworkError } from "../../api/cli
 import { liveSocketFor } from "../../api/live-socket";
 import type { Agent, Message, MessageRead, UserAgentStates } from "../../api/types";
 import { KEYED_SEND_LATE_TEXT } from "../conversation/send-request";
+import { thePageLeftItThere } from "../doc/readers-place";
 import { Sidebar } from "../sidebar/Sidebar";
 import {
   KEYED_SEND_ATTEMPT_MS,
@@ -1436,14 +1441,18 @@ async function caretAt(user: UserEvent, input: HTMLTextAreaElement, at: number):
 
 function commandOptions(): string[] {
   return within(screen.getByRole("listbox", { name: "Slash commands" }))
-    .getAllByRole("option")
+    .queryAllByRole("option")
     .map((option) => option.textContent ?? "");
 }
 
+/** The three delivery-mode rows this session's list leads with, in the "Send as" order. */
+const MODE_OPTIONS = ["Senddelivery mode", "Asidedelivery mode", "BTWdelivery mode"];
+
 // A message that starts with `/` is a command line at the session's terminal, so the composer
-// completes the session's own commands there: every runnable one first, a command only its
-// terminal runs after them (listed, so the person learns it will not run here), and as the
-// person types, names that start with what they typed before names that merely hold it.
+// completes the session's own commands there, behind the delivery modes the list always offers:
+// every runnable command first, one only its terminal runs after them (listed, so the person
+// learns it will not run here), and as the person types, names that start with what they typed
+// before names that merely hold it.
 test("the composer completes the session's slash commands, filtering as the person types", async () => {
   const user = userEvent.setup();
   const input = await renderWithCommands(COMMANDS);
@@ -1452,6 +1461,7 @@ test("the composer completes the session's slash commands, filtering as the pers
   await type(user, input, "/");
   await waitFor(() =>
     expect(commandOptions()).toEqual([
+      ...MODE_OPTIONS,
       "/compactCompact the session's context",
       "/jobsShow background jobs",
       "/recompile",
@@ -1503,8 +1513,10 @@ test("arrow keys move through the commands, and after Escape Enter sends what wa
   const input = await renderWithCommands(COMMANDS);
 
   await type(user, input, "/");
-  await waitFor(() => expect(commandOptions()).toHaveLength(4));
-  await user.keyboard("{ArrowDown}");
+  await waitFor(() => expect(commandOptions()).toHaveLength(MODE_OPTIONS.length + 4));
+  // Four steps down from the first mode row reaches the second command, so the arrows are shown
+  // crossing from the modes into the session's own commands.
+  await user.keyboard("{ArrowDown}".repeat(4));
   await waitFor(() =>
     expect(
       within(screen.getByRole("listbox", { name: "Slash commands" })).getByRole("option", {
@@ -1541,22 +1553,24 @@ test("a session with hundreds of commands shows fifty of them", async () => {
   const input = await renderWithCommands(many);
 
   await type(user, input, "/");
-  await waitFor(() => expect(commandOptions()).toHaveLength(50));
-  expect(commandOptions()[0]).toBe("/skill:s000");
+  await waitFor(() => expect(commandOptions()).toHaveLength(MODE_OPTIONS.length + 50));
+  expect(commandOptions()[MODE_OPTIONS.length]).toBe("/skill:s000");
 });
 
-// Completion is offered only where the session has a list and takes the box as input it runs: a
-// session that sent no command list has nothing to complete, and a BTW is a side question the
-// session answers rather than input it runs. Neither mentions `/`.
-test("no completion is offered without a command list or in BTW", async () => {
+// A command completion is offered only where the session has a list and takes the box as input
+// it runs: a session that sent no command list has nothing to complete, and a BTW is a side
+// question the session answers rather than input it runs. Neither placeholder names commands.
+// The delivery modes are the list's own rows and are offered throughout, since picking one is
+// how a reader leaves BTW without reaching for the header, so both placeholders still name the
+// key that opens them. A query no mode and no command matches opens no list at all: an empty
+// listbox says nothing and would take the Enter meant for Send.
+test("no command completion is offered without a command list or in BTW", async () => {
   const user = userEvent.setup();
   const silent = await renderWithCommands();
-  expect(silent.placeholder).not.toContain("/");
-  await onFakeClock(async () => {
-    await type(userOnFakeClock(), silent, "/");
-    await jump(50);
-  });
-  expect(slashList()).not.toBeInTheDocument();
+  expect(silent.placeholder).toContain("/ for send modes");
+  expect(silent.placeholder).not.toContain("commands");
+  await type(user, silent, "/");
+  await waitFor(() => expect(commandOptions()).toEqual(MODE_OPTIONS));
 
   cleanup();
   for (const spy of spies.splice(0)) spy.mockRestore();
@@ -1564,7 +1578,10 @@ test("no completion is offered without a command list or in BTW", async () => {
 
   await user.selectOptions(screen.getByRole("combobox", { name: "Delivery mode" }), "btw");
   await waitFor(() => expect(input.placeholder).toContain("delivered as BTW"));
-  expect(input.placeholder).not.toContain("/");
+  expect(input.placeholder).toContain("/ for send modes");
+  expect(input.placeholder).not.toContain("commands");
+  await type(user, input, "/");
+  await waitFor(() => expect(commandOptions()).toEqual(MODE_OPTIONS));
   await onFakeClock(async () => {
     await type(userOnFakeClock(), input, "/co");
     await jump(50);
@@ -1627,14 +1644,16 @@ async function typeAfresh(
 // The menu belongs to the `/` the caret sits in, wherever that is: a person naming a skill
 // halfway through a sentence gets the same help as one typing a command line. A `/` inside a
 // word is part of that word - a path, a date - and completing it would wreck what was typed.
+// The delivery modes lead every list the `/` opens, wherever that `/` sits: picking one is how
+// a reader sets "Send as" without reaching for the row under the box.
 test("the menu opens for a / at the start, after a space and after a line break, never inside a word", async () => {
   const user = userEvent.setup();
   const input = await renderWithCommands(SKILLS);
   const whole = [`/compactCompact the session's context`, `/skill:asd-ste100${ASD_DESCRIPTION}`];
 
-  expect(await optionsFor(user, input, "/")).toEqual(whole);
-  expect(await optionsFor(user, input, "please read /")).toEqual(whole);
-  expect(await optionsFor(user, input, "please read\n/")).toEqual(whole);
+  expect(await optionsFor(user, input, "/")).toEqual([...MODE_OPTIONS, ...whole]);
+  expect(await optionsFor(user, input, "please read /")).toEqual([...MODE_OPTIONS, ...whole]);
+  expect(await optionsFor(user, input, "please read\n/")).toEqual([...MODE_OPTIONS, ...whole]);
   expect(await optionsFor(user, input, "please read /asd")).toEqual([
     `/skill:asd-ste100${ASD_DESCRIPTION}`,
   ]);
@@ -1698,6 +1717,21 @@ test("a row shows its whole description rather than cutting it", async () => {
   expect(description.className).not.toContain("truncate");
   expect(description.className).not.toContain("line-clamp");
   expect(description).not.toHaveAttribute("title");
+});
+
+// Picking a mode from the list is the header's "Send as" pick: it sets the mode, writes nothing
+// into the message, and keeps whatever was typed after the name.
+test("picking a delivery mode from the slash list sets Send as and writes no text", async () => {
+  const user = userEvent.setup();
+  const input = await renderWithCommands(COMMANDS);
+  const mode = screen.getByRole("combobox", { name: "Delivery mode" }) as HTMLSelectElement;
+
+  await type(user, input, "/bt");
+  await waitFor(() => expect(commandOptions()).toEqual(["BTWdelivery mode"]));
+  await user.keyboard("{Enter}");
+  await waitFor(() => expect(mode.value).toBe("btw"));
+  expect(input.value).toBe("");
+  expect(screen.queryByRole("listbox", { name: "Slash commands" })).not.toBeInTheDocument();
 });
 
 /** The models a session lists, in its own order: two providers interleaved, and a custom
@@ -2162,6 +2196,62 @@ test("with an empty box Send is refused, says why on screen, and sends nothing",
   expect(within(composer()).queryByText("Type a message first.")).not.toBeInTheDocument();
 });
 
+// A picture still uploading is not in the draft yet, so a message sent then would go without it
+// and the picture's line would land in the next, empty draft. Send names the upload and takes no
+// press, and Enter - the send's own key in this one box - is refused by the form it submits
+// rather than handed back to the box, so the reader gets the reason the send waits instead of a
+// stray line break in their message. The message once the upload lands carries the picture.
+test("the live view's send waits for a pasted picture still uploading, by Send and by Enter", async () => {
+  const user = userEvent.setup();
+  const createAgentMessage = acceptSends();
+  const { promise: landed, resolve: land } = Promise.withResolvers<void>();
+  spies.push(
+    spyOn(api, "uploadArtifact").mockImplementation(async () => {
+      await landed;
+      return {
+        artifact: { kind: "image", name: "shot.png", slug: "shot-png" },
+        version: { number: 1 },
+      } as never;
+    })
+  );
+  renderLiveView({
+    agentState: {},
+    messages: [],
+    putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
+  });
+  const input = await modeSettled("steer");
+
+  await type(user, input, "Look");
+  const file = new File([new Uint8Array([137, 80, 78, 71])], "shot.png", { type: "image/png" });
+  // user-event's paste carries text, never files.
+  fireEvent.paste(input, { clipboardData: { files: [file] } });
+
+  const send = await within(composer()).findByRole("button", { name: "Uploading file…" });
+  expect(send.hasAttribute("disabled")).toBe(true);
+  await user.click(send);
+  await user.click(input);
+  await user.keyboard("{Enter}");
+  await Bun.sleep(50);
+  expect(createAgentMessage).not.toHaveBeenCalled();
+  // The key the send owns is refused, not given to the box: nothing is typed into the draft.
+  expect(composerInput().value).toBe("Look");
+  // And what holds the send is on screen under the box the picture was pasted into.
+  expect(within(composer()).getByRole("status").textContent).toBe("Uploading file…");
+
+  land();
+  const body = `Look ![shot.png](dispatch://agent/${SESSION}/artifact/shot-png@v1)`;
+  await waitFor(() => expect(composerInput().value).toBe(body));
+  await user.click(composerInput());
+  await user.keyboard("{Enter}");
+  await waitFor(() =>
+    expect(createAgentMessage).toHaveBeenCalledWith(
+      SESSION,
+      { body, delivery: "steer" },
+      keyedAttempt
+    )
+  );
+});
+
 // A send Dispatch refuses is not lost: the message is held on screen with the reason, for Retry or
 // Discard, and the box is free for the next one.
 test("a refused send keeps the message on screen and says why", async () => {
@@ -2460,6 +2550,66 @@ test("a session advertising no delivery mode still takes a mid-turn send as an a
     )
   );
   expect(screen.getByTestId("agent-takes-no-messages")).toBeTruthy();
+});
+
+/** The slash list's own box and the rows in it: happy-dom lays nothing out, computes no
+ *  overflow and scrolls nothing, so what `whatScrolls` reads to find the box and the
+ *  rectangles the placement measures are stated here (`features/doc/readers-place.ts`). */
+const COMMAND_LIST_TOP = 100;
+const COMMAND_LIST_HEIGHT = 120;
+const COMMAND_ROW_HEIGHT = 40;
+
+test("the list keeping its highlighted command in view is the page's own move", async () => {
+  const user = userEvent.setup();
+  const input = await renderWithCommands(COMMANDS);
+  await type(user, input, "/");
+  await waitFor(() => expect(commandOptions()).toHaveLength(MODE_OPTIONS.length + 4));
+  const list = screen.getByRole("listbox", { name: "Slash commands" });
+  let scrolled = 0;
+  list.style.overflowY = "auto";
+  Object.defineProperty(list, "clientHeight", {
+    configurable: true,
+    get: () => COMMAND_LIST_HEIGHT,
+  });
+  Object.defineProperty(list, "scrollHeight", { configurable: true, get: () => 1_000 });
+  Object.defineProperty(list, "scrollTop", {
+    configurable: true,
+    get: () => scrolled,
+    set: (next: number) => {
+      scrolled = next;
+    },
+  });
+  const rect = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: Element
+  ) {
+    if (this === list) {
+      return {
+        bottom: COMMAND_LIST_TOP + COMMAND_LIST_HEIGHT,
+        height: COMMAND_LIST_HEIGHT,
+        top: COMMAND_LIST_TOP,
+      } as DOMRect;
+    }
+    const index = [...list.querySelectorAll('[role="option"]')].indexOf(this);
+    const top = COMMAND_LIST_TOP + index * COMMAND_ROW_HEIGHT - scrolled;
+    return index === -1
+      ? ({ bottom: 0, height: 0, top: 0 } as DOMRect)
+      : ({ bottom: top + COMMAND_ROW_HEIGHT, height: COMMAND_ROW_HEIGHT, top } as DOMRect);
+  });
+  spies.push(rect);
+
+  // The arrows move the highlight through a list taller than the popover, so each highlighted
+  // row is kept in view. That is the page moving what it draws, written through the one call
+  // that records it (`placeInView`, `features/doc/readers-place.ts`), which measures what the
+  // browser's own `scrollIntoView({ block: "nearest" })` would do: the fifth row is below the
+  // fold, so its bottom edge comes to the list's bottom edge and no further.
+  await user.keyboard("{ArrowDown}".repeat(4));
+
+  await waitFor(() => expect(list.scrollTop).toBe(COMMAND_ROW_HEIGHT * 5 - COMMAND_LIST_HEIGHT));
+  expect(thePageLeftItThere(list)).toBe(true);
+
+  // A scrollbar drag of the reader's own leaves the list standing where the page did not.
+  list.scrollTop = 20;
+  expect(thePageLeftItThere(list)).toBe(false);
 });
 
 /** Dispatch's answer to a pin write: the session's whole state, with the time it took the pin

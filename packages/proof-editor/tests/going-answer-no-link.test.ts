@@ -81,6 +81,12 @@ const LINKING: Record<string, true> = { link: true, image: true, html: true };
  * an option there is `remarkFrontmatter`'s `['yaml']`, and `remarkGfm` is installed with none at
  * all - none of its options (`firstLineBlank`, `stringLength`, `singleTilde`, `tablePipeAlign`,
  * `tableCellPadding`) touches an autolink literal, which is what this file is about.
+ *
+ * It reads the chained calls alone, each on a line of its own that opens with `.use(`. A plugin
+ * one policy asks for and another does not is installed on a statement of its own
+ * (`remarkRawHtmlAsText`, which only a body renderer's `rawHtml: 'text'` gets), and a document
+ * is parsed without it, so it is no part of the list this file is the ground truth of. A plugin
+ * added to the chain itself still moves the guard, which is what it is for.
  */
 const APP_PARSE_PLUGINS = [
   "remarkParse",
@@ -146,7 +152,9 @@ test("the plugin list here is the one src/lib-headless.ts parses a body with", (
   expect(opens).toBeGreaterThanOrEqual(0);
   const closes = source.indexOf(SOFT_BREAK_LINE, opens);
   expect(closes).toBeGreaterThan(opens);
-  const used = [...source.slice(opens, closes).matchAll(/\.use\((\w+)/g)].map((match) => match[1]);
+  const used = [...source.slice(opens, closes).matchAll(/^\s*\.use\((\w+)/gm)].map(
+    (match) => match[1]
+  );
   expect(used).toEqual(APP_PARSE_PLUGINS);
 });
 

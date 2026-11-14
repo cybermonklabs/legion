@@ -90,7 +90,7 @@ function refuseASharedRun(): void {
       "and that gap is the page's own work only on a machine the run is not sharing: with " +
       `${workers} workers, what the other workers run goes into it as well, which is how a ` +
       "300 ms draw read 1,632 ms in CI run 41370867411 (sjawhar/legion#2612). To measure every " +
-      "wall-clock row in all three engines, run `bun run e2e:clock`." +
+      "wall-clock row, run `bun run e2e:clock`." +
       (commandLine === "" ? "" : `\n\nThis run's command line: ${commandLine}`)
   );
 }

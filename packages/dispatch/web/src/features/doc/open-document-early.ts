@@ -1,0 +1,299 @@
+import type { QueryClient } from "@tanstack/react-query";
+
+import { api } from "../../api/client";
+import { primarySpec } from "../../api/issue-cache";
+import { issueQuery, userStateQuery } from "../../api/queries";
+import type { Artifact, ArtifactText, IssueDetails } from "../../api/types";
+import { parseAheadOfTheRender, warmMarkdownRenderer } from "../refs/markdown-engine";
+import { markdownWorkerThreshold } from "../refs/markdown-worker-threshold";
+import { type IssueRoute, parseIssuePath } from "../refs/routes";
+import { loadDocumentTransport } from "./connection";
+import { leadingBlocks } from "./document-blocks";
+import { theDocumentIsOnThePage, theFirstBatchIsAwaited } from "./first-batch";
+import { currentAddress, dropFirstScreen, firstScreenAwaits } from "./first-screen";
+import { liveTextQueryOptions } from "./live-text";
+import { blockSchemaQueryOptions } from "./schema";
+
+/** The document an address opens, as the issue names it: the artifact a named slug names, else
+ *  the issue's primary spec. `undefined` for a blob, and for a slug this issue has no artifact
+ *  for, neither of which opens a document at all. */
+function documentOf(issue: IssueDetails, route: IssueRoute): Artifact | undefined {
+  const artifact =
+    route.kind === "artifact"
+      ? (issue.artifacts ?? []).find(({ slug }) => slug === route.slug)
+      : primarySpec(issue);
+  return artifact?.kind === "doc" ? artifact : undefined;
+}
+
+/**
+ * Starts what an open document needs, from the address alone, as early as the page knows it:
+ * the issue, the document's own text, the block schema, and the two chunks its editor is
+ * built from.
+ *
+ * It exists because of what those reads used to wait behind. The document's first fetch began
+ * about 3.5 s after the issue's own answer arrived on a phone, because nothing asked for it
+ * until `IssuePage`'s chunk had downloaded, its two reads had answered, and React had rendered
+ * the whole issue page down to `ProofDocument` - and that text is what the reader reads
+ * (`DocumentPreview`), so every one of those was time a large document showed nothing
+ * (dispatch://INFRA-341, R11). None of them is anything the text read depends on: the address
+ * names the issue, the issue names the document, and the document names its text.
+ *
+ * The page's first address opens from `features/shell/boot.ts`, the chunk the entry asks for in
+ * its first task (`main.tsx`), which is before React has rendered anything and before the
+ * sign-in check that module asks for just ahead of it has answered: on a phone that moved the
+ * issue's read about a second earlier and the document's
+ * text about two, since neither waits any longer for the shell to commit. Every later address
+ * opens from the shell's own effect (`app.tsx`'s `OpenDocumentEarly`), which is when the page
+ * learns of it. The two meet on the page's first render, so an address already opened is not
+ * opened again: a second read of the same text under `staleTime: 0` would download the
+ * document twice.
+ *
+ * What it does not change is who may read what. These are the page's own reads, made with the
+ * page's own session under the same query keys, and Dispatch answers each exactly as it
+ * answers the page's: a reader who may not read this issue is refused here as they are
+ * refused everywhere, and the shell still shows them whatever the sign-in check says
+ * (`AuthGate`). The page that mounts next finds each read in the cache or in flight, and asks
+ * for it itself exactly as it always did. A failure is left in the cache as any failed read
+ * is, for that page to show and to retry.
+ *
+ * The chunks are here for the same reason the reads are. A document address names the
+ * document, so neither the transport chunk (hocuspocus and yjs) nor the editor's own chunk
+ * depends on anything the page renders, and both used to be downloaded and evaluated in
+ * series after everything else: on a phone at 4x CPU throttling the editor's half of the load
+ * began at 5,920 ms, once the issue page and the read-only preview had rendered and
+ * `ProofDocument` admitted. Bytes asked for here are bytes that arrive while the page renders,
+ * and they cost that render nothing.
+ *
+ * The socket is not opened here, and that was measured rather than assumed. Opening it from
+ * this task moved it 2.9 s earlier and bought 375-811 ms on the first block a reader can type
+ * in, but it put two to three seconds of the editor's main-thread work - the sync's apply and
+ * the build it starts - in front of the page's own draw of the document, which slipped from
+ * 4,725 ms to 6,505 ms on the 28-section document and from 5,166 ms to 7,794 ms on the
+ * 140-section one (`e2e/large-documents.ts`). The reader reads that draw while they wait for
+ * the editor, so the socket is opened by the page's admission as it always was
+ * (`ProofDocument`'s `admitTheDocument`, `packages/dispatch/AGENTS.md`).
+ */
+export function openDocumentEarly(client: QueryClient, pathname: string, search: string): void {
+  const address = `${pathname}${search}`;
+  if (address === openedAddress) {
+    return;
+  }
+  openedAddress = address;
+  // The blocks the server drew into this page belong to the address it drew them for
+  // (`first-screen.ts`). A navigation away from that address leaves them with nothing to adopt
+  // them, so they go here, before anything of the new address is started.
+  dropFirstScreen(currentAddress(pathname));
+  // Whatever the address before this one left unread is this navigation's to drop, before
+  // anything of this one is started: a read belongs to the opening it was made for.
+  earlyTextRead = undefined;
+  // Whether the reader already has this document's opening blocks, because the server drew
+  // them into the page it sent: read before anything of this address is started, since the
+  // page's own preview takes them out as it mounts. It decides what is worth doing ahead of
+  // the render below, and nothing else.
+  const serverDrewTheFirstScreen = firstScreenAwaits(currentAddress(pathname));
+  const route = parseIssuePath(pathname, search);
+  // Every route whose page opens on a document: the Spec tab's, and a named artifact's, which is
+  // a document or is nothing to read ahead for.
+  if (route?.kind !== "issue" && route?.kind !== "spec" && route?.kind !== "artifact") {
+    // No document, so there is no first batch to hold the page's other reads behind: they go
+    // out as they always did (`first-batch.ts`).
+    theFirstBatchIsAwaited(false);
+    return;
+  }
+  // A document a surface on this page has already built is one the reader is coming back to:
+  // the Spec tab's surface stays mounted while they read another tab (`IssuePage`'s hidden
+  // panels), so coming back builds nothing new and no batch is coming. Answered here, from the
+  // issue this page has read already, because everything below it is work for a document that
+  // is not yet on the screen: the hold would stand until `LONGEST_HOLD_MS` for a batch that
+  // never arrives, and the text read would download the whole document over the live-text cache
+  // the open editor is working from. Before this pull request a tab switch made no request at
+  // all (dispatch://INFRA-341).
+  const cached = client.getQueryData(issueQuery(route.key).queryKey);
+  const built = cached === undefined ? undefined : documentOf(cached, route);
+  if (built !== undefined && theDocumentIsOnThePage(built.id)) {
+    theFirstBatchIsAwaited(false);
+    return;
+  }
+  // A document is coming, so the reads the first editable block needs none of wait for its
+  // first batch. Said here, before React has rendered anything, because the panels that make
+  // them render before the document surface exists (`first-batch.ts`).
+  theFirstBatchIsAwaited(true);
+  // The transport chunk - the hocuspocus provider and yjs - asked for here, in the task that
+  // asks for the app's own chunk, rather than when `ProofDocument` admits. It is the first
+  // thing the editor's half of the load needs and nothing about it depends on the document's
+  // state, so a page that waited for the admission to ask for it paid its download and its
+  // evaluation in series after everything else (dispatch://INFRA-341, R11). A second ask costs
+  // nothing: the module cache answers it, and the admission asks again as it always did.
+  void loadDocumentTransport().catch(() => undefined);
+  // And the editor's own chunk, the largest the document loads, for the same reason
+  // (`loadEditor`). It is reached through `import()` rather than a static import because the
+  // editor's module brings the document surface's chunk with it, which this task has no other
+  // use for.
+  void import("./editor").then(({ loadEditor }) => loadEditor()).catch(() => undefined);
+  // The schema the surface draws with and the socket is admitted under, read here for the same
+  // reason: the page's own read of it finds it read (`blockSchemaQueryOptions`).
+  void client.fetchQuery(blockSchemaQueryOptions()).catch(() => undefined);
+  // The text itself, where the address names the document: `/issues/{key}/artifacts/{slug}`
+  // names it as Dispatch's own route does, so the bytes a reader reads are asked for in the
+  // first round trip rather than the second, and `web/index.html` has usually asked for them
+  // already - this call takes that request rather than making a second one
+  // (`api/early-document-read.ts`). The issue read below still runs - the page needs it, and it
+  // is what names the artifact this answer belongs to - but the document's 420 KB no longer
+  // waits behind it, which on a phone was over a second of nothing on the screen
+  // (dispatch://INFRA-341, R11). The Spec tab's address names no slug, so its text is read by
+  // the id the issue answers with, as it always was.
+  const bySlug =
+    route.kind === "artifact" ? api.getIssueArtifactText(route.key, route.slug) : undefined;
+  // Nothing waits on this promise until the issue read hands it over, so its refusal is
+  // answered here rather than left to the window as an unhandled rejection.
+  void bySlug?.catch(() => undefined);
+  // The address this call opened. Both answers below reach the module long after they were
+  // asked for, and a navigation in between has started an opening of its own: an answer for an
+  // address this module has moved off replaces the current opening's read and releases its
+  // hold, so the page it belongs to downloads its text a second time (dispatch://INFRA-341).
+  const thisOpening = address;
+  void client
+    .fetchQuery(issueQuery(route.key))
+    .then((issue) => {
+      if (openedAddress !== thisOpening) {
+        return;
+      }
+      const artifact = documentOf(issue, route);
+      // A blob artifact, and a slug this issue has no artifact for, open no document, so there
+      // is nothing to build an editor from and nothing to hold the page's other reads behind.
+      // Nor is there where the page has already built this document, the case the issue in the
+      // cache answered above - asked again here for the opening whose issue was not read yet.
+      if (artifact === undefined || theDocumentIsOnThePage(artifact.id)) {
+        theFirstBatchIsAwaited(false);
+        return;
+      }
+      readTheTextEarly(client, artifact.id, serverDrewTheFirstScreen, bySlug);
+    })
+    // The issue could not be read, so nothing names a document to read ahead for.
+    .catch(() => {
+      if (openedAddress === thisOpening) {
+        theFirstBatchIsAwaited(false);
+      }
+    });
+  // The other read the page showing this document holds its whole render behind: the reader's
+  // own issue state, which `IssuePage` waits for beside the issue itself (`useIssueDetail`) and
+  // which the shell otherwise asks for only once it has rendered. The document draws inside
+  // that page, so a read the page waits on is a read the document waits on.
+  void client.prefetchQuery(userStateQuery());
+  // The engine that draws the document, started beside those reads rather than behind them -
+  // but only where the reader has no document on the screen yet.
+  //
+  // Where the server drew this address's opening blocks into the page it sent
+  // (`first-screen.ts`), the reader is reading them about a second into the load and
+  // `DocumentPreview` adopts them rather than parsing them again, so neither this warm-up nor
+  // the parse of those same blocks in `readTheTextEarly` puts anything on the screen. What
+  // they do put there is 461 KB of headless editor to compile and an engine to build - one
+  // and a half seconds of the page's own thread on a phone at 4x CPU throttling - in front of
+  // the issue page's first render, which is the page that holds the document's surface, its
+  // socket and its editor (dispatch://INFRA-341, R11). So a page carrying the server's draw
+  // leaves the engine to the surface that needs it: `DocumentPreview`'s own render asks for
+  // it, a batch of the editor's build is already on its way by then, and the blocks the
+  // reader is reading never leave the screen. A page carrying no draw warms it here as
+  // before, since there the engine is what draws the reader's first block.
+  if (serverDrewTheFirstScreen) {
+    return;
+  }
+  // It is started after the reads above are out, since the build runs on the page's own thread
+  // in a long chain of continuations and the reads' answers are read on that thread too. The
+  // warm-up is the shell's own (`DeploymentResilience`), loads once however many callers ask,
+  // and draws nothing itself.
+  void warmMarkdownRenderer().catch(() => undefined);
+}
+
+/** The address this module last opened, so the entry's own call and the shell's first effect -
+ *  which run for the same address, in that order - open it once between them. */
+let openedAddress: string | undefined;
+
+/**
+ * The text read this module made for the document the address opened, waiting for the admission
+ * that document's editor makes.
+ *
+ * An admission connects only on a read it knows was made for this opening of this document - a
+ * browser editor normalizes a tree it cannot represent and writes the result back, so the
+ * server's answer to a read from some earlier minute says nothing about the tree it would be
+ * admitted to now (`ProofDocument`'s `admitTheDocument`). This read is one of those: it was
+ * made because this address was opened, and the document mounting is what it was made for.
+ * Handing it over rather than letting the admission make its own is what keeps a large
+ * document from being downloaded twice for one opening - once for the reader to read, once for
+ * the socket.
+ *
+ * So there is one, and it belongs to the navigation that made it: the next navigation drops
+ * whatever is left of it, read or unread, before it starts its own. A reader who opens a
+ * document from the issue's Artifacts tab, goes back, and opens it again has left a read of
+ * that document behind them on the first visit - the Spec tab's, which nothing mounted to take
+ * - and the tree can have changed since, as it does where the document was replaced by one
+ * outside the Proof schema: an admission handed that read would open a socket the server then
+ * refuses, where a read of its own tells it not to open one at all
+ * (`e2e/artifacts.e2e.ts`, "an out-of-schema document does not reconnect from cached text").
+ *
+ * It is also taken once. A second admission - a socket the server refused, a repair, a re-mount
+ * later - finds nothing here and reads afresh, which is what each of those needs.
+ */
+let earlyTextRead: { artifactId: string; read: Promise<ArtifactText> } | undefined;
+
+/** The document's text, under the key the page reads it by. `asked` is the same read already
+ *  in flight under the document's address, where the address named it: it is the same route's
+ *  answer about the same document, made for this opening, so the cache takes it rather than
+ *  asking a second time. One that fails says nothing about the document - the slug may name a
+ *  file this issue no longer has - so the read by id is made in its place, as it would have
+ *  been, and so is every retry. `serverDrewTheFirstScreen` says the reader already has this
+ *  document's opening blocks, which is what decides whether those blocks are worth parsing
+ *  ahead of the render. */
+function readTheTextEarly(
+  client: QueryClient,
+  artifactId: string,
+  serverDrewTheFirstScreen: boolean,
+  asked?: Promise<ArtifactText>
+): void {
+  // `staleTime: 0` because an admission takes this read: it has to be a read, never whatever
+  // this key happened to hold.
+  const read = client.fetchQuery({
+    ...liveTextQueryOptions(artifactId),
+    queryFn:
+      asked === undefined
+        ? () => api.getArtifactText(artifactId)
+        : () => asked.catch(() => api.getArtifactText(artifactId)),
+    staleTime: 0,
+  });
+  earlyTextRead = { artifactId, read };
+  // The screenful the reader meets, parsed in the task its text arrives in rather than in the
+  // commit that mounts the issue page. `DocumentPreview` draws exactly this source under
+  // exactly these policies, and it is under the worker's threshold, so without this the page
+  // parses it on its own thread inside that commit - 294-545 ms of one task on a phone at 4x
+  // CPU throttling, in a task already over the 500 ms a reader feels as a freeze
+  // (dispatch://INFRA-341, R11). Nothing waits for it here: there is no page yet.
+  //
+  // Not where the server drew those same blocks into the page: the preview adopts them
+  // instead of parsing them (`first-screen.ts`), so this parse would draw nothing, and the
+  // engine it builds to make it is a second and a half of the page's own thread in front of
+  // the render it was meant to spare (`openDocumentEarly`).
+  if (!serverDrewTheFirstScreen) {
+    void read
+      .then(({ markdown }) =>
+        parseAheadOfTheRender(leadingBlocks(markdown, markdownWorkerThreshold))
+      )
+      .catch(() => undefined);
+  }
+  void read.catch(() => {
+    // A failed read is the document's own to report and to retry; what it must not do is wait
+    // here for an admission to take.
+    if (earlyTextRead?.read === read) {
+      earlyTextRead = undefined;
+    }
+  });
+}
+
+/** The read above, for the admission that follows it, and never twice. */
+export function takeEarlyTextRead(artifactId: string): Promise<ArtifactText> | undefined {
+  if (earlyTextRead?.artifactId !== artifactId) {
+    return undefined;
+  }
+  const { read } = earlyTextRead;
+  earlyTextRead = undefined;
+  return read;
+}

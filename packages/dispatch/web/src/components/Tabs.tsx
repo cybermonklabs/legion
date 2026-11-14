@@ -1,12 +1,12 @@
 import { type KeyboardEvent, type ReactNode, useEffect, useRef } from "react";
 
-import {
-  activeTabIndicatorBorder,
-  activeTabIndicatorText,
-  borderDefault,
-  textSecondaryOnCanvas,
-} from "../theme/classes";
 import { Pill } from "./Pill";
+import {
+  tabClassName,
+  tabCountClassName,
+  tabListClassName,
+  tabStripClassName,
+} from "./tab-classes";
 
 export interface TabDefinition<Id extends string> {
   id: Id;
@@ -94,27 +94,29 @@ export function Tabs<Id extends string>({
     revealTab(node);
   };
 
+  // In a frame of its own, never in the commit that mounted or switched the tab: the two
+  // rectangles are the first thing on the page to ask for a layout, so inside the commit they
+  // force the whole page's style and layout to be computed there. On a phone at 4x CPU
+  // throttling that was 170-200 ms of the one task that mounts an issue page - a task already
+  // over the 500 ms a reader feels as a freeze (dispatch://INFRA-341, R11). An animation frame
+  // reads the layout the browser was about to compute anyway, and scrolls the tablist before
+  // that frame is painted, so nothing a reader sees moves later than it did. A tab the reader
+  // reached from the keyboard is still revealed in their own keystroke (`onTabKeyDown`), where
+  // the measurement is all the task holds.
   useEffect(() => {
-    revealTab(tabRefs.current[activeTab]);
+    const frame = requestAnimationFrame(() => revealTab(tabRefs.current[activeTab]));
+    return () => cancelAnimationFrame(frame);
   }, [activeTab]);
 
-  const tabMinHeight = compact ? "min-h-11 md:min-h-9" : "min-h-11";
-  // Compact tabs sit tighter on phones, which is what keeps the shorter tablists on one line. The
-  // issue's nine tabs, one carrying a count pill, no longer fit a 390 px viewport: there the
+  // Compact tabs sit tighter on phones, which is what keeps the shorter tablists on one line.
+  // The issue's nine tabs, one carrying a count pill, no longer fit a 390 px viewport: there the
   // tablist scrolls sideways, as it already did at 360 px, and `revealTab` keeps the focused or
-  // selected tab fully visible. Every tab stays reachable and keeps its 44 px target.
-  const tabPadding = compact ? "px-1.5 md:px-2" : "px-3";
-  const tabGap = compact ? "gap-0 md:gap-1" : "gap-1";
-
+  // selected tab fully visible. Every tab stays reachable and keeps its 44 px target. The
+  // classes themselves are `tab-classes.ts`, which the box the issue page keeps for this strip
+  // reads too.
   return (
-    <div
-      className={`${compact ? "mb-0" : "mb-3"} flex flex-wrap items-center gap-1 border-b ${borderDefault}`}
-    >
-      <div
-        aria-label={ariaLabel}
-        className={`flex min-w-0 ${tabGap} overflow-x-auto [scrollbar-width:thin]`}
-        role="tablist"
-      >
+    <div className={tabStripClassName(compact)}>
+      <div aria-label={ariaLabel} className={tabListClassName(compact)} role="tablist">
         {tabs.map((tab) => (
           <button
             aria-controls={`${idPrefix}-${tab.id}-panel`}
@@ -125,11 +127,7 @@ export function Tabs<Id extends string>({
             // the count plainly.
             aria-label={tab.count === undefined ? undefined : `${tab.label} ${tab.count}`}
             aria-selected={activeTab === tab.id}
-            className={
-              activeTab === tab.id
-                ? `${tabMinHeight} ${tabPadding} inline-flex shrink-0 items-center gap-1.5 border-b-2 py-2 text-sm font-semibold whitespace-nowrap ${activeTabIndicatorBorder} ${activeTabIndicatorText}`
-                : `${tabMinHeight} ${tabPadding} inline-flex shrink-0 items-center gap-1.5 py-2 text-sm whitespace-nowrap ${textSecondaryOnCanvas}`
-            }
+            className={tabClassName(compact, activeTab === tab.id)}
             id={tabButtonId(idPrefix, tab.id)}
             key={tab.id}
             onClick={() => selectTab(tab.id)}
@@ -152,7 +150,7 @@ export function Tabs<Id extends string>({
             {tab.count === undefined ? null : (
               <>
                 {" "}
-                <Pill>{tab.count}</Pill>
+                <Pill className={tabCountClassName}>{tab.count}</Pill>
               </>
             )}
           </button>

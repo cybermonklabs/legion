@@ -5,6 +5,8 @@ import {
   clockFileOnCommandLine,
   clockProjectNames,
   clockSpecPattern,
+  clockSpecsNamed,
+  phoneAloneSpecPattern,
   stubProjectNames,
   tagged,
 } from "./configurations";
@@ -133,7 +135,7 @@ const stub = stubSelection({
 });
 
 // A command that names a wall-clock spec file as a filter while naming no project
-// (`clockFileOnCommandLine`, e2e/configurations.ts). The three wall-clock projects
+// (`clockFileOnCommandLine`, e2e/configurations.ts). The six `-alone` projects
 // (`clockProjectNames`, e2e/configurations.ts) are out of the default selection, so no run that
 // names no project holds a row of the file such a command named, whatever Playwright then does
 // with the rest of the line - for example, answer "No tests found", or run the whole default
@@ -163,8 +165,8 @@ if (clockFile !== undefined) {
       'rest of this command line - for example, answer "No tests found", or run the whole ' +
       "default selection, which is what a filter dropped after a `--` leaves. Write the " +
       "project as --project=<name> and never --project <name>: the option is variadic, so the " +
-      "file after it would be read as a second project name. To run every wall-clock row in " +
-      "all three engines, run `bun run e2e:clock`."
+      "file after it would be read as a second project name. To run every wall-clock row, " +
+      "run `bun run e2e:clock`."
   );
 }
 
@@ -283,6 +285,50 @@ const multiprocessProjects = [
 const readersPlaceRows =
   /a long message arriving above the reader|a reader who scrolls while a long body|Jump to latest keeps a newest long turn/;
 
+// The five rows read from the wall clock over a large document are three files of their own,
+// one per project, and the `-alone` projects below select them by file: every parallel project
+// ignores all three through `clockSpecPattern` (e2e/configurations.ts), as it ignores the three
+// specs those projects run whole. They were rows of `large-documents-measured.e2e.ts` picked
+// out by patterns over their titles until sjawhar/legion#2697, and a title is no selector: a
+// row renamed, or one added under a title the pattern missed, ran four workers wide in a
+// parallel project with every suite green. The argument above `aloneProjects` is theirs - a
+// reading of the clock is the page's own work only on a machine the run is not sharing - and
+// CI has said it of each of them.
+//
+// Four are read on the phone the spec names - the two measurements of a first editable block
+// under 4x CPU throttling, the row that times a page timer and a socket message handed over
+// inside the editor's build, and the row that times a decision answered inside one. At one
+// head the two measurements read 4,824 ms and 8,311 ms on
+// their first attempt and 3,838 ms and 5,105 ms on the retry, with each attempt's network reads
+// the same or slower and every main-thread number halved, which is the other workers easing
+// rather than any cache warming; at the same head the timer row's worst wait was 8,279 ms
+// behind a build whose own longest task was 732 ms. The decision row holds two readings of the
+// page's own clock 500 ms apart under 4x CPU throttling - the press the page made and the
+// request its answer left in - which four workers on one machine measure as surely as they
+// measure the other three (dispatch://INFRA-341).
+//
+// Those four are two projects and not one, so they are two files. The two measurements take
+// three readings each and hold the median of them to R11's targets, which is the protocol the
+// spec's Design paragraph names (`measuredReadings`, e2e/large-documents-median.ts), so each
+// costs about three times the wall clock it cost when it took one reading, and on CI's own
+// figures the two of them are most of what their leg spends. They are
+// `large-documents-measured.e2e.ts`, which `iphone-measure-alone` below runs, a leg of its own
+// in .github/workflows/dispatch-browser.yaml with a budget derived from their own measurement;
+// the timer row and the decision row, which neither changed nor repeat, are
+// `large-documents-build-serves.e2e.ts` and `large-documents-build-serves.the-decision.e2e.ts`,
+// which `iphone-alone` runs, keeping the budget their own measurement earned
+// (dispatch://INFRA-341).
+//
+// The fifth is the guard on the longest main-thread task of a build at a desktop width, whose
+// number is as much the runner's as theirs: over three CI runs of one branch, each in a
+// `chromium` shard leg four workers wide, it printed `longest 445 ms`, `longest 467 ms` and
+// `longest 557 ms`, the last of them a failure against its 500 ms guard on both attempts, while
+// the build it reads grew from 23,061 ms to 41,888 ms with nothing of the page changing - the
+// other three workers of the shard, and the row's own number moving with them
+// (dispatch://INFRA-341). Its claim is about a desktop width, so neither phone project is a
+// home for it: it is `large-documents-desktop-build.e2e.ts`, which `chromium-alone` below runs
+// beside the three specs it runs whole, Desktop Chrome with the machine to itself.
+
 // The one spec of the containerised visual review (`visual.e2e.ts`), which runs in the `visual`
 // and `visual-phone` projects at the end of this list and in no project above them: a project
 // whose configuration key equals one of theirs - the same engine, viewport, origin and
@@ -295,18 +341,31 @@ const visualSpecs = /visual\.e2e\.ts$/;
 
 // Every project that runs as wide as the run's own workers.
 const parallelProjects = [
-  // The desktop half of the pair: every row of the suite except the two kinds this project is
-  // not the one for. A `@phone-only` row has no desktop case to make, and the one row of
-  // `delivery-live.e2e.ts` that `webkit-iphone` owns has none either.
+  // The desktop half of the pair: every row of the suite except the three kinds this project is
+  // not the one for. A `@phone-only` row has no desktop case to make, the one row of
+  // `delivery-live.e2e.ts` that `webkit-iphone` owns has none either, and a row read from the
+  // wall clock is in a file of its own that this project's `testIgnore` holds
+  // (`clockSpecPattern`, e2e/configurations.ts).
   {
     name: "chromium",
     testIgnore: [plainHttpSpecs, multiprocessSpecs, clockSpecPattern, visualSpecs, stubSpecs],
     grepInvert: [phoneOnlyTagged, webkitPhoneDeliveryRow],
     use: { ...devices["Desktop Chrome"] },
   },
+  // The phone half of every `@phone` row, but for the files whose phone half is a leg of its own
+  // (`phoneAloneSpecPattern`, e2e/configurations.ts): `large-documents-long-build.e2e.ts`, whose
+  // three rows `iphone-long-build-alone` runs at the end of this list. `chromium` keeps that
+  // file's desktop half.
   {
     name: "iphone",
-    testIgnore: [plainHttpSpecs, multiprocessSpecs, clockSpecPattern, visualSpecs, stubSpecs],
+    testIgnore: [
+      plainHttpSpecs,
+      multiprocessSpecs,
+      clockSpecPattern,
+      phoneAloneSpecPattern,
+      visualSpecs,
+      stubSpecs,
+    ],
     grep: phoneRowTagged,
     use: { ...devices["iPhone 13"], browserName: "chromium" as const },
   },
@@ -348,9 +407,10 @@ const parallelProjects = [
   // Without a `testMatch` the project would see every spec in this directory, so it names the
   // same `testIgnore` as `chromium`: no tagged row may sit in a plain-HTTP, multiprocess or
   // clock-read spec, and `heavy-bodies.e2e.ts` belongs to `webkit-alone` alone. That ignore is
-  // what keeps the three clock-read files to the `-alone` projects at the end of this list and
+  // what keeps the six clock-read files to the `-alone` projects at the end of this list and
   // out of every project above them (sjawhar/legion#2612), here and in the three other projects
-  // that name it.
+  // that name it - a tag written on a wall-clock row included, since what this project sees is
+  // decided by the file and never by the row.
   {
     name: "webkit",
     testIgnore: [plainHttpSpecs, multiprocessSpecs, clockSpecPattern, visualSpecs, stubSpecs],
@@ -458,34 +518,39 @@ const parallelProjects = [
 
 /**
  * The projects a command names: the rows whose claim is a wall-clock time, with the machine to
- * themselves.
+ * themselves, and the phone half of the one file too costly for a shard
+ * (`iphone-long-build-alone`, last below).
  *
- * Each sets `default: false`, which leaves all three out of a run that names no project and
+ * Each sets `default: false`, which leaves all six out of a run that names no project and
  * takes nothing from a run that names one. `filterProjects` answers
  * `projects.filter(p => includeNonDefault || p.default)` where the command line named no
  * project, and ignores `default` altogether where it named any (`function filterProjects` at
  * node_modules/.bun/playwright@1.64.1/node_modules/playwright/lib/runner/index.js:2134);
  * `default?: boolean` is a field of `TestProject` and is `true` where it is unset
  * (playwright/types/test.d.ts:170). So `--project=chromium-alone` selects this project as it
- * always did, `bun run e2e:clock` selects all three, and a run that names none holds no row of
+ * always did, `bun run e2e:clock` selects all six, and a run that names none holds no row of
  * theirs.
  *
  * That field is also what keeps a file filter cheap, and it replaced something that did not.
  * Each of these projects named every project before it in `dependencies` until
  * dispatch://INFRA-1280: that ordered the run, and it also pulled the whole suite in behind any
- * command naming one of their three files, because a filter narrows a project it selects and
- * never a project selected to run before it. With no dependency and no place in the default
- * selection, such a command now selects nothing at all, so the configuration refuses it at the
- * top of this file and prints the command that runs the file.
+ * command naming one of their files, because a filter narrows a project it selects and never a
+ * project selected to run before it. With no dependency and no place in the default selection,
+ * such a command now selects nothing at all, so the configuration refuses a command that names
+ * a wall-clock spec file and no project at the top of this file, and prints the command that
+ * runs the file.
  *
  * What gives these rows the quiet machine is no longer the order they run in: it is a run one
- * worker wide. For the rows that measure through `e2e/main-thread-hold.ts` the row itself holds
- * the run to that: its guard fails a measuring row in a run of more than one worker rather than
- * letting it report a reading of what the other workers were running, so such a reading survives
- * only where it was taken alone, whatever project it was taken in. The rows of
- * `agent-workspace-timing.e2e.ts` read a clock of their own and reach that guard nowhere, so
- * what holds them to one worker is the command: the refusal at the top of this file prints
- * `--workers=1`, and `bun run e2e:clock` names it too.
+ * worker wide. For the rows that read a hold through `e2e/main-thread-hold.ts`, the row itself
+ * is what holds the run to that: `refuseASharedRun` fails a measuring row in a run of more than
+ * one worker rather than letting it report a reading of what the other workers were running, so
+ * a reading that survives was taken alone whatever project it was taken in. The rows of
+ * `agent-workspace-timing.e2e.ts` and the five `large-documents` rows these
+ * projects take read their numbers from a clock of their own and reach that guard nowhere, so
+ * nothing in them refuses a wider run: what keeps them alone is the command, and every command
+ * that measures them names `--workers=1` - the refusal at the top of this file prints it, `bun
+ * run e2e:clock` names it, and so do the alone job's legs
+ * (.github/workflows/dispatch-browser.yaml).
  *
  * Each still caps its own workers at one, which holds a project's own rows to one at a time
  * however wide the run is: the `workers: 1` below is this config's default, which a command
@@ -501,15 +566,22 @@ const parallelProjects = [
  *
  * Each engine keeps the rows it ran. `heavy-bodies.e2e.ts` ran in `chromium`, `firefox` and
  * `webkit`, for the reasons written above those projects, and runs here in all three;
- * `nested-directive.e2e.ts` ran in `chromium` alone and runs in `chromium-alone` alone, as does
- * `agent-workspace-timing.e2e.ts`, whose rows time the live view and the Agents page in the one
- * engine the timed halves are claimed for (INFRA-812's D14; the untimed halves of those checks
- * stay in `chromium` and `iphone`, in `agent-view-cost.e2e.ts` and `agents-window.e2e.ts`).
+ * `nested-directive.e2e.ts` ran in `chromium` alone and runs in `chromium-alone` alone, as do
+ * `large-documents-desktop-build.e2e.ts` and `agent-workspace-timing.e2e.ts`,
+ * whose rows time the live view and the Agents page in the one engine the timed halves are
+ * claimed for (INFRA-812's D14; the untimed halves of those checks stay in `chromium` and
+ * `iphone`, in `agent-view-cost.e2e.ts` and `agents-window.e2e.ts`).
  *
- * These three select by `testMatch` alone, where `webkit` and `firefox` select by an engine tag:
- * their axis is the file, not a behaviour. Every row of a clock-read file runs here whatever it
- * asserts, because what puts it here is that its claim is a wall-clock time, and
- * `heavy-bodies.e2e.ts` carries no engine tag at all - the two tagged projects ignore it.
+ * Every one of them selects by `testMatch` alone, where `webkit` and `firefox` select by an
+ * engine tag: their axis is the file, not a behaviour. Every row of a clock-read file runs
+ * here whatever it asserts, because what puts it here is that its claim is a wall-clock time,
+ * and `heavy-bodies.e2e.ts` carries no engine tag at all - the two tagged projects ignore it.
+ * Each names its files through `clockSpecsNamed` (e2e/configurations.ts), which refuses a name
+ * no wall-clock spec has, so a project whose selector matches nothing cannot sit here reading
+ * green. `firefox-alone`'s `grepInvert` is the one title this list still holds, and it drops
+ * rows rather than taking them: the three rows of `heavy-bodies.e2e.ts` that read a reader's
+ * place are measured in the two engines that anchor layout differently, and a title that
+ * stopped matching would run them here as well rather than leaving them unmeasured.
  *
  * Each also sets `retries: 0`, which Playwright takes per project as it takes `workers`,
  * against the one retry the run takes on CI. The reason is these rows' own, and holds whatever
@@ -519,10 +591,24 @@ const parallelProjects = [
  * should be red. The multiprocess project above sets the same value on a different argument.
  */
 const aloneProjects = [
+  // The three specs this project runs whole and the desktop guard beside them, each named in
+  // `clockSpecNames` (e2e/configurations.ts) and selected by file: every row of those four
+  // files is read from the wall clock, so there is nothing here to narrow by title.
+  //
+  // One project rather than one of its own for the desktop guard: this is already Desktop
+  // Chrome out of the default selection, at one worker and no retries, which is the whole of
+  // what that row needs, and `workers: 1` is what keeps its number its own - the rows here run
+  // one after another, never beside each other. The two phone projects below are two for a
+  // reason of their own, which is wall clock rather than configuration: their entries say it.
   {
     name: "chromium-alone",
     default: false,
-    testMatch: clockSpecPattern,
+    testMatch: clockSpecsNamed(
+      "agent-workspace-timing",
+      "heavy-bodies",
+      "nested-directive",
+      "large-documents-desktop-build"
+    ),
     use: { ...devices["Desktop Chrome"] },
     workers: 1,
     retries: 0,
@@ -530,7 +616,7 @@ const aloneProjects = [
   {
     name: "firefox-alone",
     default: false,
-    testMatch: /heavy-bodies\.e2e\.ts/,
+    testMatch: clockSpecsNamed("heavy-bodies"),
     grepInvert: readersPlaceRows,
     use: { ...devices["Desktop Firefox"] },
     workers: 1,
@@ -539,8 +625,68 @@ const aloneProjects = [
   {
     name: "webkit-alone",
     default: false,
-    testMatch: /heavy-bodies\.e2e\.ts/,
+    testMatch: clockSpecsNamed("heavy-bodies"),
     use: { ...devices["Desktop Safari"] },
+    workers: 1,
+    retries: 0,
+  },
+  // The two clock rows read on the phone that take one reading apiece: the timer row of
+  // `large-documents-build-serves.e2e.ts` and the decision row of
+  // `large-documents-build-serves.the-decision.e2e.ts`, which are this project's whole
+  // selection, in that order. The iPhone 13 viewport, touch and Chromium the `iphone` project
+  // gives them, since every target the spec names is read on that device under 4x CPU
+  // throttling. Like the three projects above it, it is out of the default
+  // selection, so nothing of the suite is beside it in the run that names it. On CI's own
+  // runner, at head f79cb07f in run 43098661012's `alone (iphone-alone)` leg, the timer row
+  // took 10.3 s and the decision row 19.8 s, each one row wide.
+  {
+    name: "iphone-alone",
+    default: false,
+    testMatch: clockSpecsNamed(
+      "large-documents-build-serves",
+      "large-documents-build-serves.the-decision"
+    ),
+    use: { ...devices["iPhone 13"], browserName: "chromium" as const },
+    workers: 1,
+    retries: 0,
+  },
+  // The two rows that measure a first editable block, which are
+  // `large-documents-measured.e2e.ts`, on the same
+  // device profile as `iphone-alone` above and selected the same way, by file. A project of
+  // their own and not two more rows of that one, because each of them takes
+  // three readings and holds the median to its target, and a budget is derived from what the
+  // rows under it measured: three readings put these two at about three times the 16.2 s and
+  // 20.7 s they took at one reading on CI (run 43098661012, the `alone (iphone-alone)` leg at
+  // head f79cb07f), which is more than the whole of `iphone-alone`'s leg. Raising that leg's
+  // budget would have moved the bound for the timer row and the decision row, which nothing
+  // changed; this way each leg's budget is derived from its own measurement, and
+  // .github/workflows/dispatch-browser.yaml prints both derivations
+  // (dispatch://INFRA-341).
+  {
+    name: "iphone-measure-alone",
+    default: false,
+    testMatch: clockSpecsNamed("large-documents-measured"),
+    use: { ...devices["iPhone 13"], browserName: "chromium" as const },
+    workers: 1,
+    retries: 0,
+  },
+  // The phone half of `large-documents-long-build.e2e.ts`, which is this project's whole
+  // selection, on the same device profile as the two above. It selects by file, with the very
+  // value `iphone` ignores (`phoneAloneSpecPattern`, e2e/configurations.ts). Its three rows read
+  // no number from the wall clock; what puts them on a leg of their own is their cost. Each
+  // builds the 406,000-character document under 4x CPU throttling, and in `iphone` they stood at
+  // the tail of the listing Playwright cuts its shards from by row count, so all three landed in
+  // the last shard: 1.8 min, 51.8 s and 39.3 s of the 499 s `shard (5)` took of its 540 s in run
+  // 43421318396. `iphone` ignores the file now, and `chromium` keeps its desktop half where it
+  // was, four workers wide.
+  // One worker and no retry, as every project of this list: the build-time row holds two builds'
+  // own times to a ratio, which a second attempt would only blur. The leg's budget is derived from
+  // these rows' own measurement in .github/workflows/dispatch-browser.yaml (dispatch://INFRA-341).
+  {
+    name: "iphone-long-build-alone",
+    default: false,
+    testMatch: phoneAloneSpecPattern,
+    use: { ...devices["iPhone 13"], browserName: "chromium" as const },
     workers: 1,
     retries: 0,
   },
@@ -702,7 +848,7 @@ export default defineConfig({
   // `flaky` rather than failed, which is what the merged report of the dispatch-browser lane
   // publishes its flake rate from. Locally a retry would hide a failure the developer is looking
   // at, and `bun run e2e` is read as pass or fail. This is the value of every project that sets
-  // none of its own: the three `-alone` projects, the two `visual` ones, the two stubbed ones
+  // none of its own: the six `-alone` projects, the two `visual` ones, the two stubbed ones
   // and the multiprocess one each set `retries: 0`, each for a reason its own comment gives.
   retries: process.env.CI ? 1 : 0,
   // `failure-reporter.ts` writes nothing and prints nothing, and is the one way `globalTeardown`

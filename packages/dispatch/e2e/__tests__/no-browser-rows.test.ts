@@ -24,19 +24,23 @@ const e2eDirectory = fileURLToPath(new URL("..", import.meta.url));
 // `signin.multiprocess.e2e.ts`; and only DISPATCH_E2E_SIGNIN=oidc with DISPATCH_E2E_PROCESSES=2
 // lists that last spec, whose servers sign people in through the dev OIDC issuer alone
 // (e2e/playwright.config.ts's project lists, e2e/harness-signin.ts:20-40). The fourth names the
-// three wall-clock projects (`clockProjectNames`, e2e/configurations.ts): they carry
+// six `-alone` projects (`clockProjectNames`, e2e/configurations.ts): they carry
 // `default: false` since dispatch://INFRA-1280, so a listing that names no project holds no row
-// of theirs, and `agent-workspace-timing.e2e.ts`, `heavy-bodies.e2e.ts` and
-// `nested-directive.e2e.ts` - 54 rows in this head's wall-clock listing - reach the union below
-// from it alone.
+// of theirs, and every row of this head's `-alone` listing - 59 of them, the 47 of
+// `heavy-bodies.e2e.ts` and `nested-directive.e2e.ts`, the four of
+// `agent-workspace-timing.e2e.ts`, the five of `large-documents-measured.e2e.ts`,
+// `large-documents-build-serves.e2e.ts`, `large-documents-build-serves.the-decision.e2e.ts`
+// and `large-documents-desktop-build.e2e.ts`, and the three of
+// `large-documents-long-build.e2e.ts`'s phone half - reaches the union below from it
+// alone.
 //
 // Each listing names its own DISPATCH_E2E_PROCESSES and DISPATCH_E2E_SIGNIN and never the
 // ambient ones, so this file reads the same suite wherever it runs. That is also what lets the
 // fourth be taken unconditionally: it names no process count, so it is a one-process run, and
 // two-process mode - whose project list declares the multiprocess project alone - would refuse
 // it. Measured at this head, that listing under DISPATCH_E2E_PROCESSES=2 exits 1 with
-// `Error: Project(s) "chromium-alone", "firefox-alone", "webkit-alone" not found. Available
-// projects: "chromium"`.
+// `Error: Project(s) "chromium-alone", "firefox-alone", "webkit-alone", "iphone-alone",
+// "iphone-measure-alone", "iphone-long-build-alone" not found. Available projects: "chromium"`.
 const defaultListing = retained(listing("e2e/playwright.config.ts", {}));
 const multiprocessListing = retained(
   listing("e2e/playwright.config.ts", { DISPATCH_E2E_PROCESSES: "2" })
@@ -60,9 +64,9 @@ const realStale = staleExemptions(realRows, exemptions);
 
 // The four listings run at once, over two cores they share with the two source scans below, and
 // the whole file cost 13.72, 17.11 and 23.22 seconds in three runs of it at this head. Each
-// listing on its own is a few seconds: the default one 3.59 seconds and the wall-clock one
-// 1.25, read at this head with `time bunx playwright test --config e2e/playwright.config.ts
-// --list --reporter=json` and the same line naming the three wall-clock projects. This file
+// listing on its own is a few seconds: the default one 5.66 seconds and the wall-clock one
+// 2.17, read at this head with `time bunx playwright test --config e2e/playwright.config.ts
+// --list --reporter=json` and the same line naming the five wall-clock projects. This file
 // allows three minutes, which is far above every one of those readings: the ceiling is the
 // point at which something is wrong rather than slow, not a budget for a listing.
 const listingTimeout = 180_000;

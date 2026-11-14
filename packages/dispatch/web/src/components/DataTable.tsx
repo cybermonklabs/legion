@@ -22,6 +22,7 @@ import {
 } from "@tanstack/react-table";
 import { useVirtualizer, type Virtualizer } from "@tanstack/react-virtual";
 import { Fragment, type ReactNode, useLayoutEffect, useRef, useState } from "react";
+import { putTheBoxAt } from "../features/doc/readers-place";
 import { IssueTablePager } from "../features/project/issues-table-controls";
 import { useRowKeymap } from "../features/project/issues-table-keys";
 import type { TableLayoutModel } from "../features/project/issues-table-layout";
@@ -246,7 +247,8 @@ export function useDataTable<Row>({
   });
   const previousView = useRef(viewKey);
   useLayoutEffect(() => {
-    if (previousView.current !== viewKey) layout.scrollRef.current?.scrollTo({ top: 0 });
+    const rows = layout.scrollRef.current;
+    if (previousView.current !== viewKey && rows !== null) putTheBoxAt(rows, 0);
     previousView.current = viewKey;
   }, [viewKey, layout.scrollRef]);
 

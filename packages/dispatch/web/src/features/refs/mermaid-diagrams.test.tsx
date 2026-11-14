@@ -8,6 +8,7 @@ import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 
 import { realClock, tick } from "../../__tests__/fake-clock";
+import { installIntersectionObserver } from "../../__tests__/intersection-observer";
 import { renderWithQueries as render } from "../../__tests__/query-provider";
 import { userOnFakeClock } from "../../__tests__/user";
 import { MarkdownBody } from "./MarkdownBody";
@@ -91,6 +92,10 @@ class FakeWorker {
 // validation, before any layout.
 describe("Mermaid diagrams", () => {
   const pageWorker = globalThis.Worker;
+  // A block asks for its drawing once it is within one viewport of the reader, and happy-dom
+  // reports no element ever on screen; every case but the one about that rule reads a page whose
+  // whole body a reader can see, which is what a browser showing these short bodies gives.
+  let restoreIntersections = () => {};
 
   // The worker, the drawn-source cache and a failure are module state that outlives every render,
   // so each case starts from a page that has started and drawn nothing.
@@ -101,11 +106,13 @@ describe("Mermaid diagrams", () => {
     FakeWorker.readyDelayMs = 0;
     FakeWorker.sent = [];
     globalThis.Worker = FakeWorker as unknown as typeof Worker;
+    restoreIntersections = installIntersectionObserver({ showOnObserve: true }).restore;
     resetMermaidDiagrams();
   });
 
   afterEach(() => {
     resetMermaidDiagrams();
+    restoreIntersections();
     globalThis.Worker = pageWorker;
   });
 
@@ -838,6 +845,34 @@ describe("Mermaid diagrams", () => {
     } finally {
       realClock();
       logged.mockRestore();
+      view.unmount();
+    }
+  });
+
+  // A comment holding twenty diagrams must not run the renderer twenty times for a reader who
+  // has seen two of them (dispatch://INFRA-341, requirement R11).
+  test("only a block within one viewport of the reader asks for its drawing", async () => {
+    restoreIntersections();
+    const intersections = installIntersectionObserver();
+    restoreIntersections = intersections.restore;
+    const near = fence("sequenceDiagram\n  Alice->>Bob: Near");
+    const far = fence("sequenceDiagram\n  Alice->>Bob: Far");
+    const view = render(<MarkdownBody markdown={`${near}\n${far}`} />);
+    try {
+      await waitFor(() => expect(intersections.observed()).toHaveLength(2));
+      expect(FakeWorker.sent).toEqual([]);
+      expect(figuresIn(view.container)).toHaveLength(0);
+
+      const [nearBlock] = intersections.observed();
+      intersections.show(nearBlock);
+      await waitFor(() => expect(figuresIn(view.container)).toHaveLength(1));
+      expect(diagramIn(figuresIn(view.container)[0])?.textContent).toContain("Near");
+      expect(FakeWorker.sent).toEqual(["sequenceDiagram\n  Alice->>Bob: Near"]);
+
+      // The block still below the fold is on the watch and has asked for nothing.
+      expect(intersections.observed()).toHaveLength(1);
+      expect(view.container.textContent).toContain("Alice->>Bob: Far");
+    } finally {
       view.unmount();
     }
   });

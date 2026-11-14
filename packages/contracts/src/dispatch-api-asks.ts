@@ -17,9 +17,8 @@ import {
 } from "./dispatch-api-core";
 import { AskApprovalDocumentSchema } from "./dispatch-api-documents";
 import { type IssueRouteReach, issueFields } from "./dispatch-api-issues";
-import { ASK_TURNS } from "./dispatch-api-limits";
 import { referenceChangesFields, threadLoginsFields } from "./dispatch-api-refs";
-import { ASK_URGENCIES } from "./dispatch-tools";
+import { ASK_TURNS, ASK_URGENCIES } from "./dispatch-constants";
 
 /**
  * The ask: the row every ask read answers with, the lists it appears in, and the payloads of

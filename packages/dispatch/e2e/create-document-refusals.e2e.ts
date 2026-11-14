@@ -156,6 +156,9 @@ test("a closed issue refuses both ways to add a document, in one sentence", asyn
   // `force`: the refusal is `aria-disabled`, which Playwright reads as not enabled, and the
   // press a person can still make is exactly what this reads - it opens no form.
   await create.click({ force: true });
+  // A forced press lands on whatever the page leaves at that point, so it is read where it
+  // landed: a refused control that holds the focus is the one that was pressed.
+  await expect(create).toBeFocused();
   await expect(newDocumentForm(page)).toHaveCount(0);
   expect(await listIssueArtifacts(issue.key)).toHaveLength(held);
 });

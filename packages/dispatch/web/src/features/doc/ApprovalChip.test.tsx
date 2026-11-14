@@ -199,11 +199,11 @@ test("Request changes requires a reason before it can submit, then posts it", as
     await user.click(screen.getByRole("button", { name: "Request changes" }));
     const dialog = screen.getByRole("dialog", { name: "Request changes" });
     const submit = within(dialog).getByRole("button", { name: "Request changes" });
-    expect(submit.hasAttribute("disabled")).toBe(true);
+    expect(submit.getAttribute("aria-disabled")).toBe("true");
 
     await user.click(within(dialog).getByLabelText("Reason"));
     await user.paste("Needs another pass");
-    expect(submit).not.toHaveAttribute("disabled");
+    expect(submit).not.toHaveAttribute("aria-disabled");
 
     await user.click(submit);
     await waitFor(() => expect(createArtifactReview).toHaveBeenCalledTimes(1));
@@ -215,6 +215,41 @@ test("Request changes requires a reason before it can submit, then posts it", as
       },
       keyedAttempt
     );
+  } finally {
+    createArtifactReview.mockRestore();
+    view.unmount();
+  }
+});
+
+// An empty reason refuses the submit rather than greying it out: it stays in the tab order,
+// sends nothing, and the line under it - which is also its description - says what is missing.
+test("Request changes refused by an empty reason keeps focus, sends nothing and says why", async () => {
+  const user = userEvent.setup();
+  const createArtifactReview = spyOn(api, "createArtifactReview").mockResolvedValue({
+    actor: { id: "alice", kind: "user" },
+    artifact_id: "artifact-1",
+    ask_id: null,
+    content_sha256: null,
+    content_sha256_source: null,
+    created_at: "2026-09-11T00:00:00Z",
+    id: "review-1",
+    kind: "person",
+    reason: "Needs another pass",
+    state: "changes_requested",
+    version: 3,
+  });
+  const view = renderChip(artifact({ latest_version: 3, state: "awaiting" }), "header");
+  try {
+    await user.click(screen.getByRole("button", { name: "Request changes" }));
+    const dialog = screen.getByRole("dialog", { name: "Request changes" });
+    const submit = within(dialog).getByRole("button", { name: "Request changes" });
+    submit.focus();
+    await user.click(submit);
+
+    expect(createArtifactReview).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(submit);
+    const describedBy = submit.getAttribute("aria-describedby") ?? "";
+    expect(document.getElementById(describedBy)?.textContent).toBe("Say what needs to change.");
   } finally {
     createArtifactReview.mockRestore();
     view.unmount();

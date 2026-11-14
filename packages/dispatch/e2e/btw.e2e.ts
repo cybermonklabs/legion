@@ -157,6 +157,9 @@ test("/btw with nothing after it keeps an agent's direct composer from sending, 
     await field.press("Tab");
     await expect(send).toBeFocused();
     await send.click({ force: true });
+    // A forced press lands on whatever the page leaves at that point, so it is read where it
+    // landed: a refused Send that holds the focus is the Send that was pressed.
+    await expect(send).toBeFocused();
     await field.press("Control+Enter");
     // Neither the forced click nor Ctrl+Enter may send while `/btw ` strips to an empty message,
     // and a send that never happens marks nothing to wait on: this window is the check. A POST

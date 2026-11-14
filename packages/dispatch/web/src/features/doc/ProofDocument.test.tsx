@@ -1,10 +1,15 @@
-import { beforeEach, expect, spyOn, test } from "bun:test";
+import { beforeEach, expect, jest, spyOn, test } from "bun:test";
 import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http } from "msw";
 import { type Node as ProseMirrorNode, Schema } from "prosemirror-model";
 
-import { type FakeDocumentRuntime, fakeDocumentRuntime } from "../../__tests__/document-runtime";
+import {
+  changingEachHandle,
+  type FakeDocumentRuntime,
+  fakeDocumentRuntime,
+} from "../../__tests__/document-runtime";
+import { realClock, tick } from "../../__tests__/fake-clock";
 import { answerRequests } from "../../__tests__/network";
 import {
   answerTextReadsWithTheSeededText,
@@ -17,8 +22,17 @@ import { ApiError, api } from "../../api/client";
 import type { Ask, IssueDetails, IssueReferenceSummary } from "../../api/types";
 import { heldSends } from "../conversation/held-sends";
 import { marginComposeSendKey } from "../margin/margin-context";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
+import { markdownWorkerThreshold } from "../refs/markdown-worker-threshold";
+import { installFakeParseWorker, restoreParseWorker } from "../refs/parse-worker-fixture";
 import { appKeymap } from "../shell/keymap";
 import { colorForLogin } from "./connection";
+import type { ConstructEditor } from "./editor";
+import {
+  afterTheFirstBatch,
+  LONGEST_WAIT_FOR_THE_DOCUMENT_MS,
+  theFirstBatchIsAwaited,
+} from "./first-batch";
 
 answerTextReadsWithTheSeededText();
 
@@ -71,6 +85,281 @@ test("ProofDocument creates the editor on the synced document as the signed-in u
     expect(editors[0]?.root.getAttribute("aria-multiline")).toBe("true");
     expect(editors[0]?.root.getAttribute("role")).toBe("textbox");
   } finally {
+    view.unmount();
+  }
+});
+
+// The editor is built while the socket syncs and bound when the document arrives: nothing the
+// construction is made of depends on a block of the document, and the whole of it - Milkdown,
+// the schema's typed blocks, every plugin's view, Dispatch's own node views - used to be paid
+// for after the state frame had been applied, 415 ms and 493 ms of the main thread for the two
+// documents of `e2e/large-documents.ts` on a phone at 4x CPU throttling (dispatch://INFRA-341,
+// R11). It is the admission's `/text` read that the construction waits for, never the sync: a
+// stored tree outside the Proof schema reaches no browser editor.
+test("the editor is built while the socket syncs, with no document in it until the sync", async () => {
+  const { connections, constructions, editors, sync, view } = renderProofDocument();
+
+  try {
+    await waitFor(() => expect(connections).toHaveLength(1));
+    // The socket is open and nothing has synced, and the editor is already standing.
+    await waitFor(() => expect(constructions).toHaveLength(1));
+    expect(editors).toHaveLength(0);
+    // Hidden, with no document in it and no name of its own, so the reader still reads their
+    // own draw of the document and the page holds one document textbox, not two.
+    expect(constructions[0]?.root.style.display).toBe("none");
+    expect(constructions[0]?.root.textContent).toBe("");
+    expect(screen.queryByRole("textbox", { name: "Document editor" })).toBeNull();
+
+    await sync();
+    // The same editor, now holding the document: the sync binds what was built, never builds
+    // a second one.
+    await waitFor(() => expect(editors).toHaveLength(1));
+    expect(constructions).toHaveLength(1);
+    expect(editors[0]).toBe(constructions[0]);
+    expect(editors[0]?.root.textContent).toContain("The live document");
+  } finally {
+    view.unmount();
+  }
+});
+
+// The reads and the chrome a document address holds behind the editor's first batch are let
+// go in the callback that batch answers with, never when it begins: the build calls `onBatch`
+// before it has placed the batch's blocks or shown the editor's root, and what that answers
+// once it has done both (`@legion/proof-editor`'s `progressive-build.ts`). Let go at the top
+// instead, the panels' own render was queued ahead of the batch's own DOM work, so every read
+// the page had held went out in front of the batch it waits for (dispatch://INFRA-341, R11).
+test("the reads the page holds go out once the batch's blocks are in the editor, not as it begins", async () => {
+  const fake = fakeDocumentRuntime({ text: "The live document" });
+  /** Whether the page was past the first batch at each of the build's two words. */
+  const past: { asItBegan?: boolean; onceItLanded?: boolean } = {};
+  const constructEditor: ConstructEditor = async (root, options) => {
+    const construction = await fake.runtime.constructEditor(root, options);
+    return {
+      ...construction,
+      bind: async () => {
+        const landed = options.onBatch?.(["a-block-of-the-first-batch"]);
+        past.asItBegan = afterTheFirstBatch();
+        landed?.();
+        past.onceItLanded = afterTheFirstBatch();
+        return construction.bind();
+      },
+    };
+  };
+  theFirstBatchIsAwaited(true);
+  const { sync, view } = renderProofDocument({
+    fake: { ...fake, runtime: { ...fake.runtime, constructEditor } },
+    surface: "page",
+  });
+
+  try {
+    await sync();
+    await waitFor(() => expect(past.onceItLanded).toBe(true));
+    expect(past.asItBegan).toBe(false);
+  } finally {
+    view.unmount();
+    theFirstBatchIsAwaited(false);
+  }
+});
+
+// The product's own path, which the stubbed layer's close below must leave as it was: a page
+// whose socket is open and whose server sends no document back is held for
+// `LONGEST_WAIT_FOR_THE_DOCUMENT_MS` and no less, since nothing else tells a silent server from a
+// slow one (`first-batch.ts`). The fake clock is installed before the hold is armed, so the
+// release this row reads at ten seconds is that deadline and not the twenty-second one over
+// the whole load.
+test("a page whose socket answers no document holds its reads for the server's deadline, and no less", async () => {
+  jest.useFakeTimers();
+  theFirstBatchIsAwaited(true);
+  const { connections, view } = renderProofDocument({ surface: "page" });
+
+  try {
+    await waitFor(() => expect(connections).toHaveLength(1));
+    await tick(LONGEST_WAIT_FOR_THE_DOCUMENT_MS - 1_000);
+    expect(afterTheFirstBatch()).toBe(false);
+    await tick(1_000);
+    expect(afterTheFirstBatch()).toBe(true);
+  } finally {
+    view.unmount();
+    theFirstBatchIsAwaited(false);
+    realClock();
+  }
+});
+
+// The stubbed browser layer serves no document socket and says so with
+// `NO_DOCUMENT_SERVER_CLOSE_CODE` (`e2e/stub/stub-test.ts`), which the Go server never sends. The
+// page answers it by releasing the hold and with nothing else: the connection stands, no alert
+// is raised, the status is the one the socket last reported, and no editor is bound.
+test("the stubbed layer's no-document close lets the page's reads go at once, and changes nothing else", async () => {
+  theFirstBatchIsAwaited(true);
+  const { connections, editors, noDocumentServer, toolbar, view } = renderProofDocument({
+    surface: "page",
+  });
+
+  try {
+    await waitFor(() => expect(connections).toHaveLength(1));
+    expect(afterTheFirstBatch()).toBe(false);
+    const before = toolbar.current?.connection;
+    act(() => noDocumentServer());
+    expect(afterTheFirstBatch()).toBe(true);
+    expect(within(view.container).queryByRole("alert")).toBeNull();
+    expect(connections).toHaveLength(1);
+    expect(connections[0]?.destroyed).toBe(false);
+    expect(toolbar.current?.connection).toBe(before);
+    expect(editors).toHaveLength(0);
+  } finally {
+    view.unmount();
+    theFirstBatchIsAwaited(false);
+  }
+});
+
+// The document's typed blocks go on the view before the build, not after the handle arrives: a
+// `setProps` with a new `nodeViews` map over a built document re-runs ProseMirror's view update
+// across every node of it, which for the 406,319-character document was one task of 1,218 ms on
+// a phone at 4x CPU throttling - longer than any batch of the build it followed
+// (dispatch://INFRA-341, R11). `createEditor` is what installs them, from the chunk the editor
+// library is in (`features/doc/editor.ts`), out of what this page hands it.
+test("the document's typed blocks are on the view before the editor's build", async () => {
+  const { editors, sync, view } = renderProofDocument();
+
+  try {
+    await sync();
+    await waitFor(() => expect(editors).toHaveLength(1));
+
+    // `callout` is the one host-rendered type of the suites' block schema; `ask` and `image`
+    // every document has.
+    expect(editors[0]?.nodeViewsAtBuild).toEqual(
+      expect.arrayContaining(["ask", "callout", "image"])
+    );
+  } finally {
+    view.unmount();
+  }
+});
+
+// What a reader has while the editor is built for them (`DocumentPreview`): the document, drawn
+// from the markdown `/text` answered, with a `data-block-id` on every block as the editor's
+// draw has. It is named for what it is, `Document text` under a `document` role, never for the
+// editor: nothing here takes an edit, and the page holds one document textbox, not two.
+test("ProofDocument draws the document's own text until its editor is built, and lets go of it then", async () => {
+  await warmMarkdownRenderer();
+  const { editors, sync, view } = renderProofDocument();
+
+  try {
+    const drawn = await screen.findByRole("document", { name: "Document text" });
+    expect(drawn.textContent).toContain("The live document");
+    expect(drawn.querySelectorAll("[data-block-id]").length).toBeGreaterThan(0);
+    expect(editors).toHaveLength(0);
+    expect(screen.queryByRole("textbox", { name: "Document editor" })).toBeNull();
+
+    await sync();
+    await waitFor(() => expect(editors).toHaveLength(1));
+    expect(screen.queryByRole("document", { name: "Document text" })).toBeNull();
+    expect(editors[0]?.root.textContent).toContain("The live document");
+  } finally {
+    view.unmount();
+  }
+});
+
+// A document too long for the page's own thread is drawn in two passes (`DocumentPreview`): the
+// blocks it opens with, parsed in the commit that mounts it, and the whole of it when the parse
+// worker answers. The first pass is what a reader meets, and on a phone it is seconds - often
+// the whole of the wait, since the editor can replace this draw before that answer ever lands
+// (dispatch://INFRA-341, R11).
+test("ProofDocument draws a long document's first blocks before the whole of it has been parsed", async () => {
+  await warmMarkdownRenderer();
+  const worker = installFakeParseWorker();
+  const opening = "# The lease ledger\n\nThe paragraph a reader meets first.";
+  const buried = "The paragraph at the end of it.";
+  // One paragraph past the budget of the first pass, so the cut falls after the opening's two
+  // blocks rather than part-way through a third.
+  const between = `A paragraph longer than the first draw takes. ${"Every lease settles. ".repeat(markdownWorkerThreshold / 20)}`;
+  const markdown = `${opening}\n\n${between}\n\n${buried}\n`;
+  expect(markdown.length).toBeGreaterThan(markdownWorkerThreshold);
+  const { view } = renderProofDocument({ fake: fakeDocumentRuntime({ text: markdown }) });
+
+  try {
+    const drawn = await screen.findByRole("document", { name: "Document text" });
+    // The opening is formatted - a heading, not its syntax - and the rest of the document is
+    // not here yet.
+    await waitFor(() =>
+      expect(within(drawn).getByRole("heading").textContent).toBe("The lease ledger")
+    );
+    expect(drawn.querySelectorAll("[data-block-id]")).toHaveLength(2);
+    expect(drawn.textContent).not.toContain(buried);
+    expect(drawn.textContent).not.toContain("#");
+
+    // And the whole document is what the worker was given, so the pass that follows is the
+    // document itself rather than the rest of it bolted on.
+    await worker.waitForRequests(1);
+    expect(worker.requests[0]?.markdown).toBe(markdown);
+    await act(() => worker.answer(0));
+    await waitFor(() => expect(drawn.textContent).toContain(buried));
+    expect(within(drawn).getByRole("heading").textContent).toBe("The lease ledger");
+  } finally {
+    restoreParseWorker();
+    view.unmount();
+  }
+});
+
+// Where that second pass stops: the task the editor's build begins in, which is the task the
+// sync lands in and not the one the editor's handle answers in (`DocumentPreview`'s
+// `building`). The build fills the editor a batch at a time and hands the thread back between
+// batches, so a pass painting the whole document into those gaps is work for a draw the editor
+// is about to replace, and it costs the reader the editor they are waiting for
+// (dispatch://INFRA-341, R11). The editor is held here for the whole of its build, which is
+// where a page that is told only at the end would paint it.
+test("the document's own draw stops painting in the task the editor's build begins in", async () => {
+  await warmMarkdownRenderer();
+  const worker = installFakeParseWorker();
+  // A document of this row's own: the engine keeps the parse it answered for a source, so a
+  // row sharing the row above's markdown would be handed the whole document at its first
+  // render and never meet the two passes this is about.
+  const opening = "# The settlement window\n\nThe paragraph a reader meets first.";
+  const buried = "The paragraph the build must never paint.";
+  const between = `A paragraph longer than the first draw takes. ${"Every window closes. ".repeat(markdownWorkerThreshold / 20)}`;
+  const markdown = `${opening}\n\n${between}\n\n${buried}\n`;
+  const fake = fakeDocumentRuntime({ text: markdown });
+  // The build, held: the editor is constructed while the socket syncs, and what the sync
+  // starts is its binding, which is the build this row is about (`features/doc/editor.ts`).
+  const building = Promise.withResolvers<void>();
+  const constructEditor: ConstructEditor = async (root, options) => {
+    const construction = await fake.runtime.constructEditor(root, options);
+    return {
+      ...construction,
+      bind: async () => {
+        await building.promise;
+        return construction.bind();
+      },
+    };
+  };
+  const { view } = renderProofDocument({
+    fake: { ...fake, runtime: { ...fake.runtime, constructEditor } },
+  });
+
+  try {
+    const drawn = await screen.findByRole("document", { name: "Document text" });
+    await waitFor(() => expect(drawn.querySelectorAll("[data-block-id]")).toHaveLength(2));
+    await worker.waitForRequests(1);
+
+    // The sync, and with it the build, in a commit of this task's own: the draw is told in it,
+    // and the parse answers after it. A sync left to React's own schedule would let that parse
+    // answer into a commit that had not run yet, which would prove nothing either way.
+    await waitFor(() => expect(fake.connections).toHaveLength(1));
+    act(() => fake.sync());
+    await act(() => worker.answer(0));
+    expect(drawn.textContent).not.toContain(buried);
+    expect(drawn.querySelectorAll("[data-block-id]")).toHaveLength(2);
+
+    // And the editor that build was for still arrives and replaces the draw.
+    await act(async () => {
+      building.resolve();
+      await building.promise;
+    });
+    await waitFor(() => expect(fake.editors).toHaveLength(1));
+    await waitFor(() =>
+      expect(screen.queryByRole("document", { name: "Document text" })).toBeNull()
+    );
+  } finally {
+    restoreParseWorker();
     view.unmount();
   }
 });
@@ -745,15 +1034,12 @@ test("a closed document's Comment opens a quote composer with no mark, which pos
   ]);
   const fake = fakeDocumentRuntime({ text: "brown fox brown" });
   const removed: string[] = [];
-  const createEditor = fake.runtime.createEditor;
-  fake.runtime.createEditor = async (root, options) => {
-    const handle = await createEditor(root, options);
+  fake.runtime.constructEditor = changingEachHandle(fake.runtime.constructEditor, (handle) => {
     // The fake view's state is a plain object whose `doc` the test supplies.
     const state = handle.view.state as unknown as { doc: ProseMirrorNode };
     state.doc = document;
     handle.removeMark = (markId) => void removed.push(markId);
-    return handle;
-  };
+  });
   const queryClient = createQueryClient();
   const createComment = spyOn(api, "createComment").mockResolvedValue(undefined as never);
   const { editors, margin, sync, view } = renderProofDocument({
@@ -840,14 +1126,11 @@ test("a closed document's Comment on a selection with no text to quote says so a
     schema.node("paragraph", undefined, [schema.text("brown "), schema.node("image")]),
   ]);
   const fake = fakeDocumentRuntime({ text: "brown " });
-  const createEditor = fake.runtime.createEditor;
-  fake.runtime.createEditor = async (root, options) => {
-    const handle = await createEditor(root, options);
+  fake.runtime.constructEditor = changingEachHandle(fake.runtime.constructEditor, (handle) => {
     // The fake view's state is a plain object whose `doc` the test supplies.
     const state = handle.view.state as unknown as { doc: ProseMirrorNode };
     state.doc = document;
-    return handle;
-  };
+  });
   const { editors, margin, sync, view } = renderProofDocument({ fake, isClosed: true });
   const notice = "This selection holds no text to quote. Select text to comment on it.";
 
@@ -913,16 +1196,13 @@ test("a highlight click focuses its margin item and hover identifies its matchin
 test("the marks projection reaches the editor on sync and on every change", async () => {
   const fake = fakeDocumentRuntime({ text: "The live document" });
   const projected: { metadata: object; options: { hydrateAnchors?: boolean } | undefined }[] = [];
-  const createEditor = fake.runtime.createEditor;
-  fake.runtime.createEditor = async (root, options) => {
-    const handle = await createEditor(root, options);
+  fake.runtime.constructEditor = changingEachHandle(fake.runtime.constructEditor, (handle) => {
     const applyRemoteMarks = handle.applyRemoteMarks.bind(handle);
     handle.applyRemoteMarks = (metadata, applyOptions) => {
       projected.push({ metadata, options: applyOptions });
       applyRemoteMarks(metadata, applyOptions);
     };
-    return handle;
-  };
+  });
   const { connections, editors, sync, view } = renderProofDocument({ fake });
   const storedMark = {
     by: "user:alice",
@@ -969,9 +1249,7 @@ test("mark placements are published to the margin after document changes", async
   ]);
   const fake = fakeDocumentRuntime({ text: "The live document" });
   let editorState: { doc: ProseMirrorNode } | undefined;
-  const createEditor = fake.runtime.createEditor;
-  fake.runtime.createEditor = async (root, options) => {
-    const handle = await createEditor(root, options);
+  fake.runtime.constructEditor = changingEachHandle(fake.runtime.constructEditor, (handle) => {
     editorState = handle.view.state as unknown as { doc: ProseMirrorNode };
     editorState.doc = initialDocument;
     handle.markOffsets = () =>
@@ -979,8 +1257,7 @@ test("mark placements are published to the margin after document changes", async
         ["c-1", 40],
         ["a-1", 72],
       ]);
-    return handle;
-  };
+  });
   const { connections, editors, margin, sync, view } = renderProofDocument({ fake });
 
   try {
@@ -1255,15 +1532,23 @@ const SHORT_BLOCK = "2a7f1c90";
  *  whole one up in. */
 function runtimeWithBlocks(blockIds: readonly string[]): FakeDocumentRuntime {
   const fake = fakeDocumentRuntime({ text: "The live document" });
-  const createEditor = fake.runtime.createEditor;
+  const inner = fake.runtime.constructEditor;
   return {
     ...fake,
     runtime: {
       ...fake.runtime,
-      createEditor: async (root, options) => {
-        const handle = await createEditor(root, options);
-        root.innerHTML = blockIds.map((id) => `<p data-block-id="${id}">a block</p>`).join("");
-        return handle;
+      // The blocks go in after the binding, which is what draws the document into the root:
+      // writing them before it would leave them for its own write to replace.
+      constructEditor: async (root, options) => {
+        const construction = await inner(root, options);
+        return {
+          ...construction,
+          bind: async () => {
+            const handle = await construction.bind();
+            root.innerHTML = blockIds.map((id) => `<p data-block-id="${id}">a block</p>`).join("");
+            return handle;
+          },
+        };
       },
     },
   };

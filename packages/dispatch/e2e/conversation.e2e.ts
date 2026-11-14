@@ -30,7 +30,8 @@ import {
   resolveAsk,
   resolveComment,
 } from "./api";
-import { conversationFilter } from "./editor";
+import { conversationFilter, holdFirstRequest } from "./editor";
+import { expectNoneOf } from "./none-of";
 import { navigateInApp } from "./sends";
 import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
@@ -1279,6 +1280,77 @@ test("the editor keeps a cited passage's id when its whole text is typed over", 
       text: "Other words entirely.",
     });
     await expect(quote).toContainText("Replying to alice's passage — Other words entirely.");
+  } finally {
+    await alice.close();
+  }
+});
+
+// The read mark clears about a second after the Conversation opens. A `New` mark with a block of
+// its own would drop every card under it by that block's height as it went, under a finger
+// already reaching for one; the two placements that used to take such a block are a comment's
+// thread card and an ask's card, and a message's mark, which shares the card's own byline, is
+// here as the control.
+test("clearing a conversation's New mark moves no card @phone", async ({ browser }) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "New mark layout" });
+  await createMessage(issue.key, { body: "A message card" }, agent);
+  await createComment(issue.key, { body: "A comment card" }, agent);
+  await createAsk(issue.key, { question: "An ask card" }, agent);
+
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    // Alice has read nothing, so every card carries the mark. A dwell on the newest card writes
+    // the issue's read mark a second in, and the marks clear once that write lands: holding it
+    // is what makes the two measurements below a before and an after rather than a race.
+    const { held } = await holdFirstRequest(page, /\/api\/v1\/me\/issues\/[^/]+\/state$/);
+    await page.goto(`/issues/${issue.key}/conversation`);
+
+    const turns = page.getByRole("list", { name: "Conversation turns" });
+    const marks = turns.getByText("New", { exact: true });
+    await expect(marks).toHaveCount(3);
+    // Each card's box inside the list, which no scroll of the page moves.
+    const boxes = () =>
+      turns.evaluate((list) => {
+        const origin = list.getBoundingClientRect().top;
+        return [...list.querySelectorAll(":scope > li")].map((card) => {
+          const box = card.getBoundingClientRect();
+          return {
+            height: Math.round(box.height),
+            top: Math.round(box.top - origin),
+            turn: card.getAttribute("data-turn") ?? "",
+          };
+        });
+      });
+    const before = await boxes();
+    // The three cards the row is about, one of each placement named above: a comment's thread
+    // card, an ask's card, and a message's byline mark.
+    expect(before.map((card) => card.turn.split(":")[0]).sort()).toEqual([
+      "ask",
+      "comment",
+      "message",
+    ]);
+
+    await (await held).continue();
+    await expect(marks).toHaveCount(0);
+    // Every card stands where it stood, over the three the page drew: a page that drew none of
+    // them, or that lost one as the mark went, would leave this clause nothing of the row's
+    // subject to compare (dispatch://INFRA-341, the pairing every universal clause of a check
+    // takes).
+    const after = await boxes();
+    expectNoneOf(
+      after.map((card, at) => ({ now: card, was: before[at] })),
+      {
+        amongAtLeast: 3,
+        are: ({ now, was }) =>
+          was === undefined ||
+          now.top !== was.top ||
+          now.height !== was.height ||
+          now.turn !== was.turn,
+        matched: "cards the mark clearing moved, resized or replaced",
+        measured: "cards of the conversation, each against where it stood before the mark went",
+      }
+    );
   } finally {
     await alice.close();
   }

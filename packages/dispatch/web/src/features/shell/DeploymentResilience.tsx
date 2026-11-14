@@ -10,6 +10,7 @@ import {
   primaryButtonHoverBg,
   textSecondaryOnSurface,
 } from "../../theme/classes";
+import { currentAddress, theServerDrewTheFirstScreen } from "../doc/first-screen";
 import * as markdownEngine from "../refs/markdown-engine";
 
 // The tab's recovery reloads, as a JSON array of the epoch-millisecond times they started: a chunk
@@ -46,6 +47,10 @@ interface Navigation {
 declare global {
   interface Window {
     readonly navigation?: Navigation;
+    /** Whether `web/index.html`'s inline recovery script reads this page as being left. It is
+     *  that script's own `leaving`, published so this module can read it at install: see
+     *  `installChunkFailureRecovery`. Undefined under a host that never ran that script. */
+    readonly __dispatchPageIsLeaving?: boolean;
   }
 }
 
@@ -236,7 +241,15 @@ function reloadForChunkFailure(): void {
 // `<link>` is seen first by `web/index.html`'s inline script, which reloads; a reload fires
 // `beforeunload` before it returns, so this event for the same failure finds the page being left
 // and spends nothing more.
+//
+// That holds only because this starts from what the page already knows. This module is reached by
+// an `import()` of its own (`boot.ts`, which the entry asks for), so the whole of a preload
+// failure - the inline script's reload and the `beforeunload` it fires - can be over before any
+// listener below exists, and a `leavingPage` that began `false` would read the page as staying,
+// ask for a second reload of the same failure, and spend two of the tab's three on it. The
+// inline script publishes its own answer for exactly this (`__dispatchPageIsLeaving`).
 export function installChunkFailureRecovery(): () => void {
+  leavingPage = window.__dispatchPageIsLeaving === true;
   const navigation = window.navigation;
   window.addEventListener("beforeunload", markPageLeaving);
   navigation?.addEventListener("navigate", markPageLeavingForAnotherDocument);
@@ -292,6 +305,22 @@ export function DeploymentResilience(): ReactNode {
   const lastVersionCheckAt = useRef(0);
 
   useEffect(() => {
+    // Not on a page the server drew a document into (`features/doc/first-screen.ts`). There
+    // the reader is already reading that document, and the page they are waiting for is the
+    // one that takes those blocks over: its surface, its socket and its editor. Building the
+    // engine first puts 461 KB of headless editor to compile and an engine to build - about a
+    // second and a half of the page's own thread on a phone at 4x CPU throttling - in front
+    // of that render, and buys the reader nothing, because the document's own preview loads
+    // the same engine as it mounts and is the only surface on the page that needs it
+    // (dispatch://INFRA-341, R11). So that page warms it, through the surface that uses it,
+    // and this holds off.
+    // Asked of the record rather than of the page, because the preview takes those blocks out as
+    // it mounts: whether this effect runs before or after that is the order of two mounts, and
+    // on a slower phone it goes the other way, which built the engine on the reader's own path in
+    // two measured runs for 611 and 965 ms.
+    if (theServerDrewTheFirstScreen(currentAddress(window.location.pathname))) {
+      return;
+    }
     const timer = window.setTimeout(() => {
       void markdownEngine.warmMarkdownRenderer().catch(() => undefined);
     }, 0);

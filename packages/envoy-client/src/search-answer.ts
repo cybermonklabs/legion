@@ -2,6 +2,7 @@ import {
   type AskAnswer,
   type AskResolution,
   actorActText,
+  answerSelected,
   SEARCH_DEGRADED_EMBEDDER_UNAVAILABLE,
   SEARCH_KIND_DEPTH,
   type SearchAsk,
@@ -40,7 +41,7 @@ function indentedText(text: string): string {
 
 /** An answer's two lines under its hit: who gave it, when and the options chosen, then its text. */
 function answerLines(lead: string, answer: AskAnswer): string[] {
-  const chosen = answer.selected ?? [];
+  const chosen = answerSelected(answer);
   const selected = chosen.length === 0 ? "none" : chosen.join(", ");
   const text = answer.text === null || answer.text === "" ? "none" : indentedText(answer.text);
   return [

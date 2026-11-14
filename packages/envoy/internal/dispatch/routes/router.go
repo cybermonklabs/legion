@@ -84,6 +84,12 @@ type AppContext struct {
 	// below which every event is final), and, for a context with no Store, nothing, since it has no
 	// event log to read (whoami then answers 503). A test sets it to answer a head of its own.
 	eventHead func(context.Context) (int64, error)
+	// firstScreenBudget overrides how long the page may wait for a document before it sends the
+	// shell (defaultFirstScreenBudget). Zero everywhere but in a test: a row that reads what the
+	// page CARRIES names a budget no load on any machine reaches, so its verdict is about the
+	// content and never about how busy the machine was, and the row that reads the FALLBACK names
+	// one no read can beat.
+	firstScreenBudget time.Duration
 }
 
 // AppContextOptions is the explicit-injection bundle main.go assembles
@@ -99,15 +105,18 @@ type AppContextOptions struct {
 	DashboardEntry string
 	// BuildCommit is the commit this process was built from, which main holds in its own
 	// `buildCommit`; "" for a build nothing stamped. See api.DepsInput.
-	BuildCommit    string
-	Sessions       auth.SessionStore
-	People         auth.PeopleStore
-	Identity       identity.Identity
-	SignIn         *oidc.CodeFlow
-	SignInRule     identity.SignInRule
-	Store          *store.Store
-	AgentTokens    *auth.SharedAgentTokens
-	DefaultProject string
+	BuildCommit string
+	// FirstScreenBudget is AppContext's firstScreenBudget (above): a test's own, zero everywhere
+	// else.
+	FirstScreenBudget time.Duration
+	Sessions          auth.SessionStore
+	People            auth.PeopleStore
+	Identity          identity.Identity
+	SignIn            *oidc.CodeFlow
+	SignInRule        identity.SignInRule
+	Store             *store.Store
+	AgentTokens       *auth.SharedAgentTokens
+	DefaultProject    string
 	// NewIssueLabel and NewIssueSession configure the issue the search bar files from a person's
 	// typed words (cmd/dispatch: DISPATCH_NEW_ISSUE_LABEL, DISPATCH_NEW_ISSUE_SESSION); empty
 	// where the deployment configured neither. See api.DepsInput.
@@ -249,7 +258,9 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		devSignInHost:  devSignInHost,
 		apiDeps:        apiDeps,
 		eventHead:      eventHead,
-		lifetime:       opts.Lifetime,
+		// Nothing but a test ever names one, and a test that names none gets production's.
+		firstScreenBudget: opts.FirstScreenBudget,
+		lifetime:          opts.Lifetime,
 	}, nil
 }
 
@@ -285,6 +296,9 @@ type router struct {
 	// eventHead is what GET /auth/whoami answers as event_head: the context's own (AppContext's
 	// eventHead) when it names one, else the registered API server's (api.Background's EventHead).
 	eventHead func(context.Context) (int64, error)
+	// firstScreen draws the opening blocks of the document a browser address names, for the page
+	// handler (api.Background's FirstScreen, servePageForDocument).
+	firstScreen func(context.Context, *http.Request, api.FirstScreenAddress) api.FirstScreen
 }
 
 // New returns an http.Handler that serves all dispatch routes, and the API server's background
@@ -312,6 +326,7 @@ func New(ctx *AppContext) (http.Handler, api.Background) {
 	if r.eventHead == nil {
 		r.eventHead = background.EventHead
 	}
+	r.firstScreen = background.FirstScreen
 	mux.HandleFunc("/", r.staticHandler)
 	if ctx.devSignInHost == "" {
 		return r.enforceCookieOrigin(mux), background
@@ -637,7 +652,7 @@ func (r *router) staticHandler(w http.ResponseWriter, req *http.Request) {
 		writeError(w, http.StatusNotFound, "not found")
 		return
 	}
-	servePage(w, req, filepath.Join(r.ctx.WebDistDir, "index.html"))
+	r.servePageForDocument(w, req, filepath.Join(r.ctx.WebDistDir, "index.html"), normalized)
 }
 
 // isMissingFile reports whether os.Stat's err means no file is there: the path does not exist,
@@ -820,15 +835,31 @@ func isReservedPath(normalized string, roots []string) bool {
 // build's assets. The page carries an ETag of its bytes and no Last-Modified, so a browser holding
 // another build's page, or one cached before this, gets the page this server has.
 func servePage(w http.ResponseWriter, req *http.Request, path string) {
+	page, ok := readPage(w, path)
+	if !ok {
+		return
+	}
+	sendPage(w, req, path, page)
+}
+
+// readPage reads the dashboard page, answering the request itself where there is none to read: a
+// build that is not there is a 404 and one this process cannot read a 500, as every caller of it
+// answers them.
+func readPage(w http.ResponseWriter, path string) ([]byte, bool) {
 	page, err := os.ReadFile(path)
 	if errors.Is(err, fs.ErrNotExist) {
 		writeError(w, http.StatusNotFound, "dashboard build not found")
-		return
+		return nil, false
 	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "read failed")
-		return
+		return nil, false
 	}
+	return page, true
+}
+
+// sendPage sends a page already read, with the validator servePage describes.
+func sendPage(w http.ResponseWriter, req *http.Request, path string, page []byte) {
 	w.Header().Set("Content-Type", contentType(path))
 	w.Header().Set("Cache-Control", pageCacheControl)
 	w.Header().Set("ETag", `"`+pageTag(page)+`"`)

@@ -1,4 +1,5 @@
 import { createRequire } from "node:module";
+import { relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
@@ -93,9 +94,193 @@ function thirdPartyNoticesFile(): { page: Plugin; worker: () => Plugin } {
 
 const notices = thirdPartyNoticesFile();
 
+/**
+ * What the entry chunk asks for with `import()` as it evaluates, and the chunk of each must
+ * therefore be downloaded beside the entry's own rather than behind it: the app itself, the
+ * reads the page opens with, and - at an address that opens a document - the page that opens
+ * it and the parts of that page which stand under their own `Suspense`. Each is named by the
+ * module whose chunk holds it. Without the preload below, their bytes are asked for only once
+ * the entry has downloaded, compiled and evaluated - a second serial wait on a phone, which is
+ * the wait splitting the entry was meant to remove (dispatch://INFRA-341, R11).
+ *
+ * `EVERY_ADDRESS` is in all three lists rather than only in `app`, because the inline script
+ * in `index.html` preloads one list and only one: an address that opens a document reads the
+ * list of its own shape, and a list that left the app out would leave the app a request
+ * behind.
+ *
+ * Only what the page needs to draw is named here. The decision card every Markdown body draws
+ * (`features/doc/DeferredAskCard.tsx`) is not: no `ask` shell exists until a body has been
+ * parsed and painted. Naming it would put it in every address's list, the `app` one included,
+ * and its chunk statically imports the Inbox's ask card, half a megabyte the reader would
+ * download and compile in front of the first screen. A chunk a named module statically imports
+ * joins the list with it, though, which is why both document lists hold that card's chunk
+ * anyway - `ArtifactDocument` imports it - and the `app` list does not. Nor is a tab panel
+ * named that no document address opens - the Conversation, the Activity list, the role
+ * documents - each of which is now a chunk of its own (`features/issue/IssuePage.tsx`) and is
+ * asked for when the reader asks for its tab.
+ */
+const EVERY_ADDRESS = [
+  // The app: the shell, its routes and everything they draw with (`main.tsx`).
+  "src/app.tsx",
+  // The sign-in check and the address's own document, read before the app evaluates
+  // (`features/shell/boot.ts`).
+  "src/features/shell/boot.ts",
+] as const;
+
+const DOCUMENT_ADDRESS_MODULES = {
+  app: EVERY_ADDRESS,
+  document: [
+    ...EVERY_ADDRESS,
+    "src/features/document/DocumentPage.tsx",
+    "src/features/artifacts/ArtifactDocument.tsx",
+  ],
+  issue: [
+    ...EVERY_ADDRESS,
+    "src/features/issue/IssuePage.tsx",
+    // The page's own parts, each a commit and a task of its own now (`IssuePage.tsx`).
+    "src/features/issue/IssueHeader.tsx",
+    "src/features/issue/IssueTabs.tsx",
+    "src/features/issue/SpecRequirements.tsx",
+    "src/features/artifacts/ArtifactDetails.tsx",
+    "src/features/artifacts/ArtifactDocument.tsx",
+  ],
+} as const;
+
+/** The line of `index.html` the build writes those chunks into, matched whole so a rename of
+ *  either side is a failed build rather than a page that quietly preloads nothing. */
+const ADDRESS_CHUNKS_SOURCE = "window.__dispatchAddressChunks = {};";
+
+/**
+ * Writes into `index.html` the chunks each document address needs, for the inline script there
+ * to preload: for each module of `DOCUMENT_ADDRESS_MODULES`, the chunk that holds it and every
+ * chunk that one statically imports, since the browser evaluates a chunk only once all of them
+ * have arrived.
+ *
+ * Build only. In `vite dev` nothing is bundled and the placeholder stands, which preloads
+ * nothing and leaves the page to fetch each module as it imports it.
+ */
+function documentAddressChunks(): Plugin {
+  return {
+    name: "dispatch-document-address-chunks",
+    apply: "build",
+    transformIndexHtml: {
+      order: "post",
+      handler(html, context) {
+        const bundle = context.bundle;
+        if (bundle === undefined) {
+          throw new Error("the build gave transformIndexHtml no bundle to read chunks from");
+        }
+        const withImports = (fileName: string, into: Set<string>): void => {
+          if (into.has(fileName)) return;
+          into.add(fileName);
+          const chunk = bundle[fileName];
+          if (chunk?.type !== "chunk") return;
+          for (const imported of chunk.imports) withImports(imported, into);
+        };
+        // The page's own script tag already fetches the entry chunk, and every lazy chunk
+        // imports from it, so a preload of it would be a second link to bytes already on their
+        // way.
+        const alreadyFetched = new Set(
+          Object.values(bundle)
+            .filter((chunk) => chunk.type === "chunk" && chunk.isEntry)
+            .map((chunk) => chunk.fileName)
+        );
+        const chunks = Object.fromEntries(
+          Object.entries(DOCUMENT_ADDRESS_MODULES).map(([address, modules]) => {
+            const files = new Set<string>();
+            for (const module of modules) {
+              const holder = Object.values(bundle).find(
+                (chunk) =>
+                  chunk.type === "chunk" &&
+                  Object.keys(chunk.modules).some((id) => id.endsWith(`/${module}`))
+              );
+              if (holder === undefined) {
+                throw new Error(
+                  `${module} is in no chunk of this build: a document address cannot preload it`
+                );
+              }
+              withImports(holder.fileName, files);
+            }
+            return [
+              address,
+              [...files].filter((file) => !alreadyFetched.has(file)).map((file) => `/${file}`),
+            ];
+          })
+        );
+        if (!html.includes(ADDRESS_CHUNKS_SOURCE)) {
+          throw new Error(
+            `web/index.html no longer holds "${ADDRESS_CHUNKS_SOURCE}", so this build has ` +
+              "nowhere to write the chunks a document address preloads"
+          );
+        }
+        return html.replace(
+          ADDRESS_CHUNKS_SOURCE,
+          `window.__dispatchAddressChunks = ${JSON.stringify(chunks)};`
+        );
+      },
+    },
+  };
+}
+
+/**
+ * Where the record below is written, below `dist`, as `CHUNK_CONTENTS_FILE` in
+ * `web/src/entry-chunk-contents.ts` reads it. The name is spelled on both sides rather than
+ * imported, as `window.__dispatchAddressChunks` is: this config is bundled and run on Node,
+ * and that module is a Bun script. A rename of one side fails the check outright - it reads a
+ * build that recorded no chunks - rather than passing quietly.
+ */
+const CHUNK_CONTENTS_FILE = "chunk-contents.json";
+
+/**
+ * Writes `dist/chunk-contents.json`: for every chunk of this build, the modules it holds and
+ * the chunks it statically imports, as rollup records them on the bundle.
+ *
+ * `check:entry-chunk` is the reader (`web/src/entry-chunk-contents.ts`). It used to rebuild
+ * this graph from the emitted code - a module by a string of its own that a minifier cannot
+ * rename, a static import by a regular expression over minified JavaScript - and a read that
+ * found nothing there passed every rule it was supposed to enforce. The facts are exact here,
+ * in the same build the check is about: `chunk.modules` is what rollup put in the chunk and
+ * `chunk.imports` is what the browser must evaluate with it, which is what both halves of that
+ * check are written against. `documentAddressChunks` above reads the same two fields.
+ *
+ * A module rollup records with nothing rendered is not in the chunk: tree-shaking emptied it,
+ * and its code is in no main-thread task.
+ *
+ * Build only, like the two plugins above: `vite dev` bundles nothing, and the check reads a
+ * build.
+ */
+function chunkContents(): Plugin {
+  let root = "";
+  return {
+    name: "dispatch-chunk-contents",
+    apply: "build",
+    configResolved(config) {
+      root = config.root;
+    },
+    generateBundle(_options, bundle) {
+      const contents: Record<string, { modules: string[]; imports: string[] }> = {};
+      for (const chunk of Object.values(bundle)) {
+        if (chunk.type !== "chunk") continue;
+        contents[chunk.fileName] = {
+          imports: [...chunk.imports].sort(),
+          modules: Object.entries(chunk.modules)
+            .filter(([, module]) => module.renderedLength > 0)
+            .map(([id]) => relative(root, id).split(sep).join("/"))
+            .sort(),
+        };
+      }
+      this.emitFile({
+        type: "asset",
+        fileName: CHUNK_CONTENTS_FILE,
+        source: JSON.stringify(contents),
+      });
+    },
+  };
+}
+
 export default defineConfig({
   root: "web",
-  plugins: [react(), tailwindcss(), notices.page],
+  plugins: [react(), tailwindcss(), notices.page, documentAddressChunks(), chunkContents()],
   // The Mermaid worker (features/refs/mermaid-render.worker.ts) is created with
   // `{ type: "module" }`, so it is bundled as an ES module.
   worker: { format: "es", plugins: () => [notices.worker()] },
@@ -114,14 +299,49 @@ export default defineConfig({
     dedupe: ["prosemirror-model"],
     alias: {
       "decode-named-character-reference": characterReferenceDecoder,
-      "@legion/contracts/repo": fileURLToPath(
-        new URL("../../contracts/src/repo.ts", import.meta.url)
+      // One alias per subpath of `@legion/contracts` the web imports, listed alphabetically with
+      // the bare `@legion/contracts` after all of them: Vite matches a string alias by prefix,
+      // so the bare one would otherwise swallow every subpath, and that is the only order here
+      // that decides anything. The same holds of `@legion/proof-editor` below.
+      // Each names a module of its own rather than the package's
+      // index, so the page's bundle holds only what it imports: the values and the plain
+      // helpers, never `dispatch-api.ts`, whose every zod schema is built as it loads
+      // (`packages/contracts/src/dispatch-constants.ts`; `check:no-zod`).
+      "@legion/contracts/actor-label": fileURLToPath(
+        new URL("../../contracts/src/actor-label.ts", import.meta.url)
+      ),
+      "@legion/contracts/agent-stream": fileURLToPath(
+        new URL("../../contracts/src/agent-stream.ts", import.meta.url)
+      ),
+      "@legion/contracts/claim-holds": fileURLToPath(
+        new URL("../../contracts/src/claim-holds.ts", import.meta.url)
+      ),
+      "@legion/contracts/dispatch-block-ref": fileURLToPath(
+        new URL("../../contracts/src/dispatch-block-ref.ts", import.meta.url)
+      ),
+      "@legion/contracts/dispatch-constants": fileURLToPath(
+        new URL("../../contracts/src/dispatch-constants.ts", import.meta.url)
+      ),
+      "@legion/contracts/dispatch-href": fileURLToPath(
+        new URL("../../contracts/src/dispatch-href.ts", import.meta.url)
       ),
       "@legion/contracts/dispatch-snippet": fileURLToPath(
         new URL("../../contracts/src/dispatch-snippet.ts", import.meta.url)
       ),
+      "@legion/contracts/dispatch-text-references": fileURLToPath(
+        new URL("../../contracts/src/dispatch-text-references.ts", import.meta.url)
+      ),
+      "@legion/contracts/dispatch-text-rules": fileURLToPath(
+        new URL("../../contracts/src/dispatch-text-rules.ts", import.meta.url)
+      ),
       "@legion/contracts/dispatch-tools": fileURLToPath(
         new URL("../../contracts/src/dispatch-tools.ts", import.meta.url)
+      ),
+      "@legion/contracts/related-forms": fileURLToPath(
+        new URL("../../contracts/src/related-forms.ts", import.meta.url)
+      ),
+      "@legion/contracts/repo": fileURLToPath(
+        new URL("../../contracts/src/repo.ts", import.meta.url)
       ),
       "@legion/contracts": fileURLToPath(new URL("../../contracts/src/index.ts", import.meta.url)),
       "@legion/proof-editor/document-json": fileURLToPath(
@@ -153,7 +373,7 @@ export default defineConfig({
   build: {
     outDir: "dist",
     // The largest chunk is ECharts (an `index-*.js` of 1,134,772 bytes raw), which only the
-    // Delivery page loads, and the entry is 781,007 bytes, both past Vite's 500 kB default.
+    // Delivery page loads, and the entry is 812,473 bytes, both past Vite's 500 kB default.
     // beautiful-mermaid and ELK live only in the Mermaid worker's bundle
     // (features/refs/mermaid-render.worker.ts, 1,565,608 bytes), fetched once a body or a
     // document holds a mermaid block; Vite emits it as an asset and holds it to no chunk limit.

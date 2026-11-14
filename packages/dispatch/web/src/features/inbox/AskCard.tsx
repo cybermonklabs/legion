@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import {
   type ReactNode,
+  type SetStateAction,
   useCallback,
   useContext,
   useEffect,
@@ -12,56 +13,40 @@ import {
 
 import { type ArtifactOwner, api, type DeclineAskInput, type WriteBounds } from "../../api/client";
 import { usersQuery } from "../../api/queries";
-import type {
-  AnswerAskInput,
-  Ask,
-  AskRead,
-  AskUrgency,
-  Comment,
-  CreateCommentInput,
-} from "../../api/types";
+import type { AnswerAskInput, Ask, AskRead, Comment, CreateCommentInput } from "../../api/types";
 import { CopyButton } from "../../components/CopyButton";
 import { ChevronIcon } from "../../components/DisclosureToggle";
 import { QueryError } from "../../components/QueryError";
-import { TruncatedText } from "../../components/TruncatedText";
-import { submitOnModifiedEnter } from "../../hooks/submitOnModifiedEnter";
+import { RefusableButton } from "../../components/RefusableButton";
 import { compareTimestamps } from "../../lib/timestamps";
 import {
   askUrgencyAccent,
-  badgeBlocking,
-  badgeHigh,
   badgeLow,
-  badgeMed,
   badgePrimary,
   borderDefault,
   card,
-  cardHoverBorder,
   inlineWarningText,
-  inputClasses,
   linkHoverText,
   linkText,
-  primaryButtonBg,
-  primaryButtonDisabled,
-  primaryButtonEnabledHoverBg,
-  surfaceBg,
+  primaryButton,
+  secondaryButton,
   textMutedHoverToSecondary,
   textMutedOnSurface,
   textPrimaryOnSurface,
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { appendToDraft, DraftUploadStatus, useDraftUpload } from "../artifacts/ArtifactUpload";
+import type { MentionFieldHandle } from "../conversation/MentionField";
 import { badgeSelectBadge, badgeSelectOverlay, badgeSelectWrapper } from "../issue/badge-select";
-import { AgentName, useAgentText } from "../refs/AgentName";
-import { CopyRefButton } from "../refs/CopyRefButton";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { ReferencedBy, ReferencedByToggle } from "../refs/ReferencedBy";
-import { buildDispatchReference, itemRoute } from "../refs/routes";
+import { buildDispatchReference, type DocumentOwner, itemRoute } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
 import { composerFirst } from "../threads/thread-layout";
 import { useThreadOrder } from "../threads/thread-order";
 import { askRepliesOwner, useMarkThreadRead } from "../threads/useMarkThreadRead";
-import { AskAnchorHeader } from "./AskAnchorLink";
+import { type AskAnswerActions, AskAnswerArea } from "./AskAnswerArea";
 import { AskApprovalLink } from "./AskApprovalLink";
 import { AskBlockLink } from "./AskBlockLink";
 import {
@@ -70,14 +55,15 @@ import {
   type AskFrame,
   OrphanedAnchorNotice,
 } from "./AskCompletionCard";
+import { AskHeader, hasUrgencyNotch } from "./AskHeader";
 import { AskChoiceRow } from "./AskOptionRow";
 import { AskRecipients } from "./AskRecipients";
 import { AskThread } from "./AskThread";
 import { AskThreadDisclosure } from "./AskThreadDisclosure";
 import type { OwnedAsk } from "./ask-name";
-import { askTurnHolder } from "./ask-turn";
 import { askUrgency, URGENCY_LABELS } from "./ask-urgency";
 import { DeclineControl } from "./DeclineControl";
+import type { Draft } from "./draft-store";
 import { EarlierApproval } from "./EarlierApproval";
 import { AskHandOnLiveContext } from "./hand-on-live";
 import { askWaitingOnPerson } from "./list-row";
@@ -96,12 +82,17 @@ const createReply = (
   bounds: WriteBounds
 ): Promise<Comment> => api.createComment(issueKey, input, bounds);
 
+/** The names this card's buttons know their refusals by, which the answer area is typed over:
+ *  a misspelling is then a type error rather than a button whose on-screen reason goes missing
+ *  (`AskAnswerArea.tsx`). */
+type AnswerRefusalName = "answer" | "anyway" | "askBack";
+
 export interface AskCardProps {
   artifactSlug?: string;
   ask: OwnedAsk;
   /** The project document that owns an ask whose read lacks `document` (only Inbox rows carry
    *  it), so the card can still name the ask's `dispatch://` reference. */
-  owner?: { project: string; slug: string };
+  owner?: DocumentOwner;
   thread?: "inline" | "collapsed";
   /** `compact` (the margin and the review sheet) renders the same option rows as `full`, but
    *  folds the free-text field and its Answer / Ask back actions behind an **Add a note or answer
@@ -151,14 +142,6 @@ export interface AskCardProps {
    *  collapsed thread over it. No other surface lands on a reply. */
   currentReplyId?: string;
 }
-
-/** The urgency notch's text colour, matching the urgency badge of the same level. */
-const URGENCY_NOTCH_TEXT: Record<AskUrgency, string> = {
-  blocking: badgeBlocking.text,
-  high: badgeHigh.text,
-  low: badgeLow.text,
-  med: badgeMed.text,
-};
 
 /** Moves focus from inside the form to the nearest focusable ancestor (in the Inbox, the row, so
  *  j/k/Escape still start from the same place) instead of letting it fall to the document body. */
@@ -342,17 +325,19 @@ export function AskCard({
   currentReplyId,
 }: AskCardProps): ReactNode {
   const {
+    answerDraft,
     answerFailure,
     answerFieldId,
     answerPlaceholder,
+    answerRefusal,
     answers,
     answerText,
     askChanged,
-    canAnswer,
     canChangeAnswer,
     cancelChanging,
     changing,
     clarification,
+    clarificationRefusal,
     completed,
     displayedAsk,
     edits,
@@ -367,11 +352,10 @@ export function AskCard({
     selected,
     sendAnswer,
     sendClarification,
-    setAnswerText,
+    setAnswerDraft,
     setQuestionChoice,
     startChanging,
     submit,
-    submitHint,
     toggleOther,
     submitGuard,
     threadQuery,
@@ -399,38 +383,56 @@ export function AskCard({
     if (changing && variant === "compact" && answerText.trim() !== "") setOwnWordsOpen(true);
   }
   // One page can host the same ask twice (a decision block and the margin sheet), so the
-  // panel each control names is this instance's.
+  // panel each control names, and the line the lone Answer over a closed disclosure is
+  // described by, are this instance's.
   const referencesPanelId = useId();
+  const loneAnswerReasonId = useId();
   const isCompact = variant === "compact";
   const inBlock = frame === "block";
-  // `document` is the Inbox row's: the ask read carries no owner, so the fresher `displayedAsk`
-  // cannot name it and this card's own row is where it is read.
-  const reference = itemRoute("ask", displayedAsk, ask.document ?? owner);
+  /** The project document this ask belongs to: the one it was asked on, else the one the host
+   *  is showing it under. It names the ask's own reference, the replies' references, and where
+   *  a file dropped into the box goes. `document` is the Inbox row's: the ask read carries no
+   *  owner, so the fresher `displayedAsk` cannot name it and this card's own row is where it
+   *  is read. */
+  const askOwner = ask.document ?? owner;
+  const reference = itemRoute("ask", displayedAsk, askOwner);
   // Where a `#id` in the ask's own text resolves: the document the server scopes this ask to -
   // the one its block is on, the one it is anchored to, else its issue's spec (`refs.ScopeOf`).
   const source = textSourceOf("ask", displayedAsk.id);
   // Where a file pasted or dropped into the answer, or into a reply under the ask, goes: the
   // ask's issue, or the project of the document it was asked on.
-  const documentProject = (ask.document ?? owner ?? displayedAsk.anchor_artifact)?.project;
+  const documentProject = (askOwner ?? displayedAsk.anchor_artifact)?.project;
   const uploadOwner: ArtifactOwner | undefined =
     displayedAsk.issue_key !== null
       ? { issue: displayedAsk.issue_key }
       : documentProject === undefined
         ? undefined
         : { project: documentProject };
-  const upload = useDraftUpload((text) => {
-    setAnswerText((current) => appendToDraft(current, text));
+  // Everything the reader puts in the box goes through here, the keystroke and the text an
+  // upload lands alike: a draft the field changed is no longer the question-shaped answer the
+  // card offered to ask back instead.
+  const changeDraft = (next: SetStateAction<Draft>) => {
+    setAnswerDraft(next);
     setQuestionChoice(false);
-  });
+  };
+  // The uploads behind this card's answer, held here rather than in the box they are started
+  // in (`AskAnswerArea`): the compact variant unmounts that box when its note disclosure
+  // closes - which is what picking an option with nothing typed does - and an upload that went
+  // with it left the lone Answer drawn over the closed note sending an answer without the
+  // picture (dispatch://INFRA-341, R2). Every send this card draws reads the one `uploading`
+  // below, wherever the button stands.
+  const upload = useDraftUpload((text) =>
+    changeDraft((current) => ({ ...current, text: appendToDraft(current.text, text) }))
+  );
   const uploading = upload.pending > 0;
-  const answerFieldRef = useRef<HTMLTextAreaElement>(null);
+  const answerFieldRef = useRef<MentionFieldHandle>(null);
   // Picking Request changes moves the person straight to the field the server insists
   // on. Keyed on the field actually being mounted, not just on the option: the compact variant
   // unmounts the field when its disclosure closes, and reopening it must refocus.
   const reasonFieldShown = reasonRequired && (!isCompact || ownWordsOpen);
   useEffect(() => {
     if (reasonFieldShown) {
-      answerFieldRef.current?.focus();
+      answerFieldRef.current?.textarea()?.focus();
     }
   }, [reasonFieldShown]);
   // Opening the disclosure is a move into the field it reveals, whoever opened it: the reader's
@@ -445,7 +447,7 @@ export function AskCard({
     if (!focusNoteOnOpen.current) return;
     focusNoteOnOpen.current = false;
     if (ownWordsOpen) {
-      answerFieldRef.current?.focus();
+      answerFieldRef.current?.textarea()?.focus();
     }
   }, [ownWordsOpen]);
   // A control that disables itself under the reader's focus - Ask back while sending and once
@@ -460,24 +462,14 @@ export function AskCard({
       handOffFocus(form);
     }
   });
-  const submitHintId = `${answerFieldId}-hint`;
-  const agentText = useAgentText();
-  // The asker as its button's tooltip: a block ask the server indexed with no pending author
-  // has an empty label and reads as "asked". A session's tooltip also carries its full id, since
-  // the innermost title is the one a browser shows, and an untitled session's name is the short
-  // form `session:<8>…` that sessions started in the same minute share.
+  // A block ask the server indexed with no pending author has an empty label and reads as
+  // "asked", with no session handles to open.
   const sessionAuthor = displayedAsk.author.kind === "session" ? displayedAsk.author : undefined;
-  const askerTitle =
-    displayedAsk.author.id === ""
-      ? "asked"
-      : sessionAuthor === undefined
-        ? agentText.label(displayedAsk.author)
-        : `${agentText.label(sessionAuthor)} · ${sessionAuthor.id}`;
   // The copy handles' values: the title the session stamped, as the clipboard has always had it.
   const sessionTitle = sessionAuthor?.origin?.session_title?.trim();
   const tmuxTarget = sessionAuthor?.origin?.tmux;
   const urgency = askUrgency(displayedAsk.urgency);
-  const hasUrgencyNotch = !inBlock && (urgency === "blocking" || urgency === "high");
+  const notched = hasUrgencyNotch(displayedAsk, inBlock);
   // The thread's own "still open?" wording must track the post-answer ask, not the possibly
   // stale prop passed to this instance: `completed` renders before an invalidated `ask` prop
   // round-trips down from the parent.
@@ -490,7 +482,6 @@ export function AskCard({
   // The count comes from `displayedAsk`, never from `completed`: answering an ask does not move
   // a backlink count, and the answer response is the one ask shape that carries no count.
   const referencedByCount = displayedAsk.referenced_by_count ?? 0;
-  const turnHolder = askTurnHolder(currentAsk, (threadQuery.data?.replies ?? []).at(-1));
   // The thread's newest write the card shows, which the shared thread read mark watches and
   // reads through: the newest reply, unless the record's answer came after it (an answer is a
   // write like a reply).
@@ -534,6 +525,8 @@ export function AskCard({
         ) : null}
       </div>
     );
+  // A reply's own `dispatch://` reference needs the project document behind a document ask
+  // (`askOwner`), which only an Inbox row carries on the ask itself.
   const threadNode =
     thread === "collapsed" ? (
       <AskThreadDisclosure
@@ -543,6 +536,7 @@ export function AskCard({
         embedded={completed === null}
         markNewest={answerIsNewest ? undefined : markNewest}
         order={threadOrder}
+        owner={askOwner}
         thread={threadQuery}
         unread={unreadReplies}
         uploadOwner={uploadOwner}
@@ -555,97 +549,64 @@ export function AskCard({
         embedded={completed === null}
         markNewest={answerIsNewest ? undefined : markNewest}
         order={threadOrder}
+        owner={askOwner}
         thread={threadQuery}
         unread={unreadReplies}
         uploadOwner={uploadOwner}
       />
     );
 
-  const answerField = (
-    <>
-      <label className="block" htmlFor={answerFieldId}>
-        <span
-          className={
-            reasonRequired ? `mb-1 block text-sm font-medium ${textSecondaryOnSurface}` : "sr-only"
-          }
-        >
-          {reasonRequired ? "Reason (required)" : isApproval ? "Reason" : "Your answer"}
-        </span>
-        <textarea
-          className={`block w-full rounded-lg px-3 py-2 font-normal outline-none ${inputClasses(true)}`}
-          data-ask-answer=""
-          disabled={isSubmitting}
-          id={answerFieldId}
-          onChange={(event) => {
-            setAnswerText(event.target.value);
-            setQuestionChoice(false);
-          }}
-          onDrop={
-            uploadOwner === undefined ? undefined : (event) => upload.drop(event, uploadOwner)
-          }
-          onKeyDown={(event) => submitOnModifiedEnter(event, { disabled: uploading })}
-          onPaste={
-            uploadOwner === undefined ? undefined : (event) => upload.paste(event, uploadOwner)
-          }
-          placeholder={answerPlaceholder}
-          ref={answerFieldRef}
-          rows={2}
-          value={answerText}
-        />
-      </label>
-      <DraftUploadStatus upload={upload} />
-    </>
-  );
-  const submitButton = (
-    <button
-      aria-describedby={submitHint === undefined ? undefined : submitHintId}
-      className={`min-h-11 rounded-lg px-3 py-2 text-sm font-semibold ${primaryButtonBg} ${primaryButtonEnabledHoverBg} ${primaryButtonDisabled}`}
-      disabled={!canAnswer || isSubmitting || uploading}
-      title={submitHint}
+  const answerLabel = changing ? "Save answer" : "Answer";
+  /** What Answer says while it is busy: this card's own send, or an upload the draft is waiting
+   *  on, which keeps the label while the picture lands. */
+  const answerBusy = mutation.isPending ? (changing ? "Saving…" : "Answering…") : undefined;
+  /** Answer, in each place this card draws it: inside the answer area, and as the lone button a
+   *  compact card shows over a closed note disclosure. Only its own send, or an upload the draft
+   *  is waiting on, disables it; every other reason it cannot be pressed it states and refuses.
+   *  The upload it waits on is the card's (`uploading`), not the box's, so both places are held
+   *  by the same picture and neither can be drawn without the gate. */
+  const submitButton = (shownBy: string | undefined) => (
+    <RefusableButton
+      busy={answerBusy ?? (uploading ? answerLabel : undefined)}
+      className="min-h-11"
+      refusal={answerRefusal}
+      refusalShownBy={shownBy}
       type="submit"
     >
-      {mutation.isPending
-        ? changing
-          ? "Saving…"
-          : "Answering…"
-        : changing
-          ? "Save answer"
-          : "Answer"}
-    </button>
+      {answerLabel}
+    </RefusableButton>
   );
-  const submitHintNode =
-    submitHint === undefined ? null : (
-      <p className={`text-xs ${textMutedOnSurface}`} id={submitHintId}>
-        {submitHint}
-      </p>
-    );
-  const answerActions = questionChoice ? (
-    <fieldset aria-label="Question-shaped answer" className="flex gap-2">
-      <button
-        className={`min-h-11 rounded-lg px-3 py-2 text-sm font-semibold ${primaryButtonBg} ${primaryButtonEnabledHoverBg} ${primaryButtonDisabled}`}
-        disabled={isSubmitting}
-        onClick={sendClarification}
-        ref={(node) => node?.focus()}
-        type="button"
-      >
-        {clarification.isPending ? "Sending…" : "Ask back instead"}
-      </button>
-      <button
-        className={`min-h-11 rounded-lg border px-3 py-2 text-sm font-medium ${borderDefault} ${textSecondaryOnSurface} ${cardHoverBorder}`}
-        disabled={isSubmitting}
-        onClick={() => sendAnswer(answerText)}
-        type="button"
-      >
-        Answer with it anyway
-      </button>
-    </fieldset>
-  ) : (
-    <div className="space-y-2">
+  const answerActions = ({ reasonId }: AskAnswerActions<AnswerRefusalName>): ReactNode =>
+    questionChoice ? (
+      // The pair a question-shaped answer offers is two more sends of this card, so a picture
+      // the draft is still taking holds them both, in the shape their siblings keep: the label
+      // stands and the press is taken away until the upload lands (`submitButton`, Ask back).
+      <fieldset aria-label="Question-shaped answer" className="flex gap-2">
+        <button
+          className={`min-h-11 ${primaryButton}`}
+          disabled={isSubmitting || uploading}
+          onClick={sendClarification}
+          ref={(node) => node?.focus()}
+          type="button"
+        >
+          {clarification.isPending ? "Sending…" : "Ask back instead"}
+        </button>
+        <RefusableButton
+          busy={mutation.isPending ? "Answering…" : uploading ? "Answer with it anyway" : undefined}
+          look="secondary"
+          onPress={() => sendAnswer(answerText)}
+          refusal={answerRefusal}
+          refusalShownBy={reasonId.anyway}
+        >
+          Answer with it anyway
+        </RefusableButton>
+      </fieldset>
+    ) : (
       <div className="flex gap-2">
-        {submitButton}
+        {submitButton(reasonId.answer)}
         {changing ? (
           <button
-            className={`min-h-11 rounded-lg border px-3 py-2 text-sm font-medium ${borderDefault} ${textSecondaryOnSurface} ${cardHoverBorder}`}
+            className={secondaryButton}
             disabled={isSubmitting}
             onClick={cancelChanging}
             type="button"
@@ -653,18 +614,48 @@ export function AskCard({
             Cancel
           </button>
         ) : (
-          <button
-            className={`min-h-11 rounded-lg border px-3 py-2 text-sm font-medium ${borderDefault} ${textSecondaryOnSurface} ${cardHoverBorder}`}
-            disabled={trimmedAnswer === "" || isSubmitting || uploading}
-            onClick={sendClarification}
-            type="button"
+          <RefusableButton
+            busy={clarification.isPending ? "Sending…" : uploading ? "Ask back" : undefined}
+            look="secondary"
+            onPress={sendClarification}
+            refusal={clarificationRefusal}
+            refusalShownBy={reasonId.askBack}
           >
-            {clarification.isPending ? "Sending…" : "Ask back"}
-          </button>
+            Ask back
+          </RefusableButton>
         )}
       </div>
-      {submitHintNode}
-    </div>
+    );
+  /** The card's half of the one answer area (`AskAnswerArea.tsx`): the field, the `@` picker and
+   *  the draft are the area's, and these submits are the card's, because Answer, Save answer and
+   *  Ask back all post through `useAskAnswerForm` rather than as a comment of the box's own. The
+   *  upload is the card's too, since a send of the card's stands where this area does not. */
+  const answerArea = (
+    <AskAnswerArea
+      actions={answerActions}
+      disabled={isSubmitting}
+      draft={answerDraft}
+      fieldRef={answerFieldRef}
+      handle="data-ask-answer"
+      issueKey={displayedAsk.issue_key ?? undefined}
+      label={reasonRequired ? "Reason (required)" : isApproval ? "Reason" : "Your answer"}
+      labelHidden={!reasonRequired}
+      onDraftChange={changeDraft}
+      placeholder={answerPlaceholder}
+      // Every name the card's buttons know, whichever pair is drawn: a reason that is null
+      // shows no line, so the two the other pair uses cost the card nothing.
+      refusals={
+        questionChoice
+          ? { answer: null, anyway: answerRefusal, askBack: null }
+          : {
+              answer: answerRefusal,
+              anyway: null,
+              askBack: changing ? null : clarificationRefusal,
+            }
+      }
+      upload={upload}
+      uploadOwner={uploadOwner}
+    />
   );
 
   if (completed !== null) {
@@ -679,6 +670,12 @@ export function AskCard({
           frame={frame}
           markRef={answerIsNewest ? markNewest : undefined}
           onChangeAnswer={canChangeAnswer ? startChanging : undefined}
+          // `askOwner`, not the host's `owner`: in the Inbox and the reading pane the document
+          // is the row's own and the host passes none, and `completed` is the ask read, which
+          // carries no document either - so the header had nothing to build the ask's reference
+          // from and drew no copy-link control at all (dispatch://INFRA-341, R1). The replies
+          // under the same card already take this one.
+          owner={askOwner}
         />
         {unsentAnswer === "" ? null : (
           <div
@@ -707,7 +704,7 @@ export function AskCard({
       className={
         inBlock
           ? "relative mt-3"
-          : `relative rounded-xl border-l-4 shadow-sm ${isCompact ? "px-3 pt-4 pb-3" : "px-4 pt-5 pb-4"} ${hasUrgencyNotch ? "mt-3" : ""} ${card} ${askUrgencyAccent[urgency]}`
+          : `relative rounded-xl border-l-4 shadow-sm ${isCompact ? "px-3 pt-4 pb-3" : "px-4 pt-5 pb-4"} ${notched ? "mt-3" : ""} ${card} ${askUrgencyAccent[urgency]}`
       }
       // The one handle on a card as a whole, carrying the question the card draws: a page-level
       // key that must not fire while the reader is answering an ask (the issue page's priority
@@ -717,121 +714,33 @@ export function AskCard({
       data-ask-card={displayedAsk.id}
       data-testid={`ask-${displayedAsk.id}`}
     >
-      {hasUrgencyNotch ? (
-        <span
-          aria-hidden="true"
-          className={`absolute -top-2 left-3 rounded px-1.5 text-[10px] leading-4 font-semibold tracking-wide uppercase ${surfaceBg} ${URGENCY_NOTCH_TEXT[urgency]}`}
-        >
-          {URGENCY_LABELS[urgency].toUpperCase()}
-        </span>
-      ) : null}
-      <AskAnchorHeader ask={displayedAsk} inBlock={inBlock} quoteSpacing="roomy" tone="surface" />
-      <OrphanedAnchorNotice artifactSlug={artifactSlug} ask={displayedAsk} />
-      {inBlock ||
-      displayedAsk.block_id === undefined ||
-      displayedAsk.block_id === null ||
-      displayedAsk.block_artifact === undefined ? null : (
-        <p className={`mt-2 text-sm ${linkText} ${linkHoverText}`}>
-          <AskBlockLink ask={displayedAsk} />
-        </p>
-      )}
-      <div>
-        {isApproval ? (
-          <p className={`text-[10px] font-semibold uppercase tracking-wide ${textMutedOnSurface}`}>
-            Approval requested
-          </p>
-        ) : null}
-        {isApproval && documentLink ? (
-          <p className={`mt-1 text-sm ${linkText} ${linkHoverText}`}>
-            <AskApprovalLink ask={displayedAsk} />
-          </p>
-        ) : null}
-        {inBlock ? null : (
-          <div className={`text-[15px] leading-relaxed font-medium ${textPrimaryOnSurface}`}>
-            <MarkdownBody
-              markdown={displayedAsk.question}
-              source={source}
-              tree={displayedAsk.question_tree}
-            />
-          </div>
+      {/* One provenance line under the question, in the spec's decided conversation grammar:
+          whose turn it is (the only part a reader acts on), who asked, when, and the ask's
+          own reference, drawn by the one header every surface shows an ask through. The
+          session's own handles - its ID, its title, its tmux target - are chrome a reader
+          wants perhaps once a week, so they fold behind the author chip and open onto their
+          own row. That keeps the line inside the card at 390 px and in a 280 px margin, where
+          a single row could not hold five copy controls without pushing the reference out of
+          reach. */}
+      <AskHeader
+        ask={displayedAsk}
+        control={(name) => (
+          <button
+            aria-expanded={handlesOpen}
+            className={`flex min-w-0 items-center gap-1 ${textMutedHoverToSecondary}`}
+            onClick={() => setHandlesOpen((open) => !open)}
+            type="button"
+          >
+            {name}
+            <ChevronIcon expanded={handlesOpen} />
+          </button>
         )}
-        {/* A request to approve again names the approval it follows, under the question (the
-            spec's own placement), with the diff from that version behind Show diff; a first
-            request carries no earlier approval, and EarlierApproval renders nothing for it. */}
-        {displayedAsk.approval === undefined ? null : (
-          <EarlierApproval approval={displayedAsk.approval} />
-        )}
-        {/* One provenance line under the question, in the spec's decided conversation grammar:
-            whose turn it is (the only part a reader acts on), who asked, when, and the ask's
-            own reference. The session's own handles - its ID, its title, its tmux target - are
-            chrome a reader wants perhaps once a week, so they fold behind the author chip and
-            open onto their own row. That keeps the line inside the card at 390 px and in a
-            280 px margin, where a single row could not hold five copy controls without pushing
-            the reference out of reach. */}
-        <div
-          className={`@container mt-1.5 flex flex-wrap items-center gap-x-1.5 text-xs ${textMutedOnSurface}`}
-        >
-          {/* Turn, author and time are one group whose names truncate: a separator that wrapped
-              left a line opening - or ending - on a bare "·", and the agents are the only parts
-              that can give up width ("Waiting on you" never does). Below 24rem of line (a phone,
-              a margin) the turn takes a line of its own with no separator after it, and the
-              asker and time share the next: beside the turn and the live link's 44 px touch box
-              the asker's name kept only two letters. A block ask the server indexed with no
-              pending author has an empty label and still says when it was asked. */}
-          <span className="flex min-w-0 items-center gap-x-1.5 whitespace-nowrap @max-sm:flex-wrap">
-            {turnHolder === null ? null : (
-              <span
-                className={`${turnHolder === "you" ? "shrink-0" : "min-w-0 truncate"} font-semibold @max-sm:basis-full ${textSecondaryOnSurface}`}
-                data-testid={`turn-${displayedAsk.id}`}
-              >
-                Waiting on {turnHolder === "you" ? "you" : <AgentName actor={turnHolder} inline />}
-              </span>
-            )}
-            {turnHolder === null ? null : (
-              <span className="shrink-0 @max-sm:hidden" aria-hidden="true">
-                ·
-              </span>
-            )}
-            <span className="flex min-w-0 items-center gap-x-1.5">
-              {sessionAuthor === undefined ? (
-                <TruncatedText className="min-w-0" title={askerTitle}>
-                  {displayedAsk.author.id === "" ? (
-                    "asked"
-                  ) : (
-                    <AgentName actor={displayedAsk.author} />
-                  )}
-                </TruncatedText>
-              ) : (
-                // The asker's button keeps its name and opens the session's copy handles; the
-                // component's live link sits beside it, outside the button. `whitespace-pre`
-                // keeps the space before an attribution suffix, which a flex item would drop.
-                <AgentName
-                  actor={sessionAuthor}
-                  className="flex min-w-0 items-center whitespace-pre"
-                  control={(name) => (
-                    <button
-                      aria-expanded={handlesOpen}
-                      className={`flex min-w-0 items-center gap-1 ${textMutedHoverToSecondary}`}
-                      onClick={() => setHandlesOpen((open) => !open)}
-                      type="button"
-                    >
-                      <TruncatedText className="min-w-0" title={askerTitle}>
-                        {name}
-                      </TruncatedText>
-                      <ChevronIcon expanded={handlesOpen} />
-                    </button>
-                  )}
-                  kind="control"
-                />
-              )}
-              <span className="shrink-0" aria-hidden="true">
-                ·
-              </span>
-              <Timestamp at={displayedAsk.created_at} />
-            </span>
-          </span>
-          {reference === undefined ? null : <CopyRefButton route={reference} />}
-          {!handlesOpen ? null : (
+        inBlock={inBlock}
+        lastReply={(threadQuery.data?.replies ?? []).at(-1)}
+        owner={askOwner}
+        place="card"
+        trailing={
+          !handlesOpen ? null : (
             <span className="flex basis-full flex-wrap items-center gap-x-1.5">
               {sessionAuthor === undefined ? null : (
                 <CopyButton value={sessionAuthor.id} what="session ID">
@@ -849,20 +758,61 @@ export function AskCard({
                 </CopyButton>
               )}
             </span>
+          )
+        }
+      >
+        <OrphanedAnchorNotice artifactSlug={artifactSlug} ask={displayedAsk} />
+        {inBlock ||
+        displayedAsk.block_id === undefined ||
+        displayedAsk.block_id === null ||
+        displayedAsk.block_artifact === undefined ? null : (
+          <p className={`mt-2 text-sm ${linkText} ${linkHoverText}`}>
+            <AskBlockLink ask={displayedAsk} />
+          </p>
+        )}
+        <div>
+          {isApproval ? (
+            <p
+              className={`text-[10px] font-semibold uppercase tracking-wide ${textMutedOnSurface}`}
+            >
+              Approval requested
+            </p>
+          ) : null}
+          {isApproval && documentLink ? (
+            <p className={`mt-1 text-sm ${linkText} ${linkHoverText}`}>
+              <AskApprovalLink ask={displayedAsk} />
+            </p>
+          ) : null}
+          {inBlock ? null : (
+            <div className={`text-[15px] leading-relaxed font-medium ${textPrimaryOnSurface}`}>
+              <MarkdownBody
+                markdown={displayedAsk.question}
+                source={source}
+                tree={displayedAsk.question_tree}
+              />
+            </div>
+          )}
+          {/* A request to approve again names the approval it follows, under the question (the
+              spec's own placement), with the diff from that version behind Show diff; a first
+              request carries no earlier approval, and EarlierApproval renders nothing for it. */}
+          {displayedAsk.approval === undefined ? null : (
+            <EarlierApproval approval={displayedAsk.approval} />
           )}
         </div>
-        {/* Whose question it is now, and the one control that hands it to somebody else. An
-            ask that is not open waits on nobody, so it has none: a card whose ask is answered,
-            resolved or withdrawn draws its record instead, and the one case that reaches here
-            is a reader changing the answer of a closed ask. The ask is the fresher read and
-            the issue is the card's own prop: only an Inbox row carries one, and the ask reads
-            do not. */}
-        {displayedAsk.state === "open" ? (
-          <AskHandOn ask={displayedAsk} assignee={ask.issue?.assignee ?? null} />
-        ) : null}
-        <AskEditHistory ask={displayedAsk} edits={edits} />
-        {referencedByNode}
-      </div>
+      </AskHeader>
+      {/* Whose question it is now, and the one control that hands it to somebody else, below the
+          provenance line rather than inside the header: a header's `children` are drawn between
+          the anchor and that line, where this control would sit between the reader and the
+          question's own answer. An ask that is not open waits on nobody, so it has none: a card
+          whose ask is answered, resolved or withdrawn draws its record instead, and the one case
+          that reaches here is a reader changing the answer of a closed ask. The ask is the
+          fresher read and the issue is the card's own prop: only an Inbox row carries one, and
+          the ask reads do not. */}
+      {displayedAsk.state === "open" ? (
+        <AskHandOn ask={displayedAsk} assignee={ask.issue?.assignee ?? null} />
+      ) : null}
+      <AskEditHistory ask={displayedAsk} edits={edits} />
+      {referencedByNode}
       {askChanged ? (
         <p className={`mt-3 text-sm font-medium ${inlineWarningText}`}>
           This question changed while you were answering. Review the latest wording and confirm your
@@ -910,9 +860,18 @@ export function AskCard({
         {isCompact ? (
           <>
             {selected.length === 0 || ownWordsOpen ? null : (
+              // Over a closed disclosure there is no box and so no area: the lone Answer still
+              // says why it refuses, and what holds it, on lines of this card's own. The upload
+              // outlives the box it was started in, so the picture still being taken says so
+              // here rather than disappearing with the note it was pasted into.
               <div className="space-y-2">
-                {submitButton}
-                {submitHintNode}
+                <DraftUploadStatus upload={upload} />
+                {answerRefusal === null ? null : (
+                  <p className={`text-xs ${textMutedOnSurface}`} id={loneAnswerReasonId}>
+                    {answerRefusal}
+                  </p>
+                )}
+                {submitButton(loneAnswerReasonId)}
               </div>
             )}
             <div>
@@ -935,17 +894,13 @@ export function AskCard({
               </button>
               {ownWordsOpen ? (
                 <div className="space-y-3 pt-3" id={`${answerFieldId}-disclosure`}>
-                  {answerField}
-                  {answerActions}
+                  {answerArea}
                 </div>
               ) : null}
             </div>
           </>
         ) : (
-          <>
-            {answerField}
-            {answerActions}
-          </>
+          answerArea
         )}
         {answerFailure === null ? null : (
           <QueryError
