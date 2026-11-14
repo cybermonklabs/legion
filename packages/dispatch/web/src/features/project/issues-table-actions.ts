@@ -248,15 +248,30 @@ export function useIssueTableActions({
       }
     );
   };
-  /** A start-next the reader has not seen the whole of: `Select all N matching` picked rows
-   *  off the page, and each one is a write, so the count is put to them first. */
-  const startNext = (keys: readonly string[], confirmFirst = false) => {
+  /**
+   * Starts `keys` next: each Todo issue labelled legion among them moves ahead of the other
+   * Todo issues labelled legion (`startNextWrites`). From a selection, the selected issues
+   * outside that set are named in a confirm rather than left out silently, and a selection with
+   * rows off the page (`Select all N matching`) is confirmed first, because each one is a write.
+   */
+  const startNext = (keys: readonly string[], selection?: { readonly offPage: boolean }) => {
     if (!canBegin()) return;
     const queued = queuedInOrder(items, keys);
-    if (confirmFirst && queued.length) {
+    const outside = selection === undefined ? 0 : keys.length - queued.length;
+    if (queued.length && (selection?.offPage === true || outside > 0)) {
+      const moves =
+        queued.length === 1
+          ? "1 issue moves ahead of the other Todo issues labelled legion, in one write."
+          : `${queued.length} issues move ahead of the other Todo issues labelled legion, one write each.`;
+      const stays =
+        outside === 0
+          ? ""
+          : outside === 1
+            ? " 1 of the selected issues is not a Todo issue labelled legion and stays where it is."
+            : ` ${outside} of the selected issues are not Todo issues labelled legion and stay where they are.`;
       setConfirming({
         title: "Start these next?",
-        body: `${queued.length} issues move to the top of the Todo rank, one write each.`,
+        body: `${moves}${stays}`,
         confirmLabel: "Start next",
         run: () => runQueued(queued),
       });

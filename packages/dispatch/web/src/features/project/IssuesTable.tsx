@@ -82,9 +82,10 @@ import { GroupRow, IssueRow } from "./issues-table-rows";
 import { useTableView } from "./issues-table-view";
 import {
   type BuiltInViewId,
+  clearNarrowings,
   isViewChanged,
+  narrowingsKey,
   readSavedViews,
-  resetView,
   type StoredViews,
   viewFor,
   viewQueryKey,
@@ -252,6 +253,13 @@ function ViewsTable({
     savedView === undefined
       ? isViewChanged(params)
       : viewQueryKey(new URLSearchParams(savedView.query)) !== queryKey;
+  // The address the view opens at, and whether the reader's narrowings differ from its own: the
+  // tab's mark shows any change, Clear filters only a change of what the rows are narrowed by.
+  const ownAddress =
+    savedView === undefined
+      ? new URLSearchParams(builtIn.id === "open" ? "" : `view=${builtIn.id}`)
+      : new URLSearchParams(savedView.query);
+  const narrowed = narrowingsKey(params) !== narrowingsKey(ownAddress);
 
   // The layout: the address's for this load, else the one kept for the view, else today's
   // `project.issue-view` choice (All open's, its `legion` value In flight's Board).
@@ -674,13 +682,8 @@ function ViewsTable({
     writeSaved(saved.filter((candidate) => candidate.name !== name));
     setChosenSaved(undefined);
   };
-  const reset = () => {
-    if (savedView !== undefined) {
-      update(() => new URLSearchParams(savedView.query));
-      return;
-    }
-    update((current) => resetView(current, hasLegion));
-  };
+  // Clear filters: the narrowings back to the view's own, the sort and grouping kept.
+  const clearFilters = () => update((current) => clearNarrowings(current, ownAddress));
 
   // The bar: the listed rows by the view's Bar by column.
   const barBy = builtIn.bar;
@@ -759,6 +762,26 @@ function ViewsTable({
     () => sortedModel.flatRows.filter((row) => !row.getIsGrouped()).map((row) => row.original),
     [sortedModel]
   );
+  // The Board reorders a column only while the view shows it in Place order, first first, which
+  // is the order a rank write moves (GitHub Projects' rule: a sorted board takes no reorder
+  // within a column). Under any other sort a drop into another column writes the status alone.
+  const firstSort = sorting[0];
+  const reorderRefusal =
+    firstSort?.id === "queue" && !firstSort.desc
+      ? undefined
+      : firstSort === undefined
+        ? "Not sorted by Place: sort by Place to reorder"
+        : `Sorted by ${String(table.getColumn(firstSort.id)?.columnDef.header ?? firstSort.id)}${
+            firstSort.id === "queue" ? ", last first" : ""
+          }: sort by Place to reorder`;
+  // The labels the Board's Labels picker offers: every label of the project's loaded issues.
+  const labelOptions = useMemo(
+    () =>
+      [...new Set(allItems.flatMap((item) => item.issue.labels ?? []))].sort((a, b) =>
+        a.localeCompare(b)
+      ),
+    [allItems]
+  );
 
   const tabs = (
     <IssueViewTabs
@@ -827,11 +850,11 @@ function ViewsTable({
         <IssueTableToolbar
           columns={offeredColumns}
           extraChips={extraChips}
+          labelOptions={labelOptions}
           layout={layoutChoice}
-          // Only while the view is changed: a built-in view whose address carries more than its
-          // own parameters, or a saved view whose address differs from its saved query. Clear
-          // filters then restores the view's own query.
-          onClear={changed ? reset : undefined}
+          // Only while a filter, the search, a flag or a chip differs from the view's own; the
+          // sort and the grouping it leaves as they are.
+          onClear={narrowed ? clearFilters : undefined}
           searchRef={searchRef}
           table={table}
           trailing={toolbarTrailing}
@@ -948,6 +971,7 @@ function ViewsTable({
           lanes={lanes}
           listsDone={done !== undefined}
           project={project}
+          reorderRefusal={reorderRefusal}
           rows={boardRows}
           showIcebox={showIcebox}
           stagePicks={stagePicks}

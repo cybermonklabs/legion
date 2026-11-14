@@ -180,7 +180,7 @@ export interface ControlRowProps {
   readonly onClear?: () => void;
   /** While `onClear` is absent, keep the button's room in its place, drawn invisible and out of
    *  reach, so its showing moves nothing in the row or under it. The project Issues tab keeps
-   *  it, where Clear filters shows exactly while the view is changed. */
+   *  it, where Clear filters shows exactly while a narrowing differs from the view's own. */
   readonly keepsClearRoom?: boolean;
   /** The page's search box, at the head of the row. */
   readonly search?: ReactNode;

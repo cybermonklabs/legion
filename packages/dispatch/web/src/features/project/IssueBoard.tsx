@@ -369,15 +369,22 @@ function readDrop(
  * stage, the cards in each column in the view's sort. A drop on a status column, or on the Done
  * rail, sets that status from any column; Testing, a status as well as a card stage, takes a
  * drop as a status column. A card dropped from a Legion stage column stays there until the
- * daemon's next read moves it. A drop within the Queue column writes the rank, and the card
- * takes its new place when the daemon's next read moves its Place. Any other drop on a Legion
- * stage column is refused, because the daemon owns those stages.
+ * daemon's next read moves it. Any drop on a Legion stage column but Queue is refused, because
+ * the daemon owns those stages, and so is a drop on Queue from another column.
+ *
+ * A sorted board takes no reorder within a column (GitHub Projects' rule), because the sort puts
+ * the card back: only while the view sorts by Place, first first, does a drop within a column
+ * write the rank (in Queue the card takes its new place when the daemon's next read moves its
+ * Place), and a drop on a card of another column writes the rank beside the status. Under any
+ * other sort a reorder is refused with `reorderRefusal`, and a drop into another column writes
+ * the status alone, the card landing where the sort puts it.
  */
 export function IssueBoard({
   hasLegion,
   lanes,
   listsDone,
   project,
+  reorderRefusal,
   rows,
   showIcebox,
   stagePicks,
@@ -389,6 +396,9 @@ export function IssueBoard({
   /** The view lists done issues: the Done rail opens into a column with their cards. */
   listsDone: boolean;
   project: string;
+  /** Why a card cannot be reordered within its column under the view's sort; undefined while
+   *  the view sorts by Place, first first. */
+  reorderRefusal: string | undefined;
   /** The view's rows, in the view's sort. */
   rows: readonly Item[];
   showIcebox: boolean;
@@ -450,10 +460,17 @@ export function IssueBoard({
     const priority =
       lane === undefined || lane === issuePriority(row.issue.priority) ? {} : { priority: lane };
     const status = stageStatus(target.stage);
+    // Within its own column, and its own lane, a drop can only reorder.
+    const reorders = target.stage === row.stage && Object.keys(priority).length === 0;
     if (target.stage === "queue") {
       // Within the Queue column a drop writes the rank; from anywhere else it is refused.
       if (row.stage !== "queue") {
         setNotice("Legion moves cards into Queue itself: a card cannot be dropped there");
+        return;
+      }
+      if (reorderRefusal !== undefined) {
+        if (reorders) setNotice(reorderRefusal);
+        else void move(key, priority);
         return;
       }
       const column = rows.filter((item) => item.stage === "queue");
@@ -475,10 +492,16 @@ export function IssueBoard({
       );
       return;
     }
+    if (reorders && reorderRefusal !== undefined) {
+      setNotice(reorderRefusal);
+      return;
+    }
     const input: UpdateIssueInput = {
       ...priority,
       ...(row.issue.status === status ? {} : { status }),
-      ...(target.key === undefined ? {} : { rank: { before: target.key } }),
+      ...(target.key === undefined || reorderRefusal !== undefined
+        ? {}
+        : { rank: { before: target.key } }),
     };
     if (Object.keys(input).length === 0) return;
     void move(key, input);

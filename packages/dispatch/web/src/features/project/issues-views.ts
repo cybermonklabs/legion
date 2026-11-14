@@ -197,12 +197,29 @@ export function isViewChanged(params: URLSearchParams): boolean {
   return [...params.keys()].some((key) => !DISPLAY_KEYS.includes(key));
 }
 
-/** The address of the view as it opens, keeping the columns and the layout the address holds. */
-export function resetView(params: URLSearchParams, hasLegion: boolean): URLSearchParams {
-  const view = viewFor(params.get("view"), hasLegion);
-  const next = new URLSearchParams();
-  if (view.id !== ALL_OPEN.id) next.set("view", view.id);
-  for (const key of ["cols", "layout"])
+/** What Clear filters leaves as it is: the view, its sort and grouping, and what is no part of
+ *  what a view lists. Everything else is a narrowing: a filter, the search, a flag or a chip. */
+const KEPT_BY_CLEAR = [...DISPLAY_KEYS, "sort", "group"];
+
+/** The address's narrowings alone, spelled so that two addresses that narrow the same rows give
+ *  the same text. */
+export function narrowingsKey(params: URLSearchParams): string {
+  return viewQueryKey(
+    new URLSearchParams([...params.entries()].filter(([key]) => !KEPT_BY_CLEAR.includes(key)))
+  );
+}
+
+/**
+ * The address with its narrowings taken back to those of `own`, the address the view opens at
+ * (`view=<id>` alone for a built-in view, the saved query for a saved one): its filters, search,
+ * flags and chips. The sort, the grouping, the columns, the layout and the page size stay as the
+ * reader left them, as main's Clear filters keeps them; the page goes back to the first.
+ */
+export function clearNarrowings(params: URLSearchParams, own: URLSearchParams): URLSearchParams {
+  const next = new URLSearchParams(
+    [...own.entries()].filter(([key]) => key === "view" || !KEPT_BY_CLEAR.includes(key))
+  );
+  for (const key of ["sort", "group", "cols", "layout", "size"])
     for (const value of params.getAll(key)) next.append(key, value);
   return next;
 }

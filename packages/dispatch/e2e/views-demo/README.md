@@ -126,7 +126,7 @@ Without `--before` it takes the design's pictures, each named by what it shows:
 - the Columns menu;
 - the Closed date filter open;
 - the project settings page;
-- the (i) hint open beside the tabs;
+- the (i) hint open, from its place in the control row;
 - five phone pictures: All open and In flight in the table, the In flight and All open Boards,
   and Time per phase in Hours;
 - All open, In flight and All open on the Board of the project with no Legion daemon

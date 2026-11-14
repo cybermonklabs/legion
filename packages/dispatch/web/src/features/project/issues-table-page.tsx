@@ -1,9 +1,10 @@
 import type { Column, Table } from "@tanstack/react-table";
-import { type ReactNode, type RefObject, useState } from "react";
+import { type ReactNode, type RefObject, useEffect, useState } from "react";
 import type { IssueSummary } from "../../api/types";
 import { Chip } from "../../components/Chip";
 import { ControlRow } from "../../components/ControlRow";
 import { DisplayMenu } from "../../components/DisplayMenu";
+import { MultiSelect } from "../../components/MultiSelect";
 import { PanelTrigger } from "../../components/PanelTrigger";
 import { SearchBox } from "../../components/SearchBox";
 import { SelectionBar } from "../../components/SelectionBar";
@@ -51,49 +52,82 @@ export interface ExtraChip {
 }
 
 /**
- * The Board layout's Filters trigger, whose open state is the reader's, kept at
- * `project.issue-filters` as `expanded` or `collapsed` the way INFRA-3135's Board keeps it. The
- * Board reads it when it opens, and when the signed-in identity resolves: open while a flag is
- * on, unless the reader last closed it. It is never read again because the count moved, so
- * taking the last flag off from inside the panel leaves it open under the reader's pointer.
+ * The Board layout's Filters trigger, over the Board's labels and its three flags (INFRA-3135,
+ * R3): the Labels picker writes `label=`, the parameter the table's Labels column filters by.
+ * Its open state is the reader's, kept at `project.issue-filters` as `expanded` or `collapsed`
+ * the way INFRA-3135's Board keeps it. The Board reads it when it opens, and when the signed-in
+ * identity resolves: open while a narrowing of the panel is on, unless the reader last closed
+ * it. It is never read again because the count moved, so taking the last narrowing off from
+ * inside the panel leaves it open under the reader's pointer.
  */
-function KeptFiltersTrigger({
-  children,
+function BoardFiltersTrigger({
   count,
+  flagsPanel,
+  labelOptions,
 }: {
-  children: () => ReactNode;
   count: number;
+  flagsPanel: () => ReactNode;
+  labelOptions: readonly string[];
 }): ReactNode {
+  const { labels, setLabels } = useIssueFilters();
+  const labelsOn = labels.length > 0;
   const [open, setOpen] = useUserPreference(
     "project.issue-filters",
     (stored) => count > 0 && stored !== "collapsed",
-    (next) => (next ? "expanded" : "collapsed")
+    (next) => (next ? "expanded" : "collapsed"),
+    { failed: labelsOn, pending: labelsOn }
   );
+  const [picking, setPicking] = useState(false);
+  useEffect(() => {
+    if (!open) setPicking(false);
+  }, [open]);
+  // A press outside the panel closes it, except while the Labels picker inside it is open: the
+  // picker is portalled out of the panel, so a press on it reads as outside the panel too.
+  const openPanel = (next: boolean) => {
+    if (!next && picking) return;
+    setOpen(next);
+  };
   return (
     <PanelTrigger
       count={count}
       label="Filters"
-      onOpenChange={setOpen}
+      onOpenChange={openPanel}
       open={open}
       panelClassName={FLAGS_PANEL_CLASS}
       size="compact"
     >
-      {children}
+      {() => (
+        <>
+          <MultiSelect
+            emptyMessage="No labels yet."
+            label="Labels"
+            onChange={setLabels}
+            onOpenChange={setPicking}
+            open={picking}
+            options={labelOptions}
+            searchLabel="Search labels"
+            selected={labels}
+            size="compact"
+          />
+          {flagsPanel()}
+        </>
+      )}
     </PanelTrigger>
   );
 }
 
 /**
  * The one row the view's controls sit in, for the table and the Board alike: the search box, the
- * trigger over the three flags that narrow no column, the chips of the flags and of the
- * narrowings an address carries (`exclude_tree`, `only`), **Clear filters** (which the row
- * draws, in room it keeps while the view is unchanged), the page's own controls, and the
- * display menu carrying the grouping (INFRA-3135, R1 and R3). Every narrowing that is a
- * column's own stays on that column's header.
+ * trigger over the three flags that narrow no column (on the Board, the labels too), the chips
+ * of those narrowings and of the ones an address carries (`exclude_tree`, `only`), **Clear
+ * filters** (which the row draws, in room it keeps while there is nothing to clear), the page's
+ * own controls, and the display menu carrying the grouping (INFRA-3135, R1 and R3). Every
+ * narrowing that is a column's own stays on that column's header in the table.
  */
 export function IssueTableToolbar({
   columns,
   extraChips,
+  labelOptions,
   layout,
   onClear,
   searchRef,
@@ -104,9 +138,13 @@ export function IssueTableToolbar({
   /** The columns the Columns menu offers: those the project has. */
   columns: Column<Item>[];
   extraChips: readonly ExtraChip[];
-  /** On the Board the Filters trigger keeps its open state for the reader. */
+  /** The labels the Board's Labels picker offers. */
+  labelOptions: readonly string[];
+  /** On the Board the Filters trigger holds the labels too, and keeps its open state for the
+   *  reader; the table filters labels on its Labels column. */
   layout: ViewLayout;
-  /** Restores the view as it opens; absent while the view is unchanged. */
+  /** Takes the filters, the search, the flags and the chips back to the view's own; absent
+   *  while they are the view's own. */
   onClear: (() => void) | undefined;
   /** The search box, which the selection bar hands the focus to when no row is left for it. */
   searchRef: RefObject<HTMLInputElement | null>;
@@ -120,6 +158,7 @@ export function IssueTableToolbar({
   const flags = useIssueFilters();
   const [openPanel, setOpenPanel] = useState<ToolbarPanel | undefined>(undefined);
   const { globalFilter: search, grouping } = table.getState();
+  const board = layout === "board";
   // The three narrowings that are no column of this table, and so the ones the row's own
   // trigger holds. Unclaimed is the Claimed by column's "Nobody or lapsed" as `?unclaimed=1`
   // spells it (`issues-table-model.ts`).
@@ -128,7 +167,18 @@ export function IssueTableToolbar({
     { label: "Unread", off: () => flags.setUnread(false), on: flags.unread },
     { label: "Unclaimed", off: () => flags.setUnclaimed(false), on: flags.unclaimed },
   ].filter(({ on }) => on);
-  const chipped = [...flagged.map(({ label, off }) => ({ label, remove: off })), ...extraChips];
+  // The Board draws no column header, so a label it filters by is a chip of the row.
+  const labelChips = board
+    ? flags.labels.map((label) => ({
+        label: `Label: ${label}`,
+        remove: () => flags.setLabels(flags.labels.filter((other) => other !== label)),
+      }))
+    : [];
+  const chipped = [
+    ...labelChips,
+    ...flagged.map(({ label, off }) => ({ label, remove: off })),
+    ...extraChips,
+  ];
   const chips =
     chipped.length === 0
       ? undefined
@@ -203,8 +253,12 @@ export function IssueTableToolbar({
         }
         size="compact"
         trigger={
-          layout === "board" ? (
-            <KeptFiltersTrigger count={flagged.length}>{flagsPanel}</KeptFiltersTrigger>
+          board ? (
+            <BoardFiltersTrigger
+              count={flags.labels.length + flagged.length}
+              flagsPanel={flagsPanel}
+              labelOptions={labelOptions}
+            />
           ) : (
             <PanelTrigger
               count={flagged.length}
@@ -242,7 +296,7 @@ export function IssueTableSelection({
   epics: readonly IssueSummary[];
   busy: boolean;
   unansweredEpic: string | undefined;
-  startNext: (keys: readonly string[], confirmFirst?: boolean) => void;
+  startNext: (keys: readonly string[], selection?: { readonly offPage: boolean }) => void;
   moveTo: (keys: readonly string[], epic: string | null) => void;
   newEpic: (keys: readonly string[]) => void;
 }): ReactNode {
@@ -260,11 +314,14 @@ export function IssueTableSelection({
         </Action>
       ) : null}
       {/* A selection the reader cannot see all of — "Select all N matching" — is asked
-          about first: Start next writes once per issue. */}
+          about first: Start next writes once per issue. So is one that holds issues Start next
+          leaves where they are. */}
       <Action
         disabled={busy}
         onClick={() =>
-          startNext(selectedKeys, selectedKeys.length > table.getRowModel().rows.length)
+          startNext(selectedKeys, {
+            offPage: selectedKeys.length > table.getRowModel().rows.length,
+          })
         }
       >
         Start next
