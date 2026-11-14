@@ -708,7 +708,9 @@ jobs:
           # Code calls the installed plugin's version: it reads the manifest, never the registry,
           # and an install whose manifest declares none lands in a plugin-cache directory named
           # `unknown` and never updates, since one `unknown` is indistinguishable from the next
-          # (measured on Claude Code 2.1.311). .omp-plugin/plugin.json's is what Oh My Pi reports,
+          # (measured on Claude Code 2.1.311). The Codex CLI names its plugin cache directory by
+          # .codex-plugin/plugin.json's and reinstalls when it changes (measured on Codex CLI
+          # 0.154.0, INFRA-3558). .omp-plugin/plugin.json's is what Oh My Pi reports,
           # and tests/envoy-channel-server.test.ts holds it equal to package.json's, so a release
           # that rewrote the first two alone would publish a plugin naming two versions. The
           # committed .claude-plugin manifest declares none, which is what keeps a checkout from
@@ -716,6 +718,7 @@ jobs:
           # rewrites below.
           for manifest in packages/claude-envoy/package.json \
             packages/claude-envoy/.claude-plugin/plugin.json \
+            packages/claude-envoy/.codex-plugin/plugin.json \
             packages/claude-envoy/.omp-plugin/plugin.json; do
             jq --arg v "$VERSION" '.version = $v' "$manifest" > tmp.json && mv tmp.json "$manifest"
           done
@@ -776,7 +779,7 @@ jobs:
           tar -xzOf packages/claude-envoy/*.tgz package/package.json \
             | jq -e --arg u "$url" '.repository.url == $u'
           for manifest in package/package.json package/.claude-plugin/plugin.json \
-            package/.omp-plugin/plugin.json; do
+            package/.codex-plugin/plugin.json package/.omp-plugin/plugin.json; do
             tar -xzOf packages/claude-envoy/*.tgz "$manifest" \
               | jq -e --arg v "$VERSION" '.version == $v'
           done

@@ -621,6 +621,11 @@ Each item below names a task and where its code is, then notes on it.
   `@sjawhar/pi-envoy`: the Envoy and Dispatch tools every session loads.
   See `packages/pi-envoy/AGENTS.md`
 
+- Codex CLI plugin — `packages/claude-envoy/` (`.codex-plugin/plugin.json`, `codex/hooks.json`, `src/codex/`)
+
+  The Claude Code plugin package is also the Codex CLI's Envoy and Dispatch plugin: a Codex session registers with Envoy under its own session id, shows on the Agents page, takes messages through `codex queue` and a `PostToolUse` hook, and reaches Dispatch through the plugin's `dispatch` tool, since Codex's sandbox keeps shell commands off the network.
+  See `packages/claude-envoy/AGENTS.md`, "The Codex CLI host"
+
 - Legion OMP plugin — `packages/pi-legion/`
 
   `@sjawhar/pi-legion`: the Legion entry, the Legion tool (`handoff_complete`, `read_record`, the controller's `read_state`, `set_status`, `compact` and `fresh_session`), the task agents and the Legion skills;

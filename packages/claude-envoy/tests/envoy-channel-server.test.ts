@@ -8,6 +8,8 @@ import type { Server, Subprocess } from "bun"
 import { nkeys } from "nats"
 import marketplace from "../../../.claude-plugin/marketplace.json" with { type: "json" }
 import plugin from "../.claude-plugin/plugin.json" with { type: "json" }
+import codexPlugin from "../.codex-plugin/plugin.json" with { type: "json" }
+import codexHooks from "../codex/hooks.json" with { type: "json" }
 import ompPlugin from "../.omp-plugin/plugin.json" with { type: "json" }
 import type { ModCallArguments, ModCallName, ModCallResults } from "../hooks/mod-protocol"
 import pkg from "../package.json" with { type: "json" }
@@ -472,7 +474,28 @@ test("the committed manifests declare no version the release would have to bump;
   expect(marketplaceEntries).toHaveLength(1)
   expect(marketplaceEntries[0]).not.toHaveProperty("version")
   expect(ompPlugin.version).toBe(pkg.version)
+  // The Codex CLI names its plugin cache directory by this version and reinstalls when it changes
+  // (measured on 0.154.0), so release.yaml writes the release's version into it as well.
+  expect(codexPlugin.version).toBe(pkg.version)
   expect(MCP_SERVER_INFO).toEqual({ name: "envoy", version: pkg.version })
+})
+
+test("the Codex manifest starts the server in the plugin's own directory, as the Codex host", () => {
+  // Codex runs a plugin's MCP server with `cwd: "./"` in the plugin's directory and expands no
+  // `${PLUGIN_ROOT}` in its arguments; it passes the server only the variables `env_vars` names;
+  // and it asks before every call of a plugin's tool unless the tool is pre-approved (all measured
+  // on 0.154.0, INFRA-3558).
+  const envoy = codexPlugin.mcpServers.envoy
+  expect(envoy.cwd).toBe("./")
+  expect(envoy.args).toEqual(["./dist/envoy-channel.js", "--host", "codex"])
+  expect(envoy.env_vars).toContain("ENVOY_CONFIG_FILE")
+  expect(envoy.env_vars).toContain("XDG_CONFIG_HOME")
+  expect(envoy.tools).toEqual({ dispatch: { approval_mode: "approve" } })
+  expect(codexPlugin.hooks).toBe("./codex/hooks.json")
+  const commands = Object.values(codexHooks.hooks).flatMap((groups) =>
+    groups.flatMap((group) => group.hooks.map((hook) => hook.command)),
+  )
+  for (const command of commands) expect(command).toMatch(/^bun "\$\{PLUGIN_ROOT\}\/dist\//)
 })
 
 test("the marketplace entry installs the plugin from npm, by name, above the placeholder", () => {

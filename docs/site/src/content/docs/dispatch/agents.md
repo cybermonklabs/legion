@@ -143,6 +143,8 @@ A Claude Code session at a terminal advertises no mode until the plugin's mod ha
 and Send, Aside and BTW once it has.
 A Claude Code session in a Legion pane advertises Send and Aside from the start, and gains BTW
 when the mod connects.
+A Codex CLI session advertises Send, Aside and BTW once it has taken its first prompt, which is
+when it first appears on the Agents page.
 If you write in a mode the session does not take, the message box warns you and suggests a prefix
 it does take.
 
@@ -159,6 +161,11 @@ reaches the session once it is back.
 Envoy counts a message to a Claude Code session as delivered once the plugin has put it into the
 session's conversation: the row the mod added to the turn running, the prompt it submitted while
 the session was idle, or, in a Legion pane, the message the bridge handed over.
+Envoy counts a message to a Codex CLI session as delivered once Codex has queued it for the
+session, which takes it as a new turn a few seconds later, or once the plugin has put it into the
+turn running at that turn's next tool call.
+A message that reaches a Codex CLI session during a turn that calls no further tool starts the
+next turn once that turn ends.
 
 Your Send or Aside arrives as your own message in the session's conversation, and the agent
 answers there.
@@ -168,6 +175,8 @@ A command that prints output, such as `/session` or `/compact`, posts that outpu
 On an Oh My Pi session, one that runs only in the session's own terminal says it did not run.
 On a Claude Code session, one that waits for the turn in progress or for an answer at the terminal
 replies after ten seconds that it is still running, and its output follows in another reply.
+On a Codex CLI session, a Send or Aside that starts with `/` is not run, and the reply says so:
+Codex runs only the commands typed at its own terminal.
 On an Oh My Pi session, a Send or Aside that starts with `!` is not a prompt at all: the session
 runs the rest of the line as a [shell command](#the-live-view).
 Watch any of these results in the [live view](#the-live-view).
@@ -175,6 +184,7 @@ Watch any of these results in the [live view](#the-live-view).
 A picture in your message reaches an Oh My Pi session and a Claude Code session in a Legion pane.
 It does not reach a Claude Code session at a terminal, which gets the message's text alone:
 Claude Code gives a plugin no way to put a picture into a terminal session.
+It does not reach a Codex CLI session either, which gets the message's text alone.
 
 ## Broadcasts
 
