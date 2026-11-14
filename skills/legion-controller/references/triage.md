@@ -12,7 +12,7 @@ Read this on a `triage` wake, at every start, and when a person hands you an iss
    `child_of` parent. A `child_of` under `Referenced by:` is a child of this issue, not its parent.
 3. Leave a child whose `issues.<KEY>.tree` is a root in `admission.trees`, or that has an ancestor
    that is, because that tree's architect owns it. `admission.trees` is the live trees: a slot is
-   one issue the daemon has started, held until it is done, leaves the workflow or waits only for its merge, so a tree is live whether or not its root holds one.
+   one issue the daemon has started, held until its work is past its review, until it is done, or until Dispatch takes it out of the workflow, so a tree is live whether or not its root holds one.
 4. Every other row with no `issues.<KEY>` entry in `read_state` is a root to you, a child whose
    tree is not in `admission.trees` included. Read who set its label
    ("Triage a root", step 2). A root a person labelled is queued by the daemon and needs nothing
@@ -56,24 +56,30 @@ Read this on a `triage` wake, at every start, and when a person hands you an iss
      catch-up reads that reply as done.
 3. Admit it (`set_status` to `todo`) only when you labelled it at a person's request, you filed it
    yourself (for a person, or for a clear defect no tree owns), or a person answered `Admit it`,
-   unless the request, the weekly plan or the deployment instructions say to wait or put it out of
-   scope:
-   `legion({ op: "set_status", issue: "<issue>", status: "todo" })`.
-4. When one of those says to wait, park it with `set_status` to `backlog`, or `icebox` when the
-   request asks for a longer deferral, instead of leaving it in `triage`; the label stays. Never
-   park a root for lack of a free slot, because in `todo` the daemon's waiting line already holds
-   it until a slot frees.
+   unless a person's request says to wait or puts it out of scope:
+   `legion({ op: "set_status", issue: "<issue>", status: "todo" })`. The operator's deployment
+   instructions are such a request. A line of your own weekly plan is not, unless that line names
+   the person's request behind it.
+4. When a person's request says to wait, park it with `set_status` to `backlog`, or `icebox` when
+   the request asks for a longer deferral, instead of leaving it in `triage`; the label stays.
+   Park a root only when a person asked for that move, or when the work is done, folded into another issue or no longer needed.
+   Never park a root for lack of a free slot, because in `todo` the daemon's waiting line already
+   holds it until a slot frees: admit it as step 3 says, and report the capacity to the person in
+   the day's report.
 5. For a root you admitted or parked, comment on the issue (`dispatch comment`) what you decided
-   and why. For a root you admitted, say in that comment who will be asked: `Assigned to <login>,
+   and why. For a root you parked, cite in that comment why: the person's request behind the park
+   (the deployment instructions as that file, or the request the plan's line names), or that the
+   work is done, folded into another issue (name it) or no longer needed.
+   For a root you admitted, say in that comment who will be asked: `Assigned to <login>,
    who will get this tree's questions and its design approval`, or, when `Assignee:` says
-   `unassigned`, `Unassigned — nobody's Inbox shows this tree's questions or its design approval
-   until someone takes it from the issue header (Assignee, beside Priority)`. Promise the design
-   approval only when your system prompt's `Design gate steps:` sentence names at least one step;
-   when it reads `Design gate steps: none.` nobody approves a design, so drop "and its design
-   approval" (and "or its design approval"). Take the assignee from the read, never
-   from how the issue was created, because an issue filed with no assignee still lands on the
-   project's default assignee where a person set one. An unassigned root still runs, but its
-   architect's asks reach only the Inbox's `Unassigned` filter.
+   `unassigned`, `Unassigned — this tree's questions and its design approval go to the project's
+   default assignee until someone takes it from the issue header (Assignee, beside Priority)`.
+   Promise the design approval only when your system prompt's `Design gate steps:` sentence names
+   at least one step; when it reads `Design gate steps: none.` nobody approves a design, so drop
+   "and its design approval". Take the assignee from the read, never from how the issue was
+   created: an issue filed with no assignee lands on the project's default assignee, which every
+   project names, but a person can clear an assignee later, and a root with none still has its
+   architect's asks reach the project's default assignee.
 
 ## Label an issue for a person
 

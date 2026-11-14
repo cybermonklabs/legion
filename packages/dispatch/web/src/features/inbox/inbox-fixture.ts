@@ -47,23 +47,42 @@ export function installInboxApiMocks(): InboxApiMocks {
   return mocks;
 }
 
+/** The default assignee of the project every fixture row belongs to: the third and last step the
+ *  server resolves a question's person through. Nobody's own login, so a row that falls to it is
+ *  nobody else's. */
+export const FIXTURE_PROJECT_DEFAULT = "carol";
+
 /** Resolves a fixture row's `waiting_on_person` the way the server resolves it
- *  (`coalesce(a.asked_of, i.assignee)`): whoever the ask was handed to, else the assignee of its
- *  issue, and absent where that leaves nobody. A row that names the field itself is left alone,
- *  so a test can say who waits on it outright. Every Inbox row a test builds goes through this,
- *  so no fixture waits on somebody the server would not name.
+ *  (`coalesce(a.asked_of, i.assignee, p.default_assignee)`): whoever the ask was handed to, else
+ *  the assignee of its issue, else `projectDefault`, the default assignee of the project the ask
+ *  belongs to - its issue's, or for a question on a project document that document's. A row that
+ *  names the field itself is left alone, so a test can say who waits on it outright. Every Inbox
+ *  row a test builds goes through this, so no fixture waits on somebody the server would not
+ *  name.
+ *
+ *  Every project names a default, so this release's server resolves a person for every question.
+ *  `projectDefault` is `null` only for a row a test wants resolved to nobody, which is what a
+ *  server written before that rule answers and what the `unassigned` filter and "Assign to me"
+ *  are written against: the field is then absent, as the server sends it.
  */
-export function withWaitingOnPerson(row: InboxRow): InboxRow {
+export function withWaitingOnPerson(
+  row: InboxRow,
+  projectDefault: string | null = FIXTURE_PROJECT_DEFAULT
+): InboxRow {
   if (row.waiting_on_person !== undefined) return row;
-  const person = row.asked_of ?? row.issue?.assignee ?? null;
+  const person = row.asked_of ?? row.issue?.assignee ?? projectDefault;
   return person === null ? row : { ...row, waiting_on_person: person };
 }
 
 /** A single open ask on an issue, overridable per test. The person the row waits on is resolved
- *  as the server resolves it (`coalesce(a.asked_of, i.assignee)`), so an override that moves the
- *  issue's assignee, or hands the ask to somebody, moves that person with it; an override naming
- *  `waiting_on_person` itself wins. */
-export function issueAsk(overrides: Partial<InboxRow> = {}): InboxRow {
+ *  as the server resolves it (`coalesce(a.asked_of, i.assignee, p.default_assignee)`), so an
+ *  override that moves the issue's assignee, or hands the ask to somebody, moves that person
+ *  with it, and an issue nobody holds falls to `projectDefault` as the server's third step does;
+ *  an override naming `waiting_on_person` itself wins. */
+export function issueAsk(
+  overrides: Partial<InboxRow> = {},
+  projectDefault: string | null = FIXTURE_PROJECT_DEFAULT
+): InboxRow {
   const row: InboxRow = {
     anchor: null,
     answer: null,
@@ -102,7 +121,7 @@ export function issueAsk(overrides: Partial<InboxRow> = {}): InboxRow {
     urgency: "med",
     ...overrides,
   };
-  return withWaitingOnPerson(row);
+  return withWaitingOnPerson(row, projectDefault);
 }
 
 /** Resolves `getAsk` for each row's full thread from the same fixtures `getInbox` already seeded. */

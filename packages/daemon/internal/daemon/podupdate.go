@@ -151,10 +151,7 @@ func (s *supervision) reconcileIssuePodUpdate(ctx context.Context, issue string,
 			s.tellPodlessRound(ctx, issue, group, open, now)
 			return nil
 		}
-		// Nothing can be read of a pod no claim records, so no pod round opens and none ends. A
-		// claim's own plugin round is carried all the same: it is one claim's process, not the
-		// pod's, and a suspended claim in one records no pod either.
-		s.reconcilePluginUpdates(ctx, group, now)
+		// Nothing can be read of a pod no claim records, so no pod round opens and none ends.
 		return nil
 	}
 	// The pod went without the round: it was replaced where it stood for a failure of its own — a
@@ -192,7 +189,6 @@ func (s *supervision) reconcileIssuePodUpdate(ctx context.Context, issue string,
 				"issue", issue, "round", open, "pod", pod)
 			s.endPodUpdates(group)
 		}
-		s.reconcilePluginUpdates(ctx, group, now)
 		return nil
 	}
 	joined := strings.Join(reasons, ", ")
@@ -236,10 +232,6 @@ func (s *supervision) reconcileIssuePodUpdate(ctx context.Context, issue string,
 	round := supervise.PodRound(pod)
 	opening := open != round && !sweep.reasks(issue, round)
 	if opening && sweep.holds(issue) {
-		// The claims' own plugin rounds are carried all the same, as they are for an issue with
-		// no drift at all: what one of those replaces is the claim's process, not the pod, and
-		// the pod round this issue waits for is no reason to hold one open.
-		s.reconcilePluginUpdates(ctx, group, now)
 		return nil
 	}
 	if open == "" {
@@ -521,8 +513,8 @@ func (s *supervision) replacePodForRound(ctx context.Context, replace podReplace
 	s.log.Info("supervise: every worker of this update round has answered; the pod is replaced and the round is over",
 		"issue", issue, "round", round, "pod", pod, "failedNotWaitedFor", namesOf(failed),
 		"rescued", checked.rescued(), "unchecked", checked.unchecked)
-	if message := rescueMessage(round, checked); message != "" {
-		if err := s.writeOnIssue(ctx, issue, message); err != nil && ctx.Err() == nil {
+	if post := rescueMessage(issue, round, checked); post.Body != "" {
+		if err := s.writeOnIssue(ctx, issue, post); err != nil && ctx.Err() == nil {
 			s.log.Error("supervise: write on the issue what the push check before its pod's replacement found",
 				"issue", issue, "round", round, "rescued", checked.rescued(), "unchecked", checked.unchecked, "error", err)
 		}
@@ -651,39 +643,25 @@ type pushCheck struct {
 	unchecked  string
 }
 
-// rescued is every rescue branch the check reports, as `<branch>@<commit>`, each once: a branch an
-// earlier check of the same pod pushed is reported by every workspace whose remote holds it.
+// rescued is every rescue branch the check reports, as `<branch>@<commit> in <owner>/<repo>`, each
+// once for each repository (branches).
 func (p pushCheck) rescued() []string {
 	var named []string
 	for _, b := range p.branches() {
-		named = append(named, b.name+"@"+b.commit)
+		named = append(named, b.Name+"@"+b.Commit+" in "+b.repository)
 	}
 	return named
 }
 
-// rescuedBranch is one rescue branch of the check, and the workspace that first reports it.
-type rescuedBranch struct{ name, commit, dir string }
-
-// branches is every rescue branch the check reports, each once, in the order reported.
-func (p pushCheck) branches() []rescuedBranch {
-	var branches []rescuedBranch
-	seen := map[string]bool{}
-	for _, w := range p.workspaces {
-		for _, b := range w.Branches {
-			if !seen[b.Name] {
-				seen[b.Name] = true
-				branches = append(branches, rescuedBranch{name: b.Name, commit: b.Commit, dir: w.Dir})
-			}
-		}
-	}
-	return branches
-}
-
 // rescueBranch is the prefix of every rescue branch of a pod's replacement:
-// `legion/<KEY>-rescue-<first 8 of the pod's uid>`, which the check numbers from 1. It is no
-// issue's branch (claim.BranchIssue), so nothing the daemon keeps follows it.
+// `legion/<KEY>-rescue-<first 8 of the pod's uid>`, which a shim that predates the issue's one
+// rescue branch (rescue.Target) numbers from 1. It is no issue's branch (claim.BranchIssue), so
+// nothing the daemon keeps follows it. The request names the issue's one branch in a field of its
+// own, beside this prefix rather than in its place: an older shim reports every remote branch that
+// starts with `<branch>-` as its own, so the one branch's name there would have it report every
+// earlier pod's rescue branches (shimwire.RescueUnpushed).
 func rescueBranch(issue, pod string) string {
-	return claim.IssueBranch(issue) + "-rescue-" + pod[:min(8, len(pod))]
+	return rescue.Target(issue) + "-" + pod[:min(8, len(pod))]
 }
 
 // checkUnpushed runs the push check of the round's pod (runtime.Runtime.RescueUnpushed) through a
@@ -714,7 +692,8 @@ func (s *supervision) checkUnpushed(ctx context.Context, issue, round, pod strin
 	if timeout <= 0 {
 		return fmt.Errorf("%w: the replacement has no time left to run it in", errPushCheckFailed)
 	}
-	request := runtime.RescueRequest{Branch: rescueBranch(issue, pod), WorkspaceTimeout: min(rescueWorkspaceTimeout, timeout), Timeout: timeout}
+	request := runtime.RescueRequest{Branch: rescueBranch(issue, pod), Target: rescue.Target(issue),
+		WorkspaceTimeout: min(rescueWorkspaceTimeout, timeout), Timeout: timeout}
 	var refused []string
 	for _, c := range rescuers(group, round) {
 		report, err := s.runtime.RescueUnpushed(ctx, runtime.Known{Claim: c.Token, Locator: c.Locator}, request)
@@ -785,28 +764,6 @@ func rescuers(group []supervise.Claim, round string) []supervise.Claim {
 		}
 	}
 	return append(implement, review...)
-}
-
-// rescueMessage is what the issue is told after its pod's replacement when the push check pushed
-// rescue branches or could not check the pod, and "" when it found nothing. The issue's branch
-// does not hold rescued work, and the next pod provisions from that branch, so somebody must bring
-// it in. Another agent reads it, so it follows ASD-STE100.
-func rescueMessage(round string, checked pushCheck) string {
-	if checked.unchecked != "" {
-		return fmt.Sprintf("The daemon replaced the pod of this issue (update round %s). It did not check the pod's workspaces for work that was not pushed: %s. Work that a worker did not push is lost with the pod.", round, checked.unchecked)
-	}
-	var lines []string
-	for _, b := range checked.branches() {
-		lines = append(lines, fmt.Sprintf("- `%s` (commit %s), from %s", b.name, b.commit, b.dir))
-	}
-	if len(lines) == 0 {
-		return ""
-	}
-	return fmt.Sprintf(`Before the daemon replaced the pod of this issue (update round %s), it found work in the pod's workspaces that the remote did not have. It pushed that work to these branches:
-
-%s
-
-The issue branch does not have this work, and the new pod starts from the issue branch. Merge each branch into the issue branch, or delete the branch if its work is not necessary.`, round, strings.Join(lines, "\n"))
 }
 
 // viewedGroup is every claim of the issue a round weighs, as the store names them and as each
@@ -962,7 +919,7 @@ func (s *supervision) podWentWithoutItsRound(ctx context.Context, issue string, 
 	reasons := roundReasons(group, round)
 	s.log.Warn("supervise: the pod of an open update round is gone; the roles that had not answered lost what they had not pushed",
 		"issue", issue, "round", round, "pod", pod, "lost", namesOf(lost))
-	if err := s.writeOnIssue(ctx, issue, podWentMessage(round, reasons, lost)); err != nil {
+	if err := s.writeOnIssue(ctx, issue, record.MessagePost{Body: podWentMessage(round, reasons, lost)}); err != nil {
 		s.log.Error("supervise: write on the issue that its pod went without its update round",
 			"issue", issue, "round", round, "error", err)
 	}
@@ -1074,82 +1031,12 @@ func (s *supervision) openPodUpdate(ctx context.Context, issue string, group []s
 	return reached
 }
 
-// reconcilePluginUpdates carries the plugin round of every claim of a group that is in one. It
-// runs only where no pod round is open over the group: a pod round takes every claim of the issue,
-// a plugin round's claim among them, and replacing the pod is what that claim was waiting for
-// anyway. An issue a limit of the project holds back from opening one is carried here too, for
-// the same reason read the other way: no pod round is open over it, and the claim's own round
-// has nothing to do with the slot its issue waits for (reconcileIssuePodUpdate).
-func (s *supervision) reconcilePluginUpdates(ctx context.Context, group []supervise.Claim, now time.Time) {
-	for _, c := range group {
-		if c.InPluginRound() {
-			s.reconcilePluginUpdate(ctx, c, now)
-		}
-	}
-}
-
-// reconcilePluginUpdate carries one claim's own plugin round: the round supervise's refreshPlugin
-// opens over a claim whose process speaks a plugin contract this daemon does not. The sweep is
-// what ends it — once the worker has answered and runs no turn, PodUpdateEnded replaces the
-// process onto this daemon's plugin, which is what the round was opened for. Until then the claim
-// is asked again on the round's own re-task clock, and the round's notice and bounds are the pod
-// round's.
-//
-// The end is posted for a claim whose process is gone too — suspended, launching, queued — and
-// there it relaunches nothing (supervise's endPodUpdate): the round has nothing left to wait for,
-// and the claim's next launch installs this daemon's plugin itself. Relaunching such a claim
-// would start a process an operator's suspension had stopped, which only the operator's resume
-// may do.
-//
-// An answered round that does not end is the pod round's own late stall, one claim wide, and is
-// told the same way (tellLateRound): the turn the relaunch waits for may never end, and the
-// relaunch the end posts may be refused for as long as the refusal lasts (a reserved tree
-// cleanup, a moved epoch), which leaves the round open, the claim's next task held behind it and
-// nothing but a log line per tick to show for it. The bound runs from the answer, as the pod
-// round's does, and one round is told once.
-func (s *supervision) reconcilePluginUpdate(ctx context.Context, c supervise.Claim, now time.Time) {
-	round := c.UpdateRound
-	if c.UpdateSignalledAt != nil {
-		waits := "its process is not replaced"
-		switch {
-		case c.State == supervise.StateWorking:
-			s.log.Info("supervise: this claim's plugin round has its answer; the relaunch waits for the turn still running",
-				"claim", c.Token, "round", round)
-			waits = "its turn has not ended"
-		case !supervise.HoldsCapability(c.State):
-			s.log.Info("supervise: this claim's plugin round has its answer, and its process is gone; the round ends and launches nothing",
-				"claim", c.Token, "round", round, "state", c.State)
-		default:
-			s.log.Info("supervise: this claim's plugin round has its answer; its process is replaced onto this daemon's plugin",
-				"claim", c.Token, "round", round)
-		}
-		if c.State != supervise.StateWorking {
-			s.supervisor.post(c.Token, supervise.PodUpdateEnded{Claim: c.Token, Round: round})
-		}
-		s.tellLateRound(ctx, c.Issue, []supervise.Claim{c}, round, "", c.UpdateReasons, now,
-			"the worker of the plugin round has answered, and "+waits)
-		return
-	}
-	s.supervisor.post(c.Token, supervise.PodUpdateOpen{
-		Claim: c.Token, Round: round, Reasons: c.UpdateReasons, Task: supervise.UpdateTask(round, c.UpdateReasons),
-	})
-	late := c.UpdateOpenedAt != nil && now.Sub(*c.UpdateOpenedAt) >= s.cfg.PodUpdateNotice
-	if c.UpdateToldAt != nil || !late {
-		return
-	}
-	s.tellUpdateStalled(ctx, updateStall{
-		issue: c.Issue, round: round, reasons: c.UpdateReasons, group: []supervise.Claim{c},
-		waiting: waitingOf(round, []supervise.Claim{c}),
-		reason: fmt.Sprintf("the plugin round has waited %s for its worker to answer",
-			now.Sub(*c.UpdateOpenedAt).Round(time.Minute)),
-	})
-}
-
 // updateStall is one round the sweep cannot finish, as the operator's side is told of it: the
-// issue and round it is of, the pod it was opened over (none for a plugin round), what the round
-// was opened for, the claims it waits on, the one-line why, and the group whose claims mark the
-// round told. Nothing is written on the issue: a round that stalls asks nothing of its workers
-// that they have not already been asked, and the operator reads it through the controller.
+// issue and round it is of, the pod it was opened over (none where no claim of the issue
+// records one, tellPodlessRound), what the round was opened for, the claims it waits on, the
+// one-line why, and the group whose claims mark the round told. Nothing is written on the
+// issue: a round that stalls asks nothing of its workers that they have not already been asked,
+// and the operator reads it through the controller.
 //
 // reasons is the one string the round records and the task states (supervise.Claim.UpdateReasons),
 // never a list: each reason carries ", " inside it already, so nothing here may cut one up
@@ -1213,12 +1100,13 @@ func (s *supervision) markUpdateTold(ctx context.Context, group []supervise.Clai
 	}
 }
 
-// writeOnIssue posts one message on the issue, through the outbox's Dispatch message row.
-func (s *supervision) writeOnIssue(ctx context.Context, issue, body string) error {
+// writeOnIssue posts one message on the issue, with the document it links when it links one,
+// through the outbox's Dispatch message row.
+func (s *supervision) writeOnIssue(ctx context.Context, issue string, post record.MessagePost) error {
 	if s.enqueue == nil {
 		return fmt.Errorf("write on %s: this deployment has no workflow to write through", issue)
 	}
-	return s.enqueue(ctx, issue, record.MessagePost{Body: body})
+	return s.enqueue(ctx, issue, post)
 }
 
 // endPodUpdates ends the round on every claim of the group that is in one. A round ends only
@@ -1427,9 +1315,10 @@ func blockingClaims(group []supervise.Claim) []supervise.Claim {
 //
 // A claim that left some earlier round is not that claim. It still records the round it left,
 // this round's open has not reached it yet, and it holds this round's pod exactly as any claim
-// the round has not reached does — which is why the predicate is asked about the round being
-// decided rather than about the claim's own. Asked the other way, such a claim stopped holding
-// the pod, and its disk could be deleted with work on it the round had asked nobody for.
+// the round has not reached does, which is why the predicate is asked about the round being
+// decided rather than about the claim's own: read of the claim's own round, such a claim would
+// hold the pod no longer, and its disk could be deleted with work on it the round had asked
+// nobody for.
 //
 // What a claim lost is the other question (lostClaims), and the two are never the same set.
 func waitingClaims(group []supervise.Claim, round string) []supervise.Claim {

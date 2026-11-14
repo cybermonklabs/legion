@@ -33,7 +33,7 @@ type roleClaimRelaunchRig struct {
 func newRoleClaimRelaunchRig(t *testing.T, sessionID, role string) *roleClaimRelaunchRig {
 	t.Helper()
 	registry, sessions := setupSessionsTest(t, nil, nil)
-	deps := withRoleClaimDrain(t, &listenerDeps{client: setupPublishTestClient(t), registry: registry, sessions: sessions})
+	deps := withRoleClaimDrain(t, &listenerDeps{client: setupPublishTestClient(t), registry: registry, sessions: sessions, consumers: setupSessionConsumers(t)})
 	routes := http.NewServeMux()
 	registerV1Routes(routes, deps, "test-machine", logging.New("test"))
 	return &roleClaimRelaunchRig{
@@ -47,12 +47,13 @@ func newRoleClaimRelaunchRig(t *testing.T, sessionID, role string) *roleClaimRel
 }
 
 // register is the heartbeat POST /v1/interests/subscribe a running client repeats, stating the
-// process making it: it writes the session's registration - self_subscribed, as a client that
+// process making it and asking for the session's own consumer, as every registration this build
+// stores does: it writes the session's registration - self_subscribed, as a client that
 // receives on its own subject sends - and renews the claims that process holds
 // (store.Registry.RenewRoleClaims).
 func (r *roleClaimRelaunchRig) register(instance string) {
 	r.t.Helper()
-	body := fmt.Sprintf(`{"session_id":%q,"topics":[%q],"self_subscribed":true,"client_instance_id":%q}`, r.session, r.topic, instance)
+	body := fmt.Sprintf(`{"session_id":%q,"topics":[%q],"self_subscribed":true,"delivery":{"consumer":true,"epoch":"e"},"client_instance_id":%q}`, r.session, r.topic, instance)
 	recorder := r.send(http.MethodPost, "/v1/interests/subscribe", body)
 	if recorder.Code != http.StatusOK {
 		r.t.Fatalf("registration of %s by process %q: status %d %s, want 200", r.session, instance, recorder.Code, recorder.Body.String())

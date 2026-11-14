@@ -1,27 +1,41 @@
 package api
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// The windows both of the controller's claim recoveries are refused in, and the fixtures that
-// build them. A claim stored working under a parked relaunch, one left over a process the
-// runtime's last report found gone, one a daemon restart restored over that dead process, and
-// one a suspension is held over each read the same to the compaction and to the fresh session,
-// and each is answered by one sentence both of them give (api's refuseWorkingClaim,
-// refuseInATurn, refuseHeldSuspension). The tests here hold both routes to that one answer;
-// each route's own refusals are in its own file (compact_test.go, freshsession_test.go).
+// The windows both of the controller's claim recoveries are read in, and the fixtures that
+// build them. A claim stored working under a parked relaunch and one a suspension is held over
+// read the same to the compaction and to the fresh session, and each is answered by one
+// sentence both of them give (api's refuseWorkingClaim, refuseInATurn, refuseHeldSuspension).
+// A claim stored working that no process stands behind is where the two part: the fresh
+// session stops it where the request arrives and starts it again, and the compaction, which
+// has no agent to ask, names that door instead (deadProcessWindows). The tests here hold both
+// routes to those answers; each route's own refusals are in its own file (compact_test.go,
+// freshsession_test.go).
+//
+// What a door answers such a claim is read off its process at the moment of the request
+// (processVerdict), never off the daemon's memory of an old report: the two windows below
+// differ in that memory alone, and a door that read it would answer one of them a turn that is
+// not running — which is the false word a controller with a dead architect was sent away with
+// at e9e7ae6f.
 //
 // Every sentence says what the claim is doing when the refusal is given, which door reaches
 // each state a caller can read of it afterwards, and nothing of what the next report, turn,
@@ -34,17 +48,17 @@ import (
 const (
 	wantCompactionReaches   = "A compaction reaches a claim whose agent is ready or idle"
 	wantCompactionLive      = "ready or idle"
-	wantFreshSessionReaches = "A fresh session reaches a claim whose agent is registered, ready or idle, and one that is suspended, failed or retired"
+	wantFreshSessionReaches = "A fresh session reaches a claim whose agent is registered, ready or idle, one that is suspended, failed or retired, and one stored working that no process stands behind"
 	wantFreshSessionLive    = "registered, ready or idle"
 	wantAskAgainLater       = "Ask again later; `read_state` (`legion claims list`) shows its state"
 )
 
 // inATurnRefusal is the sentence both recoveries give a claim stored working that neither the
-// parked relaunch nor the process found gone answers, with what the asking operation would do
+// parked relaunch nor the read of its process answers, with what the asking operation would do
 // to a turn of that claim that is running and the states it reaches (api's refuseInATurn). It
-// says the claim is stored working and no more, because a turn is not all that reads so: a
-// restart restores a claim left over a dead process working with nothing left of the report
-// that found the process gone (restoredWorkingOverADeadProcess).
+// says the claim is stored working and no more, because that is the whole of what the record
+// holds: the process is there, and whether a turn of it is running is the agent's own and not
+// the daemon's to state.
 func inATurnRefusal(token claim.Token, cutsTheTurn, reaches string) string {
 	return string(token) + " is stored working: if a turn of it is running, " + cutsTheTurn + ". " +
 		reaches + ". " + wantAskAgainLater
@@ -213,6 +227,88 @@ func TestAFreshSessionRefusedWhileTheRelaunchWaitsItsTurnSaysTheClaimIsUnsettled
 	}
 }
 
+// workingUnderAParkedRefresh is the other wake a machine parks over a live process: the
+// relaunch the stale-plugin refresh lane raises, which carries a kind of its own so that a
+// reader of the daemon's state can tell a fleet's refresh from the work it holds up
+// (supervise.WakePluginRefresh, dispatch://INFRA-2712 R4). Everything else about it is a
+// launch, and the window it leaves is the one above: a claim stored working with a launch in
+// flight over the process it still records.
+//
+// The claim is seeded stale as the API's own stale-caller fixture seeds one — written at an
+// earlier contract and its machine rebuilt from the store (harness.makeStale) — but with the
+// capability it registered with left as it is, since nothing here calls as the claim. The sweep
+// then finds it, the pacing parks its relaunch over the process it still runs
+// (supervise.refreshPlugin), and the live process takes a turn of its own, which is what leaves
+// the claim stored working under the park (TestATurnTheReplacedProcessConfirmedIsTakenBackAt
+// TheLaunchsTurn in supervise).
+func workingUnderAParkedRefresh(t *testing.T, h *harness) claim.Token {
+	t.Helper()
+	var park atomic.Bool
+	h.supervisor.deps.WakePace = supervise.WakePace{Rate: 1, Burst: 1, Reserve: func(now time.Time) time.Time {
+		if park.Load() {
+			return now.Add(time.Hour)
+		}
+		return now
+	}}
+	token := idleOnTheLadder(t, h)
+
+	park.Store(true)
+	m, _ := h.supervisor.Machine(token)
+	stale := m.Claim()
+	stale.PluginContract = DaemonAPIVersion - 1
+	if err := h.store.PutClaim(h.ctx, stale); err != nil {
+		t.Fatalf("seed %s at an earlier plugin contract: %v", token, err)
+	}
+	m = h.supervisor.restart(t, token)
+	if err := m.Handle(h.ctx, supervise.StalePlugin{Claim: token, Trigger: "sweep"}); err != nil {
+		t.Fatalf("the sweep's post of %s's stale plugin: %v", token, err)
+	}
+	m.Wait()
+	if err := m.Handle(h.ctx, supervise.StreamTurnStart{Claim: token}); err != nil {
+		t.Fatalf("the turn %s's live process takes under the park: %v", token, err)
+	}
+	settled(h, token)
+
+	view := m.View()
+	if view.State != supervise.StateWorking {
+		t.Fatalf("the claim is %s, want the working claim the park kept over the process it records", view.State)
+	}
+	if view.WakeWaiting == nil || view.WakeWaiting.Kind != supervise.WakePluginRefresh {
+		t.Fatalf("the claim's waiting wake is %+v, want the refresh lane's relaunch the pacing holds", view.WakeWaiting)
+	}
+	return token
+}
+
+// Both recoveries answer that window exactly as they answer a parked launch: a relaunch is in
+// flight, which is what the refresh's relaunch is. The kind tells a reader of the state body
+// which lane holds the pacing and nothing else, so a door that read it as anything but a launch
+// would answer "in a turn" and send a controller back to wait out a turn the launch is about to
+// cut (api's relaunchWaits, supervise.StartsProcess).
+func TestARecoveryRefusedWhileTheStalePluginRefreshWaitsItsTurnNamesTheLaunchInFlight(t *testing.T) {
+	for _, door := range compactDoors() {
+		t.Run("the compaction: "+door.name, func(t *testing.T) {
+			h := compactHarness(t, nil)
+			token := workingUnderAParkedRefresh(t, h)
+
+			recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer)
+
+			wantFreshSessionRefusal(t, recorder, http.StatusConflict, claimUnsettled,
+				parkedRelaunchRefusal(token, wantCompactionReaches))
+		})
+	}
+	for _, door := range freshSessionDoors() {
+		t.Run("the fresh session: "+door.name, func(t *testing.T) {
+			h := compactHarness(t, nil)
+			token := workingUnderAParkedRefresh(t, h)
+
+			recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer)
+
+			wantFreshSessionRefusal(t, recorder, http.StatusConflict, claimUnsettled,
+				parkedRelaunchRefusal(token, wantFreshSessionReaches))
+		})
+	}
+}
+
 // refusingCheckLaunchStore is the supervise store with the lifecycle recheck every launch
 // makes before it starts anything (supervise.Store.CheckLaunch) failing while refusing is set,
 // with a failure that is not the tree's — the store did not answer. That is the refusal which
@@ -231,35 +327,73 @@ func (s *refusingCheckLaunchStore) CheckLaunch(ctx context.Context, c supervise.
 	return s.Store.CheckLaunch(ctx, c)
 }
 
-// refusedRelaunchCause is one of the three runtime verdicts that raise a relaunch over a
-// process the claim still records (parkedRelaunchCauses), with what the claim reports of that
-// process once the relaunch has been refused: the two that find it gone leave a claim stored
+// refusedRelaunchCause is the runtime verdict that raises a relaunch over a process the claim
+// still records (parkedRelaunchCauses), with what the claim reports of that process once the
+// relaunch has been refused: a verdict that found the process gone leaves a claim stored
 // working over a process nothing is replacing, and the stale address leaves a process that is
-// running and takes a turn of its own under the claim. Both doors read that one fact, and it
-// is the whole of what tells the two apart (supervise.Claim.ProcessGone).
+// running and takes a turn of its own under the claim (supervise.Claim.ProcessGone). The two
+// the windows below are built from are aDeath and aRepointOverALiveProcess.
 type refusedRelaunchCause struct {
-	name        string
 	observation runtime.Observation
 	processGone bool
 }
 
-func refusedRelaunchCauses() []refusedRelaunchCause {
-	return []refusedRelaunchCause{
-		{"a death", runtime.Observation{Kind: runtime.Gone}, true},
-		{"a displacement", runtime.Observation{Kind: runtime.Gone, Displaced: true}, true},
-		{"a repoint over a live process", runtime.Observation{Kind: runtime.StaleAddress}, false},
-	}
+// aDeath is the verdict that leaves the claim stored working over a process that is not
+// running: the runtime found the process gone. A displacement — the daemon's own replacement
+// of the pod, which ends the process through no fault of its own — leaves the very same claim
+// (supervise's died, displaced), and no door tells it from this one, because what a door reads
+// of such a claim is the process itself rather than the verdict that left it there
+// (deadProcessWindows).
+func aDeath() refusedRelaunchCause {
+	return refusedRelaunchCause{observation: runtime.Observation{Kind: runtime.Gone}, processGone: true}
 }
 
-// processGoneRefusal is the sentence both recoveries give a claim left stored working over a
-// process the runtime's last report of it found gone (api's refuseProcessGone, controllerOp).
-// It says what that claim is — a relaunch that has not run, and no turn running — and names
-// no end of its own: what the next report of that process raises is the machine's (supervise's
-// died).
-func processGoneRefusal(token claim.Token, reaches string) string {
-	return string(token) + " is stored working over a process the daemon's last report of it found gone: the " +
-		"relaunch that replaces that process has not run, so no turn of " + string(token) + " is running. " +
-		reaches + ". " + wantAskAgainLater
+// aRepointOverALiveProcess is the verdict that leaves a process still running under the claim:
+// it holds an address a process launched now is not handed, and the refused relaunch keeps it
+// (supervise's repoint). That process then takes a turn of its own, so the claim is working
+// with a turn that is running — the claim both doors go on answering "in a turn".
+func aRepointOverALiveProcess() refusedRelaunchCause {
+	return refusedRelaunchCause{observation: runtime.Observation{Kind: runtime.StaleAddress}}
+}
+
+// notRunningRefusal is the sentence the compaction gives a claim stored working whose process
+// the read at the request finds is not running: there is no Oh My Pi session to compact, since
+// nothing runs one, and what starts such a claim again is the fresh session for every workflow
+// role (api's startsAgainName, claimNotRunning). The compaction names that door rather than a
+// wait, because nothing comes for this claim on its own: the relaunch that was to replace the
+// process has not run, and the recovery the caller is sent to is the one that acts.
+func notRunningRefusal(token claim.Token) string {
+	return string(token) + " is stored working over a process that is no longer running, so it runs no " +
+		"Oh My Pi session to compact; " + freshSessionName + " starts it again instead"
+}
+
+// unreadableProcessRefusal is the sentence both recoveries give a claim stored working whose
+// process the runtime would not answer for: `Uncertain`, which is a verdict and never a
+// statement that the process is gone, and a Probe that fails, which says nothing about the
+// process at all (runtime's Probe, Uncertain). Neither door may act on a claim it cannot read
+// — a fresh session that took an unread process for a dead one would cut off the turn of a
+// process that is running — and neither may say a turn is running, which nobody read. So the
+// answer is the code of a claim with no state the daemon can act on, with the read that did
+// not happen named in it and the claim left exactly as the request found it (api's
+// claimUnsettled, refuseUnreadableProcess).
+func unreadableProcessRefusal(token claim.Token, reaches string) string {
+	return string(token) + " is stored working and the daemon could not read whether its process is running: " +
+		"the runtime did not answer, and nothing of the claim changed. " + reaches + ". " + wantAskAgainLater
+}
+
+// unrecordedProcessRefusal is the sentence both recoveries give a claim stored working that
+// records no process for a read to be made of: nothing says whether a turn of it is running,
+// so it is refused as the unanswered read is (api's refuseUnrecordedProcess).
+func unrecordedProcessRefusal(token claim.Token, reaches string) string {
+	return string(token) + " is stored working and records no process for the daemon to read, so nothing says " +
+		"whether a turn of it is running, and nothing of the claim changed. " + reaches + ". " + wantAskAgainLater
+}
+
+// movedClaimRefusal is the sentence the fresh session gives a claim whose suspension the machine
+// refused as working and whose process the read made again after that refusal found gone: the
+// claim moved under the request (api's refuseMovedClaim).
+func movedClaimRefusal(token claim.Token, reaches string) string {
+	return string(token) + " moved while the request was made, and nothing of it changed. " + reaches + ". " + wantAskAgainLater
 }
 
 // workingAfterTheRelaunchWasRefused is the window the refusals below are asked in: a worker
@@ -339,52 +473,20 @@ func workingAfterTheRelaunchWasRefused(t *testing.T, h *harness, cause refusedRe
 	return token
 }
 
-// A claim the lifecycle recheck's refusal left stored working over a process the runtime found
-// gone is in no turn: the relaunch that was to replace that process never ran, nothing waits
-// over the claim, and nothing will end a turn it is not in. Both recoveries say that, and say
-// nothing of what comes for the claim next. Answered "in a turn", a controller would be told a
-// turn is running in the one window these recoveries exist for; at e9e7ae6f that is the answer
-// every door gave, since nothing of such a claim told it from one in a turn.
-//
-// The claim whose live process the same refusal left is the control, and it keeps the sentence
-// every claim stored working takes: its turn is running, and the record holds no more of it
-// than working, which is all that sentence says. The verdict the refused relaunch was raised
-// by is the whole of what separates the two (supervise.Claim.ProcessGone).
-func TestARecoveryRefusedAfterARefusedRelaunchNamesTheRelaunchRatherThanATurn(t *testing.T) {
-	for _, cause := range refusedRelaunchCauses() {
-		for _, door := range compactDoors() {
-			t.Run(cause.name+": "+door.name, func(t *testing.T) {
-				h := compactHarness(t, nil)
-				token := workingAfterTheRelaunchWasRefused(t, h, cause)
-				want := processGoneRefusal(token, wantCompactionReaches)
-				if !cause.processGone {
-					want = inATurnRefusal(token, "a compaction would abort that turn", wantCompactionReaches)
-				}
-
-				recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer)
-
-				wantFreshSessionRefusal(t, recorder, http.StatusConflict, claimInATurn, want)
-			})
-		}
-		for _, door := range freshSessionDoors() {
-			t.Run(cause.name+": "+door.name, func(t *testing.T) {
-				h := compactHarness(t, nil)
-				token := workingAfterTheRelaunchWasRefused(t, h, cause)
-				want := processGoneRefusal(token, wantFreshSessionReaches)
-				if !cause.processGone {
-					want = inATurnRefusal(token, "a fresh session would cut that turn off", wantFreshSessionReaches)
-				}
-
-				recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer)
-
-				wantFreshSessionRefusal(t, recorder, http.StatusConflict, claimInATurn, want)
-				if after := h.stored(token); after.State != supervise.StateWorking || after.Session != "ses_implementer" {
-					t.Errorf("the refused claim is %s recording session %q, want the working claim the refusal left on the session it had",
-						after.State, after.Session)
-				}
-			})
-		}
+// launchesAnswerAgain puts the lifecycle recheck workingAfterTheRelaunchWasRefused left
+// refusing back to answering (refusingCheckLaunchStore), so a start run over the window that
+// fixture built is a start that can run. The store is the supervisor's own deps, which every
+// machine built from them holds, so the claim a restart rebuilds takes it as well
+// (restoredWorkingOverADeadProcess). A row that drives a recovery through to its start calls
+// this after the fixture; a row about the start the recheck refuses, or about a step before the
+// start, does not (TestAFreshSessionThatStoppedTheClaimAndCouldNotStartItSaysNotRestartedInItsAnswer).
+func launchesAnswerAgain(t *testing.T, h *harness) {
+	t.Helper()
+	store, ok := h.supervisor.deps.Store.(*refusingCheckLaunchStore)
+	if !ok {
+		t.Fatalf("the supervisor's store is %T, want the %T the window installed over it", h.supervisor.deps.Store, store)
 	}
+	store.refusing.Store(false)
 }
 
 // restoredWorkingOverADeadProcess is the window a daemon restart leaves: the claim above,
@@ -395,8 +497,7 @@ func TestARecoveryRefusedAfterARefusedRelaunchNamesTheRelaunchRatherThanATurn(t 
 // to replace it never ran (supervise.ClaimView.ProcessGone, supervise's NewMachine).
 func restoredWorkingOverADeadProcess(t *testing.T, h *harness) claim.Token {
 	t.Helper()
-	token := workingAfterTheRelaunchWasRefused(t, h, refusedRelaunchCause{
-		name: "a death", observation: runtime.Observation{Kind: runtime.Gone}, processGone: true})
+	token := workingAfterTheRelaunchWasRefused(t, h, aDeath())
 	m := h.supervisor.restart(t, token)
 	view := m.View()
 	if view.State != supervise.StateWorking || view.ProcessGone || view.Compacting || view.SuspensionHeld || view.WakeWaiting != nil {
@@ -406,41 +507,882 @@ func restoredWorkingOverADeadProcess(t *testing.T, h *harness) claim.Token {
 	return token
 }
 
-// A daemon restart takes away the one fact that told that claim from a claim in a turn and
-// leaves the claim where it stood: stored working over a dead process, with no turn running
-// and no launch coming for it (supervise.ClaimView.ProcessGone). So the sentence both doors
-// give it says only what the store holds, which is that the claim is working. Both said "is
-// in a turn" before this row, which told the controller of a turn that was not running — the
-// false word the refusal of a process found gone exists to keep out of this window, given
-// here because the restart is what took that record away.
-//
-// What the operation would do to a turn stays in the sentence as the condition it is: a fact
-// about the operation, true whether a turn is running or not. The code is the one every claim
-// stored working takes, so the restart changes no answer of either door but the words.
-func TestARecoveryRefusedAfterARestartSaysOnlyThatTheClaimIsStoredWorking(t *testing.T) {
+// deadProcessWindow is one of the claims stored working that no process stands behind, by what
+// left it there: a relaunch the lifecycle recheck refused, where the daemon still holds the
+// report that found the process gone, and the same claim after a daemon restart, where it
+// holds nothing of that report at all (workingAfterTheRelaunchWasRefused,
+// restoredWorkingOverADeadProcess, supervise.ClaimView.ProcessGone). The record reads working
+// in both and no process runs under either, so every row below is asked in both: an answer
+// read off the daemon's memory of an old report differs between the two, and an answer read
+// off the process itself is the same in both.
+type deadProcessWindow struct {
+	name  string
+	build func(t *testing.T, h *harness) claim.Token
+}
+
+func deadProcessWindows() []deadProcessWindow {
+	return []deadProcessWindow{
+		{"a relaunch the store refused", func(t *testing.T, h *harness) claim.Token {
+			t.Helper()
+			return workingAfterTheRelaunchWasRefused(t, h, aDeath())
+		}},
+		{"a daemon restart over that claim", restoredWorkingOverADeadProcess},
+	}
+}
+
+// processVerdict is one answer the runtime gives about the claim's process when a door reads
+// that process at the moment of the request, in the words the row that stages it reads it by.
+// Every row scripts its own (fake.Runtime.ScriptProbe), because an unscripted probe answers
+// `Alive`: a row that scripted none would be a row about a live process whatever window it
+// meant to stage.
+type processVerdict struct {
+	name   string
+	result fake.ProbeResult
+}
+
+// processGoneVerdicts are the two answers that say the claim's process is not running: nothing
+// is there at all, and something that is not the process the claim records is — a reissued pid,
+// a pane id handed out again (runtime's Gone, NotRecordedProcess). The daemon reads the two the
+// same (supervise's reportedProcess), and they are the window both recoveries exist for.
+func processGoneVerdicts() []processVerdict {
+	return []processVerdict{
+		{"a process that is gone", fake.ProbeResult{Kind: runtime.Gone}},
+		{"another process in its place", fake.ProbeResult{Kind: runtime.NotRecordedProcess}},
+	}
+}
+
+// processRunningVerdicts are the two answers that say the process the claim records is running:
+// alive, and alive while holding an address a process launched now is not handed, which is a
+// live process with a turn of its own under the claim (runtime's Alive, StaleAddress). A door
+// that acted on either would stop an agent that is working.
+func processRunningVerdicts() []processVerdict {
+	return []processVerdict{
+		{"a process that is alive", fake.ProbeResult{Kind: runtime.Alive}},
+		{"a live process at a stale address", fake.ProbeResult{Kind: runtime.StaleAddress}},
+	}
+}
+
+// unreadableProcessVerdicts are the two ways the runtime says neither: `Uncertain`, which is a
+// verdict of its own precisely so that it is never read as gone, and a Probe that fails, which
+// is the runtime not being askable and no statement about the process (runtime's Probe,
+// Uncertain).
+func unreadableProcessVerdicts() []processVerdict {
+	return []processVerdict{
+		{"a verdict of uncertain", fake.ProbeResult{Kind: runtime.Uncertain}},
+		{"a runtime that would not answer", fake.ProbeResult{Err: errors.New("the runtime did not answer")}},
+	}
+}
+
+// processReads is how many times the runtime has been asked about a process (fake's Probe).
+// Every row counts it across its own request, because the answers below turn on that one read:
+// a row that made none was answered from the record, and a row that made two read one claim
+// twice in one request.
+func processReads(h *harness) int {
+	return len(h.runtime.CallsOf("Probe"))
+}
+
+// recoveryDoor is one of the four doors the two recoveries have, with the words its own
+// operation writes into the refusals both of its doors give (freshSessionDoors, compactDoors,
+// controllerOp). The rows whose answer is the same at every door run through all four.
+type recoveryDoor struct {
+	name        string
+	ask         func(t *testing.T, h *harness, issue string, role claim.Role) *httptest.ResponseRecorder
+	cutsTheTurn string
+	reaches     string
+}
+
+func recoveryDoors() []recoveryDoor {
+	doors := make([]recoveryDoor, 0, 4)
+	for _, door := range freshSessionDoors() {
+		doors = append(doors, recoveryDoor{door.name, door.ask, "a fresh session would cut that turn off", wantFreshSessionReaches})
+	}
 	for _, door := range compactDoors() {
-		t.Run(door.name, func(t *testing.T) {
+		doors = append(doors, recoveryDoor{door.name, door.ask, "a compaction would abort that turn", wantCompactionReaches})
+	}
+	return doors
+}
+
+// A claim stored working that no process stands behind is the one window the fresh session
+// exists for, and it starts the claim again: the process the claim records is read at the
+// request and found gone, so there is no turn to cut off and no agent to stop, and the
+// suspension this route runs as the operator lands where the request arrives. The claim then
+// leaves its session behind and is started again, which is the 200 a project controller has
+// for a dead architect — the one recovery it holds for a role nothing else will bring back.
+//
+// Both windows answer the same because the read is of the process rather than of the daemon's
+// memory: the claim a restart rebuilt holds no report at all, and at e9e7ae6f that is what
+// made it unreachable, since the record alone reads the same as a claim in a turn.
+func TestAFreshSessionReachesAClaimOverADeadProcess(t *testing.T) {
+	for _, window := range deadProcessWindows() {
+		for _, verdict := range processGoneVerdicts() {
+			for _, door := range freshSessionDoors() {
+				t.Run(window.name+": "+verdict.name+": "+door.name, func(t *testing.T) {
+					h := compactHarness(t, nil)
+					token := window.build(t, h)
+					launchesAnswerAgain(t, h)
+					h.runtime.ScriptProbe(verdict.result)
+					reads := processReads(h)
+
+					recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer)
+
+					if recorder.Code != http.StatusOK {
+						t.Fatalf("the fresh session over the dead process = %d, want the 200 of a claim started again; body %s",
+							recorder.Code, recorder.Body)
+					}
+					if got := processReads(h) - reads; got != 1 {
+						t.Errorf("the request read the claim's process %d times, want the one read its answer turns on", got)
+					}
+					after := h.stored(token)
+					if after.State == supervise.StateWorking {
+						t.Errorf("the claim is %s, want it out of the working the dead process left it stored in", after.State)
+					}
+					if after.Session == "ses_implementer" {
+						t.Errorf("the claim records session %q, want the session it had left behind", after.Session)
+					}
+				})
+			}
+		}
+	}
+}
+
+// A claim whose process the read finds running is a claim in a turn to every door, and both
+// recoveries go on refusing it in today's words: the record says working, the process is there,
+// and what either operation would do to a turn of it is the fact the sentence gives as the
+// condition it is. The two dead-process windows are asked here with the runtime answering that
+// the process runs, which is the whole of what separates these rows from the 200 above: a door
+// that answered from the daemon's own report would refuse the claim its read found alive, or
+// stop it, and both answers are read here from the request alone.
+//
+// The third window is the claim no read has to correct: the refused relaunch left a live
+// process under it and that process took a turn of its own, so the turn the sentence names is
+// running (aRepointOverALiveProcess). It is the row both doors answered this way before any of
+// them read a process, and the fix leaves it where it stands.
+func TestARecoveryRefusedOverALiveProcessNamesTheTurn(t *testing.T) {
+	windows := append(deadProcessWindows(), deadProcessWindow{
+		name: "a relaunch the store refused over a live process",
+		build: func(t *testing.T, h *harness) claim.Token {
+			t.Helper()
+			return workingAfterTheRelaunchWasRefused(t, h, aRepointOverALiveProcess())
+		},
+	})
+	for _, window := range windows {
+		for _, verdict := range processRunningVerdicts() {
+			for _, door := range recoveryDoors() {
+				t.Run(window.name+": "+verdict.name+": "+door.name, func(t *testing.T) {
+					h := compactHarness(t, nil)
+					token := window.build(t, h)
+					h.runtime.ScriptProbe(verdict.result)
+					reads := processReads(h)
+
+					recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer)
+
+					wantFreshSessionRefusal(t, recorder, http.StatusConflict, claimInATurn,
+						inATurnRefusal(token, door.cutsTheTurn, door.reaches))
+					if got := processReads(h) - reads; got != 1 {
+						t.Errorf("the request read the claim's process %d times, want the one read its answer turns on", got)
+					}
+					if after := h.stored(token); after.State != supervise.StateWorking || after.Session != "ses_implementer" {
+						t.Errorf("the refused claim is %s recording session %q, want the working claim the refusal left on the session it had",
+							after.State, after.Session)
+					}
+				})
+			}
+		}
+	}
+}
+
+// A runtime that could not say whether the process is running leaves every door where it was:
+// an unread process is not a dead one, and a fresh session that took it for one would cut off
+// the turn of an agent that is working. Nor is it a running one, so neither door says a turn
+// is: both recoveries give the code of a claim with no state the daemon can act on, with the
+// read that did not happen named in it, and neither suspends, forgets nor starts anything —
+// the stored claim is exactly what the request found, for the caller to ask again when the
+// runtime answers (dispatch://INFRA-3161 R2, R3).
+func TestARecoveryRefusedWhenTheRuntimeCouldNotReadTheProcess(t *testing.T) {
+	for _, window := range deadProcessWindows() {
+		for _, verdict := range unreadableProcessVerdicts() {
+			for _, door := range recoveryDoors() {
+				t.Run(window.name+": "+verdict.name+": "+door.name, func(t *testing.T) {
+					h := compactHarness(t, nil)
+					token := window.build(t, h)
+					h.runtime.ScriptProbe(verdict.result)
+					reads := processReads(h)
+					before := h.stored(token)
+
+					recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer)
+
+					wantFreshSessionRefusal(t, recorder, http.StatusConflict, claimUnsettled,
+						unreadableProcessRefusal(token, door.reaches))
+					if got := processReads(h) - reads; got != 1 {
+						t.Errorf("the request read the claim's process %d times, want the one read it was refused for", got)
+					}
+					if after := h.stored(token); !reflect.DeepEqual(after, before) {
+						t.Errorf("the refused claim is stored as %+v, want the claim the request found, untouched: %+v", after, before)
+					}
+				})
+			}
+		}
+	}
+}
+
+// The compaction reads the same process and still refuses: it has no agent to ask, since
+// nothing runs the session it would compact, and compacting is all it does. What it can do is
+// name the door that acts — the fresh session, which starts such a claim again — so the
+// caller is sent to the recovery that works rather than back to a wait that never ends. The
+// code is the one every claim with no session to compact takes (api's claimNotRunning), and the
+// claim is left stored working on the session it recorded, because the compaction changed
+// nothing about it.
+func TestACompactionOverADeadProcessNamesTheFreshSession(t *testing.T) {
+	for _, window := range deadProcessWindows() {
+		for _, verdict := range processGoneVerdicts() {
+			for _, door := range compactDoors() {
+				t.Run(window.name+": "+verdict.name+": "+door.name, func(t *testing.T) {
+					h := compactHarness(t, nil)
+					token := window.build(t, h)
+					h.runtime.ScriptProbe(verdict.result)
+					reads := processReads(h)
+
+					recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer)
+
+					wantFreshSessionRefusal(t, recorder, http.StatusConflict, claimNotRunning, notRunningRefusal(token))
+					if got := processReads(h) - reads; got != 1 {
+						t.Errorf("the request read the claim's process %d times, want the one read its answer turns on", got)
+					}
+					if after := h.stored(token); after.State != supervise.StateWorking || after.Session != "ses_implementer" {
+						t.Errorf("the refused claim is %s recording session %q, want the working claim on the session it had: the compaction changes nothing",
+							after.State, after.Session)
+					}
+				})
+			}
+		}
+	}
+}
+
+// workingController is the project's own controller in a turn: launched as its keeper launches
+// it (launchController), registered, ready, and in a turn of its own. compactHarness serves no
+// daemon-launched controller (Options.ControllerLaunched), so its register route refuses the
+// controller's boot token; the registration and the ready are posted to the machine instead,
+// exactly as the routes post them once they have authenticated the agent
+// (registerLaunchedController, ready), and the turn as the agent's stream does. The process the
+// claim then records is the one a row has the runtime answer for at the request
+// (fake.Runtime.ScriptProbe): a verdict of gone makes this the controller stored working over a
+// dead process that no sweep has reported yet, which is the window as the read at the request
+// sees it.
+func workingController(t *testing.T, h *harness) claim.Token {
+	t.Helper()
+	token, _ := h.launchController()
+	m, _ := h.supervisor.Machine(token)
+	generation := m.Claim().Generation
+	for _, ev := range []supervise.Event{
+		supervise.RequestRegister{Claim: token, Generation: generation, Session: "ses_controller",
+			SessionFile: "/sessions/ses_controller.jsonl", CapabilityHash: capabilityHash("secret"), PluginContract: DaemonAPIVersion},
+		supervise.RequestReady{Claim: token, Generation: generation, Session: "ses_controller"},
+		supervise.StreamTurnStart{Claim: token},
+	} {
+		if err := m.Handle(h.ctx, ev); err != nil {
+			t.Fatalf("%T for %s: %v", ev, token, err)
+		}
+	}
+	if view := m.View(); view.State != supervise.StateWorking || view.ProcessGone || view.Compacting || view.SuspensionHeld || view.WakeWaiting != nil {
+		t.Fatalf("the controller is %s reporting ProcessGone %v, compacting %v, a suspension held %v and wake %+v; want it working in a turn with nothing reported or waiting",
+			view.State, view.ProcessGone, view.Compacting, view.SuspensionHeld, view.WakeWaiting)
+	}
+	return token
+}
+
+// deadControllerRefusal is the sentence the compaction gives the project's own controller
+// stored working over a process the read at the request finds gone (api's refuseDeadController).
+// Its keeper does nothing for a controller stored working, and the fresh session refuses the
+// controller in every state, so neither is named: what starts it is the operator's suspend,
+// which lands where it arrives on a claim whose process a read found gone, and then the
+// operator's resume, which the keeper's own resume is held from by that suspension.
+func deadControllerRefusal(token claim.Token) string {
+	return string(token) + " is stored working over a process that is no longer running, so it runs no " +
+		"Oh My Pi session to compact. The daemon's controller keeper does nothing for a controller stored " +
+		"working and does not resume one an operator suspended, so the operator starts it again: " +
+		"`legion claims suspend --claim " + string(token) + "`, then `legion claims resume --claim " + string(token) + "`"
+}
+
+// The project's own controller stored working over a dead process is refused the compaction
+// as every claim in that window is, with the code of a claim that runs no session to compact
+// (api's claimNotRunning) — and named what starts it, which is neither the door a workflow role
+// is named nor the keeper a stopped controller is: the keeper leaves a controller stored working
+// alone, and the fresh session refuses the controller outright. So the sentence names the
+// operator's suspend and resume, and the row then runs those two commands as the sentence names
+// them and finds the controller suspended by the first and launching after the second, which is
+// what makes the sentence true rather than merely spelled. Only the operator's door asks: the
+// controller's own compact may not name the role `controller` (api's claimCompact).
+//
+// Both windows are asked, as every dead-process row is: the controller in its turn, and the
+// same claim after a daemon restart, which holds no report of anything (deadProcessWindow).
+func TestACompactionOfTheControllerOverADeadProcessNamesTheOperatorsSuspendAndResume(t *testing.T) {
+	windows := []deadProcessWindow{
+		{"a controller in a turn", workingController},
+		{"a daemon restart over that controller", func(t *testing.T, h *harness) claim.Token {
+			t.Helper()
+			token := workingController(t, h)
+			h.supervisor.restart(t, token)
+			return token
+		}},
+	}
+	for _, window := range windows {
+		for _, verdict := range processGoneVerdicts() {
+			t.Run(window.name+": "+verdict.name, func(t *testing.T) {
+				h := compactHarness(t, nil)
+				token := window.build(t, h)
+				h.runtime.ScriptProbe(verdict.result)
+				reads := processReads(h)
+				route := "/legion/v1/operator/claims/" + string(token) + "/"
+
+				recorder := h.operator(http.MethodPost, route+"compact", nil)
+
+				wantFreshSessionRefusal(t, recorder, http.StatusConflict, claimNotRunning, deadControllerRefusal(token))
+				if got := processReads(h) - reads; got != 1 {
+					t.Errorf("the request read the controller's process %d times, want the one read its answer turns on", got)
+				}
+				if after := h.stored(token); after.State != supervise.StateWorking || after.Session != "ses_controller" {
+					t.Fatalf("the refused controller is %s recording session %q, want it working on the session it had: the compaction changes nothing",
+						after.State, after.Session)
+				}
+
+				if suspended := h.operator(http.MethodPost, route+"suspend", nil); suspended.Code != http.StatusOK {
+					t.Fatalf("the suspend the refusal names = %d, want the 200 of a suspension landed where it arrived; body %s",
+						suspended.Code, suspended.Body)
+				}
+				if state := h.stored(token).State; state != supervise.StateSuspended {
+					t.Fatalf("the controller is %s after the suspend, want it suspended", state)
+				}
+				if resumed := h.operator(http.MethodPost, route+"resume", nil); resumed.Code != http.StatusOK {
+					t.Fatalf("the resume the refusal names = %d, want 200; body %s", resumed.Code, resumed.Body)
+				}
+				if m, _ := h.supervisor.Machine(token); m.Claim().State != supervise.StateLaunching {
+					t.Errorf("the controller is %s after the resume, want it launching", m.Claim().State)
+				}
+			})
+		}
+	}
+}
+
+// failingClaimWriteStore is the supervise store with the claim writes refuse picks failing: the
+// store did not answer them. It sits under refusingCheckLaunchStore where both are installed,
+// and it is installed before the claim is created, because a machine takes its deps where it is
+// built. refuse is set once the claim stands where the row needs it, so the writes that bring
+// it up all land.
+type failingClaimWriteStore struct {
+	supervise.Store
+	refuse atomic.Pointer[func(supervise.Claim) bool]
+}
+
+func (s *failingClaimWriteStore) PutClaim(ctx context.Context, c supervise.Claim) error {
+	if refuse := s.refuse.Load(); refuse != nil && (*refuse)(c) {
+		return fmt.Errorf("write the claim %s: the store did not answer", c.Token)
+	}
+	return s.Store.PutClaim(ctx, c)
+}
+
+// refusing has the store refuse every claim write refuse picks from now on.
+func (s *failingClaimWriteStore) refusing(refuse func(supervise.Claim) bool) {
+	s.refuse.Store(&refuse)
+}
+
+// failingClaimWrites installs failingClaimWriteStore over the supervisor's store.
+func failingClaimWrites(h *harness) *failingClaimWriteStore {
+	writes := &failingClaimWriteStore{Store: h.supervisor.deps.Store}
+	h.supervisor.deps.Store = writes
+	return writes
+}
+
+// wantSuspendedClaimStarts is the sentence a fresh session that stopped the claim ends its
+// answer with where the step it could not take left the claim suspended (api's
+// notStartedAgain): nothing starts such a claim by itself, so the caller is told what does.
+const wantSuspendedClaimStarts = "It is suspended, and nothing starts a suspended claim by itself, so a fresh session asked again is what starts it"
+
+// The fresh session over a dead process stops the claim, forgets the session it recorded and
+// then starts it, and either of the last two can be refused on its own. The claim is stopped by
+// then, so a refusal would be false — the request did happen, and what did not is a step after
+// the stop. The answer says so in the member that carries what the claim's own state does not
+// record (api.FreshSessionResponse.PhaseNotRestarted, freshSessionNote, notStartedAgain): it
+// names the claim, gives the store's own words for the refusal, and says what state that left
+// the claim in, read from the machine rather than assumed, since the steps leave different ones.
+//
+//   - The start the store would not answer the lifecycle recheck of, which starts nothing and
+//     writes nothing (refusingCheckLaunchStore, supervise's relaunchRefused): the claim reads
+//     suspended with no session, and the answer says a fresh session asked again starts it.
+//   - The forget the store would not write (supervise's forgetSession): the machine has
+//     forgotten the session and owes the write, the stored claim is suspended still recording
+//     it, and the answer says the same of the suspended claim.
+//   - The start whose launch the store would not write (supervise's launchNow, relaunchLater):
+//     the claim is launching, with that launch tried again at the probe interval, which starts
+//     it by itself — and a fresh session asked of it then is refused as a claim between states.
+//     The answer names the state it stands in and does not send the caller to ask again.
+//
+// The store's refusal is not spelled here, as it is the store's own wording; the sentence about
+// the state is the route's own, and is spelled.
+//
+// The last row is the negative control, and is the same request over a process the read finds
+// alive: it is refused, and the claim is left working on the session it had. So the arms are
+// told apart from the answer alone — a 200 that says a step after the stop did not run, and a
+// 409 that says nothing ran at all.
+func TestAFreshSessionThatStoppedTheClaimAndCouldNotStartItSaysNotRestartedInItsAnswer(t *testing.T) {
+	for _, door := range freshSessionDoors() {
+		t.Run(door.name+": the start the store would not answer", func(t *testing.T) {
 			h := compactHarness(t, nil)
-			token := restoredWorkingOverADeadProcess(t, h)
+			token := workingAfterTheRelaunchWasRefused(t, h, aDeath())
+			h.runtime.ScriptProbe(fake.ProbeResult{Kind: runtime.Gone})
+			reads := processReads(h)
 
 			recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer)
 
-			wantFreshSessionRefusal(t, recorder, http.StatusConflict, claimInATurn,
-				inATurnRefusal(token, "a compaction would abort that turn", wantCompactionReaches))
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("the fresh session whose start was refused = %d, want the 200 of a claim that was stopped; body %s",
+					recorder.Code, recorder.Body)
+			}
+			note := freshSessionNote(t, recorder)
+			if !strings.Contains(note, string(token)) {
+				t.Errorf("the answer says %q, want it to name %s, the claim whose start did not run", note, token)
+			}
+			if refusal := fmt.Sprintf("check the launch of %s: the store did not answer", token); !strings.Contains(note, refusal) {
+				t.Errorf("the answer says %q, want the store's own refusal of the start in it, %q", note, refusal)
+			}
+			if !strings.HasSuffix(note, wantSuspendedClaimStarts) {
+				t.Errorf("the answer says %q, want it to end %q", note, wantSuspendedClaimStarts)
+			}
+			if got := processReads(h) - reads; got != 1 {
+				t.Errorf("the request read the claim's process %d times, want the one read its answer turns on", got)
+			}
+			after := h.stored(token)
+			if after.State != supervise.StateSuspended || after.Session != "" {
+				t.Errorf("the claim is %s recording session %q, want the suspended claim with no session the refused start left",
+					after.State, after.Session)
+			}
 		})
-	}
-	for _, door := range freshSessionDoors() {
-		t.Run(door.name, func(t *testing.T) {
+		t.Run(door.name+": the forget the store would not write", func(t *testing.T) {
 			h := compactHarness(t, nil)
-			token := restoredWorkingOverADeadProcess(t, h)
+			writes := failingClaimWrites(h)
+			token := workingAfterTheRelaunchWasRefused(t, h, aDeath())
+			h.runtime.ScriptProbe(fake.ProbeResult{Kind: runtime.Gone})
+			writes.refusing(func(c supervise.Claim) bool { return c.Session == "" })
+
+			recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer)
+
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("the fresh session whose forget was refused = %d, want the 200 of a claim that was stopped; body %s",
+					recorder.Code, recorder.Body)
+			}
+			note := freshSessionNote(t, recorder)
+			for _, want := range []string{
+				string(token) + " was stopped for a fresh session, and the forget of the session it recorded was refused: ",
+				fmt.Sprintf("write the claim %s: the store did not answer", token),
+			} {
+				if !strings.Contains(note, want) {
+					t.Errorf("the answer says %q, want %q in it", note, want)
+				}
+			}
+			if !strings.HasSuffix(note, wantSuspendedClaimStarts) {
+				t.Errorf("the answer says %q, want it to end %q", note, wantSuspendedClaimStarts)
+			}
+			m, _ := h.supervisor.Machine(token)
+			if c := m.Claim(); c.State != supervise.StateSuspended || c.Session != "" {
+				t.Errorf("the machine holds the claim %s recording session %q, want it suspended with the session forgotten and the write owed",
+					c.State, c.Session)
+			}
+			if after := h.stored(token); after.State != supervise.StateSuspended || after.Session != "ses_implementer" {
+				t.Errorf("the stored claim is %s recording session %q, want the suspension written and the forget not",
+					after.State, after.Session)
+			}
+		})
+		t.Run(door.name+": the launch the store would not write", func(t *testing.T) {
+			h := compactHarness(t, nil)
+			writes := failingClaimWrites(h)
+			token := workingAfterTheRelaunchWasRefused(t, h, aDeath())
+			launchesAnswerAgain(t, h)
+			h.runtime.ScriptProbe(fake.ProbeResult{Kind: runtime.Gone})
+			writes.refusing(func(c supervise.Claim) bool { return c.State == supervise.StateLaunching })
+
+			recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer)
+
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("the fresh session whose launch was not written = %d, want the 200 of a claim that was stopped; body %s",
+					recorder.Code, recorder.Body)
+			}
+			note := freshSessionNote(t, recorder)
+			for _, want := range []string{
+				string(token) + " was stopped for a fresh session, and the start of it in a new session was refused: ",
+				fmt.Sprintf("write the claim %s: the store did not answer", token),
+			} {
+				if !strings.Contains(note, want) {
+					t.Errorf("the answer says %q, want %q in it", note, want)
+				}
+			}
+			if want := ". It is launching now; `read_state` (`legion claims list`) shows its state"; !strings.HasSuffix(note, want) {
+				t.Errorf("the answer says %q, want it to end %q", note, want)
+			}
+			if strings.Contains(note, "asked again") {
+				t.Errorf("the answer says %q, want no word sending the caller back for a claim that starts by itself", note)
+			}
+			m, _ := h.supervisor.Machine(token)
+			if c := m.Claim(); c.State != supervise.StateLaunching || c.Session != "" {
+				t.Errorf("the machine holds the claim %s recording session %q, want it launching in no session, its launch tried again",
+					c.State, c.Session)
+			}
+			if after := h.stored(token); after.State != supervise.StateSuspended || after.Session != "" {
+				t.Errorf("the stored claim is %s recording session %q, want the suspension and the forget written and the launch not",
+					after.State, after.Session)
+			}
+		})
+		t.Run(door.name+": the live process the read finds instead", func(t *testing.T) {
+			h := compactHarness(t, nil)
+			token := workingAfterTheRelaunchWasRefused(t, h, aDeath())
+			h.runtime.ScriptProbe(fake.ProbeResult{Kind: runtime.Alive})
+			reads := processReads(h)
 
 			recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer)
 
 			wantFreshSessionRefusal(t, recorder, http.StatusConflict, claimInATurn,
 				inATurnRefusal(token, "a fresh session would cut that turn off", wantFreshSessionReaches))
+			if got := processReads(h) - reads; got != 1 {
+				t.Errorf("the request read the claim's process %d times, want the one read its answer turns on", got)
+			}
 			if after := h.stored(token); after.State != supervise.StateWorking || after.Session != "ses_implementer" {
 				t.Errorf("the refused claim is %s recording session %q, want the working claim the refusal left on the session it had",
 					after.State, after.Session)
+			}
+		})
+	}
+}
+
+// The controller's door writes one Info line for a fresh session that answered 200, and the
+// line says what the request did: the claim started again in a new session, or stopped by this
+// request and not started, which is the 200 a refused start answers with (api's
+// notStartedAgain). A line that said "started" for the second would tell a reader of the log
+// that a worker is running when the request left it suspended. Both lines name the claim, the
+// issue and role the controller named it by, and the sentence the answer carries.
+//
+// The two rows are the same request over the same dead process and differ in the start alone:
+// the lifecycle recheck answering, and the recheck the store would not answer
+// (refusingCheckLaunchStore). Each finds its own line and not the other's.
+func TestTheControllersFreshSessionLogsWhetherItStartedTheClaimAgain(t *testing.T) {
+	const (
+		startedLine = "api: the controller started a claim in a fresh session"
+		stoppedLine = "api: the controller's fresh session stopped a claim and did not start it again"
+	)
+	for _, row := range []struct {
+		name          string
+		startAnswers  bool
+		want, notWant string
+	}{
+		{"the start ran", true, startedLine, stoppedLine},
+		{"the start the store would not answer", false, stoppedLine, startedLine},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			var logged bytes.Buffer
+			h := compactHarnessLogging(t, nil, slog.New(slog.NewJSONHandler(&logged, nil)))
+			token := workingAfterTheRelaunchWasRefused(t, h, aDeath())
+			if row.startAnswers {
+				launchesAnswerAgain(t, h)
+			}
+			h.runtime.ScriptProbe(fake.ProbeResult{Kind: runtime.Gone})
+
+			recorder := h.request(http.MethodPost, "/legion/v1/claims/fresh-session",
+				ClaimRequest{GrantID: controllerGrant(t, h).GrantID, Issue: "LEGION-209", Role: string(claim.RoleImplementer)}, nil)
+
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("the controller's fresh session = %d, want 200; body %s", recorder.Code, recorder.Body)
+			}
+			note := freshSessionNote(t, recorder)
+			if started := h.stored(token).State != supervise.StateSuspended; started != row.startAnswers {
+				t.Fatalf("the claim is stored %s, want it started again %v", h.stored(token).State, row.startAnswers)
+			}
+			var found int
+			for _, line := range strings.Split(strings.TrimSpace(logged.String()), "\n") {
+				var entry map[string]any
+				if err := json.Unmarshal([]byte(line), &entry); err != nil {
+					t.Fatalf("the log line %q is not JSON: %v", line, err)
+				}
+				switch entry["msg"] {
+				case row.notWant:
+					t.Errorf("the log says %q, want no such line for this request: %s", row.notWant, line)
+				case row.want:
+					found++
+					if entry["level"] != "INFO" || entry["claim"] != string(token) || entry["issue"] != "LEGION-209" ||
+						entry["role"] != string(claim.RoleImplementer) || entry["phaseNotRestarted"] != note {
+						t.Errorf("the line %s does not name the claim %s, issue LEGION-209, role %s and the answer's sentence %q at INFO",
+							line, token, claim.RoleImplementer, note)
+					}
+				}
+			}
+			if found != 1 {
+				t.Errorf("the log carries %d lines %q, want one; log:\n%s", found, row.want, logged.String())
+			}
+		})
+	}
+}
+
+// routeServer is the server the recoveries run on, built bare so a row can call one of its
+// steps with a view of its own choosing: the races below are a view taken, then the claim
+// moving, then the step, and no request through the routes can hold that order still.
+func routeServer(h *harness) *server {
+	return &server{
+		log:        slog.Default(),
+		supervisor: h.supervisor,
+		project:    testProject,
+		stopping:   context.Background(),
+		drained:    context.Background(),
+		decisions:  NewRouteDecisions(),
+	}
+}
+
+// A launch the wake pacing parks can be raised between the route's view of the claim and the
+// machine's lock, and both steps that meet such a claim there answer it as the parked relaunch
+// it is (api's refuseParkedRelaunch, claimUnsettled), never as a claim in a turn.
+//
+//   - The read (refuseWorkingClaim): the view was taken of a claim in a turn, and the sweep's
+//     death of its process parked the relaunch before the read; the machine asks nothing of a
+//     process a parked launch replaces and says so under its lock
+//     (supervise.ProcessReplacedByLaunch), which the step answers as the park, with no second
+//     view of the machine. Both doors make this read, so both are asked.
+//   - The suspension (suspendForFreshSession): the read found the process gone, and the same
+//     death parked the relaunch before the suspension arrived; the machine leaves that claim to
+//     the launch and refuses the suspension, which may not be held, and the read the step makes
+//     again after that refusal meets the park first (refuseWorkingClaim).
+//
+// Neither changes the claim: it stays working under the launch the pacing holds. The negative
+// control is the step's own default put back, which answers both CLAIM_IN_A_TURN.
+func TestARecoveryStepThatMeetsAParkRaisedAfterItsViewNamesTheLaunchInFlight(t *testing.T) {
+	for _, door := range []struct {
+		name    string
+		op      controllerOp
+		reaches string
+	}{
+		{"the fresh session", freshSessionOp, wantFreshSessionReaches},
+		{"the compaction", compactOp, wantCompactionReaches},
+	} {
+		t.Run("the read: "+door.name, func(t *testing.T) {
+			h := compactHarness(t, nil)
+			var park atomic.Bool
+			h.supervisor.deps.WakePace = supervise.WakePace{Rate: 1, Burst: 1, Reserve: func(now time.Time) time.Time {
+				if park.Load() {
+					return now.Add(time.Hour)
+				}
+				return now
+			}}
+			token := readyImplementer(t, h)
+			m, _ := h.supervisor.Machine(token)
+			if err := m.Handle(h.ctx, supervise.StreamTurnStart{Claim: token}); err != nil {
+				t.Fatalf("start %s's turn: %v", token, err)
+			}
+			before := m.View()
+			if before.State != supervise.StateWorking || before.WakeWaiting != nil {
+				t.Fatalf("the view is of a claim %s with wake %+v, want one in a turn with nothing parked", before.State, before.WakeWaiting)
+			}
+			park.Store(true)
+			if err := m.Handle(h.ctx, supervise.RuntimeObservation{Observation: runtime.Observation{
+				Locator: *before.Locator, Kind: runtime.Gone, At: stillClock{}.Now(),
+			}}); err != nil {
+				t.Fatalf("post the death of %s's process: %v", token, err)
+			}
+			if now := m.View(); now.State != supervise.StateWorking || !relaunchWaits(now) {
+				t.Fatalf("the claim is %s with wake %+v, want it working under the relaunch the pacing parked", now.State, now.WakeWaiting)
+			}
+			reads := processReads(h)
+			recorder := httptest.NewRecorder()
+
+			answered := routeServer(h).refuseWorkingClaim(recorder, httptest.NewRequest(http.MethodPost, "/", nil), m, token, before, door.op)
+
+			if !answered {
+				t.Fatal("the read answered nothing, want the refusal of the parked relaunch")
+			}
+			wantFreshSessionRefusal(t, recorder, http.StatusConflict, claimUnsettled, parkedRelaunchRefusal(token, door.reaches))
+			if got := processReads(h) - reads; got != 0 {
+				t.Errorf("the runtime was asked %d times, want nothing asked of a process a parked launch replaces", got)
+			}
+			if now := m.View(); now.State != supervise.StateWorking || !relaunchWaits(now) {
+				t.Errorf("the claim is %s with wake %+v, want it left working under the parked relaunch", now.State, now.WakeWaiting)
+			}
+		})
+	}
+	t.Run("the suspension", func(t *testing.T) {
+		h := compactHarness(t, nil)
+		token := workingUnderAParkedRelaunch(t, h, runtime.Observation{Kind: runtime.Gone})
+		m, _ := h.supervisor.Machine(token)
+		recorder := httptest.NewRecorder()
+
+		suspended := routeServer(h).suspendForFreshSession(recorder, httptest.NewRequest(http.MethodPost, "/", nil), m, token)
+
+		if suspended {
+			t.Fatal("the suspension landed, want it refused for the parked relaunch")
+		}
+		wantFreshSessionRefusal(t, recorder, http.StatusConflict, claimUnsettled, parkedRelaunchRefusal(token, wantFreshSessionReaches))
+		if now := m.View(); now.State != supervise.StateWorking || !relaunchWaits(now) || now.SuspensionHeld {
+			t.Errorf("the claim is %s with wake %+v and a suspension held %v, want it left working under the parked relaunch with nothing held",
+				now.State, now.WakeWaiting, now.SuspensionHeld)
+		}
+	})
+}
+
+// A fresh session whose suspension the machine refuses because it found the claim working — a
+// turn started, or the claim otherwise moved, between the route's view and the machine's lock
+// — is not answered from that refusal, which says the state and nothing of the process. The
+// step reads the claim's process again and answers what that second read finds (api's
+// suspendForFreshSession, refuseWorkingClaim): the turn's refusal for a process running, the
+// refusal of an unanswered read for a runtime that would not say, and, for a process found
+// gone once more, the refusal of a claim that moved under the request, since the machine
+// lands the suspension of a claim over a dead process and so was not looking at one. None of
+// them changes the stored claim, and each makes exactly the one read its answer turns on.
+//
+// The view the route read is of a ready claim and the turn starts before the step, which is the
+// order the gap gives (TestAFreshSessionRefusedForATurnThatStartedUnderItHoldsNoSuspension
+// drives the same gap through the doors, where it reads only the running process). The
+// negative control is the refusal answered from the machine's refusal alone, which made no read
+// and answered CLAIM_IN_A_TURN in every row.
+func TestAFreshSessionsSuspensionRefusedAsWorkingIsAnsweredByASecondRead(t *testing.T) {
+	for _, row := range []struct {
+		name    string
+		probe   fake.ProbeResult
+		code    string
+		message func(claim.Token) string
+	}{
+		{"a process that is alive", fake.ProbeResult{Kind: runtime.Alive}, claimInATurn, func(token claim.Token) string {
+			return inATurnRefusal(token, "a fresh session would cut that turn off", wantFreshSessionReaches)
+		}},
+		{"a verdict of uncertain", fake.ProbeResult{Kind: runtime.Uncertain}, claimUnsettled, func(token claim.Token) string {
+			return unreadableProcessRefusal(token, wantFreshSessionReaches)
+		}},
+		{"a runtime that would not answer", fake.ProbeResult{Err: errors.New("the runtime did not answer")}, claimUnsettled, func(token claim.Token) string {
+			return unreadableProcessRefusal(token, wantFreshSessionReaches)
+		}},
+		{"a process that is gone", fake.ProbeResult{Kind: runtime.Gone}, claimUnsettled, func(token claim.Token) string {
+			return movedClaimRefusal(token, wantFreshSessionReaches)
+		}},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			h := compactHarness(t, nil)
+			token := readyImplementer(t, h)
+			m, _ := h.supervisor.Machine(token)
+			if err := m.Handle(h.ctx, supervise.StreamTurnStart{Claim: token}); err != nil {
+				t.Fatalf("start %s's turn: %v", token, err)
+			}
+			if view := m.View(); view.State != supervise.StateWorking || view.WakeWaiting != nil || view.Compacting {
+				t.Fatalf("the claim is %s with wake %+v and compacting %v, want it in a turn with nothing parked over it",
+					view.State, view.WakeWaiting, view.Compacting)
+			}
+			h.runtime.ScriptProbe(row.probe)
+			reads := processReads(h)
+			before := h.stored(token)
+			recorder := httptest.NewRecorder()
+
+			suspended := routeServer(h).suspendForFreshSession(recorder, httptest.NewRequest(http.MethodPost, "/", nil), m, token)
+
+			if suspended {
+				t.Fatal("the suspension landed, want it refused for the claim in a turn")
+			}
+			wantFreshSessionRefusal(t, recorder, http.StatusConflict, row.code, row.message(token))
+			if got := processReads(h) - reads; got != 1 {
+				t.Errorf("the step read the claim's process %d times, want the one read made again after the refusal", got)
+			}
+			if view := m.View(); view.State != supervise.StateWorking || view.SuspensionHeld {
+				t.Errorf("the claim is %s with a suspension held %v, want it left working with nothing held", view.State, view.SuspensionHeld)
+			}
+			if after := h.stored(token); !reflect.DeepEqual(after, before) {
+				t.Errorf("the refused claim is stored as %+v, want the claim the step found, untouched: %+v", after, before)
+			}
+		})
+	}
+}
+
+// A claim stored working that records no process has nothing for the runtime to be asked about,
+// so nothing says whether a turn of it is running, and both doors refuse it as an unanswered
+// read is refused: the code of a claim with no state the daemon can act on, the read that was
+// not made named, and nothing of the claim changed (api's refuseUnrecordedProcess,
+// supervise.ProcessNotRecorded). No fixture a door is driven through leaves such a claim —
+// every launch records the process it starts, and every step that lets a process go moves the
+// claim out of working (supervise's letGo) — so the shared step is called directly, with the
+// view of a claim stored working handed to it over a machine whose claim records no process,
+// as the park raised after the view is above.
+func TestARecoveryStepRefusesAWorkingClaimThatRecordsNoProcessAsUnsettled(t *testing.T) {
+	for _, door := range []struct {
+		name    string
+		op      controllerOp
+		reaches string
+	}{
+		{"the fresh session", freshSessionOp, wantFreshSessionReaches},
+		{"the compaction", compactOp, wantCompactionReaches},
+	} {
+		t.Run(door.name, func(t *testing.T) {
+			h := compactHarness(t, nil)
+			token := suspendedImplementer(t, h, supervise.SuspendedByDaemon)
+			m, _ := h.supervisor.Machine(token)
+			view := m.View()
+			if view.Locator != nil {
+				t.Fatalf("the suspended claim records %+v, want no process", *view.Locator)
+			}
+			view.State = supervise.StateWorking
+			reads := processReads(h)
+			before := h.stored(token)
+			recorder := httptest.NewRecorder()
+
+			answered := routeServer(h).refuseWorkingClaim(recorder, httptest.NewRequest(http.MethodPost, "/", nil), m, token, view, door.op)
+
+			if !answered {
+				t.Fatal("the read answered nothing, want the refusal of a claim that records no process")
+			}
+			wantFreshSessionRefusal(t, recorder, http.StatusConflict, claimUnsettled, unrecordedProcessRefusal(token, door.reaches))
+			if got := processReads(h) - reads; got != 0 {
+				t.Errorf("the runtime was asked %d times, want nothing asked of a claim that records no process", got)
+			}
+			if after := h.stored(token); !reflect.DeepEqual(after, before) {
+				t.Errorf("the refused claim is stored as %+v, want the claim the step found, untouched: %+v", after, before)
+			}
+		})
+	}
+}
+
+// A claim the machine refused as working whose view, read after that refusal, no longer shows it
+// working — its turn ended, or another request suspended it — moved under the request, and each
+// door says so with nothing of the claim changed and no process read (refuseMovedClaim): the
+// fresh session after its suspension was refused (refuseSuspensionRefusedAsWorking), and the
+// compaction after the compaction was refused (refuseState). Every answer of the shared read says
+// the claim "is stored working", which such a claim no longer is. Nothing runs between the
+// machine's refusal and that view in a test, so each step is called directly with the refused
+// state and the view of a claim that is not working, as the claim that records no process is
+// above.
+//
+// The negative control is each arm replaced with refuseInATurn, which answers CLAIM_IN_A_TURN
+// for a claim with no turn.
+func TestARecoveryRefusedAsWorkingWhoseLaterViewIsNotWorkingAnswersThatTheClaimMoved(t *testing.T) {
+	for _, door := range []struct {
+		name    string
+		reaches string
+		refuse  func(s *server, w http.ResponseWriter, r *http.Request, m *supervise.Machine, token claim.Token, view supervise.ClaimView)
+	}{
+		{"the fresh session", wantFreshSessionReaches, func(s *server, w http.ResponseWriter, r *http.Request, m *supervise.Machine, token claim.Token, view supervise.ClaimView) {
+			s.refuseSuspensionRefusedAsWorking(w, r, m, token, view)
+		}},
+		{"the compaction", wantCompactionReaches, func(s *server, w http.ResponseWriter, r *http.Request, m *supervise.Machine, token claim.Token, view supervise.ClaimView) {
+			s.refuseState(w, r, m, token, supervise.StateWorking, view)
+		}},
+	} {
+		t.Run(door.name, func(t *testing.T) {
+			h := compactHarness(t, nil)
+			token := readyImplementer(t, h)
+			m, _ := h.supervisor.Machine(token)
+			view := m.View()
+			if view.State == supervise.StateWorking || view.SuspensionHeld || view.Compacting {
+				t.Fatalf("the claim is %s with a suspension held %v and compacting %v, want it out of working with nothing held",
+					view.State, view.SuspensionHeld, view.Compacting)
+			}
+			reads := processReads(h)
+			before := h.stored(token)
+			recorder := httptest.NewRecorder()
+
+			door.refuse(routeServer(h), recorder, httptest.NewRequest(http.MethodPost, "/", nil), m, token, view)
+
+			wantFreshSessionRefusal(t, recorder, http.StatusConflict, claimUnsettled, movedClaimRefusal(token, door.reaches))
+			if got := processReads(h) - reads; got != 0 {
+				t.Errorf("the runtime was asked %d times, want nothing asked of a claim that is not working", got)
+			}
+			if after := h.stored(token); !reflect.DeepEqual(after, before) {
+				t.Errorf("the refused claim is stored as %+v, want the claim the step found, untouched: %+v", after, before)
 			}
 		})
 	}

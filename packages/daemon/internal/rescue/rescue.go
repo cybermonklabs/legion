@@ -1,92 +1,31 @@
-// Package rescue finds the work an issue pod's workspaces hold that their remote lacks, and pushes
-// it to rescue branches on that remote, before the daemon replaces the pod. The pod's disk is the
-// pod's own and goes with it (docs/kubernetes.md, "The disk dies with its pod"), so this is the
-// last place that work can be read from.
+// Package rescue finds the issue's own work that an issue pod's workspaces hold and their remote
+// lacks, and pushes it to the issue's one rescue branch on that remote, before the daemon replaces
+// the pod. The pod's disk is the pod's own and goes with it (docs/kubernetes.md, "The disk dies
+// with its pod"), so this is the last place that work can be read from.
 //
 // It runs inside the pod, in a role's shim (`rescue-unpushed`, shim.rescue), as that role and with
 // that role's own GitHub credential: the shared clone's credential helper answers git from the
-// role's gh files, so the daemon handles no secret of its own for it. It writes no file of a
-// workspace's own tree: no file a role wrote is changed, moved or deleted by it. What it writes
-// is git objects, the branches it pushes to the remote with the remote-tracking ref git writes
-// in the clone for each of them (refs/remotes/origin/<branch>), and, in a worktree jj holds,
-// jj's own snapshot of that worktree, which is the read that finds the files no commit holds
-// (edits).
-//
-// What that snapshot writes was measured in an issue pod on 2026-11-12 and 2026-11-13, on jj
-// 0.45.1-sami.20260910 and git 2.47.3. A snapshot of a quiescent colocated worktree whose files
-// changed since jj's last snapshot writes four things: one jj operation, a new working-copy
-// commit, the colocated git index, and one refs/jj/keep/<commit> ref in the shared clone; one
-// whose files did not prints `No snapshot needed.` and writes nothing. Where the worktree's git
-// HEAD had moved behind jj's back, the snapshot prints `Reset the working copy parent to the new
-// Git HEAD.` and writes three such refs: the new working-copy commit, the git HEAD it imported,
-// and the empty commit it makes on that HEAD. Where another git ref moved behind jj's back while
-// HEAD did not, a branch moved or made with plain git or a remote-tracking ref, this check's own
-// earlier rescue push among them, it prints `Done importing changes from the underlying Git
-// repo.` and writes one more jj operation, `import git refs`, before its own. Where a bookmark
-// points at the working-copy commit, the snapshot moves that bookmark and exports it to
-// refs/heads/<name> in the shared clone. No configuration stops that export, and the move is the
-// move any jj command of any role makes in that same workspace. The worktree's git HEAD is
-// unchanged in each case, and so is every other refs/heads/<name>. The shared clone, which holds
-// those refs, is on the pod's own disk, and that disk goes with the pod when the pod is replaced.
-// When this check refuses the replacement, which is the case it exists for, the pod and its disk
-// stay, and so do these writes: the overwritten colocated index, an exported bookmark and the
-// refs/jj/keep refs, each a write the role's own next jj command in that workspace would make too.
-//
-// The snapshot writes the colocated git index, so a role's own staged git index in that
-// workspace can be overwritten. What the tree this check pushes holds is not changed by that:
-// the check copies that index before the snapshot, and the carry into jj's tree reads the copy
-// (snapshotTree, carried). The copy is the very input the `git add --all` read starts from, in
-// each of indexTree's three cases: the worktree's index file where HEAD names a commit, HEAD's
-// tree where that file is missing, and the empty index where HEAD is unborn. The carry takes that
-// read's input and its rule: the copy and the worktree, read through git's own commands, over a
-// base of jj's tree, which is read twice, once for its paths and gitlinks (`ls-tree`) and once
-// into the scratch index (`read-tree`). From the copy come its records jj's tree lacks and its
-// flagged records (the tracked set, seeds), and a record whose path is now a directory takes
-// git's own update rule there (`add -u`) and git's answer for what that directory would be
-// without its record; from git's own `ls-files --others --exclude-standard` over the copy, the
-// one read of the whole worktree this route makes, which walks directories and hashes no file,
-// come the untracked set and the embedded repositories; and each gitlink of jj's tree is written
-// again from what git sees at its path (unlinked), but for one the copy flags or stages at
-// another commit, which is kept as the copy records it. git's content conversion, eol rules,
-// core.autocrlf, a clean filter and core.fileMode, has no read of its own: it applies to every
-// file the carry adds, and jj's tree does not pass through it. Where that read fails, the route
-// fails the workspace and never drops the path. Two of its failures need a read of their own,
-// each bounded by the paths involved: a tracked file the worktree holds unreadable, found by one
-// walk that opens no file, one access(2) per record, and passed over only where git's own stat
-// comparison against the copy says git would not open it (unreadable); and a tracked file whose
-// attributes or configuration can make git's add fail on it unchanged (a required clean filter,
-// working-tree-encoding, text or eol conversion under core.safecrlf), which the carry re-reads
-// through git's own add, so that a failure there fails the workspace and a hidden edit there is
-// carried. Where the route keeps less than that read, the case is carried when carrying is bounded
-// by the paths involved, and named when carrying would cost the whole-worktree hash this route
-// removes, or when that read gets it wrong too. Named: the content loss of a same-size rewrite
-// jj's stat rule passes over (its mtime set back on purpose, or both writes inside one
-// millisecond) of a file jj's last snapshot recorded as unchanged, one whose record in the index
-// copy equals its entry in jj's tree; the same rewrite of a file the role had already edited is
-// carried; and a change of form, where git's content conversion would store otherwise a file
-// whose record in the index copy equals its entry in jj's tree, which the route keeps as HEAD
-// holds it. The route keeps one shape that read loses: an ignored file jj tracks that the index
-// the read starts from lacks (carried says each). A differential test compares the two trees in
-// both directions over every shape found so far and over a generated matrix of index and
-// worktree states, each difference declared by the row or cell that needs it under the word for
-// its kind (differential_test.go, matrix_test.go).
+// role's gh files, so the daemon handles no secret of its own for it. It changes nothing in a
+// workspace: no file, no index and no jj operation. In the clone it writes git objects, which
+// change nothing anyone reads: the commits it makes, and the rescue branch's tip when it fetches
+// that tip, which writes no ref. The one ref of the clone that changes is the remote-tracking ref
+// of the rescue branch, which its push updates, as every push does.
 package rescue
 
 import (
 	"bufio"
 	"bytes"
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
-	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -95,8 +34,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
-
-	"golang.org/x/sys/unix"
 )
 
 // The statuses a workspace's check ends in, the runtime's own words for them.
@@ -106,43 +43,30 @@ const (
 	Failed  = runtime.RescueFailed
 )
 
-// ownHeads is the jj revset of the work on a workspace's own line, reduced to its heads: the
-// ancestors of its working-copy commit and of the bookmarks its issue owns (ownedBookmarks), less
-// every empty commit with no description. It is the first of the two sources of a workspace's own
-// work; the second is what was made in the pod: every visible head and every local git branch
-// that no commit the clone held when it was made contains (visibleWorkHeads, madeInThePod). That
-// is what holds a role's side line and the merge it left when its working copy moved back. Whether
-// origin holds a head is git's question, asked of what the remote advertises now (unpushed), so
-// nothing here subtracts what jj last saw remote.
+// ownLine is the jj revset of a workspace's own line: the ancestors of its working-copy commit and
+// of its issue's bookmark, `legion/<KEY>`.
+func ownLine(bookmark string) string {
+	return `::(@ | bookmarks(exact:` + jjString(bookmark) + `))`
+}
+
+// ownHeads is the work on a workspace's own line (ownLine), reduced to its heads, less every empty
+// commit with no description. Whether origin holds a head is git's question, asked of what the
+// remote advertises now (unpushed), so nothing here subtracts what jj last saw remote.
 //
-// Neither source is the whole clone. A pod's shared clone keeps every commit it ever fetched
-// visible (workspace-init sets git.abandon-unreachable-commits false), so jj's visible heads hold
-// old merges, other trees' handoffs and the pre-rebase copies of rewritten branches, which origin
-// deleted or rewrote and no role of the pod wrote: rescuing them pushed one branch for each, and
-// the pod's own work was one of sixteen.
+// Nothing else jj can see is the workspace's work. A pod's shared clone keeps every commit it ever
+// fetched visible (workspace-init sets git.abandon-unreachable-commits false), so jj's visible
+// heads hold old merges, other trees' handoffs and the pre-rebase copies of rewritten branches,
+// which origin deleted or rewrote and no role of the pod wrote: rescuing them pushed one branch for
+// each, and the pod's own work was one of sixteen. A side line that a role left off its own line
+// is not taken either. The worker's own push before it answers a round is what keeps such work.
 //
 // An empty commit with no description — jj's working-copy commit before anything is written —
 // holds no work, and dropping it makes the commit under it a head. An empty commit with a
 // description is kept: an empty merge of two pushed commits is the one record of that merge, as it
 // is when a worker merges, leaves the issue's bookmark behind and its push says "Nothing changed".
 // refs/jj/keep is not read: it holds the obsolete predecessor of every rewritten commit.
-func ownHeads(bookmarks []string) string {
-	own := "@"
-	for _, b := range bookmarks {
-		own += ` | bookmarks(exact:` + jjString(b) + `)`
-	}
-	return `heads(::(` + own + `) ~ (empty() & description(exact:"")))`
-}
-
-// ownedBookmarks is the bookmarks the issue a workspace's directory names owns: its branch,
-// `legion/<KEY>`, read back from the directory's name (workspace.Location lays it out as the issue
-// key in lowercase). A directory whose name is no issue key owns none.
-func ownedBookmarks(dir string) []string {
-	issue := strings.ToUpper(filepath.Base(dir))
-	if !claim.IsIssueKey(issue) {
-		return nil
-	}
-	return []string{claim.IssueBranch(issue)}
+func ownHeads(bookmark string) string {
+	return `heads(` + ownLine(bookmark) + ` ~ (empty() & description(exact:"")))`
 }
 
 // jjString is name as a jj string literal: quoted, with `\` and `"` escaped, so a bookmark name is
@@ -151,48 +75,10 @@ func jjString(name string) string {
 	return `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(name) + `"`
 }
 
-// visibleWorkHeads is every head jj can see that holds something: with the clone's local git
-// branches, what madeInThePod reduces to the work the pod made.
-const visibleWorkHeads = `heads((::visible_heads()) ~ (empty() & description(exact:"")))`
-
-// madeInThePod is the commits of made that the clone at clone did not hold when it was made: none
-// of the commits provisioning recorded then (workspace.RecordHeld, read back with workspace.Held)
-// contains them. That record is the one thing that tells a commit the pod made from one it came
-// with, whatever the commit says of itself: its committer time is what git or jj was told
-// (`git rebase` and `git am` with --committer-date-is-author-date keep the author's,
-// GIT_COMMITTER_DATE and JJ_TIMESTAMP set any), a reflog expires and jj's export writes the same
-// entry for a bookmark it fetched as for one a role moved, and the clone's operation log can be
-// abandoned. Provisioning writes the record once, in the one place it creates the clone, so a
-// re-creation of a workspace in the live pod changes nothing of it.
-//
-// A commit someone else made, which the pod fetched while it ran and origin deleted since, is
-// among what this keeps, and is rescued: noise, and never a loss. A clone with no record, made
-// by an earlier release, or one whose record cannot be read, keeps every one of made, as the check
-// did before it read the record: noise too, and never a loss.
-func (r runner) madeInThePod(clone string, made []string) ([]string, error) {
-	recorded, ok, err := workspace.Held(clone)
-	if err != nil || !ok {
-		return made, nil
-	}
-	held, err := r.objects(clone, recorded, "commit")
-	if err != nil {
-		return nil, err
-	}
-	return r.unpushed(clone, made, held)
-}
-
 // gitPins is configuration every git this package starts reads last: no file-system monitor runs
 // and no replacement object (`git replace`, a graft among them) stands in for a commit, so a
 // commit grafted to have a role's work as its parent never makes that work look held, and the
 // push sends the commits as they are.
-//
-// `--literal-pathspecs` is for the paths this package hands git: every one of them is a name a
-// role wrote, read out of git's own NUL-separated answers, and never a pattern. Without it git
-// reads each as a pathspec, where a name beginning with `:` is magic for what follows it and a
-// name holding a glob character stands for every path it matches: measured on this build on
-// 2026-11-12, over a worktree holding a refused 2 MiB file named `:aa` beside a tracked `aa`,
-// `git add -f -- ':aa'` exited 0 with the index holding `aa` alone, and the same add with this
-// option put `:aa` in it.
 //
 // `core.hooksPath=/dev/null` turns hooks off for every command here but one: the push, in a pod.
 // There the git this package runs is the image's wrapper, which for a push alone puts
@@ -203,17 +89,30 @@ func (r runner) madeInThePod(clone string, made []string) ([]string, error) {
 // updates guardPush has already cleared. It is not turned off and cannot be: no process in a pod
 // may name a hooks path that outranks the wrapper's, which is what makes the hook a guard. What
 // the second run costs is time, and the budget holds both runs (GuardReserve).
-var gitPins = []string{"--no-replace-objects", "--literal-pathspecs", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false"}
+var gitPins = []string{"--no-replace-objects", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false"}
+
+// Target is the issue's one rescue branch, `legion/<KEY>-rescue`, which the check pushes each
+// workspace's own work to (Request.Target) and which only moves forward. It is no issue's branch
+// (claim.BranchIssue), so nothing the daemon keeps follows it.
+func Target(issue string) string {
+	return claim.IssueBranch(issue) + "-rescue"
+}
 
 // Request is one check of every workspace on a pod's disk.
 type Request struct {
 	// StateDir is the disk's root: workspaces under <StateDir>/workspaces/<owner>/<repo>/<issue>,
 	// and the shared clone each is a jj workspace of under <StateDir>/repos/github.com/<owner>/<repo>.
 	StateDir string
-	// Branch is the prefix of every rescue branch: the push of the n-th one is to <Branch>-<n>,
-	// with n the least number from 1 that names no branch the remote has and none this check has
-	// pushed already.
+	// Branch is the per-pod prefix an older shim numbers its branches from,
+	// `legion/<KEY>-rescue-<pod>`. The check reads it only when Target is empty, which is a request
+	// of an older daemon: it then pushes to that name itself, with no number, by the same
+	// forward-only rule. An older daemon lists whatever branch the check reports, so its message
+	// names the right branch.
 	Branch string
+	// Target is the issue's one rescue branch, `legion/<KEY>-rescue`, which the check pushes each
+	// workspace's own work to and which only moves forward. The daemon names it beside Branch
+	// (shimwire.RescueUnpushed), and an older daemon names none.
+	Target string
 	// WorkspaceTimeout bounds one workspace's check and push.
 	WorkspaceTimeout time.Duration
 	// Deadline bounds the whole check: a workspace not reached by then is an error, not a pass.
@@ -228,34 +127,46 @@ func StateDirOf(workspace string) string {
 	return filepath.Dir(filepath.Dir(filepath.Dir(filepath.Dir(filepath.Clean(workspace)))))
 }
 
+// RepositoryOf is the repository a workspace directory is of, `<owner>/<repo>`, read from its
+// path through workspace.LocationOf, the inverse of the <state>/workspaces/<owner>/<repo>/<issue>
+// layout workspace.Location puts a workspace in. A directory LocationOf refuses, one laid out
+// otherwise, stands for itself: RepositoryOf is dir.
+func RepositoryOf(dir string) string {
+	located, err := workspace.LocationOf(dir)
+	if err != nil {
+		return dir
+	}
+	return located.Repo.String()
+}
+
 // Report is a check's entries as the runtime boundary carries them (runtime.WorkspaceRescue).
 func Report(workspaces []shimwire.RescueWorkspace) []runtime.WorkspaceRescue {
 	report := make([]runtime.WorkspaceRescue, len(workspaces))
 	for i, w := range workspaces {
 		report[i] = runtime.WorkspaceRescue{Dir: w.Dir, Status: w.Status, Error: w.Error}
 		for _, b := range w.Branches {
-			report[i].Branches = append(report[i].Branches, runtime.RescuedBranch{Name: b.Name, Commit: b.Commit})
+			branch := runtime.RescuedBranch{Name: b.Name, Commit: b.Commit, Previous: b.Previous, Pushed: b.Pushed}
+			if len(b.Commits) > 0 {
+				branch.Commits = make([]runtime.RescuedCommit, len(b.Commits))
+				for j, c := range b.Commits {
+					branch.Commits[j] = runtime.RescuedCommit(c)
+				}
+			}
+			report[i].Branches = append(report[i].Branches, branch)
 		}
 	}
 	return report
 }
 
-// Run checks every workspace on the disk, in path order, and pushes what each holds that its remote
-// lacks. Every workspace gets one entry. A disk with no workspace yields none, which is no work to
-// lose.
+// Run checks every workspace on the disk, in path order, and pushes the issue's own work each
+// holds that its remote lacks. Every workspace gets one entry. A disk with no workspace yields
+// none, which is no work to lose.
 func Run(ctx context.Context, req Request) []shimwire.RescueWorkspace {
 	dirs, err := workspaces(req.StateDir)
 	if err != nil {
 		return []shimwire.RescueWorkspace{{Dir: req.StateDir, Status: Failed, Error: err.Error()}}
 	}
-	used := map[string]bool{}
 	results := make([]shimwire.RescueWorkspace, 0, len(dirs))
-	// seen is every worktree a check has taken already: each workspace is its own check's, and a
-	// further worktree of a clone (git worktree list) is taken by the first check of that clone.
-	seen := map[string]bool{}
-	for _, dir := range dirs {
-		seen[dir] = true
-	}
 	for _, dir := range dirs {
 		if !req.Deadline.IsZero() && !time.Now().Before(req.Deadline) {
 			results = append(results, shimwire.RescueWorkspace{Dir: dir, Status: Failed,
@@ -267,9 +178,9 @@ func Run(ctx context.Context, req Request) []shimwire.RescueWorkspace {
 			bound = min(bound, time.Until(req.Deadline))
 		}
 		one, cancel := context.WithTimeout(ctx, bound)
-		result := check(one, req, dir, used, seen)
+		result := check(one, req, dir)
 		if one.Err() != nil && result.Status == Failed {
-			result.Error = fmt.Sprintf("%s; the check ran out its %s", result.Error, bound.Round(time.Second))
+			result.Error = fmt.Sprintf("the check ran out its %s: %s", bound.Round(time.Second), result.Error)
 		}
 		cancel()
 		results = append(results, result)
@@ -278,7 +189,9 @@ func Run(ctx context.Context, req Request) []shimwire.RescueWorkspace {
 }
 
 // workspaces is every workspace directory on the disk: a real directory three levels below
-// workspaces/, never a symlink and never a file an agent left beside its workspace.
+// workspaces/, never a symlink, never a file an agent left beside its workspace, and never a
+// directory workspace.Remove renamed aside to delete (workspace.RemovingSuffix), whose removal
+// already let its work go.
 func workspaces(stateDir string) ([]string, error) {
 	if stateDir == "" || !filepath.IsAbs(stateDir) {
 		return nil, fmt.Errorf("the disk's root %q is not an absolute path", stateDir)
@@ -289,6 +202,9 @@ func workspaces(stateDir string) ([]string, error) {
 	}
 	var dirs []string
 	for _, match := range matches {
+		if strings.HasSuffix(match, workspace.RemovingSuffix) {
+			continue
+		}
 		if info, err := os.Lstat(match); err == nil && info.IsDir() {
 			dirs = append(dirs, match)
 		}
@@ -297,74 +213,63 @@ func workspaces(stateDir string) ([]string, error) {
 	return dirs, nil
 }
 
-// step is one step of a workspace's check, with the time that step started. Every failure of
-// check is reported through one, so the entry names the step that failed and how long that step
-// ran. Without the step a reader tells this check's own fault from the fault of the push it
-// makes (dispatch://INFRA-2718) only by reading the command text.
-type step struct {
-	what    string
-	started time.Time
-}
-
-// began is the step the check has reached, started now.
-func began(what string) step { return step{what: what, started: time.Now()} }
-
-// failed is err as a workspace's entry reports it: the step, how long that step ran, rounded to
-// the millisecond, and the error itself.
-func (s step) failed(err error) error {
-	return fmt.Errorf("%s failed after %s: %w", s.what, time.Since(s.started).Round(time.Millisecond), err)
-}
-
-// folded is two of a workspace's failures as the one text its entry carries, the earlier first.
-// Either may be nil. An entry is one field of a log line and one line of a notice, and
-// errors.Join would write a newline between the two, so they are joined with "; " here instead:
-// the step the first of them names is then still what a reader reads first (rescuetest.Step).
-func folded(earlier, later error) error {
-	switch {
-	case earlier == nil:
-		return later
-	case later == nil:
-		return earlier
+// pushBranch is the branch the check pushes dir's work to, and the issue whose workspace dir is:
+// Target, or Branch when Target is empty (Request). The branch must be that issue's:
+// `legion/<KEY>-rescue`, or a per-pod `legion/<KEY>-rescue-<pod>`. Any other branch is an error
+// that names both keys, and so is a directory whose name is no issue key. A rescue branch must
+// never hold the work of another issue. Provisioning lays out one workspace for each issue key
+// (workspace.Location), so such a directory is a fault to show, not a case to serve.
+func pushBranch(req Request, dir string) (branch, issue string, err error) {
+	branch = cmp.Or(req.Target, req.Branch)
+	owner := "no issue's"
+	if base, _, ok := strings.Cut(branch, "-rescue"); ok {
+		if key, ok := claim.BranchIssue(base); ok {
+			owner = "issue " + key + "'s"
+		}
 	}
-	return fmt.Errorf("%w; %w", earlier, later)
+	issue = strings.ToUpper(filepath.Base(dir))
+	if !claim.IsIssueKey(issue) {
+		return "", "", fmt.Errorf("the workspace directory %s names no issue key, and the rescue branch %q is %s: nothing of it is pushed", dir, branch, owner)
+	}
+	one := Target(issue)
+	if branch != one && (!strings.HasPrefix(branch, one+"-") || len(branch) == len(one)+1) {
+		return "", "", fmt.Errorf("the workspace %s is issue %s's, and the rescue branch %q is %s: its work is not pushed under the name of another issue", dir, issue, branch, owner)
+	}
+	return branch, issue, nil
 }
 
 // check is one workspace's check and push. The workspace's repository is the one its git names
 // (its common git directory), so a directory under workspaces/ that is no git worktree is an error
 // rather than a pass: whatever it holds, nothing can push it.
 //
+// The branch is the issue's (pushBranch), and the work is the issue's own: the heads of the
+// workspace's own line in jj (ownHeads), the issue's git branch, the workspace's git HEAD, and the
+// workspace's files that no commit holds, as one commit on that HEAD (edits). Nothing else on the
+// disk is pushed: no other local branch or bookmark, no visible head off that line, no tag, no
+// stash entry and no other worktree. A candidate that is jj's empty working-copy commit stands for
+// the commit under it (holdingWork).
+//
 // What the remote holds is read from the remote alone: a remote-tracking ref is only as fresh as
 // the pod's last fetch, so a commit of the workspace's own that only a stale one names — the
 // issue's branch since force-pushed or deleted on the remote — is a commit the remote may no
-// longer have, and is rescued.
+// longer have, and is pushed.
 //
-// The candidates are the work that is the workspace's own, and never a commit the clone held when
-// it was made. They come from two sources. The workspace's own line: the ancestors of its
-// working-copy commit and of its issue's bookmark (ownHeads, ownedBookmarks), and in git the
-// issue's branch, every local tag, every entry of the stash, and the HEAD of the workspace and of
-// every other worktree of the repository (git worktree list), each a worktree on the pod's disk;
-// the clone's own working tree is left out, which is no agent's workspace and, in a pod, no tree
-// at all. And what was made in the pod: every visible jj head and every local git branch that no
-// commit the clone held when it was made contains (madeInThePod), a side line a role left, a
-// merge it left behind when its working copy moved back, and a commit git made in the workspace's
-// detached HEAD that jj then moved away from among them. A candidate that is jj's empty
-// working-copy commit stands for the commit under it (holdingWork). Each worktree's files that no
-// commit holds become one commit on that worktree's HEAD.
+// The branch only moves forward. Its tip on the remote is held like every commit the remote
+// advertises, and when there is work to push and the clone lacks that tip, the tip is fetched
+// first (fetchTip), so work the branch holds already is not pushed again. What is left goes in
+// one rescue commit at the branch's new tip (rescueCommit), whose parents are the heads of that
+// work and the old tip when no head holds it, so the push needs no force.
 //
-// The report also names each rescue branch of this prefix the remote holds already: an earlier
-// check of the same pod pushed it, in a round whose replacement did not happen then, and the issue
-// must still be told of it once the pod goes.
-func check(ctx context.Context, req Request, dir string, used, seen map[string]bool) shimwire.RescueWorkspace {
+// With nothing left to push, the branch is still reported, as not pushed by this check, when the
+// clone holds its tip and it already holds commits of the workspace's own work that no other ref of
+// the remote holds (heldOnBranch). That is this same pod checked again, after an earlier check
+// pushed them in a round whose replacement did not happen then, or a new pod whose put-back
+// restored work that only the branch holds. A tip the clone lacks came from another pod, whose
+// replacement told the issue of it.
+func check(ctx context.Context, req Request, dir string) shimwire.RescueWorkspace {
 	result := shimwire.RescueWorkspace{Dir: dir}
-	// at is the step the check is in, and unread is what the walk of the worktrees below could
-	// not read. Every failure of this check is reported through fail, which writes both: the
-	// step that failed and, after it, what an earlier worktree left unread. Writing them here
-	// is what keeps the two together, since a call site that named only its own failure would
-	// drop the other half of the entry and no reader would learn of it.
-	at := began("the read of the workspace's own repository")
-	var unread error
 	fail := func(err error) shimwire.RescueWorkspace {
-		result.Status, result.Branches, result.Error = Failed, nil, folded(at.failed(err), unread).Error()
+		result.Status, result.Branches, result.Error = Failed, nil, err.Error()
 		return result
 	}
 	run := runner{ctx: ctx, env: req.Env}
@@ -376,118 +281,23 @@ func check(ctx context.Context, req Request, dir string, used, seen map[string]b
 	if filepath.Base(common) == ".git" {
 		clone = filepath.Dir(common)
 	}
+	branch, issue, err := pushBranch(req, dir)
+	if err != nil {
+		return fail(err)
+	}
+	own := claim.IssueBranch(issue)
 
-	at = began("the read of what the remote holds")
-	listed, err := run.git(clone, nil, "ls-remote", "origin")
+	remoteBranches, advertised, held, err := run.remote(clone)
 	if err != nil {
 		return fail(err)
 	}
-	remoteBranches := map[string]bool{}
-	var advertised []string
-	for line := range strings.Lines(listed) {
-		sha, ref, ok := strings.Cut(strings.TrimSpace(line), "\t")
-		if !ok {
-			continue
-		}
-		advertised = append(advertised, sha)
-		if branch, ok := strings.CutPrefix(ref, "refs/heads/"); ok {
-			remoteBranches[branch] = true
-			if strings.HasPrefix(branch, req.Branch+"-") {
-				result.Branches = append(result.Branches, shimwire.RescueBranch{Name: branch, Commit: sha})
-			}
-		}
-	}
-	held, err := run.objects(clone, advertised, "commit", "tag")
-	if err != nil {
-		return fail(err)
-	}
+	previous := remoteBranches[branch]
 
-	at = began("the reads that find the workspace's unpushed commits")
-	owned := ownedBookmarks(dir)
-	branches, err := run.git(clone, nil, "for-each-ref", "--format=%(objectname)", "refs/heads")
+	work, err := run.candidates(clone, dir, own)
 	if err != nil {
 		return fail(err)
 	}
-	made := fields(branches)
-	refs, err := run.git(clone, nil, "for-each-ref",
-		"--format=%(if)%(*objectname)%(then)%(*objectname)%(else)%(objectname)%(end)", "refs/tags")
-	if err != nil {
-		return fail(err)
-	}
-	candidates := fields(refs)
-	for _, b := range owned {
-		if commit, err := run.git(clone, nil, "rev-parse", "--verify", "--quiet", "refs/heads/"+b+"^{commit}"); err == nil {
-			candidates = append(candidates, commit)
-		}
-	}
-	if _, err := run.git(clone, nil, "rev-parse", "--verify", "--quiet", "refs/stash"); err == nil {
-		stash, err := run.git(clone, nil, "log", "--walk-reflogs", "--format=%H", "refs/stash")
-		if err != nil {
-			return fail(err)
-		}
-		candidates = append(candidates, fields(stash)...)
-	}
-	worktrees, err := run.worktrees(clone)
-	if err != nil {
-		return fail(err)
-	}
-	// The workspace itself, then every worktree of the repository no check has taken yet, with the
-	// clone's own working tree left out of the walk. That tree is no agent's workspace: every role
-	// of the issue works in a workspace of its own. A pod's shared clone holds no working tree
-	// at all — workspace.feedClone clones it with `git clone --no-checkout` and then clears its
-	// sparse patterns and abandons jj's first snapshot — while its git HEAD still names the
-	// default branch's commit and its index still names every file of it, so a walk that took it
-	// would have edits build the deletion of the whole tree (git's empty tree against that HEAD)
-	// and push it as a rescue branch. What the exclusion costs is the clone's own git HEAD as a
-	// candidate, which takes nothing an agent wrote: every local branch of the clone is a
-	// candidate already (for-each-ref refs/heads above), and everything jj can see is one through
-	// visibleWorkHeads. The clone's path is not marked seen, since seen records the worktrees a
-	// check took and no check takes this one: every check of this disk reads the same common git
-	// directory and leaves it out here, whichever workspace it is of.
-	cloneTree := filepath.Clean(clone)
-	mine := []string{dir}
-	for _, w := range worktrees {
-		if w == cloneTree || seen[w] {
-			continue
-		}
-		seen[w] = true
-		mine = append(mine, w)
-	}
-	heads := map[string]string{}
-	for _, w := range mine {
-		head, err := run.git(w, nil, "rev-parse", "--verify", "--quiet", "HEAD^{commit}")
-		if err != nil {
-			continue // an unborn HEAD: a worktree with no git-visible commit yet
-		}
-		heads[w] = head
-		candidates = append(candidates, head)
-	}
-	if heldByJJ(dir) {
-		jjHeadsOut, err := run.jj(dir, "log", "--no-graph", "-r", ownHeads(owned), "-T", `commit_id ++ "\n"`)
-		if err != nil {
-			return fail(err)
-		}
-		candidates = append(candidates, fields(jjHeadsOut)...)
-		visible, err := run.jj(dir, "log", "--no-graph", "-r", visibleWorkHeads, "-T", `commit_id ++ "\n"`)
-		if err != nil {
-			return fail(err)
-		}
-		made = append(made, fields(visible)...)
-	}
-	made, err = run.objects(clone, made, "commit")
-	if err != nil {
-		return fail(err)
-	}
-	made, err = run.holdingWork(clone, made)
-	if err != nil {
-		return fail(err)
-	}
-	made, err = run.madeInThePod(clone, made)
-	if err != nil {
-		return fail(err)
-	}
-	candidates = append(candidates, made...)
-	candidates, err = run.objects(clone, candidates, "commit")
+	candidates, err := run.objects(clone, work.commits, "commit")
 	if err != nil {
 		return fail(err)
 	}
@@ -495,128 +305,285 @@ func check(ctx context.Context, req Request, dir string, used, seen map[string]b
 	if err != nil {
 		return fail(err)
 	}
-
-	tips, err := run.unpushed(clone, candidates, held)
+	tips, held, err := run.unpushedWithTip(clone, branch, previous, candidates, advertised, held)
 	if err != nil {
 		return fail(err)
 	}
-	// The read of each worktree's files is the one step of this check whose cost follows the size
-	// of the worktree rather than its history, and a workspace's bound covers it (worktreeRead,
-	// which holds what that read costs and why). It is cut here with the guard's own run and the
-	// reserve it leaves the push still in hand (pushReserve), so a read that still cannot finish
-	// loses the files it was reading and not the commits this check has already found: those are
-	// pushed, and the entry fails naming the step that did not finish, which leaves the pod where
-	// it is for a person to read.
-	//
-	// The reduction of the tips below is reported as this step as well. It reads the commits the
-	// files of this step were added to, it runs before the push, and it is not the push.
-	at = began("the read of the files a worktree holds that no commit does")
-	// cut is a read the workspace's bound stopped, and it is the one failure that ends the walk:
-	// every worktree after it has no more of that bound than this one had. Every other failure —
-	// a stale working copy, a narrowed workspace, a path the snapshot left out that git could not
-	// carry — is kept in unread and the walk goes on to the next worktree, whose files the bound
-	// still has the time to read. The entry fails either way, and unread may hold more than one
-	// failure. Every failure that ends the check carries what unread holds with it (fail), so an
-	// earlier worktree's is still named in the entry.
-	cut := false
-	readRun := run
-	if deadline, ok := ctx.Deadline(); ok {
-		left := time.Until(deadline) - pushReserve
-		if left <= 0 {
-			unread = at.failed(fmt.Errorf("the files %s holds that no commit does could not be read: the workspace's bound had no time left for them", dir))
-			cut = true
-		} else {
-			bounded, cancel := context.WithTimeout(ctx, left)
-			defer cancel()
-			readRun.ctx = bounded
-		}
+	tips, err = run.independentTips(clone, tips, &work)
+	if err != nil {
+		return fail(err)
 	}
-	for _, w := range mine {
-		if cut {
-			break
-		}
-		edits, err := readRun.edits(w, heads[w])
-		if err != nil {
-			why := "could not be read"
-			if readRun.ctx.Err() != nil {
-				why, cut = "could not be read in the time the workspace's bound left for them", true
-			}
-			unread = folded(unread, at.failed(
-				fmt.Errorf("the files %s holds that no commit does %s, so they are not rescued: %w", w, why, err)))
-			continue
-		}
-		if edits == "" {
-			continue
-		}
-		tree, err := run.git(clone, nil, "rev-parse", edits+"^{tree}")
-		if err != nil {
+
+	if len(tips) == 0 {
+		result.Status = Clean
+		if result.Branches, err = run.heldOnBranch(clone, branch, previous, candidates, held); err != nil {
 			return fail(err)
 		}
-		same := false
+		if len(result.Branches) > 0 {
+			result.Status = Rescued
+		}
+		return result
+	}
+
+	workingCopy, err := run.workingCopy(clone, dir, &work)
+	if err != nil {
+		return fail(err)
+	}
+	local, err := run.localBookmarks(dir, own, &work)
+	if err != nil {
+		return fail(err)
+	}
+	bookmarks, err := run.bookmarks(clone, own, local, remoteBranches)
+	if err != nil {
+		return fail(err)
+	}
+	parents, err := run.parents(clone, tips, workingCopy, previous)
+	if err != nil {
+		return fail(err)
+	}
+	workingCopy, bookmarks, err = run.findable(clone, parents, held, workingCopy, bookmarks)
+	if err != nil {
+		return fail(err)
+	}
+	commit, err := run.rescueCommit(clone, dir, parents, workingCopy, bookmarks)
+	if err != nil {
+		return fail(err)
+	}
+	added, err := run.revList(clone, []string{commit}, held)
+	if err != nil {
+		return fail(err)
+	}
+	commits, err := run.subjects(clone, added)
+	if err != nil {
+		return fail(err)
+	}
+	pushed := shimwire.RescueBranch{Name: branch, Commit: commit, Previous: previous, Pushed: true, Commits: commits}
+	if err := guardPush(ctx, req, run, clone, pushed); err != nil {
+		return fail(err)
+	}
+	refspec := commit + ":refs/heads/" + branch
+	if _, err := run.git(clone, []string{"GIT_TERMINAL_PROMPT=0"}, "push", "--quiet", "origin", refspec); err != nil {
+		return fail(fmt.Errorf("push %s: %w", refspec, err))
+	}
+	result.Status, result.Branches = Rescued, []shimwire.RescueBranch{pushed}
+	return result
+}
+
+// remote is the remote's listing as it stands (`git ls-remote origin`): branches, the tip of each
+// branch by its name; advertised, every sha it names; and held, those of them the clone has as a
+// commit or a tag (objects).
+func (r runner) remote(clone string) (branches map[string]string, advertised, held []string, err error) {
+	listed, err := r.git(clone, nil, "ls-remote", "origin")
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	branches = map[string]string{}
+	for line := range strings.Lines(listed) {
+		sha, ref, ok := strings.Cut(strings.TrimSpace(line), "\t")
+		if !ok {
+			continue
+		}
+		advertised = append(advertised, sha)
+		if name, ok := strings.CutPrefix(ref, "refs/heads/"); ok {
+			branches[name] = sha
+		}
+	}
+	if held, err = r.objects(clone, advertised, "commit", "tag"); err != nil {
+		return nil, nil, nil, err
+	}
+	return branches, advertised, held, nil
+}
+
+// ownWork is the workspace's own work (check), as candidates reads it: the commits a rescue may
+// push, and those of them that workingCopy and localBookmarks read by what they are.
+type ownWork struct {
+	// commits is the candidates, in this order: the heads of the workspace's own line in jj
+	// (ownHeads), where it has jj; then ownBranch, head and edits, each where it is not "".
+	commits []string
+	// ownBranch is the issue's git branch, `legion/<KEY>`, where the clone has it; else "".
+	ownBranch string
+	// head is the workspace's git HEAD; "" where it is unborn.
+	head string
+	// edits is the workspace's files that no commit holds, as one commit on head (edits), where
+	// they differ from head's tree; else "". independentTips sets it to "" when it drops that
+	// commit.
+	edits string
+	// jj is whether the workspace has jj: a .jj directory of its own.
+	jj bool
+}
+
+// candidates is the workspace's own work (ownWork), as the clone and dir hold it now.
+func (r runner) candidates(clone, dir, own string) (ownWork, error) {
+	var work ownWork
+	info, err := os.Lstat(filepath.Join(dir, ".jj"))
+	work.jj = err == nil && info.IsDir()
+	if work.jj {
+		heads, err := r.jj(dir, "log", "--no-graph", "-r", ownHeads(own), "-T", `commit_id ++ "\n"`)
+		if err != nil {
+			return ownWork{}, err
+		}
+		work.commits = append(work.commits, fields(heads)...)
+	}
+	if work.ownBranch, err = r.git(clone, nil, "rev-parse", "--verify", "--quiet", "refs/heads/"+own+"^{commit}"); err != nil {
+		work.ownBranch = ""
+	} else {
+		work.commits = append(work.commits, work.ownBranch)
+	}
+	if work.head, err = r.git(dir, nil, "rev-parse", "--verify", "--quiet", "HEAD^{commit}"); err != nil {
+		work.head = "" // an unborn HEAD: a worktree with no git-visible commit yet
+	} else {
+		work.commits = append(work.commits, work.head)
+	}
+	if work.edits, err = r.edits(dir, work.head); err != nil {
+		return ownWork{}, err
+	}
+	if work.edits != "" {
+		work.commits = append(work.commits, work.edits)
+	}
+	return work, nil
+}
+
+// unpushedWithTip is tips, the candidates no held commit contains (unpushed), and held, the
+// advertised commits the clone holds, which is heldBefore unless the tip is fetched. When
+// heldBefore leaves work to push and the clone lacks previous, the rescue branch's tip on the
+// remote, the tip is fetched first (fetchTip) and both are read again with it held, so work the
+// branch holds already is not pushed again.
+func (r runner) unpushedWithTip(clone, branch, previous string, candidates, advertised, heldBefore []string) (tips, held []string, err error) {
+	if tips, err = r.unpushed(clone, candidates, heldBefore); err != nil {
+		return nil, nil, err
+	}
+	if len(tips) == 0 || previous == "" || slices.Contains(heldBefore, previous) {
+		return tips, heldBefore, nil
+	}
+	if err = r.fetchTip(clone, branch, previous); err != nil {
+		return nil, nil, err
+	}
+	if held, err = r.objects(clone, advertised, "commit", "tag"); err != nil {
+		return nil, nil, err
+	}
+	if tips, err = r.unpushed(clone, candidates, held); err != nil {
+		return nil, nil, err
+	}
+	return tips, held, nil
+}
+
+// independentTips is tips, the candidates the remote lacks, reduced to the heads a rescue commit
+// takes as its parents. An edits commit (work.edits) whose tree is another tip's holds nothing
+// that tip does not: the working copy's files are that commit's, as jj last snapshotted them. It
+// is dropped, as a tip and as the working-copy commit, so work.edits becomes "". Of more than one
+// tip left, `merge-base --independent` keeps those no other contains, sorted.
+func (r runner) independentTips(clone string, tips []string, work *ownWork) ([]string, error) {
+	if at := slices.Index(tips, work.edits); at >= 0 && len(tips) > 1 {
+		args := []string{"rev-parse"}
 		for _, tip := range tips {
-			if t, err := run.git(clone, nil, "rev-parse", tip+"^{tree}"); err == nil && t == tree {
-				same = true
+			args = append(args, tip+"^{tree}")
+		}
+		out, err := r.git(clone, nil, args...)
+		if err != nil {
+			return nil, err
+		}
+		trees := fields(out)
+		if len(trees) != len(tips) {
+			return nil, fmt.Errorf("git named %d trees for the %d tips %v", len(trees), len(tips), tips)
+		}
+		for i := range tips {
+			if i != at && trees[i] == trees[at] {
+				tips = slices.Delete(tips, at, at+1)
+				work.edits = ""
 				break
 			}
 		}
-		if !same {
-			tips = append(tips, edits)
-		}
 	}
 	if len(tips) > 1 {
-		independent, err := run.git(clone, nil, append([]string{"merge-base", "--independent"}, tips...)...)
+		independent, err := r.git(clone, nil, append([]string{"merge-base", "--independent"}, tips...)...)
 		if err != nil {
-			return fail(err)
+			return nil, err
 		}
 		tips = fields(independent)
 		slices.Sort(tips)
 	}
-	if len(tips) > 0 {
-		refspecs := make([]string, 0, len(tips))
-		var pushed []shimwire.RescueBranch
-		for _, tip := range tips {
-			name := ""
-			for n := 1; ; n++ {
-				name = req.Branch + "-" + strconv.Itoa(n)
-				if !remoteBranches[name] && !used[name] {
-					break
-				}
+	return tips, nil
+}
+
+// heldOnBranch is the report of a workspace with nothing left to push whose own work, candidates,
+// holds commits that the rescue branch holds and no other ref of the remote does: the branch at
+// previous, its tip on the remote, not pushed by this check, with those commits. There is none
+// when no such commit is left, and none when the clone lacks the tip; check says which disks give
+// each answer. The daemon tells the issue of a rescue only once the pod's replacement happens, so
+// the commits an earlier check of this same pod pushed, in a round whose replacement did not
+// happen then, are told of through this report.
+func (r runner) heldOnBranch(clone, branch, previous string, candidates, held []string) ([]shimwire.RescueBranch, error) {
+	if previous == "" || !slices.Contains(held, previous) {
+		return nil, nil
+	}
+	var others []string
+	for _, h := range held {
+		if h != previous {
+			others = append(others, h)
+		}
+	}
+	only, err := r.revList(clone, candidates, others)
+	if err != nil {
+		return nil, err
+	}
+	if len(only) == 0 {
+		return nil, nil
+	}
+	commits, err := r.subjects(clone, only)
+	if err != nil {
+		return nil, err
+	}
+	return []shimwire.RescueBranch{{Name: branch, Commit: previous, Commits: commits}}, nil
+}
+
+// workingCopy is the commit that holds the working copy's content: work.edits, the edits commit,
+// when the check keeps one; else, in a workspace with jj, jj's @ as standsFor maps it; else
+// work.head, the workspace's git HEAD. Like every commit a trailer names, it must be one the push
+// carries or the remote holds (findable).
+func (r runner) workingCopy(clone, dir string, work *ownWork) (string, error) {
+	switch {
+	case work.edits != "":
+		return work.edits, nil
+	case work.jj:
+		at, err := r.jj(dir, "log", "--no-graph", "-r", "@", "-T", "commit_id")
+		if err != nil {
+			return "", err
+		}
+		stand, err := r.standsFor(clone, []string{at})
+		if err != nil {
+			return "", err
+		}
+		return stand[at], nil
+	}
+	return work.head, nil
+}
+
+// localBookmarks is the local bookmarks of the workspace's own line (ownLine), out of which
+// bookmarks picks those the trailers name: jj's listing (bookmarkTemplate), or, in a workspace
+// with no jj, the issue's git branch own alone, at work.ownBranch, where there is one.
+func (r runner) localBookmarks(dir, own string, work *ownWork) ([]bookmark, error) {
+	switch {
+	case work.jj:
+		out, err := r.jj(dir, "bookmark", "list", "-r", ownLine(own), "-T", bookmarkTemplate)
+		if err != nil {
+			return nil, err
+		}
+		var local []bookmark
+		for line := range strings.Lines(out) {
+			if name, commit, ok := strings.Cut(strings.TrimSpace(line), " "); ok {
+				local = append(local, bookmark{name: name, commit: commit})
 			}
-			used[name] = true
-			refspecs = append(refspecs, tip+":refs/heads/"+name)
-			pushed = append(pushed, shimwire.RescueBranch{Name: name, Commit: tip})
 		}
-		at = began("the leak guard's check of the push")
-		if err := guardPush(ctx, req, run, clone, pushed); err != nil {
-			return fail(err)
-		}
-		at = began("the push of the rescue branches to the remote")
-		if _, err := run.git(clone, []string{"GIT_TERMINAL_PROMPT=0"}, append([]string{"push", "--atomic", "--quiet", "origin"}, refspecs...)...); err != nil {
-			return fail(fmt.Errorf("push %s: %w", strings.Join(refspecs, " "), err))
-		}
-		result.Branches = append(result.Branches, pushed...)
+		return local, nil
+	case work.ownBranch != "":
+		return []bookmark{{name: own, commit: work.ownBranch}}, nil
 	}
-	if unread != nil {
-		// The branches this check pushed stay on the entry: that work is on the remote and the
-		// issue must be told of it, whatever the step that did not finish leaves unread. The
-		// reader is told so here, where the push has happened, and never by the read's own
-		// error, which is written before it.
-		result.Status, result.Error = Failed, unread.Error()
-		if len(result.Branches) > 0 {
-			result.Error = unread.Error() + "; the work this check did find is on the remote, in the branches of this entry"
-		}
-		return result
-	}
-	result.Status = Clean
-	if len(result.Branches) > 0 {
-		result.Status = Rescued
-	}
-	return result
+	return nil, nil
 }
 
 // noSHA is git's "this ref is not there", which a pre-push line carries as the remote side of a
-// ref the push creates. Every branch this check pushes is created by it: the name it picks names
-// no branch the remote advertises and none an earlier workspace of the same check took.
+// ref the push creates. The branch this check pushes is new, and then its remote side is noSHA, or
+// it moves forward from the tip the remote advertised.
 const noSHA = "0000000000000000000000000000000000000000"
 
 // CheckRun is one run of the shared public leak check's push mode, measured in a pod: sixty
@@ -640,82 +607,11 @@ const pushAlone = 30 * time.Second
 const GuardReserve = CheckRun + pushAlone
 
 // readsBeforeThePush is the jj and git reads that find a workspace's unpushed work, which the
-// four minutes a workspace's bound once was left 90 s for. It does not hold the read of the
-// worktree's own files, which is worktreeRead below.
+// four minutes a workspace's bound once was left 90 s for.
 const readsBeforeThePush = 90 * time.Second
 
-// worktreeRead is the read of one worktree's files that finds what no commit holds (edits): the
-// one step of this check whose cost follows the size of the worktree rather than its history.
-// git hashes again every file whose stat data its index does not match, and jj writes a
-// colocated index with no stat data at all — measured on jj 0.45.1-sami.20260910, every entry
-// read carries ctime, mtime, dev, ino, uid, gid and size 0 — so that read over a worktree jj holds
-// hashes every tracked file, whether or not one of them changed.
-//
-// What that costs, measured in issue pods on 2026-11-11, over jj workspaces read that way: on a
-// 13 GB workspace of 291,957 tracked files, on two CPUs, git read every entry as changed (78 s
-// to list them) and took 200 s to answer that no file had changed. `git update-index -q
-// --refresh`, which hashes every tracked file the same way, took 9 minutes 13 seconds on one
-// other pod's workspace and up to 25 minutes across the thirteen pods. Refreshing the index
-// first is therefore that same read and buys nothing: it pays the hash once and jj writes the
-// stat data away again at its next snapshot.
-//
-// The add itself was measured at 27 s on OSSV-202 and 36.8 s as a dry run on OSSV-349, each on
-// a pod carrying that night's by-hand cure, which put .jj/ and .codegraph/ in the clone's
-// exclude file and refreshed the index, so each of those two read less than a pod's own read
-// does. On the architect's fixture the add alone cost 1.8 to 3.9 times the refresh alone of the
-// same tree, which carried to the slowest of the thirteen suggests an add of 45 to 98 minutes.
-//
-// So 30 minutes is about nine times the slowest read measured directly on a pod, above every
-// refresh measured (25 minutes at the most), and under what that ratio suggests for the slowest:
-// this term is not sized for the worst case, and a workspace whose read is slower than it fails
-// as it does today and waits for a person. What it is sized against is the bound those thirteen
-// pods met on 2026-11-11, which was two minutes: the read ran out, the check failed the
-// workspace, no pod was replaced and every one of them waited on a person — while in all
-// thirteen the files the read was after turned out to hold nothing the remote lacked.
-//
-// The term stays in a workspace's bound for two reads, and the measurements above are of the
-// first of them. The daemon sends this bound to every pod, and a pod whose shim predates this
-// build still makes the whole-worktree git read over a jj workspace, which is the read those
-// pods measured. This build makes that git read for a worktree with no .jj directory (edits,
-// indexTree), whose index git itself wrote with stat data it can use. A worktree jj holds takes
-// jj's own snapshot here in its place, and one `git ls-files --others --exclude-standard` over
-// the worktree, which walks its directories and hashes no file (snapshotTree), after one walk of
-// access(2) over the index copy's records that opens no file (unreadable) and one read of git's
-// configuration and attributes that hashes nothing (converting). Measured on 2026-11-13 in this
-// change's round 15, on a fixture of 290,000 tracked files whose index carries no stat data, its
-// own commits made first so @ held no diff, and every new file written into a directory no
-// commit held: the snapshot took 24.1 and 23.7 s on the clean tree and 25.3 and 26.0 s with 200
-// new files of 1 MB, that read 1.7 and 1.8 s, the walk 20.0 s, the attribute read 2.1 s, and
-// every read before the push 50.1 s on the clean tree, 55.5 s with 200 new files and 56.4 s with
-// 200 files of 1 MB new in @, where `git add --all` over a copy of the index took 293.4 s and
-// 209.2 s.
-//
-// The carry reads again every file where jj's tree and the copy differ, which is the role's own
-// uncommitted diff, so that cost follows the bytes of the diff and 90 s holds for the shape
-// above, 200 new files, and not for every workspace: on the same fixture, before the walk was
-// added, every read before the push took 78.3 s with 2,600 such files of 1 MB and 102.2 s with
-// 5,600, about 5.6 GB (the tester's round-14 measurement). A larger diff is not cut at 90 s: the
-// whole read of the files runs under the one cut at the workspace's deadline less pushReserve
-// (check), inside this term, which is sized for the reads whose cost follows the worktree.
-//
-// The first snapshot after a colocated `jj git init` took 62.5 s on that fixture on 2026-11-12,
-// because it also imports the git repository (it prints `Done importing changes from the
-// underlying Git repo.`); the live check imports wherever a git ref moved behind jj's back, HEAD,
-// a branch or a remote-tracking ref (the package doc), and in the same round-15 run a snapshot
-// after a branch moved with HEAD unchanged took 29.7 s, and after a new remote-tracking ref
-// 26.9 s.
-const worktreeRead = 30 * time.Minute
-
-// pushReserve is what a workspace's bound keeps back from the read of its files: the guard's own
-// run of the shared check (CheckRun) and what that guard leaves the push (GuardReserve). A read
-// that runs past it would take the commits this check has already found down with it, which is
-// the loss check stops the read to prevent.
-const pushReserve = CheckRun + GuardReserve
-
-// wholeDiskMargin is what the bound of a whole disk's check keeps over one workspace's: the three
-// minutes it has always kept. Nothing measured it, and the whole disk's bound rests on one
-// workspace per pod: a second workspace that follows a slow first one runs out of time and is
-// refused, not lost, since the replacement then waits for a person.
+// wholeDiskMargin is what the bound of a whole disk's check keeps over one workspace's: enough
+// for the workspaces a disk holds past the first, and the three minutes it has always kept.
 const wholeDiskMargin = 3 * time.Minute
 
 // WorkspaceTimeout and Timeout are this check's two bounds: one workspace's check and push, and
@@ -725,28 +621,15 @@ const wholeDiskMargin = 3 * time.Minute
 // internal/shim's tests): a fixture bounded under GuardReserve would have every push refused
 // for want of time rather than checked.
 //
-// A workspace's bound holds four things in a pod: the reads that find the unpushed work
-// (readsBeforeThePush), the read of the worktree's own files (worktreeRead), the guard's own run
-// of the shared check (CheckRun), and what that guard leaves the push, which in a pod runs the
-// same check a second time in the pre-push hook (GuardReserve). worktreeRead and CheckRun come
-// from measurements; GuardReserve is CheckRun and pushAlone, the 30 s the push had before the
-// hook was known to run the check again, which is a reserve kept as it was and no measurement;
-// and readsBeforeThePush is the share an earlier bound left those reads, which were measured on
-// 2026-11-13 at 50.1 to 56.4 s for the shape check c5 names (worktreeRead says what a larger diff
-// costs). 90 + 1800 + 120 + 150 is 2160 s, so a workspace's bound is 36 minutes and the whole
-// disk's, keeping wholeDiskMargin over it, 39.
-// Each is a ceiling and not a wait: a workspace whose files git can answer for at once has them
-// read in seconds, and its push then waits on the leak check, one run of which was measured in a
-// pod at 120 s (CheckRun), run twice there. Most of this package's tests take seconds; measured
-// on 2026-11-13, the read cut by its bound and the snapshot refused jj's lock took about 11 s
-// each, the differential test 176 s and the matrix test 313 s, so the whole package took 670 s
-// in a pod and needs `-timeout 25m` there.
-//
-// A bound that fits one run of the check and not two ends inside the hook's run and loses the
-// dying pod's work to a timeout rather than refusing it; a bound that does not fit the worktree
-// read never replaces the pod at all. Both are the failure these numbers exist to prevent.
+// A workspace's bound holds three things in a pod, and each is measured: the reads that find
+// the unpushed work (readsBeforeThePush), the guard's own run of the shared check (CheckRun),
+// and what that guard leaves the push, which in a pod runs the same check a second time in the
+// pre-push hook (GuardReserve). 90 + 120 + 150 is 360 s, so a workspace's bound is six minutes
+// and the whole disk's, keeping wholeDiskMargin over it, nine. A bound that fits one run of the
+// check and not two ends inside the hook's run and loses the dying pod's work to a timeout
+// rather than refusing it, which is the failure these numbers exist to prevent.
 const (
-	WorkspaceTimeout = readsBeforeThePush + worktreeRead + CheckRun + GuardReserve
+	WorkspaceTimeout = readsBeforeThePush + CheckRun + GuardReserve
 	Timeout          = WorkspaceTimeout + wholeDiskMargin
 )
 
@@ -762,13 +645,13 @@ const (
 // environment as everything else here, and a remote whose URL it cannot read fails the
 // workspace rather than being pushed unchecked.
 //
-// The updates are the refspecs the push is about to send, as git would hand them to a pre-push
-// hook: the local sha, the branch it creates on the remote, and the all-zero sha for what the
-// remote holds there, since every one of these branches is new.
+// The update is the refspec the push is about to send, as git would hand it to a pre-push hook:
+// the local sha, the branch on the remote, and what the remote holds there, which is the tip the
+// branch moves forward from (branch.Previous), or noSHA for a branch the push creates.
 //
 // Env is the role's own environment, the one the push itself runs in, which is what names the
 // credential the check reads the remote with.
-func guardPush(ctx context.Context, req Request, run runner, clone string, pushed []shimwire.RescueBranch) error {
+func guardPush(ctx context.Context, req Request, run runner, clone string, branch shimwire.RescueBranch) error {
 	what := leakguard.PushName("origin")
 	url, err := run.git(clone, nil, "remote", "get-url", "origin")
 	if err == nil && url == "" {
@@ -777,13 +660,10 @@ func guardPush(ctx context.Context, req Request, run runner, clone string, pushe
 	if err != nil {
 		return &leakguard.SetupFailure{What: what, Why: "the URL of the remote this push is made to could not be read", Err: err}
 	}
-	updates := make([]leakguard.Update, 0, len(pushed))
-	for _, branch := range pushed {
-		updates = append(updates, leakguard.Update{
-			LocalRef: branch.Commit, LocalSHA: branch.Commit,
-			RemoteRef: "refs/heads/" + branch.Name, RemoteSHA: noSHA,
-		})
-	}
+	updates := []leakguard.Update{{
+		LocalRef: branch.Commit, LocalSHA: branch.Commit,
+		RemoteRef: "refs/heads/" + branch.Name, RemoteSHA: cmp.Or(branch.Previous, noSHA),
+	}}
 	bound := ctx
 	if deadline, ok := ctx.Deadline(); ok {
 		left := time.Until(deadline) - GuardReserve
@@ -799,39 +679,6 @@ func guardPush(ctx context.Context, req Request, run runner, clone string, pushe
 	})
 }
 
-// worktrees is every worktree of the repository whose directory is there, as `git worktree list`
-// names it, the clone's own working tree included; a bare repository's entry has none.
-func (r runner) worktrees(clone string) ([]string, error) {
-	out, err := r.git(clone, nil, "worktree", "list", "--porcelain")
-	if err != nil {
-		return nil, err
-	}
-	var dirs []string
-	current, bare := "", false
-	flush := func() {
-		if current != "" && !bare {
-			if info, err := os.Lstat(current); err == nil && info.IsDir() {
-				dirs = append(dirs, filepath.Clean(current))
-			}
-		}
-		current, bare = "", false
-	}
-	for line := range strings.Lines(out + "\n") {
-		line = strings.TrimRight(line, "\n")
-		switch {
-		case strings.HasPrefix(line, "worktree "):
-			flush()
-			current = strings.TrimPrefix(line, "worktree ")
-		case line == "bare":
-			bare = true
-		case line == "":
-			flush()
-		}
-	}
-	flush()
-	return dirs, nil
-}
-
 // runner runs git and jj under one workspace's bound, in the role's environment.
 type runner struct {
 	ctx context.Context
@@ -842,116 +689,15 @@ func (r runner) git(dir string, env []string, args ...string) (string, error) {
 	return r.command(dir, env, nil, "git", append(slices.Clone(gitPins), args...)...)
 }
 
-// gitPaths is the paths one NUL-separated git read answers, each as it stands. A path may hold
-// any byte but NUL — a space at either end among them — so the read is split on NUL alone and
-// nothing of it is trimmed (carried and seeds, which read the worktree's own names and the
-// index's records this way). Every other read of this package comes through git above, which
-// trims what it answers: a sha, a ref name, and in worktrees the directories of the
-// repository's worktrees, which are paths too, read a line at a time out of `git worktree list
-// --porcelain` rather than this way.
-func (r runner) gitPaths(dir string, env []string, args ...string) ([]string, error) {
-	out, err := r.output(dir, env, nil, "git", append(slices.Clone(gitPins), args...)...)
-	if err != nil {
-		return nil, err
-	}
-	paths := strings.Split(out, "\x00")
-	if last := len(paths) - 1; last >= 0 && paths[last] == "" {
-		paths = paths[:last] // git writes a NUL after the last path, never between paths alone
-	}
-	return paths, nil
-}
-
 // jj runs a read of jj's view that writes nothing: no snapshot of the working copy, and no new
 // operation, since it reads at the operation the store is at.
 func (r runner) jj(dir string, args ...string) (string, error) {
 	return r.command(dir, nil, nil, "jj", append([]string{"--ignore-working-copy", "--at-op=@", "--no-pager", "--color=never", "-R", dir}, args...)...)
 }
 
-// snapshot takes jj's own snapshot of the worktree at dir: jj stats the files it tracks against
-// the per-file state it keeps and hashes only what changed, which costs what any jj command of
-// a role costs, where the git read it replaces hashes every tracked file of a pod's workspace
-// (worktreeRead). Only its exit status is read: jj refuses a file above the workspace's size
-// limit and skips a path whose name is not valid UTF-8, each with a warning on its standard
-// error and an exit status of 0, and what it left out that way is found by the carry from git's
-// own read of the worktree, not from those warnings (snapshotTree, carried).
-//
-// It carries neither --ignore-working-copy nor --at-op, since either one suppresses the
-// snapshot; that is why it cannot go through runner.jj.
-//
-// Every pin is on the command line, which outranks the repository's, the workspace's and the
-// user's configuration, so none of theirs changes what the snapshot does, and that was measured
-// on this build on 2026-11-12: with a repository configuring the other value of each of the
-// last two below, the snapshot recorded what the command line pinned. Eight hold this build's
-// own default. No file-system monitor is started (fsmonitor.backend), no filter of git's runs
-// over a file (git.filter.enabled), nothing is signed and no signature is remade
-// (signing.backend, signing.behavior), and every file of the tree is tracked
-// (snapshot.auto-track, quoted because this build reads an unquoted all() as a bare string).
-// snapshot.auto-update-stale is a default as well, and is pinned because a configuration that
-// turns it on has jj write the worktree's own files, which this check never does. So are the
-// two that say what a file's own bytes and mode are recorded as: working-copy.eol-conversion,
-// which under any other value would record other bytes than the worktree holds — a file of
-// CRLF lines recorded with LF — and working-copy.exec-bit-change, which under `ignore` would
-// record the mode the commit under it carries rather than the mode the file has. The ninth is
-// no default: the git jj starts.
-//
-// The size limit is not among them. jj refuses a new file above the workspace's own
-// snapshot.max-new-file-size, and a pin above that limit would have jj track the file in the
-// role's own working-copy commit, where it stays tracked long after this check is over. So the
-// snapshot runs under the workspace's own limit, and what it refused is carried into the tree
-// this check pushes by a git that writes nothing of the role's (snapshotTree, carried).
-func (r runner) snapshot(dir string) error {
-	git, err := exec.LookPath("git")
-	if err != nil {
-		return fmt.Errorf("the git this check runs is not on its PATH, so jj could not snapshot %s: %w", dir, err)
-	}
-	args := []string{"--no-pager", "--color=never", "-R", dir}
-	for _, pin := range []string{
-		`fsmonitor.backend="none"`,
-		"git.filter.enabled=false",
-		`signing.backend="none"`,
-		`signing.behavior="keep"`,
-		`snapshot.auto-track="all()"`,
-		"snapshot.auto-update-stale=false",
-		`working-copy.eol-conversion="none"`,
-		`working-copy.exec-bit-change="auto"`,
-		"git.executable-path=" + jjString(git),
-	} {
-		args = append(args, "--config", pin)
-	}
-	_, err = r.command(dir, nil, nil, "jj", append(args, "util", "snapshot")...)
-	return err
-}
-
-// observeCommand is nil outside this package's tests, where export_test.go sets it: the one
-// place a test can read every git and jj command this check runs, with its arguments, since
-// no test may put a stand-in binary on PATH.
-var observeCommand func(dir, name string, args []string)
-
-// observeRecord is nil outside this package's tests, where export_test.go sets it: the one place
-// a test can stand inside the readability walk's own loop (unreadable), called with the read's
-// context and the record's index before that record's test of the cut, so a test can have the cut
-// fall at a record of its choosing rather than at whatever record the clock reaches.
-var observeRecord func(ctx context.Context, record int)
-
+// command runs name in dir. Its environment is the role's with env after it: Go's exec takes the
+// last value of a name, so env outranks the role's.
 func (r runner) command(dir string, env []string, stdin io.Reader, name string, args ...string) (string, error) {
-	out, err := r.output(dir, env, stdin, name, args...)
-	return strings.TrimSpace(out), err
-}
-
-// output runs one command and answers its standard output as it stands, where it exits 0: a
-// name git writes may hold a space at either end, so nothing is trimmed here and each caller
-// trims what it reads, or does not (command, gitPaths). It is the one implementation the
-// package runs every git and jj through. One caller comes here directly: gitPaths, whose read's
-// standard output must reach its caller untrimmed. Every other caller comes through command,
-// which trims the output. A command that could not be started or that exits non-zero is an
-// error naming the command, the status and its standard error, so nothing of what it said is
-// lost on any path. Each argument of the command is written with %q (quoted): an argument may
-// be a path a role wrote, and a space inside one would otherwise read as the gap between two
-// arguments.
-func (r runner) output(dir string, env []string, stdin io.Reader, name string, args ...string) (string, error) {
-	if observeCommand != nil {
-		observeCommand(dir, name, args)
-	}
 	cmd := exec.CommandContext(r.ctx, name, args...)
 	cmd.Dir = dir
 	cmd.Env = append(slices.Clone(r.env), env...)
@@ -960,12 +706,12 @@ func (r runner) output(dir string, env []string, stdin io.Reader, name string, a
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := procgroup.Err(cmd.Run()); err != nil {
-		return "", fmt.Errorf("%s %s: %v", name, quoted(args), err)
+		return "", fmt.Errorf("%s %s: %v", name, strings.Join(args, " "), err)
 	}
 	if code := cmd.ProcessState.ExitCode(); code != 0 {
-		return "", fmt.Errorf("%s %s: exit %d: %s", name, quoted(args), code, strings.TrimSpace(stderr.String()))
+		return "", fmt.Errorf("%s %s: exit %d: %s", name, strings.Join(args, " "), code, strings.TrimSpace(stderr.String()))
 	}
-	return stdout.String(), nil
+	return strings.TrimSpace(stdout.String()), nil
 }
 
 // objects is the shas the clone has an object of one of kinds for, in the order given: what the
@@ -991,24 +737,34 @@ func (r runner) objects(clone string, shas []string, kinds ...string) ([]string,
 	return kept, nil
 }
 
-// unpushed is the candidates no held commit contains, each once, in the order given.
-func (r runner) unpushed(clone string, candidates, held []string) ([]string, error) {
-	if len(candidates) == 0 {
+// revList is every commit an ancestor of one of from, from included, that is no ancestor of any
+// of not, in rev-list's order.
+func (r runner) revList(clone string, from, not []string) ([]string, error) {
+	if len(from) == 0 {
 		return nil, nil
 	}
 	var input strings.Builder
-	for _, c := range candidates {
+	for _, c := range from {
 		input.WriteString(c + "\n")
 	}
-	for _, h := range held {
+	for _, h := range not {
 		input.WriteString("^" + h + "\n")
 	}
 	out, err := r.command(clone, nil, strings.NewReader(input.String()), "git", append(slices.Clone(gitPins), "rev-list", "--stdin")...)
 	if err != nil {
 		return nil, err
 	}
-	listed := map[string]bool{}
-	for _, sha := range fields(out) {
+	return fields(out), nil
+}
+
+// unpushed is the candidates no held commit contains, each once, in the order given.
+func (r runner) unpushed(clone string, candidates, held []string) ([]string, error) {
+	out, err := r.revList(clone, candidates, held)
+	if err != nil {
+		return nil, err
+	}
+	listed := make(map[string]bool, len(out))
+	for _, sha := range out {
 		listed[sha] = true
 	}
 	var tips []string
@@ -1020,17 +776,36 @@ func (r runner) unpushed(clone string, candidates, held []string) ([]string, err
 	return tips, nil
 }
 
-// holdingWork is candidates, each once, with every commit that has no message and the tree of its
-// one parent replaced by that parent, as often as it takes. That commit is jj's working-copy commit
-// before anything is written, as ownHeads drops it on jj's side, and a git ref can name it: jj
-// exports a bookmark set on it, as provisioning sets the issue's on the working copy of a workspace
-// it starts at the default branch. A merge is kept whatever it holds.
+// holdingWork is candidates, each once, each replaced by the commit that holds its work
+// (standsFor).
 func (r runner) holdingWork(clone string, candidates []string) ([]string, error) {
-	for {
-		if len(candidates) == 0 {
-			return nil, nil
+	stand, err := r.standsFor(clone, candidates)
+	if err != nil {
+		return nil, err
+	}
+	var kept []string
+	for _, c := range candidates {
+		if s := stand[c]; !slices.Contains(kept, s) {
+			kept = append(kept, s)
 		}
-		listed, err := r.git(clone, nil, append([]string{"log", "--no-walk=unsorted", "--format=%H %T %P%x09%s"}, candidates...)...)
+	}
+	return kept, nil
+}
+
+// standsFor maps each of commits to the commit that holds its work: itself, or, for a commit that
+// has no message and the tree of its one parent, what that parent stands for, as often as it
+// takes. That commit is jj's working-copy commit before anything is written, as ownHeads drops it
+// on jj's side, and a git ref can name it: jj exports a bookmark set on it, as provisioning sets
+// the issue's on the working copy of a workspace it starts at the default branch. A merge stands
+// for itself whatever it holds.
+func (r runner) standsFor(clone string, commits []string) (map[string]string, error) {
+	stand := make(map[string]string, len(commits))
+	for _, c := range commits {
+		stand[c] = c
+	}
+	pending := slices.Sorted(maps.Keys(stand))
+	for len(pending) > 0 {
+		listed, err := r.git(clone, nil, append([]string{"log", "--no-walk=unsorted", "--format=%H %T %P%x09%s"}, pending...)...)
 		if err != nil {
 			return nil, err
 		}
@@ -1049,101 +824,45 @@ func (r runner) holdingWork(clone string, candidates []string) ([]string, error)
 				replaced[commit[0]] = commit[2]
 			}
 		}
-		var next []string
-		for _, c := range candidates {
-			if p, ok := replaced[c]; ok {
-				c = p
-			}
-			if !slices.Contains(next, c) {
-				next = append(next, c)
+		for c, s := range stand {
+			if p, ok := replaced[s]; ok {
+				stand[c] = p
 			}
 		}
-		if len(replaced) == 0 {
-			return next, nil
+		// Only a parent that took a commit's place is read again: every other commit was read and
+		// holds its own work.
+		next := map[string]bool{}
+		for _, p := range replaced {
+			next[p] = true
 		}
-		candidates = next
+		pending = slices.Sorted(maps.Keys(next))
 	}
+	return stand, nil
 }
 
-// heldByJJ is whether jj holds the worktree at dir, which is a .jj directory of its own: a
-// colocated jj workspace has one, a plain git worktree a role added beside it has none. It is
-// what decides which of the two reads of a worktree's files the check makes (edits), and the
-// shape of the candidates it takes from jj at all (check).
-func heldByJJ(dir string) bool {
-	info, err := os.Lstat(filepath.Join(dir, ".jj"))
-	return err == nil && info.IsDir()
+// fetchTip fetches tip, the commit the remote's branch holds, into the clone, which lacks it. It
+// writes no ref: no remote-tracking ref (`--refmap=` with no destination), no tag and no
+// FETCH_HEAD. A fetch that fails, or after which the clone still lacks tip, is the workspace's
+// error, and nothing is pushed. It has no bound of its own: it is one of the reads before the push,
+// under the workspace's bound (readsBeforeThePush).
+func (r runner) fetchTip(clone, branch, tip string) error {
+	if _, err := r.git(clone, []string{"GIT_TERMINAL_PROMPT=0"},
+		"fetch", "--quiet", "--no-tags", "--no-write-fetch-head", "--refmap=", "origin", "refs/heads/"+branch); err != nil {
+		return fmt.Errorf("fetch the tip %s of %s, which the clone lacks: %w", tip, branch, err)
+	}
+	if _, err := r.git(clone, nil, "cat-file", "-e", tip+"^{commit}"); err != nil {
+		return fmt.Errorf("the clone lacks the tip %s of %s after it fetched the branch: %w", tip, branch, err)
+	}
+	return nil
 }
 
 // edits is one commit holding the workspace's files as they stand, on top of head, when they
-// differ from head's tree; "" when they do not. A file .gitignore ignores that the index a read
-// starts from does not track is left out by the git read, as a role's own push would leave it;
-// the jj route leaves it out too, but for one: a file jj already tracks that the index the read
-// starts from lacks (after a `git reset`, with the index file missing, or under an unborn HEAD)
-// stays in jj's tree, so the route keeps it where the git read does not, the one gain the
-// differential test declares (carried).
-//
-// Where the worktree holds a .jj directory, the tree is jj's own: the check copies the
-// worktree's git index, or reads head's tree where the worktree has no index file, or starts from
-// the empty index where HEAD is unborn, as the git read does, takes jj's snapshot of the
-// worktree, reads the tree of the working-copy commit that snapshot wrote, and then carries into
-// it what the git read would have kept and that tree lacks, taken from the index copy and from
-// git's own read of the files that copy does not track (snapshotTree,
-// carried). Where it does not, the tree is git's, read into an index of its own from a copy of
-// the worktree's where it has one, so that neither the worktree's index nor any ref moves
-// (indexTree). The two answer the same question, and the jj one is the one a pod can afford:
-// the git read hashes every tracked file there (worktreeRead).
-//
-// Of the two reads, only the snapshot writes anything of that worktree's own: its colocated git
-// index, over a role's own staged index there. What that costs the tree this check pushes is
-// nothing the git read would have kept, since the carry reads the copy of that index taken
-// before the snapshot: a file .gitignore ignores that a role forced in with `git add -f` is an
-// entry of the copy, and is carried. The git read writes no index of the worktree at all, since
-// it builds its tree in an index of its own.
-//
-// A conflicted working copy is no failure. jj writes a conflict into the worktree itself, as
-// .jjconflict-base-0/, .jjconflict-side-0/, .jjconflict-side-1/, JJ-CONFLICT-README and the
-// one-sided file, so the snapshot carries every side of it and no content is lost; failing there
-// would hold a pod replacement back for work the branch already holds.
-//
-// An untracked nested git repository is read by both as git reads it: where it has a commit,
-// `git add --all` records it as a gitlink at its HEAD, whose commit no object of this repository
-// holds, and carries none of its files, and the route records the same gitlink and carries none
-// of them either, so what is in it goes with the pod, as it would have gone had no check run;
-// where it has no commit, `git add --all` refuses it, and so does the route, so the workspace
-// fails rather than read clean and lose what that repository holds (carried).
+// differ from head's tree; "" when they do not. It is built in an index of its own, from a copy of
+// the workspace's index where it has one, so neither the workspace's index nor any ref moves. A
+// file .gitignore ignores is left out, as a role's own push would leave it. Its identity is fixed
+// and its date is head's committer date (fixedIdentity), so the same files on the same head make
+// the same commit at every check.
 func (r runner) edits(dir, head string) (string, error) {
-	var tree string
-	var err error
-	if heldByJJ(dir) {
-		tree, err = r.snapshotTree(dir, head)
-	} else {
-		tree, err = r.indexTree(dir, head)
-	}
-	if err != nil {
-		return "", err
-	}
-	args := []string{"-c", "user.name=Legion rescue", "-c", "user.email=rescue@invalid", "commit-tree", tree,
-		"-m", "Edits left in the workspace " + dir + " when its pod was replaced"}
-	if head != "" {
-		was, err := r.git(dir, nil, "rev-parse", head+"^{tree}")
-		if err != nil {
-			return "", err
-		}
-		if was == tree {
-			return "", nil
-		}
-		args = append(args, "-p", head)
-	} else if tree == emptyTree {
-		return "", nil
-	}
-	return r.command(dir, nil, nil, "git", append(slices.Clone(gitPins), args...)...)
-}
-
-// indexTree is the tree of the worktree's files as git reads them, built in an index of its own,
-// from a copy of the worktree's index where it has one, so neither that index nor any ref moves.
-// This is the read whose cost follows the size of the worktree (worktreeRead), and it is made
-// for a worktree jj does not hold, which has no snapshot of its own to take.
-func (r runner) indexTree(dir, head string) (string, error) {
 	scratch, err := os.MkdirTemp("", "legion-rescue-index-")
 	if err != nil {
 		return "", err
@@ -1175,1439 +894,28 @@ func (r runner) indexTree(dir, head string) (string, error) {
 	if _, err := r.git(dir, env, "add", "--all", "--", "."); err != nil {
 		return "", err
 	}
-	return r.git(dir, env, "write-tree")
-}
-
-// snapshotTree is the tree of the worktree's files as jj holds them once jj has snapshotted
-// them, with what the `git add --all` this route replaces would have kept and that tree lacks
-// carried into it (carried). The things that can lose a file are read in this order.
-//
-// The workspace's sparse patterns come first, before anything is written: a workspace narrowed
-// to part of its tree would have jj snapshot only that part, while the git read kept every file
-// outside it, so such a workspace fails having had nothing snapshotted. A set holding `.` is no
-// narrowing, whatever else it holds: `.` is the whole tree, a workspace checked out whole holds
-// it alone, and `jj sparse set --add d` over such a workspace leaves the two patterns `.` and
-// `d`, which together are still every file of the tree (measured on this build on 2026-11-12).
-// A set holding nothing is no narrowing either, but a workspace that holds no file of its tree
-// at all — what an unfinished checkout leaves, and the same set workspace.CheckedOut reads it
-// by — so it fails in words of its own.
-//
-// The worktree's own git index is copied next, still before anything is written, into a
-// scratch directory this removes again: that copy is the input the git read starts from
-// (indexTree), and the snapshot that follows rewrites the index it is copied from. It is made
-// in the git read's three cases. Where head, the worktree's git HEAD, names a commit and the
-// worktree has an index file, the copy is that file. Where head names a commit and the worktree
-// has no index file, the copy is read from head's tree with `read-tree <head>`. Where HEAD is
-// unborn, the copy is `read-tree --empty`, whatever the worktree's index holds: the git read
-// starts from an empty index there and reads no record of the worktree's own index, so the
-// carry reads none either.
-//
-// The copy's records are read next, once, still before anything is written, and the carry reads
-// them from there (carried, seeds). Every tracked file of the copy the git read would read is
-// checked first, and a workspace holding one this process cannot read, which git's own stat
-// comparison against the copy says that read would open, fails before the snapshot, as the git
-// read fails on it (unreadable).
-//
-// The snapshot itself fails the workspace where it fails, and is not made twice: it leaves the
-// working copy as the last jj command of a role wrote it, and no retry of ours makes a lock or
-// a stale working copy any newer. A stale one is the single case whose cure is a jj command, so
-// the failure says what a person runs, since nothing else tells them. A directory a role made
-// unreadable is another such failure, and a deliberate one: jj's snapshot fails on it (measured
-// on this build on 2026-11-12: `Failed to read directory …: Permission denied`), where
-// the `git add --all` this replaces warned `could not open directory`, exited 0 and lost what
-// was inside, so the failure is this check telling a person rather than a regression. Two more
-// are refusals of the same kind, measured on this build on 2026-11-13: a directory a role left
-// listable but not searchable (mode 0644), where that read warned `half/inside.txt: Permission
-// denied` for each file under it, exited 0 and kept each one's record as the copy held it, a
-// new file jj had snapshotted at the empty blob jj wrote for it among them, and jj's snapshot
-// failed (`Failed to stat file …/half/new.txt: Permission denied`); and a file the copy marks
-// skip-worktree that a role edited and then made unreadable, which that read kept at its record
-// without opening it, and which jj's snapshot, its mtime having moved, failed to open (`Failed
-// to open file …/s.txt: Permission denied`). Nothing the snapshot prints is read: what it left
-// out is found by the carry, from the index copy and git's own rule.
-//
-// Then jj's tree, the tree of the working-copy commit the snapshot wrote, and the carry into it.
-func (r runner) snapshotTree(dir, head string) (string, error) {
-	patterns, err := r.jj(dir, "sparse", "list")
+	tree, err := r.git(dir, env, "write-tree")
 	if err != nil {
 		return "", err
 	}
-	var held []string
-	for line := range strings.Lines(patterns) {
-		if p := strings.TrimSpace(line); p != "" {
-			held = append(held, p)
-		}
-	}
-	switch {
-	case len(held) == 0:
-		return "", fmt.Errorf("the jj workspace %s holds no sparse pattern, so it holds no file of its tree and jj's snapshot of it would carry nothing the git read kept: that is what an unfinished checkout leaves, and a person clears it by running `jj sparse reset` in %s", dir, dir)
-	case !slices.Contains(held, "."):
-		return "", fmt.Errorf("the jj workspace %s holds part of its tree and not all of it, so jj's snapshot would leave out every file the git read kept: its sparse patterns are %s", dir, quoted(held))
-	}
-	scratch, err := os.MkdirTemp("", "legion-rescue-carry-")
-	if err != nil {
-		return "", err
-	}
-	defer os.RemoveAll(scratch)
-	tracked := filepath.Join(scratch, "tracked")
-	base := []string{"read-tree", "--empty"}
+	args := []string{"commit-tree", tree, "-m", "Edits left in the workspace " + dir + " when its pod was replaced"}
+	date := noDate
 	if head != "" {
-		own, err := r.git(dir, nil, "rev-parse", "--path-format=absolute", "--git-path", "index")
+		was, err := r.git(dir, nil, "rev-parse", head+"^{tree}")
 		if err != nil {
 			return "", err
 		}
-		switch body, err := os.ReadFile(own); {
-		case err == nil:
-			if err := os.WriteFile(tracked, body, 0o600); err != nil {
-				return "", err
-			}
-			base = nil
-		case !errors.Is(err, fs.ErrNotExist):
-			return "", err
-		default:
-			base = []string{"read-tree", head}
+		if was == tree {
+			return "", nil
 		}
-	}
-	if base != nil {
-		if _, err := r.git(dir, []string{"GIT_INDEX_FILE=" + tracked}, base...); err != nil {
+		if date, err = r.newestDate(dir, head); err != nil {
 			return "", err
 		}
-	}
-	records, err := r.gitPaths(dir, []string{"GIT_INDEX_FILE=" + tracked}, "ls-files", "-s", "-v", "-z")
-	if err != nil {
-		return "", err
-	}
-	if err := r.unreadable(dir, tracked, records); err != nil {
-		return "", err
-	}
-	if err := r.snapshot(dir); err != nil {
-		if strings.Contains(err.Error(), staleWorkingCopy) {
-			return "", fmt.Errorf("%w; a person clears that by running `jj workspace update-stale` in %s, and this failure is the only thing that tells them", err, dir)
-		}
-		return "", err
-	}
-	commit, err := r.jj(dir, "log", "--no-graph", "-r", "@", "-T", "commit_id")
-	if err != nil {
-		return "", err
-	}
-	tree, err := r.git(dir, nil, "rev-parse", commit+"^{tree}")
-	if err != nil {
-		return "", err
-	}
-	return r.carried(dir, tracked, records, filepath.Join(scratch, "index"), tree)
-}
-
-// carried is tree with everything the `git add --all` this route replaces would have kept and
-// tree lacks added to it. It is built in the scratch index at index, so that neither the
-// worktree's own index nor any ref moves and jj's record of what the role's working copy tracks
-// is untouched: jj's tree is read into that index, the entries below are written to it, and the
-// tree it writes is the answer. tracked is the copy of the worktree's own index snapshotTree
-// made before the snapshot, in the git read's own three cases, so it is the index the git read
-// starts from (indexTree), and records is its records as `ls-files -s -v -z` lists them, which
-// snapshotTree read before the snapshot.
-//
-// `git add --all` over that copy does two things: it updates every entry the copy holds from the
-// worktree, whatever an ignore rule says, but for an entry marked assume-unchanged or
-// skip-worktree, whose file it does not read; and it adds as new every file the copy does not
-// hold that no ignore rule covers, which is what `ls-files --others --exclude-standard` against
-// the copy lists. The carry takes that read's own input and its own rule, read through git's own
-// commands below, over a base of jj's tree, which is read twice (ls-tree, then read-tree); git's
-// content conversion has no read of its own. The untracked set is read against the index the git
-// read walks, entry for entry: the copy itself, by git's own rule, with no index derived from it.
-// The tracked set is that index's entries jj's tree lacks or holds at another entry and the
-// worktree still holds, and its flagged entries (seeds). The gitlinks of jj's tree are checked
-// against the copy's record and what the worktree holds at each (unlinked), and each embedded
-// repository the untracked read lists is recorded as the git read records it. A record of the
-// copy whose worktree path is now a directory is read by git's own rule too, against the copy
-// with those records taken out (nowDirectories), since the untracked read against the copy lists
-// nothing there. jj's tree is the base: its entry for a file the copy records as jj's tree holds
-// it is kept as jj wrote it, while every file the carry adds or updates, a new file jj already
-// holds among them, is written again by git and so passes through git's content conversion,
-// which jj's tree does not. Where the git read fails, as it does on an embedded repository with
-// no commit, on a tracked file made unreadable (`chmod 000`: `open("t.txt"): Permission denied`,
-// exit 128) that git would open, and on a file whose required clean filter fails (`fatal: f.fx:
-// clean filter 'bad' failed`), whose working-tree-encoding cannot be read, or whose eol
-// conversion core.safecrlf refuses, the route fails the workspace and never drops the path; the
-// last three are read again through git's own add for exactly that, whether jj recorded the file
-// as changed or not, since a set-back mtime can hide an edit in it. Where the route keeps less
-// than the git read, the case is carried when carrying is bounded by the paths involved, and
-// named when it would cost the whole-worktree hash this route removes or when the git read gets
-// it wrong too; each named case is a row of the differential test, declared under the word for
-// its kind (differential_test.go).
-//
-// Two named cases are content losses, each of a file jj's tree holds at the copy's own record:
-// jj writes the colocated index with HEAD's blob for a file edited in @ and with the empty blob
-// for a file new in @, so that is a file HEAD holds that no edit jj snapshotted has changed. Such
-// a file rewritten at its size with its mtime set back on purpose to the one jj recorded (`touch
-// -r` or `-d`, `cp -p`, `rsync -t`, an archive tool writing stored times) is one jj's stat rule
-// passes over, so jj's tree keeps the blob jj read before, where the git read, hashing every file
-// of an index with no stat data, reads the new one. A same-size rewrite whose two writes fall
-// inside one millisecond can be another: jj trusts a recorded stat (type, mtime in milliseconds,
-// size) only where that mtime is strictly earlier than the mtime of its own tree_state file
-// (jj-vcs/jj lib/src/local_working_copy.rs:2009-2010 at 47254941, read on jj's main branch; the
-// pod's fork carried the same rewrite with its recorded mtime later than tree_state, as that
-// rule says). So a loss nobody forced needs jj to read the file between two same-size writes,
-// both writes inside one millisecond, and tree_state written in a later one. Measured on
-// 2026-11-13, a role's `jj status` walking 20,000 files in 6.5 s while a writer rewrote files in
-// same-size pairs lost none of 5957 pairs, 2866 of them inside one millisecond: rare, and not
-// proven never to happen. On this volume a plain open, write and close left the mtime unchanged
-// on 75.3% of 2000 back-to-back rewrites, in steps of about 1 ms, where a write followed by an
-// fsync moved it on all 2000. In both cases the role's own jj commit misses the edit by the same
-// rule, so its own branch would not hold it either. Carrying them would cost the whole-worktree
-// hash, since nothing but the file's bytes tells such a file from one unchanged. A file jj's tree
-// holds at another entry than the copy's, an edit or a new file jj snapshotted, is carried
-// whatever its mtime: the carry updates it from the worktree (seeds). Measured on this build on
-// 2026-11-13, over an e.txt committed, edited, snapshotted by `jj status` and then rewritten at
-// its size with its mtime set back, the git read kept `100644 469c470f` and the route, before it
-// updated such a file, jj's `100644 c669c18b`.
-//
-// One named case is a change of form: git's content conversion (an eol rule of .gitattributes,
-// core.autocrlf, a clean filter) stores a file jj's tree holds at the copy's own record otherwise
-// than HEAD holds it, since the git read hashes the file again, and the route keeps the bytes
-// HEAD holds, as CRLF lines committed before an eol rule was written. A file jj's tree holds at
-// another entry is updated by the carry's `update-index --add`, which converts it as the git read
-// does and keeps the copy's mode under core.fileMode=false. Beside these, one is a file the route
-// keeps and the git read loses: a file jj tracks that the copy does not hold, `git reset` having
-// taken it out, and that an ignore rule covers, which jj keeps tracking whatever an ignore rule
-// says and the git read, adding no ignored file as new, does not add.
-//
-// The tracked half is the seed (seeds), written into the scratch index as the copy records it
-// with `update-index -z --index-info`. Each file of it the copy holds unflagged — a file jj's
-// tree lacks or holds at another entry and the worktree still holds — is then updated from the
-// worktree by name with `update-index --add --replace -z --stdin`, fed the names on its standard
-// input, which matches no pathspec and has no ignore rule: these are files the index tracks,
-// which `git add --all` updates whatever an ignore rule says, so the add takes nothing that read
-// would leave out. It is not `git add -f -- <file>...`, which matches every name it is handed
-// against every record of the index, so its cost is the index's size times the names: measured
-// by the tester on 2026-11-13 over the fixture worktreeRead names, 290,600 records, `add -f`
-// over 200, 1,600 and 5,600 named files took 5.5, 22.9 and 71.0 s, and `update-index --add
-// --replace -z --stdin` over the same files 1.8, 0.9 and 2.1 s. Measured with git 2.47.3 on
-// 2026-11-13, over a scratch index of HEAD's tree with the file's record seeded as the carry
-// seeds it, `git add -f --` and that add left the same record and exit status at each shape:
-// exit 128 and `fatal: f.fx: clean filter 'bad' failed` for a required clean filter that fails;
-// `100644 57cf26d8` for one that works (`tr a-z A-Z` over `edited`); exit 128 and `fatal: CRLF
-// would be replaced by LF in c.txt` under core.safecrlf=true and `* text eol=lf`; `100644
-// 45b983be` (`hi\n`) for working-tree-encoding=UTF-16 with a byte order mark and exit 128 and
-// `fatal: BOM is required in 'w.u16' if encoded as UTF-16` without one; `100644 de980441` (LF
-// lines) under core.autocrlf=true; 100644 kept over a file made executable, and 100755 kept
-// over one made not, under core.fileMode=false; the edit of a tracked file an ignore rule
-// covers; `120000` for a tracked file now a symlink; the content of a file new in @, seeded at
-// the empty blob; a gitlink only the copy holds at the moved HEAD of its repository, at the
-// copy's record where its directory holds no repository, and at `100644` where its path is now a
-// file; exit 128 and `open("u.txt"): Permission denied` for a file of mode 000; the one named
-// file for `a*b` beside a tracked aXb; and a name holding a newline and ending in a space. A file
-// .gitignore ignores that a role forced into the index with `git add -f` is one of them, and is
-// carried; so is a tracked file under a directory that has since become a jj or git repository
-// of its own, which jj's snapshot leaves out: that add, as `git add -f -- <file>`, over an index
-// that holds that file updates it to the worktree's content even under a directory holding its
-// own .git (measured the same way, over a d/x.log under a d that became a repository with a
-// commit). So is a gitlink only the copy holds, which the add records as the git read does
-// (seeds). A file jj's tree holds at another entry than the copy's is the role's own uncommitted
-// diff, an edit or a new file jj snapshotted, since jj writes the colocated index with HEAD's
-// blob for the one and the empty blob for the other: those files are the ones this hashes beyond
-// what jj's tree lacks, and on a clean tree there are none. An unflagged record whose worktree
-// path is now a directory is seeded too and updated with `git add -u -- <path>...` instead, git's
-// own update rule for a tracked path, which records the gitlink of a repository there whose HEAD
-// resolves and otherwise takes the record out, and adds nothing under the directory (seeds). It
-// is the one shape where `update-index --add` is not git's add: measured the same way, over a
-// tracked p now a directory holding p/k.txt, `git add -u -- p` exited 0 and took the record out,
-// and `update-index --add --replace` exited 128 (`error: p: does not exist and --remove not
-// passed`). An entry the copy marks assume-unchanged or skip-worktree is seeded and not added,
-// since the git read keeps the blob it records whatever the worktree holds there. A copy that
-// holds a record and another under it, both of which the git read keeps, fails the workspace
-// before anything is written, as that read fails (keptUnderAKeptPath).
-//
-// jj's tree keeps a gitlink whatever the copy and the worktree hold at its path; the git read
-// does not. Where the copy holds the gitlink and that path is a regular file or a symlink, the
-// git read records it; where nothing is there, the git read drops the gitlink, as it drops a
-// deleted file; where it is a directory holding a repository, the git read records that
-// repository's HEAD, which a role may have moved with a commit inside it; and where it is a
-// directory holding no repository whose HEAD git resolves, it keeps the copy's gitlink, which a
-// role may have staged at another commit than HEAD's. Measured on this build on 2026-11-13, over a
-// committed submodule sub: replaced by a file, the git read recorded `100644 848e6a43` where jj's
-// tree held `160000 a2ef393b`; replaced by a symlink, `120000 8286e959` against the gitlink;
-// removed, nothing against the gitlink; a commit made inside it and staged, the new HEAD `160000
-// 391e84e7` against jj's `160000 1cf8353f`, and unstaged, `160000 181a99d1` against `160000
-// ae7c3619`; its directory emptied, as an uninitialized submodule's is, or stripped of its .git,
-// the gitlink as jj's tree holds it; and bumped, as a role bumps a submodule jj checked out as an
-// empty directory, with `update-index --cacheinfo` over that empty directory, `160000 0ed1e570`
-// where jj's tree held `160000 8a186d6f`, or with `git add sub` and then stripped of its .git,
-// `160000 9cf9733c` against `160000 8e131d17`. So each gitlink of tree is carried by the copy's
-// record at its path (unlinked). Where the copy holds it unflagged, at another commit than jj's
-// tree, the seed writes the copy's; then a path git sees nothing at is removed with `update-index
-// --force-remove -- <path>...`, which `update-index --add` will not do (`does not exist and
-// --remove not passed`, exit 128), and every other path is added by name with `update-index
-// --add --replace -z --stdin`, which records each of the others as the git read records it,
-// measured on the same shapes: the file, the symlink, the repository's HEAD, and over a
-// directory holding no repository whose HEAD git resolves nothing new, exit 0, which keeps the
-// gitlink the seed or jj's tree holds there. Where the copy holds no gitlink at the path, the git
-// read holds none there to update, so jj's gitlink is removed before the seed, and the path is
-// what the copy's own records there and the untracked half make it: measured on this build on
-// 2026-11-13, over a committed submodule emptied, taken out of the index with `git rm --cached`
-// and with a file then added under its path, the git read recorded that file and no gitlink. A
-// gitlink the copy marks assume-unchanged or skip-worktree is none of these: the git read reads
-// nothing at its path and keeps the copy's record, so unlinked passes over every path the copy
-// flags, and the record is the copy's, as the seed writes it or as jj's tree already holds it
-// (seeds). Measured on this build on 2026-11-13, over a committed sub marked either way:
-// removed, a commit made inside it, stripped of its .git, replaced by a file or by a symlink,
-// the git read kept HEAD's `160000` record in each, where the gitlink carried as an unflagged one
-// was removed, moved to the new HEAD, or became the file or the symlink.
-//
-// The untracked half is one `ls-files -z --others --exclude-standard -- .` over the whole
-// worktree against the index copy (GIT_INDEX_FILE=tracked): git's own rule for what `git add
-// --all` adds as new, over the index that read adds to. So git walks into a directory holding a
-// .git exactly where that read does, which is where the copy holds an entry under it, a deleted
-// one among them, whatever the seed holds. It is the one whole-tree read of the worktree this
-// route makes but for the same read nowDirectories makes against another index, only where a
-// record of the copy is now a directory, and it walks the worktree's directories and compares
-// names: it hashes no file and refreshes no entry, so its cost does not follow the size of the
-// tracked tree the way the git read's does (worktreeRead). A file jj refused for its size, a
-// name that is not valid UTF-8 and the files of a directory holding a .jj of its own are all
-// among what it lists, as any other file the copy does not hold. So are files jj's tree already
-// holds, the new files jj snapshotted that the copy lacks; adding them again is harmless, since
-// it writes for each the blob the git read writes for it. Under an unborn HEAD the copy holds
-// nothing (snapshotTree), so this lists every file of the worktree no ignore rule covers and the
-// carry adds each of them again, which hashes it: the cost the git read pays there too, since it
-// starts from the same empty index.
-//
-// A record of the copy that is no gitlink and whose worktree path is now a directory, not beyond
-// a symbolic link, is one this read lists nothing at, since the copy holds it as a file, while
-// `git add --all` over the copy replaces the record by what the directory holds. So those
-// directories alone are read again by the same rule against a copy of the copy without those
-// records (nowDirectories), and what that lists joins this read's answer: the files under them,
-// which it lists already where the directory is a plain one, and each embedded repository among
-// them, which it does not. The update half of that read, which records the gitlink of a
-// repository with a commit there whatever an ignore rule says, is the seeds' `git add -u` (seeds).
-//
-// Each entry is added by name with `update-index --add --replace -z --stdin`, which adds the
-// files it names and walks no directory; it adds no file an ignore rule covers, because it is
-// handed none. It is not `git add -- <file>...`, whose walk over the scratch index would not be
-// the git read's: that index holds jj's tree and the seed and nothing of a deleted file, and
-// over an index holding no entry under a directory that holds a .git, `git add` exits 0 having
-// added nothing there. Measured on this build on 2026-11-12, over a d whose tracked d/old.txt
-// was deleted and which then became a git repository with a commit of d/loose.txt and a new
-// d/new.txt: `git add -- d/loose.txt d/new.txt` over an index holding nothing under d exited 0
-// and added neither, and `update-index --add` added both at the blobs `git add --all` over the
-// copy wrote. --replace lets an added file take the place of an entry the scratch index holds at
-// one of its directories, as `git add` lets it: the worktree holds a directory at that path, so
-// the git read keeps no entry there either. That takes a seeded flagged entry out too where the
-// git read takes it out: measured on this build on 2026-11-13, a file x marked assume-unchanged
-// that became a directory holding x/k.txt was dropped by the git read, which added x/k.txt, and
-// kept at its record where the directory held nothing or only an ignored file.
-//
-// An entry git lists with a trailing slash is an embedded git repository (embeddedRepository),
-// and it is added as its directory, with no trailing slash, by the same `update-index --add
-// --replace -z --stdin`, which records it as the git read records it or refuses it where that
-// read refuses it. Measured on this build on 2026-11-13: over a repository e with a commit, `git
-// add --all` and that add both recorded `160000` at e's HEAD; over one with no commit, made with
-// `git init e` or a fresh `jj git init --colocate` inside e, `git add --all` exited 128 (`'e/'
-// does not have a commit checked out`) and that add exited 128 (`e: is a directory - add files
-// inside instead`), and its failure fails the workspace naming the repositories and git's own
-// words, where dropping e would have read the workspace clean and lost what e holds. The route
-// adds a directory only where this read itself answers a name ending in a slash, and it has no
-// check of its own for a .git or a .jj: a directory holding a .git that git walks into, because
-// the copy holds an entry under it, is no embedded repository to git and its files are carried,
-// as the git read keeps them. Adding such a directory itself would take down the tracked files
-// under it: measured on this build on 2026-11-12, over a d that HEAD tracks d/x.log in and that
-// a role then made a colocated jj repository, `git add -- d` exited 128 ("does not have a commit
-// checked out"), or once d had a commit recorded d as a gitlink, after which `git add -f --
-// d/x.log` exited 128 ("is in submodule 'd'").
-//
-// Every read of paths here is NUL-separated, since a name may hold any byte but NUL; every add
-// names the files it adds, `update-index --add` on its standard input, NUL-separated, and `git
-// add -u` in chunks (inChunks); and nothing here runs a bare add, `add --all`, `update-index
-// --refresh` or `status` over the worktree. No add hands git a pathspec but `add -u`, whose
-// paths are the records now directories, few where any: a pathspec is matched against every
-// record of the index, so a command naming many costs the index's size times their count.
-//
-// Then each file of the untracked set and each embedded repository is looked up by its name in
-// one listing of the scratch index (notCarried), and a path that index does not hold is missed:
-// the workspace fails naming those paths, since they are in no commit this check can push, and a
-// workspace reported clean would have the pod replaced and them lost with it. That is what
-// catches a name git refuses, which `update-index --add` passes over with exit 0 (notCarried).
-// The failure names ten of them and counts the rest, which is what keeps the message inside what
-// Dispatch takes, and writes each with %q, so that a name which is not valid UTF-8 and a name
-// holding the separator are both readable. The seeded half is not read back: `update-index
-// --index-info` writes each seeded entry before its add, so a read of it by name cannot fail,
-// and the add's exit status is that half's guard. Nor is a gitlink of jj's tree, a name that
-// tree already held.
-//
-// Every read the carry needs is made before jj's tree is read into the scratch index: where
-// nothing is seeded, jj's tree holds no gitlink and the untracked read lists nothing to add,
-// jj's tree is the answer as it is, with no read-tree, no write-tree and no read-back.
-func (r runner) carried(dir, tracked string, records []string, index, tree string) (string, error) {
-	listedTree, err := r.gitPaths(dir, nil, "ls-tree", "-r", "-z", tree)
-	if err != nil {
-		return "", err
-	}
-	held := make(map[string]string, len(listedTree))
-	var gitlinks []string
-	for _, line := range listedTree {
-		entry, file, ok := strings.Cut(line, "\t")
-		meta := strings.Fields(entry)
-		if !ok || len(meta) != 3 {
-			return "", fmt.Errorf("git ls-tree answered %q for jj's tree %s, which is no tree entry", line, tree)
-		}
-		held[file] = meta[0] + " " + meta[2]
-		if meta[0] == gitlinkMode {
-			gitlinks = append(gitlinks, file)
-		}
-	}
-	half, err := r.seeds(dir, tracked, records, filepath.Join(filepath.Dir(index), "without"), held)
-	if err != nil {
-		return "", err
-	}
-	readded, removed := unlinked(dir, gitlinks, half.copied)
-	listed, err := r.gitPaths(dir, []string{"GIT_INDEX_FILE=" + tracked}, "ls-files", "-z", "--others", "--exclude-standard", "--", ".")
-	if err != nil {
-		return "", err
-	}
-	untracked, repositories := embeddedRepositories(listed)
-	untracked, repositories = joined(untracked, half.untracked), joined(repositories, half.repositories)
-	if half.seed == "" && len(readded) == 0 && len(removed) == 0 && len(untracked) == 0 && len(repositories) == 0 {
-		return tree, nil
-	}
-	env := []string{"GIT_INDEX_FILE=" + index}
-	if _, err := r.git(dir, env, "read-tree", tree); err != nil {
-		return "", err
-	}
-	if err := inChunks(removed, func(paths []string) error {
-		_, err := r.git(dir, env, append([]string{"update-index", "--force-remove", "--"}, paths...)...)
-		return err
-	}); err != nil {
-		return "", err
-	}
-	if half.seed != "" {
-		if _, err := r.command(dir, env, strings.NewReader(half.seed), "git",
-			append(slices.Clone(gitPins), "update-index", "-z", "--index-info")...); err != nil {
-			return "", err
-		}
-	}
-	// byName is `update-index --add --replace -z --stdin` over paths, fed NUL-separated on its
-	// standard input: one command for the whole set, which matches no pathspec against the index.
-	byName := func(paths []string) error {
-		var stdin strings.Builder
-		for _, path := range paths {
-			stdin.WriteString(path)
-			stdin.WriteByte(0)
-		}
-		_, err := r.command(dir, env, strings.NewReader(stdin.String()), "git",
-			append(slices.Clone(gitPins), "update-index", "--add", "--replace", "-z", "--stdin")...)
-		return err
-	}
-	added := func(paths []string, err error) error {
-		return fmt.Errorf("git could not add %s of %s to the tree this check pushes as the git read adds them, so what they hold is in no commit this check can push: %w", named(paths), dir, err)
-	}
-	for _, step := range []struct {
-		paths []string
-		add   func(paths []string) error
-		// failed is the step's error as the workspace's failure says it.
-		failed func(paths []string, err error) error
-	}{
-		{paths: half.updated, add: byName, failed: added},
-		{paths: half.refreshed, add: func(paths []string) error {
-			return inChunks(paths, func(chunk []string) error {
-				_, err := r.git(dir, env, append([]string{"add", "-u", "--"}, chunk...)...)
-				return err
-			})
-		}},
-		{paths: readded, add: byName, failed: added},
-		{paths: repositories, add: byName, failed: func(paths []string, err error) error {
-			return fmt.Errorf("git could not record the embedded git repositories %s of %s as the gitlinks the git read records, so what they hold is in no commit this check can push: %w", named(paths), dir, err)
-		}},
-		{paths: untracked, add: byName, failed: added},
-	} {
-		if len(step.paths) == 0 {
-			continue
-		}
-		if err := step.add(step.paths); err != nil {
-			if step.failed != nil {
-				err = step.failed(step.paths, err)
-			}
-			return "", err
-		}
-	}
-	missed, err := r.notCarried(dir, env, append(untracked, repositories...))
-	if err != nil {
-		return "", err
-	}
-	if len(missed) > 0 {
-		return "", fmt.Errorf("jj's snapshot of %s left out paths that git could not carry into the tree this check pushes, which are therefore in no commit it can push: %s", dir, named(missed))
-	}
-	return r.git(dir, env, "write-tree")
-}
-
-// gitlinkMode is the mode git records an embedded repository's commit under.
-const gitlinkMode = "160000"
-
-// seeds is the tracked half of the carry, read from the index copy at tracked, whose records are
-// records (trackedHalf): the records the carry writes into the scratch index, each as that index
-// records it; the files among them that `update-index --add` then updates from the worktree; the
-// unflagged records among them whose worktree path is now a directory, which `git add -u`
-// updates; what git lists at every record that is no gitlink, whose path jj's tree lacks or holds
-// at another entry and whose worktree path is now a directory, split into the files and the
-// embedded repositories among them (nowDirectories), read against a copy of the copy at without;
-// and every path of the copy, with its mode and whether it is flagged, by which unlinked decides
-// each gitlink of jj's tree. Each path is named as git names it relative to dir. held is every
-// path of jj's tree with its mode and object, as carried reads them. It fails where the copy
-// holds a record and another under it that the git read keeps both of (keptUnderAKeptPath).
-//
-// An unflagged record is seeded where jj's tree lacks its file or holds it at another entry, and
-// the worktree at dir still holds it: the files the `git add --all` carried stands in for would
-// have updated as tracked and jj's tree lacks or holds otherwise than the copy records them. A
-// file jj's tree holds at another entry is the role's own uncommitted diff, an edit jj
-// snapshotted, which the copy records at HEAD's blob, or a new file it snapshotted, which the copy
-// records at the empty blob (carried). Each of them is updated after, with `update-index --add`,
-// or with `git add -u` where its path is now a directory (below), over the copy's record, so git
-// updates it as the git read does, keeping the record's mode under core.fileMode=false; and a
-// file the index holds at more than one stage is seeded once: the add replaces the record's blob
-// with the worktree's, so which stage's record seeds it decides nothing. A record jj's tree holds
-// at the copy's own mode and object is left as that tree holds it: the git read hashes that file
-// again, and carrying it would hash every file of the worktree (carried's named content losses).
-// One such file is not left: an unflagged regular file whose attributes and configuration can
-// make git's add fail on it as it is (converting), which is seeded and updated as an edit is, so
-// that the add fails the workspace where the git read fails on it, and carries an edit jj's stat
-// rule passed over where git converts it. What that re-read hashes follows the bytes of the files
-// such an attribute covers, and nothing where none does.
-//
-// A file to be updated that is no gitlink, and whose record git's own stat comparison against
-// the copy reports unchanged (wouldRead), is seeded and not updated: the git read opens no such
-// file and keeps its record, so the carry keeps it too, a file git trusts that this process
-// cannot read among them (unreadable). A record jj wrote carries no stat data, so this keeps
-// only records git itself wrote after the role's last jj command.
-//
-// A record marked assume-unchanged or skip-worktree is seeded whatever the worktree holds and
-// whether or not jj's tree holds its path, but for a directory holding a repository (below), and
-// is not updated after: the git read reads no file of it and keeps the blob it records, where
-// jj's snapshot reads the file and holds its edit or nothing. `ls-files -v` tags such a record
-// with a lower-case letter or with S (flagged).
-// Measured on this build on 2026-11-13: tags h for assume-unchanged, S for skip-worktree and s
-// for both; a file under either flag, deleted or edited, kept at its record by the git read,
-// where jj's tree held no file or the edit; and assume-unchanged d/p.txt and skip-worktree
-// e/p.txt, d then a symlink and e a file each an ignore rule covers, kept at their records by
-// the git read, which reads no file of either. Where the git read adds an entry that takes a
-// flagged record's place, the carry's add of that entry with --replace takes it out as well
-// (carried). A flagged record jj's tree holds at the same mode and object is left as that tree
-// holds it. A flagged gitlink is seeded and left by the same rule, and unlinked passes over every
-// path the copy flags, so that the gitlink is the copy's record whatever the worktree holds at
-// its path, as the git read keeps it (carried).
-//
-// Otherwise, a file git sees nothing at in the worktree (updatedAs) is a deletion: the git read
-// records it as one, and jj's tree, missing the file, already does, or holds a gitlink there,
-// which unlinked removes. That holds a file one of whose directories is now a symbolic link:
-// measured on this build on 2026-11-13, over a tracked d/p.txt whose d became a symlink to a
-// directory holding a p.txt, both reads recorded d at 120000 and no d/p.txt, and a seed of
-// d/p.txt failed `git add -f` with `pathspec 'd/p.txt' is beyond a symbolic link`: os.Lstat of
-// the whole path follows the link and finds the file.
-//
-// A record that is no gitlink and whose worktree path is now a directory is two things to the
-// git read. Its update half updates the record by git's rule for a tracked path: to the gitlink
-// of the repository the directory holds where that repository's HEAD resolves, whatever an
-// ignore rule says, and to nothing otherwise, but for a flagged record, which it leaves as it
-// records it. Its walk then adds what is under the directory as new by the ignore rules, an
-// embedded repository there among them, which fails where it has no commit. The walk is read for
-// each such path by nowDirectories. The update half is `git add -u -- <path>...` over the seeded
-// unflagged record, which updates the tracked paths it names and adds nothing new. It is not
-// `git add -f`, which would take the directory whole, ignore rules overridden: measured on this
-// build on 2026-11-12, seeding a file x that had become a directory holding x/k.txt and an
-// ignored x/i.log and adding it with -f put x/i.log into the index. Measured on this build on
-// 2026-11-13, over a committed unflagged p that became a directory, `git add -u -- p` over a copy
-// of the index and `git add --all -- .` over another recorded the same at p: `160000` at the
-// HEAD of a repository with a commit, ignored or not; nothing where the repository had no
-// commit, an ignore rule covering it, where `git add --all` then exited 0, and not covering it,
-// where it exited 128 (`'p/' does not have a commit checked out`) and nowDirectories lists `p/`,
-// so the route fails there too; and nothing at p for a directory holding a file, which `git add
-// --all` added as p/k.txt and the untracked half adds, an empty one, or one holding only ignored
-// files. A flagged record there is seeded unless nowDirectories lists a repository at its path,
-// whose gitlink then takes its place, or fails, as in the git read; where it lists files, their
-// add with --replace takes the record out, and where it lists nothing the record stays (carried).
-//
-// Any other failure to stat a file keeps it, so its add fails and the workspace with it rather
-// than the file being passed over.
-//
-// A gitlink the copy holds and jj's tree lacks — staged with `git add sub` over an embedded
-// repository, or by an uncommitted `git submodule add` — is seeded where its path is still there,
-// and updated as a file is: `update-index --add` of sub records the HEAD of the repository its
-// directory holds and, where the directory holds no repository whose HEAD git resolves, nothing
-// new, so the record stays as the copy records it (both as `git add -f -- sub` does, carried).
-// Measured on this build on 2026-11-13, over a sub staged either way and then stripped of its
-// .git, the git read kept the copy's `160000` record, and so did the seed and that add, exit 0,
-// with none of the files left in sub. A gitlink the copy holds unflagged at another commit than
-// the gitlink jj's tree holds there — a bump staged with `update-index --cacheinfo` or with `git
-// add sub` — is seeded where its path is still there and not added: unlinked re-adds that path,
-// which records the HEAD of a repository there where one resolves and otherwise keeps the seeded
-// record, as the git read keeps it (carried).
-//
-// What is seeded decides nothing of what git walks into: the untracked half is read against the
-// copy itself, which holds a deleted file's record whether or not it is seeded (carried).
-func (r runner) seeds(dir, tracked string, records []string, without string, held map[string]string) (trackedHalf, error) {
-	var seed strings.Builder
-	half := trackedHalf{copied: make(map[string]copyRecord, len(records))}
-	var directories []string
-	// marked is the flagged records whose worktree path is now a directory, each with its seed.
-	var marked []markedRecord
-	// unchanged is the unflagged records of regular files that jj's tree holds at the copy's own
-	// entry, of which converting answers the ones git's add can fail on as they are.
-	var unchanged []string
-	var files []string
-	for _, record := range records {
-		tag, mode, object, file, err := indexRecord(record)
-		if err != nil {
-			return trackedHalf{}, err
-		}
-		if _, ok := half.copied[file]; ok {
-			continue
-		}
-		half.copied[file] = copyRecord{mode: mode, flagged: flagged(tag)}
-		files = append(files, file)
-		line := mode + " " + object + " 0\t" + file + "\x00"
-		kept, inTree := held[file]
-		switch {
-		case inTree && kept == mode+" "+object:
-			if !flagged(tag) && (mode == "100644" || mode == "100755") {
-				unchanged = append(unchanged, record)
-			}
-			continue
-		case inTree && flagged(tag):
-			seed.WriteString(line)
-			continue
-		}
-		gone, directory := updatedAs(dir, file, mode)
-		if directory {
-			directories = append(directories, file)
-		}
-		switch {
-		case directory && flagged(tag):
-			marked = append(marked, markedRecord{file: file, seed: line})
-		case flagged(tag):
-			seed.WriteString(line)
-		case gone:
-		case directory:
-			half.refreshed = append(half.refreshed, file)
-			seed.WriteString(line)
-		case inTree && mode == gitlinkMode && strings.HasPrefix(kept, gitlinkMode+" "):
-			seed.WriteString(line)
-		default:
-			half.updated = append(half.updated, file)
-			seed.WriteString(line)
-		}
-	}
-	if err := keptUnderAKeptPath(dir, files, half.copied); err != nil {
-		return trackedHalf{}, err
-	}
-	listed, err := r.nowDirectories(dir, tracked, without, directories)
-	if err != nil {
-		return trackedHalf{}, err
-	}
-	half.untracked, half.repositories = embeddedRepositories(listed)
-	for _, record := range marked {
-		if !slices.Contains(half.repositories, record.file) {
-			seed.WriteString(record.seed)
-		}
-	}
-	converted, err := r.converting(dir, tracked, unchanged)
-	if err != nil {
-		return trackedHalf{}, err
-	}
-	var reread []markedRecord
-	for _, record := range unchanged {
-		if _, file, _ := strings.Cut(record, "\t"); !converted[file] {
-			continue
-		}
-		_, mode, object, file, err := indexRecord(record)
-		if err != nil {
-			return trackedHalf{}, err
-		}
-		if gone, directory := updatedAs(dir, file, mode); !gone && !directory {
-			reread = append(reread, markedRecord{file: file, seed: mode + " " + object + " 0\t" + file + "\x00"})
-		}
-	}
-	asked := make([]string, 0, len(half.updated)+len(reread))
-	for _, file := range half.updated {
-		if half.copied[file].mode != gitlinkMode {
-			asked = append(asked, file)
-		}
-	}
-	for _, record := range reread {
-		asked = append(asked, record.file)
-	}
-	read, err := r.wouldRead(dir, tracked, asked)
-	if err != nil {
-		return trackedHalf{}, err
-	}
-	updated := half.updated[:0]
-	for _, file := range half.updated {
-		if half.copied[file].mode == gitlinkMode || read[file] {
-			updated = append(updated, file)
-		}
-	}
-	for _, record := range reread {
-		if read[record.file] {
-			seed.WriteString(record.seed)
-			updated = append(updated, record.file)
-		}
-	}
-	half.updated = updated
-	half.seed = seed.String()
-	return half, nil
-}
-
-// markedRecord is a record of the copy with the line that seeds it: a flagged record whose
-// worktree path is now a directory, which seeds writes unless nowDirectories lists a repository at
-// that path, or a file it reads again through git's add (converting).
-type markedRecord struct {
-	file, seed string
-}
-
-// trackedHalf is the tracked half of the carry, as seeds reads it from the index copy (carried).
-type trackedHalf struct {
-	// seed is the records written into the scratch index, each at stage 0 and NUL-separated as
-	// `update-index -z --index-info` reads them.
-	seed string
-	// updated is the files of the seed that `update-index --add` updates from the worktree.
-	updated []string
-	// refreshed is the unflagged records of the seed whose worktree path is now a directory, which
-	// `git add -u` updates by git's own rule for a tracked path.
-	refreshed []string
-	// untracked and repositories are what git lists at every record that is no gitlink and whose
-	// worktree path is now a directory, flagged or not (nowDirectories), split into the files and
-	// the embedded repositories among them (embeddedRepositories).
-	untracked, repositories []string
-	// copied is every path of the copy, with the mode it records and whether it is marked
-	// assume-unchanged or skip-worktree, by which unlinked decides each gitlink of jj's tree.
-	copied map[string]copyRecord
-}
-
-// nowDirectories is what git's own `ls-files -z --others --exclude-standard` lists at each of
-// directories, the copy's records at tracked that are no gitlink and whose worktree path is now
-// a directory (seeds), as it would list them if the copy held none of those records: the read is
-// made against a copy of the copy at without, with exactly those records taken out by
-// `update-index --force-remove`, so it is git's own answer for what each directory is to the git
-// read's walk, and not a model of a .git. It answers nothing where directories is empty, and
-// reads nothing then. The read is the same whole-worktree listing carried makes (`-- .`), and
-// what lies under directories is kept from it here, an entry kept where one of its directories,
-// or the entry itself less its trailing slash, is one of them: a pathspec per directory is
-// matched against each entry the walk meets, so that read's cost grows with their count, where
-// this one costs one walk whatever their count (wouldRead holds what such matching cost).
-//
-// The whole-worktree listing against the copy lists nothing at such a path: the copy holds it as
-// a file, and git then lists no directory there, where `git add --all` over the copy replaces the
-// record by what the directory holds. Measured on this build on 2026-11-13, over a committed p,
-// regular, marked assume-unchanged or marked skip-worktree, that became a directory holding a git
-// repository: `ls-files -z --others --exclude-standard -- .` against the index listed nothing for
-// each, and the same against the index with p force-removed listed `p/`; `git add --all` over a
-// copy of the index recorded `160000` at the repository's HEAD where it had a commit, the marked
-// records among them, and exited 128 (`'p/' does not have a commit checked out`) where it had
-// none. And over a committed p that became a plain directory, regular or marked
-// assume-unchanged, both listings answered `p/k.txt` for a directory holding k.txt and nothing
-// for one empty or holding only an ignored i.log. So an entry listed with a trailing slash is an
-// embedded repository, which carried records as the git read does or fails the workspace where
-// that read fails; a file is one of the untracked set; and a directory that lists nothing adds
-// nothing, so a marked record seeded there stays as the git read keeps it.
-func (r runner) nowDirectories(dir, tracked, without string, directories []string) ([]string, error) {
-	if len(directories) == 0 {
-		return nil, nil
-	}
-	body, err := os.ReadFile(tracked)
-	if err != nil {
-		return nil, err
-	}
-	if err := os.WriteFile(without, body, 0o600); err != nil {
-		return nil, err
-	}
-	env := []string{"GIT_INDEX_FILE=" + without}
-	if err := inChunks(directories, func(paths []string) error {
-		_, err := r.git(dir, env, append([]string{"update-index", "--force-remove", "--"}, paths...)...)
-		return err
-	}); err != nil {
-		return nil, err
-	}
-	listed, err := r.gitPaths(dir, env, "ls-files", "-z", "--others", "--exclude-standard", "--", ".")
-	if err != nil {
-		return nil, err
-	}
-	asked := make(map[string]bool, len(directories))
-	for _, directory := range directories {
-		asked[directory] = true
-	}
-	var under []string
-	for _, entry := range listed {
-		for at := strings.IndexByte(entry, '/'); at >= 0; {
-			if asked[entry[:at]] {
-				under = append(under, entry)
-				break
-			}
-			next := strings.IndexByte(entry[at+1:], '/')
-			if next < 0 {
-				break
-			}
-			at += 1 + next
-		}
-	}
-	return under, nil
-}
-
-// joined is listed with each entry of more that listed lacks after it, in order.
-func joined(listed, more []string) []string {
-	if len(more) == 0 {
-		return listed
-	}
-	seen := make(map[string]bool, len(listed))
-	for _, entry := range listed {
-		seen[entry] = true
-	}
-	for _, entry := range more {
-		if !seen[entry] {
-			seen[entry] = true
-			listed = append(listed, entry)
-		}
-	}
-	return listed
-}
-
-// copyRecord is one path of the index copy as seeds reads it: the mode it records, and whether
-// it is marked assume-unchanged or skip-worktree (flagged).
-type copyRecord struct {
-	mode    string
-	flagged bool
-}
-
-// keptUnderAKeptPath is the failure of a copy of the index that holds a record at a path and
-// another under it, both of which `git add --all` keeps, and nil for any other copy; files is
-// the copy's paths in its own order and copied its records by path. git itself writes no such
-// index, but jj's index writer can: measured on this build on 2026-11-13, over a sub staged with
-// `git add sub` as a gitlink and then stripped of its .git, a role's `jj status` snapshotted
-// sub/inner.txt and wrote it into the colocated index beside the gitlink. `git add --all` over
-// that copy exited 0 keeping both, and its write-tree exited 128 (`You have both sub and
-// sub/inner.txt`), so the git read fails the workspace there; the carry's seed would replace
-// sub/inner.txt with the gitlink and answer a tree. So the route fails it too, by the rule that
-// read keeps a record by: a flagged record whatever the worktree holds, and an unflagged one
-// where its update keeps it (updatedAs).
-func keptUnderAKeptPath(dir string, files []string, copied map[string]copyRecord) error {
-	kept := func(file string) bool {
-		record := copied[file]
-		if record.flagged {
-			return true
-		}
-		gone, directory := updatedAs(dir, file, record.mode)
-		return !gone && !directory
-	}
-	for _, file := range files {
-		for at := strings.LastIndexByte(file, '/'); at > 0; at = strings.LastIndexByte(file[:at], '/') {
-			if _, ok := copied[file[:at]]; ok && kept(file[:at]) && kept(file) {
-				return fmt.Errorf("the git index of %s holds both %q and %q under it, which the git read keeps both of and then refuses to write a tree of (`You have both %s and %s`), so the workspace fails here as it fails there", dir, file[:at], file, file[:at], file)
-			}
-		}
-	}
-	return nil
-}
-
-// updatedAs is git's keep rule for an unflagged index record of mode at file, which git names
-// relative to dir: what `git add --all` finds at its worktree path. gone is where git sees
-// nothing there (inWorktree), which that read records as a deletion; directory is where a
-// record that is no gitlink is now a directory, which that read replaces by what the directory
-// holds (nowDirectories); and where it is neither, that read keeps the record and updates it from
-// what is there, a path os.Lstat fails on for any other reason among them, whose add then fails
-// the workspace rather than the path being passed over. seeds and keptUnderAKeptPath each decide
-// by it.
-func updatedAs(dir, file, mode string) (gone, directory bool) {
-	info, gone, err := inWorktree(dir, file)
-	return gone, !gone && err == nil && info.IsDir() && mode != gitlinkMode
-}
-
-// flagged is whether tag, the letter `ls-files -v` puts before an index record, marks the
-// record assume-unchanged, a lower-case letter, or skip-worktree, S: a record whose file `git add
-// --all` does not read.
-func flagged(tag string) bool {
-	return tag == "S" || tag != strings.ToUpper(tag)
-}
-
-// indexRecord is one record of `ls-files -s -v -z` over the index copy, split into its tag, its
-// mode, its object and its path, which git names relative to the worktree.
-func indexRecord(record string) (tag, mode, object, file string, err error) {
-	entry, file, ok := strings.Cut(record, "\t")
-	meta := strings.Fields(entry)
-	if !ok || len(meta) != 4 {
-		return "", "", "", "", fmt.Errorf("git ls-files -s -v answered %q for the copy of the worktree's index, which is no index record", record)
-	}
-	return meta[0], meta[1], meta[2], file, nil
-}
-
-// unreadable fails the workspace at dir where the worktree holds, at a path of records, the index
-// copy's records as `ls-files -s -v -z` lists them, a regular file this process cannot open for
-// reading or a symlink it cannot read, that `git add --all` over the copy at tracked would open:
-// that read fails there, so the route fails too, naming up to maxNamedPaths of them and counting
-// the rest (named). jj's snapshot does not fail there: a file it recorded whose mtime and size
-// have not moved is one it passes over, mode 000 or not, and the route would read it clean at the
-// entry jj recorded, which loses what the file holds where it was rewritten at its size with its
-// mtime set back. Measured on this build on 2026-11-13, over a committed u.txt jj had
-// snapshotted, made mode 000 as it was, or first rewritten from AAAA to BBBB at its size with its
-// mtime set back: `git add --all` over a copy of the index exited 128 (`error: open("u.txt"):
-// Permission denied`, `fatal: updating files failed`) and `jj status` answered `The working copy
-// has no changes.`, exit 0, in both.
-//
-// A record marked assume-unchanged or skip-worktree is passed over, since the git read reads no
-// file of it: measured the same way over such a u.txt of mode 000, `git add --all` exited 0 and
-// kept its record. So is a path that is gone, a directory, a path beyond a symbolic link and a
-// path os.Lstat fails on, a directory on its way that cannot be searched among them: git's own
-// rules decide those (inWorktree), and jj's snapshot fails on a directory it cannot read
-// (snapshotTree). A record held at more than one stage is one path. A symlink is read with
-// readlink, which reads the link and not what it names, as git does, so one that dangles or names
-// a file nobody may read is readable.
-//
-// So is a path whose record git trusts by its stat data, which git itself asks: the paths the walk
-// found are handed to git's own stat comparison against the copy (wouldRead), and only those it
-// reports changed fail the workspace. git opens no file whose record matches its stat data and
-// is not racily clean, so the git read keeps that record without reading the file, and the carry
-// keeps it too (seeds). Such a record is one git wrote after the role's last jj command, since jj
-// writes none: under core.trustctime=false for a file made mode 000 at any time after, or for one
-// made so inside the second its ctime was stamped in, since git compares a ctime to the second
-// and chmod changes nothing else it compares. That comparison follows every setting git reads
-// for it (core.trustctime, core.checkStat, its racy-entry rule) because it is git's own, and none
-// of them is modelled here. Measured with git 2.47.3 on 2026-11-13, over a committed f whose
-// index record git wrote with its mtime a minute back, made mode 000 1.2 s later: `diff-files
-// --name-only -z -- f` over a copy of the index listed f and `git add --all` over another copy
-// exited 128 (`error: open("f"): Permission denied`); under core.trustctime=false the first
-// listed nothing and the second exited 0 and kept f at its record, `100644 b1943619`. A record git
-// wrote in the second the file was written, then the file made mode 000, is racily clean:
-// diff-files listed it and `git add --all` exited 128, under core.trustctime=false too. It hashes
-// no file whose stat data decides: a readable file rewritten under core.trustctime=false at its
-// size and mtime was listed as unchanged though its bytes differed, and one whose mtime alone
-// moved was listed with `0000000…` as its worktree object, its bytes unread.
-//
-// What a role does to a file after the walk is not seen by it: a file made unreadable then is
-// one jj's snapshot passes over where its mtime and size have not moved, and the route answers
-// jj's entry for it, which loses something only inside the named mtime case (carried); where the
-// carry's add reads it, that add fails the workspace.
-//
-// Each path's test is one access(2) for reading, with the process's real ids, which a pod's are,
-// and it hashes nothing; a path is looked at again only where that test fails. Measured on
-// 2026-11-13 on two CPUs, over 5000 records of a fixture of 292,600 tracked files and 3.6 GB,
-// access took 347 to 501 ms and an open and close 521 to 588 ms; over all of its records access
-// took 27.0 s and 26.4 s and an open and close 33.1 s; and four, eight or sixteen goroutines over
-// 20,000 of them took 1.4 to 1.7 s where one took 1.3 s, so the walk is one loop. That loop runs
-// under the read's cut (check): it tests the cut before each record and stops at the record where
-// the cut fires, and git's stat comparison runs under the same cut, so a walk still running when
-// the bound ends eats nothing of the push's reserve
-// (TestAReadCutInsideTheWalksOwnLoopStillRescuesTheCommitsFound).
-func (r runner) unreadable(dir, tracked string, records []string) error {
-	// paths is what the walk found, each with why it cannot be read at the same index of denials.
-	var paths []string
-	var denials []error
-	last := ""
-	for i, record := range records {
-		if observeRecord != nil {
-			observeRecord(r.ctx, i)
-		}
-		if err := r.ctx.Err(); err != nil {
-			return fmt.Errorf("the walk of the tracked files of %s for one this process cannot read was stopped at its record %d of %d: %w", dir, i+1, len(records), err)
-		}
-		tag, _, _, file, err := indexRecord(record)
-		if err != nil {
-			return err
-		}
-		if file == last {
-			continue
-		}
-		last = file
-		if flagged(tag) {
-			continue
-		}
-		at := filepath.Join(dir, file)
-		denied := unix.Access(at, unix.R_OK)
-		if denied == nil {
-			continue
-		}
-		info, err := os.Lstat(at)
-		switch {
-		case err != nil, info.IsDir():
-			continue
-		case info.Mode()&fs.ModeSymlink != 0:
-			if _, denied = os.Readlink(at); denied == nil {
-				continue
-			}
-		case !info.Mode().IsRegular():
-			continue
-		default:
-			denied = &fs.PathError{Op: "access", Path: at, Err: denied}
-		}
-		if beyondSymlink(dir, file) {
-			continue
-		}
-		paths = append(paths, file)
-		denials = append(denials, denied)
-	}
-	read, err := r.wouldRead(dir, tracked, paths)
-	if err != nil {
-		return err
-	}
-	var refused []string
-	var first error
-	for i, file := range paths {
-		if !read[file] {
-			continue
-		}
-		if first == nil {
-			first = denials[i]
-		}
-		refused = append(refused, file)
-	}
-	if len(refused) == 0 {
-		return nil
-	}
-	return fmt.Errorf("the tracked files %s of %s cannot be read, and the git read fails on a tracked file it cannot read, so what they hold is in no commit this check can push: %w", named(refused), dir, first)
-}
-
-// wouldRead is the files among files, each a record of the index copy at tracked that is no
-// gitlink, that git's own stat comparison against that copy reports changed: `diff-files
-// --name-only -z` with GIT_INDEX_FILE at the copy, which compares each record's stat data with
-// the file's and lists those `git add --all` over the copy opens and hashes again; a record it
-// does not list is one that read keeps as the copy records it. It opens a file only where the
-// record is racily clean, git's own rule, and answers nothing and runs nothing where files is
-// empty (unreadable, which holds the measurements). It asks by name below wholeIndexStatAt files
-// and over the whole index at or above it (statChanged).
-func (r runner) wouldRead(dir, tracked string, files []string) (map[string]bool, error) {
-	if len(files) == 0 {
-		return nil, nil
-	}
-	return r.statChanged(dir, tracked, files, len(files) >= wholeIndexStatAt)
-}
-
-// wholeIndexStatAt is the count of files at which wouldRead asks git's stat comparison over the
-// whole index rather than by name (statChanged): where the two cost the same. By name costs the
-// index's records times the names, and the whole index its records alone, so where they meet is a
-// count of names whatever the index's size. Measured with git 2.47.3 on 2026-11-13, on two CPUs,
-// over a copy of the .git/index of a full copy of the fixture worktreeRead names (290,600
-// records, none with stat data), its worktree the copy's, each with --literal-pathspecs and the
-// names spread evenly over the index, in chunks as inChunks cuts them, twice each: by name, 200
-// names took 1.6 and 1.7 s, 800 7.1 and 6.9 s, 1,200 12.5 and 9.7 s, 1,600 12.4 and 12.2 s,
-// 2,000 16.9 and 15.9 s, 2,400 20.2 and 19.0 s, 2,800 42.0 (a run another process slowed) and
-// 23.4 s, 3,000 25.2 and 24.4 s, and 3,200 25.5 and 24.8 s, about 8 ms a name; over the whole
-// index, no pathspec, 23.0, 24.4, 25.0 and 22.3 s, listing all 290,600 records, since none
-// carries stat data. So the two meet at about 2,800 names. Names that share less of their
-// prefix with the index's records are matched faster: in the c5 timing driver
-// (TestTheJJRouteOnACopyOfTheC5Fixture), 200 and 1,600 names in one new directory took 0.6 to
-// 0.7 s and 4.7 to 4.8 s by name, about 3 ms a name, which would meet the whole index nearer
-// 7,700. The count is set where the spread names meet it, so that a read by name never costs
-// much more than the whole index does, and the most a read over the whole index costs is that
-// one read.
-const wholeIndexStatAt = 2800
-
-// statChanged is wouldRead's answer made one of two ways. By name, whole false: `diff-files
-// --name-only -z -- <file>...`, in chunks (inChunks), each name a pathspec git matches against
-// every record of the copy, so its cost is the copy's size times the names. Over the whole copy,
-// whole true: one `diff-files --name-only -z` with no pathspec, whose answer is kept here where
-// it names one of files, so its cost is one stat comparison of every record, whatever the count
-// of names. Each record's comparison is the same either way, so the two answer the same
-// (TestGitsStatComparisonAnswersTheSameByNameAndOverTheWholeIndex).
-func (r runner) statChanged(dir, tracked string, files []string, whole bool) (map[string]bool, error) {
-	env := []string{"GIT_INDEX_FILE=" + tracked}
-	read := make(map[string]bool, len(files))
-	if whole {
-		asked := make(map[string]bool, len(files))
-		for _, file := range files {
-			asked[file] = true
-		}
-		listed, err := r.gitPaths(dir, env, "diff-files", "--name-only", "-z")
-		if err != nil {
-			return nil, err
-		}
-		for _, file := range listed {
-			if asked[file] {
-				read[file] = true
-			}
-		}
-		return read, nil
-	}
-	err := inChunks(files, func(chunk []string) error {
-		listed, err := r.gitPaths(dir, env, append([]string{"diff-files", "--name-only", "-z", "--"}, chunk...)...)
-		for _, file := range listed {
-			read[file] = true
-		}
-		return err
-	})
-	return read, err
-}
-
-// converting is the files of records, records of the index copy at tracked that jj's tree holds
-// at the copy's own entry, whose attributes and configuration can make git's add fail on the file
-// as it is, which `git add --all` over the copy hashes again through git's content conversion:
-// a file whose filter attribute names a clean filter configured as required
-// (filter.<name>.required), which fails where the filter does (`fatal: f.fx: clean filter 'bad'
-// failed`); a file with a working-tree-encoding, which fails where its bytes are not in that
-// encoding (`fatal: BOM is required in 'w.u16' if encoded as UTF-16`), and where the attribute
-// is set or unset rather than naming an encoding (`true/false are no valid
-// working-tree-encodings`); and, under core.safecrlf set to true, a file git converts line
-// endings of, which fails where the conversion would not survive a checkout (`fatal: CRLF would
-// be replaced by LF in c.txt`).
-// The first, second and fourth were measured with git 2.47.3 on 2026-11-13, `git add --all`
-// over a copy of the index exiting 128 with those words; the third is git's own die in
-// git_path_check_encoding. Which file git converts line endings of is git's own rule, read in
-// convert.c's convert_attrs at v2.47.3: its text attribute, or its crlf attribute where text
-// says nothing, set, auto or input; and where neither says anything, an eol attribute of lf or
-// crlf, or core.autocrlf true or input. A file whose text attribute, or crlf where text says
-// nothing, is unset is not converted, whatever eol and core.autocrlf say. A path is taken where
-// any of these may apply, which costs a hash and never a loss.
-//
-// The attributes are read with `check-attr -z --stdin` against the copy (GIT_INDEX_FILE), without
-// --cached, which reads each .gitattributes from the worktree first and from the index where the
-// worktree lacks it, as git's add does: measured on the same day, over a c.txt whose staged
-// .gitattributes said `-text` and whose worktree one said `text eol=lf`, check-attr answered
-// `text: set` and `eol: lf` without --cached and `text: unset` with it, and `git add` failed on
-// the CRLF. Only the attributes the configuration makes matter are asked for: the filter where
-// some filter is configured as required, and text, eol and crlf under core.safecrlf=true. Each
-// boolean is read by git, `config --type=bool`, so no spelling of one is parsed here; the one
-// word core.safecrlf and core.autocrlf each take besides, warn and input, is matched without
-// regard to case, as git matches it. Nothing is hashed by this. Measured on 2026-11-13 over the
-// fixture worktreeRead names, whose index held 293,200 records that day, with no
-// .gitattributes: check-attr asking working-tree-encoding alone took 2.04 and 1.87 s, and asking
-// all five attributes 2.35, 2.22, 2.10 and 2.25 s, answering 14 MB and 52 MB.
-func (r runner) converting(dir, tracked string, records []string) (map[string]bool, error) {
-	if len(records) == 0 {
-		return nil, nil
-	}
-	keys, err := r.gitPaths(dir, nil, "config", "-z", "--name-only", "--list")
-	if err != nil {
-		return nil, err
-	}
-	// required is each filter some filter.<name>.required key names, with git's reading of it;
-	// anyRequired is whether one of them is true. autocrlf is whether core.autocrlf makes a file
-	// whose attributes say nothing of its line endings one git converts: true and input both do.
-	required := map[string]bool{}
-	anyRequired, safecrlf, autocrlf := false, false, false
-	seen := map[string]bool{}
-	for _, key := range keys {
-		if seen[key] {
-			continue
-		}
-		seen[key] = true
-		name, isFilter := strings.CutPrefix(key, "filter.")
-		name, isRequired := strings.CutSuffix(name, ".required")
-		switch {
-		case isFilter && isRequired && name != "":
-			if required[name], err = r.configBool(dir, key); err != nil {
-				return nil, err
-			}
-			anyRequired = anyRequired || required[name]
-		case key == "core.safecrlf":
-			if _, safecrlf, err = r.configBoolOrWord(dir, key, "warn"); err != nil {
-				return nil, err
-			}
-		case key == "core.autocrlf":
-			input, on, err := r.configBoolOrWord(dir, key, "input")
-			if err != nil {
-				return nil, err
-			}
-			autocrlf = input || on
-		}
-	}
-	attributes := []string{"working-tree-encoding"}
-	if anyRequired {
-		attributes = append(attributes, "filter")
-	}
-	if safecrlf {
-		attributes = append(attributes, "text", "eol", "crlf")
-	}
-	var stdin strings.Builder
-	for _, record := range records {
-		_, file, _ := strings.Cut(record, "\t")
-		stdin.WriteString(file)
-		stdin.WriteByte(0)
-	}
-	out, err := r.output(dir, []string{"GIT_INDEX_FILE=" + tracked}, strings.NewReader(stdin.String()), "git",
-		append(slices.Clone(gitPins), append([]string{"check-attr", "-z", "--stdin"}, attributes...)...)...)
-	if err != nil {
-		return nil, err
-	}
-	converted := map[string]bool{}
-	// text, eol and crlf are the line-ending attributes of the file at, which check-attr answers
-	// together, one file after another.
-	at, text, eol, crlf := "", "", "", ""
-	settle := func() {
-		if safecrlf && at != "" && endsConverted(text, eol, crlf, autocrlf) {
-			converted[at] = true
-		}
-	}
-	for rest := out; rest != ""; {
-		var file, attribute, value string
-		var ok bool
-		if file, rest, ok = strings.Cut(rest, "\x00"); ok {
-			if attribute, rest, ok = strings.Cut(rest, "\x00"); ok {
-				value, rest, ok = strings.Cut(rest, "\x00")
-			}
-		}
-		if !ok {
-			return nil, fmt.Errorf("git check-attr answered %q for the copy of the index of %s, which is no attribute record", file, dir)
-		}
-		if file != at {
-			settle()
-			at, text, eol, crlf = file, "", "", ""
-		}
-		switch attribute {
-		case "working-tree-encoding":
-			if value != "unspecified" && value != "" {
-				converted[file] = true
-			}
-		case "filter":
-			if value != "unspecified" && value != "unset" && value != "set" && required[value] {
-				converted[file] = true
-			}
-		case "text":
-			text = value
-		case "eol":
-			eol = value
-		case "crlf":
-			crlf = value
-		}
-	}
-	settle()
-	return converted, nil
-}
-
-// endsConverted is whether git converts the line endings of a file whose text, eol and crlf
-// attributes check-attr answers as given, where autocrlf is whether core.autocrlf is true or
-// input (converting).
-func endsConverted(text, eol, crlf string, autocrlf bool) bool {
-	decided := func(value string) bool {
-		return value == "set" || value == "unset" || value == "input" || value == "auto"
-	}
-	action := text
-	if !decided(action) {
-		action = crlf
-	}
-	switch {
-	case action == "unset":
-		return false
-	case decided(action):
-		return true
-	}
-	return eol == "lf" || eol == "crlf" || autocrlf
-}
-
-// configBool is git's own reading of the boolean configuration key in dir, false where it is
-// unset: `config --type=bool --default=false --get`, so every spelling git takes is git's.
-func (r runner) configBool(dir, key string) (bool, error) {
-	value, err := r.git(dir, nil, "config", "--type=bool", "--default=false", "--get", key)
-	return value == "true", err
-}
-
-// configBoolOrWord is git's reading of the configuration key in dir, which git takes as one word
-// besides a boolean: isWord where the key holds word, matched without regard to case as git
-// matches core.safecrlf's warn and core.autocrlf's input, and otherwise its boolean (configBool).
-func (r runner) configBoolOrWord(dir, key, word string) (isWord, value bool, err error) {
-	raw, err := r.git(dir, nil, "config", "--default=", "--get", key)
-	if err != nil {
-		return false, false, err
-	}
-	if strings.EqualFold(raw, word) {
-		return true, false, nil
-	}
-	value, err = r.configBool(dir, key)
-	return false, value, err
-}
-
-// inWorktree is os.Lstat of file, which git names relative to dir, with gone set where git sees
-// nothing at that path: no such file (ENOENT), a directory on its path that is now a file
-// (ENOTDIR), or a directory on its path that is a symbolic link (beyondSymlink), which git reads
-// nothing through while os.Lstat of the whole path follows it. Any other error is answered with
-// gone false, so that a caller keeps the path and git's own read of it fails the workspace
-// rather than the path being passed over. updatedAs and unlinked each decide by it.
-func inWorktree(dir, file string) (info fs.FileInfo, gone bool, err error) {
-	info, err = os.Lstat(filepath.Join(dir, file))
-	if errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ENOTDIR) || beyondSymlink(dir, file) {
-		return nil, true, nil
-	}
-	return info, false, err
-}
-
-// beyondSymlink is whether a directory on the path of file, which git names relative to dir, is
-// a symbolic link. git reads no file through one, so to git such a path holds nothing, while
-// os.Lstat of the whole path follows the link.
-func beyondSymlink(dir, file string) bool {
-	for at := strings.IndexByte(file, '/'); at >= 0; {
-		info, err := os.Lstat(filepath.Join(dir, file[:at]))
-		if err != nil {
-			return false
-		}
-		if info.Mode()&fs.ModeSymlink != 0 {
-			return true
-		}
-		next := strings.IndexByte(file[at+1:], '/')
-		if next < 0 {
-			return false
-		}
-		at += 1 + next
-	}
-	return false
-}
-
-// unlinked is the gitlinks of jj's tree, which git names relative to dir, split as the git read
-// records them (carried), by copied, the copy's records by path (seeds). jj's tree keeps a
-// gitlink whatever the copy and the worktree hold at its path, and the git read starts from the
-// copy, so each is decided by the copy's record at its path.
-//
-// A path the copy marks assume-unchanged or skip-worktree is in neither list: the git read reads
-// nothing at it and keeps the copy's record, which the seed writes where jj's tree holds another
-// (seeds).
-//
-// A path the copy holds as an unflagged gitlink is updated as the git read updates that record.
-// removed is each such path git sees nothing at (inWorktree), which the git read drops, and
-// readded is every other, which carried passes through `update-index --add --replace --
-// <path>...` over the copy's record, which the seed writes where jj's tree holds another
-// gitlink (seeds). That records what the git read records at each: the file or symlink now in
-// the gitlink's place; the HEAD of the repository the directory holds, which a role may have
-// moved; and, where the directory holds no repository whose HEAD git resolves, an uninitialized
-// submodule's empty directory among them, nothing new, which keeps the copy's gitlink, a bump a
-// role staged with `update-index --cacheinfo` or `git add` among them. A path os.Lstat fails on
-// for any other reason is readded, so that its add fails and the workspace with it rather than
-// the gitlink being passed over.
-//
-// A path the copy holds no gitlink at is removed, whatever the worktree holds there: the git
-// read holds no gitlink there to update, and what it records at the path or under it is the
-// copy's own records there, which the seed writes and the adds update, and what its walk adds as
-// new, which the untracked half adds, an embedded repository's gitlink among them. carried takes
-// these out before the seed is written, so that the seed and the adds write over a scratch index
-// that no longer holds jj's gitlink. Measured on this build on 2026-11-13, over a committed
-// submodule sub emptied, taken out of the index with `git rm --cached sub`, and with
-// sub/new.txt written and added: the git read recorded sub/new.txt and no gitlink, and a re-add
-// of sub after the seed of sub/new.txt had taken jj's gitlink out exited 128 (`sub: is a
-// directory - add individual files instead`).
-func unlinked(dir string, gitlinks []string, copied map[string]copyRecord) (readded, removed []string) {
-	for _, link := range gitlinks {
-		record, ok := copied[link]
-		switch {
-		case record.flagged:
-		case !ok || record.mode != gitlinkMode:
-			removed = append(removed, link)
-		default:
-			if _, gone, _ := inWorktree(dir, link); gone {
-				removed = append(removed, link)
-			} else {
-				readded = append(readded, link)
-			}
-		}
-	}
-	return readded, removed
-}
-
-// embeddedRepository is the directory of an embedded git repository where entry, as `ls-files
-// --others` lists it, is one, and false where it is not: git lists such a directory as itself,
-// with a trailing slash, and never lists a file in it.
-func embeddedRepository(entry string) (string, bool) {
-	return strings.CutSuffix(entry, "/")
-}
-
-// embeddedRepositories is entries split into the files among them and the embedded git
-// repositories, each repository named as its directory, with no trailing slash, which is how
-// `update-index --add` names the gitlink it records there (carried).
-func embeddedRepositories(entries []string) (files, repositories []string) {
-	for _, entry := range entries {
-		if repository, ok := embeddedRepository(entry); ok {
-			repositories = append(repositories, repository)
-		} else {
-			files = append(files, entry)
-		}
-	}
-	return files, repositories
-}
-
-// pathspecBudget is how many bytes of paths one git command this carry runs over a set of files
-// names at a time (inChunks). Either half of the carry can be as large as the worktree — a
-// directory holding a nested .jj can hold a whole jj store, and every file of it is new to git —
-// and one command line takes only so many bytes, so each such command is made in chunks of this
-// size and no file of the set goes unadded or unread for want of room on it.
-const pathspecBudget = 64 << 10
-
-// inChunks calls each with paths in order, in runs of at most pathspecBudget bytes, a run
-// holding one path at the least, and stops at the first error, which it answers.
-func inChunks(paths []string, each func(chunk []string) error) error {
-	for rest := paths; len(rest) > 0; {
-		n, size := 0, 0
-		for n < len(rest) && (n == 0 || size+len(rest[n]) <= pathspecBudget) {
-			size += len(rest[n])
-			n++
-		}
-		if err := each(rest[:n]); err != nil {
-			return err
-		}
-		rest = rest[n:]
-	}
-	return nil
-}
-
-// notCarried is every file of untracked that the index at env does not hold: the index is listed
-// once, whole, with `ls-files -z`, and a file is held only where that listing holds its exact
-// name. It is a read of the index, not a second read of the whole worktree, and it hands git no
-// pathspec: one per name is matched against every record of the index, so a read of the names
-// costs the index's size times their count, where the whole listing is read once. Measured by the
-// tester on 2026-11-13 over the fixture worktreeRead names, 290,600 records, `ls-files -z --`
-// over 200, 1,600 and 5,600 named paths took 1.9, 6.6 and 27.2 s, and `ls-files -z` with no
-// pathspec 0.1 s.
-//
-// It catches a name git refuses, which `update-index --add` passes over with exit 0 having added
-// nothing. Measured on this build on 2026-11-13, `update-index --add --replace --` over new files
-// named GIT~1, `.git. `, `git~1` and `.GIT` printed `Ignoring path GIT~1` and the same for each
-// of the others, exited 0 and added none of them, while `ls-files --others` listed all four, and
-// `update-index --add --replace -z --stdin` fed GIT~1 and `.git. ` did the same. jj's
-// snapshot takes such a file where it is small enough, and then the `read-tree` of jj's tree into
-// the scratch index refuses it (`invalid path 'GIT~1'`, exit 128, measured on this build on
-// 2026-11-13) and fails the workspace; one above jj's size limit is in neither, and only this
-// read-back finds it missing (differential_test.go). The `git add --all` this route replaces
-// refuses the same new names, with `invalid path 'GIT~1'` and exit 128, so the workspace fails by
-// either read. A file the add cannot read is another matter: `update-index --add` exits
-// non-zero for it, and that exit fails the workspace before the read-back runs
-// (TestAFileTheCarryCannotAddFailsTheWorkspaceAndPushesNothing). The read-back covers the files
-// the untracked half adds and the embedded repositories it records, since the seeded half
-// writes each entry before its add and a gitlink of jj's tree is a name that tree already held
-// (carried).
-func (r runner) notCarried(dir string, env []string, untracked []string) ([]string, error) {
-	if len(untracked) == 0 {
-		return nil, nil
-	}
-	held, err := r.gitPaths(dir, env, "ls-files", "-z")
-	if err != nil {
-		return nil, err
-	}
-	holds := make(map[string]bool, len(held))
-	for _, file := range held {
-		holds[file] = true
-	}
-	var missing []string
-	for _, file := range untracked {
-		if !holds[file] {
-			missing = append(missing, file)
-		}
-	}
-	return missing, nil
-}
-
-// quoted is paths as one text a person reads, each written with %q. A path, a sparse pattern and
-// an argument of a command that names a path may all hold any byte, the separator this list is
-// written with among them, so none is written bare: quoting is what keeps a list of them one
-// list where a reader can tell its members apart, and it keeps a name that is not valid UTF-8
-// readable.
-func quoted(paths []string) string {
-	one := make([]string, len(paths))
-	for i, path := range paths {
-		one[i] = fmt.Sprintf("%q", path)
-	}
-	return strings.Join(one, ", ")
-}
-
-// staleWorkingCopy is what jj says of a working copy an operation elsewhere moved on from: it
-// refuses the snapshot and exits 1, so this text reaches the check inside the command's error.
-const staleWorkingCopy = "working copy is stale"
-
-// maxNamedPaths is how many paths a failure names: a workspace of many of them would otherwise
-// make a message longer than Dispatch takes.
-const maxNamedPaths = 10
-
-// named is up to maxNamedPaths of paths as a person reads them, with a count of the rest.
-func named(paths []string) string {
-	if len(paths) > maxNamedPaths {
-		return fmt.Sprintf("%s, and %d more", quoted(paths[:maxNamedPaths]), len(paths)-maxNamedPaths)
-	}
-	return quoted(paths)
+		args = append(args, "-p", head)
+	} else if tree == emptyTree {
+		return "", nil
+	}
+	return r.git(dir, fixedIdentity(date), args...)
 }
 
 // emptyTree is git's tree with nothing in it.

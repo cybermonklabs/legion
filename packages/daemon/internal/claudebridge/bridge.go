@@ -94,6 +94,14 @@ type bridge struct {
 	// from the `system` `init` line that begins every turn (systemInit) — it is in a turn with no
 	// step of its own open, and that turn's one result ends it.
 	inRun, stepping bool
+	// refusal is what the provider said about a step of the turn running that it refused, and ""
+	// for a turn no step of which has failed: the turn's own outcome, reported when the turn ends.
+	// It begins each turn empty, so a turn is refused when a step of it failed, however many steps
+	// the turn took.
+	refusal string
+	// reports is this backend's producer of turn outcomes, nil for a pane that names no daemon
+	// (turnoutcome.go).
+	reports *turnReports
 	// promptRun is the request id of the daemon's prompt whose turn is running, and "" in a turn
 	// no prompt of the daemon's started — an Envoy delivery's, or one Claude Code started by
 	// itself when a background task finished. The bridge reports it as Oh My Pi reports its own
@@ -148,6 +156,7 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 	}
 	b := &bridge{cfg: cfg, log: log.New(logOut, "[claude-bridge] ", 0)}
 	b.frames = shimwire.NewWriter(&b.encoded)
+	b.reports = startTurnReports(cfg, b.log)
 	// stop ends the outputs' writers and every reader's send, once Run returns. It does not
 	// interrupt a readLines blocked in ReadBytes, and Run does not wait for those readers.
 	stop := make(chan struct{})
@@ -458,9 +467,10 @@ func (b *bridge) sendQueued() {
 // beginRun marks a turn running and tells the daemon it began. prompt is the request id of the
 // daemon's prompt that started it, and "" for a turn nothing of the daemon's did — an Envoy
 // delivery's, or one Claude Code started by itself — which is why it is written rather than
-// assumed to be clear already.
+// assumed to be clear already. The turn begins with no refusal against it: what the provider said
+// about an earlier turn is not this turn's outcome.
 func (b *bridge) beginRun(prompt string) {
-	b.inRun, b.promptRun = true, prompt
+	b.inRun, b.promptRun, b.refusal = true, prompt, ""
 	b.emit(shimwire.AgentStart{})
 }
 
@@ -567,7 +577,10 @@ const (
 // providerFailed is whether the provider failed the turn res ended, which is the one end the
 // prompt_result carries an error for (dispatch://INFRA-956/comment/4fa88c00-3313-4008-8eea-d7f95a04e24d).
 // A turn that ended any other way — Claude Code's own turn limit, a tool that failed — is a turn
-// the daemon retires the task on, as a turn that ended well is.
+// the daemon retires the task on, as a turn that ended well is. It is also what the turn's own
+// outcome report carries (turnoutcome.go): counting a turn the agent worked to Claude Code's own
+// cap, or one a tool failed in, would walk a working claim to the launch failure limit and
+// abandon the session it is working in (dispatch://INFRA-714).
 func providerFailed(res resultLine) bool {
 	return res.isError && res.terminalReason == terminalAPIError && res.subtype != subtypeMaxTurns
 }
@@ -699,7 +712,22 @@ func answerAll(deliveries []delivery, err error) {
 // read before that: the seed goes out before Claude Code can run a command of anyone's, and
 // nothing but it releases the prompts the seeding holds.
 //
-// The turn's end carries a prompt_result when a prompt of the daemon's started it, and that
+// The turn's outcome is the outcome of its newest step (refusal), reported when the turn ends
+// with the bridge's own sequence (turnoutcome.go): a step the provider failed is the turn
+// refused, and a step that ran clears what an earlier failed one left, since the provider
+// answered after all.
+//
+// Which turn a delivery belongs to is decided by the queue as this result reads it, and by
+// nothing else. In a turn the bridge stepped, a delivery already queued is sent as the next step
+// of this turn, so a refusal before it is not that turn's outcome; in a self-started turn, or for a
+// delivery that arrives after this result, the delivery starts a turn of its
+// own, and the refused turn is reported as it ended. A delivery in flight — written to the inbox
+// and not yet taken from the loop's channel — is therefore the second case, deliberately: the
+// bridge reports the turn it actually ended rather than waiting to see whether something more is
+// on its way, since such a wait would hold every refused turn open for as long as the inbox might
+// still speak, and the daemon's count of refusals is of turns that ended.
+//
+// The turn's end also carries a prompt_result when a prompt of the daemon's started it, and that
 // frame says whether the provider failed the turn (providerFailed). A result that ends a step
 // and not the turn says nothing — the turn runs on — so a turn of several steps is answered by
 // the result that ended it. A command's result ends neither, so it carries no prompt_result.
@@ -732,14 +760,21 @@ func (b *bridge) result(res resultLine) {
 	}
 	stepped := b.stepping
 	b.stepping = false
+	b.refusal = ""
 	answerAll(b.taking, errNotTaken)
 	b.taking = nil
 	failure := ""
 	if res.isError {
 		// Oh My Pi reports a failed step as the assistant message that ends it, stopReason "error";
-		// the daemon reads neither, so the log line is what puts the failure on the pane.
+		// the daemon reads neither, so the log line is what puts the failure on the pane and the
+		// turn's own report is what the daemon counts.
 		failure = "Claude Code: " + res.subtype + " " + strings.Join(res.errors, "; ")
-		b.log.Printf("the turn failed: %s", failure)
+		if providerFailed(res) {
+			b.refusal = failure
+			b.log.Printf("the turn failed: %s", failure)
+		} else {
+			b.log.Printf("the turn failed, for a reason that is not the provider failing it, so it counts toward no run of refusals: %s", failure)
+		}
 		b.emitRaw(map[string]any{"type": "message_end", "message": map[string]any{
 			"role": "assistant", "stopReason": "error", "errorMessage": failure}})
 	}
@@ -747,8 +782,10 @@ func (b *bridge) result(res resultLine) {
 		b.sendQueued()
 		return
 	}
-	b.inRun = false
+	refusal := b.refusal
+	b.inRun, b.refusal = false, ""
 	b.emit(shimwire.AgentEnd{})
+	b.reports.turnEnded(refusal)
 	if prompt := b.promptRun; prompt != "" {
 		// The turn that ran the daemon's prompt is over, and this is what says it was that
 		// prompt's: an agent_end names no prompt, and a turn Claude Code started by itself when a

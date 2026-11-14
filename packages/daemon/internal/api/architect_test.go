@@ -75,6 +75,7 @@ type statusWrite struct {
 }
 
 type statusRecorder struct {
+	noArtifacts
 	err    error
 	writes []statusWrite
 	// documents maps each Dispatch document id this fake knows to the issue carrying it.
@@ -153,6 +154,12 @@ func (r *statusRecorder) SetStatus(_ context.Context, issue, status string) (dis
 	return written, nil
 }
 
+// SetStatusAt is the fenced write, which no architect route makes: the daemon's own queued writes
+// take it, and they run in the outbox.
+func (r *statusRecorder) SetStatusAt(context.Context, dispatch.Issue, string) (dispatch.Issue, error) {
+	return dispatch.Issue{}, errors.New("the architect routes write no status at a sequence")
+}
+
 func (r *statusRecorder) HandOver(context.Context, dispatch.Issue, string) error {
 	return errors.New("the architect routes hand nothing over")
 }
@@ -218,6 +225,16 @@ func (r *statusRecorder) PutGatedSteps(context.Context, string, []string) error 
 
 func (r *statusRecorder) PutDesignGates(context.Context, string, []dispatch.DesignGateDocument) error {
 	return nil
+}
+
+// noArtifacts is the issue's documents as a fake Dispatch that keeps none: the read of an issue's
+// artifacts answers none, and an upload answers the slug Dispatch files the name under. No route
+// of this package reads or writes a document of an issue's.
+type noArtifacts struct{}
+
+func (noArtifacts) ArtifactSlugs(context.Context, string) ([]string, error) { return nil, nil }
+func (noArtifacts) UploadArtifact(_ context.Context, _, name, _ string) (string, error) {
+	return name, nil
 }
 
 var _ dispatch.Client = (*statusRecorder)(nil)

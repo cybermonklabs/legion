@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
@@ -225,7 +226,7 @@ type personHandoverRig struct {
 	t       *testing.T
 	baseURL string
 	cfg     config.Config
-	pool    *pgxpool.Pool
+	pool    *store.Pool
 	logs    *syncBuffer
 	github  string
 	rt      *fake.Runtime
@@ -265,10 +266,11 @@ func newPersonHandoverRig(t *testing.T, admissionCap int) *personHandoverRig {
 		map[string]string{"key": cfg.Project, "name": "A person's handover"}, nil)
 	dispatchCall(t, baseURL, http.MethodPut, "/api/v1/settings/repo-projects/acme/widgets",
 		map[string]any{"project": cfg.Project, "default": true}, nil)
-	pool, err := pgxpool.New(t.Context(), cfg.PostgresDSN)
+	raw, err := pgxpool.New(t.Context(), cfg.PostgresDSN)
 	if err != nil {
 		t.Fatalf("open the daemon's database: %v", err)
 	}
+	pool := store.NewPool(raw)
 	t.Cleanup(pool.Close)
 	return &personHandoverRig{t: t, baseURL: baseURL, cfg: cfg, pool: pool, logs: &syncBuffer{}, github: blockersGitHub(t)}
 }
@@ -590,12 +592,13 @@ func (r *personHandoverRig) statusRows(key string) []record.StatusWrite {
 	return writes
 }
 
-// personHandoverRows is the person's handover rows (StatusWrite.PersonHandover) still queued on key.
+// personHandoverRows is the person's handover rows (record.PersonHandoverStatusRow) still queued
+// on key.
 func (r *personHandoverRig) personHandoverRows(key string) []record.StatusWrite {
 	r.t.Helper()
 	var marked []record.StatusWrite
 	for _, write := range r.statusRows(key) {
-		if write.PersonHandover {
+		if write.Kind == record.PersonHandoverStatusRow {
 			marked = append(marked, write)
 		}
 	}

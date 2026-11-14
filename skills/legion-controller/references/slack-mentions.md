@@ -115,9 +115,9 @@ architect for it, whatever it asks. For a person's mention, take the first of th
   Answer from `read_state` and Dispatch as they stand now, never from memory: each issue's
   `issues.<KEY>.phase` and `issues.<KEY>.tree`, its pull request, `admission.trees` for the trees
   that run, and `admission.active` and `admission.waiting` for the issues holding a slot and the
-  issues in the line: an issue holds its slot from the moment the daemon starts it
-  until it is done, leaves the workflow or waits only for its merge, so `admission.active` names
-  a tree's waits as well as its work. Say what you
+  issues in the line: an issue holds one of the cap's slots from the moment the daemon starts it
+  until its work is past its review, until it is done, or until Dispatch takes it out of the
+  workflow, so `admission.active` names a tree's waits up to that review as well as its work. Say what you
   read, citing for each fact the `read_state` field or the `dispatch read` line it came from.
 - **A request for work.** Someone wants a change made, a bug fixed, something investigated. Search
   first (`skill://dispatch-first`): when an open issue already tracks it, reply with that issue and
@@ -141,9 +141,10 @@ architect for it, whatever it asks. For a person's mention, take the first of th
   no label and waits for a person to hand it over. Never label a request outside the scope the
   deployment instructions state. Reply with the new issue's key, its title, the link and assignee
   the `Created` line names (naming nobody, Dispatch assigns the issue to your token's owner, or,
-  under the shared token, to the project's default assignee when a person set one),
-  and whether Legion will take it: with the label, triage admits it in its next turn unless the
-  request, the weekly plan or the deployment instructions say to wait.
+  under the shared token, to the project's default assignee, which every project names),
+  and whether Legion will take it: with the label, triage admits it in its next turn unless a
+  person's request says to wait or puts it out of scope. That request is the request itself, the
+  deployment instructions, or a line of the weekly plan that names the person's request behind it.
 - **Something an issue's architect owns.** A question about a tree's design, a change of direction,
   a decision only the tree's architect can make about an issue Legion runs. Find the tree: follow
   `Links:` up through each `child_of` parent with `dispatch read` until you reach the issue

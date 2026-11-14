@@ -12,11 +12,16 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
+
+	"github.com/sjawhar/envoy/dispatchbody"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/rescue"
 	"github.com/sjawhar/legion/daemon/internal/rescue/rescuetest"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -24,41 +29,77 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
-// podUpdateRescueBranch is the prefix of every rescue branch of the rig's pod.
+// podUpdateRescueBranch is the per-pod prefix the rig's push check names beside the issue's one
+// branch, which an older shim numbers from 1.
 var podUpdateRescueBranch = "legion/" + podUpdateIssue + "-rescue-" + podUpdatePod[:8]
 
-// rescueWithin points the rig's runtime at d: every push check runs the real one over d's disk,
-// as the shim of the claim it is asked through would run it in the pod, under a workspace bound
-// of the case's own where workspace is set and the request's own (rescueWorkspaceTimeout, 36
-// minutes) where it is zero. A case whose read the bound must cut cannot wait the daemon's out,
-// and the bound is the whole of what decides where the check stops reading. The request's own
-// bound for the whole disk is kept, since nothing here runs near it.
-func (r *podUpdateRig) rescueWithin(d *rescuetest.Disk, workspace time.Duration) {
-	r.rt.RescueWith(func(ctx context.Context, _ runtime.Known, request runtime.RescueRequest) ([]runtime.WorkspaceRescue, error) {
-		bound := request.WorkspaceTimeout
-		if workspace > 0 {
-			bound = workspace
+// podUpdateRescueTarget is the issue's one rescue branch, which the check pushes the disk's work to.
+var podUpdateRescueTarget = "legion/" + podUpdateIssue + "-rescue"
+
+// podUpdateRescueDocument is the document the rig's rescue message links, named for the rig's
+// round as Dispatch files that name, and podUpdateRescueLink is the link the message ends with.
+const (
+	podUpdateRescueDocument = "rescue-pod-9d3f0c7a-2b41-4a39-9f6b-6c1d0a7e5b22"
+	podUpdateRescueLink     = "dispatch://" + podUpdateIssue + "/artifact/" + podUpdateRescueDocument
+)
+
+// posts is every message the sweep wrote on the issue, oldest first, each with the document it
+// links, decoded as the outbox decodes its row.
+func (r *podUpdateRig) posts() []record.MessagePost {
+	r.t.Helper()
+	var posts []record.MessagePost
+	for _, row := range r.rows(record.OutboxKindDispatchMessage) {
+		payload, err := record.DecodeOutboxPayload(row)
+		if err != nil {
+			r.t.Fatalf("decode message %d: %v", row.ID, err)
 		}
-		return rescue.Report(rescue.Run(ctx, rescue.Request{
-			StateDir: d.StateDir, Branch: request.Branch, Env: d.Env,
-			WorkspaceTimeout: bound, Deadline: time.Now().Add(request.Timeout),
-		})), nil
-	})
+		posts = append(posts, payload.(record.MessagePost))
+	}
+	return posts
 }
 
-// theWorkspaceThatFailed is the workspace the sweep logged a failed push check for, and the
-// entry's own error: checkUnpushed writes one line per workspace, and that line's workspace and
-// error fields are the entry as the sweep read it. It is where a case here reads an entry, the
-// check having run inside the runtime's answer.
-func theWorkspaceThatFailed(t *testing.T, rig *podUpdateRig) (string, string) {
-	t.Helper()
-	lines := loggedLines(t, rig.logs.String(), "push check of a workspace before its pod is replaced: error")
-	if len(lines) == 0 {
-		t.Fatalf("the sweep logged no failed workspace, so no entry of the check failed:\n%s", rig.logs.String())
+// rescuePost is the one message the sweep wrote on the issue, held to what every rescue's message
+// is: a body Dispatch takes in one post, which ends with the link to the document of the full
+// list, and that document under the round's own name.
+func (r *podUpdateRig) rescuePost() record.MessagePost {
+	r.t.Helper()
+	posts := r.posts()
+	if len(posts) != 1 {
+		r.t.Fatalf("the issue was told %d times, want one rescue message: %+v", len(posts), posts)
 	}
-	workspace, _ := lines[0]["workspace"].(string)
-	failure, _ := lines[0]["error"].(string)
-	return workspace, failure
+	post := posts[0]
+	if over := dispatchbody.Check(record.LongestPost(post.Body)); over != nil {
+		r.t.Fatalf("Dispatch would refuse the rescue message: %v\n%s", over, post.Body)
+	}
+	if !strings.HasSuffix(post.Body, podUpdateRescueLink) {
+		r.t.Fatalf("the rescue message does not end with the link %s:\n%s", podUpdateRescueLink, post.Body)
+	}
+	if post.Artifact == nil || post.Artifact.Name != podUpdateRescueDocument {
+		r.t.Fatalf("the rescue message carries the document %+v, want one named %s", post.Artifact, podUpdateRescueDocument)
+	}
+	return post
+}
+
+// rescuedOver is the commit the remote's rescue branch holds, and its first parent: the check puts
+// the disk's work under a rescue commit of its own (internal/rescue), so the work it found is that
+// parent. Both are "" when the remote has no such branch.
+func rescuedOver(t *testing.T, d *rescuetest.Disk) (tip, work string) {
+	t.Helper()
+	if tip = d.RemoteBranch(podUpdateRescueTarget); tip == "" {
+		return "", ""
+	}
+	return tip, d.Run(d.Remote, "git", "rev-parse", tip+"^1")
+}
+
+// rescueOn points the rig's runtime at d: every push check runs the real one over d's disk, as
+// the shim of the claim it is asked through would run it in the pod.
+func (r *podUpdateRig) rescueOn(d *rescuetest.Disk) {
+	r.rt.RescueWith(func(ctx context.Context, _ runtime.Known, request runtime.RescueRequest) ([]runtime.WorkspaceRescue, error) {
+		return rescue.Report(rescue.Run(ctx, rescue.Request{
+			StateDir: d.StateDir, Branch: request.Branch, Target: request.Target, Env: d.Env,
+			WorkspaceTimeout: request.WorkspaceTimeout, Deadline: time.Now().Add(request.Timeout),
+		})), nil
+	})
 }
 
 // answeredRound opens the round over the rig's pod and has every role of roles answer it.
@@ -86,7 +127,8 @@ func (r *podUpdateRig) awaitRescues(n int, what string) {
 
 // Each state of the issue's workspace, from a pod with nothing to lose to one whose only copy of
 // a commit is jj's view: the pod is replaced once the check has carried what it found off the
-// disk, the remote holds each rescue branch, and the issue is told each branch it must bring in.
+// disk, the remote holds the issue's one rescue branch, and the issue is told the branch it must
+// bring in.
 // The check is asked through the implementer, the role that acts as the implement App, though the
 // architect's claim comes first in the group.
 func TestPodUpdatePushesWhatTheDiskHoldsBeforeItReplacesThePod(t *testing.T) {
@@ -95,8 +137,9 @@ func TestPodUpdatePushesWhatTheDiskHoldsBeforeItReplacesThePod(t *testing.T) {
 		// before, when set, pushes to the remote before the pod's clone is made, so the clone holds
 		// what it pushed from the start (rescuetest.New).
 		before func(d *rescuetest.Disk)
-		// leave puts the workspace in its state and returns the commit the rescue branch must
-		// hold, "" when nothing is to be rescued, and a check of that commit's shape.
+		// leave puts the workspace in its state and returns the commit the rescue commit on the
+		// remote's branch must stand on, "" when nothing is to be rescued, and a check of that
+		// commit's shape.
 		leave func(t *testing.T, d *rescuetest.Disk) (string, func(commit string))
 	}{
 		{
@@ -164,7 +207,7 @@ func TestPodUpdatePushesWhatTheDiskHoldsBeforeItReplacesThePod(t *testing.T) {
 				for _, name := range []string{"old-merge", "abandoned-wip"} {
 					d.Write(side, name+".txt", name+"\n")
 					d.Run(side, "git", "add", name+".txt")
-					d.RunBefore(side, "git", "commit", "--quiet", "-m", name)
+					d.Run(side, "git", "commit", "--quiet", "-m", name)
 					d.Run(side, "git", "push", "--quiet", "origin", "HEAD:refs/heads/"+name)
 				}
 			},
@@ -188,7 +231,7 @@ func TestPodUpdatePushesWhatTheDiskHoldsBeforeItReplacesThePod(t *testing.T) {
 			d := rescuetest.New(t, podUpdateIssue, before...)
 			want, shape := tc.leave(t, d)
 			rig := newPodUpdateRig(t, readyWorker(claim.RoleArchitect), readyWorker(claim.RoleImplementer))
-			rig.rescueWithin(d, 0)
+			rig.rescueOn(d)
 			rig.answeredRound(claim.RoleArchitect, claim.RoleImplementer)
 
 			rig.awaitReplacement(1, "once every worker answered and the push check passed")
@@ -201,31 +244,95 @@ func TestPodUpdatePushesWhatTheDiskHoldsBeforeItReplacesThePod(t *testing.T) {
 				t.Errorf("the push check was asked through %s for %+v, want the implementer's claim and branch %s with the check's bounds",
 					got.Pod.Claim, got.Rescue, podUpdateRescueBranch)
 			}
-			branch := podUpdateRescueBranch + "-1"
-			held := d.RemoteBranch(branch)
-			messages := rig.messages()
+			branch := podUpdateRescueTarget
+			held, rescued := rescuedOver(t, d)
+			posts := rig.posts()
 			if want == "" {
-				if held != "" || len(messages) != 0 {
-					t.Fatalf("the remote holds %s at %q and the issue was told %q, want neither for a clean disk", branch, held, messages)
+				if held != "" || len(posts) != 0 {
+					t.Fatalf("the remote holds %s at %q and the issue was told %+v, want neither for a clean disk", branch, held, posts)
 				}
 				return
 			}
-			if held == "" || (want != "a new commit" && held != want) {
-				t.Fatalf("the remote holds %s at %q, want %s", branch, held, want)
+			if held == "" || (want != "a new commit" && rescued != want) {
+				t.Fatalf("the remote holds %s at %q over %q, want a rescue commit over %s", branch, held, rescued, want)
 			}
 			if shape != nil {
-				shape(held)
+				shape(rescued)
 			}
-			if extra := d.RemoteBranch(podUpdateRescueBranch + "-2"); extra != "" {
-				t.Fatalf("the remote holds %s-2 at %s, want one rescue branch: the workspace's own work is one head", podUpdateRescueBranch, extra)
+			if extra := d.RemoteBranch(podUpdateRescueBranch + "-1"); extra != "" {
+				t.Fatalf("the remote holds %s-1 at %s, want the issue's one rescue branch alone", podUpdateRescueBranch, extra)
 			}
-			if len(messages) != 1 || !strings.Contains(messages[0], "`"+branch+"` (commit "+held+")") || !strings.Contains(messages[0], d.Workspace) {
-				t.Fatalf("the issue was told %q, want one message naming %s at %s from %s", messages, branch, held, d.Workspace)
+			// The branch is new, and the work the check found is its tip's first parent, so both
+			// are among the commits it pushed, which the summary names and the document lists.
+			post := rig.rescuePost()
+			repository := rescuetest.Owner + "/" + rescuetest.Repo
+			for _, want := range []string{"`" + repository + "`", "`" + branch + "`", "`" + held + "`", "This is a new branch.", "`" + rescued + "`", "merge `" + branch + "` into the issue branch"} {
+				if !strings.Contains(post.Body, want) {
+					t.Errorf("the issue's message does not name %q:\n%s", want, post.Body)
+				}
+			}
+			for _, want := range []string{"repository: " + repository, "branch: " + branch, "tip: " + held, "tip before: none, because this is a new branch", "\n" + held, "\n" + rescued} {
+				if !strings.Contains(post.Artifact.Content, want) {
+					t.Errorf("the message's document does not list %q:\n%s", want, post.Artifact.Content)
+				}
 			}
 			if logs := rig.logs.String(); !strings.Contains(logs, branch+"@"+held) || !strings.Contains(logs, "push check of a workspace before its pod is replaced: rescued") {
 				t.Errorf("the sweep's log does not name %s@%s on its workspace line and its replacement line:\n%s", branch, held, logs)
 			}
 		})
+	}
+}
+
+// A rescue of a long line of work is told in a summary that Dispatch takes in one post, and the
+// message links the full list. 300 commits on the issue's own line reach the remote's one rescue
+// branch under the rescue's own commit, so the check pushed 301. The message names the branch,
+// that count and the link, and the document it links lists every one of the 301.
+func TestPodUpdateTellsTheIssueOfALongRescueInASummaryThatLinksTheFullList(t *testing.T) {
+	d := rescuetest.New(t, podUpdateIssue)
+	line := d.CommitLine(300, func(i int) string { return fmt.Sprintf("work %d of the issue's own line", i) })
+	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer))
+	rig.rescueOn(d)
+	rig.answeredRound(claim.RoleImplementer)
+
+	rig.awaitReplacement(1, "once the implementer answered and the push check carried the 300 commits")
+	tip := d.RemoteBranch(podUpdateRescueTarget)
+	if tip == "" {
+		t.Fatalf("the remote has no %s; it holds %v", podUpdateRescueTarget, d.RemoteBranches())
+	}
+	onBranch := strings.Fields(d.Run(d.Remote, "git", "rev-list", tip))
+	var missing []string
+	for _, id := range line {
+		if !slices.Contains(onBranch, id) {
+			missing = append(missing, id)
+		}
+	}
+	if len(missing) > 0 {
+		t.Fatalf("the remote's %s at %s lacks %d of the 300 commits: %v", podUpdateRescueTarget, tip, len(missing), missing)
+	}
+
+	post := rig.rescuePost()
+	if units := utf8.RuneCountInString(post.Body); units >= dispatchbody.BlockUnits {
+		t.Fatalf("the rescue message is %d characters, want fewer than one Dispatch block's %d", units, dispatchbody.BlockUnits)
+	}
+	for _, want := range []string{"`" + podUpdateRescueTarget + "`", "pushed 301 commits", "`" + tip + "`", "`" + line[len(line)-1] + "`", "and 281 more"} {
+		if !strings.Contains(post.Body, want) {
+			t.Errorf("the rescue message does not name %q:\n%s", want, post.Body)
+		}
+	}
+	if strings.Contains(post.Body, line[0]) {
+		t.Errorf("the rescue message names the line's first commit %s, want the first 20 of the 301 alone, newest first:\n%s", line[0], post.Body)
+	}
+	if !strings.Contains(post.Artifact.Content, "commits: 301\n") {
+		t.Errorf("the message's document does not count the 301 commits:\n%s", post.Artifact.Content)
+	}
+	missing = nil
+	for _, id := range append(line, tip) {
+		if !strings.Contains(post.Artifact.Content, "\n"+id+" ") {
+			missing = append(missing, id)
+		}
+	}
+	if len(missing) > 0 {
+		t.Fatalf("the message's document lacks %d of the 301 commits: %v", len(missing), missing)
 	}
 }
 
@@ -254,7 +361,7 @@ func TestPodUpdateCarriesAnAccountDriftedPodToItsReplacement(t *testing.T) {
 	commit := d.JJ("log", "--no-graph", "-r", "@-", "-T", "commit_id")
 	roles := []claim.Role{claim.RoleArchitect, claim.RoleImplementer}
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleArchitect), readyWorker(claim.RoleImplementer))
-	rig.rescueWithin(d, 0)
+	rig.rescueOn(d)
 	// The round answeredRound opens is the image's; this one is opened on the account alone.
 	rig.drifts(podUpdateAccountDrift)
 
@@ -283,9 +390,8 @@ func TestPodUpdateCarriesAnAccountDriftedPodToItsReplacement(t *testing.T) {
 		t.Errorf("the push check was asked through %s for %+v, want the implementer's claim and branch %s",
 			got.Pod.Claim, got.Rescue, podUpdateRescueBranch)
 	}
-	branch := podUpdateRescueBranch + "-1"
-	if held := d.RemoteBranch(branch); held != commit {
-		t.Fatalf("the remote holds %s at %q, want the commit the disk still held %s", branch, held, commit)
+	if held, rescued := rescuedOver(t, d); rescued != commit {
+		t.Fatalf("the remote holds %s at %q over %q, want a rescue commit over the commit the disk still held %s", podUpdateRescueTarget, held, rescued, commit)
 	}
 	for _, role := range roles {
 		rig.awaitClaim(role, "its round to end with the replacement", func(c supervise.Claim) bool {
@@ -304,12 +410,12 @@ func TestPodUpdateRescuesWhatAFailedClaimLeftOnTheDisk(t *testing.T) {
 	commit := d.JJ("log", "--no-graph", "-r", "@-", "-T", "commit_id")
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer),
 		podUpdateRole{role: claim.RolePlanner, state: supervise.StateFailed, session: true, contract: readyWorker(claim.RolePlanner).contract})
-	rig.rescueWithin(d, 0)
+	rig.rescueOn(d)
 	rig.answeredRound(claim.RoleImplementer)
 
 	rig.awaitReplacement(1, "once the implementer answered, the failed planner asked nothing")
-	if held := d.RemoteBranch(podUpdateRescueBranch + "-1"); held != commit {
-		t.Fatalf("the remote holds %s-1 at %q, want the failed planner's commit %s", podUpdateRescueBranch, held, commit)
+	if held, rescued := rescuedOver(t, d); rescued != commit {
+		t.Fatalf("the remote holds %s at %q over %q, want a rescue commit over the failed planner's commit %s", podUpdateRescueTarget, held, rescued, commit)
 	}
 }
 
@@ -324,7 +430,7 @@ func TestPodUpdateHoldsTheRoundWhenThePushCheckFails(t *testing.T) {
 	commit := d.JJ("log", "--no-graph", "-r", "@-", "-T", "commit_id")
 	d.RefuseWrites()
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer))
-	rig.rescueWithin(d, 0)
+	rig.rescueOn(d)
 	rig.answeredRound(claim.RoleImplementer)
 
 	rig.awaitRescues(1, "once the implementer answered")
@@ -366,8 +472,8 @@ func TestPodUpdateHoldsTheRoundWhenThePushCheckFails(t *testing.T) {
 		t.Fatal(err)
 	}
 	rig.awaitReplacement(1, "once the remote takes the push")
-	if held := d.RemoteBranch(podUpdateRescueBranch + "-1"); held != commit {
-		t.Fatalf("the remote holds %s-1 at %q, want %s", podUpdateRescueBranch, held, commit)
+	if held, rescued := rescuedOver(t, d); rescued != commit {
+		t.Fatalf("the remote holds %s at %q over %q, want a rescue commit over %s", podUpdateRescueTarget, held, rescued, commit)
 	}
 	if notices := rig.notices(); len(notices) != 1 {
 		t.Errorf("the controller was told %d times in all, want the one notice", len(notices))
@@ -490,112 +596,5 @@ func TestPodUpdateHoldsTheRoundWhenNoProcessCanRunThePushCheck(t *testing.T) {
 	}
 	if calls := rig.replacements(); len(calls) != 0 {
 		t.Fatalf("the pod was replaced %d times with no check run, want none", len(calls))
-	}
-}
-
-// Every class of workspace the check fails holds the round the same way, whichever step failed:
-// the pod is not replaced, the round stays open, the workspace's entry failed, and the entry
-// names the step that failed and how long that step ran, which is what a person reads to know
-// what to run by hand. The push's own failure is the case above
-// (TestPodUpdateHoldsTheRoundWhenThePushCheckFails); these are the rest, each driven through the
-// sweep's own checkUnpushed over a real disk.
-//
-// One sweep's check per row, which is all a row needs: the round holds on the first failed
-// entry, and the rest of what a held round then does — the notice past its bound, the later
-// sweep that checks again — is held once, by the push's case.
-func TestPodUpdateHoldsTheRoundWhenAWorkspaceCheckFails(t *testing.T) {
-	for _, row := range []struct {
-		name string
-		// bound is the workspace bound the row's check runs under, where the daemon's own is
-		// too wide for what the row reads; zero takes the daemon's.
-		bound time.Duration
-		disk  func(t *testing.T, d *rescuetest.Disk)
-		step  string
-		says  string
-	}{{
-		name: "a working copy jj has moved past",
-		// The workspace is left behind jj's operation by a restore made from the clone's own
-		// workspace (rescuetest.Disk.StaleWorkingCopy, which holds what such a restore must undo
-		// for the workspace to be stale at all).
-		disk: func(_ *testing.T, d *rescuetest.Disk) { d.StaleWorkingCopy() },
-		step: rescuetest.FileStep,
-		says: "jj workspace update-stale",
-	}, {
-		name: "a workspace narrowed to part of its tree",
-		disk: func(_ *testing.T, d *rescuetest.Disk) {
-			d.JJ("sparse", "set", "--clear", "--add", "base.txt")
-		},
-		step: rescuetest.FileStep,
-		says: "holds part of its tree",
-	}, {
-		name: "a file the carry cannot add",
-		// The snapshot runs under the workspace's own size limit, and what jj refuses for it is
-		// carried into the tree the check pushes by an add that names the file. A refused file
-		// no one may read (mode 000) is one that add cannot carry: git exits 128 for it, and the
-		// workspace fails naming that add, which is the fail-closed answer and loses no file
-		// silently (the check's own package reads the same fixture in
-		// TestAFileTheCarryCannotAddFailsTheWorkspaceAndPushesNothing). A process that reads
-		// such a file all the same, as root does, has no row here to drive.
-		disk: func(t *testing.T, d *rescuetest.Disk) {
-			d.JJ("config", "set", "--repo", "snapshot.max-new-file-size", `"1MiB"`)
-			d.Write(d.Workspace, "refused.bin", strings.Repeat("x", 2*1024*1024))
-			unreadable := filepath.Join(d.Workspace, "refused.bin")
-			if err := os.Chmod(unreadable, 0); err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() { os.Chmod(unreadable, 0o644) })
-			if f, err := os.Open(unreadable); err == nil {
-				f.Close()
-				t.Skip("this process reads a file of mode 000, as root does, so no file it writes is one git cannot read")
-			}
-		},
-		step: rescuetest.FileStep,
-		says: `open("refused.bin"): Permission denied`,
-	}, {
-		name: "a read of a worktree's files the bound cuts",
-		// Another worktree of the clone, whose files the check reads with the whole-tree git
-		// read and whose read takes a minute (rescuetest.Disk.SlowWorktreeRead). The bound
-		// leaves that read five seconds, where the daemon's own would leave it half an hour.
-		bound: rescue.CheckRun + rescue.GuardReserve + 5*time.Second,
-		disk:  func(_ *testing.T, d *rescuetest.Disk) { d.SlowWorktreeRead() },
-		step:  rescuetest.FileStep,
-		says:  "could not be read in the time the workspace's bound left for them",
-	}, {
-		name: "a remote the check cannot read",
-		disk: func(t *testing.T, d *rescuetest.Disk) {
-			d.Run(d.Clone, "git", "remote", "set-url", "origin", filepath.Join(t.TempDir(), "gone.git"))
-		},
-		step: rescuetest.RemoteStep,
-		says: "does not appear to be a git repository",
-	}} {
-		t.Run(row.name, func(t *testing.T) {
-			d := rescuetest.New(t, podUpdateIssue)
-			row.disk(t, d)
-			rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer))
-			rig.rescueWithin(d, row.bound)
-			rig.answeredRound(claim.RoleImplementer)
-
-			rig.awaitRescues(1, "once the implementer answered")
-			if calls := rig.replacements(); len(calls) != 0 {
-				t.Errorf("the pod was replaced %d times after a push check that failed, want none", len(calls))
-			}
-			if c := rig.claimOf(claim.RoleImplementer); c.UpdateRound != podUpdateRound {
-				t.Errorf("the round = %q after a failed push check, want it still open", c.UpdateRound)
-			}
-			workspace, failure := theWorkspaceThatFailed(t, rig)
-			if workspace != d.Workspace {
-				t.Errorf("the check failed %s, want the issue's workspace %s", workspace, d.Workspace)
-			}
-			if !strings.Contains(failure, row.says) {
-				t.Errorf("the workspace failed with %q, want it to say %q", failure, row.says)
-			}
-			step, ran := rescuetest.Step(t, failure)
-			if step != row.step {
-				t.Errorf("the entry names %q as the step that failed, want %q: %q", step, row.step, failure)
-			}
-			if ran > rescueTimeout {
-				t.Errorf("the entry says the step ran %s, want a time inside the check's own bound %s: %q", ran, rescueTimeout, failure)
-			}
-		})
 	}
 }

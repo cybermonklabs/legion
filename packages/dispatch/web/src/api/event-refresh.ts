@@ -1,3 +1,4 @@
+import { askProject, issueProject } from "../features/inbox/list-row";
 import { buildDispatchReference } from "../features/refs/routes";
 import {
   agentMessagesQuery,
@@ -17,6 +18,7 @@ import type {
   ArchitectureTreeComponent,
   ArchitectureTreeIssueRef,
   Artifact,
+  Ask,
   AskRead,
   ChangedReference,
   DispatchEvent,
@@ -120,6 +122,116 @@ function inboxRowOfAsk(id: string): RefreshTarget {
   return {
     queryKey: inboxKey,
     when: (data) => rowsOf<InboxRow>(data).some((row) => row.id === id),
+  };
+}
+
+/** Whether an ask is an open question nobody handed on: the person it waits on is then its
+ *  issue's assignee, or its project's default while nobody holds the issue or the ask is on a
+ *  project document (`coalesce(a.asked_of, i.assignee, p.default_assignee)`), so an assignee move
+ *  or a default move changes it. An answered or closed ask's card draws no Asked-of badge
+ *  (`AskHandOn`, drawn for an open ask alone in `AskCard`), so neither move changes what a read of
+ *  it shows. Every target below that tests a read for a question one of those moves carries
+ *  tests it with this. */
+function openAndNotHandedOn(ask: Pick<Ask, "asked_of" | "state">): boolean {
+  return ask.state === "open" && ask.asked_of === null;
+}
+
+/** Every Inbox read that holds an open ask of `project` whose person that project's default
+ *  decides: the last step of `coalesce(a.asked_of, i.assignee, p.default_assignee)`, so an ask
+ *  nobody handed on, on an issue nobody holds or on a project document. The Inbox read names no
+ *  assignee (`inboxQuery`), so a reader's list holds every open ask she can see with the person
+ *  the server resolved for it (`waiting_on_person`), whoever that is, and the assignee filter and
+ *  the Asked-of badge read that field: moving the default moves it in every list holding such a
+ *  row, not only in the two the event names. An issue row that does not say who holds its issue
+ *  is counted as one nobody holds. */
+function inboxRowsDecidedByDefault(project: string): RefreshTarget {
+  return {
+    queryKey: inboxKey,
+    when: (data) =>
+      rowsOf<InboxRow>(data).some(
+        (row) =>
+          openAndNotHandedOn(row) &&
+          askProject(row) === project &&
+          (row.issue_key === null || (row.issue?.assignee ?? null) === null)
+      ),
+  };
+}
+
+/** Every ask list of an issue of `project` that holds an open question nobody handed on
+ *  (`openAndNotHandedOn`): the issue's (`["asks", key]`, which the margin and a document's ask
+ *  blocks read) and the Conversation tab's (`["asks", key, "thread"]`, beneath it). Each row
+ *  carries the person the server resolved for it (`waiting_on_person`), which the Asked-of badge
+ *  on the issue's page reads, so a default move changes it for every such question on an issue
+ *  nobody holds. An issue key's project is the part before its first hyphen (`issueProject`).
+ *  The rows do not say who holds their issue, so the list of an issue a person holds reads again
+ *  too, which answers the same rows. */
+function issueAskListsDecidedByDefault(project: string): RefreshTarget {
+  return {
+    queryKey: ["asks"],
+    when: (data, query) => {
+      const key = query.queryKey[1];
+      return (
+        typeof key === "string" &&
+        issueProject(key) === project &&
+        rowsOf<Ask>(data).some(openAndNotHandedOn)
+      );
+    },
+  };
+}
+
+/** Every project document's ask list (`["artifact", id, "asks"]`, which the document's page reads
+ *  its ask blocks and its margin's cards from) that holds an open question nobody handed on
+ *  (`openAndNotHandedOn`): an ask on a project document waits on that project's default until
+ *  somebody hands it on. A document of an issue reads its issue's list instead (`ProofDocument`).
+ *  Of any project, since the cache cannot tell which: the key names the document by id alone, a
+ *  row names its project only for an anchored ask (`anchor_artifact`), and the document's own
+ *  read, which carries it, is another query, which a test of this one cannot see. A list of
+ *  another project's document reads again and answers the same rows. */
+const DOCUMENT_ASK_LISTS_DECIDED_BY_DEFAULT: RefreshTarget = {
+  queryKey: ["artifact"],
+  when: (data, query) =>
+    query.queryKey.length === 3 &&
+    query.queryKey[2] === "asks" &&
+    rowsOf<Ask>(data).some(openAndNotHandedOn),
+};
+
+/** The project the ask of a cached thread names, or undefined when it names none: its issue's
+ *  (`issueProject`), else the project of the document an anchored ask or an approval request sits
+ *  on. A block ask on a project document names its document by id alone (`block_artifact`). */
+function threadAskProject(ask: AskRead["ask"]): string | undefined {
+  if (ask.issue_key !== null) return issueProject(ask.issue_key);
+  return ask.anchor_artifact?.project ?? ask.approval_artifact?.project;
+}
+
+/** Every cached ask thread (`["ask-thread", id]`, from which the Inbox's Reply-thread card draws
+ *  its question's Asked-of badge, and which never goes stale on its own) whose question of
+ *  `project` is open with nobody handed on (`openAndNotHandedOn`). The thread does not say who
+ *  holds its issue, so the thread of an issue a person holds reads again too, which answers the
+ *  same badge. A thread whose ask names no project (`threadAskProject`) reads again whichever
+ *  project's it is: its project is in the document's own read, another query, which a test of
+ *  this one cannot see. A thread holding no ask (an error, never fetched) draws no badge. */
+function askThreadsDecidedByDefault(project: string): RefreshTarget {
+  return {
+    queryKey: ["ask-thread"],
+    when: (data) => {
+      const ask = (data as AskRead | undefined)?.ask;
+      if (ask === undefined || !openAndNotHandedOn(ask)) return false;
+      const named = threadAskProject(ask);
+      return named === undefined || named === project;
+    },
+  };
+}
+
+/** Every cached ask thread (`["ask-thread", id]`, the Reply-thread card's) whose question is on
+ *  issue `key` and is open with nobody handed on (`openAndNotHandedOn`): the issue's assignee is
+ *  the person it waits on, so moving the assignee changes its Asked-of badge. */
+function askThreadsDecidedByAssignee(key: string): RefreshTarget {
+  return {
+    queryKey: ["ask-thread"],
+    when: (data) => {
+      const ask = (data as AskRead | undefined)?.ask;
+      return ask !== undefined && ask.issue_key === key && openAndNotHandedOn(ask);
+    },
   };
 }
 
@@ -402,13 +514,20 @@ function isMessageEvent(event: DispatchEvent): boolean {
 //
 // A hand-on (`ask.asked_of`) is here for the same reason an assignee move is: the Inbox leaves
 // out the Reply row of an open ask it already lists (`myRepliesOwner` in the server's
-// replies.go, over `coalesce(a.asked_of, i.assignee)`), so handing the ask from one person to
-// another makes that row appear for the person who gave it up and disappear for the person who
-// took it. The event names both of them in its `thread_logins`, which is what decides whose
-// list refreshes below.
+// replies.go, over `coalesce(a.asked_of, i.assignee, p.default_assignee)`), so handing the ask
+// from one person to another makes that row appear for the person who gave it up and disappear
+// for the person who took it. The event names both of them in its `thread_logins`, which is
+// what decides whose list refreshes below.
 //
 // An issue-less `message.created` or `message.answered` is here for the Inbox's Agent rows: a
 // one-off message to a session, and that session's reply to one.
+//
+// A project's default assignee (`settings.project_default_assignee.updated`) is here for the
+// third step of the same expression: an open ask on an issue nobody holds reaches that person
+// (`coalesce(a.asked_of, i.assignee, p.default_assignee)`), and the Replies list leaves out an
+// ask the Inbox already shows the reader, so moving the default moves those threads from one
+// person's Reply rows into the other's. Its `thread_logins` names the previous default and the
+// new one.
 const INBOX_THREAD_WRITES: Partial<Record<EventType, true>> = {
   "comment.created": true,
   "comment.answered": true,
@@ -418,23 +537,31 @@ const INBOX_THREAD_WRITES: Partial<Record<EventType, true>> = {
   "ask.answered": true,
   "ask.asked_of": true,
   "ask.resolved": true,
+  "settings.project_default_assignee.updated": true,
 };
 
 /**
  * Whether the viewer's Inbox thread rows (`["me", "replies"]`: both states of the unpaged read,
  * the unread count and every owner's unread set) can have moved: a write above, or an issue
- * closing, reopening or being reassigned. A reassignment and a hand-on (`ask.asked_of`, among
- * the writes above) move the same rows for the same reason: whom an open ask waits on is one
- * expression, `coalesce(a.asked_of, i.assignee)`, and the Reply rows leave out an ask the
- * Inbox already lists for the viewer (`myRepliesOwner` in the server's replies.go), so moving
- * that person moves the ask's thread into one person's Reply rows and out of the other's.
+ * closing, reopening or being reassigned. A reassignment, a hand-on (`ask.asked_of`, among the
+ * writes above) and a project's default moving all move the same rows for the same reason: whom
+ * an open ask waits on is one expression, `coalesce(a.asked_of, i.assignee, p.default_assignee)`,
+ * and the Reply rows leave out an ask the Inbox already lists for the viewer (`myRepliesOwner`
+ * in the server's replies.go), so moving that person moves the ask's thread into one person's
+ * Reply rows and out of the other's.
+ *
+ * A project-default write moves the person without touching the thread or naming an issue, so
+ * it reads it for the two named people's whole Inbox as well, and every other reader's Inbox
+ * tests the rows it holds (`inboxRowsDecidedByDefault`, from the project-default branch of
+ * `ownerTargets`). An assignee write needs no such read: every reader's Inbox holds every open
+ * ask of the issue, so the test against its rows (`inboxRowsOf`) finds each list it moves.
  *
  * `thread_logins` names whose rows the write moved - for an issue-less message the thread root's
- * author, which is the person whose Agent row it is, and for a hand-on the person it moved from
- * and the one it moved to - so only theirs, and the writer's own, refresh. Without it every one
- * of those writes refreshes, except an `issue.updated` that says it moved neither status nor
- * assignee: the server names the logins on every status move, a close and a reopen among them,
- * and on every assignee move.
+ * author, which is the person whose Agent row it is, for a hand-on the person it moved from and
+ * the one it moved to, and for a project default the previous default and the new one - so only
+ * theirs, and the writer's own, refresh. Without it every one of those writes refreshes, except
+ * an `issue.updated` that says it moved neither status nor assignee: the server names the logins
+ * on every status move, a close and a reopen among them, and on every assignee move.
  *
  * The known limit: an older server mid-deploy writes no `thread_logins` on a reassignment, so a
  * Reply row that should appear here - an open ask on an issue assigned away from the viewer -
@@ -469,8 +596,9 @@ function issueChanges(event: DispatchEvent): ReadonlySet<string> | undefined {
 }
 
 /**
- * Every event whose server path rewrites the issue's own reference edges: a document version or
- * upload, an ask's creation or edit (a settled ask block among them), a comment or message body -
+ * Every event whose server path rewrites the issue's own reference edges: a document version,
+ * upload or title correction, which moves the title every reference to the document shows; an
+ * ask's creation or edit (a settled ask block among them), a comment or message body -
  * an answer's reply body is indexed like any other - an anchor refresh, a follower change, a child
  * link, and an issue write that moved a structural edge (its parent, its blockers, its components)
  * or the title every one of them shows as its excerpt.
@@ -478,6 +606,7 @@ function issueChanges(event: DispatchEvent): ReadonlySet<string> | undefined {
 function changesReferenceGraph(event: DispatchEvent): boolean {
   switch (event.type) {
     case "artifact.created":
+    case "artifact.renamed":
     case "artifact.version":
     case "ask.anchor_refreshed":
     case "ask.edited":
@@ -579,6 +708,13 @@ function issueWriteTargets(
     ) {
       targets.push(inboxRowsOf(key));
     }
+  }
+
+  // The Reply-thread card draws a question's Asked-of badge from its thread (`["ask-thread", id]`,
+  // never stale on its own), and an open question of the issue nobody handed on waits on its
+  // assignee.
+  if (!created && moved("assignee")) {
+    targets.push(askThreadsDecidedByAssignee(key));
   }
 
   // The sidebar's per-project open-ask count counts the open asks of open issues: only a close and
@@ -693,9 +829,14 @@ function documentTargets(event: DispatchEvent, viewer: string | undefined): Refr
   if (changesQuestionMaps(event)) {
     targets.push(EVERY_QUESTION_MAP);
   }
-  // A reference to the document shows its name, kind and latest version. A new document can be
-  // the one a reference that found nothing named (no data to test), so it refreshes those too.
-  if (event.type === "artifact.version" || event.type === "artifact.created") {
+  // A reference to the document shows its name, kind and latest version. A correction moves the
+  // name it shows. A new document can be the one a reference that found nothing named (no data
+  // to test), so it refreshes those too.
+  if (
+    event.type === "artifact.version" ||
+    event.type === "artifact.created" ||
+    event.type === "artifact.renamed"
+  ) {
     const created = event.type === "artifact.created";
     targets.push({
       queryKey: ["doc-summary", event.project],
@@ -741,6 +882,11 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
       { queryKey: ["project", event.project] },
       { queryKey: ["issues", "project", event.project] },
       { queryKey: ["repo-projects"] },
+      // The project list carries no default assignee: a new project's is in the defaults read
+      // alone, which the Settings table reads it from and was answered before it existed.
+      ...(event.type === "project.created"
+        ? [{ queryKey: projectDefaultAssigneesQuery().queryKey }]
+        : []),
       // A mapping write can change the repository every issue of its project resolves to (a new
       // default, one removed or moved away), which the issue header reads from the issue's
       // detail. The detail's key names no project, so every loaded detail refreshes; mapping
@@ -748,10 +894,31 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
       ...(event.type === "settings.repo_project.updated" ? [{ queryKey: ["issue"] }] : []),
     ];
   }
-  // The default decides who a later create lands on; no issue already listed moves, so only
-  // the Settings table's own read refreshes.
+  // The Settings table always, and the Inbox, issue, document and Reply-thread reads of a question
+  // the move carries: a project's default is the last step of the chain that decides who a
+  // question reaches, so every open ask of the project nobody handed on, on an issue nobody holds
+  // or on a project document, now waits on the new default. Every reader's Inbox holds those rows
+  // with the person they wait on, which its assignee filter and Asked-of badge read, so a reader
+  // whose list holds one reads it again whoever she is (`inboxRowsDecidedByDefault`). The issue
+  // page and the document page draw the same badge from their own ask lists, which read again
+  // when they hold such a question (`issueAskListsDecidedByDefault`,
+  // `DOCUMENT_ASK_LISTS_DECIDED_BY_DEFAULT`), and the Inbox's Reply-thread card draws it from the
+  // question's thread, which reads again when it holds one (`askThreadsDecidedByDefault`). The
+  // two people `thread_logins` names (`movesInboxThreads`) read their whole Inbox and their Reply
+  // rows as well, since the move carries those threads between their Replies, and a reader whose
+  // reads hold no such question and whom the write does not name sends no read.
   if (event.type === "settings.project_default_assignee.updated") {
-    return [{ queryKey: projectDefaultAssigneesQuery().queryKey }];
+    const targets: RefreshTarget[] = [
+      { queryKey: projectDefaultAssigneesQuery().queryKey },
+      inboxRowsDecidedByDefault(event.payload.project),
+      issueAskListsDecidedByDefault(event.payload.project),
+      DOCUMENT_ASK_LISTS_DECIDED_BY_DEFAULT,
+      askThreadsDecidedByDefault(event.payload.project),
+    ];
+    if (movesInboxThreads(event, viewer)) {
+      targets.push({ queryKey: inboxKey }, { queryKey: myRepliesKey });
+    }
+    return targets;
   }
   if (
     event.type === "settings.architecture_source.updated" ||
@@ -914,6 +1081,19 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
     }
     return targets;
   }
+  if (event.type === "artifact.renamed" || event.type === "artifact.removed") {
+    // A correction moves the title the issue's document list, the document's own read and every
+    // reference to it show; a removal takes the row out of them. Both name the document itself,
+    // and both move the `attached_to` edge the issue's backlink panel lists. Neither touches a
+    // version, so the coverage and the results stand.
+    targets.push(
+      { queryKey: ["artifacts", key] },
+      { queryKey: ["artifact", event.payload.artifact.id] },
+      issueSummaryOf(key, event),
+      referencePanel(issueReference)
+    );
+    return targets;
+  }
   if (event.type === "artifact.approved" || event.type === "artifact.changes_requested") {
     targets.push(
       { queryKey: ["artifacts", key] },
@@ -935,11 +1115,20 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
   // lists the results it recorded. Nothing else reads a result — no document, ask, inbox or
   // issue detail carries one — and this switch has a default, so the branch is deliberate and
   // its test pins it.
-  if (event.type === "result.recorded") {
+  //
+  // A retraction moves the same two reads: the result stays in both listings and stops counting
+  // as evidence there, so a page that did not refetch would keep showing it as proof.
+  if (event.type === "result.recorded" || event.type === "result.retracted") {
     targets.push({ exact: true, queryKey: ["issue", key, "results"] });
     if (event.payload.issue !== key) {
       targets.push({ exact: true, queryKey: ["issue", event.payload.issue, "results"] });
     }
+    return targets;
+  }
+  // A pull request that moves to another issue changes what this issue's results are compared
+  // with, and the event is on each of the two issues, so each refetches its own results read.
+  if (event.type === "issue.pull_request_attribution_changed") {
+    targets.push({ exact: true, queryKey: ["issue", key, "results"] });
     return targets;
   }
   if (isAskEvent(event)) {
