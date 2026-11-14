@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 
 	"github.com/nats-io/nats.go"
 )
@@ -48,32 +49,54 @@ func SessionResumeSubject(sessionID string) string {
 
 // SessionResumeRecord is the body of a session's resume record (SessionResumeSubject): the stream
 // sequence up to which the session's consumer had every message acked when that consumer was
-// deleted (ackFloor), and the identity of the stream those sequences belong to
-// (StreamIDMetadataKey). A consumer created again for the session with no start of its own starts
-// at Floor + 1, one created from a caller's start above Floor + 1 starts at Floor + 1 instead
-// (SessionConsumers.create), and a record naming another stream's identity is ignored by both,
-// since its sequences name messages of a stream this one is not.
+// deleted (ackFloor), capped at the stream's last sequence (recordResumeFloorAt), and the
+// identity of the stream those sequences belong to (StreamIDMetadataKey). A consumer created
+// again for the session with no start of its own starts at Floor + 1, one created from a caller's
+// start above Floor + 1 starts at Floor + 1 instead (SessionConsumers.create), and a record
+// naming another stream's identity is ignored by both, since its sequences name messages of a
+// stream this one is not.
 type SessionResumeRecord struct {
 	Floor    uint64 `json:"floor"`
 	StreamID string `json:"stream_id"`
 }
 
 // recordResumeFloorAt publishes session sessionID's resume record, floor and the stream's own
-// identity, on the session's resume lane (SessionResumeSubject). The newest record stands, so the
-// write takes no precondition (Client.publishStoredRaw).
-func (s *SessionConsumers) recordResumeFloorAt(ctx context.Context, sessionID string, floor uint64) error {
+// identity, on the session's resume lane (SessionResumeSubject), and returns the floor it
+// recorded. The newest record stands, so the write takes no precondition
+// (Client.publishStoredRaw).
+//
+// The floor recorded is floor capped at the stream's last sequence, as the stream read this call
+// makes reads it (streamState, whose read begins after this call, and so after the read of the
+// consumer the caller took floor from). A floor past the stream's end, which a consumer an
+// earlier build created there holds (ackFloor reads at least the sequence before its start),
+// names no stored message, so recording the last sequence instead loses nothing, and a consumer
+// created from the record (SessionConsumers.create) starts at the sequence after it and skips
+// nothing, even once the stream has grown past the floor asked. Once the record's publish
+// succeeded, and only then, a floor this lowered is logged as a WARN line naming the session
+// (session_id), the floor asked (floor), the stream's last sequence it was recorded at
+// (stream_last_seq) and the stream's identity (stream_id). A call that fails, its stream read or
+// its publish, records nothing, logs nothing and returns 0 with its error.
+func (s *SessionConsumers) recordResumeFloorAt(ctx context.Context, sessionID string, floor uint64) (uint64, error) {
 	state, err := s.streamState(ctx)
 	if err != nil {
-		return err
+		return 0, err
 	}
-	record, err := json.Marshal(SessionResumeRecord{Floor: floor, StreamID: state.id})
+	recorded := min(floor, state.lastSeq)
+	record, err := json.Marshal(SessionResumeRecord{Floor: recorded, StreamID: state.id})
 	if err != nil {
-		return err
+		return 0, err
 	}
 	if _, err := s.client.publishStoredRaw(ctx, SessionResumeSubject(sessionID), record, nil); err != nil {
-		return fmt.Errorf("bus: record the resume floor of session %q: %w", sessionID, err)
+		return 0, fmt.Errorf("bus: record the resume floor of session %q: %w", sessionID, err)
 	}
-	return nil
+	if recorded < floor {
+		s.logger.Warn("session resume floor past the stream's end, recorded at the stream's last sequence",
+			slog.String("session_id", sessionID),
+			slog.Uint64("floor", floor),
+			slog.Uint64("stream_last_seq", state.lastSeq),
+			slog.String("stream_id", state.id))
+	}
+	return recorded, nil
 }
 
 // resumeFloor is the floor session sessionID's resume record holds (SessionResumeSubject), and
