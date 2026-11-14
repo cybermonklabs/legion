@@ -20,7 +20,7 @@ Do not request `isolated` work, create a workspace, edit files, or create a comm
      gh api --paginate "repos/<o>/<r>/rules/branches/$base_path" --jq '.[].type'
    ```
 
-   `squash_merge_commit_message` of `COMMIT_MESSAGES` is GitHub's default, and it joins every commit message of the pull request into the squash commit: this tree's `Dispatch:` keys and its `Omp-Session:` trailers would land on the default branch, where they are no part of the change's history. Step 3 passes the message itself and never lets GitHub write it; step 4 cannot, which is why the setting is read here.
+   `squash_merge_commit_message` of `COMMIT_MESSAGES` is GitHub's default, and it joins every commit message of the pull request into the squash commit: this tree's `Dispatch:` keys and its `Omp-Session:` and `Legion-Role:` trailers would land on the default branch, where they are no part of the change's history. Step 3 passes the message itself and never lets GitHub write it; step 4 cannot, which is why the setting is read here.
 3. Merge at that head, writing the message yourself:
 
    ```bash

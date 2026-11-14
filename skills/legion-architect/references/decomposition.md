@@ -120,8 +120,9 @@ name the merged commit. Read the other repositories with your gh's read-only acc
 When every change of the tree lands through its children, the root's branch has no commit of its
 own, and GitHub opens no pull request for a branch with no commits ahead of its base: implementing
 would never end. The root's implementer then pushes one empty commit
-(`jj new -m '<KEY>: the root of its children; no code of its own'`, with no trailer) and opens the
-pull request on it, as its role prompt says; that push starts the required checks like any other.
+(`jj new -m '<KEY>: the root of its children; no code of its own'`), writes no trailer itself,
+and opens the pull request on it, as its role prompt says; that push starts the required checks
+like any other.
 Plan no code for the root in that case, and do not create a child only to give the root a commit.
 
 ## Architecture components

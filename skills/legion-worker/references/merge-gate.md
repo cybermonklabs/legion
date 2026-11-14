@@ -200,8 +200,8 @@ it there until that answer comes clean.
   every step below names that `headRefOid`:
   - *The message, before the merge.* GitHub's default squash message,
     `squash_merge_commit_message` of `COMMIT_MESSAGES`, joins every commit message of the pull
-    request, which puts the tree's `Dispatch:` keys and its `Omp-Session:` trailers on the
-    default branch. So the merger writes the message itself,
+    request, which puts the tree's `Dispatch:` keys and its `Omp-Session:` and `Legion-Role:`
+    trailers on the default branch. So the merger writes the message itself,
     `--subject '<pull request title> (#<n>)' --body ''`, on every merge, whatever the repository's
     setting says. It reads that setting first all the same
     (`gh api "repos/<o>/<r>" --jq '[.squash_merge_commit_title, .squash_merge_commit_message] | @tsv'`),
