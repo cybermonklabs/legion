@@ -212,8 +212,14 @@ const issueAdvancesColumnsUnread = `'{}'::text[], 0::bigint, '{}'::text[]`
 // and a tuple a writer did not see must move it whichever of the two it is. The join to the live
 // priorities is a left join on their key, so it drops no tuple from the max. A tuple that is the
 // greatest of the issue is the newest of its own pair as well, so the max over these rows is the
-// max over every tuple. Both lists come back in id order, which is the order advancesScan merges
-// them in.
+// max over every tuple.
+//
+// Both lists come back in the byte order of the id, whatever the database's collation, which is
+// the order advancesScan merges them in with Go's own comparison of the strings. The `collate
+// "C"` names that order, as prioritystore's rankKey does for the rank: to_id is plain `text`, and
+// left to the default collation an order that weighs punctuation last (glibc's en_US, which a
+// deployment's database was created with) answers `cicd` before `ci-fixes` where Go puts
+// `ci-fixes` first, and the merge then lists an id the issue holds both ways twice.
 var issueAdvancesTerms = `advances_chain as (
 		select s.key as start, s.key as issue_key, 0 as depth
 		from subjects s
@@ -225,10 +231,10 @@ var issueAdvancesTerms = `advances_chain as (
 		` + prioritystore.AdvancesTupleRead(`, t.seq, t.asserted`, `and t.from_id in (select issue_key from advances_chain)`) + `
 	), advances as (
 		select c.start as issue_key,
-		       coalesce(array_agg(distinct cu.to_id order by cu.to_id)
+		       coalesce(array_agg(distinct cu.to_id collate "C" order by cu.to_id collate "C")
 		                filter (where cu.asserted and live.id is not null and c.depth = 0), '{}') as ids,
 		       coalesce(max(cu.seq) filter (where c.depth = 0), 0) as revision,
-		       coalesce(array_agg(distinct cu.to_id order by cu.to_id)
+		       coalesce(array_agg(distinct cu.to_id collate "C" order by cu.to_id collate "C")
 		                filter (where cu.asserted and live.id is not null and c.depth > 0), '{}') as inherited
 		from advances_chain c
 		left join advances_current cu on cu.from_id = c.issue_key
@@ -507,10 +513,11 @@ type advancesScan struct {
 
 func (a *advancesScan) targets() []any { return []any{&a.ids, &a.revision, &a.inherited} }
 
-// resolve answers one entry per priority the issue advances, in id order: the issue's own
-// marked Inherited false, the rest true. An id the issue holds both ways is one entry marked
-// own, since a write of this issue's set states and retracts that one. Both lists arrive in id
-// order (issueAdvancesTerms), so this is one merge rather than a sort.
+// resolve answers one entry per priority the issue advances, in the byte order of the id: the
+// issue's own marked Inherited false, the rest true. An id the issue holds both ways is one entry
+// marked own, since a write of this issue's set states and retracts that one. Both lists arrive
+// in that byte order whatever the database's collation (issueAdvancesTerms' `collate "C"`), which
+// is the order `<=` compares in, so this is one merge rather than a sort.
 func (a *advancesScan) resolve() []model.IssueAdvance {
 	entries := make([]model.IssueAdvance, 0, len(a.ids)+len(a.inherited))
 	own, inherited := a.ids, a.inherited

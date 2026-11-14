@@ -186,7 +186,7 @@ func priorityUnplacedQuery(summary bool) string {
 	from (select 1 as one) seed
 	left join (
 		select * from unplaced
-		order by updated_at desc, key asc
+		order by updated_at desc, key collate "C" asc
 		limit ` + strconv.Itoa(priorityFaultRows) + `
 	) listed on true`
 }
@@ -221,7 +221,7 @@ func priorityParkedQuery(summary bool) string {
 		select p.*, moved.created_at as moved_at, moved.actor as moved_by
 		from parked p
 		` + parkedMoveLateral("p", "") + `
-		order by moved.created_at desc nulls last, p.key asc
+		order by moved.created_at desc nulls last, p.key collate "C" asc
 		limit ` + strconv.Itoa(priorityFaultRows) + `
 	), subjects as (
 		select key from listed
@@ -526,8 +526,14 @@ func (r *priorityFaultRow) resolve() (model.PriorityIssue, error) {
 // its rows. A fault with no issue answers one row whose issue columns are all null, which is the
 // count with no row beside it.
 //
-// The rows are ordered again here, by the column the statement cut its 50 on: a join keeps no
-// order of its own, so the order the answer carries is this one rather than the plan's.
+// The rows are ordered again here, by the columns the statement cut its 50 on: a join keeps no
+// order of its own, so the order the answer carries is this one rather than the plan's. The key
+// breaks a tie in both by its bytes, which is what strings.Compare reads and what the
+// statement's `collate "C"` names, so the 50 the statement cut are the first 50 of this order
+// whatever the database's collation. Left to the default collation, which on a deployment weighs
+// punctuation last, the cut and this sort would be two orders, and where a tie straddles the cut
+// (the parked issues whose move no event records all tie) the list would draw a row the order it
+// answers puts after one it leaves out.
 func scanPriorityFault(rows pgx.Rows, parked bool) (int, map[string]int, []model.PriorityIssue, error) {
 	count := 0
 	counts := map[string]int{}
