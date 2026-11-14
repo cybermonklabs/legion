@@ -4594,8 +4594,8 @@ The session's own user, such as a `gcp:NatsHub`'s credential-free `sessionUser`,
   A start past the end names no message, so the clamp loses nothing the session saw.
   A client's resume point only rises, so a session whose consumer was created at a clamped start comes back with the same point, still past the stream's end.
   The record rule then lowers that start to the sequence after the floor its last delete recorded, so its next consumer starts at or before the first message stored while it was away ("The resume record each delete writes" below).
-  A consumer an earlier build created past the end is restarted at its relay's next restart ("Restart at the ack floor" below).
-  That restart keeps no consumer whose next sequence, its ack floor plus one, is past the sequence after the stream's last: it deletes the consumer and creates it at that next sequence, and the create clamps the start (`bus.SessionConsumers.RestartAtFloor`).
+  A consumer an earlier build created past the end is restarted at its relay's next restart ("Restart at the ack floor" below), on nats-server v2.15.1 at the stream's first sequence ("The stream's sequences went back" below).
+  Where the server reports its ack floor as 0, as nats-server 2.10.29 does, the restart keeps no consumer whose next sequence, its ack floor plus one, is past the sequence after the stream's last: it deletes the consumer and creates it at that next sequence, and the create clamps the start (`bus.SessionConsumers.RestartAtFloor`).
   `keepAtFloor` first holds that next sequence to a second stream read, because its first read can begin before the consumer's info was read and so trail the consumer.
   `KeepListed` answers not kept with no second read, because its one read begins after the list that read the consumer.
   A delete of such a consumer records the stream's last sequence as its floor ("The resume record each delete writes" below).
@@ -4606,11 +4606,27 @@ The session's own user, such as a `gcp:NatsHub`'s credential-free `sessionUser`,
   The reconcile sets the ack floor's consumer sequence to the one it had delivered before the loss.
   So `ackFloor` keeps the floor the server reports even below the sequence before the consumer's start, unless it is 0 in both its stream and its consumer sequence and the delivered stream sequence is at or above the sequence before the start ("Restart at the ack floor" below).
   A restart then starts after that floor, so the session is handed again what waits for an ack.
-  One case stays open: a consumer that had delivered nothing before its stream lost every message, and since the loss has been delivered messages up to `OptStartSeq - 1` with the first still unacked, reads as acked up to that sequence, and a restart of it starts past those messages.
-  On nats-server v2.15.1 such a consumer is not reconciled at all, because the server writes its old floors back (`server/filestore.go` v2.15.1, lines 14015-14017, 14128-14132 and 14324-14373).
+  On nats-server v2.15.1 a consumer that had delivered nothing before its stream lost every message is not reconciled ("The stream's sequences went back" below).
   nats-server v2.15.1 reconciles only a one-copy consumer this way, not a replicated one.
 
-- **The log lines of a start:** the session-consumer connection writes three lines with the logger the listener passes to `bus.ConnectSessionConsumers`, its own JSON logger (`connectSessionDelivery`), so each line carries the listener's `machine_id`.
+- **The stream's sequences went back:** when a consumer's ack floor, as the server reports it (`AckFloor.Stream`), is above its stream's last sequence, and the stream still carries the same `envoy_stream_id`, the stream's sequence space went back: a one-copy stream lost every message, or a stream was restored from an older backup.
+  The messages now at those sequences are ones the consumer was never handed.
+  So every path that keeps or restarts a consumer restarts such a consumer at the stream's first sequence, not at the sequence after its floor, which the clamp would move to the stream's end (`bus.SessionConsumers.RestartAtFloor`):
+  `RestartAtFloor` deletes it and creates it there, keeping it neither in `keepAtFloor` nor in `KeepListed`, which answers not kept so the relay runs that restart.
+  The first message the consumer then hands over is the first the stream holds on its filters.
+  That start is at or below the sequence after the stream's last, so `create` never clamps it, and it stays the restart's pending start until its create is confirmed, as every restart's start does.
+  `RestartAtFloor` holds the floor to a stream read that began after the consumer's info was read, a second read where the floor is past the end of the first, so a floor the stream had reached by then is never read as past the end; `KeepListed`'s one read begins after the list.
+  nats-server v2.15.1 needs the rule after a whole loss: a consumer that had delivered nothing before its one-copy stream lost every message is not reconciled, because the reconciled state is all 0, which the consumer's file store reads as state not loaded yet and copies the old state back over (`server/filestore.go` v2.15.1, `stateWithCopyLocked`, lines 14324 and 14344-14373, reached from `ForceUpdate` through `encodeState`, lines 14128-14132 and 14015-14017).
+  With 20 messages stored before the loss, such a consumer still reports an ack floor of 20 in its stream sequence and 0 in its consumer sequence, a delivered stream sequence of 20 and `OptStartSeq` 21, and delivers nothing the stream stores after the loss until the stream reaches 21 (`bus.TestRestartAtFloorRestartsAConsumerAWholeLossLeftUnreconciledAtTheStreamsFirstSequence`, and `bus.TestKeepListedLeavesAConsumerAWholeLossLeftUnreconciledToARestartAtTheStreamsFirstSequence` for the list's path).
+  The rule is decided before the next-sequence check of "Past the stream's end" above: on nats-server v2.15.1 a consumer an earlier build created past the end reports its ack floor as `OptStartSeq - 1`, above the stream's last sequence, in the same shape.
+  So that consumer is restarted at the stream's first sequence rather than clamped to the stream's end, and is handed the messages stored below its start (`bus.TestAConsumerAnEarlierBuildLeftPastTheEndIsRestartedAtTheStreamsFirstSequence`).
+  The rule reads such a consumer only while the stream's last sequence is below its floor: once the stream has stored up to the floor again, the consumer reads as one inside the stream.
+  A start at the stream's first sequence hands the session again what it was handed before at those sequences, after a restore from an older backup and for the consumer an earlier build left.
+  Its plugin's ledger drops each such frame it recorded within 72 hours (`DELIVERY_DUPLICATE_WINDOW_MS`, the stream's own retention), up to the 20,000 frames it holds (`DELIVERY_LEDGER_LIMIT`, `packages/envoy-client/src/delivery-ledger.ts`).
+  That cap is the limit on these repeats: a session shown more than 20,000 frames within 72 hours can be shown the oldest of them again.
+  Each such restart writes the went-back WARN line ("The log lines of a start" below).
+
+- **The log lines of a start:** the session-consumer connection writes four lines with the logger the listener passes to `bus.ConnectSessionConsumers`, its own JSON logger (`connectSessionDelivery`), so each line carries the listener's `machine_id`.
   dispatch://INFRA-3635's production check reads their texts and keys, so keep them exact.
   WARN `session consumer start past the stream's end, created at the sequence after the stream's last` reports a create that clamped its start.
   Its keys are `session_id`, `asked_start` (the start before the clamp, after the record rule where that applied), `stream_last_seq` (the last sequence of the read the clamp used), `stream_id` and `consumer_start` (the clamped start, `stream_last_seq + 1`).
@@ -4618,8 +4634,10 @@ The session's own user, such as a `gcp:NatsHub`'s credential-free `sessionUser`,
   Its keys are `session_id`, `asked_start` (the caller's start), `record_floor` and `stream_id`, and its count is how often the record rule lowers a start.
   WARN `session resume floor past the stream's end, recorded at the stream's last sequence` reports a resume record whose floor was capped at the stream's last sequence.
   Its keys are `session_id`, `floor` (the floor asked), `stream_last_seq` (the floor recorded) and `stream_id`.
+  WARN `session consumer ack floor past the stream's end, the stream's sequences went back, restarted at the stream's first sequence` reports a restart of a consumer whose ack floor the server reported above the stream's last sequence ("The stream's sequences went back" above).
+  Its keys are `session_id`, `ack_floor` (the floor the server reported, `AckFloor.Stream`), `stream_last_seq` (the last sequence of the stream read that settled it), `stream_id` and `consumer_start` (the stream's first sequence, where the restart created the consumer).
   Each sequence is a JSON number (`slog.Uint64`), and each id is a JSON string (`slog.String`).
-  A create line is written only after the server confirmed the create (`upsert(..., "create")` returned no error), so a create that failed writes none, and the retry that succeeds writes one.
+  A create line, the went-back line included, is written only after the server confirmed the create (`upsert(..., "create")` returned no error), so a create that failed writes none, and the retry that succeeds writes one.
   A create whose answer was lost while the server applied it writes no line.
   A create that lost the race to another call's create (`jetstream.ErrConsumerExists`) writes no line either, and `Ensure` then updates the consumer that call created.
   The floor line is written only after the record's publish succeeded.
@@ -4717,7 +4735,7 @@ The session's own user, such as a `gcp:NatsHub`'s credential-free `sessionUser`,
   So after any break the session takes its messages again in stream order, and its plugin's ledger drops the ones it already wrote.
   nats-server 2.10.29 reports an ack floor of 0 until an ack moves it, so a floor the server reports as 0 reads as the consumer's start sequence minus one while its delivered sequence is at or above that and its consumer ack floor is 0, any other floor stands even below it ("Past the stream's end" above), and the floor is at least the last sequence delivered when nothing awaits an ack (`ackFloor`;
   `docs/solutions/envoy/a-fresh-jetstream-consumer-reports-ack-floor-0-so-create-it-at-a-start-sequence-INFRA-594.md`).
-  A consumer with nothing awaiting an ack, whose next sequence is not past the stream's end, has nothing to deliver again and already goes on at the sequence after its floor, so the restart keeps it:
+  A consumer with nothing awaiting an ack, its next sequence and reported floor not past the stream's end, has nothing to deliver again and already goes on after its floor, so the restart keeps it:
   it updates the filter and settings in place and sends no delete or create, which leaves no window without a consumer and writes nothing to the server's store.
   Once a restart that deletes has read the floor, the start after it stays pending on the listener's session-consumer connection until a create at it is confirmed:
   a delete or create that failed (a timeout included, and a delete the server applied whose answer was lost) leaves the consumer to the relay's retry, after 1 s doubling to 30 s while the listener owns the session, which creates a consumer it finds missing at that start, and a registration that finds it missing meanwhile creates it there too, not at its resume point or the stream's end.
@@ -4729,7 +4747,7 @@ The session's own user, such as a `gcp:NatsHub`'s credential-free `sessionUser`,
   Registrations take no turn.
   When the listener starts or gains the durable binding it reads every session consumer at once with the paged consumer list (`$JS.API.CONSUMER.LIST.ENVOY_NOTIFICATIONS`, 256 consumers a page;
   `bus.SessionConsumers.ListSessionConsumers`), and each relay of that burst whose listed consumer has nothing awaiting an ack, already carries the wanted filter and settings, and has no pending start takes no turn and sends no call before it pulls (`bus.SessionConsumers.KeepListed`);
-  every other relay, one whose listed consumer is past the stream's end included, and every relay started alone (a new `epoch`, a probe after a pause, a retry), restarts through `RestartAtFloor`.
+  every other relay, one whose consumer or floor is past the stream's end included, and every relay started alone (a new `epoch`, a probe after a pause, a retry), restarts through `RestartAtFloor`.
   A grant without the list costs one log line and one info per session.
   Calls made at once share their reads of the stream's state (identity, first and last sequence):
   each waits for a read that began after it was made, so a gap is still reported exactly when a start lies below the stream's first sequence.
@@ -4778,7 +4796,7 @@ The session's own user, such as a `gcp:NatsHub`'s credential-free `sessionUser`,
   The entry records the sequence that consumer starts at (`consumer_start`, written by the registration from `bus.SessionConsumers.Ensure`, the same number that registration's answer carries), and only a message at or after it is the consumer's:
   one stored below that start -- one deferred as unplaceable before the session's first consumer was created, say -- is in no consumer, so the durable path delivers it as it would for a session with none.
   Only a registration writes that start (`sessionEntryFromSubscribe`), so a repair or a relay restart that creates the consumer below it leaves the entry above the consumer's real start until the session's next registration, every 90 s, rewrites it from `Ensure`'s answer.
-  A create at a clamped start does that where an earlier build or a restored stream left a start past the end on the entry, and so does a restart at a floor the server lowered after data loss ("Past the stream's end" above).
+  A create at a clamped start does that where an earlier build or a restored stream left a start past the end on the entry, and so does a restart at a floor the server lowered after data loss ("Past the stream's end" above) or at the stream's first sequence after its sequences went back.
   In that window the durable path reads a message between the two starts as in no consumer and delivers it as it would for a session with none.
   An entry an earlier release wrote carries no start, which reads as today: the consumer holds every stored message of it.
 

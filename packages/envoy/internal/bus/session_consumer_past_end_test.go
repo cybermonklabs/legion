@@ -18,11 +18,13 @@ import (
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
-// The WARN lines of a start and of a floor past the stream's end (create, recordResumeFloorAt). A
+// The WARN lines of a start and of a floor past the stream's end (create, recordResumeFloorAt), and
+// of a restart at the stream's first sequence after its sequences went back (RestartAtFloor). A
 // production check reads them by these texts, so the tests name them whole.
 const (
 	clampedStartLine = "session consumer start past the stream's end, created at the sequence after the stream's last"
 	cappedFloorLine  = "session resume floor past the stream's end, recorded at the stream's last sequence"
+	wentBackLine     = "session consumer ack floor past the stream's end, the stream's sequences went back, restarted at the stream's first sequence"
 )
 
 // pastTheEnd is how far past the stream's last sequence a case puts its start: 2^20, far past any
@@ -330,64 +332,98 @@ func TestAFaultedCreateOfAClampedStartWritesNoLine(t *testing.T) {
 	})
 }
 
-// A consumer an earlier build left past the stream's end is restarted at the sequence after the
-// stream's last, on each path that would otherwise keep it: a restart at its floor
-// (RestartAtFloor), which keeps a consumer with nothing awaiting an ack (keepAtFloor), and the
-// relay's keep of a consumer as the consumer list read it (KeepListed), which answers not kept so
-// the relay runs that restart (cmd/listener session_relay.go). The restart's create clamps the
-// consumer's next sequence, writes the clamp's line, and the consumer is handed the next message
-// stored on the session's agent subject, which the consumer as it was would skip.
+// A consumer an earlier build left past the stream's end is restarted at the stream's first
+// sequence, on each path that would otherwise keep it: a restart at its floor (RestartAtFloor),
+// which keeps a consumer with nothing awaiting an ack (keepAtFloor), and the relay's keep of a
+// consumer as the consumer list read it (KeepListed), which answers not kept so the relay runs that
+// restart (cmd/listener session_relay.go). nats-server v2.15.1 reports such a consumer's ack floor
+// as the sequence before its start, OptStartSeq - 1, above the stream's last sequence: the shape of
+// a stream whose sequences went back, which is decided before a next sequence past the end (r6
+// before r4, RestartAtFloor). So the restart creates the consumer at the stream's first sequence,
+// which create does not clamp, writes r6's one line and no clamp line, and the consumer is handed
+// every message stored on the session's agent subject below its old start, which the consumer as it
+// was skips, and then the next one stored.
 //
 // The consumer is created as that build created it, with the settings and filters this build gives
 // the subjects each path is passed (createAsAnEarlierBuild), so only its start can make a path
 // restart it; a consumer created the same way at the sequence after the stream's last is kept.
-func TestAConsumerAnEarlierBuildLeftPastTheEndIsRestartedAtTheStreamsEnd(t *testing.T) {
+func TestAConsumerAnEarlierBuildLeftPastTheEndIsRestartedAtTheStreamsFirstSequence(t *testing.T) {
 	owner, consumers, logs := sessionConsumersLogging(t)
 	ctx := context.Background()
 	for i := range 3 {
 		publishStored(t, owner, contracts.AgentSubject("ses_kept_past_end_bystander"), fmt.Sprintf("bystander %d", i))
 	}
 	id := streamIDOf(t, consumers)
+	state, err := consumers.streamState(ctx)
+	if err != nil {
+		t.Fatalf("read the stream's state: %v", err)
+	}
+	// first is the stream's first sequence, which nothing in the test moves: the stream ages out
+	// no message within it.
+	first := state.firstSeq
 
-	// restarted requires session's consumer, restarted with the stream's last sequence at
-	// lastSeq, to start at the sequence after it, and the clamp's one line for it: the restart's
-	// start is the consumer's next sequence, lastSeq + 2^20 (ackFloor reads the sequence before
-	// the start of a consumer that has acked nothing).
+	// below stores two messages on session's agent subject after its consumer was created at
+	// lastSeq + 2^20, the stream's last sequence then being lastSeq, and returns their sequences,
+	// lastSeq + 1 and lastSeq + 2: both below the consumer's start.
+	below := func(t *testing.T, session string, lastSeq uint64) []uint64 {
+		t.Helper()
+		var held []uint64
+		for i := range 2 {
+			seq := publishStored(t, owner, contracts.AgentSubject(session), fmt.Sprintf("below the old start %d", i))
+			if want := lastSeq + uint64(i) + 1; seq != want {
+				t.Fatalf("message %d on the agent subject of %s was stored at %d, want %d: something else was stored since the stream was read", i, session, seq, want)
+			}
+			held = append(held, seq)
+		}
+		return held
+	}
+	// restarted requires session's consumer, created at lastSeq + 2^20 and restarted with the
+	// stream's last sequence at lastSeq + 2, to start at the stream's first sequence, and r6's one
+	// line for it and no clamp line: the floor the server reports is lastSeq + 2^20 - 1, above the
+	// stream's last sequence.
 	restarted := func(t *testing.T, session string, lastSeq uint64, start SessionConsumerStart) {
 		t.Helper()
-		if want := (SessionConsumerStart{Created: true, StartSeq: lastSeq + 1, StreamID: id, AckFloor: lastSeq}); start != want {
-			t.Errorf("RestartAtFloor of a consumer created at %d, past the stream's last sequence %d = %+v; want %+v, the consumer created again at the sequence after the stream's last", lastSeq+pastTheEnd, lastSeq, start, want)
+		if want := (SessionConsumerStart{Created: true, StartSeq: first, StreamID: id, AckFloor: first - 1}); start != want {
+			t.Errorf("RestartAtFloor of a consumer created at %d, past the stream's last sequence %d = %+v; want %+v, the consumer created again at the stream's first sequence", lastSeq+pastTheEnd, lastSeq+2, start, want)
 		}
-		requireConsumerStart(t, consumers, session, lastSeq+1, "the sequence after the stream's last, where the restart created it again")
-		requireOneLine(t, logs, "WARN", clampedStartLine, session, map[string]any{
-			"asked_start":     lastSeq + pastTheEnd,
-			"stream_last_seq": lastSeq,
+		requireConsumerStart(t, consumers, session, first, "the stream's first sequence, where the restart created it again")
+		requireOneLine(t, logs, "WARN", wentBackLine, session, map[string]any{
+			"ack_floor":       lastSeq + pastTheEnd - 1,
+			"stream_last_seq": lastSeq + 2,
 			"stream_id":       id,
-			"consumer_start":  lastSeq + 1,
+			"consumer_start":  first,
 		})
+		if lines := sessionLines(t, logs, clampedStartLine, session); len(lines) != 0 {
+			t.Errorf("the log holds %v for the restart; want no clamp line: the stream's first sequence is not past the stream's end", lines)
+		}
 	}
-	// delivered requires session's consumer, whichever path it took, to be handed the next message
-	// stored on its agent subject, at lastSeq + 1.
-	delivered := func(t *testing.T, session string, lastSeq uint64) {
+	// delivered requires session's consumer, whichever path it took, to be handed the messages
+	// stored below its old start, held, and then the next message stored on its agent subject, in
+	// stream order.
+	delivered := func(t *testing.T, session string, held []uint64) {
 		t.Helper()
 		written := publishStored(t, owner, contracts.AgentSubject(session), "written after the path ran")
-		if written != lastSeq+1 {
-			t.Fatalf("the message was stored at %d, want %d: something else was stored since the stream was read", written, lastSeq+1)
+		if want := held[len(held)-1] + 1; written != want {
+			t.Fatalf("the message was stored at %d, want %d: something else was stored since the messages below the old start", written, want)
 		}
-		requireNext(t, pullSession(t, consumers, session), written,
-			"the first message stored after the stream's last sequence; a consumer left past the stream's end skips it")
+		pull := pullSession(t, consumers, session)
+		for _, seq := range held {
+			requireNext(t, pull, seq, "a message stored below the old start; a consumer left past the stream's end, or restarted at the stream's end, skips it")
+		}
+		requireNext(t, pull, written, "the next message stored on the session's agent subject")
 	}
 
 	t.Run("RestartAtFloor", func(t *testing.T) {
 		const session = "ses_kept_past_end_restarted"
 		filters := []string{contracts.AgentSubject(session)}
 		lastSeq := createAsAnEarlierBuild(t, consumers, session, filters, pastTheEnd)
+		held := below(t, session, lastSeq)
 		start, err := consumers.RestartAtFloor(ctx, session, filters)
 		if err != nil {
 			t.Fatalf("restart at floor: %v", err)
 		}
 		restarted(t, session, lastSeq, start)
-		delivered(t, session, lastSeq)
+		delivered(t, session, held)
 	})
 
 	t.Run("KeepListed", func(t *testing.T) {
@@ -395,6 +431,7 @@ func TestAConsumerAnEarlierBuildLeftPastTheEndIsRestartedAtTheStreamsEnd(t *test
 		filters, atTheEndFilters := []string{contracts.AgentSubject(session)}, []string{contracts.AgentSubject(atTheEnd)}
 		createAsAnEarlierBuild(t, consumers, atTheEnd, atTheEndFilters, 1)
 		lastSeq := createAsAnEarlierBuild(t, consumers, session, filters, pastTheEnd)
+		held := below(t, session, lastSeq)
 		listed, err := consumers.ListSessionConsumers(ctx)
 		if err != nil {
 			t.Fatalf("list: %v", err)
@@ -403,7 +440,7 @@ func TestAConsumerAnEarlierBuildLeftPastTheEndIsRestartedAtTheStreamsEnd(t *test
 			t.Fatalf("the list holds %v for %s and %v for %s, want both consumers", listed[session], session, listed[atTheEnd], atTheEnd)
 		}
 		if _, kept, err := consumers.KeepListed(ctx, atTheEnd, atTheEndFilters, listed[atTheEnd]); err != nil || !kept {
-			t.Fatalf("KeepListed of a consumer created the same way at %d, the sequence after the stream's last = %t, %v; want it kept, since it differs from the one past the end only in its start", lastSeq+1, kept, err)
+			t.Fatalf("KeepListed of a consumer created the same way at %d, the sequence after the stream's last when it was created = %t, %v; want it kept, since it differs from the one past the end only in its start", lastSeq+1, kept, err)
 		}
 
 		// The relay pulls a consumer KeepListed kept, and restarts one it did not.
@@ -412,7 +449,7 @@ func TestAConsumerAnEarlierBuildLeftPastTheEndIsRestartedAtTheStreamsEnd(t *test
 			t.Fatalf("KeepListed: %v", err)
 		}
 		if kept {
-			t.Errorf("KeepListed of a consumer created at %d, past the stream's last sequence %d = %+v, kept; want it not kept, so the relay restarts it", lastSeq+pastTheEnd, lastSeq, start)
+			t.Errorf("KeepListed of a consumer created at %d, past the stream's last sequence %d = %+v, kept; want it not kept, so the relay restarts it", lastSeq+pastTheEnd, lastSeq+2, start)
 		} else {
 			again, err := consumers.RestartAtFloor(ctx, session, filters)
 			if err != nil {
@@ -420,7 +457,7 @@ func TestAConsumerAnEarlierBuildLeftPastTheEndIsRestartedAtTheStreamsEnd(t *test
 			}
 			restarted(t, session, lastSeq, again)
 		}
-		delivered(t, session, lastSeq)
+		delivered(t, session, held)
 	})
 }
 

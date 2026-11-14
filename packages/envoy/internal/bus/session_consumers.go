@@ -388,26 +388,66 @@ func (s *SessionConsumers) UpdateFilter(ctx context.Context, sessionID string, s
 // no reason to restart: the server skips one whose reply subject nobody subscribes to any more
 // (nats-server v2.10.29 consumer.nextWaiting).
 //
-// A consumer with nothing awaiting an ack whose next sequence is past the sequence after the
-// stream's last is not kept but restarted: an earlier build, before create clamped every start,
-// created consumers there, and such a consumer skips every message the stream stores below its
-// start. It is deleted and created again at that next sequence, as a consumer awaiting an ack
-// is, and that create, like every create a restart sends, is clamped to the sequence after the
-// stream's last and logs the clamp (create), so the consumer comes back at the stream's end and
-// delivers what the stream stores from then on. Whether it is past the end is read from a stream
-// read that began after the consumer's info was read (keepAtFloor), so no consumer is restarted
-// for a stream read that trailed it.
+// A consumer whose ack floor, as the server reports it (AckFloor.Stream), is above the stream's
+// last sequence is restarted at the stream's first sequence, whether or not anything it delivered
+// awaits an ack, and is neither kept nor restarted after that floor (r6). The consumer belongs to
+// the stream, so the stream still carries the identity the floor was counted on, and a floor above
+// its last sequence says the stream's sequence space went back: a one-copy stream lost every
+// message, or the stream was restored from an older backup. The messages now at the sequences up
+// to that floor are ones the consumer was never handed, and a restart after the floor, which create
+// clamps to the sequence after the stream's last, would start past every one of them. Restarted at
+// the stream's first sequence, the first message the consumer hands over is the first the stream
+// holds on its filters. That can hand the session again messages it was handed before the
+// sequences went back, which its plugin's ledger drops.
 //
-// A restart that deletes makes the floor's next sequence the consumer's pending start until a
-// create at it is confirmed. It is recorded before the delete, so a delete that failed, its answer
-// lost while the server applied it, leaves it as surely as a create that failed after a delete that
-// succeeded.
+// nats-server v2.15.1 leaves a consumer in that shape when a one-copy stream lost every message
+// and the consumer had delivered nothing before the loss: the server does not reconcile it
+// (ackFloor), so a consumer started at N + 1 on a stream of N messages still reports an ack floor
+// of N in its stream sequence and 0 in its consumer sequence, a delivered stream sequence of N and
+// OptStartSeq N + 1, and is handed none of the messages the stream stores after the loss below
+// N + 1 (TestRestartAtFloorRestartsAConsumerAWholeLossLeftUnreconciledAtTheStreamsFirstSequence).
+// A consumer an earlier build created past the stream's end, before create clamped every start,
+// reports its ack floor as OptStartSeq - 1 on nats-server v2.15.1, above the stream's last
+// sequence in the same shape, so it is restarted at the stream's first sequence too, and is handed
+// every message the stream stored below its start
+// (TestAConsumerAnEarlierBuildLeftPastTheEndIsRestartedAtTheStreamsFirstSequence).
+//
+// r6 is decided first, before the keep above and before the next sequence past the end below
+// (r4), and from a stream read that began after the consumer's info was read: the floor is held to
+// the read joined before the info, and to a second read where it is past that one's end
+// (pastStreamEnd), so a floor the stream had reached by the time the info answered is never read
+// as past the end. The restart makes that first sequence its pending start, deletes the consumer
+// and creates it there; the start is at or below the sequence after the stream's last, so create
+// never clamps it. Once the server has confirmed the create, and only then, the restart writes one
+// WARN line naming the session (session_id), the floor the server reported (ack_floor), the last
+// sequence of the stream read that settled it (stream_last_seq), the stream's identity
+// (stream_id) and the start the consumer was created at (consumer_start); a restart whose delete
+// or create failed writes none. r6 sees such a consumer only while the stream's last sequence is
+// below its floor: once the stream has stored up to the floor again, the consumer reads as one
+// inside the stream.
+//
+// A consumer with nothing awaiting an ack whose next sequence (ackFloor plus one) is past the
+// sequence after the stream's last, its reported floor not past the stream's last sequence, is not
+// kept but restarted (r4): such a consumer skips every message the stream stores below its start.
+// It is deleted and created again at that next sequence, as a consumer awaiting an ack is, and
+// that create, like every create a restart sends, is clamped to the sequence after the stream's
+// last and logs the clamp (create), so the consumer comes back at the stream's end and delivers
+// what the stream stores from then on. Whether it is past the end is read from a stream read that
+// began after the consumer's info was read (keepAtFloor), so no consumer is restarted for a stream
+// read that trailed it. On nats-server v2.15.1 no consumer reaches r4, since every consumer that
+// server reports past the end is r6's; r4 guards a server without the floor v2.15.1 reports
+// (keepAtFloor).
+//
+// A restart that deletes makes the start it creates the consumer at - the floor's next sequence,
+// or the stream's first sequence for r6 - the consumer's pending start until a create at it is
+// confirmed. It is recorded before the delete, so a delete that failed, its answer lost while the
+// server applied it, leaves it as surely as a create that failed after a delete that succeeded.
 // The next RestartAtFloor that finds the consumer missing creates it at the pending start rather
 // than returning ErrSessionConsumerNotFound, and so does an Ensure (Ensure). A consumer still there
-// (a delete the server never applied, a create it applied whose answer was lost) restarts at its
-// own floor, which is the pending start or past it. A consumer missing with no pending start (never
-// created, or removed after SessionConsumerInactiveThreshold) is ErrSessionConsumerNotFound, as
-// before.
+// (a delete the server never applied, a create it applied whose answer was lost) restarts from its
+// own floor, as the restart before it did, at the pending start or past it. A consumer missing with
+// no pending start (never created, or removed after SessionConsumerInactiveThreshold) is
+// ErrSessionConsumerNotFound, as before.
 //
 // The pending start is this SessionConsumers' own, in memory. Its rule holds only while every call
 // for one session through it waits for the one before (the listener holds a lock per session
@@ -423,20 +463,34 @@ func (s *SessionConsumers) RestartAtFloor(ctx context.Context, sessionID string,
 		return SessionConsumerStart{}, err
 	}
 	// The stream's state is read alongside the consumer's info, from a read the restarts at once
-	// share (streamState); only a restart that can keep the consumer waits for it.
+	// share (streamState), and a restart that finds the consumer waits for it.
 	stream := s.joinStreamRead()
 	info, err := s.info(ctx, name)
-	if err == nil && info.NumAckPending == 0 {
-		// A consumer keepAtFloor does not keep, its next sequence past the stream's end, is
-		// restarted below at that sequence, as one awaiting an ack is.
-		if start, kept, err := s.keepAtFloor(ctx, name, info, filters, stream); err != nil || kept {
-			return start, err
-		}
-	}
 	var startSeq uint64
+	// wentBack is r6's finding for a consumer that exists, and state the stream read that settled
+	// it, which keepAtFloor holds the consumer's next sequence to.
+	var wentBack bool
+	var state sessionStreamState
 	switch {
 	case err == nil:
-		startSeq = ackFloor(info) + 1
+		if state, err = stream.wait(ctx); err != nil {
+			return SessionConsumerStart{}, err
+		}
+		if state, wentBack, err = s.pastStreamEnd(ctx, state, info.AckFloor.Stream+1); err != nil {
+			return SessionConsumerStart{}, err
+		}
+		if wentBack {
+			startSeq = min(max(state.firstSeq, 1), state.lastSeq+1)
+		} else {
+			if info.NumAckPending == 0 {
+				// A consumer keepAtFloor does not keep, its next sequence past the stream's
+				// end, is restarted below at that sequence, as one awaiting an ack is.
+				if start, kept, err := s.keepAtFloor(ctx, name, info, filters, state); err != nil || kept {
+					return start, err
+				}
+			}
+			startSeq = ackFloor(info) + 1
+		}
 		s.setPendingStart(name, startSeq)
 		if err := s.delete(ctx, name); err != nil {
 			return SessionConsumerStart{}, err
@@ -455,26 +509,41 @@ func (s *SessionConsumers) RestartAtFloor(ctx context.Context, sessionID string,
 		return SessionConsumerStart{}, err
 	}
 	s.setPendingStart(name, 0)
+	if wentBack {
+		s.logger.Warn("session consumer ack floor past the stream's end, the stream's sequences went back, restarted at the stream's first sequence",
+			slog.String("session_id", sessionID),
+			slog.Uint64("ack_floor", info.AckFloor.Stream),
+			slog.Uint64("stream_last_seq", state.lastSeq),
+			slog.String("stream_id", state.id),
+			slog.Uint64("consumer_start", start.StartSeq))
+	}
 	return start, nil
 }
 
 // keepAtFloor is RestartAtFloor of consumer name, read as info, when nothing it delivered awaits an
-// ack: it updates the consumer's filters and settings in place, drops any pending start (the
-// consumer exists, so it holds its own position), and returns the sequence the consumer examines
-// next as the start, with the stream's identity and gap as the stream read it held that sequence
-// to reads them, and true.
+// ack and the ack floor the server reports is not above the stream's last sequence (r6): it
+// updates the consumer's filters and settings in place, drops any pending start (the consumer
+// exists, so it holds its own position), and returns the sequence the consumer examines next as
+// the start, with the stream's identity and gap as the stream read it held that sequence to reads
+// them, and true.
 //
 // A consumer whose next sequence (ackFloor plus one) is past the sequence after the stream's last
-// is not kept (RestartAtFloor): that sequence is held to stream, joined before the consumer's info
-// was read, and to a second read where it is past that one's end (pastStreamEnd). keepAtFloor then
-// sends no update, leaves any pending start, and returns false, and RestartAtFloor deletes the
-// consumer and creates it at that next sequence, which create clamps to the sequence after the
-// stream's last.
-func (s *SessionConsumers) keepAtFloor(ctx context.Context, name string, info *jetstream.ConsumerInfo, filters []string, stream *streamRead) (SessionConsumerStart, bool, error) {
-	state, err := stream.wait(ctx)
-	if err != nil {
-		return SessionConsumerStart{}, false, err
-	}
+// is not kept (r4, RestartAtFloor): that sequence is held to state, the stream read RestartAtFloor
+// held the server's floor to (the read joined before the consumer's info was read, or the newer one
+// r6's check made), and to a further read where it is past that one's end (pastStreamEnd).
+// keepAtFloor then sends no update, leaves any pending start, and returns false, and RestartAtFloor
+// deletes the consumer and creates it at that next sequence, which create clamps to the sequence
+// after the stream's last.
+//
+// On nats-server v2.15.1 no consumer reaches that check past the end: a live consumer's delivered
+// sequence never passes the stream's last sequence, and the reconcile after a one-copy stream lost
+// data pulls a consumer back to an ack floor inside the stream, while the consumer that server
+// leaves unreconciled, and one an earlier build created past the end, report a floor above the
+// stream's last sequence and are r6's. The check guards a server without that reconcile and that
+// floor, nats-server v2.10.29, whose ack floor of 0 for a consumer that has acked nothing takes
+// ackFloor's OptStartSeq - 1 term: there a consumer an earlier build created past the end reads
+// past it only here, and comes back at the stream's end.
+func (s *SessionConsumers) keepAtFloor(ctx context.Context, name string, info *jetstream.ConsumerInfo, filters []string, state sessionStreamState) (SessionConsumerStart, bool, error) {
 	startSeq := ackFloor(info) + 1
 	state, past, err := s.pastStreamEnd(ctx, state, startSeq)
 	if err != nil {
@@ -497,10 +566,11 @@ func (s *SessionConsumers) keepAtFloor(ctx context.Context, name string, info *j
 // own. A seq past read's end is held to a second read (streamState, whose read begins after this
 // call), because read can trail seq: in create, a message stored after read can be the first one
 // on the session's agent subject (Client.NextStoredMessage), which a start of 0 is then fixed to;
-// in keepAtFloor, read was joined before the consumer's info was read (RestartAtFloor), so it can
-// begin before that info read and trail the consumer's next sequence. pastStreamEnd then returns
-// that newer read, and true only when seq is past its end too, so a seq that is not past the
-// stream's real end is never read as past it. A second read that fails returns its error.
+// in RestartAtFloor, read was joined before the consumer's info was read, so it can begin before
+// that info read and trail the consumer's ack floor (r6) or its next sequence (keepAtFloor).
+// pastStreamEnd then returns that newer read, and true only when seq is past its end too, so a seq
+// that is not past the stream's real end is never read as past it. A second read that fails
+// returns its error.
 func (s *SessionConsumers) pastStreamEnd(ctx context.Context, read sessionStreamState, seq uint64) (sessionStreamState, bool, error) {
 	if seq <= read.lastSeq+1 {
 		return read, false, nil
@@ -678,12 +748,16 @@ func (s *SessionConsumers) setPendingStart(name string, start uint64) {
 // sequence and a delivered stream sequence of 20, and does not deliver the messages the stream
 // stores next at 1 and 2.
 //
-// One case stays open, because ConsumerInfo holds nothing that tells it from that v2.10.29
-// consumer: a consumer that had delivered nothing before its stream lost every message, and since
-// the loss has been delivered messages up to OptStartSeq - 1 with the first still unacked. Its
-// floor is read as the sequence before its start, and a restart of it starts past those messages.
-// On nats-server v2.15.1 such a consumer is not reconciled at all, because the server writes its
-// old floors back (the server/filestore.go lines above).
+// That consumer is not reconciled on nats-server v2.15.1, then: it reports the floor it had before
+// the loss, above the stream's last sequence, and RestartAtFloor restarts it at the stream's first
+// sequence before it reads this floor (r6), as KeepListed answers not kept for it before it reads
+// this floor, so the session is handed the messages the stream stores after the loss
+// (TestRestartAtFloorRestartsAConsumerAWholeLossLeftUnreconciledAtTheStreamsFirstSequence). The
+// delivered condition stays for a server that does persist that reconcile: there it keeps such a
+// consumer's floor at 0 until the consumer has been delivered messages up to OptStartSeq - 1, and
+// past that, with the first of them still unacked, ConsumerInfo holds nothing that tells it from
+// the v2.10.29 consumer, so its floor reads as the sequence before its start and a restart starts
+// past those messages.
 //
 // The clause for a consumer with nothing awaiting an ack reads nothing unacked as acked because a
 // session consumer carries MaxDeliver -1, no limit (applySettings), so a message awaits an ack
@@ -747,16 +821,24 @@ func (s *SessionConsumers) ListSessionConsumers(ctx context.Context) (map[string
 
 // KeepListed is RestartAtFloor of sessionID's consumer, as info (ListSessionConsumers) listed it,
 // when that restart would send nothing: nothing it delivered awaits an ack, its filters and
-// settings are already what subjects reduce to, no restart left it a pending start, and its next
-// sequence (ackFloor plus one) is not past the sequence after the stream's last. It then
-// returns the start RestartAtFloor's keep returns (the sequence after the floor, the stream's
-// identity and the gap, from a stream read shared as streamState shares it) and true, with no API
-// call of its own. Otherwise it returns false and the caller restarts the consumer
-// (RestartAtFloor), which creates a consumer past the stream's end again at the sequence after
-// the stream's last. That stream read begins after this call, and so after the list that read
-// info, so it cannot trail the consumer as listed: where keepAtFloor holds a consumer past its
-// read's end to a second read, one read settles it here. The caller holds the session's lock, as
-// for RestartAtFloor.
+// settings are already what subjects reduce to, no restart left it a pending start, the ack floor
+// the server reports (AckFloor.Stream) is not above the stream's last sequence, and its next
+// sequence (ackFloor plus one) is not past the sequence after the stream's last. It then returns
+// the start RestartAtFloor's keep returns (the sequence after the floor, the stream's identity and
+// the gap, from a stream read shared as streamState shares it) and true, with no API call of its
+// own. Otherwise it returns false and the caller restarts the consumer (RestartAtFloor).
+//
+// The two stream conditions are RestartAtFloor's, checked in its order. A reported floor above the
+// stream's last sequence says the stream's sequences went back, and the restart creates that
+// consumer at the stream's first sequence (r6), so the session is handed the messages now at the
+// sequences up to the floor, which it was never handed; it is checked first because on
+// nats-server v2.15.1 a consumer an earlier build created past the end reports its floor in that
+// shape, OptStartSeq - 1, and is r6's rather than the clamp's. A next sequence past the stream's
+// end with the reported floor inside the stream makes the restart create the consumer again at the
+// sequence after the stream's last (r4). That stream read begins after this call, and so after the
+// list that read info, so it cannot trail the consumer as listed: where RestartAtFloor holds a
+// floor or a next sequence past its read's end to a second read, one read settles both here. The
+// caller holds the session's lock, as for RestartAtFloor.
 func (s *SessionConsumers) KeepListed(ctx context.Context, sessionID string, subjects []string, info *jetstream.ConsumerInfo) (SessionConsumerStart, bool, error) {
 	name, filters, err := sessionConsumerTarget(sessionID, subjects)
 	if err != nil {
@@ -774,6 +856,9 @@ func (s *SessionConsumers) KeepListed(ctx context.Context, sessionID string, sub
 	state, err := s.streamState(ctx)
 	if err != nil {
 		return SessionConsumerStart{}, false, err
+	}
+	if info.AckFloor.Stream > state.lastSeq {
+		return SessionConsumerStart{}, false, nil
 	}
 	startSeq := ackFloor(info) + 1
 	if startSeq > state.lastSeq+1 {
