@@ -1,0 +1,12 @@
+kind: Added
+custom:
+  Issue: pr4021
+body: |-
+  An issue pod's launcher runs a memory guard. When the pod's anonymous memory
+  (`AnonPages`) reaches 85% of the container's memory limit, it ends with `SIGKILL` the
+  largest process that is neither Legion's own nor an agent's own, and the role whose
+  process it was gets a note on its own role topic that names the command, its size, the
+  reading and the limit. The pod's other roles keep their turns, where before the kernel
+  killed the whole gVisor sandbox. Set it under `runtime.kubernetes.memory_guard.issue_pods`
+  (`enabled`, `act_percent`, `floor_percent`, `wait_seconds`, `interval_milliseconds`); it is
+  on by default. Daemon API contract 124.
