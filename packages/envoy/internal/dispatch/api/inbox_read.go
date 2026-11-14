@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // POST /api/v1/me/inbox/read is the Inbox's Mark all read: one request marks every thread the
@@ -35,7 +36,7 @@ import (
 // standing in for the page there (inboxDismissMarkThreads, api/inbox_dismiss.go); the mark-all
 // answers it and ignores it, since one read serves both routes. The project whose event announces
 // the write is not read here: the update answers the project of every row it moved, and those are
-// the projects this transaction locks, after the rows (inboxReadLockDocuments).
+// the projects this transaction locks, after the rows (lockInboxReadOwners).
 //
 // One builder rather than a statement per state and route: the mark-all reads the caller's unread
 // rows and the dismiss route the Inbox's own or the dismissed ones (api/inbox_dismiss.go), and the
@@ -119,19 +120,23 @@ var inboxReadAgentThreads = inboxAgentRootsQuery(
 	myAgentUnreadRoots, inboxAgentUnreadReplies, inboxAgentRepliedThrough)
 
 // The lock statements of this transaction, which it takes in the order markInboxReadThreads
-// writes down: the owner rows of the threads it marks `for share`, then the caller's own
-// user_threads rows `for no key update`. Each list is ordered before it is locked, so the locks
-// are taken in the sorted order rather than whatever order the scan returns, and the update
-// below re-locks the rows rather than taking them in the order its own plan reaches them.
-const (
-	inboxReadLockDocuments = `select 1 from artifacts where id = any($1::uuid[]) order by id for share`
-	inboxReadLockIssues    = `select 1 from issues where key = any($1::text[]) order by key for share`
-	inboxReadLockThreads   = `
+// writes down: the owners of the threads it marks, in shared mode (lockInboxReadOwners,
+// store.LockOwnersShared), then the caller's own user_threads rows `for no key update`. The
+// owners are two statements, the marked threads' documents and then their issues, each sorting
+// and deduplicating its own lock keys, and the rows are ordered before they are locked, so the
+// locks are taken in the sorted order rather than whatever order the scan returns, and the
+// update below re-locks the rows rather than taking them in the order its own plan reaches
+// them.
+//
+// The owners are taken by their advisory lock rather than `for share` on their rows: a row lock
+// assigns the transaction a transaction id, which it would then hold across everything this
+// request does, and every writer of an owner now serialises on that advisory lock instead
+// (store.LockOwner, api/lock_level_test.go's TestNoForUpdateOnOwnerTables).
+const inboxReadLockThreads = `
 	select 1 from user_threads
 	where login = $1 and thread_id = any($2::uuid[])
 	order by thread_id
 	for no key update`
-)
 
 // inboxReadMarkThreads moves the caller's mark on every Reply thread it was given, and answers
 // the project of each row it moved. Every row it reaches is one inboxReadLockThreads has just
@@ -169,7 +174,7 @@ const inboxReadMarkAgentReplies = `
 // takes 30 to 43 ms end to end on the test database, of which the ordered lock pass is 7 to 10
 // (the same seed takes 24 to 33 ms without it), so ten seconds leaves better than two orders of
 // magnitude of headroom for a busier server and cuts no honest request off. The ceiling
-// matters because this transaction holds its owner rows `for share`: every comment, answer and
+// matters because this transaction holds its owners' locks in shared mode: every comment, answer and
 // issue message on those owners waits behind a statement that hangs, so one that cannot finish
 // is better killed, which rolls the transaction back and frees them.
 const inboxReadStatementTimeout = "10s"
@@ -408,8 +413,9 @@ func (s *server) markInboxRead(w http.ResponseWriter, r *http.Request) {
 // here rather than there because one order written in two places is two orders as soon as one
 // of them is edited:
 //
-//  1. the owner row of every thread it marks, `for share`, documents then issues, in ascending
-//     owner-key order (lockInboxReadOwners, inboxReadLockDocuments);
+//  1. the owner of every thread it marks, in shared mode (store.LockOwnersShared), documents
+//     then issues, each statement taking its own in ascending lock-key order
+//     (lockInboxReadOwners);
 //  2. the root message of every Agent thread a dismissal writes a mark for, `for update`, in
 //     ascending id order (inboxDismissLockAgentRoots, api/inbox_dismiss.go), which the version
 //     check that follows reads each thread under (inboxDismissCheckAgentRoots) before the insert
@@ -435,19 +441,25 @@ func (s *server) markInboxRead(w http.ResponseWriter, r *http.Request) {
 // reaches. A dismiss that took the caller's rows first and the root second would be the opposite
 // order, and the two would meet each holding what the other waits for.
 //
-// PUT /api/v1/me/threads/{id}/read takes that same order over its one thread, and the two need
-// the same one: both take the owner `for share`, two share locks do not conflict, so the owner
-// orders nothing between them, and one of them holding the project while the other holds the
-// row and waits for the project is a cycle Postgres breaks with a 40P01 that the caller reads
-// as a 500. Rows before project rather than project before rows, because that is where the
-// one-thread route's project lock already falls: its Append takes it (events.Broker.Append),
-// after the row and only when the mark moved. The other order would have every revisit that
-// moves nothing queue on the project row - the busiest row the Inbox touches - behind every
-// write in that project, for an event it was never going to append.
+// PUT /api/v1/me/threads/{id}/read is ordered against this transaction by the owner alone, as an
+// ordinary writer is (below), and not by this list: it takes its one thread's owner lock
+// exclusively and then, before its own update, the project its event names (putThreadRead,
+// api/replies.go), which is steps 3 and 6 in the opposite order. The two never cross on it,
+// because this transaction holds a caller's row only while it holds that row's owner in shared
+// mode, and that exclusive lock conflicts with the shared one: whichever of the two reaches the
+// owner second waits there holding neither the row nor the project. A shared lock there would
+// cross, two share locks conflicting with nothing: this press would hold the row while it waited
+// for the project and that route would hold the project while it waited for the row, a cycle
+// Postgres breaks with a 40P01 that the caller reads as a 500.
+//
+// Rows before project here rather than project before rows, because the projects this
+// transaction locks are the projects of the rows its update moved, which it learns from that
+// update (inboxReadMarkThreads answers them) and not before it; a press that moved nothing locks
+// none and appends none.
 //
 // Two presses of this button by one person - two tabs, two devices, a narrowed press against an
 // unfiltered one - are ordered by step 3 and nothing else: they can name the same threads and
-// the same projects, and both take their owners `for share`. Step 3 is a pass of its own rather
+// the same projects, and both take their owners in shared mode. Step 3 is a pass of its own rather
 // than the update's own row locks because `thread_id = any($3)` locks what its plan reaches in
 // the order it reaches it, and the plans differ with the size of the array: a press of a
 // thousand threads is planned as a bitmap heap scan, which locks in heap order, where a small
@@ -459,10 +471,10 @@ func (s *server) markInboxRead(w http.ResponseWriter, r *http.Request) {
 // ones the update moves, so a second press waits for the first over rows it would have skipped.
 //
 // An ordinary writer is ordered by the owner instead. A comment, an answer or an issue message
-// takes its issue or document `for no key update` (owner.go, ownerRowLock) before its trigger
-// moves the user_threads rows of everyone in the thread; that level conflicts with the
-// `for share` taken here, and every row such a trigger moves belongs to a thread on the owner
-// it holds, which is an owner this transaction holds too, since it locks the owner of every
+// takes its issue's or document's owner lock (store.LockOwner) before its trigger moves the
+// user_threads rows of everyone in the thread; that exclusive lock conflicts with the shared one
+// taken here, and every row such a trigger moves belongs to a thread on the owner it holds,
+// which is an owner this transaction holds too, since it locks the owner of every
 // thread it marks. One of the two therefore waits at the owner while holding nothing the other
 // wants, whichever order the writer itself reaches the project in: a block ask's answer appends
 // an anchor refresh, and so takes the project, before its own update moves those rows, and it
@@ -598,10 +610,12 @@ func readInboxReplyRows(
 		}
 		read.threads = append(read.threads, thread)
 		read.replyVersions[thread] = version
+		// One owner per thread, as every reader and writer of its rows names it (store.OwnerOf):
+		// the issue when it has one, since an issue owns its document and everything under it,
+		// and otherwise the document a project document's thread hangs on.
 		if issueKey != nil {
 			issues[*issueKey] = struct{}{}
-		}
-		if artifactID != nil {
+		} else if artifactID != nil {
 			documents[*artifactID] = struct{}{}
 		}
 	}
@@ -656,19 +670,31 @@ func readInboxAgentRows(
 	return nil
 }
 
-// lockInboxReadOwners takes the owner row of every thread this request marks, step 1 of the
-// lock order markInboxReadThreads writes down. The caller's rows follow, in
+// lockInboxReadOwners takes the owner of every thread this request marks, in shared mode, step 1
+// of the lock order markInboxReadThreads writes down. The caller's rows follow, in
 // writeInboxThreadMarks, and the projects after them.
+//
+// The documents go first and the issues after them, one statement each, which is the order every
+// request takes them in; each statement sorts its own owners by lock key (store.LockOwnersShared),
+// so two requests naming overlapping sets take them in one order throughout. A single statement
+// over both would order the two kinds by their hashes instead, and a request waiting on a
+// document would then already hold the issues that hashed below it, which is a lock an ordinary
+// writer of that issue waits for while the request waits for something else
+// (TestDismissLeavesAThreadRepliedToWhileItRan).
 func lockInboxReadOwners(ctx context.Context, tx pgx.Tx, read inboxReadThreads) error {
-	if len(read.documents) > 0 {
-		if _, err := tx.Exec(ctx, inboxReadLockDocuments, read.documents); err != nil {
-			return fmt.Errorf("lock the marked threads' documents: %w", err)
-		}
+	documents := make([]store.Owner, 0, len(read.documents))
+	for _, document := range read.documents {
+		documents = append(documents, store.ArtifactOwner(document))
 	}
-	if len(read.issues) > 0 {
-		if _, err := tx.Exec(ctx, inboxReadLockIssues, read.issues); err != nil {
-			return fmt.Errorf("lock the marked threads' issues: %w", err)
-		}
+	if err := store.LockOwnersShared(ctx, tx, documents...); err != nil {
+		return fmt.Errorf("lock the marked threads' documents: %w", err)
+	}
+	issues := make([]store.Owner, 0, len(read.issues))
+	for _, issue := range read.issues {
+		issues = append(issues, store.IssueOwner(issue))
+	}
+	if err := store.LockOwnersShared(ctx, tx, issues...); err != nil {
+		return fmt.Errorf("lock the marked threads' issues: %w", err)
 	}
 	return nil
 }

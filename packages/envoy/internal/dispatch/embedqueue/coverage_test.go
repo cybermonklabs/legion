@@ -102,9 +102,9 @@ type seededItems struct {
 // texts chosen to catch a coverage text that is not the indexer's: Unicode, a comment longer
 // than embed's maxInputChars (32,000 runes, stored whole and cut only when sent), an unanswered
 // and an answered ask both with options, and a project document whose latest version is the one
-// that counts. It writes no window: a document's are its version write's to write
-// (refs.IndexBlocks) and an item's the block-index tick's window arm's
-// (refs.WriteItemWindows), and seedEveryKind writes them as those writers would.
+// that counts. It writes no window: every owner's windows are the block-index tick's window
+// arm's to write now (refs.WriteDocumentWindows, refs.WriteItemWindows), and seedEveryKind
+// writes them as that arm would.
 func seedItems(t *testing.T, q querier, project string) seededItems {
 	t.Helper()
 	ctx := context.Background()

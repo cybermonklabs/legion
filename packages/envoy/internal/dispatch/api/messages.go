@@ -7,14 +7,17 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
@@ -263,12 +266,13 @@ func (s *server) createStoredMessage(
 	if err != nil {
 		return model.Message{}, nil, err
 	}
+	// A block the reply names is read here, with the index its parent owes planned beside it: the
+	// parent's lock and that index are queued with this message's own writes, in that order
+	// (below), so neither holds a transaction id while the reply is read (INFRA-636).
 	var block *namedBlock
+	var parentRepair refs.ItemRepair
 	if input.InReplyToBlock != nil {
-		if err := lockReplyParentMessage(ctx, tx, parent.ID); err != nil {
-			return model.Message{}, nil, err
-		}
-		if block, err = s.replyBlockOf(ctx, tx, refs.ItemMessage, parent.ID, *input.InReplyToBlock, "in_reply_to_block", "INVALID_MESSAGE"); err != nil {
+		if parentRepair, block, err = s.planReplyBlock(ctx, tx, refs.ItemMessage, parent.ID, *input.InReplyToBlock, "in_reply_to_block", "INVALID_MESSAGE"); err != nil {
 			return model.Message{}, nil, err
 		}
 		parent.ReplyBody = messageReplyPreview(block.excerpt)
@@ -303,69 +307,110 @@ func (s *server) createStoredMessage(
 	if err != nil {
 		return model.Message{}, nil, err
 	}
-	message, err := scanMessage(tx.QueryRow(ctx, `
-		insert into messages (issue_key, author, body, target, in_reply_to, replies_to_block)
-		values ($1, $2, $3, $4, $5, $6)
-		returning `+messageColumns+`
-	`, issueKey, author, input.Body, input.Target, input.InReplyTo, block.nodeID()))
-	if err != nil {
-		return model.Message{}, nil, err
-	}
-	// The recovery point right after its message and before the event append: a repeat that took
-	// the key over meanwhile refuses it here, and this transaction rolls back before it takes the
-	// events' global lock.
-	if err := bindRequestKeyRecovery(ctx, tx, messageRecovery{MessageID: message.ID, Delivery: delivery}); err != nil {
-		return model.Message{}, nil, err
-	}
-	if block != nil {
-		if err := hydrateMessageReplyBlocks(ctx, tx, &message); err != nil {
-			return model.Message{}, nil, err
-		}
-	}
-	referenceChanges, err := s.indexMessage(ctx, tx, message)
-	if err != nil {
+	// The message's index, its references and the advice are read here, before its first write, so
+	// none holds a transaction id (INFRA-636). Its id, which both are planned for, and its
+	// created_at, the transaction's now() its column defaults to, are taken before the insert
+	// (neither assigns one), and the advice counts the message.created this write appends after it
+	// (writeAdvice).
+	var messageID string
+	var createdAt time.Time
+	if err := tx.QueryRow(ctx, `select gen_random_uuid()::text, now()`).Scan(&messageID, &createdAt); err != nil {
 		return model.Message{}, nil, err
 	}
 	eventType := "message.created"
-	if message.InReplyTo != nil {
+	if input.InReplyTo != nil {
 		eventType = "message.answered"
 	}
-	payload := thread.payload(message, referenceChanges)
-	payload.ThreadLogins, err = messageThreadLogins(ctx, tx, message)
-	if err != nil {
-		return model.Message{}, nil, err
-	}
-	event, err := s.appendEvent(ctx, tx, messageEvent(message, eventType, actor, payload))
-	if err != nil {
-		return model.Message{}, nil, err
-	}
-	if message.IssueKey != nil {
-		if err := refs.Stamp(ctx, tx, "message", message.ID, event.ID); err != nil {
-			return model.Message{}, nil, err
-		}
-	}
-	// A targeted message's attempt 1 is written here, in the transaction that stores the
-	// message, unclaimed and naming no session yet, as writeBroadcast opens each recipient's: a
-	// process that dies, or a request whose connection is cut, between this commit and the send
-	// then leaves a pending attempt the delivery sweep (delivery_sweep.go) sends. An earlier
-	// release opened it after the listener lookup, so a message it stored could have no attempt at
-	// all, and the recovery that opens a first attempt for one (owedKeyedSend,
-	// openFirstMessageDeliveryAttempt) serves only the messages such a release stored. It records
-	// who asked for it and the urgency they chose, which every send of it
-	// carries (pendingMessageDelivery), this request's own and a resumed one alike.
-	if message.Target != nil {
-		if _, err := tx.Exec(ctx, `
-			insert into message_deliveries (message_id, attempt, delivery, session_id, state, requested_by, urgency)
-			values ($1, 1, $2, '', 'pending', $3, $4)
-		`, message.ID, delivery, author, input.Urgency); err != nil {
-			return model.Message{}, nil, err
-		}
-	}
+	// An issue message's thread_logins are read by its event's insert, after the message's insert
+	// and the user_threads trigger it fires, on the thread root found here. A direct conversation
+	// keeps no Replies row: its Inbox row is the thread root author's Agent row, read here, since
+	// nothing the insert fires decides it (directThreadLogins).
+	var logins *events.Logins
 	var advice *writeAdvice
 	if issueKey != nil {
+		root, err := messageThreadRoot(ctx, tx, messageID, input.InReplyTo)
+		if err != nil {
+			return model.Message{}, nil, err
+		}
+		logins = events.ThreadLoginsOf(root)
 		advice = s.writeAdvice(
-			ctx, tx, "POST /api/v1/issues/{key}/messages", *issueKey, actor, "", status, false,
+			ctx, tx, "POST /api/v1/issues/{key}/messages", *issueKey, actor, adviceAsks{}, status, eventType, false,
 		)
+	}
+	message, err := insertedMessage(messageID, issueKey, author, input, createdAt)
+	if err != nil {
+		return model.Message{}, nil, err
+	}
+	message.RepliesToBlock = block.nodeID()
+	message.ReplyBlock = block.replyBlock(issueKey, "", "")
+	var directLogins []string
+	if issueKey == nil {
+		if directLogins, err = directThreadLogins(ctx, tx, message); err != nil {
+			return model.Message{}, nil, err
+		}
+	}
+	// An issue message's blocks, the mentions each holds and its own references are indexed as
+	// one write (planPendingItem); a direct message, which writes no mention, has its blocks
+	// indexed alone and moves nothing. The message's insert is queued below, so the issue the
+	// row will name is handed over: it gives the document its `#id`s resolve against, its
+	// issue's spec, which no read of the row can answer yet.
+	referenceChanges, indexWrite, err := s.planPendingItem(
+		ctx, tx, refs.ItemMessage, messageID, input.Body, refs.PendingSource{IssueKey: issueKey}, createdAt, issueKey != nil,
+	)
+	if err != nil {
+		return model.Message{}, nil, err
+	}
+	// The parent's lock, the index its blocks owe, the insert, the recovery point, this message's
+	// own index, the event, its stamp and a targeted message's first delivery attempt go in one
+	// batch (store.WriteBatch): the message is known before the insert runs, and the stamp names
+	// the event's id as the id sequence left it.
+	var event model.Event
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		if block != nil {
+			queueReplyParentMessageLock(b, parent.ID)
+			parentRepair.Queue(b)
+		}
+		b.Queue("", `
+			insert into messages (id, issue_key, author, body, target, in_reply_to, replies_to_block, created_at)
+			values ($1, $2, $3, $4, $5, $6, $7, $8)
+		`, messageID, issueKey, author, input.Body, input.Target, input.InReplyTo, message.RepliesToBlock, createdAt)
+		// The recovery point right after its message and before the event append: a repeat that
+		// took the key over meanwhile refuses it, and this transaction rolls back.
+		if err := queueRequestKeyRecovery(ctx, b, messageRecovery{MessageID: messageID, Delivery: delivery}); err != nil {
+			return err
+		}
+		if err := indexWrite(b); err != nil {
+			return err
+		}
+		payload := thread.payload(message, referenceChanges)
+		payload.ThreadLogins = directLogins
+		if err := s.deps.Events.QueueAppendWithLogins(b, messageEvent(message, eventType, actor, payload), logins, func(appended model.Event) {
+			event = appended
+		}); err != nil {
+			return err
+		}
+		if issueKey != nil {
+			refs.QueueStamp(b, "message", message.ID)
+		}
+		// A targeted message's attempt 1 is queued here, with the writes of the transaction that
+		// stores the message, unclaimed and naming no session yet, as writeBroadcast opens each
+		// recipient's: a process that dies, or a request whose connection is cut, between this
+		// commit and the send then leaves a pending attempt the delivery sweep
+		// (delivery_sweep.go) sends. An earlier release opened it after the listener lookup, so a
+		// message it stored could have no attempt at all, and the recovery that opens a first
+		// attempt for one (owedKeyedSend, openFirstMessageDeliveryAttempt) serves only the
+		// messages such a release stored. It records who asked for it and the urgency they chose,
+		// which every send of it carries (pendingMessageDelivery), this request's own and a
+		// resumed one alike.
+		if message.Target != nil {
+			b.Queue("", `
+				insert into message_deliveries (message_id, attempt, delivery, session_id, state, requested_by, urgency)
+				values ($1, 1, $2, '', 'pending', $3, $4)
+			`, messageID, delivery, author, input.Urgency)
+		}
+		return nil
+	}); err != nil {
+		return model.Message{}, nil, err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return model.Message{}, nil, err
@@ -965,6 +1010,28 @@ func (s *server) loadMessage(ctx context.Context, q queryer, issueKey, id string
 	return scanMessage(q.QueryRow(ctx, query, args...))
 }
 
+// insertedMessage is the message createStoredMessage inserts as messageColumns reads it back: its
+// author as the jsonb column decodes, its in_reply_to in the uuid type's text form, and its
+// created_at the transaction's now(), its column's default. The insert runs in a batch with the
+// event that carries this message, so nothing reads the row back before that event is queued.
+func insertedMessage(id string, issueKey *string, author []byte, input createMessageInput, createdAt time.Time) (model.Message, error) {
+	message := model.Message{
+		ID: id, IssueKey: issueKey, Body: input.Body, Target: input.Target, CreatedAt: createdAt,
+		Deliveries: []model.MessageDelivery{},
+	}
+	if input.InReplyTo != nil {
+		parent, err := uuid.Parse(*input.InReplyTo)
+		if err != nil {
+			return model.Message{}, fmt.Errorf("message in_reply_to: %w", err)
+		}
+		message.InReplyTo = new(parent.String())
+	}
+	if err := json.Unmarshal(author, &message.Author); err != nil {
+		return model.Message{}, fmt.Errorf("decode message author: %w", err)
+	}
+	return message, nil
+}
+
 // messageColumns is the messages select list scanMessage reads, in scan order.
 const messageColumns = `id::text, issue_key, author, body, target, in_reply_to::text, broadcast_id::text, created_at, replies_to_block`
 
@@ -983,18 +1050,6 @@ func scanMessage(row pgx.Row, extra ...any) (model.Message, error) {
 	}
 	message.Deliveries = []model.MessageDelivery{}
 	return message, nil
-}
-
-// indexMessage indexes message, which the calling transaction has just written: an issue
-// message's blocks, the mentions each holds and its own references (refs.ReplaceCountedItem),
-// and the reference graph changes they moved. A direct message writes no mention, so its blocks
-// hold none either: only its blocks are indexed, and it moves nothing.
-func (s *server) indexMessage(ctx context.Context, tx pgx.Tx, message model.Message) (model.ReferenceChanges, error) {
-	if message.IssueKey == nil {
-		_, err := refs.IndexItem(ctx, tx, refs.ItemMessage, message.ID, message.Body, message.CreatedAt, nil, nil)
-		return model.ReferenceChanges{}, err
-	}
-	return refs.ReplaceCountedItem(ctx, tx, refs.ItemMessage, message.ID, message.Body, s.deps.ServerURL, message.CreatedAt)
 }
 
 // loadMessageReplyChains reads, for each seed message, every message transitively replying to

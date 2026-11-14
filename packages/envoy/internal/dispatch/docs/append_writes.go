@@ -51,33 +51,53 @@ func (p *PgVersioned) AppendRoomUpdatesTx(ctx context.Context, tx pgx.Tx, room s
 // appendUpdatesTx appends updates inside tx under the gate, at consecutive versions from the head
 // it reads: the document's advisory lock where the caller holds none (roomLocked), the gate's read
 // (readAppendGate), a crashed prune's recovery where one stands, the gate's verdict (gateAppend)
-// and the append's writes (appendWrites), each statement run in tx in turn. It answers the first
-// version the run stored and how many of the run it stored, which the gate's prefix rule can
-// leave short of the run it was handed.
+// and the append's writes (appendWrites), put on the transaction's write phase as one step
+// (write). It answers the first version the run stored and how many of the run it stored, which
+// the gate's prefix rule can leave short of the run it was handed.
 func (p *PgVersioned) appendUpdatesTx(ctx context.Context, tx pgx.Tx, room string, updates []BrowserUpdate, kind appendKind, flush *RoomFlush, roomLocked bool) (persistence.Version, int, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, 0, err
 	}
-	if !roomLocked {
+	// A transaction that has already queued a write of this document's history holds the
+	// document's lock from that write's own read and knows the head its queue leaves
+	// (pendingRoom): the table holds none of those rows yet, so the head and the intact flag come
+	// from the queue (appendGateRead.after) and the rest of the verdict from this read, and the
+	// prune recovery is the first write's alone. Every other append takes the lock here, once:
+	// before the cursor the gate reads and before the gate's own read, and not again, since a
+	// second acquisition in the transaction that holds it grants what the transaction has and
+	// costs the round trip every other writer of the document waits out.
+	pending := pendingRoomOf(ctx, tx, room)
+	if !roomLocked && pending == nil {
 		if err := lockDocumentRoom(ctx, tx, room); err != nil {
 			return 0, 0, err
 		}
 	}
 	// One read answers the gate's three questions and carries the prune checkpoint with it: a
 	// crashed prune's recovery (recoverPruneTx) runs only where a checkpoint stands, and the gate
-	// is read again after it, since the recovery deletes the rows above the ceiling.
-	read, err := readAppendGate(ctx, tx, room)
+	// is read again under the ceiling that recovery leaves, since its deletes of the rows above
+	// it are queued with the transaction's other writes.
+	read, err := readAppendGate(ctx, tx, room, nil)
 	if err != nil {
 		return 0, 0, err
 	}
-	if read.pruneCeiling != nil {
-		if _, err := p.recoverPruneTx(ctx, tx, room); err != nil {
-			return 0, 0, err
+	if pending == nil {
+		var recovered *int64
+		if read.pruneCeiling != nil {
+			ceiling, recovering, err := p.recoverPruneTx(ctx, tx, room)
+			if err != nil {
+				return 0, 0, err
+			}
+			recovered = ceilingOf(ceiling, recovering)
+			// The recovery's deletes go on the transaction's write phase, so the gate is read
+			// again under the ceiling they leave rather than over rows they have not taken out
+			// yet.
+			if read, err = readAppendGate(ctx, tx, room, recovered); err != nil {
+				return 0, 0, err
+			}
 		}
-		if read, err = readAppendGate(ctx, tx, room); err != nil {
-			return 0, 0, err
-		}
+		pending = recordPendingRoom(ctx, tx, room, read.latest, recovered)
 	}
+	read = read.after(pending)
 	through, gated := appendingThrough(ctx, room, flush)
 	head, admitted := read.latest, len(updates)
 	if gated {
@@ -95,13 +115,23 @@ func (p *PgVersioned) appendUpdatesTx(ctx context.Context, tx pgx.Tx, room strin
 	// path leaves them (appendRoomTx). A flush left short this way is failed by its caller, which
 	// rolls this prefix back with it (Service.flushThrough).
 	updates = updates[:admitted]
-	statements, _, err := p.appendWrites(ctx, room, head, updates, true)
+	plan, err := p.appendWrites(ctx, tx, room, head, updates, true)
 	if err != nil {
 		return 0, 0, err
 	}
-	for _, statement := range statements {
-		if err := statement.exec(ctx, tx); err != nil {
-			return 0, 0, err
+	if err := plan.send(ctx, tx); err != nil {
+		return 0, 0, err
+	}
+	// A queued statement writes nothing until the write phase runs, so the history its queue
+	// leaves is recorded for the reads of this transaction that follow it (pendingRoom): a later
+	// append of the same document in the same transaction goes after this one, and a read of the
+	// head takes it from there. What the pending-author and ask-block-author statements will
+	// leave is recorded by the helpers that queued them (queuePendingAuthors, queueAskAuthors).
+	if pending != nil {
+		pending.head = int64(plan.last)
+		pending.appended += int64(len(updates))
+		for _, appended := range updates {
+			pending.changed = pending.changed || appended.ContentChanged
 		}
 	}
 	return persistence.Version(head + 1), len(updates), nil
@@ -159,6 +189,46 @@ const appendUpdatesJoinedStatement = `
 	)
 	insert into doc_compaction_owed (artifact_id) select $1::uuid where $5 on conflict do nothing`
 
+// appendPlan is what one write owes: statements, in the order the transaction runs them, and
+// last, the version the last of its updates takes (0 for a write that appends none). A caller
+// puts them on its transaction's write phase (send), or queues them into a batch it commits
+// itself (appendRoomTx, writeStatement.queue).
+//
+// A writer with one statement to make gathers it here too, so that statement is queued by the
+// same helper the append queues it through and cannot be queued without what the helper records
+// beside it (queueAskAuthors, queuePendingAuthors): it sends a plan of one.
+type appendPlan struct {
+	statements []writeStatement
+	last       persistence.Version
+}
+
+// queue adds one statement to the plan, with what to say when it fails.
+func (p *appendPlan) queue(what, sql string, args ...any) {
+	p.add(writeStatement{sql: sql, args: args, what: what})
+}
+
+// add adds a statement a builder made (pendingAuthorsStatement, updateOwedStatement).
+func (p *appendPlan) add(statement writeStatement) {
+	p.statements = append(p.statements, statement)
+}
+
+// send puts every statement of the plan on the transaction's write phase, in the order it queued
+// them, so a failure is reported as its own statement's: where the transaction queues its writes
+// they join its one pipelined batch, and where it does not they are a batch of their own, one
+// round trip (write, store.RunWrite). A plan with nothing in it writes nothing: a step of no
+// statements would still cost the round trip a write of its own takes.
+func (p *appendPlan) send(ctx context.Context, tx pgx.Tx) error {
+	if len(p.statements) == 0 {
+		return nil
+	}
+	return write(ctx, tx, func(b *store.WriteBatch) error {
+		for _, statement := range p.statements {
+			statement.queueWrite(b)
+		}
+		return nil
+	})
+}
+
 // appendWrites is every write of an append transaction whose gate passed at head, in the order the
 // transaction runs them, and the last version they store: the insert with its announcement and the
 // document's compaction entry (appendUpdatesStatement), the owed settlement written once
@@ -167,8 +237,9 @@ const appendUpdatesJoinedStatement = `
 // authors of the ask blocks the run's renders first showed (askAuthorsStatement), recorded with
 // the updates so a settlement on any process finds them, consumed credit or not: a version lists
 // authors, not ask blocks. The rows are exactly those the same updates leave appended one at a
-// time. A caller runs the statements in its transaction (writeStatement.exec) or queues them into
-// the batch it commits with (writeStatement.queue).
+// time. A caller puts the statements on its transaction's write phase (appendPlan.send, which
+// queues each with writeStatement.queueWrite) or queues them itself into the batch its own
+// connection commits with (writeStatement.queue, appendRoomTx in room_appends.go).
 //
 // owes is whether the document owes a settlement from these updates. It is false for a room's
 // parked bytes alone (AppendParkedUpdate), which change nothing a settlement reads and credit
@@ -180,9 +251,9 @@ const appendUpdatesJoinedStatement = `
 // write, so a route that goes on to append an event (an upload, issue creation) holds it before
 // its event, as an answer marking this document a copy owed does (owedCopiesOf);
 // Ledger.Commit's later recordLatestEditSource then waits on nothing.
-func (p *PgVersioned) appendWrites(ctx context.Context, room string, head int64, updates []BrowserUpdate, owes bool) ([]writeStatement, persistence.Version, error) {
+func (p *PgVersioned) appendWrites(ctx context.Context, tx pgx.Tx, room string, head int64, updates []BrowserUpdate, owes bool) (appendPlan, error) {
 	if len(updates) == 0 {
-		return nil, 0, errors.New("append document updates: no update to append")
+		return appendPlan{}, errors.New("append document updates: no update to append")
 	}
 	versions := make([]int64, len(updates))
 	contents := make([][]byte, len(updates))
@@ -233,41 +304,33 @@ func (p *PgVersioned) appendWrites(ctx context.Context, room string, head int64,
 		insert.args = []any{room, versions, contents, classes, folds}
 		ledger.deferAnnouncement(room, persistence.Version(last))
 	}
-	statements := []writeStatement{insert}
+	plan := appendPlan{statements: []writeStatement{insert}, last: persistence.Version(last)}
 	if !owes {
-		return statements, persistence.Version(last), nil
+		return plan, nil
 	}
 	owedStatement, err := updateOwedStatement(room, owed)
 	if err != nil {
-		return nil, 0, err
+		return appendPlan{}, err
 	}
-	statements = append(statements, owedStatement)
-	if len(authors) > 0 {
-		upsert, err := pendingAuthorsStatement(room, authors)
-		if err != nil {
-			return nil, 0, err
-		}
-		statements = append(statements, upsert)
+	plan.add(owedStatement)
+	// The pending authors and the authors of the ask blocks this run's renders first showed go
+	// through the one helper per table that queues the statement and records what it will leave
+	// on the ledger (queuePendingAuthors, queueAskAuthors), so no writer can do one without the
+	// other. The ask blocks are recorded with the updates whether or not their credit was
+	// consumed: a version lists authors, not ask blocks.
+	if err := queuePendingAuthors(ctx, tx, &plan, room, authors); err != nil {
+		return appendPlan{}, err
 	}
-	if len(askAuthors) > 0 {
-		askArgs, err := askAuthorsArgs(room, askAuthors)
-		if err != nil {
-			return nil, 0, err
-		}
-		if askArgs != nil {
-			statements = append(statements, writeStatement{
-				sql:  askAuthorsStatement,
-				args: askArgs,
-				what: "record the document's ask block authors",
-			})
-		}
+	if err := queueAskAuthors(ctx, tx, &plan, room, askAuthors); err != nil {
+		return appendPlan{}, err
 	}
-	return statements, persistence.Version(last), nil
+	return plan, nil
 }
 
 // writeStatement is one statement of a durable write, with the words its error is wrapped in. A
-// caller runs it in its own transaction (exec), or queues it into a batch it sends itself (queue),
-// so one SQL serves a write made either way.
+// caller runs it in its own transaction (exec), puts it on that transaction's write phase (write,
+// queueWrite), or queues it into a batch it sends itself (queue), so one SQL serves a write made
+// any of those ways.
 type writeStatement struct {
 	sql  string
 	args []any
@@ -280,6 +343,17 @@ func (s writeStatement) exec(ctx context.Context, tx pgx.Tx) error {
 		return fmt.Errorf("%s: %w", s.what, err)
 	}
 	return nil
+}
+
+// write puts the statement on tx's write phase, so a transaction whose writes are queued runs it
+// in its own batch (writeExec), and one whose writes are not runs it at once.
+func (s writeStatement) write(ctx context.Context, tx pgx.Tx) error {
+	return writeExec(ctx, tx, s.what, s.sql, s.args...)
+}
+
+// queueWrite queues the statement on a write phase's batch, for a caller already building one.
+func (s writeStatement) queueWrite(b *store.WriteBatch) {
+	b.Queue(s.what, s.sql, s.args...)
 }
 
 // queue queues the statement into b (store.QueueExec); its error, wrapped as exec wraps it, is

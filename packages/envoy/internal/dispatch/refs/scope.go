@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
@@ -27,6 +28,17 @@ const commentOwnScope = `coalesce((c.anchor->>'artifact_id')::uuid, c.artifact_i
 
 const commentOwnScopeJoin = `left join asks k on k.id = c.ask_id ` + askScopeJoin
 
+// commentScopeSelect reads, of one comment (aliased c), the three things its scope is decided
+// from (scopeStep): the document it names itself, the comment it replies to, and its issue's
+// spec (cs, commentSpecJoin). A comment's row and a pending comment's fields are read through
+// this one select, so the rules are stated once (pendingScope).
+const commentScopeSelect = `select ` + commentOwnScope + `::text, c.reply_to::text, cs.id::text`
+
+const commentSpecJoin = `left join artifacts cs on cs.issue_key = c.issue_key and cs.is_primary`
+
+// messageScopeJoin is the document an issue message (aliased m) belongs to: its issue's spec.
+const messageScopeJoin = `join artifacts s on s.issue_key = m.issue_key and s.is_primary`
+
 // ScopeOf is the id of the document the text of one reference source belongs to, the document a
 // `#id` in that text resolves against (QuestionMap), or "" when it belongs to none:
 //
@@ -43,7 +55,9 @@ const commentOwnScopeJoin = `left join asks k on k.id = c.ask_id ` + askScopeJoi
 // one (canonicalUUID).
 //
 // A reply whose chain of parents loops before any of them names a document has none. ScopeSources
-// is its inverse, and the two must agree on every shape above (TestScopeOfAndScopeSourcesAgree).
+// is its inverse, and the two must agree on every shape above (TestScopeOfAndScopeSourcesAgree);
+// pendingScope answers the same scope before the source's row is written, and must agree with it
+// on every shape too (TestPendingScopeAgreesWithScopeOf).
 func ScopeOf(ctx context.Context, q Queryer, kind, id string) (string, error) {
 	id, ok := canonicalUUID(id)
 	if !ok {
@@ -60,9 +74,7 @@ func ScopeOf(ctx context.Context, q Queryer, kind, id string) (string, error) {
 		return commentScope(ctx, q, id)
 	case "message":
 		return scopeRow(q.QueryRow(ctx, `
-			select s.id::text from messages m
-			join artifacts s on s.issue_key = m.issue_key and s.is_primary
-			where m.id = $1
+			select s.id::text from messages m `+messageScopeJoin+` where m.id = $1
 		`, id))
 	}
 	return "", nil
@@ -77,30 +89,50 @@ func commentScope(ctx context.Context, q Queryer, id string) (string, error) {
 			return "", nil
 		}
 		seen[id] = struct{}{}
-		var own, parent, spec *string
-		err := q.QueryRow(ctx, `
-			select `+commentOwnScope+`::text, c.reply_to::text, cs.id::text
-			from comments c `+commentOwnScopeJoin+`
-			left join artifacts cs on cs.issue_key = c.issue_key and cs.is_primary
-			where c.id = $1
-		`, id).Scan(&own, &parent, &spec)
-		if errors.Is(err, pgx.ErrNoRows) {
-			return "", nil
-		}
+		own, parent, spec, err := commentScopeRow(ctx, q, id)
 		if err != nil {
-			return "", fmt.Errorf("read the scope of comment %s: %w", id, err)
+			return "", err
 		}
-		switch {
-		case own != nil:
-			return *own, nil
-		case parent != nil:
-			id = *parent
-		case spec != nil:
-			return *spec, nil
-		default:
-			return "", nil
+		scope, next, resolved := scopeStep(own, parent, spec)
+		if resolved {
+			return scope, nil
 		}
+		id = next
 	}
+}
+
+// commentScopeRow is what one stored comment's row says about its scope (commentScopeSelect),
+// each of the three nil where the row holds none. A comment that does not exist reads as a row
+// naming none, which has no scope.
+func commentScopeRow(ctx context.Context, q Queryer, id string) (own, parent, spec *string, err error) {
+	err = q.QueryRow(ctx, commentScopeSelect+`
+		from comments c `+commentOwnScopeJoin+` `+commentSpecJoin+`
+		where c.id = $1
+	`, id).Scan(&own, &parent, &spec)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil, nil, nil
+	}
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("read the scope of comment %s: %w", id, err)
+	}
+	return own, parent, spec, nil
+}
+
+// scopeStep is the one rule a comment's scope follows, over what its row says (commentScopeRow):
+// the document it names itself, else its parent's scope, else its issue's spec, else none. A
+// comment that names no document and replies to one is not resolved here: next is the parent
+// whose scope it then is, which commentScope walks to and pendingScope reads from the stored
+// parent.
+func scopeStep(own, parent, spec *string) (scope, next string, resolved bool) {
+	switch {
+	case own != nil:
+		return *own, "", true
+	case parent != nil:
+		return "", *parent, false
+	case spec != nil:
+		return *spec, "", true
+	}
+	return "", "", true
 }
 
 func scopeRow(row pgx.Row) (string, error) {
@@ -116,17 +148,156 @@ func scopeRow(row pgx.Row) (string, error) {
 	return *scope, nil
 }
 
+// PendingSource is one reference source whose row the transaction writing it has queued and not
+// run yet (INFRA-636: a route's write phase sends every statement at once), named by the fields
+// of that row ScopeOf reads. A row nothing has written answers no read, so the writer hands
+// these over and pendingScope answers the document its text's `#id`s resolve against. Each
+// field is what the queued insert binds to the column of that name, nil for a column it leaves
+// null.
+type PendingSource struct {
+	// IssueKey is the issue the row is written on (issue_key), whose spec is the scope of a
+	// source naming no document of its own. Nil for a source on no issue: an ask or a comment
+	// of a project document, a direct message.
+	IssueKey *string
+	// ArtifactID is the document that owns the row (artifact_id).
+	ArtifactID *string
+	// AnchorArtifactID is the document the row is anchored to (anchor->>'artifact_id').
+	AnchorArtifactID *string
+	// BlockArtifactID is the document an ask's block is on (block_artifact_id).
+	BlockArtifactID *string
+	// AskID is the ask a comment replies to (ask_id), whose own scope a reply to an ask takes.
+	AskID *string
+	// ReplyTo is the comment a comment replies to (reply_to), whose scope a reply in a thread
+	// takes.
+	ReplyTo *string
+}
+
+// pendingAskScopeQuery is askScope over the fields a queued ask row will hold rather than over
+// the row: the same expression and the same join of its issue's spec, so the order an ask's
+// scope coalesces in is stated once (askScope).
+const pendingAskScopeQuery = `
+	with k (block_artifact_id, anchor, artifact_id, issue_key) as (
+		select $1::uuid, jsonb_build_object('artifact_id', $2::text), $3::uuid, $4::text
+	)
+	select ` + askScope + `::text from k ` + askScopeJoin
+
+// pendingCommentScopeQuery is commentScopeSelect over the fields a queued comment row will hold:
+// the document it names itself, the comment it replies to and its issue's spec, read as a stored
+// comment's are (commentScopeRow), with the ask of a reply to an ask joined from the asks table,
+// which holds it.
+const pendingCommentScopeQuery = `
+	with c (anchor, artifact_id, ask_id, reply_to, issue_key) as (
+		select jsonb_build_object('artifact_id', $1::text), $2::uuid, $3::uuid, $4::uuid, $5::text
+	)
+	` + commentScopeSelect + ` from c ` + commentOwnScopeJoin + ` ` + commentSpecJoin
+
+// pendingMessageScopeQuery is the scope of a queued issue message: its issue's spec, joined as a
+// stored message's is (messageScopeJoin). A message on no issue joins nothing and has none.
+const pendingMessageScopeQuery = `
+	with m (issue_key) as (select $1::text)
+	select s.id::text from m ` + messageScopeJoin
+
+// pendingScope is ScopeOf for a source of kind kind whose row is queued and not written yet: the
+// document its text belongs to, answered from the fields that row will hold (PendingSource), or
+// "" when it belongs to none. The kinds are ScopeOf's own, "ask", "comment" and "message"; a
+// document version, which every writer of one has, and any other kind have none here.
+//
+// It is the same answer ScopeOf gives once the row is durable, on every shape
+// (TestPendingScopeAgreesWithScopeOf): the two read one set of SQL expressions, and what a
+// pending source does not carry - its issue's spec, the scope of the ask or of the parent
+// comment a reply takes - is read from the stored rows that hold it.
+//
+// It is read through PendingDocument, which reads it only for a text that needs it: every
+// writer of a queued source goes through that, so a body naming no question block costs this
+// read nothing.
+func pendingScope(ctx context.Context, q Queryer, kind string, source PendingSource) (string, error) {
+	switch kind {
+	case "ask":
+		return scopeRow(q.QueryRow(ctx, pendingAskScopeQuery,
+			source.BlockArtifactID, source.AnchorArtifactID, source.ArtifactID, source.IssueKey))
+	case "comment":
+		var own, parent, spec *string
+		if err := q.QueryRow(ctx, pendingCommentScopeQuery,
+			source.AnchorArtifactID, source.ArtifactID, source.AskID, source.ReplyTo, source.IssueKey,
+		).Scan(&own, &parent, &spec); err != nil {
+			return "", fmt.Errorf("read the scope of a pending comment: %w", err)
+		}
+		scope, next, resolved := scopeStep(own, parent, spec)
+		if resolved {
+			return scope, nil
+		}
+		return commentScope(ctx, q, next)
+	case "message":
+		return scopeRow(q.QueryRow(ctx, pendingMessageScopeQuery, source.IssueKey))
+	}
+	return "", nil
+}
+
+// PendingDocument is the document a source whose row the writing transaction has queued belongs
+// to, read when a text of that source first asks for it and not before (Reader.Questions, which
+// asks only for a body holding a `#` candidate). A create whose body names no question block -
+// most comments, replies, messages, asks and approval requests - costs the read nothing, and a
+// direct message, whose scope is always none, never sends the query that says so.
+//
+// One of these is the document of one queued row, however many texts that row's writer indexes:
+// an ask's question and its parts are read through readers of their own (NewReaderInScope), and
+// sharing this between them reads the scope once for the write. It is one write's object, as a
+// Reader is, and is used from one goroutine.
+type PendingDocument struct {
+	kind     string
+	source   PendingSource
+	document string
+	err      error
+	read     bool
+}
+
+// NewPendingDocument is the document of a source of kind kind - "ask", "comment" or "message",
+// the kinds pendingScope answers for - whose row source says this transaction has queued.
+func NewPendingDocument(kind string, source PendingSource) *PendingDocument {
+	return &PendingDocument{kind: kind, source: source}
+}
+
+// PendingAskDocument is NewPendingDocument for an ask whose insert a transaction has queued,
+// over the ask as that row will stand: every route that opens one - an issue's or a document's
+// ask, an approval request, the ask settlement opens for a new question block - names its scope
+// through this one call, so none of them states the fields of that row for itself.
+func PendingAskDocument(ask model.Ask) *PendingDocument {
+	source := PendingSource{
+		IssueKey:        ask.IssueKey,
+		ArtifactID:      ask.ArtifactID,
+		BlockArtifactID: ask.BlockArtifactID,
+	}
+	if ask.Anchor != nil {
+		source.AnchorArtifactID = &ask.Anchor.ArtifactID
+	}
+	return NewPendingDocument("ask", source)
+}
+
+// Scope is the document, read over q on the first call and answered from that read after, its
+// failure included: a reader that swallowed one (Reader.failed) has already left the text
+// indexed as it was written, and a second reader of the same source must not pay the read again
+// to be told the same thing.
+func (d *PendingDocument) Scope(ctx context.Context, q Queryer) (string, error) {
+	if !d.read {
+		d.read = true
+		d.document, d.err = pendingScope(ctx, q, d.kind, d.source)
+	}
+	return d.document, d.err
+}
+
 // commentSeedJoins are the sides every arm of the seed below reads to answer commentSeedScope:
 // the ask a comment replies to and that ask's scope (commentOwnScopeJoin), and the primary
-// document - the spec - of the comment's own issue. Each is a left join on a unique key, asks'
-// primary key and artifacts_one_primary, the one primary document an issue has
+// document - the spec - of the comment's own issue (commentSpecJoin, the join a stored
+// comment's own scope is read through). Each is a left join on a unique key, asks' primary key
+// and artifacts_one_primary, the one primary document an issue has
 // (store/migrations/0001_init.up.sql:24), so none of them answers a comment twice.
 const commentSeedJoins = commentOwnScopeJoin + `
-		left join artifacts cs on cs.issue_key = c.issue_key and cs.is_primary`
+		` + commentSpecJoin
 
 // commentSeedScope is what every arm of the seed tests, and the whole of what makes a comment one
 // of the walk's roots: it names the document itself (commentOwnScope), or it names none and is a
-// thread root of the issue whose spec the document is. An arm narrows which comments are read,
+// thread root of the issue whose spec the document is. It is scopeStep's rule written as one
+// predicate, over the same three things that rule reads. An arm narrows which comments are read,
 // never which of the read ones are answered.
 const commentSeedScope = `(` + commentOwnScope + ` = $1
 		       or (` + commentOwnScope + ` is null and c.reply_to is null and cs.id = $1))`
@@ -227,13 +398,28 @@ func ScopeSources(ctx context.Context, q Queryer, doc string) ([]Target, error) 
 // settlement wrote into it as copied_from. A block with neither (not settled yet) is absent. It
 // reads the latest version's directive lines (sourceText), never parsing the document, and takes
 // no lock.
+//
+// The map is the document's as the reading transaction leaves it: the version and the block asks
+// it has queued and not written yet are read from what those statements write (Pending), since
+// no read of the tables answers for them. A `#id` naming a block of the very version being
+// written, or one whose ask the same transaction opens - settlement makes the ask of every new
+// question block of an edit in one transaction - resolves to the ask it will name once the write
+// phase has run.
 func QuestionMap(ctx context.Context, q Queryer, doc string) (map[string]text.Ref, error) {
-	markdown, _, found, err := sourceText(ctx, q, "artifact", doc, false)
-	if err != nil {
-		return nil, fmt.Errorf("read the latest version of document %s: %w", doc, err)
+	pending := pendingOf(ctx)
+	markdown, queued := "", false
+	if pending != nil {
+		markdown, queued = pending.PendingMarkdown(doc)
 	}
-	if !found {
-		return nil, nil
+	if !queued {
+		stored, _, found, err := sourceText(ctx, q, "artifact", doc)
+		if err != nil {
+			return nil, fmt.Errorf("read the latest version of document %s: %w", doc, err)
+		}
+		if !found {
+			return nil, nil
+		}
+		markdown = stored
 	}
 	blocks := questionBlocks(markdown)
 	if len(blocks) == 0 {
@@ -243,11 +429,31 @@ func QuestionMap(ctx context.Context, q Queryer, doc string) (map[string]text.Re
 	for index, block := range blocks {
 		ids[index] = block.id
 	}
+	queuedBlocks, queuedAsks, queuedIssues := []string{}, []string{}, []*string{}
+	if pending != nil {
+		for _, ask := range pending.PendingBlockAsks(doc) {
+			queuedBlocks = append(queuedBlocks, ask.BlockID)
+			queuedAsks = append(queuedAsks, ask.ID)
+			queuedIssues = append(queuedIssues, ask.IssueKey)
+		}
+	}
+	// The queued rows are unioned into the one read, so a block's ask is read as the same three
+	// columns and answered as the same reference whether its row is stored or queued
+	// (scanQuestions); a block the transaction has queued a write of is read from that write
+	// alone, which is the row as it will stand.
 	questions, err := scanQuestions(q.Query(ctx, `
-		select k.block_id, k.id::text, k.issue_key, a.project_key, a.slug
-		from asks k join artifacts a on a.id = k.block_artifact_id
-		where k.block_artifact_id = $1 and k.block_id = any($2::text[])
-	`, doc, ids))
+		with queued (block_id, id, issue_key) as (
+			select * from unnest($3::text[], $4::uuid[], $5::text[])
+		)
+		select b.block_id, b.id::text, b.issue_key, a.project_key, a.slug
+		from (
+			select k.block_id, k.id, k.issue_key from asks k
+			where k.block_artifact_id = $1 and k.block_id = any($2::text[])
+			  and k.block_id not in (select block_id from queued)
+			union all
+			select q.block_id, q.id, q.issue_key from queued q where q.block_id = any($2::text[])
+		) b join artifacts a on a.id = $1
+	`, doc, ids, queuedBlocks, queuedAsks, queuedIssues))
 	if err != nil {
 		return nil, fmt.Errorf("read the questions of document %s: %w", doc, err)
 	}

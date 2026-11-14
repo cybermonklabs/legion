@@ -1590,6 +1590,8 @@ export const dispatchToolSpecs = [
       "check appears under that check. A closed issue takes a result only for a check whose " +
       "when is after_merge or default_branch, the production check after the merge. It refuses " +
       "every other record with 409 ISSUE_CLOSED, as it refuses every other write. " +
+      "A check a document version rewords while the result is being written is 409 " +
+      "CHECK_CONTENDED, with nothing recorded: run the same command again. " +
       RESULT_RETRACT_RULE +
       " The retraction keeps both records: the result stays readable, and it proves nothing " +
       "from then on. Record a new result where the check still needs one. A retraction is " +

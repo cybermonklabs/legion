@@ -1,8 +1,12 @@
 package refs
 
 import (
+	"context"
 	"slices"
 	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
@@ -15,6 +19,25 @@ import (
 // spelling it out at each assertion.
 func itemBlockNodeID(kind ItemKind, itemID, blockID string) string {
 	return string(kind) + "/" + itemID + "#" + blockID
+}
+
+// indexItemAsAWriteDoes indexes the body of comment or message itemID, written at `at`, as the
+// route that writes one indexes it: its blocks and the mentions each holds (IndexItem), then
+// the item's own references (replaceRefs), from one reading of body (Mentions), so the blocks
+// and the item read every bare key, `#id` and short id alike. A route plans those two writes
+// above its row locks and runs them as one batch of its own (api.planItemWrite), and counts
+// what both moved for its event (CountedChanges); no test here reads those counts, so this runs
+// the two writes alone.
+func indexItemAsAWriteDoes(t *testing.T, tx pgx.Tx, kind ItemKind, itemID, body, serverURL string, at time.Time) {
+	t.Helper()
+	ctx := context.Background()
+	located := NewReader(ctx, tx, string(kind), itemID, serverURL).Mentions(body)
+	if _, err := IndexItem(ctx, tx, kind, itemID, body, at, located, nil); err != nil {
+		t.Fatalf("index the blocks of %s %s: %v", kind, itemID, err)
+	}
+	if _, err := replaceRefs(ctx, tx, string(kind), itemID, text.Refs(located), nil); err != nil {
+		t.Fatalf("index the references of %s %s: %v", kind, itemID, err)
+	}
 }
 
 // A mention in a comment or message starts at the block holding it: one pair per (block, target),

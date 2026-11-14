@@ -645,9 +645,11 @@ func (s *server) dismissInbox(w http.ResponseWriter, r *http.Request) {
 // markInboxReadThreads (api/inbox_read.go) - steps 2 and 4 of that list, the roots of the Agent
 // threads it writes marks for and the caller's own user_agent_thread_dismissed rows, are this
 // route's alone, since the mark-all writes no dismissal. Taking that same order is what keeps a
-// dismiss, a mark-all and a one-thread mark from crossing: all three take the owner `for share`,
-// all three move rows of user_threads under one login, and two of them that took the row and the
-// project in opposite orders would deadlock on the project row every time they met.
+// dismiss and a mark-all from crossing: both take their owners' locks in shared mode
+// (store.LockOwnersShared), both move rows of user_threads under one login, and two of them that
+// took the row and the project in opposite orders would deadlock on the project every time they
+// met. A one-thread mark takes that row's owner exclusively instead, which is what orders it
+// against both of them, project lock and all (markInboxReadThreads).
 //
 // Every write this route makes falls inside that order: the Reply write is one update over rows
 // step 3 has already locked, as the mark-all's is and through the mark-all's own statement
@@ -656,8 +658,8 @@ func (s *server) dismissInbox(w http.ResponseWriter, r *http.Request) {
 // counting as unread.
 //
 // Every statement runs under the mark-all's statement_timeout, because this transaction holds the
-// same owner rows `for share`: every comment, answer and issue message on those owners waits behind
-// a statement that hangs, so one that cannot finish is better killed.
+// same owners' locks in shared mode: every comment, answer and issue message on those owners waits
+// behind a statement that hangs, so one that cannot finish is better killed.
 func (s *server) dismissInboxThreads(
 	ctx context.Context, actor model.Actor, plan inboxDismissPlan, rows inboxDismissRows, scope inboxReadScope,
 ) (int, []model.Event, error) {

@@ -2824,7 +2824,7 @@ func TestOneProcessBindsEachDeliveryDurableAndTheOtherStandsBy(t *testing.T) {
 		// 10 s is what the survivor gets to take a dead holder's durable over: the one
 		// durableBindInterval poll it finds the durable free on, plus the server releasing the
 		// dead holder's interest in it. Nothing here is jittered, so this is a hang guard too.
-		survivor.waitForLog(t, 10*time.Second, `msg="dispatch delivery: NATS consumer bound"`, "name="+durable)
+		survivor.waitForLog(t, 10*time.Second, `msg="`+deliveryBoundMessage+`"`, "name="+durable)
 	}
 	t.Logf("the standby bound the dead holder's durables %v after it died", time.Since(handedOver))
 }
@@ -2901,7 +2901,7 @@ func TestAProcessBackFromANATSCutLeavesDeliveryEventsToTheProcessThatTookIt(t *t
 	// the durable free on, plus the server releasing the cut process's interest in it, and nothing
 	// in it is jittered. It is the bound the row above gives a dead holder's hand-over, with room
 	// for the disconnect the cut process has to notice first.
-	keeper.waitForLog(t, 20*time.Second, `msg="dispatch delivery: NATS consumer bound"`, "name="+durable)
+	keeper.waitForLog(t, 20*time.Second, `msg="`+deliveryBoundMessage+`"`, "name="+durable)
 	t.Logf("%s bound %s %v after the cut", pair.name(keeper), durable, time.Since(cutAt).Round(time.Millisecond))
 
 	proxy.Restore()
@@ -3031,26 +3031,60 @@ func addPopulationAuthor(t *testing.T, database *store.Store, author string) {
 	}
 }
 
-// deliveryOutcome is what one process has logged for one delivery durable: its bind of it, the
+// deliveryOutcome is what one process has logged for one delivery durable: its binds of it, the
 // standing-by lines saying why it is not the process holding it, and its delivery errors on it,
 // with lines holding every delivery line naming the durable in the order it wrote them.
+//
+// bound, standby, errors and lines are everything the process ever wrote, every line of each,
+// because the failure messages print them and because a row counts the binds a process made
+// (TestAProcessBackFromANATSCutLeavesDeliveryEventsToTheProcessThatTookIt). holds, failed and
+// sinceGiveUp are the state it is in now, which is not the same question: a bind is not forever,
+// so having bound the durable once is not holding it (boundBy), and an error before a give-up is
+// about a durable the process has since let go of.
 type deliveryOutcome struct {
 	bound   []string
 	standby []string
 	errors  []string
 	lines   []string
+	// holds is whether the process holds the durable now: its last bind-or-give-up line for it
+	// is the bind. A process that never bound it holds nothing, and one that bound it and then
+	// logged deliveryConnectionChangedMessage gave it up and holds nothing either.
+	holds bool
+	// failed is whether the process has logged a delivery error for the durable since its last
+	// give-up of it: a bind or a serve of it that it tried and could not finish. It is read of a
+	// pair where neither process holds the durable (deliveryOutcomes.settled), where it tells a
+	// hand-over still in flight from a pair that will not reach one: a process whose word on the
+	// durable since its give-up is an error is no taker a bind poll away from holding it.
+	//
+	// Since the give-up, for the reason sinceGiveUp is kept at all: an error a process logged
+	// about a durable it has since let go of says nothing about the durable now. It is set where
+	// the error is sorted, beside holds, rather than by re-reading sinceGiveUp for the lines
+	// deliveryOutcomeFor has already classified.
+	failed bool
+	// sinceGiveUp are the bind, standing-by and error lines it wrote after its last give-up of
+	// the durable, or all of them where it never gave the durable up. What the process says the
+	// durable is now is read from these alone: a line it wrote before a give-up is about a
+	// durable it has since let go of.
+	sinceGiveUp []string
 }
 
-// settled reports whether the process has answered for the durable: it bound it, it read what
-// the durable is and stood by on that (deliveryLeaseHeldMessage is the standing-by line that is
-// not such a read), or it failed on it. A process with no settings yet has answered nothing -
-// Intake.Run idles while its settings cache is empty and logs no delivery line for the durable
-// at all - and so has one whose only line is the warning that a bind was given up.
+// settled reports whether the process has answered for the durable as it stands now: since its
+// last give-up of it - or since it started, where it never gave the durable up - it bound it, it
+// read what the durable is and stood by on that (deliveryLeaseHeldMessage is the standing-by line
+// that is not such a read), or it failed on it. A process with no settings yet has answered
+// nothing - Intake.Run idles while its settings cache is empty and logs no delivery line for the
+// durable at all - and so has one whose only line is the warning that a bind was given up.
+//
+// Since its last give-up, because a give-up puts the process back where it started for that
+// durable: it says which durable the process let go of and nothing about what the durable is now.
+// Taking the lines before it for an answer would read a process that gave the durable up a
+// moment ago as standing by on a durable it was still holding when it said so.
+//
+// One process having answered is not the pair's reading, and this is not what the rows wait on:
+// a process that has answered may hold the durable or not, and a hand-over in flight is two
+// answers with no holder between them (deliveryOutcomes.settled).
 func (o deliveryOutcome) settled() bool {
-	if len(o.bound) > 0 || len(o.errors) > 0 {
-		return true
-	}
-	for _, line := range o.standby {
+	for _, line := range o.sinceGiveUp {
 		if !strings.Contains(line, `msg="`+deliveryLeaseHeldMessage+`"`) {
 			return true
 		}
@@ -3087,6 +3121,14 @@ var deliveryStandbyMessages = []string{
 // still coming and called that state good.
 const deliveryLeaseHeldMessage = "dispatch delivery: NATS consumer lease held by another process; standing by"
 
+// deliveryBoundMessage is the line an intake writes when it has subscribed to a durable's
+// consumer: the process that wrote it holds the durable from then until it gives it up
+// (deliveryConnectionChangedMessage) or dies. It is the delivery package's own line
+// (internal/dispatch/delivery/intake.go), copied here as the standing-by lines above are, and
+// the rows read it out of a real process's log: deliveryOutcomeFor sorts it into bound, and two
+// rows wait for it after a hand-over (dispatchProcess.waitForLog).
+const deliveryBoundMessage = "dispatch delivery: NATS consumer bound"
+
 // deliveryConnectionChangedMessage is the line an intake writes when a connection event takes its
 // subscription away from it: it gave its durable up and is back in its bind poll, so the process
 // that took that durable over while it was away keeps it (INFRA-1551). It is the delivery
@@ -3095,7 +3137,9 @@ const deliveryLeaseHeldMessage = "dispatch delivery: NATS consumer lease held by
 // line out of a real process's log rather than importing a constant it cannot see.
 //
 // It is deliberately none of deliveryStandbyMessages: a durable given up is not an outcome for it,
-// and a process that has said only this has answered nothing yet (deliveryOutcome.settled).
+// and a process that has said only this has answered nothing yet (deliveryOutcome.settled). It is
+// what unsays a bind, too: the process holding a durable is the one whose last bind-or-give-up
+// line for it is the bind (deliveryOutcomeFor, deliveryOutcomes.boundBy).
 const deliveryConnectionChangedMessage = "dispatch delivery: NATS connection changed; durable given up; standing by"
 
 // isDeliveryStandby reports whether the line carries one of deliveryStandbyMessages as its
@@ -3136,7 +3180,19 @@ func deliveryLinesAfterGiveUp(process *dispatchProcess, durable string, within t
 }
 
 // deliveryOutcomeFor reads what the process has logged for the durable so far, sorting every
-// delivery line naming it into the bind, the standing-by reasons and the errors.
+// delivery line naming it into the binds, the standing-by reasons and the errors, and reading
+// those lines in the order the process wrote them for the state it is in now: one process's own
+// output is in that order, so position in it is time, which is how deliveryLinesAfterGiveUp
+// reads the same lines.
+//
+// In order, because a bind and a give-up are the same durable's two directions, and the last of
+// them is where the process stands: a bind has it holding the durable (holds), an error has it
+// failed on it (failed), the give-up (deliveryConnectionChangedMessage) has it back in its bind
+// poll holding nothing, failed on nothing and its current state started over (sinceGiveUp), and
+// a bind after such a give-up has it holding the durable again. A give-up is sorted into none of
+// the three lists - it is neither a bind, nor one of deliveryStandbyMessages, nor an error - so
+// what the failure messages print is unchanged; it is in lines, as every delivery line naming
+// the durable is, and describe prints it there.
 func deliveryOutcomeFor(process *dispatchProcess, durable string) deliveryOutcome {
 	var outcome deliveryOutcome
 	for _, line := range process.logLines("dispatch delivery:", "name="+durable) {
@@ -3144,10 +3200,17 @@ func deliveryOutcomeFor(process *dispatchProcess, durable string) deliveryOutcom
 		switch {
 		case strings.Contains(line, "level=ERROR"):
 			outcome.errors = append(outcome.errors, line)
-		case strings.Contains(line, `msg="dispatch delivery: NATS consumer bound"`):
+			outcome.failed = true
+			outcome.sinceGiveUp = append(outcome.sinceGiveUp, line)
+		case strings.Contains(line, `msg="`+deliveryConnectionChangedMessage+`"`):
+			outcome.holds, outcome.failed, outcome.sinceGiveUp = false, false, nil
+		case strings.Contains(line, `msg="`+deliveryBoundMessage+`"`):
 			outcome.bound = append(outcome.bound, line)
+			outcome.holds = true
+			outcome.sinceGiveUp = append(outcome.sinceGiveUp, line)
 		case isDeliveryStandby(line):
 			outcome.standby = append(outcome.standby, line)
+			outcome.sinceGiveUp = append(outcome.sinceGiveUp, line)
 		}
 	}
 	return outcome
@@ -3167,30 +3230,255 @@ func (o deliveryOutcomes) of(process *dispatchProcess) deliveryOutcome {
 	return o.a
 }
 
-// boundBy is the processes that logged a bind of the durable, A before B. Exactly one of them is
-// what the row asserts, and none or both is what it reports.
+// boundBy is the processes holding the durable now, A before B: a process holds it when its last
+// bind-or-give-up line for it is the bind (deliveryOutcome.holds). Exactly one of them is what
+// the row asserts, and none or both is what it reports.
+//
+// Now rather than ever, because the one state this reads has to tell a hand-over from two
+// holders. A process that bound the durable and then logged deliveryConnectionChangedMessage
+// gave it up, and the process that bound it while that one was away is the only one holding it -
+// two bind lines in two logs, one holder. Reading "logged a bind" as "holds it" called that pair
+// two holders and failed the row for the very state it asserts (INFRA-636: A bound
+// delivery-jobs, gave it up in the same millisecond and stood by for it, and B bound it 219 ms
+// later). Taking a line a process wrote earlier for the state it is in now is the shape that
+// took this row red before (INFRA-1539, INFRA-1551), so a change that reads "has a bind line"
+// as "holds it" again brings that failure back with it.
 func (o deliveryOutcomes) boundBy() []*dispatchProcess {
 	var bound []*dispatchProcess
-	if len(o.a.bound) > 0 {
+	if o.a.holds {
 		bound = append(bound, o.pair.a)
 	}
-	if len(o.b.bound) > 0 {
+	if o.b.holds {
 		bound = append(bound, o.pair.b)
 	}
 	return bound
 }
 
-// waitForDeliveryOutcomes waits for both processes to settle on durable and answers what each
-// logged for it. Both of them, not whichever answers first: which process bound the durable and
-// why the other stood by are one state, and reading it before both have answered reports the
-// order of the reads rather than what happened.
+// settled reports whether the pair has reached a reading of the durable: both processes have
+// answered for it as it stands now (deliveryOutcome.settled), and either one of them holds it
+// (boundBy) or one of them has failed on it since it last gave it up (deliveryOutcome.failed).
+// The rows wait on this, so what they read is one of the three states that are readings - one
+// holder, which is what they assert, both holders, which is one defect they report, and neither,
+// with a delivery error to name, which is the other - and never the fourth.
+//
+// The fourth is a hand-over in flight: the process that held the durable gave it up at a
+// connection event, and the one taking it over has not bound it yet, so each has answered,
+// neither holds it and neither has failed on it. That state is one bind poll away from a single
+// holder and says nothing about which process ends up with the durable, so the wait goes on
+// through it (waitForDeliveryOutcomes). Read as settled it fails the row naming no holder at
+// all, and the pair sits in that state for real time: measured on a pair of live processes, B
+// logged the durable missing, A bound it, gave it up and stood by for it, and the two read as
+// answered with boundBy empty for the whole two-second poll before B's bind.
+//
+// The error is what tells the two apart. A process whose last word on the durable is a delivery
+// error is binding nothing on its next poll, so the pair is where it will stay and waiting adds
+// nothing a row could read. The rows say so themselves - each reports every delivery error its
+// processes logged for the durable, binding it and standing by for it both being ordinary - and
+// they report it the moment the two have spoken rather than after the 60 s the wait allows.
+//
+// The pair's own question is asked here rather than by ageing one process's standby lines out
+// against the other's give-up, because the two logs have no order between them: position in one
+// process's output is time in that process alone, and placing a line of A's against a line of
+// B's means parsing and trusting the stamps two processes wrote. Ageing would also answer only
+// half of the state: a taker that logged "held by another process" after the give-up, while the
+// server still carried the giver's interest, has a line no ageing drops and still holds nothing.
+// Whether either process holds the durable is the question the rows ask, and it needs no clock.
+func (o deliveryOutcomes) settled() bool {
+	if !o.a.settled() || !o.b.settled() {
+		return false
+	}
+	return len(o.boundBy()) > 0 || o.a.failed || o.b.failed
+}
+
+// A delivery durable's holder is read from each process's own lines in the order it wrote them,
+// so the hand-over at a connection event - one process giving the durable up, the other binding
+// it while that one is away - reads as the one holder it is, two processes really bound to the
+// durable still read as two, the middle of that hand-over, where the giver-up has spoken and the
+// taker has not bound yet, reads as no reading at all - the pair is unsettled and the row waits -
+// and a pair that has failed on the durable, which no further poll will carry anywhere, reads as
+// a pair again, with the errors for the row to report (deliveryOutcomes.settled).
+//
+// It reads logs written out here rather than two binaries' own, because what it holds is a race
+// the rows above meet only now and then: in CI the whole hand-over took 219 ms, and the rows
+// read their pair once it has settled, which falls inside that window only sometimes. The row
+// is worth its milliseconds because this reading has been taken back twice (INFRA-1539,
+// INFRA-1551) and a third time took pull request 2468 out of testing (INFRA-636), each time as
+// a failure nobody could reproduce on the machine they were on.
+func TestADeliveryDurableGivenUpReadsAsHeldByTheProcessThatTookItOver(t *testing.T) {
+	const durable = "delivery-jobs"
+	// The standing-by lines this row writes out: the first of deliveryStandbyMessages, the one
+	// that says another process holds the durable, and the second, the one that says the durable
+	// does not exist yet. The bind line is deliveryBoundMessage, as the intake writes it
+	// (internal/dispatch/delivery/intake.go) and as deliveryOutcomeFor sorts it.
+	heldMessage := deliveryStandbyMessages[0]
+	missingMessage := deliveryStandbyMessages[1]
+	info := func(stamp, message string) string {
+		return fmt.Sprintf("time=2026-11-07T09:32:%s level=INFO msg=%q name=%s", stamp, message, durable)
+	}
+	failure := fmt.Sprintf(`time=2026-11-07T09:32:50.000Z level=ERROR msg="dispatch delivery: create NATS consumer" name=%s error="context deadline exceeded"`, durable)
+	read := func(pair *dispatchPair) deliveryOutcomes {
+		return deliveryOutcomes{pair: pair, a: deliveryOutcomeFor(pair.a, durable), b: deliveryOutcomeFor(pair.b, durable)}
+	}
+
+	// CI job 130438272011's two logs for delivery-jobs, each in the order its process wrote it: A
+	// bound the durable, gave it up at a connection event in the same millisecond and found it
+	// held a millisecond later; B bound it 219 ms after that. One durable, one subscriber, one
+	// holder - B, and a settled pair, since B's bind is the hand-over finished.
+	handOver := &dispatchPair{
+		a: deliveryLogOf(
+			info("47.850Z", deliveryBoundMessage),
+			info("47.850Z", deliveryConnectionChangedMessage),
+			info("47.851Z", heldMessage),
+		),
+		b: deliveryLogOf(info("48.069Z", deliveryBoundMessage)),
+	}
+	outcomes := read(handOver)
+	if !outcomes.settled() {
+		t.Fatalf("the hand-over reads as unsettled for %s, with settled=%t for A, settled=%t for B and %s holding it, and it is a reading of the pair: A stood by for the durable after it gave it up, and B holds it. A logged:\n%s\nB logged:\n%s",
+			durable, outcomes.a.settled(), outcomes.b.settled(), processNames(handOver, outcomes.boundBy()), outcomes.a.describe(), outcomes.b.describe())
+	}
+	if names := processNames(handOver, outcomes.boundBy()); names != "B" {
+		t.Errorf("the hand-over reads as %s holding %s, and B alone holds it: A bound the durable and gave it up at the connection event, and B bound it while A was away. A logged:\n%s\nB logged:\n%s",
+			names, durable, outcomes.a.describe(), outcomes.b.describe())
+	}
+	if len(outcomes.a.bound) != 1 || len(outcomes.a.standby) != 1 || len(outcomes.a.errors) != 0 {
+		t.Errorf("A's lines for %s sort into %d binds, %d standing-by lines and %d errors, and it logged one bind, one standing-by line and no error; the failure messages print each of the three whole:\n%s",
+			durable, len(outcomes.a.bound), len(outcomes.a.standby), len(outcomes.a.errors), outcomes.a.describe())
+	}
+
+	// Two holders are still two: each process's last bind-or-give-up line for the durable is a
+	// bind, A's one it made after giving the durable up, so both hold it. The pair is settled,
+	// since there is nothing left to wait for, and the row reports both - the failure this
+	// reading is here for.
+	bothHold := &dispatchPair{
+		a: deliveryLogOf(
+			info("47.850Z", deliveryBoundMessage),
+			info("47.850Z", deliveryConnectionChangedMessage),
+			info("49.900Z", deliveryBoundMessage),
+		),
+		b: deliveryLogOf(info("48.069Z", deliveryBoundMessage)),
+	}
+	if both := read(bothHold); !both.settled() {
+		t.Fatalf("two processes whose last line for %s is a bind read as unsettled, and they are a reading: both hold the durable, and a row that waited through this state would never report the two holders it is there to report. A logged:\n%s\nB logged:\n%s",
+			durable, both.a.describe(), both.b.describe())
+	}
+	if names := processNames(bothHold, read(bothHold).boundBy()); names != "A and B" {
+		t.Errorf("two processes whose last line for %s is a bind read as %s holding it, and both do: that is the state this row's failure is for. A logged:\n%s\nB logged:\n%s",
+			durable, names, read(bothHold).a.describe(), read(bothHold).b.describe())
+	}
+
+	// A hand-over still in flight, the state a pair passes through for up to one bind poll: B's
+	// poll found the durable missing before A gave it up, A bound it, gave it up at a connection
+	// event and stood by for it, and B has not bound it yet. Each process has answered - B's line
+	// is one of the two that say what the durable is - and neither holds it, so the pair is one
+	// bind poll short of a reading. Read as settled, this fails a row with no holder to name, for
+	// up to the two seconds until B's bind.
+	inFlight := &dispatchPair{
+		a: deliveryLogOf(
+			info("47.000Z", deliveryBoundMessage),
+			info("47.850Z", deliveryConnectionChangedMessage),
+			info("47.851Z", heldMessage),
+		),
+		b: deliveryLogOf(info("46.000Z", missingMessage)),
+	}
+	flight := read(inFlight)
+	if !flight.a.settled() || !flight.b.settled() || len(flight.boundBy()) != 0 {
+		t.Fatalf("the hand-over in flight reads as settled=%t for A, settled=%t for B and %s holding %s, and it is two answered processes with the durable held by neither: that is the state the pair's reading has to wait through. A logged:\n%s\nB logged:\n%s",
+			flight.a.settled(), flight.b.settled(), processNames(inFlight, flight.boundBy()), durable, flight.a.describe(), flight.b.describe())
+	}
+	if flight.settled() {
+		t.Errorf("a hand-over of %s with nothing after it reads as a settled pair, and it is none: A gave the durable up and B has yet to bind it, so a row reading the pair here names neither process as holding it and fails for a state that is one poll from the state it asserts. A logged:\n%s\nB logged:\n%s",
+			durable, flight.a.describe(), flight.b.describe())
+	}
+
+	// Both processes failed on the durable and neither holds it: A bound it, gave it up at a
+	// connection event and could not create the consumer on the poll after that, and B's poll
+	// failed the same way. It reads as the hand-over above in every way but the error, and the
+	// error is what makes it a reading: neither process is a poll away from a bind, so a row
+	// that waited here would spend its whole 60 s and fail naming no holder, where the errors
+	// are what it has to report. The row that reads the pair reports them the moment both have
+	// spoken (TestOneProcessBindsEachDeliveryDurableAndTheOtherStandsBy's error assertion).
+	bothFailed := &dispatchPair{
+		a: deliveryLogOf(
+			info("47.000Z", deliveryBoundMessage),
+			info("47.850Z", deliveryConnectionChangedMessage),
+			failure,
+		),
+		b: deliveryLogOf(failure),
+	}
+	failed := read(bothFailed)
+	if !failed.a.failed || !failed.b.failed || len(failed.boundBy()) != 0 {
+		t.Fatalf("the failed pair reads as failed=%t for A, failed=%t for B and %s holding %s, and it is two processes that failed on the durable with neither holding it. A logged:\n%s\nB logged:\n%s",
+			failed.a.failed, failed.b.failed, processNames(bothFailed, failed.boundBy()), durable, failed.a.describe(), failed.b.describe())
+	}
+	if !failed.settled() {
+		t.Errorf("two processes that failed on %s with neither holding it read as an unsettled pair, and they are a reading: no poll of either is about to bind the durable, so a row waiting here waits its whole deadline out and then fails for a hand-over that never finished, with the errors it should have reported printed as the logs of that failure. A logged:\n%s\nB logged:\n%s",
+			durable, failed.a.describe(), failed.b.describe())
+	}
+	// One process failing is enough: the other is standing by on a durable nobody is binding.
+	onlyAFailed := &dispatchPair{
+		a: deliveryLogOf(failure),
+		b: deliveryLogOf(info("46.000Z", missingMessage)),
+	}
+	if one := read(onlyAFailed); !one.settled() {
+		t.Errorf("a pair where A failed on %s and B stands by for it reads as unsettled, and it is a reading: A's error is the row's to report, and B's next poll binds the durable or leaves it where it is. A logged:\n%s\nB logged:\n%s",
+			durable, one.a.describe(), one.b.describe())
+	}
+
+	// What settles a process is what it has said since its last give-up: before that it was
+	// talking about a durable it has let go of. One process having answered is not the pair's
+	// reading above, which also asks whether either of them holds the durable.
+	for _, answer := range []struct {
+		what    string
+		lines   []string
+		settled bool
+	}{
+		{what: "a process that logged nothing for the durable", settled: false},
+		{what: "a process whose only line is the give-up", lines: []string{info("47.850Z", deliveryConnectionChangedMessage)}, settled: false},
+		{what: "a process whose only line is the lease-held line", lines: []string{info("47.800Z", deliveryLeaseHeldMessage)}, settled: false},
+		{what: "a process that bound the durable and gave it up", lines: []string{info("47.000Z", deliveryBoundMessage), info("47.850Z", deliveryConnectionChangedMessage)}, settled: false},
+		{what: "a process that bound the durable", lines: []string{info("47.000Z", deliveryBoundMessage)}, settled: true},
+		{what: "a process standing by because another process holds it", lines: []string{info("47.000Z", heldMessage)}, settled: true},
+		{what: "a process standing by because the durable does not exist yet", lines: []string{info("47.000Z", missingMessage)}, settled: true},
+		{what: "a process that gave the durable up and stood by for it", lines: []string{info("47.000Z", deliveryBoundMessage), info("47.850Z", deliveryConnectionChangedMessage), info("47.851Z", heldMessage)}, settled: true},
+		{what: "a process that gave the durable up and failed on it", lines: []string{info("47.000Z", deliveryBoundMessage), info("47.850Z", deliveryConnectionChangedMessage), failure}, settled: true},
+	} {
+		if settled := deliveryOutcomeFor(deliveryLogOf(answer.lines...), durable).settled(); settled != answer.settled {
+			t.Errorf("%s reads as settled=%t for %s, and settled=%t is what it is; it logged:\n%s",
+				answer.what, settled, durable, answer.settled, strings.Join(answer.lines, "\n"))
+		}
+	}
+}
+
+// deliveryLogOf is a process stand-in whose output is lines, one to a line: what the delivery
+// helpers read of a process is its output and nothing else (dispatchProcess.logLines), so a
+// sequence of lines is a whole process to them, and a reading of one can be held without
+// starting a binary.
+func deliveryLogOf(lines ...string) *dispatchProcess {
+	process := &dispatchProcess{Process: &cmdtest.Process{Output: &cmdtest.LockedBuffer{}}}
+	for _, line := range lines {
+		fmt.Fprintln(process.Output, line)
+	}
+	return process
+}
+
+// waitForDeliveryOutcomes waits for the pair to reach a reading of durable and answers what each
+// process logged for it. The pair, not whichever process answers first: which process bound the
+// durable and why the other stood by are one state, and reading it before both have answered
+// reports the order of the reads rather than what happened. It returns on the three states that
+// are readings - one process holding the durable, which is what the rows assert, both, which is
+// one defect they report, and neither, where a process has a delivery error since its give-up,
+// which is the other - and waits through the fourth, a hand-over whose taker has not bound the
+// durable yet (deliveryOutcomes.settled).
 //
 // within is a hang guard and not a wait on a jittered event. Both processes poll their durables
 // every two seconds (durableBindInterval, internal/dispatch/delivery/intake.go) from the moment
 // each has read the delivery settings, so each settles one or two polls after that - the second
 // of them on its second poll, where its first could not take the durable's consumer lease
-// (deliveryLeaseHeldMessage). 60 s is what this row has always given the first bind it waited
-// for.
+// (deliveryLeaseHeldMessage) - and a hand-over costs one poll more. 60 s is what this row has
+// always given the first bind it waited for. When it runs out the row fails with both processes'
+// logs: for a process that answered nothing (failUnsettledDurable), or for a pair that answered
+// and left the durable held by neither with no error between them (failUnheldDurable).
 func waitForDeliveryOutcomes(t *testing.T, pair *dispatchPair, durable string, within time.Duration) deliveryOutcomes {
 	t.Helper()
 	deadline := time.Now().Add(within)
@@ -3200,7 +3488,7 @@ func waitForDeliveryOutcomes(t *testing.T, pair *dispatchPair, durable string, w
 		// durable, and one read before it may yet be added to.
 		aGone, bGone := hasExited(pair.a), hasExited(pair.b)
 		outcomes := deliveryOutcomes{pair: pair, a: deliveryOutcomeFor(pair.a, durable), b: deliveryOutcomeFor(pair.b, durable)}
-		if outcomes.a.settled() && outcomes.b.settled() {
+		if outcomes.settled() {
 			return outcomes
 		}
 		expired := time.Now().After(deadline)
@@ -3210,22 +3498,51 @@ func waitForDeliveryOutcomes(t *testing.T, pair *dispatchPair, durable string, w
 		if !outcomes.b.settled() && (expired || bGone) {
 			failUnsettledDurable(t, pair, pair.b, durable, outcomes.b, within, bGone)
 		}
+		// Both answered, neither holds the durable and neither has failed on it: a hand-over
+		// whose taker has not bound it yet, which only a running process can finish. So this
+		// waits out the deadline, and stops early only once both have exited and no bind can
+		// follow. A pair that has failed on the durable is a reading and returned above, so the
+		// row reports its errors rather than waiting here for a bind no poll is about to make.
+		if expired || (aGone && bGone) {
+			failUnheldDurable(t, pair, durable, outcomes, within, aGone && bGone)
+		}
 		time.Sleep(50 * time.Millisecond)
 	}
 }
 
 // failUnsettledDurable fails the row for the process that never answered for a durable, naming
 // which of the two it is and what it logged for that durable - no line at all, where its intake
-// is still idling on a settings cache that holds nothing, and the lease line alone where it has
-// yet to read what the durable is.
+// is still idling on a settings cache that holds nothing, the lease line alone where it has yet
+// to read what the durable is, and a give-up with nothing after it, where it let the durable go
+// at a connection event and its next bind poll has not spoken yet (deliveryOutcome.settled). A
+// pair whose processes both answered, left the durable held by neither and logged no error for
+// it is the other failure, failUnheldDurable.
 func failUnsettledDurable(t *testing.T, pair *dispatchPair, process *dispatchProcess, durable string, outcome deliveryOutcome, within time.Duration, exited bool) {
 	t.Helper()
 	ended := fmt.Sprintf("within %v", within)
 	if exited {
 		ended = "before it exited"
 	}
-	t.Fatalf("%s reached no outcome for %s %s: it logged no bind of it, neither of the two standing-by lines that say what the durable is, and no delivery error for it. A process polls its durables every two seconds once it has read the delivery settings, and logs nothing for them before that, so %s logged:\n%s\n%s",
+	t.Fatalf("%s reached no outcome for %s %s: since it last gave that durable up, if it ever did, it logged no bind of it, neither of the two standing-by lines that say what the durable is, and no delivery error for it. A process polls its durables every two seconds once it has read the delivery settings, logs nothing for them before that, and polls again as soon as it has given one up, so %s logged:\n%s\n%s",
 		pair.name(process), durable, ended, pair.name(process), outcome.describe(), pair.buffers())
+}
+
+// failUnheldDurable fails the row for a pair that answered for a durable and holds it with
+// neither process: the one that gave it up is standing by for it, and the one that was to take
+// it over never bound it, so the hand-over never finished inside the wait. A pair that logged a
+// delivery error for the durable since its give-up never reaches here - that is a reading the
+// wait returns, for the row to report the errors of (deliveryOutcomes.settled) - so what this
+// prints is two processes that said what the durable is and bound it neither. It prints both
+// logs, as every failure of these rows does, because which process let the durable go and what
+// the other said instead of binding it are in the two read together.
+func failUnheldDurable(t *testing.T, pair *dispatchPair, durable string, outcomes deliveryOutcomes, within time.Duration, exited bool) {
+	t.Helper()
+	ended := fmt.Sprintf("within %v", within)
+	if exited {
+		ended = "before both processes exited"
+	}
+	t.Fatalf("neither process holds %s %s: both answered for the durable, and neither has a bind of it as its last bind-or-give-up line, so nothing is subscribed to a durable one of the two is meant to hold. A process polls its durables every two seconds once it has read the delivery settings and binds a free durable on the next poll, so a hand-over costs one poll and this one never finished. A logged:\n%s\nB logged:\n%s\n%s",
+		durable, ended, outcomes.a.describe(), outcomes.b.describe(), pair.buffers())
 }
 
 // hasExited reports whether the process has exited, without waiting for it.

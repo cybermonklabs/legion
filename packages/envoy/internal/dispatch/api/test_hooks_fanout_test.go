@@ -94,7 +94,10 @@ func TestATestHookStopsWaitingForAProcessWhoseLockIsGone(t *testing.T) {
 
 // secondHookProcess is a second server process on database: a pool of its own (and so a listening
 // connection and a lock of its own), its own document service and its own in-process conversation
-// relay, as a second envoy-dispatch process holds. It answers that process's server.
+// relay, as a second envoy-dispatch process holds. It answers that process's server once that
+// process's test-hook listener holds its lock. register starts the listener and returns before it
+// has connected, and until it holds its lock a hook called through the other process does not wait
+// for this one; one sent before this process listens never reaches it, though the call answers 200.
 func secondHookProcess(t *testing.T, database *store.Store) *httptest.Server {
 	t.Helper()
 	second := storetest.SecondProcess(t, database)
@@ -117,6 +120,11 @@ func secondHookProcess(t *testing.T, database *store.Store) *httptest.Server {
 	mux := http.NewServeMux()
 	served := register(mux, t.Context(), deps)
 	t.Cleanup(served.waitBackground)
+	ctx, cancel := context.WithTimeout(t.Context(), testHookTimeout)
+	defer cancel()
+	if _, err := served.testHooks.awaitOwnLock(ctx); err != nil {
+		t.Fatalf("second process's test-hook listener did not take its lock: %v", err)
+	}
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 	return server

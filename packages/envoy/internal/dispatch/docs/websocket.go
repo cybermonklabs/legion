@@ -36,11 +36,11 @@ type connectionContextKey struct{}
 type ownerVerifiedContextKey struct{}
 
 // ownerVerifiedToken is installed only on the server's own calls, by a caller that already
-// knows the document's owner state: a settlement, which holds the owner row locked in its
-// transaction; the publish of a committed live write, whose transaction held that row until it
+// knows the document's owner state: a settlement, which holds the owner's lock in its
+// transaction; the publish of a committed live write, whose transaction held that lock until it
 // committed; the block-id backfill, which is a command run against a database nobody is
 // serving from; or one of a comment's anchor operations under WithCommentMarks, whose caller
-// holds the owner row locked and decided under it that the comment is written. Their injections
+// holds the owner's lock and decided under it that the comment is written. Their injections
 // skip the issue read in allowInject - for the settlement that read would be a second pooled
 // connection taken while its transaction is open (store.ErrNestedAcquire), for the publish a
 // read other writers' connections can starve (see publishLiveUpdate), for the backfill a
@@ -59,7 +59,7 @@ func isOwnerVerified(ctx context.Context) bool {
 type commentMarksContextKey struct{}
 
 // WithCommentMarks marks ctx as a comment's writes to the document its anchor is in, made by a
-// caller holding the document's owner row locked in its joined transaction that decided there
+// caller holding the document owner's lock in its joined transaction that decided there
 // the comment is written. A closed issue still takes a comment, so its document still takes
 // that comment's anchor: the comment mark MarkQuote places and VerifyMark reads, the version
 // SnapshotVersion pins the anchor to, the margin record ProjectMark writes, and the
@@ -567,7 +567,7 @@ func (s *Service) onLoadDocument(ctx context.Context, room string, doc *crdt.Doc
 		return err
 	}
 	// Everything this load needs comes from the pool that owns loads. A writer holding a
-	// pooled connection and the issue's row lock waits for this load, so a read of the shared
+	// pooled connection and the issue's owner lock waits for this load, so a read of the shared
 	// pool here waits for a connection only that writer can release: the wedge, arrived at
 	// without a transaction of its own and so invisible to the pool's guard.
 	rooms, err := s.store.Pool.Rooms()

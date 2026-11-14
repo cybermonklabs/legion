@@ -10,6 +10,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 // attributionEvent is one stored issue.pull_request_attribution_changed event, as the API and the
@@ -262,5 +263,71 @@ func TestOnePassOffersBoundedlyManyRowsARaisedRuleBroughtBack(t *testing.T) {
 	}
 	if !openOffered {
 		t.Errorf("the batch = %+v, want the open head among them: the backfill never takes the whole pass", batch)
+	}
+}
+
+// A move's two events take both issues' owner locks in one statement, sorted by lock key, before
+// the first append (appendAttributionChange, events.Broker.LockOwners), so it never holds one
+// issue's lock while it waits for the other's against a writer that takes them the other way
+// round. The test is that other writer: it holds the issue whose lock sorts first, and once the
+// move waits, takes the other. A move that took the issue it left first, as its own appends reach
+// it, would hold that lock while it waited for the one the test holds, and Postgres would break
+// the cycle as a deadlock.
+func TestAnAttributionMoveTakesBothIssuesLocksInLockKeyOrder(t *testing.T) {
+	pool, ctx := deliveryTestPool(t)
+	first, second := seedAttributionIssue(t, ctx, pool, 72), seedAttributionIssue(t, ctx, pool, 73)
+	var firstSortsFirst bool
+	if err := pool.QueryRow(ctx, `select hashtext($1) < hashtext($2)`,
+		store.IssueOwner(first).LockKey(), store.IssueOwner(second).LockKey()).Scan(&firstSortsFirst); err != nil {
+		t.Fatalf("order the two issues' lock keys: %v", err)
+	}
+	low, high := first, second
+	if !firstSortsFirst {
+		low, high = second, first
+	}
+	// The move leaves the issue whose lock sorts last for the one whose lock sorts first, so its
+	// own appends would reach the two in the opposite order to the lock key's.
+	head := PullRequestHead{Repo: "acme/widgets", Number: 7300, URL: "https://github.com/acme/widgets/pull/7300",
+		IssueKey: &low, AttributionSource: "branch"}
+
+	holder, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the other writer: %v", err)
+	}
+	defer holder.Rollback(ctx)
+	if err := store.LockOwner(ctx, holder, store.IssueOwner(low)); err != nil {
+		t.Fatalf("hold %s's owner lock: %v", low, err)
+	}
+	moved := make(chan error, 1)
+	go func() {
+		moved <- func() error {
+			tx, err := pool.Begin(ctx)
+			if err != nil {
+				return err
+			}
+			defer tx.Rollback(ctx)
+			if _, err := appendAttributionChange(ctx, tx, events.NewBroker(), head, &high); err != nil {
+				return err
+			}
+			return tx.Commit(ctx)
+		}()
+	}()
+	if early, answered, _ := storetest.AwaitOwnerLockWaiter(t, &store.Store{Pool: pool}, "the attribution move", moved); answered {
+		t.Fatalf("the move answered (%v) while this test held %s's owner lock", early, low)
+	}
+	if err := store.LockOwner(ctx, holder, store.IssueOwner(high)); err != nil {
+		t.Fatalf("the other writer could not take %s's owner lock behind %s's: %v; the move held %s's lock while "+
+			"it waited for %s's, against the lock-key order", high, low, err, high, low)
+	}
+	if err := holder.Commit(ctx); err != nil {
+		t.Fatalf("commit the other writer: %v", err)
+	}
+	select {
+	case err := <-moved:
+		if err != nil {
+			t.Fatalf("the move once the other writer committed: %v", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("the move never finished once the other writer committed")
 	}
 }

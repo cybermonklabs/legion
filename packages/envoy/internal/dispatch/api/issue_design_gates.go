@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // An issue's design gates are the documents the Legion deployment's gate records on that issue,
@@ -118,19 +119,21 @@ func (s *server) putIssueDesignGates(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
-	// The issue is read in the write's own transaction, under the key-share lock the rows'
-	// foreign key takes anyway, so the refusal and the write decide on the same row. The code is
-	// written here rather than taken from loadIssue, which answers the package's plain
-	// NOT_FOUND: the daemon must tell a Dispatch that knows no such issue from a Dispatch that
-	// does not serve this route at all, and that one answers the router's own
-	// `404 {"code":"NOT_FOUND"}` (routes/router.go), which is the plain code loadIssue would
-	// give here too. The daemon ends a publication on this code alone, so the two must differ:
-	// with loadIssue's code every publication against a Dispatch older than the route would be
-	// dropped as a refusal no retry repairs.
+	// The issue is read in the write's own transaction, under its owner's advisory lock, which
+	// every writer of the issue takes (store.LockOwner): the lock and the read are one batch,
+	// the read is a plain select in the statement after the lock, and the refusal and the write
+	// decide on the same row (INFRA-636: no row lock of an owner table, which would give the
+	// transaction its id before the reads). The code is written here rather than taken from
+	// loadIssue, which answers the package's plain NOT_FOUND: the daemon must tell a Dispatch
+	// that knows no such issue from a Dispatch that does not serve this route at all, and that
+	// one answers the router's own `404 {"code":"NOT_FOUND"}` (routes/router.go), which is the
+	// plain code loadIssue would give here too. The daemon ends a publication on this code
+	// alone, so the two must differ: with loadIssue's code every publication against a Dispatch
+	// older than the route would be dropped as a refusal no retry repairs.
 	var issue string
-	if err := tx.QueryRow(r.Context(), `
-		select key from issues where key = $1 for key share
-	`, r.PathValue("key")).Scan(&issue); err != nil {
+	if err := store.LockOwnerAndRead(r.Context(), tx, store.IssueOwner(r.PathValue("key")), `
+		select key from issues where key = $1
+	`, []any{r.PathValue("key")}, &issue); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeError(w, "ISSUE_NOT_FOUND", http.StatusNotFound, fmt.Sprintf("no issue %s", r.PathValue("key")))
 			return

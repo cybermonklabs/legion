@@ -15,7 +15,7 @@ import (
 
 // An approval request opens an ask, and meaning search ranks that ask by the windows of its
 // parts. The request writes the parts and leaves their windows to the block-index tick's
-// window arm, as every write of an item's blocks does (refs.recordItemIndexed, INFRA-988): it
+// window arm, as every write of an item's blocks does (refs.queueRecordIndexed, INFRA-988): it
 // answers with the ask listed as owed its windows and no window row to embed, one pass of the
 // reconciliation writes them, stamped with the state the parts are in, and once the embed
 // queue has run each of those windows holds a vector of the text it stands at. Until that
@@ -100,7 +100,7 @@ func TestAnApprovalRequestLeavesItsAskToTheWindowArm(t *testing.T) {
 }
 
 // askPartBlockIDs is the block id of each part the index holds for ask askID, in part order: the
-// question and each option, as indexAskParts wrote them.
+// question and each option, as the write's plan of the ask's parts wrote them (refs.PlanAskParts).
 func askPartBlockIDs(t *testing.T, database *store.Store, askID string) []string {
 	t.Helper()
 	rows, err := database.Pool.Query(context.Background(), `

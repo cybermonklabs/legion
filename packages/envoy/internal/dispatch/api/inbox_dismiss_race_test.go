@@ -182,14 +182,17 @@ func threadArtifact(t *testing.T, database *store.Store, login, thread string) s
 	return artifact
 }
 
-// holdGateDocument holds one document's row the way a write to it takes it, so a dismiss that
-// locks that document queues behind this transaction: step 1 of the lock order, where
-// holdGateThread's row is step 3 (holdGateRow, api/inbox_read_test.go).
+// holdGateDocument holds one document's owner lock the way a write to it takes it
+// (store.LockOwner), so a dismiss that locks that owner queues behind this transaction: step 1
+// of the lock order, where holdGateThread's row is step 3 (holdGateRow,
+// api/inbox_read_test.go).
 func holdGateDocument(t *testing.T, database *store.Store, document string) gateHold {
 	t.Helper()
-	return holdGateRow(t, database, "the gate document's row", `
-		select 1 from artifacts where id = $1 for no key update
-	`, document)
+	hold := beginGateHold(t, database, "the gate document's owner")
+	if err := store.LockOwner(context.Background(), hold.tx, store.ArtifactOwner(document)); err != nil {
+		t.Fatalf("hold the gate document's owner: %v", err)
+	}
+	return hold
 }
 
 // threadLeftUnreadInTheInbox is the four checks every window below closes with: the thread
@@ -368,8 +371,8 @@ func TestDismissLeavesAThreadRepliedToWhileItRan(t *testing.T) {
 			held := holdGateDocument(t, database, threadArtifact(t, database, "alice", seed.document))
 			answered := make(chan *httptest.ResponseRecorder, 1)
 			go func() { answered <- postInboxDismiss(t, seed.handler, "alice", body) }()
-			if storetest.WaitForStatementBehind(t, database, held.tx, inboxReadLockDocuments, 10*time.Second) == 0 {
-				t.Fatal("the dismiss never queued on the document row it locks before it writes")
+			if storetest.WaitForStatementBehind(t, database, held.tx, store.OwnersLockShared, 10*time.Second) == 0 {
+				t.Fatal("the dismiss never queued on the document owner's lock it takes before it writes")
 			}
 			row.write(t, seed)
 			held.release()
@@ -425,9 +428,9 @@ func TestDismissLeavesAnAgentThreadWhoseReplyCommitsAsItWrites(t *testing.T) {
 	held := holdGateDocument(t, database, threadArtifact(t, database, "alice", seed.document))
 	answered := make(chan *httptest.ResponseRecorder, 1)
 	go func() { answered <- postInboxDismiss(t, handler, "alice", body) }()
-	dismissing := storetest.WaitForStatementBehind(t, database, held.tx, inboxReadLockDocuments, 10*time.Second)
+	dismissing := storetest.WaitForStatementBehind(t, database, held.tx, store.OwnersLockShared, 10*time.Second)
 	if dismissing == 0 {
-		t.Fatal("the dismiss never queued on the document row it locks before it writes")
+		t.Fatal("the dismiss never queued on the document owner's lock it takes before it writes")
 	}
 	replying := holdSessionReply(t, database, seed.agentReply)
 	held.release()
@@ -594,8 +597,8 @@ func TestDismissLeavesAReplyThreadWhoseOlderCommentCommitsBeforeItWrites(t *test
 	held := holdGateDocument(t, database, threadArtifact(t, database, "alice", seed.document))
 	answered := make(chan *httptest.ResponseRecorder, 1)
 	go func() { answered <- postInboxDismiss(t, handler, "alice", body) }()
-	if storetest.WaitForStatementBehind(t, database, held.tx, inboxReadLockDocuments, 10*time.Second) == 0 {
-		t.Fatal("the dismiss never queued on the document row it locks before it writes")
+	if storetest.WaitForStatementBehind(t, database, held.tx, store.OwnersLockShared, 10*time.Second) == 0 {
+		t.Fatal("the dismiss never queued on the document owner's lock it takes before it writes")
 	}
 	writeThreadReply(t, writing.tx, seed.firstIssue, seed.first, "session", "s1", stamp)
 	writing.commit(t)

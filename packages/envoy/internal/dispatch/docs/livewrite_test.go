@@ -111,6 +111,11 @@ func TestFailedLiveWritesReloadTheDurableDocument(t *testing.T) {
 	if _, err := service.ApplyOps(joined, artifactID, []model.EditOp{{Op: "replace", Find: "before", With: "after"}}, model.Actor{Kind: "user", ID: "alice"}, nil); err != nil {
 		t.Fatalf("apply joined edit: %v", err)
 	}
+	// The commit Ledger.commit makes: its write phase, with the settlement credit, then the
+	// transaction's commit.
+	if err := ledger.runQueue(ctx, ledger.recordSettlementCredit); err != nil {
+		t.Fatalf("run the edit's write phase: %v", err)
+	}
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatalf("commit edit transaction: %v", err)
 	}
@@ -250,9 +255,12 @@ func TestAWriteAfterItsTransactionStoredTheRoomsLingeringUpdateForksTheRoom(t *t
 		}
 		// What the write below meets: the snapshot stored the browser's held update in this
 		// transaction, and the room's cursor has not moved over it, since that happens only when
-		// the transaction commits. Without both, the write would fork the room either way.
+		// the transaction commits. Without both, the write would fork the room either way. The
+		// head is the transaction's own (transactionHead): its flush is queued on the write
+		// phase, so doc_updates holds no row of it until the commit, and what the transaction's
+		// later reads stand on is the head its queue leaves (pendingRoom).
 		tx, _ := txFromContext(ctx)
-		head, err := currentUpdateCursor(ctx, tx, artifactID)
+		head, err := transactionHead(ctx, tx, artifactID)
 		if err != nil {
 			return fmt.Errorf("read the transaction's head: %w", err)
 		}

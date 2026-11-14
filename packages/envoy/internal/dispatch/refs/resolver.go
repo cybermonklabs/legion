@@ -16,10 +16,10 @@ import (
 // with. It is one write's object, not a cache: a caller builds it, reads every text of that
 // source through it - a comment's body, an ask's question and each of its parts - and drops it,
 // so the database answers once per kind for a write however many texts it holds, and what it
-// answered is the one transaction's view. It is the text.Resolver every write of a text passes
-// to the function that indexes it (ReplaceCounted, ReplaceCountedEdit, IndexAskParts,
-// IndexAskPartsCounted), so a write that holds two texts of one source - an ask's question and
-// its parts - reads both through one.
+// answered is the one transaction's view. It is the text.Resolver every write of a text reads
+// that text through (Mentions) before it plans what to index (PlanReplace, PlanItemIndex,
+// PlanAskParts), so a write that holds two texts of one source - an ask's question and its
+// parts - reads both through one.
 //
 // Every failure it meets reaching the database is logged here and answered as nothing resolved
 // for that kind, and no call site handles one: the swallow lives in this one place because the
@@ -44,6 +44,12 @@ type Reader struct {
 	// nil for a source that belongs to no document or whose map could not be read.
 	questions map[string]text.Ref
 	asked     bool
+	// pending is the document the source's text belongs to for a source whose row this
+	// transaction has queued, which the caller hands over because no read of that row answers
+	// it (NewReaderInScope); nil for a source whose row is stored, whose document this reader
+	// reads with ScopeOf. Either way the read is made at most once, by Questions, and not at
+	// all for a text that names no question block.
+	pending *PendingDocument
 	// items is the whole id each (kind, scope, prefix) this reader resolved names, "" for one
 	// that names nothing or two items or more, so a body writing the same short id twice is one
 	// query.
@@ -62,6 +68,22 @@ type prefixKey struct {
 // pool or transaction that write runs in, with serverURL the server its mentions are read with.
 func NewReader(ctx context.Context, q Queryer, fromKind, fromID, serverURL string) *Reader {
 	return &Reader{ctx: ctx, q: q, kind: fromKind, id: fromID, serverURL: serverURL}
+}
+
+// NewReaderInScope is NewReader for a source whose row the write's own transaction may have
+// queued and not run yet (INFRA-636), so no read of that row answers the document its `#id`s
+// resolve against: the writer hands that document over, as PendingDocument answers it from the
+// fields the queued row will hold, and this reader reads it from there instead of from
+// ScopeOf. A nil document is a source whose row is stored, whose scope this reader reads for
+// itself as NewReader's does.
+//
+// The document is no more read here than ScopeOf is: both are read by Questions, for a body
+// that holds a `#` candidate and for no other, so a create whose text names no question block
+// sends neither query (PendingDocument).
+func NewReaderInScope(ctx context.Context, q Queryer, fromKind, fromID, serverURL string, document *PendingDocument) *Reader {
+	reader := NewReader(ctx, q, fromKind, fromID, serverURL)
+	reader.pending = document
+	return reader
 }
 
 // Mentions is the references body writes, read with the whole grammar (text.Mentions): the
@@ -123,17 +145,21 @@ func (r *Reader) Issues(keys []string) (map[string]bool, error) {
 	return answer, nil
 }
 
-// Questions is the question map of the document the source's text belongs to (ScopeOf, then
+// Questions is the question map of the document the source's text belongs to (the scope, then
 // QuestionMap), loaded at most once per reader and not at all unless a body holds a `#`
 // candidate, which is when text.Mentions asks. A source that belongs to no document - a direct
 // message, a reply whose thread names none - has no question, and a text on an issue but on no
-// document resolves against the issue's spec, which ScopeOf answers with.
+// document resolves against the issue's spec, which the scope answers with.
+//
+// Both reads the scope costs are paid here and nowhere earlier: a body with no `#` candidate
+// never asks, so a create whose text names no question block sends neither the query a queued
+// row's scope takes nor the one a stored row's does.
 func (r *Reader) Questions() (map[string]text.Ref, error) {
 	if r.asked {
 		return r.questions, nil
 	}
 	r.asked = true
-	document, err := ScopeOf(r.ctx, r.q, r.kind, r.id)
+	document, err := r.scope()
 	if err != nil {
 		r.failed("read the document a text belongs to", err)
 		return nil, nil
@@ -148,6 +174,16 @@ func (r *Reader) Questions() (map[string]text.Ref, error) {
 	}
 	r.questions = questions
 	return r.questions, nil
+}
+
+// scope is the document the source's text belongs to: the one the writer handed over for a row
+// this transaction has only queued (NewReaderInScope), which no read of that row can answer
+// yet, else the one the source's stored row answers (ScopeOf).
+func (r *Reader) scope() (string, error) {
+	if r.pending != nil {
+		return r.pending.Scope(r.ctx, r.q)
+	}
+	return ScopeOf(r.ctx, r.q, r.kind, r.id)
 }
 
 // Items is the whole id of each short id the text writes, resolved within the owner the reference

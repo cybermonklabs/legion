@@ -33,14 +33,32 @@ func parseIssueRepo(raw json.RawMessage) (repo *string, provided bool, err error
 	return &canonical, true, nil
 }
 
+// issueRepoMappedRead reads whether a repository ($1) is a mapping of a project ($2).
+const issueRepoMappedRead = `select 1 from repo_projects where repo = $1 and project = $2`
+
 // checkIssueRepoMapped refuses, by name, a repository that is not a mapping of the issue's project,
 // before the write reaches the foreign key that would refuse it without one. It holds the mapping's
 // row in key share until the write commits, so the mapping cannot be deleted or moved to another
-// project in between (deleteRepoProject and putRepoProject lock it for update).
+// project in between (deleteRepoProject and putRepoProject lock it for update). A row lock assigns
+// the transaction its id, so a write takes it in its write phase, directly ahead of the write it
+// guards, never in a read phase it does document work or write advice in (INFRA-636); a write that
+// refuses an unmapped repository earlier reads the mapping without it first (readIssueRepoMapped).
 func checkIssueRepoMapped(ctx context.Context, tx pgx.Tx, repo, project string) error {
-	err := tx.QueryRow(ctx, `
-		select 1 from repo_projects where repo = $1 and project = $2 for key share
-	`, repo, project).Scan(new(int))
+	return issueRepoMapped(ctx, tx, issueRepoMappedRead+` for key share`, repo, project)
+}
+
+// readIssueRepoMapped is checkIssueRepoMapped's refusal without its lock, for a write's read phase:
+// a plain read, which assigns no transaction id. It holds the mapping for nothing, so the write
+// still takes checkIssueRepoMapped ahead of its write, which refuses the same way a mapping deleted
+// or moved in between.
+func readIssueRepoMapped(ctx context.Context, tx pgx.Tx, repo, project string) error {
+	return issueRepoMapped(ctx, tx, issueRepoMappedRead, repo, project)
+}
+
+// issueRepoMapped runs read, one of the two mapping reads above, answering REPO_NOT_MAPPED when it
+// finds no row.
+func issueRepoMapped(ctx context.Context, tx pgx.Tx, read, repo, project string) error {
+	err := tx.QueryRow(ctx, read, repo, project).Scan(new(int))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return errorf(http.StatusBadRequest, "REPO_NOT_MAPPED", "%s is not mapped to project %s (Settings → Repositories → Projects)", repo, project)
 	}

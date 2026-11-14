@@ -10,6 +10,11 @@ import (
 // brokerEventInsert is the one source file allowed to insert an event.
 const brokerEventInsert = "internal/dispatch/events/broker.go"
 
+// brokerEventInserts is how many event inserts that file holds: the one a write phase queues
+// (events.Broker.QueueAppendWithLogins). It keeps the invariants below, and the count is here so
+// that an insert moving out of this scan's reach reds rather than passing unseen.
+const brokerEventInserts = 1
+
 var eventInsertStatement = regexp.MustCompile(`\binsert into events\b`)
 
 // TestOnlyTheBrokerInsertsEvents enforces what every reader of the event log by id rests on: every
@@ -64,9 +69,9 @@ func TestOnlyTheBrokerInsertsEvents(t *testing.T) {
 			"behind a horizon that passed its id and reach no open subscription. It also allocates the "+
 			"owner's seq under the owner's row lock.", brokerEventInsert, strings.Join(offences, "\n\t"))
 	}
-	if broker != 1 {
-		t.Fatalf("%s holds %d event inserts the scan can see, want 1: if the insert moved or was "+
+	if broker != brokerEventInserts {
+		t.Fatalf("%s holds %d event inserts the scan can see, want %d: if an insert moved or was "+
 			"written around a value this scan cannot resolve, this guard now passes by seeing "+
-			"nothing", brokerEventInsert, broker)
+			"nothing", brokerEventInsert, broker, brokerEventInserts)
 	}
 }

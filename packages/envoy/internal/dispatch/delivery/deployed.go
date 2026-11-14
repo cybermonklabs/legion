@@ -105,12 +105,30 @@ func listUnrecordedShipped(ctx context.Context, pool *store.Pool, deployRepo str
 
 // recordDeployedEvent marks pr and appends its event in one transaction, and reports whether it did:
 // false when another writer marked the row first, or the row no longer names pr's issue.
+//
+// It runs in the two phases every writer runs in (INFRA-636): a read phase holding no
+// transaction id, which takes the issue's owner lock, and a write phase of the marking update
+// and the event's append, back to back. The issue is known before the write - the pass read it
+// off the row (listUnrecordedShipped) - and it is the event's owner, so its lock is the one the
+// append would otherwise be the first to take (events' lockEventOwner), by which time the
+// update had already given this transaction a transaction id to wait on it with, holding back
+// every reader's snapshot while this pass queued behind the issue's own writers.
+//
+// Nothing is read under that lock: what the write is decided on is the row's own state, and the
+// update's predicate is what reads it. No lock holds that row still - the intake's upsert and
+// the attribution pass write it in statements of their own, outside any owner's lock - so a read
+// before the update could only be read again by the update itself. Of two passes that cross
+// here, intake's and the reconcile's, the second therefore finds deployed_event_at set, or the
+// row naming another issue, and writes nothing, as it did when the row's own lock ordered them.
 func recordDeployedEvent(ctx context.Context, pool *store.Pool, broker *events.Broker, pr shippedPullRequest) (bool, error) {
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return false, err
 	}
 	defer tx.Rollback(ctx)
+	if err := store.LockOwner(ctx, tx, store.IssueOwner(pr.IssueKey)); err != nil {
+		return false, err
+	}
 	tag, err := tx.Exec(ctx, `
 		update delivery_pull_requests set deployed_event_at = now()
 		where repo = $1 and number = $2 and issue_key = $3 and deployed_event_at is null

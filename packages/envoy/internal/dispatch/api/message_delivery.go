@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // createDeliveryInput is the body of POST /api/v1/messages/{id}/deliveries.
@@ -121,8 +122,9 @@ type acceptedDelivery struct {
 // It may land while the attempt is still pending, since a session answers the frame before
 // Dispatch settles the send, so it writes neither state nor claimed_at, which the settle is
 // scoped to, and appends its own message.accepted rather than a second message.delivery receipt.
-// The event's owners are locked before the message and attempt rows, the order
-// settleDeliveryAttempt takes them in.
+// It takes no owner lock: the message it accepts is a direct message (acceptDirect), whose event
+// names no owner, and a message on an issue is refused 409 ACCEPT_NOT_DIRECT before any write, so
+// no append of this route takes an owner's lock either.
 //
 // The actor is a bearer's own claim of its session, as on every session write, so a bearer
 // naming another session can spend that session's one acceptance of a fresh attempt: the real
@@ -162,10 +164,6 @@ func (s *server) acceptDelivery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(ctx)
-	if err := s.deps.Events.LockOwners(ctx, tx, event); err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
 	// Every attempt is opened, resumed and accepted under this lock, so what the checks below
 	// read cannot move before the update. It is FOR NO KEY UPDATE, which serialises it against
 	// the claim's, and not FOR UPDATE: the session's reply takes the attempt row first and then,
@@ -832,6 +830,55 @@ type messageReplyInput struct {
 	InReplyToBlock *string `json:"in_reply_to_block"`
 }
 
+// messageReplyPlan is everything a session's reply to a message delivery is decided on, read
+// and planned before the route takes its first row lock (replyRowPlan), with the body that
+// reply carries and the block of its parent it names.
+//
+// One plan serves both rows the route can insert - the reply to the attempt, and a follow-up
+// posted under a reply the session already made (replyAfterAnswer) - because at most one of
+// them is written and both carry this body, in this conversation's issue.
+type messageReplyPlan struct {
+	replyRowPlan
+	// block is the block of the answered message the reply names, nil when it names none; a
+	// follow-up names none, so one plan serves both rows.
+	block *namedBlock
+	// body is the reply row's, which its index and its references were planned for.
+	body string
+}
+
+// planMessageReply plans one session reply above every row lock the route takes: the block the
+// reply names with the index its message owes, and the reply's own index and references, for an
+// id and a created_at reserved here. Nothing it plans is written here.
+//
+// The reply row is not inserted yet, so the document its `#id`s resolve against is handed over,
+// named by the fields that row will hold (planPendingItem, refs.PendingSource), as
+// createStoredMessage hands it over for a row it has only queued. The named block is addressed
+// here for the same reason: the read that gives a stored reply its block would find no row yet.
+// A direct message writes no mention, so its blocks hold none and it moves nothing.
+func (s *server) planMessageReply(
+	ctx context.Context, tx pgx.Tx, message model.Message, body string, inReplyToBlock *string,
+) (messageReplyPlan, error) {
+	plan := messageReplyPlan{body: body}
+	if inReplyToBlock != nil {
+		repair, block, err := s.planReplyBlock(ctx, tx, refs.ItemMessage, message.ID, *inReplyToBlock, "in_reply_to_block", "INVALID_MESSAGE")
+		if err != nil {
+			plan.refusal, err = deferredRefusal(err)
+			return plan, err
+		}
+		plan.parentIndex, plan.block = repair, block
+		plan.replyBlock = block.replyBlock(message.IssueKey, "", "")
+	}
+	if err := tx.QueryRow(ctx, `select gen_random_uuid()::text, now()`).Scan(&plan.id, &plan.createdAt); err != nil {
+		return plan, err
+	}
+	var err error
+	plan.changes, plan.write, err = s.planPendingItem(
+		ctx, tx, refs.ItemMessage, plan.id, plan.body, refs.PendingSource{IssueKey: message.IssueKey},
+		plan.createdAt, message.IssueKey != nil,
+	)
+	return plan, err
+}
+
 func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 	if strings.TrimSpace(r.Header.Get("Authorization")) == "" {
 		writeError(w, "REPLY_FORBIDDEN", http.StatusForbidden, "reply requires an agent bearer token")
@@ -892,6 +939,20 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// This reply - its own body, and the block it names - is read and planned here, before the
+	// first statement that takes a row lock, so no document work runs while the transaction
+	// holds a transaction id (INFRA-636). The refusal the planning earns is raised in the
+	// branch that answers with it, where it was raised; the index it finds the parent owes is
+	// written there too, under the parent's lock, which is taken below: the order
+	// refs.IndexItemIfOwed states, and the one queueReplyParentMessageLock queues for a route
+	// with a write phase.
+	var plan messageReplyPlan
+	if input.Body != nil {
+		if plan, err = s.planMessageReply(r.Context(), tx, message, *input.Body, input.InReplyToBlock); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+	}
 	if input.InReplyToBlock != nil {
 		// Before the attempt row, as the accept route takes them: issue, message, attempt.
 		if err := lockReplyParentMessage(r.Context(), tx, message.ID); err != nil {
@@ -928,12 +989,14 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 			s.writeHandlerError(w, err)
 			return
 		}
-		read, posted, err := s.replyAfterAnswer(r.Context(), tx, answer, actor, input.Body, followUp, wantsDisplayTrees(r))
+		read, posted, err := s.replyAfterAnswer(r.Context(), tx, answer, actor, input.Body != nil && followUp, plan, wantsDisplayTrees(r))
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
 		// A message handed back as it is stored reads the block it answers as every read does.
+		// It is a database read, and loadMessage beside it is in this window whatever this read
+		// does, so it stays on the transaction, where replyComment's own replay hydrates too.
 		if posted == nil {
 			if err := hydrateMessageReplyBlocks(r.Context(), tx, &read.Message); err != nil {
 				s.writeHandlerError(w, err)
@@ -967,15 +1030,15 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 		}
 		response, events = updated, append(events, receipt)
 	default:
-		var block *namedBlock
-		if input.InReplyToBlock != nil {
-			block, err = s.replyBlockOf(r.Context(), tx, refs.ItemMessage, message.ID, *input.InReplyToBlock, "in_reply_to_block", "INVALID_MESSAGE")
-			if err != nil {
-				s.writeHandlerError(w, err)
-				return
-			}
+		if plan.refusal != nil {
+			s.writeHandlerError(w, plan.refusal)
+			return
 		}
-		reply, answered, err := s.insertSessionReply(r.Context(), tx, message, actor, *input.Body, block)
+		if err := plan.parentIndex.Write(r.Context(), tx); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		reply, answered, err := s.insertSessionReply(r.Context(), tx, message, actor, plan)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
@@ -1000,15 +1063,20 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 }
 
 // replyAfterAnswer is the reply route on an attempt the session already answered with answer.
-// Without a follow-up every call is a retry of that answer and posts nothing: the host's
-// automatic BTW answer is sent that way, so a frame the session is handed twice can never post a
-// second answer, and an error report after an answer is a retry too. A follow-up whose text the
-// session already posted in this conversation (its first reply, or an earlier follow-up) is a
-// resend and posts nothing; any other is posted under the first reply, and its event is returned.
+// post is this call asking to post the plan's body under that answer: the request carried a
+// body and named ?follow_up=true. Without it every call is a retry of that answer and posts
+// nothing: the host's automatic BTW answer is sent that way, so a frame the session is handed
+// twice can never post a second answer, and an error report after an answer is a retry too. A
+// follow-up whose text the session already posted in this conversation (its first reply, or an
+// earlier follow-up) is a resend and posts nothing; any other is posted under the first reply,
+// and its event is returned. A posted follow-up is the plan's row: the route planned one reply
+// for this body above its locks, and at most one of the two branches writes it
+// (messageReplyPlan).
 func (s *server) replyAfterAnswer(
-	ctx context.Context, tx pgx.Tx, answer model.Message, actor model.Actor, body *string, followUp, trees bool,
+	ctx context.Context, tx pgx.Tx, answer model.Message, actor model.Actor, post bool,
+	plan messageReplyPlan, trees bool,
 ) (replyRead, *model.Event, error) {
-	if body == nil || !followUp {
+	if !post {
 		return replyRead{shapedMessage: newShapedMessage(answer, trees), Duplicate: true}, nil, nil
 	}
 	posted, err := scanMessage(tx.QueryRow(ctx, `
@@ -1017,14 +1085,14 @@ func (s *server) replyAfterAnswer(
 		where (id = $1 or in_reply_to = $1) and body = $2
 		  and author->>'kind' = 'session' and author->>'id' = $3
 		order by created_at desc limit 1
-	`, answer.ID, *body, actor.ID))
+	`, answer.ID, plan.body, actor.ID))
 	if err == nil {
 		return replyRead{shapedMessage: newShapedMessage(posted, trees), Duplicate: true}, nil, nil
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return replyRead{}, nil, err
 	}
-	followUpReply, event, err := s.insertSessionReply(ctx, tx, answer, actor, *body, nil)
+	followUpReply, event, err := s.insertSessionReply(ctx, tx, answer, actor, plan)
 	if err != nil {
 		return replyRead{}, nil, err
 	}
@@ -1065,37 +1133,46 @@ func followUpRequested(r *http.Request) (bool, error) {
 // insertSessionReply writes a session's reply to parent in parent's conversation - its issue,
 // or none, and its target - with the reply's references and its message.answered event. A reply
 // naming a block of parent stores it and previews that block's text in place of the parent's.
+//
+// plan carries the row: its id and created_at, written explicitly because its index and its
+// references were planned for them before this insert ran, the body, the block it names and the
+// step that writes its index (planMessageReply). A follow-up names no block, so the plan's
+// serves both rows the route can insert. Nothing of the body and nothing of the reply's own row
+// is read here, so this write holds the transaction id for its own statements alone
+// (INFRA-636).
 func (s *server) insertSessionReply(
-	ctx context.Context, tx pgx.Tx, parent model.Message, actor model.Actor, body string, block *namedBlock,
+	ctx context.Context, tx pgx.Tx, parent model.Message, actor model.Actor, plan messageReplyPlan,
 ) (model.Message, model.Event, error) {
 	author, err := json.Marshal(actor)
 	if err != nil {
 		return model.Message{}, model.Event{}, err
 	}
 	reply, err := scanMessage(tx.QueryRow(ctx, `
-		insert into messages (issue_key, author, body, target, in_reply_to, replies_to_block)
-		values ($1, $2, $3, $4, $5, $6)
+		insert into messages (id, issue_key, author, body, target, in_reply_to, replies_to_block, created_at)
+		values ($1, $2, $3, $4, $5, $6, $7, $8)
 		returning `+messageColumns+`
-	`, parent.IssueKey, author, body, parent.Target, parent.ID, block.nodeID()))
+	`, plan.id, parent.IssueKey, author, plan.body, parent.Target, parent.ID, plan.block.nodeID(), plan.createdAt))
 	if err != nil {
 		return model.Message{}, model.Event{}, err
 	}
+	// The block was read above the route's locks, where this row did not exist yet, so the
+	// reply carries it from the plan rather than reading it back (createStoredMessage).
+	reply.ReplyBlock = plan.replyBlock
 	replyParent := messageReplyParentOf(parent)
-	if block != nil {
-		if err := hydrateMessageReplyBlocks(ctx, tx, &reply); err != nil {
-			return model.Message{}, model.Event{}, err
-		}
-		replyParent.ReplyBody = messageReplyPreview(block.excerpt)
+	if plan.block != nil {
+		replyParent.ReplyBody = messageReplyPreview(plan.block.excerpt)
 	}
-	referenceChanges, err := s.indexMessage(ctx, tx, reply)
-	if err != nil {
+	// The reply's blocks, the mentions each holds and its own references were planned above the
+	// route's locks; their statements run here as one batch of their own, where the index of a
+	// reply this route wrote has always run.
+	if err := store.RunWrite(ctx, tx, plan.write); err != nil {
 		return model.Message{}, model.Event{}, err
 	}
 	thread, err := replyParent.thread(ctx, tx)
 	if err != nil {
 		return model.Message{}, model.Event{}, err
 	}
-	payload := thread.payload(reply, referenceChanges)
+	payload := thread.payload(reply, plan.changes)
 	payload.ThreadLogins, err = messageThreadLogins(ctx, tx, reply)
 	if err != nil {
 		return model.Message{}, model.Event{}, err

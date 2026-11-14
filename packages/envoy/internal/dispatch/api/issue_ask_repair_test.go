@@ -46,7 +46,18 @@ func newRepairFixture(t *testing.T) repairFixture {
 // settle.
 func newRepairFixtureSettlingAfter(t *testing.T, settle time.Duration) repairFixture {
 	t.Helper()
+	return newRepairFixtureOn(t, settle, nil)
+}
+
+// newRepairFixtureOn is newRepairFixtureSettlingAfter on a pool tracer traces (storetest.Traced),
+// so the repair's xid window can be measured on it (route_xid_window_test.go); a nil tracer
+// leaves the pool untraced.
+func newRepairFixtureOn(t *testing.T, settle time.Duration, tracer pgx.QueryTracer) repairFixture {
+	t.Helper()
 	database := storetest.Open(t)
+	if tracer != nil {
+		database = &store.Store{Pool: storetest.Traced(t, database.Pool, tracer, nil)}
+	}
 	documents := docs.New(docs.Deps{Store: database, Identity: headerIdentity(database), Settle: settle})
 	t.Cleanup(func() { _ = documents.Shutdown(context.Background()) })
 	// A close or reopen reaches the document rooms from its commit (migration 20261101181500's

@@ -109,7 +109,9 @@ type runConfig struct {
 	// boxBusyBefore is the box's busy fraction read before Dispatch started (run-step.sh reads it
 	// with `loadgen box-busy` before its reset); negative means collectMeta reads it itself.
 	boxBusyBefore float64
-	editors       editorConfig
+	// xactInterval is the transaction-id hold sampler's interval; 0 turns the sampler off.
+	xactInterval time.Duration
+	editors      editorConfig
 	// args are the run's flags as meta.json records them: the normalized flag list, the token
 	// values redacted and the URL passwords removed (recordedArgs).
 	args []string
@@ -175,6 +177,7 @@ func runLoad(args []string) error {
 	buildCommit := fs.String("build-commit", "", "commit Dispatch was built from, for meta.json")
 	buildDirty := fs.Bool("build-dirty", false, "the build's tree had uncommitted changes, for meta.json")
 	boxBusyBefore := fs.Float64("box-busy-before", -1, "the box's busy fraction read before Dispatch started (loadgen box-busy); default: read it now")
+	xactInterval := fs.Duration("xact-interval", defaultXactInterval, "interval of the transaction-id hold sampler (0 turns it off)")
 	editors := fs.Int("editors", 0, "browser editors on document websockets (0: none)")
 	editorRate := fs.Float64("editor-rate", 2, "updates per second per editor")
 	editorDocs := fs.Int("editor-docs", 10, "documents the editors share: the first N seeded specs in key order")
@@ -286,6 +289,8 @@ func runLoad(args []string) error {
 		return fmt.Errorf("-live must be 0 or more")
 	case *boxBusyBefore > 1 || !finite(*boxBusyBefore):
 		return fmt.Errorf("-box-busy-before must be a fraction between 0 and 1")
+	case *xactInterval < 0:
+		return fmt.Errorf("-xact-interval must be 0 or more")
 	case *restartAt < 0 || *restartAt >= *duration:
 		return fmt.Errorf("-restart-at must be 0 (no restart) or inside the window (less than -duration)")
 	case *mentionFrac < 0 || *mentionFrac > 1 || !finite(*mentionFrac):
@@ -403,6 +408,7 @@ func runLoad(args []string) error {
 		unitStarts: *unitStarts, unitLife: *unitLife, loopListeners: loopEndpoints,
 		driverTopics: *driverTopics, receiptDeadline: *receiptDeadline,
 		buildCommit: *buildCommit, buildDirty: *buildDirty, boxBusyBefore: *boxBusyBefore,
+		xactInterval: *xactInterval,
 		// Fewer editors than documents edit only as many documents as there are editors.
 		editors:  editorConfig{editors: *editors, rate: *editorRate, docs: min(*editorDocs, max(*editors, 1))},
 		args:     recordedArgs(fs),
@@ -567,8 +573,11 @@ type summary struct {
 	Populations     []populationSummary `json:"populations,omitempty"`
 	Resources       *resourcesSummary   `json:"resources"`
 	CommitOrderLock lockSummary         `json:"commit_order_lock"`
-	UngrantedLocks  ungrantedSummary    `json:"ungranted_locks"`
-	Sessions        sessionsSummary     `json:"sessions"`
+	// XIDHolds is the transaction-id hold sampler's summary; null only in a summary.json written
+	// by a loadgen without the sampler.
+	XIDHolds       *xactSummary     `json:"xid_holds"`
+	UngrantedLocks ungrantedSummary `json:"ungranted_locks"`
+	Sessions       sessionsSummary  `json:"sessions"`
 	// LoopSessions is how the spec loop's own sessions went (-unit-starts), absent for a step
 	// that ran the flat population alone; what each of their classes was owed and what it got is
 	// under events.by_class (classDelivery).
@@ -668,9 +677,9 @@ func execute(cfg runConfig, sf seedFile) error {
 	defer logf.Close()
 	lg := log.New(io.MultiWriter(os.Stderr, logf), "", log.LstdFlags|log.Lmicroseconds)
 	nonce := newMarkerNonce()
-	lg.Printf("config: step=%s source=%s sessions=%d events=%g/s requests=%g/s event-mix=%s route-mix=%s warmup=%s duration=%s grace=%s human=%.2f live=%d live-resume=%t live-stale=%d restart-at=%s mention-frac=%.2f mentions=%d rng-seed=%d editors=%d editor-rate=%g editor-docs=%d heap-samples=%t marker-nonce=%s",
+	lg.Printf("config: step=%s source=%s sessions=%d events=%g/s requests=%g/s event-mix=%s route-mix=%s warmup=%s duration=%s grace=%s human=%.2f live=%d live-resume=%t live-stale=%d restart-at=%s mention-frac=%.2f mentions=%d rng-seed=%d xact-interval=%s editors=%d editor-rate=%g editor-docs=%d heap-samples=%t marker-nonce=%s",
 		cfg.name, cfg.sourceName(), cfg.sessions, cfg.events, cfg.requests, cfg.mix.Name, cfg.routes.Source, cfg.warmup, cfg.duration, cfg.grace, cfg.human,
-		cfg.live, cfg.liveResume, cfg.liveStale, cfg.restartAt, cfg.mentionFrac, cfg.mentions, cfg.rngSeed,
+		cfg.live, cfg.liveResume, cfg.liveStale, cfg.restartAt, cfg.mentionFrac, cfg.mentions, cfg.rngSeed, cfg.xactInterval,
 		cfg.editors.editors, cfg.editors.rate, cfg.editors.docs, cfg.heapSamples, formatNonce(nonce))
 	if cfg.loop != nil {
 		lg.Printf("loop seed %s: %d proposals of project %s, plan %s", cfg.loopSeedPath, len(cfg.loop.Proposals), cfg.loop.Project, cfg.loop.PlanID)
@@ -1186,13 +1195,14 @@ func (st *step) requestPath(p *population, r *rand.Rand) (*route, string) {
 }
 
 // probes are the 5 s sampler, the lock probe (1 s), the ungranted-lock sampler (1 s), the
-// transaction-id probe, the profiles, the rooms' window readings and, in a step with editors, the
-// room sampler (100 ms).
+// transaction-id hold sampler (-xact-interval), the transaction-id probe, the profiles, the
+// rooms' window readings and, in a step with editors, the room sampler (100 ms).
 type probes struct {
 	smp      *sampler
 	smpDone  chan struct{} // closed when the sampler, which runs until ctx ends, has returned
 	lp       *lockProbe
 	ls       *lockSampler
+	xs       *xactSampler
 	xidsPerS *float64
 	xidErr   error // why xidsPerS is nil
 	// roomsStart and roomsEnd are the rooms' counters at the window's start and end (readWindow);
@@ -1203,10 +1213,12 @@ type probes struct {
 }
 
 // startProbes starts the probes. The two lock samplers run from 20 s into the window to its end,
-// the room sampler from the window's start to its end. The sampler reads pulls' counts at each
-// sample, when pulls is not nil, and Dispatch's heap every 15 s under -heap-samples.
+// the room sampler from the window's start to its end, and the transaction-id hold sampler,
+// unless -xact-interval 0 turned it off, over the whole window. The sampler reads pulls' counts
+// at each sample, when pulls is not nil, and Dispatch's heap every 15 s under -heap-samples.
 func (st *step) startProbes(ctx context.Context, pulls *pullSpy) *probes {
-	p := &probes{smp: newSampler(st.cfg.ep), smpDone: make(chan struct{}), lp: &lockProbe{}, ls: &lockSampler{}}
+	p := &probes{smp: newSampler(st.cfg.ep), smpDone: make(chan struct{}), lp: &lockProbe{}, ls: &lockSampler{},
+		xs: &xactSampler{tr: newXactTracker(st.cfg.xactInterval)}}
 	p.smp.pulls = pulls
 	p.smp.heapSamples = st.cfg.heapSamples
 	go func() {
@@ -1220,6 +1232,9 @@ func (st *step) startProbes(ctx context.Context, pulls *pullSpy) *probes {
 	pg := st.cfg.ep.pg
 	p.wg.Go(func() { p.lp.loop(ctx, pg, lockFrom, st.winEnd, st.lg) })
 	p.wg.Go(func() { p.ls.loop(ctx, pg, lockFrom, st.winEnd, st.lg) })
+	if st.cfg.xactInterval > 0 {
+		p.wg.Go(func() { p.xs.loop(ctx, pg, "dispatch", st.winStart, st.winEnd, st.lg) })
+	}
 	p.wg.Go(func() { p.xidsPerS, p.xidErr = xidRate(ctx, pg, st.winStart, st.winEnd, st.lg) })
 	p.wg.Go(func() { st.profile(ctx) })
 	p.wg.Go(func() {
@@ -1383,6 +1398,8 @@ func (st *step) buildSummary(ns *natsSessions, lp *loopSessions, reg *registrar,
 		sum.Events.CommitsError = commitsErr.Error()
 		st.lg.Printf("commits: %v", commitsErr)
 	}
+	xh := pr.xs.tr.summary(pr.xs.errors, sum.Events.Committed)
+	sum.XIDHolds = &xh
 	editorsSent := 0
 	if ed != nil {
 		sum.Editors = ed.summary(durS)
