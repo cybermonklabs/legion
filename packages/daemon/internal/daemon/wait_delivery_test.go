@@ -99,7 +99,15 @@ func newWaitDeliveryRig(t *testing.T) *waitDeliveryRig {
 	logs := &testlog.Buffer{}
 	log := slog.New(slog.NewTextHandler(logs, nil))
 	steps := config.DesignGateRootIssues.Steps()
-	engine := workflow.New(records, workflow.Config{Project: issue.Project, Repositories: testRepositories, Steps: steps}, log)
+	// The engine reads the pod tables of the idle release through the store's own view of the
+	// project, as the daemon hands it under either runtime (openWorkflow): a wait's time wakes a
+	// claim a release took (workflow's waitDue).
+	podRecords, err := st.PodRecordsOf(issue.Project)
+	if err != nil {
+		t.Fatalf("read the project's pod records: %v", err)
+	}
+	engine := workflow.New(records, workflow.Config{Project: issue.Project, Repositories: testRepositories, Steps: steps,
+		Pods: podRecords}, log)
 	admission := admit.New(records, engine, 1, issue.Project, log)
 	w := &workflowRuntime{pool: pool, records: records, engine: engine, admission: admission,
 		handlers: factHandlers(records, issue.Project, engine, admission), gatedSteps: steps,
@@ -268,11 +276,17 @@ func (r *waitDeliveryRig) request(target string, body any, bearer string) *httpt
 }
 
 // declare is the tester's declaration of a wait through the daemon's route, made in its turn, and
-// answers the wait the record holds.
+// answers the wait the record holds: on the review of the head, its time two hours ahead.
 func (r *waitDeliveryRig) declare() record.ClaimWait {
 	r.t.Helper()
+	return r.declareUntil("the review of the head", time.Now().Add(2*time.Hour))
+}
+
+// declareUntil is declare of a wait on waitingOn whose time is wakeAt.
+func (r *waitDeliveryRig) declareUntil(waitingOn string, wakeAt time.Time) record.ClaimWait {
+	r.t.Helper()
 	recorder := r.request("/legion/v1/claims/wait", api.WaitRequest{ClaimToken: r.token, SessionID: waitingSession,
-		Secret: waitingSecret, WaitingOn: "the review of the head", WakeAt: time.Now().Add(2 * time.Hour).UTC().Format(time.RFC3339)}, "")
+		Secret: waitingSecret, WaitingOn: waitingOn, WakeAt: wakeAt.UTC().Format(time.RFC3339)}, "")
 	if recorder.Code != http.StatusOK {
 		r.t.Fatalf("declare the wait = %d %s, want 200", recorder.Code, recorder.Body)
 	}

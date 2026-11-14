@@ -580,6 +580,8 @@ func TestWakeTaskNamesItsWake(t *testing.T) {
 		{kind: pods.WakeRoleMessage, detail: "legion-LEGION-208-implementer", want: "role topic"},
 		{kind: pods.WakeAgentMessage, detail: "session-1", want: "sent to your session"},
 		{kind: pods.WakeBackstop, detail: "the backstop came due", want: "backstop"},
+		{kind: pods.WakeWaitTime, detail: waitTimeTask(record.ClaimWait{ID: "wait-1", WaitingOn: "the review of the head"}),
+			want: "The time of your wait wait-1 came."},
 	} {
 		t.Run(tc.kind, func(t *testing.T) {
 			task := WakeTask(tc.kind, tc.detail)

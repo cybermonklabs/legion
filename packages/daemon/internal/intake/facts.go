@@ -1259,6 +1259,21 @@ type WaitNews struct {
 
 func (WaitNews) isFact() {}
 
+// WaitDue is a phase worker's wait coming to its time (the wait_due row at the wait's WakeAt,
+// record.WaitDue): the wait WaitID of the claim Token, on Issue. It is never decoded from an
+// event — the outbox applies one per row, under `wait-due:<waitID>`, so a row run again is a
+// duplicate. The engine decides in the fact's own transaction (workflow's waitDue): a wait that is
+// not the claim's wait with no end changes nothing; one that still stands ends with the cause that
+// its time came, and its own task is written; one that no longer stands ends with the cause its
+// first failing term names, and no task is written.
+type WaitDue struct {
+	Token  claim.Token
+	Issue  string
+	WaitID string
+}
+
+func (WaitDue) isFact() {}
+
 // Handler changes the workflow record inside the caller-owned transaction.
 type Handler interface {
 	Apply(context.Context, pgx.Tx, Fact) (Result, error)

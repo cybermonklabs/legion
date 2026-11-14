@@ -103,6 +103,32 @@ func TestTheIdleViewReadsTheStoredActivityReportAndTheQueuedRows(t *testing.T) {
 	}
 }
 
+// A wait's time holds no pod (dispatch://INFRA-2040 R3, D5 of its plan): its row (wait_due,
+// record.WaitDue) is addressed to no role of the pod, so while it is the one row queued the idle
+// view reads nothing waiting, and the pod of a worker that waits may be released; the row's own
+// task brings the worker back at its time. The control is a start of the pod's tester queued
+// beside it, which the view reads as waiting.
+func TestAWaitsTimeQueuedForThePodIsNoRowThatWaitsForIt(t *testing.T) {
+	st := migratedStore(t)
+	ctx := context.Background()
+	openRunningTree(t, st)
+	if _, err := st.Pool().Exec(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error) values
+		('wait_due', $1, '{"token":"legion-legion-legion-208-tester","waitId":"wait-1"}', 0, now() + interval '2 hours', '')`,
+		rootIssue); err != nil {
+		t.Fatal(err)
+	}
+	if view := idleViewOf(t, st, rootIssue); view.Waiting {
+		t.Fatal("the view reads a role of the pod waiting on the wait's time, want nothing waiting")
+	}
+	if _, err := st.Pool().Exec(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error) values
+		('supervise', $1, '{"op":"start","tree":"LEGION-208","role":"tester","generation":1}', 0, now(), '')`, rootIssue); err != nil {
+		t.Fatal(err)
+	}
+	if view := idleViewOf(t, st, rootIssue); !view.Waiting {
+		t.Fatal("the view reads nothing waiting, though a start of the pod's tester is queued")
+	}
+}
+
 // The view carries two facts beside the rule's own conditions: whether the issue holds a bundle
 // no pod has restored, which keeps the pod from being released over work that never came back,
 // and whether a hold streak of the pod is running, which is what the daemon's pass reads before

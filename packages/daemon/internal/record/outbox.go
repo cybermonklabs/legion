@@ -31,6 +31,7 @@ const (
 	OutboxKindWorkspaceRemove  OutboxKind = "workspace_remove"
 	OutboxKindIssueBranch      OutboxKind = "issue_branch"
 	OutboxKindCheckWake        OutboxKind = "check_wake"
+	OutboxKindWaitDue          OutboxKind = "wait_due"
 	OutboxKindCheckLook        OutboxKind = "check_look"
 	OutboxKindCheckBound       OutboxKind = "check_bound"
 	OutboxKindRoleMessage      OutboxKind = "role_message"
@@ -55,7 +56,8 @@ const (
 // leaves (a start after the branch it waits for, a workspace removal after the suspend that
 // stopped the roles). It also carries the production check's rows
 // (check_wake, check_look, check_bound), which start and end the checking role's looks in order
-// with the starts and suspends they queue. The board lane runs the issue's Dispatch writes and
+// with the starts and suspends they queue, and a waiting worker's time (wait_due), whose own task
+// is a start of the same lane. The board lane runs the issue's Dispatch writes and
 // notice publishes beside them, so a status write or a notice never waits behind a start pulling
 // an image, and a slow publish never holds a stop back. It carries the deployment's gated-steps
 // publish too, the one row addressed to the bare project key rather than to an issue, so that
@@ -85,7 +87,7 @@ const (
 // laneKinds is each lane's kinds in the order LaneKinds lists them. Every OutboxKind is in exactly
 // one lane (TestEveryOutboxKindIsInExactlyOneLane).
 var laneKinds = map[OutboxLane][]OutboxKind{
-	LaneLifecycle:   {OutboxKindSupervise, OutboxKindIssueSuspend, OutboxKindIssueBundle, OutboxKindIssueRelease, OutboxKindLingerClose, OutboxKindWorkspaceRemove, OutboxKindGateSeed, OutboxKindIssueBranch, OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound},
+	LaneLifecycle:   {OutboxKindSupervise, OutboxKindIssueSuspend, OutboxKindIssueBundle, OutboxKindIssueRelease, OutboxKindLingerClose, OutboxKindWorkspaceRemove, OutboxKindGateSeed, OutboxKindIssueBranch, OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound, OutboxKindWaitDue},
 	LaneBoard:       {OutboxKindDispatchStatus, OutboxKindDispatchMessage, OutboxKindNotice, OutboxKindControllerNotice, OutboxKindRoleMessage, OutboxKindGatedStepsPublish, OutboxKindDesignGatesPublish},
 	LaneRoleMessage: {OutboxKindPhaseEnded, OutboxKindHookPrompt, OutboxKindUpdateAsk},
 	LaneClaim:       {OutboxKindClaimRelease},
@@ -724,9 +726,9 @@ type SuperviseRequest struct {
 	// worker (admit's startMidPhaseMembers), the boot's resume by rule (workflow's booted), the
 	// phase's resume task a ready worker level with the entry its phases row names is given
 	// (workflow's readyWorkerTask), a production check's look (workflow's startLook), the pod
-	// wake (workflow's wakeRow) and the resume of a cancelled idle release (the daemon's
-	// outbox). Each hands its role work it was already on, or work no phase entry numbers at
-	// all.
+	// wake (workflow's wakeRow), the task of a wait's time (workflow's waitDue, WaitID below) and
+	// the resume of a cancelled idle release (the daemon's outbox). Each hands its role work it
+	// was already on, or work no phase entry numbers at all.
 	Entry int64 `json:"entry,omitempty"`
 	// ResendEntry marks a start that hands the role the work of the entry its phases row already
 	// names rather than a new entry, so the claim's given entry does not decline the task
@@ -806,6 +808,12 @@ type SuperviseRequest struct {
 	// finishes a start without acting when the issue's check is not the one it names; zero names
 	// no instance (a row queued before the field) and is not fenced.
 	CheckOpenedAt time.Time `json:"checkOpenedAt,omitzero"`
+	// WaitID names the wait whose time this start's task tells the worker of (WaitDue, written by
+	// workflow's waitDue): a start with no phase and no entry, so no phase fence holds it. The
+	// outbox finishes such a start with no delivery while a newer wait of the claim stands, since
+	// that task would end the newer wait as new work, and the time of a replaced wait sends
+	// nothing (dispatch://INFRA-2040 R3, D5 of its plan). Every other request names none.
+	WaitID string `json:"waitId,omitempty"`
 }
 
 func (SuperviseRequest) OutboxKind() OutboxKind { return OutboxKindSupervise }
@@ -1000,6 +1008,21 @@ func (CheckLook) OutboxKind() OutboxKind { return OutboxKindCheckLook }
 type CheckBound struct{}
 
 func (CheckBound) OutboxKind() OutboxKind { return OutboxKindCheckBound }
+
+// WaitDue is a phase worker's wait coming to its time: due at the wait's WakeAt, queued in the
+// transaction that records the declaration (workflow's waitDeclared), as a production check's next
+// look is a check_wake row. Token is the claim that declared the wait and WaitID the wait, so the
+// row of a wait a newer declaration replaced, or that something else ended, ends nothing and sends
+// nothing (workflow's waitDue). It runs on the lifecycle lane, which runs under every runtime, and
+// it is no row that holds a pod (store's idleWaitingKinds): an idle release may take the pod of a
+// worker that waits, and the row's own task brings it back (dispatch://INFRA-2040 R3, D5 of its
+// plan).
+type WaitDue struct {
+	Token  claim.Token `json:"token"`
+	WaitID string      `json:"waitId"`
+}
+
+func (WaitDue) OutboxKind() OutboxKind { return OutboxKindWaitDue }
 
 // PhaseEnded tells the role whose phase a transition the daemon raised on its own ended that its
 // phase is over, on that role's own Envoy topic. It is the daemon's own news of the workflow to a
@@ -1280,6 +1303,12 @@ func decodeOutboxJSON(row OutboxRow) (OutboxPayload, error) {
 			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
 		}
 		payload = value
+	case OutboxKindWaitDue:
+		value := WaitDue{}
+		if err := decoder.Decode(&value); err != nil {
+			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
+		}
+		payload = value
 	case OutboxKindPhaseEnded:
 		value := PhaseEnded{}
 		if err := decoder.Decode(&value); err != nil {
@@ -1454,6 +1483,9 @@ func validateOutboxPayload(payload OutboxPayload) error {
 		if value.CheckLook != 0 && (value.CheckLook < 0 || value.Op != "start" || !worksCheck(value.Role) || value.Phase != "") {
 			return fmt.Errorf("a supervise check look names a start of the implementer or the tester with no phase, and only a start carries one")
 		}
+		if value.WaitID != "" && (value.Op != "start" || value.Task == "" || value.Phase != "" || value.Entry != 0 || value.CheckLook != 0) {
+			return fmt.Errorf("a supervise start of a wait's time is a start with a task, no phase, no entry and no check look")
+		}
 		if value.Kept != nil {
 			if value.Op != "start" || value.Task == "" {
 				return fmt.Errorf("only a supervise start with a task names the decisions it kept")
@@ -1508,6 +1540,10 @@ func validateOutboxPayload(payload OutboxPayload) error {
 	case CheckLook:
 		if value.Look <= 0 {
 			return fmt.Errorf("check look bound requires the look it bounds")
+		}
+	case WaitDue:
+		if value.Token == "" || value.WaitID == "" {
+			return fmt.Errorf("a wait's time names the claim that declared the wait and the wait")
 		}
 	case PhaseEnded:
 		if !claim.IsRole(value.Role) || value.Role == claim.RoleArchitect {

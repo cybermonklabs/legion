@@ -265,6 +265,8 @@ func (e *Engine) apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake
 		return e.waitDeclared(ctx, tx, fact)
 	case intake.WaitNews:
 		return e.waitNews(ctx, tx, fact)
+	case intake.WaitDue:
+		return e.waitDue(ctx, tx, fact)
 	case intake.ControllerTick:
 		return e.statusRepairTick(ctx, tx)
 	default:

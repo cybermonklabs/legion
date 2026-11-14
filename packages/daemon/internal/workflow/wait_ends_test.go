@@ -472,7 +472,8 @@ func TestTheDesignGatesClosingEndsTheWaitOfEveryMergerItHolds(t *testing.T) {
 // that stands, the moment the daemon reads the gate under the new steps (WaitStands). The
 // reconciler does not end it under the name of the next fact, which did not close the gate: it
 // judges no wait by the gate, and leaves that wait for its time, which ends it with the cause the
-// rule names then.
+// rule names then, ended by the time's own fact, and writes no task (waitDue): the worker was
+// waiting on nothing its time brings, and the gate holds its merge.
 func TestAWaitTheGateHoldsWithNoClosingIsLeftForItsTime(t *testing.T) {
 	r := newWaitRig(t, config.DesignGateOff.Steps())
 	r.issue(waitRoot, phase.Merging)
@@ -491,5 +492,15 @@ func TestAWaitTheGateHoldsWithNoClosingIsLeftForItsTime(t *testing.T) {
 	}
 	if r.stands(gated, wait) {
 		t.Fatalf("wait %s stands under a gate that holds its merger", wait.ID)
+	}
+
+	starts := len(wakeStarts(t, r.pool))
+	r.applyWith(gated, "outbox", "wait-due:"+wait.ID, intake.WaitDue{Token: wait.Token, Issue: wait.Issue, WaitID: wait.ID})
+	r.assertEnded(wait, WaitEndDesignGateClosed, "outbox/wait-due:"+wait.ID)
+	if after := wakeStarts(t, r.pool); len(after) != starts {
+		t.Fatalf("the time of a wait the gate holds wrote the starts %+v, want none: no task follows an end the gate made", after[starts:])
+	}
+	if lines := waitTimeLines(r.logs); len(lines) != 0 {
+		t.Fatalf("the time of a wait the gate holds was logged as a time that came: %q", lines)
 	}
 }

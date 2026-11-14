@@ -60,6 +60,10 @@ func WaitEndEntryMoved(entry int64) string { return fmt.Sprintf("phase entry mov
 // event the record does not hold, so only its own report ends a wait for it.
 const WaitEndNews = "news reached the session"
 
+// WaitEndTimeCame is the cause of a wait that still stood when its time came (waitDue): R3's first
+// end, which writes the wait's own task.
+const WaitEndTimeCame = "its time came"
+
 // WaitEndWoken is the cause of a wait its claim's wake of kind ended (endWokenWait), naming the
 // wake and its detail as the woken role's task names them (WakeTask): a CI settlement's head and
 // what it came to, the role topic a message was published to, or the session one was sent to.
@@ -172,41 +176,66 @@ func HandsNoNewWork(wait record.ClaimWait, entry int64, resumeTask, interrupted 
 }
 
 // WaitStandsNow is WaitStands asked of the record in tx for the claim token: its wait row that has
-// no end, and whether that wait stands, read as every reader of a wait reads it — the wait's issue,
-// the issue's tree root, the wait's role's phases row, the claim, and the tree's design gate under
-// steps, the steps the deployment gates. The wait row is read first, so a claim that has none
-// costs that one indexed read (record.Store.StandingWait), which is the answer for every claim but
-// a waiting one. A wait whose issue or root the record does not hold does not stand.
+// no end, and whether that wait stands, read as every reader of a wait reads it (readWaitTerms).
+// The wait row is read first, so a claim that has none costs that one indexed read
+// (record.Store.StandingWait), which is the answer for every claim but a waiting one. A wait whose
+// issue or root the record does not hold does not stand.
 func WaitStandsNow(ctx context.Context, tx pgx.Tx, store record.Store, steps []record.DesignStep, token claim.Token) (record.ClaimWait, bool, error) {
 	unended, err := store.StandingWait(ctx, tx, token)
 	if err != nil || unended == nil {
 		return record.ClaimWait{}, false, err
 	}
-	issue, err := store.Issue(ctx, tx, unended.Issue)
-	if err != nil || issue == nil {
+	terms, err := readWaitTerms(ctx, tx, store, steps, *unended)
+	if err != nil || terms == nil {
 		return record.ClaimWait{}, false, err
+	}
+	wait, stands := terms.stands()
+	return wait, stands, nil
+}
+
+// waitTerms is what the rule over a wait reads of the record (WaitStands, WaitEndCause): the
+// wait's issue, the issue's tree root, the wait's role's phases row, the run of the claim that
+// declared it, and the tree's design gate under the steps the deployment gates.
+type waitTerms struct {
+	issue, root record.Issue
+	row         record.PhaseRow
+	run         record.RoleRun
+	gate        record.TreeGate
+}
+
+func (w waitTerms) stands() (record.ClaimWait, bool) {
+	return WaitStands(w.issue, w.root, w.row, w.run, w.gate)
+}
+
+func (w waitTerms) cause() string { return WaitEndCause(w.issue, w.root, w.row, w.run, w.gate) }
+
+// readWaitTerms reads, in tx, the terms of wait (waitTerms), nil for a wait whose issue or root the
+// record does not hold. steps are the steps the deployment gates.
+func readWaitTerms(ctx context.Context, tx pgx.Tx, store record.Store, steps []record.DesignStep, wait record.ClaimWait) (*waitTerms, error) {
+	issue, err := store.Issue(ctx, tx, wait.Issue)
+	if err != nil || issue == nil {
+		return nil, err
 	}
 	root := issue
 	if issue.Tree != issue.Key {
 		if root, err = store.Issue(ctx, tx, issue.Tree); err != nil || root == nil {
-			return record.ClaimWait{}, false, err
+			return nil, err
 		}
 	}
 	rows, err := store.Phases(ctx, tx, issue.Key)
 	if err != nil {
-		return record.ClaimWait{}, false, err
+		return nil, err
 	}
 	gates, err := store.GatesOf(ctx, tx, issue.Tree)
 	if err != nil {
-		return record.ClaimWait{}, false, err
+		return nil, err
 	}
-	claims, err := store.RoleClaims(ctx, tx, []claim.Token{token})
+	claims, err := store.RoleClaims(ctx, tx, []claim.Token{wait.Token})
 	if err != nil {
-		return record.ClaimWait{}, false, err
+		return nil, err
 	}
-	wait, stands := WaitStands(*issue, *root, record.PhaseRowOf(rows, unended.Role), record.RoleRun{Claim: claims[token]},
-		record.TreeGate{Steps: steps, Rows: gates})
-	return wait, stands, nil
+	return &waitTerms{issue: *issue, root: *root, row: record.PhaseRowOf(rows, wait.Role),
+		run: record.RoleRun{Claim: claims[wait.Token]}, gate: record.TreeGate{Steps: steps, Rows: gates}}, nil
 }
 
 // waitDeclared applies one intake.WaitDeclared, a phase worker's declaration of a wait, deciding
@@ -231,8 +260,11 @@ func WaitStandsNow(ctx context.Context, tx pgx.Tx, store record.Store, steps []r
 // The record's refusals are the terms of WaitStands asked of the wait as it would stand once
 // recorded (WaitEndCause), so the one rule that says whether a wait stands also says whether one
 // may be declared, and no wait is recorded that would not stand at once. Otherwise the wait is
-// recorded (record.Store.DeclareWait), ending the claim's standing wait as replaced. Every line
-// is logged once the fact commits, so a fact rolled back logs no declaration.
+// recorded (record.Store.DeclareWait), ending the claim's standing wait as replaced, and its time
+// is queued in the same transaction: a wait_due row due at its WakeAt (record.WaitDue, waitDue), so
+// a wait that commits has its time and one that does not has neither. The row of a wait this one
+// replaces stays queued and ends nothing when it comes due. Every line is logged once the fact
+// commits, so a fact rolled back logs no declaration.
 func (e *Engine) waitDeclared(ctx context.Context, tx pgx.Tx, fact intake.WaitDeclared) (intake.Result, error) {
 	if refusal := declarationRefusal(fact); refusal != nil {
 		return e.refuseWait(ctx, fact, refusal), nil
@@ -288,6 +320,9 @@ func (e *Engine) waitDeclared(ctx context.Context, tx pgx.Tx, fact intake.WaitDe
 	if err != nil {
 		return intake.Result{}, err
 	}
+	if err := e.enqueueAt(ctx, tx, issue.Key, record.WaitDue{Token: fact.Token, WaitID: wait.ID}, wait.WakeAt); err != nil {
+		return intake.Result{}, err
+	}
 	if replaced != nil {
 		e.logOnCommit(ctx, "wait: ended", "claim", fact.Token, "issue", issue.Key, "role", fact.Role, "wait", replaced.ID,
 			"cause", record.WaitReplaced, "ended_by", wait.ID)
@@ -298,7 +333,7 @@ func (e *Engine) waitDeclared(ctx context.Context, tx pgx.Tx, fact intake.WaitDe
 }
 
 // refuseWait is fact's refusal, logged with its code once the fact commits. Every refusal comes
-// before the declaration's one write, so nothing else is written.
+// before the declaration's writes, so nothing else is written.
 func (e *Engine) refuseWait(ctx context.Context, fact intake.WaitDeclared, refusal *intake.Refusal) intake.Result {
 	e.logOnCommit(ctx, "wait: refused", "claim", fact.Token, "issue", fact.Issue, "role", fact.Role, "wait", fact.WaitID,
 		"code", refusal.Code, "reason", refusal.Message)
@@ -533,13 +568,119 @@ func (e *Engine) waitNews(ctx context.Context, tx pgx.Tx, fact intake.WaitNews) 
 	return intake.Result{WaitEnded: ended}, err
 }
 
+// waitDue applies one intake.WaitDue, the wait_due row of a wait coming to its time: R3's first
+// end (D5 of dispatch://INFRA-2040's plan). It decides on the record read in the fact's own
+// transaction:
+//   - a wait that is not the claim's wait with no end — a newer declaration replaced it, or
+//     something else ended it first — changes nothing, and this is logged: the time of a replaced
+//     wait sends nothing;
+//   - a wait with no end that no longer stands — a merger the design gate holds with no closing of
+//     the gate (EndStaleWaits leaves such a wait for its time), or an end the reconciler did not
+//     see — ends with the cause WaitEndCause names, ended by this fact, and no task is written: the
+//     worker was waiting on nothing that its time brings;
+//   - a wait that still stands (WaitStands) ends with the cause WaitEndTimeCame, ended by this fact,
+//     and its own task is written in the same transaction (writeWaitTimeTask), logged
+//     `wait: its time came` with the row of that task.
+//
+// The end is a compare-and-set on the wait's id (record.Store.EndWait), so the fact applied twice,
+// or after another transaction ended the wait, writes no second end and no task.
+func (e *Engine) waitDue(ctx context.Context, tx pgx.Tx, fact intake.WaitDue) (intake.Result, error) {
+	unended, err := e.store.StandingWait(ctx, tx, fact.Token)
+	if err != nil {
+		return intake.Result{}, err
+	}
+	if unended == nil || unended.ID != fact.WaitID {
+		standing := ""
+		if unended != nil {
+			standing = unended.ID
+		}
+		e.logOnCommit(ctx, "wait: its time came to a wait that is over; nothing is sent", "claim", fact.Token,
+			"issue", fact.Issue, "wait", fact.WaitID, "standing", standing)
+		return intake.Result{}, nil
+	}
+	wait := *unended
+	terms, err := readWaitTerms(ctx, tx, e.store, e.cfg.Steps, wait)
+	if err != nil {
+		return intake.Result{}, err
+	}
+	endedBy := factEndedBy(ctx)
+	stands := false
+	if terms != nil {
+		if cause := terms.cause(); cause != "" {
+			_, err := e.endWait(ctx, tx, wait, cause, endedBy)
+			return intake.Result{}, err
+		}
+		_, stands = terms.stands()
+	}
+	if !stands {
+		// No term failed, yet the wait does not stand: the record holds no issue, root or claim
+		// of it, so there is nothing to judge it by and no claim to send its task to.
+		e.logOnCommit(ctx, "wait: its time came to a wait the record holds no issue or claim of; nothing is sent",
+			"claim", wait.Token, "issue", wait.Issue, "role", wait.Role, "wait", wait.ID)
+		return intake.Result{}, nil
+	}
+	ended, err := e.endWait(ctx, tx, wait, WaitEndTimeCame, endedBy)
+	if err != nil || !ended {
+		return intake.Result{}, err
+	}
+	row, woke, err := e.writeWaitTimeTask(ctx, tx, terms.issue, wait)
+	if err != nil {
+		return intake.Result{}, err
+	}
+	e.logOnCommit(ctx, "wait: its time came", "claim", wait.Token, "issue", wait.Issue, "role", wait.Role, "wait", wait.ID,
+		"row", row, "wake", woke)
+	return intake.Result{}, nil
+}
+
+// writeWaitTimeTask writes the task of wait's time (waitTimeTask) for the claim that declared it,
+// on issue as the record holds it now, and answers the outbox row it wrote and whether that row is
+// a wake. A claim an idle release took (Pods.ReleasedClaimOfRole) is woken with the wake kind
+// pods.WakeWaitTime (wakeReleased), so its pod comes back with the task and the resume is recorded
+// as every wake's is. Every other claim is given a start with no phase and no entry that names the
+// wait (record.SuperviseRequest.WaitID): one that runs, one whose wake another pass took and whose
+// pod is on its way back, and one whose pod's release is still in progress, which the release has
+// not suspended yet. That start overtakes such a release (store's IssueReleaseStop and
+// IssueRelease read a start queued above the release's own rows), and it brings back a claim the
+// release has suspended by the time it runs (the outbox's RequestRuleResume), so the task reaches
+// the worker once its pod is back. The outbox finishes it with no delivery while a newer wait of
+// the claim stands (internal/daemon's waitTimeReplaced).
+func (e *Engine) writeWaitTimeTask(ctx context.Context, tx pgx.Tx, issue record.Issue, wait record.ClaimWait) (int64, bool, error) {
+	task := waitTimeTask(wait)
+	if e.cfg.Pods != nil {
+		released, found, err := e.cfg.Pods.ReleasedClaimOfRole(ctx, tx, issue.Key, wait.Role)
+		if err != nil {
+			return 0, false, err
+		}
+		if found {
+			row, err := e.wakeReleased(ctx, tx, released, pods.WakeWaitTime, task, e.now())
+			if err != nil || row != 0 {
+				return row, row != 0, err
+			}
+		}
+	}
+	row, err := e.enqueueID(ctx, tx, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: wait.Role,
+		Generation: issue.Generation, Task: task, WaitID: wait.ID})
+	return row, false, err
+}
+
+// waitTimeTask is the task a worker is given when the time of its wait comes: the wait's id and
+// what it waited on, that its time came, and what to do now. A woken worker reads it behind the
+// wake's own preamble (WakeTask, pods.WakeWaitTime).
+func waitTimeTask(wait record.ClaimWait) string {
+	return fmt.Sprintf("The time of your wait %s came.\nYou waited on this: %s\n"+
+		"Continue your phase from the point where you stopped. If you must wait more, declare a new wait "+
+		"with the legion tool's declare_wait operation.",
+		wait.ID, strings.TrimSpace(wait.WaitingOn))
+}
+
 // wakeEndsWait is whether a wake of kind ends the wait of the claim it brings back: R3's third
 // end names a wake of the claim's released pod whose cause is a CI settlement (pods.WakeChecks), a
 // message to its role (pods.WakeRoleMessage) or a message to its session (pods.WakeAgentMessage),
 // each news the worker may wait on. The backstop's wake (pods.WakeBackstop) ends none: it is the
-// release's own timer, not news that reached the worker. A delivery's wake (pods.WakeDelivery) is
-// no wake of wakeReleased's: the delivery resumes the claim itself, and is judged at its send as
-// any task is.
+// release's own timer, not news that reached the worker. Nor does the wake of a wait's time
+// (pods.WakeWaitTime): its fact ended the wait before it woke the pod (waitDue), so there is no
+// wait left for the wake to end. A delivery's wake (pods.WakeDelivery) is no wake of
+// wakeReleased's: the delivery resumes the claim itself, and is judged at its send as any task is.
 func wakeEndsWait(kind string) bool {
 	switch kind {
 	case pods.WakeChecks, pods.WakeRoleMessage, pods.WakeAgentMessage:

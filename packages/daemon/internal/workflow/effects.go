@@ -311,6 +311,16 @@ func (e *Engine) enqueue(ctx context.Context, tx pgx.Tx, issue string, payload r
 	return e.enqueueAt(ctx, tx, issue, payload, e.now())
 }
 
+// enqueueID is enqueue answering the id of the row it wrote, for a row the log names: a wake's
+// start (wakeRow) and the task of a wait's time (waitDue).
+func (e *Engine) enqueueID(ctx context.Context, tx pgx.Tx, issue string, payload record.OutboxPayload) (int64, error) {
+	row, err := record.NewOutboxRow(issue, payload, e.now())
+	if err != nil {
+		return 0, err
+	}
+	return e.store.EnqueueID(ctx, tx, row)
+}
+
 // enqueueAt enqueues payload for issue due at at: a deadline row (a linger's close, a production
 // check's bounds), where enqueue's rows are due now.
 func (e *Engine) enqueueAt(ctx context.Context, tx pgx.Tx, issue string, payload record.OutboxPayload, at time.Time) error {

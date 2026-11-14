@@ -668,6 +668,8 @@ func (r *outbox) execute(ctx context.Context, row record.OutboxRow) error {
 		return r.checkLook(ctx, row, value)
 	case record.CheckBound:
 		return r.checkBound(ctx, row)
+	case record.WaitDue:
+		return r.waitDue(ctx, row, value)
 	case record.PhaseEnded:
 		return r.phaseEnded(ctx, row, value)
 	case record.HookPrompt:
@@ -1753,6 +1755,16 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 				return nil
 			}
 		}
+		// The task of a wait's time names the wait (record.SuperviseRequest.WaitID). Once a newer
+		// wait of the claim stands, that task would reach the claim as new work and end the newer
+		// wait at its send (supervise's waitHolds), so the start finishes here, before it brings
+		// the claim back or queues anything: the time of a replaced wait sends nothing
+		// (waitTimeReplaced, D5 of dispatch://INFRA-2040's plan).
+		if payload.WaitID != "" {
+			if replaced, err := r.waitTimeReplaced(ctx, row, payload, issue.Key, token); err != nil || replaced {
+				return err
+			}
+		}
 		if err := r.mergerWaitsForTheDesignGate(ctx, issue, payload.Role); err != nil {
 			return err
 		}
@@ -2114,18 +2126,12 @@ func keepsStartTask(held supervise.Claim, payload record.SuperviseRequest) bool 
 // it again (supervise's waitHolds). The resume of a cancelled idle release carries no task, so it
 // never comes here.
 //
-// The wait is read in a transaction of its own (workflow.WaitStandsNow), just before the delivery
-// it decides, as every fence of a row is read, and a start that delivers nothing is logged with
-// the wait it found.
+// The wait is read just before the delivery it decides (standingWait), as every fence of a row
+// is read, and a start that delivers nothing is logged with the wait it found.
 func (r *outbox) startWaits(ctx context.Context, row record.OutboxRow, payload record.SuperviseRequest, issue string, token claim.Token) (bool, error) {
-	var standing record.ClaimWait
-	var stands bool
-	if err := pgx.BeginTxFunc(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
-		var err error
-		standing, stands, err = workflow.WaitStandsNow(ctx, tx, r.records, r.gatedSteps, token)
-		return err
-	}); err != nil {
-		return false, fmt.Errorf("read the wait of %s: %w", token, err)
+	standing, stands, err := r.standingWait(ctx, token)
+	if err != nil {
+		return false, err
 	}
 	if !stands || !workflow.HandsNoNewWork(standing, payload.Entry, payload.ResumeTask, false) {
 		return false, nil
@@ -2133,6 +2139,44 @@ func (r *outbox) startWaits(ctx context.Context, row record.OutboxRow, payload r
 	r.log.Info("outbox start delivered nothing: the claim's wait stands", "row", row.ID, "claim", token, "issue", issue,
 		"role", payload.Role, "wait", standing.ID, "entry", payload.Entry, "taken", standing.TakenEntry)
 	return true, nil
+}
+
+// waitTimeReplaced says whether this start, the task of the time of the wait payload.WaitID
+// (workflow's waitDue), finishes with no delivery because a newer wait of the claim token stands:
+// the worker declared again after that task was written — in the turn of a task it held back,
+// say, which goes first (D7 of dispatch://INFRA-2040's plan) — and the task of the old wait's time
+// would reach the claim as new work and end the newer wait at its send. A start whose wait no
+// newer wait replaced is delivered, as is one whose claim has no wait standing at all, which is
+// every such start but one a newer declaration overtook: its own wait ended when its time came.
+//
+// The wait is read just before the start acts (standingWait), and a start finished here is
+// logged with the wait that stands.
+func (r *outbox) waitTimeReplaced(ctx context.Context, row record.OutboxRow, payload record.SuperviseRequest, issue string, token claim.Token) (bool, error) {
+	standing, stands, err := r.standingWait(ctx, token)
+	if err != nil {
+		return false, err
+	}
+	if !stands || standing.ID == payload.WaitID {
+		return false, nil
+	}
+	r.log.Info("outbox start of a wait's time finished without acting: a newer wait of the claim stands", "row", row.ID,
+		"claim", token, "issue", issue, "role", payload.Role, "wait", payload.WaitID, "standing", standing.ID)
+	return true, nil
+}
+
+// standingWait is the claim token's wait with no end and whether it stands, read in a read-only
+// transaction of its own as every reader of a wait reads it (workflow.WaitStandsNow).
+func (r *outbox) standingWait(ctx context.Context, token claim.Token) (record.ClaimWait, bool, error) {
+	var standing record.ClaimWait
+	var stands bool
+	if err := pgx.BeginTxFunc(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+		var err error
+		standing, stands, err = workflow.WaitStandsNow(ctx, tx, r.records, r.gatedSteps, token)
+		return err
+	}); err != nil {
+		return record.ClaimWait{}, false, fmt.Errorf("read the wait of %s: %w", token, err)
+	}
+	return standing, stands, nil
 }
 
 // stopElsewhere suspends, as the daemon and keeping its session, every claim of issue that still
@@ -2841,6 +2885,22 @@ func (r *outbox) checkBound(ctx context.Context, row record.OutboxRow) error {
 	if _, err := intake.ApplyFact(ctx, r.pool, "outbox", fmt.Sprintf("check-bound:%s:%d", row.Issue, row.ID),
 		intake.CheckBound{Issue: row.Issue}, r.handlers...); err != nil {
 		return fmt.Errorf("apply the bound of %s's production check: %w", row.Issue, err)
+	}
+	return nil
+}
+
+// waitDue is a phase worker's wait coming to its time (record.WaitDue, due at the wait's WakeAt):
+// intake.WaitDue, applied through the daemon's fact handlers under `wait-due:<waitID>`, so the row
+// run again after its fact committed is a duplicate. The wait is read in the fact's own
+// transaction, where no declaration and no end of it can land between the read and what the
+// workflow writes: it ends the wait the row names and writes the wait's own task, or ends it with
+// the term that stopped it, or changes nothing for a wait that is over (workflow's waitDue). The
+// row runs on the lifecycle lane, which runs under both runtimes, so a wait's time comes whether
+// or not the deployment releases idle pods (dispatch://INFRA-2040 R3, D5 of its plan).
+func (r *outbox) waitDue(ctx context.Context, row record.OutboxRow, payload record.WaitDue) error {
+	if _, err := intake.ApplyFact(ctx, r.pool, "outbox", "wait-due:"+payload.WaitID,
+		intake.WaitDue{Token: payload.Token, Issue: row.Issue, WaitID: payload.WaitID}, r.handlers...); err != nil {
+		return fmt.Errorf("bring wait %s of %s to its time: %w", payload.WaitID, payload.Token, err)
 	}
 	return nil
 }

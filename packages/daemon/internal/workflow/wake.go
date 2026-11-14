@@ -19,11 +19,12 @@ import (
 // A wake brings a released pod back. The release suspended every claim of the pod with the source
 // `released` and deleted the pod, its disk and its Sandbox; a wake resumes one of those claims,
 // which relaunches its session in a fresh pod whose launcher restores the workspace bundle the
-// release saved. Five things wake a pod, and this file holds four of them: the CI settlement, the
+// release saved. Six things wake a pod, and this file holds four of them: the CI settlement, the
 // role message and the agent message the Envoy listener reports, and the stored backstop. The
-// fifth — a delivery the daemon already had for a role of the pod — needs nothing here, because a
-// delivery to a suspended claim already resumes it (supervise's deliverResuming) and the delivery
-// is its own account of why the pod came back.
+// fifth, the time of a wait the released worker declared, wakes through wakeReleased as they do
+// (waitDue, wait.go). The sixth — a delivery the daemon already had for a role of the pod — needs
+// nothing here, because a delivery to a suspended claim already resumes it (supervise's
+// deliverResuming) and the delivery is its own account of why the pod came back.
 //
 // Every wake acts only on a claim that is still `released`, of an issue still in the workflow
 // whose tree is live, and a role comes back once while its pod is on its way: the role's one open
@@ -93,6 +94,9 @@ func WakeTask(kind, detail string) string {
 	case pods.WakeBackstop:
 		return preamble + "The wake is the release's backstop running out: " + detail +
 			". Nothing else asked for you, so take up your phase where you left it."
+	case pods.WakeWaitTime:
+		// The detail is the wait's own task (waitTimeTask), which says what the wake is.
+		return preamble + detail
 	default:
 		return preamble + "The wake is " + kind + ": " + detail + "."
 	}
@@ -158,7 +162,7 @@ func (e *Engine) wakeOnSettlement(ctx context.Context, tx pgx.Tx, fact intake.Pu
 	// pass took is already bringing the pod back with a task of its own, and a claim this
 	// settlement did not wake is told as any live role is (tellChecks).
 	woken, err := e.wakeReleased(ctx, tx, released, pods.WakeChecks, settlementDetail(fact), e.now())
-	if err != nil || !woken {
+	if err != nil || woken == 0 {
 		return "", err
 	}
 	return role, nil
@@ -214,7 +218,8 @@ func (e *Engine) podBackstopDue(ctx context.Context, tx pgx.Tx, fact intake.PodB
 // writes the one outbox row that resumes the role and gives it the task naming the wake. Both are
 // this transaction's, so a wake this daemon took is a wake whose start row is queued: a take that
 // committed without one is what wedges a role, which is why the outbox's own delivery wake, which
-// resumes a claim in process instead, heals a refused wake (wakeForDelivery).
+// resumes a claim in process instead, heals a refused wake (wakeForDelivery). It answers the id of
+// that start row, and 0 where it woke nothing.
 //
 // A wake that takes the pod and whose cause is news — a CI settlement, a message to the role or one
 // to the session — ends the woken claim's wait in the same transaction, before its start row is
@@ -229,21 +234,21 @@ func (e *Engine) podBackstopDue(ctx context.Context, tx pgx.Tx, fact intake.PodB
 // wake first closes a resume of this role written before the issue's newest release
 // (Pods.ClosePodGoneResume), which matches nothing while a pod is on its way back, since such a
 // resume was itself written after every release there is.
-func (e *Engine) wakeReleased(ctx context.Context, tx pgx.Tx, released supervise.Claim, kind, detail string, at time.Time) (bool, error) {
+func (e *Engine) wakeReleased(ctx context.Context, tx pgx.Tx, released supervise.Claim, kind, detail string, at time.Time) (int64, error) {
 	issue, err := e.store.Issue(ctx, tx, released.Issue)
 	if err != nil || issue == nil {
-		return false, err
+		return 0, err
 	}
 	root, err := e.store.Issue(ctx, tx, issue.Tree)
 	if err != nil || root == nil {
-		return false, err
+		return 0, err
 	}
 	if !pods.InWorkflowNotLingering(issue.Standing(), root.Standing(), record.OutOfWorkflow) {
-		return false, nil
+		return 0, nil
 	}
 	newest, err := e.cfg.Pods.ClosePodGoneResume(ctx, tx, issue.Key, released.Role)
 	if err != nil {
-		return false, err
+		return 0, err
 	}
 	if newest > 0 {
 		e.log.Warn("wake: a pod went away under an open resume of a released role; this wake closes that resume and takes its own",
@@ -251,13 +256,13 @@ func (e *Engine) wakeReleased(ctx context.Context, tx pgx.Tx, released supervise
 	}
 	taken, err := e.cfg.Pods.TakePodWake(ctx, tx, issue.Key, released.Role, kind, at)
 	if err != nil || !taken {
-		return false, err
+		return 0, err
 	}
 	if err := e.endWokenWait(ctx, tx, *issue, *root, released.Token, released.Role, kind, detail); err != nil {
-		return false, err
+		return 0, err
 	}
 	e.log.Info("wake: a released pod is coming back", "issue", issue.Key, "role", released.Role, "kind", kind, "detail", detail)
-	return true, e.enqueue(ctx, tx, issue.Key, wakeRow(*issue, released.Role, WakeTask(kind, detail)))
+	return e.enqueueID(ctx, tx, issue.Key, wakeRow(*issue, released.Role, WakeTask(kind, detail)))
 }
 
 // OpenPhaseRole is the phase worker of an open phase, and "" where there is none: a phase no role
