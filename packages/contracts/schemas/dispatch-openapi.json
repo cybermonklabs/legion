@@ -4741,7 +4741,7 @@
     },
     "/api/v1/going/catalogue": {
       "get": {
-        "description": "The catalogue of operations an agent may propose on Dispatch's graph: the dispatch tools that write, twenty of the thirty-three tool specs agents operate Dispatch with, each carried whole - its own name, its own description, the arguments it takes with an example call, the rows of this table it writes, and the graph relations its verbs write. Twenty actions is a list read whole, so the route takes no query and serves no page. An action the catalogue does not hold is no action at all: nothing serves it.",
+        "description": "The catalogue of operations an agent may propose on Dispatch's graph: the dispatch tools that write, twenty of the thirty-four tool specs agents operate Dispatch with, each carried whole - its own name, its own description, the arguments it takes with an example call, the rows of this table it writes, and the graph relations its verbs write. Twenty actions is a list read whole, so the route takes no query and serves no page. An action the catalogue does not hold is no action at all: nothing serves it.",
         "operationId": "getApiV1GoingCatalogue",
         "parameters": [
           {
@@ -4979,7 +4979,7 @@
     },
     "/api/v1/issues": {
       "get": {
-        "description": "List issues; filters project, status, parent, label, priority (repeatable: 0-3, or none for unset), open, updated_since, closed_since and closed_before (RFC3339; the issues closed at or after closed_since and before closed_before, so an open issue matches neither), route_status (live, no_holder or unknown; open issues only); ?pinned=true needs the person scope, since the pins are one person's. A malformed updated_since, closed_since or closed_before is 400 INVALID_UPDATED_SINCE, INVALID_CLOSED_SINCE or INVALID_CLOSED_BEFORE, and a closed_before at or before closed_since 400 INVALID_CLOSED_WINDOW. Each issue carries closed_at, when it was closed or null while it is open, and progress: {tasks, children}, its spec's task-list items and its direct children as {done, total}, each null when it has none. Pages with limit (1-250) and offset (0 or more; alone it pages 50): a paged answer is {issues, total, limit, offset}, total counting every issue the filters match; without either it is every matching issue as an array. cursor is 400 INVALID_QUERY.",
+        "description": "List issues; filters project, status (repeatable: the issues standing in any of those statuses; a blank value names none, and a value is matched as written, so a status the lifecycle does not hold matches no issue: alone it answers none, and beside another status it adds nothing), parent, label, priority (repeatable: 0-3, or none for unset), advances (repeatable: a priority id, none for the work that advances no live priority or any for the work that advances one, own or inherited; several are a union), open, updated_since, closed_since and closed_before (RFC3339; the issues closed at or after closed_since and before closed_before, so an open issue matches neither), route_status (live, no_holder or unknown; open issues only); ?pinned=true needs the person scope, since the pins are one person's. A malformed updated_since, closed_since or closed_before is 400 INVALID_UPDATED_SINCE, INVALID_CLOSED_SINCE or INVALID_CLOSED_BEFORE, and a closed_before at or before closed_since 400 INVALID_CLOSED_WINDOW. Each issue carries closed_at, when it was closed or null while it is open, and progress: {tasks, children}, its spec's task-list items and its direct children as {done, total}, each null when it has none. ?moved=true adds moved_at and moved_by to each issue standing in backlog or icebox: when it was moved there and who moved it, read from its newest issue.updated event that set one of the two statuses, as GET /api/v1/priorities' parked work reads them; an issue standing elsewhere, or whose events do not reach back to the move, carries neither, and a listing without moved=true carries neither on any issue. Pages with limit (1-250) and offset (0 or more; alone it pages 50): a paged answer is {issues, total, limit, offset}, total counting every issue the filters match; without either it is every matching issue as an array. cursor is 400 INVALID_QUERY.",
         "operationId": "getApiV1Issues",
         "parameters": [
           {
@@ -5000,7 +5000,10 @@
             "name": "status",
             "in": "query",
             "schema": {
-              "type": "string"
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
             }
           },
           {
@@ -5049,6 +5052,23 @@
                 "type": "string"
               },
               "type": "array"
+            }
+          },
+          {
+            "name": "advances",
+            "in": "query",
+            "schema": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          {
+            "name": "moved",
+            "in": "query",
+            "schema": {
+              "type": "boolean"
             }
           },
           {
@@ -8758,6 +8778,266 @@
         },
         "x-auth": "bearer",
         "x-write-scope": "session"
+      }
+    },
+    "/api/v1/priorities": {
+      "get": {
+        "description": "Every live priority, in rank order: id, title, description (markdown of any length), owner, rank (its place in the one order), state (live; a deleted priority is gone and is not listed), and when and by whom it was made, each beside the work that advances it (work): by_status, the open issues in each lifecycle status, claimed, open_asks, closed_last_7_days and newest_event_at. The work under a priority is the issues that state the relation and every issue below one of them. Beside the list it answers the two faults: work_under_no_priority, the open issues in flight (in_progress, testing, needs_review, retro) that advance no live priority, and priority_work_parked, the issues that advance one and stand in backlog or icebox, each as a whole count, the same count by project or by priority, and the newest 50 rows. Each row carries advances as the issue read does, one {id, inherited} entry per live priority the issue advances, inherited true for one it takes from an issue above it; a row of work_under_no_priority carries the empty list. A priority belongs to no project, so this read is of the whole deployment and any authenticated caller makes it, the shared token every pod carries included. ?project=\u003cKEY\u003e, repeatable, narrows the work counted and both fault lists to those projects and never the priorities themselves; ?summary=true answers the two fault counts alone, with no priority row and no fault row, which is what the navigation rail reads.",
+        "operationId": "getApiV1Priorities",
+        "parameters": [
+          {
+            "name": "project",
+            "in": "query",
+            "schema": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          {
+            "name": "summary",
+            "in": "query",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Priorities"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any"
+      },
+      "post": {
+        "description": "Write one priority {id?, title, description?, owner?}: title is required, and a title with nothing in it or over 1000 characters (UTF-16 units, counted as an issue title is) is 400 PRIORITY_INPUT; id is the caller's and defaults to the title written as a slug, and an id that is no slug of lowercase letters, digits and single hyphens, one over 200 characters, the ids none and any (the issue listing reads advances=none as the work under no priority and advances=any as the work under any), and a title no slug can be written from are each 400 PRIORITY_INPUT, an id derived from the title as much as one given; an id the store already holds is 409 PRIORITY_EXISTS. The new priority takes the last place of the order. A credential scoped to one project is refused, since a priority belongs to none.",
+        "operationId": "postApiV1Priorities",
+        "parameters": [
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreatePriorityInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Priority"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-write-scope": "deployment"
+      }
+    },
+    "/api/v1/priorities/{id}": {
+      "delete": {
+        "description": "Delete a priority: its state is written gone and no row is removed, so the listing answers without it while its history still names who ended it and when. An id no priority carries is 404 PRIORITY_NOT_FOUND; 204 otherwise.",
+        "operationId": "deleteApiV1PrioritiesById",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ActorInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "204": {
+            "description": "No Content"
+          }
+        },
+        "x-auth": "any",
+        "x-write-scope": "deployment"
+      },
+      "patch": {
+        "description": "Write one priority's title, description or owner, and move its order {title?, description?, owner?, rank?}: each field named is written and each left out is left alone. rank is {before, after}, the priority this one lands above and the one it lands below, as the issue board's own drag names them; a rank naming neither, a neighbour that is this priority, and one no live priority carries (an id the store does not hold, or one whose state is gone) are each 400 RANK_INPUT. A title with nothing in it or over 1000 characters (UTF-16 units, counted as an issue title is, so a rename is held to the bound a create is) and a body naming nothing to write are 400 PRIORITY_INPUT, and an id no priority carries is 404 PRIORITY_NOT_FOUND.",
+        "operationId": "patchApiV1PrioritiesById",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PatchPriorityInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Priority"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-write-scope": "deployment"
+      }
+    },
+    "/api/v1/priorities/{id}/history": {
+      "get": {
+        "description": "One priority's own history, newest first: every act stated about it as {field, value, issue, asserted, actor, at}. field is what was stated — title, description, owner and rank, the four a person writes, state (live when it was made, gone when it was deleted) and visibility; advances is the relation an issue states on it. value is what an attribute write wrote and is empty on an advances act; issue is the issue at the other end of an advances act and is empty on an attribute write; asserted is false on the act that retracted an advances and true on every other. A priority belongs to no project, so any authenticated caller reads this, the shared token every pod carries included. A deleted priority still answers its history, the delete its newest act; an id no priority carries is 404 PRIORITY_NOT_FOUND.",
+        "operationId": "getApiV1PrioritiesByIdHistory",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/PriorityAct"
+                  },
+                  "type": "array"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any"
       }
     },
     "/api/v1/projects": {
@@ -15044,6 +15324,19 @@
       },
       "ClaimedIssue": {
         "properties": {
+          "advances": {
+            "items": {
+              "$ref": "#/components/schemas/IssueAdvance"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "advances_revision": {
+            "format": "int64",
+            "type": "integer"
+          },
           "assignee": {
             "type": [
               "null",
@@ -15193,6 +15486,8 @@
           "labels",
           "parent",
           "blocked_by",
+          "advances",
+          "advances_revision",
           "assignee",
           "claim",
           "components",
@@ -16218,6 +16513,15 @@
               }
             ]
           },
+          "advances": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
           "assignee": {
             "anyOf": [
               {
@@ -16378,6 +16682,36 @@
         },
         "required": [
           "version"
+        ],
+        "type": "object"
+      },
+      "CreatePriorityInput": {
+        "properties": {
+          "actor": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Actor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "description": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "owner": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "title"
         ],
         "type": "object"
       },
@@ -19930,6 +20264,19 @@
       },
       "Issue": {
         "properties": {
+          "advances": {
+            "items": {
+              "$ref": "#/components/schemas/IssueAdvance"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "advances_revision": {
+            "format": "int64",
+            "type": "integer"
+          },
           "assignee": {
             "type": [
               "null",
@@ -20076,6 +20423,8 @@
           "labels",
           "parent",
           "blocked_by",
+          "advances",
+          "advances_revision",
           "assignee",
           "claim",
           "components",
@@ -20092,6 +20441,21 @@
           "plan_artifact_id",
           "decisions_artifact_id",
           "last_seq"
+        ],
+        "type": "object"
+      },
+      "IssueAdvance": {
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "inherited": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "inherited"
         ],
         "type": "object"
       },
@@ -20778,6 +21142,19 @@
       },
       "IssueDetails": {
         "properties": {
+          "advances": {
+            "items": {
+              "$ref": "#/components/schemas/IssueAdvance"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "advances_revision": {
+            "format": "int64",
+            "type": "integer"
+          },
           "artifacts": {
             "items": {
               "$ref": "#/components/schemas/ArtifactWithTrees"
@@ -21004,6 +21381,8 @@
           "labels",
           "parent",
           "blocked_by",
+          "advances",
+          "advances_revision",
           "assignee",
           "claim",
           "components",
@@ -21389,6 +21768,19 @@
       },
       "IssueSummary": {
         "properties": {
+          "advances": {
+            "items": {
+              "$ref": "#/components/schemas/IssueAdvance"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "advances_revision": {
+            "format": "int64",
+            "type": "integer"
+          },
           "assignee": {
             "type": [
               "null",
@@ -21452,6 +21844,13 @@
           },
           "last_seq": {
             "type": "integer"
+          },
+          "moved_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "moved_by": {
+            "$ref": "#/components/schemas/Actor"
           },
           "open_asks": {
             "type": "integer"
@@ -21533,6 +21932,8 @@
           "labels",
           "parent",
           "blocked_by",
+          "advances",
+          "advances_revision",
           "assignee",
           "claim",
           "components",
@@ -22886,6 +23287,49 @@
         ],
         "type": "object"
       },
+      "PatchPriorityInput": {
+        "properties": {
+          "actor": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Actor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "description": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "owner": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "rank": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/IssueRankInput"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "title": {
+            "type": [
+              "null",
+              "string"
+            ]
+          }
+        },
+        "type": "object"
+      },
       "PersonSignInResp": {
         "properties": {
           "created_at": {
@@ -22944,6 +23388,293 @@
         },
         "required": [
           "signins"
+        ],
+        "type": "object"
+      },
+      "Priorities": {
+        "properties": {
+          "empty": {
+            "type": "string"
+          },
+          "priorities": {
+            "items": {
+              "$ref": "#/components/schemas/PriorityRow"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "priority_work_parked": {
+            "$ref": "#/components/schemas/PriorityWorkParked"
+          },
+          "work_under_no_priority": {
+            "$ref": "#/components/schemas/WorkUnderNoPriority"
+          }
+        },
+        "required": [
+          "priorities",
+          "work_under_no_priority",
+          "priority_work_parked"
+        ],
+        "type": "object"
+      },
+      "Priority": {
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "made_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "made_by": {
+            "$ref": "#/components/schemas/Actor"
+          },
+          "owner": {
+            "type": "string"
+          },
+          "rank": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "description",
+          "owner",
+          "rank",
+          "state",
+          "made_at",
+          "made_by"
+        ],
+        "type": "object"
+      },
+      "PriorityAct": {
+        "properties": {
+          "actor": {
+            "$ref": "#/components/schemas/Actor"
+          },
+          "asserted": {
+            "type": "boolean"
+          },
+          "at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "field": {
+            "type": "string"
+          },
+          "issue": {
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field",
+          "value",
+          "issue",
+          "asserted",
+          "actor",
+          "at"
+        ],
+        "type": "object"
+      },
+      "PriorityIssue": {
+        "properties": {
+          "advances": {
+            "items": {
+              "$ref": "#/components/schemas/IssueAdvance"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "assignee": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "changed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "claim": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/IssueClaim"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "key": {
+            "type": "string"
+          },
+          "moved_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "moved_by": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Actor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "project": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "title",
+          "project",
+          "status",
+          "assignee",
+          "claim",
+          "changed_at",
+          "advances",
+          "moved_at",
+          "moved_by"
+        ],
+        "type": "object"
+      },
+      "PriorityRow": {
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "made_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "made_by": {
+            "$ref": "#/components/schemas/Actor"
+          },
+          "owner": {
+            "type": "string"
+          },
+          "rank": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "work": {
+            "$ref": "#/components/schemas/PriorityWork"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "description",
+          "owner",
+          "rank",
+          "state",
+          "made_at",
+          "made_by",
+          "work"
+        ],
+        "type": "object"
+      },
+      "PriorityWork": {
+        "properties": {
+          "by_status": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "claimed": {
+            "type": "integer"
+          },
+          "closed_last_7_days": {
+            "type": "integer"
+          },
+          "newest_event_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "open_asks": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "by_status",
+          "claimed",
+          "open_asks",
+          "closed_last_7_days",
+          "newest_event_at"
+        ],
+        "type": "object"
+      },
+      "PriorityWorkParked": {
+        "properties": {
+          "by_priority": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "count": {
+            "type": "integer"
+          },
+          "issues": {
+            "items": {
+              "$ref": "#/components/schemas/PriorityIssue"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "count",
+          "by_priority",
+          "issues"
         ],
         "type": "object"
       },
@@ -24859,6 +25590,21 @@
               }
             ]
           },
+          "advances": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          },
+          "advances_revision": {
+            "type": [
+              "null",
+              "integer"
+            ]
+          },
           "assignee": {
             "anyOf": [
               {
@@ -25267,6 +26013,37 @@
           "kind",
           "login",
           "scopes"
+        ],
+        "type": "object"
+      },
+      "WorkUnderNoPriority": {
+        "properties": {
+          "by_project": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "count": {
+            "type": "integer"
+          },
+          "issues": {
+            "items": {
+              "$ref": "#/components/schemas/PriorityIssue"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "count",
+          "by_project",
+          "issues"
         ],
         "type": "object"
       },

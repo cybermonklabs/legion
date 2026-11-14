@@ -115,6 +115,36 @@ test("the plain-text projection names a reference by its resolved name", async (
   }
 });
 
+// The projection reads the whole text unless its caller asks for the first block alone, which a
+// closed priority row does: that block is cut from the parsed document, so its soft line break
+// still joins the paragraph's lines, its references are still named, and the blocks after it
+// are not read at all.
+test("the plain-text projection reads the first block alone where it is asked to", async () => {
+  const markdown = "Tied to **dispatch://CORE-1**\nhere.\n\n- A list after it";
+  const view = draw(
+    <>
+      <PlainText firstBlock markdown={markdown}>
+        {(text) => <span data-testid="first">{text ?? ""}</span>}
+      </PlainText>
+      <PlainText markdown={markdown}>
+        {(text) => <span data-testid="whole">{text ?? ""}</span>}
+      </PlainText>
+    </>
+  );
+  try {
+    await waitFor(() =>
+      expect(view.getByTestId("first").textContent).toBe("Tied to CORE-1 Fix the thing here.")
+    );
+    await waitFor(() =>
+      expect(view.getByTestId("whole").textContent).toBe(
+        "Tied to CORE-1 Fix the thing here. A list after it"
+      )
+    );
+  } finally {
+    view.unmount();
+  }
+});
+
 // Shape 2: inside a link or a button there is no link of its own. The words and the reference
 // stay - the hover card is still the card - and the host is what a click follows.
 test("a reference inside a link or a button is drawn inert", async () => {

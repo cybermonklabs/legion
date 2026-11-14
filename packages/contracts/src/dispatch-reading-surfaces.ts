@@ -59,6 +59,7 @@ export type DispatchReadingSurface =
   | "margin-suggestion-diff"
   | "margin-comment-body"
   | "margin-thread-preview"
+  | "priority-description"
   | "body-reference-cards"
   | "dispatch-reference-card"
   | "github-reference-card"
@@ -394,6 +395,16 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     record: true,
     rendered: true,
     surface: "margin-thread-preview",
+  },
+  // A priority's description, on its own page and on the open row of the priorities table.
+  {
+    files: ["packages/dispatch/web/src/features/priorities/PriorityDescription.tsx"],
+    reach: "/priorities/<ID>, the Description of P1 group",
+    reason:
+      "A priority's description is no record of the reference graph: a priority is none of the four kinds a `TextSource` names (an artifact, an ask, a comment, a message), and the priority write stores the description as an attribute of the priority and indexes nothing from it - so a `#id` in it declares nothing and names nothing.",
+    record: false,
+    rendered: true,
+    surface: "priority-description",
   },
   // The cards under a body: the renderer draws them itself, so no surface pairs a card with a
   // body by hand.

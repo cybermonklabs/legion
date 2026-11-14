@@ -602,6 +602,12 @@ export interface MarkdownHeadline {
  * that leaves it out reads every reference as its short form, which is what a title drawn over
  * one record's text does (`useReferenceTarget`), since a name inside a name resolves nothing.
  *
+ * `firstBlock` projects the document's first block alone (its first paragraph, heading or list)
+ * rather than the whole of it, for a place that shows the opening of a text and no more of it.
+ * Only a closed row of the priorities table asks for it today (`priorities-columns.tsx`); every
+ * other caller reads the whole text, which is the default. `cut` still says only whether the
+ * projected words were cut to `max`.
+ *
  * `undefined` where neither is given, until the engine has answered (one pre-paint commit once
  * it is loaded on the page, and for a parsed body until the worker's answer lands), and for a
  * tree the schema refuses or an engine that cannot load: the surfaces that show a headline
@@ -611,7 +617,8 @@ export function useMarkdownHeadline(
   tree: DisplayTree | undefined,
   max: number,
   markdown?: string,
-  names: ReferenceNames = NO_REFERENCE_NAMES
+  names: ReferenceNames = NO_REFERENCE_NAMES,
+  firstBlock = false
 ): MarkdownHeadline | undefined {
   const [headline, setHeadline] = useState<MarkdownHeadline>();
   useLayoutEffect(() => {
@@ -620,7 +627,13 @@ export function useMarkdownHeadline(
         setHeadline(undefined);
         return;
       }
-      const projected = plainWords(document, names);
+      // The first block is cut from the parsed document, never from the markdown, so the
+      // projection reads it as it reads a whole text.
+      const first = firstBlock ? document.firstChild : null;
+      const projected = plainWords(
+        first === null ? document : document.cut(0, first.nodeSize),
+        names
+      );
       const characters = Array.from(projected.words.replace(/\s+/g, " ").trim());
       const cut = characters.length > max;
       setHeadline({
@@ -641,6 +654,6 @@ export function useMarkdownHeadline(
       // and the headline left in place would be the one a frame before it produced.
       fit(pending ? undefined : parsed);
     });
-  }, [markdown, max, names, tree]);
+  }, [firstBlock, markdown, max, names, tree]);
   return headline;
 }

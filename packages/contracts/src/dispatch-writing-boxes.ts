@@ -41,6 +41,7 @@ export type DispatchWritingBox =
   | "approval-reason"
   | "broadcast"
   | "architecture-reason"
+  | "priority-description"
   | "delivery-production-jobs"
   | "delivery-population-authors"
   | "delivery-excluded-repos";
@@ -65,6 +66,8 @@ export type DispatchWritingBox =
  * - `issue-spec`: the spec document a new issue is created with.
  * - `approval-reason`: why a reviewer asked for changes on a document.
  * - `architecture-reason`: why an issue touches no component.
+ * - `priority-description`: a priority's description, which every reader of the priority reads
+ *   and which is sent to nobody.
  * - `delivery-settings`: the delivery settings of this Dispatch.
  */
 export type DispatchWriting =
@@ -82,6 +85,7 @@ export type DispatchWriting =
   | "issue-spec"
   | "approval-reason"
   | "architecture-reason"
+  | "priority-description"
   | "delivery-settings";
 
 /** One row of DISPATCH_WRITING_BOXES: one write of one box. */
@@ -468,6 +472,25 @@ export const DISPATCH_WRITING_BOXES: readonly DispatchWritingBoxRow[] = [
     issueRows: true,
     reach: "Why <ISSUE> is not architectural",
     write: "architecture-reason",
+  },
+  // A priority's description, written where it is read: on the priority's own page and on the
+  // open row of the priorities table, which both open the one editor (`PriorityDescription`
+  // picks this row; `InPlaceField` mounts the shared field). The priority write resolves no
+  // party out of it and indexes nothing from it, so a party picked here is a link for a reader
+  // and nobody is told. A priority belongs to no issue, so the picker lists everyone who has
+  // signed in.
+  {
+    box: "priority-description",
+    covered: true,
+    delivers: false,
+    files: [
+      "packages/dispatch/web/src/features/priorities/InPlaceField.tsx",
+      "packages/dispatch/web/src/features/priorities/PriorityDescription.tsx",
+    ],
+    hint: DISPATCH_WRITING_HINT_QUIET,
+    issueRows: false,
+    reach: "Description of P1",
+    write: "priority-description",
   },
   // Settings' delivery form. These three take no picker, and the spec's exclusion is why.
   {

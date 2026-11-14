@@ -219,6 +219,8 @@ test("ProofDocument opens a hover card for a dispatch:// link in the live editor
     holder_state: null,
     last_seen: null,
     takeable_at: null,
+    advances: [],
+    advances_revision: 0,
     artifacts: [],
     children: [],
     closed_at: null,

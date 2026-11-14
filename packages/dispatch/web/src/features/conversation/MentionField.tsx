@@ -79,8 +79,10 @@ export function MentionField({
   labelClassName,
   labelHidden = false,
   maxLength,
+  onBlur,
   onChange,
   onDrop,
+  onFocus,
   onKeyDown,
   onPaste,
   onPickerOpenChange,
@@ -129,8 +131,15 @@ export function MentionField({
   /** The most the box takes, in the UTF-16 units the server counts, where the write has a bound
    *  a host says so at the box rather than leaving it to a refusal (the decline note's). */
   readonly maxLength?: number;
+  /** Told when the reader leaves the box: a host that saves what was written as it is left (a
+   *  priority's description, `InPlaceField`). A pick is no leaving, since a row of the list
+   *  keeps the focus here while it is clicked. */
+  readonly onBlur?: () => void;
   readonly onChange: (change: MentionFieldChange) => void;
   readonly onDrop?: (event: DragEvent<HTMLTextAreaElement>) => void;
+  /** Told when the reader comes into the box: a host that holds its own draft against the
+   *  server's text while the reader is writing it. */
+  readonly onFocus?: () => void;
   /** The host's own keys - a submit on Ctrl/Cmd+Enter, an ask option on Enter - which the keys
    *  an open picker owns never reach. */
   readonly onKeyDown?: (event: KeyboardEvent<HTMLTextAreaElement>) => void;
@@ -282,10 +291,14 @@ export function MentionField({
           }
           // The list closes with the box the reader leaves. A row of it keeps the focus here
           // while it is clicked (`RefPickerList` stops the mouse down), so a pick is no blur.
-          onBlur={() => setFocused(false)}
+          onBlur={() => {
+            setFocused(false);
+            onBlur?.();
+          }}
           onFocus={(event: SyntheticEvent<HTMLTextAreaElement>) => {
             setCaret(event.currentTarget.selectionStart);
             setFocused(true);
+            onFocus?.();
           }}
           onKeyDown={onKeyDown}
           onPaste={onPaste}

@@ -72,10 +72,11 @@ function ReferenceNameRead({
 export function usePlainHeadline(
   tree: DisplayTree | undefined,
   markdown: string | undefined,
-  max = Number.POSITIVE_INFINITY
+  max = Number.POSITIVE_INFINITY,
+  firstBlock = false
 ): { reads: ReactNode; text: MarkdownHeadline | undefined } {
   const [names, setNames] = useState<ReferenceNames>(NO_REFERENCE_NAMES);
-  const text = useMarkdownHeadline(tree, max, markdown, names);
+  const text = useMarkdownHeadline(tree, max, markdown, names, firstBlock);
   // Keyed on the addresses themselves, never on the array: the projection answers a fresh one
   // every time it runs, and re-reading the same addresses for it would never settle. A source
   // the engine has not parsed has no address at all, which is the empty key.
@@ -126,6 +127,7 @@ export function usePlainHeadline(
  */
 export function PlainText({
   children,
+  firstBlock = false,
   markdown,
   max = Number.POSITIVE_INFINITY,
   tree,
@@ -133,13 +135,17 @@ export function PlainText({
   /** Draws whatever holds the line: the control the label names, the element the title is on.
    *  `undefined` until the engine has answered. */
   children: (text: string | undefined) => ReactNode;
+  /** Reads the text's first block alone rather than the whole of it (`useMarkdownHeadline`):
+   *  a closed row of the priorities table, which shows the opening of a description and no
+   *  more of it, is the one caller that asks. */
+  firstBlock?: boolean;
   markdown: string | undefined;
   max?: number;
   /** The reading Go made of this stored text, whose words the line is; absent for a text
    *  Dispatch does not store, whose `markdown` is parsed instead. */
   tree?: DisplayTree;
 }): ReactNode {
-  const { reads, text } = usePlainHeadline(tree, markdown, max);
+  const { reads, text } = usePlainHeadline(tree, markdown, max, firstBlock);
   return (
     <>
       {reads}

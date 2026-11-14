@@ -9,6 +9,7 @@ import { agentRow, getSentMessages } from "./agents";
 import {
   answerAsk,
   createIssueArtifact,
+  createPriority,
   getArtifactText,
   publishAgentStreamFrame,
   requestApproval,
@@ -479,6 +480,20 @@ const DRIVERS: Partial<Record<DispatchWritingBox, Driver>> = {
       await expect(field).toBeVisible();
       await walkBox(field, world);
       await expectRow(page, field, "phone-thread-composer", "comment");
+    },
+  },
+  // A priority belongs to no issue, so its box is on the priority's own page rather than the
+  // world's host, and lists everyone who has signed in. An unwritten description reads as the
+  // prompt that opens its editor.
+  "priority-description": {
+    drive: async (page, world) => {
+      const priority = await createPriority({ owner: "alice", title: "Keep one build" });
+      await page.goto(`/priorities/${priority.id}`);
+      await page.getByText("No description is written. Click here to write one.").click();
+      const field = page.getByRole("textbox", { exact: true, name: "Description of P1" });
+      await expect(field).toBeFocused();
+      await walkBox(field, world);
+      await expectRow(page, field, "priority-description", "priority-description");
     },
   },
   "suggestion-replacement": {
