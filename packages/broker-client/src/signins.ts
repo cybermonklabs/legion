@@ -45,8 +45,12 @@ export const SIGNIN_COMMAND = "agent-secrets login";
 const SIGNINS_DIR = "signins";
 
 /** An environment these functions read their variables out of: a process's own, or a caller's
- *  record of one. `environment.ts`'s `BrokerVariables` names every variable they read. */
-type Environment = Readonly<Record<string, string | undefined>>;
+ *  record of one. `environment.ts`'s `BrokerVariables` names every variable they read; the two
+ *  named here are the ones read by property, the base of the default sign-in directory. */
+type Environment = Readonly<Record<string, string | undefined>> & {
+  readonly XDG_STATE_HOME?: string | undefined;
+  readonly HOME?: string | undefined;
+};
 
 /**
  * One person's sign-in on this machine as `agent-secrets login` keeps it on disk (Go's
