@@ -214,7 +214,11 @@ func TestGitWrapperTrailerAgreesWithGitOnEveryMessageForm(t *testing.T) {
 			for i, arg := range tc.args {
 				args[i] = strings.ReplaceAll(arg, "{files}", dir)
 			}
-			outcome := func(wrapper bool) (int, string) {
+			// outcome runs the case once and says whether it made a commit. Exit status 0 alone does
+			// not say so: `git commit -h` exits 129 on git 2.47.3 and 0 on git 2.56.1 (this file's
+			// `-h` case, on CI's runner), and makes no commit on either. A case made a commit when it
+			// exited 0 and the repository has a HEAD.
+			outcome := func(wrapper bool) (code int, committed bool, text string) {
 				repo := trailerRepo(t, git)
 				for _, step := range tc.setup {
 					name, stepArgs := git, step
@@ -229,7 +233,6 @@ func TestGitWrapperTrailerAgreesWithGitOnEveryMessageForm(t *testing.T) {
 				if wrapper {
 					command = append([]string{legion, "git", "--real", git, "--"}, args...)
 				}
-				var code int
 				var stderr string
 				if tc.fifo != "" {
 					code, _, stderr = trailerRun(t, repo, env, tc.stdin, bash, append([]string{"-c", `f=$1; shift; "$@" <(printf %s "$f")`, "bash", tc.fifo}, command...)...)
@@ -237,19 +240,22 @@ func TestGitWrapperTrailerAgreesWithGitOnEveryMessageForm(t *testing.T) {
 					code, _, stderr = trailerRun(t, repo, env, tc.stdin, command[0], command[1:]...)
 				}
 				if code != 0 {
-					return code, stderr
+					return code, false, stderr
 				}
-				return 0, trailerMessage(t, git, repo)
+				if head, _, _ := trailerRun(t, repo, trailerEnv(t, trailerPath(git)), "", git, "rev-parse", "-q", "--verify", "HEAD"); head != 0 {
+					return code, false, stderr
+				}
+				return 0, true, trailerMessage(t, git, repo)
 			}
-			aloneCode, alone := outcome(false)
-			wrappedCode, wrapped := outcome(true)
-			if (aloneCode == 0) != tc.commits {
+			aloneCode, aloneCommitted, alone := outcome(false)
+			wrappedCode, wrappedCommitted, wrapped := outcome(true)
+			if aloneCommitted != tc.commits {
 				t.Fatalf("git alone exited %d (%s); want a commit: %v", aloneCode, alone, tc.commits)
 			}
-			if (wrappedCode == 0) != (aloneCode == 0) {
+			if wrappedCode != aloneCode || wrappedCommitted != aloneCommitted {
 				t.Fatalf("git alone exited %d and through the wrapper %d: %s", aloneCode, wrappedCode, wrapped)
 			}
-			if aloneCode == 0 {
+			if aloneCommitted {
 				assertTrailersAdded(t, alone, wrapped, tc.lines)
 			}
 		})
