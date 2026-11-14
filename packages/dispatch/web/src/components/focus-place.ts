@@ -25,11 +25,10 @@ export function focusableIn(container: Element): HTMLElement[] {
   );
 }
 
-/** Where a hand-off sends the focus a control took away with it: the control now at `index`
- *  among those the focus can reach in `container`, else the one before it. */
-function controlAt(container: Element, index: number): HTMLElement | undefined {
-  const left = focusableIn(container);
-  return left[index] ?? left[index - 1];
+/** Where a hand-off sends the focus a control took away with it: the control now at `index` in
+ *  `controls`, else the one before it. */
+function controlAt(controls: readonly HTMLElement[], index: number): HTMLElement | undefined {
+  return controls[index] ?? controls[index - 1];
 }
 
 /** `element`'s place among the controls the focus can reach in `container` (`focusableIn`'s
@@ -93,7 +92,9 @@ export function useFocusPlace(
     }
     place.current = null;
     if (held.element.isConnected || !focusOnDocument()) return;
-    const placed = held.container.isConnected ? controlAt(held.container, held.index) : undefined;
+    const placed = held.container.isConnected
+      ? controlAt(focusableIn(held.container), held.index)
+      : undefined;
     (placed ?? fallback(held.container))?.focus();
   });
   return (event) => {
@@ -130,39 +131,116 @@ function rendered(element: Element): boolean {
   return element.closest("[hidden]") === null && element.getClientRects().length > 0;
 }
 
-/** A focus an element lost: the element, the region it was counted in, its place there, the path
- *  of the page it was focused on, and whether the page took it from the reader (`taken`: the
- *  element was disabled, hidden or taken away) rather than the reader moving off it. */
+/** The controls the focus can reach in `region` that the page draws. The rescue counts places
+ *  among these and lands only on these, so a control drawn at one width alone - `md:hidden`, say
+ *  - neither holds a place nor is handed a focus it cannot show. */
+function drawnIn(region: Element): HTMLElement[] {
+  return focusableIn(region).filter(rendered);
+}
+
+/** How many of `controls` come before `node` in the page. */
+function countBefore(controls: readonly Element[], node: Node): number {
+  let index = 0;
+  for (const control of controls) {
+    if (
+      control === node ||
+      !(control.compareDocumentPosition(node) & Node.DOCUMENT_POSITION_FOLLOWING)
+    ) {
+      break;
+    }
+    index += 1;
+  }
+  return index;
+}
+
+/** Whether the keyboard focus is lost: on the body, or still on an element that has left the
+ *  page. WebKit and Firefox move the focus off a removed element only at the next rendering
+ *  update (the HTML spec's focus fixup), so until then the document still names it. */
+function focusLost(): boolean {
+  const focused = document.activeElement;
+  return focused === null || focused === document.body || !focused.isConnected;
+}
+
+/** Focuses `element` and, once it holds the focus, scrolls it into view: WebKit scrolls a focused
+ *  control into view only a frame later, by when a list's own scroll keeping may have moved the
+ *  page again. Answers whether it took the focus. */
+function land(element: HTMLElement): boolean {
+  element.focus();
+  if (document.activeElement !== element) return false;
+  element.scrollIntoView({ block: "nearest", inline: "nearest" });
+  return true;
+}
+
+/** A focus an element lost: the element, the region it was counted in, its place there among
+ *  the controls the page draws, the path of the page it was focused on, whether the page took it
+ *  from the reader (`taken`: the element was disabled, hidden or taken away) rather than the
+ *  reader moving off it, and - in a dialog - the loss the dialog was opened from (`opener`):
+ *  the place the focus left for it, or null for a dialog the focus entered from the body. */
 interface Loss {
   readonly element: HTMLElement;
   readonly index: number;
+  readonly opener: Loss | null;
   readonly path: string;
   readonly region: Element;
   readonly taken: boolean;
 }
 
-/** Runs `then` once the components have had their turn with a loss of focus: a frame and then a
- *  task later, after React has committed and run its passive effects. Answers what cancels it. */
+/** The longest the rescue waits for an animation frame before it goes on without one. WebKit can
+ *  hold a page's frames back while nothing on it is drawn - measured in headless WebKit, a check
+ *  waited 775 ms for its frame, and another had none in 2 s while the page's timers ran - and a
+ *  keyboard reader is not to sit on the body for that. React has committed and run its passive
+ *  effects well inside this. */
+const FRAME_WAIT_MS = 100;
+
+/** Runs `then` once the components have had their turn with a loss of focus: a frame, or
+ *  `FRAME_WAIT_MS` where no frame comes, and then a task later, after React has committed and run
+ *  its passive effects. Answers what cancels it. */
 function afterComponents(then: () => void): () => void {
   let task: number | undefined;
-  const frame = window.requestAnimationFrame(() => {
+  const go = () => {
+    if (task !== undefined) return;
+    window.cancelAnimationFrame(frame);
+    window.clearTimeout(late);
     task = window.setTimeout(then, 0);
-  });
+  };
+  const frame = window.requestAnimationFrame(go);
+  const late = window.setTimeout(go, FRAME_WAIT_MS);
   return () => {
     window.cancelAnimationFrame(frame);
+    window.clearTimeout(late);
     window.clearTimeout(task);
   };
 }
 
-/** The place of a control `record` took away, itself or with a parent, among `region`'s controls:
- *  how many of them come before the point it was taken from - before the sibling after it while
- *  that is still in the page, else up to and through the sibling before it, else through the
- *  parent it was taken from. */
+/** The record of `records` that took `element` away, itself or with a parent, read at a point
+ *  still in the page: where the parent it was taken from went too, later in the same batch, the
+ *  record that took that parent. */
+function removalOf(
+  records: readonly MutationRecord[],
+  element: Element
+): MutationRecord | undefined {
+  let node: Node = element;
+  let found: MutationRecord | undefined;
+  for (;;) {
+    const record = records.find((each) =>
+      [...each.removedNodes].some((removed) => removed.contains(node))
+    );
+    if (record === undefined) return found;
+    found = record;
+    if (record.target.isConnected) return record;
+    node = record.target;
+  }
+}
+
+/** The place of a control `record` took away, itself or with a parent, among the controls
+ *  `region` draws: how many of them come before the point it was taken from - before the sibling
+ *  after it while that is still in the page, else up to and through the sibling before it, else
+ *  through the parent it was taken from. */
 function placeOfRemoval(region: Element, record: MutationRecord): number {
   const next = record.nextSibling?.isConnected ? record.nextSibling : null;
   const through = record.previousSibling?.isConnected ? record.previousSibling : record.target;
   let index = 0;
-  for (const control of focusableIn(region)) {
+  for (const control of drawnIn(region)) {
     const before =
       next === null
         ? through.contains(control) ||
@@ -174,32 +252,32 @@ function placeOfRemoval(region: Element, record: MutationRecord): number {
   return index;
 }
 
-/** Hands on the focus `loss`'s element took with it when it went: to the control now at its
- *  place in its region, else the one before it. A region that went with it - a dialog that
- *  closed - hands it to the last loss `lost` holds of a region still in the page, the region
- *  under it: to that element, the control that opened the dialog, if it can still take the
- *  focus, else the control now at its place, else the one before it. Then to the page's search
- *  box, then to its filter trigger. */
-function handOn(loss: Loss, lost: ReadonlyMap<Element, Loss>, main: HTMLElement | null): void {
-  let candidates: (HTMLElement | undefined)[] = [];
+/** Hands on the focus `loss`'s element took with it when it went. In a region still in the page:
+ *  to the control now at its place there, else the one before it, else the page's search box,
+ *  else its filter trigger. From a region that went with it - a dialog that closed - only back
+ *  to the place the dialog was opened from (its `opener`, or that dialog's own opener where it
+ *  closed too): that element, the control that opened it, if it can still take the focus, else
+ *  the control now at its place, else the one before it. A dialog opened from the body hands the
+ *  focus nowhere: the body is where the reader was. */
+function handOn(loss: Loss, main: HTMLElement | null): void {
+  let candidates: (HTMLElement | null | undefined)[] = [];
   if (loss.region.isConnected) {
-    candidates = [controlAt(loss.region, loss.index)];
+    candidates = [
+      controlAt(drawnIn(loss.region), loss.index),
+      main === null ? null : controlIn(main, CONTROL.searchBox),
+      main === null ? null : controlIn(main, CONTROL.panelTrigger),
+    ];
   } else {
-    for (const held of lost.values()) {
-      if (held.region.isConnected && held.path === loss.path) {
-        candidates = [held.element, controlAt(held.region, held.index)];
-      }
+    let opener = loss.opener;
+    while (opener !== null && !opener.region.isConnected) opener = opener.opener;
+    if (opener !== null && opener.path === loss.path) {
+      candidates = [opener.element, controlAt(drawnIn(opener.region), opener.index)];
     }
   }
-  for (const candidate of [
-    ...candidates,
-    main === null ? null : controlIn(main, CONTROL.searchBox),
-    main === null ? null : controlIn(main, CONTROL.panelTrigger),
-  ]) {
+  for (const candidate of candidates) {
     if (candidate === null || candidate === undefined) continue;
     if (!candidate.isConnected || !rendered(candidate)) continue;
-    candidate.focus();
-    if (document.activeElement === candidate) return;
+    if (land(candidate)) return;
   }
 }
 
@@ -213,15 +291,16 @@ function handOn(loss: Loss, lost: ReadonlyMap<Element, Loss>, main: HTMLElement 
  * Every element that takes the focus is noted as it does (`focusin`), with its region - the
  * dialog holding it, modal or not, else the shell's main content (`main`), else the document -
  * and the path of the page it was focused on, which a navigation does not change before the old
- * page goes. A loss is seen two ways. A control disabled, hidden or left by the reader fires a
- * `focusout` in every engine, while it is still in the page. A control taken away, itself or with
- * a parent, is seen by watching the page (a MutationObserver over the document) in every engine,
- * since Firefox and WebKit fire no `focusout` for it; Chromium fires one as well, and whichever
- * comes first is the loss recorded. Each loss holds its element, its region, its place among the
- * region's controls, the path, and whether the page took the element (`taken`). A move from one
- * control to another in the same region is no loss. Each region keeps its last loss, so a dialog
- * that closes can hand the focus to the place it was opened from. A new loss cancels whatever is
- * still out for the one before it.
+ * page goes. A dialog the focus enters for the first time notes where it came from: the loss of
+ * the element that handed it over, or none when it came from the body. A loss is seen two ways.
+ * A control disabled, hidden or left by the reader fires a `focusout` in every engine, while it is
+ * still in the page. A control taken away, itself or with a parent, is seen by watching the page
+ * (a MutationObserver over the document) in every engine, since Firefox and WebKit fire no
+ * `focusout` for it; Chromium fires one as well, and whichever comes first is the loss recorded.
+ * Each loss holds its element, its region, its place among the controls the region draws, the
+ * path, whether the page took the element (`taken`), and its dialog's opener. A move from one
+ * control to another in the same region is no loss. A new loss cancels whatever is still out for
+ * the one before it.
  *
  * The check runs a frame and a task after the loss, once React has committed and run its passive
  * effects, so every component's own hand-off has had its turn first: every `useFocusPlace`
@@ -229,31 +308,41 @@ function handOn(loss: Loss, lost: ReadonlyMap<Element, Loss>, main: HTMLElement 
  * `returnFocus`, AskCard's, `useDialog`'s return to the opener, the Agents composer's take-back.
  * Each knows its own target better than a place counted in the page does - the row marked last,
  * the opener, the composer's box - so the rescue answers only a loss none of them answered, and
- * acts only while the focus is still on the body. It leaves alone a loss on a page the reader has
- * since left, since the new page owns its focus, and a loss the reader made whose element is
- * still in the page, enabled and drawn - a click on the page itself, a deliberate `.blur()` such
- * as the Inbox's and the Board's Escape - so every place the rescue holds is forgotten. A taken
- * element that is back by then gets the focus back.
+ * acts only while the focus is still lost. It leaves alone a loss on a page the reader has since
+ * left, since the new page owns its focus, and a loss the reader made whose element is still in
+ * the page, enabled and drawn - a click on the page itself, a deliberate `.blur()` such as the
+ * Inbox's and the Board's Escape. A taken element that is back by then gets the focus back.
  *
  * An element that went - taken away, hidden, no longer drawn, or replaced under a new key - hands
- * the focus on (`handOn`): to the control now at its place in its region, else the one before it;
- * from a dialog that closed, to the place it was opened from; then to the page's search box or
- * filter trigger, and never to an arbitrary first control of the page. An element the press
- * disabled, itself or through the fieldset around it, gets the focus back when it is enabled
- * again, watched rather than polled, since its write's latency is the server's; if it goes
- * instead, or is still disabled after `RESCUE_WAIT_MS`, the focus is handed on as from an element
- * that went. That settle too waits a frame and a task, so a component that watches the same
- * control - the Agents composer, giving its box the focus back - acts on the change first.
- * `focus()` scrolls the element it lands on into view.
+ * the focus on (`handOn`): to the control now at its place in its region, else the one before it,
+ * then to the page's search box or filter trigger, and never to an arbitrary first control of the
+ * page. From a dialog that closed it goes only back to the place the dialog was opened from; a
+ * dialog opened from the body - a single-key shortcut with nothing focused - leaves the focus on
+ * the body, where the reader was, and never puts it in a text box whose next key would be typed.
+ * An element the press disabled, itself or through the fieldset around it, gets the focus back
+ * when it is enabled again, watched rather than polled, since its write's latency is the
+ * server's; if it goes instead, or is still disabled after `RESCUE_WAIT_MS`, the focus is handed
+ * on as from an element that went. That settle too waits a frame and a task, so a component that
+ * watches the same control - the Agents composer, giving its box the focus back - acts on the
+ * change first. A pointer press anywhere while a check or a wait is out is the reader moving on -
+ * onto a control, or onto the page itself - and ends it, so a control enabled again later never
+ * pulls back a focus the reader left on the page. So is the reader's Escape: a control it takes
+ * away or leaves - the issue title's editor, whose heading would open it again if it took the
+ * focus - is the reader leaving it, and the focus stays where Escape left it, as the Inbox's and
+ * the Board's own Escape leave it on the page. The element the rescue lands on is scrolled into
+ * view (`land`).
  */
 export function useFocusRescue(main: RefObject<HTMLElement | null>): void {
   useEffect(() => {
-    /** Each region's last loss, the latest last. */
-    const lost = new Map<Element, Loss>();
     /** The element holding the focus, its region and the path it was focused on, until it loses
      *  the focus by a `focusout`; one still noted here once it has left the page went with no
      *  `focusout` at all. */
     let focused: { element: HTMLElement; path: string; region: Element } | null = null;
+    /** The loss each dialog the focus has entered was opened from, or null for one it entered
+     *  from the body. */
+    const openedFrom = new Map<Element, Loss | null>();
+    /** Where a `focusout` is handing the focus, and the loss it leaves in another region. */
+    let moving: { from: Loss | null; to: Element } | null = null;
     /** Cancels the check or the wait still out for the latest loss. */
     let pending: (() => void) | null = null;
 
@@ -269,9 +358,9 @@ export function useFocusRescue(main: RefObject<HTMLElement | null>): void {
       let settling: (() => void) | undefined;
       const settle = () => {
         pending = null;
-        if (!focusOnDocument() || window.location.pathname !== loss.path) return;
-        if (element.isConnected && rendered(element)) element.focus();
-        if (document.activeElement !== element) handOn(loss, lost, main.current);
+        if (!focusLost() || window.location.pathname !== loss.path) return;
+        if (element.isConnected && rendered(element) && land(element)) return;
+        handOn(loss, main.current);
       };
       // The element enabled again, gone, or the wait run out: settled a frame and a task later,
       // as the first check is, so a component answering the same change - its own watcher,
@@ -307,39 +396,29 @@ export function useFocusRescue(main: RefObject<HTMLElement | null>): void {
 
     const check = (loss: Loss) => {
       pending = null;
-      if (window.location.pathname !== loss.path) {
-        lost.clear();
-        return;
-      }
-      if (!focusOnDocument()) return;
+      if (window.location.pathname !== loss.path || !focusLost()) return;
       const { element } = loss;
       if (!element.isConnected || !rendered(element)) {
-        handOn(loss, lost, main.current);
+        handOn(loss, main.current);
       } else if (element.matches(":disabled")) {
         pending = wait(loss);
       } else if (loss.taken) {
-        element.focus();
-      } else {
-        lost.clear();
+        land(element);
       }
-    };
-
-    /** Keeps `loss` as its region's last, and checks it once the components have had their turn
-     *  unless the focus went straight to another element (`checked` false): that loss is kept only
-     *  as the place it left - the opener's, while a dialog it opened holds the focus. */
-    const keep = (loss: Loss, checked: boolean) => {
-      for (const held of lost.keys()) {
-        if (!held.isConnected) lost.delete(held);
-      }
-      lost.delete(loss.region);
-      lost.set(loss.region, loss);
-      if (checked) pending = afterComponents(() => check(loss));
     };
 
     const noteFocus = (event: globalThis.FocusEvent) => {
       const element = event.target;
       if (!(element instanceof HTMLElement)) return;
-      focused = { element, path: window.location.pathname, region: regionOf(element) };
+      const region = regionOf(element);
+      if (region.matches(DIALOG) && !openedFrom.has(region)) {
+        for (const dialog of openedFrom.keys()) {
+          if (!dialog.isConnected) openedFrom.delete(dialog);
+        }
+        openedFrom.set(region, moving?.to === element ? moving.from : null);
+      }
+      moving = null;
+      focused = { element, path: window.location.pathname, region };
     };
 
     const record = (event: globalThis.FocusEvent) => {
@@ -351,12 +430,25 @@ export function useFocusRescue(main: RefObject<HTMLElement | null>): void {
       pending = null;
       const region = regionOf(element);
       const next = event.relatedTarget;
+      if (leaving && !(next instanceof Element)) return;
       // A move from one control to another in the same region - j and k, the arrows - is no
       // loss, and counts nothing.
-      if (next instanceof Element && regionOf(next) === region) return;
-      const taken = element.matches(":disabled") || !rendered(element);
-      const loss = { element, index: placeIn(region, element).index, path, region, taken };
-      keep(loss, next === null);
+      if (next instanceof Element && regionOf(next) === region) {
+        moving = { from: null, to: next };
+        return;
+      }
+      const loss: Loss = {
+        element,
+        index: countBefore(drawnIn(region), element),
+        opener: openedFrom.get(region) ?? null,
+        path,
+        region,
+        taken: element.matches(":disabled") || !rendered(element),
+      };
+      // A focus going straight to another region is kept only as the place it left: the opener
+      // of the dialog it is entering.
+      if (next instanceof Element) moving = { from: loss, to: next };
+      else pending = afterComponents(() => check(loss));
     };
 
     // A focused element taken away with no `focusout` - Firefox's and WebKit's way, for the
@@ -366,24 +458,46 @@ export function useFocusRescue(main: RefObject<HTMLElement | null>): void {
       const held = focused;
       if (held === null || held.element.isConnected) return;
       focused = null;
-      if (!focusOnDocument()) return;
-      const record = records.find((each) =>
-        [...each.removedNodes].some((node) => node.contains(held.element))
-      );
+      if (leaving || !focusLost()) return;
+      const removal = removalOf(records, held.element);
       const index =
-        record === undefined || !held.region.isConnected
-          ? focusableIn(held.region).length
-          : placeOfRemoval(held.region, record);
+        removal === undefined || !held.region.isConnected
+          ? drawnIn(held.region).length
+          : placeOfRemoval(held.region, removal);
       pending?.();
-      keep({ ...held, index, taken: true }, true);
+      const loss: Loss = {
+        ...held,
+        index,
+        opener: openedFrom.get(held.region) ?? null,
+        taken: true,
+      };
+      pending = afterComponents(() => check(loss));
     });
     watcher.observe(document.body, { childList: true, subtree: true });
+    const readerMoved = () => {
+      pending?.();
+      pending = null;
+    };
+    /** Whether the reader's Escape is being answered: set by its `keydown` until the next task,
+     *  by when the commit it caused has run. */
+    let leaving = false;
+    const noteEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      leaving = true;
+      window.setTimeout(() => {
+        leaving = false;
+      }, 0);
+    };
     document.addEventListener("focusin", noteFocus, true);
     document.addEventListener("focusout", record, true);
+    document.addEventListener("pointerdown", readerMoved, true);
+    document.addEventListener("keydown", noteEscape, true);
     return () => {
       watcher.disconnect();
       document.removeEventListener("focusin", noteFocus, true);
       document.removeEventListener("focusout", record, true);
+      document.removeEventListener("pointerdown", readerMoved, true);
+      document.removeEventListener("keydown", noteEscape, true);
       pending?.();
     };
   }, [main]);

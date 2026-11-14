@@ -1,4 +1,4 @@
-import { expect, jest, test } from "bun:test";
+import { expect, jest, spyOn, test } from "bun:test";
 import { renderHook, waitFor } from "@testing-library/react";
 
 import { SEND_DEADLINE_MS } from "../features/writes/keyed-write";
@@ -223,6 +223,79 @@ test("a panel that is no modal, closed by a press outside the main content, hand
     box.blur();
     panel.remove();
     await waitFor(() => expect(trigger).toHaveFocus());
+  });
+});
+
+// (r) WebKit can hold a page's animation frames back for seconds while nothing is drawn: the
+// check goes on without its frame rather than leaving the reader on the page that long.
+test("a loss is answered even while the page's animation frames are held back", async () => {
+  const frames = spyOn(window, "requestAnimationFrame").mockImplementation(() => 0);
+  try {
+    await withRescue(async () => {
+      const [, second, third] = mainOf("First", "Second", "Third").buttons;
+      second?.focus();
+      lose(second as HTMLElement);
+      await waitFor(() => expect(third).toHaveFocus());
+    });
+  } finally {
+    frames.mockRestore();
+  }
+});
+
+// (q) A control the reader's own Escape takes away - an editor Escape closes - is the reader
+// leaving it: nothing moves, so a heading that opens the editor when it takes the focus is not
+// handed the focus and the editor stays closed.
+test("a control taken away by the reader's Escape moves nothing", async () => {
+  await withRescue(async () => {
+    const [, editor, heading] = mainOf("Before", "Editor", "Heading").buttons;
+    editor?.focus();
+    document.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Escape" }));
+    lose(editor as HTMLElement);
+    await settled();
+    expect(document.activeElement).toBe(document.body);
+    expect(heading).not.toHaveFocus();
+  });
+});
+
+// (p) A press on the page while the rescue waits on a disabled control is the reader moving on:
+// the control enabled again later does not pull the focus back from the page.
+test("a pointer press on the page during the wait leaves the focus there when the control is enabled", async () => {
+  await withRescue(async () => {
+    const [, saving] = mainOf("Message", "Send").buttons;
+    const send = saving as HTMLButtonElement;
+    send.focus();
+    send.blur();
+    send.disabled = true;
+    await settled();
+    document.body.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+    send.disabled = false;
+    await settled();
+    expect(document.activeElement).toBe(document.body);
+  });
+});
+
+// (o) A dialog the reader opened with the focus on the page itself - a single-key shortcut with
+// nothing focused - gives the focus back to the page when it closes. That is where the reader
+// was, so it is no loss: nothing moves, the page's search box least of all, which would take the
+// reader's next key as text.
+test("a modal dialog opened with the focus on the page closes and leaves the focus on the page", async () => {
+  await withRescue(async () => {
+    const { main } = mainOf("First", "Second");
+    const search = document.createElement("input");
+    search.setAttribute("data-control", "search-box");
+    main.prepend(search);
+    const dialog = document.createElement("div");
+    dialog.setAttribute("role", "dialog");
+    dialog.setAttribute("aria-modal", "true");
+    const box = document.createElement("input");
+    dialog.append(box);
+    document.body.append(dialog);
+    expect(document.activeElement).toBe(document.body);
+    box.focus();
+    lose(box, () => dialog.remove());
+    await settled();
+    expect(document.activeElement).toBe(document.body);
+    expect(search).not.toHaveFocus();
   });
 });
 
