@@ -4500,8 +4500,9 @@ it holds no memory, and under gVisor its `exe` link answers `EACCES`, which woul
 A process in either state whose other threads still run is one whose main thread alone has exited, and the guard reads it as a live process ("What it does not do", below).
 It measures each process it may end from its `/proc/<pid>/smaps`: the sum of its `Anonymous:` lines, plus the resident size (`Rss:`) of each of its shared maps of memory-backed files, which are `/dev/zero (deleted)` (shared anonymous memory), `/memfd:…`, `/dev/shm/…` and `/SYSV…` (`smapsSize`, `proc.go`).
 Shared anonymous memory and a memfd raise `AnonPages` while their pages read 0 in `Anonymous:`, so without the second term a process that grows that way would not be seen.
-It also adds each memfd the process holds open by a file descriptor and has not mapped shared, at the memfd's size as `stat` reads it through that descriptor (`heldMemfdBytes`, `proc.go`):
-ending the process frees those pages too, and no line of its smaps shows them.
+It also adds each memfd the process holds open by a file descriptor and has not mapped shared, at its size as `stat` reads it through that descriptor or the pod's `Shmem` reading at the decision, whichever is less (`heldMemfdBytes`, `proc.go`):
+ending the process frees that memfd's pages too, and no line of its smaps shows them.
+`Shmem`, the pages of the pod's memory filesystems and memfds, bounds those pages where the size does not: an unwritten memfd made large with `ftruncate` has its size and no pages, and under gVisor neither its size nor its block count shows its pages, so in an 8 GiB gVisor pod on 2026-11-14 the holder of an unwritten 16 GiB memfd, counted at that size, was ended first and freed nothing, and the kernel stopped the sandbox.
 A memfd counts once: one that a process the guard measures maps shared counts through that map's `Rss:` alone, and one that several of them hold by a descriptor counts for the largest of them by its smaps.
 A map of a file on disk adds nothing, which is why a process that maps a database is not ended for its map.
 A region that several processes map counts in each of them, since gVisor gives no `Pss` that would divide it.
@@ -4656,6 +4657,13 @@ A note can be lost in each of these cases, and in each the `ended` line stays in
 - It does not end memory that Oh My Pi holds in its own process, its embedded shell engine's included: that process is a role's agent, which the guard never ends.
 
 - It does not free the pages of the pod's memory filesystems (tmpfs): `AnonPages` counts them and no kill frees them, so they show in a `stopped for this rise` line as `unheld`.
+
+- It does not count a deleted file in `/dev/shm` that a process holds open by a descriptor and has not mapped shared.
+  Its pages raise `Shmem` and `AnonPages`, no smaps line shows them, and of a process's descriptors the guard reads only those that hold a memfd, so that memory shows in a `stopped for this rise` line as `unheld`.
+
+- It does not tell the pages of one held memfd from another's.
+  Where a process holds a written memfd and an unwritten one, or two processes hold different ones, each counts up to the whole `Shmem` reading, so their sizes may together count the same pages more than once.
+  The guard can then end a holder whose end frees less than its size said.
 
 - It does not act again while memory it may not end holds the pod above the mark, or after a kill that lowered the reading by nothing within the wait.
   When the processes it may end hold less than the floor, it writes `reason=nothing to end`; when a kill freed nothing, `reason=not fallen`.

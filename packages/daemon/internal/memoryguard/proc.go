@@ -364,14 +364,17 @@ func parseMemfdID(dev, inode []byte) (memfdID, bool) {
 }
 
 // heldMemfdBytes is what the memfds the process at dir holds open by a descriptor add to its
-// size: the size of each such memfd that counted does not hold, which it then adds to counted. So
-// a memfd that a process of the same pass maps (smapsSize), that a process before this one holds,
-// or that two descriptors of this one hold, counts once. A descriptor holds a memfd where its link
-// starts with link (memfdPrefix on a real /proc), and the memfd is the file stat finds through the
-// link, at that file's size: ending the process frees those pages, which no line of its smaps
-// shows. An fd directory or a link that cannot be read adds nothing and is no error: a process
-// opens and closes descriptors as it runs, and one may be gone under the read.
-func heldMemfdBytes(dir, link string, counted map[memfdID]bool) uint64 {
+// size: for each such memfd that counted does not hold, which it then adds to counted, the size
+// stat finds through the descriptor or shmem, the pod's Shmem reading in bytes, whichever is less.
+// So a memfd that a process of the same pass maps (smapsSize), that a process before this one
+// holds, or that two descriptors of this one hold, counts once. A descriptor holds a memfd where
+// its link starts with link (memfdPrefix on a real /proc). Ending the process frees only the
+// memfd's resident pages, which no line of its smaps shows, and Shmem bounds them, since it counts
+// the pages of every memfd. Under gVisor neither the file's size nor its block count shows those
+// pages: a memfd made large with ftruncate and never written has its whole size and no pages.
+// An fd directory or a link that cannot be read adds nothing and is no error: a process opens and
+// closes descriptors as it runs, and one may be gone under the read.
+func heldMemfdBytes(dir, link string, counted map[memfdID]bool, shmem uint64) uint64 {
 	fds := filepath.Join(dir, "fd")
 	f, err := os.Open(fds)
 	if err != nil {
@@ -398,7 +401,7 @@ func heldMemfdBytes(dir, link string, counted map[memfdID]bool) uint64 {
 			continue
 		}
 		counted[memfd] = true
-		size += uint64(info.Size())
+		size += min(uint64(info.Size()), shmem)
 	}
 	return size
 }

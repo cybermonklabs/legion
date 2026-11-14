@@ -886,7 +886,7 @@ func (s *liveSampler) take() error {
 	if err != nil {
 		return err
 	}
-	top := s.largest()
+	top := s.largest(shmem)
 	text := fmt.Sprintf("sample anon_pages=%d counter=%d shmem=%d pid=%d anonymous=%d size=%d vm_rss=%d at=%s",
 		anon, counter, shmem, top.pid, top.anonymous, top.size, top.vmRSS, liveTime(at))
 	s.out.write(text)
@@ -918,10 +918,11 @@ type liveProcess struct {
 
 // largest is the scenario's largest process by the guard's own rule, among its root and the
 // root's descendants by their PPid chain: each one's smaps size, and the memfds it holds open by
-// a descriptor that none of them maps and no larger one of them holds, ranked as the guard ranks
-// them (addHeldMemfds), so a process that grows a memfd it never maps shows that memfd's size.
-// pid 0 when none could be read.
-func (s *liveSampler) largest() liveProcess {
+// a descriptor that none of them maps and no larger one of them holds, each at its size or shmem,
+// the sample's Shmem reading, whichever is less, ranked as the guard ranks them (addHeldMemfds),
+// so a process that grows a memfd it never maps shows that memfd's size up to Shmem. pid 0 when
+// none could be read.
+func (s *liveSampler) largest(shmem uint64) liveProcess {
 	if s.memfds == nil {
 		s.memfds = map[memfdID]bool{}
 	}
@@ -940,7 +941,7 @@ func (s *liveSampler) largest() liveProcess {
 	if len(read) == 0 {
 		return liveProcess{}
 	}
-	addHeldMemfds(read, liveProc, memfdPrefix, s.memfds)
+	addHeldMemfds(read, liveProc, memfdPrefix, s.memfds, shmem)
 	top := liveProcess{pid: read[0].PID, anonymous: anonymous[read[0].PID], size: read[0].size}
 	if status, err := os.ReadFile(filepath.Join(liveProc, strconv.Itoa(top.pid), "status")); err == nil {
 		top.vmRSS, _ = meminfoBytes(status, "VmRSS")

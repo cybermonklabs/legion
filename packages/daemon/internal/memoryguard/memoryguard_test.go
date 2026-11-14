@@ -767,6 +767,8 @@ func TestMemoryGuardEndsTheHolderOfAnUnmappedMemfdAtItsSize(t *testing.T) {
 		fakeProcess{pid: 1100, ppid: 100, args: []string{"python3", "memfd.py"}, anon: 20 * mib, fds: []string{pool.path}},
 		fakeProcess{pid: 1101, ppid: 100, args: []string{"python3", "grow.py"}, anon: 600 * mib},
 	)
+	// The memfd's written pages raise Shmem by its size.
+	pod.setShmem(gib)
 	pod.setAnon(3700 * mib)
 	h := newHarness(t, pod, protect("tester", 100)).run()
 	h.requireKilled(1100)
@@ -822,6 +824,27 @@ func TestMemoryGuardDoesNotPickTheHolderOfAnUnwrittenMemfdBeforeALargerProcess(t
 	}
 }
 
+// The hourly line's scan for the largest process, on a goroutine of its own, counts a memfd a
+// descriptor holds at most at the Shmem of the reading that started it, as an assessment does: a
+// process that holds an unwritten memfd larger than the pod's limit is named at its Anonymous and
+// that reading, and not at the memfd's size.
+func TestMemoryGuardHourlyLineCountsAnUnwrittenMemfdAtMostAtShmem(t *testing.T) {
+	pod := newFakePod(t)
+	hole := pod.memfd("hole", 16*gib)
+	pod.add(
+		agent(gib),
+		fakeProcess{pid: 1160, ppid: 100, args: []string{"python3", "sparse.py"}, anon: 1500 * mib, fds: []string{hole.path}},
+	)
+	pod.setShmem(32 * mib)
+	pod.setAnon(2000 * mib)
+	h := newHarness(t, pod, protect("tester", 100)).run()
+	h.tickAfter(time.Hour)
+	largest := fmt.Sprintf(" largest_pid=1160 largest_role=tester largest_size=%d ", 1500*mib+32*mib)
+	if hours := h.log.with("hour"); len(hours) != 1 || !strings.Contains(hours[0], largest) {
+		t.Fatalf("the hourly lines are %q, want one naming%s (its Anonymous and the Shmem reading at most)", hours, largest)
+	}
+}
+
 // A memfd that a process maps counts through that mapping's Rss alone, whichever process holds it
 // by a descriptor: a process that maps the memfd it holds counts it once, and a process that holds
 // by a descriptor alone a memfd another process maps counts nothing for it, so neither is ranked
@@ -868,6 +891,8 @@ func TestMemoryGuardCountsAMemfdTwoProcessesHoldOnceForTheLarger(t *testing.T) {
 		fakeProcess{pid: 1301, ppid: 1300, args: []string{"python3", "child.py"}, anon: 200 * mib, fds: []string{shared.path}},
 		fakeProcess{pid: 1302, ppid: 100, args: []string{"python3", "grow.py"}, anon: 1100 * mib},
 	)
+	// The memfd's written pages raise Shmem by its size.
+	pod.setShmem(gib)
 	pod.setAnon(3700 * mib)
 	h := newHarness(t, pod, protect("tester", 100)).run()
 	h.requireKilled(1300)

@@ -23,10 +23,11 @@
 //
 // A process's size, by which the guard ranks it, is the sum of the `Anonymous:` lines of its
 // smaps, the `Rss:` of its shared mappings of memory-backed files (a shared anonymous map, a
-// memfd, POSIX or System V shared memory), and the size of each memfd it holds open by a file
-// descriptor and has not mapped, since its end frees those pages too. A memfd that a process the
-// guard read maps counts through that mapping's `Rss` alone, and one that several of them hold by
-// a descriptor counts once, for the largest of them (smapsSize, heldMemfdBytes, addHeldMemfds).
+// memfd, POSIX or System V shared memory), and, for each memfd it holds open by a file descriptor
+// and has not mapped, that memfd's size or the pod's Shmem reading, whichever is less, since its
+// end frees that memfd's pages too and Shmem bounds them. A memfd that a process the guard read
+// maps counts through that mapping's `Rss` alone, and one that several of them hold by a
+// descriptor counts once, for the largest of them (smapsSize, heldMemfdBytes, addHeldMemfds).
 // The scan leaves out a zombie and a dead process, which hold no memory, and reads nothing of
 // either past its stat and status: under gVisor a zombie's exe link answers EACCES, which would
 // otherwise count it unread. A process in either state whose status counts more than one thread
@@ -253,7 +254,8 @@ type Guard struct {
 
 	// The rest is Run's own.
 	meminfoFile, limitFile, counterFile heldFile
-	// meminfoData is the meminfo of the last reading, which a kill reads Shmem from.
+	// meminfoData is the meminfo of the last reading, which a kill, an assessment and the start
+	// of a scan for the largest process read Shmem from.
 	meminfoData  []byte
 	smaps        []byte
 	phase        phase
@@ -641,7 +643,11 @@ func (g *Guard) assess() (assessment, error) {
 		}
 		a.endable = append(a.endable, candidate{Process: p, role: classes[p.PID].Role, size: size})
 	}
-	addHeldMemfds(a.endable, g.proc, g.memfdLink, g.memfds)
+	// A held memfd counts at most the Shmem of the reading the decision is made on. A meminfo
+	// with no Shmem line gives 0, and a memfd held and not mapped then counts nothing; Linux and
+	// gVisor both print the line.
+	shmem, _ := meminfoBytes(g.meminfoData, "Shmem")
+	addHeldMemfds(a.endable, g.proc, g.memfdLink, g.memfds, shmem)
 	for _, c := range a.endable {
 		a.endableBytes += c.size
 	}
@@ -650,15 +656,17 @@ func (g *Guard) assess() (assessment, error) {
 }
 
 // addHeldMemfds adds to the size of each process of cs, read under proc, the memfds it holds open
-// by a descriptor (heldMemfdBytes), and ranks cs largest first (rank). counted holds, on entry,
-// the memfds that the reads of cs's smaps found mapped, which count through their mappings alone.
-// cs is ranked by those smaps sizes before any descriptor is read, so the first of a memfd's
-// holders to read it, the one it counts for, is the largest of them by the size without any
-// memfd a descriptor holds, the newest among equal sizes.
-func addHeldMemfds(cs []candidate, proc, link string, counted map[memfdID]bool) {
+// by a descriptor, each at its size or shmem, the pod's Shmem reading, whichever is less
+// (heldMemfdBytes), and ranks cs largest first (rank). Ending a holder frees only its memfds'
+// resident pages, which Shmem bounds and which under gVisor neither a memfd's size nor its block
+// count shows. counted holds, on entry, the memfds that the reads of cs's smaps found mapped,
+// which count through their mappings alone. cs is ranked by those smaps sizes before any
+// descriptor is read, so the first of a memfd's holders to read it, the one it counts for, is the
+// largest of them by the size without any memfd a descriptor holds, the newest among equal sizes.
+func addHeldMemfds(cs []candidate, proc, link string, counted map[memfdID]bool, shmem uint64) {
 	rank(cs)
 	for i := range cs {
-		cs[i].size += heldMemfdBytes(filepath.Join(proc, strconv.Itoa(cs[i].PID)), link, counted)
+		cs[i].size += heldMemfdBytes(filepath.Join(proc, strconv.Itoa(cs[i].PID)), link, counted, shmem)
 	}
 	rank(cs)
 }
@@ -822,16 +830,19 @@ func (g *Guard) readCounter(now time.Time) uint64 {
 }
 
 // startScan starts a scan for the largest process in the window that starts at start, unless one
-// is running.
+// is running. It reads here, on the loop's goroutine, the Shmem of the reading that starts the
+// scan, by which the scan caps each memfd a descriptor holds, and hands the scan that value: the
+// loop replaces meminfoData at each reading while the scan runs.
 func (g *Guard) startScan(start time.Time) bool {
 	g.scanMu.Lock()
 	defer g.scanMu.Unlock()
 	if g.scanBusy {
 		return false
 	}
+	shmem, _ := meminfoBytes(g.meminfoData, "Shmem")
 	g.scanBusy = true
 	g.scans.Add(1)
-	go g.scanLargest(start)
+	go g.scanLargest(start, shmem)
 	return true
 }
 
@@ -849,8 +860,9 @@ func (g *Guard) takeScan() {
 // scanLargest finds the largest process of every process the pod shows, protected ones among
 // them: the hourly line says what held the memory, whatever the guard may end. It ranks them by
 // the sizes and in the order an assessment ranks the processes the guard may end (addHeldMemfds),
-// every process whose smaps it read being a holder and a mapper of memfds here.
-func (g *Guard) scanLargest(start time.Time) {
+// every process whose smaps it read being a holder and a mapper of memfds here, and shmem the
+// Shmem of the reading that started it (startScan).
+func (g *Guard) scanLargest(start time.Time, shmem uint64) {
 	defer g.scans.Done()
 	found := largestScan{window: start}
 	if t, err := scan(g.proc); err == nil {
@@ -866,7 +878,7 @@ func (g *Guard) scanLargest(start time.Time) {
 			read = append(read, candidate{Process: p, role: classes[p.PID].Role, size: smapsSize(data, g.scanMemfds)})
 		}
 		g.scanSmaps = keepSmaps(g.scanSmaps)
-		addHeldMemfds(read, g.proc, g.memfdLink, g.scanMemfds)
+		addHeldMemfds(read, g.proc, g.memfdLink, g.scanMemfds, shmem)
 		if len(read) > 0 {
 			biggest := read[0]
 			found.pid, found.role, found.size = biggest.PID, biggest.role, biggest.size
