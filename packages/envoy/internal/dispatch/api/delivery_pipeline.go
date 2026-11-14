@@ -7,8 +7,6 @@ import (
 	"net/url"
 	"time"
 
-	"golang.org/x/sync/errgroup"
-
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -35,19 +33,17 @@ type deliveryPipelineResponse struct {
 	Freshness         delivery.DeliveryFreshnessView `json:"freshness"`
 }
 
-const (
-	pipelineProductionApplyCard measures.DeployJobCardID = "production_apply"
-	pipelineStagingE2ECard      measures.DeployJobCardID = "staging_e2e"
-	pipelineStagingApplyCard    measures.DeployJobCardID = "staging_apply"
-)
-
 // deliveryPipelinePRChecks is the PR-checks workflow's part of the Pipeline page: its whole runs'
 // timing, its slowest jobs and the jobs that failed over the window's last day, both lists never
-// null.
+// null, and the timed results over the shown days a job needed to be ranked among the slowest:
+// the min_n of pr-ci's job series in the project the deploy repository is mapped to, or
+// measures.SlowestMinResults where it maps to none or that project holds no pr-ci eval yet
+// (evals.Store.PipelineSlowestJobsMinN), so the page says what it ranked by.
 type deliveryPipelinePRChecks struct {
-	Run         measures.Timing       `json:"run"`
-	SlowestJobs []measures.JobTiming  `json:"slowest_jobs"`
-	FailingJobs []measures.FailingJob `json:"failing_jobs"`
+	Run               measures.Timing       `json:"run"`
+	SlowestJobs       []measures.JobTiming  `json:"slowest_jobs"`
+	SlowestMinResults int                   `json:"slowest_min_results"`
+	FailingJobs       []measures.FailingJob `json:"failing_jobs"`
 }
 
 // pipelineWindow is the span one Pipeline answer covers: the whole UTC days it shows and the
@@ -144,91 +140,72 @@ func (s *server) getDeliveryPipeline(w http.ResponseWriter, r *http.Request) {
 
 // pipelinePopulation is every read the Pipeline page's answer for one window makes: the PR-checks
 // pull_request runs and the deploy push runs on main started in the shown days, each with its
-// jobs, and the population pull requests merged in them (their lead times).
+// jobs, the population pull requests merged in them (their lead times), and the timed results a
+// job needs to be ranked among the slowest (evals.Store.PipelineSlowestJobsMinN).
 type pipelinePopulation struct {
 	checks, deploys delivery.RunsWithJobs
 	leadTimes       deliveryPopulation
+	slowestMinN     int
 }
 
-// readPipelinePopulation reads the Pipeline page's runs and pull requests for the window's days.
-// Runs are read by start over the whole of those days, the last one included past the window's
-// end.
+// readPipelinePopulation reads the Pipeline page's runs and pull requests for the window's days,
+// and the min_n its slowest jobs are ranked by. Runs are read by start over the whole of those
+// days, the last one included past the window's end, by delivery.ReadCIRows, the read the CI
+// evals' day rows make: the PR-checks runs with every job, which their job timings and failing
+// jobs tally whatever their names (measures.PRChecks), and the deploy runs with the jobs the
+// deploy cards follow and no other (measures.DeployJobs reads none else). The three reads depend
+// on none of each other, and are read side by side.
 func (s *server) readPipelinePopulation(ctx context.Context, settings delivery.DeliverySettings, window pipelineWindow) (pipelinePopulation, error) {
-	pool := s.deps.Store.Pool
 	from, to := window.start(), window.readTo()
-
-	// The two run reads are independent, so they run side by side, each on a hold mark of its own
-	// (store.ForConcurrentRead), as readDeliveryPopulation runs its reads.
 	var pop pipelinePopulation
-	reads, readsCtx := errgroup.WithContext(ctx)
-	for _, read := range []struct {
-		into                *delivery.RunsWithJobs
-		kind                delivery.DeliveryRunKind
-		branch, githubEvent string
-	}{
-		{&pop.checks, delivery.DeliveryRunKindPRChecks, "", "pull_request"},
-		{&pop.deploys, delivery.DeliveryRunKindDeploy, "main", "push"},
-	} {
-		readCtx, err := store.ForConcurrentRead(readsCtx)
-		if err != nil {
-			_ = reads.Wait()
-			return pipelinePopulation{}, err
-		}
-		reads.Go(func() (err error) {
-			*read.into, err = delivery.ListRunsWithJobsStartedIn(readCtx, pool, settings.DeployRepo, read.kind, read.branch, read.githubEvent, from, to)
+	if err := store.ReadSideBySide(ctx,
+		func(ctx context.Context) error {
+			ci, err := delivery.ReadCIRows(ctx, s.deps.Store.Pool, settings.DeployRepo, from, to, measures.DeployCardJobNames(measures.DeployCards(settings)))
+			pop.checks, pop.deploys = ci.Checks, ci.Deploys
 			return err
-		})
-	}
-	if err := reads.Wait(); err != nil {
-		return pipelinePopulation{}, err
-	}
-	var err error
-	if pop.leadTimes, err = s.readDeliveryRows(ctx, settings, from, to, url.Values{}, false, false); err != nil {
+		},
+		func(ctx context.Context) (err error) {
+			pop.leadTimes, err = s.readDeliveryRows(ctx, settings, from, to, url.Values{}, false, false)
+			return err
+		},
+		func(ctx context.Context) (err error) {
+			pop.slowestMinN, err = s.registry().PipelineSlowestJobsMinN(ctx, settings.DeployRepo)
+			return err
+		},
+	); err != nil {
 		return pipelinePopulation{}, err
 	}
 	return pop, nil
 }
 
 // deliveryPipelineCompute is GET /api/v1/delivery/pipeline's body for window, from a population
-// read for it or narrowed to it. It reads nothing; now is only computed_at.
+// read for it or narrowed to it. It reads nothing; now is only computed_at. The PR checks, the
+// deploy cards and the lead times build each shown day's rows into day parts and fold them with
+// the folds the CI and delivery evals read stored parts with (measures.PRChecks, DeployJobs and
+// LeadTimes), the slowest jobs ranked by the population's min_n through the ranking pr-ci's items
+// sorted by median read (measures.FoldSlowestJobs); the failing-jobs table is read from the run
+// jobs themselves (measures.FailingJobs).
 func deliveryPipelineCompute(settings delivery.DeliverySettings, pop pipelinePopulation, window pipelineWindow, now time.Time) deliveryPipelineResponse {
 	days := window.days()
 	rollup := ""
 	if settings.PRChecksRollupJobName != nil {
 		rollup = *settings.PRChecksRollupJobName
 	}
-	run, slowest, failing := measures.PRChecks(pop.checks.Runs, pop.checks.Jobs, days, window.end, rollup)
-	cards := []measures.DeployJobCard{{
-		CardID:     pipelineProductionApplyCard,
-		Production: settings.Production(),
-	}}
-	for _, optional := range []struct {
-		cardID measures.DeployJobCardID
-		name   *string
-	}{
-		{pipelineStagingE2ECard, settings.StagingE2EJobName},
-		{pipelineStagingApplyCard, settings.StagingApplyJobName},
-	} {
-		if optional.name == nil {
-			continue
-		}
-		cards = append(cards, measures.DeployJobCard{
-			CardID:     optional.cardID,
-			Production: delivery.Production{JobNames: []string{*optional.name}},
-		})
-	}
-	timings := measures.DeployJobs(pop.deploys.Runs, pop.deploys.Jobs, cards, days)
-	stagingE2E := optionalDeployJobTiming(timings, pipelineStagingE2ECard)
-	stagingApply := optionalDeployJobTiming(timings, pipelineStagingApplyCard)
+	run, slowest, failing := measures.PRChecks(pop.checks.Runs, pop.checks.Jobs, days, window.end, rollup, pop.slowestMinN)
+	timings := measures.DeployJobs(pop.deploys.Runs, pop.deploys.Jobs, measures.DeployCards(settings), days)
+	stagingE2E := optionalDeployJobTiming(timings, measures.CardStagingE2E)
+	stagingApply := optionalDeployJobTiming(timings, measures.CardStagingApply)
 	derived := pop.leadTimes.derive(settings)
 	mergeToProduction, openedToMerge := measures.LeadTimes(derived.measuresPRs(), days)
 	return deliveryPipelineResponse{
-		Days:              days,
-		ComputedAt:        now,
-		PRChecks:          deliveryPipelinePRChecks{Run: run, SlowestJobs: slowest, FailingJobs: failing},
+		Days:       days,
+		ComputedAt: now,
+		PRChecks: deliveryPipelinePRChecks{
+			Run: run, SlowestJobs: slowest, SlowestMinResults: pop.slowestMinN, FailingJobs: failing,
+		},
 		StagingE2E:        stagingE2E,
 		StagingApply:      stagingApply,
-		ProductionApply:   timings[pipelineProductionApplyCard],
+		ProductionApply:   timings[measures.CardProductionApply],
 		MergeToProduction: mergeToProduction,
 		OpenedToMerge:     openedToMerge,
 		Targets:           measures.DefaultTargets,
@@ -247,19 +224,19 @@ func optionalDeployJobTiming(timings map[measures.DeployJobCardID]measures.Deplo
 // narrowedTo is the population for a later window: when its last day moved, the runs started
 // before the new first shown day leave and the lead times' pull requests narrow to it; the
 // failing-jobs table needs nothing taken out, since deliveryPipelineCompute reads its 24 hours
-// from the window's end.
+// from the window's end, and the min_n is the one the population was read with.
 func (p pipelinePopulation) narrowedTo(settings delivery.DeliverySettings, window pipelineWindow) pipelinePopulation {
 	start := window.start()
 	startedInShownDays := func(run delivery.DeliveryRun) bool { return !run.StartedAt.Before(start) }
-	narrowed := pipelinePopulation{leadTimes: p.leadTimes.narrowedTo(settings, start)}
+	narrowed := pipelinePopulation{leadTimes: p.leadTimes.narrowedTo(settings, start), slowestMinN: p.slowestMinN}
 	narrowed.checks.Runs, narrowed.checks.Jobs = runsWhere(p.checks.Runs, p.checks.Jobs, startedInShownDays)
 	narrowed.deploys.Runs, narrowed.deploys.Jobs = runsWhere(p.deploys.Runs, p.deploys.Jobs, startedInShownDays)
 	return narrowed
 }
 
-// pipelineNextExpiry is the next UTC midnight (measures.ShownDays, pipeline.go:142) or the earliest
+// pipelineNextExpiry is the next UTC midnight (measures.ShownDays, pipeline.go:156) or the earliest
 // failing-jobs edge, whichever comes first: just past a timed PR-checks run's completion +
-// measures.FailingWindow (pipeline.go:33), when it leaves the 24 hours the table counts, or a timed
+// measures.FailingWindow (pipeline.go:48), when it leaves the 24 hours the table counts, or a timed
 // run's completion itself when that is after now (a clock ahead of Dispatch's), when it enters them.
 func pipelineNextExpiry(pop pipelinePopulation, now time.Time) time.Time {
 	next := nextUTCMidnight(now)

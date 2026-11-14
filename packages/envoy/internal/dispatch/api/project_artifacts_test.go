@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/dispatch/evals"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -86,12 +87,16 @@ func TestListProjectArtifactsIncludesIssueArtifactsExceptPrimaries(t *testing.T)
 	}
 	projectDocument := createProjectDocument(t, handler, "CORE", "Design notes", "# Design notes\n")
 
+	// A project made through the route holds its seeded evals-md first (dispatch://INFRA-2916, R5),
+	// a document of the project's own like the one created here.
 	listed := dispatchRequest(t, handler, http.MethodGet, "/api/v1/projects/CORE/artifacts", nil, "alice")
 	if listed.Code != http.StatusOK {
 		t.Fatalf("list project artifacts: status=%d body=%s", listed.Code, listed.Body.String())
 	}
 	artifacts := decodeBody[[]model.Artifact](t, listed)
-	if len(artifacts) != 2 || artifacts[0].Slug != "notes-md" || artifacts[0].IssueKey == nil || *artifacts[0].IssueKey != issue.Key || artifacts[1].ID != projectDocument.ID || artifacts[1].IssueKey != nil {
+	if len(artifacts) != 3 || artifacts[0].Slug != evals.DocumentSlug || artifacts[0].IssueKey != nil ||
+		artifacts[1].Slug != "notes-md" || artifacts[1].IssueKey == nil || *artifacts[1].IssueKey != issue.Key ||
+		artifacts[2].ID != projectDocument.ID || artifacts[2].IssueKey != nil {
 		t.Fatalf("project artifacts = %#v", artifacts)
 	}
 
@@ -99,7 +104,7 @@ func TestListProjectArtifactsIncludesIssueArtifactsExceptPrimaries(t *testing.T)
 	if unlinked.Code != http.StatusOK {
 		t.Fatalf("list unlinked project artifacts: status=%d body=%s", unlinked.Code, unlinked.Body.String())
 	}
-	if values := decodeBody[[]model.Artifact](t, unlinked); len(values) != 1 || values[0].ID != projectDocument.ID {
+	if values := decodeBody[[]model.Artifact](t, unlinked); len(values) != 2 || values[0].Slug != evals.DocumentSlug || values[1].ID != projectDocument.ID {
 		t.Fatalf("unlinked project artifacts = %#v", values)
 	}
 

@@ -816,6 +816,14 @@ func TestRebuildRefsConvergesOnTheLiveIndex(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
 	createReferenceAPIProject(t, handler, "CORE")
 	createReferenceAPIProject(t, handler, "OPS")
+	// Each project holds its seeded evals-md (dispatch://INFRA-2916, R5), a document whose own
+	// references are in the index before this test writes anything: they are counted here, and
+	// every count below is this test's writes on top of them.
+	seeded := readRefRows(t, database)
+	var seededDocuments int
+	if err := database.Pool.QueryRow(context.Background(), `select count(*) from artifacts where kind = 'doc'`).Scan(&seededDocuments); err != nil || seededDocuments != 2 {
+		t.Fatalf("the two projects hold %d documents (%v), want their two seeded evals-md", seededDocuments, err)
+	}
 	issue := createReferenceAPIIssue(t, handler, "CORE")
 	createProjectDocument(t, handler, "OPS", "Diagram", "# Diagram\n")
 	design := createProjectDocument(t, handler, "CORE", "Design notes", "# Design\n\nSee dispatch://OPS/artifact/diagram and https://dispatch.example/issues/"+issue.Key+".\n")
@@ -832,8 +840,8 @@ func TestRebuildRefsConvergesOnTheLiveIndex(t *testing.T) {
 		t.Fatalf("create message: status=%d body=%s", response.Code, response.Body.String())
 	}
 	live := readRefRows(t, database)
-	if len(live) != 6 {
-		t.Fatalf("live index = %#v; want six edges", live)
+	if len(live) != 6+len(seeded) {
+		t.Fatalf("live index = %#v; want six edges beside the %d of the seeded documents", live, len(seeded))
 	}
 	for _, row := range live {
 		if row.SourceSeq == nil {
@@ -856,19 +864,24 @@ func TestRebuildRefsConvergesOnTheLiveIndex(t *testing.T) {
 			t.Fatalf("doctor refs: %v", err)
 		}
 	}
-	if doctored := readRefRows(t, database); len(doctored) != 7 {
-		t.Fatalf("doctored index = %#v; want seven rows", doctored)
+	if doctored := readRefRows(t, database); len(doctored) != 7+len(seeded) {
+		t.Fatalf("doctored index = %#v; want seven rows beside the %d of the seeded documents", doctored, len(seeded))
 	}
 
 	report, err := refs.RebuildAll(context.Background(), database.Pool, "https://dispatch.example")
 	if err != nil {
 		t.Fatalf("rebuild refs: %v", err)
 	}
-	// Every document has a version (three, counting the two specs); the planted row from a message
-	// that does not exist is the one orphan. Each of the three is marked owed a block index, and
-	// the ask, the comment and the message are each marked owed a block index of their own parts.
-	if report != (refs.Rebuild{Documents: 3, Asks: 1, Comments: 1, Messages: 1, Orphans: 1, Edges: 6, BlocksOwed: 3, ItemsOwed: 3}) {
-		t.Fatalf("rebuild report = %#v", report)
+	// Every document has a version (three, counting the two specs, beside the seeded ones); the
+	// planted row from a message that does not exist is the one orphan. Each document is marked owed
+	// a block index, and the ask, the comment and the message are each marked owed a block index of
+	// their own parts.
+	want := refs.Rebuild{
+		Documents: 3 + seededDocuments, Asks: 1, Comments: 1, Messages: 1, Orphans: 1, Edges: 6 + len(seeded),
+		BlocksOwed: 3 + seededDocuments, ItemsOwed: 3,
+	}
+	if report != want {
+		t.Fatalf("rebuild report = %#v, want %#v", report, want)
 	}
 	var documents, owed int
 	if err := database.Pool.QueryRow(context.Background(), `
@@ -878,7 +891,7 @@ func TestRebuildRefsConvergesOnTheLiveIndex(t *testing.T) {
 	`).Scan(&documents, &owed); err != nil {
 		t.Fatalf("read the block index of every document: %v", err)
 	}
-	if documents != 3 || owed != documents {
+	if documents != 3+seededDocuments || owed != documents {
 		t.Fatalf("after rebuild-refs %d of %d documents are owed a block index, want every one", owed, documents)
 	}
 	var items, owedItems int

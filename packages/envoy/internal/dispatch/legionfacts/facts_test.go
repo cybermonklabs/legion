@@ -1,6 +1,7 @@
 package legionfacts
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"maps"
@@ -42,7 +43,7 @@ func TestEveryIssueLegionWorkedGetsAStoredRowAndNoOtherIssueDoes(t *testing.T) {
 	seeded := seed(t, 0)
 	project := seeded.fixture.Project
 
-	rows, err := ComputeProject(t.Context(), seeded.database.Pool, project, seeded.now)
+	rows, _, err := ComputeProject(t.Context(), seeded.database.Pool, project, seeded.now)
 	if err != nil {
 		t.Fatalf("compute the project's facts: %v", err)
 	}
@@ -89,7 +90,7 @@ func TestEachStoredFactEqualsTheSourceItComesFrom(t *testing.T) {
 		Blocked: []legion.BlockedIssue{{Issue: blocked, BlockedBy: []string{blocker}}},
 	})
 
-	rows, err := ComputeProject(t.Context(), seeded.database.Pool, project, seeded.now)
+	rows, _, err := ComputeProject(t.Context(), seeded.database.Pool, project, seeded.now)
 	if err != nil {
 		t.Fatalf("compute the project's facts: %v", err)
 	}
@@ -144,7 +145,7 @@ func TestWriteRewritesNothingThatDidNotMove(t *testing.T) {
 	seeded := seed(t, 4)
 	project := seeded.fixture.Project
 
-	rows, err := ComputeProject(t.Context(), seeded.database.Pool, project, seeded.now)
+	rows, _, err := ComputeProject(t.Context(), seeded.database.Pool, project, seeded.now)
 	if err != nil {
 		t.Fatalf("compute the project's facts: %v", err)
 	}
@@ -203,33 +204,69 @@ func TestWriteRewritesNothingThatDidNotMove(t *testing.T) {
 	}
 }
 
-// TestTheStoredRowsReadBackFieldByField: Read answers what WriteProject wrote, every field of
-// every row, read out of its map by issue key.
+// TestTheStoredRowsReadBackFieldByField: the rows read with every column (readWhole, the read
+// ReadClosedIn makes of a window's rows) answer what WriteProject wrote, every field of every row,
+// and the board's Read answers the columns the board shows of each, every other field left at its
+// zero value, each read out of its map by issue key.
 func TestTheStoredRowsReadBackFieldByField(t *testing.T) {
 	seeded := seed(t, 4)
 	project := seeded.fixture.Project
 
-	rows, err := ComputeProject(t.Context(), seeded.database.Pool, project, seeded.now)
+	rows, _, err := ComputeProject(t.Context(), seeded.database.Pool, project, seeded.now)
 	if err != nil {
 		t.Fatalf("compute the project's facts: %v", err)
 	}
 	if _, err := WriteProject(t.Context(), seeded.database.Pool, ProjectWrite{Project: project, Rows: rows, Whole: true}); err != nil {
 		t.Fatalf("write the facts: %v", err)
 	}
-	whole, err := Read(t.Context(), seeded.database.Pool, project)
+	whole, err := readWhole(t.Context(), seeded.database.Pool, project)
 	if err != nil {
 		t.Fatalf("read the project's facts: %v", err)
 	}
+	board, err := Read(t.Context(), seeded.database.Pool, project)
+	if err != nil {
+		t.Fatalf("read the project's facts as the board does: %v", err)
+	}
 
-	if len(whole) != len(rows) {
-		t.Fatalf("the project holds %d stored rows, want the %d written", len(whole), len(rows))
+	if len(whole) != len(rows) || len(board) != len(rows) {
+		t.Fatalf("the project holds %d stored rows and the board reads %d, want the %d written", len(whole), len(board), len(rows))
 	}
 	for _, want := range rows {
 		if got := whole[want.Issue]; !sameRow(got, want) {
 			t.Errorf("%s reads back as\n%s\nwant\n%s", want.Issue, show(got), show(want))
 		}
+		shown := boardColumnsOf(want)
+		if got := board[want.Issue]; !sameRow(got, shown) {
+			t.Errorf("%s reads back to the board as\n%s\nwant\n%s", want.Issue, show(got), show(shown))
+		}
 	}
 	t.Logf("%d rows read back by key, field by field", len(whole))
+}
+
+// boardColumnsOf is row as the board's Read answers it: the fields of the columns the board shows
+// (boardColumns), and every other field at its zero value.
+func boardColumnsOf(row Row) Row {
+	return Row{
+		Project: row.Project, Issue: row.Issue, OpenedAt: row.OpenedAt, ClosedAt: row.ClosedAt,
+		HoursByPhase: row.HoursByPhase, WorkHours: row.WorkHours, ReviewRounds: row.ReviewRounds,
+		RootKey: row.RootKey, TreeDepth: row.TreeDepth, SlotHours: row.SlotHours, WaitingReason: row.WaitingReason,
+		WorkFirstAt: row.WorkFirstAt, WorkLastAt: row.WorkLastAt, UpdatedAt: row.UpdatedAt,
+	}
+}
+
+// readWhole is every column of the project's stored rows, by issue key, as ReadClosedIn reads a
+// row (readRows, wide): what a check of every value a pass wrote reads, where the board's Read
+// reads the columns the board shows alone.
+func readWhole(ctx context.Context, q Querier, project string) (map[string]Row, error) {
+	read, err := readRows(ctx, q, project, true, `where project_key = $1`, project)
+	if err != nil {
+		return nil, err
+	}
+	rows := make(map[string]Row, len(read))
+	for _, row := range read {
+		rows[row.Issue] = row
+	}
+	return rows, nil
 }
 
 // sameRow is whether two rows hold the same facts, each field compared as its own type: the times
@@ -242,7 +279,7 @@ func sameRow(got, want Row) bool {
 // where they hold the same facts. It is where the field list is stated, so a check that counts
 // differing rows and a check that prints one read the same comparison.
 //
-// The hours of want are read as the table stores them (storedHours), because the one caller that
+// The maps of want are read as the table stores them (storedMap), because the one caller that
 // compares a computed row to a stored one answers an empty map where the computation answered a
 // nil one.
 func rowDifference(got, want Row) string {
@@ -256,7 +293,7 @@ func rowDifference(got, want Row) string {
 		{"the issue", got.Issue == want.Issue, got.Issue, want.Issue},
 		{"opened_at", got.OpenedAt.Equal(want.OpenedAt), got.OpenedAt.UTC(), want.OpenedAt.UTC()},
 		{"closed_at", sameTime(got.ClosedAt, want.ClosedAt), utc(got.ClosedAt), utc(want.ClosedAt)},
-		{"hours_by_phase", maps.Equal(got.HoursByPhase, storedHours(want.HoursByPhase)), got.HoursByPhase, want.HoursByPhase},
+		{"hours_by_phase", maps.Equal(got.HoursByPhase, storedMap(want.HoursByPhase)), got.HoursByPhase, want.HoursByPhase},
 		{"work_hours", got.WorkHours == want.WorkHours, got.WorkHours, want.WorkHours},
 		{"review_rounds", got.ReviewRounds == want.ReviewRounds, got.ReviewRounds, want.ReviewRounds},
 		{"root_key", got.RootKey == want.RootKey, got.RootKey, want.RootKey},
@@ -265,6 +302,20 @@ func rowDifference(got, want Row) string {
 		{"waiting_reason", got.WaitingReason == want.WaitingReason, got.WaitingReason, want.WaitingReason},
 		{"work_first_at", sameTime(got.WorkFirstAt, want.WorkFirstAt), utc(got.WorkFirstAt), utc(want.WorkFirstAt)},
 		{"work_last_at", sameTime(got.WorkLastAt, want.WorkLastAt), utc(got.WorkLastAt), utc(want.WorkLastAt)},
+		{"parked_hours", got.ParkedHours == want.ParkedHours, got.ParkedHours, want.ParkedHours},
+		{"queued_hours", got.QueuedHours == want.QueuedHours, got.QueuedHours, want.QueuedHours},
+		{"started_at", sameTime(got.StartedAt, want.StartedAt), utc(got.StartedAt), utc(want.StartedAt)},
+		{"merged_at", sameTime(got.MergedAt, want.MergedAt), utc(got.MergedAt), utc(want.MergedAt)},
+		{"bars", maps.Equal(got.Bars, storedMap(want.Bars)), got.Bars, want.Bars},
+		{"idle_by_role", maps.Equal(got.IdleByRole, storedMap(want.IdleByRole)), got.IdleByRole, want.IdleByRole},
+		{"slot_wait_hours", got.SlotWaitHours == want.SlotWaitHours, got.SlotWaitHours, want.SlotWaitHours},
+		{"sent_back", got.SentBack == want.SentBack, got.SentBack, want.SentBack},
+		{"implementing_after_first_review", got.ImplementingAfterFirstReview == want.ImplementingAfterFirstReview,
+			got.ImplementingAfterFirstReview, want.ImplementingAfterFirstReview},
+		{"testing_after_first_review", got.TestingAfterFirstReview == want.TestingAfterFirstReview,
+			got.TestingAfterFirstReview, want.TestingAfterFirstReview},
+		{"children", got.Children == want.Children, got.Children, want.Children},
+		{"repo", got.Repo == want.Repo, got.Repo, want.Repo},
 		{"updated_at", got.UpdatedAt.Equal(want.UpdatedAt), got.UpdatedAt.UTC(), want.UpdatedAt.UTC()},
 	}
 	for _, field := range fields {
@@ -285,10 +336,14 @@ func sameTime(got, want *time.Time) bool {
 
 // show is one row written for a failure message, its times in UTC so two zones read alike.
 func show(row Row) string {
-	return fmt.Sprintf("opened %s closed %v hours %v work %g rounds %d root %s depth %d slot %g waiting %q work %v to %v updated %s",
+	return fmt.Sprintf("opened %s closed %v hours %v work %g rounds %d root %s depth %d slot %g waiting %q work %v to %v "+
+		"parked %g queued %g started %v merged %v bars %v idle %v slot wait %g sent back %t after review %g+%g children %d repo %q updated %s",
 		row.OpenedAt.UTC(), utc(row.ClosedAt), row.HoursByPhase, row.WorkHours, row.ReviewRounds,
 		row.RootKey, row.TreeDepth, row.SlotHours, row.WaitingReason,
-		utc(row.WorkFirstAt), utc(row.WorkLastAt), row.UpdatedAt.UTC())
+		utc(row.WorkFirstAt), utc(row.WorkLastAt), row.ParkedHours, row.QueuedHours,
+		utc(row.StartedAt), utc(row.MergedAt), row.Bars, row.IdleByRole, row.SlotWaitHours, row.SentBack,
+		row.ImplementingAfterFirstReview, row.TestingAfterFirstReview, row.Children, row.Repo,
+		row.UpdatedAt.UTC())
 }
 
 func utc(at *time.Time) any {

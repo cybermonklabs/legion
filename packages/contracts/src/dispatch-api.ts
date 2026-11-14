@@ -13,9 +13,9 @@
 //   - what one map's values hold where the server keeps them unparsed, so the document can only
 //     say they are bytes (`InboxDismissSeen`, `LegionSettingSource`).
 //
-// A name read off a generated shape is none of those: `LegionMetricsScope` and its kind are
-// `LegionMetricsResponse["scope"]` and so on, so the set a field carries is stated once, by the
-// Go field's `enum` tag, and nothing here can drift from it.
+// A name read off a generated shape is none of those: `LegionBoardColumnID` is
+// `LegionBoardColumn["id"]` and so on, so the set a field carries is stated once, by the Go
+// field's `enum` tag, and nothing here can drift from it.
 import { z } from "zod";
 import type { AgentStreamResponder } from "./agent-stream";
 import type {
@@ -36,6 +36,7 @@ import type {
   DuplicateCandidate,
   EditPreconditionCurrent,
   EditPreconditionMismatch,
+  EvalListResponse,
   Issue,
   IssueAskRow,
   IssueClaim,
@@ -43,9 +44,6 @@ import type {
   IssueDetails,
   LegionBoardColumn,
   LegionBoardResponse,
-  LegionFiledIssue,
-  LegionMetricsResponse,
-  LegionRoleBar,
   Message,
   MyReplyRow,
   MyReplySession,
@@ -1942,33 +1940,6 @@ export type LegionSettingSources = Readonly<Record<string, LegionSettingSource>>
  *  Read off the generated column, whose `id` the Go field's `enum` narrows (`legionBoardColumn`). */
 export type LegionBoardColumnID = LegionBoardColumn["id"];
 
-/** Which of a project's Legion issues an answer counts: the Legion section's own toggle. */
-export type LegionMetricsScope = LegionMetricsResponse["scope"];
-
-/** The bar of metric 2 an hour falls on: one of Legion's six worker types, or the seventh bar for
- *  the phases no role works (`metrics.bars`). */
-export type LegionBarRole = LegionRoleBar["role"];
-
-/** What a filing of metric 4 is: filed by a Legion session of the filer's own tree at design or
- *  after it, filed out of that tree, or filed by the project's controller, which works under no
- *  issue (`metrics.classes`, in the order the card lists them). */
-export type LegionFilingClass = LegionFiledIssue["class"];
-
-/** Who filed an issue of metric 4: one of Legion's six worker types, or the project's controller,
- *  which works no issue. It is the role the filing session's title names
- *  (`legion.SessionTitle.Role`, `metrics.FiledIssue.Filer`). */
-export type LegionFiler = LegionFiledIssue["filer"];
-
-/** The word a table of the Legion section names a phase by (`metrics.tablePhase`), which is the
- *  bar the phase falls on. The seven bar words are `design`, `planning`, `implementing`,
- *  `testing`, `reviewing`, `accepting` and `merging`, the last of which holds the daemon's
- *  `retro`, `merging` and `awaiting_merge` (`legion.MergerPhases`). Three more words a timeline
- *  holds are on no role's bar and pass through as they are: `queued`, the waiting line, and
- *  `awaiting_person` and `held`, the "no role" bar's. `done` is what an issue the daemon has
- *  finished and Dispatch has not closed yet holds, and `""` is a moment the issue's timeline does
- *  not cover, which is what every filing by the controller carries. */
-export type LegionTablePhase = LegionFiledIssue["filer_phase"];
-
 /** A window by preset, whose end stays at the present, or by the exact `from`/`to` of a custom range. */
 export type DeliveryLiveWindow =
   | { readonly preset: 7 | 14 | 28 | 84 }
@@ -1982,15 +1953,33 @@ export type DeliveryLiveWindow =
  *  follows none of the timeline's facets. A legion view names the project whose board it shows and
  *  nothing else: the board has no window, and the project is the whole of what
  *  `GET /api/v1/projects/{key}/legion/board` reads. Its snapshot and deltas carry a
- *  `LegionBoardResponse`. */
+ *  `LegionBoardResponse`. An evals view names the project whose evals it shows, its window, and
+ *  the rest of what `GET /api/v1/projects/{key}/evals` would be sent as its `query`: the compare
+ *  range (`compare_from`, `compare_to`), the repositories (`repo`), the kind (`kind`) and the page
+ *  (`limit`, `offset`). Its snapshot and deltas carry an `EvalListResponse`, its evals sent by id. */
 export type DeliveryLiveView =
   | { readonly kind: "timeline"; readonly window: DeliveryLiveWindow; readonly query: string }
   | { readonly kind: "measures"; readonly window: DeliveryLiveWindow; readonly query: string }
   | { readonly kind: "pipeline"; readonly window?: DeliveryLiveWindow; readonly at?: string }
-  | { readonly kind: "legion"; readonly project: string };
+  | { readonly kind: "legion"; readonly project: string }
+  | {
+      readonly kind: "evals";
+      readonly project: string;
+      readonly window: DeliveryLiveWindow;
+      readonly query: string;
+    };
 
-/** The timeline's lists sent item by item, by id. */
-export type DeliveryLiveList = "prs" | "runs" | "session_groups";
+/** Each list a view sends item by item, by id, as its body holds it: the timeline's pull
+ *  requests, runs and session groups, and an evals view's evals, by eval id. */
+interface DeliveryLiveLists {
+  readonly prs: NonNullable<DeliveryTimelineWithMeasures["prs"]>;
+  readonly runs: NonNullable<DeliveryTimelineWithMeasures["runs"]>;
+  readonly session_groups: NonNullable<DeliveryTimelineWithMeasures["session_groups"]>;
+  readonly items: NonNullable<EvalListResponse["items"]>;
+}
+
+/** The lists sent item by item, by id. */
+export type DeliveryLiveList = keyof DeliveryLiveLists;
 
 /** The timeline's maps sent entry by entry, by key. */
 export type DeliveryLiveMap =
@@ -2104,7 +2093,8 @@ export type DeliveryLiveBody =
   | DeliveryTimelineWithMeasures
   | DeliveryMeasuresResponse
   | DeliveryPipelineResponse
-  | LegionBoardResponse;
+  | LegionBoardResponse
+  | EvalListResponse;
 
 export interface DeliveryLiveSnapshot {
   readonly type: "snapshot";
@@ -2120,7 +2110,7 @@ export interface DeliveryLiveSnapshot {
 
 /** One list's changes: its items that are new or changed, whole, and the ids of those that left. */
 export interface DeliveryLiveItemChanges<L extends DeliveryLiveList> {
-  readonly upsert: NonNullable<DeliveryTimelineWithMeasures[L]>;
+  readonly upsert: DeliveryLiveLists[L];
   readonly remove: readonly string[];
 }
 
@@ -2129,7 +2119,8 @@ export interface DeliveryLiveDelta {
   readonly sub: string;
   readonly seq: string;
   readonly changed_at: string | null;
-  /** Fields replaced whole. `window` is here whenever it moved, and never alone. */
+  /** Fields replaced whole. A timeline's or measures view's `window` is here whenever it moved,
+   *  and never alone. */
   readonly set: Readonly<Record<string, unknown>>;
   readonly items: { readonly [L in DeliveryLiveList]?: DeliveryLiveItemChanges<L> };
   /** A key's new value, or null when it left. */

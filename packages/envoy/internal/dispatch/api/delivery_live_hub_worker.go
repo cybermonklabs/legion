@@ -275,8 +275,53 @@ func (h *deliveryHub) readLegionBoardView(ctx context.Context, spec deliveryLive
 	return legionBoardCompute(board, now), nil
 }
 
+// errEvalsNoProject is an evals view's read of a project no row holds, which
+// GET /api/v1/projects/{key}/evals answers 404 PROJECT_NOT_FOUND (loadProject). Its subscribers are
+// told so once, with that code and message, and stay open: the project's creation seeds its evals,
+// and the change rows of those versions mark the view, whose next read answers it.
+var errEvalsNoProject = errors.New("dispatch: the evals view names a project no row holds")
+
+// evalsNoProjectCode and evalsNoProjectMessage are the refusal loadProject answers the list route
+// with for a project no row holds, which an evals view's subscribers are told.
+const (
+	evalsNoProjectCode    = "PROJECT_NOT_FOUND"
+	evalsNoProjectMessage = "project not found"
+)
+
+// readEvalsView is an evals view's read: the list read of GET /api/v1/projects/{key}/evals, through
+// the function the route answers with (readProjectEvalList), from the query the route would be
+// sent: the view's own, and its window's from and to, a preset's ending now. So the body is the
+// route's for the same query, byte for byte.
+//
+// It names no issue and no session, and reads no delivery settings: what moves it is a write of
+// its project's readings, versions or day rows, each of which the change log carries (touchedBy).
+// It sets no expiry, so no expire narrows it: a window is whole UTC days, which move at midnight,
+// and the refresher's pass at midnight writes every project's rows of the new day, its
+// unowned-p0 row at least, whatever its inputs (evals' walkDaily), whose change marks the view.
+func (h *deliveryHub) readEvalsView(ctx context.Context, spec deliveryLiveSpec, now time.Time, read *deliveryViewRead) (any, error) {
+	from, to := spec.from, spec.to
+	if spec.preset > 0 {
+		from, to = now.Add(-spec.days()), now
+	}
+	query := maps.Clone(spec.query)
+	query.Set("from", from.Format(time.RFC3339Nano))
+	query.Set("to", to.Format(time.RFC3339Nano))
+	answer, err := h.server.readProjectEvalList(ctx, query, spec.project, now)
+	if err != nil {
+		// Of the refusals readProjectEvalList answers, loadProject's alone is PROJECT_NOT_FOUND.
+		var refusal *apiError
+		if errors.As(err, &refusal) && refusal.code == evalsNoProjectCode {
+			return nil, errEvalsNoProject
+		}
+		return nil, err
+	}
+	return answer, nil
+}
+
 // readPipelineView is a Pipeline section's read: the delivery settings and the runs, jobs and
-// merges of the window its spec names.
+// merges of the window its spec names, with the min_n its slowest jobs are ranked by, through the
+// GET route's own read and compute (readPipelinePopulation, deliveryPipelineCompute), so the view
+// ranks them as the route does.
 func (h *deliveryHub) readPipelineView(ctx context.Context, spec deliveryLiveSpec, now time.Time, read *deliveryViewRead) (any, error) {
 	pool := h.server.deps.Store.Pool
 	var err error

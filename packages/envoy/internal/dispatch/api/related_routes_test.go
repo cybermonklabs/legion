@@ -56,7 +56,8 @@ func relatedOwners(suggestions testSuggestions) []string {
 }
 
 // A title through GET finds the item holding its rare words and none of the thirty sharing only
-// a common one, and the check leaves no row behind.
+// a common one, and the check leaves no row behind. The title's other words are ones no item of
+// the project holds, the project's seeded evals-md (dispatch://INFRA-2916, R5) included.
 func TestRelatedRouteGetWithATitleFindsTheRareWordMatchAndWritesNothing(t *testing.T) {
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	createSuggestionProject(t, handler, "RGET")
@@ -67,7 +68,7 @@ func TestRelatedRouteGetWithATitleFindsTheRareWordMatchAndWritesNothing(t *testi
 	refreshTermStats(t, database, "RGET")
 	before := relatedWrites(t, database)
 
-	suggestions := getRelated(t, handler, "RGET", url.Values{"title": {"Zymurgy ledger totals are wrong on the dashboard"}})
+	suggestions := getRelated(t, handler, "RGET", url.Values{"title": {"Zymurgy ledger tallies look askew on the dashboard"}})
 	if suggestions.Outcome != "found" || !slices.Equal(relatedOwners(suggestions), []string{target}) {
 		t.Fatalf("suggestions = %+v, want %s alone, found", suggestions, target)
 	}
@@ -78,7 +79,9 @@ func TestRelatedRouteGetWithATitleFindsTheRareWordMatchAndWritesNothing(t *testi
 }
 
 // A spec longer than a URL may carry goes through POST, is checked whole (the rare words sit at
-// its end) and writes nothing; the same text through GET is over the search cap.
+// its end) and writes nothing; the same text through GET is over the search cap. The filler's
+// words are ones no item of the project holds, the project's seeded evals-md (dispatch://INFRA-2916,
+// R5) included.
 func TestRelatedRoutePostChecksALongSpec(t *testing.T) {
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	createSuggestionProject(t, handler, "RPOST")
@@ -87,9 +90,9 @@ func TestRelatedRoutePostChecksALongSpec(t *testing.T) {
 	refreshTermStats(t, database, "RPOST")
 	before := relatedWrites(t, database)
 
-	spec := strings.Repeat("Notes about the weather today. ", 300) + "The zymurgy fermentation totals drift."
+	spec := strings.Repeat("Memos about the coast weather. ", 300) + "The zymurgy fermentation tallies drift."
 	response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects/RPOST/related", map[string]any{
-		"title": "Quarterly notes", "text": spec,
+		"title": "Quarterly memos", "text": spec,
 	}, "alice")
 	if response.Code != http.StatusOK {
 		t.Fatalf("POST related: status=%d body=%s", response.Code, response.Body.String())
@@ -101,7 +104,7 @@ func TestRelatedRoutePostChecksALongSpec(t *testing.T) {
 	expectNothingWritten(t, database, before)
 
 	tooLong := dispatchRequest(t, handler, http.MethodGet, "/api/v1/projects/RPOST/related?"+url.Values{
-		"title": {"Quarterly notes"}, "text": {spec},
+		"title": {"Quarterly memos"}, "text": {spec},
 	}.Encode(), nil, "alice")
 	if tooLong.Code != http.StatusBadRequest || !strings.Contains(tooLong.Body.String(), `"code":"CAP_EXCEEDED"`) {
 		t.Fatalf("GET of the long spec: status=%d body=%s, want 400 CAP_EXCEEDED", tooLong.Code, tooLong.Body.String())

@@ -19,15 +19,17 @@ import (
 // key, counts two levels deep, and the other fields whole. The events view is the event feed,
 // event by event, and the agent view one session's live conversation.
 
-// The four delivery-hub views a page can subscribe to, by the GET route each mirrors. The first
+// The five delivery-hub views a page can subscribe to, by the GET route each mirrors. The first
 // three answer the Delivery and Pipeline pages' bodies for a window; the fourth is the Legion
 // board of one project (legion_board.go), which has no window: it shows what the daemon's state
-// says now.
+// says now; the fifth is one project's evals (evals.go), the list read over a window and a
+// compare range.
 const (
 	deliveryLiveTimeline = "timeline"
 	deliveryLiveMeasures = "measures"
 	deliveryLivePipeline = "pipeline"
 	legionBoardView      = "legion"
+	evalsView            = "evals"
 )
 
 // The two views beside the delivery views: the event feed, and one session's live conversation.
@@ -48,7 +50,10 @@ type DeliveryLiveWindow struct {
 // Query, the query string the page would send to the GET route without from/to (search and every
 // facet); a pipeline view names its Window, or an At, which is the seven days ending on that day,
 // or neither, which is the seven days ending at the present, and no Query; a legion view names
-// its Project and nothing else, since the board has no window.
+// its Project and nothing else, since the board has no window; an evals view names its Project,
+// its Window and its Query, the query string the page would send to
+// GET /api/v1/projects/{key}/evals without from/to (the compare range, the repositories, the kind
+// and the page).
 type DeliveryLiveView struct {
 	Kind    string              `json:"kind"`
 	Window  *DeliveryLiveWindow `json:"window,omitempty"`
@@ -257,7 +262,7 @@ type deliveryLiveClasses struct {
 	out []string
 
 	// project is whether a subscribed view of this kind names the project it shows: the Legion
-	// board is one project's, and a read of that project's daemon marks it (dirtyLegionBoard).
+	// board and the evals list are each one project's.
 	project bool
 	// unownedP0 is whether the view shows the unowned P0 list, so a write of a P0 issue moves it
 	// even where its own population does not name the issue.
@@ -266,10 +271,13 @@ type deliveryLiveClasses struct {
 	// change of one can move it (touchedBy), its read holds the delivery settings, and its
 	// freshness is the hub's one verdict. The Legion board reads a daemon's recorded state and
 	// the stored per-issue facts instead, so it judges no freshness, and the one delivery change
-	// that touches it is the write of a facts row of an issue it shows.
+	// that touches it is the write of a facts row of an issue it shows. An evals view reads the
+	// registry's rows, so it judges none either, and the changes that touch it are its project's
+	// readings, versions and day rows.
 	delivery bool
 	// unconfigured is what this kind's read answers for a deployment that configured nothing it
-	// reads, with the code and message its subscribers are refused with.
+	// reads, or for a project no row holds, with the code and message its subscribers are refused
+	// with.
 	unconfigured                          error
 	unconfiguredCode, unconfiguredMessage string
 	// parse reads a subscribed view's own fields into its spec, or refuses it: what the matching
@@ -349,6 +357,33 @@ var deliveryLiveKinds = map[string]deliveryLiveClasses{
 		unconfiguredMessage: legionNotConfiguredMessage,
 		parse:               parseLegionLiveView,
 		read:                (*deliveryHub).readLegionBoardView,
+	},
+	// One project's evals: the body of GET /api/v1/projects/{key}/evals, read by the route's own
+	// function (readEvalList). Its items are sent eval by eval, by id, since a write moves one
+	// eval's rows at a time (a reading, a version of its definition, the refresher's rewrite of
+	// its day rows); every other field is sent whole. The window is whole UTC days, which for a
+	// preset move only when a day turns, so a page holding it is sent it only then; the compare
+	// range is the one the view's query names, which never moves. The freshness's refresher age is
+	// measured at the moment of the read, so its revision leaves that age out: it goes with the
+	// freshness when the folded rows' own age moves.
+	//
+	// It shows the unowned-p0 eval, whose count the list reads from the project's stored row of
+	// today alone, so a P0 issue's event, which moves no stored row, marks no evals view: the
+	// refresher's rewrite of that row, which the same event wakes, logs the eval_days change that
+	// marks the views of that project alone.
+	evalsView: {
+		body:  reflect.TypeFor[evalListResponse](),
+		lists: []string{"items"},
+		whole: map[string][]string{
+			"total": nil, "limit": nil, "offset": nil, "window": nil, "compare": nil,
+			"freshness": {"refresher_age_seconds"},
+		},
+		project:             true,
+		unconfigured:        errEvalsNoProject,
+		unconfiguredCode:    evalsNoProjectCode,
+		unconfiguredMessage: evalsNoProjectMessage,
+		parse:               parseEvalsLiveView,
+		read:                (*deliveryHub).readEvalsView,
 	},
 }
 

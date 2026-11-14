@@ -16,6 +16,8 @@
       "!!packages/daemon/internal/runtime/sandbox/testdata/golden",
       "!!packages/envoy/internal/dispatch/pmdoc/testdata",
       "!!packages/envoy/internal/dispatch/text/testdata",
+      "!!packages/envoy/internal/dispatch/api/testdata/golden_delivery",
+      "!!packages/envoy/internal/dispatch/legion/metrics/testdata",
       "!!packages/envoy/internal/broker/approval/templates",
       "!!packages/daemon/docker/language-servers/package-lock.json",
       "!!.legion"

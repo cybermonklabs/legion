@@ -14,6 +14,7 @@ import (
 
 	gws "github.com/gorilla/websocket"
 
+	"github.com/sjawhar/envoy/internal/dispatch/evals"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -158,7 +159,9 @@ func seedEvents(t *testing.T, database *store.Store, key string, count, pad int)
 }
 
 // createPlainIssue creates project and an issue in it with no spec, as alice, and answers the
-// issue's key: two events, project.created and issue.created, and no document to settle.
+// issue's key: three events, project.created, the artifact.created of the project's seeded
+// evals-md (dispatch://INFRA-2916, R5), which the create writes in its own transaction, and
+// issue.created.
 func createPlainIssue(t *testing.T, handler http.Handler, project string) string {
 	t.Helper()
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
@@ -188,8 +191,9 @@ func TestTheEventFeedReplaysThenStreamsACommittedEvent(t *testing.T) {
 	if _, project := nextEvent(t, client, "events"); project.Type != "project.created" {
 		t.Fatalf("first replayed event = %+v, want project.created", project)
 	}
+	requireSeededDocumentEvent(t, client)
 	if _, replayed := nextEvent(t, client, "events"); replayed.Type != "issue.created" || replayed.IssueKey == nil || *replayed.IssueKey != "TEST-1" {
-		t.Fatalf("second replayed event = %+v, want issue.created of TEST-1", replayed)
+		t.Fatalf("third replayed event = %+v, want issue.created of TEST-1", replayed)
 	}
 
 	renameIssue(t, rig.handler, issue, "Renamed")
@@ -197,13 +201,22 @@ func TestTheEventFeedReplaysThenStreamsACommittedEvent(t *testing.T) {
 		t.Fatalf("live event = %+v, want the rename's issue.updated", live)
 	}
 
-	// A page resuming after the second event, on a socket of its own, is sent the third.
+	// A page resuming after the third event, on a socket of its own, is sent the fourth.
 	resumed := rig.dial(t, withBearer("agent-token"))
-	if start := subscribeEvents(t, resumed, "events", new(int64(2))); start != 2 {
-		t.Fatalf("the resumed subscription's events_start.since = %d, want 2", start)
+	if start := subscribeEvents(t, resumed, "events", new(int64(3))); start != 3 {
+		t.Fatalf("the resumed subscription's events_start.since = %d, want 3", start)
 	}
-	if _, event := nextEvent(t, resumed, "events"); event.ID != 3 || event.Type != "issue.updated" {
-		t.Fatalf("resumed replay = %+v, want event 3, the issue.updated", event)
+	if _, event := nextEvent(t, resumed, "events"); event.ID != 4 || event.Type != "issue.updated" {
+		t.Fatalf("resumed replay = %+v, want event 4, the issue.updated", event)
+	}
+}
+
+// requireSeededDocumentEvent fails the test unless the next event client's "events" subscription
+// is sent is the artifact.created of the project's seeded evals-md.
+func requireSeededDocumentEvent(t *testing.T, client *socketClient) {
+	t.Helper()
+	if _, seeded := nextEvent(t, client, "events"); seeded.Type != "artifact.created" || !strings.Contains(string(seeded.Payload), `"slug":"`+evals.DocumentSlug+`"`) {
+		t.Fatalf("second replayed event = %+v, want the artifact.created of the project's %s", seeded, evals.DocumentSlug)
 	}
 }
 
@@ -792,8 +805,9 @@ func TestTheDisconnectHookSendsTheEventFeedThroughItsResume(t *testing.T) {
 	if _, project := nextEvent(t, client, "events"); project.Type != "project.created" {
 		t.Fatalf("first replayed event = %+v, want project.created", project)
 	}
+	requireSeededDocumentEvent(t, client)
 	if _, replayed := nextEvent(t, client, "events"); replayed.Type != "issue.created" {
-		t.Fatalf("second replayed event = %+v, want issue.created", replayed)
+		t.Fatalf("third replayed event = %+v, want issue.created", replayed)
 	}
 
 	if disconnect := agentRequest(t, rig.handler, http.MethodPost, "/api/v1/live/_test/disconnect", nil, "agent-token"); disconnect.Code != http.StatusOK {
@@ -812,11 +826,11 @@ func TestTheDisconnectHookSendsTheEventFeedThroughItsResume(t *testing.T) {
 	// A page reopening after this close resumes from the last id it applied, not from 0.
 	renameIssue(t, rig.handler, issue, "Renamed after disconnect")
 	resumed := rig.dial(t, withBearer("agent-token"))
-	if start := subscribeEvents(t, resumed, "events", new(int64(2))); start != 2 {
-		t.Fatalf("the resumed subscription starts after %d, want 2", start)
+	if start := subscribeEvents(t, resumed, "events", new(int64(3))); start != 3 {
+		t.Fatalf("the resumed subscription starts after %d, want 3", start)
 	}
-	if _, event := nextEvent(t, resumed, "events"); event.ID != 3 || event.Type != "issue.updated" {
-		t.Fatalf("resumed replay after the disconnect = %+v, want event 3, the issue.updated", event)
+	if _, event := nextEvent(t, resumed, "events"); event.ID != 4 || event.Type != "issue.updated" {
+		t.Fatalf("resumed replay after the disconnect = %+v, want event 4, the issue.updated", event)
 	}
 }
 

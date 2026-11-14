@@ -1121,6 +1121,31 @@ export function getLegionBoard(project: string, options: ApiOptions = {}) {
   return get("/api/v1/projects/{key}/legion/board", { params: { key: project } }, options);
 }
 
+/** `GET /api/v1/projects/{key}/evals`: one page of the project's evals, each listed series'
+ *  statistics over the window the query names (the route's own default where it names none). */
+export function listProjectEvals(
+  project: string,
+  query: Query<"/api/v1/projects/{key}/evals", "get"> = {},
+  options: ApiOptions = {}
+) {
+  return get("/api/v1/projects/{key}/evals", { params: { key: project }, query }, options);
+}
+
+/** `GET /api/v1/settings/legion`: every project's Legion setting, as the Settings page reads them. */
+export function listLegionSettings(options: ApiOptions = {}) {
+  return get("/api/v1/settings/legion", {}, options);
+}
+
+/** `PUT /api/v1/settings/legion/{project}`: names the Legion daemon `project`'s state is read from,
+ *  as the Settings page's Save does. */
+export function putLegionSetting(
+  project: string,
+  input: Body<"/api/v1/settings/legion/{project}", "put">,
+  options: ApiOptions = {}
+) {
+  return put("/api/v1/settings/legion/{project}", { body: input, params: { project } }, options);
+}
+
 /** Retry one comment mention's delivery, the endpoint the "Mention deliveries" Retry posts to. */
 export function retryCommentDelivery(
   comment: string,

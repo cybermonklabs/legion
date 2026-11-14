@@ -180,6 +180,13 @@ type Deps struct {
 	// DashboardEntry is the entry chunk (`/assets/index-*.js`) of the dashboard build this process
 	// serves, "" when it serves none; GET /api/v1/dashboard/builds answers it as serving.
 	DashboardEntry string
+	// Build is the build this process runs as, which the eval day rows a readings write keeps
+	// record as the build that wrote them (eval_days.built_by): the string the eval day-row
+	// refresher records against every row it writes (cmd/dispatch's processBuild, from
+	// main.buildCommit), so the refresher never reads a row this process wrote as another
+	// build's. Empty in a process that names none, whose readings write then fails rather than
+	// write a row no build owns.
+	Build string
 }
 
 // defaultStreamHeartbeat is StreamHeartbeat when DepsInput leaves it zero.
@@ -254,6 +261,8 @@ type DepsInput struct {
 	ListenerRosterUncached bool
 	// DashboardEntry is this process's dashboard entry chunk; see Deps.DashboardEntry.
 	DashboardEntry string
+	// Build is the build this process runs as; see Deps.Build.
+	Build string
 }
 
 // NewDeps parses boot configuration once and returns API dependencies.
@@ -336,6 +345,7 @@ func NewDeps(input DepsInput) (Deps, error) {
 		TestHookTimeout:        input.TestHookTimeout,
 		ListenerRosterUncached: input.ListenerRosterUncached,
 		DashboardEntry:         input.DashboardEntry,
+		Build:                  input.Build,
 	}, nil
 }
 
@@ -1446,11 +1456,21 @@ func decodeJSONWithin(r *http.Request, value any, limit int64, tooLarge *apiErro
 	return nil
 }
 
-// WriteJSON writes body as the JSON response with the given status.
+// WriteJSON writes body as the JSON response with the given status. The body is encoded whole
+// before the status is written, as json.Encoder.Encode builds it, with the newline Encode ends it
+// with, so a body that cannot be encoded (a +Inf, a time past year 9999) answers the server's 500
+// INTERNAL, and is logged, rather than the status with an empty body: an empty 2xx is a success
+// that carries nothing, and a keyed write would answer its retry the same nothing.
 func WriteJSON(w http.ResponseWriter, status int, body any) {
+	var encoded bytes.Buffer
+	if err := json.NewEncoder(&encoded).Encode(body); err != nil {
+		slog.Error("dispatch: a JSON answer cannot be encoded", "status", status, "error", err)
+		writeError(w, codeInternal, http.StatusInternalServerError, "internal server error")
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	if err := json.NewEncoder(w).Encode(body); err != nil {
+	if _, err := w.Write(encoded.Bytes()); err != nil {
 		slog.Warn("dispatch: write json failed", "error", err)
 	}
 }
@@ -1556,15 +1576,6 @@ func refuseClosed(open bool, write closedWrite) error {
 		return errIssueClosed
 	}
 	return nil
-}
-
-// A version event is built by docs.ArtifactVersionEventPayload wherever it is appended; a
-// document's creation is the one other artifact payload, and it states what the write moved
-// through the same helper, so both shapes spell the reference keys once.
-func artifactCreatedEventPayload(artifact model.Artifact, changes model.ReferenceChanges) map[string]any {
-	payload := map[string]any{"artifact": artifact}
-	model.NameReferenceChanges(payload, changes)
-	return payload
 }
 
 func (s *server) namedVersionDiff(ctx context.Context, tx pgx.Tx, artifactID string, version model.Version) (*string, error) {

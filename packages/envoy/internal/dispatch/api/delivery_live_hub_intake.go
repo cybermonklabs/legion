@@ -4,9 +4,11 @@ import (
 	"encoding/json"
 	"log/slog"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/evals"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/pglisten"
 )
@@ -253,13 +255,13 @@ func (h *deliveryHub) receive(g *hubGeneration, event model.Event) {
 }
 
 // applyEventLocked marks the views one event can touch: an issue write or claim the views whose
-// issues or their ancestors hold the issue, and every timeline and measures view when the issue is
-// a P0 before or after it (the measures' unowned P0 list); an architecture import every view; and
-// a session's titled write every view that shows the session under another title than the one it
-// wrote under, while a write carrying no title takes no name away and marks nothing. Those are
-// every writer of a field the Delivery page shows (Task 0 Step 18: route has one writer, PATCH
-// /api/v1/issues/{key}, whose event is issue.updated or issue.closed). The event is the relay's,
-// shared with every other subscriber, and is only read.
+// issues or their ancestors hold the issue, and every timeline, measures and evals view when the
+// issue is a P0 before or after it (the unowned P0 count each shows); an architecture import every
+// view; and a session's titled write every view that shows the session under another title than
+// the one it wrote under, while a write carrying no title takes no name away and marks nothing.
+// Those are every writer of a field the Delivery page shows (Task 0 Step 18: route has one writer,
+// PATCH /api/v1/issues/{key}, whose event is issue.updated or issue.closed). The event is the
+// relay's, shared with every other subscriber, and is only read.
 //
 // A mark judges a view by the issues, ancestors and sessions its last answer names (none before
 // its first), while a view whose read is under way (reading, set as that read took its change
@@ -386,7 +388,8 @@ func (h *deliveryHub) recheckHeardLocked(g *hubGeneration, view *deliveryView, n
 // showsIssue is whether a write to the issue key, a P0 before or after it when p0, can move the
 // view's answer: the view's population, or its ancestors, names the issue, or the view shows the
 // unowned P0 list and the issue is a P0. A Legion board names its own issues and shows no P0
-// list, so only the first rule reaches it.
+// list, so only the first rule reaches it; an evals view does neither, so no issue write reaches
+// it (its unowned-p0 count is a stored row, whose rewrite the change log carries).
 func (view *deliveryView) showsIssue(key string, p0 bool) bool {
 	_, named := view.issues[key]
 	_, ancestor := view.ancestors[key]
@@ -423,20 +426,53 @@ func (h *deliveryHub) markDirtyLocked(g *hubGeneration, view *deliveryView, now 
 // change whose rows carry no time at all (a pull request never merged, a job of a run not stored)
 // is taken as touching timeline and measures views. Pipeline lead times read only merged pull
 // requests (ListPullRequestsInWindow), so an unmerged pull request cannot move a Pipeline view.
+//
+// The kinds of the first switch are rows no delivery view reads, but for one: the Pipeline reads
+// the min_n of pr-ci's job series, so a version of pr-ci marks a pipeline view there. Each answers
+// there, above the test that refuses every view reading no delivery row (the views those kinds
+// mark are such views, the pipeline view aside), so none reaches the second switch, whose closing
+// `return true` would mark every delivery view with it.
 func (view *deliveryView) touchedBy(change delivery.Change, now time.Time) bool {
-	if change.Kind == "issue_facts" {
+	switch change.Kind {
+	case delivery.ChangeKindIssueFacts:
 		// One issue's stored Legion facts, which the Legion board is the one reader of
-		// (legionfacts.Read). The branch stands above the test below, and not as a case of the
-		// switch under it, because that test refuses every view that reads no delivery row, and
-		// the board is one. No other kind of view reads a facts row, so a board that shows the
+		// (legionfacts.Read). No other kind of view reads a facts row, so a board that shows the
 		// issue is woken and every delivery view is left: the sweep rewrites every open issue's
 		// row every legionfacts.SweepEvery, and a timeline, measures or pipeline answer cannot
 		// move when one does.
 		return view.spec.kind == legionBoardView && view.showsIssue(change.Ref, false)
+	case delivery.ChangeKindEvalReadings, delivery.ChangeKindEvalVersions, delivery.ChangeKindEvalDays:
+		// One eval's readings, a new version of its definition, or its day rows: what the evals
+		// view of the eval's project reads (readEvalList). The change's repo holds that project
+		// (migrations 20261113082200 to 20261113082202).
+		//
+		// No other kind marks an evals view. A computed eval's value moves when the refresher
+		// rewrites its day rows, after its input's own change (a pull request, a run, a stored
+		// fact, a filing) was logged: a view woken by the input would read the rows before the
+		// rewrite, and the eval_days change of the rewrite is what wakes it.
+		//
+		// A new version of pr-ci or of one of its series marks every pipeline view too, and no
+		// other view: the Pipeline ranks its slowest jobs by the min_n of pr-ci's job series in
+		// the project its deploy repository is mapped to (evals.Store.PipelineSlowestJobsMinN),
+		// which a register write sets and a project's seed first writes. Which project that is,
+		// is the mapping's, which no view holds, so pr-ci's version in any project marks it, and a
+		// recompute that reads the same min_n sends nothing; a change of the mapping is a
+		// settings change, which marks every delivery view.
+		if view.spec.kind == deliveryLivePipeline {
+			return change.Kind == delivery.ChangeKindEvalVersions && strings.HasSuffix(change.Ref, "/"+evals.SlugPRCI)
+		}
+		return view.spec.kind == evalsView && view.spec.project == change.Repo
+	case delivery.ChangeKindIssueFilings:
+		// One filing of a Legion session. No view reads a filing: the refresher does, and
+		// rewrites the day's Legion rows, whose eval_days change marks the evals view; the
+		// Legion board reads the stored facts (legionfacts.Read) and the daemon's state; and
+		// the delivery views read the delivery rows alone.
+		return false
 	}
 	if !view.spec.classes().delivery {
 		// The view reads no delivery row at all: what moves a Legion board is a read of the
-		// daemon (legion.StateChannel) or a write of one of its issues (dirtyIssueLocked).
+		// daemon (legion.StateChannel) or a write of one of its issues (dirtyIssueLocked), and
+		// what moves an evals view is the eval kinds above.
 		return false
 	}
 	var times []time.Time
@@ -449,19 +485,19 @@ func (view *deliveryView) touchedBy(change delivery.Change, now time.Time) bool 
 	some := func(in func(time.Time) bool) bool { return slices.ContainsFunc(times, in) }
 	atOrAfterFrom := func(t time.Time) bool { return !t.Before(from) }
 	switch change.Kind {
-	case "session_group", "settings":
+	case delivery.ChangeKindSessionGroup, delivery.ChangeKindSettings:
 		return true
-	case "pull_request":
+	case delivery.ChangeKindPullRequest:
 		switch view.spec.kind {
-		case deliveryLiveTimeline:
-			// The waiting line reads merges before the window, so every merge before its end can move it.
+		case deliveryLiveTimeline, deliveryLiveMeasures:
+			// The timeline's waiting line reads merges before the window, and the measures'
+			// deploys_with_prs counts a deploy of the window that ships a pull request merged before
+			// it (delivery.Deploys.ShippedBy), so every merge before the window's end can move either.
 			return len(times) == 0 || some(func(t time.Time) bool { return t.Before(to) })
-		case deliveryLiveMeasures:
-			return len(times) == 0 || some(func(t time.Time) bool { return !t.Before(from) && t.Before(to) })
 		default:
 			return some(atOrAfterFrom)
 		}
-	case "run", "run_job":
+	case delivery.ChangeKindRun, delivery.ChangeKindRunJob:
 		switch change.RunKind {
 		case string(delivery.DeliveryRunKindPRChecks):
 			return view.spec.kind == deliveryLivePipeline && (len(times) == 0 || some(atOrAfterFrom))

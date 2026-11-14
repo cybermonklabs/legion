@@ -13,9 +13,10 @@ import (
 // declares its closed set, "none" | "stored"; this server writes only "none".
 type deliveryFlagsSource string
 
-// deliveryFlagsSourceNone is every answer while Dispatch stores no failed-change flags: the change
-// failure rate and time to restore are computed from an empty flag set, since a flag counts only
-// once the dora role holder confirms it (LEGION-294).
+// deliveryFlagsSourceNone is every answer while Dispatch stores no failed-change flags: no failure
+// source exists (a flag counts only once the dora role holder confirms it, LEGION-294), so
+// measures.Compute is handed none and the change failure rate is null and time to restore holds
+// no median, each with no verdict, as their evals read "no data" (root R11: 0 is a value).
 const deliveryFlagsSourceNone deliveryFlagsSource = "none"
 
 // deliveryMeasuresResponse is GET /api/v1/delivery/measures, and the timeline's `measures`: the
@@ -88,9 +89,16 @@ func deliveryMeasuresCompute(settings delivery.DeliverySettings, pop deliveryPop
 // Facets narrow the pull-request measures (lead time, rework share, the per-PR failure rate)
 // exactly as they narrow the timeline's prs[]; deploys and runs follow the window alone: every
 // deploy-workflow run on main started in [from, to), each a deploy when its production job
-// succeeded. A deploy's shipped-PR count is every window pull request whose first shipping apply is
-// that run, before the facets (derived.shipped), so deploys_with_prs belongs to the deploy, not the
-// filter. The measures route and the timeline both answer through it, so the two never disagree.
+// succeeded. A deploy is one with pull requests (deploys_with_prs, with_prs_per_day) when it ships
+// any population pull request first, whenever that pull request merged and whatever the facets
+// (pop.windowShipped, delivery.Deploys.ShippedBy), so deploys_with_prs belongs to the deploy, not
+// to the window or the filter, and is the rule the deploy-frequency eval's day rows count by
+// (measures.DeployFrequencyDay). Counting only the pull requests merged inside the window would
+// leave out a deploy that shipped only pull requests merged before the window. The measures route
+// and the timeline both answer through it,
+// so the two never disagree. measures.Compute builds the window's rows into day parts with the
+// day builders and folds them with the folds the delivery evals read stored parts with, one fold
+// per measure.
 func deliveryMeasuresOver(settings delivery.DeliverySettings, pop deliveryPopulation, derived deliveryDerived, from, to, now time.Time) deliveryMeasuresResponse {
 	applies := delivery.ProductionApplies(pop.windowRuns, pop.windowJobs, settings.Production()).Applies
 	reached := map[int64]bool{}
@@ -101,7 +109,7 @@ func deliveryMeasuresOver(settings delivery.DeliverySettings, pop deliveryPopula
 	for i, run := range pop.windowRuns {
 		runs[i] = measures.Run{
 			ID: run.RunID, StartedAt: run.StartedAt, Conclusion: run.Conclusion,
-			ReachedProduction: reached[run.RunID], ShippedPRs: len(derived.shipped[run.RunID]),
+			ReachedProduction: reached[run.RunID], ShippedPRs: pop.windowShipped[run.RunID],
 		}
 	}
 	unowned := pop.unownedP0

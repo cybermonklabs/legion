@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"math"
 	"net/http"
+	"net/url"
 	"os"
 	"reflect"
 	"strconv"
@@ -236,6 +237,39 @@ func TestGetDeliveryMeasuresRejectsMalformedWindow(t *testing.T) {
 	}
 }
 
+// TestADeliveryWindowOutsideTheYearsAReadAnswersIsRefused: the delivery routes read their window
+// with the parser the eval reads share (parseOptionalRFC3339), so a from, a to or the Pipeline's
+// at whose UTC year is after 9999 or before 1 is refused 400 INVALID_QUERY, as any other malformed
+// window is, rather than answered with an empty 200 (R18). A window ending in the year 9999's last
+// hour is answered.
+func TestADeliveryWindowOutsideTheYearsAReadAnswersIsRefused(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	seedMeasuresSettings(t, database)
+	routes := []string{"/api/v1/delivery/timeline", "/api/v1/delivery/measures", "/api/v1/delivery/pipeline"}
+	var refused []string
+	for _, route := range routes {
+		for _, window := range []url.Values{
+			{"from": {"9999-12-30T00:00:00Z"}, "to": {"9999-12-31T23:00:00-14:00"}},
+			{"from": {"0000-01-01T00:00:00+01:00"}, "to": {"0000-01-03T00:00:00Z"}},
+		} {
+			refused = append(refused, route+"?"+window.Encode())
+		}
+	}
+	refused = append(refused, "/api/v1/delivery/pipeline?"+url.Values{"at": {"9999-12-31T23:00:00-14:00"}}.Encode())
+	for _, target := range refused {
+		response := dispatchRequest(t, handler, http.MethodGet, target, nil, "alice")
+		if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), `"code":"INVALID_QUERY"`) {
+			t.Errorf("GET %s: status = %d, body = %.200s, want 400 INVALID_QUERY", target, response.Code, response.Body.String())
+		}
+	}
+	for _, route := range routes {
+		target := route + "?" + url.Values{"from": {"9999-12-30T00:00:00Z"}, "to": {"9999-12-31T23:00:00Z"}}.Encode()
+		if response := dispatchRequest(t, handler, http.MethodGet, target, nil, "alice"); response.Code != http.StatusOK || response.Body.Len() == 0 {
+			t.Errorf("GET %s: status = %d, body = %.200s, want 200 with its answer", target, response.Code, response.Body.String())
+		}
+	}
+}
+
 // TestGetDeliveryMeasuresIsAgentReadable: an agent optimizing against the measures reads them
 // with its bearer, as a person's browser does; an anonymous caller reads nothing.
 func TestGetDeliveryMeasuresIsAgentReadable(t *testing.T) {
@@ -320,8 +354,10 @@ func TestGetDeliveryMeasuresComputesTheFixture(t *testing.T) {
 	if body.FlagsSource != "none" {
 		t.Errorf("flags_source = %q, want none", body.FlagsSource)
 	}
-	if got := result.ChangeFailureRate.PerPR; got.Confirmed != 0 || got.Total != 14 {
-		t.Errorf("change_failure_rate.per_pr = %+v, want no confirmed flags of 14", got)
+	// No failure source exists, so the change failure rate is no value and time to restore has no
+	// median: a 0 would be a measured rate, which a target would judge met.
+	if result.ChangeFailureRate != nil {
+		t.Errorf("change_failure_rate = %+v with flags_source none, want null", *result.ChangeFailureRate)
 	}
 	if result.TimeToRestore.MedianMinutes != nil {
 		t.Errorf("time_to_restore.median_minutes = %v, want null", *result.TimeToRestore.MedianMinutes)
@@ -338,9 +374,9 @@ func TestGetDeliveryMeasuresComputesTheFixture(t *testing.T) {
 	if body.Status.DeploysPerDay || body.Status.MergeToProduction == nil || *body.Status.MergeToProduction {
 		t.Errorf("status = %+v, want the fixture to miss deploys a day and merge to production", body.Status)
 	}
-	if body.Status.ChangeFailureRate == nil {
-		// flags_source none still has 5 successful deploys to judge the per-deploy rate over.
-		t.Error("status.change_failure_rate = null, want a verdict over 5 deploys")
+	if verdict, upper := body.Status.ChangeFailureRate, body.Status.ChangeFailureRateUpperBound; verdict != nil || upper != nil {
+		// flags_source none measures no failure rate, so there is nothing to judge, met or missed.
+		t.Errorf("status.change_failure_rate is set %t and its upper bound %t, want no verdict with no failure source", verdict != nil, upper != nil)
 	}
 	timeline := getDeliveryTimeline(t, handler, measuresFixtureWindow)
 	if body.Freshness != timeline.Freshness {

@@ -2,23 +2,27 @@
 // what it wrote. The per-issue facts (dispatch://INFRA-2915) are counted over hundreds of issues
 // at once, and a check of them can count nothing until a history that size exists. It is an
 // ordinary package rather than a _test.go file, as store/storetest is, so every package whose
-// tests need such a history can import it: Go cannot share test-only code across packages.
+// tests need such a history can import it (Go cannot share test-only code across packages), and
+// a command can write the same history through Write (evals/evalfixture/cmd).
 //
-// Seed writes the rows a running Legion leaves behind: the project and its issues, an event of
+// Write stores the rows a running Legion leaves behind: the project and its issues, an event of
 // each role's session, the handoffs, and the observations of the phase, the slot, each role's
-// claim and the waits the daemon recorded. It writes them with plain pool.Exec, as every other
-// Legion test seeder does, and it batches each table into one statement. A history of 200 issues
-// is some thousands of rows, and a statement per row takes minutes against a real Postgres.
+// claim and the waits the daemon recorded. It writes them with plain Exec, as every other Legion
+// test seeder does, and it batches each table into one statement. A history of 200 issues is
+// some thousands of rows, and a statement per row takes minutes against a real Postgres. Its
+// events bypass events.Broker.Append, so a page that was open when they were written may not see
+// them until it reloads; a reader of the tables, which every check of them is, sees them all.
 //
 // Fixture answers every key the history holds and which set each key belongs to, so a caller
-// asserts against the names Seed wrote and never reads the database back to learn them. Seed
-// also logs one line naming the project, the counts and the window, so a reader of a check's
-// record can see which history the check ran over.
+// asserts against the names Write wrote and never reads the database back to learn them. Seed
+// also logs one line naming the project, the counts and the window (Fixture.Summary), so a
+// reader of a check's record can see which history the check ran over.
 package legiontest
 
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -48,9 +52,14 @@ const (
 	// the follow-up a person filed carries Legion phase work.
 	issuesPerTree = 6
 
+	// FinishedPerTree is how many issues of one tree finish with Legion phase work, which are the
+	// issues a Legion measure counts: the root and three of its children, since one child never
+	// closes and the follow-up a person filed carries no phase work.
+	FinishedPerTree = 4
+
 	// treeSpan is how long before the history's end the first tree opens. Each later tree opens
-	// one hour before the tree before it, so the trees overlap as a project's trees do, and the
-	// whole window is treeSpan plus one hour per tree.
+	// one hour (Spec.Spacing) before the tree before it, so the trees overlap as a project's trees
+	// do, and the whole window is treeSpan plus one hour per tree.
 	treeSpan = 60 * time.Hour
 
 	// slotCap is how many slot numbers the roots share out. A root takes index%slotCap and the
@@ -63,21 +72,70 @@ const (
 // person is the actor of every write a person made in the history.
 const person = `{"kind":"user","id":"alice"}`
 
-// Spec is the history Seed writes: the project the issues belong to, how many trees of a root
+// Spec is the history Write writes: the project the issues belong to, how many trees of a root
 // and its children it holds, and the moment the history ends. The caller gives its own Now, so
 // the hours an open issue has run are the hours the caller's own computation measures. A zero
 // field takes its default: the package's own project, DefaultTrees, and this moment.
+//
+// The other fields are off where zero, and a Spec that sets none of them writes the history every
+// golden file of this change was recorded over, row for row. They shape the history a check of
+// the eval registry's Legion measures reads (dispatch://INFRA-2916, k6 and k17), which needs a
+// window before the project's first observation and one after it, finished issues that sat
+// parked, merged pull requests and filings of every class.
 type Spec struct {
 	Project string
 	Trees   int
 	Now     time.Time
+
+	// Spacing is how long before the tree after it each tree opens: one hour where zero. A wider
+	// spacing spreads the same trees over more days.
+	Spacing time.Duration
+	// Unobserved is how many of the oldest trees the daemon's sampler never saw: their events
+	// and handoffs are written and no observation of them is, so the project's first
+	// observation falls partway through the history and the issues before it carry the event
+	// log alone, as a project's issues did before Dispatch read its daemon.
+	Unobserved int
+	// Queued has each observed root wait for a slot: the sampler records it admitted from its
+	// creation, an hour before it takes its slot, and the root of each odd tree gives its slot
+	// up for the fourth hour of its history and waits again. Without it no issue of the history
+	// ever waits for a slot.
+	Queued bool
+	// IssueOffset is how many of the project's issue numbers another history took already: the
+	// issues are numbered from IssueOffset+1, so this history can be written beside that one.
+	IssueOffset int
+	// Parked has a finished child of every tree sit parked partway through its work, each park
+	// both a Dispatch status and what the daemon observes: in an even tree the implemented child
+	// sits in `icebox` for the two hours between its implementer's handoff and its tester, put
+	// there by a person, and in an odd tree the reviewed child is parked in `backlog` for three
+	// hours of its implementing by its tree's architect, as the daemon's parkChild moves a child.
+	// The sampler records phase `held` over each park, and the phase it returns to after it.
+	Parked bool
+	// Merged gives each issue the merger closes (each root and its implemented and reviewed
+	// children) a merged pull request naming it, merged an hour before its close, so the facts
+	// read its merge (metrics' Issue.MergedAt) and store it.
+	Merged bool
+	// Filings has each tree's Legion sessions file one issue of each class metric 4 counts besides
+	// the architect's own at design (metrics.ClassInTreeAtDesign): the implemented child's
+	// implementer one into the tree after its first implementer event (in_tree_later), the
+	// reviewed child's reviewer one with no parent (out_of_tree), and the project's controller one
+	// (by_the_controller). A person closes each an hour after it is filed, and no Legion role works
+	// it. They are numbered after every tree's issues, so the trees keep their numbers.
+	Filings bool
 }
 
-// Fixture is what Seed wrote, in the terms a caller asserts against.
+// spacing is how long before the tree after it each tree opens.
+func (s Spec) spacing() time.Duration {
+	if s.Spacing <= 0 {
+		return time.Hour
+	}
+	return s.Spacing
+}
+
+// Fixture is what Write wrote, in the terms a caller asserts against.
 type Fixture struct {
 	// Project is the project every issue below belongs to.
 	Project string
-	// Keys is every issue of the history, in the order Seed wrote them: each tree's root, then
+	// Keys is every issue of the history, in the order Write wrote them: each tree's root, then
 	// that tree's children.
 	Keys []string
 	// Roots is each tree's root, in the same order.
@@ -98,15 +156,40 @@ type Fixture struct {
 	// caller reads it to state which of legion.PhaseColumns the history reaches.
 	Phases map[string][]string
 	// SlotHours is how long each issue that held an admission slot of its own held it, from the
-	// slot observations Seed wrote as a history of taking one and giving it up.
+	// slot observations Write wrote as a history of taking one and giving it up.
 	SlotHours map[string]float64
 	// From and To are the two ends of the window the history falls in. To is the Spec's own Now.
 	From, To time.Time
+	// FirstObserved is the moment of the oldest observation the history holds, which is where
+	// the project's observed history begins; zero for a history with none. FirstFinished is the
+	// earliest close of an issue with Legion phase work, the first day a Legion measure has
+	// input.
+	FirstObserved, FirstFinished time.Time
 }
 
-// Seed writes one project's Legion history into the database and answers what it wrote.
+// Summary is one line naming the history and its counts, which Seed logs and a command prints.
+func (f Fixture) Summary() string {
+	return fmt.Sprintf("seeded %s: %d issues, %d with Legion phase work, %d open, %d with no measured work, from %s to %s",
+		f.Project, len(f.Keys), len(f.PhaseWork), len(f.Open), len(f.NoMeasuredWork),
+		f.From.Format(time.RFC3339), f.To.Format(time.RFC3339))
+}
+
+// Seed writes one project's Legion history into the database (Write), fails the test if it
+// cannot, logs one line naming what it wrote, and answers it.
 func Seed(t testing.TB, pool *store.Pool, spec Spec) Fixture {
 	t.Helper()
+	fixture, err := Write(t.Context(), pool, spec)
+	if err != nil {
+		t.Fatalf("seed the Legion history: %v", err)
+	}
+	t.Log(fixture.Summary())
+	return fixture
+}
+
+// Write writes the history spec names into pool's database and answers what it wrote. The
+// project's row is written where the project has none and kept where it has one, so the history
+// can join a project another history, or a person, made first.
+func Write(ctx context.Context, pool *store.Pool, spec Spec) (Fixture, error) {
 	if spec.Project == "" {
 		spec.Project = defaultProject
 	}
@@ -124,33 +207,39 @@ func Seed(t testing.TB, pool *store.Pool, spec Spec) Fixture {
 			Project:   spec.Project,
 			Phases:    map[string][]string{},
 			SlotHours: map[string]float64{},
-			From:      spec.Now.Add(-(treeSpan + time.Duration(spec.Trees)*time.Hour)),
+			From:      spec.Now.Add(-(treeSpan + time.Duration(spec.Trees)*spec.spacing())),
 			To:        spec.Now,
 		},
 	}
 	for index := range spec.Trees {
 		run.tree(index)
 	}
-	run.write(t, pool)
-	fixture := run.fixture
-	t.Logf("seeded %s: %d issues, %d with Legion phase work, %d open, %d with no measured work, from %s to %s",
-		fixture.Project, len(fixture.Keys), len(fixture.PhaseWork), len(fixture.Open),
-		len(fixture.NoMeasuredWork), fixture.From.Format(time.RFC3339), fixture.To.Format(time.RFC3339))
-	return fixture
+	for index, key := range run.rows.issueKeys {
+		closed := run.rows.issueClosed[index]
+		if closed != nil && run.phaseWork[key] && (run.fixture.FirstFinished.IsZero() || closed.Before(run.fixture.FirstFinished)) {
+			run.fixture.FirstFinished = *closed
+		}
+	}
+	if err := run.write(ctx, pool); err != nil {
+		return Fixture{}, err
+	}
+	return run.fixture, nil
 }
 
-// seeding is one run of Seed: the spec it was given, what it has written so far, the next event
-// sequence number of each issue, which events.seq is unique on, and the issues it has already
-// recorded Legion phase work for.
+// seeding is one run of Write: the spec it was given, what it has written so far, the next event
+// sequence number of each issue, which events.seq is unique on, the issues it has already
+// recorded Legion phase work for, and whether the sampler saw the tree it is writing.
 type seeding struct {
 	spec      Spec
 	fixture   Fixture
 	rows      rows
 	seq       map[string]int32
 	phaseWork map[string]bool
+	observed  bool
 }
 
-// rows is the four tables one seed writes, each held as the columns of one batched insert.
+// rows is the five tables one seed writes beside its project's row (issues, the pull requests,
+// events, handoffs and observations), each held as the columns of one batched insert.
 type rows struct {
 	issueKeys       []string
 	issueNumbers    []int32
@@ -178,13 +267,22 @@ type rows struct {
 	observeFields []string
 	observeValues []string
 	observeAt     []time.Time
+
+	prRepos   []string
+	prNumbers []int32
+	prTitles  []string
+	prURLs    []string
+	prIssues  []string
+	prCreated []time.Time
+	prMerged  []time.Time
 }
 
-// session is the actor of a Legion role's session working issue, carrying the title Dispatch
-// learns the session by. Every reader of the phase-work rule resolves a session's newest title
-// off the session's own events (delivery.ResolveSessionTitles), so the title belongs on the
-// actor of each event it writes.
-func session(role, issue string) string {
+// SessionActor is the actor JSON of a Legion role's session working issue, carrying the title
+// Dispatch learns the session by. Every reader of the phase-work rule resolves a session's newest
+// title (delivery.ResolveSessionTitles) from the session's own events, whose insert records it
+// (migration 20261113090412's trigger, which fires for this package's bare inserts too), so the
+// title belongs on the actor of each event it writes; evalbench's load writes its sessions so.
+func SessionActor(role, issue string) string {
 	return fmt.Sprintf(`{"kind":"session","id":"s-%s-%s","origin":{"session_title":%q}}`,
 		role, issue, "Legion "+role+" · "+issue)
 }
@@ -208,15 +306,19 @@ type phaseMark struct {
 // hours. The fifth is a follow-up a person filed and no Legion role worked, so it gets no facts
 // entry at all.
 func (s *seeding) tree(index int) {
-	start := s.spec.Now.Add(-(treeSpan + time.Duration(index)*time.Hour))
+	start := s.spec.Now.Add(-(treeSpan + time.Duration(index)*s.spec.spacing()))
 	at := func(hours float64) time.Time {
 		return start.Add(time.Duration(hours * float64(time.Hour)))
 	}
-	number := index*issuesPerTree + 1
+	number := s.spec.IssueOffset + index*issuesPerTree + 1
+	// The oldest Spec.Unobserved trees are the ones the sampler never saw.
+	s.observed = index < s.spec.Trees-s.spec.Unobserved
 
 	// The root. Its architect designs it while it holds a slot, its planner plans it, it waits on
 	// its children through its accepting phase, a person answers its ask, and its merger closes
-	// it once the merge is done.
+	// it once the merge is done. Under Spec.Queued it waits for its slot first, from its creation
+	// to its architect's first hour, and the root of an odd tree waits again for the fourth hour
+	// of its history.
 	root := s.issue(number, "A Legion root", "", 1, at(0), new(at(56)))
 	s.fixture.Roots = append(s.fixture.Roots, root)
 	s.event(root, "issue.created", person, `{"status":"triage"}`, at(0))
@@ -225,11 +327,23 @@ func (s *seeding) tree(index int) {
 	s.handoff(root, "plan", "planner", at(8))
 	s.ask(root, "architect", at(30), at(34))
 	s.roleEvent(root, "merger", "issue.closed", `{"status":"done"}`, at(56))
-	s.slot(root, index%slotCap, at(1), at(50))
+	if s.spec.Merged {
+		s.pullRequest(root, number, at(1), at(55))
+	}
+	admitted := 1.0
+	if s.spec.Queued {
+		admitted = 0
+	}
+	if s.spec.Queued && index%2 == 1 {
+		s.slot(root, index%slotCap, at(1), at(3))
+		s.slot(root, index%slotCap, at(4), at(50))
+	} else {
+		s.slot(root, index%slotCap, at(1), at(50))
+	}
 	s.claim(root, "architect", at(1), at(6))
 	s.claim(root, "planner", at(6), at(8))
 	s.phases(root, at, []phaseMark{
-		{1, legion.PhaseAdmitted},
+		{admitted, legion.PhaseAdmitted},
 		{6, legion.PhasePlanning},
 		{20, legion.PhaseAccepting},
 		{30, legion.PhaseAwaitingPerson},
@@ -243,46 +357,72 @@ func (s *seeding) tree(index int) {
 	// again, so its facts hold two review rounds. It holds a slot of its own, which is what
 	// keeps a reader from taking every slot holder for a root.
 	implemented := s.issue(number+1, "An implemented child", root, 2, at(2), new(at(24)))
-	s.event(implemented, "issue.created", session("architect", root), filing(root), at(2))
+	s.event(implemented, "issue.created", SessionActor("architect", root), filing(root), at(2))
 	s.roleEvent(implemented, "implementer", "comment.created", `{"status":"in_progress"}`, at(4))
 	s.handoff(implemented, "implement", "implementer", at(12))
+	// Under Spec.Parked an even tree's implemented child waits in `icebox` from its implementer's
+	// handoff to its tester, a person's park.
+	icebox := s.spec.Parked && index%2 == 0
+	if icebox {
+		s.event(implemented, "issue.updated", person, `{"status":"icebox"}`, at(12))
+		s.event(implemented, "issue.updated", person, `{"status":"in_progress"}`, at(14))
+	}
 	s.roleEvent(implemented, "tester", "comment.created", `{}`, at(14))
 	s.handoff(implemented, "test", "tester", at(15))
 	s.roleEvent(implemented, "merger", "issue.closed", `{"status":"done"}`, at(24))
+	if s.spec.Merged {
+		s.pullRequest(implemented, number+1, at(4), at(23))
+	}
 	s.slot(implemented, slotCap+index%slotCap, at(4), at(24))
 	s.claim(implemented, "implementer", at(4), at(12))
 	s.claim(implemented, "tester", at(14), at(15))
-	s.phases(implemented, at, []phaseMark{
-		{4, legion.PhaseImplementing},
-		{14, legion.PhaseTesting},
-		{16, legion.PhaseReviewing},
-		{18, legion.PhaseImplementing},
-		{20, legion.PhaseReviewing},
-		{24, legion.PhaseDone},
-	})
+	implementedPhases := []phaseMark{{4, legion.PhaseImplementing}}
+	if icebox {
+		implementedPhases = append(implementedPhases, phaseMark{12, legion.PhaseHeld})
+	}
+	s.phases(implemented, at, append(implementedPhases,
+		phaseMark{14, legion.PhaseTesting},
+		phaseMark{16, legion.PhaseReviewing},
+		phaseMark{18, legion.PhaseImplementing},
+		phaseMark{20, legion.PhaseReviewing},
+		phaseMark{24, legion.PhaseDone},
+	))
 
 	// The child a reviewer and a merger took through: a person answered its ask, and it is the
 	// one issue of the tree that reaches all three of the merger's phases.
 	reviewed := s.issue(number+2, "A reviewed child", root, 2, at(5), new(at(40)))
-	s.event(reviewed, "issue.created", session("architect", root), filing(root), at(5))
+	s.event(reviewed, "issue.created", SessionActor("architect", root), filing(root), at(5))
 	s.roleEvent(reviewed, "implementer", "comment.created", `{"status":"in_progress"}`, at(10))
+	// Under Spec.Parked an odd tree's reviewed child is parked in `backlog` for three hours of its
+	// implementing by its tree's architect, as the daemon's parkChild moves a child, and put back.
+	backlog := s.spec.Parked && index%2 == 1
+	if backlog {
+		s.event(reviewed, "issue.updated", SessionActor("architect", root), `{"status":"backlog"}`, at(16))
+		s.event(reviewed, "issue.updated", SessionActor("architect", root), `{"status":"in_progress"}`, at(19))
+	}
 	s.roleEvent(reviewed, "reviewer", "comment.created", `{"status":"needs_review"}`, at(26))
 	s.ask(reviewed, "reviewer", at(28), at(31))
 	s.handoff(reviewed, "review", "reviewer", at(33))
 	s.roleEvent(reviewed, "merger", "comment.created", `{}`, at(34))
-	s.event(reviewed, "issue.closed", session("merger", reviewed), `{"status":"done"}`, at(40))
+	s.event(reviewed, "issue.closed", SessionActor("merger", reviewed), `{"status":"done"}`, at(40))
+	if s.spec.Merged {
+		s.pullRequest(reviewed, number+2, at(10), at(39))
+	}
 	s.claim(reviewed, "implementer", at(10), at(26))
 	s.claim(reviewed, "reviewer", at(26), at(33))
 	s.claim(reviewed, "merger", at(34), at(38))
-	s.phases(reviewed, at, []phaseMark{
-		{10, legion.PhaseImplementing},
-		{26, legion.PhaseReviewing},
-		{28, legion.PhaseAwaitingPerson},
-		{31, legion.PhaseAccepting},
-		{34, legion.PhaseRetro},
-		{36, legion.PhaseMerging},
-		{40, legion.PhaseDone},
-	})
+	reviewedPhases := []phaseMark{{10, legion.PhaseImplementing}}
+	if backlog {
+		reviewedPhases = append(reviewedPhases, phaseMark{16, legion.PhaseHeld}, phaseMark{19, legion.PhaseImplementing})
+	}
+	s.phases(reviewed, at, append(reviewedPhases,
+		phaseMark{26, legion.PhaseReviewing},
+		phaseMark{28, legion.PhaseAwaitingPerson},
+		phaseMark{31, legion.PhaseAccepting},
+		phaseMark{34, legion.PhaseRetro},
+		phaseMark{36, legion.PhaseMerging},
+		phaseMark{40, legion.PhaseDone},
+	))
 	s.waiting(reviewed, "ask", at(28), at(31))
 
 	// The child nobody closed. Its work time runs to the moment of the computation, and the six
@@ -290,7 +430,7 @@ func (s *seeding) tree(index int) {
 	// to accept and to merge while the child is still open.
 	open := s.issue(number+3, "An open child", root, 2, at(8), nil)
 	s.fixture.Open = append(s.fixture.Open, open)
-	s.event(open, "issue.created", session("architect", root), filing(root), at(8))
+	s.event(open, "issue.created", SessionActor("architect", root), filing(root), at(8))
 	s.roleEvent(open, "implementer", "comment.created", `{"status":"in_progress"}`, at(12))
 	s.event(open, "issue.updated", person, `{"status":"backlog"}`, at(20))
 	s.event(open, "issue.updated", person, `{"status":"in_progress"}`, at(26))
@@ -319,6 +459,48 @@ func (s *seeding) tree(index int) {
 	s.fixture.NoPhaseWork = append(s.fixture.NoPhaseWork, untouched)
 	s.event(untouched, "issue.created", person, `{"status":"triage"}`, at(48))
 	s.event(untouched, "issue.closed", person, `{"status":"done"}`, at(52))
+
+	// Under Spec.Filings, one filing of each class but the architect's at design, each numbered
+	// after every tree's issues and closed by a person an hour after it was filed.
+	if s.spec.Filings {
+		extra := s.spec.IssueOffset + s.spec.Trees*issuesPerTree + index*filingsPerTree + 1
+		// Into the tree, under the implemented child, after its implementer's first event.
+		later := s.issue(extra, "A follow-up the implementer filed", implemented, 3, at(10), new(at(11)))
+		s.event(later, "issue.created", SessionActor("implementer", implemented),
+			fmt.Sprintf(`{"status":"triage","parent":%q,"ancestors":[%q,%q]}`, implemented, implemented, root), at(10))
+		s.event(later, "issue.closed", person, `{"status":"done"}`, at(11))
+		// Under no parent at all, so in no tree of the reviewer's.
+		outside := s.issue(extra+1, "An issue the reviewer filed outside the tree", "", 3, at(30), new(at(31)))
+		s.event(outside, "issue.created", SessionActor("reviewer", reviewed), `{"status":"triage"}`, at(30))
+		s.event(outside, "issue.closed", person, `{"status":"done"}`, at(31))
+		// By the project's controller, which works no issue.
+		controlled := s.issue(extra+2, "An issue the controller filed", "", 3, at(48), new(at(49)))
+		s.event(controlled, "issue.created", controller(s.spec.Project), `{"status":"triage"}`, at(48))
+		s.event(controlled, "issue.closed", person, `{"status":"done"}`, at(49))
+		s.fixture.NoPhaseWork = append(s.fixture.NoPhaseWork, later, outside, controlled)
+	}
+}
+
+// filingsPerTree is how many issues Spec.Filings files in each tree.
+const filingsPerTree = 3
+
+// controller is the actor of the project's Legion controller session, titled as Legion titles it
+// (`Legion controller · <PROJECT>`).
+func controller(project string) string {
+	return fmt.Sprintf(`{"kind":"session","id":"s-controller-%s","origin":{"session_title":%q}}`, project, "Legion controller · "+project)
+}
+
+// pullRequest records the merged pull request of issue, numbered as the issue is, in the project's
+// own repository: opened at its first worker event and merged at merged.
+func (s *seeding) pullRequest(issue string, number int, opened, merged time.Time) {
+	repo := "acme/" + strings.ToLower(s.spec.Project)
+	s.rows.prRepos = append(s.rows.prRepos, repo)
+	s.rows.prNumbers = append(s.rows.prNumbers, int32(number))
+	s.rows.prTitles = append(s.rows.prTitles, "The work of "+issue)
+	s.rows.prURLs = append(s.rows.prURLs, fmt.Sprintf("https://github.com/%s/pull/%d", repo, number))
+	s.rows.prIssues = append(s.rows.prIssues, issue)
+	s.rows.prCreated = append(s.rows.prCreated, opened)
+	s.rows.prMerged = append(s.rows.prMerged, merged)
 }
 
 // filing is the payload of the `issue.created` event a root's architect writes when it files a
@@ -368,7 +550,7 @@ func (s *seeding) event(issue, kind, actor, payload string, at time.Time) {
 // root's architect on a child it filed goes through event instead, because that title names the
 // root and so is no phase work of the child.
 func (s *seeding) roleEvent(issue, role, kind, payload string, at time.Time) {
-	s.event(issue, kind, session(role, issue), payload, at)
+	s.event(issue, kind, SessionActor(role, issue), payload, at)
 	s.carriesPhaseWork(issue)
 }
 
@@ -397,7 +579,7 @@ func askID(issue string) string {
 func (s *seeding) handoff(issue, phase, role string, at time.Time) {
 	s.rows.handoffIssues = append(s.rows.handoffIssues, issue)
 	s.rows.handoffPhases = append(s.rows.handoffPhases, phase)
-	s.rows.handoffAuthors = append(s.rows.handoffAuthors, session(role, issue))
+	s.rows.handoffAuthors = append(s.rows.handoffAuthors, SessionActor(role, issue))
 	s.rows.handoffAt = append(s.rows.handoffAt, at)
 	s.carriesPhaseWork(issue)
 }
@@ -419,10 +601,17 @@ func (s *seeding) observe(issue, field, value string, at time.Time) {
 	s.rows.observeFields = append(s.rows.observeFields, field)
 	s.rows.observeValues = append(s.rows.observeValues, value)
 	s.rows.observeAt = append(s.rows.observeAt, at)
+	if s.fixture.FirstObserved.IsZero() || at.Before(s.fixture.FirstObserved) {
+		s.fixture.FirstObserved = at
+	}
 }
 
-// phases writes the phases the sampler recorded of one issue, in the order it recorded them.
+// phases writes the phases the sampler recorded of one issue, in the order it recorded them. It,
+// slot, claim and waiting write nothing of a tree the sampler never saw (Spec.Unobserved).
 func (s *seeding) phases(issue string, at func(float64) time.Time, marks []phaseMark) {
+	if !s.observed {
+		return
+	}
 	for _, mark := range marks {
 		s.observe(issue, legion.FieldPhase, fmt.Sprintf("%q", mark.phase), at(mark.hour))
 		s.fixture.Phases[mark.phase] = append(s.fixture.Phases[mark.phase], issue)
@@ -431,16 +620,23 @@ func (s *seeding) phases(issue string, at func(float64) time.Time, marks []phase
 
 // slot writes the history of one admission slot: the moment the issue took it, and the moment it
 // gave it up. Two rows and not one, because a reader that measures how long the issue held a
-// slot needs an end as much as a start.
+// slot needs an end as much as a start. An issue that takes a slot twice holds the two stretches'
+// hours together.
 func (s *seeding) slot(issue string, index int, taken, released time.Time) {
+	if !s.observed {
+		return
+	}
 	s.observe(issue, legion.FieldSlot, fmt.Sprintf("%d", index), taken)
 	s.observe(issue, legion.FieldSlot, "null", released)
-	s.fixture.SlotHours[issue] = released.Sub(taken).Hours()
+	s.fixture.SlotHours[issue] += released.Sub(taken).Hours()
 }
 
 // claim writes one role's turn on the issue: the moment the role started to work and the moment
 // it stopped, which is the stretch the facts count as time in a turn.
 func (s *seeding) claim(issue, role string, started, ended time.Time) {
+	if !s.observed {
+		return
+	}
 	s.observe(issue, legion.ClaimFieldPrefix+role, `"working"`, started)
 	s.observe(issue, legion.ClaimFieldPrefix+role, `"idle"`, ended)
 }
@@ -448,6 +644,9 @@ func (s *seeding) claim(issue, role string, started, ended time.Time) {
 // waiting writes the wait the daemon recorded of the issue: the wait a read found while the
 // person still held it, and the same wait answered.
 func (s *seeding) waiting(issue, kind string, since, answered time.Time) {
+	if !s.observed {
+		return
+	}
 	held := fmt.Sprintf(`{"kind":%q,"since":%q}`, kind, since.Format(time.RFC3339))
 	done := fmt.Sprintf(`{"kind":%q,"since":%q,"answeredAt":%q}`,
 		kind, since.Format(time.RFC3339), answered.Format(time.RFC3339))
@@ -456,20 +655,21 @@ func (s *seeding) waiting(issue, kind string, since, answered time.Time) {
 }
 
 // write stores everything the trees built, one statement per table. Each statement takes its
-// table's columns as arrays and unnests them, so a history of thousands of rows costs four round
-// trips rather than thousands.
-func (s *seeding) write(t testing.TB, pool *store.Pool) {
-	t.Helper()
-	ctx := context.Background()
-	exec := func(what, statement string, args ...any) {
-		t.Helper()
+// table's columns as arrays and unnests them, so a history of thousands of rows costs six round
+// trips (the project's row and the five tables) rather than thousands. The project's row is kept
+// where it exists already.
+func (s *seeding) write(ctx context.Context, pool *store.Pool) error {
+	exec := func(what, statement string, args ...any) error {
 		if _, err := pool.Exec(ctx, statement, args...); err != nil {
-			t.Fatalf("seed the %s of %s (%s): %v", what, s.spec.Project, statement, err)
+			return fmt.Errorf("write the %s of %s: %w", what, s.spec.Project, err)
 		}
+		return nil
 	}
-	exec("project", `insert into projects (key, name, next_number) values ($1, $1, $2)`,
-		s.spec.Project, len(s.rows.issueKeys)+1)
-	exec("issues", `
+	if err := exec("project", `insert into projects (key, name, next_number) values ($1, $1, $2) on conflict (key) do nothing`,
+		s.spec.Project, s.spec.IssueOffset+len(s.rows.issueKeys)+1); err != nil {
+		return err
+	}
+	if err := exec("issues", `
 		insert into issues (key, project_key, number, title, status, rank, priority, parent_key,
 			created_by, created_at, closed_at)
 		select key, $1, number, title, status, rank, priority, parent, $2::jsonb, opened, closed
@@ -478,21 +678,41 @@ func (s *seeding) write(t testing.TB, pool *store.Pool) {
 			as seeded(key, number, title, status, rank, priority, parent, opened, closed)`,
 		s.spec.Project, person, s.rows.issueKeys, s.rows.issueNumbers, s.rows.issueTitles,
 		s.rows.issueStatuses, s.rows.issueRanks, s.rows.issuePriorities, s.rows.issueParents,
-		s.rows.issueOpened, s.rows.issueClosed)
-	exec("events", `
+		s.rows.issueOpened, s.rows.issueClosed); err != nil {
+		return err
+	}
+	// The pull requests of Spec.Merged, each naming its issue as the attribution read would (its
+	// title's key), so nothing later reads it again. A history with none writes no row.
+	if len(s.rows.prRepos) > 0 {
+		if err := exec("pull requests", `
+			insert into delivery_pull_requests (repo, number, title, url, author, created_at, merged_at, issue_key,
+				attribution_title_keys, attribution_cited_issues, attribution_branch_keys, attribution_commit_keys)
+			select repo, number, title, url, 'legion-bot', opened, merged, issue, array[issue], '{}', '{}', '{}'
+			from unnest($1::text[], $2::int[], $3::text[], $4::text[], $5::text[], $6::timestamptz[], $7::timestamptz[])
+				as seeded(repo, number, title, url, issue, opened, merged)`,
+			s.rows.prRepos, s.rows.prNumbers, s.rows.prTitles, s.rows.prURLs, s.rows.prIssues,
+			s.rows.prCreated, s.rows.prMerged); err != nil {
+			return err
+		}
+	}
+	if err := exec("events", `
 		insert into events (issue_key, seq, type, actor, payload, notify, created_at)
 		select issue, seq, kind, actor::jsonb, payload::jsonb, false, at
 		from unnest($1::text[], $2::int[], $3::text[], $4::text[], $5::text[], $6::timestamptz[])
 			as seeded(issue, seq, kind, actor, payload, at)`,
 		s.rows.eventIssues, s.rows.eventSeqs, s.rows.eventTypes, s.rows.eventActors,
-		s.rows.eventPayloads, s.rows.eventAt)
-	exec("handoffs", `
+		s.rows.eventPayloads, s.rows.eventAt); err != nil {
+		return err
+	}
+	if err := exec("handoffs", `
 		insert into handoffs (issue_key, phase, version, body, author, created_at)
 		select issue, phase, 1, '{}', author::jsonb, at
 		from unnest($1::text[], $2::text[], $3::text[], $4::timestamptz[])
 			as seeded(issue, phase, author, at)`,
-		s.rows.handoffIssues, s.rows.handoffPhases, s.rows.handoffAuthors, s.rows.handoffAt)
-	exec("observations", `
+		s.rows.handoffIssues, s.rows.handoffPhases, s.rows.handoffAuthors, s.rows.handoffAt); err != nil {
+		return err
+	}
+	return exec("observations", `
 		insert into legion_observations (project, issue_key, field, value, observed_at)
 		select $1, issue, field, value::jsonb, at
 		from unnest($2::text[], $3::text[], $4::text[], $5::timestamptz[])

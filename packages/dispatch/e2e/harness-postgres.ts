@@ -49,10 +49,10 @@ export const pgBinVariable = "DISPATCH_E2E_PG_BIN";
  *  clusters, and nothing outside a stack reads it. */
 const databaseName = "dispatch_e2e";
 /** A stack's connection limit. One Dispatch process opens up to `store.ConnectionsPerProcess`
- *  (89, packages/envoy/internal/dispatch/store/pool.go), two-process mode runs two of them on
- *  one stack, the harness's psql sessions open their own, and Postgres reserves 3 for
- *  superusers: 200 clears all of that with room for a pool that has not closed yet. */
-const maxConnections = 200;
+ *  (109, packages/envoy/internal/dispatch/store/pool.go), two-process mode runs two of them on
+ *  one stack (218), the harness's psql sessions open their own, and Postgres reserves 3 for
+ *  superusers: 250 clears all of that with room for a pool that has not closed yet. */
+const maxConnections = 250;
 /** A stack's server. Its data dies with the run and its database is 46 MB with a working set of
  *  one scenario's rows, so each setting here gives up something only a database that outlives
  *  its run can use. What each costs if the database were real is on its own line. Measured in an

@@ -3,6 +3,7 @@ package metrics
 import (
 	"maps"
 	"math"
+	"reflect"
 	"slices"
 	"testing"
 	"time"
@@ -27,11 +28,7 @@ func TestTheFactsShareOutEachIssuesBarHours(t *testing.T) {
 		statusAt(hour(5), "done")
 	population := fixture(hour(-24), hour(24), root, child)
 
-	facts := ProjectFacts(population)
-	work := map[string]WorkTimeIssue{}
-	for _, row := range Compute(population, ScopeAll, hour(24)).WorkTime.Issues {
-		work[row.Key] = row
-	}
+	facts := ProjectFacts(population, nil)
 	// The root waited on its child from hour 3 to hour 5, and the child waited on none.
 	waited := map[string]float64{"INFRA-1": 2, "INFRA-2": 0}
 	for key, row := range facts {
@@ -39,7 +36,7 @@ func TestTheFactsShareOutEachIssuesBarHours(t *testing.T) {
 		for _, spent := range row.PhaseHours {
 			sum += spent
 		}
-		want := work[key].Hours - work[key].QueuedHours - waited[key]
+		want := row.WorkHours - row.QueuedHours - waited[key]
 		if math.Abs(sum-want) > 0.001 {
 			t.Errorf("%s holds %g h by phase, want its bar hours %g: %v", key, sum, want, row.PhaseHours)
 		}
@@ -63,7 +60,7 @@ func TestEveryIssueWithPhaseWorkHasFactsWhateverItsHoursAre(t *testing.T) {
 	open := newIssue("INFRA-1").worked("implementer", hour(0)).statusAt(hour(0), "in_progress")
 	instant := newIssue("INFRA-2").under("INFRA-1").worked("implementer", hour(4)).closedAt(hour(4))
 	untouched := newIssue("INFRA-3").under("INFRA-1").closedAt(hour(6))
-	facts := ProjectFacts(fixture(hour(-24), hour(8), open, instant, untouched))
+	facts := ProjectFacts(fixture(hour(-24), hour(8), open, instant, untouched), nil)
 
 	if got := facts["INFRA-1"]; got.WorkHours != 8 {
 		t.Errorf("the open issue holds %g h of work, want the eight to the population's end: %+v", got.WorkHours, got)
@@ -93,7 +90,7 @@ func TestTheFactsCountTheSlotHoursAndTheDepthInTheTree(t *testing.T) {
 	grandchild := newIssue("INFRA-3").under("INFRA-2").worked("tester", hour(5)).closedAt(hour(8)).
 		statusAt(hour(5), "in_progress").
 		statusAt(hour(8), "done")
-	facts := ProjectFacts(fixture(hour(-24), hour(24), root, child, grandchild))
+	facts := ProjectFacts(fixture(hour(-24), hour(24), root, child, grandchild), nil)
 
 	if got := facts["INFRA-1"]; got.SlotHours != 5 {
 		t.Errorf("the root held a slot for %g h, want the five from hour 2 to hour 7: %+v", got.SlotHours, got)
@@ -121,7 +118,7 @@ func TestTheFactsNameWhenAnIssueOpenedClosedAndWasWorked(t *testing.T) {
 		worked("implementer", hour(4)).closedAt(hour(4))
 	open := newIssue("INFRA-3").under("INFRA-1").openedAt(hour(1)).
 		worked("tester", hour(2)).statusAt(hour(2), "in_progress")
-	facts := ProjectFacts(fixture(hour(-24), hour(8), worked, instant, open))
+	facts := ProjectFacts(fixture(hour(-24), hour(8), worked, instant, open), nil)
 
 	got := facts["INFRA-1"]
 	if !got.OpenedAt.Equal(hour(-2)) || got.ClosedAt == nil || !got.ClosedAt.Equal(hour(6)) {
@@ -155,19 +152,19 @@ func TestTheFactsOfNamedIssuesAreTheFactsOfTheWholeProject(t *testing.T) {
 	keys, otherTree := fixture.Keys[:perTree], fixture.Keys[perTree:]
 
 	startedProject := time.Now()
-	project, err := ReadProject(t.Context(), database.Pool, nil, fixture.Project, now)
+	project, err := ReadProject(t.Context(), database.Pool, fixture.Project, now)
 	projectRead := time.Since(startedProject)
 	if err != nil {
 		t.Fatalf("read the project: %v", err)
 	}
 	startedIssues := time.Now()
-	named, err := ReadIssues(t.Context(), database.Pool, nil, fixture.Project, keys, now)
+	named, err := ReadIssues(t.Context(), database.Pool, fixture.Project, keys, nil, now)
 	issuesRead := time.Since(startedIssues)
 	if err != nil {
 		t.Fatalf("read the named issues: %v", err)
 	}
 
-	whole, part := ProjectFacts(project), ProjectFacts(named)
+	whole, part := ProjectFacts(project, nil), ProjectFacts(named, nil)
 	if len(whole) != len(fixture.PhaseWork) {
 		t.Fatalf("the project's facts hold %d issues (%v), want the %d with Legion phase work",
 			len(whole), slices.Sorted(maps.Keys(whole)), len(fixture.PhaseWork))
@@ -202,4 +199,46 @@ func TestTheFactsOfNamedIssuesAreTheFactsOfTheWholeProject(t *testing.T) {
 	}
 	t.Logf("%d issues compared, %d of them with work hours; ReadProject took %s over %d issues and ReadIssues took %s over %d",
 		compared, worked, projectRead, len(fixture.Keys), issuesRead, len(keys))
+}
+
+// TestTheFactsOfTheWantedIssuesAreTheirFactsAmongEveryIssue: ProjectFacts asked for some issues of
+// a population computes the facts of those alone, and each equals the facts the same population
+// answers for it when every issue is computed, field by field: no issue's facts read what the
+// computation of another issue left behind. The issues asked for are every other issue of two
+// trees, an issue no Legion role worked among them, which has facts in neither.
+func TestTheFactsOfTheWantedIssuesAreTheirFactsAmongEveryIssue(t *testing.T) {
+	database := storetest.Open(t)
+	fixture := legiontest.Seed(t, database.Pool, legiontest.Spec{Trees: 2})
+	population, err := ReadProject(t.Context(), database.Pool, fixture.Project, fixture.To)
+	if err != nil {
+		t.Fatalf("read the project: %v", err)
+	}
+	wanted := map[string]bool{fixture.NoPhaseWork[0]: true}
+	for index, key := range fixture.Keys {
+		if index%2 == 1 {
+			wanted[key] = true
+		}
+	}
+	every, some := ProjectFacts(population, nil), ProjectFacts(population, wanted)
+	kept := 0
+	for _, key := range slices.Sorted(maps.Keys(every)) {
+		got, computed := some[key]
+		switch {
+		case !wanted[key] && computed:
+			t.Errorf("%s was not asked for and its facts were computed: %+v", key, got)
+		case wanted[key] && !computed:
+			t.Errorf("%s was asked for, has Legion phase work and no facts were computed", key)
+		case wanted[key] && !reflect.DeepEqual(got, every[key]):
+			t.Errorf("%s computed among the issues asked for is\n%+v\nand among every issue\n%+v", key, got, every[key])
+		case wanted[key]:
+			kept++
+		}
+	}
+	if _, computed := some[fixture.NoPhaseWork[0]]; computed {
+		t.Errorf("%s, which no Legion role worked, has facts", fixture.NoPhaseWork[0])
+	}
+	if kept == 0 || kept == len(every) {
+		t.Fatalf("%d of the %d issues with facts were asked for, which proves nothing", kept, len(every))
+	}
+	t.Logf("%d of %d issues' facts computed alone, each equal to its facts among every issue", kept, len(every))
 }

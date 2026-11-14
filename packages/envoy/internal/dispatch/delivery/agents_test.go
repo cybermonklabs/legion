@@ -17,9 +17,11 @@ const (
 	titlesIssueBand = 3000
 )
 
-// seedTitlesIssue writes titlesIssue in deliveryProject and clears its events, so a run against
-// the database an earlier run left reads only what this test writes.
-func seedTitlesIssue(t *testing.T, ctx context.Context, pool *store.Pool) {
+// seedTitlesIssue writes titlesIssue in deliveryProject and clears its events and the stored
+// titles of sessions, so a run against the database an earlier run left reads only what this test
+// writes: deleting an event takes no title away, since the title is stored where the event was
+// written (migration 20261113090412's trigger).
+func seedTitlesIssue(t *testing.T, ctx context.Context, pool *store.Pool, sessions ...string) {
 	t.Helper()
 	seedDeliveryProject(t, ctx, pool)
 	if _, err := pool.Exec(ctx, `
@@ -31,11 +33,14 @@ func seedTitlesIssue(t *testing.T, ctx context.Context, pool *store.Pool) {
 	if _, err := pool.Exec(ctx, `delete from events where issue_key = $1`, titlesIssue); err != nil {
 		t.Fatalf("clear the events of %s: %v", titlesIssue, err)
 	}
+	if _, err := pool.Exec(ctx, `delete from session_titles where session_id = any($1)`, sessions); err != nil {
+		t.Fatalf("clear the titles of %v: %v", sessions, err)
+	}
 }
 
 // writeSessionEvent appends one event of titlesIssue at at, stamped with actor as the writer
-// stored it: a write's actor is JSONB on the events row, which is where ResolveSessionTitles
-// reads a session's title from.
+// stored it: a write's actor is JSONB on the events row, and the trigger on events records the
+// title it stamps in session_titles, which is where ResolveSessionTitles reads it from.
 func writeSessionEvent(t *testing.T, ctx context.Context, pool *store.Pool, at time.Time, actor json.RawMessage) {
 	t.Helper()
 	if _, err := pool.Exec(ctx, `
@@ -66,12 +71,12 @@ func actorJSON(t *testing.T, actor model.Actor) json.RawMessage {
 // limit chosen for INFRA-1368: nothing here backfills a name, so SessionTitle answers its bare id.
 func TestASessionKeepsItsNameAfterAWriteThatCarriesNoTitle(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
-	seedTitlesIssue(t, ctx, pool)
-
 	const (
 		named    = "ses_release_sender"
 		nameless = "ses_never_titled"
 	)
+	seedTitlesIssue(t, ctx, pool, named, nameless)
+
 	at := time.Date(2024, 3, 1, 12, 0, 0, 0, time.UTC)
 	writeSessionEvent(t, ctx, pool, at, actorJSON(t, model.Actor{
 		Kind: "session", ID: named, Origin: &model.ActorOrigin{SessionTitle: "Release sender"},

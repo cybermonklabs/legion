@@ -28,7 +28,7 @@ func TestTheFirstPassOverASeededLogReadsOnePage(t *testing.T) {
 	if _, err := run.deps.Horizon.Await(t.Context()); err != nil {
 		t.Fatalf("await the event log's safe horizon: %v", err)
 	}
-	safe, err := safeHorizon(t.Context(), run.deps.Horizon)
+	safe, err := run.deps.Horizon.SafeOrAwait(t.Context())
 	if err != nil {
 		t.Fatalf("read the event log's safe horizon: %v", err)
 	}

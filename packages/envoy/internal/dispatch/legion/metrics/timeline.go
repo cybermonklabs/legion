@@ -119,9 +119,29 @@ func (p *Population) Phases(issue *Issue) ([]PhaseSpan, bool) {
 	return p.fallbackPhases(issue), false
 }
 
-// observedPhases is the timeline the sampler's `phase` observations draw, with each admitted
-// stretch split into the design the issue held a slot through and the queue it did not.
+// observedPhases is the timeline the sampler's `phase` observations draw (sampledPhases), with
+// the first stretch reaching back to the issue's first worker event where the sampler first saw
+// the issue after it.
 func (p *Population) observedPhases(issue *Issue) []PhaseSpan {
+	timeline := p.sampledPhases(issue)
+	// The same rule the fallback keeps, for the same reason: an hour of the work time before the
+	// first phase starts is on that phase's bar (the spec's "Work hours before any phase mark"),
+	// so no work hour is off every bar. A sampler that first saw the issue after its first worker
+	// event would otherwise leave those hours on none. sampledPhases builds a new slice on every
+	// call, so moving its first span moves no other caller's.
+	if at, worked := firstWorkerEvent(issue); worked && len(timeline) > 0 && at.Before(timeline[0].Span.From) {
+		timeline[0].Span.From = at
+	}
+	return timeline
+}
+
+// sampledPhases is the timeline the sampler's `phase` observations draw and nothing else: each
+// observed phase from its mark to the next, the last to the issue's end, with each admitted
+// stretch split into the design the issue held a slot through and the queue it did not. It is
+// the issue's observed phase at each moment, which is what the two rules that read only an
+// observed phase stand on (slotWaitHours and idleByRole): an hour before the sampler first saw
+// the issue has no observed phase, so it is on neither.
+func (p *Population) sampledPhases(issue *Issue) []PhaseSpan {
 	marks := issue.Observed[legion.FieldPhase]
 	if len(marks) == 0 {
 		return nil
@@ -153,13 +173,6 @@ func (p *Population) observedPhases(issue *Issue) []PhaseSpan {
 		}
 	}
 	slices.SortFunc(timeline, func(a, b PhaseSpan) int { return a.Span.From.Compare(b.Span.From) })
-	// The same rule the fallback keeps, for the same reason: an hour of the work time before the
-	// first phase starts is on that phase's bar (the spec's "Work hours before any phase mark"),
-	// so no work hour is off every bar. A sampler that first saw the issue after its first worker
-	// event would otherwise leave those hours on none.
-	if at, worked := firstWorkerEvent(issue); worked && len(timeline) > 0 && at.Before(timeline[0].Span.From) {
-		timeline[0].Span.From = at
-	}
 	return timeline
 }
 

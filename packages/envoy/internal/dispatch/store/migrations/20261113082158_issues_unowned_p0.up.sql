@@ -1,0 +1,31 @@
+-- pgmigrate:non-transactional
+-- 20261113082158_issues_unowned_p0.up.sql
+--
+-- The index behind the reads of the open P0 issues (dispatch://INFRA-2916, R13): the count of P0
+-- issues with no owner, which the unowned-p0 eval and the delivery measures route answer (an
+-- issue with priority 0, a status other than done, no claim and no route, the rule of
+-- delivery.ListUnownedP0 and delivery.CountUnownedP0), and the delivery live hub's set of every
+-- open P0 issue's key (delivery.OpenP0Keys), which the hub reads each time it stands up its event
+-- feed and which marks the views a P0 issue's change moves. No index of issues holds priority, so
+-- each of those reads, over every project at once, scanned the whole table, and the count of one
+-- project's (`select count(*) from issues where project_key = $1 and priority = 0 and status <>
+-- 'done' and claimed_by is null and route is null`, CountUnownedP0's) could at best read every
+-- issue of that project.
+--
+-- The predicate is the clauses the two reads share, `priority = 0 and status <> 'done'`, so the
+-- planner proves it from either read's own clauses and the index holds the open P0 issues alone:
+-- a few hundred rows at INFRA's size. The hub's read is the whole of this small index; the count
+-- of unowned ones is one range of it by project_key, its key, with the claim and the route a
+-- filter over that range. An issue enters it and leaves it as its priority or its status changes,
+-- which costs a write to this index on those updates alone.
+--
+-- It is built `concurrently`, outside the runner's transaction, because issues is the table every
+-- issue write, claim, route and status change writes. A plain build holds SHARE on it for one
+-- read of the table, which blocks every one of those writes until it ends. A concurrent build
+-- takes SHARE UPDATE EXCLUSIVE, which no ordinary read or write waits on, at the cost of two passes
+-- over the table and a wait for the transactions already open, each wait bounded at five seconds
+-- and tried again as the runner tries every lock wait (pgmigrate.ExecNonTransactional). A failed
+-- build leaves an INVALID index of this name on issues, which the runner drops with DROP INDEX
+-- CONCURRENTLY and builds again on its next attempt or boot.
+create index concurrently if not exists issues_open_p0 on issues (project_key)
+    where priority = 0 and status <> 'done';

@@ -744,7 +744,7 @@ func movedApprovalArtifacts(
 	// (refs.loadArtifactNodes): an approval's stored id that is not a uuid would fail the cast
 	// and cost the whole report, where this read simply returns no row for it.
 	rows, err := q.Query(ctx, `
-		select `+artifactColumns+`
+		select `+docs.ArtifactColumns+`
 		from artifacts where id::text = any($1::text[])
 	`, ids)
 	if err != nil {

@@ -1,0 +1,29 @@
+-- pgmigrate:non-transactional
+-- 20261114154233_delivery_run_jobs_failed.up.sql
+--
+-- The index behind the Delivery timeline's read of its deploy runs' failed jobs
+-- (dispatch://INFRA-2916, R13). The timeline lists each deploy run with its failed jobs and the job
+-- that failed first (delivery.FailedJobs and delivery.RootFailingJob), which can be any job the
+-- run holds, so it read every job of every deploy run GitHub created from the window's start,
+-- where the production job each run is judged by is one row of it. It now reads each run's
+-- production jobs by name through the primary key, as every other reader does, and its failed
+-- jobs through this index (delivery.runJobsNamedOrFailedForRunsQuery), so the read grows with the
+-- runs' failures and not with every job they ran.
+--
+-- The predicate is the read's own `conclusion = 'failure'`, written into its statement rather than
+-- bound, so the planner proves the index from the statement under a generic plan too, and the
+-- index holds the failed jobs alone: a few in a hundred of the table's rows. Its key is the read's
+-- other two conditions, so the read is one descent of the index for each run it asks for. A job
+-- enters it when a write records its failure, which costs a write to this index on those writes
+-- alone.
+--
+-- It is built `concurrently`, outside the runner's transaction, because delivery_run_jobs is the
+-- table every job listing the intake and the reconcile store writes. A plain build holds SHARE on
+-- it for one read of the table, which blocks every one of those writes until it ends. A concurrent
+-- build takes SHARE UPDATE EXCLUSIVE, which no ordinary read or write waits on, at the cost of two
+-- passes over the table and a wait for the transactions already open, each wait bounded at five
+-- seconds and tried again as the runner tries every lock wait (pgmigrate.ExecNonTransactional). A
+-- failed build leaves an INVALID index of this name on delivery_run_jobs, which the runner drops
+-- with DROP INDEX CONCURRENTLY and builds again on its next attempt or boot.
+create index concurrently if not exists delivery_run_jobs_failed on delivery_run_jobs (repo, run_id)
+    where conclusion = 'failure';

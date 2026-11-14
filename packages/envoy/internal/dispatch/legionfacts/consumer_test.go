@@ -95,10 +95,10 @@ func (c *consumer) writeEvent(t *testing.T, issue, role, kind, payload string, a
 	`, issue, kind, actor, payload, at)
 }
 
-// rows is every stored row of the history's project, by issue key.
+// rows is every stored row of the history's project, by issue key, with every column (readWhole).
 func (c *consumer) rows(t *testing.T) map[string]Row {
 	t.Helper()
-	stored, err := Read(t.Context(), c.database.Pool, c.fixture.Project)
+	stored, err := readWhole(t.Context(), c.database.Pool, c.fixture.Project)
 	if err != nil {
 		t.Fatalf("read the stored facts: %v", err)
 	}
@@ -164,7 +164,7 @@ func statedSet(t *testing.T, run *consumer, keys []string, moved map[string]bool
 	if err != nil {
 		t.Fatalf("read the links above the project's issues: %v", err)
 	}
-	stated, err := rowsToCompute(t.Context(), run.database.Pool, run.fixture.Project, keys, moved, above)
+	stated, _, err := rowsToCompute(t.Context(), run.database.Pool, run.fixture.Project, keys, nil, moved, above)
 	if err != nil {
 		t.Fatalf("read the set the pass states: %v", err)
 	}
@@ -593,7 +593,7 @@ func TestTheSweepsPaceHoldsTheFreshnessRequirement(t *testing.T) {
 			project := run.fixture.Project
 
 			started := time.Now()
-			rows, err := ComputeProject(t.Context(), run.database.Pool, project, run.at)
+			rows, _, err := ComputeProject(t.Context(), run.database.Pool, project, run.at)
 			if err != nil {
 				t.Fatalf("compute the project's facts: %v", err)
 			}

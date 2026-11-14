@@ -62,7 +62,7 @@ func TestAChangeToAChildRecomputesTheRootItReportsAsItsTree(t *testing.T) {
 	changed := run.pass(t)
 	stored := run.rows(t)
 
-	whole, err := ComputeProject(t.Context(), run.database.Pool, run.fixture.Project, run.at)
+	whole, _, err := ComputeProject(t.Context(), run.database.Pool, run.fixture.Project, run.at)
 	if err != nil {
 		t.Fatalf("compute the project whole: %v", err)
 	}

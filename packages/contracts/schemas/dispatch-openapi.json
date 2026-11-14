@@ -3909,7 +3909,7 @@
     },
     "/api/v1/delivery/measures": {
       "get": {
-        "description": "The four delivery measures and Sami's KPI targets for [from, to) (default the last 7 days) and the same facets the timeline takes: deploys a day, lead time (merge, first commit and open to production; open to merge), change failure rate per PR and per deploy (flags_source says whether stored flags fed it), time to restore, rework share, deploy-run success, a per-UTC-day series, the open P0 issues with no owner, and whether each target is met; 404 DELIVERY_NOT_CONFIGURED without a delivery_settings row.",
+        "description": "The four delivery measures and Sami's KPI targets for [from, to) (default the last 7 days) and the same facets the timeline takes: deploys a day, lead time (merge, first commit and open to production; open to merge), change failure rate per PR and per deploy, time to restore, rework share, deploy-run success, a per-UTC-day series, the open P0 issues with no owner, and whether each target is met. flags_source says whether a failure source fed the change failure rate and time to restore: with none (none) change_failure_rate is null, time_to_restore has no median, and both verdicts are null, since a rate nothing measured is no 0. 404 DELIVERY_NOT_CONFIGURED without a delivery_settings row.",
         "operationId": "getApiV1DeliveryMeasures",
         "parameters": [
           {
@@ -4049,7 +4049,7 @@
     },
     "/api/v1/delivery/pipeline": {
       "get": {
-        "description": "The Pipeline page over the UTC days its window covers: ?at= (default now) is the seven days ending on its own, and ?from= and ?to= are the days that window covers, bounded by the same 84 days as the other delivery routes. By the day each run started: the PR-checks workflow's run wall time and success, its five slowest jobs (50 timed results to rank) and the jobs that failed in the 24 hours before the window's end, which for a whole-day window is its last day; the duration and result of the staging end-to-end, staging deploy and production deploy jobs the settings name in push runs on main; and merge-to-production and PR-open-to-merge per merge day against their targets. Not filtered by the timeline's facets; 400 INVALID_QUERY for a malformed at or window, for a window over the cap, and for an at beside from or to, 404 DELIVERY_NOT_CONFIGURED without a delivery_settings row.",
+        "description": "The Pipeline page over the UTC days its window covers: ?at= (default now) is the seven days ending on its own, and ?from= and ?to= are the days that window covers, bounded by the same 84 days as the other delivery routes. By the day each run started: the PR-checks workflow's run wall time and success, its five slowest jobs and the jobs that failed in the 24 hours before the window's end, which for a whole-day window is its last day; the duration and result of the staging end-to-end, staging deploy and production deploy jobs the settings name in push runs on main; and merge-to-production and PR-open-to-merge per merge day against their targets. A job is ranked among the slowest with as many timed results as pr_checks.slowest_min_results states: the min_n of the job series (job:*) of the pr-ci eval of the project the deploy repository is mapped to, or 50 where it is mapped to no project or that project holds no pr-ci eval yet; the ranking is the one pr-ci's items read with sort=median. Not filtered by the timeline's facets; 400 INVALID_QUERY for a malformed at or window, for a window over the cap, and for an at beside from or to, 404 DELIVERY_NOT_CONFIGURED without a delivery_settings row.",
         "operationId": "getApiV1DeliveryPipeline",
         "parameters": [
           {
@@ -4442,6 +4442,120 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/DeliveryTimelineWithMeasures"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any"
+      }
+    },
+    "/api/v1/evals": {
+      "get": {
+        "description": "The evals of several projects in the project read's item shape and envelope {items, total, limit, offset}, by project in the order named and then by slug, the page running across them: ?project=, repeated, names the projects read, and with none named every project the store holds is read, by key, with no project picked for the caller. The window, compare range, kind, repo and page keys are the project read's. 400 INVALID_QUERY names a malformed key, or a key the route does not take (any but these and the global session parameter), 404 PROJECT_NOT_FOUND an unknown project.",
+        "operationId": "getApiV1Evals",
+        "parameters": [
+          {
+            "name": "project",
+            "in": "query",
+            "schema": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "compare_from",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "compare_to",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "kind",
+            "in": "query",
+            "schema": {
+              "enum": [
+                "delivery",
+                "legion",
+                "ci",
+                "experiment"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "repo",
+            "in": "query",
+            "schema": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EvalListResponse"
                 }
               }
             }
@@ -7106,78 +7220,6 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/IssueReferenceSummary"
-                }
-              }
-            }
-          }
-        },
-        "x-auth": "any"
-      }
-    },
-    "/api/v1/legion/metrics": {
-      "get": {
-        "description": "The Delivery page's Legion section for ?project= (the first project naming a daemon when none is given), [from, to) (default the last 7 days) and ?scope=all|roots|children: over the issues that closed in the window with Legion phase work, the work time to merge less parked and queued time, the phase hours of each of the seven worker bars split into waiting on a person, in a turn, CI wait, waiting on children and idle in that order, the review rounds, send-back share and post-review hours, and the issues Legion sessions filed per week by class against the issues finished per week; 400 INVALID_QUERY for a malformed window or scope, 404 NOT_FOUND for a project that does not exist.",
-        "operationId": "getApiV1LegionMetrics",
-        "parameters": [
-          {
-            "name": "project",
-            "in": "query",
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "from",
-            "in": "query",
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "to",
-            "in": "query",
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "scope",
-            "in": "query",
-            "schema": {
-              "enum": [
-                "all",
-                "roots",
-                "children"
-              ],
-              "type": "string"
-            }
-          },
-          {
-            "name": "session",
-            "in": "query",
-            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "default": {
-            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "200": {
-            "description": "OK",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/LegionMetricsResponse"
                 }
               }
             }
@@ -9958,6 +10000,688 @@
           "person"
         ],
         "x-write-scope": "project"
+      }
+    },
+    "/api/v1/projects/{key}/evals": {
+      "get": {
+        "description": "The project's evals, one page {items, total, limit, offset} by slug (limit 1-200, default 50), each its current definition (every field of eval_versions, read through evals_current), its owner, each listed series with its statistics over the window [from, to) (RFC3339, a moment of the UTC years 1 to 9999, default the last 7 days, at most 84) and over compare_from..compare_to (both or neither, at most 84 days; the two need not be of one length), the change between them, data_since (the series' first day; a range that starts before it reads every statistic null, \"no data\", never 0), the count of rows that reached the project through a repository, and for a headline series a per-day array; and the verdict of its target (null where the target is off). Every figure is folded from the stored day rows of the UTC days the range covers, which end by 9999-12-31, through the one fold the eval's source names, or its series' agg for a logged eval; a figure past what a float holds is null; window and compare state those days, freshness the oldest row folded and the day-row refresher's age. ?kind= (delivery, legion, ci, experiment) keeps one kind; ?repo=, repeated, folds those repositories' rows in place of the project's. 400 INVALID_QUERY names a malformed key, or a key the route does not take (any but these and the global session parameter), 404 PROJECT_NOT_FOUND an unknown project.",
+        "operationId": "getApiV1ProjectsByKeyEvals",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "compare_from",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "compare_to",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "kind",
+            "in": "query",
+            "schema": {
+              "enum": [
+                "delivery",
+                "legion",
+                "ci",
+                "experiment"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "repo",
+            "in": "query",
+            "schema": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EvalListResponse"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any"
+      },
+      "post": {
+        "description": "Register an eval or change its definition {slug, actor?, name?, question?, number_rule?, decision?, doc_block?, doc_text?, failure_modes?, unit?, direction?, target?, target_inclusive?, target_judges?, owner_role?, person?, issue_key?, kind?, source?, state?, replaced_by?, links?, series?}: the next version, written in one transaction with every field the body leaves out copied from the newest version (target: null turns the target off); a series named in series is registered or changed the same way. doc_text replaces the eval's method in its section of the project's evals-md document (not with doc_block) unless that section holds it already. Each link {rel, href, label}, its href an absolute http or https URL, is stored with the server's recorded_at, and its far side is never fetched. A slug and a series' name hold at most 512 bytes. On a computed eval the write sets only how the number is judged and who answers for it: target, target_inclusive, target_judges, a series' min_n, owner_role, person, issue_key, links, state, replaced_by and its method (doc_text or doc_block); its code defines the rest, and a write naming any other field, or a series the eval does not hold, is refused EVAL_FIELD_COMPUTED. Answers 201 {items, total, limit, offset} with what it wrote, a version of the definition or of a series, or 200 with the versions that stand where the body changed nothing; 400 {code, error, field} with a stable code and the field it refuses (EVAL_SLUG_INVALID, EVAL_KEY_TOO_LONG, EVAL_FIELD_INVALID, EVAL_FIELD_COMPUTED, EVAL_SERIES_INVALID, EVAL_DOC_TEXT_EMPTY, LINK_HREF_NOT_ABSOLUTE, LINK_HREF_NOT_HTTP, LINK_REL_MISSING), 404 PROJECT_NOT_FOUND, 409 EVALS_DOCUMENT_NOT_A_DOCUMENT where the project's evals-md slug names a file.",
+        "operationId": "postApiV1ProjectsByKeyEvals",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EvalRegisterInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EvalRegisterResponse"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EvalRegisterResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EvalReadingsRefusal"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EvalReadingsRefusal"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EvalReadingsRefusal"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-write-scope": "project"
+      }
+    },
+    "/api/v1/projects/{key}/evals/{slug}": {
+      "get": {
+        "description": "One eval's versions, newest first, one page {items, total, limit, offset} of the list's item shape: the newest states the window's values as the list read does (the same window, compare range, repo and freshness), every older version its definition alone; and doc_text, the method the eval's section of the project's evals-md document holds (null where the document holds none). 400 INVALID_QUERY names a malformed key, or a key the route does not take (any but these and the global session parameter), 404 PROJECT_NOT_FOUND an unknown project and EVAL_NOT_FOUND a slug no eval of it holds.",
+        "operationId": "getApiV1ProjectsByKeyEvalsBySlug",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "compare_from",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "compare_to",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "repo",
+            "in": "query",
+            "schema": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EvalDetailResponse"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any"
+      }
+    },
+    "/api/v1/projects/{key}/evals/{slug}/items": {
+      "get": {
+        "description": "The rows behind an eval's numbers over the window and the compare range, one page {items, total, limit, offset}, every row {row_key, row_kind, cols, measured_at, source, href, links, range} whatever its kind, range compare for a row of the compare range: the eval's readings (a reading logged under a computed eval's slug among them), its stored day rows (day), and for a computed eval the rows its numbers count, as its project's day rows counted them: a Legion eval's issues closed in the range and legion-splitting's filings (issue), a delivery eval's pull requests and deploy runs (pull_request, deploy), a CI eval's runs (run) and pr-ci's jobs (job), unowned-p0's open P0 issues with no owner (issue). measured_at is when a row's value was measured, the moment its eval dates it by: a reading's own, a pull request's merge, a deploy run's and a CI run's start, a Legion issue's close, a filing's filing, a day row's day, a job's newest day, a failing job's latest failure, and the read itself for an open P0 issue with no owner. ?series= narrows to a series (a Legion series' :roots or :children cut, a filed:\u003cclass\u003e series, a job:\u003cname\u003e series), ?row_kind= and ?row= to a row kind and a row key, ?repo=, repeated, to those repositories; ?sort=median answers pr-ci's jobs with their series' min_n timed results, slowest first, and ?sort=failures the jobs that failed in the 24 hours before the range's end. 400 INVALID_QUERY names a malformed key, or a key the route does not take (any but these and the global session parameter), 404 PROJECT_NOT_FOUND and EVAL_NOT_FOUND as the eval's read answers them.",
+        "operationId": "getApiV1ProjectsByKeyEvalsBySlugItems",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "compare_from",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "compare_to",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "series",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "row_kind",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "row",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "repo",
+            "in": "query",
+            "schema": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          {
+            "name": "sort",
+            "in": "query",
+            "schema": {
+              "enum": [
+                "median",
+                "failures"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EvalItemsResponse"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any"
+      }
+    },
+    "/api/v1/projects/{key}/evals/{slug}/readings": {
+      "post": {
+        "description": "Log one batch of readings of one eval {readings, actor?}, each reading {series, row_kind, measured_at, value or value_absent_reason, row_key?, col?, unit?, n?, n_unit?, ci_low?, ci_high?, ci_level?, attributes?, links?, source?, note?, replaces?}: stored in one transaction or not at all, under an Idempotency-Key the write requires (400 IDEMPOTENCY_KEY_REQUIRED), a repeat under the key answered the first write's answer. A slug no eval holds registers its eval with the caller as owner, no target and state active; a reading under a computed eval's slug is stored and answered by its items, never folded into its value. A correction is a new reading naming the one it replaces. The server sets recorded_by and recorded_at, and refuses a row carrying either. measured_at lies from 2025-01-01T00:00:00Z to 24 hours after the server's time; series, row_kind, row_key and attributes.repo hold at most 512 bytes each; a link's href is an absolute http or https URL. A refused batch stores nothing and answers 400 {code, error, rows}, rows naming each refused row by its index and field with its own code (READING_INVALID, READING_VALUE_OR_REASON, READING_FIELD_SERVER_SET, READING_SERIES_INVALID, READING_REPLACES_UNKNOWN, READING_ALREADY_REPLACED, MEASURED_AT_OUT_OF_RANGE, EVAL_KEY_TOO_LONG, LINK_HREF_NOT_ABSOLUTE, LINK_HREF_NOT_HTTP, LINK_REL_MISSING, and READING_DAY_OVERFLOW for a value that would take a sum of its day row, its values or each weighted by its n, past what a float holds); a slug that is no slug is 400 EVAL_SLUG_INVALID, one over 512 bytes 400 EVAL_KEY_TOO_LONG, a batch of no reading 400 READINGS_EMPTY, an unknown project 404 PROJECT_NOT_FOUND, and a project whose evals-md slug names a file 409 EVALS_DOCUMENT_NOT_A_DOCUMENT. The write takes no query key but session: any other is 400 INVALID_QUERY naming it. Answers 201 {items, total, limit, offset, definition, registered}.",
+        "operationId": "postApiV1ProjectsByKeyEvalsBySlugReadings",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EvalReadingsInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EvalReadingsResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EvalReadingsRefusal"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EvalReadingsRefusal"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EvalReadingsRefusal"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-write-scope": "project"
+      }
+    },
+    "/api/v1/projects/{key}/evals/{slug}/readings/{id}": {
+      "put": {
+        "description": "Refused, whatever the id names: 405 READING_APPEND_ONLY. A reading is append-only; a correction is a new reading naming the one it replaces in replaces.",
+        "operationId": "putApiV1ProjectsByKeyEvalsBySlugReadingsById",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "204": {
+            "description": "No Content"
+          },
+          "405": {
+            "description": "Method Not Allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-write-scope": "no-write"
+      },
+      "delete": {
+        "description": "Refused, whatever the id names: 405 READING_APPEND_ONLY. A reading is never deleted; a correction is a new reading naming the one it replaces in replaces.",
+        "operationId": "deleteApiV1ProjectsByKeyEvalsBySlugReadingsById",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "204": {
+            "description": "No Content"
+          },
+          "405": {
+            "description": "Method Not Allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-write-scope": "no-write"
       }
     },
     "/api/v1/projects/{key}/gated-steps": {
@@ -16522,7 +17246,14 @@
       "DeliveryMeasures": {
         "properties": {
           "change_failure_rate": {
-            "$ref": "#/components/schemas/ChangeFailureRate"
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChangeFailureRate"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "daily": {
             "items": {
@@ -16780,11 +17511,15 @@
               "array",
               "null"
             ]
+          },
+          "slowest_min_results": {
+            "type": "integer"
           }
         },
         "required": [
           "run",
           "slowest_jobs",
+          "slowest_min_results",
           "failing_jobs"
         ],
         "type": "object"
@@ -18234,6 +18969,1340 @@
         "required": [
           "code",
           "error"
+        ],
+        "type": "object"
+      },
+      "EvalDayPoint": {
+        "properties": {
+          "day": {
+            "type": "string"
+          },
+          "statistics": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EvalStatistics"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "day",
+          "statistics"
+        ],
+        "type": "object"
+      },
+      "EvalDefinition": {
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "decision": {
+            "type": "string"
+          },
+          "direction": {
+            "type": "string"
+          },
+          "doc_block": {
+            "type": "string"
+          },
+          "eval_id": {
+            "type": "string"
+          },
+          "failure_modes": {
+            "items": {
+              "$ref": "#/components/schemas/EvalFailureMode"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "issue_key": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "links": {
+            "items": {
+              "$ref": "#/components/schemas/EvalLink"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "number_rule": {
+            "type": "string"
+          },
+          "owner_role": {
+            "type": "string"
+          },
+          "person": {
+            "type": "string"
+          },
+          "project_key": {
+            "type": "string"
+          },
+          "question": {
+            "type": "string"
+          },
+          "replaced_by": {
+            "type": "string"
+          },
+          "slug": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "target": {
+            "type": [
+              "null",
+              "number"
+            ]
+          },
+          "target_inclusive": {
+            "type": "boolean"
+          },
+          "target_judges": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "unit": {
+            "type": "string"
+          },
+          "version": {
+            "type": "integer"
+          },
+          "written_by": {
+            "$ref": "#/components/schemas/Actor"
+          },
+          "written_via": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "eval_id",
+          "version",
+          "project_key",
+          "slug",
+          "name",
+          "question",
+          "number_rule",
+          "decision",
+          "doc_block",
+          "failure_modes",
+          "unit",
+          "direction",
+          "target",
+          "target_inclusive",
+          "target_judges",
+          "owner_role",
+          "person",
+          "issue_key",
+          "kind",
+          "source",
+          "state",
+          "replaced_by",
+          "links",
+          "written_via",
+          "written_by",
+          "created_at"
+        ],
+        "type": "object"
+      },
+      "EvalDetailResponse": {
+        "properties": {
+          "compare": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EvalRange"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "doc_text": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "freshness": {
+            "$ref": "#/components/schemas/EvalFreshness"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/EvalItem"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "limit": {
+            "type": "integer"
+          },
+          "offset": {
+            "type": "integer"
+          },
+          "total": {
+            "type": "integer"
+          },
+          "window": {
+            "$ref": "#/components/schemas/EvalRange"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "limit",
+          "offset",
+          "window",
+          "compare",
+          "freshness",
+          "doc_text"
+        ],
+        "type": "object"
+      },
+      "EvalFailureMode": {
+        "properties": {
+          "guard": {
+            "type": "string"
+          },
+          "mode": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "mode",
+          "guard"
+        ],
+        "type": "object"
+      },
+      "EvalFreshness": {
+        "properties": {
+          "refresher_age_seconds": {
+            "type": [
+              "null",
+              "integer"
+            ]
+          },
+          "rows_updated_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          }
+        },
+        "required": [
+          "rows_updated_at",
+          "refresher_age_seconds"
+        ],
+        "type": "object"
+      },
+      "EvalItem": {
+        "properties": {
+          "definition": {
+            "$ref": "#/components/schemas/EvalDefinition"
+          },
+          "owner": {
+            "$ref": "#/components/schemas/EvalOwner"
+          },
+          "series": {
+            "items": {
+              "$ref": "#/components/schemas/EvalSeriesValues"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "verdict": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EvalVerdict"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "definition",
+          "owner",
+          "series",
+          "verdict"
+        ],
+        "type": "object"
+      },
+      "EvalItemRow": {
+        "properties": {
+          "cols": {
+            "additionalProperties": {},
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "href": {
+            "type": "string"
+          },
+          "links": {
+            "items": {
+              "$ref": "#/components/schemas/EvalLink"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "measured_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "range": {
+            "enum": [
+              "window",
+              "compare"
+            ],
+            "type": "string"
+          },
+          "row_key": {
+            "type": "string"
+          },
+          "row_kind": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "row_key",
+          "row_kind",
+          "cols",
+          "measured_at",
+          "source",
+          "href",
+          "links",
+          "range"
+        ],
+        "type": "object"
+      },
+      "EvalItemsResponse": {
+        "properties": {
+          "compare": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EvalRange"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/EvalItemRow"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "limit": {
+            "type": "integer"
+          },
+          "offset": {
+            "type": "integer"
+          },
+          "total": {
+            "type": "integer"
+          },
+          "window": {
+            "$ref": "#/components/schemas/EvalRange"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "limit",
+          "offset",
+          "window",
+          "compare"
+        ],
+        "type": "object"
+      },
+      "EvalJudge": {
+        "properties": {
+          "judge": {
+            "type": "string"
+          },
+          "met": {
+            "type": [
+              "null",
+              "boolean"
+            ]
+          },
+          "value": {
+            "type": [
+              "null",
+              "number"
+            ]
+          }
+        },
+        "required": [
+          "judge",
+          "value",
+          "met"
+        ],
+        "type": "object"
+      },
+      "EvalLink": {
+        "properties": {
+          "href": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "recorded_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "rel": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "rel",
+          "href",
+          "label",
+          "recorded_at"
+        ],
+        "type": "object"
+      },
+      "EvalLinkInput": {
+        "properties": {
+          "href": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "rel": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "rel",
+          "href"
+        ],
+        "type": "object"
+      },
+      "EvalListItem": {
+        "properties": {
+          "definition": {
+            "$ref": "#/components/schemas/EvalDefinition"
+          },
+          "id": {
+            "type": "string"
+          },
+          "owner": {
+            "$ref": "#/components/schemas/EvalOwner"
+          },
+          "series": {
+            "items": {
+              "$ref": "#/components/schemas/EvalSeriesValues"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "verdict": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EvalVerdict"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "definition",
+          "owner",
+          "series",
+          "verdict"
+        ],
+        "type": "object"
+      },
+      "EvalListResponse": {
+        "properties": {
+          "compare": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EvalRange"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "freshness": {
+            "$ref": "#/components/schemas/EvalFreshness"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/EvalListItem"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "limit": {
+            "type": "integer"
+          },
+          "offset": {
+            "type": "integer"
+          },
+          "total": {
+            "type": "integer"
+          },
+          "window": {
+            "$ref": "#/components/schemas/EvalRange"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "limit",
+          "offset",
+          "window",
+          "compare",
+          "freshness"
+        ],
+        "type": "object"
+      },
+      "EvalOwner": {
+        "properties": {
+          "person": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string"
+          },
+          "written_by": {
+            "$ref": "#/components/schemas/Actor"
+          }
+        },
+        "required": [
+          "role",
+          "person",
+          "written_by"
+        ],
+        "type": "object"
+      },
+      "EvalRange": {
+        "properties": {
+          "days": {
+            "type": "integer"
+          },
+          "from": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "to": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "from",
+          "to",
+          "days"
+        ],
+        "type": "object"
+      },
+      "EvalReading": {
+        "properties": {
+          "attributes": {
+            "additionalProperties": {},
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "ci_high": {
+            "type": [
+              "null",
+              "number"
+            ]
+          },
+          "ci_level": {
+            "type": [
+              "null",
+              "number"
+            ]
+          },
+          "ci_low": {
+            "type": [
+              "null",
+              "number"
+            ]
+          },
+          "col": {
+            "type": "string"
+          },
+          "eval_id": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "links": {
+            "items": {
+              "$ref": "#/components/schemas/EvalLink"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "measured_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "n": {
+            "type": [
+              "null",
+              "integer"
+            ]
+          },
+          "n_unit": {
+            "type": "string"
+          },
+          "note": {
+            "type": "string"
+          },
+          "recorded_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "recorded_by": {
+            "$ref": "#/components/schemas/Actor"
+          },
+          "replaces": {
+            "type": "string"
+          },
+          "row_key": {
+            "type": "string"
+          },
+          "row_kind": {
+            "type": "string"
+          },
+          "series": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "superseded_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "unit": {
+            "type": "string"
+          },
+          "value": {
+            "type": [
+              "null",
+              "number"
+            ]
+          },
+          "value_absent_reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "eval_id",
+          "series",
+          "row_key",
+          "row_kind",
+          "col",
+          "value",
+          "value_absent_reason",
+          "unit",
+          "n",
+          "n_unit",
+          "ci_low",
+          "ci_high",
+          "ci_level",
+          "attributes",
+          "links",
+          "measured_at",
+          "recorded_at",
+          "recorded_by",
+          "source",
+          "note",
+          "replaces",
+          "superseded_at"
+        ],
+        "type": "object"
+      },
+      "EvalReadingInput": {
+        "properties": {
+          "attributes": {
+            "additionalProperties": {},
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "ci_high": {
+            "type": [
+              "null",
+              "number"
+            ]
+          },
+          "ci_level": {
+            "type": [
+              "null",
+              "number"
+            ]
+          },
+          "ci_low": {
+            "type": [
+              "null",
+              "number"
+            ]
+          },
+          "col": {
+            "type": "string"
+          },
+          "links": {
+            "items": {
+              "$ref": "#/components/schemas/EvalLinkInput"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "measured_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "n": {
+            "type": [
+              "null",
+              "integer"
+            ]
+          },
+          "n_unit": {
+            "type": "string"
+          },
+          "note": {
+            "type": "string"
+          },
+          "replaces": {
+            "type": "string"
+          },
+          "row_key": {
+            "type": "string"
+          },
+          "row_kind": {
+            "type": "string"
+          },
+          "series": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "unit": {
+            "type": "string"
+          },
+          "value": {
+            "type": [
+              "null",
+              "number"
+            ]
+          },
+          "value_absent_reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "series",
+          "row_kind",
+          "measured_at"
+        ],
+        "type": "object"
+      },
+      "EvalReadingsInput": {
+        "properties": {
+          "actor": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Actor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "readings": {
+            "items": {
+              "$ref": "#/components/schemas/EvalReadingInput"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "readings"
+        ],
+        "type": "object"
+      },
+      "EvalReadingsRefusal": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "field": {
+            "type": "string"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/EvalRowRefusal"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "code",
+          "error"
+        ],
+        "type": "object"
+      },
+      "EvalReadingsResponse": {
+        "properties": {
+          "definition": {
+            "$ref": "#/components/schemas/EvalDefinition"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/EvalReading"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "limit": {
+            "type": "integer"
+          },
+          "offset": {
+            "type": "integer"
+          },
+          "registered": {
+            "type": "boolean"
+          },
+          "total": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "limit",
+          "offset",
+          "definition",
+          "registered"
+        ],
+        "type": "object"
+      },
+      "EvalRegisterInput": {
+        "properties": {
+          "actor": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Actor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "decision": {
+            "type": "string"
+          },
+          "direction": {
+            "type": "string"
+          },
+          "doc_block": {
+            "type": "string"
+          },
+          "doc_text": {
+            "type": "string"
+          },
+          "failure_modes": {
+            "items": {
+              "$ref": "#/components/schemas/EvalFailureMode"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "issue_key": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "links": {
+            "items": {
+              "$ref": "#/components/schemas/EvalLinkInput"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "number_rule": {
+            "type": "string"
+          },
+          "owner_role": {
+            "type": "string"
+          },
+          "person": {
+            "type": "string"
+          },
+          "question": {
+            "type": "string"
+          },
+          "replaced_by": {
+            "type": "string"
+          },
+          "series": {
+            "items": {
+              "$ref": "#/components/schemas/EvalSeriesInput"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "slug": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "target": {
+            "type": [
+              "null",
+              "number"
+            ]
+          },
+          "target_inclusive": {
+            "type": "boolean"
+          },
+          "target_judges": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "unit": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "slug"
+        ],
+        "type": "object"
+      },
+      "EvalRegisterResponse": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/EvalRegistered"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "limit": {
+            "type": "integer"
+          },
+          "offset": {
+            "type": "integer"
+          },
+          "total": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "limit",
+          "offset"
+        ],
+        "type": "object"
+      },
+      "EvalRegistered": {
+        "properties": {
+          "definition": {
+            "$ref": "#/components/schemas/EvalDefinition"
+          },
+          "series": {
+            "items": {
+              "$ref": "#/components/schemas/EvalSeries"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "wrote": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "definition",
+          "series",
+          "wrote"
+        ],
+        "type": "object"
+      },
+      "EvalRowRefusal": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "field": {
+            "type": "string"
+          },
+          "index": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "index",
+          "code",
+          "error"
+        ],
+        "type": "object"
+      },
+      "EvalSeries": {
+        "properties": {
+          "agg": {
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "eval_id": {
+            "type": "string"
+          },
+          "is_primary": {
+            "type": "boolean"
+          },
+          "links": {
+            "items": {
+              "$ref": "#/components/schemas/EvalLink"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "listed": {
+            "type": "boolean"
+          },
+          "min_n": {
+            "type": [
+              "null",
+              "integer"
+            ]
+          },
+          "role": {
+            "type": "string"
+          },
+          "series": {
+            "type": "string"
+          },
+          "unit": {
+            "type": "string"
+          },
+          "version": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "eval_id",
+          "series",
+          "version",
+          "unit",
+          "role",
+          "is_primary",
+          "min_n",
+          "listed",
+          "agg",
+          "links",
+          "created_at"
+        ],
+        "type": "object"
+      },
+      "EvalSeriesInput": {
+        "properties": {
+          "agg": {
+            "type": "string"
+          },
+          "is_primary": {
+            "type": "boolean"
+          },
+          "links": {
+            "items": {
+              "$ref": "#/components/schemas/EvalLinkInput"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "listed": {
+            "type": "boolean"
+          },
+          "min_n": {
+            "type": [
+              "null",
+              "integer"
+            ]
+          },
+          "role": {
+            "type": "string"
+          },
+          "series": {
+            "type": "string"
+          },
+          "unit": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "series"
+        ],
+        "type": "object"
+      },
+      "EvalSeriesValues": {
+        "properties": {
+          "agg": {
+            "type": "string"
+          },
+          "change": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EvalStatistics"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "compare": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EvalStatistics"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "data_since": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "days": {
+            "items": {
+              "$ref": "#/components/schemas/EvalDayPoint"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "eval_id": {
+            "type": "string"
+          },
+          "is_primary": {
+            "type": "boolean"
+          },
+          "links": {
+            "items": {
+              "$ref": "#/components/schemas/EvalLink"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "listed": {
+            "type": "boolean"
+          },
+          "min_n": {
+            "type": [
+              "null",
+              "integer"
+            ]
+          },
+          "role": {
+            "type": "string"
+          },
+          "series": {
+            "type": "string"
+          },
+          "unit": {
+            "type": "string"
+          },
+          "version": {
+            "type": "integer"
+          },
+          "via_repository": {
+            "type": "integer"
+          },
+          "window": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EvalStatistics"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "eval_id",
+          "series",
+          "version",
+          "unit",
+          "role",
+          "is_primary",
+          "min_n",
+          "listed",
+          "agg",
+          "links",
+          "created_at",
+          "window",
+          "compare",
+          "change",
+          "data_since",
+          "via_repository",
+          "days"
+        ],
+        "type": "object"
+      },
+      "EvalStatistics": {
+        "additionalProperties": {
+          "type": [
+            "null",
+            "number"
+          ]
+        },
+        "type": "object"
+      },
+      "EvalVerdict": {
+        "properties": {
+          "direction": {
+            "type": "string"
+          },
+          "inclusive": {
+            "type": "boolean"
+          },
+          "judges": {
+            "items": {
+              "$ref": "#/components/schemas/EvalJudge"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "met": {
+            "type": [
+              "null",
+              "boolean"
+            ]
+          },
+          "target": {
+            "format": "double",
+            "type": "number"
+          }
+        },
+        "required": [
+          "target",
+          "direction",
+          "inclusive",
+          "met",
+          "judges"
         ],
         "type": "object"
       },
@@ -21318,284 +23387,6 @@
         ],
         "type": "object"
       },
-      "LegionFiledIssue": {
-        "properties": {
-          "at": {
-            "format": "date-time",
-            "type": "string"
-          },
-          "class": {
-            "enum": [
-              "in_tree_at_design",
-              "in_tree_later",
-              "out_of_tree",
-              "by_the_controller"
-            ],
-            "type": "string"
-          },
-          "filer": {
-            "enum": [
-              "architect",
-              "planner",
-              "implementer",
-              "tester",
-              "reviewer",
-              "merger",
-              "controller"
-            ],
-            "type": "string"
-          },
-          "filer_issue": {
-            "type": "string"
-          },
-          "filer_phase": {
-            "enum": [
-              "",
-              "queued",
-              "design",
-              "planning",
-              "implementing",
-              "testing",
-              "reviewing",
-              "accepting",
-              "merging",
-              "awaiting_person",
-              "held",
-              "done"
-            ],
-            "type": "string"
-          },
-          "key": {
-            "type": "string"
-          },
-          "title": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "key",
-          "title",
-          "at",
-          "class",
-          "filer",
-          "filer_issue",
-          "filer_phase"
-        ],
-        "type": "object"
-      },
-      "LegionMetricsResponse": {
-        "properties": {
-          "computed_at": {
-            "format": "date-time",
-            "type": "string"
-          },
-          "finished": {
-            "type": "integer"
-          },
-          "from": {
-            "format": "date-time",
-            "type": "string"
-          },
-          "phase_time": {
-            "$ref": "#/components/schemas/LegionPhaseTime"
-          },
-          "project": {
-            "type": "string"
-          },
-          "rework": {
-            "$ref": "#/components/schemas/LegionRework"
-          },
-          "scope": {
-            "enum": [
-              "all",
-              "roots",
-              "children"
-            ],
-            "type": "string"
-          },
-          "splitting": {
-            "$ref": "#/components/schemas/LegionSplitting"
-          },
-          "to": {
-            "format": "date-time",
-            "type": "string"
-          },
-          "work_time": {
-            "$ref": "#/components/schemas/LegionWorkTime"
-          }
-        },
-        "required": [
-          "project",
-          "from",
-          "to",
-          "scope",
-          "computed_at",
-          "finished",
-          "work_time",
-          "phase_time",
-          "rework",
-          "splitting"
-        ],
-        "type": "object"
-      },
-      "LegionPhaseTime": {
-        "properties": {
-          "bars": {
-            "items": {
-              "$ref": "#/components/schemas/LegionRoleBar"
-            },
-            "type": [
-              "array",
-              "null"
-            ]
-          },
-          "idle_share": {
-            "format": "double",
-            "type": "number"
-          }
-        },
-        "required": [
-          "bars",
-          "idle_share"
-        ],
-        "type": "object"
-      },
-      "LegionRework": {
-        "properties": {
-          "hours_after_first_review": {
-            "format": "double",
-            "type": "number"
-          },
-          "issues": {
-            "items": {
-              "$ref": "#/components/schemas/LegionReworkIssue"
-            },
-            "type": [
-              "array",
-              "null"
-            ]
-          },
-          "median_hours_after_first_review": {
-            "format": "double",
-            "type": "number"
-          },
-          "median_review_rounds": {
-            "format": "double",
-            "type": "number"
-          },
-          "sent_back_share": {
-            "format": "double",
-            "type": "number"
-          }
-        },
-        "required": [
-          "median_review_rounds",
-          "sent_back_share",
-          "hours_after_first_review",
-          "median_hours_after_first_review",
-          "issues"
-        ],
-        "type": "object"
-      },
-      "LegionReworkIssue": {
-        "properties": {
-          "implementing_hours_after_first_review": {
-            "format": "double",
-            "type": "number"
-          },
-          "key": {
-            "type": "string"
-          },
-          "review_rounds": {
-            "type": "integer"
-          },
-          "sent_back": {
-            "type": "boolean"
-          },
-          "testing_hours_after_first_review": {
-            "format": "double",
-            "type": "number"
-          }
-        },
-        "required": [
-          "key",
-          "review_rounds",
-          "sent_back",
-          "implementing_hours_after_first_review",
-          "testing_hours_after_first_review"
-        ],
-        "type": "object"
-      },
-      "LegionRoleBar": {
-        "properties": {
-          "hours": {
-            "format": "double",
-            "type": "number"
-          },
-          "issues": {
-            "type": "integer"
-          },
-          "median_hours_per_issue": {
-            "format": "double",
-            "type": "number"
-          },
-          "role": {
-            "enum": [
-              "architect",
-              "planner",
-              "implementer",
-              "tester",
-              "reviewer",
-              "merger",
-              "no_role"
-            ],
-            "type": "string"
-          },
-          "segments": {
-            "$ref": "#/components/schemas/LegionSegments"
-          }
-        },
-        "required": [
-          "role",
-          "hours",
-          "issues",
-          "median_hours_per_issue",
-          "segments"
-        ],
-        "type": "object"
-      },
-      "LegionSegments": {
-        "properties": {
-          "ci_wait": {
-            "format": "double",
-            "type": "number"
-          },
-          "idle": {
-            "format": "double",
-            "type": "number"
-          },
-          "in_a_turn": {
-            "format": "double",
-            "type": "number"
-          },
-          "waiting_on_children": {
-            "format": "double",
-            "type": "number"
-          },
-          "waiting_on_person": {
-            "format": "double",
-            "type": "number"
-          }
-        },
-        "required": [
-          "waiting_on_person",
-          "in_a_turn",
-          "ci_wait",
-          "waiting_on_children",
-          "idle"
-        ],
-        "type": "object"
-      },
       "LegionSetting": {
         "properties": {
           "created_by": {
@@ -21642,164 +23433,6 @@
         },
         "required": [
           "changes"
-        ],
-        "type": "object"
-      },
-      "LegionSplitting": {
-        "properties": {
-          "children_per_root": {
-            "format": "double",
-            "type": "number"
-          },
-          "filed": {
-            "items": {
-              "$ref": "#/components/schemas/LegionFiledIssue"
-            },
-            "type": [
-              "array",
-              "null"
-            ]
-          },
-          "finished_roots": {
-            "type": "integer"
-          },
-          "median_hours_roots_with_children": {
-            "format": "double",
-            "type": "number"
-          },
-          "median_hours_roots_without_children": {
-            "format": "double",
-            "type": "number"
-          },
-          "weeks": {
-            "items": {
-              "$ref": "#/components/schemas/LegionSplittingWeek"
-            },
-            "type": [
-              "array",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "weeks",
-          "filed",
-          "finished_roots",
-          "children_per_root",
-          "median_hours_roots_with_children",
-          "median_hours_roots_without_children"
-        ],
-        "type": "object"
-      },
-      "LegionSplittingWeek": {
-        "properties": {
-          "filed": {
-            "additionalProperties": {
-              "type": "integer"
-            },
-            "type": [
-              "object",
-              "null"
-            ]
-          },
-          "finished": {
-            "type": "integer"
-          },
-          "week": {
-            "format": "date-time",
-            "type": "string"
-          }
-        },
-        "required": [
-          "week",
-          "filed",
-          "finished"
-        ],
-        "type": "object"
-      },
-      "LegionWorkTime": {
-        "properties": {
-          "issues": {
-            "items": {
-              "$ref": "#/components/schemas/LegionWorkTimeIssue"
-            },
-            "type": [
-              "array",
-              "null"
-            ]
-          },
-          "median_hours": {
-            "format": "double",
-            "type": "number"
-          },
-          "p90_hours": {
-            "format": "double",
-            "type": "number"
-          }
-        },
-        "required": [
-          "median_hours",
-          "p90_hours",
-          "issues"
-        ],
-        "type": "object"
-      },
-      "LegionWorkTimeIssue": {
-        "properties": {
-          "closed_at": {
-            "format": "date-time",
-            "type": "string"
-          },
-          "hours": {
-            "format": "double",
-            "type": "number"
-          },
-          "key": {
-            "type": "string"
-          },
-          "merged_at": {
-            "format": "date-time",
-            "type": [
-              "null",
-              "string"
-            ]
-          },
-          "parked_hours": {
-            "format": "double",
-            "type": "number"
-          },
-          "priority": {
-            "type": [
-              "null",
-              "integer"
-            ]
-          },
-          "queued_hours": {
-            "format": "double",
-            "type": "number"
-          },
-          "root": {
-            "type": "boolean"
-          },
-          "started_at": {
-            "format": "date-time",
-            "type": "string"
-          },
-          "title": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "key",
-          "title",
-          "priority",
-          "root",
-          "started_at",
-          "closed_at",
-          "merged_at",
-          "hours",
-          "parked_hours",
-          "queued_hours"
         ],
         "type": "object"
       },

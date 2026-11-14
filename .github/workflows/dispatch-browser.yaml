@@ -1222,8 +1222,8 @@ jobs:
 
   # The containerised visual review: every page of packages/dispatch/e2e/review-routes.ts's shot
   # set compared against a committed baseline, in light and in dark, at a desktop width and two
-  # of them again at a phone width. Eighteen pages and two, so forty comparisons, which is the
-  # number of PNGs under packages/dispatch/e2e/__screenshots__.
+  # of them again at a phone width. Seventeen pages and two, so thirty-eight comparisons, which
+  # is the number of PNGs under packages/dispatch/e2e/__screenshots__.
   #
   # The full lane only. A snapshot difference holds the merge queue, which is the point: a palette
   # or a layout regression is refused at the merge rather than found the next morning, and the

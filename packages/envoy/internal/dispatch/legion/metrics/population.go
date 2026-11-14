@@ -1,10 +1,13 @@
-// Package metrics computes the Delivery page's four Legion measures — work time to merge, phase
-// time by worker type, rework, and splitting and follow-ups (dispatch://INFRA-1077, the spec's
-// "The four Legion metrics" and "Rule details").
+// Package metrics computes the Legion measures — work time to merge, phase time by worker type,
+// rework, and splitting and follow-ups (dispatch://INFRA-1077, the spec's "The four Legion
+// metrics" and "Rule details"), and slot wait and idle time by role (dispatch://INFRA-2916, D3):
+// each issue's facts, which legionfacts stores, and the six folds the Legion evals read over the
+// day parts built from those facts (folds.go).
 //
-// It is split the way api/delivery_pipeline.go is split: Read makes every database and GitHub read
-// one answer needs, and Compute turns that population into the answer and touches nothing, so the
-// route and the live hub share one body rather than two implementations of the rules.
+// It is split the way api/delivery_pipeline.go is split: ReadProject and ReadIssues make every
+// database read a computation needs, and ProjectFacts and ProjectFilings turn that
+// population into the facts and touch nothing, so every reader of the facts shares one body
+// rather than two implementations of the rules.
 //
 // Two disciplines run through it:
 //
@@ -21,15 +24,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"slices"
-	"strings"
 	"time"
 
-	"golang.org/x/sync/errgroup"
-
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
-	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -37,18 +35,6 @@ import (
 // askTurnEventTypes are the ask events a person's turn starts and ends with: the two that hand an
 // ask to a person and the two that take it back (api/events.go names the same family).
 var askTurnEventTypes = []string{"ask.opened", "ask.handed_back", "ask.answered", "ask.resolved"}
-
-// fetchedMergeTimesCap bounds how many pull requests one answer fetches from GitHub for a merge
-// time Dispatch has not already stored. Every finished issue whose pull request the delivery
-// intake has reconciled reads from delivery_pull_requests; this is the tail of issues closed since
-// the last reconcile, and a window that names hundreds of them is a backfill, not a dashboard.
-const fetchedMergeTimesCap = 50
-
-// fetchedMergeTimesConcurrency bounds how many of those fetches are in flight at once. Each one
-// mints an installation token and makes two GitHub calls, so a serial pass over the cap is up to
-// 150 round trips inside one request; the bound is the one the broadcast resolver holds its own
-// fan-out to (api/broadcasts.go's broadcastResolveConcurrency).
-const fetchedMergeTimesConcurrency = 8
 
 // Mark is one value of one field as of a moment: an observation the sampler recorded, or a status
 // an event snapshotted. The value of an observation is the JSON text legion_observations holds; a
@@ -68,8 +54,6 @@ type Handoff struct {
 // Issue is one issue of the population with every fact the rules read of it.
 type Issue struct {
 	Key       string
-	Title     string
-	Priority  *int
 	Parent    string
 	CreatedAt time.Time
 	ClosedAt  *time.Time
@@ -118,7 +102,6 @@ type Issue struct {
 // and no rule turns on it (the spec's "Rule details — The tree of a filed issue").
 type Filed struct {
 	Key       string
-	Title     string
 	At        time.Time
 	Session   string
 	Filer     legion.SessionTitle
@@ -126,7 +109,8 @@ type Filed struct {
 	Ancestors []string
 }
 
-// Population is every fact one metrics answer is computed from.
+// Population is every fact one computation of the facts reads, from the project's beginning
+// (From, the zero time for both reads) to To, the moment an open issue's hours run to.
 type Population struct {
 	Project string
 	From    time.Time
@@ -137,7 +121,8 @@ type Population struct {
 	Issues map[string]*Issue
 	Keys   []string
 
-	// Filed is every issue a Legion session created in the window, in creation order.
+	// Filed is every issue a Legion session of the project created that the read covers, in
+	// creation order: the whole history's (ReadProject) or the named filed issues' (ReadIssues).
 	Filed []Filed
 
 	// reported is every issue of the project the daemon reports — the issues the sampler
@@ -155,56 +140,48 @@ type Population struct {
 	askTurns []askTurn
 }
 
-// Read is every database and GitHub read one metrics answer makes: the project's issues, the
-// Legion phase work the event log records — for every issue of the project, which is what places
-// an issue in a tree, and in the window's scope per role, which is what a metric counts — the
-// handoffs and observations of the window's issues, the issues of the project the daemon
-// reports, the issues Legion sessions created in the window, and the merge time of each finished
-// issue's pull request.
-//
-// github may be nil, and a GitHub read that fails is not an error: a merge time Dispatch cannot
-// reach leaves that issue with none, since no metric's rule is written in terms of one.
-func Read(ctx context.Context, pool *store.Pool, github *githubapp.Client, project string, from, to time.Time) (*Population, error) {
-	return read(ctx, pool, github, project, from, to, func(p *Population) []string {
-		return p.scopeKeys(from, to)
-	}, true)
-}
-
 // ReadProject is the population of every issue of the project, open or closed, up to now: what
 // the per-issue facts read (ProjectFacts). Its window runs from the beginning to now, so an open
-// issue's hours run to now, and its scope is every issue of the project rather than the issues a
-// window names. It reads none of the window's filings, for the reason ReadIssues gives.
-func ReadProject(ctx context.Context, pool *store.Pool, github *githubapp.Client, project string, now time.Time) (*Population, error) {
-	return read(ctx, pool, github, project, time.Time{}, now, func(p *Population) []string {
+// issue's hours run to now, and its scope is every issue of the project. Its filings are every
+// issue a Legion session of the project ever filed (ProjectFilings), whose filers are issues of
+// the project and so inside that scope.
+func ReadProject(ctx context.Context, pool *store.Pool, project string, now time.Time) (*Population, error) {
+	return read(ctx, pool, project, now, func(ctx context.Context, p *Population) error {
+		return p.readFiled(ctx, pool, project, time.Time{}, now)
+	}, func(p *Population) []string {
 		return p.Keys
-	}, false)
+	})
 }
 
 // ReadIssues is the population the facts of the named issues are recomputed from, so a consumer
 // can recompute one issue without reading a whole project's event history. Its scope is wider
 // than the keys asked for: it is every issue the trees of those keys reach by the one tree rule
 // (treeScopeKeys), because an issue's own hours read the issues above it and the issues below it
-// (segments.go measures a root's waiting on children from its children's spans). It reads none
-// of the window's filings, whose one reader is metric 4 (Splitting), and no facts computation
-// calls that. The project's own reads stay, because they are what places an issue in a tree and
-// they are cheap.
-func ReadIssues(ctx context.Context, pool *store.Pool, github *githubapp.Client, project string, keys []string, now time.Time) (*Population, error) {
-	return read(ctx, pool, github, project, time.Time{}, now, func(p *Population) []string {
-		return p.treeScopeKeys(keys)
-	}, false)
+// (segments.go measures a root's waiting on children from its children's spans). The project's
+// own reads stay, because they are what places an issue in a tree and they are cheap.
+//
+// filed names the filed issues whose filings are read with it (readFiledIssues), the ones a
+// Legion session of the project filed among them, and the scope holds the issue each filer was
+// working as well, because a filing's class and its filer's phase read that issue's timeline
+// (classify). The facts of the keys asked for are the same whatever the scope adds around them.
+func ReadIssues(ctx context.Context, pool *store.Pool, project string, keys, filed []string, now time.Time) (*Population, error) {
+	return read(ctx, pool, project, now, func(ctx context.Context, p *Population) error {
+		return p.readFiledIssues(ctx, pool, project, filed)
+	}, func(p *Population) []string {
+		return p.treeScopeKeys(slices.Concat(keys, p.filerKeys()))
+	})
 }
 
-// read is the body the three readers share. scope names which issues the seven detail reads
-// cover, and filed says whether the window's filings are read.
-func read(ctx context.Context, pool *store.Pool, github *githubapp.Client, project string, from, to time.Time, scope func(*Population) []string, filed bool) (*Population, error) {
-	population := &Population{Project: project, From: from, To: to, Issues: map[string]*Issue{}}
+// read is the body the two readers share, from the beginning to `to`. filed reads the
+// population's filings, before the scope is chosen because the scope holds each filer's issue,
+// and scope names which issues the seven detail reads cover.
+func read(ctx context.Context, pool *store.Pool, project string, to time.Time, filed func(ctx context.Context, p *Population) error, scope func(*Population) []string) (*Population, error) {
+	population := &Population{Project: project, To: to, Issues: map[string]*Issue{}}
 	if err := population.readIssues(ctx, pool, project); err != nil {
 		return nil, err
 	}
-	if filed {
-		if err := population.readFiled(ctx, pool, project, from, to); err != nil {
-			return nil, err
-		}
+	if err := filed(ctx, population); err != nil {
+		return nil, err
 	}
 	// readReported runs here, before the scope is chosen, and not in the group below. It takes
 	// no keys — it reads what the daemon reports of every issue of the project — and the scope
@@ -221,33 +198,17 @@ func read(ctx context.Context, pool *store.Pool, github *githubapp.Client, proje
 	// The seven reads below write disjoint fields — six take the keys above and write fields of
 	// those issues, the seventh the project's phase-work keys — so they run together rather
 	// than one after another, as the delivery population's independent reads do
-	// (api/delivery.go). errgroup answers the first error recorded, so which of two failing
-	// reads names the failure is no longer fixed.
-	independent := []func(ctx context.Context) error{
+	// (api/delivery.go). store.ReadSideBySide answers the first error recorded, so which of two
+	// failing reads names the failure is no longer fixed.
+	if err := store.ReadSideBySide(ctx,
 		func(ctx context.Context) error { return population.readRoleEvents(ctx, pool, keys) },
 		func(ctx context.Context) error { return population.readStatusMarks(ctx, pool, keys) },
 		func(ctx context.Context) error { return population.readAskTurns(ctx, pool, keys) },
 		func(ctx context.Context) error { return population.readHandoffs(ctx, pool, keys) },
 		func(ctx context.Context) error { return population.readObservations(ctx, pool, project, keys) },
-		func(ctx context.Context) error { return population.readMergeTimes(ctx, pool, github, keys) },
+		func(ctx context.Context) error { return population.readMergeTimes(ctx, pool, keys) },
 		func(ctx context.Context) error { return population.readPhaseWork(ctx, pool) },
-	}
-	reads, readsCtx := errgroup.WithContext(ctx)
-	start := func(fn func(ctx context.Context) error) error {
-		readCtx, err := store.ForConcurrentRead(readsCtx)
-		if err != nil {
-			return err
-		}
-		reads.Go(func() error { return fn(readCtx) })
-		return nil
-	}
-	for _, fn := range independent {
-		if err := start(fn); err != nil {
-			_ = reads.Wait()
-			return nil, err
-		}
-	}
-	if err := reads.Wait(); err != nil {
+	); err != nil {
 		return nil, err
 	}
 	population.linkTrees()
@@ -255,13 +216,12 @@ func read(ctx context.Context, pool *store.Pool, github *githubapp.Client, proje
 	return population, nil
 }
 
-// readIssues reads the project's issues. It reads all of them rather than the window's: the window
-// names which issues finished, while the rules read their whole trees (a child that finished in
-// the window belongs to a root that may not have) and each issue's whole life (the work time runs
-// from its first worker event, which is older than the window whenever the issue is).
+// readIssues reads the project's issues, all of them: the rules read each issue's whole tree (a
+// child that finished belongs to a root that may not have) and its whole life (the work time runs
+// from its first worker event).
 func (p *Population) readIssues(ctx context.Context, pool *store.Pool, project string) error {
 	rows, err := pool.Query(ctx, `
-		select key, title, priority, parent_key, created_at, closed_at
+		select key, parent_key, created_at, closed_at
 		from issues
 		where project_key = $1
 		order by key
@@ -273,7 +233,7 @@ func (p *Population) readIssues(ctx context.Context, pool *store.Pool, project s
 	for rows.Next() {
 		issue := &Issue{FirstRoleEvent: map[string]time.Time{}, Observed: map[string][]Mark{}}
 		var parent *string
-		if err := rows.Scan(&issue.Key, &issue.Title, &issue.Priority, &parent, &issue.CreatedAt, &issue.ClosedAt); err != nil {
+		if err := rows.Scan(&issue.Key, &parent, &issue.CreatedAt, &issue.ClosedAt); err != nil {
 			return fmt.Errorf("scan an issue of %s: %w", project, err)
 		}
 		if parent != nil {
@@ -288,23 +248,51 @@ func (p *Population) readIssues(ctx context.Context, pool *store.Pool, project s
 	return nil
 }
 
-// readFiled reads every `issue.created` event of the window a session wrote, whatever project
+// readFiled reads every `issue.created` event before `to` a session wrote, whatever project
 // the new issue belongs to — an issue filed out of the filer's tree is one of metric 4's
 // classes — and keeps the ones a Legion session of this project filed.
 func (p *Population) readFiled(ctx context.Context, pool *store.Pool, project string, from, to time.Time) error {
-	rows, err := pool.Query(ctx, `
-		select coalesce(events.issue_key, ''), coalesce(issues.title, ''), events.created_at,
+	return p.readFilings(ctx, pool, project, `
+		select coalesce(events.issue_key, ''), events.created_at,
 			coalesce(events.actor->>'id', ''), coalesce(events.payload->>'parent', ''),
 			coalesce(events.payload->'ancestors', '[]'::jsonb)
 		from events
-		left join issues on issues.key = events.issue_key
 		where events.type = 'issue.created'
 			and events.actor->>'kind' = 'session'
 			and events.created_at >= $1 and events.created_at < $2
 		order by events.created_at, events.id
 	`, from, to)
+}
+
+// readFiledIssues reads the `issue.created` event a session wrote of each named issue, whatever
+// project it belongs to, and keeps the ones a Legion session of this project filed: readFiled's
+// rule over a set of filed issues rather than a window, which is the filings a consumer that
+// recomputes some issues recomputes with them. The events are read by their issue, so the read
+// is the issues' own and never the whole log's.
+func (p *Population) readFiledIssues(ctx context.Context, pool *store.Pool, project string, keys []string) error {
+	if len(keys) == 0 {
+		return nil
+	}
+	return p.readFilings(ctx, pool, project, `
+		select coalesce(events.issue_key, ''), events.created_at,
+			coalesce(events.actor->>'id', ''), coalesce(events.payload->>'parent', ''),
+			coalesce(events.payload->'ancestors', '[]'::jsonb)
+		from events
+		where events.issue_key = any($1)
+			and events.type = 'issue.created'
+			and events.actor->>'kind' = 'session'
+		order by events.created_at, events.id
+	`, keys)
+}
+
+// readFilings is the body the two reads of filings share: it runs statement, which answers the
+// filed issue, the moment, the session, and the parent and ancestors the event carried, resolves
+// each session's newest title, and keeps the filings whose session is a Legion session of this
+// project, in the order the statement answered them.
+func (p *Population) readFilings(ctx context.Context, pool *store.Pool, project, statement string, args ...any) error {
+	rows, err := pool.Query(ctx, statement, args...)
 	if err != nil {
-		return fmt.Errorf("read the issues filed in the window: %w", err)
+		return fmt.Errorf("read the issues Legion sessions of %s filed: %w", project, err)
 	}
 	defer rows.Close()
 	var filed []Filed
@@ -312,7 +300,7 @@ func (p *Population) readFiled(ctx context.Context, pool *store.Pool, project st
 	for rows.Next() {
 		var one Filed
 		var ancestors []byte
-		if err := rows.Scan(&one.Key, &one.Title, &one.At, &one.Session, &one.Parent, &ancestors); err != nil {
+		if err := rows.Scan(&one.Key, &one.At, &one.Session, &one.Parent, &ancestors); err != nil {
 			return fmt.Errorf("scan a filed issue: %w", err)
 		}
 		if one.Key == "" || one.Session == "" {
@@ -325,7 +313,7 @@ func (p *Population) readFiled(ctx context.Context, pool *store.Pool, project st
 		sessions[one.Session] = true
 	}
 	if err := rows.Err(); err != nil {
-		return fmt.Errorf("read the issues filed in the window: %w", err)
+		return fmt.Errorf("read the issues Legion sessions of %s filed: %w", project, err)
 	}
 	titles, err := resolveTitles(ctx, pool, sessions)
 	if err != nil {
@@ -342,24 +330,16 @@ func (p *Population) readFiled(ctx context.Context, pool *store.Pool, project st
 	return nil
 }
 
-// scopeKeys is every issue the event, handoff and observation reads cover: the issues that could
-// have finished in the window, every issue each one shares a tree with by the one tree rule
-// (treeScopeKeys), and the issues the window's filings name as their filer, whose phase at the
-// filing metric 4 reports.
-func (p *Population) scopeKeys(from, to time.Time) []string {
-	seeds := make([]string, 0, len(p.Keys)+len(p.Filed))
-	for _, key := range p.Keys {
-		issue := p.Issues[key]
-		if issue.ClosedAt != nil && !issue.ClosedAt.Before(from) && issue.ClosedAt.Before(to) {
-			seeds = append(seeds, key)
-		}
-	}
+// filerKeys is the issue each filing's filer was working, for every filing the population read,
+// and none for a filing by the controller, which works no issue.
+func (p *Population) filerKeys() []string {
+	keys := make([]string, 0, len(p.Filed))
 	for _, filed := range p.Filed {
 		if filed.Filer.Issue != "" {
-			seeds = append(seeds, filed.Filer.Issue)
+			keys = append(keys, filed.Filer.Issue)
 		}
 	}
-	return p.treeScopeKeys(seeds)
+	return keys
 }
 
 // treeScopeKeys is the scope the seeds reach, by the one tree step (legion.TreeAbove): each
@@ -785,12 +765,11 @@ func (p *Population) fillReportedTrees() {
 	}
 }
 
-// readMergeTimes reads the merge time of each issue's pull request from the delivery population,
-// and fetches the ones that population does not hold yet from GitHub (delivery.FetchPullRequest),
-// up to fetchedMergeTimesCap of them. A fetch that fails leaves the issue with no merge time.
-func (p *Population) readMergeTimes(ctx context.Context, pool *store.Pool, github *githubapp.Client, keys []string) error {
+// readMergeTimes reads the merge time of each issue's pull request from the delivery population:
+// the earliest of those that merged, where it holds one.
+func (p *Population) readMergeTimes(ctx context.Context, pool *store.Pool, keys []string) error {
 	rows, err := pool.Query(ctx, `
-		select issue_key, repo, number, merged_at
+		select issue_key, merged_at
 		from delivery_pull_requests
 		where issue_key = any($1) and unfetchable_at is null
 		order by issue_key, number
@@ -799,77 +778,23 @@ func (p *Population) readMergeTimes(ctx context.Context, pool *store.Pool, githu
 		return fmt.Errorf("read the pull requests of the finished issues: %w", err)
 	}
 	defer rows.Close()
-	type unmerged struct {
-		issue, repo string
-		number      int
-	}
-	var fetch []unmerged
 	for rows.Next() {
-		var key, repo string
-		var number int
+		var key string
 		var mergedAt *time.Time
-		if err := rows.Scan(&key, &repo, &number, &mergedAt); err != nil {
+		if err := rows.Scan(&key, &mergedAt); err != nil {
 			return fmt.Errorf("scan a pull request: %w", err)
 		}
 		issue := p.Issues[key]
-		if issue == nil {
+		if issue == nil || mergedAt == nil {
 			continue
 		}
-		switch {
-		case mergedAt == nil:
-			fetch = append(fetch, unmerged{issue: key, repo: repo, number: number})
-		case issue.MergedAt == nil || mergedAt.Before(*issue.MergedAt):
+		if issue.MergedAt == nil || mergedAt.Before(*issue.MergedAt) {
 			issue.MergedAt = mergedAt
 		}
 	}
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("read the pull requests of the finished issues: %w", err)
 	}
-	if github == nil {
-		return nil
-	}
-	// The cap first, over the flat list, so the same entries are attempted as a serial pass
-	// would attempt; then one group per issue, in the order the rows arrived. Each group runs
-	// its own entries one after another, so the first pull request of an issue that answers a
-	// merge time is still the one assigned and the rest of that issue's are still skipped;
-	// groups write to distinct issues, so no two of them touch the same field.
-	if len(fetch) > fetchedMergeTimesCap {
-		fetch = fetch[:fetchedMergeTimesCap]
-	}
-	grouped := map[string][]unmerged{}
-	var order []string
-	for _, one := range fetch {
-		if _, seen := grouped[one.issue]; !seen {
-			order = append(order, one.issue)
-		}
-		grouped[one.issue] = append(grouped[one.issue], one)
-	}
-	fetches := new(errgroup.Group)
-	fetches.SetLimit(fetchedMergeTimesConcurrency)
-	for _, key := range order {
-		fetches.Go(func() error {
-			for _, one := range grouped[key] {
-				issue := p.Issues[one.issue]
-				if issue == nil || issue.MergedAt != nil {
-					continue
-				}
-				owner, name, found := strings.Cut(one.repo, "/")
-				if !found {
-					continue
-				}
-				fetched, err := delivery.FetchPullRequest(ctx, github, owner, name, one.number)
-				if err != nil {
-					slog.Debug("dispatch: read a Legion issue's merge time", "issue", one.issue, "repo", one.repo, "number", one.number, "error", err)
-					continue
-				}
-				issue.MergedAt = fetched.MergedAt
-			}
-			return nil
-		})
-	}
-	// No group returns an error — a fetch that fails leaves the issue with no merge time, as a
-	// serial pass left it — so this waits and nothing more.
-	_ = fetches.Wait()
 	return nil
 }
 
@@ -936,9 +861,9 @@ func (p *Population) readPhaseWork(ctx context.Context, pool *store.Pool) error 
 
 // hasPhaseWork is whether this read carried Legion phase work of the issue: an event of a
 // session titled `Legion <role> · <its key>`, or a handoff, among the window's scope. The rule
-// that picks which finished issues a metric counts reads this and not isLegionIssue (compute.go's
-// finishedInWindow): an issue the daemon reports and no role ever worked finished nothing,
-// however its tree reads.
+// that picks which finished issues a measure counts reads this and not isLegionIssue
+// (ProjectFacts, whose issues closed in a window are the ones it finished): an issue the daemon
+// reports and no role ever worked finished nothing, however its tree reads.
 func (p *Population) hasPhaseWork(issue *Issue) bool {
 	return len(issue.FirstRoleEvent) > 0 || len(issue.Handoffs) > 0
 }
@@ -952,7 +877,7 @@ func (p *Population) issueEnd(issue *Issue) time.Time {
 }
 
 // resolveTitles is each session's most recent known title (delivery.ResolveSessionTitles, which
-// reads the one index Dispatch keeps of them).
+// reads the one table Dispatch keeps of them, session_titles).
 func resolveTitles(ctx context.Context, pool *store.Pool, sessions map[string]bool) (map[string]string, error) {
 	ids := make([]string, 0, len(sessions))
 	for id := range sessions {

@@ -1,0 +1,7 @@
+kind: Changed
+body: |-
+  A deploy counts as one with pull requests when it shipped any pull request, whenever that pull
+  request merged, on the Delivery page and in the eval registry alike. The old rule counted a
+  deploy only when it shipped a pull request merged inside the reader's window, which depends on
+  the window and so cannot be a part of one day. Over the test history the Delivery page's
+  `deploys_with_prs` moved by one deploy in 4 of 20 windows.

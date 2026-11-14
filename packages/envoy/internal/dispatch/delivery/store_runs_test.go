@@ -8,7 +8,7 @@ import (
 
 // TestListRunsStartedInIsHalfOpenAndOrderedByStart seeds four deploy runs started one second
 // before from, at from, one second before to and at to, every head commit before from: the
-// measures count the middle two, oldest start first. ListRuns, which filters on a run's creation
+// measures count the middle two, oldest start first. listRuns, which filters on a run's creation
 // (its start here, since none carries created_at), would return the three started at or after from.
 func TestListRunsStartedInIsHalfOpenAndOrderedByStart(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
@@ -40,9 +40,9 @@ func TestListRunsStartedInIsHalfOpenAndOrderedByStart(t *testing.T) {
 		t.Fatalf("seed other repository's run: %v", err)
 	}
 
-	runs, err := ListRunsStartedIn(ctx, pool, "acme/widgets", DeliveryRunKindDeploy, "", "", from, to)
+	runs, err := listRunsStartedIn(ctx, pool, "acme/widgets", DeliveryRunKindDeploy, "", "", from, to)
 	if err != nil {
-		t.Fatalf("ListRunsStartedIn: %v", err)
+		t.Fatalf("listRunsStartedIn: %v", err)
 	}
 	got := make([]time.Time, len(runs))
 	for i, run := range runs {
@@ -50,7 +50,7 @@ func TestListRunsStartedInIsHalfOpenAndOrderedByStart(t *testing.T) {
 	}
 	want := []time.Time{from, to.Add(-time.Second)}
 	if len(got) != len(want) || !got[0].Equal(want[0]) || !got[1].Equal(want[1]) {
-		t.Fatalf("started_at of the runs ListRunsStartedIn returned = %v, want %v", got, want)
+		t.Fatalf("started_at of the runs listRunsStartedIn returned = %v, want %v", got, want)
 	}
 	if runs[0].RunID != 902 || runs[1].RunID != 901 {
 		t.Fatalf("run ids = %d, %d, want 902, 901", runs[0].RunID, runs[1].RunID)
@@ -58,7 +58,7 @@ func TestListRunsStartedInIsHalfOpenAndOrderedByStart(t *testing.T) {
 }
 
 // TestUpsertRunRoundTripsBranchAndEvent writes runs carrying GitHub's head_branch and event and
-// reads them back through ListRunsStartedIn's two filters: a non-empty filter matches only that
+// reads them back through listRunsStartedIn's two filters: a non-empty filter matches only that
 // value, an empty one matches anything, and a run stored with neither (one the backfill has not
 // reached) matches only when both filters are empty.
 func TestUpsertRunRoundTripsBranchAndEvent(t *testing.T) {
@@ -80,9 +80,9 @@ func TestUpsertRunRoundTripsBranchAndEvent(t *testing.T) {
 
 	ids := func(branch, event string) []int64 {
 		t.Helper()
-		runs, err := ListRunsStartedIn(ctx, pool, "acme/widgets", DeliveryRunKindDeploy, branch, event, from, to)
+		runs, err := listRunsStartedIn(ctx, pool, "acme/widgets", DeliveryRunKindDeploy, branch, event, from, to)
 		if err != nil {
-			t.Fatalf("ListRunsStartedIn(%q, %q): %v", branch, event, err)
+			t.Fatalf("listRunsStartedIn(%q, %q): %v", branch, event, err)
 		}
 		got := make([]int64, len(runs))
 		for i, run := range runs {
@@ -99,13 +99,13 @@ func TestUpsertRunRoundTripsBranchAndEvent(t *testing.T) {
 		{"", "", []int64{960, 961, 962}},
 	} {
 		if got := ids(c.branch, c.event); !slices.Equal(got, c.want) {
-			t.Errorf("ListRunsStartedIn(%q, %q) = %v, want %v", c.branch, c.event, got, c.want)
+			t.Errorf("listRunsStartedIn(%q, %q) = %v, want %v", c.branch, c.event, got, c.want)
 		}
 	}
 
-	runs, err := ListRunsStartedIn(ctx, pool, "acme/widgets", DeliveryRunKindDeploy, "main", "push", from, to)
+	runs, err := listRunsStartedIn(ctx, pool, "acme/widgets", DeliveryRunKindDeploy, "main", "push", from, to)
 	if err != nil || len(runs) != 1 {
-		t.Fatalf("ListRunsStartedIn(main, push) = %+v, %v", runs, err)
+		t.Fatalf("listRunsStartedIn(main, push) = %+v, %v", runs, err)
 	}
 	if runs[0].HeadBranch == nil || *runs[0].HeadBranch != "main" || runs[0].Event == nil || *runs[0].Event != "push" {
 		t.Fatalf("run 960 read back HeadBranch, Event = %v, %v, want main, push", runs[0].HeadBranch, runs[0].Event)
@@ -133,9 +133,9 @@ func TestListRunsNarrowsContainmentToOneBranch(t *testing.T) {
 		branch string
 		want   []int64
 	}{{"main", []int64{970}}, {"", []int64{970, 971, 972}}} {
-		runs, err := ListRuns(ctx, pool, "acme/widgets", DeliveryRunKindDeploy, c.branch, since)
+		runs, err := listRuns(ctx, pool, "acme/widgets", DeliveryRunKindDeploy, c.branch, since, nil)
 		if err != nil {
-			t.Fatalf("ListRuns(%q): %v", c.branch, err)
+			t.Fatalf("listRuns(%q): %v", c.branch, err)
 		}
 		var got []int64
 		for _, run := range runs {
@@ -144,7 +144,7 @@ func TestListRunsNarrowsContainmentToOneBranch(t *testing.T) {
 			}
 		}
 		if !slices.Equal(got, c.want) {
-			t.Errorf("ListRuns(%q) = %v, want %v", c.branch, got, c.want)
+			t.Errorf("listRuns(%q) = %v, want %v", c.branch, got, c.want)
 		}
 	}
 }

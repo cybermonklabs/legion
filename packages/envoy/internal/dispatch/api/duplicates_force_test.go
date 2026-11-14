@@ -71,9 +71,13 @@ func newDuplicateVocabulary(t *testing.T, handler http.Handler, project string, 
 	return duplicateVocabularyTest{
 		project:   project,
 		candidate: candidate,
-		title:     "New " + duplicateWords[0],
-		spec:      strings.Join(duplicateWords, " ") + ".",
-		score:     float64(shared) / float64(total),
+		// "Fresh" is a word no item of the project holds, so the term picker drops it (df 0) and
+		// the score stays the candidate's share of the vocabulary. The project's seeded evals-md
+		// (dispatch://INFRA-2916, R5) holds "new", which the picker would then keep as a term the
+		// candidate lacks.
+		title: "Fresh " + duplicateWords[0],
+		spec:  strings.Join(duplicateWords, " ") + ".",
+		score: float64(shared) / float64(total),
 	}
 }
 

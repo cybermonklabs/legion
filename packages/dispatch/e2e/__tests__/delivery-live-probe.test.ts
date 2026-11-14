@@ -12,6 +12,9 @@ import type { ServerWebSocket } from "bun";
 import after from "../../../contracts/fixtures/live/after.json";
 import delta from "../../../contracts/fixtures/live/delta.json";
 import error from "../../../contracts/fixtures/live/error.json";
+import evalsAfter from "../../../contracts/fixtures/live/evals_after.json";
+import evalsDelta from "../../../contracts/fixtures/live/evals_delta.json";
+import evalsSnapshot from "../../../contracts/fixtures/live/evals_snapshot.json";
 import heartbeat from "../../../contracts/fixtures/live/heartbeat.json";
 import snapshot from "../../../contracts/fixtures/live/snapshot.json";
 import { RECONNECT_SPREAD_MS } from "../../web/src/api/live-socket";
@@ -20,6 +23,7 @@ import type {
   DeliveryLiveSnapshot,
   DeliveryLiveView,
   DeliveryTimelineWithMeasures,
+  EvalListResponse,
   LiveClientFrame,
 } from "../../web/src/api/types";
 import type { ProbeCompareLine, ProbeHeld, ProbeLine } from "../delivery-live-probe";
@@ -172,7 +176,8 @@ function runProbe(args: readonly string[]): Run {
 function args(
   dispatch: FakeDispatchServer<LiveClientFrame>,
   token = TOKEN,
-  minutes = "1"
+  minutes = "1",
+  shown: DeliveryLiveView = view
 ): string[] {
   const tokenFile = join(scratch(), "token");
   writeFileSync(tokenFile, `${token}\n`, { mode: 0o600 });
@@ -182,7 +187,7 @@ function args(
     "--token-file",
     tokenFile,
     "--view",
-    JSON.stringify(view),
+    JSON.stringify(shown),
     "--minutes",
     minutes,
   ];
@@ -202,6 +207,7 @@ const comparisons = (lines: readonly ProbeLine[]) =>
 const nothing = {
   changed_at: null,
   counts: null,
+  items: null,
   maps: null,
   prs: null,
   runs: null,
@@ -396,6 +402,106 @@ test(
         runs: { equal: false, extra: [], missing: ["99"] },
       },
       { equal: true, measures: { differ: [], equal: true }, prs: null, runs: null },
+    ]);
+  },
+  PROCESS_TEST_MS
+);
+
+test(
+  "an evals view's frames are written eval by eval, and --compare reads its project's list route",
+  async () => {
+    // The frames Dispatch's own diff writes for an evals view: a reading moved pr-size's numbers
+    // and lead-time was registered, and the rows' new age moved the freshness.
+    const evalsHeld = evalsSnapshot as unknown as DeliveryLiveSnapshot;
+    const evalsChange = evalsDelta as unknown as DeliveryLiveDelta;
+    const evalsNext = evalsAfter as unknown as DeliveryLiveSnapshot;
+    const nextList = evalsNext.body as EvalListResponse;
+    const evalsView: DeliveryLiveView = {
+      kind: "evals",
+      project: "ACME",
+      query: "kind=experiment",
+      window: { from: nextList.window.from, to: nextList.window.to },
+    };
+    const sent: string[] = [];
+    const dispatch = probeDispatch({
+      onSubscribe(socket, sub) {
+        for (const text of [forSub(evalsHeld, sub), forSub(evalsChange, sub)]) {
+          sent.push(text);
+          socket.send(text);
+        }
+      },
+      // The route measures the refresher's age at its own read, which the comparison leaves out.
+      routes: {
+        "/api/v1/projects/ACME/evals": {
+          ...nextList,
+          freshness: { ...nextList.freshness, refresher_age_seconds: 600 },
+        },
+      },
+    });
+    const bodyFile = join(scratch(), "body.json");
+    const run = runProbe([
+      ...args(dispatch, TOKEN, "1", evalsView),
+      "--compare",
+      "--body-file",
+      bodyFile,
+    ]);
+    await run.until(() => run.lines.some((line) => line.type === "delta"));
+    run.kill("SIGINT");
+    expect(await run.exited()).toBe(0);
+
+    expect(dispatch.received).toEqual([{ sub: "probe", type: "subscribe", view: evalsView }]);
+    const bytes = sent.map((text) => Buffer.byteLength(text));
+    expect(
+      run.lines.filter((line) => line.type !== "compare").map(({ at: _at, ...line }) => line)
+    ).toEqual([
+      { resume: null, type: "open" },
+      {
+        ...nothing,
+        bytes: bytes[0],
+        changed_at: evalsHeld.changed_at,
+        items: ((evalsHeld.body as EvalListResponse).items ?? []).length,
+        seq: evalsHeld.seq,
+        type: "snapshot",
+      },
+      {
+        ...nothing,
+        bytes: bytes[1],
+        changed_at: evalsChange.changed_at,
+        counts: {},
+        items: { remove: [], upsert: ["ACME/lead-time", "ACME/pr-size"] },
+        maps: {},
+        seq: evalsChange.seq,
+        set: ["freshness", "total"],
+        type: "delta",
+      },
+    ]);
+
+    // What the probe holds is the snapshot a page subscribing afterwards gets, every field.
+    const applied = (await Bun.file(bodyFile).json()) as ProbeHeld;
+    expect(applied.body).toEqual(evalsNext.body);
+    expect(applied.revs).toEqual(evalsNext.revs);
+
+    // --compare reads the project's list route for the days the body folded, with the view's
+    // own query, and finds every eval and every field equal.
+    expect(
+      dispatch.reads.map((url) => [
+        url.pathname,
+        url.searchParams.get("from"),
+        url.searchParams.get("to"),
+        url.searchParams.get("kind"),
+      ])
+    ).toEqual([
+      ["/api/v1/projects/ACME/evals", nextList.window.from, nextList.window.to, "experiment"],
+    ]);
+    expect(comparisons(run.lines).map(({ at: _at, route: _route, ...line }) => line)).toEqual([
+      {
+        equal: true,
+        measures: { differ: [], equal: true },
+        prs: null,
+        runs: null,
+        status: 200,
+        type: "compare",
+      },
     ]);
   },
   PROCESS_TEST_MS

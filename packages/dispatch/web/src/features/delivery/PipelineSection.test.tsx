@@ -145,6 +145,7 @@ const PIPELINE: DeliveryPipelineResponse = {
         ...timing({}, { n: 900, median_minutes: 17.3, p90_minutes: 21, success: 890, failure: 10 }),
       },
     ],
+    slowest_min_results: 50,
     failing_jobs: [
       {
         name: "build / unit",
@@ -363,6 +364,25 @@ test("says when no job has enough results and when no job failed", () => {
   view({ ...PIPELINE, pr_checks: { ...PIPELINE.pr_checks, failing_jobs: [], slowest_jobs: [] } });
   expect(document.body).toHaveTextContent("No job has 50 timed results yet.");
   expect(document.body).toHaveTextContent("No job failed in the last 24 hours.");
+});
+
+test("the slowest jobs say the threshold the server ranked by, not 50 alone", () => {
+  view({
+    ...PIPELINE,
+    pr_checks: { ...PIPELINE.pr_checks, slowest_jobs: [], slowest_min_results: 120 },
+  });
+  const slowest = document.querySelector<HTMLElement>('[data-section="slowest-jobs"]');
+  expect(slowest).toHaveTextContent("a job needs 120 timed results in the 7 days to be ranked.");
+  expect(slowest).toHaveTextContent("No job has 120 timed results yet.");
+  expect(slowest?.textContent).not.toContain("50 timed");
+
+  // A min_n of 0 still ranks only a job with a median, so the page says one result is needed.
+  view({
+    ...PIPELINE,
+    pr_checks: { ...PIPELINE.pr_checks, slowest_jobs: [], slowest_min_results: 0 },
+  });
+  const zero = [...document.querySelectorAll<HTMLElement>('[data-section="slowest-jobs"]')].at(-1);
+  expect(zero).toHaveTextContent("No job has 1 timed result yet.");
 });
 
 test("the failing-jobs note names the roll-up the server leaves out only by its role", () => {

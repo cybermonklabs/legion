@@ -109,7 +109,7 @@ func storedRowsBeneathAgree(t *testing.T, run *consumer, parent, what string) {
 	if len(beneath) == 0 {
 		t.Fatalf("no issue stood beneath %s %s, so this test examined nothing", parent, what)
 	}
-	fresh, err := Compute(t.Context(), run.database.Pool, run.fixture.Project, beneath, run.at)
+	fresh, _, err := computeKeys(t.Context(), run.database.Pool, run.fixture.Project, beneath, nil, run.at)
 	if err != nil {
 		t.Fatalf("compute the %d issue(s) beneath %s: %v", len(beneath), parent, err)
 	}
@@ -141,7 +141,7 @@ func storedRowsBeneathAgree(t *testing.T, run *consumer, parent, what string) {
 // answers for it.
 func computedPlacement(t *testing.T, run *consumer, key string) Row {
 	t.Helper()
-	fresh, err := Compute(t.Context(), run.database.Pool, run.fixture.Project, []string{key}, run.at)
+	fresh, _, err := computeKeys(t.Context(), run.database.Pool, run.fixture.Project, []string{key}, nil, run.at)
 	if err != nil {
 		t.Fatalf("compute %s: %v", key, err)
 	}

@@ -90,7 +90,9 @@ func readRelatedCheckRows(t *testing.T, database *store.Store, where string, arg
 
 // One word every item of the project shares and words only one item holds: the check searches
 // for the rare words, so it lists that one item and none of the thirty that share only the common
-// word. The old query ORed every word of the text and listed common-word matches beside it.
+// word. The old query ORed every word of the text and listed common-word matches beside it. The
+// text's other words are ones no item of the project holds, the project's seeded evals-md
+// (dispatch://INFRA-2916, R5) included.
 func TestRelatedCheckListsTheRareWordMatchNotTheCommonWordMatches(t *testing.T) {
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	createSuggestionProject(t, handler, "RARE")
@@ -102,7 +104,7 @@ func TestRelatedCheckListsTheRareWordMatchNotTheCommonWordMatches(t *testing.T) 
 	refreshTermStats(t, database, "RARE")
 
 	response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{
-		"project": "RARE", "title": "Zymurgy ledger totals are wrong on the dashboard", "force": true,
+		"project": "RARE", "title": "Zymurgy ledger tallies look askew on the dashboard", "force": true,
 	}, "alice")
 	if response.Code != http.StatusCreated {
 		t.Fatalf("create issue: status=%d body=%s", response.Code, response.Body.String())
@@ -250,9 +252,11 @@ func TestRelatedCheckMeaningListsASameMeaningItemBehindAFullKeywordPage(t *testi
 // excluded issues nearer the text than the keeper fill the window the page takes
 // (suggestionSearchDepth rows), and the check still finds the keeper and still says it searched
 // by meaning and keywords. Left out after the page instead, the ten take every place in it and
-// the keeper, eleventh by vector, is never seen (INFRA-1160).
+// the keeper, eleventh by vector, is never seen (INFRA-1160). The text's words are ones no item of
+// the project holds, the project's seeded evals-md (dispatch://INFRA-2916, R5) included, so its
+// keyword arms list nothing and what the check lists is its meaning stage's.
 func TestRelatedCheckMeaningLeavesExcludedIssuesOutOfItsWindow(t *testing.T) {
-	const text = "Archive snapshots finish late"
+	const text = "Archive snapshots arrive late"
 	const keeperTitle = "Our own nightly backup cousin"
 	arc := func(angle float64) []float32 { return angledVector(math.Cos(angle), 1) }
 	vectors := map[string][]float32{text: queryVector(), keeperTitle: arc(0.8)}

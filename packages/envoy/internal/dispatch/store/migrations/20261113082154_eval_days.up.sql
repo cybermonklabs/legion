@@ -1,0 +1,116 @@
+-- 20261113082154_eval_days.up.sql
+--
+-- The stored per-day aggregates of every eval (dispatch://INFRA-2916, R12), which every window
+-- read folds: a window's value is the fold of its days' rows, and a compare range is a second
+-- read of the same rows, so no page read reads a project's population.
+--
+-- eval_days holds one row per project, eval, writer, series, repository and day.
+--   project_key     the project the row counts for, which is also the project of its eval id.
+--   eval_id, series the series the row is a day of.
+--   writer          which writer made the row (R3): `computation`, the refresher and the day
+--                   builders, which write a computed eval's rows; or `readings`, the readings
+--                   write, which keeps a logged eval's rows, beside the zero rows the refresher
+--                   fills on that eval's days with no reading. A computed eval's fold reads only
+--                   the computation's rows, and a logged eval's only the readings write's, so an
+--                   eval whose source changes (a register write, or the seed making computed a
+--                   slug a reading registered as logged) never folds a row the other writer made:
+--                   a reading logged while the eval was logged is in no row its computed fold
+--                   reads, even before the refresher rewrites that day. The writer is in the key,
+--                   so the two writers' rows of one eval, series, repository and day stand side by
+--                   side, and an eval whose source changes back finds its own rows as it left
+--                   them. The default is the computation, which writes every row the readings
+--                   write does not.
+--   repo            '' for the row of all the project's repositories, and a repository's name for
+--                   that repository's own row, so a read cut by repository folds those rows and
+--                   a read of the whole project folds the '' rows alone.
+--   day             the day. A day with no '' row reads "no data": each writer stores an explicit
+--                   zero row for each day from a series' first input day on, so a missing row
+--                   means the series had no input yet, never that it counted 0.
+--   listed          the series' own flag, copied here so the window index holds the listed
+--                   series alone.
+--   n, sum, num, den, max
+--                   the day's parts: a count folds by sum, a share by Σnum over Σden, a maximum
+--                   by max.
+--   samples         for a quantile series, every value of the day, so the fold merges the days'
+--                   lists and its quantile is exact.
+--   counts          named sub-counts, a JSON object whose values fold by sum.
+--   last_value      the newest value the day holds, and last_at when it was measured, which the
+--   last_at         `last` fold reads: the fold of a window answers the last_value of its newest
+--                   last_at. A logged eval's day keeps its newest reading here; the unowned-p0
+--                   day keeps its count at the day's last refresh. Both are null on a day that
+--                   holds no such value.
+--   via_repository  how many of the row's inputs reached the project through a repository
+--                   rather than through an issue.
+--   built_by        the build that wrote the row, so a build whose rules differ rewrites rows an
+--                   older build wrote.
+--   updated_at      when the row was last written.
+-- eval_days_window, (project_key, repo, day) over the listed rows, is the list read's window: one
+-- index range per project, repository and range of days, measured on 1,533,000 rows (712 MB) as
+-- one Bitmap Index Scan per range, 18 to 24 ms for 84 days with an 84-day compare range
+-- (dispatch://INFRA-2916/artifact/plan-md, "The design in one page"); the read keeps each eval's
+-- rows of its own writer from what the range holds. The primary key is the read and the upsert of
+-- one writer's days of one series.
+--
+-- eval_day_members holds, for each item a family of day rows counted, where it was last counted:
+-- the day and the repository. An item whose day moves, an issue closed again on another day or a
+-- pull request merged again, then rewrites the day it left as well as the day it joined.
+--   project_key, family, row_key
+--                   the project, the family of evals that counted the item, and the item's key,
+--                   which is the row's identity.
+--   day, repo       the day and the repository the item was last counted in.
+--   shipped_by      for a pull request of the delivery family, the row key of the deploy run that
+--                   shipped it when it was last counted (`run:<repo>/<run id>`), '' for one no
+--                   deploy shipped and for every other item. A change of that run, or of the pull
+--                   request, moves which run ships it (containment), and the run it left counts it
+--                   in its own day's rows: this is how the refresher finds that day once the
+--                   stored rows no longer say it.
+-- Only the computation counts items: a logged eval's day folds readings, each of which is its own
+-- row of eval_readings, so no member names a writer.
+-- eval_day_members_day, (project_key, family, day), is the read of the items one write of a day
+-- counted before it: the write of a project's day deletes the members of its families recorded on
+-- that day that the day no longer holds, which the primary key answers only by walking every item
+-- of the project's family, one row per pull request, run or issue it ever counted.
+-- eval_day_members_shipped, (project_key, shipped_by) over the pull requests a deploy shipped, is
+-- the read of the pull requests one deploy run shipped, by project.
+--
+-- Two new tables, both empty: nothing existing is read or rewritten, and the release before this
+-- one neither reads nor writes either, so the two builds roll together (cmd/dispatch/README.md,
+-- "Database migrations"). The foreign keys to projects take SHARE ROW EXCLUSIVE on projects for
+-- the length of this transaction, which holds a project write and no project read. The census
+-- answers 0, and rolling back past it is an image rollback alone.
+create table eval_days (
+    project_key text not null references projects (key) on delete cascade,
+    eval_id text not null,
+    writer text not null default 'computation' check (writer in ('computation', 'readings')),
+    series text not null,
+    repo text not null default '',
+    day date not null,
+    listed boolean not null,
+    n integer not null default 0,
+    sum double precision,
+    num double precision,
+    den double precision,
+    max double precision,
+    samples double precision[],
+    last_value double precision,
+    last_at timestamptz,
+    counts jsonb not null default '{}'::jsonb check (jsonb_typeof(counts) = 'object'),
+    via_repository integer not null default 0,
+    built_by text not null,
+    updated_at timestamptz not null default now(),
+    primary key (project_key, eval_id, writer, series, repo, day),
+    constraint eval_days_eval_of_project check (starts_with(eval_id, project_key || '/'))
+);
+create index eval_days_window on eval_days (project_key, repo, day) where listed;
+
+create table eval_day_members (
+    project_key text not null references projects (key) on delete cascade,
+    family text not null,
+    row_key text not null,
+    day date not null,
+    repo text not null default '',
+    shipped_by text not null default '',
+    primary key (project_key, family, row_key)
+);
+create index eval_day_members_day on eval_day_members (project_key, family, day);
+create index eval_day_members_shipped on eval_day_members (project_key, shipped_by) where shipped_by <> '';

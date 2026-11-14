@@ -84,7 +84,7 @@ func askWhoami(t *testing.T, handler http.Handler) whoamiAnswer {
 }
 
 // createProject creates the project key through the router's API, as alice@d.example, which
-// appends one event, project.created.
+// appends two events: project.created, and the artifact.created of its seeded evals-md.
 func createProject(t *testing.T, handler http.Handler, key string) {
 	t.Helper()
 	request := httptest.NewRequest(http.MethodPost, "http://dispatch.test/api/v1/projects", strings.NewReader(`{"key":"`+key+`","name":"`+key+` project"}`))
@@ -98,7 +98,8 @@ func createProject(t *testing.T, handler http.Handler, key string) {
 }
 
 // GET /auth/whoami carries event_head, the decimal id of the newest committed event, read after the
-// sign-in check: "0" on an empty log, and the third event's id once three have committed.
+// sign-in check: "0" on an empty log, and the last event's id once three projects' six have
+// committed.
 func TestWhoamiCarriesTheNewestEventID(t *testing.T) {
 	database := storetest.Open(t)
 	handler := storeRouter(t, database)
@@ -109,26 +110,31 @@ func TestWhoamiCarriesTheNewestEventID(t *testing.T) {
 	for _, key := range []string{"ONE", "TWO", "THREE"} {
 		createProject(t, handler, key)
 	}
-	rows, err := database.Pool.Query(context.Background(), `select id from events order by id`)
+	// Each create writes its project.created and, in the same transaction, the artifact.created of
+	// the project's seeded evals-md (dispatch://INFRA-2916, R5).
+	rows, err := database.Pool.Query(context.Background(), `select id, type from events order by id`)
 	if err != nil {
 		t.Fatalf("read the event log: %v", err)
 	}
 	var ids []int64
+	types := map[string]int{}
 	for rows.Next() {
 		var id int64
-		if err := rows.Scan(&id); err != nil {
+		var eventType string
+		if err := rows.Scan(&id, &eventType); err != nil {
 			t.Fatalf("read an event id: %v", err)
 		}
 		ids = append(ids, id)
+		types[eventType]++
 	}
 	if err := rows.Err(); err != nil {
 		t.Fatalf("read the event log: %v", err)
 	}
-	if len(ids) != 3 {
-		t.Fatalf("the log holds %d events, want the three projects' (%v)", len(ids), ids)
+	if len(ids) != 6 || types["project.created"] != 3 || types["artifact.created"] != 3 {
+		t.Fatalf("the log holds %d events %v (%v), want the three projects' and their seeded documents'", len(ids), types, ids)
 	}
-	if answer := askWhoami(t, handler); answer.EventHead != strconv.FormatInt(ids[2], 10) {
-		t.Fatalf("whoami after three events: event_head = %q, want the third's id %d", answer.EventHead, ids[2])
+	if answer := askWhoami(t, handler); answer.EventHead != strconv.FormatInt(ids[len(ids)-1], 10) {
+		t.Fatalf("whoami after six events: event_head = %q, want the last one's id %d", answer.EventHead, ids[len(ids)-1])
 	}
 }
 

@@ -28,7 +28,8 @@ func plannedPools(t *testing.T, pool *store.Pool) []*store.Pool {
 }
 
 // TestARunsJobsComeBackInOneOrder: a run's jobs come back by when each started, a job that never
-// started last, then by name, from both job reads.
+// started last, then by name, from every job read, the read of some jobs by name and the read of
+// the named and the failed ones included.
 func TestARunsJobsComeBackInOneOrder(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	started := time.Date(2026, 10, 14, 9, 0, 0, 0, time.UTC)
@@ -87,13 +88,28 @@ func TestARunsJobsComeBackInOneOrder(t *testing.T) {
 					t.Errorf("%s, ListRunJobs(%d) under a %s = %q, want %q", when, id, plan, got, want)
 				}
 			}
-			byRun, err := ListRunJobsForRuns(ctx, planned, "acme/widgets", runs)
+			every, err := listEveryRunJobForRuns(ctx, planned, "acme/widgets", runs)
+			if err != nil {
+				t.Fatalf("listEveryRunJobForRuns: %v", err)
+			}
+			named, err := ListRunJobsForRuns(ctx, planned, "acme/widgets", runs, []string{"test / unit", "deploy", "setup"})
 			if err != nil {
 				t.Fatalf("ListRunJobsForRuns: %v", err)
 			}
+			// notify-slack is named and did not fail; deploy is named and failed, and comes back once.
+			namedOrFailed, err := listRunJobsNamedOrFailedForRuns(ctx, planned, "acme/widgets", runs, []string{"notify-slack", "deploy"})
+			if err != nil {
+				t.Fatalf("listRunJobsNamedOrFailedForRuns: %v", err)
+			}
 			for _, id := range runs {
-				if got := names(byRun[id]); !slices.Equal(got, want) {
+				if got := names(every[id]); !slices.Equal(got, want) {
+					t.Errorf("%s, listEveryRunJobForRuns' run %d under a %s = %q, want %q", when, id, plan, got, want)
+				}
+				if got, want := names(named[id]), []string{"setup", "deploy", "test / unit"}; !slices.Equal(got, want) {
 					t.Errorf("%s, ListRunJobsForRuns' run %d under a %s = %q, want %q", when, id, plan, got, want)
+				}
+				if got := names(namedOrFailed[id]); !slices.Equal(got, want) {
+					t.Errorf("%s, listRunJobsNamedOrFailedForRuns' run %d under a %s = %q, want %q", when, id, plan, got, want)
 				}
 			}
 		}
@@ -165,7 +181,7 @@ func TestPullRequestsMergedTogetherComeBackInOneOrder(t *testing.T) {
 	check("after a pull request was written again unchanged")
 }
 
-// TestRunsStartedTogetherComeBackInOneOrder: ListRunsStartedIn answers runs that started in one
+// TestRunsStartedTogetherComeBackInOneOrder: listRunsStartedIn answers runs that started in one
 // instant by run id, which decides the Pipeline's last failing run of a job.
 func TestRunsStartedTogetherComeBackInOneOrder(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
@@ -182,16 +198,16 @@ func TestRunsStartedTogetherComeBackInOneOrder(t *testing.T) {
 	check := func(when string) {
 		t.Helper()
 		for i, planned := range pools {
-			runs, err := ListRunsStartedIn(ctx, planned, "acme/widgets", DeliveryRunKindDeploy, "", "", from, to)
+			runs, err := listRunsStartedIn(ctx, planned, "acme/widgets", DeliveryRunKindDeploy, "", "", from, to)
 			if err != nil {
-				t.Fatalf("ListRunsStartedIn: %v", err)
+				t.Fatalf("listRunsStartedIn: %v", err)
 			}
 			got := make([]int64, len(runs))
 			for j, run := range runs {
 				got[j] = run.RunID
 			}
 			if !slices.Equal(got, want) {
-				t.Errorf("%s, ListRunsStartedIn under a %s = %v, want %v", when, storetest.Plans[i], got, want)
+				t.Errorf("%s, listRunsStartedIn under a %s = %v, want %v", when, storetest.Plans[i], got, want)
 			}
 		}
 	}

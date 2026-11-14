@@ -1,0 +1,166 @@
+{
+  "type": "delta",
+  "sub": "evals-1",
+  "seq": "44",
+  "changed_at": "2026-10-28T23:00:00Z",
+  "set": {
+    "freshness": {
+      "rows_updated_at": "2026-10-28T23:00:00Z",
+      "refresher_age_seconds": 5
+    },
+    "total": 4
+  },
+  "items": {
+    "items": {
+      "upsert": [
+        {
+          "id": "ACME/lead-time",
+          "definition": {
+            "eval_id": "ACME/lead-time",
+            "version": 1,
+            "project_key": "ACME",
+            "slug": "lead-time",
+            "name": "lead-time",
+            "question": "",
+            "number_rule": "",
+            "decision": "",
+            "doc_block": "",
+            "failure_modes": [],
+            "unit": "count",
+            "direction": "",
+            "target": null,
+            "target_inclusive": false,
+            "target_judges": [],
+            "owner_role": "",
+            "person": "alice",
+            "issue_key": "",
+            "kind": "experiment",
+            "source": "logged",
+            "state": "active",
+            "replaced_by": "",
+            "links": [],
+            "written_via": "reading",
+            "written_by": {
+              "kind": "user",
+              "id": "alice"
+            },
+            "created_at": "2026-10-01T00:00:00Z"
+          },
+          "owner": {
+            "role": "",
+            "person": "alice",
+            "written_by": {
+              "kind": "user",
+              "id": "alice"
+            }
+          },
+          "series": [
+            {
+              "eval_id": "ACME/lead-time",
+              "series": "value",
+              "version": 1,
+              "unit": "count",
+              "role": "headline",
+              "is_primary": true,
+              "min_n": null,
+              "listed": true,
+              "agg": "sum",
+              "links": [],
+              "created_at": "2026-10-01T00:00:00Z",
+              "window": {
+                "mean": 45
+              },
+              "compare": {},
+              "change": {},
+              "data_since": "2026-10-01",
+              "via_repository": 0,
+              "days": []
+            }
+          ],
+          "verdict": null
+        },
+        {
+          "id": "ACME/pr-size",
+          "definition": {
+            "eval_id": "ACME/pr-size",
+            "version": 1,
+            "project_key": "ACME",
+            "slug": "pr-size",
+            "name": "pr-size",
+            "question": "",
+            "number_rule": "",
+            "decision": "",
+            "doc_block": "",
+            "failure_modes": [],
+            "unit": "count",
+            "direction": "",
+            "target": null,
+            "target_inclusive": false,
+            "target_judges": [],
+            "owner_role": "",
+            "person": "alice",
+            "issue_key": "",
+            "kind": "experiment",
+            "source": "logged",
+            "state": "active",
+            "replaced_by": "",
+            "links": [],
+            "written_via": "reading",
+            "written_by": {
+              "kind": "user",
+              "id": "alice"
+            },
+            "created_at": "2026-10-01T00:00:00Z"
+          },
+          "owner": {
+            "role": "",
+            "person": "alice",
+            "written_by": {
+              "kind": "user",
+              "id": "alice"
+            }
+          },
+          "series": [
+            {
+              "eval_id": "ACME/pr-size",
+              "series": "value",
+              "version": 1,
+              "unit": "count",
+              "role": "headline",
+              "is_primary": true,
+              "min_n": null,
+              "listed": true,
+              "agg": "sum",
+              "links": [],
+              "created_at": "2026-10-01T00:00:00Z",
+              "window": {
+                "mean": 140
+              },
+              "compare": {},
+              "change": {},
+              "data_since": "2026-10-01",
+              "via_repository": 0,
+              "days": []
+            }
+          ],
+          "verdict": null
+        }
+      ],
+      "remove": []
+    }
+  },
+  "maps": {},
+  "counts": {},
+  "revs": {
+    "items": {
+      "items": {
+        "ACME/lead-time": "9adfc7a6475f568c",
+        "ACME/pr-size": "5c17833737f7c976"
+      }
+    },
+    "fields": {
+      "freshness": "bfa0f7e0c0223d84",
+      "total": "af63a94c860195e3"
+    }
+  }
+}

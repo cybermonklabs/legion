@@ -167,7 +167,7 @@ func (s *server) projectOfProject(ctx context.Context, q queryer, r *http.Reques
 	return scanProjectKey(q.QueryRow(ctx, `select key from projects where key = $1`, r.PathValue("key")))
 }
 
-// projectOfArtifact reads the project_key every artifact carries (artifactColumns), which is
+// projectOfArtifact reads the project_key every artifact carries (docs.ArtifactColumns), which is
 // its issue's for an issue document and its own for a project document. An agent conversation's
 // artifact carries none, so it resolves to no project and a project-scoped caller is refused
 // it.

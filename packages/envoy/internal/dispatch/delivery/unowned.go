@@ -12,17 +12,35 @@ type UnownedIssue struct {
 	Title string `json:"title"`
 }
 
-// ListUnownedP0 is the "P0 issues with no owner" KPI (CONTRACT.md "KPI targets"): every issue with
-// priority 0, status other than done, claimed_by null and route null, across every project, in
-// project then number order (the prototype's collector/src/collector/dispatch.py:157-170
-// unowned_p0, without its fetch of three named projects). It follows neither the measures' window
-// nor their facets.
-func ListUnownedP0(ctx context.Context, pool *store.Pool) ([]UnownedIssue, error) {
-	rows, err := pool.Query(ctx, `
-		select key, title from issues
-		where priority = 0 and status <> 'done' and claimed_by is null and route is null
-		order by project_key, number
-	`)
+// The reads of the open P0 issues with no owner. Each carries issues_open_p0's predicate as the
+// migration spells it (20261113082158, `priority = 0 and status <> 'done'`), so the planner proves
+// the index from the statement's own clauses and reads that index, which holds the open P0 issues
+// alone, and no other row of issues, with the rest of the rule (no claim, no route) a filter over
+// what it reads: one project's issues are one range of its key, every project's the whole of a
+// small index. One statement for each case, rather than one whose condition holds for an empty $1
+// or a matching project_key: under a generic plan, which knows no value of $1, that condition keys
+// nothing, and the project read would walk every project's entries.
+const (
+	// unownedP0Rule is the rule every read below holds an issue to, written once.
+	unownedP0Rule = `priority = 0 and status <> 'done' and claimed_by is null and route is null`
+
+	unownedP0Query        = `select key, title from issues where ` + unownedP0Rule + ` order by project_key, number`
+	projectUnownedP0Query = `select key, title from issues where project_key = $1 and ` + unownedP0Rule + ` order by number`
+	projectUnownedP0Count = `select count(*) from issues where project_key = $1 and ` + unownedP0Rule
+)
+
+// ListUnownedP0 is the "P0 issues with no owner" KPI (CONTRACT.md "KPI targets"): every issue of
+// project with priority 0, status other than done, claimed_by null and route null, in number
+// order, or with project empty the same issues of every project, in project then number order
+// (the prototype's collector/src/collector/dispatch.py:157-170 unowned_p0, without its fetch of
+// three named projects). The delivery measures read every project's. It follows neither the
+// measures' window nor their facets; how many there are is the length of the list.
+func ListUnownedP0(ctx context.Context, pool *store.Pool, project string) ([]UnownedIssue, error) {
+	query, arguments := unownedP0Query, []any{}
+	if project != "" {
+		query, arguments = projectUnownedP0Query, []any{project}
+	}
+	rows, err := pool.Query(ctx, query, arguments...)
 	if err != nil {
 		return nil, err
 	}
@@ -36,4 +54,12 @@ func ListUnownedP0(ctx context.Context, pool *store.Pool) ([]UnownedIssue, error
 		issues = append(issues, issue)
 	}
 	return issues, rows.Err()
+}
+
+// CountUnownedP0 is how many issues ListUnownedP0 lists for project, counted by the statement
+// rather than read: the unowned-p0 eval's day row records the count alone.
+func CountUnownedP0(ctx context.Context, pool *store.Pool, project string) (int, error) {
+	var count int
+	err := pool.QueryRow(ctx, projectUnownedP0Count, project).Scan(&count)
+	return count, err
 }

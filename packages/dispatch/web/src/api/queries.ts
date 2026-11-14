@@ -19,10 +19,11 @@ import type {
   DeliveryMeasuresResponse,
   DeliveryPipelineResponse,
   DeliveryTimelineWithMeasures,
+  EvalItemRow,
+  EvalListResponse,
   InboxRow,
   IssueDetails,
   LegionBoardResponse,
-  LegionMetricsScope,
   MyRepliesResponse,
 } from "./types";
 
@@ -353,6 +354,7 @@ interface DeliveryLiveBodies {
   readonly measures: DeliveryMeasuresResponse;
   readonly pipeline: DeliveryPipelineResponse;
   readonly legion: LegionBoardResponse;
+  readonly evals: EvalListResponse;
 }
 
 /** The live view's answer, which is the body of the GET route its kind mirrors. */
@@ -427,20 +429,83 @@ export const legionBoardQuery = (view: DeliveryLiveView & { kind: "legion" }) =>
     queryFn: (context) => subscribeLive(context, view),
   });
 
-/** The Delivery page's Legion section, by GET: the four metrics of one project over one range
- *  and one scope. Not live — the section draws a window of closed issues rather than what the
- *  daemon says now, and the page reads it a second time for its compare range, as the Pipeline
- *  section reads its own route twice. The key holds every parameter, so a project, a range or a
- *  scope the reader picks is its own entry and the one before it stays cached. */
-export const legionMetricsQuery = (query: {
-  project: string;
+/** The most rows one page of an eval read answers (`evalPageMax`, api/evals.go): the Legion
+ *  section reads each of its lists whole, a page this long at a time. */
+const EVAL_PAGE = 200;
+
+/** One page of a paged eval read: its rows, and how many rows the read holds in all. */
+interface EvalPage<Item> {
+  readonly items: readonly Item[] | null;
+  readonly total: number;
+}
+
+/** Every row of one paged eval read, read a page at a time from the first (`read` answers the
+ *  page at an offset), with the first page's answer: it stops at that page's total, or at a page
+ *  that answers no row, so rows written while it reads cannot keep it reading. */
+async function readEveryPage<Item, Page>(
+  read: (offset: number) => Promise<Page & EvalPage<Item>>
+): Promise<{ readonly first: Page; readonly items: Item[] }> {
+  const first = await read(0);
+  const items = [...(first.items ?? [])];
+  while (items.length < first.total) {
+    const page = (await read(items.length)).items ?? [];
+    if (page.length === 0) break;
+    items.push(...page);
+  }
+  return { first, items };
+}
+
+/** The Delivery page's Legion section, by GET: the Legion evals of every project named, over one
+ *  range, in one read across the projects (`GET /api/v1/evals?project=…&kind=legion`), which
+ *  picks no project when none is named. Not live — the section draws a window of closed issues
+ *  rather than what the daemon says now, and the page reads it a second time for its compare
+ *  range, as the Pipeline section reads its own route twice. Every page is read, so a deployment
+ *  with more Legion projects than one page holds still draws them all; the answer is the first
+ *  page's with every page's items. The key holds every parameter, so a range the reader picks is
+ *  its own entry and the one before it stays cached. */
+export const legionEvalsQuery = (query: {
+  projects: readonly string[];
   from: string;
   to: string;
-  scope: LegionMetricsScope;
 }) =>
   queryOptions({
-    queryKey: ["legion", "metrics", query],
-    queryFn: () => api.getLegionMetrics(query),
+    queryKey: ["legion", "evals", query],
+    queryFn: async (): Promise<EvalListResponse> => {
+      const { first, items } = await readEveryPage((offset) =>
+        api.listEvals({
+          from: query.from,
+          kind: "legion",
+          limit: EVAL_PAGE,
+          offset,
+          project: [...query.projects],
+          to: query.to,
+        })
+      );
+      return { ...first, items };
+    },
+  });
+
+/** The rows behind one of a project's Legion evals over one range, every page of them
+ *  (`GET /api/v1/projects/{key}/evals/{slug}/items`): the issues its series counts, closed in the
+ *  range, each with its stored facts as columns, which is what a card's list of issues draws. */
+export const legionEvalItemsQuery = (
+  project: string,
+  slug: string,
+  query: { from: string; to: string; series: string }
+) =>
+  queryOptions({
+    queryKey: ["legion", "eval-items", project, slug, query],
+    queryFn: async (): Promise<EvalItemRow[]> => {
+      const { items } = await readEveryPage((offset) =>
+        api.listProjectEvalItems(project, slug, {
+          ...query,
+          limit: EVAL_PAGE,
+          offset,
+          row_kind: "issue",
+        })
+      );
+      return items;
+    },
   });
 
 /** Every project's Legion setting, by project key, read once for the whole app: the Issues page's

@@ -255,13 +255,13 @@ Each item below names a task and where its code is, then notes on it.
   `delivery/reconcile_backfill.go`'s `backfillRuns` fills older runs' `head_branch` and `event` once, and deploy runs' `created_at` once more under its own step;
   a pull request ships with the earliest-finishing successful production deploy whose run GitHub created after its merge (`delivery/containment.go`, `DeliveryRun.Created`)
 
-- **Where Legion's time goes**: `internal/dispatch/legion/`, `internal/dispatch/legionfacts/`, `api/settings_legion.go`, `api/legion_board.go`, `api/legion_metrics.go`
+- **Where Legion's time goes**: `internal/dispatch/legion/`, `internal/dispatch/legionfacts/`, `api/settings_legion.go`, `api/legion_board.go`
 
   A per-project setting names the Legion daemon whose `GET /legion/v1/state` Dispatch reads (`store.go`, `GET /api/v1/settings/legion` and `PUT`/`DELETE /api/v1/settings/legion/{project}`), and `PUT /api/v1/legion/{project}/settings` relays an operator's `legion.yaml` change back to it, as the ServiceAccount token `DISPATCH_LEGION_DAEMON_TOKEN_FILE` names (`client.go`; `docs/kubernetes.md`, "The settings route").
   `sampler.go` reads each configured daemon's state every minute, one replica at a time under the `legion-state` lease, and records what moved (`state.go`, migration `20261103170923_legion_state`);
-  `metrics/` computes from those records what `GET /api/v1/legion/metrics` serves the Delivery page's Legion section, and `api/legion_board.go` what `GET /api/v1/projects/{key}/legion/board` serves the Issues page's Legion view.
   `metrics/breakdown.go`'s `ProjectFacts` is the one computation of an issue's Legion facts, and `legionfacts/` stores them as rows of `issue_facts`: one leased loop recomputes the issues whose inputs moved, sweeps every open issue, whose facts grow with the clock, and logs each write on the `delivery_changes` feed under the kind `issue_facts`, so every view built on the facts is woken.
-  The board reads those rows and computes nothing, and `legion/board_rules.go` holds the two card rules the route and the stored rows share.
+  `metrics/folds.go`'s day builders turn the stored facts of each day into the six Legion evals' day rows (`evals/legion_days.go`), and its folds fold a window's rows for `GET /api/v1/projects/{key}/evals?kind=legion` and `GET /api/v1/evals?kind=legion`, which the Delivery page's Legion section reads.
+  `api/legion_board.go` serves the Issues page's Legion view as `GET /api/v1/projects/{key}/legion/board`: it reads the stored facts and computes nothing, and `legion/board_rules.go` holds the two card rules the route and the stored rows share.
 
 - **`issue.deployed`: a merged pull request reached production**: `internal/dispatch/delivery/deployed.go`
 
@@ -2762,8 +2762,8 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   `grep -rn 'refs\.Replace\(Counted\|CountedEdit\|CountedItem\|CountedItemEdit\|DocumentCounted\)(' --include=*.go internal` lists every write that indexes a body, and the reconcile half is callable only from inside `refs`.
 
 - Every payload family that can carry reference changes is built by a helper that takes them, so a producer that forgets does not compile:
-  `artifact.*` through `api.artifactCreatedEventPayload` and `docs.ArtifactVersionEventPayload` (`writeVersionTx` returns `model.ReferenceChanges`, `SnapshotVersion` and `NamedVersion` return them on a `docs.VersionResult`, and the six producers
-  — a settle, an upload, `POST /artifacts/{id}/versions`, `POST /artifacts/{id}/edits` (the route `dispatch doc-edit` uses), accepting a suggestion, and an anchor snapshot on an ask or a comment
+  `artifact.*` through `docs.ArtifactCreatedEventPayload` and `docs.ArtifactVersionEventPayload` (`writeVersionTx` returns `model.ReferenceChanges`, `SnapshotVersion` and `NamedVersion` return them on a `docs.VersionResult`, and the seven producers
+  — a settle, an upload, `POST /artifacts/{id}/versions`, `POST /artifacts/{id}/edits` (the route `dispatch doc-edit` uses), accepting a suggestion, an anchor snapshot on an ask or a comment, and the eval registry's create and edit of a project's `evals-md` (`internal/dispatch/evals/document.go`)
   — each pass what their write moved); `ask.*` through `model.NewAskEventPayload` / `model.NewAskEditEventPayload`;
   `message.*` through `messageReplyThread.payload`;
   `comment.*` through `s.commentEventPayload`;
@@ -2771,7 +2771,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   A transition that writes no text passes `model.ReferenceChanges{}` rather than omitting the argument.
   The guard is the required argument plus review, not the compiler alone:
   a struct literal (`model.AskEditEventPayload{Ask: …}`, as `outbox/publisher_test.go` builds) still compiles.
-  Re-runnable inventory: `grep -rn 'NewAskEventPayload\|NewAskEditEventPayload\|NewIssueEventPayload\|newIssueEventPayload\|commentEventPayload\|artifactCreatedEventPayload\|ArtifactVersionEventPayload\|thread.payload(' --include=*.go internal`.
+  Re-runnable inventory: `grep -rn 'NewAskEventPayload\|NewAskEditEventPayload\|NewIssueEventPayload\|newIssueEventPayload\|commentEventPayload\|ArtifactCreatedEventPayload\|ArtifactVersionEventPayload\|thread.payload(' --include=*.go internal`.
 
 - An event says what its write changed, so a reader refreshes only what it shows (the dashboard's `packages/dispatch/web/src/api/event-refresh.ts`).
   Every field is additive, read in the writer's own transaction, and absent (`omitzero`) from an event written before it, so a reader treats an absent field as "anything may have moved"; `[]` means the write names nothing.

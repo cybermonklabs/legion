@@ -212,6 +212,11 @@ export function PipelineView({
   // reader's own alike, and the page reads the one they pick.
   const cardCompare = (series: readonly ChartSeries[] | null | undefined) =>
     chartCompare(compare, series);
+  // How many timed results the server ranked a job by (the min_n of the deploy repository's
+  // project's pr-ci job series, 50 where it has none); a job with no timed result has no median to
+  // rank by, so a ranked job holds one whatever the threshold.
+  const needed = Math.max(checks.slowest_min_results, 1);
+  const neededResults = `${needed} timed ${needed === 1 ? "result" : "results"}`;
 
   return (
     <>
@@ -295,11 +300,11 @@ export function PipelineView({
       <section aria-label="PR CI slowest jobs" className="mt-1" data-section="slowest-jobs">
         <h3 className={`text-sm font-semibold ${textPrimaryOnCanvas}`}>PR CI: slowest jobs</h3>
         <p className={`text-xs ${textMutedOnCanvas}`}>
-          Ranked by their {dayCount}-day median; a job needs 50 timed results in the {dayCount} days
+          Ranked by their {dayCount}-day median; a job needs {neededResults} in the {dayCount} days
           to be ranked.
         </p>
         {(checks.slowest_jobs ?? []).length === 0 ? (
-          <p className={`mt-1 text-xs ${textMutedOnCanvas}`}>No job has 50 timed results yet.</p>
+          <p className={`mt-1 text-xs ${textMutedOnCanvas}`}>No job has {neededResults} yet.</p>
         ) : (
           <div className="overflow-x-auto">
             <table className="mt-1 w-full max-w-6xl text-xs tabular-nums">

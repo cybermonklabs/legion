@@ -42,6 +42,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/embedqueue"
+	"github.com/sjawhar/envoy/internal/dispatch/evals"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/files"
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
@@ -77,9 +78,11 @@ const (
 var buildCommit string
 
 // processBuild names the build this process is, for the Legion facts consumer's record of the
-// build that last read each project whole (legionfacts.Deps.Build). legionfacts/scope.go's
-// legionProjects says why a pass under a build that record does not name reads the project
-// whole again.
+// build that last read each project whole (legionfacts.Deps.Build) and for the eval day-row
+// refresher's record of the build each walk was made under (evals.RefresherDeps.Build).
+// legionfacts/scope.go's legionProjects says why a pass under a build that record does not name
+// reads the project whole again; a walk recorded under another build is begun again, so every day
+// row of each family is rebuilt under this one (evals/refresher.go).
 //
 // It is buildCommit where the image build stamped one. Every process of one release then
 // answers that one commit, so the fleet reads each project whole once per release and sweeps
@@ -93,7 +96,9 @@ var buildCommit string
 // suffix. The suffix makes them two builds: a developer who edits the phase-work rule
 // (legion/session_title.go, legion.PhaseWorkKeys) and restarts has every project read whole
 // under the edited rule, rather than swept against the record the run before it left. What that
-// read costs is in legionfacts/scope.go's legionProjects.
+// read costs is in legionfacts/scope.go's legionProjects. The same suffix has the eval day-row
+// refresher rebuild every day row of every family at each start of an unstamped binary, since
+// every walk it finds was recorded under another build.
 //
 // It answers one string for as long as the process runs: the loop compares the string it
 // recorded, and a process that answered two would read every project whole on every pass.
@@ -404,6 +409,20 @@ func main() {
 		slog.Info("dispatch: filled document_search for the documents stored before this release", "rows", filled)
 	}
 
+	// session_titles (migration 20261113082156) holds each session's newest stamped title,
+	// 20261113090412's trigger keeps it in step from the deploy on, and this fills it for the
+	// events stored before that, in committed batches, for document_search's reason above
+	// (20261113090413's comment). A failure stops the boot: delivery.ResolveSessionTitles reads
+	// session_titles alone, so a process that served with the table unfilled would name every
+	// session stored before this release by its id, while the release before this one, which
+	// serves until this process is ready, still names them.
+	if filled, err := database.FillSessionTitles(ctx); err != nil {
+		slog.Error("dispatch: fill session_titles for the events stored before this release", "error", err)
+		os.Exit(1)
+	} else if filled > 0 {
+		slog.Info("dispatch: filled session_titles for the events stored before this release", "rows", filled)
+	}
+
 	// asks_anchor_artifact_id (migration 0148) indexes the anchors whose artifact_id is a
 	// lower-case document id, the form every server-written anchor carries. A row an earlier
 	// release stored with another spelling is left out, and settlement records no mark for it:
@@ -543,6 +562,9 @@ func main() {
 		AgentStream:    agentStream,
 		Files:          fileStore,
 		Lifetime:       ctx,
+		// The build the eval readings write records against the day rows it keeps, the one the
+		// eval day-row refresher records (evals.RefresherDeps.Build).
+		Build: processBuild(),
 	}
 	// Set only when configured: a nil *oidc.LazyVerifier in the interface field would read as a
 	// configured verifier, and every JWT-shaped bearer would be sent to it.
@@ -583,19 +605,24 @@ func main() {
 	//     shared listener below says their work may have changed, or when a due time their last
 	//     pass asked for comes round: the embedding queue (embedqueue.WakeChannel), the reference
 	//     excerpts (docs.ExcerptsOwedChannel), the edit notices (docs.EditNoticesChannel), the
-	//     suggestion outcomes (api.EventsChannel) and the delivery settings both intakes route by
-	//     (delivery.SettingsChannel). The two leased ones, reference-excerpts and edit-notices,
-	//     take their lease with no period (duty.RunWoken): a process that finds it held retries
-	//     until a pass of its own runs, since the other process's pass may have read before the
-	//     change that woke this one. The suggestion-outcome loop takes none: each of its pages
+	//     suggestion outcomes (api.EventsChannel), the delivery settings both intakes route by
+	//     (delivery.SettingsChannel), the Legion facts (legionfacts.Run) and the eval day rows
+	//     (evals.Store.RunRefresher, woken by api.EventsChannel and delivery.ChangesChannel, whose
+	//     due time is the next UTC midnight). The four leased ones, reference-excerpts,
+	//     edit-notices, legion-facts and eval-days, take their lease with no period
+	//     (duty.RunWoken): a process that finds it held retries until a pass of its own runs,
+	//     since the other process's pass may have read before the change that woke this one. The
+	//     suggestion-outcome loop takes none: each of its pages
 	//     runs in a transaction holding the suggestion_outcome_cursor row for update, which
 	//     serialises two processes woken by one commit, the first pass on a database included
 	//     (api/suggestion_outcomes.go). The keyed writes' own sweep - the Idempotency-Keys past
 	//     their window, and the deliveries a process that died left owed - keeps a timer of its
 	//     own below, because no wake announces either: a death commits nothing.
 	//   - boot passes, which run once at start: the embedding coverage pass (embedqueue.Run starts
-	//     it, and repeats only its identity steps while another identity's rows remain) and the
-	//     task progress reconciliation (retrying, briefly, rows another writer held).
+	//     it, and repeats only its identity steps while another identity's rows remain), the
+	//     task progress reconciliation (retrying, briefly, rows another writer held) and the eval
+	//     seed (evals.Store.SeedEveryProject), which takes the eval-seed lease with no period and,
+	//     like the four leased woken loops, retries until a pass of its own runs.
 	//   - timers that stay, because GitHub has no feed of what they would miss - a webhook that
 	//     never arrived, a delivery that failed, a source's branch head: the delivery reconcile
 	//     and the architecture import every 5 minutes, each starting after a random delay within
@@ -745,6 +772,12 @@ func main() {
 	factsEventsWake := listenerHub.Wake(api.EventsChannel)
 	factsStateWake := listenerHub.Wake(legion.StateChannel)
 	factsChangesWake := listenerHub.Wake(delivery.ChangesChannel)
+	// The eval day-row refresher reads two feeds, each with a wake of its own: the delivery
+	// changes, which name the days a pull request, a run, a stored Legion fact or a filing moves,
+	// and the events, which name the issues whose P0 count or repository moved
+	// (evals.Store.RunRefresher).
+	daysEventsWake := listenerHub.Wake(api.EventsChannel)
+	daysChangesWake := listenerHub.Wake(delivery.ChangesChannel)
 	if natsClient != nil && appCtx.GitHub() != nil {
 		settingsWake = listenerHub.Wake(delivery.SettingsChannel)
 	}
@@ -948,6 +981,29 @@ func main() {
 		Events:       factsEventsWake,
 		Observations: factsStateWake,
 		Deliveries:   factsChangesWake,
+	})
+	// dispatch://INFRA-2916: every project holds the computed evals of the catalogue, each with
+	// its section of the project's evals-md. A project created through the API is seeded in its
+	// own transaction (api's createProject); this boot pass seeds every project, which covers one
+	// made by SQL and writes what this build's catalogue changed. It takes the eval-seed lease,
+	// so two processes booting together write each project once, and a process that finds the
+	// lease held seeds again once it is free, with its own build's catalogue.
+	evalStore := evals.New(database, documentService, broker)
+	go evalStore.SeedEveryProject(ctx, leases)
+	// The eval day-row refresher keeps every project's stored day rows (eval_days) true to their
+	// inputs: it rewrites the days each delivery change and issue event names, walks every day of
+	// each family from its first input day once per build and each new UTC day as it comes, which
+	// writes the explicit zero rows, seeds a project made by SQL since the boot pass, and prunes
+	// the delivery change log, which no reconcile prunes where no GitHub App runs one. It takes
+	// the eval-days lease, so two processes woken by one commit build each day once, and reads the
+	// event log up to the safe horizon of the same events.Horizon the facts consumer reads. It
+	// records the build it runs as against every row and walk, as the facts consumer does.
+	go evalStore.RunRefresher(ctx, evals.RefresherDeps{
+		Horizon:    background.EventHorizon(),
+		Build:      processBuild(),
+		Leases:     leases,
+		Events:     daysEventsWake,
+		Deliveries: daysChangesWake,
 	})
 	// The Idempotency-Keys past their 24 hours and the deliveries a process that died
 	// left owed, once a minute across the processes under the suggestion-outcomes lease. It is a

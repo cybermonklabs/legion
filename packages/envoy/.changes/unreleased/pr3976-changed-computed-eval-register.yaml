@@ -1,0 +1,9 @@
+kind: Changed
+body: |-
+  On a computed eval, `POST /api/v1/projects/{key}/evals` sets only how the number is judged and
+  who answers for it: the target with its inclusiveness and judges, a series' `min_n`, the owner
+  role, person, issue, links, state and what replaced it, and the method. A write naming any field
+  of the computation (name, question, number rule, decision, failure modes, unit, direction, kind,
+  source, any series field but `min_n`, or a series the eval does not hold) is
+  `400 EVAL_FIELD_COMPUTED` naming the field, and stores nothing; a logged eval takes every field.
+  The boot seed carries a person's `min_n` forward like the target instead of reverting it.

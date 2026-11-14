@@ -268,18 +268,35 @@ func TestComputeOnStoredContainment(t *testing.T) {
 	}
 }
 
-func TestComputeWithNoFlagsReportsZeroFailuresAndNoRestoreTime(t *testing.T) {
+// TestComputeWithNoFailureSourceReadsNoFailureRateAndNoRestoreTime: with no failure source (nil
+// flags) the change failure rate is no value and time to restore holds no median, and neither
+// is judged; with a source that holds no flag (an empty list) the rate is a measured 0 over the
+// window's pull requests and deploys, which the target judges.
+func TestComputeWithNoFailureSourceReadsNoFailureRateAndNoRestoreTime(t *testing.T) {
 	prs, runs, window := loadFixture(t)
 	result := Compute(prs, runs, nil, window)
-
-	if got, want := result.ChangeFailureRate.PerPR, (FlagCounts{Total: 14}); got != want {
-		t.Errorf("per_pr = %+v, want %+v", got, want)
-	}
-	if got, want := result.ChangeFailureRate.PerDeploy, (DeployFlagCounts{FlagCounts: FlagCounts{Total: 5}}); got != want {
-		t.Errorf("per_deploy = %+v, want %+v", got, want)
+	if result.ChangeFailureRate != nil {
+		t.Errorf("change_failure_rate = %+v with no failure source, want no value", *result.ChangeFailureRate)
 	}
 	if result.TimeToRestore.MedianMinutes != nil {
 		t.Errorf("time_to_restore.median_minutes = %v, want nil", *result.TimeToRestore.MedianMinutes)
+	}
+	if status := KPIStatus(result, 0, DefaultTargets); status.ChangeFailureRate != nil || status.ChangeFailureRateUpperBound != nil {
+		t.Errorf("status = %v and %v with no failure source, want no verdict", optionalBool(status.ChangeFailureRate), optionalBool(status.ChangeFailureRateUpperBound))
+	}
+
+	sourced := Compute(prs, runs, []Flag{}, window)
+	if sourced.ChangeFailureRate == nil {
+		t.Fatal("change_failure_rate = nil from a failure source with no flag, want a rate of 0")
+	}
+	if got, want := sourced.ChangeFailureRate.PerPR, (FlagCounts{Total: 14}); got != want {
+		t.Errorf("per_pr = %+v, want %+v", got, want)
+	}
+	if got, want := sourced.ChangeFailureRate.PerDeploy, (DeployFlagCounts{FlagCounts: FlagCounts{Total: 5}}); got != want {
+		t.Errorf("per_deploy = %+v, want %+v", got, want)
+	}
+	if status := KPIStatus(sourced, 0, DefaultTargets); status.ChangeFailureRate == nil || !*status.ChangeFailureRate {
+		t.Errorf("status.change_failure_rate = %v from a source with no flag over 5 deploys, want met", optionalBool(status.ChangeFailureRate))
 	}
 }
 
@@ -438,6 +455,8 @@ func assertStatus(t *testing.T, got, want Status) {
 // (dora.test.ts:193-219).
 func atTargets(base Result) Result {
 	result := base
+	failures := *base.ChangeFailureRate
+	result.ChangeFailureRate = &failures
 	result.DeployFrequency.PerDay = DefaultTargets.DeploysPerDay
 	result.ChangeFailureRate.PerDeploy.Total = 100
 	result.ChangeFailureRate.PerDeploy.Rate = DefaultTargets.ChangeFailureRate
@@ -510,6 +529,19 @@ func TestKPIStatus(t *testing.T) {
 		assertStatus(t, KPIStatus(result, 0, DefaultTargets), Status{
 			DeploysPerDay: true,
 			UnownedP0:     true,
+		})
+	})
+
+	t.Run("with no failure source the change failure rate has no verdict", func(t *testing.T) {
+		result := atTargets(base)
+		result.ChangeFailureRate = nil
+		assertStatus(t, KPIStatus(result, 0, DefaultTargets), Status{
+			DeploysPerDay:           true,
+			MergeToProductionMedian: new(false),
+			MergeToProduction:       new(false),
+			OpenedToMerge:           new(false),
+			DeployRunSuccess:        new(true),
+			UnownedP0:               true,
 		})
 	})
 }

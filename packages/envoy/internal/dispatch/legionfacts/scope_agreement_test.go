@@ -55,7 +55,7 @@ func TestEveryIssueComputedAloneHoldsTheFactsTheProjectComputedWhole(t *testing.
 			unstarted, countedOn, root)
 	}
 
-	whole, err := ComputeProject(t.Context(), pool, project, seeded.now)
+	whole, _, err := ComputeProject(t.Context(), pool, project, seeded.now)
 	if err != nil {
 		t.Fatalf("compute the project whole: %v", err)
 	}
@@ -72,7 +72,7 @@ func TestEveryIssueComputedAloneHoldsTheFactsTheProjectComputedWhole(t *testing.
 		}
 	}
 	for _, key := range seeded.fixture.Keys {
-		alone, err := Compute(t.Context(), pool, project, []string{key}, seeded.now)
+		alone, _, err := computeKeys(t.Context(), pool, project, []string{key}, nil, seeded.now)
 		if err != nil {
 			t.Fatalf("compute %s on its own: %v", key, err)
 		}
@@ -123,7 +123,7 @@ func seedPhase(t *testing.T, seeded history, issue, phase string, at time.Time) 
 // climbed a tree to answer the issue, which is the one rule of the facts that reads another issue.
 func cardAbove(t *testing.T, seeded history, key string) string {
 	t.Helper()
-	population, err := metrics.ReadProject(t.Context(), seeded.database.Pool, nil, seeded.fixture.Project, seeded.now)
+	population, err := metrics.ReadProject(t.Context(), seeded.database.Pool, seeded.fixture.Project, seeded.now)
 	if err != nil {
 		t.Fatalf("read the project's population: %v", err)
 	}

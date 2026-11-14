@@ -860,14 +860,14 @@ What the two processes share, and what each keeps to itself:
   — also record each pass in `duty_passes` (migration `0115`) with the loop's own period, so a process whose tick lands between another's passes
   — the ordinary case, since each ticker draws its phase at boot and a rolling update starts the second process minutes after the first
   — finds the period already served and logs the same skip: each runs once per period across the processes.
-  The two leased woken loops, the reference excerpts and the edit notices, take their lease with no period:
+  The four leased woken loops, the reference excerpts, the edit notices, the Legion facts (lease `legion-facts`) and the eval day rows (lease `eval-days`, `evals.Store.RunRefresher`), take their lease with no period, and so does the boot seed of every project's evals (lease `eval-seed`):
   a process that finds it held tries again until a pass of its own runs, since the other process's pass may have read before the change that woke this one.
   The suggestion outcome sweep takes no lease at all:
   each of its pages holds the `suggestion_outcome_cursor` row `for update`, which serialises two processes by itself (Background loops, below).
   The settlement resumption is leased because a settlement reads the store under the document's lock whichever process runs it, so one process per minute arms every owed settlement.
   The embeddings `project_key` fill (lease `embeddings-project-key-fill`, `api.RunEmbeddingProjectKeyFill`) is leased and is no loop of a cadence: it is one pass of one to two hours that labels the rows stored before migration `20261109120000`, started once at boot, and it takes its lease with no period because the cursor row of `20261109120100` says when there is nothing left to do, so the process of a roll that finds the lease held logs the skip and fills nothing.
   That process then tries for the lease again every five minutes until that cursor row reads done, so a holder killed mid-pass costs the labelling one wait rather than lasting until something next boots, and each process's goroutine and its lease-pool connection go back for good once the rows are labelled.
-  Seventeen names are leased in all: those fourteen loops, the CI reconcile among them, one per delivery durable for the consumers' reconciliation, and the fill, which is why the lease pool holds seventeen connections (`store.LeasePoolSize`'s comment in `internal/dispatch/store/pool.go` lists the names, and `TestTheLeasePoolHoldsAConnectionForEveryLeasedCaller` counts this process's leased callers against it).
+  Twenty names are leased in all: those sixteen loops, the CI reconcile among them, the eval seed, one per delivery durable for the consumers' reconciliation, and the fill, which is why the lease pool holds twenty connections (`store.LeasePoolSize`'s comment in `internal/dispatch/store/pool.go` lists the names, and `TestTheLeasePoolHoldsAConnectionForEveryLeasedCaller` counts this process's leased callers against it).
   The delivery live hub, the event-stream relay, the process's shared listener connection, with the document rooms' room sync and the woken loops' wakes on it, and the document rooms' timers stay per-process by design (below), the embedding queue and the task progress reconciliation claim their own work, and the outbox publishes under its hold (above);
   the embedding queue's coverage pass runs in every process with no lease, each of its steps safe beside another process's, and drops every vector its own embedder did not make, so every process takes the same embedder settings (Search, below);
   `cmd/dispatch/main.go` says at the call site which loop is which and why.
@@ -1049,12 +1049,12 @@ During the roll that releases this behaviour, processes of the earlier build beh
 Every change this build writes still notifies `dispatch_doc_changed`, which the earlier build reads, and an issue that the earlier build closes still closes this build's rooms through the trigger.
 
 **Each process holds its own connections, so a second process doubles them.**
-Every pool's size is fixed in code (`internal/dispatch/store/pool.go`), and a serving process opens at most 64 + 17 + 8 + 4 + 2 + 1 + 2 + 2 + 1 + 5 = 106 connections to Postgres (`store.ConnectionsPerProcess`):
+Every pool's size is fixed in code (`internal/dispatch/store/pool.go`), and a serving process opens at most 64 + 20 + 8 + 4 + 2 + 1 + 2 + 2 + 1 + 5 = 109 connections to Postgres (`store.ConnectionsPerProcess`):
 
 | Pool | Connections | What takes them |
 | --- | --- | --- |
 | Shared (`sharedPoolSize`) | 64 | Requests, settlements, and the document writers that hold a room's lock on a connection of their own (`lockRoom` through `withRoomLock`: snapshots, prunes, deletions). |
-| Leases (`store.LeasePoolSize`) | 17 | The periodic maintenance loops' once-overall leases (`duty.Exclusive`), one per caller that can be inside a lease at once, the Legion sampler's read of each project's daemon and the embeddings `project_key` fill's one pass among them. |
+| Leases (`store.LeasePoolSize`) | 20 | The periodic maintenance loops' once-overall leases (`duty.Exclusive`), one per caller that can be inside a lease at once, the Legion sampler's read of each project's daemon, the Legion facts, the eval seed, the eval day rows and the embeddings `project_key` fill's one pass among them. |
 | Room appends (`roomAppendsPoolSize`) | 8 | The document rooms' batches of browser updates; `application_name=dispatch-room-appends`. |
 | Rooms (`RoomsPoolSize`) | 4 | Document loads; `application_name=dispatch-rooms`. |
 | Compaction (`compactionPoolSize`) | 2 | A document's compaction: the read transaction of the rows it folds, and its write back under the document's lock (`Pool.Compaction`); `application_name=dispatch-compaction`. |
@@ -1064,7 +1064,7 @@ Every pool's size is fixed in code (`internal/dispatch/store/pool.go`), and a se
 | Registry (`registryPoolSize`) | 1 | Held for the life of the process: the heartbeat that stamps its row in the registry of live server processes every 5 seconds (`processes.Register`). |
 | Listeners (`listenerConnections`) | 5 | What the process may hold at once, each on a connection of its own: the events outbox's `LISTEN` on `dispatch_events` and `dispatch_duty_holds`, the shared listener hub the document rooms' room sync and the woken background loops wait on, and the document rooms' NOTIFY sender, each held for the life of the process, and the delivery hub's and the event stream relay's, each held only while something subscribes to them. |
 
-Two processes at their ceiling hold 212, past a default Postgres's `max_connections` of 100, so size the database's limit for both, with whatever else uses that database counted in, before the second process starts.
+Two processes at their ceiling hold 218, past a default Postgres's `max_connections` of 100, so size the database's limit for both, with whatever else uses that database counted in, before the second process starts.
 
 **A connection is closed after its next response once it is 60 seconds old** (`maxConnAge`, `cmd/dispatch/conn_age.go`):
 the server stamps each connection's accept time and answers the first request it reads at that age or later with `Connection: close`, and a request carrying an `Upgrade` header, a websocket handshake, keeps its connection.
@@ -1081,7 +1081,7 @@ Dispatch's background loops come in three shapes, so that a database nobody writ
 
 **Woken loops** run a pass at start and then only when a Postgres notification says their work may have changed, or when a due time their last pass asked for comes round.
 With nothing written and nothing due they hold no timer and send no statement.
-The four that run passes (`duty.RunWoken`) start two passes no closer together than the period of the ticker each replaced, so under load each runs no more often than that ticker did.
+The loops that run passes (`duty.RunWoken`) start two passes no closer together than a gap of their own: for the four that replaced a ticker (the embedding queue, the reference excerpts, the edit notices and the suggestion outcomes) the period of that ticker, so under load each runs no more often than it did; the Legion facts consumer and the eval day-row refresher, which replaced none, state theirs below and in their packages.
 
 - The embedding queue (`embedqueue.Run`) scans when a write enqueues a row:
   the issue trigger's `embeddings_enqueue` (migration `0151`) and each indexer's `embeddings_enqueue_window` (migration `20261102233625`) notify `dispatch_embeddings` for a new row or a text whose hash changed, and a write that leaves the text as it was notifies nothing.
@@ -1128,9 +1128,18 @@ The four that run passes (`duty.RunWoken`) start two passes no closer together t
   a read that fails is tried again 30 s later.
   The release before this one polls the row every 30 s and may run beside it during a roll.
 
-The two leased woken loops take their lease with no period.
+- The eval day-row refresher (`evals.Store.RunRefresher`, lease `eval-days`) keeps every project's `eval_days` true to its inputs.
+  It is woken by `delivery_changes`, which every delivery table's trigger notifies (`0100`) as do those of `issue_facts`, `issue_filings` (`20261113170751`), `repo_projects` (`20261113170752`) and the eval tables, and by `dispatch_events`.
+  Passes start at least 10 s apart.
+  A pass reads the changes and the events after its two cursors (`eval_days_cursor`, `20261113170753`), the events at or below the safe horizon as the suggestion outcome sweep reads them, and rewrites each day they name (`internal/dispatch/evals/refresher_work.go` lists what each change touches).
+  A change cursor whose change has left the log is a loss only when that change was younger than its 24 hours, by the rule the delivery live hub reads its own cursor by: one pruned after its 24 hours lost nothing, and a loss begins every walk again.
+  The pass then builds up to 28 days of each walk (`eval_days_walks`): every day from the first input day of the delivery and CI rows, of each project's Legion rows and of each project's logged evals, once per build and then each new UTC day, which writes the explicit zero rows of the days nothing happened on, and each project's `unowned-p0` row of today, once a day whether or not delivery settings exist.
+  It asks for its next pass at once while a walk has days left, and otherwise at the earlier of the next UTC midnight and five minutes after the oldest delivery change passes its 24 hours, which the pass prunes (`delivery.PruneChanges`), so the change log keeps its retention where no GitHub App runs the reconcile that prunes it too, and the passes that prune a busy log run every five minutes rather than every 10 s.
+  A failed pass is retried 10 s later.
+
+The leased woken loops take their lease with no period, and so does the boot seed of every project's evals.
 A process that finds it held tries again
-— every 2 s for the excerpts, every 5 s for the edit notices, plus up to a tenth again
+— every 2 s for the excerpts, every 5 s for the edit notices, every 30 s for the Legion facts, every 10 s for the eval day rows, every minute for the eval seed, plus up to a tenth again
 — until a pass of its own runs, because the other process's pass may have read before the change that woke this one.
 
 **Boot passes** run once at start:
@@ -3073,12 +3082,6 @@ Each item below names a path with its method and identity, then its purpose.
   The bearer is Dispatch's own projected Kubernetes service-account token, minted for the daemon's audience, which `DISPATCH_LEGION_DAEMON_TOKEN_FILE` names and the relay reads at call time, so a rotation needs no restart; unset, it sends no bearer and whatever the daemon answers is what the caller sees.
   `404 LEGION_NOT_CONFIGURED` when the project names no daemon, `503 LEGION_DAEMON_UNAVAILABLE` when it could not be reached.
 
-- `/api/v1/legion/metrics?project=&from=&to=&scope=` (GET; cookie, trusted header, or bearer)
-
-  The Delivery page's Legion section for one project, the first naming a daemon when `project` is left out, over `[from, to)` (default the last 7 days) and `scope=all|roots|children`.
-  Over the issues that closed in the window with Legion phase work: the work time to merge less parked and queued time, the phase hours of each of the seven worker bars split into waiting on a person, in a turn, CI wait, waiting on children and idle, the review rounds, send-back share and post-review hours, and the issues Legion sessions filed per week by class against the issues finished per week.
-  `400 INVALID_QUERY` for a malformed window or scope, `404 NOT_FOUND` for a project that does not exist.
-
 - `/api/v1/projects/{key}/legion/board` (GET; cookie, trusted header, or bearer)
 
   The Legion view on the Issues page for the project the path names, from what the sampler recorded of that project's daemon and from the per-issue Legion facts the facts consumer stored.
@@ -3087,6 +3090,54 @@ Each item below names a path with its method and identity, then its purpose.
   The header carries the slots in use, the slot cap, the queue's length, the last read of the daemon with its failure, how many issues of the project carry Legion phase work, the oldest `updated_at` of the rows served and the age of the facts consumer's cursor.
   The three facts fields together tell a project with no Legion work, which carries no Legion issues and no rows, from a project whose backfill has not run, which carries Legion issues and no rows; the cursor age alone cannot, because it is the deployment's one consumer and every project of a running deployment reads the same age.
   `404 PROJECT_NOT_FOUND` for a project that does not exist, `404 LEGION_NOT_CONFIGURED` when the project names no daemon.
+
+- `/api/v1/projects/{key}/evals?from=&to=&compare_from=&compare_to=&kind=&repo=&limit=&offset=` (GET, POST; cookie, trusted header, or bearer)
+
+  GET reads one page of the project's evals, `{items, total, limit, offset}` by slug, `limit` 1 to 200 (default 50).
+  Each item is an eval's current definition (every field of `eval_versions`, read through `evals_current`), its owner, each listed series with its statistics over the window and over the compare range, the change between them, `data_since`, the via-repository count and, for a headline series, a per-day array, and the verdict of its target (null where the target is off).
+  The window is `[from, to)` as the delivery routes read it (RFC3339, a moment of the UTC years 1 to 9999, the last 7 days by default, at most 84 days); `compare_from` and `compare_to` come together or not at all, each range at most 84 days and the two of any length; each range is the UTC days it covers, which the answer's `window` and `compare` state, and which end by 9999-12-31, since no JSON answer writes a later time.
+  Every statistic is folded from the stored day rows of those days (`eval_days`), never from the population again: a computed eval through the one fold its `source` names (`evals.FoldStatistics`, `internal/dispatch/evals/statistics.go`), which the delivery routes fold their stored day parts through too, a logged eval through its series' `agg`.
+  Each row records which writer made it (`eval_days.writer`), and an eval folds its own writer's rows alone: a computed eval the rows the computation wrote (the refresher and the day builders), a logged eval those the readings write kept, so an eval whose source changes, by a register write or by the seed making computed a slug a reading registered first, never folds a row the other writer made.
+  A series with no day row reads every statistic `null`, never 0, and a range that starts before a series' first day (`data_since`) reads `null` too, its per-day array still answering the days that exist.
+  A figure the fold of a range takes past what a float holds (two days each summing 1e308) reads `null` too, as does a change between two such figures: each day row is finite, since the readings write refuses one that would not be, but their sum need not be.
+  `kind` keeps one kind, and `repo`, repeated, folds those repositories' rows in place of the project's own; `freshness` is the oldest `updated_at` of the rows folded and the day-row refresher's age.
+  POST registers an eval or writes the next version of its definition, `{slug, ...}` with each field it sets, every other copied forward from the newest version (`target: null` turns the target off), and `doc_text` replacing the eval's method in its section of the project's `evals-md`; it answers `201` with the version written, or `200` where the body changed nothing.
+  On a computed eval the write sets only how the number is judged and who answers for it: `target`, `target_inclusive` and `target_judges`, a series' `min_n`, `owner_role`, `person`, `issue_key`, `links`, `state`, `replaced_by` and the method (`doc_text`, or `doc_block`), each of which the boot seed carries forward rather than reverts.
+  The eval's code defines the rest, so a write naming its `name`, `question`, `number_rule`, `decision`, `failure_modes`, `unit`, `direction`, `kind` or `source`, any field of a series but `min_n`, or a series the eval does not hold, is `400 EVAL_FIELD_COMPUTED` naming that field and stores nothing; a logged eval takes every field.
+  A link `{rel, href, label}` takes the server's `recorded_at`; an `href` that is not an absolute URL is `400 LINK_HREF_NOT_ABSOLUTE`, and one whose scheme is not `http` or `https` (`javascript:`, `data:`, `mailto:`, `urn:` among them) `400 LINK_HREF_NOT_HTTP`, since a page draws the link for a person to click; the server never fetches it.
+  A slug or a series' name holds at most 512 bytes (`400 EVAL_KEY_TOO_LONG`), which keeps every index entry of the registry well inside what Postgres holds (`evals.maxKeyBytes`); each refusal of the write names its field in `field`.
+  `400 INVALID_QUERY` names a malformed key, and a key the route does not take (any but those above and the global `session` parameter, so a caller still sending the old `scope=` is told rather than answered every issue), `404 PROJECT_NOT_FOUND` an unknown project, and a project-scoped credential of another project is `403 PROJECT_SCOPE`.
+
+- `/api/v1/projects/{key}/evals/{slug}` (GET; cookie, trusted header, or bearer)
+
+  One eval's versions, newest first, in the list read's envelope and item shape: the newest carries the window's values (the same window, compare range and `repo` keys), every older version its definition alone.
+  `doc_text` is the method the eval's section of the project's `evals-md` holds, read by the version's `doc_block`.
+  `400 INVALID_QUERY` names a malformed key or one the route does not take, as the list read does; `404 EVAL_NOT_FOUND` for a slug no eval of the project holds.
+
+- `/api/v1/projects/{key}/evals/{slug}/items?from=&to=&compare_from=&compare_to=&series=&row_kind=&row=&repo=&sort=&limit=&offset=` (GET; cookie, trusted header, or bearer)
+
+  The rows behind an eval's numbers, `{items, total, limit, offset}`, every row `{row_key, row_kind, cols, measured_at, source, href, links, range}` whatever its kind, `range: compare` for a row of the compare range.
+  Every eval answers its readings (a reading logged under a computed eval's slug among them) and its stored day rows (`day`); a computed eval answers the rows its numbers count, as its project's day rows counted them: a Legion eval's issues closed in the range and `legion-splitting`'s filings (`issue`, with the issue's title and priority), a delivery eval's pull requests and deploy runs (`pull_request`, `deploy`), a CI eval's runs (`run`) and `pr-ci`'s jobs (`job`), and `unowned-p0`'s open P0 issues with no owner (`issue`).
+  `series` narrows to a series (a Legion series' `:roots` or `:children` cut, `filed:<class>`, `job:<name>`), `row_kind` and `row` to a row kind and a row key, `repo` to those repositories; `sort=median` answers `pr-ci`'s jobs with their series' `min_n` timed results, slowest first, and `sort=failures` the jobs that failed in the 24 hours before the range's end.
+  Each row's `measured_at` is when its value was measured, the moment its eval dates it by: a reading's own, a pull request's merge, a deploy run's and a CI run's start, a Legion issue's close, a filing's filing, a day row's day, a job's newest day and a failing job's latest failure; an open P0 issue with no owner is measured at the read.
+  `400 INVALID_QUERY` names a malformed key or one the route does not take, as the list read does.
+
+- `/api/v1/projects/{key}/evals/{slug}/readings` (POST; cookie, trusted header, or bearer)
+
+  Log one batch of readings of one eval, `{readings, actor?}`, stored in one transaction or not at all; an `Idempotency-Key` is required (`400 IDEMPOTENCY_KEY_REQUIRED`), and a repeat under it is answered the first write's answer.
+  A slug no eval holds registers its eval with the caller as owner, no target and state `active`; a reading under a computed eval's slug is stored and answered by its items, and never folded into its value.
+  The server sets `recorded_by` and `recorded_at`, and a row carrying either is refused; a row whose value would take a sum of its day row (its values, or each weighted by its `n`) past what a float holds is refused `READING_DAY_OVERFLOW`, since no read could answer it; a refused batch stores nothing and answers `400 {code, error, rows}`, each refused row named by its index and field with its own code.
+  A row's `measured_at` lies from 2025-01-01T00:00:00Z (`evals.MeasuredAtFloor`) to 24 hours after the server's time, else the row is refused `MEASURED_AT_OUT_OF_RANGE`: the refresher writes a logged eval's zero rows from its first day on, and one reading at 0001-01-01 made it write 739,934 rows.
+  A row's `series`, `row_kind`, `row_key` and `attributes.repo`, and the slug, hold at most 512 bytes each (`EVAL_KEY_TOO_LONG`), and a link's `href` is an absolute `http` or `https` URL (`LINK_HREF_NOT_ABSOLUTE`, `LINK_HREF_NOT_HTTP`).
+  A correction is a new reading naming the one it replaces in `replaces`; `PUT` and `DELETE` of `.../readings/{id}` are `405 READING_APPEND_ONLY`.
+  The write takes no query key but the global `session` parameter: any other is `400 INVALID_QUERY` naming it.
+  The day rows of a logged eval are kept in the write's own transaction, recording the server's build (`main.buildCommit`, or the process's own build name where the image build stamped none) as the build that wrote them: a day the batch replaces a reading of is folded again from the readings that stand, and any other day the batch reaches has the batch's readings added to it.
+
+- `/api/v1/evals?project=&from=&to=&compare_from=&compare_to=&kind=&repo=&limit=&offset=` (GET; cookie, trusted header, or bearer)
+
+  The project read across projects, in its envelope and item shape: `project`, repeated, names the projects read in the order named, and with none named every project the store holds is read, by key; no project is picked for the caller.
+  The page runs across the projects.
+  `400 INVALID_QUERY` names a malformed key or one the route does not take, as the project read does; `404 PROJECT_NOT_FOUND` names a project no row holds.
 
 - `/api/v1/github/app-installation/{owner}/{repo}` (GET; cookie, trusted header, or bearer)
 

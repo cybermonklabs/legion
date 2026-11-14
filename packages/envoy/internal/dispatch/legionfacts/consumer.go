@@ -89,10 +89,6 @@ const (
 // cursorNames is the three in one list, which is how a pass reads and writes them.
 var cursorNames = []string{eventsCursor, observationsCursor, changesCursor}
 
-// pullRequestChange is the delivery_changes kind this loop keeps: a pull request's row, whose
-// merge time is the one delivery fact an issue's facts read.
-const pullRequestChange = "pull_request"
-
 // Deps is what Run needs of the server.
 type Deps struct {
 	// Pool is the database the facts are computed from and written to.
@@ -157,6 +153,13 @@ var serverSchedule = schedule{
 //     rows whose issue carries no Legion phase work any more, which no feed names at all
 //     (staleStoredRows).
 //
+// The same passes keep each project's filings (issue_filings): an `issue.created` event a Legion
+// session wrote is a new filing of that session's project, a session that writes under a title
+// naming another issue moves every filing it made to the project and the filer that title names
+// (readEventPage, sessionFilings), and a stored filing is computed again whenever the pass
+// computes its filed issue or its filer's issue (filingsToCompute), so its class, its filer's
+// phase and its root move with the inputs the rows move with.
+//
 // A pass that fails logs and leaves its cursors where they were, so the next pass reads the same
 // rows again. Every pass is safe to run twice: a row whose values did not move is not rewritten
 // (Upsert), and a cursor moves only in the transaction that wrote the rows it covers (passPage).
@@ -178,7 +181,7 @@ func run(ctx context.Context, deps Deps, sched schedule) {
 	duty.RunWoken(ctx, duty.WokenLoop{
 		Lease:  Lease,
 		Leases: deps.Leases,
-		Wake:   mergeWakes(ctx, deps.Events, deps.Observations, deps.Deliveries),
+		Wake:   duty.MergeWakes(ctx, deps.Events, deps.Observations, deps.Deliveries),
 		MinGap: sched.every,
 		Pass: func(ctx context.Context) time.Time {
 			changed, next, err := pass(ctx, deps, sched)
@@ -197,43 +200,6 @@ func run(ctx context.Context, deps Deps, sched schedule) {
 	})
 }
 
-// mergeWakes is the one wake a WokenLoop reads, signalled by any of the loop's three. It keeps
-// the shape a pglisten.Hub wake has: a buffer of one and a send that never blocks, so any number
-// of changes collapse into one signal and a change that arrives while a pass runs earns a pass
-// after it. A nil wake is left out, and three nil wakes answer nil, which is a loop that runs at
-// start and at each due time alone.
-func mergeWakes(ctx context.Context, wakes ...<-chan struct{}) <-chan struct{} {
-	live := make([]<-chan struct{}, 0, len(wakes))
-	for _, wake := range wakes {
-		if wake != nil {
-			live = append(live, wake)
-		}
-	}
-	switch len(live) {
-	case 0:
-		return nil
-	case 1:
-		return live[0]
-	}
-	merged := make(chan struct{}, 1)
-	for _, wake := range live {
-		go func() {
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case <-wake:
-					select {
-					case merged <- struct{}{}:
-					default:
-					}
-				}
-			}
-		}()
-	}
-	return merged
-}
-
 // pass is one pass of the loop: it reads page after page of the three feeds until one comes back
 // short, each page computed and written in a transaction of its own, and answers the keys whose
 // stored rows it changed and when the loop should run again.
@@ -243,7 +209,7 @@ func mergeWakes(ctx context.Context, wakes ...<-chan struct{}) <-chan struct{} {
 // that moment, which is what holds a stored row within Freshness of the clock.
 func pass(ctx context.Context, deps Deps, sched schedule) ([]string, time.Time, error) {
 	now := sched.now()
-	safe, err := safeHorizon(ctx, deps.Horizon)
+	safe, err := deps.Horizon.SafeOrAwait(ctx)
 	if err != nil {
 		return nil, time.Time{}, err
 	}
@@ -258,24 +224,6 @@ func pass(ctx context.Context, deps Deps, sched schedule) ([]string, time.Time, 
 			return changed, now.Add(sched.every), nil
 		}
 	}
-}
-
-// safeHorizon is the highest event id at or below which every event is final (events.Horizon).
-// A safe of 0 is a horizon that has proven nothing yet, which is every first pass of a process,
-// since one snapshot never proves its own newest id: such a pass takes a horizon with Await
-// instead of reading no event at all.
-func safeHorizon(ctx context.Context, horizon *events.Horizon) (int64, error) {
-	safe, err := horizon.Safe(ctx)
-	if err != nil {
-		return 0, fmt.Errorf("read the event log's safe horizon: %w", err)
-	}
-	if safe > 0 {
-		return safe, nil
-	}
-	if safe, err = horizon.Await(ctx); err != nil {
-		return 0, fmt.Errorf("await the event log's safe horizon: %w", err)
-	}
-	return safe, nil
 }
 
 // passPage is one page of one pass: it reads where each feed stands, reads a page of each,
@@ -315,7 +263,7 @@ func passPage(ctx context.Context, deps Deps, sched schedule, safe int64, now ti
 			return nil
 		}
 		if work[project] == nil {
-			work[project] = &projectWork{keys: map[string]bool{}, moved: map[string]bool{}}
+			work[project] = &projectWork{keys: map[string]bool{}, open: map[string]bool{}, moved: map[string]bool{}, filed: map[string]bool{}}
 		}
 		return work[project]
 	}
@@ -329,6 +277,24 @@ func passPage(ctx context.Context, deps Deps, sched schedule, safe int64, now ti
 			}
 		}
 	}
+	// A filing is the filer's project's, wherever the filed issue lives (legion.SessionTitle's
+	// OfProject, the rule metrics reads a filing by), so it is owed to the project its filer's
+	// newest title names, which computes and writes it. One project at most answers that: a
+	// project's key is upper case, and OfProject compares it ignoring case. A filing stored under
+	// another project is owed to that project as well, whose computation answers no filing for it
+	// and so deletes it: the one pass takes the filing out of the project it left and writes it
+	// into the project it joined, and the upsert of the one moves the stored row to it whichever
+	// of the two is written first (upsertFilings).
+	for _, filed := range read.events.filings {
+		for project := range projects {
+			if !(filed.legion && filed.filer.OfProject(project)) && project != filed.stored {
+				continue
+			}
+			if work := needed(project); work != nil {
+				work.filed[filed.issue] = true
+			}
+		}
+	}
 	if sweep {
 		open, err := openStoredRows(ctx, deps.Pool)
 		if err != nil {
@@ -338,12 +304,20 @@ func passPage(ctx context.Context, deps Deps, sched schedule, safe int64, now ti
 		if err != nil {
 			return nil, false, err
 		}
-		for _, swept := range []map[string][]string{open, stale} {
-			for project, keys := range swept {
-				if work := needed(project); work != nil {
-					for _, key := range keys {
-						work.keys[key] = true
-					}
+		// The open rows are kept apart: the sweep adds them because their hours move with the
+		// clock, which moves no filing (rowsToCompute). A stale row is added for a loss no feed
+		// carried, which can move a filing as well, so it joins the feeds' keys.
+		for project, keys := range open {
+			if work := needed(project); work != nil {
+				for _, key := range keys {
+					work.open[key] = true
+				}
+			}
+		}
+		for project, keys := range stale {
+			if work := needed(project); work != nil {
+				for _, key := range keys {
+					work.keys[key] = true
 				}
 			}
 		}
@@ -361,13 +335,13 @@ func passPage(ctx context.Context, deps Deps, sched schedule, safe int64, now ti
 	// project whose issues have all lost their Legion phase work answers no row at all and
 	// still owes the deletion of the stale rows its stated set holds, which is the one pass
 	// that takes those rows away.
-	computed := []ProjectWrite{}
+	computed := []projectPass{}
 	for _, project := range slices.Sorted(maps.Keys(work)) {
-		rows, err := computeProjectWork(ctx, deps.Pool, project, work[project], now)
+		one, err := computeProjectWork(ctx, deps.Pool, project, work[project], now)
 		if err != nil {
 			return nil, false, err
 		}
-		computed = append(computed, rows)
+		computed = append(computed, one)
 	}
 
 	positions := map[string]int64{
@@ -375,58 +349,82 @@ func passPage(ctx context.Context, deps Deps, sched schedule, safe int64, now ti
 		observationsCursor: read.observations.position,
 		changesCursor:      read.changes.position,
 	}
-	changed, err := writePass(ctx, deps.Pool, computed, positions, now, deps.Build)
+	changed, err := writePass(ctx, deps.Pool, computed, positions, now, deps.Build, read.changes.remapped)
 	if err != nil {
 		return changed, false, err
 	}
 	return changed, read.more, nil
 }
 
-// projectWork is what one page owes one project: the issues its feeds named, those of them a
-// row moved between trees (touch), and whether the project is to be computed whole (a
-// backfill).
+// projectWork is what one page owes one project: the issues its feeds named and the stale rows its
+// sweep adds, the open rows its sweep adds, those of the feeds' issues a row moved between trees
+// (touch), the filings its events moved that the project owes, the ones it joined and the ones it
+// left (feed.filings), and whether the project is to be computed whole (a backfill).
 type projectWork struct {
 	keys     map[string]bool
+	open     map[string]bool
 	moved    map[string]bool
+	filed    map[string]bool
 	backfill bool
 }
 
-// computeProjectWork computes the rows one project owes and answers them as the write of that
-// project (ProjectWrite): the rows, the set the pass stated for them, and whether the pass read
-// the project whole. A backfill reads the whole project (ComputeProject) and the keys its
-// feeds named are left out of the call, because the whole project already holds them: its
-// stated set is the project itself. Every other project is computed over the rows its changes
-// touch (rowsToCompute), and no row outside that set is written or deleted.
-func computeProjectWork(ctx context.Context, pool *store.Pool, project string, work *projectWork, now time.Time) (ProjectWrite, error) {
+// projectPass is what one page computed for one project: the write of its rows and the write of
+// its filings, which writePass makes in one transaction.
+type projectPass struct {
+	facts   ProjectWrite
+	filings FilingsWrite
+}
+
+// computeProjectWork computes the rows and the filings one project owes and answers them as the
+// writes of that project (ProjectWrite, FilingsWrite): the rows and the filings, the sets the
+// pass stated for them, and whether the pass read the project whole. A backfill reads the whole
+// project (ComputeProject) and the keys its feeds named are left out of the call, because the
+// whole project already holds them: its stated set is the project itself, and its filings are
+// every filing a Legion session of the project made. Every other project is computed over the
+// rows its changes and its sweep touch (rowsToCompute) and the filings named by its moved filings
+// and by the rows its keys touch, the open rows the sweep adds left out (filingsToCompute), and no
+// row or filing outside those sets is written or deleted.
+func computeProjectWork(ctx context.Context, pool *store.Pool, project string, work *projectWork, now time.Time) (projectPass, error) {
 	if work.backfill {
-		rows, err := ComputeProject(ctx, pool, project, now)
+		rows, filings, err := ComputeProject(ctx, pool, project, now)
 		if err != nil {
-			return ProjectWrite{}, err
+			return projectPass{}, err
 		}
-		return ProjectWrite{Project: project, Whole: true, Rows: rows}, nil
+		return projectPass{
+			facts:   ProjectWrite{Project: project, Whole: true, Rows: rows},
+			filings: FilingsWrite{Project: project, Whole: true, Filings: filings},
+		}, nil
 	}
 	above, err := metrics.TreeLinks(ctx, pool, project)
 	if err != nil {
-		return ProjectWrite{}, err
+		return projectPass{}, err
 	}
-	keys, err := rowsToCompute(ctx, pool, project, slices.Sorted(maps.Keys(work.keys)), work.moved, above)
+	keys, fed, err := rowsToCompute(ctx, pool, project, slices.Sorted(maps.Keys(work.keys)), slices.Sorted(maps.Keys(work.open)), work.moved, above)
 	if err != nil {
-		return ProjectWrite{}, err
+		return projectPass{}, err
 	}
-	rows, err := Compute(ctx, pool, project, keys, now)
+	filed, err := filingsToCompute(ctx, pool, project, fed, work.filed)
 	if err != nil {
-		return ProjectWrite{}, err
+		return projectPass{}, err
 	}
-	return ProjectWrite{Project: project, Stated: keys, Rows: rows}, nil
+	rows, filings, err := computeKeys(ctx, pool, project, keys, filed, now)
+	if err != nil {
+		return projectPass{}, err
+	}
+	return projectPass{
+		facts:   ProjectWrite{Project: project, Stated: keys, Rows: rows},
+		filings: FilingsWrite{Project: project, Stated: filed, Filings: filings},
+	}, nil
 }
 
-// writePass writes every project's rows, deletes the stale rows inside the set each project's
-// pass stated, records the projects it computed whole and moves the three cursors, all in one
-// transaction. It answers the keys whose stored rows changed, the deleted keys among them,
-// because a row that went is a change of the stored facts as much as a row that moved. A
-// failure leaves the cursors and the marks where they were, so the next pass reads the same
-// rows again.
-func writePass(ctx context.Context, pool *store.Pool, computed []ProjectWrite, positions map[string]int64, now time.Time, build string) ([]string, error) {
+// writePass writes every project's rows and filings, deletes the stale rows and filings inside
+// the sets each project's pass stated, resolves every stored row's repository again where remapped
+// says the page read a change of a repository's mapping (reresolveRepos), records the projects it
+// computed whole and moves the three cursors, all in one transaction. It answers the keys whose
+// stored rows changed, the deleted keys among them, because a row that went is a change of the
+// stored facts as much as a row that moved. A failure leaves the cursors and the marks where they
+// were, so the next pass reads the same rows again.
+func writePass(ctx context.Context, pool *store.Pool, computed []projectPass, positions map[string]int64, now time.Time, build string, remapped bool) ([]string, error) {
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("open the Legion facts' write: %w", err)
@@ -434,11 +432,21 @@ func writePass(ctx context.Context, pool *store.Pool, computed []ProjectWrite, p
 	defer func() { _ = tx.Rollback(context.Background()) }()
 	changed := []string{}
 	for _, project := range computed {
-		written, err := WriteProject(ctx, tx, project)
+		written, err := WriteProject(ctx, tx, project.facts)
 		if err != nil {
 			return nil, err
 		}
 		changed = append(changed, written...)
+		if err := WriteFilings(ctx, tx, project.filings); err != nil {
+			return nil, err
+		}
+	}
+	if remapped {
+		moved, err := reresolveRepos(ctx, tx)
+		if err != nil {
+			return nil, err
+		}
+		changed = append(changed, moved...)
 	}
 	if err := markComputedWhole(ctx, tx, computed, now, build); err != nil {
 		return nil, err
@@ -467,15 +475,15 @@ func writePass(ctx context.Context, pool *store.Pool, computed []ProjectWrite, p
 // this project to a whole read compared against (legionProjects). The pass carries that one
 // value through both steps rather than reading it a second time, so a project read whole is
 // marked as read whole by the build that read it and the next pass of that build sweeps it.
-func markComputedWhole(ctx context.Context, tx pgx.Tx, computed []ProjectWrite, now time.Time, build string) error {
+func markComputedWhole(ctx context.Context, tx pgx.Tx, computed []projectPass, now time.Time, build string) error {
 	projects := []string{}
 	answered := []int32{}
-	for _, write := range computed {
-		if !write.Whole {
+	for _, one := range computed {
+		if !one.facts.Whole {
 			continue
 		}
-		projects = append(projects, write.Project)
-		answered = append(answered, int32(len(write.Rows)))
+		projects = append(projects, one.facts.Project)
+		answered = append(answered, int32(len(one.facts.Rows)))
 	}
 	if len(projects) == 0 {
 		return nil
