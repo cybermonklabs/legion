@@ -1,15 +1,22 @@
 // Session attribution for jj commits, shared by the harness plugins.
 //
 // At root bootstrap the extension exports JJ_CONFIG = <user config chain> +
-// a generated overlay that sets `templates.commit_trailers`, so every jj
-// commit made from the root session — and from every phase worker, since
-// workers are subagents sharing the root process environment — automatically
-// carries an `Omp-Session: <root-session-id>` trailer. Attribution rides the
-// commit itself; no worker compliance and no host-specific jj config needed.
+// a generated overlay that sets three jj templates, so every jj commit made
+// from the root session — and from every phase worker, since workers are
+// subagents sharing the root process environment — automatically carries the
+// pair: an `Omp-Session: <root-session-id>` line, then a `Legion-Role: <role>`
+// line. The role is `LEGION_ROLE` when it names a role (`isTrailerRole`), and
+// a pane without one gets the session line alone. `templates.commit_trailers`
+// gives the pair to `jj commit`, `jj describe` and `jj split`. `jj revert` and
+// `jj duplicate` write their descriptions from `templates.revert_description`
+// and `templates.duplicate_description` and read no trailer template, so the
+// overlay sets those two to jj's own text with the pair added. Attribution
+// rides the commit itself; no worker compliance and no host-specific jj config
+// needed.
 //
 // JJ_CONFIG replaces jj's default config lookup, so an existing JJ_CONFIG (or
 // jj's own `config path --user` output, chained in printed order) must come
-// first; the overlay layers last and wins for its single key. Attribution
+// first; the overlay layers last and wins for its three keys. Attribution
 // must degrade to *no* trailer, never a *wrong* one: stale attribution
 // overlays already present in the inherited chain (this extension's or the
 // dotfiles session-env extension's — both use the omp-attribution-*.toml
@@ -21,32 +28,34 @@
 // claim and `claims/ready`, which run after it.
 //
 // For a pane whose issue sits on a repository the deployment names, the
-// overlay carries a second line, `Dispatch: <KEY>`, so a squash landing
-// message carries the issue key. That line rides a `[[--scope]]` table whose
-// `--when.workspaces` names the pane's own resolved workspace, and the
-// unscoped `[templates]` table keeps the session line alone: a commit the
-// pane's shell makes in any other jj repository carries the session line and
-// no issue key, so a clone of a public repository never carries this
+// overlay's `commit_trailers` carries one more line, `Dispatch: <KEY>`, so a
+// squash landing message carries the issue key. That line rides a
+// `[[--scope]]` table whose `--when.workspaces` names the pane's own resolved
+// workspace, and the unscoped `[templates]` table keeps the pair alone: a
+// commit the pane's shell makes in any other jj repository carries the pair
+// and no issue key, so a clone of a public repository never carries this
 // deployment's issue key.
 //
-// The scoped table repeats *both* lines, because a scoped
+// The scoped table repeats the pair before the issue line, because a scoped
 // `templates.commit_trailers` replaces the key rather than adding to it: a
-// scope carrying the issue line alone would drop `Omp-Session:` from every
-// commit it stamps.
+// scope carrying the issue line alone would drop the pair from every commit
+// it stamps. The scope sets no other template, so inside it `jj revert` and
+// `jj duplicate` use the unscoped two, which write the pair and no issue key.
 //
 // jj resolves a workspace root before it matches the scope, and matches it as
 // a path prefix on whole path components, so the path written must be the
 // real, absolute one (`resolvedWorkspace`). A jj repository a role creates
 // *under* its own workspace is stamped too; a sibling whose name merely
 // extends that path is not; and a second jj workspace of the same repository,
-// at another path, carries the session line alone. A workspace path the
+// at another path, carries the pair alone. A workspace path the
 // writer cannot contain — one holding a character a TOML basic string cannot
-// carry raw — and one that does not resolve both leave the session line
+// carry raw — and one that does not resolve both leave the pair
 // alone, rather than a scope jj refuses: a scope jj cannot parse breaks every
 // `jj` command in the pane, which is far worse than a missing trailer.
 import { realpathSync } from "node:fs";
 import { mkdir, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { isLegionRole } from "@legion/contracts";
 import { SESSION_ID_PATH_SEGMENT } from "@legion/envoy-client/dispatch-session-directory";
 
 const UUID = "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}";
@@ -66,6 +75,21 @@ const ISSUE_KEY = /^[A-Z][A-Z0-9]{1,9}-[0-9]+$/;
  * character below the space, and the DEL. */
 const FIRST_RAW_CODE = 0x20;
 const DEL_CODE = 0x7f;
+/** `LEGION_ROLE` in the controller's process (`legion controller start`): it is no `LegionRole`,
+ * and a commit the controller makes names it all the same. */
+const CONTROLLER_ROLE = "controller";
+/** jj 0.45's default `templates.revert_description` (`jj config list --include-defaults
+ * templates`), one argument of its `concat` per entry, copied as jj writes them. jj writes a
+ * revert's description from this template alone and adds no `commit_trailers` to it, so the
+ * overlay's revert template is these parts, then a blank line and the pair. */
+const JJ_REVERT_PARTS = [
+  `'Revert "' ++ description.first_line() ++ '"' ++ "\\n"`,
+  `"\\n"`,
+  `"This reverts commit " ++ commit_id ++ ".\\n"`,
+];
+
+/** A trailer the overlay writes: its key, then a value the writer checked. */
+type Trailer = readonly [key: string, value: string];
 
 export function sessionIdFromTranscript(sessionFile: string): string | undefined {
   return TOP_LEVEL_TRANSCRIPT.exec(path.basename(sessionFile))?.[1];
@@ -86,13 +110,69 @@ export function resolvedWorkspace(workspace: string | undefined): string | undef
 
 /** `workspace` as a TOML basic string, quotes included, or undefined when it holds a character
  * such a string cannot carry raw and no escape of ours should guess at: a scope jj cannot parse
- * would break every `jj` command in the pane, so the caller writes the session line alone. */
+ * would break every `jj` command in the pane, so the caller writes no scope and the pair alone. */
 function tomlBasicString(workspace: string): string | undefined {
   for (let at = 0; at < workspace.length; at += 1) {
     const code = workspace.charCodeAt(at);
     if (code < FIRST_RAW_CODE || code === DEL_CODE) return undefined;
   }
   return `"${workspace.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`;
+}
+
+/** Whether `role` may reach the overlay's `Legion-Role:` line: a Legion role (`isLegionRole`) or
+ * the controller's. The match is containment as much as correctness, as the issue key's is: the
+ * value is interpolated into a jj template inside a TOML literal. */
+function isTrailerRole(role: string | undefined): role is string {
+  return role !== undefined && (isLegionRole(role) || role === CONTROLLER_ROLE);
+}
+
+/** `templates.commit_trailers` giving `trailers`, one line each in order. The `\n` between them is
+ * the two characters jj's template language reads as a newline, inside a TOML literal. */
+function commitTrailers(trailers: readonly Trailer[]): string {
+  return `commit_trailers = '"${trailers.map(([key, value]) => `${key}: ${value}`).join("\\n")}"'\n`;
+}
+
+/** The unscoped `[templates]` table: the three templates that give `pair` to `jj commit`,
+ * `jj describe`, `jj split`, `jj revert` and `jj duplicate`. The two multi-line templates are TOML
+ * `'''` literals, because jj's own revert text holds `'`. */
+function templatesTable(pair: readonly Trailer[]): string {
+  const revert = [
+    ...JJ_REVERT_PARTS,
+    `"\\n"`,
+    ...pair.map(([key, value]) => `"${key}: ${value}\\n"`),
+  ];
+  // A duplicate keeps the description of its source and adds each line of the pair that no
+  // trailer of the source holds with the same key and value. A description with no trailer holds
+  // no line of the pair, so it takes a blank line before them. An empty description stays empty.
+  const missing = pair.map(([key, value]) => {
+    const held = `trailers.any(|t| t.key() == "${key}" && t.value() == "${value}")`;
+    return `    if(!${held}, "${key}: ${value}\\n"),\n`;
+  });
+  return (
+    "[templates]\n" +
+    commitTrailers(pair) +
+    `revert_description = '''\nconcat(\n${revert.map((part) => `  ${part},\n`).join("")})\n'''\n` +
+    "duplicate_description = '''\nconcat(\n  description,\n  if(description, concat(\n" +
+    `    if(!trailers, "\\n"),\n${missing.join("")}  )),\n)\n'''\n`
+  );
+}
+
+/** The `[[--scope]]` table that gives `pair`, then `Dispatch: <issueKey>`, to the commits of
+ * `workspace` alone, or "" when the key's whole value is no key or there is no workspace a TOML
+ * basic string can carry. A scoped `templates.commit_trailers` replaces the unscoped one, so it
+ * repeats the pair. */
+function scopeTable(
+  pair: readonly Trailer[],
+  issueKey: string | undefined,
+  workspace: string | undefined
+): string {
+  if (issueKey === undefined || !ISSUE_KEY.test(issueKey) || !workspace) return "";
+  const scopedTo = tomlBasicString(workspace);
+  if (scopedTo === undefined) return "";
+  return (
+    `\n[[--scope]]\n--when.workspaces = [${scopedTo}]\n[--scope.templates]\n` +
+    commitTrailers([...pair, ["Dispatch", issueKey]])
+  );
 }
 
 function withoutOverlays(chain: string): string {
@@ -160,21 +240,23 @@ export async function userConfigChain(
  * (`SESSION_ID_PATH_SEGMENT`: the id reaches both the TOML literal and the overlay's file name,
  * so an id that is not one passes nothing on), no base chain to layer over, or a failed write —
  * which still degrades `env.JJ_CONFIG` to the base, since no overlay is active.
- * `options.issueKey` and `options.workspace` add the `Dispatch:` line, scoped to that one
- * workspace, only when the key's whole value is a key and the path is one a TOML basic string can
- * carry; `options.workspace` is the resolved path (`resolvedWorkspace`), which is what jj matches
- * a scope against. */
+ * `options.role` adds the `Legion-Role:` line after the session line, only when it names a role a
+ * commit may carry (`isTrailerRole`). `options.issueKey` and `options.workspace` add the
+ * `Dispatch:` line, scoped to that one workspace, only when the key's whole value is a key and the
+ * path is one a TOML basic string can carry; `options.workspace` is the resolved path
+ * (`resolvedWorkspace`), which is what jj matches a scope against. */
 export async function exportJjSessionAttribution(
   sessionId: string,
   stateDir: string,
   options: {
     issueKey?: string;
     workspace?: string;
+    role?: string;
     env?: NodeJS.ProcessEnv;
     resolveBase?: () => Promise<string | undefined>;
   } = {}
 ): Promise<string | undefined> {
-  const { issueKey, workspace, env = process.env, resolveBase = userConfigChain } = options;
+  const { issueKey, workspace, role, env = process.env, resolveBase = userConfigChain } = options;
   // The id reaches both a TOML literal and a file name here: a single quote would end the literal
   // and break every `jj` command in the pane, and a `/` would move the overlay out of the state
   // directory. Oh My Pi's id is the transcript's UUID; Claude Code's is whatever its hook input
@@ -189,18 +271,11 @@ export async function exportJjSessionAttribution(
   if (active?.split(":").includes(overlay)) return active;
   const base = (active ? withoutOverlays(active) : "") || (await resolveBase());
   if (!base) return undefined;
-  // `\n` is the two characters jj's template language reads as a newline, inside a TOML literal.
-  const sessionTrailer = `Omp-Session: ${sessionId}`;
-  const scopedTo =
-    issueKey !== undefined && ISSUE_KEY.test(issueKey) && workspace
-      ? tomlBasicString(workspace)
-      : undefined;
-  const contents =
-    `[templates]\ncommit_trailers = '"${sessionTrailer}"'\n` +
-    (scopedTo === undefined
-      ? ""
-      : `\n[[--scope]]\n--when.workspaces = [${scopedTo}]\n[--scope.templates]\n` +
-        `commit_trailers = '"${sessionTrailer}\\nDispatch: ${issueKey}"'\n`);
+  // The session line, then the role line: a caller's role is checked again here, as the key is,
+  // because the value reaches a jj template inside a TOML literal.
+  const pair: Trailer[] = [["Omp-Session", sessionId]];
+  if (isTrailerRole(role)) pair.push(["Legion-Role", role]);
+  const contents = templatesTable(pair) + scopeTable(pair, issueKey, workspace);
   try {
     await mkdir(stateDir, { recursive: true });
     const tmp = `${overlay}.${process.pid}.tmp`;
@@ -216,28 +291,38 @@ export async function exportJjSessionAttribution(
   // biome-ignore-end lint/complexity/useLiteralKeys: see above
 }
 
-/** The writer's `issueKey` and `workspace` for a Legion pane, from the pane's environment: the
- * two rules both harnesses' callers follow, in one place.
+/** The writer's `issueKey`, `workspace` and `role` for a Legion pane, from the three variables of
+ * the pane's environment that give them: the rules both harnesses' callers follow, in one place.
  *
  * The key is `LEGION_ISSUE_TRAILER` alone, never `LEGION_ISSUE`: a pane works an issue of this
  * deployment's own Dispatch project, and only the daemon knows whether its repository is one the
  * deployment names, so a key reaches a commit only when the daemon put it in this variable
- * (dispatch://INFRA-472). Absent or empty is no key, and the trailer is the session line alone.
+ * (dispatch://INFRA-472). Absent or empty is no key, and the overlay carries the pair alone.
  *
  * The workspace is `LEGION_WORKSPACE` resolved (`resolvedWorkspace`), since jj matches a scope
  * against the workspace root it resolved: a caller that passed the raw variable would write a
- * scope that silently matches nothing. Without one the trailer is the session line alone too —
+ * scope that silently matches nothing. Without one the overlay carries the pair alone too —
  * the issue key belongs to the pane's own repository, not to whatever else its shell commits in.
+ *
+ * The role is `LEGION_ROLE`, only when it names a role a commit may carry (`isTrailerRole`: a
+ * Legion role, or the controller's). Any other value is no role, and the pair is the session line
+ * alone. This is the one place that reads the role for the overlay.
  *
  * Each is left out rather than passed undefined, so the result is the options object of a caller
  * type-checked under `exactOptionalPropertyTypes` (claude-envoy's). */
 export function paneAttributionOptions(env: NodeJS.ProcessEnv): {
   issueKey?: string;
   workspace?: string;
+  role?: string;
 } {
   // biome-ignore-start lint/complexity/useLiteralKeys: claude-envoy's tsconfig refuses dot access
   const issueKey = env["LEGION_ISSUE_TRAILER"];
   const workspace = resolvedWorkspace(env["LEGION_WORKSPACE"]);
+  const role = env["LEGION_ROLE"];
   // biome-ignore-end lint/complexity/useLiteralKeys: see above
-  return { ...(issueKey ? { issueKey } : {}), ...(workspace ? { workspace } : {}) };
+  return {
+    ...(issueKey ? { issueKey } : {}),
+    ...(workspace ? { workspace } : {}),
+    ...(isTrailerRole(role) ? { role } : {}),
+  };
 }

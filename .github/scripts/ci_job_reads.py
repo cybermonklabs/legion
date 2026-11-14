@@ -1043,7 +1043,7 @@ GATES = [
         (".github/workflows/release.yaml", "packages/pi-shared/test/skills-partition.test.ts:82"),
     ) + envoy_client_dep("packages/pi-shared/tsconfig.json paths @legion/envoy-client/errors; src imports "
                          "@legion/envoy-client/* (exports.bun -> src)")
-      + biome(at("pi-shared", "Lint pi-shared")) + bun_job("pi-shared") + CI_SELF),
+      + install_jj("pi-shared") + biome(at("pi-shared", "Lint pi-shared")) + bun_job("pi-shared") + CI_SELF),
 
     gate("pi_envoy", "pi-envoy", reads=reads(
         ("packages/pi-envoy/**", f"{at('pi-envoy', 'Lint pi-envoy')}, typecheck, test and pack in packages/pi-envoy"),

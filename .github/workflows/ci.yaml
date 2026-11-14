@@ -1067,12 +1067,23 @@ jobs:
               # reads the Go package's own testdata by relative path, that file itself and never a
               # copy, so a field added there must start this job.
               - 'packages/envoy/internal/brokerclient/testdata/wire.json'
-            # The private workspace package both Oh My Pi plugins import.
+            # The private workspace package both Oh My Pi plugins import, and the jj
+            # .github/actions/install-jj installs for the one case of src/jj-attribution.test.ts
+            # that runs the real jj.
             pi_shared:
               - '.github/workflows/ci.yaml'
               - *bun_install
               - *biome
               - 'packages/pi-shared/**'
+              - '.github/actions/install-jj/**'
+              # install-jj's second step reads `ARG JJ_TOOL` from here, the tool spec mise
+              # installs.
+              - 'packages/daemon/docker/worker.Dockerfile'
+              # install-jj's first step installs mise from the manifest's `mise` row through
+              # that helper, and its second step holds the jj binary mise installs to the `jj`
+              # row's digest, or fetches that row's second source when mise cannot.
+              - '.github/ci-tools.yaml'
+              - '.github/scripts/ci-tools.sh'
               - 'packages/envoy-client/src/**'
               # And @legion/broker-client with it: src/broker-credential.ts:21-22 imports it, so
               # this job compiles its sources too (ci_job_reads.py's envoy_client_dep).
@@ -4297,6 +4308,9 @@ jobs:
       - name: Typecheck pi-shared
         run: bun run typecheck
         working-directory: packages/pi-shared
+      # src/jj-attribution.test.ts runs the real jj in a scratch repository for one case, and
+      # refuses on GitHub Actions without one.
+      - uses: ./.github/actions/install-jj
       # test/skills-partition.test.ts stages each plugin's skills with scripts/pi-plugin-prepack.sh
       # --stage-skills and holds the two lists to a partition of skills/.
       - name: Test pi-shared
