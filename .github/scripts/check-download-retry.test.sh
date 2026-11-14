@@ -1092,6 +1092,11 @@ run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "names the step" "$(contains "$out" "Read the run's artifact list")"
 check "names the budget" "$(contains "$out" 'timeout-minutes')"
+# The figures a refusal prints are what its reader writes next, so each is pinned exactly: a
+# `cost // 60 + 1` turned into `/` prints `6.0`, which a check for `timeout-minutes: 6` alone
+# also matches (dispatch://INFRA-1545, round 33).
+check "says the budget in seconds" "$(contains "$out" 'carries .timeout-minutes: 5., 300 s, and its own retries take 300 s')"
+check "says exactly what to write" "$(contains "$out" 'so write .timeout-minutes: 6. or more\.')"
 check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
 
 echo "case: the same step with a budget above its attempts passes"
@@ -1895,7 +1900,7 @@ check "exits 1" "$(is "$status" 1)"
 check "names the step, its arithmetic and the budget it writes none of" \
   "$(contains "$out" "step .Install elan. holds 607 s of retries and carries no .timeout-minutes. of its own")"
 check "names the measured shape it comes from" "$(contains "$out" 'install-elan')"
-check "says what to write" "$(contains "$out" 'timeout-minutes: 11')"
+check "says exactly what to write" "$(contains "$out" 'write .timeout-minutes: 11. or more on this step')"
 
 echo "case: the same step carrying that budget passes"
 root=$(fixture action-budgeted)
@@ -3625,6 +3630,31 @@ run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "says the job writes none and what GitHub gives it" \
   "$(contains "$out" "job 'build' writes no .timeout-minutes., so GitHub gives it 360 minutes, and its step 'The small fetch' carries .timeout-minutes: 400.")"
+
+# The same default, under a step's retries this time: the refusal prints GitHub's 360 minutes in
+# seconds as well, a figure its reader compares with the step's own, so it is pinned exactly.
+echo "case: a job that writes no timeout-minutes, under a step's retries, is told the 21600 s it gets"
+root=$(fixture job-default-under-retries)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: The large fetch, thirty times
+        timeout-minutes: 600
+        run: |
+          . .github/scripts/ci-retry.sh
+          for x in $(seq 1 30); do
+            retry_fetch "a large asset" 180 -- curl -fsSL --max-time 180 -o b https://example.com/b
+          done
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "says what GitHub gives the job, in minutes and in seconds, against the step's retries" \
+  "$(contains "$out" "job 'build' writes no .timeout-minutes., so GitHub gives it 360 minutes, 21600 s, and its step 'The large fetch, thirty times' holds retries taking 31500 s to exhaust")"
+check "says exactly what to write on the job" "$(contains "$out" 'Write .timeout-minutes: 526. or more on this job\.')"
 
 # The priced-comment clause reads a block to the last line of the file, and a file whose last line
 # is a comment with no newline after it ends the block there.
