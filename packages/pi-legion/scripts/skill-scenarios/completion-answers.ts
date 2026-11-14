@@ -24,14 +24,17 @@ const AFTER_TAKEN = " after 200";
 
 /** One line of the daemon stand-in's log (daemon-standin.ts): what reached it, when, and what it
  * answered, with the refusal's code where the answer carried one; the role of the agent the
- * stand-in served; a completion's line names the handoff record it reported, and a backward
- * move's the phase it asked for. The stand-in writes beside them the reason that move gave and
- * the phase a completion was answered on, which no reader uses, so this names neither. The
- * stand-in writes `role` on every line; a reader keys a completion by it and by nothing else, so
- * a completion line without one is unkeyable (`unkeyed`) and fails closed, never given the role
- * of the agent booted in its place. */
+ * stand-in served; the request's method, which a log written before the stand-in logged one does
+ * not name; a completion's line names the handoff record it reported, a backward move's the
+ * phase it asked for, and a turn outcome's whether its answer failed the claim. The stand-in
+ * writes beside them the reason that move gave and the phase a
+ * completion was answered on, which no reader uses, so this names neither. The stand-in writes
+ * `role` on every line; a reader keys a completion by it and by nothing else, so a completion
+ * line without one is unkeyable (`unkeyed`) and fails closed, never given the role of the agent
+ * booted in its place. */
 export const DaemonLine = z.looseObject({
   at: z.string(),
+  method: z.string().optional(),
   path: z.string(),
   status: z.number(),
   code: z.string().optional(),
@@ -39,6 +42,7 @@ export const DaemonLine = z.looseObject({
   handoffId: z.string().optional(),
   handoffVersion: z.number().optional(),
   to: z.string().optional(),
+  failed: z.boolean().optional(),
 });
 export type DaemonLine = z.infer<typeof DaemonLine>;
 

@@ -388,11 +388,16 @@ caller's PATH is Legion's leak-check wrapper, the rig passes the caller's `PUBLI
 each run's pane and refuses to start a run when it names no readable check.
 
 `rig.sh health [--tmp-snapshot <file>] <run dir>...` says whether each run's world could take what
-its agents did, and whether the run stayed inside its own world. It reads seven things: the run
+its agents did, and whether the run stayed inside its own world. It reads nine things: the run
 finished (its `out.txt` ends with an `exit=` line); every completion line names a role the
 scenario boots, and every completion the daemon stand-in refused was answered as
 `completion-answers.ts`'s `ANSWERS` table allows for the run's scenario, label and that role; a
-reviewer-text-findings world took the reviewer's completion at least once; no tool result of any
+reviewer-text-findings world took the reviewer's completion at least once; no request the daemon
+stand-in answered 404 is of a route the run's label's daemon registers, read out of the source of
+the checkout the run's `built-from` names (the stand-in answers by the same routes, and a run with
+a 404 whose routes cannot be read is unhealthy); no turn outcome the stand-in answered failed the
+claim, as the daemon fails one whose provider refused turns up to its launch failure limit; no
+tool result of any
 agent, and no `out*.txt`, holds a line the push guard prints when it refuses a push or cannot run;
 no `gh` call the gh stand-in refused (`calls.jsonl`) with a refusal `health.ts`'s `GH_DECLARED`
 does not declare for the scenario and the calling role (a call no route of the world answers

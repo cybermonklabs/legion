@@ -1,18 +1,25 @@
 #!/usr/bin/env bun
 /**
  * A stand-in for the Legion daemon that serves exactly the routes a phase worker's `legion` tool
- * hits in a skill scenario: the worker's claim registration (`claims/register`, `claims/ready`,
- * the daemon's claim routes the plugin boots through), the session's activity report
- * (`claims/activity`, which the plugin posts after each turn and the daemon answers 204 once the
- * claim's secret authenticates it, as `claims/ready` is: `s.activity` in
- * packages/daemon/internal/api/claims.go), the grant the tool mints in-process before
+ * and plugin hit in a skill scenario, of those the run's label's daemon registers (`ROUTES`): the
+ * worker's claim registration (`claims/register`, `claims/ready`, the daemon's claim routes the
+ * plugin boots through), the session's activity report (`claims/activity`, which the plugin posts
+ * after each turn and the daemon answers 204 once the claim's secret authenticates it, as
+ * `claims/ready` is: `s.activity` in packages/daemon/internal/api/claims.go), the outcome of each
+ * turn (`claims/turn-outcome`, which this checkout's plugin posts after each turn: `turnOutcome`
+ * there, answered with the run of refused turns, `TURN_OUTCOMES`), the idle-release records
+ * (`claims/release-records`, the tool's `read_release_records`: `releaseRecords` there, answered
+ * with none, since no pod of the rig is ever released), the grant the tool mints in-process before
  * each of its own daemon calls (`grants`), the issue's record (`GET /legion/v1/state`, the tool's
  * `read_record`), the phase completion (`handoff/complete`, the tool's `handoff_complete`) and
  * the return of the issue to an earlier phase (`phase/backward`, the tool's
  * `request_backward_move`), the two routes here that redeem a grant. No credential route and no
  * grant file: a pane's `gh` and
  * `git` read the rig's token from the gh files under its `GH_CONFIG_DIR`, which `daemon-pane.go`
- * writes, and no agent runs `legion` from bash.
+ * writes, and no agent runs `legion` from bash. A route the label's daemon does not register is
+ * answered 404 whatever this has a handler for, as that daemon's catch-all answers it; a route
+ * it registers and this does not answer is answered 404 too, which `rig.sh health` reads as a
+ * world the daemon would not have served (health.ts's `routes` rule).
  *
  * Every request and response body is the Go daemon's (`@legion/contracts/legion-api`): the
  * tool's grant request, its completion, and the state document. The grant rule mirrors the real
@@ -72,8 +79,9 @@
  * the rig's scorer reads that record back from Dispatch and holds it to the run's session
  * (score.ts testerProof).
  *
- * Every request appends one JSON line to the log file: `{at, path, status, role, code?, grantId?,
- * sessionId?, mintedGrantId?, handoffId?, handoffVersion?, to?, reason?, phase?}`, the run's
+ * Every request appends one JSON line to the log file: `{at, method, path, status, role, code?,
+ * grantId?, sessionId?, mintedGrantId?, handoffId?, handoffVersion?, to?, reason?, phase?,
+ * failed?}`, the run's
  * record of what reached the daemon, each line naming the role this stand-in serves, which is
  * what tells one half's completion from the other's in the one log a run keeps
  * (completion-answers.ts); a refusal's line carries its code where the answer has one, a
@@ -86,7 +94,8 @@
  * ever wrote, which is a rig error (score.ts's `unscored`). No score reads the line itself.
  *
  * Usage: `bun daemon-standin.ts <port> <log file> <boot token file> <project> <issue> <run dir>
- * <role> [phase] [completed]`
+ * <role> [phase] [completed]`. The daemon whose routes it answers is the one of the checkout
+ * <run dir>/built-from names (`ROUTES`).
  * The state document holds that one issue, on the repository and default branch of the run's own
  * world, which it reads from <run dir>/world.json, as the gh stand-in does: a record naming
  * another repository sends the agent's review to one the world has not got, and a record naming
@@ -110,7 +119,9 @@ import {
   LegionGrantRequest,
   LegionHandoffCompleteRequest,
   LegionPhaseBackwardRequest,
+  LegionReleaseRecordsRequest,
   LegionStateResponse,
+  LegionTurnOutcomeRequest,
 } from "@legion/contracts/legion-api";
 import { z } from "zod";
 import {
@@ -119,7 +130,15 @@ import {
   labelOf,
   NOT_CURRENT_PHASE as NOT_CURRENT_PHASE_CODE,
 } from "./completion-answers";
-import { DAEMON_MODULE, notCurrentPhase, runDaemonPane } from "./daemon-pane";
+import {
+  claimRefusal,
+  countDefault,
+  labelCheckout,
+  labelPhase,
+  labelRoutes,
+  notCurrentPhase,
+  serves,
+} from "./daemon-pane";
 import { mergeStateOn, routeFor, worldOf } from "./gh-call";
 import { CALLS, openingLine } from "./run-records";
 
@@ -197,13 +216,66 @@ if (REPO_OWNER === "" || !repo.includes("/")) {
  * since the worker claims this token on the real Envoy and Envoy rejects uppercase. */
 const ROLE_TOKEN = roleToken(project, issue, role);
 const SESSION_SECRET = "rig-secret";
+/** A fact of the run's label's daemon read at boot, or the boot failed with why it could not be
+ * read: a run whose daemon cannot be read is never answered as some other daemon would answer
+ * it. */
+function bootRead<T>(read: () => T): T {
+  try {
+    return read();
+  } catch (error) {
+    console.error(`daemon-standin: ${error instanceof Error ? error.message : String(error)}`);
+    process.exit(2);
+  }
+}
+/** The checkout the run's label was built from (the run's built-from, daemon-pane.ts's
+ * `labelCheckout`), whose daemon every fact below is read out of: its routes, its phase table,
+ * its refusals' sentences and its launch failure limit. Each is read through daemon-pane.ts's
+ * facts cache, so a boot whose sources a boot before it read runs no `go run`. */
+const CHECKOUT = bootRead(() => labelCheckout(runDir));
+/** The routes the run's label's daemon registers (daemon-pane.ts's `labelRoutes`): the one answer
+ * to "does this daemon serve that route", which `fetch` asks of every request and health asks of
+ * every 404 the log holds. */
+const ROUTES = bootRead(() => labelRoutes(CHECKOUT));
+/** The run of refused turns at which the daemon fails the claim: the launch failure limit
+ * (supervise's `turnOutcome`, `run < m.deps.Limits.LaunchFailures`), which the daemon is given as
+ * `launch_failure_limit` and the rig, having no legion.yaml, runs at its default, read out of the
+ * label's config source (daemon-pane.ts's `countDefault`). Read only for a daemon that serves
+ * `claims/turn-outcome`. */
+const TURN_OUTCOME_LIMIT = serves(ROUTES, "POST", "/legion/v1/claims/turn-outcome")
+  ? bootRead(() => countDefault(CHECKOUT, "launch_failure_limit"))
+  : 0;
+/** The claim refusals the claim routes answer a caller with (packages/daemon/internal/claim's
+ * `InvalidSecret`, `InvalidBootToken` and `StaleGeneration`), each its status and its sentence,
+ * read out of the label's claim source (daemon-pane.ts's `claimRefusal`). */
+const INVALID_SECRET = bootRead(() => claimRefusal(CHECKOUT, "InvalidSecret"));
+const INVALID_BOOT_TOKEN = bootRead(() => claimRefusal(CHECKOUT, "InvalidBootToken"));
+const STALE_GENERATION = bootRead(() => claimRefusal(CHECKOUT, "StaleGeneration"));
+/** The answer of a claim refusal read at boot, in the daemon's shape (claim.Refusal marshals as
+ * `{error}`). */
+function refuse(refusal: { status: number; message: string }): Response {
+  return json(refusal.status, { error: refusal.message });
+}
+/** The turn outcomes reported for this stand-in's one claim, by `<generation>:<sequence>`, each
+ * whether the turn was refused: the daemon's window (supervise's `recordTurnOutcome`), where a
+ * repeat of a key replaces it rather than adding one, kept in (generation, sequence) order and
+ * trimmed to the newest `TURN_OUTCOME_LIMIT`. */
+const TURN_OUTCOMES: { generation: number; sequence: number; refused: boolean }[] = [];
+/** Whether the claim still holds the capability its registration's secret authenticates: until
+ * a turn outcome fails the claim. The daemon fails it there (supervise's `fail`), and every write
+ * of a failed claim clears its capability hash (`NormalizeClaim`, since `HoldsCapability` is
+ * false for a failed claim), so each route that authenticates the secret (`authenticated` in
+ * packages/daemon/internal/api/claims.go) answers it `InvalidSecret` from then on. */
+let capabilityHeld = true;
+/** Whether `secret` authenticates this claim, as the daemon's `authenticated` decides it. */
+function authenticates(secret: string | undefined): boolean {
+  return capabilityHeld && secret === SESSION_SECRET;
+}
 
 const startedAt = new Date().toISOString();
 /** The phase the role's own worker is started in, the first of the transition table it works,
- * and the word of the handoff record that phase ends with, empty when it ends with none. */
-const [ROLE_PHASE = "", HANDOFF_WORD = ""] = runDaemonPane(DAEMON_MODULE, ["phase", role]).split(
-  "\n"
-);
+ * and the word of the handoff record that phase ends with, empty when it ends with none, as the
+ * label's daemon has them (daemon-pane.ts's `labelPhase`). */
+const { phase: ROLE_PHASE, word: HANDOFF_WORD } = bootRead(() => labelPhase(CHECKOUT, role));
 /** The phases that end with a handoff record (`phase.Handoff` in
  * packages/daemon/internal/phase/phase.go): the route refuses a completion naming a record in any
  * other phase. daemon-pane.go answers only the role's own phase, at a `go run` each, so the rest
@@ -224,16 +296,15 @@ const PHASE = phaseArg === "" ? ROLE_PHASE : phaseArg;
  * served when the refusal is sent. */
 const PHASE_SLOT = "PHASESLOTOFTHEISSUE";
 /** The daemon's own refusal of a late completion of this role, its code and its message, read
- * from the daemon's code at boot (daemon-pane.ts's `notCurrentPhase`) rather than written here:
- * the skill has the worker quote that sentence to its architect. It is read once, with the phase
- * left as `PHASE_SLOT`, since the phase the issue stands in when the refusal is sent is the one
- * served then, and a `go run` per phase costs a boot several seconds each. It is read only for a
- * run whose role can be late: one booted in a phase that is not the role's, or in `reviewing`,
- * the one phase the review round moves. A daemon whose refusal cannot be read fails the boot
- * rather than the completion. */
+ * from the label's daemon's code at boot (daemon-pane.ts's `notCurrentPhase`) rather than written
+ * here: the skill has the worker quote that sentence to its architect. It is read once, with the
+ * phase left as `PHASE_SLOT`, since the phase the issue stands in when the refusal is sent is the
+ * one served then. It is read only for a run whose role can be late: one booted in a phase that
+ * is not the role's, or in `reviewing`, the one phase the review round moves. A daemon whose
+ * refusal cannot be read fails the boot rather than the completion. */
 const NOT_CURRENT_PHASE = (() => {
   if (PHASE === ROLE_PHASE && PHASE !== "reviewing") return undefined;
-  const refusal = notCurrentPhase(DAEMON_MODULE, role, PHASE_SLOT, issue);
+  const refusal = bootRead(() => notCurrentPhase(CHECKOUT, role, PHASE_SLOT, issue));
   if (refusal === undefined || refusal.code !== NOT_CURRENT_PHASE_CODE) {
     console.error(
       `daemon-standin: daemon-pane printed no ${NOT_CURRENT_PHASE_CODE} code and message for the refusal of ${role}'s late completion`
@@ -401,6 +472,7 @@ function roundOutcome(): "accepting" | "implementing" | undefined {
 
 interface LogLine {
   readonly at: string;
+  readonly method: string;
   readonly path: string;
   readonly status: number;
   readonly role: string;
@@ -413,6 +485,7 @@ interface LogLine {
   readonly to?: string;
   readonly reason?: string;
   readonly phase?: string;
+  readonly failed?: boolean;
 }
 
 const expectedBootToken = (await Bun.file(bootTokenFile).text()).trim();
@@ -462,6 +535,12 @@ function stringField(body: unknown, key: string): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
 
+function booleanField(body: unknown, key: string): boolean | undefined {
+  if (typeof body !== "object" || body === null) return undefined;
+  const value = (body as Record<string, unknown>)[key];
+  return typeof value === "boolean" ? value : undefined;
+}
+
 function numberField(body: unknown, key: string): number | undefined {
   if (typeof body !== "object" || body === null) return undefined;
   const value = (body as Record<string, unknown>)[key];
@@ -484,16 +563,88 @@ function resolveGrant(grantId: string): Response | undefined {
   return undefined;
 }
 
+/** `POST /legion/v1/claims/turn-outcome` (`turnOutcome` in packages/daemon/internal/api/claims.go):
+ * a body of neither caller or of both, a sequence or a generation of 0, and an outcome neither
+ * `clean` nor `refused` are refused 400 by the body's contract; a boot token that is not the
+ * launch's is refused `InvalidBootToken`, and a report under it for another generation than the
+ * launch's, 1, `StaleGeneration`; a claim and secret the claim does not authenticate
+ * (`authenticates`) `InvalidSecret`. A report is then recorded in the window (`TURN_OUTCOMES`),
+ * and the answer is the run of refused turns the window ends with (supervise's `RefusedRun`) and
+ * whether it reached the launch failure limit, which fails the claim: from then on the claim's
+ * secret authenticates nothing (`capabilityHeld`), so the plugin's next report, which names the
+ * claim with its secret, is refused `InvalidSecret`, as is every other route that reads the
+ * secret. Not modelled: a report under the boot token on a failed claim, which the daemon hands
+ * to the failed machine and refuses with the machine's own sentence for a request in a failed
+ * claim. Only the Claude bridge reports under a boot token, no rig agent runs one, and a run
+ * whose claim failed is unhealthy whatever comes after (health.ts's `failedClaim`), so this
+ * answers it with its own sentence and names no daemon's. */
+function turnOutcome(body: unknown): Response {
+  const parsed = LegionTurnOutcomeRequest.safeParse(body);
+  if (!parsed.success) return json(400, { error: parsed.error.message });
+  const report = parsed.data;
+  if ("bootToken" in report) {
+    if (report.bootToken !== expectedBootToken) return refuse(INVALID_BOOT_TOKEN);
+    if (report.generation !== 1) return refuse(STALE_GENERATION);
+    if (!capabilityHeld)
+      return json(500, {
+        error: "daemon-standin models no boot-token report on a claim the daemon failed",
+      });
+  } else if (report.claimToken !== ROLE_TOKEN || !authenticates(report.secret)) {
+    return refuse(INVALID_SECRET);
+  }
+  const turn = {
+    generation: report.generation,
+    sequence: report.sequence,
+    refused: report.outcome === "refused",
+  };
+  const at = TURN_OUTCOMES.findIndex(
+    (kept) =>
+      kept.generation > turn.generation ||
+      (kept.generation === turn.generation && kept.sequence >= turn.sequence)
+  );
+  const same = TURN_OUTCOMES[at];
+  if (same !== undefined && same.generation === turn.generation && same.sequence === turn.sequence)
+    TURN_OUTCOMES[at] = turn;
+  else TURN_OUTCOMES.splice(at === -1 ? TURN_OUTCOMES.length : at, 0, turn);
+  TURN_OUTCOMES.splice(0, Math.max(0, TURN_OUTCOMES.length - TURN_OUTCOME_LIMIT));
+  let refusedRun = 0;
+  for (let i = TURN_OUTCOMES.length - 1; i >= 0 && TURN_OUTCOMES[i]?.refused === true; i--)
+    refusedRun++;
+  const failed = refusedRun >= TURN_OUTCOME_LIMIT;
+  if (failed) capabilityHeld = false;
+  return json(200, { refusedRun, failed });
+}
+
 /** Answers one POST: the response, the grant it minted, and, for a completion that reached the
- * phase read, the phase it was answered on. */
+ * phase read, the phase it was answered on. Its cases are the routes this stand-in answers of
+ * those its label's daemon registers (`ROUTES`, which `fetch` holds every request to first).
+ * One route a phase worker's tool can reach is registered by both labels' daemons and answered
+ * by no case: `claims/ready-for-update`, the tool's `ready_for_update`. It answers the update
+ * message a pod replacement sends, and the rig opens no update round, no prompt names one, and
+ * no kept run called it, so an agent reaches it only with a round it made up; the daemon's answer
+ * to that is a sentence its supervisor builds in an unexported function, which this does not
+ * restate. Such a call is answered 404, which health reads as a world the daemon would not have
+ * served, so the run is unhealthy and never scored. */
 function handle(
   path: string,
   body: unknown
 ): { response: Response; mintedGrantId?: string; phase?: string } {
   switch (path) {
+    case "/legion/v1/claims/turn-outcome":
+      return { response: turnOutcome(body) };
+    case "/legion/v1/claims/release-records": {
+      // `releaseRecords` there: the body's contract, then the claim's secret, then the project's
+      // records since the time named, of which the rig keeps none.
+      const parsed = LegionReleaseRecordsRequest.safeParse(body);
+      if (!parsed.success) return { response: json(400, { error: parsed.error.message }) };
+      if (parsed.data.claimToken !== ROLE_TOKEN || !authenticates(parsed.data.secret)) {
+        return { response: refuse(INVALID_SECRET) };
+      }
+      return { response: json(200, { releases: [], resumes: [], holds: [] }) };
+    }
     case "/legion/v1/claims/register": {
       if (stringField(body, "bootToken") !== expectedBootToken) {
-        return { response: forbidden("Invalid boot token") };
+        return { response: refuse(INVALID_BOOT_TOKEN) };
       }
       return {
         response: json(200, {
@@ -508,22 +659,22 @@ function handle(
       };
     }
     case "/legion/v1/claims/ready": {
-      if (stringField(body, "secret") !== SESSION_SECRET) {
-        return { response: forbidden("Invalid session secret") };
+      if (!authenticates(stringField(body, "secret"))) {
+        return { response: refuse(INVALID_SECRET) };
       }
       return { response: new Response(null, { status: 204 }) };
     }
     case "/legion/v1/claims/activity": {
-      if (stringField(body, "secret") !== SESSION_SECRET) {
-        return { response: forbidden("Invalid session secret") };
+      if (!authenticates(stringField(body, "secret"))) {
+        return { response: refuse(INVALID_SECRET) };
       }
       return { response: new Response(null, { status: 204 }) };
     }
     case "/legion/v1/grants": {
       const parsed = LegionGrantRequest.safeParse(body);
       if (!parsed.success) return { response: json(400, { error: parsed.error.message }) };
-      if (parsed.data.secret !== SESSION_SECRET) {
-        return { response: forbidden("Invalid session secret") };
+      if (!authenticates(parsed.data.secret)) {
+        return { response: refuse(INVALID_SECRET) };
       }
       const grantId = randomUUID();
       const expiresAt = Date.now() + GRANT_TTL_MS;
@@ -655,8 +806,11 @@ const server = Bun.serve({
         body = undefined;
       }
     }
-    const { response, mintedGrantId, phase } =
-      request.method === "POST"
+    // A route the label's daemon registers none of is answered as its catch-all answers it, 404,
+    // whatever case `handle` has for it (`ROUTES`).
+    const { response, mintedGrantId, phase } = !serves(ROUTES, request.method, path)
+      ? { response: json(404, { error: `no route for ${request.method} ${path}` }) }
+      : request.method === "POST"
         ? handle(path, body)
         : request.method === "GET" && path === "/legion/v1/state"
           ? { response: json(200, stateIn(served())) }
@@ -664,12 +818,19 @@ const server = Bun.serve({
     // A refusal's line carries its code, the daemon's `Failure` code where the answer has one, so
     // a reader of the log can tell the daemon's own answer to a run (HANDOFF_NOT_CURRENT_PHASE)
     // from a body this stand-in could not take at all, whose 400 has none (score.ts's
-    // `unscored`). A completion's line carries the phase it was answered on, which no program
-    // reads (completion-answers.ts's `DaemonLine`): it is how a person reading the run tells a
-    // late completion from one of the role's own phase.
+    // `unscored`). Every line carries the request's method and path, the route health holds a
+    // 404 to (health.ts's `routes`). A completion's line carries the phase it was answered on,
+    // which no program reads (completion-answers.ts's `DaemonLine`): it is how a person reading
+    // the run tells a late completion from one of the role's own phase. A turn outcome's line
+    // carries whether its answer failed the claim, which health reads (health.ts's `failedClaim`).
     const refusal: unknown = response.status >= 400 ? await response.clone().json() : undefined;
+    const outcome: unknown =
+      path === "/legion/v1/claims/turn-outcome" && response.status === 200
+        ? await response.clone().json()
+        : undefined;
     const line: LogLine = {
       at: new Date().toISOString(),
+      method: request.method,
       path,
       status: response.status,
       role,
@@ -682,6 +843,7 @@ const server = Bun.serve({
       ...carried("to", stringField(body, "to")),
       ...carried("reason", stringField(body, "reason")),
       ...carried("phase", phase),
+      ...carried("failed", booleanField(outcome, "failed")),
     };
     await appendFile(logFile, `${JSON.stringify(line)}\n`);
     return response;

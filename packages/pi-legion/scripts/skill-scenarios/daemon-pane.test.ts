@@ -1,9 +1,26 @@
 import { beforeAll, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import path from "node:path";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
-import { DAEMON_MODULE, RIG_GH_TOKEN, runDaemonPane, workerPane } from "./daemon-pane";
+import {
+  claimRefusal,
+  countDefault,
+  DAEMON_MODULE,
+  labelRoutes,
+  RIG_GH_TOKEN,
+  runDaemonPane,
+  serves,
+  workerPane,
+} from "./daemon-pane";
 
 // Every row below asks the daemon's own functions for a pane environment, which `go run` compiles
 // and runs, so a host with no go runs none of them.
@@ -495,6 +512,166 @@ for (const { file, shape, call, intake, says } of SUBSTITUTE_ENGINES) {
     600_000
   );
 }
+
+/** A substitute checkout whose daemon's API package holds `body` in one file, read through
+ * daemon-pane.ts's `labelRoutes`. */
+function routesOver(name: string, body: string): readonly string[] {
+  const checkout = path.join(rig, `routes-${name}`);
+  const api = path.join(checkout, "packages", "daemon", "internal", "api");
+  mkdirSync(api, { recursive: true });
+  writeFileSync(path.join(api, "server.go"), `package api\n\nfunc routes() {\n${body}\n}\n`);
+  // A test file registers nothing the daemon serves.
+  writeFileSync(
+    path.join(api, "server_test.go"),
+    'package api\n\nfunc testRoutes() {\n\tmux.HandleFunc("POST /only/in/a/test", nil)\n}\n'
+  );
+  return labelRoutes(checkout);
+}
+
+// The routes the rig reads a label's daemon as serving, which the stand-in answers by and health
+// holds every 404 to, read out of that daemon's own source. Catches: a registration read in one
+// of its two shapes alone, a pattern read twice, a test file's registration read as the daemon's,
+// the mux's catch-all `/` read as a route, another pattern with no method read as one method's,
+// and a package registering none read as a daemon that serves nothing, under which the stand-in
+// would answer every request 404 and health would call each the daemon's own answer.
+test.skipIf(skip)(
+  "the routes reading takes each pattern a HandleFunc or Handle call registers, and refuses what it cannot read",
+  () => {
+    expect(
+      routesOver(
+        "both-shapes",
+        [
+          '\tmux.HandleFunc("POST /legion/v1/claims/turn-outcome", s.turnOutcome)',
+          '\tmux.Handle("GET /legion/v1/state", handler)',
+          '\tmux.HandleFunc("POST /legion/v1/claims/turn-outcome", s.turnOutcome)',
+          '\tmux.HandleFunc("/", notFound)',
+          "\tm.Handle(ctx, event)",
+        ].join("\n")
+      )
+    ).toEqual(["GET /legion/v1/state", "POST /legion/v1/claims/turn-outcome"]);
+    expect(() => routesOver("methodless", '\tmux.HandleFunc("/legion/v1/state", s.state)')).toThrow(
+      'registers ["/legion/v1/state"] with no method'
+    );
+    expect(() => routesOver("none", "\tm.Handle(ctx, event)")).toThrow(
+      "registers no route with a HandleFunc or Handle call naming its pattern"
+    );
+  },
+  600_000
+);
+
+// Catches: a request matched against a route by its path alone where the log names the method,
+// and a `{name}` segment matched literally, which would read an operator route's 404 as no
+// daemon's route; and a request whose log names no method (an older stand-in's) refused any route
+// of its path.
+test("a request is served by a route of its method and of its path, segment by segment", () => {
+  const routes = [
+    "POST /legion/v1/claims/turn-outcome",
+    "POST /legion/v1/operator/claims/{token}/stop",
+  ];
+  expect(serves(routes, "POST", "/legion/v1/claims/turn-outcome")).toBe(true);
+  expect(serves(routes, "GET", "/legion/v1/claims/turn-outcome")).toBe(false);
+  expect(serves(routes, undefined, "/legion/v1/claims/turn-outcome")).toBe(true);
+  expect(serves(routes, "POST", "/legion/v1/operator/claims/legion-a-b-c/stop")).toBe(true);
+  expect(serves(routes, "POST", "/legion/v1/operator/claims//stop")).toBe(false);
+  expect(serves(routes, "POST", "/legion/v1/claims/turn-outcome/more")).toBe(false);
+  expect(serves(routes, "POST", "/legion/v1/claims")).toBe(false);
+});
+
+// The facts cache the stand-in's boot reads through (daemon-pane.ts's `cachedRead`), kept under
+// the rig's work directory. Catches: a key that leaves out a source's bytes, under which a
+// changed daemon is answered with what its older source said; a hit that runs the program again
+// rather than reading the file, which is the boot cost the cache is for; and a key holding the
+// checkout's absolute path, under which a second checkout of the same sources reads nothing.
+test.skipIf(skip)(
+  "a read is kept under a key of its sources, and a changed source is read again",
+  () => {
+    const kept = process.env.SKILL_SCENARIOS_WORK;
+    const cacheWork = path.join(rig, "facts-work");
+    process.env.SKILL_SCENARIOS_WORK = cacheWork;
+    try {
+      const cached = () =>
+        readdirSync(path.join(cacheWork, "daemon-facts")).filter((name) => name.endsWith(".out"));
+      expect(routesOver("cached", '\tmux.HandleFunc("POST /one", s.one)')).toEqual(["POST /one"]);
+      expect(cached()).toHaveLength(1);
+      expect(
+        routesOver(
+          "cached",
+          '\tmux.HandleFunc("POST /one", s.one)\n\tmux.HandleFunc("POST /two", s.two)'
+        )
+      ).toEqual(["POST /one", "POST /two"]);
+      const [first, second] = cached();
+      expect(second).toBeDefined();
+      // The newest answer is the one a hit now reads: overwritten, it is what the read answers.
+      const newest = [first, second].find((name) =>
+        readFileSync(path.join(cacheWork, "daemon-facts", name ?? ""), "utf8").includes("/two")
+      );
+      writeFileSync(path.join(cacheWork, "daemon-facts", newest ?? ""), "POST /from/the/file\n");
+      const again = path.join(rig, "routes-cached");
+      expect(labelRoutes(again)).toEqual(["POST /from/the/file"]);
+      const copy = path.join(rig, "routes-cached-copy");
+      cpSync(again, copy, { recursive: true });
+      expect(labelRoutes(copy)).toEqual(["POST /from/the/file"]);
+      expect(cached()).toHaveLength(2);
+    } finally {
+      if (kept === undefined) delete process.env.SKILL_SCENARIOS_WORK;
+      else process.env.SKILL_SCENARIOS_WORK = kept;
+    }
+  },
+  600_000
+);
+
+// The claim refusals the stand-in answers a refused caller with, read out of the daemon's claim
+// source. Catches: a sentence this program writes for itself, and a declaration of another shape
+// read as a refusal.
+test.skipIf(skip)(
+  "the claim refusal reading takes the daemon's own refusal and refuses what it cannot read",
+  () => {
+    const checkout = path.join(rig, "claim-refusals");
+    const claim = path.join(checkout, "packages", "daemon", "internal", "claim");
+    mkdirSync(claim, { recursive: true });
+    writeFileSync(
+      path.join(claim, "wire.go"),
+      'package claim\n\nvar (\n\tInvalidSecret = Refusal{Status: http.StatusForbidden, Message: "no such secret here"}\n\tStaleGeneration = refusalOf(409)\n)\n'
+    );
+    expect(claimRefusal(checkout, "InvalidSecret")).toEqual({
+      status: 403,
+      message: "no such secret here",
+    });
+    expect(() => claimRefusal(checkout, "StaleGeneration")).toThrow(
+      'which is no Refusal{Status: http.<Status>, Message: "<message>"}'
+    );
+    expect(() => claimRefusal(checkout, "InvalidBootToken")).toThrow(
+      "declares no claim refusal InvalidBootToken"
+    );
+    expect(claimRefusal(path.resolve(DAEMON_MODULE, "../.."), "InvalidSecret").status).toBe(403);
+  },
+  600_000
+);
+
+// The launch failure limit the stand-in fails a claim's refused turns at, read out of the daemon's
+// config source. Catches: a number this program writes for itself, and an entry of another shape
+// read as a default.
+test.skipIf(skip)(
+  "the count default reading takes the daemon's own default and refuses what it cannot read",
+  () => {
+    const checkout = path.join(rig, "count-defaults");
+    const config = path.join(checkout, "packages", "daemon", "internal", "config");
+    mkdirSync(config, { recursive: true });
+    writeFileSync(
+      path.join(config, "config.go"),
+      'package config\n\nvar countKeys = []struct{ key string; defaultValue int }{\n\t{"launch_failure_limit", 7},\n\t{"prompt_failure_limit", limit},\n}\n'
+    );
+    expect(countDefault(checkout, "launch_failure_limit")).toBe(7);
+    expect(() => countDefault(checkout, "prompt_failure_limit")).toThrow(
+      "gives prompt_failure_limit a default of limit, which is no integer literal"
+    );
+    expect(() => countDefault(checkout, "worker_wake_burst")).toThrow(
+      'holds no {"worker_wake_burst", <default>, …} entry'
+    );
+  },
+  600_000
+);
+
 // worker-pane.ts reads the repository its addressing names, and the branch it gives as the
 // default, out of the run's own world (rig.sh's worker world comment), so the rig names neither
 // a second time. Catches: a pane built on names of its own, which is the addressing defect

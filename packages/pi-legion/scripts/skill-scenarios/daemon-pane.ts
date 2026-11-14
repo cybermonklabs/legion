@@ -7,7 +7,17 @@
  * table has not always had the same name; its comment says so. `workerPane` builds a phase
  * worker's whole pane environment over it.
  */
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { LegionRole } from "@legion/contracts";
@@ -62,17 +72,187 @@ export function refusalIn(printed: string): Refusal | undefined {
   return { code, message };
 }
 
-/** The daemon's own refusal of `role`'s completion while the issue `issue` stands in `phase`,
- * read out of `module`'s source by daemon-pane.go (`refusalIn`), or undefined when that
- * printout is no refusal. The daemon stand-in answers such a completion with it and its tests
- * read it the same way, so no copy of the sentence and no second reading of it lives here. */
-export function notCurrentPhase(
+/** The daemon module of `checkout`. */
+function daemonOf(checkout: string): string {
+  return path.join(checkout, "packages", "daemon");
+}
+
+/** The Go sources of the package at `dir` but its tests, in byte order, each a full path; none for
+ * a directory that is not there, whose reading then refuses on its own terms. */
+function goSources(dir: string): string[] {
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir)
+    .filter((name) => name.endsWith(".go") && !name.endsWith("_test.go"))
+    .sort()
+    .map((name) => path.join(dir, name));
+}
+
+/** Where daemon-pane.go's answers are kept between processes (`cachedRead`): under the rig's work
+ * directory (`SKILL_SCENARIOS_WORK`, which rig.sh exports), else under `TMPDIR`; never under HOME
+ * or a `/tmp` nobody named. With neither set nothing is kept, and every read runs the program. */
+function factsCache(): string | undefined {
+  const work = process.env.SKILL_SCENARIOS_WORK;
+  if (work !== undefined && work !== "") return path.join(work, "daemon-facts");
+  const tmp = process.env.TMPDIR;
+  if (tmp !== undefined && tmp !== "") return path.join(tmp, "skill-scenarios-daemon-facts");
+  return undefined;
+}
+
+/** daemon-pane.go's answer to `args`, run in `module`, kept in the facts cache under a key of
+ * exactly what decides it: the program's own source, `keyArgs` (the command with no path in it),
+ * and every source file the read parses, each by its path under `root` and its bytes. A boot
+ * whose key is kept reads the answer from the file, with no `go run`; any other runs the program
+ * and writes the answer whole (a temporary file renamed into place), so a reader never sees half
+ * of one. A read that fails writes nothing, and throws as the program refused. The key names no
+ * absolute path, so a second checkout of the same sources is the same answer. */
+function cachedRead(
   module: string,
+  args: readonly string[],
+  keyArgs: readonly string[],
+  root: string,
+  sources: readonly string[]
+): string {
+  const dir = factsCache();
+  if (dir === undefined) return runDaemonPane(module, args);
+  const hash = createHash("sha256").update(readFileSync(PROGRAM)).update(JSON.stringify(keyArgs));
+  for (const source of sources)
+    hash.update(`\0${path.relative(root, source)}\0`).update(readFileSync(source));
+  const file = path.join(dir, `${hash.digest("hex")}.out`);
+  if (existsSync(file)) return readFileSync(file, "utf8");
+  const answer = runDaemonPane(module, args);
+  mkdirSync(dir, { recursive: true });
+  const written = `${file}.${process.pid}.${randomUUID()}.tmp`;
+  writeFileSync(written, answer);
+  renameSync(written, file);
+  return answer;
+}
+
+/** The daemon's own refusal of `role`'s completion while the issue `issue` stands in `phase`, as
+ * the daemon of `checkout` writes it: read out of that checkout's engine and intake sources by
+ * daemon-pane.go (`refusalIn`), or undefined when that printout is no refusal. The daemon
+ * stand-in answers such a completion with it and its tests read it the same way, so no copy of
+ * the sentence and no second reading of it lives here. */
+export function notCurrentPhase(
+  checkout: string,
   role: string,
   phase: string,
   issue: string
 ): Refusal | undefined {
-  return refusalIn(runDaemonPane(module, ["refusal", "not-current-phase", role, phase, issue]));
+  const daemon = daemonOf(checkout);
+  const engine = path.join(daemon, "internal", "workflow", "engine.go");
+  const intake = path.join(daemon, "internal", "intake");
+  const command = ["refusal", "not-current-phase", role, phase, issue];
+  return refusalIn(
+    cachedRead(DAEMON_MODULE, [...command, engine, intake], command, daemon, [
+      engine,
+      ...goSources(intake),
+    ])
+  );
+}
+
+/** The phase `role`'s worker is started in by the daemon of `checkout`, the first of its
+ * transition table the role works, and the word of the handoff record that phase ends with, ""
+ * when it ends with none: daemon-pane.go's `phase`, which runs the daemon's own functions and so
+ * runs inside that checkout's module. Its answer is the phase and workflow tables and the claim
+ * roles they name, so those three packages are what keeps it (`cachedRead`). */
+export function labelPhase(checkout: string, role: string): { phase: string; word: string } {
+  const daemon = daemonOf(checkout);
+  const internal = path.join(daemon, "internal");
+  const [phase = "", word = ""] = cachedRead(daemon, ["phase", role], ["phase", role], daemon, [
+    ...goSources(path.join(internal, "phase")),
+    ...goSources(path.join(internal, "workflow")),
+    ...goSources(path.join(internal, "claim")),
+  ]).split("\n");
+  return { phase, word };
+}
+
+/** The checkout the run under `runDir` was built from: the `checkout` line of its built-from,
+ * which rig.sh's cmd_profile writes for the label and cmd_run copies into the run before any
+ * agent boots. Its daemon is the one the label's runs stand in for (`labelRoutes`). Throws for a
+ * run with no such line: what that run's daemon serves is unknown. */
+export function labelCheckout(runDir: string): string {
+  const file = path.join(runDir, "built-from");
+  const line = existsSync(file)
+    ? readFileSync(file, "utf8")
+        .split("\n")
+        .find((one) => one.startsWith("checkout "))
+    : undefined;
+  const checkout = line?.slice("checkout ".length).trim() ?? "";
+  if (checkout === "")
+    throw new Error(
+      `${file} names no checkout (rig.sh's cmd_profile writes a \`checkout <dir>\` line), so the daemon that run stands in for is unknown`
+    );
+  return checkout;
+}
+
+/** Every route the daemon of `checkout` registers, `<METHOD> <path>` each, read out of that
+ * checkout's API source by daemon-pane.go's `routes`, which this checkout's daemon module runs:
+ * the reading parses the other checkout's files and compiles nothing of them, so a substitute
+ * checkout holding the source alone is read the same way. Throws what the reading refused. */
+export function labelRoutes(checkout: string): readonly string[] {
+  const daemon = daemonOf(checkout);
+  const api = path.join(daemon, "internal", "api");
+  return cachedRead(DAEMON_MODULE, ["routes", api], ["routes"], daemon, goSources(api))
+    .split("\n")
+    .filter((line) => line !== "");
+}
+
+/** Whether `routes` (`labelRoutes`) serves a request of `method` to `asked`; `method` undefined
+ * is a request whose method is not recorded, which any route of that path serves. A segment the
+ * daemon names `{name}` matches any one non-empty segment, and `{name...}` the rest of the path,
+ * as Go's ServeMux matches them. */
+export function serves(
+  routes: readonly string[],
+  method: string | undefined,
+  asked: string
+): boolean {
+  const parts = asked.split("/");
+  return routes.some((pattern) => {
+    const space = pattern.indexOf(" ");
+    if (method !== undefined && pattern.slice(0, space) !== method) return false;
+    const segments = pattern.slice(space + 1).split("/");
+    for (const [at, segment] of segments.entries()) {
+      if (/^\{[^}]*\.\.\.\}$/.test(segment)) return parts.length > at;
+      const part = parts[at];
+      if (part === undefined) return false;
+      if (/^\{[^}]*\}$/.test(segment) ? part === "" : part !== segment) return false;
+    }
+    return parts.length === segments.length;
+  });
+}
+
+/** The default the daemon of `checkout` gives the count setting `key` when legion.yaml leaves it
+ * out, which is the value the rig's daemon runs with, having no legion.yaml: daemon-pane.go's
+ * `count-default`, over that checkout's config source. Throws what the reading refused. */
+export function countDefault(checkout: string, key: string): number {
+  const daemon = daemonOf(checkout);
+  const config = path.join(daemon, "internal", "config", "config.go");
+  const command = ["count-default", key];
+  const printed = cachedRead(DAEMON_MODULE, [...command, config], command, daemon, [config]).trim();
+  const value = Number(printed);
+  if (!Number.isSafeInteger(value))
+    throw new Error(`daemon-pane count-default ${key} printed ${JSON.stringify(printed)}`);
+  return value;
+}
+
+/** The claim refusal `name` (claim.InvalidSecret, claim.StaleGeneration, …) of the daemon of
+ * `checkout`, its status and its message: daemon-pane.go's `claim-refusal`, over that checkout's
+ * claim source, which the stand-in answers a caller it refuses with. Throws what the reading
+ * refused. */
+export function claimRefusal(checkout: string, name: string): { status: number; message: string } {
+  const daemon = daemonOf(checkout);
+  const claim = path.join(daemon, "internal", "claim");
+  const command = ["claim-refusal", name];
+  const [status = "", message = ""] = cachedRead(
+    DAEMON_MODULE,
+    [...command, claim],
+    command,
+    daemon,
+    goSources(claim)
+  ).split("\n");
+  if (!/^\d+$/.test(status) || message === "")
+    throw new Error(`daemon-pane claim-refusal ${name} printed no status and message`);
+  return { status: Number(status), message };
 }
 
 /** The claim a pane is launched for and the rig's stand-ins for what the daemon knows at boot

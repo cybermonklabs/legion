@@ -11,24 +11,35 @@
  *   3. taken: a scenario whose world must take a role's completion (`ANSWERS`' `takes`) took it at
  *      least once, with an answer the entry allows. reviewer-text-findings requires one of the
  *      reviewer's; threads-closed requires none;
- *   4. push guard: no tool result of any agent of the run, and no out*.txt, holds a line the public
+ *   4. routes: no request the daemon stand-in answered 404 is of a route the run's label's daemon
+ *      registers (`unservedRoute`): the routes read out of the source of the checkout the run's
+ *      built-from names (daemon-pane.ts's `labelRoutes`), which the stand-in itself answers by
+ *      (daemon-standin.ts's `ROUTES`). A 404 of a route that daemon does not register is that
+ *      daemon's own answer, as the base label's to this checkout's `claims/turn-outcome` is. A
+ *      run with a 404 whose daemon's routes cannot be read is unhealthy, since which it was is
+ *      unknown;
+ *   5. failed claim: no turn outcome the daemon stand-in answered failed the claim (its line's
+ *      `failed`, `failedClaim`): the daemon fails a claim whose provider refused turns up to its
+ *      launch failure limit, stops its process and takes its secret, so what the run did after
+ *      is a world no daemon serves;
+ *   6. push guard: no tool result of any agent of the run, and no out*.txt, holds a line the public
  *      leak check or Legion's git and jj wrappers print when they refuse a push or cannot run
  *      (GUARD_REFUSAL). No world of this rig plants a secret, so a refusal is the guard refusing
  *      what a production pod would let through, or a guard that could not start;
- *   5. gh: no `gh` call the gh stand-in refused (calls.jsonl, exit not 0) with a refusal the
+ *   7. gh: no `gh` call the gh stand-in refused (calls.jsonl, exit not 0) with a refusal the
  *      scenario does not declare for the calling role (GH_DECLARED, `ghRefusal`);
- *   6. another run: no tool call of the run names a path under another run's directory
+ *   8. another run: no tool call of the run names a path under another run's directory
  *      (`otherRun`): a sibling under the same runs directory, an archived run, or a run of another
  *      batch, wherever it sits;
- *   7. another run's write: no tool call of the run reads a path another run of those given wrote
+ *   9. another run's write: no tool call of the run reads a path another run of those given wrote
  *      last before the read (`otherRunWrite`). A run's own writes outside its directory, HOME and
  *      TMPDIR are recorded (`writesOf`) and are no verdict on it.
- * Rules 4, 6 and 7 read every transcript of the run (`<run>/sessions/**\/*.jsonl`: each agent's
+ * Rules 6, 8 and 9 read every transcript of the run (`<run>/sessions/**\/*.jsonl`: each agent's
  * and each subagent's) through score.ts's readers. The run's own directory is the one its pane
  * file names (`SKILL_SCENARIO_RUN`, which the transcripts' paths are written under) and the
- * directory health was given, which differ for a run read from an archive or a copy. Rule 7 reads
+ * directory health was given, which differ for a run read from an archive or a copy. Rule 9 reads
  * the runs it is given together, so a batch's runs are judged in one call: given one run, it
- * sees no other run's writes and flags nothing, while rules 1 to 6 read each run alone.
+ * sees no other run's writes and flags nothing, while rules 1 to 8 read each run alone.
  *
  * Prints one line per run, `<run>  healthy` or `<run>  unhealthy: <reason>`, naming the first rule
  * the run fails with the evidence it failed on; then, for each rule, `health: <rule>: <n> of <m>
@@ -49,6 +60,7 @@ import {
   scenarioOf,
   takenCompletions,
 } from "./completion-answers";
+import { labelCheckout, labelRoutes, serves } from "./daemon-pane";
 import { isPost, methodOf, readWorld, reviewsRoute, submitsReview } from "./gh-call";
 import { CALLS } from "./run-records";
 import {
@@ -542,6 +554,36 @@ function otherRunWrite(run: Run, runs: readonly Run[]): string | undefined {
   return undefined;
 }
 
+/** Rule 4: the first request the daemon stand-in answered 404 whose route the run's label's
+ * daemon registers, as a reason; or why the routes of that daemon cannot be read, for a run that
+ * has a 404 at all. A line naming no method, which the stand-in wrote before it logged one, is
+ * held to every route of its path. */
+function unservedRoute(run: Run): string | undefined {
+  const missing = daemonLines(run.dir).filter((line) => line.status === 404);
+  if (missing.length === 0) return undefined;
+  let checkout: string;
+  let routes: readonly string[];
+  try {
+    checkout = labelCheckout(run.dir);
+    routes = labelRoutes(checkout);
+  } catch (error) {
+    const why = error instanceof Error ? error.message : String(error);
+    return `routes unknown: the stand-in answered ${missing[0]?.path} 404, and which routes the ${run.label} label's daemon registers cannot be read: ${why}`;
+  }
+  const line = missing.find((one) => serves(routes, one.method, one.path));
+  if (line === undefined) return undefined;
+  return `unserved route: the stand-in answered ${line.method ?? "a request of"} ${line.path} 404, a route the ${run.label} label's daemon registers (${checkout})`;
+}
+
+/** Rule 5: the first turn outcome the daemon stand-in answered with `failed` (its line's
+ * `failed`), as a reason. */
+function failedClaim(run: Run): string | undefined {
+  const failed = daemonLines(run.dir).find((line) => line.failed === true);
+  return failed === undefined
+    ? undefined
+    : `failed claim: the stand-in answered the ${failed.role}'s turn outcome at ${failed.at} with failed, so the daemon would have failed that claim`;
+}
+
 /** Every rule, in the order a run's line names the first it fails. A rule is given the run and
  * every run health was given, which only the cross-run rule reads. */
 const RULES: readonly {
@@ -571,6 +613,8 @@ const RULES: readonly {
         : undefined;
     },
   },
+  { name: "routes", judge: unservedRoute },
+  { name: "failed claim", judge: failedClaim },
   { name: "push guard", judge: guardRefusal },
   { name: "gh", judge: ghUndeclared },
   { name: "another run", judge: otherRunReach },

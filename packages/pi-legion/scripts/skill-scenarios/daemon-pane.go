@@ -12,6 +12,16 @@
 //	                         prints the code of the daemon's refusal of a completion of a phase
 //	                         the role does not run, then on a second line the daemon's own
 //	                         message for it, read out of the daemon's source (notCurrentPhase)
+//	routes [<api package dir>]
+//	                         prints each route the daemon's API registers, `<METHOD> <path>` one
+//	                         to a line in byte order, read out of the daemon's source (routes)
+//	count-default <key> [<config source>]
+//	                         prints the default of the count setting `key` (legion.yaml), read
+//	                         out of the daemon's source (countDefault)
+//	claim-refusal <name> [<claim package dir>]
+//	                         prints the status of the claim refusal `name` (claim.InvalidSecret,
+//	                         claim.StaleGeneration, …), then on a second line its message, read out
+//	                         of the daemon's source (claimRefusal)
 //	pane                     reads a paneRequest (JSON) on stdin, writes the claim's gh bundle
 //	                         under its LEGION_GH_OWNERS_DIR, and prints its paneResponse (JSON)
 package main
@@ -25,8 +35,10 @@ import (
 	"go/token"
 	"go/types"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -46,7 +58,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
-const usage = "usage: daemon-pane phase <role> | refusal not-current-phase <role> <phase> <issue> [<engine source> [<intake package dir>]] | pane < request.json"
+const usage = "usage: daemon-pane phase <role> | refusal not-current-phase <role> <phase> <issue> [<engine source> [<intake package dir>]] | routes [<api package dir>] | count-default <key> [<config source>] | claim-refusal <name> [<claim package dir>] | pane < request.json"
 
 func main() {
 	args := os.Args[1:]
@@ -71,6 +83,26 @@ func main() {
 			intakeDir = args[6]
 		}
 		err = printNotCurrentPhase(args[2], args[3], args[4], engine, intakeDir)
+	case (len(args) == 1 || len(args) == 2) && args[0] == "routes":
+		// The package the routes are read out of: the daemon's own, and the one a caller names
+		// otherwise, for the reason the refusal's sources are named (above).
+		dir := defaultAPIDir
+		if len(args) == 2 {
+			dir = args[1]
+		}
+		err = printRoutes(dir)
+	case (len(args) == 2 || len(args) == 3) && args[0] == "count-default":
+		file := defaultConfigFile
+		if len(args) == 3 {
+			file = args[2]
+		}
+		err = printCountDefault(args[1], file)
+	case (len(args) == 2 || len(args) == 3) && args[0] == "claim-refusal":
+		dir := defaultClaimDir
+		if len(args) == 3 {
+			dir = args[2]
+		}
+		err = printClaimRefusal(args[1], dir)
 	case len(args) == 1 && args[0] == "pane":
 		err = pane()
 	default:
@@ -104,6 +136,137 @@ func printPhase(role claim.Role) error {
 		return nil
 	}
 	return fmt.Errorf("%q works no phase", role)
+}
+
+// defaultAPIDir is the package the daemon registers its HTTP routes in, read relative to the
+// module this program is run inside, and taken as an argument as defaultEngineFile is.
+const defaultAPIDir = "internal/api"
+
+// printRoutes prints the routes the daemon's API registers (routes), one to a line.
+func printRoutes(dir string) error {
+	registered, err := routes(dir)
+	if err != nil {
+		return err
+	}
+	for _, route := range registered {
+		fmt.Println(route)
+	}
+	return nil
+}
+
+// routes is every route the API package at `dir` registers, each as the pattern its registration
+// names (`<METHOD> <path>`), in byte order and once each: the string literal a
+// `<mux>.HandleFunc(…)` or `<mux>.Handle(…)` call of the package's own files names first. It is
+// read out of the source rather than listed in the rig, so the stand-in of each label answers the
+// routes that label's daemon serves (daemon-standin.ts), and a route the daemon adds is one the
+// rig reads with no edit. The pattern `/` names no route: it is the mux's remainder, every request
+// no other pattern matches, which the daemon's catch-all answers 404 ("no route"), as the stand-in
+// answers a route its label does not serve. Any other pattern naming no method is an error, since
+// what it serves is every method of a path and the rig reads a route as one method and one path;
+// so is a package registering none, never an empty set: the stand-in would answer every route 404
+// and health would call that the daemon's own answer.
+func routes(dir string) ([]string, error) {
+	sources, err := filepath.Glob(filepath.Join(dir, "*.go"))
+	if err != nil {
+		return nil, fmt.Errorf("list the daemon's %s: %w", dir, err)
+	}
+	seen := map[string]bool{}
+	var methodless []string
+	for _, source := range sources {
+		if strings.HasSuffix(source, "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(token.NewFileSet(), source, nil, 0)
+		if err != nil {
+			return nil, fmt.Errorf("read the daemon's %s: %w", source, err)
+		}
+		ast.Inspect(file, func(node ast.Node) bool {
+			call, isCall := node.(*ast.CallExpr)
+			if !isCall || len(call.Args) != 2 {
+				return true
+			}
+			selector, isSelector := call.Fun.(*ast.SelectorExpr)
+			if !isSelector || (selector.Sel.Name != "HandleFunc" && selector.Sel.Name != "Handle") {
+				return true
+			}
+			pattern, isText := stringLiteral(call.Args[0])
+			switch {
+			case !isText || pattern == "/":
+			case strings.Contains(pattern, " "):
+				seen[pattern] = true
+			default:
+				methodless = append(methodless, pattern)
+			}
+			return true
+		})
+	}
+	if len(methodless) > 0 {
+		return nil, fmt.Errorf("%s registers %q with no method, a route this reading cannot name as one method and one path", dir, methodless)
+	}
+	if len(seen) == 0 {
+		return nil, fmt.Errorf("%s registers no route with a HandleFunc or Handle call naming its pattern: the daemon registers its routes some other way now", dir)
+	}
+	registered := make([]string, 0, len(seen))
+	for pattern := range seen {
+		registered = append(registered, pattern)
+	}
+	slices.Sort(registered)
+	return registered, nil
+}
+
+// defaultConfigFile is where the daemon reads legion.yaml and keeps each setting's default, read
+// relative to the module, and taken as an argument as defaultEngineFile is.
+const defaultConfigFile = "internal/config/config.go"
+
+// printCountDefault prints the default of the count setting `key` (countDefault).
+func printCountDefault(key, file string) error {
+	value, err := countDefault(key, file)
+	if err != nil {
+		return err
+	}
+	fmt.Println(value)
+	return nil
+}
+
+// countDefault is the default the daemon gives the count setting `key` when legion.yaml leaves it
+// out, read out of the source at `file`: the integer literal beside the key's string literal in
+// the entry of the daemon's table of count keys that names it (`{"<key>", <default>, …}`). The rig
+// runs with no legion.yaml, so that default is the value the daemon runs with. An entry of
+// another shape, or none, is an error, never a number this invents.
+func countDefault(key, file string) (int, error) {
+	parsed, err := parser.ParseFile(token.NewFileSet(), file, nil, 0)
+	if err != nil {
+		return 0, fmt.Errorf("read the daemon's %s: %w", file, err)
+	}
+	value, found := 0, false
+	var read error
+	ast.Inspect(parsed, func(node ast.Node) bool {
+		if found || read != nil {
+			return false
+		}
+		entry, isLiteral := node.(*ast.CompositeLit)
+		if !isLiteral || len(entry.Elts) < 2 {
+			return true
+		}
+		if named, isText := stringLiteral(entry.Elts[0]); !isText || named != key {
+			return true
+		}
+		number, isNumber := entry.Elts[1].(*ast.BasicLit)
+		if !isNumber || number.Kind != token.INT {
+			read = fmt.Errorf("%s gives %s a default of %s, which is no integer literal", file, key, types.ExprString(entry.Elts[1]))
+			return false
+		}
+		value, read = strconv.Atoi(number.Value)
+		found = read == nil
+		return false
+	})
+	if read != nil {
+		return 0, read
+	}
+	if !found {
+		return 0, fmt.Errorf("%s holds no {%q, <default>, …} entry: the daemon keeps that default some other way now", file, key)
+	}
+	return value, nil
 }
 
 // defaultEngineFile is where the daemon builds the workflow's refusals, read relative to the
@@ -337,6 +500,106 @@ func sprintfOf(expression ast.Expr) (string, []ast.Expr, bool) {
 		return "", nil, false
 	}
 	return text, sprintf.Args[1:], true
+}
+
+// defaultClaimDir is the package the daemon keeps its claim refusals in, read relative to the
+// module, and taken as an argument as defaultEngineFile is.
+const defaultClaimDir = "internal/claim"
+
+// statuses are the HTTP statuses a claim refusal is written with, by the name net/http gives each:
+// the standard library's own constants, so a refusal of another status is an error here.
+var statuses = map[string]int{
+	"StatusBadRequest": http.StatusBadRequest, "StatusUnauthorized": http.StatusUnauthorized,
+	"StatusForbidden": http.StatusForbidden, "StatusConflict": http.StatusConflict,
+	"StatusGone": http.StatusGone, "StatusPreconditionFailed": http.StatusPreconditionFailed,
+}
+
+// printClaimRefusal prints the claim refusal `name`'s status and message (claimRefusal).
+func printClaimRefusal(name, dir string) error {
+	status, message, err := claimRefusal(name, dir)
+	if err != nil {
+		return err
+	}
+	fmt.Println(status)
+	fmt.Println(message)
+	return nil
+}
+
+// claimRefusal is the status and the message of the claim refusal the package at `dir` declares
+// as `<name> = Refusal{Status: http.<Status>, Message: "<message>"}`: the answer a claim route
+// gives a caller it refuses, read out of the source rather than restated in the rig, so the
+// stand-in's refusal is the daemon's own sentence (daemon-standin.ts). A declaration of another
+// shape, or none, is an error, never a sentence this invents.
+func claimRefusal(name, dir string) (int, string, error) {
+	sources, err := filepath.Glob(filepath.Join(dir, "*.go"))
+	if err != nil {
+		return 0, "", fmt.Errorf("list the daemon's %s: %w", dir, err)
+	}
+	for _, source := range sources {
+		if strings.HasSuffix(source, "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(token.NewFileSet(), source, nil, 0)
+		if err != nil {
+			return 0, "", fmt.Errorf("read the daemon's %s: %w", source, err)
+		}
+		for _, decl := range file.Decls {
+			general, isGeneral := decl.(*ast.GenDecl)
+			if !isGeneral || general.Tok != token.VAR {
+				continue
+			}
+			for _, spec := range general.Specs {
+				value, isValue := spec.(*ast.ValueSpec)
+				if !isValue || len(value.Names) != 1 || value.Names[0].Name != name || len(value.Values) != 1 {
+					continue
+				}
+				status, message, read := refusalLiteral(value.Values[0])
+				if !read {
+					return 0, "", fmt.Errorf("%s declares %s as %s, which is no Refusal{Status: http.<Status>, Message: \"<message>\"}", source, name, types.ExprString(value.Values[0]))
+				}
+				return status, message, nil
+			}
+		}
+	}
+	return 0, "", fmt.Errorf("%s declares no claim refusal %s: the daemon refuses that caller some other way now", dir, name)
+}
+
+// refusalLiteral is the status and the message of `Refusal{Status: http.<Status>, Message:
+// "<message>"}`, and false for any other expression.
+func refusalLiteral(expression ast.Expr) (int, string, bool) {
+	literal, isLiteral := expression.(*ast.CompositeLit)
+	if !isLiteral {
+		return 0, "", false
+	}
+	if kind, isIdent := literal.Type.(*ast.Ident); !isIdent || kind.Name != "Refusal" {
+		return 0, "", false
+	}
+	status, message := 0, ""
+	for _, element := range literal.Elts {
+		field, isField := element.(*ast.KeyValueExpr)
+		if !isField {
+			return 0, "", false
+		}
+		key, isKey := field.Key.(*ast.Ident)
+		if !isKey {
+			return 0, "", false
+		}
+		switch key.Name {
+		case "Status":
+			named, isSelector := field.Value.(*ast.SelectorExpr)
+			if !isSelector {
+				return 0, "", false
+			}
+			status = statuses[named.Sel.Name]
+		case "Message":
+			text, isText := stringLiteral(field.Value)
+			if !isText {
+				return 0, "", false
+			}
+			message = text
+		}
+	}
+	return status, message, status != 0 && message != ""
 }
 
 // stringLiteral is the text of an interpreted string literal, and false for any other expression.

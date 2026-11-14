@@ -1,11 +1,16 @@
 import { expect, test } from "bun:test";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { type LegionRole, roleToken } from "@legion/contracts";
 import { LegionActivityRequest, LegionStateResponse } from "@legion/contracts/legion-api";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { z } from "zod";
-import { DAEMON_MODULE, notCurrentPhase, refusalIn } from "./daemon-pane";
+import { claimRefusal, countDefault, notCurrentPhase, refusalIn } from "./daemon-pane";
+
+/** This checkout, the one the head label is built from, whose daemon's routes a stand-in reads
+ * out of the run's built-from by default. */
+const CHECKOUT = path.resolve(import.meta.dir, "../../../..");
 
 // The stand-in asks the daemon's own functions for the phase its role works, which `go run`
 // compiles, so a host with no go runs none of this.
@@ -29,7 +34,8 @@ const WORLD_BASE = "main";
  * the caller names one. The run directory is named as rig.sh's cmd_run names a run of `label`,
  * which is how the stand-in reads the label whose daemon it answers as (completion-answers.ts's
  * `labelOf`); `completed` is the roles the run's world says completed their phase with a commit
- * (rig.sh's worker_boot COMPLETED). It prints
+ * (rig.sh's worker_boot COMPLETED); `checkout` is the checkout the run's built-from names, whose
+ * daemon's routes the stand-in answers, this one by default and none at all for "". It prints
  * `listening on http://127.0.0.1:<port>` once the socket is open, which is what this waits
  * for. */
 let started = 0;
@@ -37,7 +43,7 @@ async function standin(
   role: string,
   startIn = "",
   world = { repo: WORLD_REPO, base: WORLD_BASE },
-  { label = "head", completed = "" } = {}
+  { label = "head", completed = "", checkout = CHECKOUT } = {}
 ) {
   // One directory per start, so a second stand-in of the same role writes its own log: a test
   // that reads the log reads its own run's lines and no earlier run's.
@@ -58,6 +64,9 @@ async function standin(
       ...world,
     })
   );
+  // The label's built-from, as cmd_run copies it into the run: the checkout whose daemon's routes
+  // the stand-in answers.
+  if (checkout !== "") writeFileSync(path.join(dir, "built-from"), `checkout ${checkout}\n`);
   const log = path.join(dir, "daemon.log");
   const child = Bun.spawn(
     [
@@ -526,12 +535,12 @@ test.skipIf(skip)(
   600_000
 );
 
-/** The daemon's own refusal of `role`'s late completion while the issue stands in `phase`, read
- * out of its source by the reader the stand-in answers from (daemon-pane.ts's
- * `notCurrentPhase`); daemon-pane.test.ts holds that reading to what the daemon's own engine.go
- * writes, so no copy of the sentence lives in this rig. */
-function lateRefusal(role: string, phase: string) {
-  const refusal = notCurrentPhase(DAEMON_MODULE, role, phase, "LWEVAL-1");
+/** The daemon's own refusal of `role`'s late completion while the issue stands in `phase`, as the
+ * daemon of `checkout` (this one by default) writes it, read out of its source by the reader the
+ * stand-in answers from (daemon-pane.ts's `notCurrentPhase`); daemon-pane.test.ts holds that
+ * reading to what the daemon's own source writes, so no copy of the sentence lives in this rig. */
+function lateRefusal(role: string, phase: string, checkout = CHECKOUT) {
+  const refusal = notCurrentPhase(checkout, role, phase, "LWEVAL-1");
   expect(refusal).toBeDefined();
   return { code: refusal?.code, error: refusal?.message };
 }
@@ -833,6 +842,362 @@ test("a run of a label the rig models no daemon for fails the boot", () => {
     "reviewer-ablate-1 names no label this rig models a daemon for"
   );
 });
+
+/** The sentence the older daemon (`olderCheckout`) refuses a late completion with: words of its
+ * own, so a stand-in that read this checkout's daemon for that label answers with another. */
+const OLDER_SENTENCE =
+  "an older daemon says the %s may not finish phase %s of %s; this completion changed nothing";
+let older: string | undefined;
+/** A second checkout of this one's daemon module, standing in for an older daemon such as the base
+ * label's: a copy, so the daemon-pane.go reads that compile the daemon's own functions run in it
+ * as they do in any label's checkout, and changed where an older daemon differs: it registers no
+ * `claims/turn-outcome` and no `claims/activity`, and its intake writes the not-current-phase
+ * refusal in `OLDER_SENTENCE`. Made once for the file. */
+function olderCheckout(): string {
+  if (older !== undefined) return older;
+  const checkout = path.join(work, "older-checkout");
+  const daemon = path.join(checkout, "packages", "daemon");
+  cpSync(path.join(CHECKOUT, "packages", "daemon"), daemon, { recursive: true });
+  // The module's go.mod replaces the envoy module with its sibling directory (`../envoy`).
+  symlinkSync(path.join(CHECKOUT, "packages", "envoy"), path.join(checkout, "packages", "envoy"));
+  const server = path.join(daemon, "internal", "api", "server.go");
+  const registered = readFileSync(server, "utf8");
+  const fewer = registered
+    .split("\n")
+    .filter(
+      (line) =>
+        !line.includes('"POST /legion/v1/claims/turn-outcome"') &&
+        !line.includes('"POST /legion/v1/claims/activity"')
+    )
+    .join("\n");
+  expect(registered.length - fewer.length).toBeGreaterThan(0);
+  writeFileSync(server, fewer);
+  const facts = path.join(daemon, "internal", "intake", "facts.go");
+  const written = readFileSync(facts, "utf8");
+  const reworded = written.replace(
+    /(Code: "HANDOFF_NOT_CURRENT_PHASE", Message: fmt\.Sprintf\(")((?:[^"\\]|\\.)*)(")/,
+    (_whole, before: string, _sentence: string, after: string) =>
+      `${before}${OLDER_SENTENCE}${after}`
+  );
+  expect(reworded).not.toBe(written);
+  writeFileSync(facts, reworded);
+  older = checkout;
+  return checkout;
+}
+
+/** A report of one turn under the claim this stand-in serves, for the role `role` (the plugin's
+ * `agent_end` hook), with `extra` beside it or over it. */
+function turn(role: LegionRole, sequence: number, outcome: string, extra: object = {}) {
+  return {
+    claimToken: roleToken("skills1", "LWEVAL-1", role),
+    sessionId: "01a0f2cc",
+    secret: "rig-secret",
+    generation: 1,
+    sequence,
+    outcome,
+    ...extra,
+  };
+}
+
+// Catches: a head stand-in with no `claims/turn-outcome`, which answered every turn this
+// checkout's plugin reports 404 (all twenty head runs of the kept batch logged one), and one that
+// counts the turns otherwise than the daemon does. The daemon keeps one report per (generation,
+// sequence), so a repeat replaces its report and is counted once (supervise's
+// `recordTurnOutcome`), answers the run of refused turns the reports end with (`RefusedRun`), and
+// fails the claim when that run reaches the launch failure limit, which the rig runs at its
+// default: read here out of the daemon's config source, as the stand-in reads it.
+test.skipIf(skip)(
+  "on the head label, a turn outcome is answered with the run of refused turns the daemon counts",
+  async () => {
+    const limit = countDefault(CHECKOUT, "launch_failure_limit");
+    expect(limit).toBeGreaterThan(2);
+    const daemon = await standin("reviewer");
+    try {
+      const report = async (sequence: number, outcome: string) => {
+        const answer = await daemon.post(
+          "/legion/v1/claims/turn-outcome",
+          turn("reviewer", sequence, outcome)
+        );
+        return [answer.status, await answer.json()];
+      };
+      expect(await report(1, "clean")).toEqual([200, { refusedRun: 0, failed: false }]);
+      expect(await report(2, "refused")).toEqual([200, { refusedRun: 1, failed: false }]);
+      expect(await report(3, "refused")).toEqual([200, { refusedRun: 2, failed: false }]);
+      expect(await report(3, "refused")).toEqual([200, { refusedRun: 2, failed: false }]);
+      for (let sequence = 4; sequence < limit + 1; sequence += 1)
+        expect(await report(sequence, "refused")).toEqual([
+          200,
+          { refusedRun: sequence - 1, failed: false },
+        ]);
+      expect(await report(limit + 1, "refused")).toEqual([
+        200,
+        { refusedRun: limit, failed: true },
+      ]);
+    } finally {
+      daemon.stop();
+    }
+  },
+  600_000
+);
+
+// Catches: a turn outcome taken that the daemon's route refuses: a sequence or a generation of 0,
+// an outcome neither clean nor refused, and a caller named neither way or both ways are 400; a
+// secret or a boot token that is not the claim's is 403; and a report under the launch's boot
+// token for another generation than the launch's is 409 (`turnOutcome` in
+// packages/daemon/internal/api/claims.go).
+test.skipIf(skip)(
+  "a turn outcome the daemon's route refuses is refused as it refuses it",
+  async () => {
+    const daemon = await standin("reviewer");
+    try {
+      const boot = { generation: 1, sequence: 1, outcome: "clean" };
+      const answers: [string, number][] = [];
+      for (const [name, body] of [
+        ["no sequence", turn("reviewer", 0, "clean")],
+        ["no generation", turn("reviewer", 1, "clean", { generation: 0 })],
+        ["another outcome", turn("reviewer", 1, "maybe")],
+        ["neither caller", boot],
+        ["both callers", turn("reviewer", 1, "clean", { bootToken: "rig-boot-token" })],
+        ["another secret", turn("reviewer", 1, "clean", { secret: "not-it" })],
+        ["another boot token", { ...boot, bootToken: "not-it" }],
+        ["another generation", { ...boot, generation: 2, bootToken: "rig-boot-token" }],
+        ["the launch's boot token", { ...boot, bootToken: "rig-boot-token" }],
+      ] as const)
+        answers.push([name, (await daemon.post("/legion/v1/claims/turn-outcome", body)).status]);
+      expect(answers).toEqual([
+        ["no sequence", 400],
+        ["no generation", 400],
+        ["another outcome", 400],
+        ["neither caller", 400],
+        ["both callers", 400],
+        ["another secret", 403],
+        ["another boot token", 403],
+        ["another generation", 409],
+        ["the launch's boot token", 200],
+      ]);
+    } finally {
+      daemon.stop();
+    }
+  },
+  600_000
+);
+
+// Catches: a stand-in that answers a route because it has a case for it rather than because the
+// run's label's daemon registers it. The base label's daemon, `ff2a10ef`, registers no
+// `claims/turn-outcome`, so its runs' plugin never posts one and a daemon of its would answer one
+// 404; a daemon registering no such route, read out of its own source, gets that 404 here, and
+// the routes it does register are answered.
+test.skipIf(skip)(
+  "a route the label's daemon does not register is answered 404, whatever the stand-in has a case for",
+  async () => {
+    const daemon = await standin("reviewer", "", undefined, {
+      label: "base",
+      checkout: olderCheckout(),
+    });
+    try {
+      expect(
+        (await daemon.post("/legion/v1/claims/turn-outcome", turn("reviewer", 1, "clean"))).status
+      ).toBe(404);
+      expect(
+        (await daemon.post("/legion/v1/claims/activity", { secret: "rig-secret" })).status
+      ).toBe(404);
+      expect(await daemon.phase()).toBe("reviewing");
+      expect(
+        daemon
+          .logged()
+          .filter((line) => line.status === 404)
+          .map((line) => [line.method, line.path])
+      ).toEqual([
+        ["POST", "/legion/v1/claims/turn-outcome"],
+        ["POST", "/legion/v1/claims/activity"],
+      ]);
+    } finally {
+      daemon.stop();
+    }
+  },
+  600_000
+);
+
+// Catches: a stand-in that goes on taking a claim's reports after the daemon failed it. The
+// daemon fails the claim when its run of refused turns reaches the launch failure limit, and
+// every write of a failed claim clears the capability its secret authenticated (supervise's
+// `NormalizeClaim`), so each route that authenticates the secret refuses it `InvalidSecret`
+// from then on: the plugin's next turn outcome, its activity report and its grant. The sentence
+// is the daemon's own claim refusal, read out of its claim source. The failing report's log line
+// says it failed the claim, which health reads.
+test.skipIf(skip)(
+  "once a turn outcome fails the claim, its secret authenticates nothing",
+  async () => {
+    const limit = countDefault(CHECKOUT, "launch_failure_limit");
+    const invalid = claimRefusal(CHECKOUT, "InvalidSecret");
+    const daemon = await standin("reviewer");
+    try {
+      for (let sequence = 1; sequence <= limit; sequence += 1)
+        await daemon.post("/legion/v1/claims/turn-outcome", turn("reviewer", sequence, "refused"));
+      const answers = [];
+      for (const [route, body] of [
+        ["/legion/v1/claims/turn-outcome", turn("reviewer", limit + 1, "clean")],
+        ["/legion/v1/claims/activity", { secret: "rig-secret" }],
+        [
+          "/legion/v1/grants",
+          { sessionId: "01a0f2cc", secret: "rig-secret", tree: "LWEVAL-1", issue: "LWEVAL-1" },
+        ],
+      ] as const) {
+        const answer = await daemon.post(route, body);
+        answers.push([route, answer.status, await answer.json()]);
+      }
+      expect(answers).toEqual(
+        ["/legion/v1/claims/turn-outcome", "/legion/v1/claims/activity", "/legion/v1/grants"].map(
+          (route) => [route, invalid.status, { error: invalid.message }]
+        )
+      );
+      expect(
+        daemon
+          .logged()
+          .filter((line) => line.path === "/legion/v1/claims/turn-outcome")
+          .map((line) => [line.status, line.failed])
+      ).toEqual([
+        ...Array.from({ length: limit - 1 }, () => [200, false]),
+        [200, true],
+        [invalid.status, undefined],
+      ]);
+    } finally {
+      daemon.stop();
+    }
+  },
+  600_000
+);
+
+// Catches: a base-label stand-in that answers a late completion with this checkout's daemon's
+// sentence rather than its own label's. The sentence, and the phase table the boot reads, come
+// out of the checkout the run's built-from names, here a daemon that words the refusal in
+// `OLDER_SENTENCE`.
+test.skipIf(skip)(
+  "a late completion is refused in the sentence of the label's own daemon",
+  async () => {
+    const checkout = olderCheckout();
+    const daemon = await standin("reviewer", "", undefined, { label: "base", checkout });
+    try {
+      pullRequest(daemon.dir).requestChanges();
+      expect(await daemon.phase()).toBe("implementing");
+      const refused = await daemon.complete(true);
+      expect(refused.status).toBe(409);
+      const filled = ["reviewer", "implementing", "LWEVAL-1"].reduce(
+        (text, value) => text.replace(/%s/, value),
+        OLDER_SENTENCE
+      );
+      expect(await refused.json()).toEqual({ code: "HANDOFF_NOT_CURRENT_PHASE", error: filled });
+      expect(lateRefusal("reviewer", "implementing", checkout).error).toBe(filled);
+      expect(lateRefusal("reviewer", "implementing").error).not.toBe(filled);
+    } finally {
+      daemon.stop();
+    }
+  },
+  600_000
+);
+
+// Catches the same against the base label's own daemon, main `ff2a10ef`, where a checkout of it
+// is on the host (SKILL_SCENARIOS_BASE_CHECKOUT, as the contract row above reads it): its engine
+// writes the refusal as `refused("HANDOFF_NOT_CURRENT_PHASE", fmt.Sprintf(<format>, fact.Role,
+// issue.Phase, issue.Key))`, and the stand-in answers in that format filled.
+test.skipIf(skip || baseCheckout === undefined)(
+  "a base-label late completion is refused in the base daemon's own sentence",
+  async () => {
+    const checkout = baseCheckout ?? "";
+    const engine = readFileSync(
+      path.join(checkout, "packages", "daemon", "internal", "workflow", "engine.go"),
+      "utf8"
+    );
+    const [, format = ""] =
+      /refused\("HANDOFF_NOT_CURRENT_PHASE", fmt\.Sprintf\("((?:[^"\\]|\\.)*)", fact\.Role, issue\.Phase, issue\.Key\)/.exec(
+        engine
+      ) ?? [];
+    expect(format).not.toBe("");
+    const daemon = await standin("reviewer", "", undefined, { label: "base", checkout });
+    try {
+      pullRequest(daemon.dir).requestChanges();
+      const refused = await daemon.complete(true);
+      expect(refused.status).toBe(409);
+      expect(await refused.json()).toEqual({
+        code: "HANDOFF_NOT_CURRENT_PHASE",
+        error: ["reviewer", "implementing", "LWEVAL-1"].reduce(
+          (text, value) => text.replace(/%s/, value),
+          format
+        ),
+      });
+    } finally {
+      daemon.stop();
+    }
+  },
+  600_000
+);
+
+// Catches: a stand-in with no `claims/release-records`, which both labels' daemons register and
+// the tool's `read_release_records` posts, and one answering it otherwise than `releaseRecords`:
+// the body's contract, then the claim's secret, then every release, resume and hold since the
+// time named, of which the rig's world has none, as three empty lists.
+test.skipIf(skip)(
+  "the release records are answered as the daemon answers them in a world that released no pod",
+  async () => {
+    const daemon = await standin("reviewer");
+    try {
+      const records = (body: object) =>
+        daemon.post("/legion/v1/claims/release-records", {
+          claimToken: roleToken("skills1", "LWEVAL-1", "reviewer"),
+          secret: "rig-secret",
+          since: "2026-11-01T00:00:00Z",
+          ...body,
+        });
+      const read = await records({});
+      expect([read.status, await read.json()]).toEqual([
+        200,
+        { releases: [], resumes: [], holds: [] },
+      ]);
+      expect((await records({ since: "yesterday" })).status).toBe(400);
+      expect((await records({ secret: "not-it" })).status).toBe(403);
+    } finally {
+      daemon.stop();
+    }
+  },
+  600_000
+);
+
+// Catches: a stand-in that answers a run whose daemon it cannot read the routes of, as some other
+// daemon would answer it. The routes are read out of the checkout the run's built-from names, and
+// a run with none fails the boot.
+test.skipIf(skip)(
+  "a run whose built-from names no checkout fails the boot",
+  () => {
+    const dir = path.join(work, "reviewer-head-900");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(path.join(dir, "boot-token"), "rig-boot-token\n");
+    writeFileSync(
+      path.join(dir, "world.json"),
+      JSON.stringify({
+        key: "LWEVAL-1",
+        branch: "legion/LWEVAL-1",
+        pr: 1001,
+        head: "0".repeat(40),
+        repo: WORLD_REPO,
+        base: WORLD_BASE,
+      })
+    );
+    const boot = Bun.spawnSync([
+      "bun",
+      path.join(import.meta.dir, "daemon-standin.ts"),
+      "0",
+      path.join(dir, "daemon.log"),
+      path.join(dir, "boot-token"),
+      "skills1",
+      "LWEVAL-1",
+      dir,
+      "reviewer",
+    ]);
+    expect(boot.exitCode).toBe(2);
+    expect(boot.stderr.toString()).toContain("built-from names no checkout");
+  },
+  600_000
+);
 
 // Catches: a stand-in whose record names a repository or a default branch the run's world has
 // not got. Agents read the record for the repository their `gh` calls name and for the branch

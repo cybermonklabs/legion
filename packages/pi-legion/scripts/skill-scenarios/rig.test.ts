@@ -22,6 +22,10 @@ setDefaultTimeout(60_000);
 // The judge runs in a Docker container; every other row here needs no container. Read once, so
 // one warning names docker for the whole file.
 const withoutDocker = skipWithout("docker");
+// The routes rule reads a label's daemon's routes with daemon-pane.go, which `go run` compiles.
+const withoutGo = skipWithout("go");
+/** This checkout, the one the head label is built from. */
+const CHECKOUT = path.resolve(import.meta.dir, "../../../..");
 
 // rig.sh's install_model_route, run with the checkout's real installers: the route a label's
 // profile reaches Anthropic by, picked by LEGION_E2E_MODEL_ROUTE.
@@ -1253,6 +1257,17 @@ describe("worker_boot", () => {
     expect(world).toMatchObject({ repo: "example/widgets", base: "main" });
   });
 
+  // Catches: a stand-in started without the rig's work directory, which keeps no facts cache
+  // there and so runs `go run` for each fact at every boot (daemon-pane.ts's `factsCache`).
+  test("the stand-in is given the rig's work directory for its facts cache", () => {
+    const { dir, started } = boot("tester", "");
+    expect(started.split(" ").slice(0, 3)).toEqual([
+      "daemon",
+      "env",
+      `SKILL_SCENARIOS_WORK=${dir}/work`,
+    ]);
+  });
+
   // Catches: a world statement that never reaches the stand-in. threads-closed's implementer
   // completed its round before the run began, which is what makes either label's daemon refuse
   // its completion 409 HANDOFF_NOT_CURRENT_PHASE (daemon-standin.ts's COMPLETED_ROWS); a boot
@@ -1424,14 +1439,16 @@ describe("health", () => {
   const NOT_CURRENT = "HANDOFF_NOT_CURRENT_PHASE";
   /** A run directory named `name`, under a directory of its own, whose daemon.log holds one
    * opening line per boot, each followed by that boot's lines; `finished` false leaves out.txt
-   * with no `exit=` line, as a run that never ended leaves it. */
-  function run(name: string, boots: object[][], { finished = true } = {}) {
+   * with no `exit=` line, as a run that never ended leaves it; `checkout` is the checkout its
+   * built-from names, none for "". */
+  function run(name: string, boots: object[][], { finished = true, checkout = "" } = {}) {
     const dir = path.join(freshDir("health"), name);
     mkdirSync(dir);
     writeFileSync(
       path.join(dir, "out.txt"),
       finished ? "the agent's output\nexit=0\n" : "the agent's output\n"
     );
+    if (checkout !== "") writeFileSync(path.join(dir, "built-from"), `checkout ${checkout}\n`);
     writeFileSync(
       path.join(dir, "daemon.log"),
       boots
@@ -1442,9 +1459,17 @@ describe("health", () => {
     return dir;
   }
   function health(...dirs: string[]) {
+    // The go caches of the caller's, which the routes rule's `go run` compiles with: a HOME of
+    // its own would have go fetch and build the daemon module from nothing.
+    const go = Object.fromEntries(
+      ["GOCACHE", "GOMODCACHE", "GOPATH", "GOFLAGS", "GOTOOLCHAIN"].flatMap((name) => {
+        const value = process.env[name];
+        return value === undefined ? [] : [[name, value]];
+      })
+    );
     const result = Bun.spawnSync(
       ["bash", path.join(import.meta.dir, "rig.sh"), "health", ...dirs],
-      { env: { ...childEnv, SKILL_SCENARIOS_WORK: freshDir("health-work") } }
+      { env: { ...childEnv, ...go, SKILL_SCENARIOS_WORK: freshDir("health-work") } }
     );
     return {
       code: result.exitCode,
@@ -1600,6 +1625,91 @@ describe("health", () => {
       `threads-closed-code-defect-head-2  ${refused(`409 ${MISMATCH}`)}`
     );
     expect(stdout).toEndWith("health: 4 of 6 runs unhealthy\n");
+  });
+
+  // Catches: a run whose stand-in answered 404 a route its label's daemon registers read as
+  // healthy, which read every head run of the kept batch healthy though each logged the plugin's
+  // `claims/turn-outcome` answered 404; and the same 404 read as unhealthy where the label's
+  // daemon registers no such route, which is that daemon's own answer. A daemon's routes are read
+  // out of the source of the checkout the run's built-from names: this checkout's for the head,
+  // and for the other label a checkout holding a daemon's API source alone that registers no
+  // `claims/turn-outcome`, as main `ff2a10ef`'s does not. A line naming no method (the kept
+  // batch's, written before the stand-in logged one) is held to every route of its path; a 404 of
+  // a route no daemon registers is any daemon's own answer; and a run with a 404 whose built-from
+  // names no checkout is unhealthy, since whose answer it was is unknown.
+  test.skipIf(withoutGo)(
+    "a 404 of a route the run's label's daemon registers is unhealthy, and of one it does not, healthy",
+    () => {
+      const older = path.join(freshDir("health"), "older-daemon");
+      const api = path.join(older, "packages", "daemon", "internal", "api");
+      mkdirSync(api, { recursive: true });
+      writeFileSync(
+        path.join(api, "server.go"),
+        'package api\n\nfunc routes() {\n\tmux.HandleFunc("GET /legion/v1/state", s.state)\n\tmux.HandleFunc("POST /legion/v1/claims/ready-for-update", s.readyForUpdate)\n}\n'
+      );
+      const notFound = (route: string, method?: string) => ({
+        at: "2026-11-13T18:00:00.000Z",
+        ...(method === undefined ? {} : { method }),
+        path: route,
+        status: 404,
+        role: "reviewer",
+      });
+      const turnOutcome = "/legion/v1/claims/turn-outcome";
+      const head = run("threads-closed-code-defect-head-7", [[notFound(turnOutcome)]], {
+        checkout: CHECKOUT,
+      });
+      const update = run(
+        "threads-closed-code-defect-head-8",
+        [[notFound("/legion/v1/claims/ready-for-update", "POST")]],
+        { checkout: CHECKOUT }
+      );
+      const base = run("threads-closed-code-defect-base-7", [[notFound(turnOutcome, "POST")]], {
+        checkout: older,
+      });
+      const nowhere = run("threads-closed-code-defect-head-9", [[notFound("/nowhere", "POST")]], {
+        checkout: CHECKOUT,
+      });
+      const unknown = run("threads-closed-code-defect-head-10", [[notFound(turnOutcome, "POST")]]);
+      const { code, stdout } = health(head, update, base, nowhere, unknown);
+      expect(code).toBe(1);
+      expect(verdict(stdout, head)).toBe(
+        `threads-closed-code-defect-head-7  unhealthy: unserved route: the stand-in answered a request of ${turnOutcome} 404, a route the head label's daemon registers (${CHECKOUT})`
+      );
+      expect(verdict(stdout, update)).toBe(
+        `threads-closed-code-defect-head-8  unhealthy: unserved route: the stand-in answered POST /legion/v1/claims/ready-for-update 404, a route the head label's daemon registers (${CHECKOUT})`
+      );
+      expect(verdict(stdout, base)).toBe("threads-closed-code-defect-base-7  healthy");
+      expect(verdict(stdout, nowhere)).toBe("threads-closed-code-defect-head-9  healthy");
+      expect(verdict(stdout, unknown)).toContain(
+        `unhealthy: routes unknown: the stand-in answered ${turnOutcome} 404, and which routes the head label's daemon registers cannot be read: `
+      );
+      expect(stdout).toContain("health: routes: 3 of 5 runs\n");
+      expect(stdout).toEndWith("health: 3 of 5 runs unhealthy\n");
+    }
+  );
+
+  // Catches: a run whose stand-in answered a turn outcome that failed the claim read as healthy.
+  // The daemon fails a claim whose provider refused turns up to its launch failure limit, stops
+  // its process and takes its secret, so what the run did after is no world the daemon serves;
+  // a turn outcome answered without failing the claim is no such run.
+  test("a run whose turn outcome failed the claim is unhealthy", () => {
+    const outcome = (failed: boolean) => ({
+      at: "2026-11-13T18:00:00.000Z",
+      method: "POST",
+      path: "/legion/v1/claims/turn-outcome",
+      status: 200,
+      role: "reviewer",
+      failed,
+    });
+    const spent = run("threads-closed-code-defect-head-11", [[outcome(false), outcome(true)]]);
+    const kept = run("threads-closed-code-defect-head-12", [[outcome(false), outcome(false)]]);
+    const { code, stdout } = health(spent, kept);
+    expect(code).toBe(1);
+    expect(verdict(stdout, spent)).toBe(
+      "threads-closed-code-defect-head-11  unhealthy: failed claim: the stand-in answered the reviewer's turn outcome at 2026-11-13T18:00:00.000Z with failed, so the daemon would have failed that claim"
+    );
+    expect(verdict(stdout, kept)).toBe("threads-closed-code-defect-head-12  healthy");
+    expect(stdout).toContain("health: failed claim: 1 of 2 runs\n");
   });
 
   // Catches: a code outside the run's own entry read as allowed because some entry allows it.

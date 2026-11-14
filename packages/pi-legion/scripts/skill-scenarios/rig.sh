@@ -20,7 +20,10 @@
 #                                                  every completion names its role and none was
 #                                                  refused in a way its label's daemon would not
 #                                                  refuse it, and its world took the completions it
-#                                                  must take (completion-answers.ts's ANSWERS); no
+#                                                  must take (completion-answers.ts's ANSWERS); the
+#                                                  daemon stand-in answered no route 404 that the
+#                                                  run's label's daemon registers, and no turn
+#                                                  outcome it answered failed the claim; no
 #                                                  agent met a push-guard refusal or a gh refusal
 #                                                  its scenario does not declare; no tool call named
 #                                                  another run's directory; and none read a path
@@ -2416,8 +2419,10 @@ worker_boot() {
   # Port 0: the kernel assigns the stand-in's port, which it prints, so concurrent runs never race.
   # It is given the run directory, not a repository: the record it answers names the world's own
   # repository and default branch, which it reads out of $R/world.json (the worker world comment).
-  start_process daemon bun "$here/daemon-standin.ts" 0 "$R/daemon.log" "$state/secrets/boot" \
-    "$project" "$worker_key" "$R" "$role" "$phase" "$completed"
+  # It is given the work directory, under which daemon-pane.ts keeps what it read of the label's
+  # daemon (its facts cache), so a boot whose sources an earlier boot read runs no `go run`.
+  start_process daemon env SKILL_SCENARIOS_WORK="$work" bun "$here/daemon-standin.ts" 0 \
+    "$R/daemon.log" "$state/secrets/boot" "$project" "$worker_key" "$R" "$role" "$phase" "$completed"
   await_start daemon "$daemon_pid" 30 "the daemon stand-in to listen" grep -q '^listening on ' "$R/logs/daemon.log"
   port=$(sed -n 's|^listening on http://127\.0\.0\.1:||p' "$R/logs/daemon.log")
   base_env
@@ -2795,7 +2800,7 @@ live-read) shift && cmd_live_read "$@" ;;
 batch) shift && cmd_batch "$@" ;;
 run) shift && cmd_run "$@" ;;
 score) shift && bun "$here/score.ts" runs "$work/runs" "$@" ;;
-health) shift && bun "$here/health.ts" "$@" ;;
+health) shift && SKILL_SCENARIOS_WORK=$work bun "$here/health.ts" "$@" ;;
 judge) shift && cmd_judge "$@" ;;
 judge-omp) shift && cmd_judge_omp "$@" ;;
 *) sed -n '2,/^set -euo/p' "${BASH_SOURCE[0]}" | sed '$d' | sed 's/^# \{0,1\}//' && exit 2 ;;
