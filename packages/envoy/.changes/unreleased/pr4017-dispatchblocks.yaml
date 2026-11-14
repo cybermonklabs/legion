@@ -5,4 +5,4 @@ body: |-
   (a check's `serves`), with the reader Dispatch shows a past version with, so a caller outside
   this module, the Legion daemon among them, reads a named version as Dispatch reads it.
 custom:
-    Issue: pr0000
+    Issue: pr4017
