@@ -2487,7 +2487,8 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   A walk of the pages is exact only on an unchanged listing:
   an issue that enters or leaves what the filters match (a `route_status` filter's by a refreshed listener answer too), or whose status or rank changes, between two reads shifts rows across a page boundary, and one issue is served twice and another never.
   The unpaged array is the only exact set one read gives.
-  The `dispatch issues` command always sends `limit` and `offset` (`DispatchClient.listIssuePage`, `packages/envoy-client`) and refuses an array answered to that paged request, which means a Dispatch older than #1612 or a regression of the page.
+
+- The `dispatch issues` command always sends `limit` and `offset` (`DispatchClient.listIssuePage`, `packages/envoy-client`) and refuses an array answered to that paged request, which means a Dispatch older than #1612 or a regression of the page.
   So a Dispatch rolled back past #1612, or one that stops paging, fails every `dispatch issues` call with that refusal;
   the SPA and both daemons send neither parameter and keep reading the array.
 
@@ -2531,7 +2532,8 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
 
 - A project's default assignee is moved by a person alone, through `GET /api/v1/settings/project-default-assignees` (every project, since every project names one) and `PUT /api/v1/projects/{key}/default-assignee` `{assignee}` (an email of a row of `people`; nothing clears a default, so an absent, null or blank `assignee` is `400 INVALID_PROJECT`, a login nobody has signed in with `400 ASSIGNEE_NOT_ALLOWED`, and the write appends a `settings.project_default_assignee.updated` event naming both people it moved rows between);
   `POST /api/v1/projects` takes the project's first default, `default_assignee`, else the person creating it, else the person its credential acts for, holds whichever answers to a row of `people` (`400 ASSIGNEE_NOT_ALLOWED`; a broker-issued token's owner comes from the broker, not from `people`), refuses a call that can name none with `400 INVALID_PROJECT`, and answers the project plus the `default_assignee` it took (`createdProject`); `GET /api/v1/projects` lists no default, so the person-scoped settings read above is the one source of it (`api/project_default_assignee.go`, `api/projects.go`).
-  `GET /api/v1/users` (needs the `person` scope) returns everyone in `people`, sorted by email, as `{users: [{login}]}` — the picker's options;
+
+- `GET /api/v1/users` (needs the `person` scope) returns everyone in `people`, sorted by email, as `{users: [{login}]}` — the picker's options;
   `GET /api/v1/whoami` (any auth) returns `{kind: "user", login, scopes}` (the person's lowercase email) for a cookie/header caller or `{kind: "agent", owner, scopes}` for a bearer (`owner` is the personal token's owner by lowercase email, null under the shared token; `scopes` is the OAuth scopes the credential holds, `[]` for one that holds none) — what `dispatch whoami` reports.
   Issue reads (`GET /issues/{key}`, summaries, pinned) carry `assignee`, and so does the `issue` on every inbox row.
 
@@ -2935,9 +2937,14 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
 - The architecture importer (`internal/dispatch/architecture`, migrations `0037` and `0117`) imports each architecture source of a project on its own:
   a project has any number of sources, one per repository (`architecture_sources` keyed `(project_key, id)`, unique on `(project_key, repo)`;
   a source that predates `0117` is `id` 0), and its component model is every source's components together, each `components` row carrying `source_id`, a foreign key to its source with `on delete cascade`.
-  For one source it reads every regular `*.md` (mode 100644/100755;
-  symlinks and nested directories skipped) directly inside `.dispatch/architecture/` at that source's branch head commit with one subtree read (`GET /git/trees/{commit}:.dispatch/architecture`, never the recursive repository tree;
-  GitHub's 404 is an empty model) and one blob read per file (an entry listed over 1 MiB is a typed `file too large` failure before any blob is fetched), validates the set whole (`Parse`:
+  What a note is, how large one may be and whether a set is valid are the rules of one note set, which live in a package of their own, `internal/dispatch/architecture/notes`:
+  pure, with no database and no network, it imports nothing outside the standard library but `gopkg.in/yaml.v3` and `internal/dispatch/text`.
+  `IsNote` keeps a regular `*.md` file directly in the directory, read as a blob of mode 100644/100755 from a GitHub tree entry by `GitKind` or as a regular file of a checkout by `FileKind`, and passes over symlinks, submodules and nested directories;
+  `CheckSize` refuses a note over `MaxFileSize`, 1 MiB, with `ErrFileTooLarge`, whose text is `file too large`;
+  and `Parse` validates the set.
+  `githubapp`'s `Dir` lists only the entries `IsNote` keeps, and its `DirFiles` checks each listed size and each decoded blob with `CheckSize`, so the importer reaches the note rule and the bound through those two, and it calls `notes.Parse` itself.
+  For one source it reads every note directly inside `.dispatch/architecture/` at that source's branch head commit with one subtree read (`GET /git/trees/{commit}:.dispatch/architecture`, never the recursive repository tree;
+  GitHub's 404 is an empty model) and one blob read per note (an entry listed over 1 MiB is a typed `file too large` failure, `notes.CheckSize`'s, before any blob is fetched), validates the set whole (`notes.Parse`:
   slug file names, text PostgreSQL can store (`text.Storable`:
   valid UTF-8 without NUL) in the file's bytes and in each decoded front-matter string, since YAML spells U+0000 in ASCII as `"\0"`, front matter via yaml.v3 with unknown keys rejected
   — the closer is a line that is exactly `---`, and an empty block is defaults
@@ -2950,6 +2957,36 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   the first problems and a count of the rest, the same text the `sync_failed` payload carries);
   the source's previous projection, and every other source's, stays up.
   `graph_edges` gains the `part_of`/`depends_on` arms over node kind `component` (`<project>/<id>`), never rows in `refs`.
+
+- `cmd/architecture-check` reads one directory of architecture notes from disk, a checkout's `.dispatch/architecture`, and judges it by the rules the importer applies to that directory on GitHub (`cmd/architecture-check/main.go`).
+  `architecture-check [--allow-empty] <directory>` makes the directory absolute before it reads anything, and every line it prints about the directory or an entry of it names that absolute path.
+  Every rule it applies is the notes package's, as `githubapp`'s are:
+  `notes.FileKind` and `notes.IsNote` decide which entries are notes, `notes.CheckSize` bounds every note before any is read and each note again once read, and `notes.Parse` judges the set, so no second reader of the rules exists.
+  A valid set is exit 0 and one line on stdout, `architecture-check: <directory>: <n> notes, the set is valid` (`note` for one).
+  A refused set is exit 1:
+  one line on stderr for each problem, `architecture-check: <directory>: <problem>`, then `architecture-check: <directory>: <n> notes, the set is refused` on stdout.
+  A problem is one of the errors `notes.Parse` joins, each starting with its note's file name, or one `notes.CheckSize` refusal naming the note's absolute path, after which no note is parsed;
+  a line break in a problem (yaml.v3's `unmarshal errors:` for an unknown key has one) prints as `\n`.
+  A directory it cannot judge is exit 2 and one line on stderr naming it and the case, `does not exist`, `cannot be read: <error>` or `holds no note`, and a usage error (no directory argument, two of them, an unknown flag) is exit 2 and the usage line;
+  neither prints a count line.
+  Each entry `notes.IsNote` rejects is a warning on stderr, `architecture-check: warning: <path>: not a note (<kind>); the importer passes over it`, and changes no exit status:
+  the importer passes over such an entry in silence, and its author expects it to count.
+  `say` writes every line but the usage, starting it with the fixed text `architecture-check: ` whatever the format, and `printable` escapes the rest of the line:
+  each control character (Cc), since a GitHub runner ends a line at `\n` and `\r` and reads a command from a line starting `::` after its leading white space and from a `##[` anywhere;
+  the `[` of every `##[` as `\x5b`, since only a literal `##[` names a command: the runner's search can pass over an ignorable character, but it reads the name three characters after the match's start and accepts only a name of its registered commands, compared without regard to case, so a name read through an ignorable character starts at `#`, `[` or that character, and no command the runner defines has that name (actions/runner at `8cfa1049f86781d141056082d73802d56cd2b433`: `ActionCommand.TryParse` reads it at `cmdIndex = prefixIndex + Prefix.Length`, and `ActionCommandManager`'s `_registeredCommands` is a `StringComparer.OrdinalIgnoreCase` set);
+  and each format character (Cf, invisible or reordering text), the line separator U+2028 (Zl) and the paragraph separator U+2029 (Zp), which the runner does not end a line at (it reads lines with `StreamReader.ReadLine`) but a log viewer can show as a line break, and each byte not UTF-8, for a log reader.
+  `--allow-empty` reads a directory that holds no note, and one that does not exist, as the empty set, exit 0 with a count of 0, as the server reads a missing directory as the empty model;
+  git keeps no empty directory, so a repository with no note yet has no directory at all.
+  It opens no database and reaches no network.
+
+- The composite action `.github/actions/architecture-check` is how another repository runs `cmd/architecture-check` (`README.md` there is that caller's guide):
+  it builds the command from this repository at the commit the caller pins, with the Go that `packages/envoy/go.mod` names, runs it over its `path` input (default `.dispatch/architecture`, resolved against the caller's checkout) with `--allow-empty` when `allow-empty` is `true`, exits with the command's status, and hands the count line's number to the caller as its `count` output, on exit 0 and on exit 1.
+  Right after its setup-go it removes the `go` problem matcher that setup-go adds (`::remove-matcher owner=go::`), since that matcher reads every later line of the job and would make an error annotation, with the author's text, of a check line holding `.go: `, such as one naming a file `cmd.go: forged annotation`;
+  the runner keeps one matcher per owner, so in a caller's job that set up Go earlier the action's setup-go replaces that job's `go` matcher and the removal deletes it for every later step, and the README sends a caller to a job of its own or to a place before the job's own setup-go, which adds the matcher again.
+  Any other matcher an earlier step of the job added reads the check's lines too, one more reason for a job of its own.
+  `ci.yaml`'s `envoy-go-checks` runs the notes package's and the command's tests, runs the action over this repository's own notes first, right after its checkout and before the job's own setup-go, which adds the Go matcher again for every later step, and fails unless `count` is a positive whole number;
+  `ci-caches.yaml`'s `architecture-check` job, a job of its own, runs the action on every push to main, which fills its `architecture-check-<os>-<arch>-go<version>-<hash>` cache entry in main's scope (`<hash>` is the SHA-256 of `packages/envoy/go.sum`, and on a miss the action restores the newest entry of the same Go version and still saves the new key), since the action saves only on a miss in a `push`, `schedule` or `workflow_dispatch` run;
+  a run of any other event (`pull_request`, `pull_request_target`, `merge_group`, `issue_comment`, `workflow_run` and the rest) may hold another person's code, so it restores and never saves.
 
 - Every sync runs under a two-minute deadline of its own, counted from when its flight began rather than from when a caller arrived.
   A flight runs on a context detached from whichever caller started it (`context.WithoutCancel`), so one caller hanging up fails none of the others.

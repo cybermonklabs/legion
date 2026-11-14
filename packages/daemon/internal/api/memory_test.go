@@ -29,7 +29,7 @@ var memoryDrawnAt = time.Date(2026, 9, 20, 11, 4, 5, 0, time.UTC)
 // answer under `why`, the two issues whose current phase names a phase worker role carry the
 // entry that role stands on and the entry it was given, and every issue of a live tree carries
 // that tree's quiet time, so one state proves sixteen of the seventeen downgrades and that they
-// compose; it stands no member of the line of the kind 116 added, whose downgrade
+// compose; it stands no member of the line of the kind 132 added, whose downgrade
 // waiting_on_issue_test.go proves. What the sixteenth band is measured on in finer grain — both
 // halves on each member of one tree, and neither on an issue whose tree has left the workflow —
 // is quiet_time_test.go's state of its own.
@@ -125,9 +125,9 @@ var (
 // from 87 to 93 the claim views' `leakCheckCause` too, and still neither entry number, nor the
 // held list, nor the quiet time; a pod from 94 to 97 the two entry numbers too, and still no held
 // list and no quiet time; a pod from 98 to 110 the held list too, and still no tree quiet time; a
-// pod from 111 to 115 the quiet time too; a pod below 46 none of the seventeen; and a pod at 116,
-// this daemon's declared contract — the fixture stands no member of the line of the one kind 116
-// added, so 116's strip finds nothing here (waiting_on_issue_test.go reads it) — a pod whose
+// pod from 111 to 131 the quiet time too; a pod below 46 none of the seventeen; and a pod at 132,
+// this daemon's declared contract — the fixture stands no member of the line of the one kind 132
+// added, so 132's strip finds nothing here (waiting_on_issue_test.go reads it) — a pod whose
 // claims record no contract and a caller in no pod — the operator's `legion state`, whose memory
 // line reads the draws, whose queue line reads the wakes and whose tool-call line reads the step
 // records — are served all of them, the quiet time of every live tree with the rest.
@@ -274,7 +274,7 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		// The band from 98 to 110, from heldContract to below quietTimeContract: the held list is
 		// served too, and the tree quiet time is the one measure held back.
 		{name: "a pod at heldContract", remote: statePodAddr + ":41000", claims: podClaims(heldContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true},
-		// The band from 111 to 115, from quietTimeContract to below waitingOnIssueContract, the
+		// The band from 111 to 131, from quietTimeContract to below waitingOnIssueContract, the
 		// last under the declared contract: the quiet time is served too, and this fixture stands
 		// nothing the one contract above it holds back.
 		{name: "a pod at quietTimeContract", remote: statePodAddr + ":41000", claims: podClaims(quietTimeContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true},
