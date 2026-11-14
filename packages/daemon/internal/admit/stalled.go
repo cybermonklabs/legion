@@ -64,32 +64,11 @@ func (a *Admission) quietTrees(ctx context.Context, tx pgx.Tx, issues []record.I
 // it is held by nothing the daemon knows of (everyIssueWaitsByDesign over lineHolds, from what
 // the caller handed over) or the project's line can no longer move (lineCanMove).
 //
-// The rule. An issue of the tree is held by something the daemon knows of exactly when one of
-// the first three of these holds, read in this order, and the fourth is the rest:
-//
-//  1. it stands in awaiting_person, answered or not, wherever the line's walk placed it — among
-//     the slot holders, in the line or left behind — because only a person's act moves it;
-//  2. it is an entry of the waiting line holding no slot (record.LineEntry.Holds false), which
-//     is the cap's own hold in both its shapes, and a started issue that gave its row back to
-//     wait on another issue (record.LineWaitingOnIssue), which a blocker holds and so waits by
-//     design as clause 3's words do; an entry of the line holding a slot is not held;
-//  3. its first phase has still to start — it stands at admitted, in the workflow, and is no
-//     root waiting for its tree to be opened (record.QueuedRoot) — and the word the walk left it
-//     behind with silences (silencedTree): its tree's root waits on a person, its design gate
-//     is shut, a Dispatch blocker holds it, or its own children are open. Holding a slot
-//     decides nothing here, because a root at admitted whose design gate has never opened keeps
-//     its slot through those same waits (blockers.waitsOf), and is left behind rather than
-//     placed in the line;
-//  4. anything else is not held: a slot holder at work in its phase, an issue past its review
-//     on no slot, a root waiting for its tree to be opened, an issue out of the workflow, and
-//     an issue whose phase is already running that the line left behind. That last one is the
-//     stall itself and never a wait, whatever word the ladder gives it: the words of clause 3
-//     hold a start, and such an issue has had its start. A member in implementing under a root
-//     that waits on a person is the case that rule decides — the root's wait is the root's
-//     alone, and the tree is told.
-//
-// It is written once, as lineHolds.waitsByDesign, and both halves of the silencing rule ask it:
-// everyIssueWaitsByDesign of every member of a quiet tree and lineCanMove of every slot holder.
+// The rule that says whether an issue of the tree is held by something the daemon knows of is
+// written once, with its ladder, as lineHolds.waitsByDesign, and both halves of the silencing
+// rule ask it: everyIssueWaitsByDesign of every member of a quiet tree and lineCanMove of every
+// slot holder. A member in implementing under a root that waits on a person is the case its
+// last clause decides: the root's wait is the root's alone, and the tree is told.
 //
 // The holds of the daemon's own silence a tree only while the project's line can still move,
 // which is the whole of why lineCanMove is read here and not per tree: a project no work of

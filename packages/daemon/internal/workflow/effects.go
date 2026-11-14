@@ -734,10 +734,8 @@ const (
 // which is what the daemon has always done for back-to-back transitions.
 //
 // No other start of the daemon's comes through here, and none may: the tree architect's start
-// (admit's promotion, awaiting_reconcile.go), which waits for no slot of its own, since the row
-// the cap counts is its root's and the root holds it from its promotion until its work is past
-// its review, except while it waits on another issue (record.KeepsSlot, blockers.waitsOf), the
-// production check's look (check.go), the pod wake (wake.go), the resume of a cancelled idle
+// (admit's promotion, awaiting_reconcile.go), the production check's look (check.go), the pod
+// wake (wake.go), the resume of a cancelled idle
 // release (the daemon's outbox), the roles admission brings back beside a member's phase worker
 // (admit's startMidPhaseMembers) and the phase's resume task a ready worker level with the entry
 // its phases row names is given (catch_up.go's readyWorkerTask) are enqueued directly and stay

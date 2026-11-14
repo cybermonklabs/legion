@@ -189,8 +189,9 @@ A slot stops
 nothing either way: every worker of a waiting issue stays live in the issue's pod and answers
 questions until the issue closes, and giving a slot back for a wait stops nothing either — no
 claim is suspended, no session ends, no phase moves, and no Dispatch status is written.
-The worker at work goes on, but every start of a phase worker of the issue, its next phase's or a
-restart of its current one, waits until the issue holds a slot again.
+The worker at work goes on, but every start of a phase worker of the issue up to its review, its
+next phase's or a restart of its current one, waits until the issue holds a slot again; a start of
+a phase past the review (`retro`, `merging`) takes no slot and runs at once.
 `legion state` names such an issue under `admission.waiting` and under `admission.blocked` and
 never under `admission.active`, which is how you tell it from an issue a person parked, which is
 in none of the three.
@@ -465,8 +466,8 @@ The merge closes the issue: the daemon reads the merged pull request, writes `do
 left of the issue to develop. A root whose tree still runs is the one issue the merge does not
 close at once: the daemon records the merge, and the root stays in `merging` with its workers
 while its children reach their own merges.
-It keeps its admission slot there, unless an unfinished `blocked_by` link holds it:
-then it gives the slot back, as any started issue that waits on another issue does.
+It stands there on no admission slot, as every phase past the review does, so no wait of it
+changes the cap.
 Its architect is told once which issues the close waits for,
 and the close comes when the last of them is done or parked. What is
 left after the close is to see the change work in production, and that is

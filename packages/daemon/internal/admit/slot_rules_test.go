@@ -356,9 +356,9 @@ func TestSlotPerPhase(t *testing.T) {
 }
 
 // A2. The cap counts the issues whose change is still to write, so one tree holds one row for
-// each issue the daemon has started and has not carried past its review: the root gives up the
-// row it took at its admission once it reaches accepting, where its children do the work, and
-// each child takes one as its first phase starts.
+// each issue the daemon has started and has not carried past its review: the root, which the
+// fixture stands in accepting with the row it took at its admission, gives that row up because
+// its work is past its review, and each child takes one as its first phase starts.
 //
 // The root's own work comes back when the architect sends it to a phase of its own. It holds no
 // row then, so it waits in the line among the issues whose work came back, and the row its own

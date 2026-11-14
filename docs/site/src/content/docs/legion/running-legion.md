@@ -268,7 +268,9 @@ Dispatch read them, delete the files, then install every App from
   under `controller: daemon`, the controller's pod are counted; `admission_cap` counts the issues
   the daemon has started rather than the pods, since an issue keeps its pod past the slot — through
   its acceptance, its retro and its merge, on to its own close — and an issue waiting up to its
-  review keeps both, and an issue pod the pool cannot place stays `Pending` until
+  review keeps both, unless it waits on another issue, when it keeps only its pod
+  ([Admission and the `legion` label](/legion/legion/concepts/#admission-and-the-legion-label)),
+  and an issue pod the pool cannot place stays `Pending` until
   the daemon reads it dead and, once its launch failures run out, fails the claim.
 - **A namespace and a storage class.** Each issue pod's disk (`issue_volume`, 50Gi by default,
   raised from 20Gi with the shared scratch) comes from `storage_class`, which is required. That
@@ -589,8 +591,9 @@ What each part is for:
   may be quiet — no issue of it moving and no agent of it stepping — before the project's
   controller is told once about that tree, decimals allowed; a tree with a role at work is never
   told, nor is one every quiet issue of which waits by design while the project's line can still
-  move — some issue of the project holds a slot and waits by no such rule, or some claim of it is
-  at work — and no value turns the notice off,
+  move — some issue of the project holds a slot and waits by no such rule, some claim of it is
+  at work, or a slot is free and an issue of the line that waits on no other issue will take it —
+  and no value turns the notice off,
   so a deployment that wants fewer notices raises the number, to 596 at most),
   `review_round_cap` (3),
   `controller_wake_interval_seconds` (3600), and the supervision budgets `launch_failure_limit`

@@ -132,9 +132,10 @@ The daemon tells you when at least one issue of it waits by no rule of the daemo
 the project's line can no longer move.
 A tree is silent only while every quiet issue of it waits on a person, on a Dispatch blocker, for
 an open child, or for an admission slot it needs and does not hold, and only while the project's
-line can still move: some issue of the project holds a slot and waits by none of those rules, or
-some claim of the project is at work.
-Where neither holds, no work of the project can start again by itself, so every tree of it is
+line can still move: some issue of the project holds a slot and waits by none of those rules, some
+claim of the project is at work, or a slot is free and an issue of the line that waits on no other
+issue will take it.
+Where none of these holds, no work of the project can start again by itself, so every tree of it is
 named however its members wait. The
 `reason` says the root has stopped and how many hours the tree has been quiet. It then gives one
 line for each issue of the tree the workflow still runs: the phase its record carries, the role
@@ -306,8 +307,8 @@ here, because the controller's session id changes when it restarts or is taken o
 A running tree can hold a slot while it waits on an event outside Legion: a deploy, another
 project's release, a vendor, or a person outside the company.
 When the event is a Dispatch issue, of this project or of another, and the waiting issue names it
-in its `blocked_by` links, the waiting issue gives its slot back while that issue is not `done`
-and takes one again by itself, unless it is one of the three roots that keep their
+in its `blocked_by` links, the waiting issue gives its slot back before its review while that
+issue is not `done` and takes one again by itself, unless it is one of the three roots that keep their
 slot through a wait ([Admission and the `legion` label](https://cybermonklabs.github.io/legion/legion/concepts/#admission-and-the-legion-label)): it holds no slot for that wait, so there is
 nothing to park or ask.
 An event no `blocked_by` link names is no such wait.

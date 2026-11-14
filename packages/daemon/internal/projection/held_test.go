@@ -103,11 +103,13 @@ func TestEveryIssueInTheWorkflowHasAPlace(t *testing.T) {
 	gatedMember := treeMember("LEGION-161", "LEGION-160", "LEGION-160", "todo", phase.Admitted)
 	// A running tree under an open gate: its root waits for the one open child Dispatch shows
 	// under it, so the admission pass has taken its slot back for that wait and marked it
-	// (admit.releaseSlotsForWaits, record.Issue.ReleasedForWaitAt), and its members carry three of
-	// the words. The issue in merging is
-	// an ancestor the daemon has accepted (record.Accepted), and holds no slot, since its work is
-	// past its review (record.KeepsSlot); nothing of the issue under it starts before that close, the issue at work that holds no row is the one the pass names nowhere,
-	// and the issue at work that holds one is the plain slot holder.
+	// (admit.releaseSlotsForWaits, record.Issue.ReleasedForWaitAt), and its members carry four of
+	// the words: LEGION-171 dispatch_blocker, LEGION-172 at_work, LEGION-173 accepted_ancestor and
+	// LEGION-174 unclassified. LEGION-172, in merging, is an ancestor the daemon has accepted
+	// (record.Accepted) and holds no slot, since its work is past its review (record.KeepsSlot);
+	// nothing of LEGION-173 under it starts before that close. LEGION-174 is the issue at work in
+	// a phase up to its review that holds no row and that the line does not place, and LEGION-175,
+	// at work holding one, is the plain slot holder.
 	openRoot := treeRoot("LEGION-170", "todo", phase.Admitted)
 	openRoot.ReleasedForWaitAt = &releasedAt
 	blockedChild := treeMember("LEGION-171", "LEGION-170", "LEGION-170", "todo", phase.Admitted)

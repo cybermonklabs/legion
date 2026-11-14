@@ -739,10 +739,11 @@ func later(a, b time.Time) time.Time {
 // narrower question than the cap asks. gate is the design
 // gate of the issue's tree root, the zero value for a root with no step of it registered.
 //
-// Three readers are left. Two ask about a worker rather than about the cap: CanWaitOnPerson,
-// which lets a root hand work to a person only while its architect has work to hand over; and
+// Four readers are left. Three ask about a worker rather than about the cap: CanWaitOnPerson,
+// which lets a root hand work to a person only while its architect has work to hand over;
 // admit's resumeSlottedWorkers, which starts the phase worker of an issue that has lost its task
-// and must pass over one whose phase has no worker at all. The third, blockers.waitsOf, asks it
+// and must pass over one whose phase has no worker at all; and workflow's unpromptedPhaseWorker,
+// which finds a live phase worker nothing will prompt. The fourth, blockers.waitsOf, asks it
 // of a started issue at phase.Admitted to decide a slot release: a tree's root there whose
 // design gate has never opened is its architect at work, so it waits on nothing and keeps its
 // row.
