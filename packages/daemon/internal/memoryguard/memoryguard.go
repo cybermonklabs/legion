@@ -30,7 +30,9 @@
 // The scan leaves out a zombie and a dead process, which hold no memory, and reads nothing of
 // either past its stat and status: under gVisor a zombie's exe link answers EACCES, which would
 // otherwise count it unread. A process in either state whose status counts more than one thread
-// is one whose main thread alone has exited, alive with all its memory, and is read as live.
+// is one whose main thread alone has exited, alive with all its memory, and is read as live. A
+// process whose exe, ns/pid or smaps fails to read after its stat was read is left out the same
+// way when its stat, read again, shows it gone or exited, since it may have exited in between.
 //
 // What it may end is its caller's to say (Classifier): the launcher protects Legion's own
 // processes and the agents', and INFRA-3531's controller pod protects its own. The package
@@ -613,9 +615,10 @@ type assessment struct {
 
 // assess scans the processes, asks the classifier, and reads the size of each process it may
 // end: one that is not protected, not the guard's own and not unread. A process whose smaps
-// cannot be read is unread too, since it cannot be ranked. The processes it may end are the only
-// ones whose files it reads, so they alone are the holders and the mappers of memfds among which
-// a memfd counts once (addHeldMemfds).
+// cannot be read is unread too, since it cannot be ranked, unless it has ended since the scan
+// read its stat (endedSince): it is then left out of the processes it may end and of unread
+// alike. The processes it may end are the only ones whose files it reads, so they alone are the
+// holders and the mappers of memfds among which a memfd counts once (addHeldMemfds).
 func (g *Guard) assess() (assessment, error) {
 	t, err := scan(g.proc)
 	if err != nil {
@@ -631,7 +634,7 @@ func (g *Guard) assess() (assessment, error) {
 		}
 		size, err := g.size(p.PID, g.memfds)
 		if err != nil {
-			if !errors.Is(err, fs.ErrNotExist) {
+			if !errors.Is(err, fs.ErrNotExist) && !endedSince(filepath.Join(g.proc, strconv.Itoa(p.PID)), p.StartTime) {
 				t.unread[p.PID] = fmt.Errorf("read the smaps: %w", err)
 			}
 			continue

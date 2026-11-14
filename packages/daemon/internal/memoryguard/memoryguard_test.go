@@ -2,6 +2,7 @@ package memoryguard
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -261,6 +262,57 @@ func (p *fakePod) remove(pid int) {
 	if err := os.RemoveAll(filepath.Join(p.proc, strconv.Itoa(pid))); err != nil {
 		p.t.Fatal(err)
 	}
+}
+
+// exitAsItsCmdlineIsRead has pid exit while a scan reads it, after the scan's read of its stat and
+// before its read of its exe: pid's cmdline, which the scan reads between the two, becomes a named
+// pipe, and once a reader has opened the pipe, pid's stat is replaced by a zombie's before the
+// arguments are written and the pipe closed. The scan so reads a running process's stat first and
+// a zombie's at any later read.
+func (p *fakePod) exitAsItsCmdlineIsRead(pid int) {
+	p.t.Helper()
+	dir := filepath.Join(p.proc, strconv.Itoa(pid))
+	stat, cmdline := filepath.Join(dir, "stat"), filepath.Join(dir, "cmdline")
+	running, err := os.ReadFile(stat)
+	if err != nil {
+		p.t.Fatal(err)
+	}
+	zombie := stat + ".zombie"
+	if err := os.WriteFile(zombie, []byte(strings.Replace(string(running), ") S ", ") Z ", 1)), 0o644); err != nil {
+		p.t.Fatal(err)
+	}
+	args, err := os.ReadFile(cmdline)
+	if err != nil {
+		p.t.Fatal(err)
+	}
+	if err := os.Remove(cmdline); err != nil {
+		p.t.Fatal(err)
+	}
+	if err := unix.Mkfifo(cmdline, 0o644); err != nil {
+		p.t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		w, err := os.OpenFile(cmdline, os.O_WRONLY, 0)
+		if err != nil {
+			done <- err
+			return
+		}
+		renamed := os.Rename(zombie, stat)
+		_, written := w.Write(args)
+		done <- errors.Join(renamed, written, w.Close())
+	}()
+	p.t.Cleanup(func() {
+		// The writer waits in its open until a reader opens the pipe; one that does not wait lets
+		// it go where no scan read the pipe.
+		r, err := os.OpenFile(cmdline, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+		if err == nil {
+			defer r.Close()
+		}
+		if err := <-done; err != nil {
+			p.t.Errorf("the exit of pid %d as its cmdline was read: %v", pid, err)
+		}
+	})
 }
 
 // writeWhole writes a process's file through a rename, so the guard's hourly scan, which reads
@@ -1534,6 +1586,77 @@ func TestMemoryGuardEndsAProcessInStateZWhoseOtherThreadsRun(t *testing.T) {
 	}
 	if unread := h.log.with("unread"); len(unread) != 0 {
 		t.Fatalf("the unread lines are %q, want none", unread)
+	}
+}
+
+// A process can exit between the scan's read of its stat and a later read of its files, and under
+// gVisor a zombie answers the read of its exe link with EACCES. The guard reads the stat of a
+// process whose exe, ns/pid or smaps it could not read again before it counts the process unread,
+// and leaves out one that has exited since: no unread line, and not among the processes it may
+// end. Here pid 980's stat reads S at the scan's first read and Z at any later one, and either its
+// exe link cannot be read (a plain file stands in for gVisor's refusal) or its smaps cannot (a
+// directory, whose read answers EISDIR). A process whose exe cannot be read while it runs still
+// counts unread (TestMemoryGuardDoesNotEndAProcessItCannotRead).
+func TestMemoryGuardLeavesOutAProcessThatExitsWhileItIsRead(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		unreadableExe bool
+		// listed is whether the scan lists pid 980: it does when the read that fails is assess's
+		// of the smaps, after the scan.
+		listed bool
+		exits  func(pod *fakePod, h *harness)
+	}{
+		{"its exe", true, false, func(pod *fakePod, _ *harness) { pod.exitAsItsCmdlineIsRead(980) }},
+		{"its smaps", false, true, func(pod *fakePod, h *harness) {
+			h.g.smapsRead = func(pid int) {
+				if pid != 980 {
+					return
+				}
+				dir := filepath.Join(pod.proc, strconv.Itoa(pid))
+				stat, err := os.ReadFile(filepath.Join(dir, "stat"))
+				if err != nil {
+					pod.t.Fatal(err)
+				}
+				pod.writeWhole(filepath.Join(dir, "stat"), strings.Replace(string(stat), ") S ", ") Z ", 1))
+				if err := os.Remove(filepath.Join(dir, "smaps")); err != nil {
+					pod.t.Fatal(err)
+				}
+				if err := os.Mkdir(filepath.Join(dir, "smaps"), 0o755); err != nil {
+					pod.t.Fatal(err)
+				}
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pod := newFakePod(t)
+			pod.add(
+				agent(gib),
+				fakeProcess{pid: 980, ppid: 100, args: []string{"python3", "pool.py"}, anon: 600 * mib, unreadableExe: tc.unreadableExe},
+				fakeProcess{pid: 981, ppid: 100, args: []string{"python3", "grow.py"}, anon: 500 * mib},
+			)
+			h := newHarness(t, pod, protect("tester", 100))
+			tc.exits(pod, h)
+			a, err := h.g.assess()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if unread := h.log.with("unread"); len(unread) != 0 {
+				t.Fatalf("the guard logged %q for a process that exited while it was read", unread)
+			}
+			if err, unread := a.table.unread[980]; unread {
+				t.Fatalf("pid 980 counts unread (%v), want it left out", err)
+			}
+			if _, listed := a.table.Get(980); listed != tc.listed {
+				t.Fatalf("pid 980 listed %v, want %v", listed, tc.listed)
+			}
+			var endable []int
+			for _, c := range a.endable {
+				endable = append(endable, c.PID)
+			}
+			if !slices.Equal(endable, []int{981}) {
+				t.Fatalf("the processes the guard may end are %v, want 981 alone", endable)
+			}
+		})
 	}
 }
 

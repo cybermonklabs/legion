@@ -86,8 +86,8 @@ func (t *Table) Cwd(pid int) (string, error) {
 
 // scan reads every process under proc. A process that ends while the scan reads it is left out:
 // it holds nothing any longer, and a missing file is how the kernel says so. A zombie and a dead
-// process are left out the same way (errExited). Any other failure to read its stat, exe or ns/pid
-// counts it in unread.
+// process are left out the same way (errExited), and so is a process that a read after its stat's
+// finds ended (endedSince). Any other failure to read its stat, exe or ns/pid counts it in unread.
 func scan(proc string) (*Table, error) {
 	entries, err := os.ReadDir(proc)
 	if err != nil {
@@ -121,20 +121,18 @@ func scan(proc string) (*Table, error) {
 	return t, nil
 }
 
-// errExited is a process whose stat reads it a zombie or dead and that has no thread left: it has
-// exited, and holds no memory.
+// errExited is a process whose stat reads it exited (exited), at the scan's first read of it or
+// at a read after one of its other files failed (endedSince): it holds no memory.
 var errExited = errors.New("the process has exited")
 
-// readProcess reads one process's stat, exe, ns/pid and cmdline. A process whose stat's state is
-// `Z` (a zombie, which its parent has not reaped yet) or `X` (dead) and whose status counts one
-// thread or none (threadsLeft) answers errExited, and nothing more of it is read: what its other
-// files answer differs by kernel, and a zombie's exe link answers ENOENT on Linux and EACCES under
-// gVisor, measured in a gVisor pod on 2026-11-14, where the scan counted unread a pool worker the
-// guard had just ended and its parent had not reaped. Otherwise it answers the process with an
-// error when stat was read and exe or ns/pid was not, so the caller keeps the process in the tree
-// and counts it unread; a missing exe or ns/pid is a process that has ended since its stat was
-// read, and answers fs.ErrNotExist like a missing stat. The arguments are best read: a process
-// that shows none is still a process.
+// readProcess reads one process's stat, exe, ns/pid and cmdline. A process whose stat reads it
+// exited (exited) answers errExited, and nothing more of it is read: what its other files answer
+// differs by kernel, and a zombie's exe link answers ENOENT on Linux and EACCES under gVisor,
+// measured in a gVisor pod on 2026-11-14, where the scan counted unread a pool worker the guard
+// had just ended and its parent had not reaped. Otherwise it answers the process with an error
+// when stat was read and exe or ns/pid was not (unreadOrEnded), so the caller keeps the process
+// in the tree and counts it unread, unless the process has ended since its stat was read. The
+// arguments are best read: a process that shows none is still a process.
 func readProcess(proc string, pid int) (*Process, error) {
 	dir := filepath.Join(proc, strconv.Itoa(pid))
 	stat, err := os.ReadFile(filepath.Join(dir, "stat"))
@@ -145,7 +143,7 @@ func readProcess(proc string, pid int) (*Process, error) {
 	if err != nil {
 		return nil, err
 	}
-	if (p.state == 'Z' || p.state == 'X') && !threadsLeft(dir) {
+	if exited(dir, p.state) {
 		return nil, errExited
 	}
 	p.PID = pid
@@ -154,21 +152,54 @@ func readProcess(proc string, pid int) (*Process, error) {
 	}
 	exe, err := os.Readlink(filepath.Join(dir, "exe"))
 	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return nil, err
-		}
-		return p, fmt.Errorf("read the exe: %w", err)
+		return unreadOrEnded(dir, p, "exe", err)
 	}
 	p.Exe = exe
 	ns, err := os.Readlink(filepath.Join(dir, "ns", "pid"))
 	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return nil, err
-		}
-		return p, fmt.Errorf("read the ns/pid: %w", err)
+		return unreadOrEnded(dir, p, "ns/pid", err)
 	}
 	p.PIDNamespace = ns
 	return p, nil
+}
+
+// unreadOrEnded is what readProcess answers for p, at dir, whose file what could not be read
+// after its stat was, with err: fs.ErrNotExist, or errExited where the process has ended since
+// its stat was read (endedSince), either of which leaves it out of the scan, and otherwise p with
+// the error that counts it unread.
+func unreadOrEnded(dir string, p *Process, what string, err error) (*Process, error) {
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return nil, err
+	case endedSince(dir, p.StartTime):
+		return nil, errExited
+	}
+	return p, fmt.Errorf("read the %s: %w", what, err)
+}
+
+// endedSince is whether the process at dir, whose stat read the start time start, has ended
+// since: its stat is gone, reads another start time (a process that took its pid), or reads it
+// exited (exited). A read of a process's exe, ns/pid or smaps that fails with anything but
+// fs.ErrNotExist asks it before the process counts unread, since a process can exit between the
+// read of its stat and that later read, and under gVisor a zombie answers that read with EACCES
+// (readProcess), which would count unread a process that has simply ended. A stat that cannot be
+// read for another reason, or does not parse, shows nothing ended, and the process counts unread.
+func endedSince(dir string, start uint64) bool {
+	stat, err := os.ReadFile(filepath.Join(dir, "stat"))
+	if err != nil {
+		return errors.Is(err, fs.ErrNotExist)
+	}
+	p, err := parseStat(stat)
+	if err != nil {
+		return false
+	}
+	return p.StartTime != start || exited(dir, p.state)
+}
+
+// exited is whether the process at dir, whose stat reads state, has exited: state `Z` (a zombie,
+// which its parent has not reaped yet) or `X` (dead), with no thread left (threadsLeft).
+func exited(dir string, state byte) bool {
+	return (state == 'Z' || state == 'X') && !threadsLeft(dir)
 }
 
 // threadsLeft is whether the process at dir runs more than one thread, by the `Threads:` line of
