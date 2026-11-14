@@ -265,11 +265,10 @@ type PodUpdateOpen struct {
 // An answer only brings the round's end forward. No answer, and no turn, holds the pod past
 // endsAt, so the text names that moment and what goes with the pod then: the turn in progress,
 // its background jobs, each commit and each file the role did not push, the pod's test database
-// and its caches. With no check of the disk before the replacement, every file that no push
-// carried goes, not only the ignored ones. The step to answer is the one step a role can be
-// unable to do: the op list its `legion` tool holds is a closed enum compiled into its plugin,
-// and a plugin below PodUpdateContract has no ready_for_update in it. Such a role is told to
-// push all the same, because its round ends at endsAt whatever it does.
+// and its caches. The step to answer is the one step a role can be unable to do: the op list its
+// `legion` tool holds is a closed enum compiled into its plugin, and a plugin below
+// PodUpdateContract has no ready_for_update in it. Such a role is told to push all the same,
+// because its round ends at endsAt whatever it does.
 //
 // Only the role's own push keeps its work: the daemon saves nothing of the disk before the pod
 // goes, so the text says that work not pushed before the pod goes is lost.

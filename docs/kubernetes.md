@@ -4588,7 +4588,7 @@ nothing is suspended, the round stays open, and the next sweep decides again.
 
 The daemon then replaces the pod with nothing read from its disk: a role's own push is what keeps its work, and work not pushed when the pod goes, a failed claim's included, is lost with the disk, so the agent does it again in the new pod, by the decision recorded at dispatch://INFRA-2848/ask/dc797d9e-49a6-49f6-b279-d27702c9ebd9.
 An earlier release checked the disk first, from the shim, and pushed what the remote lacked; that check and the frame that asked for it are gone.
-A daemon of an earlier release still sends the frame to a shim of this image, which passes it to its agent unchanged, and the agent refuses a command it does not know, which that daemon reads as a shim that predates the check, so it replaces the pod with no check of the disk.
+A daemon of an earlier release that sends that frame still sends it to a shim of this image, which passes it to its agent unchanged, and the agent refuses a command it does not know, which that daemon reads as a shim that predates the check, so it replaces the pod with no check of the disk.
 A `legion-v20.14.0` daemon then replaces the pod as this release does: once every role it asked has answered, or at the round's bound, and it asks no role a second time.
 A daemon before `legion-v20.14.0` replaces the pod on its workers' answers, asking once more a worker whose standing answer was a turn's end.
 
