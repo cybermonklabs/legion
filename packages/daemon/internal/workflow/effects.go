@@ -873,8 +873,29 @@ func task(issue record.Issue, handoff record.PhaseRow, pr *record.PullRequest, r
 	return text
 }
 
+// continueLine opens every phase task: the issue, its key and the phase the worker starts, and,
+// for an issue whose spec is a view on an ancestor's requirements, the sentence that says so
+// (viewSentence).
 func continueLine(issue record.Issue) string {
-	return fmt.Sprintf("Continue %s. Issue: %s. Phase: %s.", issue.Title, issue.Key, issue.Phase)
+	text := fmt.Sprintf("Continue %s. Issue: %s. Phase: %s.", issue.Title, issue.Key, issue.Phase)
+	if view := viewSentence(issue); view != "" {
+		text += " " + view
+	}
+	return text
+}
+
+// viewSentence is the one sentence each task of a phase worker of issue carries when its spec is
+// a view on an ancestor's requirements (record.Issue.ViewOf, dispatch://INFRA-3320, R4), and ""
+// for any other issue: the issue's requirements are the parts of the ancestor's requirements that
+// the Delivers: line of the issue's spec names. The task is built from the record alone, inside
+// the transition, so the view fact the last registration of the spec step recorded is what it
+// reads, whether a basis or a person's approval opened that step, and no document is read.
+func viewSentence(issue record.Issue) string {
+	if issue.ViewOf == "" {
+		return ""
+	}
+	return fmt.Sprintf("%s is a view on %s: the requirements of %s are the parts of the requirements of %s that the Delivers: line in the spec of %s names.",
+		issue.Key, issue.ViewOf, issue.Key, issue.ViewOf, issue.Key)
 }
 
 // handoffWord is the word of the Dispatch handoff record role writes (phase.Handoff's writer), ""
