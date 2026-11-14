@@ -545,6 +545,52 @@ func TestGitHubAppMintStillRefusesWhenGitHubDoesNotRevoke(t *testing.T) {
 	}
 }
 
+// TestGitHubAppMintReadsARetriedRevokesRefusalAsRevoked: GitHub revokes the token at the first
+// DELETE /installation/token and that answer is lost (the connection drops before the 204), so the
+// Retry makes the DELETE again, as the token GitHub has just revoked, and GitHub answers it 401, or
+// 404 for a token it no longer knows. That is the revoke done: the wider token is still refused,
+// and Mint logs no line saying GitHub did not revoke it. A 401 or a 404 to the first DELETE keeps
+// its meaning, a revoke GitHub did not confirm, and is logged as one.
+func TestGitHubAppMintReadsARetriedRevokesRefusalAsRevoked(t *testing.T) {
+	wider := reply{status: http.StatusCreated, body: `{"token":"token-7","expires_at":"2026-11-14T13:00:00Z","permissions":{"contents":"write","metadata":"read"}}`}
+	revokedAndLost := reply{lost: true}
+	badCredentials := reply{status: http.StatusUnauthorized, body: `{"message":"Bad credentials"}`}
+	notFound := reply{status: http.StatusNotFound, body: `{"message":"Not Found"}`}
+	for _, tc := range []struct {
+		name    string
+		revokes []reply
+		warned  bool
+	}{
+		{"the first answer lost, then GitHub's 401", []reply{revokedAndLost, badCredentials}, false},
+		{"the first answer lost, then a 404", []reply{revokedAndLost, notFound}, false},
+		{"a 401 to the first DELETE", []reply{badCredentials}, true},
+		{"a 404 to the first DELETE", []reply{notFound}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var logged bytes.Buffer
+			logtest.SetDefault(t, slog.NewTextHandler(&logged, nil))
+			retry, _, _ := testRetry(atTheBottom)
+			up := newScripted(t, append([]reply{installed, wider}, tc.revokes...)...)
+			release, err := mintGitHub(t.Context(), t, up, retry, &secrets.GitHubNarrowing{Owner: "acme", ReadOnly: true})
+			if release.Value != "" || secrets.MintErrorClass(err) != "upstream" || !strings.Contains(err.Error(), "more than read access") {
+				t.Fatalf("Mint = %q, %v (class %s); want nothing released and class upstream naming the read access", release.Value, err, secrets.MintErrorClass(err))
+			}
+			var deletes int
+			for _, request := range up.requests() {
+				if request.method == http.MethodDelete && request.path == "/installation/token" {
+					deletes++
+				}
+			}
+			if deletes != len(tc.revokes) {
+				t.Fatalf("Mint sent %d revokes; want %d", deletes, len(tc.revokes))
+			}
+			if warned := strings.Contains(logged.String(), "did not revoke"); warned != tc.warned {
+				t.Fatalf("log = %q; a line saying GitHub did not revoke the token: %t, want %t", logged.String(), warned, tc.warned)
+			}
+		})
+	}
+}
+
 // TestGitHubAppMintReadsTheAnswerToANarrowingAtTheMaximum: GitHub's answer to a narrowed token
 // carries a full repository object for each repository, about 5 KB, and GitHub has minted the
 // token by the time it answers, so an answer Mint could not read whole would leave a token neither

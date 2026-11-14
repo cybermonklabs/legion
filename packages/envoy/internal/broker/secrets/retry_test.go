@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"math"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -80,11 +81,13 @@ func attemptSamples(registry *metrics.Registry) string {
 	return samples.String()
 }
 
-// reply is one answer a scripted upstream gives.
+// reply is one answer a scripted upstream gives. A lost reply is a request the upstream acts on
+// and never answers: it drops the connection before writing anything.
 type reply struct {
 	status int
 	header http.Header
 	body   string
+	lost   bool
 }
 
 // sentRequest is what one request to a scripted upstream sent.
@@ -119,6 +122,15 @@ func newScripted(t *testing.T, replies ...reply) *scripted {
 		next := s.replies[0]
 		s.replies = s.replies[1:]
 		s.mu.Unlock()
+		if next.lost {
+			connection, _, err := w.(http.Hijacker).Hijack()
+			if err != nil {
+				t.Errorf("drop the answer to %s %s: %v", r.Method, r.URL.Path, err)
+				return
+			}
+			_ = connection.Close()
+			return
+		}
 		for name, values := range next.header {
 			w.Header()[name] = values
 		}
@@ -413,9 +425,12 @@ func TestMintCallWaitsTheWaitTheServerNamesInFull(t *testing.T) {
 
 // TestMintCallEndsAtANamedWaitPastWhatIsLeft: a wait the answer names that does not fit in what
 // is left of the mint's 10 s ends the mint with no further attempt, and none of it is waited: a
-// wait longer than the whole budget, a rate limit that names no wait (a minute), and a wait that
-// fits the budget but not what an earlier wait of the same mint left of it.
+// wait longer than the whole budget, however many seconds it names (past what a Duration holds,
+// past math.MaxInt64 and as an X-RateLimit-Reset at math.MaxInt64 too, none of which may wrap to
+// no wait), a rate limit that names no wait (a minute), and a wait that fits the budget but not
+// what an earlier wait of the same mint left of it.
 func TestMintCallEndsAtANamedWaitPastWhatIsLeft(t *testing.T) {
+	maxInt64 := strconv.FormatInt(math.MaxInt64, 10)
 	for _, tc := range []struct {
 		name     string
 		replies  []reply
@@ -423,6 +438,10 @@ func TestMintCallEndsAtANamedWaitPastWhatIsLeft(t *testing.T) {
 		attempts int
 	}{
 		{"a 429 asking 11 s", []reply{installed, answered(http.StatusTooManyRequests, http.Header{"Retry-After": {"11"}})}, nil, 1},
+		{"a 503 asking 9999999999 s", []reply{installed, answered(http.StatusServiceUnavailable, http.Header{"Retry-After": {"9999999999"}})}, nil, 1},
+		{"a 503 asking math.MaxInt64 s", []reply{installed, answered(http.StatusServiceUnavailable, http.Header{"Retry-After": {maxInt64}})}, nil, 1},
+		{"a 503 asking more seconds than an int64 holds", []reply{installed, answered(http.StatusServiceUnavailable, http.Header{"Retry-After": {"99999999999999999999"}})}, nil, 1},
+		{"a 403 whose X-RateLimit-Reset is math.MaxInt64", []reply{installed, answered(http.StatusForbidden, http.Header{"X-Ratelimit-Remaining": {"0"}, "X-Ratelimit-Reset": {maxInt64}})}, nil, 1},
 		{"a secondary rate limit naming no wait", []reply{installed, {status: http.StatusForbidden, body: `{"message":"You have exceeded a secondary rate limit."}`}}, nil, 1},
 		{"a 429 naming no wait", []reply{installed, answered(http.StatusTooManyRequests, nil)}, nil, 1},
 		{"a 429 asking 2 s after a 503 asked 9 s", []reply{installed,

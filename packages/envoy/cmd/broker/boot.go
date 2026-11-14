@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net"
 	"time"
@@ -13,10 +14,10 @@ import (
 // so that a test drives the sequence - the first policy load, the reread listener, the wait on
 // its first LISTEN, the catch-up load and the bind - against fakes of its own and reads back the
 // order it ran them in. A row makes real only what the thing it pins is about: ordering_test.go's
-// two boot rows each bind 127.0.0.1:0, and the catch-up row drives a real reread listener on a
-// real Postgres, because the race it pins is one Postgres itself decides. main fills every field
-// from the configuration it has loaded; boot calls each one exactly where main used to do that
-// work itself.
+// boot rows bind 127.0.0.1:0 for each port they take, and the catch-up row drives a real reread
+// listener on a real Postgres, because the race it pins is one Postgres itself decides. main
+// fills every field from the configuration it has loaded; boot calls each one exactly where main
+// used to do that work itself.
 type brokerBoot struct {
 	// LoadPolicy takes the first whole-namespace policy load and starts the five-minute reload
 	// behind it, on the serving context boot hands it. In production:
@@ -38,8 +39,8 @@ type brokerBoot struct {
 	// cfg.AirlockListenAddr).
 	ListenAirlock func() (net.Listener, error)
 	// ListenMetrics binds the metrics port, which serves GET /metrics alone. In production:
-	// net.Listen("tcp", cfg.MetricsListenAddr), which main always sets; a row of
-	// ordering_test.go about another step leaves it nil, and the boot then binds no metrics port.
+	// net.Listen("tcp", cfg.MetricsListenAddr). Every deployment has that port, so a boot given
+	// no ListenMetrics refuses before it runs anything.
 	ListenMetrics func() (net.Listener, error)
 	// ListenWait bounds how long the bind waits for that first LISTEN. In production:
 	// rereadListenWait, whose own comment says what the bound is for and what reaching it costs.
@@ -70,8 +71,7 @@ type booted struct {
 	// AirlockListener is the airlock proxy port's bound socket, nil when there is no airlock.
 	// Nothing is serving it yet either.
 	AirlockListener net.Listener
-	// MetricsListener is the metrics port's bound socket, nil only for a boot given no
-	// ListenMetrics. Nothing is serving it yet either.
+	// MetricsListener is the metrics port's bound socket. Nothing is serving it yet either.
 	MetricsListener net.Listener
 }
 
@@ -85,6 +85,12 @@ type booted struct {
 // srv.Shutdown has returned. ctx is the signal's own context, read only for whether a signal has
 // arrived: nothing this sequence runs is cancelled by it.
 func boot(ctx context.Context, b brokerBoot) (booted, error) {
+	// main serves the metrics port on every deployment and reads the listener this answers with
+	// no check, so a boot with no bind for it is refused here, before the first load and before
+	// any socket is taken, rather than answering a listener main would meet as nil once it serves.
+	if b.ListenMetrics == nil {
+		return booted{}, errors.New("broker: the boot was given no metrics port to bind")
+	}
 	// The context the work that has to outlive the drain runs on: the five-minute policy reload
 	// below and the reread listener under it. ctx is signal.NotifyContext's, which the first
 	// SIGTERM cancels, and a pod goes on being sent new requests for the whole of its drain —
@@ -212,17 +218,14 @@ func boot(ctx context.Context, b brokerBoot) (booted, error) {
 	// address another process holds - fails its boot rather than serving callers nobody can
 	// watch it serve. Last, because nothing a caller is answered depends on it, and a refused
 	// boot closes every socket it bound before.
-	var metricsListener net.Listener
-	if b.ListenMetrics != nil {
-		metricsListener, err = b.ListenMetrics()
-		if err != nil {
-			listener.Close()
-			if airlockListener != nil {
-				airlockListener.Close()
-			}
-			endServing()
-			return booted{}, err
+	metricsListener, err := b.ListenMetrics()
+	if err != nil {
+		listener.Close()
+		if airlockListener != nil {
+			airlockListener.Close()
 		}
+		endServing()
+		return booted{}, err
 	}
 	return booted{Serving: serving, EndServing: endServing, Policy: current, Listener: listener,
 		AirlockListener: airlockListener, MetricsListener: metricsListener}, nil

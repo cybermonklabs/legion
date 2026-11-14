@@ -19,5 +19,6 @@ body: |-
   for each new version, kind or shape, and refuses a value the decoder refuses as
   `value-malformed`, before any mint.
   A mint call that fails with a 5xx, a transport failure or a rate limit is made again: at most 3
-  attempts of 5 s each, at most 10 s of added wait for each mint, and at most 60 retries a minute
-  for the whole process. The `broker: mint failed` line names the attempts made.
+  attempts of 5 s each, at most 10 s of added wait for each mint, and, for the whole process, a
+  budget of 60 retries that gains one back each second. The `broker: mint failed` line names the
+  attempts made.

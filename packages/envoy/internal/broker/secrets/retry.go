@@ -29,9 +29,10 @@ const (
 	// internal/dispatch/githubapp's rateLimitWait uses. It is past mintWaitBudget, so such an
 	// answer ends the mint.
 	rateLimitedWait = time.Minute
-	// retryBudgetSize retries a minute, refilling one each retryBudgetRefill, is the process-wide
-	// budget every mint's retries draw from: the server-wide retry budget of Google's SRE book, so
-	// an upstream brownout cannot triple every release's calls at once.
+	// retryBudgetSize and retryBudgetRefill are the process-wide budget every mint's retries draw
+	// from (take): a budget of 60 retries that gains one back each second, the server-wide retry
+	// budget of Google's SRE book, so an upstream brownout cannot triple every release's calls at
+	// once. It starts full, so the first minute of a brownout can spend about 120.
 	retryBudgetSize   = 60
 	retryBudgetRefill = time.Second
 )
