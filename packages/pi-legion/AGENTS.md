@@ -94,7 +94,20 @@ field from `legion.goDaemonApiVersion` when the plugin dropped its TypeScript-da
 (LEGION-223): a release before it declares the TypeScript daemon's 9 under this name and is
 refused naming that number. The split of the one plugin into this package and `@sjawhar/pi-envoy`
 (LEGION-247) moved no request, response or pane variable, so it bumped nothing of its own: the
-number is the one `DaemonAPIVersion` declares, last bumped by contract 111 (dispatch://INFRA-2560:
+number is the one `DaemonAPIVersion` declares, last bumped by contract 127's per-caller answer
+shapes (dispatch://INFRA-2694: every request carries the caller's own contract in the
+`Legion-Plugin-Contract` header and every answer carries the daemon's in `Legion-Daemon-Contract`,
+so the daemon serves each caller the shape that caller's contract describes rather than the shape
+of the pod it is placed in, `GET /legion/v1/issues/{key}/record` is the per-issue record route
+that `read_record`, `handoff_complete` and the phase reminder read in place of the whole state
+and that answers 404 `RECORD_NOT_FOUND` for an issue the daemon records nothing of, `GET
+/healthz` answers a typed body of `status` and `project` that the controller's boot check reads
+in place of the state, `GET /legion/v1/state` gains `lowestPluginContract`, the lowest contract
+among the claims whose locator names a pod and that record a contract, and every claim view
+gains `updateState` and `wake`, which a
+caller from an earlier contract is served without, and `handoff_complete` reads the `ready` that
+a plugin below 86 still sends, so that such a pod can end its phase: `false` is ignored, and `true` is refused
+`READY_RETIRED`, since no daemon from 86 on acts on READY), after contract 111 (dispatch://INFRA-2560:
 every issue of a live tree carries `treeMovedAt`, when that tree last moved, and `quietHours`,
 how long it has been still, which a caller below 111 is served without), after contract 104's
 claim recoveries (dispatch://INFRA-3161: `fresh_session` reaches a claim stored working that no
@@ -108,7 +121,7 @@ contract 111 on (see `record.HeldAtWork`) — and `heldBy`, the issues that hold
 no issue holds the one
 that waits; the strict reader this plugin parses the state through takes the key as optional,
 because a caller from a pod whose claims record a contract under 98 is served the admission
-block without it (`api.stateFor`,
+block without it (`api.shapeState`,
 `withoutHeld`), and the controller's tick notice carries the same rows), after contract 94
 (dispatch://INFRA-2800: each issue carries `phaseEntry` and `givenEntry`, which a caller below
 94 is served without, and a completion of an older phase entry is refused
@@ -118,8 +131,8 @@ refused with because the shared public leak check could not be installed, which 
 87 is served without), after contract 86
 (dispatch://INFRA-714: the phase vocabulary loses `awaiting_merge`, a pull request carries
 `mergeState` in place of `checksVerdict`, a phase carries `pass`, every claim view carries
-`lastTurnStart` and `lastTurnEnd`, and `handoff_complete` takes no `ready`), after contract 85's
-`why` and the
+`lastTurnStart` and `lastTurnEnd`, and `handoff_complete` takes no `ready`), and after contract
+85's `why` and the
 `waitingLine` fields beside it
 (INFRA-2554: each member of the line carries `part`, `kind`, `partPlace`, `partLength`,
 `holdsSlot`, `since` for a member whose work came back, `rootRank`, `ownRank` and `rootKey`
@@ -409,7 +422,17 @@ tool. There is no tool-call hook: nothing a pane runs is refused or minted for. 
 the `legion` tool: architects register gates, release children, request a backward move, choose
 retry or escalation, sign off, close an admitted root tree (a root architect only), and read
 records; phase workers request a backward move and read records; a phase worker and a
-sub-architect complete their phase (`handoff_complete`). Each operation that writes mints its own
+sub-architect complete their phase (`handoff_complete`).
+Every claim session also has `read_build`, the controller's among them, which answers the package
+name and version of the plugin module this process loaded, the daemon API contract that build
+speaks, and the contract the daemon states on its answer to `GET /healthz` (`daemonContract`, the
+header alone).
+That contract is null in three cases: the daemon refused the health route, no answer reached
+this process at all, or the daemon stated no contract.
+A note of its own says which.
+The two numbers can differ, and a role reporting which build it runs reports this answer rather
+than the version at the plugin's path on the image, which a relaunch does not update.
+Each operation that writes mints its own
 grant on `/grants` and posts it with the request, so no grant is written to the pane. No
 `claims/exit` report runs at shutdown, because a daemon-requested suspend ends the session but
 keeps its claim for resumption.
@@ -454,8 +477,8 @@ through the controller session (`src/controller-session.ts`), not the claim sess
 `legion` tool's controller operations once its claim registers: `read_state`, the whole
 `GET /legion/v1/state` (unauthenticated, as the route is), and `set_status`, which mints a
 controller grant and posts `POST /legion/v1/issues/status` with it. The claim: `GET
-/legion/v1/state` first, since a registration replaces the running controller: an unset
-`LEGION_PROJECT`, or one whose controller role is not that of the project the state names
+/healthz` first, since a registration replaces the running controller: an unset
+`LEGION_PROJECT`, or one whose controller role is not that of the project the health answer names
 (`legionProjectToken` in `@legion/contracts`, the daemon's own rule), stops the claim there; then
 `claims/register` with the capability in place of a boot token, answered with
 `api.ControllerRegisterResponse` (`LegionControllerRegisterResponse`), then the Envoy role
@@ -634,7 +657,7 @@ implementer whose left record names no head, which sends `@-` alone, naming no r
 `POST /legion/v1/handoff/complete` (`summary`, `verdict`, and `handoffId`,
 `handoffVersion`, `commit` and `wakeAt` where they apply). A
 report on a look of a closed issue's production check is the one call that finds neither: the
-operation reads the daemon's state first, and a call on an issue in `done` whose
+operation reads this issue's record first (`GET /legion/v1/issues/<key>/record`), and a call on an issue in `done` whose
 `check` is open is a check report, posted with its `verdict` (`pass`, `pending` or `fail`, required
 there; `pending` is refused on a phase completion), its `summary` and, on a `pending` that is not
 the check's last look, `wakeAt` — no handoff and no `commit`. The plugin refuses, posting nothing,
@@ -731,9 +754,9 @@ head of the
 worker's last message under one idempotency key, minted at the first attempt and kept until the
 count resets, so a listener that holds no architect session yet is tried again by the next
 reminder. A reminder is dropped when the daemon's record says this role no longer works this phase
-or that the daemon has failed this role's claim (the `read_record` state, bounded at 5 s and
-failing open otherwise, since an unreachable daemon is exactly when a stalled worker must still be
-nudged). A worker the daemon relaunched into an open phase is
+or that the daemon has failed this role's claim (the record route `read_record` reads, bounded at
+5 s and failing open otherwise, since an unreachable daemon is exactly when a stalled worker must
+still be nudged). A worker the daemon relaunched into an open phase is
 reminded from a timer `LEGION_STALL_RESUME_MS` after its claim boots, since nothing else would
 wake it.
 

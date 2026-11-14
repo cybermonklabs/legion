@@ -238,6 +238,13 @@ func populatedState(t *testing.T) State {
 		ArgsHash:      "9b2e45c0d1f8a673",
 		StartedAt:     time.Date(2026, 9, 22, 9, 17, 12, 0, time.UTC),
 	}
+	// What the daemon last saw of the architect's turns and of its launches (contract 86): the
+	// turn it began and ended, the ready that dates the two causes beside them, the cause its
+	// process was last found gone under, and the failure its last start reported. One claim view
+	// of the fixture carries all five, so every record describes each key.
+	architectTurnStart := time.Date(2026, 9, 22, 9, 16, 40, 0, time.UTC)
+	architectTurnEnd := time.Date(2026, 9, 22, 9, 16, 58, 0, time.UTC)
+	architectReady := time.Date(2026, 9, 22, 9, 15, 44, 0, time.UTC)
 	state := State{
 		Daemon: DaemonInfo{
 			Project:       "legion",
@@ -301,7 +308,20 @@ func populatedState(t *testing.T) State {
 						Incarnation: "31881:9442101",
 						Tmux:        &runtime.TmuxLocator{Window: "@4", Pane: "%12"},
 					},
-					Step: StepViewOf(architectStep),
+					// No round is open over this claim, and the pacing holds a catch-up for it:
+					// the notice a child's re-admission wrote it in place of a launch, which the
+					// state names under `wakesWaiting` too.
+					UpdateState: UpdateStateNone,
+					Step:        StepViewOf(architectStep),
+					Wake:        &WakeView{Kind: supervise.WakeCatchUp, DueAt: time.Date(2026, 9, 22, 9, 18, 3, 0, time.UTC)},
+					// The turns this agent began and ended, the ready that dates what follows,
+					// and the two causes a start of it reported before the one running now
+					// (contract 86).
+					LastTurnStart:    &architectTurnStart,
+					LastTurnEnd:      &architectTurnEnd,
+					LastReady:        &architectReady,
+					LastDeathCause:   "the pane's process was gone at the daemon's read",
+					LastStartFailure: "the pod was not ready within the worker boot timeout",
 				},
 				Workers: map[claim.Role]PhaseView{
 					claim.RolePlanner: {
@@ -327,6 +347,10 @@ func populatedState(t *testing.T) State {
 							UpdateRound:   "pod:7f0c2f9a-6a4b-4f2e-9a1c-2f0d5a3b7e11",
 							UpdateHead:    "4c1b8e2a6f9d3047b5e1c8a2f6d940b3e7c5a128",
 							UpdateReasons: "the pod template changed: image ghcr.io/cybermonklabs/legion-worker moved",
+							// The worker answered with the ready_for_update call. Its launch onto
+							// the pod's replacement waits in the pacing meanwhile.
+							UpdateState: UpdateStateAnswered,
+							Wake:        &WakeView{Kind: supervise.WakeLaunch, DueAt: time.Date(2026, 9, 22, 9, 18, 11, 0, time.UTC)},
 						},
 						HandoffRecord: &HandoffRecordView{ID: "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b", Version: 1},
 						Pass:          0,
@@ -355,8 +379,10 @@ func populatedState(t *testing.T) State {
 							},
 							// The same round, on the worker that has not answered it yet: no head is
 							// reported until a worker answers, and the reasons are the round's own.
+							// The round published its ask on this worker's role topic.
 							UpdateRound:   "pod:7f0c2f9a-6a4b-4f2e-9a1c-2f0d5a3b7e11",
 							UpdateReasons: "the pod template changed: image ghcr.io/cybermonklabs/legion-worker moved",
+							UpdateState:   UpdateStateAsked,
 							// The run of the last confirmed delivery this claim retired, which is
 							// this issue's own generation: the worker is turning over the run the
 							// issue is in.
@@ -394,10 +420,13 @@ func populatedState(t *testing.T) State {
 				PhaseEntry: 4,
 				GivenEntry: 4,
 				PullRequest: &PullRequestView{
-					Repo:           "acme/widgets",
-					Number:         1247,
-					Head:           "5b3d9e2c8f1a47d06b2e5c9f3a8d1e4b7c0f6a29",
-					State:          "open",
+					Repo:   "acme/widgets",
+					Number: 1247,
+					Head:   "5b3d9e2c8f1a47d06b2e5c9f3a8d1e4b7c0f6a29",
+					State:  "open",
+					// GitHub's own merge state for the head as the daemon's last read found it
+					// (contract 86): a review the repository requires holds this one.
+					MergeState:     "blocked",
 					ReviewDecision: "changes_requested",
 				},
 				DesignGate: &GateView{
@@ -444,8 +473,9 @@ func populatedState(t *testing.T) State {
 					// leak check could not be installed in the pod, which this fixture carries with
 					// the other optional keys of the view at once, as operatorClaim does.
 					claim.RoleImplementer: {Claim: ClaimView{
-						Session: "ses_implementer_210",
-						State:   "failed",
+						Session:     "ses_implementer_210",
+						State:       "failed",
+						UpdateState: UpdateStateNone,
 						Failure: &ClaimFailureView{
 							Cause:    supervise.CauseDied,
 							Detail:   "launch failures ran out",
@@ -485,8 +515,9 @@ func populatedState(t *testing.T) State {
 					// the two sends that never reached a turn are on it: the diagnosis record a
 					// stalled claim is read by, with no budget spent on either.
 					claim.RoleImplementer: {Claim: ClaimView{
-						Session: "ses_implementer_211",
-						State:   "suspended",
+						Session:     "ses_implementer_211",
+						State:       "suspended",
+						UpdateState: UpdateStateNone,
 						PendingTask: &PendingTaskView{
 							Phase: phase.Implementing, QueuedAt: time.Date(2026, 9, 22, 8, 54, 20, 0, time.UTC),
 							SendFailures: 2, LastSendError: "post the prompt: dial tcp 10.42.0.17:13371: connect: connection refused",
@@ -620,7 +651,13 @@ func populatedState(t *testing.T) State {
 				// tree would read an absent `holdReason` by, the suppression being the linger's.
 				LingerUntil: &lingerUntil,
 				Workers: map[claim.Role]PhaseView{
-					claim.RoleImplementer: {Claim: ClaimView{Session: "ses_implementer_207", State: "working"}, HandoffCommit: "7d1e4f2a9c3b5e8d0a6f2c4b8e1d3a5f7c9b2e40", Pass: 1, Rounds: 1},
+					// The pacing holds this claim's relaunch onto this daemon's plugin, which the
+					// stale-plugin lane's own gate admitted for it: a wake stands over a claim no
+					// round has asked yet, which reads `none` with its wake beside it.
+					claim.RoleImplementer: {Claim: ClaimView{
+						Session: "ses_implementer_207", State: "working", UpdateState: UpdateStateNone,
+						Wake: &WakeView{Kind: supervise.WakePluginRefresh, DueAt: time.Date(2026, 9, 22, 9, 17, 56, 0, time.UTC)},
+					}, HandoffCommit: "7d1e4f2a9c3b5e8d0a6f2c4b8e1d3a5f7c9b2e40", Pass: 1, Rounds: 1},
 				},
 				PullRequest: &PullRequestView{
 					Repo:           "acme/widgets",
@@ -775,6 +812,12 @@ func populatedState(t *testing.T) State {
 		MemoryDrawMode: string(config.MemoryRandom),
 		MemoryDrawnAt:  &memoryDrawnAt,
 	}
+	// The oldest plugin any pod of the fixture's project runs, which the state route reads from
+	// the claims of its own snapshot (api's lowestPluginContract). The floor is the reading this
+	// change records of the fleet, and the fixture carries a value so that the golden and every
+	// walk over it see the field.
+	lowest := ServingFloor
+	state.LowestPluginContract = &lowest
 	// Every issue standing in a tree the admission block names carries that tree's quiet time,
 	// the two keys contract 111 added: the measure is the tree's, so each member of one tree
 	// carries the same pair. LEGION-207's tree closed and LEGION-209 stands in no tree of this
@@ -810,13 +853,25 @@ func populatedState(t *testing.T) State {
 }
 
 // The state golden is the body the route serves a caller at this daemon's own contract: the
-// source answers no mark and the route writes one (server's stateFor), so the fixture carries
+// source answers no mark and the route writes one (shaping's shapeState), so the fixture carries
 // the two numbers of `contract` and the plugin's schema is held to them. A caller below the
 // contract that added it is served no such key, which TestANarrowedBodySaysSo holds.
 func TestStateGolden(t *testing.T) {
 	state := populatedState(t)
 	state.Contract = &ContractView{Daemon: DaemonAPIVersion, Caller: DaemonAPIVersion}
 	golden(t, "state.json", state)
+}
+
+// One issue's record, what `GET /legion/v1/issues/{key}/record` answers: the very `api.Issue`
+// the whole-project body holds under `issues.LEGION-208`, which a test of the route holds the
+// two to, field for field.
+func TestIssueRecordGolden(t *testing.T) {
+	golden(t, "issue-record.json", populatedState(t).Issues[recordGoldenIssue])
+}
+
+// What `GET /healthz` answers: that the daemon is serving, and the project it serves.
+func TestHealthGolden(t *testing.T) {
+	golden(t, "health.json", Health{Status: "ok", Project: "legion"})
 }
 
 // Every plugin parses the state with the schema of the contract it was built at, and a
@@ -912,6 +967,10 @@ func TestStateOperatorClaimGolden(t *testing.T) {
 						Incarnation: "1618075:268131172",
 						Tmux:        &runtime.TmuxLocator{Window: "@1", Pane: "%1"},
 					},
+					// No round is open over an operator's spawn either: every claim view names
+					// one of the four states, and the projection writes this one for a claim no
+					// round has reached.
+					UpdateState: UpdateStateNone,
 				},
 			},
 		},
@@ -1282,6 +1341,24 @@ func TestTask310RouteGoldens(t *testing.T) {
 	golden(t, "root-close.json", EmptyResponse{})
 	golden(t, "child-park.json", EmptyResponse{})
 	golden(t, "child-rerun.json", EmptyResponse{})
+}
+
+// The table of answers a plugin parses (answers.go): one row per response schema, the routes
+// that answer it, and the contract that answer arrived at. No route answers this fixture. It is
+// written out so that the plugin's own side reads the same rows the daemon shapes by.
+func TestAnswersGolden(t *testing.T) {
+	golden(t, "answers.json", Answers)
+}
+
+// The table of enumerated fields a plugin parses strictly (answers.go): one row per field, with
+// each value and the contract it arrived at. No route answers this fixture either. It is
+// written out beside answers.json so that the plugin's own side holds its enumerations to the
+// daemon's: `packages/contracts/src/legion-api.test.ts` reads this file, holds each row's values
+// equal to the members of the `z.enum` it reads at that row's key path, and fails a `z.enum` it
+// reads at a path no row declares. A value added on one side and not the other is red rather
+// than silent.
+func TestEnumeratedFieldsGolden(t *testing.T) {
+	golden(t, "enumerated-fields.json", EnumeratedFields)
 }
 
 // The turn outcome's answer is what a producer's report of one turn comes back as: the run of

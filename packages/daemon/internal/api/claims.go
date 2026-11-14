@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"reflect"
 	"strings"
 	"time"
 
@@ -54,7 +55,7 @@ type Supervisor interface {
 // its own controller registers no other, so such a token is the unknown one it is.
 func (s *server) register(w http.ResponseWriter, r *http.Request) {
 	var req claim.RegisterRequest
-	if !s.readRegisterBody(w, r, &req) || !requireFields(w,
+	if !s.readRegisterBody(w, r, &req) || !s.requireFields(w, r,
 		field{"bootToken", req.BootToken}, field{"sessionId", req.SessionID},
 		field{"ompSessionFile", req.OmpSessionFile}, field{"agentId", req.AgentID},
 	) {
@@ -63,12 +64,12 @@ func (s *server) register(w http.ResponseWriter, r *http.Request) {
 	launch, known, err := s.bootTokens.Resolve(r.Context(), req.BootToken)
 	if err != nil {
 		s.logRequestFailure(r, err, "api: resolve a registration's boot token")
-		writeJSON(w, http.StatusInternalServerError, errorBody("register failed: the daemon could not resolve the boot token"))
+		s.refuse(w, r, http.StatusInternalServerError, "register failed: the daemon could not resolve the boot token")
 		return
 	}
 	if !known {
 		if s.controllerLaunched {
-			writeJSON(w, claim.InvalidBootToken.Status, claim.InvalidBootToken)
+			s.writeAnswer(w, r, AnswerRefusal, claim.InvalidBootToken.Status, claim.InvalidBootToken)
 			return
 		}
 		s.registerController(w, r, req)
@@ -76,15 +77,15 @@ func (s *server) register(w http.ResponseWriter, r *http.Request) {
 	}
 	m, supervised := s.supervisor.Machine(launch.Claim)
 	if !supervised {
-		writeJSON(w, claim.InvalidBootToken.Status, claim.InvalidBootToken)
+		s.writeAnswer(w, r, AnswerRefusal, claim.InvalidBootToken.Status, claim.InvalidBootToken)
 		return
 	}
 	if m.Claim().Role == claim.RoleController {
 		if !s.controllerLaunched {
 			s.log.Warn("api: refused a launched controller's registration: this daemon leaves the controller to its operator",
 				"claim", launch.Claim, "generation", launch.Generation, "session", req.SessionID)
-			writeJSON(w, http.StatusConflict, errorBody(fmt.Sprintf(
-				"%s is a launch of the daemon's own controller, and this daemon leaves the controller to its operator (controller: operator)", launch.Claim)))
+			s.refuse(w, r, http.StatusConflict, fmt.Sprintf(
+				"%s is a launch of the daemon's own controller, and this daemon leaves the controller to its operator (controller: operator)", launch.Claim))
 			return
 		}
 		s.registerLaunchedController(w, r, req, launch, m)
@@ -104,13 +105,13 @@ func (s *server) register(w http.ResponseWriter, r *http.Request) {
 		PluginContract: req.PluginContract,
 	})
 	if err != nil {
-		s.claimFailure(w, "register", launch.Claim, err)
+		s.claimFailure(w, r, "register", launch.Claim, err)
 		return
 	}
 	c := m.Claim()
 	s.log.Info("api: claim registered", "claim", c.Token, "generation", launch.Generation,
 		"session", req.SessionID, "agent", req.AgentID, "pluginContract", req.PluginContract)
-	writeJSON(w, http.StatusOK, claim.RegisterResponse{
+	s.writeAnswer(w, r, AnswerRegister, http.StatusOK, claim.RegisterResponse{
 		ClaimToken:   c.Token,
 		Tree:         c.Tree,
 		Issue:        c.Issue,
@@ -138,14 +139,14 @@ func (s *server) promptAgentsList() []string {
 // name cleaned as a detail is (capabilities.Normalize).
 func (s *server) ready(w http.ResponseWriter, r *http.Request) {
 	var req claim.ReadyRequest
-	if !s.readBody(w, r, &req, s.claimSecretCheck) || !requireFields(w,
+	if !s.readBody(w, r, &req, s.claimSecretCheck) || !s.requireFields(w, r,
 		field{"claimToken", string(req.ClaimToken)}, field{"sessionId", req.SessionID}, field{"secret", req.Secret},
-	) || !requireGeneration(w, req.Generation) {
+	) || !s.requireGeneration(w, r, req.Generation) {
 		return
 	}
 	m, _, ok := s.authenticated(req.ClaimToken, req.Secret)
 	if !ok {
-		writeJSON(w, claim.InvalidSecret.Status, claim.InvalidSecret)
+		s.writeAnswer(w, r, AnswerRefusal, claim.InvalidSecret.Status, claim.InvalidSecret)
 		return
 	}
 	if s.refuseIfStaleClaim(w, r, m.Claim()) {
@@ -157,7 +158,7 @@ func (s *server) ready(w http.ResponseWriter, r *http.Request) {
 		Claim: req.ClaimToken, Generation: req.Generation, Session: req.SessionID,
 	})
 	if err != nil {
-		s.claimFailure(w, "ready", req.ClaimToken, err)
+		s.claimFailure(w, r, "ready", req.ClaimToken, err)
 		return
 	}
 	c := m.Claim()
@@ -201,15 +202,15 @@ func (s *server) capabilityReport(c supervise.Claim, req claim.ReadyRequest) cap
 // root claim is suspended until its tree closes, and the reason is logged.
 func (s *server) exit(w http.ResponseWriter, r *http.Request) {
 	var req claim.ExitRequest
-	if !s.readBody(w, r, &req, s.claimSecretCheck) || !requireFields(w,
+	if !s.readBody(w, r, &req, s.claimSecretCheck) || !s.requireFields(w, r,
 		field{"claimToken", string(req.ClaimToken)}, field{"sessionId", req.SessionID}, field{"secret", req.Secret},
 		field{"reason", req.Reason},
-	) || !requireGeneration(w, req.Generation) {
+	) || !s.requireGeneration(w, r, req.Generation) {
 		return
 	}
 	m, _, ok := s.authenticated(req.ClaimToken, req.Secret)
 	if !ok {
-		writeJSON(w, claim.InvalidSecret.Status, claim.InvalidSecret)
+		s.writeAnswer(w, r, AnswerRefusal, claim.InvalidSecret.Status, claim.InvalidSecret)
 		return
 	}
 	if s.refuseIfStaleClaim(w, r, m.Claim()) {
@@ -221,7 +222,7 @@ func (s *server) exit(w http.ResponseWriter, r *http.Request) {
 		Claim: req.ClaimToken, Generation: req.Generation, Session: req.SessionID, Reason: req.Reason,
 	})
 	if err != nil {
-		s.claimFailure(w, "exit", req.ClaimToken, err)
+		s.claimFailure(w, r, "exit", req.ClaimToken, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -242,17 +243,17 @@ func (s *server) exit(w http.ResponseWriter, r *http.Request) {
 // caller that cannot say is not answered.
 func (s *server) turnOutcome(w http.ResponseWriter, r *http.Request) {
 	var req claim.TurnOutcomeRequest
-	if !s.readBody(w, r, &req, s.claimSecretCheck) || !requireGeneration(w, req.Generation) {
+	if !s.readBody(w, r, &req, s.claimSecretCheck) || !s.requireGeneration(w, r, req.Generation) {
 		return
 	}
 	if req.Sequence == 0 {
 		// Zero is how a body that named no sequence decodes, and every turn of such a producer
 		// would collide on one key and be counted once, so it is refused rather than recorded.
-		writeJSON(w, http.StatusBadRequest, errorBody("sequence is required, counted from 1 within the generation"))
+		s.refuse(w, r, http.StatusBadRequest, "sequence is required, counted from 1 within the generation")
 		return
 	}
 	if req.Outcome != claim.TurnClean && req.Outcome != claim.TurnRefused {
-		writeJSON(w, http.StatusBadRequest, errorBody(fmt.Sprintf("outcome %q is neither %q nor %q", req.Outcome, claim.TurnClean, claim.TurnRefused)))
+		s.refuse(w, r, http.StatusBadRequest, fmt.Sprintf("outcome %q is neither %q nor %q", req.Outcome, claim.TurnClean, claim.TurnRefused))
 		return
 	}
 	token, m, ok := s.turnOutcomeCaller(w, r, req)
@@ -266,7 +267,7 @@ func (s *server) turnOutcome(w http.ResponseWriter, r *http.Request) {
 		Refused: req.Outcome == claim.TurnRefused, Message: req.Message,
 	})
 	if err != nil {
-		s.claimFailure(w, "turn outcome", token, err)
+		s.claimFailure(w, r, "turn outcome", token, err)
 		return
 	}
 	c := m.Claim()
@@ -275,7 +276,7 @@ func (s *server) turnOutcome(w http.ResponseWriter, r *http.Request) {
 		s.log.Error("api: a claim's provider refused its turns out of their budget", "claim", token,
 			"generation", req.Generation, "sequence", req.Sequence, "refusedRun", run, "failure", c.Failure)
 	}
-	writeJSON(w, http.StatusOK, claim.TurnOutcomeResponse{RefusedRun: run, Failed: c.State == supervise.StateFailed})
+	s.writeAnswer(w, r, AnswerTurnOutcome, http.StatusOK, claim.TurnOutcomeResponse{RefusedRun: run, Failed: c.State == supervise.StateFailed})
 }
 
 // turnOutcomeCaller is the claim a turn outcome is reported for and its machine: the claim the
@@ -293,7 +294,7 @@ func (s *server) turnOutcomeCaller(w http.ResponseWriter, r *http.Request, req c
 	}
 	// The body named neither caller, or both — and, were a third ever added to claim without
 	// this route, one this route cannot act on, which is the same answer.
-	writeJSON(w, http.StatusBadRequest, errorBody("a turn outcome names its caller with claimToken, sessionId and secret, or with bootToken; give one"))
+	s.refuse(w, r, http.StatusBadRequest, "a turn outcome names its caller with claimToken, sessionId and secret, or with bootToken; give one")
 	return "", nil, false
 }
 
@@ -307,18 +308,18 @@ func (s *server) turnOutcomeByBootToken(w http.ResponseWriter, r *http.Request, 
 	launch, known, err := s.bootTokens.Resolve(r.Context(), caller.BootToken)
 	if err != nil {
 		s.log.Error("api: resolve a turn outcome's boot token", "error", err)
-		writeJSON(w, http.StatusInternalServerError, errorBody("turn outcome failed: the daemon could not resolve the boot token"))
+		s.refuse(w, r, http.StatusInternalServerError, "turn outcome failed: the daemon could not resolve the boot token")
 		return "", nil, false
 	}
 	m, supervised := s.supervisor.Machine(launch.Claim)
 	if !known || launch.Stale || !supervised {
-		writeJSON(w, claim.InvalidBootToken.Status, claim.InvalidBootToken)
+		s.writeAnswer(w, r, AnswerRefusal, claim.InvalidBootToken.Status, claim.InvalidBootToken)
 		return "", nil, false
 	}
 	if generation != launch.Generation {
 		s.log.Warn("api: refused a turn outcome reported for another generation", "claim", launch.Claim,
 			"launch", launch.Generation, "reported", generation)
-		writeJSON(w, claim.StaleGeneration.Status, claim.StaleGeneration)
+		s.writeAnswer(w, r, AnswerRefusal, claim.StaleGeneration.Status, claim.StaleGeneration)
 		return "", nil, false
 	}
 	return launch.Claim, m, true
@@ -327,14 +328,14 @@ func (s *server) turnOutcomeByBootToken(w http.ResponseWriter, r *http.Request, 
 // turnOutcomeBySecret is the claim the body names, authenticated by the secret its registration
 // was issued, as the ready and the exit are.
 func (s *server) turnOutcomeBySecret(w http.ResponseWriter, r *http.Request, caller claim.AgentCaller) (claim.Token, *supervise.Machine, bool) {
-	if !requireFields(w,
+	if !s.requireFields(w, r,
 		field{"claimToken", string(caller.ClaimToken)}, field{"sessionId", caller.SessionID}, field{"secret", caller.Secret},
 	) {
 		return "", nil, false
 	}
 	m, _, ok := s.authenticated(caller.ClaimToken, caller.Secret)
 	if !ok {
-		writeJSON(w, claim.InvalidSecret.Status, claim.InvalidSecret)
+		s.writeAnswer(w, r, AnswerRefusal, claim.InvalidSecret.Status, claim.InvalidSecret)
 		return "", nil, false
 	}
 	if s.refuseIfStaleClaim(w, r, m.Claim()) {
@@ -361,36 +362,36 @@ func (s *server) turnOutcomeBySecret(w http.ResponseWriter, r *http.Request, cal
 // never released, so nothing lost here costs anything but a release.
 func (s *server) activity(w http.ResponseWriter, r *http.Request) {
 	var req claim.ActivityRequest
-	if !s.readBody(w, r, &req, s.claimSecretCheck) || !requireFields(w,
+	if !s.readBody(w, r, &req, s.claimSecretCheck) || !s.requireFields(w, r,
 		field{"claimToken", string(req.ClaimToken)}, field{"sessionId", req.SessionID}, field{"secret", req.Secret},
 	) {
 		return
 	}
 	if req.Activity.At.IsZero() {
-		writeJSON(w, http.StatusBadRequest, errorBody("activity.at is required"))
+		s.refuse(w, r, http.StatusBadRequest, "activity.at is required")
 		return
 	}
 	m, held, ok := s.authenticated(req.ClaimToken, req.Secret)
 	if !ok {
-		writeJSON(w, claim.InvalidSecret.Status, claim.InvalidSecret)
+		s.writeAnswer(w, r, AnswerRefusal, claim.InvalidSecret.Status, claim.InvalidSecret)
 		return
 	}
 	if s.refuseIfStaleClaim(w, r, m.Claim()) {
 		return
 	}
 	if s.claimActivity == nil {
-		writeJSON(w, http.StatusInternalServerError, errorBody("the daemon has no store to record session activity in"))
+		s.refuse(w, r, http.StatusInternalServerError, "the daemon has no store to record session activity in")
 		return
 	}
 	known, err := s.claimActivity.PutClaimActivity(r.Context(), req.ClaimToken, held.Generation, req.Activity)
 	if err != nil {
 		s.logRequestFailure(r, err, "api: a session's activity report was not recorded", "claim", req.ClaimToken,
 			"session", req.SessionID)
-		writeJSON(w, http.StatusInternalServerError, errorBody("record session activity: "+err.Error()))
+		s.refuse(w, r, http.StatusInternalServerError, "record session activity: "+err.Error())
 		return
 	}
 	if !known {
-		writeJSON(w, claim.InvalidSecret.Status, claim.InvalidSecret)
+		s.writeAnswer(w, r, AnswerRefusal, claim.InvalidSecret.Status, claim.InvalidSecret)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -475,7 +476,7 @@ type ReleaseRecordsResponse struct {
 // a window, and the whole table is not an answer.
 func (s *server) releaseRecords(w http.ResponseWriter, r *http.Request) {
 	var req ReleaseRecordsRequest
-	if !s.readBody(w, r, &req, s.claimSecretCheck) || !requireFields(w,
+	if !s.readBody(w, r, &req, s.claimSecretCheck) || !s.requireFields(w, r,
 		field{"claimToken", string(req.ClaimToken)}, field{"secret", req.Secret}, field{"since", req.Since},
 	) {
 		return
@@ -483,28 +484,28 @@ func (s *server) releaseRecords(w http.ResponseWriter, r *http.Request) {
 	token := req.ClaimToken
 	from, err := time.Parse(time.RFC3339, req.Since)
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, errorBody("since must be an RFC 3339 time: "+err.Error()))
+		s.refuse(w, r, http.StatusBadRequest, "since must be an RFC 3339 time: "+err.Error())
 		return
 	}
 	m, _, ok := s.authenticated(token, req.Secret)
 	if !ok {
-		writeJSON(w, claim.InvalidSecret.Status, claim.InvalidSecret)
+		s.writeAnswer(w, r, AnswerRefusal, claim.InvalidSecret.Status, claim.InvalidSecret)
 		return
 	}
 	if s.refuseIfStaleClaim(w, r, m.Claim()) {
 		return
 	}
 	if s.releaseRecordStore == nil {
-		writeJSON(w, http.StatusInternalServerError, errorBody("the daemon keeps no release records"))
+		s.refuse(w, r, http.StatusInternalServerError, "the daemon keeps no release records")
 		return
 	}
 	records, err := s.releaseRecordStore.PodReleaseRecords(r.Context(), s.project, from.UTC())
 	if err != nil {
 		s.logRequestFailure(r, err, "api: the release records could not be read", "claim", token)
-		writeJSON(w, http.StatusInternalServerError, errorBody("read the release records: "+err.Error()))
+		s.refuse(w, r, http.StatusInternalServerError, "read the release records: "+err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, releaseRecordsBody(records))
+	s.writeAnswer(w, r, AnswerReleaseRecords, http.StatusOK, releaseRecordsBody(records))
 }
 
 // releaseRecordsBody is store.PodReleaseRecords on the wire: every time as RFC 3339 in UTC, an
@@ -564,20 +565,20 @@ func (s *server) authenticated(token claim.Token, secret string) (*supervise.Mac
 // status and sentence (the plugin exits on the registration's 403 or 409), a request the claim's
 // state does not allow with 409 and the machine's reason, and anything else — the store refusing
 // a write — with a 500 that says what failed and nothing the caller could use.
-func (s *server) claimFailure(w http.ResponseWriter, request string, token claim.Token, err error) {
+func (s *server) claimFailure(w http.ResponseWriter, r *http.Request, request string, token claim.Token, err error) {
 	var refusal claim.Refusal
 	if errors.As(err, &refusal) {
 		s.log.Info("api: refused a claim request", "request", request, "claim", token, "reason", err)
-		writeJSON(w, refusal.Status, refusal)
+		s.writeAnswer(w, r, AnswerRefusal, refusal.Status, refusal)
 		return
 	}
 	var refused *supervise.RefusedError
 	if errors.As(err, &refused) {
-		writeJSON(w, http.StatusConflict, errorBody(refused.Error()))
+		s.refuse(w, r, http.StatusConflict, refused.Error())
 		return
 	}
 	s.logFailure("api: a claim request failed", "request", request, "claim", token, "error", err)
-	writeJSON(w, http.StatusInternalServerError, errorBody(request+" failed: the daemon could not record it"))
+	s.refuse(w, r, http.StatusInternalServerError, request+" failed: the daemon could not record it")
 }
 
 // capabilityHash is the one hash a registration's secret is stored and compared by.
@@ -592,6 +593,9 @@ func capabilityHash(secret string) []byte {
 // bytes either way. The raw bytes are returned too, so a strict failure can be retried leniently
 // for a route family's identity.
 func decodeJSON(w http.ResponseWriter, r *http.Request, into any, strict bool) ([]byte, error) {
+	if requestDecoded != nil {
+		requestDecoded(r.Pattern, reflect.TypeOf(into).Elem())
+	}
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxRequestBytes))
 	if err != nil {
 		return nil, err
@@ -613,7 +617,7 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, into any, strict bool) (
 // error, never the body itself (it may carry a secret), logged with the route.
 func (s *server) refuseBadBody(w http.ResponseWriter, r *http.Request, err error) {
 	s.log.Warn("api: refused an undecodable request body", "route", r.URL.Path, "error", err)
-	writeJSON(w, http.StatusBadRequest, errorBody("invalid request body: "+err.Error()))
+	s.refuse(w, r, http.StatusBadRequest, "invalid request body: "+err.Error())
 }
 
 // identityCheck is readBody's lenient fallback for a route family that has a caller to name: it
@@ -723,7 +727,7 @@ func (s *server) refuseIfStaleClaim(w http.ResponseWriter, r *http.Request, c su
 	}
 	s.logStaleRefusal(r, "claim", string(c.Token), got)
 	refusal := claim.StalePluginContract(got, DaemonAPIVersion)
-	writeJSON(w, refusal.Status, refusal)
+	s.writeAnswer(w, r, AnswerRefusal, refusal.Status, refusal)
 	return true
 }
 
@@ -735,7 +739,7 @@ func (s *server) refuseIfStaleClaimFailure(w http.ResponseWriter, r *http.Reques
 		return false
 	}
 	s.logStaleRefusal(r, "claim", string(c.Token), got)
-	writeFailure(w, http.StatusConflict, "STALE_PLUGIN_CONTRACT", claim.StalePluginContract(got, DaemonAPIVersion).Message)
+	s.writeFailure(w, r, http.StatusConflict, "STALE_PLUGIN_CONTRACT", claim.StalePluginContract(got, DaemonAPIVersion).Message)
 	return true
 }
 
@@ -761,10 +765,10 @@ type field struct{ name, value string }
 // requireFields refuses the first field that is blank, by its wire name, with the sentence alone:
 // the claim and operator routes' refusal shape (the credential and workflow routes add a code,
 // requireFailureFields).
-func requireFields(w http.ResponseWriter, fields ...field) bool {
+func (s *server) requireFields(w http.ResponseWriter, r *http.Request, fields ...field) bool {
 	for _, f := range fields {
 		if strings.TrimSpace(f.value) == "" {
-			writeJSON(w, http.StatusBadRequest, errorBody(f.name+" is required"))
+			s.refuse(w, r, http.StatusBadRequest, f.name+" is required")
 			return false
 		}
 	}
@@ -773,9 +777,9 @@ func requireFields(w http.ResponseWriter, fields ...field) bool {
 
 // requireGeneration refuses a request whose launch generation is zero, the one count from 1 the
 // claim and operator routes read: a request that names no generation is fenced against nothing.
-func requireGeneration(w http.ResponseWriter, generation uint64) bool {
+func (s *server) requireGeneration(w http.ResponseWriter, r *http.Request, generation uint64) bool {
 	if generation == 0 {
-		writeJSON(w, http.StatusBadRequest, errorBody("generation is required"))
+		s.refuse(w, r, http.StatusBadRequest, "generation is required")
 		return false
 	}
 	return true

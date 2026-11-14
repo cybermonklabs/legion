@@ -1922,7 +1922,7 @@ func staleForTheLane(c supervise.Claim, noPluginInstall func(supervise.Claim) bo
 // whole of it (staleForTheLane): the round term is in there with the other four, so no claim
 // the pass would post is left out of this count and none it passes over is named by it. It is
 // computed here, where the lane's own rule lives, rather than in internal/api, which does not
-// own that rule and which cuts the body to its caller only after it is built (api's stateFor).
+// own that rule and which cuts the body to its caller only after it is built (api's shapeState).
 //
 // A claim in a turn is counted, for the same reason the pass posts it: the lane has it left to
 // refresh, its relaunch is raised at that turn's end (supervise's holdStaleRelaunch, afterTurn),
@@ -2663,15 +2663,13 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 	if err != nil {
 		return api.State{}, nil, err
 	}
-	state, err := projection.Project(ctx, tx, records, s.project, s.gatedSteps, claims, stranded, s.reports(), now)
-	if err != nil {
-		return api.State{}, nil, err
-	}
-	state.StrandedClaims = api.StrandedClaimsOf(stranded)
 	// A wake waits in one of two places, and the state names both as one list (api.WakesWaitingOf):
 	// a launch waits in its claim's machine, in memory alone, since no store holds one and a
 	// restart raises the wave again through its own paths; a paced catch-up waits on its
 	// outbox row, read here in the snapshot every other durable fact of this state is read from.
+	//
+	// The two are read before the projection and handed to it, so the state's `wakesWaiting` and
+	// each claim view's own `wake` are set from one list. Each read is of this one snapshot.
 	paced, err := pacedCatchUps(ctx, tx, records, s.projectToken, s.project, now)
 	if err != nil {
 		return api.State{}, nil, err
@@ -2680,7 +2678,15 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 	if s.wakes != nil {
 		held = s.wakes()
 	}
-	state.WakesWaiting = api.WakesWaitingOf(held, paced)
+	state, err := projection.Project(ctx, projection.Inputs{
+		Tx: tx, Store: records, Project: s.project, Steps: s.gatedSteps,
+		Claims: claims, Stranded: stranded, Reports: s.reports(),
+		Wakes: api.WakesWaitingOf(held, paced), Now: now,
+	})
+	if err != nil {
+		return api.State{}, nil, err
+	}
+	state.StrandedClaims = api.StrandedClaimsOf(stranded)
 	state.ClaimsToRefresh = claimsToRefresh(claims, s.noPluginInstall)
 	state.Daemon = api.DaemonInfo{
 		Project:       s.project,

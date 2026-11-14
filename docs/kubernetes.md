@@ -1947,7 +1947,7 @@ update outbox set payload = payload - 'held' where kind = 'controller_notice' an
 What the strip costs is one line of one wake: the tick that row carries then names the blocked issues alone, which is what the earlier release's controller reads anyway, and the next tick of the daemon that runs is whole again.
 
 Nothing else of this release needs a rollback step.
-The state's own key, `admission.held`, is served by the new daemon alone: no row holds it, no pod reads it from a queue, and the route already strips it for a caller whose plugin is below the contract that added it (`api.stateFor`, `withoutHeld`).
+The state's own key, `admission.held`, is served by the new daemon alone: no row holds it, no pod reads it from a queue, and the route already strips it for a caller whose plugin is below the contract that added it (`api.shapeState`, `withoutHeld`).
 This change writes no column and runs no migration, so no dump and no `alter table` belong here.
 
 #### Rolling back the release that frees the slot past review
@@ -2425,6 +2425,14 @@ Every other undecodable request body is logged `api: refused an undecodable requ
 A relaunched process that registers still on the old contract is charged as a launch failure (the claim remembers `PluginRelaunchFor`), ending, like any other exhausted budget, in a `worker-died`.
 The contract shows on every claim view — `GET /legion/v1/state`, `legion state --json`, `read_record`'s `pluginContract` field
 — on `legion claims list`'s line, whose last three columns are the claim's `updateRound`, the `updateHead` its worker reported (`-` for neither) and the tool call its agent is in (`-` for none), and on the state's controller locator.
+A role reads its own two numbers with the `legion` tool's `read_build`, which every claim session has, the controller's among them (`packages/pi-shared/src/legion-phase-ops.ts`).
+It answers the package name and version of the plugin module the process loaded, the daemon API contract that build speaks, and the contract the daemon states on its answer to `GET /healthz`.
+That contract is null in three cases: the daemon refused the health route, no answer reached this process at all, or the daemon stated no contract.
+A note of its own says which, so a role asked which build it runs is answered while the daemon is down.
+The two numbers can differ, and the answer shows both.
+A role reporting which plugin build it runs reports what that call answers, never the version at the plugin's path on the image (`/opt/legion/pi-legion`): a relaunch installs the plugin pair fresh under the role's state home and loads it with `--extension`, so the path on the image reads an older version on every pod made from an older image.
+`read_build` reads no project state.
+
 `legion claims list` also prints one line of its own under the claims, what the daemon's last pod-update sweep decided about the project's two limits on opening rounds ("The disk dies with its pod" below, `podUpdateRoundsLine` in `packages/daemon/cmd/legion/claims.go`):
 `pod update rounds: max open 2, 1 a minute; in a round: 2 — INFRA-10, INFRA-1000; waiting on the open-round limit: 25 — <keys>; waiting on the limit a minute: none`, with `no limit` in place of a limit the file does not set, at most 20 keys of a list and then `and <n> more`, and `pod update rounds: the daemon has not swept yet` before the first sweep.
 It is that sweep's own word, written whole when the sweep decided it, and it is printed whenever the command prints at all, over no claims as over many:
@@ -6170,7 +6178,7 @@ A `legion claims stop` of the controller under `controller: daemon` releases it 
 A daemon built before LEGION-592 cannot run against a database a `controller: daemon` daemon used:
 it lists the controller's claim as an issue keyed `""`, which every agent's plugin refuses.
 Nothing deletes a claim row, and a switch back only retires this one, while that release lists every claim of its project whatever its state or role.
-With the row present, every agent's `read_record` fails, and the operator's controller cannot claim, since it reads the state before it registers.
+With the row present, every agent's `read_record` fails, and the operator's controller cannot claim, since its boot check reads the project from `GET /healthz` before it registers and that release answers that route without a `project` (`packages/pi-legion/src/controller-session.ts`).
 So the fallback from `controller: daemon` is `controller: operator` on this release, never the previous image.
 A revert that cannot be avoided goes in this order:
 

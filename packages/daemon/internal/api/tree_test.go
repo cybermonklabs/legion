@@ -50,7 +50,7 @@ func treesServed(t *testing.T, body []byte) (roots []string, carried bool, issue
 // at this contract, a pod whose claims record no contract at all, and a caller the daemon cannot
 // place in a pod — the operator's `legion state`, which names the live trees — are served both
 // keys. A pod whose claims cannot be read is no case here: the claims are the state's own
-// snapshot (stateFor), so a read that fails refuses the whole request before this is asked.
+// snapshot (shapeState), so a read that fails refuses the whole request before this is asked.
 func TestTheStateRouteServesAPodItsPluginContractsTrees(t *testing.T) {
 	full := stateFrom(t, populatedState(t), "192.0.2.1:41000", podClaims(treeContract-1))
 	wantRoots, wantCarried, wantIssues := treesServed(t, full)

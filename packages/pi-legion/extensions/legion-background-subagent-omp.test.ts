@@ -411,14 +411,21 @@ async function startRolePane(): Promise<RolePane> {
         expiresAt: "2099-01-01T00:00:00Z",
       });
     }
-    if (url.pathname === "/legion/v1/state") return Response.json(MOVED_ON);
+    // The reminder's record check reads one issue's record (dispatch://INFRA-2694).
+    if (url.pathname === `/legion/v1/issues/${ISSUE}/record`) {
+      return Response.json(MOVED_ON.issues[ISSUE]);
+    }
     if (url.pathname.startsWith("/legion/")) {
       return Response.json({ error: `no stand-in route ${url.pathname}` }, { status: 404 });
     }
-    // The Envoy listener: registration, the role claim, and any read answer with an interest. A
-    // registration is answered a consumer on the session's own relay subject, the one path a
-    // message reaches a session by (INFRA-771); an answer without one leaves the pane deaf and
-    // its claim boot fails.
+    // The Envoy listener, which serves `/v1/` and nothing else: registration, the role claim, and
+    // any other `/v1/` read answer with an interest. A path outside it is a route this stand-in
+    // does not serve, and it is refused. A registration is answered a consumer on the session's
+    // own relay subject, the one path a message reaches a session by (INFRA-771); an answer
+    // without one leaves the pane deaf and its claim boot fails.
+    if (!url.pathname.startsWith("/v1/")) {
+      return Response.json({ error: `no stand-in route ${url.pathname}` }, { status: 404 });
+    }
     return Response.json({
       session_id: typeof body.session_id === "string" ? body.session_id : "",
       machine_id: "bgsub-machine",

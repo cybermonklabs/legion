@@ -1,11 +1,12 @@
 import { expect, test } from "bun:test";
-import type { LegionState } from "@legion/contracts/legion-api";
+import type { LegionIssue } from "@legion/contracts/legion-api";
 import {
   createEnvoyClient,
   EnvoyApiError,
   type PublishInput,
   type PublishResult,
 } from "@legion/envoy-client/transport";
+import { createLegionDaemonClient } from "./daemon-client";
 import { createPhaseReminder, type PhaseReminder } from "./phase-reminder";
 import { type PhaseStallEntry, REMINDER } from "./phase-stall";
 import { DEFAULT_STALL_LIMITS } from "./stall-limits";
@@ -23,31 +24,27 @@ const implementer = {
 /** A turn the worker ended by saying `text`, as `turnEndOf` classifies it on Oh My Pi. */
 const said = (text: string) => ({ kind: "settle", lastAssistantText: text }) as const;
 
-/** The daemon's state with this role's claim failed, which is its word that the session is
- * finished. Only the two fields the record check reads, cast because the state's own schema would
- * demand the whole daemon document for them; `rig` below reads its empty state the same way. */
+/** This role's own issue record with its claim failed, which is the daemon's word that the
+ * session is finished. Only the two fields the record check reads, cast because the record's own
+ * schema would demand the whole issue document for them; `rig` below answers no record at all. */
 const claimFailed = {
-  issues: {
-    "LEGION-208": {
-      phase: "implementing",
-      workers: { implementer: { claim: { state: "failed" } } },
-    },
-  },
-} as unknown as LegionState;
+  phase: "implementing",
+  workers: { implementer: { claim: { state: "failed" } } },
+} as unknown as LegionIssue;
 
 // A daemon that never answers the record check: the check fails open once its bound passes, and
 // the read it started is aborted then rather than left open, one request per reminder.
 test("the record check aborts a daemon read that outlives its bound, and reminds all the same", async () => {
-  const handed: AbortSignal[] = [];
+  const handed: { readonly issue: string; readonly signal: AbortSignal }[] = [];
   const debugged: string[] = [];
   const reminder = createPhaseReminder({
     sendReminder: () => {},
     armTimer: () => {},
     saveEntry: () => {},
     claim: () => implementer,
-    readState: (signal) => {
-      handed.push(signal);
-      return new Promise<LegionState>(() => {});
+    readRecord: (issue, signal) => {
+      handed.push({ issue, signal });
+      return new Promise<LegionIssue | undefined>(() => {});
     },
     publisher: () => undefined,
     project: "LEGION",
@@ -61,9 +58,65 @@ test("the record check aborts a daemon read that outlives its bound, and reminds
 
   expect(continuation).toBeString();
   expect(handed).toHaveLength(1);
-  expect(handed[0]?.aborted).toBe(true);
-  expect((handed[0]?.reason as Error).message).toBe("no answer within 20ms");
+  expect(handed[0]?.issue).toBe("LEGION-208");
+  expect(handed[0]?.signal.aborted).toBe(true);
+  expect((handed[0]?.signal.reason as Error).message).toBe("no answer within 20ms");
   expect(debugged).toEqual(["legion: the daemon did not answer the phase reminder's record check"]);
+});
+
+/** A reminder over a real daemon client whose fetch is `answer`, recording every route the
+ * check asks for and every line it logs at debug. */
+function overDaemon(answer: typeof fetch) {
+  const routes: string[] = [];
+  const debugged: string[] = [];
+  const recording = (async (input, init) => {
+    routes.push(new URL(input.toString()).pathname);
+    return answer(input, init);
+  }) as typeof fetch;
+  const daemon = createLegionDaemonClient("http://daemon.test", {
+    pluginContract: 60,
+    fetch: recording,
+  });
+  const reminder = createPhaseReminder({
+    sendReminder: () => {},
+    armTimer: () => {},
+    saveEntry: () => {},
+    claim: () => implementer,
+    readRecord: (issue, signal) => daemon.record(issue, { signal }),
+    publisher: () => undefined,
+    project: "LEGION",
+    limits: DEFAULT_STALL_LIMITS,
+    log: { debug: (message) => debugged.push(message), warn: () => {} },
+  });
+  reminder.apply({ kind: "assignment" });
+  return { reminder, routes, debugged };
+}
+
+// The check keeps its two branches apart: the route's own 404 for an issue the daemon records
+// nothing of is the absent record, and everything else is a read that failed. It asks for its
+// own issue's record and never for the whole project.
+test("the record check reads one record: the route's 404 is the absent record, a transport failure the read that failed", async () => {
+  const absent = overDaemon((async (_input, _init) =>
+    Response.json(
+      { code: "RECORD_NOT_FOUND", error: "The daemon has no record for LEGION-208" },
+      { status: 404 }
+    )) as typeof fetch);
+
+  expect(await absent.reminder.settle(said("Pushed."))).toBeString();
+  expect(absent.routes).toEqual(["/legion/v1/issues/LEGION-208/record"]);
+  expect(absent.debugged).toEqual([
+    "legion: the daemon holds no record for this phase reminder's issue",
+  ]);
+
+  const failed = overDaemon((async (_input, _init): Promise<Response> => {
+    throw new TypeError("fetch failed");
+  }) as typeof fetch);
+
+  expect(await failed.reminder.settle(said("Pushed."))).toBeString();
+  expect(failed.routes).toEqual(["/legion/v1/issues/LEGION-208/record"]);
+  expect(failed.debugged).toEqual([
+    "legion: the daemon did not answer the phase reminder's record check",
+  ]);
 });
 
 interface ArmedTimer {
@@ -87,7 +140,7 @@ interface Rig {
 function rig(options: {
   readonly sendReminder?: (reminder: string) => void | Promise<void>;
   readonly publish?: (input: PublishInput) => Promise<Pick<PublishResult, "kept">>;
-  readonly state?: LegionState;
+  readonly record?: LegionIssue;
 }): Rig {
   const timers: ArmedTimer[] = [];
   const sent: string[] = [];
@@ -104,7 +157,7 @@ function rig(options: {
     },
     saveEntry: (entry) => entries.push(entry),
     claim: () => implementer,
-    readState: async () => options.state ?? ({ issues: {} } as unknown as LegionState),
+    readRecord: async () => options.record,
     publisher: () => async (input) => {
       published.push(input);
       return options.publish === undefined ? {} : options.publish(input);
@@ -392,7 +445,7 @@ test("a refused turn below the limit reminds once, after the delay and not befor
 // The timer the last refused turn armed still fires, and its record check drops the reminder, so
 // nothing is written into a session nobody can act on.
 test("a refused turn at the limit, whose claim the daemon failed, reminds nothing", async () => {
-  const { reminder, timers, sent } = rig({ state: claimFailed });
+  const { reminder, timers, sent } = rig({ record: claimFailed });
 
   expect(
     await reminder.settle({ kind: "refused", message: "Refusal (reasoning_extraction)" })
@@ -420,7 +473,7 @@ test("no reminder is sent once the daemon has failed this role's claim", async (
     },
     saveEntry: () => {},
     claim: () => implementer,
-    readState: async () => claimFailed,
+    readRecord: async () => claimFailed,
     publisher: () => undefined,
     project: "legion",
     limits: DEFAULT_STALL_LIMITS,

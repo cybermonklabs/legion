@@ -1001,10 +1001,15 @@ export async function runLegionPane(
     if (url.pathname.startsWith("/legion/")) {
       return Response.json({ error: `no stand-in route ${url.pathname}` }, { status: 404 });
     }
-    // The Envoy listener: registration, the role claim, and any read answer with an interest.
-    // A session takes its messages from its own consumer, relayed on its own deliver subject: a
-    // registration answered without one leaves the session deaf, which the plugin refuses rather
-    // than accept, and with it every claim the pane makes (INFRA-771).
+    // The Envoy listener, which serves `/v1/` and nothing else: registration, the role claim, and
+    // any other `/v1/` read answer with an interest. A path outside it is a route this stand-in
+    // does not serve, and it is refused. A case that needs another route, Dispatch's among them,
+    // serves it from `answer`. A session takes its messages from its own consumer, relayed on its
+    // own deliver subject: a registration answered without one leaves the session deaf, which the
+    // plugin refuses rather than accept, and with it every claim the pane makes (INFRA-771).
+    if (!url.pathname.startsWith("/v1/")) {
+      return Response.json({ error: `no stand-in route ${url.pathname}` }, { status: 404 });
+    }
     const sessionID = typeof body.session_id === "string" ? body.session_id : "";
     return Response.json({
       session_id: sessionID,

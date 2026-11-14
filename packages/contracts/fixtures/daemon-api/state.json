@@ -7,8 +7,8 @@
     "startedAt": "2026-09-22T09:15:02Z"
   },
   "contract": {
-    "daemon": 123,
-    "caller": 123
+    "daemon": 127,
+    "caller": 127
   },
   "admission": {
     "cap": 3,
@@ -72,7 +72,12 @@
           "claim": {
             "session": "ses_implementer_207",
             "state": "working",
-            "pluginContract": 0
+            "pluginContract": 0,
+            "updateState": "none",
+            "wake": {
+              "kind": "plugin-refresh",
+              "dueAt": "2026-09-22T09:17:56Z"
+            }
           },
           "handoffCommit": "7d1e4f2a9c3b5e8d0a6f2c4b8e1d3a5f7c9b2e40",
           "pass": 1,
@@ -133,6 +138,12 @@
           }
         },
         "pluginContract": 0,
+        "updateState": "none",
+        "lastTurnStart": "2026-09-22T09:16:40Z",
+        "lastTurnEnd": "2026-09-22T09:16:58Z",
+        "lastDeathCause": "the pane's process was gone at the daemon's read",
+        "lastStartFailure": "the pod was not ready within the worker boot timeout",
+        "lastReady": "2026-09-22T09:15:44Z",
         "step": {
           "at": "2026-09-22T09:16:58Z",
           "turnStartedAt": "2026-09-22T09:16:40Z",
@@ -142,6 +153,10 @@
           "argsHash": "3f7c1a9d62b40e58",
           "startedAt": "2026-09-22T09:16:55Z",
           "endedAt": "2026-09-22T09:16:58Z"
+        },
+        "wake": {
+          "kind": "catch-up",
+          "dueAt": "2026-09-22T09:18:03Z"
         }
       },
       "workers": {
@@ -179,6 +194,7 @@
             "pluginContract": 0,
             "updateRound": "pod:7f0c2f9a-6a4b-4f2e-9a1c-2f0d5a3b7e11",
             "updateReasons": "the pod template changed: image ghcr.io/cybermonklabs/legion-worker moved",
+            "updateState": "asked",
             "providerErrorRun": 2,
             "pendingTask": {
               "phase": "implementing",
@@ -220,7 +236,12 @@
             "pluginContract": 0,
             "updateRound": "pod:7f0c2f9a-6a4b-4f2e-9a1c-2f0d5a3b7e11",
             "updateHead": "4c1b8e2a6f9d3047b5e1c8a2f6d940b3e7c5a128",
-            "updateReasons": "the pod template changed: image ghcr.io/cybermonklabs/legion-worker moved"
+            "updateReasons": "the pod template changed: image ghcr.io/cybermonklabs/legion-worker moved",
+            "updateState": "answered",
+            "wake": {
+              "kind": "launch",
+              "dueAt": "2026-09-22T09:18:11Z"
+            }
           },
           "handoffRecord": {
             "id": "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b",
@@ -235,6 +256,7 @@
         "number": 1247,
         "head": "5b3d9e2c8f1a47d06b2e5c9f3a8d1e4b7c0f6a29",
         "state": "open",
+        "mergeState": "blocked",
         "reviewDecision": "changes_requested"
       },
       "designGate": {
@@ -295,6 +317,7 @@
             "session": "ses_implementer_210",
             "state": "failed",
             "pluginContract": 0,
+            "updateState": "none",
             "failure": {
               "cause": "died",
               "detail": "launch failures ran out",
@@ -345,6 +368,7 @@
             "session": "ses_implementer_211",
             "state": "suspended",
             "pluginContract": 0,
+            "updateState": "none",
             "pendingTask": {
               "phase": "implementing",
               "queuedAt": "2026-09-22T08:54:20Z",
@@ -896,5 +920,6 @@
       "stalled": false,
       "unavailable": "read the consumer's info: context deadline exceeded"
     }
-  ]
+  ],
+  "lowestPluginContract": 46
 }

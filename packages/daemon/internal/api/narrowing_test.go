@@ -4,21 +4,25 @@ import (
 	"bytes"
 	"encoding/json"
 	"log/slog"
+	"slices"
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
 // narrowingLine is one line the daemon wrote for a narrowing of one state request, as its own
-// log holds it: the caller, the contract that caller's pod records, the contract the daemon
-// declares and what that narrowing dropped (server's stateFor).
+// log holds it: the caller, the contract that narrowing followed, the contract the daemon
+// declares, the clause a value strip's line carries and a band's does not, and what that
+// narrowing dropped (shaping's recordShaping).
 type narrowingLine struct {
 	Message        string `json:"msg"`
 	Caller         string `json:"caller"`
 	Pod            string `json:"pod"`
 	PluginContract int    `json:"pluginContract"`
 	DaemonContract int    `json:"daemonApiVersion"`
+	Follows        string `json:"follows"`
 	Dropped        string `json:"dropped"`
 }
 
@@ -69,17 +73,31 @@ func contractServed(t *testing.T, body []byte) (mark map[string]any, carried boo
 	return mark, true
 }
 
-// narrowingsExpected is what the daemon's log holds for a caller at contract, in the order
-// stateFor applies them: the `dropped` of every row of stateNarrowings that caller stands below.
-// The fixture's state carries something of every row, so each of them writes its line. It is
-// read from the table rather than written out here, so a narrowing added above the contract a
-// row below reads is counted by that row rather than failing it.
-func narrowingsExpected(contract int) []string {
+// narrowingsExpected is what the daemon's log holds for a caller whose pod records contract, in
+// the order recordShaping writes the lines: the `dropped` of every row of stateNarrowings the
+// caller's strip stands below, and then the two value strips, which follow its restore. The
+// bands are read from the table rather than written out here, so a narrowing added above the
+// contract a row below reads is counted by that row rather than failing it.
+//
+// The two strips hold no row of that table, so they are read from what the shaping itself
+// reports it took off state (tookOff), the one place their conditions are written. The fixture
+// carries a retired stranded entry and no wait answered by a value younger than the floor, so a
+// caller below 56 is expected one value line and no caller is expected two.
+func narrowingsExpected(state State, contract int) []string {
+	restore, strip := restoreContract(contract), stripContract(contract)
 	var dropped []string
 	for _, narrowing := range stateNarrowings {
-		if contract < narrowing.contract {
+		if strip < narrowing.contract {
 			dropped = append(dropped, narrowing.dropped)
 		}
+	}
+	var took tookOff
+	shapeState(state, restore, strip, &took)
+	if took.retiredStranded {
+		dropped = append(dropped, droppedRetiredStranded)
+	}
+	if took.waitAnswer {
+		dropped = append(dropped, droppedWaitAnswer)
 	}
 	return dropped
 }
@@ -103,7 +121,8 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 	// of that one arm.
 	t.Run("a caller below the contract is told nothing, and the log says what was taken", func(t *testing.T) {
 		const remote = statePodAddr + ":41000"
-		body, narrowings := stateNarrowed(t, populatedState(t), remote, podClaims(recordFieldsContract-1))
+		state := populatedState(t)
+		body, narrowings := stateNarrowed(t, state, remote, podClaims(recordFieldsContract-1))
 
 		if mark, carried := contractServed(t, body); carried {
 			t.Errorf("the body served to a pod below %d carries the mark %v; a key in a narrowed body is what the narrowing exists to prevent",
@@ -116,7 +135,7 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 			}
 		}
 
-		want := narrowingsExpected(recordFieldsContract - 1)
+		want := narrowingsExpected(state, recordFieldsContract-1)
 		if len(narrowings) != len(want) {
 			t.Fatalf("the daemon wrote %d narrowing lines for a caller at %d, want %d, the mark's own and one for each contract above it: %+v",
 				len(narrowings), recordFieldsContract-1, len(want), narrowings)
@@ -153,7 +172,8 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 	// Such a caller is still below every band above it, the tree quiet time among them, so its
 	// issues carry no measure and its request writes one line for each of those bands.
 	t.Run("a caller at the contract carries the two numbers beside the record", func(t *testing.T) {
-		body, narrowings := stateNarrowed(t, populatedState(t), statePodAddr+":41000", podClaims(recordFieldsContract))
+		state := populatedState(t)
+		body, narrowings := stateNarrowed(t, state, statePodAddr+":41000", podClaims(recordFieldsContract))
 
 		mark, carried := contractServed(t, body)
 		if !carried {
@@ -178,7 +198,7 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 		// A caller at this contract stands below the contracts above it and is narrowed by those
 		// alone: the log names every one of them and never the mark's own arm, whose line would
 		// mean the record had been taken out of the body just read.
-		wantLines := narrowingsExpected(recordFieldsContract)
+		wantLines := narrowingsExpected(state, recordFieldsContract)
 		if len(narrowings) != len(wantLines) {
 			t.Fatalf("the daemon wrote %d narrowing lines for a caller at %d, want %d, one for each contract above it: %+v",
 				len(narrowings), recordFieldsContract, len(wantLines), narrowings)
@@ -192,7 +212,8 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 
 	// The operator's own answer, `legion state --json`: the daemon places that caller in no pod,
 	// so it is served the state whole and narrowed by nothing, and the mark names the contract it
-	// was built at and no caller's.
+	// was built at twice: as the daemon's, and as the contract the caller is served (ContractView
+	// says why a caller at the daemon's own contract is told it too).
 	t.Run("the operator's own answer says which contract it was built at", func(t *testing.T) {
 		body, narrowings := stateNarrowed(t, populatedState(t), "192.0.2.1:41000", podClaims(recordFieldsContract-1))
 
@@ -203,44 +224,164 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 		if mark["daemon"] != float64(DaemonAPIVersion) {
 			t.Errorf("the operator's answer was built at %v, want the contract the daemon declares, %d", mark["daemon"], DaemonAPIVersion)
 		}
-		if _, narrowed := mark["caller"]; narrowed || len(mark) != 1 {
-			t.Errorf("the operator's answer carries the mark %v, want the daemon's number alone: nothing narrows that reader", mark)
+		if mark["caller"] != float64(DaemonAPIVersion) || len(mark) != 2 {
+			t.Errorf("the operator's answer carries the mark %v, want the daemon's number as both the daemon's and the caller's: nothing narrows that reader", mark)
 		}
 		if len(narrowings) != 0 {
 			t.Errorf("the daemon narrowed the operator's own answer: %+v", narrowings)
 		}
 	})
 
-	// Every narrowing says what it dropped, not only the mark's own: a caller below every
-	// contract in stateNarrowings is served one line per row of it, each naming its own keys.
-	// One line for all of them, or a line that named the contract and nothing else, would leave
-	// a reader of the log to find out elsewhere what left the body.
-	t.Run("each narrowing names its own keys", func(t *testing.T) {
-		_, narrowings := stateNarrowed(t, populatedState(t), statePodAddr+":41000", podClaims(supervise.PodUpdateContract-1))
+	// The other value strip, read on the fixture that carries what it takes: a pod at 64 is
+	// served the wait of a root a person declined without its answered pair, and one line says
+	// so, naming the pod's lowest contract as the number that strip followed. The report of
+	// claims nothing will wake is empty in this state, so the strip above writes nothing and
+	// this is the one value line of the request.
+	t.Run("a value the caller does not admit is recorded as dropped", func(t *testing.T) {
+		const behind = 64
+		body, narrowings := stateNarrowed(t, stateCarryingTheRestOfTheShape(t), statePodAddr+":41000", podClaims(behind))
 
-		if len(narrowings) != len(stateNarrowings) {
+		if bytes.Contains(body, []byte(`"answeredBy"`)) {
+			t.Errorf("the body served to a pod at %d carries `answeredBy`, the very value that caller does not admit: %s", behind, body)
+		}
+		var written []narrowingLine
+		for _, line := range narrowings {
+			if line.Dropped == droppedWaitAnswer {
+				written = append(written, line)
+			}
+			if line.Dropped == droppedRetiredStranded {
+				t.Errorf("the daemon says it dropped %q from a state whose report of claims nothing will wake is empty", line.Dropped)
+			}
+		}
+		if len(written) != 1 {
+			t.Fatalf("the daemon wrote %d lines for the wait answer it took, want one: %+v", len(written), narrowings)
+		}
+		if written[0].PluginContract != behind || written[0].Follows != followsTheLowest {
+			t.Errorf("the line names contract %d and follows %q, want the pod's lowest %d and %q",
+				written[0].PluginContract, written[0].Follows, behind, followsTheLowest)
+		}
+	})
+
+	// Every narrowing says what it dropped, not only the mark's own: a caller below every row of
+	// stateNarrowings is served one line per row, each naming its own keys, and one more for the
+	// value strip that took the retired entries out of its body. One line for all of them, or a
+	// line that named the contract and nothing else, would leave a reader of the log to find out
+	// elsewhere what left the body.
+	//
+	// The value strip's line names the lowest contract the pod records, which is the floor for
+	// this caller, where a band's line names the highest; the clause under `follows` is what
+	// tells an operator the two numbers of one request apart.
+	t.Run("each narrowing names its own keys", func(t *testing.T) {
+		state := populatedState(t)
+		_, narrowings := stateNarrowed(t, state, statePodAddr+":41000", podClaims(supervise.PodUpdateContract-1))
+
+		want := narrowingsExpected(state, supervise.PodUpdateContract-1)
+		if len(want) != len(stateNarrowings)+1 {
+			t.Fatalf("a caller below every row expects %d lines, want the %d rows and the retired entries' own: %v",
+				len(want), len(stateNarrowings), want)
+		}
+		if len(narrowings) != len(want) {
 			t.Fatalf("the daemon wrote %d narrowing lines for a caller below every contract, want %d: %+v",
-				len(narrowings), len(stateNarrowings), narrowings)
+				len(narrowings), len(want), narrowings)
 		}
 		dropped := map[string]bool{}
 		for i, line := range narrowings {
 			if line.Dropped == "" {
-				t.Errorf("the line for contract %d says nothing of what it dropped", stateNarrowings[i].contract)
+				t.Errorf("line %d says nothing of what it dropped", i)
 			}
 			if dropped[line.Dropped] {
 				t.Errorf("two narrowings report the same keys, %q: each arm names its own", line.Dropped)
 			}
 			dropped[line.Dropped] = true
-			if line.Dropped != stateNarrowings[i].dropped {
-				t.Errorf("the lines are out of the table's order: line %d says %q, want %q",
-					i, line.Dropped, stateNarrowings[i].dropped)
+			if line.Dropped != want[i] {
+				t.Errorf("the lines are out of the order recordShaping writes them: line %d says %q, want %q",
+					i, line.Dropped, want[i])
 			}
+		}
+		if band := narrowings[0]; band.Follows != "" {
+			t.Errorf("a band's line says it follows %q, want no such clause: a band follows the pod's highest contract and says so by saying nothing",
+				band.Follows)
+		}
+		value := narrowings[len(narrowings)-1]
+		if value.PluginContract != ServingFloor || value.Follows != followsTheLowest {
+			t.Errorf("the value strip's line names contract %d and follows %q, want the pod's lowest %d and %q",
+				value.PluginContract, value.Follows, ServingFloor, followsTheLowest)
 		}
 	})
 }
 
+// A band logs a drop only of a key the body carried on the wire. narrowingsExpected reads a
+// fully populated state, where every band has a key to take, so this case reads the other end:
+// a state with one issue that carries no optional field, served to a caller below every band.
+// The issue holds an empty `gatedSteps`, which a root of a deployment that gates no step carries
+// (GatedStepViewsOf), and an empty `ancestry`. `omitempty` keeps each empty list off the wire as
+// it keeps a nil list. The issue has no worker and no check, so no `pass` and no `role` is on the
+// wire either, and no band of an issue may log a drop.
+//
+// What each band takes from the wire is measured here and not listed: the band's halves are
+// applied to the body the bands start from, and the two bodies are marshalled and compared. A
+// band that changes no byte has taken no key, and the log must say nothing of it. Today the
+// bands of the body's own keys do change the bytes, because every state carries
+// `admission.trees`, `wakesWaiting`, `claimsToRefresh`, the mark, `admission.held`,
+// `lowestPluginContract` for these claims and `settings.pod_update_grace_minutes`.
+func TestAnEmptyStateLogsNoDropOfAKeyItNeverCarried(t *testing.T) {
+	const below = supervise.PodUpdateContract - 1
+	claims := podClaims(below)
+	state := State{Issues: map[string]Issue{"LEGION-300": {
+		Key:        "LEGION-300",
+		Workers:    map[claim.Role]PhaseView{},
+		GatedSteps: []GatedStepView{},
+		Ancestry:   []string{},
+	}}}
+	_, narrowings := stateNarrowed(t, state, statePodAddr+":41000", claims)
+
+	// The body the bands start from: the state as the route answers it, with the fleet's lowest
+	// contract it writes (projectState) and the mark shapeState writes before any band runs.
+	served := state
+	served.LowestPluginContract = lowestPluginContract(claims)
+	served.Contract = &ContractView{Daemon: DaemonAPIVersion, Caller: stripContract(below)}
+	marshalled := func(body State) []byte {
+		t.Helper()
+		encoded, err := json.Marshal(body)
+		if err != nil {
+			t.Fatalf("marshal the state: %v", err)
+		}
+		return encoded
+	}
+	before := marshalled(served)
+	var want []string
+	for _, narrowing := range stateNarrowings {
+		narrowed := served
+		if narrowing.state != nil {
+			narrowed, _ = narrowing.state(narrowed)
+		}
+		if narrowing.issue != nil {
+			issues := make(map[string]Issue, len(narrowed.Issues))
+			for key, issue := range narrowed.Issues {
+				issues[key], _ = narrowing.issue(issue)
+			}
+			narrowed.Issues = issues
+		}
+		if !bytes.Equal(before, marshalled(narrowed)) {
+			want = append(want, narrowing.dropped)
+		}
+	}
+	got := make([]string, 0, len(narrowings))
+	for _, line := range narrowings {
+		got = append(got, line.Dropped)
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("the daemon logged the drops %q for the empty state, want only the bands that changed the wire, %q", got, want)
+	}
+	for _, narrowing := range stateNarrowings {
+		if narrowing.state == nil && slices.Contains(got, narrowing.dropped) {
+			t.Errorf("the daemon logged %q for an issue that carries none of those keys", narrowing.dropped)
+		}
+	}
+}
+
 // recordFieldsContract is never above this daemon's declared contract. A caller is served the
-// nine keys only where its pod records that number or more (podContract), so a constant above
+// nine keys only where its pod records that number or more (podContracts), so a constant above
 // DaemonAPIVersion is a contract no caller could ever reach and nine keys nothing serves, with
 // every row above this one still green. version.go tells the next author to consider renumbering
 // DaemonAPIVersion at each merge, and this is what makes a renumber that leaves this constant

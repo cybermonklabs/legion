@@ -824,6 +824,9 @@ jobs:
               # test directory, and tsc puts four of its files in this job's program.
               - 'packages/envoy-client/test/**'
               - 'packages/pi-shared/src/**'
+              # tests/legion-tool.test.ts:8 imports the image-manifest mock both read_build cases
+              # share.
+              - 'packages/pi-shared/test/image-manifest.ts'
               # tests/ import @legion/test-fixtures.
               - 'packages/test-fixtures/src/**'
               # scripts/build.ts:115-128 generates legion/ from pi-legion's agents and the skills
@@ -1102,8 +1105,14 @@ jobs:
               - 'packages/contracts/src/**'
               # src/*.test.ts and test/*.ts import @legion/test-fixtures.
               - 'packages/test-fixtures/src/**'
-              # src/daemon-client.test.ts:15 and its neighbours read the daemon API fixtures.
+              # src/daemon-client.test.ts:22 and its neighbours read the daemon API fixtures.
               - 'packages/contracts/fixtures/daemon-api/**'
+              # src/daemon-client.test.ts:1214-1219,1365-1376 walks every .ts of these three
+              # directories that is no test, so that the fields LEGION_ANSWER_READS declares read
+              # are the fields the two plugins take the value of.
+              - 'packages/pi-legion/src/**'
+              - 'packages/pi-legion/extensions/**'
+              - 'packages/claude-envoy/src/**'
               # test/skills-partition.test.ts stages each plugin's skills with the prepack script
               # and holds the two lists to a partition of skills/, to the daemon's prompts (:57-63)
               # and to release.yaml's skill lists (:79).

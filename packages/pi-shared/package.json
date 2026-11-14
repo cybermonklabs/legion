@@ -129,6 +129,10 @@
       "types": "./test/host-registry.ts",
       "bun": "./test/host-registry.ts"
     },
+    "./test/image-manifest": {
+      "types": "./test/image-manifest.ts",
+      "bun": "./test/image-manifest.ts"
+    },
     "./test/omp-harness": {
       "types": "./test/omp-harness.ts",
       "bun": "./test/omp-harness.ts"

@@ -187,7 +187,7 @@ func TestEveryEntryOfTheHeldSentenceTableIsServedThroughTheWholePass(t *testing.
 					t.Fatalf("a fixture walks %s under %s, which heldSentences does not serve", word, state)
 				}
 				key := fixture.row.Issue
-				projected, err := Project(context.Background(), nil, fixture.store, "LEGION", nil, nil, nil, nil, projectedAt)
+				projected, err := Project(context.Background(), Inputs{Store: fixture.store, Project: "LEGION", Now: projectedAt})
 				if err != nil {
 					t.Fatalf("Project: %v", err)
 				}
@@ -312,7 +312,7 @@ func TestABlockedChildInACycleReadsTheCycleWhateverItsHeldWord(t *testing.T) {
 func blockedWhy(t *testing.T, store projectionStore, wantRow api.HeldIssue, wantBlocked []string, want api.WhyView) {
 	t.Helper()
 	key := wantRow.Issue
-	state, err := Project(context.Background(), nil, store, "LEGION", nil, nil, nil, nil, projectedAt)
+	state, err := Project(context.Background(), Inputs{Store: store, Project: "LEGION", Now: projectedAt})
 	if err != nil {
 		t.Fatalf("Project: %v", err)
 	}

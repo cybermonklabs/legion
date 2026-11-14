@@ -214,7 +214,7 @@ func TestAFreshSessionRefusedWhileTheRelaunchWaitsItsTurnSaysTheClaimIsUnsettled
 				h := compactHarness(t, nil)
 				token := workingUnderAParkedRelaunch(t, h, cause.observation)
 
-				recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer)
+				recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer, nil)
 
 				wantFreshSessionRefusal(t, recorder, http.StatusConflict, claimUnsettled,
 					parkedRelaunchRefusal(token, wantFreshSessionReaches))
@@ -301,7 +301,7 @@ func TestARecoveryRefusedWhileTheStalePluginRefreshWaitsItsTurnNamesTheLaunchInF
 			h := compactHarness(t, nil)
 			token := workingUnderAParkedRefresh(t, h)
 
-			recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer)
+			recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer, nil)
 
 			wantFreshSessionRefusal(t, recorder, http.StatusConflict, claimUnsettled,
 				parkedRelaunchRefusal(token, wantFreshSessionReaches))
@@ -594,7 +594,11 @@ type recoveryDoor struct {
 func recoveryDoors() []recoveryDoor {
 	doors := make([]recoveryDoor, 0, 4)
 	for _, door := range freshSessionDoors() {
-		doors = append(doors, recoveryDoor{door.name, door.ask, "a fresh session would cut that turn off", wantFreshSessionReaches})
+		ask := func(t *testing.T, h *harness, issue string, role claim.Role) *httptest.ResponseRecorder {
+			t.Helper()
+			return door.ask(t, h, issue, role, nil)
+		}
+		doors = append(doors, recoveryDoor{door.name, ask, "a fresh session would cut that turn off", wantFreshSessionReaches})
 	}
 	for _, door := range compactDoors() {
 		doors = append(doors, recoveryDoor{door.name, door.ask, "a compaction would abort that turn", wantCompactionReaches})
@@ -623,7 +627,7 @@ func TestAFreshSessionReachesAClaimOverADeadProcess(t *testing.T) {
 					h.runtime.ScriptProbe(verdict.result)
 					reads := processReads(h)
 
-					recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer)
+					recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer, nil)
 
 					if recorder.Code != http.StatusOK {
 						t.Fatalf("the fresh session over the dead process = %d, want the 200 of a claim started again; body %s",
@@ -931,7 +935,7 @@ func TestAFreshSessionThatStoppedTheClaimAndCouldNotStartItSaysNotRestartedInIts
 			h.runtime.ScriptProbe(fake.ProbeResult{Kind: runtime.Gone})
 			reads := processReads(h)
 
-			recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer)
+			recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer, nil)
 
 			if recorder.Code != http.StatusOK {
 				t.Fatalf("the fresh session whose start was refused = %d, want the 200 of a claim that was stopped; body %s",
@@ -963,7 +967,7 @@ func TestAFreshSessionThatStoppedTheClaimAndCouldNotStartItSaysNotRestartedInIts
 			h.runtime.ScriptProbe(fake.ProbeResult{Kind: runtime.Gone})
 			writes.refusing(func(c supervise.Claim) bool { return c.Session == "" })
 
-			recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer)
+			recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer, nil)
 
 			if recorder.Code != http.StatusOK {
 				t.Fatalf("the fresh session whose forget was refused = %d, want the 200 of a claim that was stopped; body %s",
@@ -999,7 +1003,7 @@ func TestAFreshSessionThatStoppedTheClaimAndCouldNotStartItSaysNotRestartedInIts
 			h.runtime.ScriptProbe(fake.ProbeResult{Kind: runtime.Gone})
 			writes.refusing(func(c supervise.Claim) bool { return c.State == supervise.StateLaunching })
 
-			recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer)
+			recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer, nil)
 
 			if recorder.Code != http.StatusOK {
 				t.Fatalf("the fresh session whose launch was not written = %d, want the 200 of a claim that was stopped; body %s",
@@ -1036,7 +1040,7 @@ func TestAFreshSessionThatStoppedTheClaimAndCouldNotStartItSaysNotRestartedInIts
 			h.runtime.ScriptProbe(fake.ProbeResult{Kind: runtime.Alive})
 			reads := processReads(h)
 
-			recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer)
+			recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer, nil)
 
 			wantFreshSessionRefusal(t, recorder, http.StatusConflict, claimInATurn,
 				inATurnRefusal(token, "a fresh session would cut that turn off", wantFreshSessionReaches))
@@ -1619,7 +1623,7 @@ func TestARecoveryRefusedUnderAHeldSuspensionSaysTheClaimStopsWorking(t *testing
 				h := compactHarness(t, nil)
 				token := held.start(t, h)
 
-				recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer)
+				recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer, nil)
 
 				wantFreshSessionRefusal(t, recorder, http.StatusConflict, held.code,
 					heldSuspensionRefusal(token, freshSessionName, "a fresh session", wantFreshSessionLive))

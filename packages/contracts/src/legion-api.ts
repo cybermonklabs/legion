@@ -113,22 +113,28 @@ export type LegionClaimState = (typeof LEGION_CLAIM_STATES)[number];
  */
 const legionLocator = z.discriminatedUnion("runtime", [
   z.object({
+    // The union's discriminator. A body without it matches no member, so `.optional()` here
+    // would state what the parse does not do, and `LEGION_ANSWER_READS` names no discriminator.
     runtime: z.literal("tmux"),
-    claim: nonEmptyString,
-    incarnation: nonEmptyString,
-    tmux: z.object({ window: nonEmptyString, pane: nonEmptyString }),
+    claim: nonEmptyString.optional(),
+    incarnation: nonEmptyString.optional(),
+    tmux: z
+      .object({ window: nonEmptyString.optional(), pane: nonEmptyString.optional() })
+      .optional(),
   }),
   z.object({
     runtime: z.literal("sandbox"),
-    claim: nonEmptyString,
-    incarnation: nonEmptyString,
-    sandbox: z.object({
-      namespace: nonEmptyString,
-      name: nonEmptyString,
-      podUid: nonEmptyString,
-      container: nonEmptyString,
-      generation: z.number().int().positive(),
-    }),
+    claim: nonEmptyString.optional(),
+    incarnation: nonEmptyString.optional(),
+    sandbox: z
+      .object({
+        namespace: nonEmptyString.optional(),
+        name: nonEmptyString.optional(),
+        podUid: nonEmptyString.optional(),
+        container: nonEmptyString.optional(),
+        generation: z.number().int().positive().optional(),
+      })
+      .optional(),
   }),
 ]);
 
@@ -142,10 +148,12 @@ const legionLocator = z.discriminatedUnion("runtime", [
  * are never null; the daemon floors an open row's detail (`capabilities.Normalize`), and the
  * schema stays the guard. */
 const legionCapabilityReportView = z.object({
-  measuredAt: timestamp,
-  incarnation: z.string(),
-  ok: z.array(nonEmptyString),
-  open: z.array(z.object({ name: nonEmptyString, detail: nonEmptyString })),
+  measuredAt: timestamp.optional(),
+  incarnation: z.string().optional(),
+  ok: z.array(nonEmptyString).optional(),
+  open: z
+    .array(z.object({ name: nonEmptyString.optional(), detail: nonEmptyString.optional() }))
+    .optional(),
 });
 
 /** `api.StepView` — what the daemon last saw a claim's agent do, built from the tool frames of
@@ -170,6 +178,16 @@ const legionStepView = z.object({
   startedAt: timestamp.optional(),
   endedAt: timestamp.optional(),
 });
+
+/** The two fields a wake the daemon's pacing holds carries: what kind of wake it is, and
+ * `dueAt`, the moment the pacing gave it, which is when it runs (contract 127). The claim view's
+ * `wake` and `legionWakeWaiting` below carry the same wake, so both spread this one object and
+ * cannot drift apart. The kind is read as a plain string, so a lane a later daemon adds is read
+ * rather than refused. */
+const legionPacedWake = {
+  kind: nonEmptyString.optional(),
+  dueAt: timestamp.optional(),
+};
 
 /** `supervise.FailureCauses` — the closed set of words a claim can fail under, in the order the
  * daemon declares them. The Go side is the source: its `TestFailureCausesGolden` writes that
@@ -205,15 +223,17 @@ const legionFailureCause = z.enum(LEGION_FAILURE_CAUSES);
  * retired after it failed carries it still, which is what lets an agent reading a retired claim
  * say why it is there. */
 const legionClaimFailureView = z.object({
-  cause: legionFailureCause,
-  detail: z.string(),
+  cause: legionFailureCause.optional(),
+  detail: z.string().optional(),
   at: timestamp.optional(),
-  attempts: z.object({
-    launchFailures: z.number().int().nonnegative(),
-    deaths: z.number().int().nonnegative(),
-    promptFailures: z.number().int().nonnegative(),
-    promptRetires: z.number().int().nonnegative(),
-  }),
+  attempts: z
+    .object({
+      launchFailures: z.number().int().nonnegative().optional(),
+      deaths: z.number().int().nonnegative().optional(),
+      promptFailures: z.number().int().nonnegative().optional(),
+      promptRetires: z.number().int().nonnegative().optional(),
+    })
+    .optional(),
 });
 
 /** `api.PendingTaskView` — the task a claim holds, as an agent surface shows it: the key's own
@@ -227,7 +247,7 @@ const legionClaimFailureView = z.object({
  * a task and since when, not the prose another seat was sent. */
 const legionPendingTaskView = z.object({
   phase: z.enum(LEGION_WORKFLOW_PHASES).optional(),
-  queuedAt: timestamp,
+  queuedAt: timestamp.optional(),
   sendFailures: z.number().int().positive().optional(),
   lastSendError: nonEmptyString.optional(),
 });
@@ -237,7 +257,7 @@ const legionPendingTaskView = z.object({
  * until a session of the claim reports on `claims/ready` (the controller's never does), and
  * `failure` is absent for a claim the daemon holds no cause and sentence for. */
 const legionClaimView = z.object({
-  session: z.string(),
+  session: z.string().optional(),
   state: z.enum(LEGION_CLAIM_STATES),
   locator: legionLocator.optional(),
   capabilities: legionCapabilityReportView.optional(),
@@ -247,7 +267,7 @@ const legionClaimView = z.object({
    * the claim serves is of this generation. */
   servingGeneration: z.number().int().positive().optional(),
   /** 0 = no contract recorded. */
-  pluginContract: z.number().int().nonnegative(),
+  pluginContract: z.number().int().nonnegative().optional(),
   /** The update round the claim is in, absent while none is open: `pod:<pod uid>`, the drift
    * round every claim of that pod shares, or `plugin:<daemon contract>`, this claim's own. Once
    * the worker has answered `ready_for_update`, the daemon holds the claim's next task until the
@@ -260,6 +280,15 @@ const legionClaimView = z.object({
   /** Why the daemon must replace this pod, as it found the drift, and absent while no round is
    * open: the worker answering a round is told to act on it. */
   updateReasons: nonEmptyString.optional(),
+  /** Where the claim's update round stands, read from the claim's own columns (contract 127):
+   * `none` when no round is open, `open` when a round is open and its ask has not gone out,
+   * `asked` when the round published its ask on this worker's role topic, and `answered` once
+   * the worker answered. A reader takes this rather than spelling the same reading out of
+   * `updateRound` and `updateHead`, which cannot tell a worker that answered with no head from
+   * one nobody asked. A caller in a pod whose plugin declares a contract below 127 is served the
+   * state with no such key at all (the daemon's `withoutClaimRoundReport`), so every reader
+   * takes it as optional. */
+  updateState: z.enum(["none", "open", "asked", "answered"]).optional(),
   /** How many turns of this claim ended in a provider error in a row, absent for a claim whose
    * last turn ended with none. It bounds nothing — a limit here would fail every claim of a
    * project at once in a provider outage — and the project's controller is told of it once, at
@@ -288,6 +317,11 @@ const legionClaimView = z.object({
    * contract below 57 is served the state with no such key at all (the daemon's
    * `withoutStallRecord`), so every reader takes it as optional. */
   step: legionStepView.optional(),
+  /** The wake the daemon's pacing holds for this claim, absent where it holds none: the same
+   * wake `wakesWaiting` names beside this claim (contract 127). The kinds are the daemon's three
+   * paced lanes, as `legionWakeWaiting` below names them. A caller below 127 is served no such
+   * key (`withoutClaimRoundReport`). */
+  wake: z.object(legionPacedWake).optional(),
   /** Why the claim failed, and absent for a claim the daemon holds no cause and sentence for: one
    * that never failed, and one whose launch cleared the record. A caller in a pod whose plugin
    * declares a contract below 75 is served the state with no such key at all (the daemon's
@@ -312,8 +346,8 @@ const legionClaimView = z.object({
 /** `api.HandoffRecordView` — the Dispatch handoff record a worker's completion of its current
  * file-backed phase named: its id, and its version among its phase's records. */
 const legionHandoffRecordView = z.object({
-  id: nonEmptyString,
-  version: z.number().int().positive(),
+  id: nonEmptyString.optional(),
+  version: z.number().int().positive().optional(),
 });
 
 /** `api.PhaseView` — one phase worker's claim, the handoff of its current phase (the commit its
@@ -322,11 +356,11 @@ const legionHandoffRecordView = z.object({
  * backward move counts one of, `rounds`, the review rounds, which only a review that requested
  * changes counts, and `backwardMoves`, the counts of the moves back that made those rounds. */
 const legionPhaseView = z.object({
-  claim: legionClaimView,
+  claim: legionClaimView.optional(),
   handoffCommit: nonEmptyString.optional(),
   handoffRecord: legionHandoffRecordView.optional(),
-  pass: z.number().int().nonnegative(),
-  rounds: z.number().int().nonnegative(),
+  pass: z.number().int().nonnegative().optional(),
+  rounds: z.number().int().nonnegative().optional(),
   /** How many times the issue's work has gone back by each kind of move, keyed `<from>-<to>` as
    * the daemon counts the pairs (`reviewing-implementing` and the rest). Absent, never `{}`, for
    * a worker whose issue has had no move back, and absent from the whole state for a caller in a
@@ -348,11 +382,11 @@ const legionPhaseView = z.object({
  * until contract 59 removed the count. */
 const legionPullRequestView = z.object({
   /** The repository (`owner/name`) the pull request is in, its issue's (contract 31). */
-  repo: nonEmptyString,
-  number: z.number().int().positive(),
-  head: nonEmptyString,
+  repo: nonEmptyString.optional(),
+  number: z.number().int().positive().optional(),
+  head: nonEmptyString.optional(),
   /** `open`, `merged` or `closed` (contract 36), `record.PullRequestState`'s values. */
-  state: z.enum(["open", "merged", "closed"]),
+  state: z.enum(["open", "merged", "closed"]).optional(),
   /** GitHub's own merge state for the head, in GitHub's lowercase spelling, as the daemon's last
    * read of the pull request found it (`record.MergeState`); absent until that read has run. It
    * says whether GitHub would merge the head now (`clean`) or holds it on a check or a review the
@@ -366,9 +400,9 @@ const legionPullRequestView = z.object({
 /** `api.GateView` — the design gate; `approvedVersion` is null until a human approves one, and
  * the gate is open exactly when it equals `currentVersion`. */
 const legionGateView = z.object({
-  artifactId: nonEmptyString,
-  currentVersion: z.number().int().positive(),
-  approvedVersion: z.number().int().positive().nullable(),
+  artifactId: nonEmptyString.optional(),
+  currentVersion: z.number().int().positive().optional(),
+  approvedVersion: z.number().int().positive().nullable().optional(),
 });
 
 /** `record.DesignStep` — one step of a deployment's design gate, each naming one document of the
@@ -386,18 +420,18 @@ const legionDesignStep = z.enum(GATED_STEPS);
  * step) or `changes_requested` (its reviewer asked for changes at its current version, with
  * `changesReason` the reason they gave; absent under every other status). */
 const legionGatedStepView = z.object({
-  step: legionDesignStep,
+  step: legionDesignStep.optional(),
   artifactId: nonEmptyString.optional(),
   currentVersion: z.number().int().positive().optional(),
-  approvedVersion: z.number().int().positive().nullable(),
-  status: z.enum(["unregistered", "waiting", "approved", "changes_requested"]),
+  approvedVersion: z.number().int().positive().nullable().optional(),
+  status: z.enum(["unregistered", "waiting", "approved", "changes_requested"]).optional(),
   changesReason: nonEmptyString.optional(),
 });
 
 /** `api.SlotView` — the admission slot the issue occupies and when it took it. */
 const legionSlotView = z.object({
-  index: z.number().int().nonnegative(),
-  admittedAt: timestamp,
+  index: z.number().int().nonnegative().optional(),
+  admittedAt: timestamp.optional(),
   lentTo: issueKey.optional(),
 });
 
@@ -425,8 +459,8 @@ const legionSlotView = z.object({
  * retired word comes back off a row, and naming the four kinds is what lets a reader branch on
  * them. */
 const legionWaitingLineView = z.object({
-  place: z.number().int().positive(),
-  length: z.number().int().positive(),
+  place: z.number().int().positive().optional(),
+  length: z.number().int().positive().optional(),
   part: z.enum(["returned", "starting"]).optional(),
   kind: z.enum(["returning", "answered", "queued_root", "first_phase"]).optional(),
   partPlace: z.number().int().positive().optional(),
@@ -448,8 +482,8 @@ const legionWaitingLineView = z.object({
  * `z.enum` for the reason `part` and `kind` above are, and it arrives with the line's own
  * `partPlace` and the rest of its fields at contract 85. */
 const legionWhyView = z.object({
-  state: z.enum(["claim_stopped", "waiting", "blocked", "unlisted"]),
-  reason: nonEmptyString,
+  state: z.enum(["claim_stopped", "waiting", "blocked", "unlisted"]).optional(),
+  reason: nonEmptyString.optional(),
 });
 
 /** `api.CheckWakeView` — what woke a production check's latest look: `kind` names the cause
@@ -459,9 +493,9 @@ const legionWhyView = z.object({
  * are gone), `detail` the cause's own detail — for `check wake`, the summary the agent's report
  * gave or the retry's own words — `at` when. */
 const legionCheckWakeView = z.object({
-  kind: nonEmptyString,
-  detail: z.string(),
-  at: timestamp,
+  kind: nonEmptyString.optional(),
+  detail: z.string().optional(),
+  at: timestamp.optional(),
 });
 
 /** `api.CheckView` — an issue's open production check, the work the project's `production_check`
@@ -478,15 +512,15 @@ const legionCheckWakeView = z.object({
  * the settings. Present on the issue record only while the check is open; absent once it closed
  * or while none was opened. */
 const legionCheckView = z.object({
-  repo: nonEmptyString,
-  pullRequest: z.number().int().positive(),
-  mergeCommit: z.string(),
-  openedAt: timestamp,
+  repo: nonEmptyString.optional(),
+  pullRequest: z.number().int().positive().optional(),
+  mergeCommit: z.string().optional(),
+  openedAt: timestamp.optional(),
   role: nonEmptyString,
   looks: z.number().int().nonnegative(),
-  lookOpen: z.boolean(),
+  lookOpen: z.boolean().optional(),
   lastWake: legionCheckWakeView.optional(),
-  nextWakeAt: timestamp,
+  nextWakeAt: timestamp.optional(),
   last: z.boolean(),
 });
 
@@ -523,11 +557,11 @@ const legionWaitTimes = {
  * `artifactId`) a person has not reviewed. Contract 40 carries both shapes, and a daemon writes either. */
 const legionWaitingOn = z
   .discriminatedUnion("kind", [
-    z.object({ kind: z.literal("ask"), ask: nonEmptyString, ...legionWaitTimes }),
+    z.object({ kind: z.literal("ask"), ask: nonEmptyString.optional(), ...legionWaitTimes }),
     z.object({
       kind: z.literal("gate"),
-      gateVersion: z.number().int().positive(),
-      artifactId: nonEmptyString,
+      gateVersion: z.number().int().positive().optional(),
+      artifactId: nonEmptyString.optional(),
       ...legionWaitTimes,
     }),
   ])
@@ -542,10 +576,10 @@ const legionWaitingOn = z
  * oldest first, so it shows each issue's writes in that order. The workflow owns the payload's
  * detailed shape, so the state surface preserves it as JSON. */
 const legionPendingStatusWrite = z.object({
-  issue: nonEmptyString,
-  payload: z.record(z.string(), z.unknown()),
-  attempts: z.number().int().nonnegative(),
-  nextAt: timestamp,
+  issue: nonEmptyString.optional(),
+  payload: z.record(z.string(), z.unknown()).optional(),
+  attempts: z.number().int().nonnegative().optional(),
+  nextAt: timestamp.optional(),
   lastError: z.string().optional(),
 });
 
@@ -556,7 +590,7 @@ const legionPendingStatusWrite = z.object({
  * retired while its tree runs: only a start of the phase it owns relaunches it, and no rule the
  * daemon runs queues that start, so nothing will wake it either. That state arrived with contract
  * 56, and a pod whose claims record a contract below it is served this report without its retired
- * entries (`api`'s `stateFor`, `withoutRetiredStranded`) rather than being made to refuse the
+ * entries (`api`'s `shapeState`, `withoutRetiredStranded`) rather than being made to refuse the
  * whole state over a third value its enum does not name.
  *
  * Who suspended a suspended one is not here and must never be added: a session parses this body
@@ -566,9 +600,9 @@ const legionPendingStatusWrite = z.object({
  * The operator claim routes serve it, and no plugin calls them
  * ("no session-facing response carries suspendedBy" in legion-api.test.ts). */
 const legionStrandedClaim = z.object({
-  issue: issueKey,
-  role: z.enum(LEGION_ROLES),
-  state: z.enum(["suspended", "failed", "retired"]),
+  issue: issueKey.optional(),
+  role: z.enum(LEGION_ROLES).optional(),
+  state: z.enum(["suspended", "failed", "retired"]).optional(),
 });
 
 /** `api.HeldOutboxRow` — one due lifecycle outbox row its issue's lifecycle lane cannot run yet,
@@ -578,11 +612,11 @@ const legionStrandedClaim = z.object({
  * waiting on its sibling; `waitsOn` is the id of the running row — or, for a role's start fenced
  * behind its issue's branch row, that branch row while it runs. */
 const legionHeldOutboxRow = z.object({
-  id: z.number().int().positive(),
-  kind: nonEmptyString,
-  issue: nonEmptyString,
-  waitedSeconds: z.number().int().nonnegative(),
-  waitsOn: z.number().int().positive(),
+  id: z.number().int().positive().optional(),
+  kind: nonEmptyString.optional(),
+  issue: nonEmptyString.optional(),
+  waitedSeconds: z.number().int().nonnegative().optional(),
+  waitsOn: z.number().int().positive().optional(),
 });
 
 /** `api.WakeWaiting` — one wake the daemon's pacing is holding until its turn
@@ -596,11 +630,10 @@ const legionHeldOutboxRow = z.object({
  * running in place of a launch, which waits on its own outbox row. `kind` is an unconstrained
  * string, so a lane a later daemon names is read rather than refused. */
 const legionWakeWaiting = z.object({
-  claim: nonEmptyString,
-  issue: issueKey,
-  role: z.enum(LEGION_ROLES),
-  kind: nonEmptyString,
-  dueAt: timestamp,
+  claim: nonEmptyString.optional(),
+  issue: issueKey.optional(),
+  role: z.enum(LEGION_ROLES).optional(),
+  ...legionPacedWake,
 });
 
 /** `api.Issue` — `workers` is keyed by a plain string, not by the role names this build knows, so
@@ -609,16 +642,16 @@ const legionWakeWaiting = z.object({
  * is optional. `waitingOn` is present only in `awaiting_person`; `check` is the issue's open
  * production check, present only on a `done` issue while the check is open. */
 const legionIssue = z.object({
-  key: nonEmptyString,
-  generation: z.number().int().nonnegative(),
+  key: nonEmptyString.optional(),
+  generation: z.number().int().nonnegative().optional(),
   phase: z.enum(LEGION_PHASES),
-  status: nonEmptyString,
+  status: nonEmptyString.optional(),
   /** The key of the root of the issue's tree, equal to `key` on a root (contract 51). A child
    * holds an admission slot of its own, so neither `admission.active` nor `admission.waiting`
    * says which tree an issue belongs to; a reader tells a child from a root here, and finds the
    * members of a tree that lingers. Absent on an issue the workflow does not record (phase
    * `unrecorded`, an operator's claim), which stands in no tree, and absent from every issue of
-   * the body the route serves a caller before 51 (`api.stateFor`, `withoutTrees`). */
+   * the body the route serves a caller before 51 (`api.shapeState`, `withoutTrees`). */
   tree: issueKey.optional(),
   /** The repository (`owner/name`) the issue targets and that repository's default branch, taken
    * when the daemon first recorded the issue and never changed after; absent on an issue the
@@ -648,7 +681,7 @@ const legionIssue = z.object({
    * any live root stands on its chain, and this is the only surface that chain reaches. */
   ancestry: z.array(issueKey).optional(),
   architect: legionClaimView.optional(),
-  workers: z.partialRecord(z.string(), legionPhaseView),
+  workers: z.partialRecord(z.string(), legionPhaseView).optional(),
   pullRequest: legionPullRequestView.optional(),
   designGate: legionGateView.optional(),
   /** The deployment's design gate as this issue stands in it, one entry for each step the
@@ -670,7 +703,7 @@ const legionIssue = z.object({
    * and the answer is the same answer for every issue that carries one. Present only for an issue
    * the record holds in the workflow whose sentence renders something, so an issue at work
    * carries none; a caller served the line's own `partPlace` and the fields that arrived with it
-   * is served this key too, and one below contract 85 is served neither (`api.stateFor`,
+   * is served this key too, and one below contract 85 is served neither (`api.shapeIssue`,
    * `withoutWhyAndLineFields`). */
   why: legionWhyView.optional(),
   waitingOn: legionWaitingOn.optional(),
@@ -710,20 +743,26 @@ const legionIssue = z.object({
   quietHours: z.number().nonnegative().optional(),
 });
 
-/** `api.DaemonInfo` — the running daemon: its project, its store's schema, and its boot history. */
+/** `api.DaemonInfo` — the running daemon: its project, its store's schema, and its boot history.
+ * No plugin code reads a field of it: the controller's boot check read `project` here until it
+ * read the health answer instead, and the controller's `read_state` hands the state to its
+ * agent whole. So every field is optional, as `LEGION_ANSWER_READS` requires of a field no
+ * plugin code takes the value of. */
 const daemonInfo = z.object({
-  project: nonEmptyString,
-  schemaVersion: z.number().int().nonnegative(),
-  boots: z.number().int().nonnegative(),
-  firstBootAt: timestamp,
-  startedAt: timestamp,
+  project: nonEmptyString.optional(),
+  schemaVersion: z.number().int().nonnegative().optional(),
+  boots: z.number().int().nonnegative().optional(),
+  firstBootAt: timestamp.optional(),
+  startedAt: timestamp.optional(),
 });
 
 /** `api.ContractView` — the mark of the narrowing, beside the daemon's own block: `daemon` is the
  * contract the daemon declares and served this body at (its `DaemonAPIVersion`), and `caller` the
- * contract the claims of the caller's own pod record, absent for a reader the daemon places in no
- * pod — the operator's `legion state --json`, a tmux pane, a pod whose claims record no contract
- * — whose body is served whole and narrowed by nothing (contract 75).
+ * contract the daemon shaped this body to (contract 75). From contract 127 on the daemon writes
+ * `caller` for every reader. A reader served the body whole — the operator's
+ * `legion state --json`, a tmux pane, a pod whose claims record no contract, a reader at the
+ * daemon's own contract — is told the daemon's own number. A daemon from 75 to 123 left `caller`
+ * off for such a reader, which is why the key stays optional.
  *
  * The daemon serves a caller below 75 the state with this key gone, as it strips the nine fields
  * of the decided record (`api.withoutRecordFields`): a key added to a narrowed body is exactly
@@ -734,7 +773,7 @@ const daemonInfo = z.object({
  * internal/projection answered it, never that the daemon is older than this plugin: the boot gate
  * and `legion probe-image` refuse that pair. */
 const legionContract = z.object({
-  daemon: z.number().int().positive(),
+  daemon: z.number().int().positive().optional(),
   caller: z.number().int().positive().optional(),
 });
 
@@ -743,8 +782,8 @@ const legionContract = z.object({
  * lists them. A blocker the daemon has not yet observed as an issue of its own counts as
  * unfinished, so `blockedBy` can name a key the state's `issues` does not. */
 const legionBlockedIssue = z.object({
-  issue: issueKey,
-  blockedBy: z.array(issueKey),
+  issue: issueKey.optional(),
+  blockedBy: z.array(issueKey).optional(),
 });
 
 /**
@@ -777,8 +816,8 @@ export const LEGION_HELD_REASONS = [
  * `issues` does not hold, as `blockedBy` may today, since an issue the daemon has not observed
  * holds work all the same. */
 const legionHeldIssue = z.object({
-  issue: issueKey,
-  reason: z.enum(LEGION_HELD_REASONS),
+  issue: issueKey.optional(),
+  reason: z.enum(LEGION_HELD_REASONS).optional(),
   heldBy: z.array(issueKey).optional(),
 });
 
@@ -800,7 +839,7 @@ const legionHeldIssue = z.object({
  * trees. A daemon at this contract writes it on every state, empty rather than null, and it is
  * optional here only because that daemon leaves it off one body: a reader before 51 refuses the
  * key outright, so the route strips `trees` and the issues' `tree` for a caller in a pod whose
- * claims record a contract below 51 (`api.stateFor`, `withoutTrees`). A reader that finds it
+ * claims record a contract below 51 (`api.shapeState`, `withoutTrees`). A reader that finds it
  * absent has been served that stripped body and learns nothing about which trees run; it is
  * never a daemon older than this plugin, whom the boot gate and `legion probe-image` refuse.
  * `blocked` is every root and every child Legion is waiting to start behind a Dispatch
@@ -815,14 +854,14 @@ const legionHeldIssue = z.object({
  * `blockedBy` may. A daemon at this contract writes `held` on every state, empty rather than
  * null, and it is optional here for the one reason `trees` is and no other: a reader before the
  * contract that added it refuses the key outright, so the route strips it for a caller in a pod
- * whose claims record a contract below that one (`api.stateFor`, `withoutHeld`). A reader that
+ * whose claims record a contract below that one (`api.shapeState`, `withoutHeld`). A reader that
  * finds it absent has been served that stripped body and learns nothing about what is held. */
 const legionAdmission = z.object({
-  cap: z.number().int().nonnegative(),
-  active: z.array(nonEmptyString),
-  waiting: z.array(nonEmptyString),
+  cap: z.number().int().nonnegative().optional(),
+  active: z.array(nonEmptyString).optional(),
+  waiting: z.array(nonEmptyString).optional(),
   trees: z.array(issueKey).optional(),
-  blocked: z.array(legionBlockedIssue),
+  blocked: z.array(legionBlockedIssue).optional(),
   held: z.array(legionHeldIssue).optional(),
   free: z.number().int().nonnegative().optional(),
 });
@@ -832,12 +871,12 @@ const legionAdmission = z.object({
  * when it registered. `external` is `true` for the operator-launched controller and for the one the
  * daemon launches itself under `controller: daemon`, whose process is a claim like any other. */
 const legionControllerLocator = z.object({
-  runtime: z.enum(["tmux", "kubernetes"]),
-  external: z.literal(true),
-  sessionId: nonEmptyString,
-  registeredAt: timestamp,
+  runtime: z.enum(["tmux", "kubernetes"]).optional(),
+  external: z.literal(true).optional(),
+  sessionId: nonEmptyString.optional(),
+  registeredAt: timestamp.optional(),
   /** 0 = no contract recorded. */
-  pluginContract: z.number().int().nonnegative(),
+  pluginContract: z.number().int().nonnegative().optional(),
 });
 
 /** `api.AgentSecretsLoginView` — the daemon's own agent-secrets token login's current status
@@ -845,7 +884,7 @@ const legionControllerLocator = z.object({
  * "issued", or "failed" (the latest login won no credential). The daemon logs in with its own
  * ServiceAccount token, which no person approves, so there is no confirmation code (contract 22). */
 const legionAgentSecretsLoginView = z.object({
-  state: z.string(),
+  state: z.string().optional(),
 });
 
 /** `api.CapabilityState` — one row of the deployment's capability report
@@ -861,9 +900,9 @@ const legionAgentSecretsLoginView = z.object({
  * alone decides) or `boot` (what boot measured); absent on every other row (contract 25). A gap is
  * reported here, never refused (contract 16). */
 const legionCapabilityState = z.object({
-  name: nonEmptyString,
-  status: z.enum(["present", "unchecked", "withheld", "decided", "open"]),
-  detail: nonEmptyString,
+  name: nonEmptyString.optional(),
+  status: z.enum(["present", "unchecked", "withheld", "decided", "open"]).optional(),
+  detail: nonEmptyString.optional(),
   decision: nonEmptyString.optional(),
   configLine: nonEmptyString.optional(),
   source: z.enum(["configuration", "boot"]).optional(),
@@ -875,8 +914,8 @@ const legionCapabilityState = z.object({
  * contract change. `max_fix_attempts` was typed here until contract 59 removed the key, and
  * `review_round_cap` is the one cap left that blocks a pull request. */
 const legionSettings = z.looseObject({
-  review_round_cap: z.number().int().positive(),
-  worker_boot_timeout_seconds: z.number().int().positive(),
+  review_round_cap: z.number().int().positive().optional(),
+  worker_boot_timeout_seconds: z.number().int().positive().optional(),
 });
 
 /** `api.CacheView` — a repository cache as the Kubernetes runtime shows it: its repository and
@@ -885,11 +924,11 @@ const legionSettings = z.looseObject({
  * the default branch's `head`, `lastFetchAt` and the `bytes` it serves or the read's
  * `healthError`, and, for a repository the mapping no longer names, `retainedUntil` (contract 32). */
 const legionCacheView = z.object({
-  repo: nonEmptyString,
-  sandbox: nonEmptyString,
-  state: z.enum(["starting", "cloning", "ready", "failing", "refused"]),
+  repo: nonEmptyString.optional(),
+  sandbox: nonEmptyString.optional(),
+  state: z.enum(["starting", "cloning", "ready", "failing", "refused"]).optional(),
   reason: nonEmptyString.optional(),
-  ready: z.boolean(),
+  ready: z.boolean().optional(),
   address: nonEmptyString.optional(),
   head: nonEmptyString.optional(),
   lastFetchAt: timestamp.optional(),
@@ -907,17 +946,23 @@ const legionCacheView = z.object({
  * the check; served all the same, contract 43), and the `caches` of repositories the mapping no
  * longer names. Every list sorted and never null (contracts 31, 32). */
 const legionRepositories = z.object({
-  owners: z.array(nonEmptyString),
-  mapped: z.array(
-    z.object({
-      repo: nonEmptyString,
-      default: z.boolean(),
-      cache: legionCacheView.optional(),
-    })
-  ),
-  refused: z.array(z.object({ repo: nonEmptyString, reason: nonEmptyString })),
-  withoutWebhookApp: z.array(z.object({ repo: nonEmptyString, reason: nonEmptyString })),
-  caches: z.array(legionCacheView),
+  owners: z.array(nonEmptyString).optional(),
+  mapped: z
+    .array(
+      z.object({
+        repo: nonEmptyString.optional(),
+        default: z.boolean().optional(),
+        cache: legionCacheView.optional(),
+      })
+    )
+    .optional(),
+  refused: z
+    .array(z.object({ repo: nonEmptyString.optional(), reason: nonEmptyString.optional() }))
+    .optional(),
+  withoutWebhookApp: z
+    .array(z.object({ repo: nonEmptyString.optional(), reason: nonEmptyString.optional() }))
+    .optional(),
+  caches: z.array(legionCacheView).optional(),
 });
 
 /** `api.ConsumerLagView` — one durable consumer's lag, read from NATS after the state's
@@ -929,12 +974,12 @@ const legionRepositories = z.object({
  * 60 seconds; and `unavailable`, what NATS did not answer or refused, absent when every read
  * answered. */
 const legionConsumerLag = z.object({
-  name: nonEmptyString,
-  waiting: z.number().int().nonnegative(),
-  oldestAt: timestamp.nullable(),
-  oldestAgeSeconds: z.number().int().nullable(),
-  lastHandledAt: timestamp.nullable(),
-  stalled: z.boolean(),
+  name: nonEmptyString.optional(),
+  waiting: z.number().int().nonnegative().optional(),
+  oldestAt: timestamp.nullable().optional(),
+  oldestAgeSeconds: z.number().int().nullable().optional(),
+  lastHandledAt: timestamp.nullable().optional(),
+  stalled: z.boolean().optional(),
   unavailable: nonEmptyString.optional(),
 });
 
@@ -955,7 +1000,7 @@ const legionConsumerLag = z.object({
  * null, empty at every moment outside a restart or a refresh wave (contract 53). It is optional
  * here only because a daemon at this contract leaves it off one body: a reader before 53 refuses
  * the key outright, empty as surely as naming a wake, so the route strips it for a caller in a pod
- * whose claims record a contract below 53, and for that caller alone (`api.stateFor`,
+ * whose claims record a contract below 53, and for that caller alone (`api.shapeState`,
  * `withoutWakesWaiting`). A reader that finds it absent has been served that stripped body and
  * learns nothing about which wakes wait; it is never a daemon older than this plugin, whom the
  * boot gate and `legion probe-image` refuse. `claimsToRefresh` is how many claims the stale-plugin
@@ -964,35 +1009,59 @@ const legionConsumerLag = z.object({
  * minute of the pacing at a time, so its waiting wakes are what it has admitted and this is what it
  * has left. It is optional for the same reason `wakesWaiting` is and no other: the route strips it
  * for a caller in a pod below 73, and for that caller alone, since a reader before 73 refuses the
- * key when it is 0 as surely as when it names a number (`api.stateFor`, `withoutClaimsToRefresh`).
+ * key when it is 0 as surely as when it names a number (`api.shapeState`, `withoutClaimsToRefresh`).
  * A caller in a pod whose claims record no contract at all is served the count, as is a caller the
  * daemon can place in no pod. The two strips compose on one body: a caller below 53 is below 73 too
  * and is served neither key. `contract` is the mark of the narrowing, the two contract numbers
  * the daemon's own log line names (contract 75), optional for the same reason the other two are:
  * the route strips it for a caller in a pod below 75, and for that caller alone, since a reader
- * before 75 refuses the key (`api.stateFor`, `withoutRecordFields`). A caller in a pod whose
+ * before 75 refuses the key (`api.shapeState`, `withoutRecordFields`). A caller in a pod whose
  * claims record no contract and a caller the daemon can place in no pod are served the mark, and
  * the shapes `internal/projection` answers before the route marks them carry none either. */
 export const LegionStateResponse = z.object({
-  daemon: daemonInfo,
+  daemon: daemonInfo.optional(),
   contract: legionContract.optional(),
-  admission: legionAdmission,
+  admission: legionAdmission.optional(),
   issues: z.record(z.string(), legionIssue),
-  pendingStatusWrites: z.array(legionPendingStatusWrite),
-  heldOutboxRows: z.array(legionHeldOutboxRow),
-  strandedClaims: z.array(legionStrandedClaim),
+  pendingStatusWrites: z.array(legionPendingStatusWrite).optional(),
+  heldOutboxRows: z.array(legionHeldOutboxRow).optional(),
+  strandedClaims: z.array(legionStrandedClaim).optional(),
   wakesWaiting: z.array(legionWakeWaiting).optional(),
   claimsToRefresh: z.number().int().nonnegative().optional(),
   controllerLocator: legionControllerLocator.optional(),
   agentSecretsLogin: legionAgentSecretsLoginView.optional(),
-  capabilities: z.array(legionCapabilityState),
-  repositories: legionRepositories,
-  settings: legionSettings,
-  consumers: z.array(legionConsumerLag),
+  capabilities: z.array(legionCapabilityState).optional(),
+  repositories: legionRepositories.optional(),
+  settings: legionSettings.optional(),
+  consumers: z.array(legionConsumerLag).optional(),
+  // `lowestPluginContract` is the lowest contract among the claims of the project that hold a
+  // process and record one, absent where no claim does (contract 127). No plugin code reads the
+  // value — it is a number for an operator and for the serving-down's own reckoning — so it is
+  // optional here, and a reader that finds it absent learns that nothing of the project runs a
+  // plugin it knows the contract of.
+  lowestPluginContract: z.number().int().positive().optional(),
 });
 
 export type LegionState = z.output<typeof LegionStateResponse>;
 export type LegionIssue = LegionState["issues"][string];
+
+/** `api.Issue` again, as the body of `GET /legion/v1/issues/{key}/record` (contract 127): one
+ * issue's record, equal field for field to the value the whole-project body holds under
+ * `issues.<key>`. It is the very schema `LegionStateResponse` reads that value with, so the two
+ * readers cannot drift apart. The daemon answers 404 with the code `RECORD_NOT_FOUND` for an
+ * issue it records nothing of, which is the client's absent-record branch and no body at all. */
+export const LegionIssueRecordResponse = legionIssue;
+
+/** `api.Health`, the body of `GET /healthz` (contract 127): that the daemon is serving, and the
+ * project it serves. `project` is required because the controller's boot check reads it
+ * (`packages/pi-legion/src/controller-session.ts`), which is the one word that read the whole
+ * state before. `status` is a word for an operator: no plugin code takes its value. */
+export const LegionHealthResponse = z.object({
+  status: nonEmptyString.optional(),
+  project: nonEmptyString,
+});
+
+export type LegionHealth = z.output<typeof LegionHealthResponse>;
 
 /** `claim.RegisterResponse`, the body of `POST /legion/v1/claims/register`: the claim the agent
  * holds, the secret its ready and exit authenticate with, and `promptAgents`, the sorted names of
@@ -1144,14 +1213,17 @@ export type LegionActivityRequestBody = z.output<typeof LegionActivityRequest>;
 
 /** `api.ReleaseRecord` — one issue pod the daemon released: the run it released, the roles whose
  * claims it suspended (sorted, as the store holds them), when the release completed, and the size
- * of the git bundle of unpushed work it saved, zero when the workspace held none. */
+ * of the git bundle of unpushed work it saved, zero when the workspace held none. `roles` is
+ * required because `read_release_records` reads it: the empty list is the whole mark of a
+ * release no wake can reach, which that report counts and measures nowhere, and the daemon
+ * writes the list on every release, empty rather than null. */
 const legionReleaseRecord = z.object({
   id: z.number().int().positive(),
-  issue: issueKey,
-  generation: z.number().int().nonnegative(),
+  issue: issueKey.optional(),
+  generation: z.number().int().nonnegative().optional(),
   roles: z.array(nonEmptyString),
   at: timestamp,
-  bundleBytes: z.number().int().nonnegative(),
+  bundleBytes: z.number().int().nonnegative().optional(),
 });
 
 /** `api.ResumeRecord` — one wake of a released pod and what it cost: the release it ended (0 when
@@ -1159,15 +1231,15 @@ const legionReleaseRecord = z.object({
  * daemon, and `podReadyAt` and `firstTurnAt`, each absent until it is observed. `stuck` is a wake
  * that went ten minutes with no turn of the woken role. */
 const legionResumeRecord = z.object({
-  id: z.number().int().positive(),
+  id: z.number().int().positive().optional(),
   release: z.number().int().nonnegative(),
-  issue: issueKey,
-  role: nonEmptyString,
+  issue: issueKey.optional(),
+  role: nonEmptyString.optional(),
   kind: nonEmptyString,
   at: timestamp,
   podReadyAt: timestamp.optional(),
   firstTurnAt: timestamp.optional(),
-  stuck: z.boolean(),
+  stuck: z.boolean().optional(),
 });
 
 /** `api.HoldRecord` — one streak of the idle rule keeping a pod past the idle period, with the
@@ -1181,13 +1253,13 @@ const legionResumeRecord = z.object({
  * pod and reason for all time. The daemon records no row for a pod that is simply not idle
  * yet. */
 const legionHoldRecord = z.object({
-  id: z.number().int().positive(),
-  issue: issueKey,
+  id: z.number().int().positive().optional(),
+  issue: issueKey.optional(),
   reason: nonEmptyString,
   detail: nonEmptyString.optional(),
-  firstAt: timestamp,
-  at: timestamp,
-  passes: z.number().int().positive(),
+  firstAt: timestamp.optional(),
+  at: timestamp.optional(),
+  passes: z.number().int().positive().optional(),
 });
 
 /** `api.ReleaseRecordsRequest`, the body of `POST /legion/v1/claims/release-records`: the claim
@@ -1226,7 +1298,7 @@ export type LegionReleaseRecords = z.output<typeof LegionReleaseRecordsResponse>
  * grants authenticate with. No tree, no issue. */
 export const LegionControllerRegisterResponse = z.object({
   claimToken: nonEmptyString,
-  role: z.literal("controller"),
+  role: z.literal("controller").optional(),
   generation: z.number().int().positive(),
   secret: nonEmptyString,
 });
@@ -1307,7 +1379,10 @@ const legionSuspendedBy = z.enum(["unknown", "operator", "daemon", "exit", "rele
  * /legion/v1/operator/claims`, `…/{token}/deliver|suspend|resume|stop|retry|forget-session|close`):
  * the claim as its supervisor holds it, but its hashes. `forgottenSession` and
  * `forgottenSessionFile` appear only in a successful `forget-session` response, and
- * `phaseNotRestarted` only in a `retry` that asked for a fresh session. */
+ * `phaseNotRestarted` only in a `retry` that asked for a fresh session. The Go CLI reads this
+ * answer and the plugin's client parses it nowhere, so a field the daemon always writes stays
+ * required here and the read-set census never reaches it.
+ */
 export const LegionOperatorClaimResponse = z.object({
   token: nonEmptyString,
   tree: nonEmptyString,
@@ -1410,7 +1485,8 @@ const legionPodUpdateRounds = z.object({
 });
 
 /** `api.OperatorClaims`, the body of `GET /legion/v1/operator/claims`, in token order, with what
- * the daemon's last pod-update sweep decided beside the claims. */
+ * the daemon's last pod-update sweep decided beside the claims. The Go CLI reads this answer and
+ * the plugin's client parses it nowhere, so its fields stay required. */
 export const LegionOperatorClaimsResponse = z.object({
   claims: z.array(LegionOperatorClaimResponse),
   pod_update_rounds: legionPodUpdateRounds,
@@ -1419,7 +1495,7 @@ export const LegionOperatorClaimsResponse = z.object({
 /** The credential grant body from `internal/api/credentials.go`. */
 export const LegionGrantResponse = z.object({
   grantId: nonEmptyString,
-  expiresAt: timestamp,
+  expiresAt: timestamp.optional(),
 });
 export type LegionGrant = z.output<typeof LegionGrantResponse>;
 
@@ -1437,9 +1513,9 @@ export const LegionHandoffCompleteResponse = z.object({});
  * the release did with each of them. A child neither started nor held — one the daemon does not
  * record, or one still admitted that waits on nothing — is in neither list. */
 export const LegionWaveReleaseResponse = z.object({
-  released: z.array(nonEmptyString),
-  started: z.array(issueKey),
-  held: z.array(legionBlockedIssue),
+  released: z.array(nonEmptyString).optional(),
+  started: z.array(issueKey).optional(),
+  held: z.array(legionBlockedIssue).optional(),
 });
 
 /** `api.GrantRequest`, the session form that mints one short-lived credential grant: it serves every
@@ -1574,3 +1650,137 @@ export const LegionChildRequest = z.strictObject({
   grantId: nonEmptyString,
   issue: nonEmptyString,
 });
+
+/** What plugin code takes the value of in one issue's record: `legion-phase-ops.ts` reads the
+ * issue's phase and its open check for `handoff_complete`, `phase-reminder.ts` and
+ * `pi-legion/src/stall-evidence.ts` read the architect's claim state, and the controller's
+ * `read_state` summary (`pi-legion/src/tools.ts`) reads each issue's status, hold reason, slot,
+ * design gate, and the state and both turn times of the architect's claim and of every worker's.
+ * The record route and the
+ * state's `issues{}` answer the same node, so the read set below names these paths at both,
+ * `LegionIssueRecordResponse` as they stand and `LegionStateResponse` under the state's prefix.
+ * They are written once here because the two entries must say the same thing.
+ *
+ * The summary reads the state and never the record route. Its fields are in this list because
+ * the summary reads them on the node that the two answers share. Each of them is `.optional()`
+ * on `legionIssue`, so the record route refuses no body that does not carry one. A change that
+ * makes one of them required for the state makes it required on the record route too. */
+const ISSUE_RECORD_READS = [
+  "phase",
+  "status",
+  "holdReason",
+  "architect",
+  "architect.state",
+  "architect.lastTurnStart",
+  "architect.lastTurnEnd",
+  "workers",
+  "workers{}.claim",
+  "workers{}.claim.state",
+  "workers{}.claim.lastTurnStart",
+  "workers{}.claim.lastTurnEnd",
+  "check",
+  "check.role",
+  "check.looks",
+  "check.last",
+  "designGate",
+  "designGate.currentVersion",
+  "designGate.approvedVersion",
+  "slot",
+  "slot.index",
+  "slot.admittedAt",
+  "slot.lentTo",
+] as const;
+
+/**
+ * The declared read set: every field of an answer schema that plugin code takes the value of,
+ * by the answer schema's exported name and the path of the field within it. A path names each
+ * key from that schema's root, with a record's value written `{}` and a list's element `[]`, as
+ * the object census in `legion-api.test.ts` writes them. An answer schema with no entry here is
+ * one no plugin code reads a field of.
+ *
+ * It is the other half of "the reader requires only what it reads" (dispatch://INFRA-2694). A
+ * field this set does not name is `.optional()` above, so a daemon that serves this contract
+ * without that field is still read; a field it names may stay required. The census in
+ * `packages/pi-shared/src/daemon-client.test.ts` holds the two to each other in three
+ * directions: a required field this set does not name fails it, a name of this set that no
+ * consumer source takes the value of fails it too, and a field a consumer source reads of its
+ * own parent that this set does not name fails it as well. The consumer sources are
+ * `packages/pi-shared/src`, `packages/pi-legion/src`, `packages/pi-legion/extensions` and
+ * `packages/claude-envoy/src`, their test files left out.
+ *
+ * The census reaches the answer schemas the client parses and no others, reading the parse sites
+ * of `packages/pi-shared/src/daemon-client.ts` for the roster. The operator and controller
+ * answers the Go CLI reads and the client parses nowhere are outside it, and they keep every
+ * field the daemon always writes required.
+ *
+ * A value handed to an agent whole is no read. The controller's `read_state` summarises the
+ * state rather than passing it on, so the fields that summary takes are reads and are named
+ * here (`pi-legion/src/tools.ts`), while a record a filter answers is handed on as it came and
+ * is no read. A field a reader takes and the daemon
+ * leaves out where it has none — `resumes[].firstTurnAt` — is named here and stays optional:
+ * this set says what the plugin reads, not what the daemon always writes.
+ *
+ * One node several paths reach is named at each of them: the claim view is read at an issue's
+ * `architect` and sits under `workers{}.claim` as well, and the issue record is the same node as
+ * the state's `issues{}`, so both carry the same lines. The discriminator of a discriminated
+ * union (`locator.runtime`, `waitingOn.kind`) is in no entry: a body without it matches no
+ * member of the union, so the union requires it whatever a reader takes.
+ */
+export const LEGION_ANSWER_READS: Readonly<Record<string, readonly string[]>> = {
+  // The three readers of an issue's record ask the record route for it (dispatch://INFRA-2694),
+  // and the controller's `read_state` summary reads the project's admission line, its
+  // capability report and each issue's own fields. `daemon` and `daemon.project` stood
+  // here until the controller's boot check read the project from the health answer instead
+  // (`pi-legion/src/controller-session.ts`), and both are optional above.
+  LegionStateResponse: [
+    "issues",
+    ...ISSUE_RECORD_READS.map((field) => `issues{}.${field}`),
+    "admission",
+    "admission.blocked[].issue",
+    "admission.blocked[].blockedBy",
+    "capabilities",
+    "capabilities[].name",
+    "capabilities[].status",
+    "capabilities[].detail",
+    "capabilities[].configLine",
+  ],
+  // The same record read of one issue, by the same readers.
+  LegionIssueRecordResponse: ISSUE_RECORD_READS,
+  // The controller's boot check compares the daemon's project with its own LEGION_PROJECT.
+  LegionHealthResponse: ["project"],
+  // `legion-claim-core.ts` records every field of the claim the registration issued.
+  LegionRegisterResponse: [
+    "claimToken",
+    "tree",
+    "issue",
+    "role",
+    "generation",
+    "secret",
+    "promptAgents",
+  ],
+  // `controller-session.ts` checks the controller's claim token, mints every controller grant
+  // with the secret, and sends the generation on `claims/ready`.
+  LegionControllerRegisterResponse: ["claimToken", "generation", "secret"],
+  // Every write of the `legion` tool posts the grant id `mintClaimGrant` took.
+  LegionGrantResponse: ["grantId"],
+  // `daemon-client.ts` reads both fields of a refusal: the code decides whether a 502 is a
+  // restarting daemon, and the sentence is what the role is shown.
+  LegionErrorResponse: ["error", "code"],
+  // `read_release_records` counts the window's rows and measures the time between them.
+  LegionReleaseRecordsResponse: [
+    "releases",
+    "releases[].id",
+    "releases[].roles",
+    "releases[].at",
+    "resumes",
+    "resumes[].release",
+    "resumes[].at",
+    "resumes[].kind",
+    "resumes[].firstTurnAt",
+    "holds",
+    "holds[].reason",
+  ],
+  // `pi-legion/src/turn-outcome.ts` logs the run of refused turns and whether this report
+  // failed the claim on every turn it reports.
+  LegionTurnOutcomeResponse: ["refusedRun", "failed"],
+};

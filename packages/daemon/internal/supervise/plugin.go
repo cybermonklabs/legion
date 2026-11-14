@@ -20,7 +20,7 @@ import (
 // keeps the pod and the disk, so what op a claim's plugin holds decides nothing there. What a
 // claim can answer is the pod round's question alone, and the one reader left makes a decision
 // of its own: internal/api serves a caller in a pod whose claims record a contract below this
-// one the state without the two update-round keys that contract added (stateFor,
+// one the state without the two update-round keys that contract added (shapeState,
 // withoutUpdateRounds).
 //
 // It lives here rather than beside DaemonAPIVersion because internal/api imports this package.

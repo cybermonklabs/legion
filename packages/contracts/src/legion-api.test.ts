@@ -26,7 +26,9 @@ import {
   LegionGrantResponse,
   LegionHandoffCompleteRequest,
   LegionHandoffCompleteResponse,
+  LegionHealthResponse,
   LegionInstant,
+  LegionIssueRecordResponse,
   LegionIssueStatusRequest,
   LegionOperatorClaimResponse,
   LegionOperatorClaimsResponse,
@@ -58,6 +60,12 @@ const schemas: Record<string, z.ZodType> = {
   // Written by internal/projection's own golden test: what the state route projects while the
   // daemon's own controller (`controller: daemon`) holds its claim on no issue.
   "state-controller-claim.json": LegionStateResponse,
+  // One issue's record (`GET /legion/v1/issues/{key}/record`), which answers the very value the
+  // state holds under `issues.<key>`: the issue schema the state response already carries.
+  "issue-record.json": LegionIssueRecordResponse,
+  // The typed health body (`api.Health`, `GET /healthz`): that the daemon is serving, and the
+  // project it serves, which the controller's boot check reads.
+  "health.json": LegionHealthResponse,
   "register.json": LegionRegisterResponse,
   // The claim wire's `claim.ReadyRequest` with a capability report: what a session posts on
   // `claims/ready` (contract 21).
@@ -112,6 +120,72 @@ const schemas: Record<string, z.ZodType> = {
       z.number().int().nonnegative()
     ),
   }),
+  // Nor this one: the table of answers a plugin parses (`internal/api/answers.go`), one row per
+  // response schema. `routes` are the routes that answer it, empty for the refusal body, which
+  // a client parses on every answer that is not a success. `since` is the contract the answer
+  // arrived at, never below the serving floor. `noBody` says the answer carries no body at all,
+  // which reads differently from a body whose set of key paths is empty.
+  "answers.json": z.array(
+    z.strictObject({
+      id: z.string().min(1),
+      routes: z.array(z.string().min(1)),
+      since: z.number().int().positive(),
+      noBody: z.boolean(),
+    })
+  ),
+  // Nor this one: the table of the fields a plugin parses with a strict enumeration
+  // (`internal/api/answers.go`'s `EnumeratedFields`), one row per field. `answer` is the answer
+  // the field belongs to and `keyPath` its key path in that answer's body, written as
+  // `contract-shapes.json` writes one. `values` is every value the field may take, each with
+  // the contract it arrived at. It is recorded because a strict reader refuses a body for a
+  // value its enumeration does not name as surely as for a key it does not know, so a widened
+  // field is a shape change like an added key.
+  "enumerated-fields.json": z.array(
+    z.strictObject({
+      answer: z.string().min(1),
+      keyPath: z.string().min(1),
+      values: z.array(
+        z.strictObject({ value: z.string().min(1), since: z.number().int().positive() })
+      ),
+    })
+  ),
+  // Nor this one: what the daemon serves every contract it supports
+  // (`internal/api/contract_shapes_test.go`). One record per answer per contract, from the
+  // contract the answer arrived at up to the daemon's own, holding the sorted key paths of the
+  // body a caller at that contract reads. A key path is one key of a body, written as the
+  // dotted path from the body's root, with a map's key and a list's index written as `*`, so
+  // `issues.*.pullRequest.fixAttempts` is one path, whichever issues the body holds and
+  // whichever of them carries a pull request. `noBody` says the answer writes no body at all,
+  // which reads differently from a body whose set of key paths is empty: the four routes that
+  // answer 204 are `"noBody": true` with no path, and the empty object the eight fact routes
+  // answer is `"noBody": false` with no path.
+  //
+  // `domains` is the other half of a record: for each field of that answer the daemon's table
+  // declares enumerated (`enumerated-fields.json`), under the field's own key path, the sorted
+  // values whose arrival is at or below that contract — what a reader there admits, and not
+  // what any sample body carries. An answer with no such field writes `{}`. The rule it stands
+  // for is that a value refuses a reader as a key does: a body carrying a value the reader's
+  // enumeration does not name is refused whole, which is why the record carries the domain and
+  // the daemon serves an unadmitted value down.
+  "contract-shapes.json": z.array(
+    z.strictObject({
+      contract: z.number().int().positive(),
+      answer: z.string().min(1),
+      noBody: z.boolean(),
+      keyPaths: z.array(z.string().min(1)),
+      domains: z.record(z.string().min(1), z.array(z.string().min(1))),
+    })
+  ),
+  // Nor this one: the field paths of every request body a plugin sends
+  // (`internal/api/request_shapes_test.go`), one record per route per contract from the daemon's
+  // own contract on, each path written as a key path above is.
+  "request-shapes.json": z.array(
+    z.strictObject({
+      contract: z.number().int().positive(),
+      route: z.string().min(1),
+      fieldPaths: z.array(z.string().min(1)),
+    })
+  ),
   // Nor this one: the closed set of words a claim can fail under
   // (`supervise.FailureCauses`), written by `internal/api`'s TestFailureCausesGolden so that
   // the Go roster and `LEGION_FAILURE_CAUSES` are held to each other here, by the case "the
@@ -229,6 +303,214 @@ test("every answer schema the module exports is the schema of a golden", () => {
   ).toEqual([]);
 });
 
+/** One row of `enumerated-fields.json`: one field of one answer the daemon declares a plugin
+ * parses with a strict enumeration, and every value it may take with the contract it arrived
+ * at (`internal/api/answers.go`'s `EnumeratedFields`). */
+interface EnumeratedFieldRow {
+  readonly answer: string;
+  readonly keyPath: string;
+  readonly values: readonly { readonly value: string; readonly since: number }[];
+}
+
+/** The answer schema this module parses each answer of the daemon's table with, by the id the
+ * table writes it under (`internal/api/answers.go`). An answer whose id no entry here names
+ * fails the case below, so an enumerated field of a fourth answer is read rather than skipped. */
+const ANSWER_SCHEMAS: Record<string, z.ZodType> = {
+  state: LegionStateResponse,
+  "issue-record": LegionIssueRecordResponse,
+  register: LegionRegisterResponse,
+};
+
+/** One step of a path from a schema's root to a node below it: the field `key` of an object,
+ * the element of a list, the value of a record, or the option `index` of a union. */
+type SchemaStep =
+  | { readonly kind: "key"; readonly key: string }
+  | { readonly kind: "element" }
+  | { readonly kind: "value" }
+  | { readonly kind: "option"; readonly index: number };
+
+/** A path as the object censuses below write it: `.key` for a field, `[]` for a list's element,
+ * `{}` for a record's value and `|0`, `|1` for the options of a union. */
+function censusPath(steps: readonly SchemaStep[]): string {
+  return steps
+    .map((step) => {
+      if (step.kind === "key") return `.${step.key}`;
+      if (step.kind === "option") return `|${step.index}`;
+      return step.kind === "element" ? "[]" : "{}";
+    })
+    .join("");
+}
+
+/** The node kinds the schemas of either side are built from that hold no node below them. A
+ * kind outside this list and the branches of `walkSchema` throws: a `z.tuple`, a
+ * `z.intersection`, a `.pipe()` or a `z.lazy()` added later would otherwise take its whole
+ * subtree out of every census in silence. */
+const CENSUS_LEAF_KINDS: Record<string, true> = {
+  boolean: true,
+  enum: true,
+  literal: true,
+  number: true,
+  string: true,
+  unknown: true,
+};
+
+/** The one walk of the schema tree that every census of this file reads. It calls `visit` on
+ * `node` and on every node below it, with the steps from the root. It descends an object's
+ * shape, a list's element, a record's value type and a union's options (`.refine()` wraps
+ * nothing, so a refined object is still an object node and a refined discriminated union still a
+ * union node). It visits the inner type of an optional or a nullable at the path of the wrapper,
+ * and the wrapper not at all. A node two paths reach is visited at each of them, as the claim
+ * view is at an issue's `architect` and under `workers{}.claim`. The schemas hold no `z.lazy`,
+ * so the walk ends: `CENSUS_LEAF_KINDS` refuses one if it arrives. `root` names the schema in
+ * the sentence the walk throws. */
+function walkSchema(
+  root: string,
+  node: z.core.$ZodType,
+  visit: (node: z.core.$ZodType, steps: readonly SchemaStep[]) => void,
+  steps: readonly SchemaStep[] = []
+): void {
+  if (node instanceof z.ZodOptional || node instanceof z.ZodNullable) {
+    walkSchema(root, node.def.innerType, visit, steps);
+    return;
+  }
+  visit(node, steps);
+  if (node instanceof z.ZodObject) {
+    for (const [key, value] of Object.entries(node.def.shape)) {
+      walkSchema(root, value, visit, [...steps, { kind: "key", key }]);
+    }
+    return;
+  }
+  if (node instanceof z.ZodArray) {
+    walkSchema(root, node.def.element, visit, [...steps, { kind: "element" }]);
+    return;
+  }
+  if (node instanceof z.ZodRecord) {
+    walkSchema(root, node.def.valueType, visit, [...steps, { kind: "value" }]);
+    return;
+  }
+  if (node instanceof z.ZodUnion) {
+    for (const [index, option] of node.def.options.entries()) {
+      walkSchema(root, option, visit, [...steps, { kind: "option", index }]);
+    }
+    return;
+  }
+  const kind = node._zod.def.type;
+  if (CENSUS_LEAF_KINDS[kind] !== true) {
+    throw new Error(
+      `the census reached a ${kind} node it does not walk, at ${root}${censusPath(steps)}`
+    );
+  }
+}
+
+/** Every `z.enum` the answer schemas of `roots` read, with its members, by `<answer> <key path>`.
+ * The key path is written as the daemon's table writes one: the keys joined by `.`, a record's
+ * value and a list's element both `*` (`issues.*.phase`, `capabilities.*.status`), and the
+ * options of a union at the path of the union itself, since `waitingOn.answeredBy` is one field
+ * of both the `ask` and the `gate` shape. A node two paths reach is read at both of them, as the
+ * claim view is at `architect` and at `workers.*.claim`.
+ *
+ * `problems` names each path that holds no one list to compare: a path at which two
+ * enumerations with different members stand, a path at which a `z.enum` stands beside a node
+ * of another kind, and a `z.enum` with a member that is no string, since the daemon's table
+ * writes every value as a word. */
+function enumeratedFields(roots: Record<string, z.ZodType>): {
+  readonly members: ReadonlyMap<string, readonly string[]>;
+  readonly problems: readonly string[];
+} {
+  const members = new Map<string, readonly string[]>();
+  const others = new Map<string, string>();
+  const problems: string[] = [];
+  for (const [answer, schema] of Object.entries(roots)) {
+    walkSchema(answer, schema, (node, steps) => {
+      const keyPath = steps
+        .flatMap((step) => {
+          if (step.kind === "key") return [step.key];
+          return step.kind === "option" ? [] : ["*"];
+        })
+        .join(".");
+      const field = `${answer} ${keyPath}`;
+      if (!(node instanceof z.ZodEnum)) {
+        // A union and its options stand at one path, so only a kind other than those two is
+        // one that could stand where an enumeration does.
+        if (!(node instanceof z.ZodUnion) && !(node instanceof z.ZodObject)) {
+          others.set(field, node._zod.def.type);
+        }
+        return;
+      }
+      const words = node.options.filter((member): member is string => typeof member === "string");
+      if (words.length !== node.options.length) {
+        problems.push(`${field} is a z.enum whose members are not all strings`);
+        return;
+      }
+      const before = members.get(field);
+      const sorted = [...words].sort().join(", ");
+      if (before !== undefined && [...before].sort().join(", ") !== sorted) {
+        problems.push(
+          `${field} is read with two enumerations: ${[...before].sort().join(", ")} and ${sorted}`
+        );
+        return;
+      }
+      members.set(field, words);
+    });
+  }
+  for (const [field, kind] of others) {
+    if (members.has(field))
+      problems.push(`${field} is a z.enum in one place and a ${kind} in another`);
+  }
+  return { members, problems };
+}
+
+// The two statements of one domain, held to each other. The daemon serves a value down to a
+// reader whose contract does not admit it, and it reads the arrival of each value from its own
+// table; this module refuses a value its `z.enum` does not name. A value added on one side and
+// not the other would make the daemon either refuse a body it writes or strip a value this
+// build reads, so the two lists are compared here rather than left to agree by habit.
+//
+// Both sides are read rather than restated. The compared side is one map of every `z.enum` the
+// answer schemas read, by answer and key path, collected in one walk (`enumeratedFields`), so a
+// change to any enumeration of legion-api.ts is a change to what this case compares. The join is
+// the whole key path, not its tail, so a row can only meet the field it names. Neither is a list
+// kept by hand beside the schemas: a field the daemon adds to its table is compared without a
+// line being added here, and a `z.enum` this module reads at a path the daemon declares nothing
+// for fails the last assertion rather than passing unheld.
+test("every enumerated field the daemon declares holds this build's own values", () => {
+  const rows = fixture("enumerated-fields.json") as EnumeratedFieldRow[];
+  expect(rows.length).toBeGreaterThan(0);
+  const { members, problems } = enumeratedFields(ANSWER_SCHEMAS);
+  expect(problems).toEqual([]);
+  // A walk that read no enumeration would leave both directions below holding vacuously.
+  expect(members.size).toBeGreaterThan(0);
+
+  for (const row of rows) {
+    expect(
+      ANSWER_SCHEMAS[row.answer],
+      `the daemon declares \`${row.keyPath}\` of the ${row.answer} answer enumerated and ANSWER_SCHEMAS names no schema for that answer`
+    ).toBeDefined();
+    const read = members.get(`${row.answer} ${row.keyPath}`);
+    expect(
+      read,
+      `the daemon declares \`${row.keyPath}\` of the ${row.answer} answer enumerated and this module reads it with no z.enum`
+    ).toBeDefined();
+    if (read === undefined) {
+      continue;
+    }
+    expect(
+      row.values.map((value) => value.value).sort(),
+      `the daemon's \`${row.keyPath}\` of the ${row.answer} answer and this build's enumeration name different values`
+    ).toEqual([...read].sort());
+  }
+
+  // The other direction: a field this module reads with a `z.enum` that the daemon's table does
+  // not declare is a value the daemon could add without serving it down, and the loop above
+  // would never reach it.
+  const declared = new Set(rows.map((row) => `${row.answer} ${row.keyPath}`));
+  const undeclared = [...members.keys()].filter((field) => !declared.has(field)).sort();
+  expect(
+    undeclared,
+    `this module reads these fields with a z.enum and the daemon's table declares none of them: ${undeclared.join(", ")}`
+  ).toEqual([]);
+});
+
 // What that equality catches, and the one place it is blind. A key no schema names is dropped
 // wherever an object names its keys, at the top level and at the depth INFRA-1048's incident
 // took, and the gate names its path. Under `settings` (a `z.looseObject`) and under a pending
@@ -282,7 +564,7 @@ test("every golden's worker keys are roles this build knows", () => {
   for (const name of states) {
     const state = LegionStateResponse.parse(fixture(name));
     for (const [key, issue] of Object.entries(state.issues)) {
-      for (const role of Object.keys(issue.workers)) {
+      for (const role of Object.keys(issue.workers ?? {})) {
         expect(isLegionRole(role), `${name}: ${key} carries the worker ${role}`).toBeTrue();
         seen += 1;
       }
@@ -351,67 +633,21 @@ function objectMark(node: z.ZodObject): ObjectMark {
   return catchall === "never" ? "refuses" : "loose";
 }
 
-/** The node kinds the schemas of either side are built from that hold no object below them. A
- * kind outside this list and the walk's own branches throws: a `z.tuple`, a `z.intersection`, a
- * `.pipe()` or a `z.lazy()` added later would otherwise take its whole subtree out of the census
- * in silence. */
-const CENSUS_LEAF_KINDS: Record<string, true> = {
-  boolean: true,
-  enum: true,
-  literal: true,
-  number: true,
-  string: true,
-  unknown: true,
-};
-
-/** Every object node of the given schemas, by mark and by path. The walk descends an object's
- * shape, an array's element (`[]`), a record's value type (`{}`), a union's options (`|0`, `|1`;
- * `.refine()` wraps nothing, so a refined object is still an object node and a refined
- * discriminated union still a union node) and the inner type of an optional or a nullable. A node
- * two paths reach is one node, counted at the first path that reaches it: the claim view under
- * `architect`, the cache view under `repositories.mapped[].cache`. */
+/** Every object node of the given schemas, by mark and by path, read off `walkSchema`. A path is
+ * written as `censusPath` writes it. A node two paths reach is one node, counted at the first
+ * path that reaches it: the claim view under `architect`, the cache view under
+ * `repositories.mapped[].cache`. */
 function objectCensus(roots: Record<string, z.ZodType>): Record<ObjectMark, string[]> {
   const found: Record<ObjectMark, string[]> = { strips: [], refuses: [], loose: [] };
   const seen = new Set<z.core.$ZodType>();
-
-  const walk = (node: z.core.$ZodType, path: string): void => {
-    if (seen.has(node)) {
-      return;
-    }
-    seen.add(node);
-    if (node instanceof z.ZodObject) {
-      found[objectMark(node)].push(path);
-      for (const [key, value] of Object.entries(node.def.shape)) {
-        walk(value, `${path}.${key}`);
-      }
-      return;
-    }
-    if (node instanceof z.ZodArray) {
-      walk(node.def.element, `${path}[]`);
-      return;
-    }
-    if (node instanceof z.ZodRecord) {
-      walk(node.def.valueType, `${path}{}`);
-      return;
-    }
-    if (node instanceof z.ZodUnion) {
-      for (const [index, option] of node.def.options.entries()) {
-        walk(option, `${path}|${index}`);
-      }
-      return;
-    }
-    if (node instanceof z.ZodOptional || node instanceof z.ZodNullable) {
-      walk(node.def.innerType, path);
-      return;
-    }
-    const kind = node._zod.def.type;
-    if (CENSUS_LEAF_KINDS[kind] !== true) {
-      throw new Error(`the census reached a ${kind} node it does not walk, at ${path}`);
-    }
-  };
-
   for (const [name, schema] of Object.entries(roots)) {
-    walk(schema, name);
+    walkSchema(name, schema, (node, steps) => {
+      if (!(node instanceof z.ZodObject) || seen.has(node)) {
+        return;
+      }
+      seen.add(node);
+      found[objectMark(node)].push(`${name}${censusPath(steps)}`);
+    });
   }
   for (const paths of Object.values(found)) {
     paths.sort();
@@ -592,7 +828,9 @@ test("the state golden carries what an awaiting_person root waits on", () => {
   expect(
     parses({ kind: "ask", ask: "ask-7", answeredAt: "2026-09-22T09:21:00Z", answeredBy: "guess" })
   ).toBeFalse();
-  expect(parses({ kind: "gate", gateVersion: 3 })).toBeFalse();
+  // `artifactId` is no field this plugin reads, so a gate wait without it is read, not refused;
+  // the discriminator is the one key the union itself requires.
+  expect(parses({ kind: "gate", gateVersion: 3 })).toBeTrue();
   expect(parses({ kind: "other", ask: "ask-7" })).toBeFalse();
 });
 
@@ -889,7 +1127,7 @@ test("a failed claim carries its cause", () => {
   // the state sees them only because `legion-api.ts` names both.
   const parsed = LegionStateResponse.parse(state).issues["LEGION-210"];
   expect(parsed?.heldFrom).toBe("implementing");
-  expect(parsed?.workers.implementer?.claim.failure).toEqual(record);
+  expect(parsed?.workers?.implementer?.claim?.failure).toEqual(record);
 
   // A failure the migration backfilled carries no moment, and the record outlives the claim's
   // retirement; a cause outside the seven words, or a held phase outside the workflow's, is
@@ -915,8 +1153,14 @@ test("a failed claim carries its cause", () => {
     at: "2026-09-22T09:28:41Z",
     attempts: { launchFailures: 3, deaths: 0, promptFailures: 0, promptRetires: 0 },
   });
+  // A failure record with no `attempts` is read as the two keys it carries, not refused: every
+  // field this build does not name in its own read set is optional, so a daemon that stops
+  // serving one loses that key rather than the body (daemon-client.test.ts).
   claim.failure = { cause: "died", detail: "it died" };
-  expect(LegionOperatorClaimResponse.safeParse(claim).success).toBeFalse();
+  expect(LegionOperatorClaimResponse.parse(claim).failure).toEqual({
+    cause: "died",
+    detail: "it died",
+  });
   claim.failure = undefined;
   expect(LegionOperatorClaimResponse.safeParse(claim).error?.issues ?? []).toEqual([]);
 });
@@ -987,7 +1231,7 @@ test("a claim and an issue carry the fields the record decides they serve", () =
 
   // All seven survive the parse: the answer side strips what it does not name.
   const parsed = LegionStateResponse.parse(state);
-  const parsedWorking = parsed.issues["LEGION-208"]?.workers.implementer?.claim;
+  const parsedWorking = parsed.issues["LEGION-208"]?.workers?.implementer?.claim;
   expect({
     servingGeneration: parsedWorking?.servingGeneration,
     providerErrorRun: parsedWorking?.providerErrorRun,
@@ -999,7 +1243,7 @@ test("a claim and an issue carry the fields the record decides they serve", () =
     updateReasons: "the pod template changed: image ghcr.io/cybermonklabs/legion-worker moved",
     pendingTask: { phase: "implementing", queuedAt: "2026-09-22T09:16:58Z" },
   });
-  expect(parsed.issues["LEGION-210"]?.workers.implementer?.claim.pendingCause).toBe("died");
+  expect(parsed.issues["LEGION-210"]?.workers?.implementer?.claim?.pendingCause).toBe("died");
   expect(parsed.issues["LEGION-207"]?.lingerUntil).toBe("2026-09-22T10:10:12Z");
   expect(parsed.issues["LEGION-211"]?.ancestry).toEqual(["LEGION-209", "LEGION-208"]);
   // The pending task is the five facts and the text is not one of them, here or anywhere in the
@@ -1049,7 +1293,8 @@ test("a claim carries the leak check's cause beside its failure", () => {
     "the shared public leak check could not be installed: GitHub answered the read of theorem-labs/agent-infra at leak-check-v3 with HTTP 404: Not Found";
   expect(refused.leakCheckCause).toBe(sentence);
   expect(
-    LegionStateResponse.parse(state).issues["LEGION-210"]?.workers.implementer?.claim.leakCheckCause
+    LegionStateResponse.parse(state).issues["LEGION-210"]?.workers?.implementer?.claim
+      ?.leakCheckCause
   ).toBe(sentence);
 
   refused.leakCheckCause = "";
@@ -1080,11 +1325,12 @@ test("a claim carries the leak check's cause beside its failure", () => {
 
 // The mark of the narrowing, the last key of contract 75: the body the daemon serves a caller at
 // or above the contract carries the two numbers — the contract the daemon declares and the one
-// the caller's own pod records — and the body it narrows for a caller below it carries no such
-// key at all, since a key added to a narrowed body is exactly what the narrowing exists to
-// prevent. The daemon writes that narrowing to its own log instead (`api.stateFor`). The
-// operator's `legion state --json` is served whole and carries the daemon's number alone, which
-// is how the one reader that is never narrowed says which contract its answer was built at.
+// it shaped the body to — and the body it narrows for a caller below it carries no such key at
+// all, since a key added to a narrowed body is exactly what the narrowing exists to prevent. The
+// daemon writes that narrowing to its own log instead (`api.recordShaping`). From contract 127 on,
+// a reader served the body whole, the operator's `legion state --json` among them, is told the
+// daemon's own number as the caller's too, which is the golden's mark. A daemon from 75 to 123
+// served that reader the daemon's number alone, and the schema reads that mark as well.
 test("the state says which contract it was built at", () => {
   const { daemonApiVersion } = fixture("version.json") as { daemonApiVersion: number };
   const golden = fixture("state.json") as { contract?: Record<string, unknown> };
@@ -1094,9 +1340,9 @@ test("the state says which contract it was built at", () => {
     caller: daemonApiVersion,
   });
 
-  const operator = fixture("state.json") as { contract?: Record<string, unknown> };
-  operator.contract = { daemon: daemonApiVersion };
-  expect(LegionStateResponse.parse(operator).contract).toEqual({ daemon: daemonApiVersion });
+  const older = fixture("state.json") as { contract?: Record<string, unknown> };
+  older.contract = { daemon: daemonApiVersion };
+  expect(LegionStateResponse.parse(older).contract).toEqual({ daemon: daemonApiVersion });
 
   // A narrowed body carries no mark, and parses: the readers of this schema are never served one
   // — a caller below 75 reads with the schema of its own contract — and the state as
@@ -1106,14 +1352,15 @@ test("the state says which contract it was built at", () => {
   expect(LegionStateResponse.safeParse(narrowed).error?.issues ?? []).toEqual([]);
   expect(LegionStateResponse.parse(fixture("state-stage3.json")).contract).toBeUndefined();
 
-  // A number that is no contract is refused rather than read, and the daemon's own is required
-  // of a body that carries the mark at all: a mark naming the caller alone says nothing about
-  // which contract the answer was built at.
+  // A number that is no contract is refused rather than read. A mark naming the caller alone is
+  // read instead: every field of an answer this build does not name in its own read set is
+  // optional, so a daemon that leaves `daemon` off loses that key here and not the whole body
+  // (daemon-client.test.ts holds that rule over every answer schema).
   const wrong = fixture("state.json") as { contract?: Record<string, unknown> };
   wrong.contract = { daemon: 0 };
   expect(LegionStateResponse.safeParse(wrong).success).toBeFalse();
   wrong.contract = { caller: daemonApiVersion };
-  expect(LegionStateResponse.safeParse(wrong).success).toBeFalse();
+  expect(LegionStateResponse.parse(wrong).contract).toEqual({ caller: daemonApiVersion });
 });
 
 // An architect's backward move names the issue it moves from accepting; a phase worker's may
@@ -1289,34 +1536,44 @@ test("the empty answer refuses a body that is not an object", () => {
   expect(LegionEmptyResponse.safeParse("{}").success).toBeFalse();
 });
 
-test("a field the Go shape requires cannot be dropped", () => {
-  const mutated = fixture("state.json") as { admission: Record<string, unknown> };
-  delete mutated.admission.waiting;
+// Contract 60: the reader requires only the fields plugin code reads (`LEGION_ANSWER_READS`),
+// so a body that leaves out a field no plugin code reads is read rather than refused — which is
+// what the daemon serves a caller at a contract the field came after — and a body that leaves
+// out a field the plugin reads is refused by that field's own path.
+test("a field the plugin reads cannot be dropped, and a field it does not read can", () => {
+  const unread = fixture("state.json") as { admission: Record<string, unknown> };
+  delete unread.admission.waiting;
+  expect(LegionStateResponse.safeParse(unread).success).toBeTrue();
 
-  expect(LegionStateResponse.safeParse(mutated).success).toBeFalse();
+  const read = fixture("state.json") as Record<string, unknown>;
+  delete read.issues;
+  const refused = LegionStateResponse.safeParse(read);
+  expect(refused.success).toBeFalse();
+  expect(refused.error?.issues[0]?.path.join(".")).toBe("issues");
 });
 
 // Contract 38: the state names every issue Legion is waiting to start behind a Dispatch issue
 // nobody has finished — a child held at `admitted` and a waiting root alike — by issue key, each
-// with the keys it waits on, among them keys the state's `issues` does not record. `blocked` is
-// required, so a daemon older than the plugin cannot leave it out, and `waiting` keeps its own
-// meaning beside it: the admission line, which since contract 51 carries children as well as
-// roots.
+// with the keys it waits on, among them keys the state's `issues` does not record. No plugin
+// code reads either key, so a body without `blocked` is read and its value carries none, and
+// `waiting` keeps its own meaning beside it: the admission line, which since contract 51
+// carries children as well as roots. A `blockedBy` of a type the schema does not describe is
+// still refused.
 test("the state golden names what every blocked issue waits on", () => {
   const state = LegionStateResponse.parse(fixture("state.json"));
 
-  expect(state.admission.blocked).toEqual([
+  expect(state.admission?.blocked).toEqual([
     { issue: "LEGION-209", blockedBy: ["LEGION-210", "LEGION-213"] },
     { issue: "LEGION-211", blockedBy: ["LEGION-210"] },
   ]);
-  expect(state.admission.waiting).toEqual(["LEGION-212", "LEGION-211"]);
+  expect(state.admission?.waiting).toEqual(["LEGION-212", "LEGION-211"]);
 
   const dropped = fixture("state.json") as { admission: Record<string, unknown> };
   delete dropped.admission.blocked;
-  expect(LegionStateResponse.safeParse(dropped).success).toBeFalse();
+  expect(LegionStateResponse.safeParse(dropped).success).toBeTrue();
 
   const malformed = fixture("state.json") as { admission: { blocked: unknown[] } };
-  malformed.admission.blocked = [{ issue: "LEGION-209" }];
+  malformed.admission.blocked = [{ issue: "LEGION-209", blockedBy: "LEGION-210" }];
   expect(LegionStateResponse.safeParse(malformed).success).toBeFalse();
 });
 
@@ -1326,15 +1583,15 @@ test("the state golden names what every blocked issue waits on", () => {
 // golden carries a child: LEGION-209 stands in LEGION-208's tree, and all three live trees are
 // named while one issue alone holds a slot. Neither key is required: a daemon at this contract
 // strips both from the state it serves a caller whose pod's plugin is older than 51
-// (`api.stateFor`, `withoutTrees`). So a body without them parses, and a reader of it
+// (`api.shapeState`, `withoutTrees`). So a body without them parses, and a reader of it
 // learns nothing about which trees run rather than losing the whole state; what is refused is a
 // `tree` that is no issue key. A daemon older than this plugin is kept away by the boot gate and
 // `legion probe-image`, not by this schema.
 test("the state names the live trees and each issue's own tree", () => {
   const state = LegionStateResponse.parse(fixture("state-controller-claim.json"));
 
-  expect(state.admission.active).toEqual(["LEGION-208"]);
-  expect(state.admission.trees).toEqual(["LEGION-208", "LEGION-210", "LEGION-211"]);
+  expect(state.admission?.active).toEqual(["LEGION-208"]);
+  expect(state.admission?.trees).toEqual(["LEGION-208", "LEGION-210", "LEGION-211"]);
   expect(state.issues["LEGION-209"]?.tree).toBe("LEGION-208");
   expect(state.issues["LEGION-208"]?.tree).toBe("LEGION-208");
 
@@ -1348,7 +1605,7 @@ test("the state names the live trees and each issue's own tree", () => {
   }
   const served = LegionStateResponse.safeParse(stripped);
   expect(served.success).toBeTrue();
-  expect(served.data?.admission.trees).toBeUndefined();
+  expect(served.data?.admission?.trees).toBeUndefined();
 
   const malformed = fixture("state.json") as { issues: Record<string, { tree?: unknown }> };
   const issue = malformed.issues["LEGION-208"];
@@ -1360,8 +1617,9 @@ test("the state names the live trees and each issue's own tree", () => {
 });
 
 // Contract 38: a release is accepted whatever its children's links say, so the answer says which
-// of them it started and which it left held, with what each held child waits on. Both are
-// required, and `held` carries the same `{issue, blockedBy}` row the state's `blocked` does.
+// of them it started and which it left held, with what each held child waits on. No plugin code
+// reads the answer — the `legion` tool hands it to the agent whole — so a body with `released`
+// alone is read, and `held` carries the same `{issue, blockedBy}` row the state's `blocked` does.
 test("a wave release answers what it started and what it held", () => {
   expect(LegionWaveReleaseResponse.parse(fixture("wave-release.json"))).toEqual({
     released: ["LEGION-209"],
@@ -1375,7 +1633,8 @@ test("a wave release answers what it started and what it held", () => {
       held: [{ issue: "LEGION-209", blockedBy: ["LEGION-300"] }],
     }).success
   ).toBeTrue();
-  expect(LegionWaveReleaseResponse.safeParse({ released: ["LEGION-209"] }).success).toBeFalse();
+  expect(LegionWaveReleaseResponse.safeParse({ released: ["LEGION-209"] }).success).toBeTrue();
+  expect(LegionWaveReleaseResponse.safeParse({ released: "LEGION-209" }).success).toBeFalse();
 });
 
 test("the Stage 3 state golden carries the record status and pending Dispatch status write", () => {
@@ -1393,13 +1652,21 @@ test("the Stage 3 state golden carries the record status and pending Dispatch st
   ]);
 });
 
-test("a Stage 3 issue without its Dispatch status is refused", () => {
+// An issue's `status` is no field plugin code reads: the issue record is handed to the agent
+// with it, and no line of the plugin takes its value. A body without it is read, and an issue
+// whose `phase` is no phase this build knows is still refused.
+test("a Stage 3 issue without its Dispatch status is read, and one without a phase is refused", () => {
   const state = fixture("state-stage3.json") as {
     issues: Record<string, Record<string, unknown>>;
   };
   delete state.issues["LEGION-208"]?.status;
+  expect(LegionStateResponse.safeParse(state).success).toBeTrue();
 
-  expect(LegionStateResponse.safeParse(state).success).toBeFalse();
+  const phaseless = fixture("state-stage3.json") as {
+    issues: Record<string, Record<string, unknown>>;
+  };
+  delete phaseless.issues["LEGION-208"]?.phase;
+  expect(LegionStateResponse.safeParse(phaseless).success).toBeFalse();
 });
 
 // Contract 31: every recorded issue carries the repository it targets and its default branch, its
@@ -1414,14 +1681,17 @@ test("the state golden carries each issue's repository and the project's mapping
   expect(state.issues["LEGION-208"]?.repo).toBe("acme/widgets");
   expect(state.issues["LEGION-208"]?.pullRequest?.repo).toBe("acme/widgets");
   expect(state.issues["LEGION-210"]?.defaultBranch).toBe("release/v7.1");
-  expect(state.repositories.owners).toEqual(["acme", "zeta"]);
+  expect(state.repositories?.owners).toEqual(["acme", "zeta"]);
   expect(
-    state.repositories.mapped.map(({ repo, default: isDefault }) => ({ repo, default: isDefault }))
+    state.repositories?.mapped?.map(({ repo, default: isDefault }) => ({
+      repo,
+      default: isDefault,
+    }))
   ).toEqual([
     { repo: "acme/widgets", default: true },
     { repo: "zeta/tools", default: false },
   ]);
-  expect(state.repositories.mapped[0]?.cache).toEqual({
+  expect(state.repositories?.mapped?.[0]?.cache).toEqual({
     repo: "acme/widgets",
     sandbox: "legion-legion-cache-acme-widgets-d782c874",
     state: "ready",
@@ -1431,7 +1701,7 @@ test("the state golden carries each issue's repository and the project's mapping
     lastFetchAt: "2026-10-16T19:20:30Z",
     bytes: 6612345678,
   });
-  expect(state.repositories.mapped[1]?.cache).toEqual({
+  expect(state.repositories?.mapped?.[1]?.cache).toEqual({
     repo: "zeta/tools",
     sandbox: "legion-legion-cache-zeta-tools-1b2c3d4e",
     state: "failing",
@@ -1439,10 +1709,10 @@ test("the state golden carries each issue's repository and the project's mapping
     reason:
       "container cache CrashLoopBackOff: back-off 5m0s restarting failed container (restarted 4 times)",
   });
-  expect(state.repositories.refused[0]?.reason).toBe(
+  expect(state.repositories?.refused?.[0]?.reason).toBe(
     "the review App is not installed on acme/gadgets"
   );
-  expect(state.repositories.caches).toEqual([
+  expect(state.repositories?.caches).toEqual([
     {
       repo: "acme/legacy",
       sandbox: "legion-legion-cache-acme-legacy-0a1b2c3d",
@@ -1454,10 +1724,10 @@ test("the state golden carries each issue's repository and the project's mapping
 
   const dropped = fixture("state.json") as Record<string, unknown>;
   delete dropped.repositories;
-  expect(LegionStateResponse.safeParse(dropped).success).toBeFalse();
+  expect(LegionStateResponse.safeParse(dropped).success).toBeTrue();
   const noCaches = fixture("state.json") as { repositories: Record<string, unknown> };
   delete noCaches.repositories.caches;
-  expect(LegionStateResponse.safeParse(noCaches).success).toBeFalse();
+  expect(LegionStateResponse.safeParse(noCaches).success).toBeTrue();
   const refused = fixture("state.json") as {
     repositories: { caches: Array<Record<string, unknown>> };
   };
@@ -1465,7 +1735,7 @@ test("the state golden carries each issue's repository and the project's mapping
     state: "refused",
     reason: "its Service legion-legion-cache-acme-legacy-0a1b2c3d has no controller",
   });
-  expect(LegionStateResponse.parse(refused).repositories.caches[0]?.state).toBe("refused");
+  expect(LegionStateResponse.parse(refused).repositories?.caches?.[0]?.state).toBe("refused");
   Object.assign(refused.repositories.caches[0] ?? {}, { state: "gone" });
   expect(LegionStateResponse.safeParse(refused).success).toBeFalse();
 });
@@ -1484,7 +1754,7 @@ test("the state golden carries each issue's repository and the project's mapping
 test("the state golden carries the deployment's capability report", () => {
   const state = LegionStateResponse.parse(fixture("state.json"));
 
-  const rows = Object.fromEntries(state.capabilities.map((row) => [row.name, row]));
+  const rows = Object.fromEntries((state.capabilities ?? []).map((row) => [row.name, row]));
   expect(rows.secrets).toEqual({
     name: "secrets",
     status: "decided",
@@ -1519,7 +1789,7 @@ test("the state golden carries the deployment's capability report", () => {
     detail:
       "no session has reported yet (dispatch://LEGION-663): dispatches task subagents, each on the model its role configures",
   });
-  const statuses = state.capabilities.map((row) => row.status);
+  const statuses = (state.capabilities ?? []).map((row) => row.status);
   for (const status of ["present", "unchecked", "withheld", "decided", "open"] as const) {
     expect(statuses).toContain(status);
   }
@@ -1539,7 +1809,7 @@ test("the state golden carries the deployment's capability report", () => {
   expect(emptied.capabilities).toEqual([]);
 });
 
-test("a capability row's status is one the report renders, and the report cannot be dropped", () => {
+test("a capability row's status is one the report renders, and the report may be left out", () => {
   const unknownStatus = fixture("state.json") as { capabilities: { status: string }[] };
   unknownStatus.capabilities = [{ ...unknownStatus.capabilities[0], status: "missing" }];
   expect(LegionStateResponse.safeParse(unknownStatus).success).toBeFalse();
@@ -1551,9 +1821,10 @@ test("a capability row's status is one the report renders, and the report cannot
   live.capabilities = [{ ...live.capabilities[0], status: "live" }];
   expect(LegionStateResponse.safeParse(live).success).toBeFalse();
 
+  // No plugin code reads the report, so a body without it is read rather than refused.
   const dropped = fixture("state.json") as Record<string, unknown>;
   delete dropped.capabilities;
-  expect(LegionStateResponse.safeParse(dropped).success).toBeFalse();
+  expect(LegionStateResponse.safeParse(dropped).success).toBeTrue();
 });
 
 // A session's own report (contract 21): `claims/ready` carries what the session measured of the
@@ -1858,7 +2129,7 @@ test("no session-facing response carries suspendedBy", () => {
 
 test("the state golden shows a claim's capability report beside its locator", () => {
   const state = LegionStateResponse.parse(fixture("state.json"));
-  const implementer = state.issues["LEGION-208"]?.workers.implementer?.claim;
+  const implementer = state.issues["LEGION-208"]?.workers?.implementer?.claim;
 
   expect(implementer?.capabilities).toEqual({
     measuredAt: "2026-09-22T09:17:03Z",
@@ -1868,7 +2139,7 @@ test("the state golden shows a claim's capability report beside its locator", ()
   });
   expect(implementer?.capabilities?.incarnation).toBe(implementer?.locator?.incarnation);
   // The planner has reported nothing: a claim view without `capabilities` parses.
-  expect(state.issues["LEGION-208"]?.workers.planner?.claim.capabilities).toBeUndefined();
+  expect(state.issues["LEGION-208"]?.workers?.planner?.claim?.capabilities).toBeUndefined();
 
   const withoutReport = fixture("state.json") as {
     issues: Record<string, { workers: Record<string, { claim: Record<string, unknown> }> }>;
@@ -1879,7 +2150,7 @@ test("the state golden shows a claim's capability report beside its locator", ()
   // The implementer's report in a parsed copy of the golden, altered one member at a time.
   const parsedReport = () => {
     const document = LegionStateResponse.parse(fixture("state.json"));
-    const report = document.issues["LEGION-208"]?.workers.implementer?.claim.capabilities;
+    const report = document.issues["LEGION-208"]?.workers?.implementer?.claim?.capabilities;
     if (report === undefined) throw new Error("state.json: the implementer has no report");
     return { document, report };
   };
@@ -1901,7 +2172,7 @@ test("the state golden shows a claim's capability report beside its locator", ()
 // start of the phase it owns — one no rule the daemon runs queues — would relaunch it (contract
 // 56) — three keys each, neither the released nor the retired one wider than the failed one —
 // and a state with none carries an empty list rather than none.
-test("the state golden names the claims nothing will wake, and the list cannot be dropped", () => {
+test("the state golden names the claims nothing will wake, and the list may be left out", () => {
   const state = LegionStateResponse.parse(fixture("state.json"));
   expect(state.strandedClaims).toEqual([
     { issue: "LEGION-210", role: "implementer", state: "failed" },
@@ -1913,17 +2184,17 @@ test("the state golden names the claims nothing will wake, and the list cannot b
   const running = fixture("state.json") as { strandedClaims: unknown[] };
   running.strandedClaims = [{ issue: "LEGION-210", role: "implementer", state: "idle" }];
   expect(LegionStateResponse.safeParse(running).success).toBeFalse();
-
+  // No plugin code reads the list, so a body without it is read rather than refused.
   const dropped = fixture("state.json") as Record<string, unknown>;
   delete dropped.strandedClaims;
-  expect(LegionStateResponse.safeParse(dropped).success).toBeFalse();
+  expect(LegionStateResponse.safeParse(dropped).success).toBeTrue();
 });
 
 // The lifecycle rows held behind their issues' running ones (contract 28): the golden carries
-// LEGION-208's supervise row 802 waiting behind row 801 for two and a half minutes, a state with none
-// carries an empty list rather than none, a row's wait is never negative, and the list cannot be
-// dropped: a plugin from before the field refuses the state, which is what the bump is for.
-test("the state golden names the held lifecycle rows, and the list cannot be dropped", () => {
+// LEGION-208's supervise row 802 waiting behind row 801 for two and a half minutes, a state with
+// none carries an empty list rather than none, and a row's wait is never negative. No plugin
+// code reads the list, so a body without it is read rather than refused.
+test("the state golden names the held lifecycle rows, and the list may be left out", () => {
   const state = LegionStateResponse.parse(fixture("state.json"));
   expect(state.heldOutboxRows).toEqual([
     { id: 802, kind: "supervise", issue: "LEGION-208", waitedSeconds: 150, waitsOn: 801 },
@@ -1938,22 +2209,22 @@ test("the state golden names the held lifecycle rows, and the list cannot be dro
 
   const unnamed = fixture("state.json") as { heldOutboxRows: unknown[] };
   unnamed.heldOutboxRows = [
-    { id: 802, kind: "supervise", issue: "LEGION-208", waitedSeconds: 150 },
+    { id: 802, kind: "supervise", issue: "LEGION-208", waitedSeconds: 150, waitsOn: "801" },
   ];
   expect(LegionStateResponse.safeParse(unnamed).success).toBeFalse();
 
   const dropped = fixture("state.json") as Record<string, unknown>;
   delete dropped.heldOutboxRows;
-  expect(LegionStateResponse.safeParse(dropped).success).toBeFalse();
+  expect(LegionStateResponse.safeParse(dropped).success).toBeTrue();
 });
 
 // The wakes the pacing holds (contract 53): the golden names one of each kind the daemon paces,
 // in claim order, and a state outside a wave carries an empty list rather than none. The key is
 // not required: a daemon at this contract leaves it off the state it serves a caller whose pod's
-// plugin is older than 53, and the one it serves a caller whose pod's claims it cannot read at
-// all, which may be a pod at this contract (`api.stateFor`, `withoutWakesWaiting`). So a body
-// without the key parses, and a reader of it learns nothing about which wakes wait rather than
-// losing the whole state; what is refused is a wake with no kind at all.
+// plugin is older than 53, and off no other body it serves (`api.shapeState`,
+// `withoutWakesWaiting`). So a body without the key parses, and a reader of it learns nothing
+// about which wakes wait rather than losing the whole state; what is refused is a wake with no
+// kind at all.
 test("the state golden names the wakes the pacing holds, and the key may be absent", () => {
   const state = LegionStateResponse.parse(fixture("state.json"));
   expect(state.wakesWaiting).toEqual([
@@ -2004,10 +2275,10 @@ test("the state golden names the wakes the pacing holds, and the key may be abse
 // that lane has left to do, the claim whose wake it already holds among them, and a
 // state whose lane has nothing left carries 0 rather than no key. The key is not required for
 // the same reason `wakesWaiting` is not: a daemon at this contract leaves it off the state it
-// serves a caller whose pod's plugin is older than 73, and the one it serves a caller whose
-// pod's claims it cannot read at all (`api.stateFor`, `withoutClaimsToRefresh`). So a body
-// without the key parses and a reader of it learns nothing about what the lane has left, rather
-// than losing the whole state; what is refused is a count that is not a whole number of claims.
+// serves a caller whose pod's plugin is older than 73, and off no other body it serves
+// (`api.shapeState`, `withoutClaimsToRefresh`). So a body without the key parses and a reader of
+// it learns nothing about what the lane has left, rather than losing the whole state; what is
+// refused is a count that is not a whole number of claims.
 test("the state golden counts the claims the stale-plugin lane has left, and the key may be absent", () => {
   const state = fixture("state.json") as Record<string, unknown>;
   expect(LegionStateResponse.parse(state).claimsToRefresh).toBe(4);
@@ -2026,26 +2297,27 @@ test("the state golden counts the claims the stale-plugin lane has left, and the
 });
 
 // The daemon's resolved legion.yaml (contract 35): the golden carries the file's
-// `review_round_cap` and `worker_boot_timeout_seconds` and its GitHub Apps' ids and installations with no key, a
-// Stage 3 state carries the defaults, the two typed keys are positive integers, the rest rides
-// loosely, and the block cannot be dropped: a plugin from before the field refuses the state.
-// `max_fix_attempts` rode here until contract 59 removed the key.
-test("the state golden carries the daemon's settings with no credential, and the block cannot be dropped", () => {
+// `review_round_cap` and `worker_boot_timeout_seconds` and its GitHub Apps' ids and
+// installations with no key, a Stage 3 state carries the defaults, the two typed keys are
+// positive integers and the rest rides loosely. No plugin code reads the block, so a body
+// without it is read rather than refused. `max_fix_attempts` rode here until contract 59
+// removed the key.
+test("the state golden carries the daemon's settings with no credential", () => {
   const state = LegionStateResponse.parse(fixture("state.json"));
-  expect(state.settings.review_round_cap).toBe(4);
-  expect(state.settings.max_fix_attempts).toBeUndefined();
-  expect(state.settings.worker_boot_timeout_seconds).toBe(180);
-  const apps = state.settings.github_apps as { implement: Record<string, unknown> };
+  expect(state.settings?.review_round_cap).toBe(4);
+  expect(state.settings?.max_fix_attempts).toBeUndefined();
+  expect(state.settings?.worker_boot_timeout_seconds).toBe(180);
+  const apps = state.settings?.github_apps as { implement: Record<string, unknown> };
   expect(Object.keys(apps.implement).sort()).toEqual(["app_id", "installations"]);
 
   const stage3 = LegionStateResponse.parse(fixture("state-stage3.json"));
-  expect(stage3.settings.review_round_cap).toBe(3);
-  expect(stage3.settings.max_fix_attempts).toBeUndefined();
-  expect(stage3.settings.worker_boot_timeout_seconds).toBe(120);
+  expect(stage3.settings?.review_round_cap).toBe(3);
+  expect(stage3.settings?.max_fix_attempts).toBeUndefined();
+  expect(stage3.settings?.worker_boot_timeout_seconds).toBe(120);
 
   const dropped = fixture("state.json") as Record<string, unknown>;
   delete dropped.settings;
-  expect(LegionStateResponse.safeParse(dropped).success).toBeFalse();
+  expect(LegionStateResponse.safeParse(dropped).success).toBeTrue();
 
   const zero = fixture("state.json") as { settings: Record<string, unknown> };
   zero.settings.review_round_cap = 0;
@@ -2061,12 +2333,12 @@ test("the state golden carries the daemon's settings with no credential, and the
   expect(text).not.toMatch(/:\/\/[^/@\s]+:[^/@\s]+@/);
 });
 
-// The lag of the daemon's durable consumers (contract 43): the golden carries a caught-up consumer,
-// one whose info NATS did not answer and one stalled with messages waiting; a state with no
-// workflow carries an empty list; the oldest and the last handled are null rather than absent, a
-// negative count is refused, and the list cannot be dropped: a plugin from before the field
-// refuses the state, which is what the bump is for.
-test("the state golden carries each durable consumer's lag, and the list cannot be dropped", () => {
+// The lag of the daemon's durable consumers (contract 43): the golden carries a caught-up
+// consumer, one whose info NATS did not answer and one stalled with messages waiting; a state
+// with no workflow carries an empty list; the oldest and the last handled are null rather than
+// absent, and a negative count is refused. No plugin code reads the list, so a body without it
+// is read rather than refused.
+test("the state golden carries each durable consumer's lag", () => {
   const state = LegionStateResponse.parse(fixture("state.json"));
   expect(state.consumers).toEqual([
     {
@@ -2099,7 +2371,7 @@ test("the state golden carries each durable consumer's lag, and the list cannot 
 
   const absent = fixture("state.json") as { consumers: Record<string, unknown>[] };
   delete absent.consumers[0]?.oldestAt;
-  expect(LegionStateResponse.safeParse(absent).success).toBeFalse();
+  expect(LegionStateResponse.safeParse(absent).success).toBeTrue();
 
   const negative = fixture("state.json") as { consumers: Record<string, unknown>[] };
   negative.consumers = [{ ...negative.consumers[0], waiting: -1 }];
@@ -2107,16 +2379,16 @@ test("the state golden carries each durable consumer's lag, and the list cannot 
 
   const dropped = fixture("state.json") as Record<string, unknown>;
   delete dropped.consumers;
-  expect(LegionStateResponse.safeParse(dropped).success).toBeFalse();
+  expect(LegionStateResponse.safeParse(dropped).success).toBeTrue();
 });
 
-// Each served repository Dispatch's GitHub App is not known to be installed on (contract 43): the
-// golden carries one with its reason, a state with none carries an empty list, an entry without
-// its reason is refused, and the list cannot be dropped: a plugin from before the field refuses
-// the state.
-test("the state golden names each served repository without the webhook App, and the list cannot be dropped", () => {
+// Each served repository Dispatch's GitHub App is not known to be installed on (contract 43):
+// the golden carries one with its reason, and a state with none carries an empty list. No
+// plugin code reads the list, so an entry without its reason and a body without the list are
+// both read rather than refused.
+test("the state golden names each served repository without the webhook App", () => {
   const state = LegionStateResponse.parse(fixture("state.json"));
-  expect(state.repositories.withoutWebhookApp).toEqual([
+  expect(state.repositories?.withoutWebhookApp).toEqual([
     {
       repo: "zeta/tools",
       reason:
@@ -2124,18 +2396,18 @@ test("the state golden names each served repository without the webhook App, and
     },
   ]);
   expect(
-    LegionStateResponse.parse(fixture("state-stage3.json")).repositories.withoutWebhookApp
+    LegionStateResponse.parse(fixture("state-stage3.json")).repositories?.withoutWebhookApp
   ).toEqual([]);
 
   const reasonless = fixture("state.json") as {
     repositories: { withoutWebhookApp: Record<string, unknown>[] };
   };
   delete reasonless.repositories.withoutWebhookApp[0]?.reason;
-  expect(LegionStateResponse.safeParse(reasonless).success).toBeFalse();
+  expect(LegionStateResponse.safeParse(reasonless).success).toBeTrue();
 
   const dropped = fixture("state.json") as { repositories: Record<string, unknown> };
   delete dropped.repositories.withoutWebhookApp;
-  expect(LegionStateResponse.safeParse(dropped).success).toBeFalse();
+  expect(LegionStateResponse.safeParse(dropped).success).toBeTrue();
 });
 
 // An operator spawns a claim on an issue no workflow records — `legion claims spawn`, which is
@@ -2152,24 +2424,33 @@ test("state carrying an operator's claim on an issue no workflow records is pars
   expect(spawned?.architect?.state).toBe("idle");
 });
 
-test("a locator is the runtime's nested shape, never the flat one", () => {
-  const mutated = fixture("operator-claim.json") as { locator: Record<string, unknown> };
-  mutated.locator = {
+// The locator is the runtime's nested shape. No plugin code reads a locator's members, so the
+// flat shape a daemon might write instead is read and its flat keys are dropped, and a body
+// whose backend member is not the one its runtime names keeps nothing of that member. The
+// discriminator is the one key the union requires, and a runtime the schema does not describe
+// is still refused.
+test("a locator keeps the runtime's nested shape and drops what is not in it", () => {
+  const flat = fixture("operator-claim.json") as { locator: Record<string, unknown> };
+  flat.locator = {
     runtime: "tmux",
     claim: "legion-legion-legion-209-implementer",
     incarnation: "40217:9551230",
     window: "@7",
     pane: "%23",
   };
+  expect(LegionOperatorClaimResponse.parse(flat).locator).toEqual({
+    runtime: "tmux",
+    claim: "legion-legion-legion-209-implementer",
+    incarnation: "40217:9551230",
+  });
 
-  expect(LegionOperatorClaimResponse.safeParse(mutated).success).toBeFalse();
-});
+  const sandbox = fixture("operator-claim.json") as { locator: Record<string, unknown> };
+  sandbox.locator = { ...sandbox.locator, runtime: "sandbox" };
+  expect(LegionOperatorClaimResponse.parse(sandbox).locator).not.toHaveProperty("tmux");
 
-test("a locator's backend member is the one its runtime names", () => {
-  const mutated = fixture("operator-claim.json") as { locator: Record<string, unknown> };
-  mutated.locator = { ...mutated.locator, runtime: "sandbox" };
-
-  expect(LegionOperatorClaimResponse.safeParse(mutated).success).toBeFalse();
+  const unnamed = fixture("operator-claim.json") as { locator: Record<string, unknown> };
+  unnamed.locator = { ...unnamed.locator, runtime: "docker" };
+  expect(LegionOperatorClaimResponse.safeParse(unnamed).success).toBeFalse();
 });
 
 test("a claim state is one the supervisor has", () => {

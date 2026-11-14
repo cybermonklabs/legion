@@ -32,7 +32,8 @@
             "pane": "%1"
           }
         },
-        "pluginContract": 0
+        "pluginContract": 0,
+        "updateState": "none"
       },
       "workers": {}
     }

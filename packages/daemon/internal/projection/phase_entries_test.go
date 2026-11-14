@@ -61,7 +61,7 @@ func TestProjectShowsThePhaseEntryAndTheEntryTheRoleWasGiven(t *testing.T) {
 			Session: "ses_implementer_60", GivenEntry: 5},
 	}
 
-	got, err := Project(context.Background(), nil, store, project, nil, claims, nil, nil, projectedAt)
+	got, err := Project(context.Background(), Inputs{Store: store, Project: project, Claims: claims, Now: projectedAt})
 	if err != nil {
 		t.Fatalf("Project: %v", err)
 	}
@@ -103,10 +103,10 @@ func TestProjectWritesNoPhaseEntryForAPhaseNoWorkerRoleWorks(t *testing.T) {
 			"LEGION-70": {{Issue: "LEGION-70", Role: claim.RoleArchitect, Claim: "legion-70-architect", Entry: 2}},
 		},
 	}
-	got, err := Project(context.Background(), nil, store, project, nil, []supervise.Claim{
+	got, err := Project(context.Background(), Inputs{Store: store, Project: project, Claims: []supervise.Claim{
 		{Token: "legion-70-architect", Issue: "LEGION-70", Role: claim.RoleArchitect, State: supervise.StateReady,
 			Session: "ses_architect_70", GivenEntry: 1},
-	}, nil, nil, projectedAt)
+	}, Now: projectedAt})
 	if err != nil {
 		t.Fatalf("Project: %v", err)
 	}

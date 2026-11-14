@@ -506,10 +506,14 @@ async function runPane(run: Run, pane: Pane, cleanup: Cleanup): Promise<void> {
     if (url.pathname.startsWith("/legion/")) {
       return Response.json({ error: `no stand-in route ${url.pathname}` }, { status: 404 });
     }
-    // The Envoy listener: registration, the role claim, and any read answer with an interest.
-    // A registration is answered the session's own consumer (deliveryFor): a session given none
-    // receives nothing and its claim boot ends it, so a pane with no consumer would never reach
-    // the turns this proof measures.
+    // The Envoy listener, which serves `/v1/` and nothing else: registration, the role claim, and
+    // any other `/v1/` read answer with an interest. A path outside it is a route this stand-in
+    // does not serve, and it is refused. A registration is answered the session's own consumer
+    // (deliveryFor): a session given none receives nothing and its claim boot ends it, so a pane
+    // with no consumer would never reach the turns this proof measures.
+    if (!url.pathname.startsWith("/v1/")) {
+      return Response.json({ error: `no stand-in route ${url.pathname}` }, { status: 404 });
+    }
     return Response.json({
       session_id: typeof body.session_id === "string" ? body.session_id : "",
       machine_id: `${run.label}-machine`,

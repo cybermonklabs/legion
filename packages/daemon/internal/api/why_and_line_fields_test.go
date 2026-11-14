@@ -96,7 +96,7 @@ func fieldNames(fields map[string]string) []string {
 	return slices.Sorted(maps.Keys(fields))
 }
 
-// Three bands read this route, and the two strips make them in order (api's stateFor). A caller
+// Three bands read this route, and the two strips make them in order (api's shapeIssue). A caller
 // below waitingLineContract reads no `waitingLine` and no `why` at all, which withoutWaitingLine
 // and withoutWhyAndLineFields leave it. A caller from waitingLineContract up to the contract
 // below whyAndLineFieldsContract reads `waitingLine` with `place` and `length` alone and no

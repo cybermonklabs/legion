@@ -26,15 +26,15 @@ import (
 // round no early answer from it, and the round would wait for its bound.
 func (s *server) readyForUpdate(w http.ResponseWriter, r *http.Request) {
 	var req claim.ReadyForUpdateRequest
-	if !s.readBody(w, r, &req, s.claimSecretCheck) || !requireFields(w,
+	if !s.readBody(w, r, &req, s.claimSecretCheck) || !s.requireFields(w, r,
 		field{"claimToken", string(req.ClaimToken)}, field{"sessionId", req.SessionID},
 		field{"secret", req.Secret}, field{"round", req.Round},
-	) || !requireGeneration(w, req.Generation) {
+	) || !s.requireGeneration(w, r, req.Generation) {
 		return
 	}
 	m, _, ok := s.authenticated(req.ClaimToken, req.Secret)
 	if !ok {
-		writeJSON(w, claim.InvalidSecret.Status, claim.InvalidSecret)
+		s.writeAnswer(w, r, AnswerRefusal, claim.InvalidSecret.Status, claim.InvalidSecret)
 		return
 	}
 	ctx, decided := s.decision(r, req.ClaimToken)
@@ -44,7 +44,7 @@ func (s *server) readyForUpdate(w http.ResponseWriter, r *http.Request) {
 		Round: req.Round, Head: req.Head,
 	})
 	if err != nil {
-		s.claimFailure(w, "ready_for_update", req.ClaimToken, err)
+		s.claimFailure(w, r, "ready_for_update", req.ClaimToken, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

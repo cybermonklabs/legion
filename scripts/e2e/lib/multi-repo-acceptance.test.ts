@@ -113,6 +113,21 @@ describe("the daemon health refusal", () => {
       `LEGION_E2E_DAEMON_URL http://127.0.0.1:${daemonServer.port} is not a Legion daemon`
     );
   });
+
+  // The check reads `.status` alone, so a body that carries more than `status` passes (every
+  // other case here runs against daemonStub, which answers the typed body with `project`), and
+  // a 200 whose body is not a health body is still refused.
+  test("a stub whose /healthz answers 200 with another JSON body is refused", async () => {
+    const daemonServer = servers.track(
+      Bun.serve({ port: 0, fetch: () => Response.json({ ready: true }) })
+    );
+    const env = fullInputs(`http://127.0.0.1:${daemonServer.port}`, "http://127.0.0.1:1");
+    const { status, stderr } = await run(["done", "X-1"], env);
+    expect(status).not.toBe(0);
+    expect(stderr).toContain(
+      `LEGION_E2E_DAEMON_URL http://127.0.0.1:${daemonServer.port} is not a Legion daemon`
+    );
+  });
 });
 
 describe("children: structured Dispatch + state agreement, with raw evidence", () => {

@@ -37,12 +37,11 @@ const Unrecorded phase.Phase = "unrecorded"
 // State is the daemon's own facts, and nothing another system owns (spec: State and store).
 type State struct {
 	Daemon DaemonInfo `json:"daemon"`
-	// Contract is the contract this body was built at and, where the daemon placed the caller in
-	// a pod of the project, the contract that pod's claims record (ContractView): the two
-	// numbers the narrowing's own log line names (server's stateFor). Absent from a body the
-	// route narrowed, which is every caller below the contract that added it; written on every
-	// other body, the operator's `legion state --json` among them, which is served whole and
-	// says by this which contract it was built at.
+	// Contract is the contract this body was built at and the contract the shaping served the
+	// caller (ContractView): the two numbers the serving-down's own log line names (shaping.go's
+	// shapeState). Absent from a body served to a caller below the contract that added it;
+	// written on every other body, the operator's `legion state --json` among them, which is
+	// served whole and says by this which contract it was built at.
 	Contract            *ContractView        `json:"contract,omitempty"`
 	Admission           Admission            `json:"admission"`
 	Issues              map[string]Issue     `json:"issues"` // the issue record, keyed by issue key
@@ -109,14 +108,25 @@ type State struct {
 	// NATS at the request after the state's transaction commits, so no NATS read holds the
 	// snapshot open. Never null: a daemon with no workflow has none (contract 43).
 	Consumers []ConsumerLagView `json:"consumers"`
+	// LowestPluginContract is the lowest plugin contract among the claims of the project whose
+	// locator names a pod and that record one — the claims that hold a process, which are the
+	// ones a plugin reads this daemon's answers from (api's lowestPluginContract). Absent where
+	// no such claim exists, which is a project with nothing running.
+	//
+	// It is the number that says which shapes the serving-down must still cover, and the one to
+	// read before the floor this daemon shapes an answer from (ServingFloor) is raised: no claim
+	// holding a process reads below it. A claim that is suspended, failed or retired gave its
+	// locator up with its process and lowers it by nothing, however old the plugin it last
+	// recorded (contract 127).
+	LowestPluginContract *int `json:"lowestPluginContract,omitempty"`
 	// wakesWaitingHidden is set on the copy the state route serves a caller whose plugin is older
-	// than the contract that added WakesWaiting (api's withoutWakesWaiting, below server.go's
+	// than the contract that added WakesWaiting (api's withoutWakesWaiting, below shaping.go's
 	// wakesWaitingContract): that reader knows no `wakesWaiting` and refuses the key as surely
 	// when it is empty as when it names a wake, so MarshalJSON leaves the key off that one body
 	// rather than writing it empty, as Admission.treesHidden does for `trees`.
 	wakesWaitingHidden bool
 	// claimsToRefreshHidden is the same for ClaimsToRefresh, set on the copy the route serves a
-	// caller below server.go's claimsToRefreshContract (api's withoutClaimsToRefresh): the count
+	// caller below shaping.go's claimsToRefreshContract (api's withoutClaimsToRefresh): the count
 	// is written on every other body, 0 included, and a strict reader before that contract
 	// refuses the key when it is zero as surely as when it names a number, so MarshalJSON
 	// leaves it off that one body. The two flags compose on one body: a caller below
@@ -375,23 +385,27 @@ type DaemonInfo struct {
 	StartedAt     time.Time `json:"startedAt"`
 }
 
-// ContractView is the mark of the narrowing: the contract this body was built at and the
-// contract its caller records (`contract`, contract 75). Daemon is DaemonAPIVersion, what this
-// binary declares and serves; Caller is the plugin contract the claims of the caller's own pod
-// record, absent for a caller the daemon places in no pod — the operator's `legion state
-// --json`, a tmux pane, a pod whose claims record no contract — whose body is served whole and
-// narrowed by nothing. The two stand beside the daemon's own block rather than inside it,
-// because the second number is the caller's and no fact of the daemon.
+// ContractView is the mark of the serving-down: the contract this body was built at and the
+// contract it was shaped to (`contract`, contract 75). Daemon is DaemonAPIVersion, what this
+// binary declares and serves; Caller is the contract the answer was shaped to. From contract 127
+// on, Caller is written for every caller. A caller served this daemon's own shape — the
+// operator's `legion state --json`, a tmux pane, a pod whose claims record no contract, a
+// caller that states this contract or a higher one — is told DaemonAPIVersion, which is the
+// contract whose shape it gets. Before 127 the daemon left Caller off for such a caller. Now the
+// key is in the record of the daemon's own contract (contract-shapes.json), so that record does
+// not change when a later contract lands above it and serves such a caller a body below the
+// daemon's own, which carries the key. The two stand beside the daemon's own block rather than
+// inside it, because the second number is the caller's and no fact of the daemon.
 //
-// The mark rides under the contract that decided the record (server's recordFieldsContract), so
-// a caller below that contract is served no `contract` key at all (withoutRecordFields): a key
-// added to a narrowed body is exactly what the narrowing exists to prevent, since the plugin
-// that body is narrowed for reads the state with a strict schema and would refuse the whole of
-// it for one key it does not name. Such a caller is told nothing of the narrowing here; the
-// daemon's own log says it, one line per narrowing (server's stateFor).
+// The mark rides under the contract that decided the record (shaping.go's recordFieldsContract),
+// so a caller below that contract is served no `contract` key at all (withoutContractMark): a
+// key added to a body served down is exactly what the serving-down exists to prevent, since the
+// plugin that body is shaped for reads the state with a strict schema and would refuse the whole
+// of it for one key it does not name. Such a caller is told nothing of it here; the daemon's own
+// log says it, one line per band (shaping.go's stateNarrowings).
 type ContractView struct {
 	Daemon int `json:"daemon"`
-	Caller int `json:"caller,omitempty"`
+	Caller int `json:"caller"`
 }
 
 // Admission is the issue cap and the issues under it, in Dispatch rank order. Concurrency is
@@ -441,12 +455,12 @@ type Admission struct {
 	// workflow runs or waits in the line.
 	Held []HeldIssue `json:"held,omitzero"`
 	// treesHidden is set on the copy the state route serves a caller whose plugin is older than
-	// the contract that added Trees (api's withoutTrees, below server.go's treeContract): that
+	// the contract that added Trees (api's withoutTrees, below shaping.go's treeContract): that
 	// reader knows no `trees` and refuses the key as surely when it is empty as when it names a
 	// tree, so MarshalJSON leaves the key off that one body rather than writing it empty.
 	treesHidden bool
 	// heldHidden is the same for Held: it is set on the copy served a caller whose plugin is
-	// older than the contract that added the list (api's withoutHeld, below server.go's
+	// older than the contract that added the list (api's withoutHeld, below shaping.go's
 	// heldContract), whose reader refuses `held` emptied as surely as filled, so MarshalJSON
 	// leaves that key off too.
 	heldHidden bool
@@ -617,12 +631,12 @@ type Issue struct {
 	// has stopped is the tree and not the issue a reader happens to hold. Both are absent
 	// together for an issue whose tree is not live — one whose tree has left the workflow, and
 	// one the workflow does not record — since there is no tree of the deployment's to measure,
-	// and both are absent from the body the route serves a caller below quietTimeContract (api's
-	// stateFor, withoutQuietTime). A tree the record shows no movement for at all is measured
-	// from the zero time, as the measure defines it, and a Go duration saturates there, so such
-	// a tree reads as quiet for 2562047.788 hours — the largest span a duration holds, 292
-	// years. That is the pair saying the tree has never moved, not a fault: the alternative,
-	// leaving the keys off, would read as a tree nobody measures at all.
+	// and both are absent from the body the route serves a caller below quietTimeContract
+	// (shaping.go's shapeState, withoutQuietTime). A tree the record shows no movement for at
+	// all is measured from the zero time, as the measure defines it, and a Go duration saturates
+	// there, so such a tree reads as quiet for 2562047.788 hours — the largest span a duration
+	// holds, 292 years. That is the pair saying the tree has never moved, not a fault: the
+	// alternative, leaving the keys off, would read as a tree nobody measures at all.
 	TreeMovedAt *time.Time `json:"treeMovedAt,omitempty"`
 	QuietHours  *float64   `json:"quietHours,omitempty"`
 }
@@ -701,6 +715,11 @@ type ClaimView struct {
 	UpdateRound   string `json:"updateRound,omitempty"`
 	UpdateHead    string `json:"updateHead,omitempty"`
 	UpdateReasons string `json:"updateReasons,omitempty"`
+	// UpdateState is where the round above stands on this claim, as UpdateStateOf reads the
+	// claim's own update columns: `none`, `open`, `asked` or `answered` (contract 127). A
+	// reader takes it rather than spelling the same reading out of `updateRound` and
+	// `updateHead`, which tell a worker that answered with no head from one nobody asked.
+	UpdateState UpdateState `json:"updateState,omitempty"`
 	// LastTurnStart and LastTurnEnd are when the claim's agent last began a turn and last ended
 	// one, each absent until that happens: a claim that has worked since this release records
 	// them, and one that last ran before it records neither. They are what says whether a worker
@@ -730,6 +749,11 @@ type ClaimView struct {
 	// Step is what the daemon last saw this claim's agent do (supervise.StepRecord), and is
 	// absent for a claim whose agent has neither begun a turn nor made a call the daemon saw.
 	Step *StepView `json:"step,omitempty"`
+	// Wake is the wake the daemon's pacing holds for this claim, and absent where it holds
+	// none: the same wake the state names under `wakesWaiting`, beside the claim it will wake
+	// (WakeView). A claim that was never asked and carries a waiting launch is read here as the
+	// claim of a process the daemon has still to start.
+	Wake *WakeView `json:"wake,omitempty"`
 	// Failure is why the claim failed, and is absent for a claim the daemon holds no cause and
 	// sentence for (ClaimFailureView, FailureViewOf). PendingCause beside it is what failed the
 	// process whose relaunch is now in flight (supervise.Claim.PendingCause), and is absent for a
@@ -961,6 +985,29 @@ type PhaseView struct {
 	// that added them and are never filled in from the past, so an issue already in flight reads
 	// counts that add up to less than its `rounds`.
 	BackwardMoves map[string]int `json:"backwardMoves,omitempty"`
+	// passHidden is set on the copy the state route serves a caller below the contract that added
+	// Pass (api's withoutStateMachineFields, below shaping.go's stateMachineContract): that reader
+	// knows no `pass` and refuses the whole body for it, so MarshalJSON leaves the key off that
+	// one body rather than writing it as 0, which the key being no `omitempty` field would
+	// otherwise write.
+	passHidden bool
+}
+
+// MarshalJSON leaves `pass` off the one body whose reader knows no such key, and writes it on
+// every other, exactly as CheckView.MarshalJSON leaves off `role`: that body is marshalled
+// through a value whose own zero `pass` field, being `omitempty`, shadows the embedded one and so
+// is written by nothing. The shadowing field is the whole mechanism, and the embedded `pass` is
+// left as the phase counted it.
+func (p PhaseView) MarshalJSON() ([]byte, error) {
+	type wire PhaseView
+	out := wire(p)
+	if p.passHidden {
+		return json.Marshal(struct {
+			wire
+			Pass int `json:"pass,omitempty"`
+		}{wire: out})
+	}
+	return json.Marshal(out)
 }
 
 // HandoffRecordView is the Dispatch handoff record a worker's completion of its current
@@ -995,6 +1042,33 @@ type PullRequestView struct {
 	State          string `json:"state"`
 	MergeState     string `json:"mergeState,omitempty"`
 	ReviewDecision string `json:"reviewDecision,omitempty"`
+	// fixAttemptsShown is set on the copy the state route serves a caller below the contract
+	// that removed `fixAttempts` from this view (api's withFixAttempts, below shaping.go's
+	// fixAttemptsContract): that reader parses the pull request strictly and refuses the whole
+	// body for want of the key, so MarshalJSON writes the stand-in on that one body and no
+	// other. It is a flag of the view's own and the stand-in is a constant, as
+	// CheckView.roleHidden is a flag and no value: one body in a hundred carries the key, and
+	// the value it carries is the same on every one of them.
+	fixAttemptsShown bool
+}
+
+// MarshalJSON writes `fixAttempts` on the bodies that carry its stand-in, and leaves the key off
+// every other, which is how State.MarshalJSON leaves off `wakesWaiting` and `claimsToRefresh`:
+// the key is written by a field of the outer value rather than by one of the view, so no body
+// this contract writes can carry it. The outer value holds one pointer per stand-in, filled
+// where the view's flag is set and nil elsewhere, so a later stand-in is one more pointer and
+// one more flag.
+func (p PullRequestView) MarshalJSON() ([]byte, error) {
+	type wire PullRequestView
+	out := struct {
+		wire
+		FixAttempts *int `json:"fixAttempts,omitempty"`
+	}{wire: wire(p)}
+	if p.fixAttemptsShown {
+		standIn := fixAttemptsStandIn
+		out.FixAttempts = &standIn
+	}
+	return json.Marshal(out)
 }
 
 // GateView is the design gate: the spec document, the version Dispatch currently holds, and the
@@ -1185,6 +1259,30 @@ type CheckView struct {
 	LastWake    *CheckWakeView `json:"lastWake,omitempty"`
 	NextWakeAt  time.Time      `json:"nextWakeAt"`
 	Last        bool           `json:"last"`
+	// roleHidden is set on the copy the state route serves a caller below the contract that added
+	// Role (api's withoutCheckRole, below shaping.go's checkRoleContract): that reader knows no
+	// `role` and refuses the whole body for it, so MarshalJSON leaves the key off that one body
+	// rather than writing it empty.
+	roleHidden bool
+}
+
+// MarshalJSON leaves `role` off the one body whose reader knows no such key, and writes it on
+// every other, as State.MarshalJSON leaves off `wakesWaiting`: that body is marshalled through a
+// value whose own empty `role` field, being `omitempty`, shadows the embedded one and so is
+// written by nothing. The shadowing field is the whole mechanism, and the embedded `role`
+// is left as the check records it: a second way to the same end would leave a reader free to
+// delete the one that works. shaped_answers_test.go reads the key off the wire for a caller
+// below the contract (wantStandIns), which fails if it ever comes back.
+func (c CheckView) MarshalJSON() ([]byte, error) {
+	type wire CheckView
+	out := wire(c)
+	if c.roleHidden {
+		return json.Marshal(struct {
+			wire
+			Role string `json:"role,omitempty"`
+		}{wire: out})
+	}
+	return json.Marshal(out)
 }
 
 // CheckWakeView is what woke a production check's latest look: Kind names the cause (`merge` for
@@ -1423,12 +1521,45 @@ func WakesWaitingOf(held []supervise.WaitingWake, queued []WakeWaiting) []WakeWa
 	return wakes
 }
 
+// WakeView is the wake the pacing holds for one claim, as that claim's view names it
+// (ClaimView.Wake): what kind of wake it is and the moment the pacing gave it, which is when it
+// runs. The claim, its issue and its role are the view's own, so the entry here is the rest of
+// the state's own `wakesWaiting` row (WakeWaiting) and reports the same wake. A claim view that
+// carries this and whose state is `queued` or `suspended` is a process the daemon has still to
+// start, which is the reading a reader of `updateState` alone cannot reach.
+type WakeView struct {
+	Kind  supervise.WakeKind `json:"kind"`
+	DueAt time.Time          `json:"dueAt"`
+}
+
+// ClaimWakes is the wake each claim's view carries, by claim, read from the one list the state
+// names (WakesWaitingOf): both lanes, so a claim view answers the same wake its row under
+// `wakesWaiting` answers, whichever lane holds it.
+//
+// One claim can hold two wakes — a machine's and a row's, or two rows — and the first of them in
+// that list is the one its view carries. WakesWaitingOf sorts by claim and leaves the order of
+// one claim's wakes as its sources gave it, so the machine's wake comes before a row's. Nothing
+// is allocated where no wake waits, which is every moment outside a wave.
+func ClaimWakes(wakes []WakeWaiting) map[claim.Token]WakeView {
+	if len(wakes) == 0 {
+		return nil
+	}
+	views := make(map[claim.Token]WakeView, len(wakes))
+	for _, wake := range wakes {
+		if _, held := views[wake.Claim]; held {
+			continue
+		}
+		views[wake.Claim] = WakeView{Kind: wake.Kind, DueAt: wake.DueAt}
+	}
+	return views
+}
+
 // StateSource maps the daemon's durable and live facts through the transaction the state route
 // owns. It does not commit it: the route can refuse one failed projection without publishing a
 // partial snapshot. It answers the project's claims beside the state, the ones it read through
 // that transaction to build the claim views, so the route decides what the caller's plugin reads
-// (server's stateFor) from the claims of the snapshot it serves, rather than reading the table a
-// second time at another moment.
+// (shaping.go's shapeState) from the claims of the snapshot it serves, rather than reading the
+// table a second time at another moment.
 type StateSource interface {
 	State(ctx context.Context, tx pgx.Tx) (State, []supervise.Claim, error)
 }

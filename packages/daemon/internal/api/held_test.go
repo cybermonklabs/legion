@@ -41,7 +41,7 @@ func heldServed(t *testing.T, body []byte) (rows []HeldIssue, carried bool) {
 // body for a key it does not name, and refuses `held` emptied as surely as filled. A pod at this
 // contract, a pod whose claims record no contract at all, and a caller the daemon cannot place
 // in a pod — the operator's `legion state` — are served the key with its rows. A pod whose
-// claims cannot be read is no case here: the claims are the state's own snapshot (stateFor), so
+// claims cannot be read is no case here: the claims are the state's own snapshot (shapeState), so
 // a read that fails refuses the whole request before this is asked.
 func TestTheHeldListIsStrippedBelowItsContract(t *testing.T) {
 	full := stateFrom(t, populatedState(t), "192.0.2.1:41000", podClaims(heldContract-1))
