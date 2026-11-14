@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -420,6 +421,113 @@ func TestTheArchitectSweepSendsTheTaskTheDerivationGivesOverTheRecord(t *testing
 	if row := architectRow(t, pool, root); row.Entry != seededEntry {
 		t.Fatalf("the architect's row after the re-send = entry %d, want the %d it stood at: the rule sends the work of an entry and raises none", row.Entry, seededEntry)
 	}
+}
+
+// A root put back to admitted by the resume of a person's answer is sent the work of its entry
+// when the resume's start was lost, and the resume here is a real one: LEGION-100 waits on its
+// question ask-q, alice answers it, and the admission pass of that answer resumes the root
+// (workflow.Engine.ResumeAwaitedRoot). The resume raises the architect's entry one above the entry
+// the wait began on (workflow.Engine.EnterArchitect), writes its task as the work of the raised
+// entry, and queues the architect's start at that entry. The architect took the work of the entry
+// the wait began on, so its claim stands at that entry.
+//
+// The lane then finishes the resume's start row without the task reaching the claim (runStart),
+// as the outbox's fences or a lost lane leave one. The claim stands one entry below its row, and
+// the sweep is the only thing left that sends the raised entry's work. One sweep writes one
+// architect start at the raised entry, carrying the task the derivation gives over the record as
+// it stands (workflow.Engine.SendArchitectStart) and not the resume's text stored on the row
+// (TestTheArchitectSweepSendsTheTaskTheDerivationGivesOverTheRecord says why). A second sweep,
+// while that row is still queued, writes no second row.
+//
+// The control is the same resume with its start row left in the outbox: that row already carries
+// the raised entry (workflow.OwedEntry), so the sweep writes nothing beside it.
+func TestTheArchitectSweepSendsTheEntryAResumeRaisedWhenItsStartWasLost(t *testing.T) {
+	const root = "LEGION-100"
+	// resumed records LEGION-100 waiting on ask-q, its architect's row and claim both at
+	// seededEntry, and applies alice's answer. It checks what the resume wrote — the root back at
+	// admitted, the architect's row one entry up carrying the resume's task, and one start row of
+	// that entry carrying the same task — and answers the pool, the admission, the row and that
+	// start.
+	resumed := func(t *testing.T) (*pgxpool.Pool, *Admission, record.PhaseRow, convergeStart) {
+		t.Helper()
+		pool := migratedPool(t)
+		admission := quiet(t, 1)
+		awaitingRoot(t, pool, record.Awaiting{Ask: "ask-q", Since: seqMark(10)})
+		putArchitectRow(t, pool, root, seededEntry, handedBackAt)
+		token := putWorkerClaim(t, pool, root, root, claim.RoleArchitect, 1, supervise.StateIdle, "")
+		markGivenEntry(t, pool, token, seededEntry)
+
+		applyFact(t, pool, admission, "answer", answeredBy("ask-q", 11))
+
+		if got := issue(t, pool, root); got.Phase != phase.Admitted || got.Awaiting != nil {
+			t.Fatalf("%s after alice's answer stands in %s waiting on %+v, want it resumed at admitted with no wait", root, got.Phase, got.Awaiting)
+		}
+		row := architectRow(t, pool, root)
+		if row.Entry != seededEntry+1 || !strings.Contains(row.EntryTask, "ask-q") {
+			t.Fatalf("the architect row of %s after the resume = entry %d carrying %q, want entry %d carrying the resume's task, which names ask-q",
+				root, row.Entry, row.EntryTask, seededEntry+1)
+		}
+		starts := architectSweepStarts(t, pool, root)
+		if len(starts) != 1 || starts[0].entry != row.Entry || starts[0].task != row.EntryTask {
+			t.Fatalf("the architect starts of %s after the resume = %+v, want the one of entry %d carrying the resume's task %q",
+				root, starts, row.Entry, row.EntryTask)
+		}
+		return pool, admission, row, starts[0]
+	}
+
+	t.Run("the resume's start was lost", func(t *testing.T) {
+		pool, admission, row, _ := resumed(t)
+		runStart(t, pool, root)
+		if starts := architectSweepStarts(t, pool, root); len(starts) != 0 {
+			t.Fatalf("the architect starts of %s after the lane finished the resume's = %+v, want none", root, starts)
+		}
+		var given int64
+		if err := pool.QueryRow(context.Background(), `select given_entry from claims where token = $1`,
+			string(architectToken(t, root))).Scan(&given); err != nil {
+			t.Fatalf("read the entry the architect claim of %s was given: %v", root, err)
+		}
+		if given != seededEntry {
+			t.Fatalf("the architect claim of %s was given entry %d, want the %d the wait began on: the lost row gave it nothing of entry %d",
+				root, given, seededEntry, row.Entry)
+		}
+
+		applySweep(t, pool, admission, "resume-lost-1")
+
+		starts := architectSweepStarts(t, pool, root)
+		if len(starts) != 1 {
+			t.Fatalf("the architect starts of %s after the sweep = %+v, want the one the sweep writes for the entry %d the resume raised",
+				root, starts, row.Entry)
+		}
+		if starts[0].entry != row.Entry {
+			t.Fatalf("the architect start of %s after the sweep = %+v, want it at the entry %d the resume raised", root, starts[0], row.Entry)
+		}
+		if want := architectStart(t, pool, admission, root, ""); starts[0].task != want || !workflow.CarriesArchitectStart(starts[0].task) {
+			t.Fatalf("the task the sweep sent %s = %q, want the derivation's %q over the record as it stands, not the resume's %q stored on the row",
+				root, starts[0].task, want, row.EntryTask)
+		}
+		if after := architectRow(t, pool, root); after.Entry != row.Entry {
+			t.Fatalf("the architect row of %s after the sweep = entry %d, want the %d the resume raised: the sweep sends the work of an entry and raises none",
+				root, after.Entry, row.Entry)
+		}
+
+		applySweep(t, pool, admission, "resume-lost-2")
+
+		if again := architectSweepStarts(t, pool, root); len(again) != 1 || again[0] != starts[0] {
+			t.Fatalf("the architect starts of %s after a second sweep = %+v, want only the %+v the first wrote: that row is still on its way",
+				root, again, starts[0])
+		}
+	})
+
+	t.Run("the resume's start still stands", func(t *testing.T) {
+		pool, admission, _, start := resumed(t)
+
+		applySweep(t, pool, admission, "resume-standing")
+
+		if starts := architectSweepStarts(t, pool, root); len(starts) != 1 || starts[0] != start {
+			t.Fatalf("the architect starts of %s after the sweep = %+v, want only the %+v the resume wrote: a start at the raised entry is already on its way",
+				root, starts, start)
+		}
+	})
 }
 
 // Every role of the daemon is inside the rule, read from claim.Roles so that a role added to the
