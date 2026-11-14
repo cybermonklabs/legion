@@ -1693,7 +1693,7 @@ func adminInterestsHandler(registry *store.Registry, sessions *session.SessionRe
 // the claim is refused, with the bus-unavailable 503 and Retry-After: 1 naming the state
 // (writeBusUnavailable) and nothing claimed, while the role claim view cannot be served
 // (store.Registry.RoleViewErr), while the copy's last whole read of the role bucket is past its
-// repair bound or none has completed (store.Registry.RoleClaimRepairErr), and while this
+// repair bound or none has completed (store.RoleClaimRepairReport.Err), and while this
 // listener's own renewal of that role's claim for its holder failed inside the live window
 // (store.Registry.RenewalFailedWithin, which a renewal of that claim that writes clears). Without
 // them a listener whose renewals stopped landing would hand a live holder's role to the second

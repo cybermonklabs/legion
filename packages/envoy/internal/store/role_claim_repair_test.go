@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/kvwatch"
+	"github.com/sjawhar/envoy/internal/kvwatch/kvwatchtest"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -22,60 +23,15 @@ import (
 // moment its start's read completes on that clock.
 var repairBase = time.Date(2026, 11, 13, 15, 0, 0, 0, time.UTC)
 
-// repairWaits stands in for time.AfterFunc in the role claim watcher (WithRoleClaimWatch,
-// kvwatch.WithAfterFunc). It keeps every wait longer than a scan's idle timeout for the test to
-// fire itself, and hands every shorter one - the stream probe, a re-read, a scan's idle wait - to
-// time.AfterFunc, so the watcher reads and follows its bucket as it does in production. The waits
-// it keeps are the scheduled read's and the minute a watcher stop nobody asked for waits before its
-// ERROR, which no test here makes. A kept wait records its delay, so a test reads the interval the
-// watcher armed rather than assuming it.
-type repairWaits struct {
-	mu   sync.Mutex
-	kept []*repairWait
-}
-
-// repairWait is one wait a repairWaits kept.
-type repairWait struct {
-	delay   time.Duration
-	fire    func()
-	stopped atomic.Bool
-}
-
-func (w *repairWait) Stop() bool { return !w.stopped.Swap(true) }
-
-// after is the AfterFunc the watcher arms its waits through.
-func (p *repairWaits) after(d time.Duration, f func()) kvwatch.Timer {
-	if d <= kvwatch.ScanIdleTimeout {
-		return time.AfterFunc(d, f)
-	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	wait := &repairWait{delay: d, fire: f}
-	p.kept = append(p.kept, wait)
-	return wait
-}
-
-// armed is the kept wait the watcher armed last and has not stopped, and nil when there is none.
-func (p *repairWaits) armed() *repairWait {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	for i := len(p.kept) - 1; i >= 0; i-- {
-		if !p.kept[i].stopped.Load() {
-			return p.kept[i]
-		}
-	}
-	return nil
-}
-
 // repairRig is a registry whose role claim watcher keeps its scheduled read for the test to fire
-// (repairWaits), on a clock the test moves (manualClock), with the connection it was opened on and
-// raw handles on its two buckets for the writes the registry does not make itself.
+// (kvwatchtest.Waits), on a clock the test moves (manualClock), with the connection it was opened
+// on and raw handles on its two buckets for the writes the registry does not make itself.
 type repairRig struct {
 	t         *testing.T
 	conn      *natsgo.Conn
 	reg       *Registry
 	clock     *manualClock
-	waits     *repairWaits
+	waits     *kvwatchtest.Waits
 	roles     natsgo.KeyValue
 	interests natsgo.KeyValue
 }
@@ -97,8 +53,8 @@ func newRepairRig(t *testing.T, seed func(roles natsgo.KeyValue)) *repairRig {
 		}
 		seed(roles)
 	}
-	rig := &repairRig{t: t, conn: conn, clock: &manualClock{at: repairBase}, waits: &repairWaits{}}
-	rig.reg, err = Open(conn, WithReplicas(1), WithClock(rig.clock.Now), WithRoleClaimWatch(kvwatch.WithAfterFunc(rig.waits.after)))
+	rig := &repairRig{t: t, conn: conn, clock: &manualClock{at: repairBase}, waits: &kvwatchtest.Waits{}}
+	rig.reg, err = Open(conn, WithReplicas(1), WithClock(rig.clock.Now), WithRoleClaimWatch(kvwatch.WithAfterFunc(rig.waits.After)))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -121,11 +77,11 @@ func newRepairRig(t *testing.T, seed func(roles natsgo.KeyValue)) *repairRig {
 // scheduled is the scheduled read the role claim watcher armed last and has not stopped. It is
 // waited for: a read records its completion (roleCache.CompleteRead) a moment before the watcher
 // arms the next.
-func (rig *repairRig) scheduled() *repairWait {
+func (rig *repairRig) scheduled() *kvwatchtest.Wait {
 	rig.t.Helper()
-	var wait *repairWait
+	var wait *kvwatchtest.Wait
 	waitFor(rig.t, 10*time.Second, func() bool {
-		wait = rig.waits.armed()
+		wait = rig.waits.Armed()
 		return wait != nil
 	})
 	return wait
@@ -135,18 +91,18 @@ func (rig *repairRig) scheduled() *repairWait {
 // read that armed it, which completed when the report says.
 func (rig *repairRig) due() time.Time {
 	rig.t.Helper()
-	return rig.reg.RoleClaimRepair().CompletedAt.Add(rig.scheduled().delay)
+	return rig.reg.RoleClaimRepair().CompletedAt.Add(rig.scheduled().Delay())
 }
 
 // fire moves the registry's clock to at and fires the armed scheduled read, without waiting for
 // the read it starts. It returns the report before that read and the wait it fired, for
 // awaitRepair.
-func (rig *repairRig) fire(at time.Time) (RoleClaimRepairReport, *repairWait) {
+func (rig *repairRig) fire(at time.Time) (RoleClaimRepairReport, *kvwatchtest.Wait) {
 	rig.t.Helper()
 	wait := rig.scheduled()
 	before := rig.reg.RoleClaimRepair()
 	rig.clock.Set(at)
-	wait.fire()
+	wait.Fire()
 	return before, wait
 }
 
@@ -154,10 +110,10 @@ func (rig *repairRig) fire(at time.Time) (RoleClaimRepairReport, *repairWait) {
 // read in place of fired, and returns the report of that read. A read that does not complete is an
 // error and not the end of the test, so the assertion the caller makes of the copy next fails too,
 // naming what the repair left undone.
-func (rig *repairRig) awaitRepair(before RoleClaimRepairReport, fired *repairWait) RoleClaimRepairReport {
+func (rig *repairRig) awaitRepair(before RoleClaimRepairReport, fired *kvwatchtest.Wait) RoleClaimRepairReport {
 	rig.t.Helper()
 	if !testwait.Holds(10*time.Second, testwait.Poll, func() bool {
-		next := rig.waits.armed()
+		next := rig.waits.Armed()
 		return next != nil && next != fired && rig.reg.RoleClaimRepair().Completed > before.Completed
 	}) {
 		rig.t.Errorf("the scheduled read fired after %d completed reads completed no read of the role claims within 10s", before.Completed)
@@ -212,22 +168,19 @@ func rolesBySession(t *testing.T, reg *Registry) map[string][]string {
 	return held
 }
 
-// The repair runs often enough to finish inside its bound, and the bound leaves a claim the copy
-// lost two heartbeats of the live window to be renewed in. The registry's watcher arms its
-// scheduled read at the very interval the constant names, so the constant is what runs.
+// The repair runs often enough to finish inside its bound, and the registry's watcher arms its
+// scheduled read at the very interval the constant names, so the constant is what runs. That the
+// bound leaves a claim the copy lost two heartbeats of the live window to be renewed in is the
+// bound's own definition (RoleClaimRepairBound), not something to test.
 func TestTheRoleClaimRepairIntervalIsInsideItsBound(t *testing.T) {
 	if roleClaimRepairInterval > RoleClaimRepairBound {
 		t.Fatalf("the role claim repair runs every %s, past its bound of %s: a claim the copy lost stays lost past the bound",
 			roleClaimRepairInterval, RoleClaimRepairBound)
 	}
-	if limit := contracts.SessionLiveWindow - 2*contracts.SessionHeartbeat; RoleClaimRepairBound > limit {
-		t.Fatalf("the role claim repair bound is %s, past the live window of %s less two %s heartbeats (%s): a claim the repair puts back is not renewed again before its live window ends",
-			RoleClaimRepairBound, contracts.SessionLiveWindow, contracts.SessionHeartbeat, limit)
-	}
 	rig := newRepairRig(t, nil)
-	if wait := rig.scheduled(); wait.delay != roleClaimRepairInterval {
+	if wait := rig.scheduled(); wait.Delay() != roleClaimRepairInterval {
 		t.Fatalf("the role claim watcher armed its scheduled read %s after the start's read, want roleClaimRepairInterval, %s",
-			wait.delay, roleClaimRepairInterval)
+			wait.Delay(), roleClaimRepairInterval)
 	}
 }
 
@@ -245,9 +198,9 @@ func TestARoleCopyLostClaimIsBackWithinTheRepairBound(t *testing.T) {
 		putRoleClaim(t, roles, role, holder)
 		putRoleClaim(t, roles, "reviewer", kept)
 	})
-	if wait := rig.scheduled(); wait.delay > RoleClaimRepairBound {
+	if wait := rig.scheduled(); wait.Delay() > RoleClaimRepairBound {
 		t.Fatalf("the role claim watcher armed its scheduled read %s after the read that completed, past the repair bound of %s",
-			wait.delay, RoleClaimRepairBound)
+			wait.Delay(), RoleClaimRepairBound)
 	}
 
 	lostAt := rig.clock.Now()
@@ -420,7 +373,7 @@ func TestARepairMidScanKeepsAClaimGrantedWhileTheReadRuns(t *testing.T) {
 	}
 	rig.reg.roleWatcher.Stop()
 	rig.reg.roleWatcher = kvwatch.New("role claims", rig.reg.roles(), cache,
-		kvwatch.WithScheduledRead(roleClaimRepairInterval), kvwatch.WithAfterFunc(rig.waits.after))
+		kvwatch.WithScheduledRead(roleClaimRepairInterval), kvwatch.WithAfterFunc(rig.waits.After))
 	rig.reg.roleWatcher.Start()
 	waitFor(t, 10*time.Second, func() bool { return servableView(rig.reg) })
 
@@ -543,34 +496,34 @@ func TestARescanBringsBackAClaimNeitherTheRecordNorTheCopyNames(t *testing.T) {
 	}
 }
 
-// RoleClaimRepairErr ages the last whole read that completed against the bound on the registry's
-// clock: a registry no read has completed for is reported so, a read no older than the bound is
-// not late, one older is, naming its age and the bound, and the next read that completes, however
-// late, resets the age.
+// RoleClaimRepairReport.Err ages the last whole read that completed against the bound on the
+// registry's clock: a registry no read has completed for is reported so, a read no older than the
+// bound is not late, one older is, naming its age and the bound, and the next read that completes,
+// however late, resets the age.
 func TestARoleClaimRepairOlderThanItsBoundIsReportedLate(t *testing.T) {
-	if err := (&Registry{}).RoleClaimRepairErr(); err == nil || err.Error() != "no whole read of the role claims has completed" {
-		t.Fatalf("a registry no read has completed for answers RoleClaimRepairErr %v, want that no whole read has completed", err)
+	if err := (&Registry{}).RoleClaimRepair().Err(); err == nil || err.Error() != "no whole read of the role claims has completed" {
+		t.Fatalf("a registry no read has completed for reports the repair error %v, want that no whole read has completed", err)
 	}
 	rig := newRepairRig(t, nil)
-	if err := rig.reg.RoleClaimRepairErr(); err != nil {
-		t.Fatalf("just after the start's read RoleClaimRepairErr = %v, want nil", err)
+	if err := rig.reg.RoleClaimRepair().Err(); err != nil {
+		t.Fatalf("just after the start's read the repair error = %v, want nil", err)
 	}
 	rig.clock.Set(repairBase.Add(RoleClaimRepairBound))
-	if err := rig.reg.RoleClaimRepairErr(); err != nil {
-		t.Fatalf("the bound after the start's read RoleClaimRepairErr = %v, want nil", err)
+	if err := rig.reg.RoleClaimRepair().Err(); err != nil {
+		t.Fatalf("the bound after the start's read the repair error = %v, want nil", err)
 	}
 	late := repairBase.Add(RoleClaimRepairBound + time.Second)
 	rig.clock.Set(late)
-	err := rig.reg.RoleClaimRepairErr()
+	err := rig.reg.RoleClaimRepair().Err()
 	if want := "the last whole read of the role claims completed 2m1s ago, past the 2m0s bound"; err == nil || err.Error() != want {
-		t.Fatalf("past the bound RoleClaimRepairErr = %v, want %q", err, want)
+		t.Fatalf("past the bound the repair error = %v, want %q", err, want)
 	}
 
 	repaired := rig.awaitRepair(rig.fire(late))
 	if !repaired.CompletedAt.Equal(late) {
 		t.Fatalf("the late scheduled read completed at %s, want %s", repaired.CompletedAt, late)
 	}
-	if err := rig.reg.RoleClaimRepairErr(); err != nil {
-		t.Fatalf("after the late scheduled read RoleClaimRepairErr = %v, want nil", err)
+	if err := rig.reg.RoleClaimRepair().Err(); err != nil {
+		t.Fatalf("after the late scheduled read the repair error = %v, want nil", err)
 	}
 }

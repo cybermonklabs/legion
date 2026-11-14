@@ -201,16 +201,17 @@ func roleOfTopic(topic string) (string, bool) {
 //
 // A read of the claim that did not answer or failed - ErrMalformedRoleClaim and a key the bus
 // refuses included - and a write that did not answer or failed are this renewal's failures: each
-// is returned naming role and recorded against role and sessionID (recordRenewalFailure), since
-// such a claim may be sessionID's and is then not renewed. A lost compare-and-swap, a claim of
-// another session or process, a handed-back claim and a role with no claim record are none: the
-// record said what stands, and nothing of sessionID's went unrenewed. A write that landed clears
-// the record of role for sessionID (clearRenewalFailure).
+// is returned naming role and recorded against role and sessionID (renewalFailures.record),
+// since such a claim may be sessionID's and is then not renewed. A lost compare-and-swap, a claim
+// of another session or process, a handed-back claim and a role with no claim record are none:
+// the record said what stands, and nothing of sessionID's went unrenewed. A write that landed
+// clears the record of role for sessionID (renewalFailures.clear).
 func (r *Registry) renewRoleClaim(ctx context.Context, role, sessionID, clientInstanceID string) (bool, error) {
+	key := renewalFailureKey{role: role, sessionID: sessionID}
 	claim, err := r.RoleClaim(ctx, role)
 	if err != nil {
 		err = fmt.Errorf("renew role %s's claim held by %s: %w", role, sessionID, err)
-		r.recordRenewalFailure(role, sessionID, err)
+		r.renewalFailures.record(r.now(), key, err)
 		return false, err
 	}
 	outcome, _, err := r.writeRoleClaim(ctx, claim, roleClaimWrite{
@@ -235,10 +236,10 @@ func (r *Registry) renewRoleClaim(ctx context.Context, role, sessionID, clientIn
 	switch {
 	case err != nil:
 		err = fmt.Errorf("renew role %s's claim held by %s: %w", role, sessionID, err)
-		r.recordRenewalFailure(role, sessionID, err)
+		r.renewalFailures.record(r.now(), key, err)
 		return false, err
 	case outcome == roleClaimWriteLanded:
-		r.clearRenewalFailure(role, sessionID)
+		r.renewalFailures.clear(key)
 		return true, nil
 	case outcome == roleClaimWriteRaced, outcome == roleClaimWriteMissing:
 		r.logger().Info("registry dropped a role claim renewal a claim landed under",
@@ -296,16 +297,9 @@ type renewalFailureKey struct {
 type renewalFailures struct {
 	mu      sync.Mutex
 	entries map[renewalFailureKey]RenewalFailure
-	// window is the live window the role claim reaper's last pass pruned the record at
-	// (ReapRoleClaims), which each write of the record prunes at too. It is 0 before any pass,
-	// and a write then prunes nothing: the record cannot know the deployment's live window
-	// before the reaper hands it one, and an entry pruned at a shorter window than the reader's
-	// would answer a failure inside that window as none.
-	window time.Duration
 }
 
-// record records err against key at now, in place of any earlier failure of that key, and prunes
-// the entries as old as the reaper's last window or older.
+// record records err against key at now, in place of any earlier failure of that key.
 func (f *renewalFailures) record(now time.Time, key renewalFailureKey, err error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -313,9 +307,6 @@ func (f *renewalFailures) record(now time.Time, key renewalFailureKey, err error
 		f.entries = map[renewalFailureKey]RenewalFailure{}
 	}
 	f.entries[key] = RenewalFailure{At: now, Err: err}
-	if f.window > 0 {
-		f.pruneLocked(now, f.window)
-	}
 }
 
 // clear removes key's failure.
@@ -333,42 +324,17 @@ func (f *renewalFailures) get(key renewalFailureKey) (RenewalFailure, bool) {
 	return failure, ok
 }
 
-// prune removes every entry window old or older as of now and keeps window for the prune of each
-// later write.
+// prune removes every entry window old or older as of now: such an entry is outside the window
+// RenewalFailedWithin reads it in, so no reader at that window can be answered with it. The role
+// claim reaper's pass calls it (ReapRoleClaims), the one caller handed the deployment's live
+// window. An entry that passes the window between two passes only takes memory until the next,
+// since RenewalFailedWithin answers none older than the window it is asked about.
 func (f *renewalFailures) prune(now time.Time, window time.Duration) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.window = window
-	f.pruneLocked(now, window)
-}
-
-// pruneLocked is prune's removal, under f.mu: an entry window old or older is outside the
-// window RenewalFailedWithin reads it in, so no reader at that window can be answered with it.
-func (f *renewalFailures) pruneLocked(now time.Time, window time.Duration) {
 	maps.DeleteFunc(f.entries, func(_ renewalFailureKey, failure RenewalFailure) bool {
 		return now.Sub(failure.At) >= window
 	})
-}
-
-// recordRenewalFailure records err, the failure of a renewal of role's claim for sessionID, on the
-// registry's clock (renewRoleClaim, RecordRenewalFailures).
-func (r *Registry) recordRenewalFailure(role, sessionID string, err error) {
-	r.renewalFailures.record(r.now(), renewalFailureKey{role: role, sessionID: sessionID}, err)
-}
-
-// clearRenewalFailure removes the failure recorded of role's claim for sessionID: a renewal of
-// that claim for that session wrote (renewRoleClaim), so the claim carries this listener's
-// heartbeat again.
-func (r *Registry) clearRenewalFailure(role, sessionID string) {
-	r.renewalFailures.clear(renewalFailureKey{role: role, sessionID: sessionID})
-}
-
-// pruneRenewalFailures removes every renewal failure recorded liveWindow ago or longer, on the
-// registry's clock, and keeps liveWindow for the prune each later write of the record makes. The
-// role claim reaper's pass calls it (ReapRoleClaims), the one caller handed the deployment's live
-// window.
-func (r *Registry) pruneRenewalFailures(liveWindow time.Duration) {
-	r.renewalFailures.prune(r.now(), liveWindow)
 }
 
 // RecordRenewalFailures records cause as a renewal failure of every role sessionID may hold, for a
@@ -387,7 +353,8 @@ func (r *Registry) RecordRenewalFailures(sessionID string, cause error) {
 	}
 	roles, _ := r.weighedRoles(sessionID, topics)
 	for _, role := range roles {
-		r.recordRenewalFailure(role, sessionID, fmt.Errorf("renew role %s's claim held by %s: the registration failed before its renewal: %w", role, sessionID, cause))
+		r.renewalFailures.record(r.now(), renewalFailureKey{role: role, sessionID: sessionID},
+			fmt.Errorf("renew role %s's claim held by %s: the registration failed before its renewal: %w", role, sessionID, cause))
 	}
 }
 

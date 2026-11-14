@@ -27,7 +27,7 @@ func (r *Registry) applyRoleClaim(entry natsgo.KeyValueEntry) {
 func (r *Registry) resetRoleHolders() {
 	r.holdersMu.Lock()
 	defer r.holdersMu.Unlock()
-	r.roleHolders = newRoleHolderCopy()
+	r.roleHolders = newRoleHolderCopy(r)
 }
 
 // holderOf is the session the view names for role, empty when it names none.

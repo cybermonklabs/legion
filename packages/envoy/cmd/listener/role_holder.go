@@ -284,7 +284,7 @@ const (
 //     would have named goes unrenewed, and no other arm covers the window after the watcher ends
 //     terminally.
 //   - The copy's last whole read of the role bucket completed longer ago than
-//     store.RoleClaimRepairBound, or none has completed (store.Registry.RoleClaimRepairErr). The
+//     store.RoleClaimRepairBound, or none has completed (store.RoleClaimRepairReport.Err). The
 //     repair is what puts back a claim the copy lost when the interest row does not name it
 //     either, so past the bound such a claim may have gone unrenewed for as long as the live
 //     window leaves its holder.
@@ -308,7 +308,7 @@ func roleOwnSessionVerdict(registry *store.Registry, role string, claim store.Ro
 	if viewErr := registry.RoleViewErr(); viewErr != nil {
 		return roleHolderUnread, fmt.Errorf("read role claim view: %w", viewErr)
 	}
-	if repairErr := registry.RoleClaimRepairErr(); repairErr != nil {
+	if repairErr := registry.RoleClaimRepair().Err(); repairErr != nil {
 		return roleHolderUnread, fmt.Errorf("role claim repair: %w", repairErr)
 	}
 	if failure, failed := registry.RenewalFailedWithin(role, claim.HolderSessionID, liveWindow); failed {

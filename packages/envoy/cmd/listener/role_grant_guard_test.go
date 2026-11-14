@@ -17,71 +17,26 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strings"
-	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/kvwatch"
+	"github.com/sjawhar/envoy/internal/kvwatch/kvwatchtest"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 )
 
-// heldScheduledReads stands in for time.AfterFunc in a registry's role claim watcher
-// (store.WithRoleClaimWatch, kvwatch.WithAfterFunc). It keeps every wait longer than a scan's idle
-// timeout - the scheduled read of the role claims, and the minute a stop nobody asked for waits
-// before its ERROR - for the test to fire or leave unfired, and hands every shorter one (the
-// stream probe, a re-read, a scan's idle wait) to time.AfterFunc, so the watcher follows its
-// bucket as it does in production and completes no whole read the test did not ask for.
-type heldScheduledReads struct {
-	mu   sync.Mutex
-	kept []*heldScheduledRead
-}
-
-// heldScheduledRead is one wait a heldScheduledReads kept.
-type heldScheduledRead struct {
-	delay   time.Duration
-	fire    func()
-	stopped atomic.Bool
-}
-
-func (r *heldScheduledRead) Stop() bool { return !r.stopped.Swap(true) }
-
-// after is the AfterFunc the watcher arms its waits through.
-func (h *heldScheduledReads) after(d time.Duration, f func()) kvwatch.Timer {
-	if d <= kvwatch.ScanIdleTimeout {
-		return time.AfterFunc(d, f)
-	}
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	wait := &heldScheduledRead{delay: d, fire: f}
-	h.kept = append(h.kept, wait)
-	return wait
-}
-
-// armed is the kept wait the watcher armed last and has not stopped, and nil when there is none.
-func (h *heldScheduledReads) armed() *heldScheduledRead {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	for i := len(h.kept) - 1; i >= 0; i-- {
-		if !h.kept[i].stopped.Load() {
-			return h.kept[i]
-		}
-	}
-	return nil
-}
-
 // grantGuardRig is one listener's registration and role routes over one account: a registry on a
 // clock the test moves (store.WithClock), whose role claim watcher measures on that clock too
-// (kvwatch.WithNow) and keeps its scheduled read for the test (heldScheduledReads), the session
+// (kvwatch.WithNow) and keeps its scheduled read for the test (kvwatchtest.Waits), the session
 // registry the route reads its live window from, and the routes' shared log.
 type grantGuardRig struct {
 	client    *bus.Client
 	clock     *listenerClock
-	reads     *heldScheduledReads
+	reads     *kvwatchtest.Waits
 	deps      *listenerDeps
 	logs      *cmdtest.LockedBuffer
 	set       http.Handler
@@ -95,9 +50,9 @@ func newGrantGuardRig(t *testing.T) *grantGuardRig {
 	t.Helper()
 	client := setupPublishTestClient(t)
 	clock := &listenerClock{now: time.Now()}
-	reads := &heldScheduledReads{}
+	reads := &kvwatchtest.Waits{}
 	registry, err := store.Open(client.Conn, store.WithReplicas(1), store.WithClock(clock.Now),
-		store.WithRoleClaimWatch(kvwatch.WithAfterFunc(reads.after), kvwatch.WithNow(clock.Now)))
+		store.WithRoleClaimWatch(kvwatch.WithAfterFunc(reads.After), kvwatch.WithNow(clock.Now)))
 	if err != nil {
 		t.Fatalf("open the listener's registry: %v", err)
 	}
@@ -127,11 +82,11 @@ func newGrantGuardRig(t *testing.T) *grantGuardRig {
 
 // scheduled is the scheduled read the role claim watcher armed last and has not stopped. It is
 // waited for: a read records its completion a moment before the watcher arms the next.
-func (r *grantGuardRig) scheduled(t *testing.T) *heldScheduledRead {
+func (r *grantGuardRig) scheduled(t *testing.T) *kvwatchtest.Wait {
 	t.Helper()
-	var wait *heldScheduledRead
+	var wait *kvwatchtest.Wait
 	waitFor(t, 10*time.Second, "the role claim watcher to arm its scheduled read", func() bool {
-		wait = r.reads.armed()
+		wait = r.reads.Armed()
 		return wait != nil
 	})
 	return wait
@@ -143,9 +98,9 @@ func (r *grantGuardRig) repair(t *testing.T) store.RoleClaimRepairReport {
 	t.Helper()
 	fired := r.scheduled(t)
 	before := r.deps.registry.RoleClaimRepair()
-	fired.fire()
+	fired.Fire()
 	waitFor(t, 10*time.Second, "the fired scheduled read of the role claims to complete", func() bool {
-		next := r.reads.armed()
+		next := r.reads.Armed()
 		return next != nil && next != fired && r.deps.registry.RoleClaimRepair().Completed > before.Completed
 	})
 	return r.deps.registry.RoleClaimRepair()
@@ -254,12 +209,12 @@ func (r *grantGuardRig) failRenewal(t *testing.T, holder, role string) store.Ren
 // renewal failure of role's claim for holder recorded inside the live window or not (failed).
 func requireGuardState(t *testing.T, registry *store.Registry, role, holder string, window time.Duration, viewServes, repairInBound, failed bool) {
 	t.Helper()
-	viewErr, repairErr := registry.RoleViewErr(), registry.RoleClaimRepairErr()
+	viewErr, repairErr := registry.RoleViewErr(), registry.RoleClaimRepair().Err()
 	failure, recorded := registry.RenewalFailedWithin(role, holder, window)
-	t.Logf("before the claim: RoleViewErr %v, RoleClaimRepairErr %v, renewal failure recorded %v (%v), repair report %+v",
+	t.Logf("before the claim: RoleViewErr %v, the repair error %v, renewal failure recorded %v (%v), repair report %+v",
 		viewErr, repairErr, recorded, failure.Err, registry.RoleClaimRepair())
 	if (viewErr == nil) != viewServes || (repairErr == nil) != repairInBound || recorded != failed {
-		t.Fatalf("the case's state is RoleViewErr %v, RoleClaimRepairErr %v and a recorded renewal failure %v; want the view serving %v, the repair inside its bound %v and a failure recorded %v",
+		t.Fatalf("the case's state is RoleViewErr %v, the repair error %v and a recorded renewal failure %v; want the view serving %v, the repair inside its bound %v and a failure recorded %v",
 			viewErr, repairErr, recorded, viewServes, repairInBound, failed)
 	}
 }
@@ -370,8 +325,8 @@ func TestTheGrantGuardRefusesWhileThisListenersRenewalsFailOrItsCopyIsStale(t *t
 		restarted := unreadRegistry(t, rig.client, rig.clock)
 		set := roleSetHandler(withRoleClaimDrain(t, &listenerDeps{client: rig.client, registry: restarted, sessions: rig.deps.sessions}),
 			"test-machine", logging.NewWithWriter("test", rig.logs))
-		if err := restarted.RoleClaimRepairErr(); err == nil || err.Error() != "no whole read of the role claims has completed" {
-			t.Fatalf("the restarted listener's RoleClaimRepairErr is %v, want that no whole read has completed", err)
+		if err := restarted.RoleClaimRepair().Err(); err == nil || err.Error() != "no whole read of the role claims has completed" {
+			t.Fatalf("the restarted listener's repair error is %v, want that no whole read has completed", err)
 		}
 		requireGuardState(t, restarted, role, holder, rig.liveWindow(), false, false, false)
 

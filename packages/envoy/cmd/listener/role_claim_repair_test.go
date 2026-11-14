@@ -206,9 +206,9 @@ func TestHealthzReportsTheRoleClaimRescanAndIsDegradedPastItsBound(t *testing.T)
 	}
 	late := store.RoleClaimRepairBound + time.Second
 	rig.clock.Advance(started.CompletedAt.Add(late).Sub(rig.clock.Now()))
-	repairErr := rig.deps.registry.RoleClaimRepairErr()
+	repairErr := rig.deps.registry.RoleClaimRepair().Err()
 	if repairErr == nil {
-		t.Fatalf("RoleClaimRepairErr is nil %s after the last whole read, past the %s bound", late, store.RoleClaimRepairBound)
+		t.Fatalf("the repair error is nil %s after the last whole read, past the %s bound", late, store.RoleClaimRepairBound)
 	}
 	answer = reports.health(t, "past the bound with no whole read since")
 	if answer.code != http.StatusOK || answer.body["status"] != "degraded" {
@@ -276,10 +276,10 @@ func TestARoleCopyLostClaimIsBackInTheSessionsRowsAndTheRegistryWithinTheBound(t
 	}
 
 	wait := rig.scheduled(t)
-	if wait.delay > store.RoleClaimRepairBound {
-		t.Fatalf("the role claim watcher armed its scheduled read %s after its last read, past the repair bound of %s", wait.delay, store.RoleClaimRepairBound)
+	if wait.Delay() > store.RoleClaimRepairBound {
+		t.Fatalf("the role claim watcher armed its scheduled read %s after its last read, past the repair bound of %s", wait.Delay(), store.RoleClaimRepairBound)
 	}
-	rig.clock.Advance(wait.delay)
+	rig.clock.Advance(wait.Delay())
 	repaired := rig.repair(t)
 
 	if listed, entry := rolesNamed("after the scheduled read"); !slices.Equal(listed, []string{role}) || !slices.Equal(entry, []string{role}) {

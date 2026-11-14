@@ -56,25 +56,6 @@ type Registry struct {
 	renewalFailures renewalFailures
 }
 
-// roleClaimRepairInterval is how long after each whole read of the role claims that completed the
-// role claim watcher reads the bucket whole again (kvwatch.WithScheduledRead), which repairs a copy
-// that drifted from its bucket in either direction: a claim the copy lost, and one it kept that the
-// bucket no longer holds. A minute leaves room inside RoleClaimRepairBound for one whole read, the
-// scan's idle timeout (kvwatch.ScanIdleTimeout, 10 s) and the 5 s a re-read whose setup failed
-// waits before it is tried again, so a scheduled read that runs late still completes inside the
-// bound, and /healthz and the grant guard do not flap at each read.
-const roleClaimRepairInterval = time.Minute
-
-// RoleClaimRepairBound is the longest the role claim copy may go without a whole read of the bucket
-// that completed before its repair is reported late (RoleClaimRepairErr): the live window
-// (contracts.SessionLiveWindow, 5 minutes) less two 90-second heartbeats
-// (contracts.SessionHeartbeat). A claim the copy lost is back within the bound, and its holder's
-// next heartbeat renews it within one heartbeat more, so the claim is renewed again before the live
-// window its last renewal opened ends and before another session may take the role. It is a
-// constant and no setting: a setting would have to refuse every value above the bound, and no
-// caller needs another value.
-const RoleClaimRepairBound = 2 * time.Minute
-
 // OpenOption configures the registry.
 type OpenOption func(*openOpts)
 
@@ -146,12 +127,12 @@ func Open(conn *nats.Conn, options ...OpenOption) (*Registry, error) {
 		roleKV:                roleKV,
 		log:                   opts.log,
 		index:                 newSubjectIndex(),
-		roleHolders:           newRoleHolderCopy(),
 		now:                   opts.now,
 		openedAt:              opts.now(),
 		restoredRoleRevisions: restoredRoleRevisions,
 	}
 	r.cache = newInterestCopy(r)
+	r.roleHolders = newRoleHolderCopy(r)
 	r.watcher = kvwatch.New("interest registry", kv, interestCache{r}, kvwatch.WithLogger(opts.log))
 	r.roleWatcher = r.newRoleWatcher(roleKV, opts.roleWatch...)
 	// No eager load: the watchers populate the caches asynchronously. A synchronous load of N

@@ -230,15 +230,17 @@ func DecodeRoleClaim(value []byte) (RoleClaim, error) {
 
 // newRoleHolderCopy is an empty copy of the role claim bucket, which keeps the session each claim
 // it can read names. A claim this build cannot read (ErrMalformedRoleClaim) gives its role to
-// nobody, so the copy keeps no entry for it, as a delete marker leaves none.
-func newRoleHolderCopy() kvwatch.Copy[string] {
+// nobody, so the copy keeps no entry for it, as a delete marker leaves none. Each entry it removes
+// is handed to r's repair (roleClaimRepair.swept), which counts the ones a repairing read's sweep
+// took out.
+func newRoleHolderCopy(r *Registry) kvwatch.Copy[string] {
 	return kvwatch.NewCopy(kvwatch.Rows[string]{Decode: func(entry kvwatch.Entry) (string, bool, error) {
 		claim, err := DecodeRoleClaim(entry.Value)
 		if err != nil {
 			return "", false, err
 		}
 		return claim.HolderSessionID, true, nil
-	}})
+	}, Removed: r.roleRepair.swept})
 }
 
 // roleCache is the registry as the role claim cache its watcher feeds (kvwatch.Cache). The hooks
@@ -248,45 +250,32 @@ func newRoleHolderCopy() kvwatch.Copy[string] {
 type roleCache struct{ r *Registry }
 
 // BeginRead starts a read of the role claim bucket (kvwatch.Copy.BeginRead). Every holder stays.
-// The read repairs the copy, and counts what it repairs, when a read of its epoch completed before
-// it and it is not the first read of a recreated bucket: the copy it reads into was then filled by
-// a complete read of that same bucket, so what it changes there is drift. The first read of an
-// epoch, the start's or a recreated bucket's, fills the copy rather than repairing it and counts
-// nothing, so a start does not report every claim of the bucket put back. The counts of the read
-// under way start at zero here, apart from the last completed read's, which only CompleteRead moves.
+// Whether the read repairs the copy, and so counts what it repairs, is the repair's to say
+// (roleClaimRepair.begin).
 func (c roleCache) BeginRead(read kvwatch.Read) {
 	r := c.r
 	r.holdersMu.Lock()
 	defer r.holdersMu.Unlock()
 	r.roleHolders.BeginRead(read)
-	repair := &r.roleRepair
-	repair.repairing = repair.completed > 0 && repair.completedEpoch == read.Epoch && !read.Recreated
-	repair.read = roleClaimRepairCounts{}
+	r.roleRepair.begin(read)
 }
 
 // Apply takes one record the read delivered (kvwatch.Copy.Delivered), and logs a claim it could
 // not read, which gave its role to nobody, as the interest watcher logs a value it cannot decode.
-// While a read that repairs is under way, it counts what the record did to the role's entry: a
-// holder stored where the copy held none or held another is put back, and an entry the record
-// removed - a delete marker, or a claim this build cannot read - is taken out.
+// What the record did to the role's entry is handed to the repair while a read that repairs is
+// under way (roleClaimRepair.delivered); a record delivered while the copy follows its bucket
+// costs no look at the entry beside its own write.
 func (c roleCache) Apply(entry kvwatch.Entry, _ kvwatch.Read) {
 	r := c.r
 	r.holdersMu.Lock()
-	repair := &r.roleRepair
-	var before string
-	var held bool
-	if repair.repairing {
-		before, held = r.roleHolders.Get(entry.Key)
-	}
-	malformed := r.roleHolders.Delivered(entry)
-	if repair.repairing {
+	var malformed error
+	if r.roleRepair.repairing {
+		before, held := r.roleHolders.Get(entry.Key)
+		malformed = r.roleHolders.Delivered(entry)
 		after, holds := r.roleHolders.Get(entry.Key)
-		switch {
-		case holds && (!held || after != before):
-			repair.read.notePutBack(entry.Key)
-		case held && !holds:
-			repair.read.noteTookOut(entry.Key)
-		}
+		r.roleRepair.delivered(entry.Key, before, held, after, holds)
+	} else {
+		malformed = r.roleHolders.Delivered(entry)
 	}
 	r.holdersMu.Unlock()
 	if malformed != nil {
@@ -299,41 +288,19 @@ func (c roleCache) Apply(entry kvwatch.Entry, _ kvwatch.Read) {
 }
 
 // CompleteRead removes every holder and fence entry the read found no evidence of: the bucket no
-// longer holds that role's claim. A read that repairs counts each holder that sweep removed as
-// taken out, from the roles the copy held before it. Every completed read, whether it repaired or
-// filled the copy, is recorded as the last on the registry's clock, with what it repaired, which
-// RoleClaimRepair reports and RoleClaimRepairErr ages; a read that repaired anything logs it at
-// INFO, with the counts and the first roleClaimRepairLoggedRoles of the roles it repaired.
+// longer holds that role's claim. The sweep runs with the repair's sweeping flag on, so a read
+// that repairs counts each holder the sweep removes as taken out (roleClaimRepair.swept), and no
+// removal outside the sweep is counted so. Every completed read, whether it repaired or filled the
+// copy, is recorded as the last on the registry's clock, with what it repaired
+// (roleClaimRepair.complete); a read that repaired anything logs it at INFO, with the counts and
+// the first roleClaimRepairLoggedRoles of the roles it repaired.
 func (c roleCache) CompleteRead(read kvwatch.Read) {
 	r := c.r
 	r.holdersMu.Lock()
-	repair := &r.roleRepair
-	if repair.repairing {
-		held := repair.beforeSweep[:0]
-		for role := range r.roleHolders.All() {
-			held = append(held, role)
-		}
-		r.roleHolders.CompleteRead()
-		if r.roleHolders.Len() < len(held) {
-			for _, role := range held {
-				if _, ok := r.roleHolders.Get(role); !ok {
-					repair.read.noteTookOut(role)
-				}
-			}
-		}
-		// The roles are dropped and the room kept, so the next read reuses it and the copy's
-		// keys are not held past the sweep.
-		clear(held)
-		repair.beforeSweep = held[:0]
-	} else {
-		r.roleHolders.CompleteRead()
-	}
-	repair.repairing = false
-	repair.completed++
-	repair.completedEpoch = read.Epoch
-	repair.completedAt = r.now()
-	repair.last = repair.read
-	found := repair.read
+	r.roleRepair.sweeping = true
+	r.roleHolders.CompleteRead()
+	r.roleRepair.sweeping = false
+	found := r.roleRepair.complete(read, r.now())
 	r.holdersMu.Unlock()
 	if found.putBack > 0 || found.tookOut > 0 {
 		r.logger().Info(fmt.Sprintf("role claim repair put back %d claims and took out %d", found.putBack, found.tookOut),
@@ -343,127 +310,6 @@ func (c roleCache) CompleteRead(read kvwatch.Read) {
 			slog.Any("took_out_roles", found.tookOutRoles),
 		)
 	}
-}
-
-// roleClaimRepairLoggedRoles is how many roles the line a repairing read logs names, put back and
-// taken out together: enough to name what one lost write or one missed delete left behind, and
-// few enough that a read repairing a whole bucket's drift logs one line of bounded size.
-const roleClaimRepairLoggedRoles = 10
-
-// roleClaimRepair is what the role claim watcher's whole reads of the bucket repaired in the copy
-// (roleCache), guarded by holdersMu. The counts of the read under way and those of the last read
-// that completed are kept apart, so a read that begins and never completes - a scan that timed
-// out, a read a rewatch replaced - leaves the last completed read's report as it was.
-type roleClaimRepair struct {
-	// repairing says the read under way repairs the copy and counts what it repairs (BeginRead);
-	// it is false between a completed read and the next BeginRead, so a record the watcher
-	// delivers while following counts nothing.
-	repairing bool
-	// read is what the read under way has repaired so far.
-	read roleClaimRepairCounts
-	// beforeSweep is the room CompleteRead lists the copy's roles in before its sweep, kept empty
-	// between reads so each read reuses it rather than allocating one the size of the bucket.
-	beforeSweep []string
-	// completed is how many reads have completed, completedEpoch the epoch of the last of them
-	// (kvwatch.Read.Epoch), completedAt when it completed on the registry's clock, and last what
-	// it repaired.
-	completed      int
-	completedEpoch uint64
-	completedAt    time.Time
-	last           roleClaimRepairCounts
-}
-
-// roleClaimRepairCounts is what one read repaired: how many claims it put back and took out, and
-// the first roleClaimRepairLoggedRoles of their roles, for the line its completion logs.
-type roleClaimRepairCounts struct {
-	putBack, tookOut           int
-	putBackRoles, tookOutRoles []string
-}
-
-// notePutBack counts role's claim as one the read stored where the copy held none or held another
-// holder.
-func (c *roleClaimRepairCounts) notePutBack(role string) {
-	c.putBack++
-	if len(c.putBackRoles)+len(c.tookOutRoles) < roleClaimRepairLoggedRoles {
-		c.putBackRoles = append(c.putBackRoles, role)
-	}
-}
-
-// noteTookOut counts role's claim as one the read removed while the copy held it.
-func (c *roleClaimRepairCounts) noteTookOut(role string) {
-	c.tookOut++
-	if len(c.putBackRoles)+len(c.tookOutRoles) < roleClaimRepairLoggedRoles {
-		c.tookOutRoles = append(c.tookOutRoles, role)
-	}
-}
-
-// RoleClaimRepairReport is what the role claim watcher's last whole read of the bucket that
-// completed found in the copy every claim view answers from (RoleClaimRepair).
-type RoleClaimRepairReport struct {
-	// CompletedAt is when that read completed, on the registry's clock (WithClock), and zero when
-	// no read has completed.
-	CompletedAt time.Time
-	// PutBack is how many claims that read stored where the copy held none or held another holder,
-	// and TookOut how many it removed while the copy held them: by a delete marker it delivered, by
-	// a claim it delivered that this build cannot read, which gives its role to nobody, or by the
-	// sweep at its completion. Both are zero for the first read of an epoch, the start's or a
-	// recreated bucket's, which fills the copy rather than repairing it. A claim another listener
-	// wrote while the read ran can count as put back: the count does not tell that from drift.
-	PutBack int
-	TookOut int
-	// Completed is how many whole reads of the bucket have completed since Open.
-	Completed int
-	// Age is how long before the report that read completed, on the registry's clock, and zero
-	// when no read has completed. It is the age Err judges against RoleClaimRepairBound, so a
-	// reader that reports it beside that error (/healthz) reports the very reading the error was
-	// judged on.
-	Age time.Duration
-}
-
-// RoleClaimRepair reports the role claim watcher's last whole read of the bucket that completed:
-// when, how long ago, and what it put back and took out of the copy. Every read that completes
-// counts - the start's, a rewatch's, a re-read after a timed-out scan or a recreate, and the
-// scheduled read roleClaimRepairInterval after each of them - so the time is the copy's last repair
-// however it came. It makes no bucket call, so a report of the repair never waits on the bus.
-func (r *Registry) RoleClaimRepair() RoleClaimRepairReport {
-	r.holdersMu.RLock()
-	defer r.holdersMu.RUnlock()
-	repair := &r.roleRepair
-	report := RoleClaimRepairReport{
-		CompletedAt: repair.completedAt,
-		PutBack:     repair.last.putBack,
-		TookOut:     repair.last.tookOut,
-		Completed:   repair.completed,
-	}
-	if report.Completed > 0 {
-		report.Age = r.now().Sub(report.CompletedAt)
-	}
-	return report
-}
-
-// Err is nil while the read report names completed no longer ago than RoleClaimRepairBound, as of
-// the report, and otherwise an error that says no such read has completed, or how long ago the
-// last one did. A copy past the bound may have lost a claim, or kept one the bucket no longer
-// holds, for longer than the live window leaves its holder to renew it, so a caller that would
-// decide on that copy reads this first. It is a report on the repair, not on whether the view
-// answers (RoleViewErr): a copy that goes on following its bucket while no whole read completes -
-// each scheduled read's setup failing, say - still answers RolesHeldBy past the bound.
-func (report RoleClaimRepairReport) Err() error {
-	if report.Completed == 0 {
-		return errors.New("no whole read of the role claims has completed")
-	}
-	if report.Age > RoleClaimRepairBound {
-		return fmt.Errorf("the last whole read of the role claims completed %s ago, past the %s bound",
-			report.Age.Round(time.Millisecond), RoleClaimRepairBound)
-	}
-	return nil
-}
-
-// RoleClaimRepairErr is the error of the role claim watcher's last whole read of the bucket, as
-// of now on the registry's clock (RoleClaimRepair, RoleClaimRepairReport.Err): nil while that
-// read completed no longer ago than RoleClaimRepairBound. It makes no bucket call.
-func (r *Registry) RoleClaimRepairErr() error {
-	return r.RoleClaimRepair().Err()
 }
 
 // setOwnRoleHolder records a claim write this registry made through a handle of epoch
