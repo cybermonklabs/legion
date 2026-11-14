@@ -1,4 +1,5 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, jest, test } from "bun:test";
+import { closeSync, constants, openSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import {
   type FakeDispatchServer,
@@ -16,6 +17,7 @@ import {
   Supervisor,
   shellQuote,
 } from "../local-instance-support";
+import { bounds, eventually, rowLimit, runBounded } from "./bounded-subprocess";
 
 const makeDirectory = temporaryDirectories("local-instance-support");
 
@@ -29,27 +31,14 @@ function groupAlive(pgid: number): boolean {
   }
 }
 
-/** Polls `ready` until it holds or `ms` pass. Used only for what another process does — its write
- *  to a file, or the kernel reaping a killed process, which still answers `kill(pid, 0)` as a
- *  zombie until its parent or init collects it — with no event in this process to await. */
-async function eventually(ready: () => boolean | Promise<boolean>, ms = 3_000): Promise<boolean> {
-  const deadline = Date.now() + ms;
-  while (Date.now() < deadline) {
-    if (await ready()) return true;
-    await Bun.sleep(25);
-  }
-  return ready();
-}
-
-/** The pid a real child process writes to `path`. */
+/** The pid a real child process writes to `path`. A write another process makes raises no event
+ *  here, so the file is read until it holds one. */
 async function pidFrom(path: string): Promise<number> {
   const read = () =>
     Bun.file(path)
       .text()
       .catch(() => "");
-  if (!(await eventually(async () => /^\d+\s*$/.test(await read())))) {
-    throw new Error(`no pid in ${path}`);
-  }
+  await eventually(`a pid in ${path}`, async () => /^\d+\s*$/.test(await read()));
   return Number(await read());
 }
 
@@ -71,9 +60,83 @@ function pidOf(running: { readonly child: { readonly pid?: number } }): number {
   return pid;
 }
 
-/** One macrotask turn: the runtime reports an unhandled rejection only after the microtask queue
- *  drains, so a test that waits for that report yields one turn rather than a guessed duration. */
+/** How long each `sleep` the `Supervisor.stop` rows start runs, and how long the held process's
+ *  `read` waits for the line that releases it, in seconds: the limit of the first two of those
+ *  rows, the largest of the four, so every such sleep and `read` outlasts its own row. A sleep no
+ *  stop ended is then still running at every check its row makes, and never meets a check that it
+ *  is gone by ending on its own. No held process ends by itself inside its row either: the line
+ *  that releases it ends it, or the row's own kill does, and where the run is killed first it
+ *  ends by itself once its `read` gives up, after its row. */
+const outlastsRow = rowLimit("short", "short", "short", "short", "short") / 1000;
+
+/** Sends SIGKILL to `pid`, a process or, when negative, a process group, where it is still
+ *  alive: what a stop under test left behind, so a failed row leaves no sleep running. A process
+ *  the stop ended answers ESRCH, which is no failure; any other error is the row's own. */
+function killLeft(pid: number): void {
+  try {
+    process.kill(pid, "SIGKILL");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+  }
+}
+
+/** One macrotask turn. It resolves on a `setImmediate`, which comes only once the microtask
+ *  queue has drained, and which Bun's fake clock leaves real, so every promise already chained,
+ *  however deep, has run by then without a fake clock moving. The `untilInterrupted` row waits
+ *  two turns before it stops listening for an unhandled rejection: Bun 1.4.4 reports one within
+ *  the first turn, and the second keeps the row from resting on which turn that is. */
 const nextTurn = () => new Promise<void>((resolve) => setImmediate(resolve));
+
+/** Answers whether `waiting` has settled yet, without awaiting it. */
+function watch(waiting: Promise<unknown>): () => boolean {
+  let settled = false;
+  const done = () => {
+    settled = true;
+  };
+  waiting.then(done, done);
+  return () => settled;
+}
+
+/** A `Supervisor.stop` the row started and did not await. A stop that never sees a leader exit
+ *  never returns, so the row waits for `returned` with `eventually`, which fails naming the stop,
+ *  rather than awaiting a promise that only the runner's clock ends. `read` runs in the stop's own
+ *  settle handler, the moment the stop returns: the runtime reaps a child and raises its exit
+ *  only between macrotasks, so nothing ends after the return and before `read`, and `atReturn`
+ *  answers what `read` saw then. The handlers below catch every outcome, so the promise never
+ *  rejects unhandled while the row fails on another line: a stop that throws counts as returned,
+ *  and `forced` and `atReturn` throw what it threw. */
+function underway<Read>(
+  stopping: Promise<boolean>,
+  read: () => Read
+): {
+  readonly returned: () => boolean;
+  readonly forced: () => boolean;
+  readonly atReturn: () => Read;
+} {
+  let outcome:
+    | { readonly forced: boolean; readonly read: Read }
+    | { readonly error: unknown }
+    | undefined;
+  stopping.then(
+    (forced) => {
+      const seen = read();
+      outcome = { forced, read: seen };
+    },
+    (error: unknown) => {
+      outcome = { error };
+    }
+  );
+  const settled = () => {
+    if (outcome === undefined) throw new Error("the stop has not returned");
+    if ("error" in outcome) throw outcome.error;
+    return outcome;
+  };
+  return {
+    atReturn: () => settled().read,
+    forced: () => settled().forced,
+    returned: () => outcome !== undefined,
+  };
+}
 
 const supervisors: Supervisor[] = [];
 function supervisor(): Supervisor {
@@ -86,43 +149,170 @@ afterEach(async () => {
 });
 
 describe("Supervisor.stop", () => {
-  test("ends every process group it started, a grandchild included", async () => {
-    const pidFile = join(makeDirectory(), "leader.pid");
-    const made = supervisor();
-    const leader = made.start(
-      "leader",
-      ["bash", "-c", `sleep 60 & echo $! > ${pidFile}; wait`],
-      "/"
+  // Each of the two rows holds one leader past the SIGTERM until the row lets it go, so the row,
+  // and not the scheduler, decides which leader exits last. Each row catches a stop that skips
+  // its held leader, so the two rows together catch a stop that skips either.
+  for (const held of ["leader", "quiet"] as const) {
+    test(
+      `ends every process group it started, a grandchild included, when the ${held} process exits last`,
+      async () => {
+        const directory = makeDirectory();
+        const pidFile = join(directory, "leader.pid");
+        const heldPidFile = join(directory, "held.pid");
+        const release = join(directory, "release");
+        // The held leader ignores SIGTERM and exits once the row writes a line to the FIFO
+        // `release`, or once `outlastsRow` has passed, so it ends by itself after the row when
+        // the run is killed. It opens the FIFO for reading and writing, so its open waits for no
+        // writer, and the row's write finds a reader as long as the held leader runs. It writes
+        // its pid once it ignores SIGTERM.
+        const hold = `mkfifo ${release}; exec 3<> ${release}; trap '' TERM; echo $$ > ${heldPidFile}; read -t ${outlastsRow} _ <&3`;
+        const made = supervisor();
+        const leaderRunning = made.start(
+          "leader",
+          [
+            "bash",
+            "-c",
+            held === "leader"
+              ? // The sleep starts ahead of the trap, so it does not ignore SIGTERM too.
+                `sleep ${outlastsRow} & echo $! > ${pidFile}; ${hold}`
+              : `sleep ${outlastsRow} & echo $! > ${pidFile}; wait`,
+          ],
+          "/"
+        );
+        const quietRunning = made.start(
+          "quiet",
+          held === "quiet" ? ["bash", "-c", hold] : ["sleep", `${outlastsRow}`],
+          "/"
+        );
+        const leader = pidOf(leaderRunning);
+        const quiet = pidOf(quietRunning);
+        const [other, otherPid, otherRunning] =
+          held === "leader"
+            ? (["quiet", quiet, quietRunning] as const)
+            : (["leader", leader, leaderRunning] as const);
+        const otherExited = watch(otherRunning.exited);
+        let grandchild: number | undefined;
+        try {
+          grandchild = await pidFrom(pidFile);
+          const alone = grandchild;
+          const heldPid = await pidFrom(heldPidFile);
+          expect(groupAlive(leader)).toBe(true);
+          expect(groupAlive(quiet)).toBe(true);
+
+          // The force-kill fires at half the short bound, inside the waits below: a stop that
+          // leaves one group to it rather than to SIGTERM fails on `forced`, or on the held
+          // leader's exit before the row let it go. Each leader is the supervisor's own child, so
+          // the runtime has reaped it by the return of a stop that waited for both.
+          const stop = underway(made.stop(bounds.short / 2), () => ({
+            leader: processAlive(leader),
+            quiet: groupAlive(quiet),
+          }));
+          await eventually(
+            `the ${other} process ${otherPid} to exit on the stop's SIGTERM`,
+            otherExited
+          );
+          // A stop that waited for that leader alone settles in the microtasks its exit
+          // released, and one macrotask turn runs them all.
+          await nextTurn();
+          expect(
+            processAlive(heldPid),
+            `the held leader ${heldPid} exited before the row let it go`
+          ).toBe(true);
+          expect(stop.returned(), `the stop returned while leader ${heldPid} still ran`).toBe(
+            false
+          );
+          // Non-blocking, so a FIFO with no reader fails the open rather than hanging the row.
+          const released = openSync(release, constants.O_WRONLY | constants.O_NONBLOCK);
+          try {
+            writeSync(released, "\n");
+          } finally {
+            closeSync(released);
+          }
+
+          await eventually(
+            `the stop of the leader ${leader} and the quiet process ${quiet} to return`,
+            stop.returned
+          );
+          expect(stop.forced(), "the stop's force-kill ran: SIGTERM did not end every group").toBe(
+            false
+          );
+          const atReturn = stop.atReturn();
+          expect(atReturn.leader, `the leader ${leader} outlived the stop`).toBe(false);
+          expect(atReturn.quiet, `the group of the quiet process ${quiet} outlived the stop`).toBe(
+            false
+          );
+
+          // The grandchild is no child of the supervisor: once its parent is gone, its zombie
+          // answers `kill(pid, 0)` until init reaps it, which raises no event here and can come
+          // after the return. So the leader's group, the grandchild in it, is read until it is
+          // gone.
+          await eventually(
+            `the group of the leader ${leader}, its grandchild ${alone} included, to end`,
+            () => !groupAlive(leader) && !processAlive(alone)
+          );
+        } finally {
+          killLeft(-leader);
+          killLeft(-quiet);
+          if (grandchild !== undefined) killLeft(grandchild);
+        }
+      },
+      // Five waits the short bound of `eventually` ends, one after another: the grandchild's pid
+      // in its file, the held leader's pid in its file, the other leader's exit, the stop's
+      // return, then the leader's group leaving the process table.
+      rowLimit("short", "short", "short", "short", "short")
     );
-    const quiet = made.start("quiet", ["sleep", "60"], "/");
-    const grandchild = await pidFrom(pidFile);
-    expect(groupAlive(pidOf(leader))).toBe(true);
-    expect(groupAlive(pidOf(quiet))).toBe(true);
+  }
 
-    await made.stop();
+  test(
+    "returns as soon as the leaders exit, not after the force-kill delay",
+    async () => {
+      const made = supervisor();
+      const quiet = pidOf(made.start("quiet", ["sleep", `${outlastsRow}`], "/"));
+      try {
+        // The force-kill fires after the short bound, past the wait below, so a stop that waits
+        // for that delay rather than for the leader to exit fails on the wait, naming the stop.
+        const stop = underway(made.stop(2 * bounds.short), () => groupAlive(quiet));
+        await eventually(
+          `the stop of the quiet process ${quiet} to return before its force-kill`,
+          stop.returned
+        );
+        expect(stop.atReturn(), "the leader's group outlived the stop").toBe(false);
+      } finally {
+        killLeft(-quiet);
+      }
+    },
+    // The wait for the stop's return, which the short bound of `eventually` ends.
+    rowLimit("short")
+  );
 
-    expect(await eventually(() => !groupAlive(pidOf(leader)))).toBe(true);
-    expect(await eventually(() => !groupAlive(pidOf(quiet)))).toBe(true);
-    expect(await eventually(() => !processAlive(grandchild))).toBe(true);
-  });
-
-  test("returns as soon as the leaders exit, not after the force-kill delay", async () => {
-    const made = supervisor();
-    made.start("quiet", ["sleep", "60"], "/");
-    const started = Date.now();
-    await made.stop(30_000);
-    expect(Date.now() - started).toBeLessThan(5_000);
-  });
-
-  test("ends a foreground step that a stop interrupts", async () => {
-    const made = supervisor();
-    const step = made.run(["sleep", "60"], "/");
-    made.interrupt();
-    await expect(step).rejects.toBeInstanceOf(Interrupted);
-    const started = Date.now();
-    await made.stop();
-    expect(Date.now() - started).toBeLessThan(5_000);
-  });
+  test(
+    "ends a foreground step that a stop interrupts",
+    async () => {
+      const pidFile = join(makeDirectory(), "step.pid");
+      const made = supervisor();
+      const step = made.run(["bash", "-c", `echo $$ > ${pidFile}; exec sleep ${outlastsRow}`], "/");
+      let pid: number | undefined;
+      try {
+        pid = await pidFrom(pidFile);
+        made.interrupt();
+        await expect(step).rejects.toBeInstanceOf(Interrupted);
+        // The force-kill fires at half the short bound, inside the wait below: a stop that leaves
+        // the step to it rather than to SIGTERM returns in time and fails on `forced`.
+        const group = pid;
+        const stop = underway(made.stop(bounds.short / 2), () => groupAlive(group));
+        await eventually(`the stop of the interrupted step ${pid} to return`, stop.returned);
+        expect(stop.forced(), "the stop's force-kill ran: SIGTERM did not end the step").toBe(
+          false
+        );
+        expect(stop.atReturn(), "the interrupted step's group outlived the stop").toBe(false);
+      } finally {
+        if (pid !== undefined) killLeft(-pid);
+      }
+    },
+    // Two waits the short bound of `eventually` ends, one after the other: the step's pid in its
+    // file, then the stop's return.
+    rowLimit("short", "short")
+  );
 });
 
 describe("Supervisor.untilInterrupted", () => {
@@ -185,11 +375,20 @@ describe("shellQuote", () => {
     expect(quoteCases.length).toBeGreaterThan(0);
   });
 
-  test.each(quoteCases)("quotes $word as $quoted, which reads back whole in bash", async (row) => {
-    expect(shellQuote(row.word)).toBe(row.quoted);
-    const echoed = await Bun.$`bash -c ${`printf %s ${shellQuote(row.word)}`}`.text();
-    expect(echoed).toBe(row.word);
-  });
+  test.each(quoteCases)(
+    "quotes $word as $quoted, which reads back whole in bash",
+    async (row) => {
+      expect(shellQuote(row.word)).toBe(row.quoted);
+      const { code, named, stderr, stdout } = await runBounded({
+        argv: ["bash", "-c", `printf %s ${shellQuote(row.word)}`],
+        bound: "short",
+        from: import.meta.url,
+      });
+      if (code !== 0) throw new Error(`${named} exited ${code}: ${stderr}`);
+      expect(stdout).toBe(row.word);
+    },
+    rowLimit("short")
+  );
 });
 
 // `agentViewRefusal` opens a real live socket, and this package's test preload replaces
@@ -206,24 +405,25 @@ describe("agentViewRefusal", () => {
   });
 
   /** The answer `agentViewRefusal` gives for `sessionId` against `baseUrl`, read from a process
-   *  with the runtime's own WebSocket: its refusal, or null for none. */
+   *  with the runtime's own WebSocket: its refusal, or null for none. The first frame gets the
+   *  short bound, which the child's own bound ends too, so no row reads a stall of this machine
+   *  as Dispatch's silence. */
   async function refusalFrom(
     baseUrl: string,
     headers: Record<string, string>,
     sessionId: string
   ): Promise<string | null> {
-    const code =
+    const script =
       `const { agentViewRefusal } = await import(${JSON.stringify(supportModule)});\n` +
       `const answer = await agentViewRefusal(${JSON.stringify(baseUrl)}, ` +
-      `${JSON.stringify(headers)}, ${JSON.stringify(sessionId)});\n` +
+      `${JSON.stringify(headers)}, ${JSON.stringify(sessionId)}, ${bounds.short});\n` +
       "process.stdout.write(JSON.stringify(answer ?? null));\n";
-    const child = Bun.spawn([process.execPath, "-e", code], { stderr: "pipe", stdout: "pipe" });
-    const [code_, stdout, stderr] = await Promise.all([
-      child.exited,
-      new Response(child.stdout).text(),
-      new Response(child.stderr).text(),
-    ]);
-    if (code_ !== 0) throw new Error(`the child exited ${code_}: ${stderr}`);
+    const { code, named, stderr, stdout } = await runBounded({
+      argv: [process.execPath, "-e", script],
+      bound: "short",
+      from: import.meta.url,
+    });
+    if (code !== 0) throw new Error(`the child ${named} exited ${code}: ${stderr}`);
     return JSON.parse(stdout) as string | null;
   }
 
@@ -239,62 +439,91 @@ describe("agentViewRefusal", () => {
     return dispatch;
   }
 
-  test("an agent view Dispatch carries is no refusal, and it subscribes as the page does", async () => {
-    const dispatch = dispatchAnswering((socket, sub) =>
-      socket.send(
-        JSON.stringify({
-          data: { responding: false, v: 1 },
-          event: "responder",
-          sub,
-          type: "agent",
-        })
-      )
-    );
-    expect(await refusalFrom(dispatch.url, { Cookie: "dsession=alice" }, SESSION)).toBeNull();
-    expect(dispatch.cookies).toEqual(["dsession=alice"]);
-    expect(dispatch.received).toEqual([
-      {
-        sub: "local-instance-smoke",
-        type: "subscribe",
-        view: { kind: "agent", session_id: SESSION },
-      },
-    ]);
-  });
+  test(
+    "an agent view Dispatch carries is no refusal, and it subscribes as the page does",
+    async () => {
+      const dispatch = dispatchAnswering((socket, sub) =>
+        socket.send(
+          JSON.stringify({
+            data: { responding: false, v: 1 },
+            event: "responder",
+            sub,
+            type: "agent",
+          })
+        )
+      );
+      expect(await refusalFrom(dispatch.url, { Cookie: "dsession=alice" }, SESSION)).toBeNull();
+      expect(dispatch.cookies).toEqual(["dsession=alice"]);
+      expect(dispatch.received).toEqual([
+        {
+          sub: "local-instance-smoke",
+          type: "subscribe",
+          view: { kind: "agent", session_id: SESSION },
+        },
+      ]);
+    },
+    rowLimit("short")
+  );
 
-  test("a session id Dispatch refuses is the refusal, named", async () => {
-    const dispatch = dispatchAnswering((socket, sub) =>
-      socket.send(
-        JSON.stringify({
-          code: "SESSION_ID_INPUT",
-          message: "session_id must be a session uuid",
-          sub,
-          type: "error",
-        })
-      )
-    );
-    const refusal = await refusalFrom(dispatch.url, {}, "planner-session");
-    expect(refusal).toContain("SESSION_ID_INPUT");
-    expect(refusal).toContain("session_id must be a session uuid");
-  });
+  test(
+    "a session id Dispatch refuses is the refusal, named",
+    async () => {
+      const dispatch = dispatchAnswering((socket, sub) =>
+        socket.send(
+          JSON.stringify({
+            code: "SESSION_ID_INPUT",
+            message: "session_id must be a session uuid",
+            sub,
+            type: "error",
+          })
+        )
+      );
+      const refusal = await refusalFrom(dispatch.url, {}, "planner-session");
+      expect(refusal).toContain("SESSION_ID_INPUT");
+      expect(refusal).toContain("session_id must be a session uuid");
+    },
+    rowLimit("short")
+  );
 
-  test("a socket that closes before any answer says so", async () => {
-    const dispatch = dispatchAnswering((socket) => socket.close(1011, "internal error"));
-    expect(await refusalFrom(dispatch.url, {}, SESSION)).toBe(
-      "the live socket closed first (1011 internal error)"
-    );
-  });
+  test(
+    "a socket that closes before any answer says so",
+    async () => {
+      const dispatch = dispatchAnswering((socket) => socket.close(1011, "internal error"));
+      expect(await refusalFrom(dispatch.url, {}, SESSION)).toBe(
+        "the live socket closed first (1011 internal error)"
+      );
+    },
+    rowLimit("short")
+  );
 
-  test("a live socket that cannot be opened at all says so", async () => {
-    const dispatch = dispatchAnswering(() => undefined);
-    const port = new URL(dispatch.url).port;
-    for (const server of servers.splice(0)) server.stop();
-    expect(await refusalFrom(`http://127.0.0.1:${port}`, {}, SESSION)).toBe(
-      "the live socket could not be opened"
-    );
-  });
+  test(
+    "a live socket that cannot be opened at all says so",
+    async () => {
+      const dispatch = dispatchAnswering(() => undefined);
+      const port = new URL(dispatch.url).port;
+      for (const server of servers.splice(0)) server.stop();
+      expect(await refusalFrom(`http://127.0.0.1:${port}`, {}, SESSION)).toBe(
+        "the live socket could not be opened"
+      );
+    },
+    rowLimit("short")
+  );
 });
 
 describe("awaitSeededInbox", () => {
+  // Every row runs on Bun's fake timers. The helper's deadline, its sleeps and each read's budget
+  // are `setTimeout`s and `Date.now()` readings, so a row moves the clock with
+  // `jest.advanceTimersByTime` and decides by where the clock stands, never by how fast the
+  // machine runs.
+  beforeEach(() => {
+    jest.useFakeTimers();
+  });
+
+  // A fake clock left behind stops the timers of every row the same worker runs after this one.
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
   /** Five rows like the seed's: four of its own asks, the runbook's on a document and no issue,
    *  and the spec's decision row, declared by its block id on its issue. */
   const declared: readonly SeededInboxRow[] = [
@@ -331,7 +560,7 @@ describe("awaitSeededInbox", () => {
   const owner =
     "  These rows are written by the seed (packages/dispatch/e2e/workspace.ts) and by Dispatch's " +
     "own document settlement, not by the change under test.";
-  /** For every row that waits out its deadline, so none costs the 15 second default. */
+  /** For every row that waits out its deadline: 300 ms on the moved clock. */
   const quick = { deadlineMs: 300, intervalMs: 20 };
 
   /** A reader that answers `answer(call)` for its 1-based call, or throws it when it is an error,
@@ -349,6 +578,53 @@ describe("awaitSeededInbox", () => {
     return made;
   }
 
+  /** Moves the fake clock `ms` on one millisecond at a time, and lets what each step released run
+   *  before the next, so a sleep or a read the helper starts inside the span is timed from the
+   *  moment it starts. One jump is not enough: once the process has spawned a child, Bun fires
+   *  every timer of the span before the helper's continuations run, and the next sleep then
+   *  starts at the end of the span. Each step ends on `nextTurn`, so every promise the helper
+   *  chained runs as far as it goes before the clock moves again. */
+  async function pass(ms: number): Promise<void> {
+    await nextTurn();
+    for (let step = 0; step < ms; step += 1) {
+      jest.advanceTimersByTime(1);
+      await nextTurn();
+    }
+  }
+
+  /** Moves the clock `ms` on and checks that `waiting` has settled by then, so a wait that never
+   *  ends fails on this line rather than on the runner's timeout. */
+  async function settledAfter(ms: number, waiting: Promise<unknown>): Promise<void> {
+    const settled = watch(waiting);
+    await pass(ms);
+    expect(
+      settled(),
+      `awaitSeededInbox had neither answered nor rejected once the fake clock moved ${ms} ms more`
+    ).toBe(true);
+  }
+
+  /** Moves the clock to 1 ms short of `deadline` and checks that `waiting` has not settled, then
+   *  1 ms and `interval` more and checks that it has: it settles at its deadline, or, where
+   *  `interval` is given, no later than one interval past it. */
+  async function settlesAt(
+    deadline: number,
+    waiting: Promise<unknown>,
+    interval = 0
+  ): Promise<void> {
+    const settled = watch(waiting);
+    await pass(deadline - 1);
+    expect(
+      settled(),
+      "awaitSeededInbox had settled before the fake clock reached its deadline"
+    ).toBe(false);
+    await pass(1 + interval);
+    const by = interval === 0 ? "reached its deadline" : "moved one interval past its deadline";
+    expect(
+      settled(),
+      `awaitSeededInbox had neither answered nor rejected once the fake clock ${by}`
+    ).toBe(true);
+  }
+
   /** The message `waiting` rejects with, which must be an Error ending in the owner line. */
   async function failureOf(waiting: Promise<unknown>): Promise<string> {
     const error = await waiting.then(
@@ -363,10 +639,10 @@ describe("awaitSeededInbox", () => {
 
   test("a row that arrives late is waited for", async () => {
     const inbox = reader((call) => (call < 3 ? shortSet : wholeSet));
-    const match = await awaitSeededInbox(declared, inbox.read, {
-      deadlineMs: 10_000,
-      intervalMs: 20,
-    });
+    const waiting = awaitSeededInbox(declared, inbox.read, { deadlineMs: 10_000, intervalMs: 20 });
+    // Reads at 0, 20 and 40 ms.
+    await settledAfter(40, waiting);
+    const match = await waiting;
     expect(match.reads).toBe(3);
     expect(match.line).toBe("inbox rows: 5 of 5 declared rows matched in 3 reads");
   });
@@ -375,7 +651,9 @@ describe("awaitSeededInbox", () => {
     // The stray row carries the declared block id on another issue, so it is not the decision row.
     const stray: InboxRowRead = { block_id: "b-9f3c1a", id: "ask-stray", issue_key: "CORE-7" };
     const inbox = reader(() => [...shortSet, stray]);
-    const message = await failureOf(awaitSeededInbox(declared, inbox.read, quick));
+    const waiting = awaitSeededInbox(declared, inbox.read, quick);
+    await settledAfter(quick.deadlineMs, waiting);
+    const message = await failureOf(waiting);
     expect(message).toContain(
       [
         "  missing (the seed declares it, the Inbox did not list it):",
@@ -390,7 +668,9 @@ describe("awaitSeededInbox", () => {
   test("every declared row and one more names the extra row and no missing row", async () => {
     const extra: InboxRowRead = { block_id: null, id: "ask-extra", issue_key: "CORE-9" };
     const inbox = reader(() => [...wholeSet, extra]);
-    const message = await failureOf(awaitSeededInbox(declared, inbox.read, quick));
+    const waiting = awaitSeededInbox(declared, inbox.read, quick);
+    await settledAfter(quick.deadlineMs, waiting);
+    const message = await failureOf(waiting);
     expect(message).toContain(
       [
         "  missing (the seed declares it, the Inbox did not list it):",
@@ -404,9 +684,9 @@ describe("awaitSeededInbox", () => {
 
   test("a row that never arrives is named missing after the deadline", async () => {
     const inbox = reader(() => shortSet);
-    const started = Date.now();
-    const message = await failureOf(awaitSeededInbox(declared, inbox.read, quick));
-    expect(Date.now() - started).toBeGreaterThanOrEqual(300);
+    const waiting = awaitSeededInbox(declared, inbox.read, quick);
+    await settlesAt(quick.deadlineMs, waiting);
+    const message = await failureOf(waiting);
     const waited = message.match(
       new RegExp(
         `^inbox rows: the Inbox and the seed still disagree after (\\d+\\.\\d) s and ${inbox.calls} reads\\.\\n`
@@ -426,9 +706,22 @@ describe("awaitSeededInbox", () => {
     expect(message).not.toContain("the last read failed");
   });
 
+  test("a wait given no options ends at the 15 s default deadline", async () => {
+    // `e2e/workspace.e2e.ts` passes no options, so this deadline is the one its wait has.
+    const inbox = reader(() => shortSet);
+    const waiting = awaitSeededInbox(declared, inbox.read);
+    await settlesAt(15_000, waiting);
+    const message = await failureOf(waiting);
+    expect(message.split("\n")[0]).toBe(
+      `inbox rows: the Inbox and the seed still disagree after 15.0 s and ${inbox.calls} reads.`
+    );
+  });
+
   test("the whole set at once returns on the first read", async () => {
     const inbox = reader(() => wholeSet);
-    const match = await awaitSeededInbox(declared, inbox.read);
+    const waiting = awaitSeededInbox(declared, inbox.read);
+    await settledAfter(0, waiting);
+    const match = await waiting;
     expect(inbox.calls).toBe(1);
     expect(match.reads).toBe(1);
     expect(match.line).toBe("inbox rows: 5 of 5 declared rows matched in 1 read");
@@ -446,20 +739,20 @@ describe("awaitSeededInbox", () => {
       { deadlineMs: 10_000, intervalMs: 20, signal: stopping.signal }
     );
     await asked.promise;
-    const aborted = Date.now();
+    // The clock does not move after the abort: "at once" is before any timer fires.
     stopping.abort();
+    await settledAfter(0, waiting);
     await expect(waiting).rejects.toBeInstanceOf(Interrupted);
-    expect(Date.now() - aborted).toBeLessThan(1_000);
   });
 
   test("reads that fail first and then answer the whole set return", async () => {
     const inbox = reader((call) =>
       call <= 3 ? new Error("GET /api/v1/inbox failed: 502 bad gateway") : wholeSet
     );
-    const match = await awaitSeededInbox(declared, inbox.read, {
-      deadlineMs: 10_000,
-      intervalMs: 20,
-    });
+    const waiting = awaitSeededInbox(declared, inbox.read, { deadlineMs: 10_000, intervalMs: 20 });
+    // Reads at 0, 20, 40 and 60 ms.
+    await settledAfter(60, waiting);
+    const match = await waiting;
     expect(inbox.calls).toBe(4);
     expect(match.reads).toBe(inbox.calls);
     expect(match.line).toBe(`inbox rows: 5 of 5 declared rows matched in ${inbox.calls} reads`);
@@ -467,7 +760,9 @@ describe("awaitSeededInbox", () => {
 
   test("reads that always fail say that no read answered, and the last error", async () => {
     const inbox = reader((call) => new Error(`GET /api/v1/inbox failed: 500 attempt ${call}`));
-    const message = await failureOf(awaitSeededInbox(declared, inbox.read, quick));
+    const waiting = awaitSeededInbox(declared, inbox.read, quick);
+    await settledAfter(quick.deadlineMs, waiting);
+    const message = await failureOf(waiting);
     const lines = message.split("\n");
     expect(lines[0]).toMatch(
       new RegExp(
@@ -483,7 +778,9 @@ describe("awaitSeededInbox", () => {
 
   test("a second copy of a declared row is unexpected, and no row is missing", async () => {
     const inbox = reader(() => [...wholeSet, shortSet[1]]);
-    const message = await failureOf(awaitSeededInbox(declared, inbox.read, quick));
+    const waiting = awaitSeededInbox(declared, inbox.read, quick);
+    await settledAfter(quick.deadlineMs, waiting);
+    const message = await failureOf(waiting);
     expect(message).toContain(
       [
         "  missing (the seed declares it, the Inbox did not list it):",
@@ -499,7 +796,9 @@ describe("awaitSeededInbox", () => {
     const inbox = reader((call) =>
       call === 1 ? shortSet : new Error(`GET /api/v1/inbox failed: 500 attempt ${call}`)
     );
-    const message = await failureOf(awaitSeededInbox(declared, inbox.read, quick));
+    const waiting = awaitSeededInbox(declared, inbox.read, quick);
+    await settledAfter(quick.deadlineMs, waiting);
+    const message = await failureOf(waiting);
     expect(message).toStartWith("inbox rows: the Inbox and the seed still disagree after ");
     expect(message).toContain(
       [
@@ -515,11 +814,9 @@ describe("awaitSeededInbox", () => {
   });
 
   test("a read that never answers is a failed read once the deadline passes", async () => {
-    const started = Date.now();
-    const message = await failureOf(
-      awaitSeededInbox(declared, () => new Promise<never>(() => {}), quick)
-    );
-    expect(Date.now() - started).toBeLessThan(2_000);
+    const waiting = awaitSeededInbox(declared, () => new Promise<never>(() => {}), quick);
+    await settlesAt(quick.deadlineMs, waiting);
+    const message = await failureOf(waiting);
     expect(message.split("\n").slice(1)).toEqual([
       "  the seed declares 5 rows.",
       "  the last read failed: the read had not answered within 0.3 s",
@@ -536,8 +833,9 @@ describe("awaitSeededInbox", () => {
       calls += 1;
       return Date.now() - started < 200 ? Promise.resolve(shortSet) : new Promise<never>(() => {});
     };
-    const message = await failureOf(awaitSeededInbox(declared, read, quick));
-    expect(Date.now() - started).toBeLessThan(450);
+    const waiting = awaitSeededInbox(declared, read, quick);
+    await settlesAt(quick.deadlineMs, waiting, quick.intervalMs);
+    const message = await failureOf(waiting);
     expect(calls).toBeGreaterThan(1);
     const lines = message.split("\n");
     expect(lines[0]).toMatch(
@@ -562,9 +860,9 @@ describe("awaitSeededInbox", () => {
     // Reads at 0 ms and at 200 ms; the second sleep is cut to the 100 ms the deadline leaves, so
     // no third read starts at 400 ms with no time left to answer in.
     const inbox = reader(() => shortSet);
-    const message = await failureOf(
-      awaitSeededInbox(declared, inbox.read, { deadlineMs: 300, intervalMs: 200 })
-    );
+    const waiting = awaitSeededInbox(declared, inbox.read, { deadlineMs: 300, intervalMs: 200 });
+    await settlesAt(300, waiting);
+    const message = await failureOf(waiting);
     expect(inbox.calls).toBeLessThanOrEqual(2);
     expect(message.split("\n")[0]).toMatch(/ and [12] reads?\.$/);
     expect(message).not.toContain("the last read failed");
@@ -578,7 +876,9 @@ describe("awaitSeededInbox", () => {
       issue_key: null,
     };
     const inbox = reader(() => [...wholeSet, stray]);
-    const message = await failureOf(awaitSeededInbox(declared, inbox.read, quick));
+    const waiting = awaitSeededInbox(declared, inbox.read, quick);
+    await settledAfter(quick.deadlineMs, waiting);
+    const message = await failureOf(waiting);
     expect(message).toContain("    - ask ask-notes on the document Notes (block none)\n");
   });
 
@@ -589,18 +889,18 @@ describe("awaitSeededInbox", () => {
       asked.resolve();
       return shortSet;
     });
-    const started = Date.now();
     const waiting = awaitSeededInbox(declared, inbox.read, {
       deadlineMs: 10_000,
       intervalMs: 5_000,
       signal: stopping.signal,
     });
-    // The first read has answered, and one macrotask turn later the helper is in its 5 s sleep.
+    // The first read has answered, and once its promises have run the helper is in its 5 s
+    // sleep. The clock does not move after the abort: "at once" is before any timer fires.
     await asked.promise;
     await nextTurn();
     stopping.abort();
+    await settledAfter(0, waiting);
     await expect(waiting).rejects.toBeInstanceOf(Interrupted);
-    expect(Date.now() - started).toBeLessThan(1_000);
     expect(inbox.calls).toBe(1);
   });
 });

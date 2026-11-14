@@ -134,8 +134,8 @@ export class Supervisor {
   /** Aborts `signal`, sends SIGTERM to every process group started and not yet seen to stop,
    *  SIGKILL to whatever still runs `forceAfterMs` later, and returns the moment every leader has
    *  exited: the force-kill timer is cleared then, so a clean Ctrl-C does not keep the shell
-   *  prompt waiting on it. */
-  async stop(forceAfterMs = 10_000): Promise<void> {
+   *  prompt waiting on it. Answers whether the force-kill ran. */
+  async stop(forceAfterMs = 10_000): Promise<boolean> {
     this.#stopping.abort();
     const running = this.#children.splice(0);
     const signalGroups = (signal: NodeJS.Signals) => {
@@ -150,9 +150,14 @@ export class Supervisor {
       }
     };
     signalGroups("SIGTERM");
-    const forceKill = setTimeout(() => signalGroups("SIGKILL"), forceAfterMs);
+    let forced = false;
+    const forceKill = setTimeout(() => {
+      forced = true;
+      signalGroups("SIGKILL");
+    }, forceAfterMs);
     await Promise.allSettled(running.map(({ exited }) => exited));
     clearTimeout(forceKill);
+    return forced;
   }
 }
 
@@ -196,8 +201,9 @@ export function shellQuote(value: string): string {
   return /^[A-Za-z0-9_@%+=:,./-]+$/.test(value) ? value : `'${value.replaceAll("'", `'\\''`)}'`;
 }
 
-/** How long the live view's answer may take: Dispatch answers a subscription it accepts with the
- *  responder verdict as soon as it has one, and refuses one it does not at once. */
+/** How long the live view's answer may take in `bun run dispatch:local`: Dispatch answers a
+ *  subscription it accepts with the responder verdict as soon as it has one, and refuses one it
+ *  does not at once. */
 const AGENT_VIEW_WAIT_MS = 10_000;
 
 const BunWebSocket = WebSocket as unknown as new (
@@ -210,12 +216,14 @@ const BunWebSocket = WebSocket as unknown as new (
  * is unavailable", or undefined when Dispatch carries it: it subscribes the agent view on the live
  * socket as the page does, under `headers` (a signed-in person's cookie), and reads Dispatch's
  * first frame for it. A session id that is not a uuid is refused there (`SESSION_ID_INPUT`), which
- * is how a seed of named sessions passes every HTTP check and still has no live view.
+ * is how a seed of named sessions passes every HTTP check and still has no live view. `waitMs` is
+ * how long that first frame may take before its absence is the refusal.
  */
 export async function agentViewRefusal(
   baseUrl: string,
   headers: Record<string, string>,
-  sessionId: string
+  sessionId: string,
+  waitMs = AGENT_VIEW_WAIT_MS
 ): Promise<string | undefined> {
   const socketUrl = new URL("/ws/live", baseUrl);
   socketUrl.protocol = socketUrl.protocol === "https:" ? "wss:" : "ws:";
@@ -227,8 +235,8 @@ export async function agentViewRefusal(
     socket.close(1000);
   };
   const timeout = setTimeout(
-    () => settle(`Dispatch sent nothing for it within ${AGENT_VIEW_WAIT_MS / 1_000}s`),
-    AGENT_VIEW_WAIT_MS
+    () => settle(`Dispatch sent nothing for it within ${waitMs / 1_000}s`),
+    waitMs
   );
   socket.addEventListener("open", () => {
     socket.send(

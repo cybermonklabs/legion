@@ -14,6 +14,7 @@ import delta from "../../../contracts/fixtures/live/delta.json";
 import error from "../../../contracts/fixtures/live/error.json";
 import heartbeat from "../../../contracts/fixtures/live/heartbeat.json";
 import snapshot from "../../../contracts/fixtures/live/snapshot.json";
+import { REQUEST_DEADLINE_MS } from "../../web/src/api/client";
 import { RECONNECT_SPREAD_MS } from "../../web/src/api/live-socket";
 import type {
   DeliveryLiveDelta,
@@ -22,7 +23,15 @@ import type {
   DeliveryTimelineWithMeasures,
   LiveClientFrame,
 } from "../../web/src/api/types";
-import type { ProbeCompareLine, ProbeHeld, ProbeLine } from "../delivery-live-probe";
+import type {
+  ProbeCloseLine,
+  ProbeCompareLine,
+  ProbeEndLine,
+  ProbeHeld,
+  ProbeLine,
+  ProbeOpenLine,
+} from "../delivery-live-probe";
+import { beforeDeadline, pastDeadline, rowLimit, runBounded } from "./bounded-subprocess";
 
 // The probe runs as an agent runs it, a process of its own, against a stand-in for Dispatch that
 // replays the frames Dispatch's own diff writes (packages/contracts/fixtures/live): a
@@ -43,8 +52,6 @@ const view: DeliveryLiveView = {
   query: "repo=acme%2Fwidgets",
   window: { preset: 28 },
 };
-/** Each test starts a Bun process and loads the probe's imports; the box these run on is shared. */
-const PROCESS_TEST_MS = 30_000;
 
 interface Script {
   /** Answers the probe's `count`th subscribe (from 1) on `socket`, for its subscription `sub`. */
@@ -121,6 +128,12 @@ async function readLines(
   if (pending !== "") onLine(pending);
 }
 
+/** The probe as the six rows that drive it start it: a process of its own, which the row reads
+ *  line by line, waits on with `until` and signals itself, so no bound stands at it, since a bound
+ *  would kill a process the row still uses. Where the line a row awaits never comes, the probe
+ *  runs until `--minutes 1` after an open, or, where its dial never opens, until 45 s after that
+ *  dial. Where that is past the row's limit, the limit ends the row and `afterEach` kills the
+ *  probe; where the probe exits first, the wait fails as "the probe ended first". */
 function runProbe(args: readonly string[]): Run {
   const child = Bun.spawn([process.execPath, probe, ...args], {
     cwd: dispatchPackage,
@@ -169,11 +182,38 @@ function runProbe(args: readonly string[]): Run {
   };
 }
 
-function args(
-  dispatch: FakeDispatchServer<LiveClientFrame>,
-  token = TOKEN,
-  minutes = "1"
-): string[] {
+/** The probe as the nine rows that wait for its exit alone start it, six written out and three
+ *  from the loop over the flags that set a timer: a bounded child, read whole once it has ended.
+ *  They read the exit status and the stderr, which is what the run itself answers with, so this
+ *  adds nothing to it. No row drives this one, so its bound stops nothing a row is still using. */
+function runProbeToEnd(args: readonly string[]) {
+  return runBounded({
+    argv: [process.execPath, probe, ...args],
+    bound: "short",
+    cwd: dispatchPackage,
+    from: import.meta.url,
+  });
+}
+
+/** Every line of the probe's whole stdout, each the JSON object it writes on one line. */
+function linesOf(stdout: string): ProbeLine[] {
+  return stdout
+    .split("\n")
+    .filter((line) => line !== "")
+    .map((line) => JSON.parse(line) as ProbeLine);
+}
+
+/** The `open` lines of the probe's whole stdout. */
+function opensOf(stdout: string): ProbeOpenLine[] {
+  return linesOf(stdout).filter((line): line is ProbeOpenLine => line.type === "open");
+}
+
+/** The `end` lines of the probe's whole stdout. */
+function endsOf(stdout: string): ProbeEndLine[] {
+  return linesOf(stdout).filter((line): line is ProbeEndLine => line.type === "end");
+}
+
+function args(dispatch: { readonly url: string }, token = TOKEN, minutes = "1"): string[] {
   const tokenFile = join(scratch(), "token");
   writeFileSync(tokenFile, `${token}\n`, { mode: 0o600 });
   return [
@@ -347,7 +387,13 @@ test(
       },
     ]);
   },
-  PROCESS_TEST_MS
+  {
+    // This row drives the probe: it waits for the error line, sends SIGINT, and then reads the
+    // body file the probe wrote. 30 s is enough because the fake Dispatch sends every frame at
+    // the subscribe, so the row waits for the probe's start, one loopback watch and two loopback
+    // reads; `runProbe` says what ends the row where the error line never comes.
+    timeout: 30_000,
+  }
 );
 
 test(
@@ -398,27 +444,28 @@ test(
       { equal: true, measures: { differ: [], equal: true }, prs: null, runs: null },
     ]);
   },
-  PROCESS_TEST_MS
+  {
+    // This row drives the probe through --compare: it waits for the delta line and then sends
+    // SIGINT. 30 s is enough because the fake Dispatch sends both frames at the subscribe, so the
+    // row waits for the probe's start, one loopback watch and two loopback reads; `runProbe` says
+    // what ends the row where the delta line never comes.
+    timeout: 30_000,
+  }
 );
 
 // Dispatch's rotation (4001) is the one close the probe answers by opening again at once; its
-// restart (1012) and any other close wait at least a draw of the first attempt's spread, so a
-// second subscribe within 500 ms of the close is the at-once reopen only for the rotation.
+// restart (1012) and any other close wait a draw of the first attempt's spread or longer. The
+// close line names the delay the probe chose, so the row reads that choice from the probe's own
+// output, and the second subscribe is the fact that the reconnect happened.
 for (const [code, reason, what] of [[4001, "max age", "rotation"]] as const) {
   test(
     `after a ${what} close the probe reconnects at once and resumes with the change and revisions it holds`,
     async () => {
-      let closedAt = 0;
-      let reopenedAt = 0;
       const dispatch = probeDispatch({
         onSubscribe(socket, sub, count) {
-          if (count > 1) {
-            reopenedAt = performance.now();
-            return;
-          }
+          if (count > 1) return;
           socket.send(forSub(snapshot, sub));
           socket.send(forSub(delta, sub));
-          closedAt = performance.now();
           socket.close(code, reason);
         },
       });
@@ -427,7 +474,6 @@ for (const [code, reason, what] of [[4001, "max age", "rotation"]] as const) {
       run.kill("SIGINT");
       expect(await run.exited()).toBe(0);
 
-      expect(reopenedAt - closedAt).toBeLessThan(500);
       expect(dispatch.received).toEqual([
         { sub: "probe", type: "subscribe", view },
         { resume: { revs: next.revs, seq: change.seq }, sub: "probe", type: "subscribe", view },
@@ -435,12 +481,24 @@ for (const [code, reason, what] of [[4001, "max age", "rotation"]] as const) {
       expect(
         run.lines.map((line) => {
           if (line.type === "open") return `open ${line.resume}`;
-          if (line.type === "close") return `close ${line.code}`;
+          if (line.type === "close") return `close ${line.code} retry_ms ${line.retry_ms}`;
           return line.type;
         })
-      ).toEqual(["open null", "snapshot", "delta", `close ${code}`, `open ${change.seq}`]);
+      ).toEqual([
+        "open null",
+        "snapshot",
+        "delta",
+        `close ${code} retry_ms 0`,
+        `open ${change.seq}`,
+      ]);
     },
-    PROCESS_TEST_MS
+    {
+      // This row drives the probe across a rotation close: it waits for the second subscribe
+      // and then sends SIGINT. 30 s is enough because the probe dials again at once after a
+      // rotation, so the row waits for the probe's start and two loopback watches; `runProbe`
+      // says what ends the row where the second subscribe never comes.
+      timeout: 30_000,
+    }
   );
 }
 
@@ -471,26 +529,36 @@ test(
         return line.type;
       })
     ).toEqual(["open null", "snapshot", "delta", "close 1012", `open ${change.seq}`]);
-    // The page's first attempt after a restart close waits up to `RECONNECT_SPREAD_MS`; the
-    // probe, a process of its own, draws its own wait, so this holds the bound rather than the
-    // draw. A second of slack covers the loopback handshake on a shared box.
-    const closedAt = Date.parse(run.lines[3]?.at ?? "");
-    const reopenedAt = Date.parse(run.lines[4]?.at ?? "");
-    expect(reopenedAt - closedAt).toBeLessThan(RECONNECT_SPREAD_MS + 1_000);
+    // The page's first attempt after a restart close waits a draw of up to
+    // `RECONNECT_SPREAD_MS`; the close line names the draw the probe made before it dialled.
+    const retry = run.lines.find((line): line is ProbeCloseLine => line.type === "close")?.retry_ms;
+    expect(retry).toBeNumber();
+    expect(retry).toBeGreaterThanOrEqual(0);
+    expect(retry).toBeLessThanOrEqual(RECONNECT_SPREAD_MS);
   },
-  PROCESS_TEST_MS
+  {
+    // This row drives the probe across a restart close: it waits for the second subscribe,
+    // sends SIGINT, and reads the close line. 30 s is enough because the row waits for the
+    // probe's start, two loopback watches and a reconnect delay of at most `RECONNECT_SPREAD_MS`
+    // (2 s); `runProbe` says what ends the row where the second subscribe never comes.
+    timeout: 30_000,
+  }
 );
 
 test(
   "a refused upgrade ends the probe with exit 1, naming the refusal",
   async () => {
     const dispatch = probeDispatch({ onSubscribe() {} });
-    const run = runProbe(args(dispatch, "not-the-token"));
-    expect(await run.exited()).toBe(1);
+    const run = await runProbeToEnd(args(dispatch, "not-the-token"));
+    expect(run.code).toBe(1);
     expect(dispatch.upgrades).toEqual(["Bearer not-the-token"]);
-    expect(run.stderr.join("\n")).toContain("Dispatch refused the connection to ws://127.0.0.1:");
+    expect(run.stderr).toContain("Dispatch refused the connection to ws://127.0.0.1:");
+    expect(
+      endsOf(run.stdout),
+      "the probe wrote an end line when Dispatch refused its connection"
+    ).toEqual([]);
   },
-  PROCESS_TEST_MS
+  rowLimit("short")
 );
 
 test(
@@ -508,38 +576,350 @@ test(
         );
       },
     });
-    const run = runProbe(args(dispatch));
-    expect(await run.exited()).toBe(1);
-    expect(run.stderr.join("\n")).toContain(
+    const run = await runProbeToEnd(args(dispatch));
+    expect(run.code).toBe(1);
+    expect(run.stderr).toContain(
       "Dispatch refused the view: INVALID_QUERY: window is wider than 84 days"
     );
+    expect(
+      endsOf(run.stdout),
+      "the probe wrote an end line when Dispatch refused its view"
+    ).toEqual([]);
   },
-  PROCESS_TEST_MS
+  rowLimit("short")
 );
 
+// `--minutes` counts from the first open, and the row reads the probe's own `open` and `end` lines.
 test(
-  "the watch ends on its own after --minutes",
+  "the probe's own end line comes no sooner than --minutes after its open",
   async () => {
     const dispatch = probeDispatch({ onSubscribe() {} });
-    const started = Date.now();
-    // 0.01 minutes is 600 ms of the probe's own clock, in another process, which no fake timer
-    // here reaches: the test waits for that process to end and checks it ended no sooner.
-    const run = runProbe(args(dispatch, TOKEN, "0.01"));
-    expect(await run.exited()).toBe(0);
-    expect(Date.now() - started).toBeGreaterThanOrEqual(600);
+    const run = await runProbeToEnd(args(dispatch, TOKEN, "0.01"));
+    expect(run.code).toBe(0);
+    const opens = opensOf(run.stdout);
+    const ends = endsOf(run.stdout);
+    expect(
+      opens,
+      "the probe wrote no open line, or more than one, for its one connection"
+    ).toHaveLength(1);
+    expect(ends, "the probe wrote no end line when its watch stopped").toHaveLength(1);
+    expect(
+      Date.parse(ends[0].at) - Date.parse(opens[0].at),
+      "the probe's own clock says its watch ended before 600 ms had passed since its open"
+    ).toBeGreaterThanOrEqual(600);
     expect(dispatch.received).toEqual([{ sub: "probe", type: "subscribe", view }]);
   },
-  PROCESS_TEST_MS
+  rowLimit("short")
+);
+
+/** A Dispatch on a loopback port of its own that holds each `/ws/live` upgrade for `holdMs`,
+ *  counted from the moment the probe asks for it, as a loaded pod can answer late, and then takes
+ *  it. It records the moment it let each upgrade go, and every frame the probe sent, parsed. */
+function heldDispatch(holdMs: number) {
+  const released: number[] = [];
+  const received: LiveClientFrame[] = [];
+  const server = Bun.serve({
+    async fetch(request, srv) {
+      if (new URL(request.url).pathname !== "/ws/live") {
+        return new Response("not found", { status: 404 });
+      }
+      // Real time, since the probe is a process of its own whose clock no fake timer here
+      // reaches; the row reads the order of this release and the probe's open, not this length.
+      await Bun.sleep(holdMs);
+      released.push(Date.now());
+      return srv.upgrade(request) ? undefined : new Response("upgrade failed", { status: 400 });
+    },
+    hostname: "127.0.0.1",
+    port: 0,
+    websocket: {
+      message(_socket, raw) {
+        received.push(JSON.parse(String(raw)) as LiveClientFrame);
+      },
+    },
+  });
+  kills.push(() => server.stop(true));
+  return { received, released, url: `http://127.0.0.1:${server.port}` };
+}
+
+// `--minutes` counts from the socket's first open, not from the dial, so a socket that opens late
+// still gets its whole watch. The Dispatch here holds the upgrade for 2.5 s from the moment the
+// probe asks for it, so the open comes at least 2.5 s after the dial, well past the 600 ms of
+// `--minutes 0.01`, however fast the pod runs the probe. The row reads from the probe's own
+// `open` line that the open came after the hold was let go, and from its `end` line that the
+// watch ran at least 600 ms past that open; and it proves the watch still subscribes, and still
+// ends on its own with exit 0.
+test(
+  "the watch subscribes and ends on its own when its socket opens late",
+  async () => {
+    const dispatch = heldDispatch(2_500);
+    const run = await runProbeToEnd(args(dispatch, TOKEN, "0.01"));
+    expect(run.code).toBe(0);
+    const opens = opensOf(run.stdout);
+    const ends = endsOf(run.stdout);
+    expect(dispatch.released, "the held Dispatch let no upgrade go, or more than one").toHaveLength(
+      1
+    );
+    expect(
+      opens,
+      "the probe wrote no open line, or more than one, for its one connection"
+    ).toHaveLength(1);
+    expect(Date.parse(opens[0].at)).toBeGreaterThanOrEqual(dispatch.released[0]);
+    expect(ends, "the probe wrote no end line when its late-opening watch stopped").toHaveLength(1);
+    expect(
+      Date.parse(ends[0].at) - Date.parse(opens[0].at),
+      "the probe's own clock says its late-opening watch ended before 600 ms had passed since its open"
+    ).toBeGreaterThanOrEqual(600);
+    expect(dispatch.received).toEqual([{ sub: "probe", type: "subscribe", view }]);
+  },
+  rowLimit("short")
+);
+
+// The other half of counting `--minutes` from the first open: a watch whose socket never opens
+// still ends. The server here accepts the connection and never answers the upgrade, so the open
+// that arms `--minutes` never comes, and the silence check, which acts only after a first open,
+// never redials. The row proves that `--open-within 1` ends that watch on its own with exit 1, as
+// a refused connection ends it, and not as a clean watch. Its stderr must name the flag's 1 s, so
+// a probe that misreads the value fails here, as does an exit 1 for any other reason, a crash at
+// load included. The server notes when it accepted the connection and when that connection
+// closed, and the row holds the time between to at least half the flag's 1 s and under
+// `heldUnderMs`. The lower bound stands at half the timer rather than at the timer itself
+// because the time between is the timer give or take the scheduling of the probe's dial and of
+// this process's accept and close handlers, so load can shorten it as well as lengthen it: with
+// six busy loops on two CPUs, the lowest of 74 runs of the 1 s timer measured 988.8 ms. The upper
+// bound follows the module's rule, three times the largest reading of its kind under load: the
+// largest accept-to-close of a correct 1 s timer, in 74 runs under six busy loops on two CPUs on
+// 2026-11-14, was 1 031.7 ms, three times which is 3 095.1 ms; the bound is 3 200 ms, which keeps
+// over 100 ms above that. So the row catches a timer set well short, one set several times too
+// long and one left at the 45 s default; it does not catch one set between about 0.5 s and about
+// 3 s, such as 2 s for 1 s, which held 1 987-2 029 ms.
+const heldUnderMs = 3_200;
+
+test(
+  "a watch whose socket never opens ends on its own, and not as a clean watch",
+  async () => {
+    const accepted: number[] = [];
+    const closed = Promise.withResolvers<number>();
+    const silent = Bun.listen({
+      hostname: "127.0.0.1",
+      port: 0,
+      // Accepts every connection and never answers it: an upgrade that hangs.
+      socket: {
+        close() {
+          closed.resolve(performance.now());
+        },
+        data() {},
+        open() {
+          accepted.push(performance.now());
+        },
+      },
+    });
+    try {
+      const openWithinMs = 1_000;
+      const argv = args({ url: `http://127.0.0.1:${silent.port}` }, TOKEN, "0.01");
+      argv.push("--open-within", `${openWithinMs / 1_000}`);
+      const run = await runProbeToEnd(argv);
+      expect(run.code).toBe(1);
+      expect(
+        run.stderr,
+        "the probe's stderr does not say the socket missed the 1 s that --open-within gave it"
+      ).toContain("did not open within 1 s (--open-within)");
+      expect(
+        endsOf(run.stdout),
+        "the probe wrote an end line when its socket never opened"
+      ).toEqual([]);
+      expect(
+        accepted,
+        "the silent server accepted no connection from the probe, or more than one"
+      ).toHaveLength(1);
+      // The probe has exited, so its connection is closed, and the close is on its way here; a
+      // close that never comes fails by name rather than on the row's own clock.
+      const close = await beforeDeadline(closed.promise, performance.now() + heldUnderMs);
+      if (close === pastDeadline) {
+        throw new Error(
+          `the silent server saw no close of the probe's connection within ${heldUnderMs} ms of ` +
+            "the probe's exit"
+        );
+      }
+      const held = close - accepted[0];
+      expect(
+        held,
+        `the probe gave up on its connection before ${openWithinMs / 2} ms, half the ` +
+          `${openWithinMs} ms that --open-within gave it`
+      ).toBeGreaterThanOrEqual(openWithinMs / 2);
+      expect(
+        held,
+        `the probe held its connection for ${heldUnderMs} ms or longer, more than three times the ` +
+          `largest hold, 1 031.7 ms, that a correct ${openWithinMs} ms timer showed under load, ` +
+          `against the ${openWithinMs} ms that --open-within gave it`
+      ).toBeLessThan(heldUnderMs);
+    } finally {
+      silent.stop(true);
+    }
+  },
+  rowLimit("short")
 );
 
 test(
   "a missing flag is a usage error, exit 2",
   async () => {
     const dispatch = probeDispatch({ onSubscribe() {} });
-    const run = runProbe(args(dispatch).slice(0, 4));
-    expect(await run.exited()).toBe(2);
-    expect(run.stderr.join("\n")).toContain("--minutes is required");
+    const run = await runProbeToEnd(args(dispatch).slice(0, 4));
+    expect(run.code).toBe(2);
+    expect(run.stderr).toContain("--minutes is required");
     expect(dispatch.upgrades).toEqual([]);
   },
-  PROCESS_TEST_MS
+  rowLimit("short")
 );
+
+/** A Dispatch on a loopback port of its own that sends each subscribe the fixture snapshot and
+ *  answers each GET with `answer`, and the paths read. Bun.serve closes a connection silent for
+ *  10 s unless told not to, which would answer a read with a reset; the fake Dispatch keeps that
+ *  default, so the rows that hold a read open use this one. */
+function slowDispatch(answer: (url: URL) => Response | Promise<Response>) {
+  const reads: string[] = [];
+  const server = Bun.serve({
+    fetch(request, srv) {
+      const url = new URL(request.url);
+      if (url.pathname === "/ws/live") {
+        return srv.upgrade(request) ? undefined : new Response("upgrade failed", { status: 400 });
+      }
+      reads.push(url.pathname);
+      return answer(url);
+    },
+    hostname: "127.0.0.1",
+    idleTimeout: 0,
+    port: 0,
+    websocket: {
+      message(socket, raw) {
+        // The probe's own frame, a subscribe.
+        const frame = JSON.parse(String(raw)) as LiveClientFrame;
+        if (frame.type === "subscribe") socket.send(forSub(snapshot, frame.sub));
+      },
+    },
+  });
+  kills.push(() => server.stop(true));
+  return { reads, url: `http://127.0.0.1:${server.port}` };
+}
+
+/** The probe's argv for a watch of `url` that compares once it ends, each read given
+ *  `readWithin` seconds of silence. */
+function compareArgs(url: string, readWithin: string): string[] {
+  return [...args({ url }), "--compare", "--read-within", readWithin];
+}
+
+// A `--compare` read that receives nothing for `--read-within` fails the probe, naming its route,
+// where without that bound the probe waits on the read for good. The read starts once SIGINT
+// ends the watch, so the time from SIGINT to the probe's exit is the read's 1 s of silence give
+// or take scheduling, and the row holds it to at least half that 1 s and under `exitUnderMs`:
+// three times the largest such time a correct probe took, 1 049.1 ms in 8 runs under six busy
+// loops on two CPUs on 2026-11-14, rounded up to the next 100 ms. So a read timer set well short
+// or several times too long fails here by name, and not on this row's own clock; one set between
+// about 0.5 s and about 3 s does not, and `silence-read.test.ts` holds the timer to its value on
+// Bun's fake clock.
+const exitUnderMs = 3_200;
+
+test(
+  "a --compare read that receives nothing fails the probe with exit 1, naming the route",
+  async () => {
+    // Takes every GET and never answers it.
+    const dispatch = slowDispatch(() => new Promise<Response>(() => {}));
+    const run = runProbe(compareArgs(dispatch.url, "1"));
+    await run.until(() => run.lines.some((line) => line.type === "snapshot"));
+    const stopped = performance.now();
+    run.kill("SIGINT");
+    const code = await beforeDeadline(run.exited(), stopped + exitUnderMs);
+    const took = performance.now() - stopped;
+    expect(
+      code,
+      `the probe had not exited ${exitUnderMs} ms after SIGINT, more than three times the largest ` +
+        "time, 1 049.1 ms, a correct probe took to fail a read that --read-within 1 gave 1 s of silence"
+    ).not.toBe(pastDeadline);
+    expect(
+      took,
+      "the probe exited before 500 ms had passed since SIGINT, half the 1 s --read-within gave its read"
+    ).toBeGreaterThanOrEqual(500);
+    expect(code).toBe(1);
+    expect(dispatch.reads).toEqual(["/api/v1/delivery/timeline"]);
+    const stderr = run.stderr.join("\n");
+    expect(stderr).toContain("the read of /api/v1/delivery/timeline?");
+    expect(stderr).toContain("received nothing for 1 s (--read-within)");
+  },
+  {
+    // This row drives the probe: it waits for the snapshot line and sends SIGINT, and the read
+    // runs after that. 30 s is enough because the row waits for the probe's start, one loopback
+    // watch and the read, whose wait ends by name at `exitUnderMs`; `runProbe` says what ends
+    // the row where the snapshot line never comes.
+    timeout: 30_000,
+  }
+);
+
+// A body that arrives in 16 pieces, 0.25 s apart, is read whole and compared. The read gets the
+// page's own deadline, `REQUEST_DEADLINE_MS`, so no stall of the pod between two pieces turns
+// the verdict. That the deadline starts over on the headers and on each piece, so a body longer
+// than the deadline is read whole, is `silence-read.test.ts`'s, on Bun's fake timers.
+test(
+  "a --compare read whose body keeps arriving is read whole, however long it takes",
+  async () => {
+    const text = JSON.stringify(heldBody);
+    const count = 16;
+    const pieces = Array.from({ length: count }, (_, index) =>
+      text.slice((index * text.length) / count, ((index + 1) * text.length) / count)
+    );
+    const dispatch = slowDispatch((url) => {
+      if (url.pathname === "/api/v1/delivery/measures") return Response.json(heldBody.measures);
+      let sent = 0;
+      const encoder = new TextEncoder();
+      const body = new ReadableStream<Uint8Array>({
+        async pull(controller) {
+          // A real gap between pieces, so the body reaches the probe, a process of its own, as
+          // pieces; no verdict here reads how long the gap took.
+          if (sent > 0) await Bun.sleep(250);
+          controller.enqueue(encoder.encode(pieces[sent] ?? ""));
+          sent += 1;
+          if (sent === pieces.length) controller.close();
+        },
+      });
+      return new Response(body, { headers: { "content-type": "application/json" } });
+    });
+    const run = runProbe(compareArgs(dispatch.url, String(REQUEST_DEADLINE_MS / 1000)));
+    await run.until(() => run.lines.some((line) => line.type === "snapshot"));
+    run.kill("SIGINT");
+    expect(await run.exited(), run.stderr.join("\n")).toBe(0);
+    expect(dispatch.reads).toEqual(["/api/v1/delivery/timeline", "/api/v1/delivery/measures"]);
+    expect(comparisons(run.lines).map((line) => [line.route.split("?")[0], line.equal])).toEqual([
+      ["/api/v1/delivery/timeline", true],
+      ["/api/v1/delivery/measures", true],
+    ]);
+  },
+  {
+    // This row drives the probe: it waits for the snapshot line and sends SIGINT, and the read
+    // runs after that. The 60 s, two `REQUEST_DEADLINE_MS`, covers the wait for the snapshot,
+    // which the Dispatch here sends at the subscribe, and a read of about 4 s of pieces, in
+    // which any silence fails the probe by name at 30 s, half this limit; `runProbe` says what
+    // ends the row where the snapshot line never comes.
+    timeout: 2 * REQUEST_DEADLINE_MS,
+  }
+);
+
+// A delay longer than 2^31-1 ms does not fit `setTimeout`'s 32-bit field, and bun sets it to
+// 1 ms, which would end a watch at once. Each flag that sets a timer refuses a value that long
+// with a usage error that names the largest value it takes.
+for (const [flag, value, refusal] of [
+  ["--minutes", "40000", "--minutes is at most 35791.394116 minutes"],
+  ["--open-within", "3000000", "--open-within is at most 2147483.647 seconds"],
+  ["--read-within", "3000000", "--read-within is at most 2147483.647 seconds"],
+] as const) {
+  test(
+    `${flag} longer than a timer keeps is a usage error, exit 2`,
+    async () => {
+      const dispatch = probeDispatch({ onSubscribe() {} });
+      const argv =
+        flag === "--minutes" ? args(dispatch, TOKEN, value) : [...args(dispatch), flag, value];
+      const run = await runProbeToEnd(argv);
+      expect(run.code).toBe(2);
+      expect(run.stderr).toContain(refusal);
+      expect(dispatch.upgrades).toEqual([]);
+    },
+    rowLimit("short")
+  );
+}

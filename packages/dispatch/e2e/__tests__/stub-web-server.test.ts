@@ -23,10 +23,9 @@
 import { expect, test } from "bun:test";
 import { fileURLToPath } from "node:url";
 
-const dispatchPackage = fileURLToPath(new URL("../..", import.meta.url));
+import { rowLimit, runBounded } from "./bounded-subprocess";
 
-/** Two spawns of about a second and a half each. */
-const probeTimeout = 60_000;
+const dispatchPackage = fileURLToPath(new URL("../..", import.meta.url));
 
 /** The `command` of the web server this config declares for a run whose argv is `argv`, or null
  *  where it declares none. The config reads the selection from `process.argv`, so the reading
@@ -37,19 +36,15 @@ async function webServerCommand(argv: readonly string[]): Promise<string | null>
     "const server = config.webServer ?? null;" +
     "const declared = Array.isArray(server) ? (server[0] ?? null) : server;" +
     "console.log(JSON.stringify(declared === null ? null : declared.command));";
-  const child = Bun.spawn(["bun", "--eval", script, "--", ...argv], {
+  const { code, named, stderr, stdout } = await runBounded({
+    argv: ["bun", "--eval", script, "--", ...argv],
+    bound: "short",
     cwd: dispatchPackage,
     env: { HOME: process.env.HOME ?? "", PATH: process.env.PATH ?? "" },
-    stderr: "pipe",
-    stdout: "pipe",
+    from: import.meta.url,
   });
-  const [code, stderr, stdout] = await Promise.all([
-    child.exited,
-    new Response(child.stderr).text(),
-    new Response(child.stdout).text(),
-  ]);
   if (code !== 0) {
-    throw new Error(`reading the config with ${argv.join(" ")} exited ${code}:\n${stderr}`);
+    throw new Error(`reading the config ${named} exited ${code}:\n${stderr}`);
   }
   return JSON.parse(stdout) as string | null;
 }
@@ -65,7 +60,7 @@ test(
         "a stub project, and for no other run."
     ).toBeNull();
   },
-  probeTimeout
+  rowLimit("short")
 );
 
 test(
@@ -79,5 +74,5 @@ test(
         "/api/v1/** and /auth/whoami and nothing else."
     ).toBe("bun e2e/stub/static-server.ts");
   },
-  probeTimeout
+  rowLimit("short")
 );

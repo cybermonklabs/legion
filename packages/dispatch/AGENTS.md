@@ -2040,20 +2040,106 @@ Playwright listings first, to prove it scanned the files the suite runs: the
 default selection, that selection under `DISPATCH_E2E_PROCESSES=2` and under
 `DISPATCH_E2E_SIGNIN=oidc` with it, and one that names the three wall-clock
 projects, whose rows a listing naming no project holds none of. The four
-collect at once, and the readings the timing comment above
-`listingTimeout` carries (`e2e/__tests__/no-browser-rows.test.ts`) are of
-the whole file: 13.72, 17.11 and 23.22 seconds in three runs of it, with
-the default listing 3.59 seconds on its own and the wall-clock one 1.25.
-The file allows three minutes,
-which is a ceiling for something being wrong rather than a budget for a
-listing. A row may stand all the same as a named exemption
-with its reason, written in `e2e/no-browser-rows.ts`, whose list ships empty;
-the check refuses a stale exemption too — one naming a row the suite no longer
-holds, or one that drives a browser now — so the rule cannot come to lie in the
-other direction either.
+collect at once, and each is a bounded child, so the row states its limit as
+`rowLimit` over the four (`e2e/__tests__/no-browser-rows.test.ts`) and the file
+holds no number of its own. The four listings start when the file's module loads,
+and the process that runs the file prints each one's cost line on its own stderr
+as that listing ends. A row may stand all the same as a named
+exemption with its reason, written in `e2e/no-browser-rows.ts`, whose list
+ships empty; the check refuses a stale exemption too — one naming a row the
+suite no longer holds, or one that drives a browser now — so the rule cannot
+come to lie in the other direction either.
 INFRA-1554 moved the last four rows out: the CLI's nested-reply read, the
 agent API's duplicate gate, a spec write's invalid-markdown refusal, and the
 two-build rollout row.
+
+Every one-shot subprocess a row or hook waits for, but the two stated edges
+below, starts through `runBounded`
+(`e2e/__tests__/bounded-subprocess.ts`): it bounds the child, kills the child
+and every process it started when the bound passes (its descendants by parent
+pid, and on Linux every process whose environment carries the child's token),
+fails with a message naming the file that started the child, its command and
+how long it waited, and prints one line per child, with what that child cost,
+on the stderr of the run that started it. Two subprocesses are stated edges
+rather than bounded: the psql of `e2e/psql.ts` (the rows and hooks of
+`e2e/__tests__/psql-session.test.ts`), whose `sqlAt` `e2e/harness-postgres.ts`
+and `e2e/local-instance.ts` call too, so a bound on it would reach past
+`e2e/__tests__/`; and, on a machine with no `/proc`, the `ps` with which
+`bounded-subprocess.ts` and its test read the process table, which runs with no
+bound. Linux lists its processes under `/proc` and never runs that `ps`.
+The child stays in the process group of the run that started it, so an
+interrupted `bun test --parallel` takes it along
+(`e2e/__tests__/bounded-subprocess.test.ts`).
+The bounds are `short` (60 000 ms, a command that
+starts nothing), `listing` (300 000 ms,
+one `playwright test --list`), `generation` (330 000 ms,
+`bun e2e/tools/row-map.ts`, which starts two listings of its own) and
+`twoStackBuild` (1 800 000 ms, the child that builds two stacks). One rule
+derives a row's limit from them: `rowLimit(...)` sums the bounds of what the
+row waits for one after another - each child, and each wait the row ends at a
+bound itself, such as `whether` or `eventually` of `bounded-subprocess.ts`,
+which read a state another process reaches until it holds; once the short
+bound has passed, `whether` answers false and `eventually` fails naming that
+state - counts a group written `{ atOnce: [...] }` as the
+largest bound in it, and adds 30 000 ms for the row's own work. Each argument
+is a bound name and never a number, so a wrong value is a compiler error rather
+than a red run. A row or hook that drives a process rather than waiting for one
+states `rowLimit` too where every wait it makes ends at a bound: the
+interrupted-runner row of `e2e/__tests__/bounded-subprocess.test.ts` drives a
+`bun test` runner and states `rowLimit("short", "short", "short")` for its three
+polls, and the rows of `e2e/__tests__/local-instance-support.test.ts` that wait
+for its `Supervisor`'s processes state one for each `eventually`. Otherwise it
+keeps a number, with the reason it is that long on the line directly above it:
+the six rows of `e2e/__tests__/delivery-live-probe.test.ts` that read the
+probe's lines and stop it with SIGINT, and the two hooks of
+`e2e/__tests__/psql-session.test.ts`.
+`e2e/row-limits.ts`, which
+`e2e/__tests__/row-limits.test.ts` runs over every file under that directory, at
+any depth, that the lane's `bun test` collects there - measured with bun 1.4.4
+as a name ending `.test`, `_test`, `.spec` or `_spec` and then `ts`, `tsx`,
+`js`, `jsx`, `mjs`, `cjs`, `mts` or `cts`, in any case, in every directory but
+`node_modules` and one whose name begins with a dot -
+refuses every other limit: a limit is a call of that shared
+`rowLimit`, or it carries a reason of at least eight words on the line directly
+above it. It reads a limit in every spelling Bun honours: a row's second or
+third argument, a hook's second (`onTestFinished` included), `setDefaultTimeout`
+and `jest.setTimeout`, under any name a file imports, binds or destructures
+them to. It also refuses a row or hook that waits for `runBounded`, `listing`,
+`whether` or `eventually`,
+itself, through a function of its own file, or by referring to a name the file
+binds or assigns to such a call (`const lane = retained(listing(...))` at module
+load, or `lane = retained(listing(...))` in a hook, then `await lane` in the
+row), unless it states its limit as a `rowLimit`
+call, its own or the file's `setDefaultTimeout`: without one the lane's
+`--timeout 60000` stops it, which ties with the `short` bound. It reads those
+exports from an import declaration or from a name bound to an `import()`
+or `require` of their module. Where it reads the bound of what a row waits for
+(a `listing` call, a `runBounded` whose `bound:` is a string literal, a
+`whether` or `eventually` call, which is the `short` bound, a name
+bound to any of those), it refuses a `rowLimit` whose total, computed from its
+arguments as written, falls below `rowLimit` of the largest such bound; a bound
+or a total it cannot read (a computed `bound:`, a spread argument) is not
+checked. What it does not read is read as waiting for nothing, and no refusal
+names a row that waits that way: a bounded function passed as a value
+(`.map(runBounded)`); a name bound to a waiting name
+(`const rows = lane.then(rowsOf)`); a name a destructuring declaration binds
+(`const [lane] = [listing(...)]`); a name a property or a destructuring
+assignment writes (`state.lane = listing(...)`, `[lane] = [listing(...)]`); and
+a method of a class declaration, static or not, that calls `runBounded`,
+`listing`, `whether` or `eventually` (a class expression or an object literal
+bound to a name is read, since that name's initializer holds the call). A name
+bound to an
+awaited call (`const options = await helpOptions()`) is no wait either, since it
+holds what the call answered, but only where the `await` is outermost:
+`const code = (await runBounded(...)).code` is read as a waiting name, so a row
+that refers to `code` and states no `rowLimit` is refused although `code` is a
+number. A call is matched to a waiting function of the file by its bare name, so
+a row that declares a name of its own that a waiting function of the file also
+bears (`const helper = ...`) and calls it is refused the same way. No test file
+under `e2e/__tests__/` writes either shape.
+`e2e/__tests__/fixtures/row-limits.fixture.ts` and
+`e2e/__tests__/fixtures/row-limits-spellings.fixture.ts` are its planted
+controls, one limit of every shape the rule answers.
 
 The markdown shapes the parity rows read live in
 `packages/envoy/internal/dispatch/pmdoc/testdata/corpus/`, and all three suites
@@ -2651,8 +2737,9 @@ assertion, so the command has to start on a server without that fix for the spec
 against it. What it runs on lives in `e2e/local-instance-support.ts`, which runs nothing on
 import: `Supervisor`, which starts each process and stops them all (Ctrl-C, a SIGTERM, a failure
 at any step), signalling every process group, SIGKILLing whatever still runs after 10 s, aborting
-the signal its psql calls carry, and returning once every leader has exited, and which
-`e2e/harness-start.ts` starts the harness's processes on, their output piped to it;
+the signal its psql calls carry, and returning once every leader has exited with whether it had
+to SIGKILL, and which `e2e/harness-start.ts` starts the harness's processes on, their output piped
+to it;
 `databaseUrlRefusal`, its own `DATABASE_URL` check; and `shellQuote`, for the commands it prints.
 `e2e/__tests__/local-instance-support.test.ts` (`bun run test`) drives them with real processes
 and no server. That check reads the URL with `new URL`, as libpq would only in part; the order
@@ -2662,17 +2749,30 @@ of the reset.
 
 `e2e/delivery-live-probe.ts` is an agent's client for a delivery subscription on `GET /ws/live`,
 run with `bun` against any Dispatch under a bearer (`--url`, `--token-file`, `--view <json>`,
-`--minutes`): it writes one JSON line per frame, applies each with the page's own `applyDelta` and
-`applyRevs`, and reconnects and resumes as `api/live-socket.ts` does. `POST
-/api/v1/live/_test/disconnect` closes its socket as a restart would, and `POST
-/api/v1/live/_test/rotate` exercises a 4001 rotation. With `--compare`, the probe reads the GET
-routes for the last window it applied and writes whether the pull request ids, run ids and every
-measure are equal, exiting 1 when one does not. `docs/site/src/content/docs/dispatch/delivery.md`
+`--minutes`, counted from the first open; `--open-within <seconds>` bounds the first connection's
+wait to open, `LIVE_SOCKET_SILENT_MS` unless given, and that first connection, when it does not
+open by then or is refused, ends the probe with exit 1, while a later one is dialled again): it
+writes one JSON line per frame, applies each with the page's own `applyDelta` and `applyRevs`,
+and reconnects and resumes as `api/live-socket.ts` does.
+It writes an `end` line, `{ at, type: "end" }`, when `--minutes` is up, and none when a signal, a
+refusal or a failure ends the watch.
+`POST /api/v1/live/_test/disconnect`
+closes its socket as a restart would, and `POST /api/v1/live/_test/rotate` exercises a 4001
+rotation. With `--compare`, the probe reads the GET routes for the last window it applied and
+writes whether the pull request ids, run ids and every measure are equal, exiting 1 when one does
+not, when no snapshot arrived to compare, or when a read receives nothing for
+`--read-within <seconds>` (`REQUEST_DEADLINE_MS` unless given; it starts over as the headers and
+each piece of the body arrive). Each read goes through `readUntilSilent` of `e2e/silence-read.ts`,
+a module of its own so a test can import it. `docs/site/src/content/docs/dispatch/delivery.md`
 ("For agents") is its user's guide. `e2e/__tests__/delivery-live-probe.test.ts` (`bun run test`)
 runs it as a process against a Bun websocket server that replays `packages/contracts/fixtures/live`
-and holds the body it applies to `after.json`. It also checks that the probe reopens at once
-after a 4001, its second subscribe arriving within 500 ms of the close, and within the first
-attempt's spread after a 1012 (`RECONNECT_SPREAD_MS`, two seconds).
+and holds the body it applies to `after.json`. It also reads the delay each close line names as
+`retry_ms`: 0 after a 4001, a dial at once, and at most `RECONNECT_SPREAD_MS` (two seconds) after
+a 1012, each followed by a second subscribe that resumes from the change the probe holds.
+`e2e/__tests__/silence-read.test.ts` (`bun run test`) holds the read's deadline on Bun's fake
+timers, which it moves with `jest.advanceTimersByTime`: the deadline starts over on the headers and
+on each piece of the body, and a read whose headers never come, or whose body falls silent, fails
+at the deadline, naming its route.
 
 The `webkit` Playwright project runs the rows tagged `@webkit` (`webkitTagged` in
 `e2e/playwright.config.ts`) of `e2e/collab-cursor.e2e.ts`, `e2e/deep-links.e2e.ts`,
@@ -2972,10 +3072,9 @@ every file whose rows stayed, each with the server behaviour those rows depend o
 committed file and a fresh generation differ. The generation reads two listings and takes the
 rows of both, because one listing is no longer the suite: a listing that names no project holds
 no wall-clock row, so a second names the three `-alone` projects, and `heavy-bodies.e2e.ts` and
-`nested-directive.e2e.ts` reach the map from it alone. The two cost about four seconds together
-on a two-core pod, the reading the comment above that tool's own `defaultListing` and
-`clockListing` carries (`e2e/tools/row-map.ts`: the default listing about three and a half
-seconds on its own and the wall-clock one about one).
+`nested-directive.e2e.ts` reach the map from it alone. Both listings are bounded children, so
+what each one cost is in the line the generation prints on its own stderr
+(`e2e/__tests__/bounded-subprocess.ts`).
 The map carries no count and names no `@pr` row, deliberately: both are read from those
 listings, which hold the whole suite, so a map that held them would be red on every pull
 request of every tree that adds or removes a row here. A **new spec file** still moves it,

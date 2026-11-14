@@ -1,25 +1,55 @@
 /** `bun e2e/delivery-live-probe.ts`: an agent's client for `GET /ws/live`, the websocket the
  * Delivery and Pipeline pages keep themselves current over. It subscribes one view under a bearer
  * token and writes one JSON line per frame Dispatch sends, applying each to the body it holds with
- * the page's own `applyDelta` and `applyRevs`. It reconnects as the page does: at once after
- * Dispatch's rotation (4001), within the first attempt's spread (up to 2 s) after Dispatch's
- * restart close (1012), with backoff after any other close, and by replacing a socket that has
- * carried no frame for three heartbeats; each new connection resumes from the last change it
- * applied. The watch ends after `--minutes`, on Ctrl-C, or when Dispatch refuses the view.
- *  Then `--body-file` writes the body it holds, and `--compare` reads the matching GET routes for
- *  the last window it applied and writes, for each, whether the pull request ids, run ids and every
- *  measure are equal.
+ * the page's own `applyDelta` and `applyRevs`. It reconnects as the page does, and each new
+ * connection resumes from the last change it applied. What bounds each wait of the probe:
+ *
+ *  - Before the first open, `--open-within` seconds from the first dial; without that flag, the
+ *    page's silence rule, `LIVE_SOCKET_SILENT_MS` (45 s, three heartbeats). A first dial that
+ *    has not opened by then fails the watch, and a first connection that is refused or closed
+ *    fails it at once. A later connection that is refused or never opens is dialled again.
+ *  - After the first open, `--minutes` counted from that open, which ends the watch cleanly and
+ *    writes an `end` line. The first `open` line and the `end` line read one clock, so the `end`
+ *    line's `at` less the first `open` line's `at` is the watch's length and never less than
+ *    `--minutes`. A reconnect's open does not count it again.
+ *  - Between reconnects, the delay `reconnectDelayMs` draws: none after Dispatch's rotation
+ *    (4001), up to `RECONNECT_SPREAD_MS` (2 s) after Dispatch's restart close (1012), and up to
+ *    30 s with backoff after any other close. `--minutes` ends the watch during that delay as
+ *    well. Each close line carries the delay chosen as `retry_ms`: 0 for a dial at once, null when
+ *    none follows.
+ *  - A silent socket, after the first open: one that has carried no frame for more than
+ *    `LIVE_SOCKET_SILENT_MS`, a reconnect's dial that never opens included, is replaced by a new
+ *    dial at the next check, which runs each second, and `--minutes` still ends the watch.
+ *  - Each `--compare` read, while Dispatch sends nothing: `--read-within` seconds; without that
+ *    flag, the page's own deadline on a GET's silence, `REQUEST_DEADLINE_MS` (30 s). The time
+ *    starts at the request and starts over as the headers arrive and as each piece of the body
+ *    does, so a read that keeps sending goes on however slowly, and one that sends nothing for
+ *    that long fails the probe. The reads run one after another, two for a timeline view and one
+ *    for any other.
+ *
+ *  No flag takes a time longer than the longest delay a timer keeps, 2^31-1 ms (about 24.9 days).
+ *  Reading `--token-file` and writing `--body-file` wait as long as the named file makes them, as
+ *  a FIFO with no writer or no reader does; whoever named the file ends that wait. The probe takes
+ *  such a file, since `--token-file <(...)` and `/dev/stdin` are uses it serves.
+ *
+ *  Ctrl-C or SIGTERM ends the watch at any time. Then `--body-file` writes the body it holds, and
+ *  `--compare` reads the matching GET routes for the last window it applied and writes, for each,
+ *  whether the pull request ids, run ids and every measure are equal. Dispatch refusing the view
+ *  ends the watch at once and the probe exits 1 with neither: no body is written and no route is
+ *  read.
  *
  *    bun e2e/delivery-live-probe.ts --url <dispatch> --token-file <file> \
  *      --view '{"kind":"timeline","window":{"preset":28},"query":""}' --minutes 10 --compare
  *
  *  It exits 0 when every comparison is equal or none was asked for; 1 when one is not, a read
- *  fails, the first connection is refused, Dispatch refuses the view, or a frame breaks the
- *  contract; 2 on a usage error. */
+ *  fails or receives nothing for `--read-within`, `--compare` was asked for and no snapshot
+ *  arrived to compare, the first connection is refused or does not open within `--open-within`,
+ *  Dispatch refuses the view, or a frame breaks the contract; 2 on a usage error. */
 import { writeFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { LIVE_SOCKET_MAX_AGE_CLOSE } from "@legion/contracts";
 
+import { REQUEST_DEADLINE_MS } from "../web/src/api/client";
 import { LIVE_SOCKET_SILENT_MS, reconnectDelayMs } from "../web/src/api/live-socket";
 import type {
   DeliveryLiveBody,
@@ -35,6 +65,7 @@ import type {
   LiveSubscribe,
 } from "../web/src/api/types";
 import { applyDelta, applyRevs } from "../web/src/features/delivery/lib/applyDelta";
+import { readUntilSilent } from "./silence-read";
 
 /** The frames `GET /ws/live` sends: a delivery view's own, the freshness verdict, a refusal and
  * the heartbeat. */
@@ -81,12 +112,22 @@ export interface ProbeOpenLine {
   readonly resume: string | null;
 }
 
-/** A connection closing, by Dispatch or by the probe replacing a silent socket. */
+/** A connection closing, by Dispatch or by the probe replacing a silent socket, and the delay in
+ *  milliseconds the probe chose before its next dial: 0 for a dial at once, null when it dials no
+ *  more. */
 export interface ProbeCloseLine {
   readonly at: string;
   readonly type: "close";
   readonly code: number;
   readonly reason: string;
+  readonly retry_ms: number | null;
+}
+
+/** The watch's end once `--minutes` has passed since the first open, by the clock that open's
+ *  line reads. No other end of the watch writes it. */
+export interface ProbeEndLine {
+  readonly at: string;
+  readonly type: "end";
 }
 
 /** The ids a GET answer holds that the probe's body lacks (`missing`), and the reverse (`extra`). */
@@ -111,7 +152,12 @@ export interface ProbeCompareLine {
   readonly error?: { readonly code: string; readonly message: string };
 }
 
-export type ProbeLine = ProbeFrameLine | ProbeOpenLine | ProbeCloseLine | ProbeCompareLine;
+export type ProbeLine =
+  | ProbeFrameLine
+  | ProbeOpenLine
+  | ProbeCloseLine
+  | ProbeEndLine
+  | ProbeCompareLine;
 
 /** What `--body-file` holds: the last change the probe applied, the body and its revisions. */
 export interface ProbeHeld {
@@ -122,7 +168,7 @@ export interface ProbeHeld {
 }
 
 const USAGE =
-  "usage: bun e2e/delivery-live-probe.ts --url <dispatch> --token-file <file> --view <json> --minutes <n> [--compare] [--body-file <file>]";
+  "usage: bun e2e/delivery-live-probe.ts --url <dispatch> --token-file <file> --view <json> --minutes <n> [--open-within <seconds>] [--read-within <seconds>] [--compare] [--body-file <file>]";
 
 /** The probe's one subscription. */
 const SUB = "probe";
@@ -135,6 +181,10 @@ const REPLACED = 4000;
  *  either answer, so the watch ends; any other code (DELIVERY_NOT_CONFIGURED) is answered again
  *  once Dispatch can, and the watch goes on. */
 const REFUSALS: Readonly<Record<string, true>> = { INVALID_FRAME: true, INVALID_QUERY: true };
+
+/** The largest delay `setTimeout` keeps, 2^31-1 ms: a longer one does not fit its 32-bit signed
+ *  field, and bun sets it to 1 ms instead, so a watch of more `--minutes` would end at once. */
+const LONGEST_TIMER_MS = 2_147_483_647;
 
 const MAPS = [
   "issue_titles",
@@ -189,7 +239,12 @@ interface Options {
   readonly url: URL;
   readonly tokenFile: string;
   readonly view: DeliveryLiveView;
-  readonly minutes: number;
+  /** How long the watch runs from its first open, in milliseconds. */
+  readonly minutesMs: number;
+  /** How long the first dial has to open, in milliseconds. */
+  readonly openWithinMs: number;
+  /** How long each `--compare` read may receive nothing, in milliseconds. */
+  readonly readWithinMs: number;
   readonly compare: boolean;
   readonly bodyFile: string | undefined;
 }
@@ -231,6 +286,8 @@ function readArgs(argv: readonly string[]) {
         "body-file": { type: "string" },
         compare: { type: "boolean" },
         minutes: { type: "string" },
+        "open-within": { type: "string" },
+        "read-within": { type: "string" },
         "token-file": { type: "string" },
         url: { type: "string" },
         view: { type: "string" },
@@ -245,6 +302,23 @@ function readArgs(argv: readonly string[]) {
 function required(value: string | undefined, flag: string): string {
   if (value === undefined || value === "") throw new UsageError(`${flag} is required`);
   return value;
+}
+
+/** `raw`, a number of `unit`, in milliseconds: above 0 and no longer than `LONGEST_TIMER_MS`. */
+function duration(flag: string, raw: string, unit: "minutes" | "seconds"): number {
+  const unitMs = unit === "minutes" ? 60_000 : 1_000;
+  const ms = Number(raw) * unitMs;
+  if (!Number.isFinite(ms) || ms <= 0) {
+    throw new UsageError(`${flag} is a number of ${unit} above 0, not ${raw}`);
+  }
+  if (ms > LONGEST_TIMER_MS) {
+    // Rounded down to six decimals, so the value named is one the flag takes.
+    const largest = Math.floor((LONGEST_TIMER_MS / unitMs) * 1e6) / 1e6;
+    throw new UsageError(
+      `${flag} is at most ${largest} ${unit}, the longest delay a timer keeps, not ${raw}`
+    );
+  }
+  return ms;
 }
 
 /** The view `--view` names. The probe checks what it reads itself (the kind, a timeline or
@@ -297,15 +371,20 @@ function parseOptions(argv: readonly string[]): Options {
   if (url.protocol !== "http:" && url.protocol !== "https:") {
     throw new UsageError(`--url is Dispatch's http or https address, not ${rawUrl}`);
   }
-  const rawMinutes = required(values.minutes, "--minutes");
-  const minutes = Number(rawMinutes);
-  if (!Number.isFinite(minutes) || minutes <= 0) {
-    throw new UsageError(`--minutes is a number of minutes above 0, not ${rawMinutes}`);
-  }
+  const rawOpenWithin = values["open-within"];
+  const rawReadWithin = values["read-within"];
   return {
     bodyFile: values["body-file"],
     compare: values.compare === true,
-    minutes,
+    minutesMs: duration("--minutes", required(values.minutes, "--minutes"), "minutes"),
+    openWithinMs:
+      rawOpenWithin === undefined
+        ? LIVE_SOCKET_SILENT_MS
+        : duration("--open-within", rawOpenWithin, "seconds"),
+    readWithinMs:
+      rawReadWithin === undefined
+        ? REQUEST_DEADLINE_MS
+        : duration("--read-within", rawReadWithin, "seconds"),
     tokenFile: required(values["token-file"], "--token-file"),
     url,
     view: parseView(required(values.view, "--view")),
@@ -397,21 +476,40 @@ function frameLine(frame: DeliveryServerFrame, bytes: number): ProbeFrameLine {
   }
 }
 
-/** Watches `options.view` until `--minutes` pass, a Ctrl-C, or Dispatch refuses the view, and
- *  resolves with the body the probe holds then, or null when no snapshot arrived. Rejects when the
- *  first connection is refused, the view is refused, or a frame breaks the contract. */
+/** Watches `options.view` until `--minutes` pass from its socket's first open, or a Ctrl-C or
+ *  SIGTERM, and resolves with the body the probe holds then, or null when no snapshot arrived.
+ *  Rejects when the first connection is refused or does not open within `--open-within`,
+ *  Dispatch refuses the view, or a frame breaks the contract. */
 async function watch(options: Options, token: string): Promise<ProbeHeld | null> {
   const liveUrl = new URL("/ws/live", options.url);
   liveUrl.protocol = options.url.protocol === "https:" ? "wss:" : "ws:";
   let held: ProbeHeld | null = null;
   let socket: WebSocket | null = null;
-  let opened = false;
   let attempt = 0;
   let lastFrameAt = 0;
   let cancelReconnect: (() => void) | undefined;
+  // Armed at the first dial for `--open-within`, which fails the watch; the first open arms it
+  // again for `--minutes` from then, which ends the watch cleanly.
+  let timer: Timer | undefined;
+  // Whether the first open has come; the time `--minutes` counts from goes to `timeUp` as its
+  // argument.
+  let opened = false;
   // Settles once, with why the watch ended early, or with nothing once its time is up.
   const ended = Promise.withResolvers<Error | undefined>();
   const fail = (reason: string) => ended.resolve(new Error(reason));
+  const stop = () => ended.resolve(undefined);
+  // `--minutes` is up only once that much of this clock has passed since the first open, at
+  // `from`; a timer that fires early is armed again for what is left.
+  const timeUp = (from: number) => {
+    const at = Date.now();
+    const left = from + options.minutesMs - at;
+    if (left > 0) {
+      timer = setTimeout(timeUp, left, from);
+      return;
+    }
+    write({ at: new Date(at).toISOString(), type: "end" });
+    stop();
+  };
 
   const subscribeFrame = (): LiveSubscribe =>
     held === null
@@ -481,9 +579,14 @@ async function watch(options: Options, token: string): Promise<ProbeHeld | null>
     // Each listener ignores a socket the probe has already let go, whose events still arrive.
     next.addEventListener("open", () => {
       if (socket !== next) return;
-      opened = true;
-      lastFrameAt = Date.now();
-      write({ at: now(), resume: held?.seq ?? null, type: "open" });
+      const at = Date.now();
+      if (!opened) {
+        clearTimeout(timer);
+        opened = true;
+        timer = setTimeout(timeUp, options.minutesMs, at);
+      }
+      lastFrameAt = at;
+      write({ at: new Date(at).toISOString(), resume: held?.seq ?? null, type: "open" });
       next.send(JSON.stringify(subscribeFrame()));
     });
     next.addEventListener("message", (event) => {
@@ -496,35 +599,41 @@ async function watch(options: Options, token: string): Promise<ProbeHeld | null>
 
   const lost = (code: number, reason: string) => {
     socket = null;
-    write({ at: now(), code, reason, type: "close" });
     if (!opened) {
+      write({ at: now(), code, reason, retry_ms: null, type: "close" });
       fail(`Dispatch refused the connection to ${liveUrl.href}: ${reason || `close ${code}`}`);
       return;
     }
-    if (code === LIVE_SOCKET_MAX_AGE_CLOSE) {
+    // As the page does: Dispatch's rotation is answered by a dial at once, and its restart close
+    // starts the backoff over, so the next attempt waits within the first attempt's spread.
+    let delay = 0;
+    if (code !== LIVE_SOCKET_MAX_AGE_CLOSE) {
+      if (code === SERVICE_RESTART) attempt = 0;
+      delay = reconnectDelayMs(attempt);
+      attempt += 1;
+    }
+    write({ at: now(), code, reason, retry_ms: delay, type: "close" });
+    if (delay === 0) {
       open();
       return;
     }
-    // As the page does: Dispatch's restart close starts the backoff over, so the next attempt
-    // waits within the first attempt's spread.
-    if (code === SERVICE_RESTART) attempt = 0;
-    const handle = setTimeout(open, reconnectDelayMs(attempt));
-    attempt += 1;
+    const handle = setTimeout(open, delay);
     cancelReconnect = () => clearTimeout(handle);
   };
 
-  // A socket that carried no frame for three heartbeats is dead without knowing it: replace it.
+  // After the first open, a socket that carried no frame for three heartbeats is dead without
+  // knowing it: replace it. Before the first open, `--open-within` judges the dial.
   const silence = setInterval(() => {
-    if (socket === null || Date.now() - lastFrameAt <= LIVE_SOCKET_SILENT_MS) return;
+    if (!opened || socket === null || Date.now() - lastFrameAt <= LIVE_SOCKET_SILENT_MS) {
+      return;
+    }
     const silent = socket;
     socket = null;
     const reason = `no frame for ${LIVE_SOCKET_SILENT_MS / 1000} s`;
-    write({ at: now(), code: REPLACED, reason, type: "close" });
+    write({ at: now(), code: REPLACED, reason, retry_ms: 0, type: "close" });
     silent.close(REPLACED, reason);
     open();
   }, 1_000);
-  const stop = () => ended.resolve(undefined);
-  const timer = setTimeout(stop, options.minutes * 60_000);
   process.once("SIGINT", stop);
   process.once("SIGTERM", stop);
   const shutDown = () => {
@@ -538,6 +647,13 @@ async function watch(options: Options, token: string): Promise<ProbeHeld | null>
     closing?.close(1000);
   };
 
+  timer = setTimeout(
+    () =>
+      fail(
+        `the socket to ${liveUrl.href} did not open within ${options.openWithinMs / 1000} s (--open-within)`
+      ),
+    options.openWithinMs
+  );
   open();
   const failure = await ended.promise;
   shutDown();
@@ -665,11 +781,24 @@ function readsFor(view: DeliveryLiveView, body: DeliveryLiveBody): Read[] {
   }
 }
 
-async function compareRead(base: URL, token: string, route: Read): Promise<ProbeCompareLine> {
-  const response = await fetch(new URL(route.route, base), {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-  const text = await response.text();
+/** One route read and compared. Dispatch has `withinMs` to send something, as the page gives a
+ *  GET: `readUntilSilent` starts the time over as the headers arrive and as each piece of the body
+ *  does, so a body that keeps coming is read however slowly, and one that stops fails the read. */
+async function compareRead(
+  base: URL,
+  token: string,
+  route: Read,
+  withinMs: number
+): Promise<ProbeCompareLine> {
+  const { response, text } = await readUntilSilent(
+    route.route,
+    (signal) =>
+      fetch(new URL(route.route, base), {
+        headers: { Authorization: `Bearer ${token}` },
+        signal,
+      }),
+    withinMs
+  );
   const refused = (code: string, reason: string): ProbeCompareLine => ({
     at: now(),
     equal: false,
@@ -714,7 +843,7 @@ async function compareRead(base: URL, token: string, route: Read): Promise<Probe
 async function compare(options: Options, token: string, held: ProbeHeld): Promise<boolean> {
   let equal = true;
   for (const route of readsFor(options.view, held.body)) {
-    const line = await compareRead(options.url, token, route);
+    const line = await compareRead(options.url, token, route, options.readWithinMs);
     write(line);
     equal &&= line.equal;
   }
