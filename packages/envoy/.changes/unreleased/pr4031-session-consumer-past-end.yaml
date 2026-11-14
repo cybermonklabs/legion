@@ -13,4 +13,7 @@ body: |-
   created past the end is restarted at the stream's end at the relay's next restart of the
   session, and a delete records a resume floor no higher than the stream's last sequence (one WARN
   line). After a one-copy stream lost data, a restart of a consumer starts at the sequence after
-  the ack floor the server reports, so the messages that still wait for an ack are delivered again.
+  the ack floor the server reports, so the messages that still wait for an ack are delivered
+  again, except for a consumer that had delivered nothing before its stream lost every message,
+  and since the loss has been delivered messages up to `OptStartSeq - 1` with the first still
+  unacked.

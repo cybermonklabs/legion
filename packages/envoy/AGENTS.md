@@ -4601,10 +4601,13 @@ The session's own user, such as a `gcp:NatsHub`'s credential-free `sessionUser`,
   A delete of such a consumer records the stream's last sequence as its floor ("The resume record each delete writes" below).
   `Ensure` does not check a consumer that exists against the stream's end, because that check would cost a stream read on every registration, so the relay's restart is what repairs it.
   A stream that lost data can end below a consumer's start.
-  nats-server v2.15.1 recovers a one-copy consumer whose delivered sequence is past its stream's last sequence by lowering its ack floor and its delivered sequence to that last sequence, and the consumer's configuration keeps its `OptStartSeq` (`server/consumer.go` v2.15.1, lines 1366-1374 and 6317-6370).
+  nats-server v2.15.1 recovers a one-copy consumer whose delivered sequence is past its stream's last sequence by lowering its ack floor and its delivered sequence to that last sequence, while its configuration keeps its `OptStartSeq` (`server/consumer.go` v2.15.1, lines 1366-1374 and 6317-6370).
   The messages the stream stores next take the sequences after that last one, which are below the consumer's start, and the consumer delivers them.
-  So `ackFloor` reads a floor the server reports as 0 as the sequence before the consumer's start, and keeps a floor the server reports above 0 even where it is below that sequence.
-  A restart of such a consumer then starts at the sequence after its real floor, so the session is handed again the messages that still wait for an ack.
+  The reconcile sets the ack floor's consumer sequence to the one it had delivered before the loss.
+  So `ackFloor` keeps the floor the server reports even below the sequence before the consumer's start, unless it is 0 in both its stream and its consumer sequence and the delivered stream sequence is at or above the sequence before the start ("Restart at the ack floor" below).
+  A restart then starts after that floor, so the session is handed again what waits for an ack.
+  One case stays open: a consumer that had delivered nothing before its stream lost every message, and since the loss has been delivered messages up to `OptStartSeq - 1` with the first still unacked, reads as acked up to that sequence, and a restart of it starts past those messages.
+  On nats-server v2.15.1 such a consumer is not reconciled at all, because the server writes its old floors back (`server/filestore.go` v2.15.1, lines 14015-14017, 14128-14132 and 14324-14373).
   nats-server v2.15.1 reconciles only a one-copy consumer this way, not a replicated one.
 
 - **The log lines of a start:** the session-consumer connection writes three lines with the logger the listener passes to `bus.ConnectSessionConsumers`, its own JSON logger (`connectSessionDelivery`), so each line carries the listener's `machine_id`.
@@ -4712,7 +4715,7 @@ The session's own user, such as a `gcp:NatsHub`'s credential-free `sessionUser`,
 - **Restart at the ack floor:** every start of a session's relay (the listener starts or gains the durable binding, the session registers with a new `epoch`, a paused relay's backoff ran out or its session registered, a consumer call or a pull failed) reads the consumer's ack floor, deletes the consumer and creates it again at the sequence after the floor with the current filter (`bus.SessionConsumers.RestartAtFloor`;
   nats-server 2.10.29 has no consumer reset).
   So after any break the session takes its messages again in stream order, and its plugin's ledger drops the ones it already wrote.
-  nats-server 2.10.29 reports a consumer's ack floor as 0 until an ack moves it, so a floor the server reports as 0 reads as the consumer's start sequence minus one, a floor above 0 stands even below that ("Past the stream's end" above), and, while nothing awaits an ack, the floor never reads below the last sequence delivered (`ackFloor`;
+  nats-server 2.10.29 reports an ack floor of 0 until an ack moves it, so a floor the server reports as 0 reads as the consumer's start sequence minus one while its delivered sequence is at or above that and its consumer ack floor is 0, any other floor stands even below it ("Past the stream's end" above), and the floor is at least the last sequence delivered when nothing awaits an ack (`ackFloor`;
   `docs/solutions/envoy/a-fresh-jetstream-consumer-reports-ack-floor-0-so-create-it-at-a-start-sequence-INFRA-594.md`).
   A consumer with nothing awaiting an ack, whose next sequence is not past the stream's end, has nothing to deliver again and already goes on at the sequence after its floor, so the restart keeps it:
   it updates the filter and settings in place and sends no delete or create, which leaves no window without a consumer and writes nothing to the server's store.

@@ -619,26 +619,71 @@ func (s *SessionConsumers) setPendingStart(name string, start uint64) {
 }
 
 // ackFloor is the stream sequence up to which consumer info has every message it delivered acked.
-// The server's own AckFloor.Stream can read low: nats-server v2.10.29 reports 0 for a consumer
-// until an ack moves it (a new consumer's stored state sets only its delivered sequence), so a
-// consumer that has delivered nothing, or whose first delivery is still unacked, would read as
-// acked up to nothing, and a restart there would deliver the stream from its first message
-// (docs/solutions/envoy/a-fresh-jetstream-consumer-reports-ack-floor-0-so-create-it-at-a-start-sequence-INFRA-594.md).
-// So a floor the server reports as 0 is read as the sequence before the consumer's start (every
-// session consumer is created at a start sequence, Ensure), and, while nothing it delivered
-// awaits an ack, the floor is the last sequence it delivered. nats-server v2.15.1 reports the
-// sequence before the start itself for a consumer that has acked nothing
-// (TestRestartAtFloorNeverDeliversWhatTheStreamHeldBeforeTheConsumer).
+// It is the floor the server reports (AckFloor.Stream), except in two cases. While the server
+// reports no ack floor in either sequence (AckFloor.Stream == 0 and AckFloor.Consumer == 0) and the
+// consumer's delivered stream sequence is at or above the sequence before its start
+// (OptStartSeq - 1; every session consumer is created at a start sequence, Ensure), the floor is
+// read as that sequence before the start; a floor that misses any of those three conditions is
+// kept, even below that sequence. And while nothing the consumer delivered awaits an ack, the floor
+// reads no lower than the last sequence it delivered.
 //
-// A floor the server reports above 0 is kept as it is, even below the sequence before the
-// consumer's start, because the server lowers a consumer's floor there after its stream lost
-// data: nats-server v2.15.1, recovering a one-copy consumer whose delivered sequence is past its
-// stream's last sequence, reconciles it (server/consumer.go v2.15.1, lines 1366-1374 and
-// 6317-6370), lowering its ack floor and its delivered sequence to the stream's last sequence
-// while its configuration keeps OptStartSeq. The messages the stream stores next take the
-// sequences after that last one, below the consumer's start, and the reconciled consumer
-// delivers them; reading the floor up to the sequence before the start would put a restart past
-// them, and the session would never be handed the ones still awaiting an ack.
+// The OptStartSeq - 1 term is for nats-server v2.10.29, which reports both sequences of a
+// consumer's ack floor as 0 until an ack moves them (a new consumer's stored state sets only its
+// delivered sequence) and starts delivery at OptStartSeq, so while no ack has moved the floor the
+// consumer's delivered stream sequence is at or above the sequence before its start. Read as it
+// is, that floor would say the consumer has acked up to nothing, and a restart there would deliver
+// the stream from its first message
+// (docs/solutions/envoy/a-fresh-jetstream-consumer-reports-ack-floor-0-so-create-it-at-a-start-sequence-INFRA-594.md).
+// Measured on nats-server v2.10.29, with this package's own tests run against it, a consumer with
+// OptStartSeq 4 on a stream whose last sequence is 3 reports an ack floor of 0 in both sequences,
+// with a delivered stream sequence of 3 while it is new, 4 with its first delivery unacked, and 5
+// with a later delivery acked while the first is not; for the first two,
+// TestRestartAtFloorNeverDeliversWhatTheStreamHeldBeforeTheConsumer reads the floor as 3.
+// nats-server v2.15.1 reports the sequence before the start itself for a consumer that has acked
+// nothing (the same test).
+//
+// After a one-copy stream lost data, the floor the server reports must be kept even below the
+// sequence before the start. nats-server v2.15.1, recovering a one-copy consumer whose delivered
+// sequence is past its stream's last sequence, reconciles it (server/consumer.go v2.15.1,
+// reconcileStateWithStream, lines 1366-1374 and 6317-6372): it sets the stream sequence of the
+// consumer's ack floor to the stream's last sequence, the consumer sequence of that floor to the
+// consumer's delivered sequence before the loss (adflr = dseq - 1, lines 6324-6326), and its
+// delivered sequences to its floor, while its configuration keeps OptStartSeq. The messages the
+// stream stores next take the sequences after that last one, below the consumer's start, and the
+// reconciled consumer delivers them; reading the floor up to the sequence before the start would
+// put a restart past them, and the session would never be handed the ones still awaiting an ack.
+//
+// The conditions tell reconciled consumers from the v2.10.29 one, and a test pins each of the two
+// that nats-server v2.15.1 reaches with a consumer that only that condition tells apart. One whose
+// stream kept some of its messages has a stream floor above 0, so AckFloor.Stream == 0 fails
+// (TestRestartAtFloorAfterTheEndWasLostRedeliversPastTheStartWhenTheConsumerHadDeliveredNothing;
+// TestRestartAtFloorAfterAOneCopyStreamLostDataDeliversThePendingMessagesAgain too). One whose
+// stream lost every message has a stream floor of 0 and, if it had delivered anything before the
+// loss, a consumer floor above 0, so AckFloor.Consumer == 0 fails
+// (TestRestartAtFloorAfterEveryMessageWasLostRedeliversPastTheStartWhenTheConsumerHadDelivered;
+// TestRestartAtFloorAfterAOneCopyStreamLostEveryMessageDeliversThePendingMessagesAgain too).
+//
+// The delivered condition guards a reconciled consumer with both floors at 0, one whose stream lost
+// every message and that had delivered nothing before the loss: its delivered stream sequence, 0
+// after the reconcile, stays below the sequence before a start past 1 until the consumer has been
+// delivered that far. nats-server v2.15.1 does not persist that state, so no test on it reaches
+// it. The reconciled state is all 0, and the consumer's file store treats a delivered sequence of
+// 0 as state it has not loaded yet: writing the reconciled state reads the old state from disk,
+// copies it back and writes that (server/filestore.go v2.15.1, stateWithCopyLocked, lines 14324
+// and 14344-14373, reached from ForceUpdate through encodeState, lines 14128-14132 and
+// 14015-14017), and the consumer applies that old state again when it becomes leader
+// (server/consumer.go v2.15.1, lines 1805-1806). Measured with a cut as those tests make it, a
+// consumer started at 21 on a stream of 20 messages that then lost every message, the server
+// logging its reconcile, reports an ack floor of 20 in its stream sequence and 0 in its consumer
+// sequence and a delivered stream sequence of 20, and does not deliver the messages the stream
+// stores next at 1 and 2.
+//
+// One case stays open, because ConsumerInfo holds nothing that tells it from that v2.10.29
+// consumer: a consumer that had delivered nothing before its stream lost every message, and since
+// the loss has been delivered messages up to OptStartSeq - 1 with the first still unacked. Its
+// floor is read as the sequence before its start, and a restart of it starts past those messages.
+// On nats-server v2.15.1 such a consumer is not reconciled at all, because the server writes its
+// old floors back (the server/filestore.go lines above).
 //
 // The clause for a consumer with nothing awaiting an ack reads nothing unacked as acked because a
 // session consumer carries MaxDeliver -1, no limit (applySettings), so a message awaits an ack
@@ -650,7 +695,7 @@ func (s *SessionConsumers) setPendingStart(name string, start uint64) {
 // and this clause would then read that message as acked.
 func ackFloor(info *jetstream.ConsumerInfo) uint64 {
 	floor := info.AckFloor.Stream
-	if floor == 0 && info.Config.OptStartSeq > 0 {
+	if floor == 0 && info.AckFloor.Consumer == 0 && info.Config.OptStartSeq > 0 && info.Delivered.Stream+1 >= info.Config.OptStartSeq {
 		floor = info.Config.OptStartSeq - 1
 	}
 	if info.NumAckPending == 0 {
