@@ -567,11 +567,8 @@ func (p *PgVersioned) RebuildTx(ctx context.Context, tx pgx.Tx, room string, loa
 		return RebuildReport{}, err
 	}
 	if current != loaded {
-		latest, err := savedVersionNumber(ctx, tx, room)
-		if err != nil {
-			return RebuildReport{}, err
-		}
-		return RebuildReport{}, fmt.Errorf("%w: document %s changed while it was being rebuilt (its head moved from %d to %d), by another rebuild or an edit, so Dispatch refused the rebuild. A rebuild discards every edit made after saved version %d. Stop. Ask a person whether to rebuild the document", ErrDocumentLive, room, loaded, current, latest)
+		cause := fmt.Sprintf("changed while it was being rebuilt (its head moved from %d to %d), by another rebuild or an edit", loaded, current)
+		return RebuildReport{}, liveRebuildRefusal(ctx, tx, room, cause, readAgainFirst)
 	}
 	if _, err := p.recoverPruneTx(ctx, tx, room); err != nil {
 		return RebuildReport{}, err

@@ -15,7 +15,8 @@ body: |-
     or another one holds the document or its head moved during the rebuild, name what their repair,
     a rebuild or a replacement from markdown, discards and say that a person decides, and
     `409 DOCUMENT_LOADS` offers no repair and tells the reader to ask a person, where each told the
-    reader to rebuild or replace the document.
+    reader to rebuild or replace the document. The one `DOCUMENT_LIVE` that names no version is
+    `already being rebuilt`, which says only that a rebuild of the document is running.
 time: 2026-10-28T12:39:38.814907639Z
 custom:
     Issue: pr2461

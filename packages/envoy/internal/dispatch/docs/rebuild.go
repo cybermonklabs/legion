@@ -82,11 +82,7 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 	// refused (ErrRoomBehindHead) and lead to the same close, and the reload reads the rebuilt
 	// document.
 	if s.srv.GetDoc(artifactID) != nil {
-		latest, err := savedVersionNumber(ctx, tx, artifactID)
-		if err != nil {
-			return RebuildReport{}, VersionResult{}, err
-		}
-		return RebuildReport{}, VersionResult{}, fmt.Errorf("%w: document %s is open in this Dispatch process, or its last editor left it less than two minutes ago, so Dispatch refused the rebuild. A rebuild discards every edit made after saved version %d. Stop. Ask a person whether to rebuild the document after two minutes", ErrDocumentLive, artifactID, latest)
+		return RebuildReport{}, VersionResult{}, liveRebuildRefusal(ctx, tx, artifactID, roomOpenHere, askAfterTwoMinutes)
 	}
 	answers, _, err := s.roomQueries.ask(ctx, tx, artifactID, roomQueryHolds)
 	if err != nil {
@@ -94,11 +90,7 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 	}
 	for _, answer := range answers {
 		if answer.holds {
-			latest, err := savedVersionNumber(ctx, tx, artifactID)
-			if err != nil {
-				return RebuildReport{}, VersionResult{}, err
-			}
-			return RebuildReport{}, VersionResult{}, fmt.Errorf("%w: document %s is open in another Dispatch process, or its last editor left it less than two minutes ago, so Dispatch refused the rebuild. A rebuild discards every edit made after saved version %d. Stop. Ask a person whether to rebuild the document after two minutes", ErrDocumentLive, artifactID, latest)
+			return RebuildReport{}, VersionResult{}, liveRebuildRefusal(ctx, tx, artifactID, roomOpenElsewhere, askAfterTwoMinutes)
 		}
 	}
 	// The head of the history the refusal below judges. RebuildTx replaces that history only
@@ -295,6 +287,28 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 	}
 	report.SourceVersion = written.version.Number
 	return report, VersionResult{Version: written.version, Wrote: true, Changes: written.changes}, nil
+}
+
+// The causes and next steps of the rebuild refusals liveRebuildRefusal builds.
+const (
+	roomOpenHere       = "is open in this Dispatch process, or its last editor left it less than two minutes ago"
+	roomOpenElsewhere  = "is open in another Dispatch process, or its last editor left it less than two minutes ago"
+	askAfterTwoMinutes = "Stop. Ask a person whether to rebuild the document after two minutes"
+	readAgainFirst     = "Another rebuild may already have repaired the document: read it again, and ask a person whether to rebuild it only if it still does not load"
+)
+
+// liveRebuildRefusal is every ErrDocumentLive refusal of a rebuild that names what a rebuild would
+// discard: why Dispatch refused (cause), the latest saved version a rebuild from it would go back
+// to, read on tx, and what the caller does next (next). One builder, so no refusal keeps advice
+// another has dropped. The one ErrDocumentLive refusal it does not build is "already being
+// rebuilt" (RebuildDocument), which says only that a rebuild is running and offers no repair.
+func liveRebuildRefusal(ctx context.Context, tx pgx.Tx, artifactID, cause, next string) error {
+	latest, err := savedVersionNumber(ctx, tx, artifactID)
+	if err != nil {
+		return err
+	}
+	return fmt.Errorf("%w: document %s %s, so Dispatch refused the rebuild. A rebuild from the latest saved version, %d, discards every edit made after it. %s",
+		ErrDocumentLive, artifactID, cause, latest, next)
 }
 
 // savedVersionNumber is the number of artifactID's latest saved version, which a refused rebuild

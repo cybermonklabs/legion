@@ -260,10 +260,9 @@ func TestRebuildDocumentRefusesALiveRoom(t *testing.T) {
 	if err := service.store.Pool.QueryRow(context.Background(), `select count(*) from doc_updates where artifact_id = $1`, artifactID).Scan(&before); err != nil {
 		t.Fatalf("count updates before rebuild: %v", err)
 	}
+	saved := savedVersion(t, service.store, artifactID)
 	_, _, err := rebuildDocument(t, service, artifactID, nil)
-	if !errors.Is(err, ErrDocumentLive) || !strings.Contains(err.Error(), "A rebuild discards every edit made after saved version ") || !strings.Contains(err.Error(), "Stop. Ask a person whether to rebuild the document") || strings.Contains(err.Error(), "either") || strings.Contains(err.Error(), "replace") || strings.Contains(err.Error(), "retry") {
-		t.Fatalf("rebuild resident room: %v, want ErrDocumentLive naming what a rebuild discards and telling the caller to stop and ask a person", err)
-	}
+	requireLiveRebuildRefusal(t, err, saved, "is open in this Dispatch process", "Stop. Ask a person whether to rebuild the document after two minutes")
 	var after int
 	if err := service.store.Pool.QueryRow(context.Background(), `select count(*) from doc_updates where artifact_id = $1`, artifactID).Scan(&after); err != nil {
 		t.Fatalf("count updates after refused rebuild: %v", err)
@@ -592,30 +591,10 @@ func TestARebuildIsRefusedWhileAnotherProcessHoldsTheRoom(t *testing.T) {
 		t.Fatal("task A holds a room of the document, so its own check would refuse the rebuild")
 	}
 	head := storedHead(t, database, artifactID)
-	var saved int
-	if err := database.Pool.QueryRow(context.Background(), `select max(number) from artifact_versions where artifact_id = $1`, artifactID).Scan(&saved); err != nil {
-		t.Fatalf("read the latest saved version: %v", err)
-	}
+	saved := savedVersion(t, database, artifactID)
 
 	_, _, err := rebuildDocument(t, taskA, artifactID, nil)
-	if !errors.Is(err, ErrDocumentLive) {
-		t.Fatalf("a rebuild through task A while task B holds the room = %v, want ErrDocumentLive", err)
-	}
-	message := err.Error()
-	for _, want := range []string{
-		"is open in another Dispatch process",
-		fmt.Sprintf("A rebuild discards every edit made after saved version %d.", saved),
-		"Stop. Ask a person whether to rebuild the document",
-	} {
-		if !strings.Contains(message, want) {
-			t.Errorf("the refusal %q does not say %q", message, want)
-		}
-	}
-	for _, advice := range []string{"markdown", "replace", "retry", "close its editors"} {
-		if strings.Contains(message, advice) {
-			t.Errorf("the refusal %q offers a repair a person did not decide (%q)", message, advice)
-		}
-	}
+	requireLiveRebuildRefusal(t, err, saved, "is open in another Dispatch process", "Stop. Ask a person whether to rebuild the document after two minutes")
 	if after := storedHead(t, database, artifactID); after != head {
 		t.Fatalf("the refused rebuild moved the head from %d to %d", head, after)
 	}
@@ -636,10 +615,7 @@ func TestTwoRebuildsOnTwoProcessesAtOnceReplaceTheHistoryOnce(t *testing.T) {
 	seedServiceText(t, taskA, artifactID, "before\n")
 	corruptStoredHistory(t, database, artifactID)
 	head := storedHead(t, database, artifactID)
-	var saved int
-	if err := database.Pool.QueryRow(context.Background(), `select max(number) from artifact_versions where artifact_id = $1`, artifactID).Scan(&saved); err != nil {
-		t.Fatalf("read the latest saved version: %v", err)
-	}
+	saved := savedVersion(t, database, artifactID)
 
 	ctx := context.Background()
 	gate, err := database.Pool.Begin(ctx)
@@ -679,15 +655,39 @@ func TestTwoRebuildsOnTwoProcessesAtOnceReplaceTheHistoryOnce(t *testing.T) {
 	if succeeded != 1 || len(refusals) != 1 || !errors.Is(refusals[0], ErrDocumentLive) || !strings.Contains(refusals[0].Error(), "changed while it was being rebuilt") {
 		t.Fatalf("two rebuilds at once: %d succeeded, refusals %v; want one success and one ErrDocumentLive for the moved head", succeeded, refusals)
 	}
-	message := refusals[0].Error()
-	if !strings.Contains(message, fmt.Sprintf("A rebuild discards every edit made after saved version %d.", saved)) || !strings.Contains(message, "Stop. Ask a person whether to rebuild the document") || strings.Contains(message, "before rebuilding") {
-		t.Errorf("the moved-head refusal %q does not name what a rebuild discards and tell the caller to stop and ask a person", message)
-	}
+	requireLiveRebuildRefusal(t, refusals[0], saved, "changed while it was being rebuilt", "Another rebuild may already have repaired the document: read it again, and ask a person whether to rebuild it only if it still does not load")
 	var rows int
 	if err := database.Pool.QueryRow(ctx, `select count(*) from doc_updates where artifact_id = $1`, artifactID).Scan(&rows); err != nil {
 		t.Fatalf("count the rebuilt rows: %v", err)
 	}
 	if after := storedHead(t, database, artifactID); rows != 1 || after != head+1 {
 		t.Fatalf("after the rebuilds the history holds %d rows at head %d, want the one row a single rebuild seeds at %d", rows, after, head+1)
+	}
+}
+
+// requireLiveRebuildRefusal holds a DOCUMENT_LIVE refusal of a rebuild to the one rule every such
+// refusal keeps: it is ErrDocumentLive, says why (cause), names the latest saved version a rebuild
+// from it would discard every later edit back to (saved), says what the caller does next (next),
+// and offers no repair a person did not decide.
+func requireLiveRebuildRefusal(t *testing.T, err error, saved int, cause, next string) {
+	t.Helper()
+	if !errors.Is(err, ErrDocumentLive) {
+		t.Fatalf("the rebuild = %v, want ErrDocumentLive", err)
+	}
+	message := err.Error()
+	for _, want := range []string{
+		cause,
+		"so Dispatch refused the rebuild.",
+		fmt.Sprintf("A rebuild from the latest saved version, %d, discards every edit made after it.", saved),
+		next,
+	} {
+		if !strings.Contains(message, want) {
+			t.Errorf("the refusal %q does not say %q", message, want)
+		}
+	}
+	for _, advice := range []string{"markdown", "replace", "retry", "close its editors", "before rebuilding", "either"} {
+		if strings.Contains(message, advice) {
+			t.Errorf("the refusal %q offers a repair a person did not decide (%q)", message, advice)
+		}
 	}
 }

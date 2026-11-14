@@ -4366,10 +4366,12 @@ Each item below names a status and code, then its meaning.
   A rebuild found the document resident in this server or in another Dispatch process on the database (it asks every member, and waits 500 ms at most for the answers):
   open in an editor, or left by its last editor less than 90 seconds ago (a room stays resident a minute after its last peer leaves, and the sweep that evicts it runs every 30 seconds).
   Nothing was deleted.
-  The message says whether this process or another one holds the document, names the saved version N a rebuild would discard every edit after, and tells the caller to stop and ask a person whether to rebuild the document after two minutes;
+  The message says whether this process or another one holds the document, names the latest saved version N a rebuild from it would discard every later edit back to, and tells the caller to stop and ask a person whether to rebuild the document after two minutes;
   it offers no other repair.
   A rebuild also answers this code when the document's head moved while it ran, because of another rebuild or an edit;
-  that message too names the saved version a rebuild would discard every edit after and tells the caller to stop and ask a person.
+  that message names the same saved version and says that another rebuild may already have repaired the document, so the caller reads it again and asks a person only if it still does not load.
+  One `DOCUMENT_LIVE` names no version and no discard: `document <id> is already being rebuilt`, while a rebuild of it runs in this process, which says only that and offers no repair.
+  One builder makes every other one (`liveRebuildRefusal`, `docs/rebuild.go`).
 
 - `409 DOCUMENT_LOADS`
 
