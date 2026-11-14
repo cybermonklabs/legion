@@ -902,7 +902,7 @@ func (r *cutoverRig) toldTheQueuedTask(t *testing.T, issue cutoverIssue) {
 	}
 }
 
-// prompts is every prompt token's processes were given, oldest first.
+// prompts is every task token's processes were given, oldest first (cutoverAgent.told).
 func (r *cutoverRig) prompts(token claim.Token) []string {
 	r.mu.Lock()
 	agents := slices.Clone(r.agents[token])
@@ -1248,7 +1248,13 @@ func (a *cutoverAgent) serve() {
 			a.send(shimwire.Response{ID: f.ID, Command: shimwire.TypeGetState, Success: true, Data: data})
 		case shimwire.Prompt:
 			a.mu.Lock()
-			a.prompts = append(a.prompts, f.Message)
+			// The daemon's own delivery of a relaunch's record (supervise.Delivery.Relaunch) is
+			// no task: it tells the relaunched process what its relaunch ended, and a merger
+			// relaunched onto the current plugin is given it at its ready, before any task
+			// (dispatch://INFRA-3276 R3). What this rig counts is the tasks a merger is given.
+			if !(supervise.Delivery{ID: f.DeliveryID}).Relaunch() {
+				a.prompts = append(a.prompts, f.Message)
+			}
 			a.mu.Unlock()
 			a.send(shimwire.Response{ID: f.ID, Command: shimwire.TypePrompt, Success: true})
 			a.send(shimwire.AgentStart{})
@@ -1269,7 +1275,8 @@ func (a *cutoverAgent) send(frame shimwire.Frame) {
 	_ = a.writer.WriteFrame(frame)
 }
 
-// told is every prompt this process was given, oldest first.
+// told is every task this process was given, oldest first: every prompt but the daemon's own
+// delivery of a relaunch's record.
 func (a *cutoverAgent) told() []string {
 	a.mu.Lock()
 	defer a.mu.Unlock()
