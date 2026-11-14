@@ -1,0 +1,11 @@
+kind: Fixed
+body: |-
+  Dispatch's GitHub client reads a wait that is too large for a Go duration, such as a
+  `Retry-After` of 9999999999 seconds or an `X-RateLimit-Reset` of 9223372036854775807, as the
+  longest wait a duration holds, about 292 years. It reads a negative `Retry-After` as no wait. It
+  read the two large values as zero or a negative wait, so it recorded a rate limit that had
+  already ended and Dispatch could ask GitHub again at once, while the webhook redelivery sweep
+  waited only its own one-minute floor. The model loop that Dispatch and the Legion daemon share,
+  and the broker helper's refresh, read `Retry-After` by the same rule: a model call whose endpoint
+  asks for such a wait is not made again inside its run, and the helper waits its one-minute cap
+  after a 429 that asks for one. All three also read a `Retry-After` given as an HTTP date.

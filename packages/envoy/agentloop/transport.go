@@ -8,8 +8,9 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"strconv"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/serverwait"
 )
 
 // modelTransport carries every model call of a run. It puts the endpoint's token, read again for
@@ -109,7 +110,11 @@ func (t *modelTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 }
 
 // retryable is whether a model call's outcome is retried, and after how long: a transport error,
-// 429 or a 5xx, after the response's Retry-After (seconds) or a second.
+// 429 or a 5xx, after the response's Retry-After or a second. Retry-After is read by the one rule
+// every reader of a server's wait in this module keeps (serverwait.RetryAfter): a wait past
+// serverwait.Longest, about 292 years, is that, which no run's deadline leaves time for, so the
+// call is not made again (waitable); a negative wait is none; and any other is itself, in seconds
+// or as an HTTP date.
 func retryable(resp *http.Response, err error) (time.Duration, bool) {
 	if err != nil {
 		return defaultRetryWait, !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded)
@@ -117,8 +122,8 @@ func retryable(resp *http.Response, err error) (time.Duration, bool) {
 	if resp.StatusCode != http.StatusTooManyRequests && resp.StatusCode < 500 {
 		return 0, false
 	}
-	if seconds, err := strconv.Atoi(resp.Header.Get("Retry-After")); err == nil && seconds >= 0 {
-		return time.Duration(seconds) * time.Second, true
+	if wait, named := serverwait.RetryAfter(resp.Header.Get("Retry-After"), time.Now()); named {
+		return wait, true
 	}
 	return defaultRetryWait, true
 }

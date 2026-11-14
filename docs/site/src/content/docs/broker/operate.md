@@ -1029,7 +1029,9 @@ for.
   date, or GitHub's `X-RateLimit-Reset` when `X-RateLimit-Remaining` is `0`. The broker waits it
   in full when it fits in what is left of the mint's 10 seconds (the next item) and of the
   request's deadline, and otherwise ends the mint with no further attempt. A rate limit that names
-  no wait counts as 60 seconds, so it ends the mint.
+  no wait counts as 60 seconds, so it ends the mint. A wait longer than a Go duration holds, about
+  292 years, counts as that longest wait, so it ends the mint too, and a negative wait counts as
+  none.
 - One mint waits at most 10 seconds in all, over every call it makes. A GitHub mint makes several:
   a page of installations, a token for each owner, perhaps one more without `actions`, perhaps a
   revoke.

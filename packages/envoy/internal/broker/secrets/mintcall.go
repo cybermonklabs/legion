@@ -7,11 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math"
 	"net"
 	"net/http"
-	"strconv"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/serverwait"
 )
 
 // mintResponseLimit caps what a minter reads of an upstream answer. GitHub's installation pages
@@ -84,37 +84,19 @@ func rateLimited(response *http.Response, body []byte) bool {
 	return bytes.Contains(lower, []byte("rate limit")) || bytes.Contains(lower, []byte("ratelimit")) || bytes.Contains(lower, []byte("rate_limit"))
 }
 
-// longestWaitSeconds is the most whole seconds a Duration holds, about 292 years, and what
-// serverWait reads any longer count of seconds as. Multiplied out, a larger count wraps
-// time.Duration(seconds)*time.Second and can come out negative, which the floor of zero makes no
-// wait at all, so a call whose answer named a wait past the budget would be made again at once.
-// This one is far past mintWaitBudget, so it ends the call (mintRetry.again) as any wait past the
-// budget does.
-const longestWaitSeconds = int64(math.MaxInt64 / time.Second)
-
 // serverWait is the wait an answer names before the next request, read against now, and whether
-// it names one: Retry-After's seconds or HTTP date, else the time until X-RateLimit-Reset's epoch
-// seconds when X-RateLimit-Remaining is 0, else, for a rate limit, rateLimitedWait, the one minute
-// GitHub asks for when it gives neither, and for any other answer no wait at all. A wait already
-// past is no wait rather than a negative one, and Retry-After's seconds or a reset further out
-// than longestWaitSeconds is that far. It reads the two headers as internal/dispatch/githubapp's
-// rateLimitWait does, on a clock the caller sets, and adds Retry-After's HTTP date, a floor of zero
-// on its seconds, that ceiling on its seconds and on a reset, and no wait for an answer that is no
-// rate limit.
+// it names one: serverwait.Read's wait, Retry-After's seconds or HTTP date, else the time until
+// X-RateLimit-Reset's epoch seconds when X-RateLimit-Remaining is 0; else, for a rate limit,
+// rateLimitedWait, the one minute GitHub asks for when it gives neither; and for any other answer
+// no wait at all. Read keeps the one rule internal/dispatch/githubapp's rateLimitWait keeps too:
+// a wait already past, or a negative one, is no wait, and one past serverwait.Longest, about 292
+// years, is that. Multiplied out, a larger count of seconds wraps
+// time.Duration(seconds)*time.Second and can come out negative, so a call whose answer named a
+// wait past the budget would be made again at once; held to Longest, which is far past
+// mintWaitBudget, it ends the call (mintRetry.again) as any wait past the budget does.
 func serverWait(header http.Header, rateLimited bool, now time.Time) (time.Duration, bool) {
-	retryAfter := header.Get("Retry-After")
-	// A count of seconds past what an int64 holds still names a wait: ParseInt answers it as the
-	// largest int64 with ErrRange, and the ceiling reads that as the longest wait.
-	if seconds, err := strconv.ParseInt(retryAfter, 10, 64); err == nil || errors.Is(err, strconv.ErrRange) {
-		return time.Duration(min(max(seconds, 0), longestWaitSeconds)) * time.Second, true
-	}
-	if at, err := http.ParseTime(retryAfter); err == nil {
-		return max(at.Sub(now), 0), true
-	}
-	if reset, err := strconv.ParseInt(header.Get("X-RateLimit-Reset"), 10, 64); err == nil && header.Get("X-RateLimit-Remaining") == "0" {
-		// time.Unix wraps an epoch this close to math.MaxInt64 into the distant past, which would
-		// read as no wait; held first to longestWaitSeconds from now, it reads as the longest wait.
-		return max(time.Unix(min(reset, now.Unix()+longestWaitSeconds), 0).Sub(now), 0), true
+	if wait, named := serverwait.Read(header, now); named {
+		return wait, true
 	}
 	if rateLimited {
 		return rateLimitedWait, true

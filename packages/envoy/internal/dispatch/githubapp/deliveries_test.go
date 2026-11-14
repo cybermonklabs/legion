@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"slices"
 	"strconv"
@@ -14,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
+	"github.com/sjawhar/envoy/internal/serverwait"
 )
 
 const deliveriesClientID = "Iv1.deliveries"
@@ -239,5 +241,52 @@ func TestGraphQLRateLimitReadsTheEnvelopeAndNeverTheData(t *testing.T) {
 				t.Errorf("the limit asks for %s, want GitHub's own %s", limited.Wait, want.wait)
 			}
 		})
+	}
+}
+
+// TestRateLimitBoundsTheWaitGitHubNames: RateLimit's wait, which rateLimitWait reads, keeps the
+// one rule every reader of a server's wait in this module keeps (internal/serverwait). A
+// Retry-After of 9999999999 seconds, an X-RateLimit-Reset of math.MaxInt64 with no requests left
+// and a Retry-After date in the year 9999 are each past what a Duration holds, and read as
+// serverwait.Longest: converted as they came, the first two read as zero or a negative wait, which
+// every caller takes for no wait at all. A negative Retry-After and a reset already past read as
+// no wait, and an ordinary value of each header reads as itself. The test counts the rows it drove
+// and fails under the number the table must hold.
+func TestRateLimitBoundsTheWaitGitHubNames(t *testing.T) {
+	const rowsToDrive = 7
+	now := time.Now()
+	exhausted := func(reset string) http.Header {
+		return http.Header{"X-Ratelimit-Remaining": {"0"}, "X-Ratelimit-Reset": {reset}}
+	}
+	rows := []struct {
+		name     string
+		header   http.Header
+		min, max time.Duration
+	}{
+		{"a Retry-After of 9999999999 seconds", http.Header{"Retry-After": {"9999999999"}}, serverwait.Longest, serverwait.Longest},
+		{"an X-RateLimit-Reset of math.MaxInt64 with no requests left", exhausted(strconv.FormatInt(math.MaxInt64, 10)), serverwait.Longest, serverwait.Longest},
+		{"a Retry-After date in the year 9999", http.Header{"Retry-After": {"Fri, 31 Dec 9999 23:59:59 GMT"}}, serverwait.Longest, serverwait.Longest},
+		{"a negative Retry-After", http.Header{"Retry-After": {"-30"}}, 0, 0},
+		{"an X-RateLimit-Reset an hour past with no requests left", exhausted(strconv.FormatInt(now.Add(-time.Hour).Unix(), 10)), 0, 0},
+		{"a Retry-After of 30 seconds", http.Header{"Retry-After": {"30"}}, 30 * time.Second, 30 * time.Second},
+		// The reset is whole seconds, and rateLimitWait reads it against its own clock a moment
+		// later, so the wait is up to two seconds short of the 90 it names.
+		{"an X-RateLimit-Reset 90 seconds out with no requests left", exhausted(strconv.FormatInt(now.Add(90*time.Second).Unix(), 10)), 88 * time.Second, 90 * time.Second},
+	}
+	driven := 0
+	for _, row := range rows {
+		t.Run(row.name, func(t *testing.T) {
+			driven++
+			limited := githubapp.RateLimit(http.StatusTooManyRequests, row.header, nil)
+			if limited == nil {
+				t.Fatal("a 429 read as no rate limit")
+			}
+			if limited.Wait < row.min || limited.Wait > row.max {
+				t.Errorf("the limit asks for %s, want %s to %s", limited.Wait, row.min, row.max)
+			}
+		})
+	}
+	if driven < rowsToDrive {
+		t.Fatalf("the table drove %d rows, want %d", driven, rowsToDrive)
 	}
 }

@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"golang.org/x/oauth2"
+
+	"github.com/sjawhar/envoy/internal/serverwait"
 )
 
 func answered(status int, retryAfter string) error {
@@ -73,6 +75,44 @@ func TestARetryAfterIsCappedAtAMinute(t *testing.T) {
 		if wait := s.next(answered(429, retryAfter)); wait != want {
 			t.Fatalf("Retry-After %s: wait %s; want %s", retryAfter, wait, want)
 		}
+	}
+}
+
+// TestARetryAfterIsReadByTheOneBound: retryAfter reads the broker's Retry-After by the one rule
+// every reader of a server's wait in this module keeps (internal/serverwait), and the schedule
+// clamps what it reads. A Retry-After of 9999999999 seconds and one dated in the year 9999 are
+// past what a Duration holds and read as serverwait.Longest, so the schedule waits its cap, a
+// minute: converted as it came, the count read as a negative wait, which the schedule's floor
+// turned into the shortest wait it has, the fixed 15 s retry. A negative Retry-After reads as no
+// wait, which waits that retry, and an ordinary one reads as itself. The test counts the rows it
+// drove and fails under the number the table must hold.
+func TestARetryAfterIsReadByTheOneBound(t *testing.T) {
+	const rowsToDrive = 4
+	rows := []struct {
+		retryAfter  string
+		read, waits time.Duration
+	}{
+		{"9999999999", serverwait.Longest, maxRetryAfter},
+		{"Fri, 31 Dec 9999 23:59:59 GMT", serverwait.Longest, maxRetryAfter},
+		{"-30", 0, defaultRefreshRetry},
+		{"30", 30 * time.Second, 30 * time.Second},
+	}
+	driven := 0
+	for _, row := range rows {
+		t.Run("Retry-After "+row.retryAfter, func(t *testing.T) {
+			driven++
+			err := answered(http.StatusTooManyRequests, row.retryAfter)
+			if read := retryAfter(err); read != row.read {
+				t.Errorf("retryAfter = %s, want %s", read, row.read)
+			}
+			s := (&Broker{}).newRetrySchedule()
+			if wait := s.next(err); wait != row.waits {
+				t.Errorf("the schedule waits %s, want %s", wait, row.waits)
+			}
+		})
+	}
+	if driven < rowsToDrive {
+		t.Fatalf("the table drove %d rows, want %d", driven, rowsToDrive)
 	}
 }
 
