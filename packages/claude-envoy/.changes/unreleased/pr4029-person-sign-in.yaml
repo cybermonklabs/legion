@@ -1,0 +1,13 @@
+kind: Added
+body: |-
+  A Claude Code session, its hooks and `envoy-send` trade a person's sign-in at the secrets broker
+  where a person ran `agent-secrets login` on the machine and no bearer is configured, so their
+  Dispatch and Envoy tokens name that person. With no sign-in, they trade the machine as before.
+  A refused sign-in fails their broker calls with words that name `agent-secrets login`, and they
+  never trade the machine in its place. A process whose environment sets
+  `PERSON_SIGNIN_TRADE=off`, as `legion controller start` sets it for the controller, trades the
+  machine even where a person signed in. `AGENT_SECRETS_MACHINE_IDENTITY=pool` trades as well.
+  The bundled `dispatch` command gains `dispatch review`. After `agent-secrets login`, start a new
+  session rather than resume one that traded at the broker as the machine.
+custom:
+    Issue: pr4029

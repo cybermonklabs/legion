@@ -460,7 +460,7 @@ export interface paths {
     /** @description List a document's approval reviews. */
     get: operations["getApiV1ArtifactsByIdReviews"];
     put?: never;
-    /** @description Approve or request changes on a document's latest settled version; answers the open approval ask when present, preserving its thread, and reviews every document that ask named. */
+    /** @description Approve or request changes on a document {state, reason?, version?}, at its latest settled version; with an approval ask open it answers that ask instead, preserving its thread, and reviews every document the ask named, each at the version the ask names. version, when given, is the version the caller read: a review that would record another version of this document is 409 REVIEW_VERSION_MOVED, naming the version it would record, with nothing written, and a version below 1 is 400 INVALID_REVIEW. */
     post: operations["postApiV1ArtifactsByIdReviews"];
     delete?: never;
     options?: never;
@@ -1194,7 +1194,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The catalogue of operations an agent may propose on Dispatch's graph: the dispatch tools that write, twenty of the thirty-four tool specs agents operate Dispatch with, each carried whole - its own name, its own description, the arguments it takes with an example call, the rows of this table it writes, and the graph relations its verbs write. Twenty actions is a list read whole, so the route takes no query and serves no page. An action the catalogue does not hold is no action at all: nothing serves it. */
+    /** @description The catalogue of operations an agent may propose on Dispatch's graph: twenty of the twenty-one dispatch tools that write, of the thirty-five tool specs agents operate Dispatch with, each carried whole - its own name, its own description, the arguments it takes with an example call, the rows of this table it writes, and the graph relations its verbs write. The one it leaves out is dispatch_review, on purpose: a review records an approval or a changes request in a person's name, and the loop that proposes operations must never propose one. Twenty actions is a list read whole, so the route takes no query and serves no page. An action the catalogue does not hold is no action at all: nothing serves it. */
     get: operations["getApiV1GoingCatalogue"];
     put?: never;
     post?: never;
@@ -3940,6 +3940,7 @@ export interface components {
     CreateArtifactReviewInput: {
       reason?: null | string;
       state: string;
+      version?: null | number;
     };
     CreateAskInput: {
       actor?: components["schemas"]["Actor"] | null;

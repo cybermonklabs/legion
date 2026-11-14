@@ -255,6 +255,25 @@ function planReviewBody() {
   };
 }
 
+/** `POST /api/v1/artifacts/{id}/reviews`: the person's approval of the issue's spec at the version
+ *  `dispatch review`'s example names. The person is the one the token names, and the act names
+ *  the session the token proved; no request was open, so the review answers no ask. */
+function reviewBody() {
+  return {
+    id: UUID,
+    artifact_id: ARTIFACT_ID,
+    version: 2,
+    state: "approved",
+    actor: { kind: "user", id: "person@example.com", act: { session: SESSION } },
+    reason: null,
+    ask_id: null,
+    kind: "person",
+    created_at: AT,
+    content_sha256: null,
+    content_sha256_source: null,
+  };
+}
+
 /** What a check compares its results with: the head of the issue's pull request, at the commit
  *  the one recorded result stands at, as Dispatch read it. */
 function checkBasisBody() {
@@ -554,6 +573,7 @@ function answerFor(method: string, pathname: string, body?: unknown): Response {
     if (rest === "blocks") return response([]);
     if (rest === "edits") return response({ applied: 1, version: versionBody(), changed: true });
     if (rest === "plan-reviews") return response(planReviewBody(), 201);
+    if (rest === "reviews") return response(reviewBody(), 201);
     if (rest === "suggestions") {
       return response({ ...commentBody(), artifact_id: ARTIFACT_ID }, 201);
     }

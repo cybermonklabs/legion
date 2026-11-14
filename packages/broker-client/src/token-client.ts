@@ -14,9 +14,11 @@
 //
 // What it refuses to do: hand out a token it could not renew. `token()` answers the token in hand
 // while that token is live and the broker is merely unreachable, busy (its 429) or refusing this
-// moment's proof (`invalid_dpop_proof`, `use_dpop_nonce`), and throws once the broker has refused
-// the identity in a way no retry can cure or the token in hand has run out, so a caller that
-// writes only with what `token()` gave it never writes with no identity.
+// moment's proof (`invalid_dpop_proof`, `use_dpop_nonce`), or the source of the identity could
+// not be read this once. It throws once the token in hand has run out, or once the identity has
+// been refused in a way no retry can cure (`isFinalRefusal`): by the broker, or by the issuer
+// that no longer honours a person's sign-in. So a caller that writes only with what `token()`
+// gave it never writes with no identity, nor with one that has been ended.
 
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 import {
@@ -30,6 +32,8 @@ import {
   type TokenEndpointResponse,
 } from "openid-client";
 import type { DpopKey } from "./dpop";
+import { messageOf } from "./error-text";
+import { SIGNIN_COMMAND } from "./signins";
 import type { SubjectToken, TokenSource } from "./source";
 import {
   ACTOR_TOKEN_TYPE_MACHINE,
@@ -79,21 +83,24 @@ const INVALID_DPOP_PROOF = "invalid_dpop_proof";
 const USE_DPOP_NONCE = "use_dpop_nonce";
 
 /**
- * A trade the broker refused: a plain error naming what it said. Almost every refusal is one no
- * retry can cure — an identity no entry lists, a sign-in a person revoked, a token of the wrong
- * audience — and a renewal stops on it rather than asking again. The three exceptions are the
- * broker's 429 and its two DPoP refusals (`permanent`).
+ * A trade the broker refused: a plain error naming what was traded and what the broker said.
+ * Almost every refusal is one no retry can cure — an identity no entry lists, a sign-in a person
+ * revoked, a token of the wrong audience — and a renewal stops on it rather than asking again.
+ * The three exceptions are the broker's 429 and its two DPoP refusals (`permanent`).
  */
 export class BrokerRefusedError extends Error {
+  /** `refused` names the identity traded, as its source describes it: this machine's, or a
+   *  person's sign-in on it. */
   constructor(
     readonly status: number,
     readonly code: string,
-    readonly description: string
+    readonly description: string,
+    refused: string
   ) {
     super(
       description === ""
-        ? `the secrets broker refused this machine's identity: HTTP ${status} ${code}`
-        : `the secrets broker refused this machine's identity: HTTP ${status} ${code}: ${description}`
+        ? `the secrets broker refused ${refused}: HTTP ${status} ${code}`
+        : `the secrets broker refused ${refused}: HTTP ${status} ${code}: ${description}`
     );
     this.name = "BrokerRefusedError";
   }
@@ -127,11 +134,46 @@ export class BrokerRefusedError extends Error {
   }
 }
 
+/**
+ * A person's sign-in that the issuer no longer honours: its refresh token was answered
+ * `invalid_grant`, because the person revoked the grant at Google or it expired. It mirrors the
+ * Go client's `ErrSignInEnded` (`packages/envoy/internal/brokerclient/device.go`), and like a
+ * broker's permanent refusal it is final ({@link isFinalRefusal}): no retry and no other caller
+ * cures it, only a new {@link SIGNIN_COMMAND}.
+ */
+export class SignInEndedError extends Error {
+  constructor(
+    readonly issuer: string,
+    readonly person: string,
+    options?: ErrorOptions
+  ) {
+    super(
+      `${issuer} no longer honours ${person}'s sign-in on this machine; run: ${SIGNIN_COMMAND}`,
+      options
+    );
+    this.name = "SignInEndedError";
+  }
+}
+
+/**
+ * Whether `error` ends the identity a client trades for good: a broker's refusal no retry can
+ * cure (`BrokerRefusedError.permanent`), or a sign-in the issuer has ended
+ * ({@link SignInEndedError}). A client drops the token in hand on one rather than answer it
+ * until it lapses, and a caller that remembers refusals remembers these alone: remembering the
+ * broker's 429 or a clock-skewed proof would stop a client a later trade would have answered.
+ */
+export function isFinalRefusal(error: unknown): boolean {
+  return (
+    (error instanceof BrokerRefusedError && error.permanent) || error instanceof SignInEndedError
+  );
+}
+
 /** One client: the broker it trades at, the identity it trades, and the key it proves. */
 export interface BrokerTokenClientOptions {
   /** The broker's base URL, with or without a trailing slash. */
   readonly brokerUrl: string;
-  /** This process's own DPoP key, whose public half alone reaches the broker. */
+  /** The DPoP key this client proves — one this process made, or a person's box key — whose
+   *  public half alone reaches the broker. */
   readonly key: DpopKey;
   /** The identity being traded. */
   readonly subject: TokenSource;
@@ -146,13 +188,19 @@ export interface BrokerTokenClientOptions {
    * the key it proved ({@link FORM_LAUNCHER_CREDENTIAL}); true by default, as an absent
    * parameter is on the wire.
    *
-   * Every caller in this repository passes `false` (`brokerTokenClient`, ./environment.ts): the
+   * A machine's own client passes `false` (`brokerTokenClient`, ./environment.ts): the
    * TypeScript clients want a Dispatch access token and nothing else, and none of them reads
    * `credentialId`. Each trade that asks writes a `launcher_credentials` row keyed by the
    * machine and the key it proved and a `launcher_credential.token_login` audit row, and this
    * client makes a key per process and per session, so asking would put a row on an operator's
    * machine-logins list for every `dispatch` call, every hook run and every session of a
    * long-lived process — rows nothing removes.
+   *
+   * A person's client leaves it unset, because the broker refuses a person's trade that declines
+   * with `400 invalid_request` (`personDeclinesNothing`,
+   * `packages/envoy/internal/broker/oauth/exchange.go`): a sign-in holds its credential, and the
+   * revoke of the sign-in ends every token minted under it. So each person's trade writes one
+   * `launcher_credential.token_login` audit row, which the broker writes for every one of them.
    */
   readonly launcherCredential?: boolean | undefined;
   /** Overrides {@link DEFAULT_RENEW_BEFORE_MS}. Only a test shortens it. */
@@ -165,10 +213,11 @@ export interface BrokerTokenClientOptions {
 }
 
 /**
- * The HTTP status behind `error`, or 0 where it carries none: a status the library reports as an
- * unconforming answer is left in the response it hangs off the error's `cause` chain.
+ * The HTTP status behind `error`, or 0 where it carries none: a status `openid-client` reports
+ * as an unconforming answer is left in the response it hangs off the error's `cause` chain. The
+ * person's identity source reads its issuer's errors with it too (`person-identity.ts`).
  */
-function statusOf(error: unknown): number {
+export function statusOf(error: unknown): number {
   let cause: unknown = error;
   for (let depth = 0; depth < 4; depth += 1) {
     if (cause instanceof Response) return cause.status;
@@ -176,6 +225,29 @@ function statusOf(error: unknown): number {
     cause = cause.cause;
   }
   return 0;
+}
+
+/**
+ * The request `openid-client` asked for in `options`, sent with `headers`: its method, its body,
+ * its redirect rule, and its own signal beside the caller's `signal`, either of which aborts it.
+ * The broker's exchange and the person's identity source (`person-identity.ts`) both send what
+ * the library asks through it.
+ */
+export function requestInit(
+  options: CustomFetchOptions,
+  signal: AbortSignal | undefined,
+  headers: Headers | Record<string, string>
+): RequestInit {
+  const signals = [options.signal, signal].filter((one) => one !== undefined);
+  return {
+    method: options.method,
+    headers,
+    // openid-client's own body union is wider than one `fetch` typing or another admits; the
+    // bytes are the form it encoded, and every runtime this package runs on sends them.
+    body: options.body as RequestInit["body"],
+    redirect: options.redirect,
+    ...(signals.length === 0 ? {} : { signal: AbortSignal.any(signals) }),
+  };
 }
 
 /** Trades this client's identity for the broker's access tokens and keeps one live. */
@@ -221,12 +293,14 @@ export class BrokerTokenClient {
 
   /**
    * A live access token: the one in hand while it is good for longer than the renewal window, and
-   * otherwise a fresh trade. A trade the broker did not answer, or answered with one of the three
-   * refusals a later trade may be answered differently (`BrokerRefusedError.permanent`), while the
-   * token in hand is still live answers that token, since a client that already holds an identity
-   * need not stop for a broker that is merely down, busy, or refusing this moment's proof; a
-   * refusal no retry can cure, and a failure with nothing live left, throw, so no caller writes
-   * with no identity.
+   * otherwise a fresh trade. A trade that failed in a way a later trade may not repeat — the
+   * broker did not answer, answered with one of its three refusals a later trade may be answered
+   * differently (`BrokerRefusedError.permanent`), or the identity's source could not be read this
+   * once — answers the token in hand while it is still live, since a client that already holds
+   * an identity need not stop for a broker or an issuer that is merely down, busy, or refusing
+   * this moment's proof. A final refusal ({@link isFinalRefusal}), and a failure with nothing
+   * live left, drop the token in hand and throw, so no caller writes with no identity or with one
+   * the broker or the issuer has ended.
    */
   async token(signal?: AbortSignal): Promise<BrokerToken> {
     const held = this.#held;
@@ -241,6 +315,16 @@ export class BrokerTokenClient {
     }
   }
 
+  /**
+   * Forgets the token in hand, so the next {@link token} trades afresh: for a caller a server has
+   * told that the token it presented is no longer live, such as one the broker ended at a revoke
+   * before it lapsed. A trade already under way is left alone, since the token it brings back is
+   * a fresh one.
+   */
+  drop(): void {
+    this.#held = null;
+  }
+
   /** One trade, with what the client does about a failure of it. */
   async #renew(signal: AbortSignal | undefined): Promise<BrokerToken> {
     try {
@@ -249,11 +333,7 @@ export class BrokerTokenClient {
       return token;
     } catch (error) {
       const held = this.#held;
-      if (
-        !(error instanceof BrokerRefusedError && error.permanent) &&
-        held !== null &&
-        this.#now() < held.expiresAt.getTime()
-      ) {
+      if (!isFinalRefusal(error) && held !== null && this.#now() < held.expiresAt.getTime()) {
         return held;
       }
       this.#held = null;
@@ -288,8 +368,9 @@ export class BrokerTokenClient {
       try {
         actor = await this.#actor.read(signal);
       } catch (error) {
-        const said = error instanceof Error ? error.message : String(error);
-        throw new Error(`read the machine this person signed in on: ${said}`, { cause: error });
+        throw new Error(`read the machine this person signed in on: ${messageOf(error)}`, {
+          cause: error,
+        });
       }
       form["actor_token"] = actor.token;
       // The same token under the type that says what it proves here: not who is asking, but which
@@ -327,10 +408,15 @@ export class BrokerTokenClient {
    */
   #refusal(endpoint: string, error: unknown): Error {
     if (error instanceof ResponseBodyError && error.status >= 400 && error.status < 500) {
-      return new BrokerRefusedError(error.status, error.error, error.error_description ?? "");
+      return new BrokerRefusedError(
+        error.status,
+        error.error,
+        error.error_description ?? "",
+        this.#subject.describe()
+      );
     }
     const status = statusOf(error);
-    const message = error instanceof Error ? error.message : String(error);
+    const message = messageOf(error);
     const said = status === 0 ? message : `HTTP ${status}: ${message}`;
     return new Error(`trade ${this.#subject.describe()} at ${endpoint}: ${said}`, {
       cause: error,
@@ -355,17 +441,7 @@ export class BrokerTokenClient {
         "DPoP",
         await this.#key.proof({ method: options.method, url, nonce: this.#nonce })
       );
-      const signals = [options.signal, signal].filter((one) => one !== undefined);
-      // openid-client's own body union is wider than one `fetch` typing or another admits; the
-      // bytes are the form it encoded, and every runtime this package runs on sends them.
-      const body = options.body as RequestInit["body"];
-      return await this.#fetch(url, {
-        method: options.method,
-        headers,
-        body,
-        redirect: options.redirect,
-        ...(signals.length === 0 ? {} : { signal: AbortSignal.any(signals) }),
-      });
+      return await this.#fetch(url, requestInit(options, signal, headers));
     };
     let answer = await send();
     const given = answer.headers.get("DPoP-Nonce") ?? "";

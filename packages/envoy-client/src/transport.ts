@@ -218,9 +218,10 @@ export type EnvoyClientConfig = {
   readonly retry?: boolean;
   /**
    * What every call presents (`EnabledEnvoySettings.credential`): the listener's bearer, as it
-   * always was; or this machine's identity traded at the secrets broker, presented under the
-   * `DPoP` scheme with a proof of this process's key on each request; or none at all, which
-   * sends no `Authorization` header, for a loopback listener that asks for none.
+   * always was; or an access token the secrets broker traded this machine's identity for, or the
+   * identity of a person signed in on it, presented under the `DPoP` scheme with a proof of the
+   * token's key on each request; or none at all, which sends no `Authorization` header, for a
+   * loopback listener that asks for none.
    */
   readonly credential?: RequestCredential | undefined;
 };

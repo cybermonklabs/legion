@@ -1,0 +1,11 @@
+kind: Added
+body: |-
+  `dispatch review --issue <KEY> --version <N> --verdict <approved|changes_requested>` records a
+  person's review of one version of an issue's document: the spec, unless `--artifact` names
+  another. `changes_requested` needs `--reason`. The command works only with a token that names a
+  person who holds `approve`, such as a person's sign-in gives. Dispatch refuses any other token
+  with `403 OAUTH_SCOPE_REQUIRED` or `403 SIGN_IN_REQUIRED`. `--version` is the version the caller
+  read, and Dispatch refuses it with `409 REVIEW_VERSION_MOVED` when the review would record
+  another version. The output names the state, the version and the actor that Dispatch recorded.
+custom:
+    Issue: pr4029

@@ -1,0 +1,9 @@
+kind: Added
+body: |-
+  `POST /api/v1/artifacts/{id}/reviews` takes an optional `version`, the version the caller read.
+  When the review would record another version of the document (the version an open approval
+  request names for it, else its latest settled version), Dispatch refuses it with
+  `409 REVIEW_VERSION_MOVED`, which names the version to read, and writes nothing. A `version`
+  below 1 is `400 INVALID_REVIEW`. A review without `version` is recorded as before.
+custom:
+    Issue: pr4029

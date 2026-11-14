@@ -1,5 +1,5 @@
 {
-  "commands": 34,
+  "commands": 35,
   "refusals": 29,
   "runs": [
     {
@@ -1695,6 +1695,43 @@
         "  The check's words: The workspace opens natively.",
         "  - pass by implementer at 1111111111111111111111111111111111111111. That commit is the head of pull request #2712. The check's words did not move after this result (result version 1, check version 1). Recorded 2026-01-02T03:04:05Z. Result 01234567-0000-4000-8000-000000000001.",
         "    The role recorded no reading."
+      ]
+    },
+    {
+      "tool": "dispatch_review",
+      "call": "valid",
+      "args": {
+        "issue": "DSP-1",
+        "verdict": "approved",
+        "version": 2
+      },
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/v1/issues/DSP-1",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret"
+          },
+          "body": null
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/artifacts/01234567-0000-4000-8000-00000000000a/reviews",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret",
+            "Content-Type": "application/json"
+          },
+          "body": {
+            "state": "approved",
+            "version": 2
+          }
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "Recorded the review of spec.md (document id 01234567-0000-4000-8000-00000000000a): approved at version 2, by user person@example.com, acting through session session-1."
       ]
     },
     {

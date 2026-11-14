@@ -5,9 +5,11 @@
 # real network binds or a real server binary: it puts a fake `go`, `psql`, `curl` and `python3` on
 # PATH — each recording what it was asked for to the instance's own call file and answering it
 # without touching anything real — and the fake `go build -o <dir>/ ./cmd/<pkg> ...` installs a
-# stub at <dir>/<pkg> instead of compiling. dev-stack.sh's own isolation, port and stop logic
-# lives entirely in the shell driver and never in the Go binaries it starts, so a stub proves the
-# driver's behaviour without depending on cmd/dispatch, cmd/broker or cmd/listener compiling.
+# stub at <dir>/<pkg> instead of compiling. The same fake go makes the prebuilt directory a
+# --binaries run is given, as the builds farm makes the real one. dev-stack.sh's own isolation,
+# port and stop logic lives entirely in the shell driver and never in the Go binaries it starts,
+# so a stub proves the driver's behaviour without depending on cmd/dispatch, cmd/broker or
+# cmd/listener compiling.
 #
 # Each stub logs the line the real process logs once it is listening — the issuer's
 # "issuer listening url=", the broker's "broker listening addr=", natsd's "Listening for client
@@ -28,10 +30,14 @@
 # drops exactly the two databases it created, on a normal exit, on INT, on a SIGTERM to its whole
 # process group sent again while the stop runs, and on a failure part way through, which leaves
 # nothing running; (f) a run given no database URL refuses with exit 2, naming all three sources;
-# and (g) the second box is printed with a path of its own for each of the first box's, every one
+# (g) the second box is printed with a path of its own for each of the first box's, every one
 # of them under this run's own work directory, the directories it writes into already there, and
 # its metadata stand-in taking its port file from the environment rather than from the one baked
-# path two stand-ins would fight over.
+# path two stand-ins would fight over; (h) a run given --binaries calls no go at all, copies the
+# prebuilt stubs into its own bin directory, and runs them, held to everything (a), (b),
+# (c) and (e) hold a built run to; and (i) a --binaries directory short of one of them, or
+# holding one that is not an executable file, is refused with exit 2, naming each such file,
+# before anything is created or started.
 set -euo pipefail
 # Monitor mode, for the two cases that signal an instance: a background command of a shell
 # without job control inherits SIGINT ignored, and a shell cannot trap a signal that was ignored
@@ -182,9 +188,12 @@ chmod +x "${fake_bin_dir}/python3"
 # start; it is baked in rather than read from the environment because dev-stack.sh starts every
 # process with env -i, so nothing of this test's environment reaches one. The client stubs
 # (agent-secrets, agent-secrets-helper) are never run by dev-stack.sh, which only puts their
-# directory on PATH. ---
+# directory on PATH. With DEV_STACK_TEST_GO_CALL_FILE set, every call is also recorded there,
+# which is how a --binaries run shows it called no go at all. ---
 cat >"${fake_bin_dir}/go" <<'EOF'
 #!/usr/bin/env bash
+# Every call, recorded where the caller asks, so a --binaries run can show it made none.
+[[ -z "${DEV_STACK_TEST_GO_CALL_FILE:-}" ]] || printf 'go %s\n' "$*" >>"$DEV_STACK_TEST_GO_CALL_FILE"
 out=""
 prev=""
 packages=()
@@ -300,17 +309,23 @@ chmod +x "${fake_bin_dir}/go"
 # the previous run's "dev-stack: ready." line until that job runs, and wait_for_ready would read
 # it. TMPDIR is this test's own directory, so each run's work directory lives under it and this
 # test's cleanup removes both. The run is given no LEGION_TEST_PG_DSN and no DATABASE_URL, so
-# nothing of the machine it runs on decides which server it is pointed at.
+# nothing of the machine it runs on decides which server it is pointed at. Arguments after the
+# fourth are dev-stack.sh's own, after its --database-url.
 run_instance() {
   local which="$1" log_file="$2" psql_call_file="$3" curl_call_file="$4"
+  shift 4
   : >"$log_file"
   : >"$psql_call_file"
   : >"$curl_call_file"
+  if [[ -n "${DEV_STACK_TEST_GO_CALL_FILE:-}" ]]; then
+    : >"$DEV_STACK_TEST_GO_CALL_FILE"
+  fi
   env -u LEGION_TEST_PG_DSN -u DATABASE_URL \
     PATH="${fake_bin_dir}:${PATH}" TMPDIR="$temporary_dir" \
     DEV_STACK_TEST_PSQL_CALL_FILE="$psql_call_file" DEV_STACK_TEST_CURL_CALL_FILE="$curl_call_file" \
     DEV_STACK_TEST_BROKER_FAILS="${DEV_STACK_TEST_BROKER_FAILS:-}" \
-    bash "$driver" --database-url "$admin_url" >"$log_file" 2>&1 &
+    DEV_STACK_TEST_GO_CALL_FILE="${DEV_STACK_TEST_GO_CALL_FILE:-}" \
+    bash "$driver" --database-url "$admin_url" "$@" >"$log_file" 2>&1 &
   instance_pid[which]=$!
 }
 
@@ -553,16 +568,20 @@ psql_calls1="${temporary_dir}/psql-calls-1"
 psql_calls2="${temporary_dir}/psql-calls-2"
 curl_calls1="${temporary_dir}/curl-calls-1"
 curl_calls2="${temporary_dir}/curl-calls-2"
+go_calls1="${temporary_dir}/go-calls-1"
 
 # Both instances start before either is waited on: this is the scenario a port and a database of
 # each run's own exist to make safe, not two sequential runs that never contend for anything.
-run_instance 1 "$log1" "$psql_calls1" "$curl_calls1"
+# Instance 1 records its go calls, the control for (h): a run that builds is seen to call go.
+DEV_STACK_TEST_GO_CALL_FILE="$go_calls1" run_instance 1 "$log1" "$psql_calls1" "$curl_calls1"
 run_instance 2 "$log2" "$psql_calls2" "$curl_calls2"
 
 assert_instance_ready 'instance 1' "$log1" "$psql_calls1" "$curl_calls1"
 work_dir1="$work_dir"
 suffix1="$run_suffix"
 kept_port1="$kept_port"
+grep -q '^go build -o ' "$go_calls1" ||
+  fail "instance 1 built nothing through the fake go, so a run that records no go call proves nothing"
 declare -A port1=()
 for name in "${!process_port[@]}"; do port1["$name"]="${process_port[$name]}"; done
 printf "PASS: instance 1 started every process and took each port from that process's own report (issuer %s, broker %s, natsd %s, listener %s, dispatch %s; Dispatch keeper %s)\n" \
@@ -695,5 +714,87 @@ for source in --database-url LEGION_TEST_PG_DSN DATABASE_URL scripts/dev-postgre
 done
 [[ ! -e "${temporary_dir}/psql-calls-refusal" ]] || fail "a run with no database URL still called psql"
 printf 'PASS: a run with no database URL names --database-url, LEGION_TEST_PG_DSN, DATABASE_URL and dev-postgres.sh, and exits 2\n'
+
+# (h) Prebuilt binaries, as the builds farm makes them for a pod that compiles no Go: the fake go
+# makes a stub of each binary in a directory of its own, and a run given that directory with
+# --binaries calls no go at all, puts a copy of each in its own bin directory, and runs those.
+# Every check a built run passes, (a) to (c), holds for it, and so does the stop of (e).
+prebuilt="${temporary_dir}/prebuilt"
+# One list of the stack's packages; the binary names the copy check reads come from it.
+prebuilt_packages=(./cmd/broker ./cmd/dev-oidc-issuer ./cmd/dispatch ./cmd/listener
+  ./cmd/agent-secrets ./cmd/agent-secrets-helper ./internal/testnats/cmd/natsd)
+env -u DEV_STACK_TEST_BROKER_FAILS -u DEV_STACK_TEST_GO_CALL_FILE "${fake_bin_dir}/go" build -o "${prebuilt}/" \
+  "${prebuilt_packages[@]}"
+go_calls_prebuilt="${temporary_dir}/go-calls-prebuilt"
+DEV_STACK_TEST_GO_CALL_FILE="$go_calls_prebuilt" run_instance 1 "$log1" "$psql_calls1" "$curl_calls1" --binaries "$prebuilt"
+assert_instance_ready 'the --binaries run' "$log1" "$psql_calls1" "$curl_calls1"
+[[ ! -s "$go_calls_prebuilt" ]] || fail "the --binaries run called go: $(cat "$go_calls_prebuilt")"
+for binary in "${prebuilt_packages[@]##*/}"; do
+  [[ -f "${work_dir}/bin/${binary}" && -x "${work_dir}/bin/${binary}" ]] ||
+    fail "the --binaries run put no executable $binary in its own bin directory"
+  cmp -s "${prebuilt}/${binary}" "${work_dir}/bin/${binary}" ||
+    fail "the --binaries run's own $binary is not the prebuilt one it was given"
+done
+kill -INT "${instance_pid[1]}"
+wait_for_exit 1
+[[ "$exited_status" -eq 130 ]] || fail "the --binaries run exited $exited_status on INT, not 130"
+assert_everything_stopped 'the --binaries run'
+assert_databases_dropped 'the --binaries run' "$psql_calls1" "$run_suffix"
+printf 'PASS: --binaries called no go, copied the %d prebuilt stubs into its own bin directory (%s/bin) and ran them\n' "${#prebuilt_packages[@]}" "$work_dir"
+
+# (i) A --binaries directory that does not hold each of those executable files is refused with
+# exit 2, naming each file that is missing or not executable and no other, before anything is
+# created or started: no work directory, and no psql, curl or go call.
+work_dirs_made() { compgen -G "${temporary_dir}/dev-stack.*" | wc -l || true; }
+refuse_binaries() {
+  local label="$1" dir="$2" made_before tool
+  made_before="$(work_dirs_made)"
+  for tool in psql curl go; do
+    rm -f "${temporary_dir}/${tool}-calls-binaries"
+  done
+  refusal_status=0
+  env -u LEGION_TEST_PG_DSN -u DATABASE_URL PATH="${fake_bin_dir}:${PATH}" TMPDIR="$temporary_dir" \
+    DEV_STACK_TEST_PSQL_CALL_FILE="${temporary_dir}/psql-calls-binaries" \
+    DEV_STACK_TEST_CURL_CALL_FILE="${temporary_dir}/curl-calls-binaries" \
+    DEV_STACK_TEST_GO_CALL_FILE="${temporary_dir}/go-calls-binaries" \
+    bash "$driver" --database-url "$admin_url" --binaries "$dir" >"$refusal" 2>&1 || refusal_status=$?
+  [[ "$refusal_status" -eq 2 ]] || fail "$label exited $refusal_status, not 2"
+  [[ "$(work_dirs_made)" -eq "$made_before" ]] || fail "$label made a work directory before it refused"
+  for tool in psql curl go; do
+    [[ ! -e "${temporary_dir}/${tool}-calls-binaries" ]] || fail "$label still called $tool"
+  done
+}
+# The refusal's lines that name a file of dir are exactly the lines given, in the order given.
+refused_files_are() {
+  local label="$1" dir="$2" named want
+  shift 2
+  named="$(grep -F "  ${dir}/" "$refusal" || true)"
+  want="$(printf '%s\n' "$@")"
+  [[ "$named" == "$want" ]] || fail "$label named '$named', not '$want'"
+}
+
+no_natsd="${temporary_dir}/prebuilt-no-natsd"
+cp -R "$prebuilt" "$no_natsd"
+rm "${no_natsd}/natsd"
+refuse_binaries 'a --binaries directory with no natsd' "$no_natsd"
+refused_files_are 'a --binaries directory with no natsd' "$no_natsd" "  ${no_natsd}/natsd: missing"
+printf 'PASS: a --binaries directory with no natsd is refused with exit 2, naming %s/natsd, before anything is created or started\n' "$no_natsd"
+
+listener_unrunnable="${temporary_dir}/prebuilt-listener-not-executable"
+cp -R "$prebuilt" "$listener_unrunnable"
+chmod -x "${listener_unrunnable}/listener"
+refuse_binaries 'a --binaries directory whose listener is not executable' "$listener_unrunnable"
+refused_files_are 'a --binaries directory whose listener is not executable' "$listener_unrunnable" \
+  "  ${listener_unrunnable}/listener: not an executable file"
+printf 'PASS: a --binaries directory whose listener is not executable is refused with exit 2, naming %s/listener\n' "$listener_unrunnable"
+
+two_unusable="${temporary_dir}/prebuilt-two-unusable"
+cp -R "$prebuilt" "$two_unusable"
+chmod -x "${two_unusable}/listener"
+rm "${two_unusable}/natsd"
+refuse_binaries 'a --binaries directory with two unusable binaries' "$two_unusable"
+refused_files_are 'a --binaries directory with two unusable binaries' "$two_unusable" \
+  "  ${two_unusable}/listener: not an executable file" "  ${two_unusable}/natsd: missing"
+printf 'PASS: a --binaries directory with two unusable binaries names each of them\n'
 
 printf 'ALL PASS: dev-stack.test.sh\n'

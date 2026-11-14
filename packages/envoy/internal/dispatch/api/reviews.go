@@ -309,9 +309,13 @@ func (s *server) listArtifactReviews(w http.ResponseWriter, r *http.Request) {
 type createArtifactReviewInput struct {
 	State  string  `json:"state" required:"true"`
 	Reason *string `json:"reason"`
+	// Version is the version the caller read and reviews, when it names one: the review is
+	// refused 409 REVIEW_VERSION_MOVED unless it is the version the review would record. Absent,
+	// the review records that version whichever it is, as the document header's does.
+	Version *int `json:"version" minimum:"1"`
 }
 
-// POST /api/v1/artifacts/{id}/reviews  {state, reason?}  (the person and approve scopes)
+// POST /api/v1/artifacts/{id}/reviews  {state, reason?, version?}  (the person and approve scopes)
 func (s *server) createArtifactReview(w http.ResponseWriter, r *http.Request) {
 	var input createArtifactReviewInput
 	if err := decodeJSON(r, &input); err != nil {
@@ -334,6 +338,10 @@ func (s *server) createArtifactReview(w http.ResponseWriter, r *http.Request) {
 	}
 	if state == "changes_requested" && reason == nil {
 		writeError(w, "REASON_REQUIRED", http.StatusBadRequest, "requesting changes requires a reason")
+		return
+	}
+	if input.Version != nil && *input.Version < 1 {
+		writeError(w, "INVALID_REVIEW", http.StatusBadRequest, "version must name a version of the document, 1 or more")
 		return
 	}
 	// Before the open approval request is looked for: a reason answers that request, so it
@@ -379,12 +387,35 @@ func (s *server) createArtifactReview(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	events := []model.Event{}
-	var askID *string
 	// Without a request open, the header reviews this document at its latest settled version;
 	// with one, it answers that request, so it reviews every document the request named, each at
 	// the version the request named, and the request is answered once for both.
-	reviewed := []model.AskApprovalDocument{{ArtifactID: artifact.ID, Name: artifact.Name, Version: version}}
+	approval := &model.AskApproval{Documents: []model.AskApprovalDocument{{ArtifactID: artifact.ID, Name: artifact.Name, Version: version}}}
+	if open != nil {
+		approval = open.Approval
+	}
+	// The version this review records for the document is approval's entry for it: the one the
+	// open request names for it (OpenApprovalAsk finds only a request that names it, so a request
+	// with no entry for it is a fault of this server's, answered 500 before anything is written),
+	// else the latest settled version. A caller that names the version it read is refused here
+	// when that is not it, before the request is answered or anything is written, so no review
+	// records in a person's name a version of this document that person did not name. With a
+	// request open, every other document the request names is reviewed at the version the
+	// request names for it, which the caller does not name and this check does not compare.
+	entry := approval.Document(artifact.ID)
+	if entry == nil {
+		s.writeHandlerError(w, fmt.Errorf("the open approval request %s names no entry for the document %s it was found by", open.ID, artifact.ID))
+		return
+	}
+	recorded := entry.Version
+	if input.Version != nil && *input.Version != recorded {
+		writeError(w, "REVIEW_VERSION_MOVED", http.StatusConflict, fmt.Sprintf(
+			"the review would record version %d of %s, not version %d: read version %d and review it",
+			recorded, artifact.Name, *input.Version, recorded))
+		return
+	}
+	events := []model.Event{}
+	var askID *string
 	if open != nil {
 		selected := docs.ApprovalOptionApprove
 		if state == "changes_requested" {
@@ -397,9 +428,8 @@ func (s *server) createArtifactReview(w http.ResponseWriter, r *http.Request) {
 		}
 		events = append(events, answeredEvents...)
 		askID = &answered.ID
-		reviewed = open.Approval.Documents
 	}
-	reviews, reviewEvents, err := s.writeApprovalReviews(r.Context(), tx, artifact, reviewed, state, actor, reason, askID)
+	reviews, reviewEvents, err := s.writeApprovalReviews(r.Context(), tx, artifact, approval.Documents, state, actor, reason, askID)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

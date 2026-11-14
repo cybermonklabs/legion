@@ -1,0 +1,8 @@
+kind: Added
+body: |-
+  The `dispatch_review` spec: `issue`, `artifact` (the issue's spec by default), `version` (an
+  integer from 1), `verdict` (`approved` or `changes_requested`) and `reason`, which
+  `changes_requested` requires. The review route's body, `CreateArtifactReviewInput`, takes an
+  optional `version`, and the route can answer `409 REVIEW_VERSION_MOVED`.
+custom:
+    Issue: pr4029

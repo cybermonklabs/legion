@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { ArchitectureSource, IssueSummary, ItemBlocks } from "@legion/contracts";
-import { bearerCredential } from "../bearer";
+import { bearerCredential, type RequestCredential } from "../bearer";
 import {
   DISPATCH_WRITE_RETRY,
   DispatchClient,
@@ -1493,5 +1493,150 @@ describe("syncArchitectureSources against a server older than the every-source s
       message: "not found",
     });
     expect(requests).toHaveLength(1);
+  });
+});
+
+// A broker token the broker ended before it lapsed — a person's revoke of their sign-in does that
+// — is answered `401 BROKER_TOKEN_NOT_ACTIVE`. Dispatch authenticates before any handler runs, so
+// that answer says it did nothing: the client tells the credential, presents it afresh and sends
+// the request once more, a write under its own key.
+describe("a broker token Dispatch says is not live", () => {
+  const notLive = () =>
+    jsonResponse(
+      {
+        code: "BROKER_TOKEN_NOT_ACTIVE",
+        error: "the secrets broker does not hold this access token as live",
+      },
+      401
+    );
+
+  /**
+   * A credential like the broker's: each presentation carries the token it holds now, and
+   * `stale`, which records what it was told, moves it to the next of `tokens`. `refusal`, where
+   * given, is what a presentation after `stale` throws, as a trade the broker refuses does.
+   */
+  function brokered(tokens: readonly string[], refusal?: Error) {
+    const stales: (string | undefined)[] = [];
+    const credential: RequestCredential = {
+      scheme: "DPoP",
+      headers: () => {
+        if (refusal !== undefined && stales.length > 0) throw refusal;
+        return { Authorization: `DPoP ${tokens[stales.length]}`, DPoP: "proof" };
+      },
+      stale: (session) => {
+        stales.push(session);
+      },
+      secret: () => tokens[stales.length] ?? "",
+    };
+    return { credential, stales };
+  }
+
+  /** What each request presented, in order. */
+  const presented = (requests: readonly RecordedRequest[]) =>
+    requests.map((request) => (request.init.headers as Record<string, string>).Authorization);
+
+  test("a read is sent once more with a fresh token", async () => {
+    const listed = [{ key: "DSP-1", title: "DSP-1", status: "todo" }];
+    const { fetchImpl, requests } = fakeFetch([notLive(), jsonResponse(listed)]);
+    const { credential, stales } = brokered(["dead", "fresh"]);
+    const client = new DispatchClient("http://dispatch.test", credential, fetchImpl);
+
+    expect(await client.listAllIssues({})).toEqual(listed as unknown as IssueSummary[]);
+    expect(stales).toEqual([undefined]);
+    expect(presented(requests)).toEqual(["DPoP dead", "DPoP fresh"]);
+  });
+
+  test("a write is sent once more with a fresh token, under the same Idempotency-Key", async () => {
+    const { fetchImpl, requests } = fakeFetch([notLive(), jsonResponse({ id: "message-1" }, 201)]);
+    const { credential, stales } = brokered(["dead", "fresh"]);
+    const client = new DispatchClient("http://dispatch.test", credential, fetchImpl);
+
+    await client.message("DSP-1", { body: "Shipped.", actor });
+    expect(stales).toEqual([undefined]);
+    expect(presented(requests)).toEqual(["DPoP dead", "DPoP fresh"]);
+    const keys = requests.map(
+      (request) => (request.init.headers as Record<string, string>)["Idempotency-Key"]
+    );
+    expect(keys[0]).toBeString();
+    expect(keys[1]).toBe(keys[0] as string);
+    expect(requests.map(requestBody)).toEqual([
+      { body: "Shipped.", actor },
+      { body: "Shipped.", actor },
+    ]);
+  });
+
+  test("a second such answer is the call's: no third send", async () => {
+    for (const call of [
+      (client: DispatchClient) => client.listAllIssues({}),
+      (client: DispatchClient) => client.message("DSP-1", { body: "Shipped.", actor }),
+    ]) {
+      const { fetchImpl, requests } = fakeFetch([notLive(), notLive()]);
+      const { credential, stales } = brokered(["dead", "also-dead"]);
+      const client = new DispatchClient("http://dispatch.test", credential, fetchImpl);
+
+      await expect(call(client)).rejects.toMatchObject({
+        status: 401,
+        code: "BROKER_TOKEN_NOT_ACTIVE",
+        message: "the secrets broker does not hold this access token as live",
+      });
+      expect(stales).toHaveLength(1);
+      expect(requests).toHaveLength(2);
+    }
+  });
+
+  test("a 401 with another code is not sent again", async () => {
+    const { fetchImpl, requests } = fakeFetch([
+      jsonResponse(
+        {
+          code: "BROKER_TOKEN_PROOF_INVALID",
+          error: "the DPoP proof does not meet RFC 9449",
+        },
+        401
+      ),
+    ]);
+    const { credential, stales } = brokered(["live", "unused"]);
+    const client = new DispatchClient("http://dispatch.test", credential, fetchImpl);
+
+    await expect(client.listAllIssues({})).rejects.toMatchObject({
+      status: 401,
+      code: "BROKER_TOKEN_PROOF_INVALID",
+    });
+    expect(stales).toEqual([]);
+    expect(requests).toHaveLength(1);
+  });
+
+  test("a bearer, which has no other token to present, is not sent again", async () => {
+    const { fetchImpl, requests } = fakeFetch([notLive()]);
+    const client = new DispatchClient(
+      "http://dispatch.test",
+      bearerCredential("secret"),
+      fetchImpl
+    );
+
+    await expect(client.listAllIssues({})).rejects.toMatchObject({
+      status: 401,
+      code: "BROKER_TOKEN_NOT_ACTIVE",
+    });
+    expect(requests).toHaveLength(1);
+  });
+
+  test("a credential that cannot present again fails the call in its own words", async () => {
+    // After a revoke the broker refuses the new trade, and its words name `agent-secrets login`,
+    // which Dispatch's 401 does not.
+    const refusal = new Error(
+      "the secrets broker refused ada@example.com's sign-in on this machine: HTTP 400 invalid_grant: ada@example.com revoked this machine's sign-in, so the key this proof was signed with trades nothing. Sign in again with `agent-secrets login`."
+    );
+    for (const call of [
+      (client: DispatchClient) => client.listAllIssues({}),
+      (client: DispatchClient) => client.message("DSP-1", { body: "Shipped.", actor }),
+    ]) {
+      const { fetchImpl, requests } = fakeFetch([notLive()]);
+      const { credential, stales } = brokered(["dead"], refusal);
+      const client = new DispatchClient("http://dispatch.test", credential, fetchImpl);
+
+      await expect(call(client)).rejects.toThrow(refusal.message);
+      expect(stales).toHaveLength(1);
+      expect(requests).toHaveLength(1);
+    }
   });
 });

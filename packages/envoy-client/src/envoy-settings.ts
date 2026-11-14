@@ -180,10 +180,10 @@ export interface EnabledEnvoySettings {
   readonly url: string;
   /**
    * What every listener call presents: the listener's bearer (`bearerCredential`), the access
-   * token this machine traded its own identity for at the secrets broker, presented under the
-   * `DPoP` scheme with a fresh proof of this process's key on each request (`brokerCredential`),
-   * or undefined for a loopback listener that asks for none. One field, so no caller can present
-   * half of it.
+   * token the secrets broker traded this machine's identity for, or the identity of a person
+   * signed in on it, presented under the `DPoP` scheme with a fresh proof of the token's key on
+   * each request (`brokerCredential`), or undefined for a loopback listener that asks for none.
+   * One field, so no caller can present half of it.
    */
   readonly credential: RequestCredential | undefined;
   /** Inbound messages, which arrive over NATS. Off with `NO_NATS_SERVER` when nothing names a
@@ -337,10 +337,10 @@ export function envoySettings(
           }
     );
     if (source.kind === "none") {
-      // No bearer: this machine's own identity, where it has one to trade, is what the listener
-      // checks at the broker's introspection route. A listener that asks for no credential is
-      // unaffected — it reads the request's identity, or none, the same way, and a trade that
-      // fails leaves its calls standing (`createEnvoyClient`, transport.ts).
+      // No bearer: this machine's identity, or a person's sign-in on it, traded at the broker, is
+      // what the listener checks at the broker's introspection route. A listener that asks for no
+      // credential is unaffected — it reads the request's identity, or none, the same way, and a
+      // trade that fails leaves its calls standing (`createEnvoyClient`, transport.ts).
       credential = brokerRouteConfigured(env).traded
         ? brokerCredential(env, options.session)
         : undefined;

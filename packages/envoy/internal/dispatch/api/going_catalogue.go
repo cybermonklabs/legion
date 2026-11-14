@@ -3,20 +3,24 @@ package api
 // going_catalogue.go holds the catalogue of operations an agent may propose on Dispatch's
 // graph, and serves it at GET /api/v1/going/catalogue.
 //
-// The catalogue is the dispatch tools that write: the specs in
+// The catalogue is the dispatch tools that write, all but one: the specs in
 // packages/contracts/src/dispatch-tools.ts that agents already operate Dispatch with all day,
 // each carried whole through contracts.DispatchTools — its own curated description, which is
-// what a model chooses on, and its own argument schema. Twenty of the thirty-four tools write,
-// which is under the count where a model's choice measurably falls apart, so the list is read
-// whole: nothing searches it, and no second schema is authored per route.
+// what a model chooses on, and its own argument schema. Twenty-one of the thirty-five tools
+// write, and the catalogue holds twenty of them, which is under the count where a model's choice
+// measurably falls apart, so the list is read whole: nothing searches it, and no second schema
+// is authored per route. The one it leaves out is dispatch_review, on purpose: a review records
+// an approval or a changes request in a person's name, and the loop that proposes operations on
+// Dispatch's graph must never propose one, so goingToolRoutes names no row for it.
 //
 // Which tools write is not a field a tool spec carries. goingToolRoutes names the rows of the
 // server's own table each tool writes, and buildGoingCatalogue holds every one of them to the
 // table it mounts: a row that is no row of that table, one the table does not class as a write
 // (mutatingRoutes, the set TestEveryMutatingRouteIsClassed reads), a placeholder nothing fills,
 // or a relation in neither edge family refuses to mount (register). The other direction is a
-// report rather than a refusal, since a write no tool performs is work still to do and not an
-// error: TestTheMutatingRoutesNoToolSpecNames names every one of them.
+// report rather than a refusal, since a write no tool in the catalogue performs is not an error:
+// most are work still to do, and the review route is kept out on purpose.
+// TestTheMutatingRoutesNoToolSpecNames names every one of them.
 //
 // Nothing here decides anything: the catalogue says what an action is and what it takes, and
 // GoingCaller performs one an agent already chose. The loop that chooses is not in this package.
@@ -68,9 +72,12 @@ type goingToolRoute struct {
 }
 
 // goingToolRoutes is the rows of the server's table each dispatch tool writes, by the tool's own
-// name. A tool this map does not name writes nothing, so the catalogue does not hold it: the
-// read tools, and `dispatch_related`, whose POST row writes nothing (it runs the related-item
-// check and records none of it).
+// name, and so the tools the catalogue holds. A tool this map does not name is not in the
+// catalogue: the read tools; `dispatch_related`, whose POST row writes nothing (it runs the
+// related-item check and records none of it); and `dispatch_review`, which writes and is left
+// out on purpose. A review records an approval or a changes request in a person's name, and the
+// loop that proposes operations on Dispatch's graph must never propose one, so it gets no row
+// here.
 //
 // The rows of one tool are tried in order, so the row a call performs is the first whose guard
 // it satisfies and whose placeholders it fills: a document write names its issue, else its

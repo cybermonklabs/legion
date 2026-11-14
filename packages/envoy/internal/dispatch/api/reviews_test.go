@@ -472,6 +472,160 @@ func TestHeaderChangesRequestedAnswersTheOpenApprovalAskAndNeedsAReason(t *testi
 	}
 }
 
+// specMovedToVersionTwo answers a handler, the id of an issue's spec there with two settled
+// versions, the second an agent's written while a person read the first, and that spec's reviews
+// route.
+func specMovedToVersionTwo(t *testing.T) (http.Handler, string, string) {
+	t.Helper()
+	var documentService *docs.Service
+	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
+		documentService = docs.New(docs.Deps{Store: database, Settle: time.Hour})
+		t.Cleanup(func() { _ = documentService.Shutdown(context.Background()) })
+		return documentService
+	})
+	issue := createInteractionIssue(t, handler, "TEST", "Review a version", "A spec")
+	if _, err := replaceDocumentText(database, documentService, issue.PrimaryArtifactID, "A revised spec", model.Actor{Kind: "session", ID: "session-0123456789abcdef"}); err != nil {
+		t.Fatalf("revise document: %v", err)
+	}
+	if named := dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/versions", map[string]string{"summary": "revised"}, "alice"); named.Code != http.StatusCreated {
+		t.Fatalf("settle revised version: status=%d body=%s", named.Code, named.Body.String())
+	}
+	return handler, issue.PrimaryArtifactID, "/api/v1/artifacts/" + issue.PrimaryArtifactID + "/reviews"
+}
+
+// A review that names the version its reviewer read records it only when it is the version the
+// review would record, which with no approval request open is the latest settled version. A
+// version the document has moved past is refused 409 REVIEW_VERSION_MOVED, naming the version to
+// read, and nothing is written, so `dispatch review --version 1` never records version 2 in a
+// person's name. A version below 1 is no version of any document.
+func TestAReviewNamingAVersionRecordsOnlyTheVersionTheReviewWouldRecord(t *testing.T) {
+	handler, artifactID, reviewsPath := specMovedToVersionTwo(t)
+
+	for _, version := range []int{0, -1} {
+		refused := dispatchRequest(t, handler, http.MethodPost, reviewsPath, map[string]any{"state": "approved", "version": version}, "alice")
+		if code, _ := refusalOf(t, refused); refused.Code != http.StatusBadRequest || code != "INVALID_REVIEW" {
+			t.Fatalf("review naming version %d: status=%d body=%s, want 400 INVALID_REVIEW", version, refused.Code, refused.Body.String())
+		}
+	}
+	for _, review := range []struct {
+		state  string
+		reason string
+	}{
+		{state: "approved"},
+		{state: "changes_requested", reason: "Name the rollback path."},
+	} {
+		moved := dispatchRequest(t, handler, http.MethodPost, reviewsPath, map[string]any{"state": review.state, "reason": review.reason, "version": 1}, "alice")
+		code, text := refusalOf(t, moved)
+		if moved.Code != http.StatusConflict || code != "REVIEW_VERSION_MOVED" ||
+			text != "the review would record version 2 of spec.md, not version 1: read version 2 and review it" {
+			t.Fatalf("%s naming version 1 of a document at version 2: status=%d body=%s, want 409 REVIEW_VERSION_MOVED naming version 2", review.state, moved.Code, moved.Body.String())
+		}
+	}
+	if reviews := listReviews(t, handler, artifactID); len(reviews) != 0 {
+		t.Fatalf("reviews after the refusals = %#v, want none", reviews)
+	}
+
+	matched := dispatchRequest(t, handler, http.MethodPost, reviewsPath, map[string]any{"state": "approved", "version": 2}, "alice")
+	if matched.Code != http.StatusCreated {
+		t.Fatalf("review naming version 2: status=%d body=%s", matched.Code, matched.Body.String())
+	}
+	if review := decodeBody[model.ArtifactReview](t, matched); review.Version != 2 || review.State != "approved" || review.Actor.ID != "alice" || review.AskID != nil {
+		t.Fatalf("review = %#v, want alice's approval of version 2 answering no ask", review)
+	}
+	if got := readApproval(t, handler, artifactID); got.Approval == nil || got.Approval.State != "approved" || got.Approval.Version == nil || *got.Approval.Version != 2 {
+		t.Fatalf("approval = %#v, want approved at version 2", got.Approval)
+	}
+}
+
+// A review that names no version records what it always has, the latest settled version
+// whichever that is, so the document header's own call, which sends none, is unchanged. A null
+// version names none.
+func TestAReviewNamingNoVersionRecordsTheLatestSettledVersion(t *testing.T) {
+	handler, artifactID, reviewsPath := specMovedToVersionTwo(t)
+
+	for _, review := range []struct {
+		state string
+		body  map[string]any
+	}{
+		{state: "changes_requested", body: map[string]any{"state": "changes_requested", "reason": "Name the rollback path."}},
+		{state: "approved", body: map[string]any{"state": "approved", "version": nil}},
+	} {
+		written := dispatchRequest(t, handler, http.MethodPost, reviewsPath, review.body, "alice")
+		if written.Code != http.StatusCreated {
+			t.Fatalf("review %v: status=%d body=%s", review.body, written.Code, written.Body.String())
+		}
+		if got := decodeBody[model.ArtifactReview](t, written); got.Version != 2 || got.State != review.state {
+			t.Fatalf("review %v = %#v, want %s at version 2", review.body, got, review.state)
+		}
+	}
+	if reviews := listReviews(t, handler, artifactID); len(reviews) != 2 {
+		t.Fatalf("reviews = %#v, want the two just written", reviews)
+	}
+}
+
+// With an approval request open, the review answers it at the version the request names for the
+// document, so that is the version a review naming one must name. Every route that writes a
+// version moves the open request to it (TestANewVersionMovesTheOpenApprovalAsk), so the two part
+// only for a version written straight into artifact_versions, as an older build wrote one; that
+// row holds them apart here, and the review is held to the request's version, not the latest. A
+// refused review leaves the request open and unanswered, and appends no event.
+func TestAReviewUnderAnOpenRequestMustNameTheVersionTheRequestNames(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	issue := createInteractionIssue(t, handler, "TEST", "Review under a request", "A spec")
+	reviewsPath := "/api/v1/artifacts/" + issue.PrimaryArtifactID + "/reviews"
+	requested := sessionRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/approval-requests", map[string]any{"actor": sessionActor()})
+	if requested.Code != http.StatusCreated {
+		t.Fatalf("request approval: status=%d body=%s", requested.Code, requested.Body.String())
+	}
+	askID := decodeBody[struct {
+		Ask struct {
+			ID string `json:"id"`
+		} `json:"ask"`
+	}](t, requested).Ask.ID
+	if _, err := database.Pool.Exec(context.Background(), `
+		insert into artifact_versions (artifact_id, number, markdown, authors)
+		select artifact_id, 2, markdown, authors from artifact_versions where artifact_id = $1 and number = 1
+	`, issue.PrimaryArtifactID); err != nil {
+		t.Fatalf("write version 2 as an older build would: %v", err)
+	}
+	askState := func() string {
+		t.Helper()
+		return decodeBody[struct {
+			Ask struct {
+				State string `json:"state"`
+			} `json:"ask"`
+		}](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/asks/"+askID, nil, "alice")).Ask.State
+	}
+	eventsBefore := len(issueEvents(t, handler, issue.Key))
+
+	latest := dispatchRequest(t, handler, http.MethodPost, reviewsPath, map[string]any{"state": "approved", "version": 2}, "alice")
+	code, text := refusalOf(t, latest)
+	if latest.Code != http.StatusConflict || code != "REVIEW_VERSION_MOVED" ||
+		text != "the review would record version 1 of spec.md, not version 2: read version 1 and review it" {
+		t.Fatalf("review naming the latest version under a request for version 1: status=%d body=%s, want 409 REVIEW_VERSION_MOVED naming version 1", latest.Code, latest.Body.String())
+	}
+	if reviews := listReviews(t, handler, issue.PrimaryArtifactID); len(reviews) != 0 {
+		t.Fatalf("reviews after the refusal = %#v, want none", reviews)
+	}
+	if state := askState(); state != "open" {
+		t.Fatalf("approval request after the refusal is %s, want it still open", state)
+	}
+	if appended := len(issueEvents(t, handler, issue.Key)) - eventsBefore; appended != 0 {
+		t.Fatalf("the refused review appended %d events, want none", appended)
+	}
+
+	answered := dispatchRequest(t, handler, http.MethodPost, reviewsPath, map[string]any{"state": "approved", "version": 1}, "alice")
+	if answered.Code != http.StatusCreated {
+		t.Fatalf("review naming the request's version: status=%d body=%s", answered.Code, answered.Body.String())
+	}
+	if review := decodeBody[model.ArtifactReview](t, answered); review.Version != 1 || review.State != "approved" || review.AskID == nil || *review.AskID != askID {
+		t.Fatalf("review = %#v, want an approval of version 1 answering %s", review, askID)
+	}
+	if state := askState(); state != "answered" {
+		t.Fatalf("approval request after the review is %s, want it answered", state)
+	}
+}
+
 // An architect writes a spec whose decisions are ask blocks and a human approves it straight
 // away. Settlement indexes those blocks seconds later, over words nobody has touched since. A
 // version minted for that indexing staled an approval a human had just given and closed Legion's

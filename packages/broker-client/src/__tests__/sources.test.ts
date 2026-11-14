@@ -1,8 +1,10 @@
 // packages/broker-client/src/__tests__/sources.test.ts
 //
-// The two identities a TypeScript caller holds: a pod's projected service-account token, read
-// from the file its runtime mounts, and a Compute Engine machine's own Google identity token,
-// asked of its metadata server with format=full and fetched through no proxy.
+// Two of the identities a TypeScript caller holds, the two this file tests: a pod's projected
+// service-account token, read from the file its runtime mounts, and a Compute Engine machine's
+// own Google identity token, asked of its metadata server with format=full and fetched through
+// no proxy. A pool machine's identity and a person's sign-in have tests of their own
+// (pool-identity.test.ts, person-identity.test.ts).
 
 import { afterAll, expect, test } from "bun:test";
 import { writeFile } from "node:fs/promises";
