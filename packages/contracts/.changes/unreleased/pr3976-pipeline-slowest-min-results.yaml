@@ -1,0 +1,4 @@
+kind: Changed
+body: |-
+  The Dispatch API contract's `DeliveryPipelinePRChecks` carries `slowest_min_results`, the
+  number of timed results a job needed to be ranked among the Pipeline's slowest jobs.

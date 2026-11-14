@@ -4,14 +4,18 @@ import (
 	"encoding/json"
 	"math"
 	"net/http"
+	"net/url"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
+	"github.com/sjawhar/envoy/internal/dispatch/evals"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -428,4 +432,64 @@ func TestGetDeliveryPipelineAnswersEmptyListsAsArrays(t *testing.T) {
 			t.Errorf("body lacks %s: %s", want, text)
 		}
 	}
+}
+
+// TestThePipelineRanksBy50WhereItsDeployRepositoryMapsToNoProject: the deployment-wide Pipeline
+// ranks its slowest jobs by the min_n of pr-ci's job series in the project its deploy repository
+// is mapped to, states it in slowest_min_results, and ranks by measures.SlowestMinResults (50)
+// where the repository maps to no project, or to a project holding no pr-ci eval yet, whatever
+// min_n another project's pr-ci holds. Over a deliverytest history whose deploy repository is
+// DELIV's, a register write setting DELIV's job min_n to the timed results of the busiest job the
+// Pipeline ranks at 50 moves its table, so the table can tell the two apart; with the mapping
+// deleted the Pipeline answers its table at 50 again, and with the repository mapped to a project
+// made by SQL, which holds no eval, too.
+func TestThePipelineRanksBy50WhereItsDeployRepositoryMapsToNoProject(t *testing.T) {
+	handler, database, deps := newTestServer(t, testServerOptions{})
+	ctx := t.Context()
+	fixture := deliverytest.Seed(t, database.Pool, deliverytest.Spec{Seed: 2916, OneProject: true, Days: 14})
+	if _, err := evals.New(database, deps.Docs, deps.Events).Ensure(ctx, fixture.Project); err != nil {
+		t.Fatalf("seed the evals of %s: %v", fixture.Project, err)
+	}
+	query := url.Values{"from": {fixture.From.AddDate(0, 0, 4).Format(time.RFC3339)}, "to": {fixture.From.AddDate(0, 0, 11).Format(time.RFC3339)}}.Encode()
+	read := func() (names []string, busiest, minN int) {
+		t.Helper()
+		checks := evalGet[deliveryPipelineResponse](t, handler, "/api/v1/delivery/pipeline?"+query).PRChecks
+		for _, job := range checks.SlowestJobs {
+			names, busiest = append(names, job.Name), max(busiest, job.Total.N)
+		}
+		return names, busiest, checks.SlowestMinResults
+	}
+	at50, busiest, minN := read()
+	if minN != measures.SlowestMinResults || len(at50) < 2 {
+		t.Fatalf("with %s's pr-ci seeded the Pipeline ranks %v by %d, want two jobs or more by %d", fixture.Project, at50, minN, measures.SlowestMinResults)
+	}
+	registered := evalRequest(t, handler, http.MethodPost, "/api/v1/projects/"+fixture.Project+"/evals", map[string]any{
+		"slug": evals.SlugPRCI, "series": []any{map[string]any{"series": evals.SeriesJobs, "min_n": busiest}},
+	}, "pr-ci-min-n")
+	if registered.Code != http.StatusCreated && registered.Code != http.StatusOK {
+		t.Fatalf("set %s's pr-ci min_n to %d: status %d, body %s", fixture.Project, busiest, registered.Code, registered.Body.String())
+	}
+	if moved, _, minN := read(); minN != busiest || slices.Equal(moved, at50) {
+		t.Fatalf("with %s's pr-ci min_n at %d the Pipeline ranks %v by %d, at 50 %v: want its table moved and ranked by %d",
+			fixture.Project, busiest, moved, minN, at50, busiest)
+	}
+
+	if _, err := database.Pool.Exec(ctx, `delete from repo_projects where repo = $1`, fixture.DeployRepo); err != nil {
+		t.Fatalf("delete the mapping of %s: %v", fixture.DeployRepo, err)
+	}
+	if unmapped, _, minN := read(); minN != measures.SlowestMinResults || !slices.Equal(unmapped, at50) {
+		t.Errorf("with %s mapped to no project the Pipeline ranks %v by %d, want %v by %d", fixture.DeployRepo, unmapped, minN, at50, measures.SlowestMinResults)
+	}
+
+	if _, err := database.Pool.Exec(ctx, `insert into projects (key, name) values ('BARE', 'Made by SQL')`); err != nil {
+		t.Fatalf("make a project by SQL: %v", err)
+	}
+	if _, err := database.Pool.Exec(ctx, `insert into repo_projects (repo, project, created_by) values ($1, 'BARE', '{"kind":"user","id":"alice"}'::jsonb)`, fixture.DeployRepo); err != nil {
+		t.Fatalf("map %s to BARE: %v", fixture.DeployRepo, err)
+	}
+	if bare, _, minN := read(); minN != measures.SlowestMinResults || !slices.Equal(bare, at50) {
+		t.Errorf("with %s mapped to BARE, which holds no pr-ci eval, the Pipeline ranks %v by %d, want %v by %d", fixture.DeployRepo, bare, minN, at50, measures.SlowestMinResults)
+	}
+	t.Logf("at 50 the Pipeline ranks %v; at %s's min_n of %d another table; mapped to no project, and to a project with no pr-ci eval, %v again",
+		at50, fixture.Project, busiest, at50)
 }

@@ -1,7 +1,6 @@
 package api
 
 import (
-	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -748,9 +747,10 @@ func outcomeOf(parts []measures.DayPart) string {
 // jobs that failed in the 24 hours before the range's end, the Pipeline's own failing-jobs list
 // for the same from and to (failingJobRows), most failures first; otherwise each job's figures,
 // its unlisted `job:<name>` day rows of the range folded by measures.FoldTiming, by name, or with
-// sort median the jobs with the job series' min_n timed results (eval_series `job:*`), slowest
-// first, the ranking measures.FoldSlowestJobs makes. A series filter names one job's series. An
-// eval with no job series answers none.
+// sort median the one ranking the Pipeline's slowest-jobs table shows the first
+// measures.SlowestJobs of (measures.FoldSlowestJobs): every job with the job series' min_n timed
+// results over the range's days (eval_series `job:*`, evals.SlowestJobsMinN), slowest first. A
+// series filter names one job's series. An eval with no job series answers none.
 func (s *server) jobItemRows(ctx context.Context, read evalItemsRead) ([]evalItemRow, error) {
 	index := slices.IndexFunc(read.entry.Series, func(series evals.Series) bool { return series.Series == evals.SeriesJobs })
 	if index < 0 {
@@ -763,41 +763,40 @@ func (s *server) jobItemRows(ctx context.Context, read evalItemsRead) ([]evalIte
 	if err != nil {
 		return nil, err
 	}
-	byJob := map[string][]measures.DayPart{}
+	var parts []measures.DayPart
 	newest := map[string]time.Time{}
 	for _, day := range days {
 		name, job := strings.CutPrefix(day.Series, measures.JobSeriesPrefix)
 		if !job {
 			continue
 		}
-		// The job's parts as the timing fold reads a series: its minutes.
-		part := day.Part()
-		part.Series = measures.SeriesMinutes
-		byJob[name] = append(byJob[name], part)
+		parts = append(parts, day.Part())
 		if day.Day.After(newest[name]) {
 			newest[name] = day.Day
 		}
-	}
-	minN := measures.SlowestMinResults
-	if read.entry.Series[index].MinN != nil {
-		minN = *read.entry.Series[index].MinN
 	}
 	type jobCell struct {
 		name string
 		cell measures.Cell
 	}
 	var cells []jobCell
-	for _, name := range slices.Sorted(maps.Keys(byJob)) {
-		cell := measures.FoldTiming(byJob[name])
-		// A ranked job has min_n timed results and at least one: N counts the timed results, so a
-		// job with none, which a min_n of 0 would keep, has no median to rank by.
-		if read.request.sort == evalSortMedian && (cell.N < minN || cell.MedianMinutes == nil) {
-			continue
-		}
-		cells = append(cells, jobCell{name, cell})
-	}
 	if read.request.sort == evalSortMedian {
-		slices.SortStableFunc(cells, func(a, b jobCell) int { return cmp.Compare(*b.cell.MedianMinutes, *a.cell.MedianMinutes) })
+		// The range's own days: its day rows are of no other.
+		shown := pipelineWindowBetween(read.rng.days.From, read.rng.days.To).days()
+		for _, job := range measures.FoldSlowestJobs(parts, shown, evals.SlowestJobsMinN(read.entry.Series[index].MinN)) {
+			cells = append(cells, jobCell{job.Name, job.Total})
+		}
+	} else {
+		byJob := map[string][]measures.DayPart{}
+		for _, part := range parts {
+			name := strings.TrimPrefix(part.Series, measures.JobSeriesPrefix)
+			// The job's parts as the timing fold reads a series: its minutes.
+			part.Series = measures.SeriesMinutes
+			byJob[name] = append(byJob[name], part)
+		}
+		for _, name := range slices.Sorted(maps.Keys(byJob)) {
+			cells = append(cells, jobCell{name, measures.FoldTiming(byJob[name])})
+		}
 	}
 	rows := make([]evalItemRow, len(cells))
 	for position, job := range cells {

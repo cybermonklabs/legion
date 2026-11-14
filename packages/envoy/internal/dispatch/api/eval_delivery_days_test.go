@@ -267,8 +267,9 @@ func foldedMeasures(parts map[string][]measures.DayPart, window measures.Window)
 }
 
 // foldedPipeline is the Pipeline route's day cards folded from parts and jobs (one cut's day rows
-// and its job series), by the folds the route answers through.
-func foldedPipeline(parts map[string][]measures.DayPart, jobs []measures.DayPart, settings delivery.DeliverySettings, days []string) deliveryPipelineResponse {
+// and its job series), by the folds the route answers through, its slowest jobs the first
+// measures.SlowestJobs of the ranking by minN timed results.
+func foldedPipeline(parts map[string][]measures.DayPart, jobs []measures.DayPart, settings delivery.DeliverySettings, days []string, minN int) deliveryPipelineResponse {
 	cards := map[measures.DeployJobCardID]measures.DeployJobTiming{}
 	slugs := map[measures.DeployJobCardID]string{
 		measures.CardProductionApply: evals.SlugProductionDeploy, measures.CardStagingE2E: evals.SlugStagingE2E, measures.CardStagingApply: evals.SlugStagingDeploy,
@@ -276,15 +277,37 @@ func foldedPipeline(parts map[string][]measures.DayPart, jobs []measures.DayPart
 	for _, card := range measures.DeployCards(settings) {
 		cards[card.CardID] = measures.DeployJobTiming{Job: strings.Join(card.JobNames, " or "), Timing: dayTiming(parts[slugs[card.CardID]], days)}
 	}
+	ranked := measures.FoldSlowestJobs(jobs, days, minN)
 	return deliveryPipelineResponse{
-		Days:              days,
-		PRChecks:          deliveryPipelinePRChecks{Run: dayTiming(parts[evals.SlugPRCI], days), SlowestJobs: measures.FoldSlowestJobs(jobs, days)},
+		Days: days,
+		PRChecks: deliveryPipelinePRChecks{
+			Run: dayTiming(parts[evals.SlugPRCI], days), SlowestJobs: ranked[:min(len(ranked), measures.SlowestJobs)], SlowestMinResults: minN,
+		},
 		StagingE2E:        optionalDeployJobTiming(cards, measures.CardStagingE2E),
 		StagingApply:      optionalDeployJobTiming(cards, measures.CardStagingApply),
 		ProductionApply:   cards[measures.CardProductionApply],
 		MergeToProduction: dayLeadTiming(parts[evals.SlugMergeToProduction], days),
 		OpenedToMerge:     dayLeadTiming(parts[evals.SlugPROpenToMerge], days),
 	}
+}
+
+// prCIJobsMinN is the min_n of pr-ci's job series among entries, as the Pipeline reads it
+// (evals.SlowestJobsMinN), the threshold the Pipeline of a deploy repository mapped to their
+// project ranks by.
+func prCIJobsMinN(t *testing.T, project string, entries []evals.Entry) int {
+	t.Helper()
+	for _, entry := range entries {
+		if entry.Definition.EvalID != evals.EvalID(project, evals.SlugPRCI) {
+			continue
+		}
+		for _, series := range entry.Series {
+			if series.Series == evals.SeriesJobs {
+				return evals.SlowestJobsMinN(series.MinN)
+			}
+		}
+	}
+	t.Fatalf("%s holds no pr-ci job series among its %d evals", project, len(entries))
+	return 0
 }
 
 // oracleTree is value as JSON, read as compareDeliveryOracleTrees reads an answer.
@@ -378,8 +401,9 @@ func compareDayRowsWithRoutes(t *testing.T, handler http.Handler, registry *eval
 		compare("the measures of all repositories", oracleTree(t, folded), subtree(wholeMeasures, "measures"))
 		tally.withPRs = folded.DeployFrequency.DeploysWithPRs
 	}
+	minN := prCIJobsMinN(t, fixture.Project, entries)
 	compare("the pipeline of all repositories",
-		subtree(oracleTree(t, foldedPipeline(all, jobParts(fixture.Project, stored, "", from, to), settings, days)), "", pipelineDropped...),
+		subtree(oracleTree(t, foldedPipeline(all, jobParts(fixture.Project, stored, "", from, to), settings, days, minN)), "", pipelineDropped...),
 		subtree(wholePipeline, "", pipelineDropped...))
 
 	for _, repo := range fixture.Repos {
@@ -413,7 +437,7 @@ func compareDayRowsWithRoutes(t *testing.T, handler http.Handler, registry *eval
 		for _, field := range []string{"deploy_frequency", "deploy_run_success", "daily"} {
 			compare("the "+field+" of "+repo, subtree(oracleTree(t, folded), field), subtree(wholeMeasures, "measures."+field))
 		}
-		cutPipeline := subtree(oracleTree(t, foldedPipeline(cut, jobParts(fixture.Project, stored, repo, from, to), settings, days)), "", pipelineDropped...)
+		cutPipeline := subtree(oracleTree(t, foldedPipeline(cut, jobParts(fixture.Project, stored, repo, from, to), settings, days, minN)), "", pipelineDropped...)
 		for _, field := range []string{"pr_checks", "staging_e2e", "staging_apply", "production_apply"} {
 			compare("the "+field+" of "+repo, subtree(cutPipeline, field), subtree(subtree(wholePipeline, "", pipelineDropped...), field))
 		}

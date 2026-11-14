@@ -319,7 +319,9 @@ func (h *deliveryHub) readEvalsView(ctx context.Context, spec deliveryLiveSpec, 
 }
 
 // readPipelineView is a Pipeline section's read: the delivery settings and the runs, jobs and
-// merges of the window its spec names.
+// merges of the window its spec names, with the min_n its slowest jobs are ranked by, through the
+// GET route's own read and compute (readPipelinePopulation, deliveryPipelineCompute), so the view
+// ranks them as the route does.
 func (h *deliveryHub) readPipelineView(ctx context.Context, spec deliveryLiveSpec, now time.Time, read *deliveryViewRead) (any, error) {
 	pool := h.server.deps.Store.Pool
 	var err error

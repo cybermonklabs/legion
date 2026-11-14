@@ -4049,7 +4049,7 @@
     },
     "/api/v1/delivery/pipeline": {
       "get": {
-        "description": "The Pipeline page over the UTC days its window covers: ?at= (default now) is the seven days ending on its own, and ?from= and ?to= are the days that window covers, bounded by the same 84 days as the other delivery routes. By the day each run started: the PR-checks workflow's run wall time and success, its five slowest jobs (50 timed results to rank) and the jobs that failed in the 24 hours before the window's end, which for a whole-day window is its last day; the duration and result of the staging end-to-end, staging deploy and production deploy jobs the settings name in push runs on main; and merge-to-production and PR-open-to-merge per merge day against their targets. Not filtered by the timeline's facets; 400 INVALID_QUERY for a malformed at or window, for a window over the cap, and for an at beside from or to, 404 DELIVERY_NOT_CONFIGURED without a delivery_settings row.",
+        "description": "The Pipeline page over the UTC days its window covers: ?at= (default now) is the seven days ending on its own, and ?from= and ?to= are the days that window covers, bounded by the same 84 days as the other delivery routes. By the day each run started: the PR-checks workflow's run wall time and success, its five slowest jobs and the jobs that failed in the 24 hours before the window's end, which for a whole-day window is its last day; the duration and result of the staging end-to-end, staging deploy and production deploy jobs the settings name in push runs on main; and merge-to-production and PR-open-to-merge per merge day against their targets. A job is ranked among the slowest with as many timed results as pr_checks.slowest_min_results states: the min_n of the job series (job:*) of the pr-ci eval of the project the deploy repository is mapped to, or 50 where it is mapped to no project or that project holds no pr-ci eval yet; the ranking is the one pr-ci's items read with sort=median. Not filtered by the timeline's facets; 400 INVALID_QUERY for a malformed at or window, for a window over the cap, and for an at beside from or to, 404 DELIVERY_NOT_CONFIGURED without a delivery_settings row.",
         "operationId": "getApiV1DeliveryPipeline",
         "parameters": [
           {
@@ -17511,11 +17511,15 @@
               "array",
               "null"
             ]
+          },
+          "slowest_min_results": {
+            "type": "integer"
           }
         },
         "required": [
           "run",
           "slowest_jobs",
+          "slowest_min_results",
           "failing_jobs"
         ],
         "type": "object"

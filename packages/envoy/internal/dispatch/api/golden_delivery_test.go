@@ -17,6 +17,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 )
 
 // deliveryOracleTolerance is how far apart, relative to the larger, two floats may be and still
@@ -62,16 +63,22 @@ type deliveryOracleFixture struct {
 // or more). The recorder is gone: run at any later head it would record that head's own answers,
 // and the oracle would compare the code with itself.
 //
-// The two named exceptions are rules INFRA-2916 changed. A deploy's with_prs: a deploy is one with
-// pull requests when it ships any pull request, whenever that pull request merged, where the base
-// head counted only those merged inside the window. So each measures answer's deploys_with_prs
-// must be the base head's plus exactly the deploys of the window whose every shipped pull request
-// merged before it, counted from the fixture's own containment (deploysShippingOnlyEarlier), and
-// with_prs_per_day the base head's plus that count over the window's days. And the change failure
-// rate while no failure source exists (root R11: 0 is a value, never a stand-in): the base head
-// answered an object of zero flag counts and rates over the window's totals, and verdicts over
-// them; this head answers change_failure_rate null and both its verdicts null
-// (takeFailureMeasures). Those fields are then left out of the value-for-value comparison, and
+// The three named exceptions are rules INFRA-2916 changed. A deploy's with_prs: a deploy is one
+// with pull requests when it ships any pull request, whenever that pull request merged, where the
+// base head counted only those merged inside the window. So each measures answer's
+// deploys_with_prs must be the base head's plus exactly the deploys of the window whose every
+// shipped pull request merged before it, counted from the fixture's own containment
+// (deploysShippingOnlyEarlier), and with_prs_per_day the base head's plus that count over the
+// window's days. The change failure rate while no failure source exists (root R11: 0 is a value,
+// never a stand-in): the base head answered an object of zero flag counts and rates over the
+// window's totals, and verdicts over them; this head answers change_failure_rate null and both its
+// verdicts null (takeFailureMeasures). And the Pipeline's slowest-jobs threshold (R5: a series'
+// min_n is a person's to set, and every reader uses it): the base head ranked by the constant 50
+// and stated nothing, this head ranks by the min_n of pr-ci's job series in the project the
+// deploy repository is mapped to, 50 where none holds one, and states it in
+// pr_checks.slowest_min_results, which must be 50 here, where no pr-ci eval is seeded, and which
+// the base head's answer must not hold (takeSlowestMinResults); its slowest_jobs are then the base
+// head's value for value. Those fields are then left out of the value-for-value comparison, and
 // every other field must be the base head's.
 func TestTheDeliveryRoutesAnswerWhatTheyAnsweredAtTheBaseHead(t *testing.T) {
 	dir := filepath.Join("testdata", "golden_delivery")
@@ -89,7 +96,7 @@ func TestTheDeliveryRoutesAnswerWhatTheyAnsweredAtTheBaseHead(t *testing.T) {
 			fixture.Summary(), fixture.Repos, recorded.Fixture.Summary, recorded.Fixture.Repos)
 	}
 
-	requests, values, differing, moved, movedWindows, failuresNulled := 0, 0, 0, 0, 0, 0
+	requests, values, differing, moved, movedWindows, failuresNulled, thresholds := 0, 0, 0, 0, 0, 0, 0
 	for _, window := range recorded.Windows {
 		var file struct {
 			Head    string                     `json:"head"`
@@ -130,6 +137,13 @@ func TestTheDeliveryRoutesAnswerWhatTheyAnsweredAtTheBaseHead(t *testing.T) {
 					t.Errorf("%s: GET %s: %s", window.File, target, difference)
 				}
 			}
+			if strings.HasPrefix(target, "/api/v1/delivery/pipeline?") {
+				if difference := takeSlowestMinResults(got, want); difference != "" {
+					differing++
+					t.Errorf("%s: GET %s: %s", window.File, target, difference)
+				}
+				values, thresholds = values+1, thresholds+1
+			}
 			compared, difference := compareDeliveryOracleTrees("", got, want)
 			requests, values = requests+1, values+compared
 			if difference != "" {
@@ -144,11 +158,16 @@ func TestTheDeliveryRoutesAnswerWhatTheyAnsweredAtTheBaseHead(t *testing.T) {
 			window.From.Format(time.DateOnly), window.To.Format(time.DateOnly), window.Days, earlier, strings.Join(slices.Compact(withPRsMoved), ", "))
 	}
 	t.Logf("history %s (seed %d, %d days to %s), recorded at %s: %d windows, %d requests, %d values compared, %d requests differing; "+
-		"deploys_with_prs moved in %d of the %d windows, by %d deploys in all; %d failure-measure values the base head answered are null",
+		"deploys_with_prs moved in %d of the %d windows, by %d deploys in all; %d failure-measure values the base head answered are null; "+
+		"%d Pipeline answers state the slowest-jobs threshold %d the base head ranked by",
 		recorded.Fixture.Spec.Project, recorded.Fixture.Spec.Seed, recorded.Fixture.Spec.Days, recorded.Fixture.Spec.Now.Format(time.DateOnly),
-		recorded.Head, len(recorded.Windows), requests, values, differing, movedWindows, len(recorded.Windows), moved, failuresNulled)
+		recorded.Head, len(recorded.Windows), requests, values, differing, movedWindows, len(recorded.Windows), moved, failuresNulled,
+		thresholds, measures.SlowestMinResults)
 	if failuresNulled == 0 {
 		t.Error("no measures answer held a failure measure to compare, so the named difference was never read")
+	}
+	if thresholds == 0 {
+		t.Error("no Pipeline answer was read, so its named difference was never read")
 	}
 }
 
@@ -283,6 +302,23 @@ func takeFailureMeasures(t *testing.T, got, want any) (int, string) {
 		delete(wantParent, key)
 	}
 	return named, ""
+}
+
+// takeSlowestMinResults checks got's pr_checks.slowest_min_results, a Pipeline answer's, against
+// want, the base head's, which ranked by the constant measures.SlowestMinResults and stated no
+// threshold: got's must be that 50, where no project holds a pr-ci eval to read another from, and
+// want must hold none. It takes the field out of got and answers, where either is off, what is.
+func takeSlowestMinResults(got, want any) string {
+	gotChecks := got.(map[string]any)["pr_checks"].(map[string]any)
+	if _, held := want.(map[string]any)["pr_checks"].(map[string]any)["slowest_min_results"]; held {
+		return "the base head's pr_checks holds slowest_min_results, which it never stated"
+	}
+	value, held := gotChecks["slowest_min_results"]
+	if number, isNumber := value.(json.Number); !held || !isNumber || number.String() != strconv.Itoa(measures.SlowestMinResults) {
+		return fmt.Sprintf("pr_checks.slowest_min_results is %v (held %t), want %d, the threshold the base head ranked by", value, held, measures.SlowestMinResults)
+	}
+	delete(gotChecks, "slowest_min_results")
+	return ""
 }
 
 func readDeliveryOracleFile(t *testing.T, path string, into any) {

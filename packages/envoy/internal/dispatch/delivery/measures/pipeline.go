@@ -36,11 +36,15 @@ import (
 // ending on the day its clock is on (pipeline.py:19).
 const ShownDayCount = 7
 
-// SlowestJobs is how many of the PR-checks workflow's jobs the slowest-jobs table ranks.
+// SlowestJobs is how many of the PR-checks workflow's jobs the slowest-jobs table shows: the first
+// of FoldSlowestJobs' ranking.
 const SlowestJobs = 5
 
-// SlowestMinResults is how many timed results a job needs in the shown days to be ranked, so a
-// one-task matrix entry with a handful of results is not (pipeline.py:27-29).
+// SlowestMinResults is how many timed results a job needs in the shown days to be ranked where no
+// eval states another, so a one-task matrix entry with a handful of results is not
+// (pipeline.py:27-29): the min_n the catalogue seeds pr-ci's job series with, which a person may
+// change, and the one the deployment-wide Pipeline ranks by where its deploy repository's project
+// holds no pr-ci eval to read one from (evals.Store.PipelineSlowestJobsMinN).
 const SlowestMinResults = 50
 
 // FailingWindow is how far back the failing-jobs table looks from the window's end: its last day,
@@ -345,25 +349,28 @@ func jobTimings(parts []DayPart, days []string) map[string]Timing {
 	return timings
 }
 
-// FoldSlowestJobs is pr-ci's slowest-jobs table over parts (pipeline.py:137-142): the SlowestJobs
-// jobs with SlowestMinResults timed results over the shown days (the job series' min_n), by
-// their median over those days, slowest first, then by name, each with its cell of every shown
-// day; never nil.
-func FoldSlowestJobs(parts []DayPart, days []string) []JobTiming {
+// FoldSlowestJobs is pr-ci's ranking of its jobs over parts (pipeline.py:137-142), the one ranking
+// both the Pipeline's slowest-jobs table, its first SlowestJobs (PRChecks), and pr-ci's items
+// sorted by median read: every job with minResults timed results over the shown days, the job
+// series' min_n, and at least one, by its median over those days, slowest first, then by name,
+// each with its cell of every shown day; never nil.
+func FoldSlowestJobs(parts []DayPart, days []string, minResults int) []JobTiming {
 	slowest := []JobTiming{}
 	for name, timing := range jobTimings(parts, days) {
-		if timing.Total.N >= SlowestMinResults {
+		// N counts the timed results, so a job with none, which a minResults of 0 would keep, has
+		// no median to rank by.
+		if timing.Total.N >= max(minResults, 1) {
 			slowest = append(slowest, JobTiming{Name: name, Timing: timing})
 		}
 	}
 	slices.SortFunc(slowest, func(a, b JobTiming) int {
-		// A ranked job has SlowestMinResults timed results, so its median is set.
+		// A ranked job has a timed result, so its median is set.
 		if c := cmp.Compare(*b.Total.MedianMinutes, *a.Total.MedianMinutes); c != 0 {
 			return c
 		}
 		return cmp.Compare(a.Name, b.Name)
 	})
-	return slowest[:min(len(slowest), SlowestJobs)]
+	return slowest
 }
 
 // prChecksParts is pr-ci's parts of each shown day, built from the runs started on it.
@@ -379,12 +386,14 @@ func prChecksParts(runs []delivery.DeliveryRun, jobsByRun map[int64][]delivery.D
 // PRChecks is the PR-checks workflow's Pipeline numbers (pipeline.py:113-167), from the parts
 // PRChecksDay builds of each shown day's runs: run, every run's wall time from its start to its
 // completion and its outcome, each day folded alone and the shown days together by FoldTiming;
-// slowest, FoldSlowestJobs; and failing, FailingJobs up to end, where the window stops. A run on
-// no shown day adds to no cell. The caller passes the shown days' runs, each with its event and
-// branch already selected.
-func PRChecks(runs []delivery.DeliveryRun, jobsByRun map[int64][]delivery.DeliveryRunJob, days []string, end time.Time, rollupJob string) (run Timing, slowest []JobTiming, failing []FailingJob) {
+// slowest, the first SlowestJobs of FoldSlowestJobs' ranking of the jobs with slowestMinResults
+// timed results; and failing, FailingJobs up to end, where the window stops. A run on no shown day
+// adds to no cell. The caller passes the shown days' runs, each with its event and branch already
+// selected.
+func PRChecks(runs []delivery.DeliveryRun, jobsByRun map[int64][]delivery.DeliveryRunJob, days []string, end time.Time, rollupJob string, slowestMinResults int) (run Timing, slowest []JobTiming, failing []FailingJob) {
 	parts := prChecksParts(runs, jobsByRun, days)
-	return timingByDay(parts, days, FoldTiming), FoldSlowestJobs(parts, days), FailingJobs(runs, jobsByRun, end, rollupJob)
+	ranked := FoldSlowestJobs(parts, days, slowestMinResults)
+	return timingByDay(parts, days, FoldTiming), ranked[:min(len(ranked), SlowestJobs)], FailingJobs(runs, jobsByRun, end, rollupJob)
 }
 
 // FailingJobs is PRChecks' failing tally (pipeline.py:144-157): every job that failed in a run

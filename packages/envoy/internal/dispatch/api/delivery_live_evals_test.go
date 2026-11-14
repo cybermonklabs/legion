@@ -8,11 +8,13 @@ import (
 	"net/url"
 	"reflect"
 	"slices"
+	"strconv"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
+	"github.com/sjawhar/envoy/internal/dispatch/evals"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -78,7 +80,8 @@ func requireTheListRead(t *testing.T, handler http.Handler, project string, body
 // day row each mark the evals views of their eval's project and no other view at all, and no other
 // kind of change marks an evals view. A filing marks no view: the refresher's rewrite of the day's
 // rows is what wakes the evals view. None of the four kinds reaches the delivery switch's closing
-// `return true`, which would mark every timeline, measures and pipeline view.
+// `return true`, which would mark every timeline, measures and pipeline view. The one version that
+// marks a pipeline view, pr-ci's, is TestAPRCIVersionMarksEveryPipelineViewAndNoOtherDeliveryView's.
 func TestAnEvalChangeTouchesTheEvalsViewsOfItsProjectAlone(t *testing.T) {
 	now := time.Date(2026, 11, 13, 12, 0, 0, 0, time.UTC)
 	today := measures.Midnight(now)
@@ -149,6 +152,120 @@ func TestAnEvalChangeTouchesTheEvalsViewsOfItsProjectAlone(t *testing.T) {
 	}
 	t.Logf("issue_filings marks %d of %d views; %d changes of every other kind make %d marks of an evals view",
 		filingMarks, len(views), len(others), evalsMarks)
+}
+
+// TestAPRCIVersionMarksEveryPipelineViewAndNoOtherDeliveryView: the Pipeline ranks its slowest jobs
+// by the min_n of pr-ci's job series in the project its deploy repository is mapped to, which no
+// view holds, so a new version of pr-ci (a register write of that min_n, a project's seed) in any
+// project marks every pipeline view, beside the evals views of its project; pr-ci's readings and
+// day rows, which the Pipeline does not read, mark none, and neither does another eval's version.
+// No timeline or measures view is marked by any of them.
+func TestAPRCIVersionMarksEveryPipelineViewAndNoOtherDeliveryView(t *testing.T) {
+	now := time.Date(2026, 11, 13, 12, 0, 0, 0, time.UTC)
+	today := measures.Midnight(now)
+	pipeline := deliveryViewShowing(deliveryLivePipeline)
+	others := []*deliveryView{deliveryViewShowing(deliveryLiveTimeline), deliveryViewShowing(deliveryLiveMeasures)}
+	for _, change := range []struct {
+		change delivery.Change
+		marks  bool
+	}{
+		{evalsChange("eval_versions", "INFRA", evals.SlugPRCI, nil, nil), true},
+		{evalsChange("eval_versions", "OTHER", evals.SlugPRCI, nil, nil), true},
+		{evalsChange("eval_versions", "INFRA", "deploy-frequency", nil, nil), false},
+		{evalsChange("eval_versions", "INFRA", "x-"+evals.SlugPRCI, nil, nil), false},
+		{evalsChange("eval_readings", "INFRA", evals.SlugPRCI, &today, &today), false},
+		{evalsChange("eval_days", "INFRA", evals.SlugPRCI, &today, &today), false},
+	} {
+		if got := pipeline.touchedBy(change.change, now); got != change.marks {
+			t.Errorf("%s of %s: touchedBy(a pipeline view) = %t, want %t", change.change.Kind, change.change.Ref, got, change.marks)
+		}
+		for _, view := range others {
+			if view.touchedBy(change.change, now) {
+				t.Errorf("%s of %s marks a %s view, want none", change.change.Kind, change.change.Ref, view.spec.kind)
+			}
+		}
+	}
+}
+
+// TestAPRCIMinNWriteMovesTheLivePipelinesSlowestJobs: the live Pipeline view ranks its slowest jobs
+// through the GET route's compute with the GET route's min_n, the one of pr-ci's job series in the
+// project the deploy repository is mapped to, and a register write of that min_n reaches it: the
+// write's version of pr-ci marks the view, and its delta lands on the GET route's body. Of six
+// PR-checks runs, all with a quick job and three with a slow one, no job ranks at the seeded 50,
+// both rank at 3, the slower first, and the quick one alone at 6, each body stating its min_n.
+func TestAPRCIMinNWriteMovesTheLivePipelinesSlowestJobs(t *testing.T) {
+	rig := newHubRig(t, nil)
+	seedHubSettings(t, rig.database)
+	ctx := t.Context()
+	createTestProject(t, rig.handler, "HUB")
+	if _, err := rig.database.Pool.Exec(ctx, `insert into repo_projects (repo, project, created_by) values ('acme/widgets', 'HUB', '{"kind":"user","id":"alice"}'::jsonb)`); err != nil {
+		t.Fatalf("map acme/widgets to HUB: %v", err)
+	}
+	now := rig.clock.Now()
+	success, jobSuccess := delivery.DeliveryRunConclusionSuccess, delivery.DeliveryJobConclusionSuccess
+	for i := range 6 {
+		id := int64(500 + i)
+		started := now.Add(-time.Duration(i+1) * time.Hour)
+		done := started.Add(40 * time.Minute)
+		if err := delivery.UpsertRun(ctx, rig.database.Pool, delivery.DeliveryRun{
+			Repo: "acme/widgets", RunID: id, Kind: delivery.DeliveryRunKindPRChecks, HeadSHA: "sha" + strconv.FormatInt(id, 10),
+			HeadCommitAt: started, StartedAt: started, CompletedAt: &done, Conclusion: &success, PRNumber: new(7),
+			URL: "https://github.com/acme/widgets/actions/runs/" + strconv.FormatInt(id, 10), HeadBranch: new("feature"), Event: new("pull_request"),
+		}); err != nil {
+			t.Fatalf("upsert PR-checks run %d: %v", id, err)
+		}
+		jobs := []delivery.DeliveryRunJob{{Repo: "acme/widgets", RunID: id, Name: "quick", StartedAt: &started, CompletedAt: new(started.Add(5 * time.Minute)), Conclusion: &jobSuccess}}
+		if i < 3 {
+			jobs = append(jobs, delivery.DeliveryRunJob{Repo: "acme/widgets", RunID: id, Name: "slow", StartedAt: &started, CompletedAt: new(started.Add(30 * time.Minute)), Conclusion: &jobSuccess})
+		}
+		if err := delivery.UpsertRunJobs(ctx, rig.database.Pool, "acme/widgets", id, jobs, true); err != nil {
+			t.Fatalf("upsert PR-checks run %d's jobs: %v", id, err)
+		}
+	}
+	conn := newFakeLiveConn()
+	rig.hub.Subscribe(conn, subscribeFrame("p", livePipelineView(nil)))
+	body := conn.snapshot(t, 5*time.Second, "p").Body
+	if names, minN := pipelineSlowestJobs(t, body); len(names) != 0 || minN != measures.SlowestMinResults {
+		t.Fatalf("the snapshot ranks %v by %d, want no job by the seeded %d", names, minN, measures.SlowestMinResults)
+	}
+	rig.settle(t)
+	for _, step := range []struct {
+		minN int
+		want []string
+	}{{3, []string{"slow", "quick"}}, {6, []string{"quick"}}} {
+		registered := evalRequest(t, rig.handler, http.MethodPost, "/api/v1/projects/HUB/evals", map[string]any{
+			"slug": evals.SlugPRCI, "series": []any{map[string]any{"series": evals.SeriesJobs, "min_n": step.minN}},
+		}, "pr-ci-min-n-"+strconv.Itoa(step.minN))
+		if registered.Code != http.StatusCreated && registered.Code != http.StatusOK {
+			t.Fatalf("set HUB's pr-ci min_n to %d: status %d, body %s", step.minN, registered.Code, registered.Body.String())
+		}
+		body = requireLandsOnGET(t, rig.handler, deliveryLivePipeline, body, conn.delta(t, 5*time.Second, "p"), "")
+		if names, minN := pipelineSlowestJobs(t, body); !slices.Equal(names, step.want) || minN != step.minN {
+			t.Fatalf("with HUB's pr-ci min_n at %d the live Pipeline ranks %v by %d, want %v by %d", step.minN, names, minN, step.want, step.minN)
+		}
+	}
+}
+
+// pipelineSlowestJobs is the names a pipeline body's slowest-jobs table holds, in its own order, and
+// the min_n it ranked them by.
+func pipelineSlowestJobs(t *testing.T, body json.RawMessage) ([]string, int) {
+	t.Helper()
+	var shape struct {
+		PRChecks struct {
+			SlowestJobs []struct {
+				Name string `json:"name"`
+			} `json:"slowest_jobs"`
+			SlowestMinResults int `json:"slowest_min_results"`
+		} `json:"pr_checks"`
+	}
+	if err := json.Unmarshal(body, &shape); err != nil {
+		t.Fatalf("read the pipeline body's slowest jobs: %v", err)
+	}
+	names := make([]string, len(shape.PRChecks.SlowestJobs))
+	for i, job := range shape.PRChecks.SlowestJobs {
+		names[i] = job.Name
+	}
+	return names, shape.PRChecks.SlowestMinResults
 }
 
 // TestAP0WriteAndTheSamplerMarkNoEvalsView: an evals view shows the unowned-p0 eval, whose count

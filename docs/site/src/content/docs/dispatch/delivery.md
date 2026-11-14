@@ -255,9 +255,13 @@ clock; a step's median and 90th percentile are rounded to a tenth of a minute.
   judged on the seven days' median: the target is a median under 60 minutes.
 
 **PR CI: slowest jobs** ranks the checks workflow's jobs by their seven-day median, slowest first,
-and shows five. A job needs 50 timed results in the seven days to be ranked, so a rarely run job
-cannot top the table on a handful of results. Only jobs of runs that ended in success or failure
-are counted.
+and shows five. A job needs a number of timed results in the seven days to be ranked, so a rarely
+run job cannot top the table on a handful of results: the `min_n` of the `job:*` series of the
+`pr-ci` eval in the project the deploy repository is mapped to (**Settings → Repositories →
+Projects**), which is 50 until someone changes it, and 50 where the deploy repository is mapped to
+no project or that project has no `pr-ci` eval yet. The section says the number it ranked by. The
+`pr-ci` eval's items sorted by median list every job ranked the same way. Only jobs of runs that
+ended in success or failure are counted.
 
 **PR CI: jobs that failed in the last 24 hours** lists every job that failed in a run completed in
 the last day, most failures first, with how many of its results there failed and a link to the run

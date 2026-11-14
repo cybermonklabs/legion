@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"slices"
@@ -447,6 +448,44 @@ func readRepoProjects(ctx context.Context, s *Store) (repoProjects, error) {
 		}
 	}
 	return mapped, rows.Err()
+}
+
+// SlowestJobsMinN is the fewest timed results a PR-checks job needs over the days a read folds to
+// be ranked among pr-ci's slowest jobs (measures.FoldSlowestJobs), from jobsMinN, the min_n of
+// pr-ci's job series (SeriesJobs), which a person may set (R5): that count, or none (0) where it
+// is null, the column's "no minimum".
+func SlowestJobsMinN(jobsMinN *int) int {
+	if jobsMinN == nil {
+		return 0
+	}
+	return *jobsMinN
+}
+
+// PipelineSlowestJobsMinN is SlowestJobsMinN for the deployment-wide Pipeline, which ranks the
+// jobs of the deploy repository's PR-checks runs whatever project they count for: the min_n of
+// pr-ci's job series in the project deployRepo is mapped to, by the rule a CI run's project is
+// (repoProjects.of), so the Pipeline and that project's items sorted by median rank by one min_n.
+// It is measures.SlowestMinResults, the min_n the catalogue seeds, where no mapping names
+// deployRepo or that project holds no pr-ci job series yet.
+func (s *Store) PipelineSlowestJobsMinN(ctx context.Context, deployRepo string) (int, error) {
+	mapped, err := readRepoProjects(ctx, s)
+	if err != nil {
+		return 0, err
+	}
+	project := mapped.of(deployRepo)
+	if project == "" {
+		return measures.SlowestMinResults, nil
+	}
+	evalID := EvalID(project, SlugPRCI)
+	var minN *int
+	err = s.database.Pool.QueryRow(ctx, `select min_n from eval_series_current where eval_id = $1 and series = $2`, evalID, SeriesJobs).Scan(&minN)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return measures.SlowestMinResults, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("read the min_n of %s's series %s: %w", evalID, SeriesJobs, err)
+	}
+	return SlowestJobsMinN(minN), nil
 }
 
 // Projects is every project a row of the day counts for, by key.

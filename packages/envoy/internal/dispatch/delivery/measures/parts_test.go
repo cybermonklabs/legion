@@ -124,7 +124,7 @@ func TestNoPartsReadNoValueAndAZeroPartReadsZero(t *testing.T) {
 		assertLeadTimeCell(t, name+": FoldLeadTime", FoldLeadTime(parts), 0, nil, nil, nil)
 		assertOptional(t, name+": FoldTimeToRestore.median_minutes", FoldTimeToRestore(parts).MedianMinutes, nil)
 		assertCell(t, name+": FoldTiming", FoldTiming(parts), 0, nil, nil, 0, 0, 0, nil)
-		if got := FoldSlowestJobs(parts, []string{utcDay(foldDays[0])}); got == nil || len(got) != 0 {
+		if got := FoldSlowestJobs(parts, []string{utcDay(foldDays[0])}, 0); got == nil || len(got) != 0 {
 			t.Errorf("%s: FoldSlowestJobs = %#v, want an empty list", name, got)
 		}
 	}

@@ -4,9 +4,11 @@ import (
 	"encoding/json"
 	"log/slog"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/evals"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/pglisten"
 )
@@ -425,10 +427,11 @@ func (h *deliveryHub) markDirtyLocked(g *hubGeneration, view *deliveryView, now 
 // is taken as touching timeline and measures views. Pipeline lead times read only merged pull
 // requests (ListPullRequestsInWindow), so an unmerged pull request cannot move a Pipeline view.
 //
-// The kinds of the first switch are rows no delivery view reads. Each answers there, above the
-// test that refuses every view reading no delivery row (the views those kinds mark are such
-// views), so none reaches the second switch, whose closing `return true` would mark every
-// delivery view with it.
+// The kinds of the first switch are rows no delivery view reads, but for one: the Pipeline reads
+// the min_n of pr-ci's job series, so a version of pr-ci marks a pipeline view there. Each answers
+// there, above the test that refuses every view reading no delivery row (the views those kinds
+// mark are such views, the pipeline view aside), so none reaches the second switch, whose closing
+// `return true` would mark every delivery view with it.
 func (view *deliveryView) touchedBy(change delivery.Change, now time.Time) bool {
 	switch change.Kind {
 	case delivery.ChangeKindIssueFacts:
@@ -440,13 +443,24 @@ func (view *deliveryView) touchedBy(change delivery.Change, now time.Time) bool 
 		return view.spec.kind == legionBoardView && view.showsIssue(change.Ref, false)
 	case delivery.ChangeKindEvalReadings, delivery.ChangeKindEvalVersions, delivery.ChangeKindEvalDays:
 		// One eval's readings, a new version of its definition, or its day rows: what the evals
-		// view of the eval's project reads (readEvalList), and what no other view reads at all.
-		// The change's repo holds that project (migrations 20261113082200 to 20261113082202).
+		// view of the eval's project reads (readEvalList). The change's repo holds that project
+		// (migrations 20261113082200 to 20261113082202).
 		//
 		// No other kind marks an evals view. A computed eval's value moves when the refresher
 		// rewrites its day rows, after its input's own change (a pull request, a run, a stored
 		// fact, a filing) was logged: a view woken by the input would read the rows before the
 		// rewrite, and the eval_days change of the rewrite is what wakes it.
+		//
+		// A new version of pr-ci or of one of its series marks every pipeline view too, and no
+		// other view: the Pipeline ranks its slowest jobs by the min_n of pr-ci's job series in
+		// the project its deploy repository is mapped to (evals.Store.PipelineSlowestJobsMinN),
+		// which a register write sets and a project's seed first writes. Which project that is,
+		// is the mapping's, which no view holds, so pr-ci's version in any project marks it, and a
+		// recompute that reads the same min_n sends nothing; a change of the mapping is a
+		// settings change, which marks every delivery view.
+		if view.spec.kind == deliveryLivePipeline {
+			return change.Kind == delivery.ChangeKindEvalVersions && strings.HasSuffix(change.Ref, "/"+evals.SlugPRCI)
+		}
 		return view.spec.kind == evalsView && view.spec.project == change.Repo
 	case delivery.ChangeKindIssueFilings:
 		// One filing of a Legion session. No view reads a filing: the refresher does, and
