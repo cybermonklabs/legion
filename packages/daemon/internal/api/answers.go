@@ -12,11 +12,13 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// ServingFloor is the lowest plugin contract this daemon shapes an answer for. A caller that
-// declares less than this is served what a caller at the floor is served. A caller that states
-// no contract is placed by the claims of its pod on the state and record routes. On every other
-// answer, and on every answer when it asks from no pod, it is served this daemon's own shape
-// (contractsFor, writeAnswer).
+// ServingFloor is the lowest plugin contract this daemon shapes an answer for. A caller below it,
+// whether it states its contract or its pod records it, has the keys removed since the floor
+// written back as at the floor (restoreContract) and every key added at or above its own number
+// left off (stripContract keeps that number), so it is served less than a caller at the floor;
+// the daemon logs a line for it. A caller that states no contract is placed by the claims of its
+// pod on the state and record routes. On every other answer, and on every answer when it asks
+// from no pod, it is served this daemon's own shape (contractsFor, writeAnswer).
 //
 // 46 is the reading this change records: no claim holding a process recorded a contract below 46.
 // The 50 claims at contracts 36 to 43 are all suspended, so they call nothing.

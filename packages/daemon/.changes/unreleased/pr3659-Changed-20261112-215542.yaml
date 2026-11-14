@@ -18,9 +18,11 @@ body: |-
   contract 104 as the daemon did before 104: the failure of the refused step, and no 200 with
   `phaseNotRestarted`. A plugin below 104 reads that 200 as a claim that runs again.
   `GET /legion/v1/issues/{key}/record` answers one issue on its own, and `GET /healthz` answers
-  the project the daemon serves beside its status. Every reader of the whole state body,
-  `legion state --json` among them, now gets `contract.caller` at the daemon's own contract.
-  Before, the daemon left that key out for a caller at its own contract.
+  the project the daemon serves beside its status. A reader served this daemon's own shape,
+  `legion state --json` among them, now gets `contract.caller`, equal to `contract.daemon`;
+  before, the daemon left that key out for such a reader. A reader below the daemon's own
+  contract gets there the contract its body is shaped to, as before, and a reader below 75 gets no `contract`
+  mark at all.
 time: 2026-11-12T21:55:42.614806298Z
 custom:
     Issue: pr3659

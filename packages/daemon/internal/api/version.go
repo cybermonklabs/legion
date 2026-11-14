@@ -1613,7 +1613,9 @@ package api
 // alone. `GET /legion/v1/issues/{key}/record` is the per-issue record route, and it answers 404
 // `RECORD_NOT_FOUND` for an issue the daemon records nothing of. `GET /healthz` answers a typed
 // body, `api.Health` with `status` and `project`, in place of one untyped key, so a caller reads
-// which project the daemon it reached serves. `api.State` gains `lowestPluginContract`, the
+// which project the daemon it reached serves. A plugin newer than its daemon therefore fails the
+// controller's boot check, which requires `project` from `/healthz`, against a daemon before this
+// contract, which answers that route with no such key. `api.State` gains `lowestPluginContract`, the
 // lowest contract among the claims whose locator names a pod and that record a contract
 // (`recordsContract`). Every claim view gains `updateState`, which is `none`, `open`, `asked` or
 // `answered`, and `wake`. An earlier head of this change also wrote two more claim view fields,
@@ -1662,9 +1664,14 @@ package api
 // because readers below 59 required the key, and these two are allowed because no plugin code
 // reads them.
 // Contract 123 is served down with no code of its own here. It changes no shape on either side
-// of the wire and no answer that a plugin below it receives (measured: a tester or a reviewer
-// below 123 that completes with no commit is answered as before 123, 200 at its entry and 409
-// behind it).
+// of the wire, and it refuses nothing a plugin below it sends that a daemon before 123 did not
+// refuse (measured: a tester or a reviewer below 123 that completes with no commit is answered
+// as before 123, 200 at its entry and 409 behind it). Two answers do change. An implementer
+// below 123 whose completion is behind its entry, not after a move back, and names the pull
+// request's recorded head as its commit now gets 200 where it got 409. A completion of another
+// entry from a role that does not work the phase the issue stands in now gets
+// HANDOFF_NOT_CURRENT_PHASE where it got HANDOFF_STALE_ENTRY. No plugin below 123 branches on
+// either code.
 // Contract 104 is served down too, by what one answer means, because 104 moved no key path. A
 // fresh session that stopped the claim and could not start it again answers a caller below 104
 // as the daemon did before 104: the refusal of the step that failed, 409 with the machine's
@@ -1724,9 +1731,7 @@ package api
 //     those again, so the change passes for such keys and fields.
 //
 // The request gate catches only a request field that a later type no longer reads. A newly
-// required field, a narrowed value and a changed type all pass it. And a plugin newer than its
-// daemon also fails the controller's boot check, which requires `project` from `/healthz`: a
-// daemon before this contract answers that route with no such key. (This
+// required field, a narrowed value and a changed type all pass it. (This
 // entry first took 60, when the base carried 59, then 81 at the forward merge of 2026-11-12
 // that brought main in at 68, 81 again at the merge of that day that brought main in at 73, 87
 // at the merge that brought main in at 85, 89 at the merge that brought main in at 86, 95 at

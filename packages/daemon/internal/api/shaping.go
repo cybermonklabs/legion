@@ -1395,10 +1395,8 @@ var answerWritten func(pattern string, id AnswerID)
 // shape has moved since ServingFloor. Both are written by writeAnswerFrom, which hands the
 // claims of the very snapshot each answers. Every other answer is the identity at every contract
 // this daemon serves, so a read of the claims for one of them would decide nothing: such an
-// answer is written without one, and contractsFor reads no pod for it either. The contract-shape
-// gate places a caller of a pod the same way on these answers (contract_shapes_test.go's
-// servedShapes), so a serving-down added to one of them is red for that caller until its route
-// hands in its claims through writeAnswerFrom.
+// answer is written without one, and contractsFor reads no pod for it either. A serving-down
+// added to one of them therefore needs its route to hand in its claims through writeAnswerFrom.
 func (s *server) writeAnswer(w http.ResponseWriter, r *http.Request, id AnswerID, status int, body any) {
 	s.writeAnswerFrom(w, r, id, status, body, nil)
 }

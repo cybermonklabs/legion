@@ -374,8 +374,8 @@ func mixedPodClaims(low, high int) []supervise.Claim {
 	return append(claims, claimInPod("legion-legion-legion-208-tester", statePodUID, 0))
 }
 
-// keysAddedAfterTheFloor is the keys the servings-down of the bands between the
-// floor and claimsToRefreshContract remove, as the wire names them: a caller served all of them
+// keysAddedAfterTheFloor is the keys the servings-down of the bands between the floor and
+// claimsToRefreshContract remove, as the wire names them: a caller served all of them
 // is served everything this daemon writes above the floor and below its own contract, but each
 // check's `role`, which shapeOf reads instead because an issue carries a check only while its
 // production check is open.

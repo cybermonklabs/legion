@@ -720,7 +720,9 @@ func (k callerKind) askedBody(t *testing.T, handler http.Handler, target string,
 // is what each of those routes hands it (writeAnswer). So the pod kind is placed as production
 // places it: by no pod, at this daemon's own contract. A serving-down on one of those answers
 // then reaches the caller that states its contract and not the caller of a pod, and this test
-// is red for the second until the route hands in its claims (writeAnswerFrom).
+// is red for the second until two things change together: the route hands in its claims
+// (writeAnswerFrom), and servedBodies gains a case for that answer id that drives its route, as
+// its state and record cases do, since servedShapes places every other answer with no claims.
 //
 // These answers are not driven through their routes, as the state and the record are. Each
 // route wants a store, a registration, a boot token or a grant, and a fixture body such as the
