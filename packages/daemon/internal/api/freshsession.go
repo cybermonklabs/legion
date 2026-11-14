@@ -894,9 +894,11 @@ const (
 // It reads the header before it reads the store. A caller that states its contract in
 // pluginContractHeader is placed by the header alone, so no claim is read for it. A plugin below
 // shapedAnswersContract sends no header, so only its pod places it, and the pod is read from the
-// project's claims. `legion` sends no header either and runs from no pod, so it is placed at
-// this daemon's own contract and gets the 200. If the store does not give the claims, the
-// caller is placed as one in no pod, as every answer that writeAnswer writes places it.
+// project's claims. `legion` sends no header either, so it is placed like any such caller: run
+// from no pod, it is placed at this daemon's own contract and gets the 200, and run from a pod
+// below processReadContract, as the worker image's `legion` can be, it gets the failure. If the
+// store does not give the claims, the caller is placed as one in no pod, as every answer that
+// writeAnswer writes places it.
 func (s *server) readsTheStopAsAFailure(r *http.Request) (placement, bool) {
 	var claims []supervise.Claim
 	if _, stated := statedContract(r); !stated {

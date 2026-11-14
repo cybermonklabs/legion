@@ -746,10 +746,11 @@ const quietTimeContract = 111
 
 // shapedAnswersContract is the daemon contract this change lands under (version.go's 118), and
 // the contract that added three keys of its own: `lowestPluginContract` on the state, the
-// lowest contract any claim of the project records, and each claim view's `updateState` and
-// `wake`. A plugin before it reads the state with a schema that names none of the three and
-// refuses the whole body for one of them, so a caller below this contract is served the state
-// without them (withoutLowestPluginContract, withoutClaimRoundReport).
+// lowest contract among the claims whose locator names a pod and that record a contract
+// (recordsContract), and each claim view's `updateState` and `wake`. A plugin before it reads
+// the state with a schema that names none of the three and refuses the whole body for one of
+// them, so a caller below this contract is served the state without them
+// (withoutLowestPluginContract, withoutClaimRoundReport).
 //
 // It is a literal of its own and never DaemonAPIVersion: the number a later contract takes
 // moves that constant, and the contract these keys arrived at stays where it is. It moves only
@@ -1282,9 +1283,12 @@ func withMaxFixAttempts(state State) State {
 // podUpdateRetaskHoursStandIn and podUpdateNoticeHoursStandIn are the `pod_update_retask_hours`
 // and `pod_update_notice_hours` a caller below podUpdateGraceContract is served in the settings
 // block: 1 and 4, the hours an unconfigured daemon sent before main's #3982 (its config
-// defaults, time.Hour and 4 * time.Hour). They describe no behaviour of this daemon, whose update
-// round asks no worker again and ends at its bound. No plugin from 46 to 111 reads either key,
-// so they exist only to keep the records of those contracts fixed (version.go's 118).
+// defaults, time.Hour and 4 * time.Hour). No plugin code from 46 to 111 reads either key. A
+// controller's model does see them: the `legion` tool's `read_state` with `settings` answers the
+// whole settings block, and there the two values read as the unconfigured defaults. Those
+// describe no behaviour of this daemon, whose update round asks no worker again and ends at its
+// bound. The stand-ins exist only to keep the records of those contracts fixed (version.go's
+// 118).
 const (
 	podUpdateRetaskHoursStandIn float64 = 1
 	podUpdateNoticeHoursStandIn float64 = 4
@@ -1386,7 +1390,10 @@ var answerWritten func(pattern string, id AnswerID)
 // shape has moved since ServingFloor. Both are written by writeAnswerFrom, which hands the
 // claims of the very snapshot each answers. Every other answer is the identity at every contract
 // this daemon serves, so a read of the claims for one of them would decide nothing: such an
-// answer is written without one, and contractsFor reads no pod for it either.
+// answer is written without one, and contractsFor reads no pod for it either. The contract-shape
+// gate places a caller of a pod the same way on these answers (contract_shapes_test.go's
+// servedShapes), so a serving-down added to one of them is red for that caller until its route
+// hands in its claims through writeAnswerFrom.
 func (s *server) writeAnswer(w http.ResponseWriter, r *http.Request, id AnswerID, status int, body any) {
 	s.writeAnswerFrom(w, r, id, status, body, nil)
 }

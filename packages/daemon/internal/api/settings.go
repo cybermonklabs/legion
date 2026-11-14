@@ -143,9 +143,11 @@ type Settings struct {
 	maxFixAttemptsShown bool
 	// podUpdateHoursShown is set on the copy the state route serves a caller below the contract
 	// that took `pod_update_retask_hours` and `pod_update_notice_hours` out of this block (api's
-	// withPodUpdateHours, below shaping.go's podUpdateGraceContract). No plugin from 46 to 111
-	// reads either key, so the two stand-ins keep that contract's record fixed and tell its
-	// reader nothing. They are constants, as the `max_fix_attempts` stand-in is.
+	// withPodUpdateHours, below shaping.go's podUpdateGraceContract). No plugin code from 46 to
+	// 111 reads either key, so the two stand-ins keep that contract's record fixed. A
+	// controller's model still sees them through the `legion` tool's `read_state` with
+	// `settings`, as the unconfigured defaults, which describe no behaviour of this daemon. They
+	// are constants, as the `max_fix_attempts` stand-in is.
 	podUpdateHoursShown bool
 	// podUpdateGraceHidden is set on the copy the state route serves a caller below the same
 	// contract (api's withoutPodUpdateGrace), so MarshalJSON leaves `pod_update_grace_minutes`

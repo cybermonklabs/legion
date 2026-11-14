@@ -669,8 +669,10 @@ func (k callerKind) reaches(contract int) bool {
 }
 
 // contracts is the pair of contracts the caller is served at, read from contractsFor itself, the
-// one function every route puts the question to.
-func (k callerKind) contracts(t *testing.T, contract int) (restore, strip int) {
+// one function every route puts the question to. The request is built like the caller's own, and
+// claims are what the route hands contractsFor: the caller's pod's (callerKind.claims) for a
+// route that writes through writeAnswerFrom, and nil for one that writes through writeAnswer.
+func (k callerKind) contracts(t *testing.T, contract int, claims []supervise.Claim) (restore, strip int) {
 	t.Helper()
 	s := &server{
 		log:       slog.New(slog.NewTextHandler(io.Discard, nil)),
@@ -681,7 +683,7 @@ func (k callerKind) contracts(t *testing.T, contract int) (restore, strip int) {
 	if stated := k.stated(contract); stated > 0 {
 		request.Header.Set(pluginContractHeader, strconv.Itoa(stated))
 	}
-	at := s.contractsFor(request, k.claims(contract))
+	at := s.contractsFor(request, claims)
 	return at.restore, at.strip
 }
 
@@ -710,12 +712,22 @@ func (k callerKind) askedBody(t *testing.T, handler http.Handler, target string,
 //
 // The state and the record come from the routes that answer them: this package's own test server
 // answers both with no credential of any kind, so each body goes through the whole of
-// writeAnswerFrom — contractsFor over the caller's own request, shapeAnswer, and the one writer.
-// Every other answer goes through shapeAnswer with the pair contractsFor read from that same
-// caller. Their own routes each want a store, a registration, a boot token or a grant, none of
-// which decides the shape of an answer, and shapeAnswer is the whole of what stands between a
-// route's body and the wire. The refusal has no route of its own at all: a client parses it on
-// every answer that is not a success.
+// writeAnswerFrom — contractsFor over the caller's own request and the claims of the state's own
+// snapshot, shapeAnswer, and the one writer.
+//
+// Every other answer goes through shapeAnswer at the pair contractsFor gives a request built like
+// the caller's own, from its address and with its header, and with no claims, because no claims
+// is what each of those routes hands it (writeAnswer). So the pod kind is placed as production
+// places it: by no pod, at this daemon's own contract. A serving-down on one of those answers
+// then reaches the caller that states its contract and not the caller of a pod, and this test
+// is red for the second until the route hands in its claims (writeAnswerFrom).
+//
+// These answers are not driven through their routes, as the state and the record are. Each
+// route wants a store, a registration, a boot token or a grant, and a fixture body such as the
+// fresh session's refused restart wants a machine that refuses one. None of that decides the
+// shape. What decides the shape is the placement and shapeAnswer, and both are the production
+// functions here, with the claims the route passes. The refusal has no route of its own at
+// all: a client parses it on every answer that is not a success.
 func servedShapes(t *testing.T, caller callerKind) map[shapeKey]answerShape {
 	t.Helper()
 	fixtures := answerFixtures(t)
@@ -726,9 +738,9 @@ func servedShapes(t *testing.T, caller callerKind) map[shapeKey]answerShape {
 	for id, fixture := range fixtures {
 		shapes[id] = fixture.shape(t)
 	}
-	// The claims the answers are read against are this daemon's own at every contract for the
-	// caller the header places, so that caller's handlers are built once; the other caller's
-	// claims are its pod's, which record the contract itself (callerKind.claims).
+	// The claims the state and the record are read against are this daemon's own at every
+	// contract for the caller the header places, so that caller's handlers are built once. The
+	// other caller's claims are its pod's, which record the contract itself (callerKind.claims).
 	var stated []http.Handler
 	if caller.states {
 		stated = stateHandlers(t, states, caller.claims(DaemonAPIVersion))
@@ -744,7 +756,9 @@ func servedShapes(t *testing.T, caller callerKind) map[shapeKey]answerShape {
 		if handlers == nil {
 			handlers = stateHandlers(t, states, caller.claims(contract))
 		}
-		restore, strip := caller.contracts(t, contract)
+		// The pair every other answer is shaped at: contractsFor with no claims, as writeAnswer
+		// hands it none.
+		restore, strip := caller.contracts(t, contract, nil)
 		for _, answer := range Answers {
 			if answer.Since > contract {
 				continue
@@ -795,7 +809,9 @@ func stateHandlers(t *testing.T, states []State, claims []supervise.Claim) []htt
 }
 
 // servedBodies is every body the answer writes at one contract, as the bytes a caller reads.
-// handlers answer the state bodies of states, one handler each.
+// handlers answer the state bodies of states, one handler each. restore and strip are the pair
+// every other answer is shaped at, which contractsFor gives the caller's request with no claims,
+// as writeAnswer places it (servedShapes says why those answers do not go through their routes).
 func servedBodies(t *testing.T, caller callerKind, handlers []http.Handler, states []State, id AnswerID,
 	fixture answerFixture, contract, restore, strip int,
 ) [][]byte {
@@ -944,7 +960,10 @@ func TestContractShapesFixture(t *testing.T) {
 // `Legion-Plugin-Contract`, and at every contract below shapedAnswersContract to a caller stating
 // nothing from a pod whose claims record it (callerKind.reaches says why the pod kind stops
 // there). Both are held to the same records, because a body is owed to the reader and not to the
-// way it said who it is, and the second is the population this change is about.
+// way it said who it is, and the second is the population this change is about. Each caller is
+// placed as production places it (servedShapes). On the state and the record its pod places
+// it. On every other answer no claims reach contractsFor, so the pod kind is served this
+// daemon's own body, and a serving-down there that only the header kind gets is red here.
 func TestEveryAnswerAtEveryContractIsTheShapeItsRecordDescribes(t *testing.T) {
 	if *updateGolden {
 		t.Skip("the fixture is being rewritten; run the suite again without -update")
@@ -979,14 +998,15 @@ func TestEveryAnswerAtEveryContractIsTheShapeItsRecordDescribes(t *testing.T) {
 	}
 }
 
-// The two callers are placed by different readings and served the same pair of contracts, which
-// is why one record stands for both. The pod reading is asked only about the contracts a caller
+// The two callers are placed by different readings and served the same pair of contracts where
+// the route hands contractsFor the claims, as the state and the record routes do. That is why
+// one record stands for both. The pod reading is asked only about the contracts a caller
 // of a pod can be at (callerKind.reaches): every build from shapedAnswersContract on states its
 // contract in the header, so podContracts leaves its claims out, and the pod reading of such a
 // contract answers DaemonAPIVersion, which equals the contract only while it is the daemon's own.
 func TestTheTwoCallersAreServedTheSameContracts(t *testing.T) {
 	for _, contract := range SupportedContracts {
-		statedRestore, statedStrip := callerKinds[0].contracts(t, contract)
+		statedRestore, statedStrip := callerKinds[0].contracts(t, contract, callerKinds[0].claims(contract))
 		if statedRestore != contract || statedStrip != contract {
 			t.Errorf("contract %d is served (%d, %d), want the contract itself on both sides: every contract of SupportedContracts is a shape this daemon describes",
 				contract, statedRestore, statedStrip)
@@ -994,7 +1014,7 @@ func TestTheTwoCallersAreServedTheSameContracts(t *testing.T) {
 		if !callerKinds[1].reaches(contract) {
 			continue
 		}
-		podRestore, podStrip := callerKinds[1].contracts(t, contract)
+		podRestore, podStrip := callerKinds[1].contracts(t, contract, callerKinds[1].claims(contract))
 		if statedRestore != podRestore || statedStrip != podStrip {
 			t.Errorf("contract %d is served (%d, %d) to a caller stating it and (%d, %d) to a caller of a pod recording it",
 				contract, statedRestore, statedStrip, podRestore, podStrip)

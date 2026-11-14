@@ -1574,9 +1574,13 @@ package api
 // `RECORD_NOT_FOUND` for an issue the daemon records nothing of. `GET /healthz` answers a typed
 // body, `api.Health` with `status` and `project`, in place of one untyped key, so a caller reads
 // which project the daemon it reached serves. `api.State` gains `lowestPluginContract`, the
-// lowest contract any claim of the project records. Every claim view gains `updateState` and
-// `wake`. main's #3982 removed the push-check re-ask and the take-back, so 118 reports four
-// update states (`none`, `open`, `asked`, `answered`) and no `unpromptedTurnTakesAnswerBack`.
+// lowest contract among the claims whose locator names a pod and that record a contract
+// (`recordsContract`). Every claim view gains `updateState`, which is `none`, `open`, `asked` or
+// `answered`, and `wake`. An earlier head of this change also wrote two more claim view fields,
+// `updateReaskedForPushCheck` and `unpromptedTurnTakesAnswerBack`, and a fifth update state,
+// `push-check-reask`. main's #3982 removed the push-check re-ask and the take-back that they
+// reported, so this change dropped them before it merged. Neither field shipped in any contract,
+// so no record holds them and no caller is served them down.
 // The two contracts the boot gate alone covered are now served the shape their own entry
 // describes: a caller below 54
 // is served the state with each check view's `role` left off (`withoutCheckRole`), and a caller
@@ -1604,20 +1608,29 @@ package api
 // `podUpdateGraceContract`). It is served the two removed keys as stand-ins, with the defaults an
 // unconfigured daemon sent before #3982: 1 and 4 (`withPodUpdateHours`). The stand-ins describe
 // no behaviour of this daemon, whose update round asks no worker a second time and ends at its
-// bound. They exist only to keep the records of 46 to 111 fixed. No supported plugin reads
-// either key: measured at the commit of each of the 24 contracts from 46 to 111,
-// `legionSettings` is a loose object, and no plugin source names either key. This is the other
-// of the two reasons that allow a stand-in: `max_fix_attempts: 3` was allowed because readers
-// below 59 required the key, and these two are allowed because no reader reads them.
+// bound. They exist only to keep the records of 46 to 111 fixed. No plugin code reads either key:
+// measured at the commit of each of the 24 contracts from 46 to 111, `legionSettings` is a loose
+// object, and no plugin source names either key. A controller's model does see them: the
+// `legion` tool's `read_state` with `settings` answers the whole settings block, and there the
+// two values read as the unconfigured defaults, which describe no behaviour of this daemon. This
+// is the other of the two reasons that allow a stand-in: `max_fix_attempts: 3` was allowed
+// because readers below 59 required the key, and these two are allowed because no plugin code
+// reads them.
 // Contract 104 is served down too, by what one answer means, because 104 moved no key path. A
 // fresh session that stopped the claim and could not start it again answers a caller below 104
 // as the daemon did before 104: the refusal of the step that failed, 409 with the machine's
 // sentence or 500, in the `error` body. A caller at 104 or above gets the 200 with that refusal
 // in `phaseNotRestarted` (`readsTheStopAsAFailure`, `processReadContract`).
-// The operator's door, `legion claims retry --fresh-session`, keeps the 200. The `legion`
-// command is built from the daemon's own tree, and an operator runs the `legion` of the release
-// that the daemon runs. The command states no contract and runs in no pod, so the daemon places
-// it at the daemon's own contract. An older `legion` that asks a newer daemon is not served down.
+// So from this contract on the header decides the status of an answer as well as its shape. For
+// 104's `fresh_session`, the caller's contract, which its header states or else its pod records,
+// decides between the 200 and the 409 or 500, and that choice is how this daemon serves 104's
+// meaning down. This departs from the rule that the header changes no refusal.
+// The operator's door, `legion claims retry --fresh-session`, is placed like any caller. Both
+// doors place a caller by its header, else by the claims of its pod (`readsTheStopAsAFailure`).
+// The `legion` command states no contract. Run from no pod, it stands at the daemon's own
+// contract and gets the 200. The worker image ships `legion` too, and run from a pod below 104
+// it gets the failure, which `TestAFreshSessionAnswersAPodBelow104ByItsLowestContract` holds.
+// From such a pod the failure that 104 replaced is the conservative answer.
 // A value is served down as a key is: an issue's
 // `waitingOn.answeredBy` carries a value only to a caller whose own contract admits it, and the
 // records under `packages/contracts/fixtures/daemon-api/contract-shapes.json` hold what this
@@ -1648,12 +1661,23 @@ package api
 // above it, and `-update`, which writes only the records of the daemon's own contract, never has
 // to leave a record below it wrong.
 //
-// Two kinds of change pass both gates, because neither reads them. A change to what an answer
-// means, with no change to its shape, passes both: a later contract that does that must serve
-// the old meaning down by hand, as 104's fresh session is served above. And a refusal's `code`
-// is held by no record, so a code renamed or removed passes both. At this contract no supported
-// plugin branches on a code the daemon no longer sends: the one renamed code an older plugin
-// names, `HANDOFF_STALE_ASSIGNMENT`, it names in its tool description and not in a branch. (This
+// Some kinds of change pass both gates, because neither reads them:
+//
+//   - A change to what an answer means, with no change to its shape. A later contract that does
+//     that must serve the old meaning down by hand, as 104's fresh session is served above.
+//   - A renamed or removed refusal `code`, which no record holds. At this contract no supported
+//     plugin branches on a code the daemon no longer sends: the one renamed code an older plugin
+//     names, `HANDOFF_STALE_ASSIGNMENT`, it names in its tool description and not in a branch.
+//   - A change to the type of a field. The records hold key paths, value domains and request
+//     field paths, and no types, so a string that becomes a number passes both gates.
+//   - A change that keeps the contract number. A key or a request field that arrived at that
+//     number stands in the records of the daemon's own contract only, and `-update` writes
+//     those again, so the change passes for such keys and fields.
+//
+// The request gate catches only a request field that a later type no longer reads. A newly
+// required field, a narrowed value and a changed type all pass it. And a plugin newer than its
+// daemon also fails the controller's boot check, which requires `project` from `/healthz`: a
+// daemon before this contract answers that route with no such key. (This
 // entry first took 60, when the base carried 59, then 81 at the forward merge of 2026-11-12
 // that brought main in at 68, 81 again at the merge of that day that brought main in at 73, 87
 // at the merge that brought main in at 85, 89 at the merge that brought main in at 86, 95 at

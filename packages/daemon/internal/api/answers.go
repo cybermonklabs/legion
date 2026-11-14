@@ -13,8 +13,10 @@ import (
 )
 
 // ServingFloor is the lowest plugin contract this daemon shapes an answer for. A caller that
-// declares less than this is served what a caller at the floor is served, and a caller that
-// declares nothing is served this daemon's own shape.
+// declares less than this is served what a caller at the floor is served. A caller that states
+// no contract is placed by the claims of its pod on the state and record routes. On every other
+// answer, and on every answer when it asks from no pod, it is served this daemon's own shape
+// (contractsFor, writeAnswer).
 //
 // 46 is the reading this change records: no claim holding a process recorded a contract below 46.
 // The 50 claims at contracts 36 to 43 are all suspended, so they call nothing.

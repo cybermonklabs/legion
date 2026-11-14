@@ -12,17 +12,17 @@ import (
 // roundAt is a pod round of the fixture's pod, the round every claim of that pod shares.
 var roundAt = supervise.PodRound(statePodUID)
 
-// askedAt and answeredAt are the two clocks an update round writes on a claim: when its task was
-// last sent and when its worker answered.
+// askedAt and answeredAt are the two clocks an update round writes on a claim: when the sweep
+// published the round's ask on the role's Envoy topic (supervise.Claim.UpdateTaskedAt) and when
+// its worker answered.
 var (
 	askedAt    = time.Date(2026, 9, 22, 9, 16, 0, 0, time.UTC)
 	answeredAt = time.Date(2026, 9, 22, 9, 17, 0, 0, time.UTC)
 )
 
 // inRound is a claim the round above stands over, as the supervisor stores it, with the update
-// columns the case sets. The claim holds a process in the round's own pod, which is what makes
-// it a member of that round: a claim that left the pod records the round it left besides
-// (supervise.Claim.UpdateLeftRound).
+// columns the case sets. The claim holds a process in the round's own pod, as a member of that
+// round does. UpdateStateOf reads the update columns alone, so the locator decides no row here.
 func inRound(token claim.Token, set func(c *supervise.Claim)) supervise.Claim {
 	c := supervise.Claim{
 		Token: token, Project: testProject, Tree: "LEGION-208", Issue: "LEGION-208",
