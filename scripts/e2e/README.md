@@ -265,6 +265,16 @@ Each item below names a script, then what it proves.
   a start row deleted from the outbox before any lane ran it loses no work, since with no fact of the project arriving the daemon's own entry sweep sends that entry's task to the implementer's live connection;
   and one read of `GET /legion/v1/state` carries the issue's `phaseEntry` and `givenEntry`
 
+- `task-take.sh`
+
+  a task is a value the worker takes, not a prompt the daemon pushes (dispatch://INFRA-2811's R3 and R4), driven through the whole daemon `legion start` boots, with its own task bucket on a `nats-server` of the run's own, over a PostgreSQL the caller names, and through this checkout's Envoy listener on that `nats-server`, each process of the worker registering its session with the listener on its own consumer, claiming its role there and taking its task over the daemon's own HTTP routes and worker stream:
+  a claim given a task has its value relayed to the session holding its role, which is the negative control;
+  the number taken is accepted once, and the turn's report naming it finishes it;
+  a process killed mid-turn has its next registration take the same number once, and a newer task written meanwhile is taken after it, under the next number;
+  a released pod's wake task is taken once across the relaunch the wake makes;
+  a daemon restart takes no finished number again;
+  and a finished worker whose phase waits registers again as a new process, its idle release cancelled after its role stop, and no value is written
+
 - `provider-error-retry.sh`
 
   a turn that ends in a provider error keeps its task, and the operator restarts the claims such turns leave (dispatch://INFRA-956 R2 and R3), driven through the whole daemon `legion start` boots, over a PostgreSQL the caller names and a `nats-server` of the run's own, with three real `omp --mode rpc` panes under the real `legion worker-shim`, each carrying this checkout's two plugins and answered by a model stand-in of the driver's own:
@@ -374,7 +384,7 @@ Each item below names a script, then what it proves.
 ## On a GitHub-hosted runner
 
 [`.github/workflows/e2e.yaml`](../../.github/workflows/e2e.yaml) runs one proof per job on `ubuntu-24.04`, against a Postgres service.
-Six scripts run there: `child-adoption.sh`, `conflict-no-takeover.sh`, `dispatch-claimant-delivery.sh`, `handoff-records.sh`, `verification-results.sh` and `stage1-skeleton.sh`, which the `test` job of `ci.yaml` also runs.
+Eight scripts run there: `child-adoption.sh`, `conflict-no-takeover.sh`, `dispatch-claimant-delivery.sh`, `handoff-records.sh`, `phase-entry-converge.sh`, `task-take.sh`, `verification-results.sh` and `stage1-skeleton.sh`, which the `test` job of `ci.yaml` also runs.
 None of them needs a secret, and none there may:
 Sami answered that no API key goes into this repository, and that a smoke test which calls a model runs in the deployment repository on workload identity federation (sjawhar/legion#2512).
 Every other script needs a devbox, a throwaway kind cluster, a real cluster or a model key, and the workflow refuses it by name with what its own header says it needs.
@@ -400,7 +410,7 @@ gh run download <run id>    # every evidence directory the run uploaded
 ```
 
 Each job writes its evidence to one directory and uploads it as `e2e-<script>-<run id>-<run attempt>`, on a pass and on a failure.
-The job sets the evidence variable of the script it runs (`CHILD_ADOPTION_EVIDENCE_DIR`, `CONFLICT_NO_TAKEOVER_EVIDENCE_DIR`, `HANDOFF_RECORDS_EVIDENCE_DIR`), so that script writes its transcript and its logs there.
+The job sets the evidence variable of the script it runs (`CHILD_ADOPTION_EVIDENCE_DIR`, `CONFLICT_NO_TAKEOVER_EVIDENCE_DIR`, `HANDOFF_RECORDS_EVIDENCE_DIR`, `PHASE_ENTRY_CONVERGE_EVIDENCE_DIR`, `TASK_TAKE_EVIDENCE_DIR`), so that script writes its transcript and its logs there.
 It also keeps the run's own output as `output.log` in the same directory, which is what `stage1-skeleton.sh`, `dispatch-claimant-delivery.sh` and `verification-results.sh` leave a reader:
 they take no evidence variable and keep a work directory of their own, whose path that output names.
 
@@ -4208,6 +4218,66 @@ The issue, its pull request, its slot and the implementer's claim are seeded thr
 The configuration, the store and its migrations, the HTTP API, the claim supervision and its worker stream, `openWorkflow`, the JetStream consumers, the outbox lanes and the entry sweep are the real ones.
 `PHASE_ENTRY_CONVERGE_EVIDENCE_DIR` (default a fresh directory under `TMPDIR`, kept and printed) keeps the transcript, the `nats-server`'s log, the daemon's own, which the driver writes through `LEGION_E2E_DAEMON_LOG`, and the driver's `proof.log`.
 
+## task-take.sh
+
+```sh
+LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
+  [LEGION_E2E_NATS_BIN=<nats-server>] bash scripts/e2e/task-take.sh     # → "task take e2e: PASS in <n>s", exit 0
+```
+
+dispatch://INFRA-2811's live proof that a task is a value the worker takes, not a prompt the daemon pushes (its R3 and R4, and its check c8).
+Runs on any Linux host with `go`, `awk` and `python3` (for [`lib/loopback-dsn.py`](#libloopback-dsnpy), [`lib/held-port.py`](#libheld-portpy) and the listener's health check) — no Docker, no cluster, no agent — so a Legion pod, CI and a devbox all run it.
+`LEGION_TEST_PG_DSN` is required and names the PostgreSQL the daemon migrates and runs on;
+the script starts none.
+The DSN's host must be loopback: `prerequisites` refuses one that is not with exit 2, before the driver is built and before the broker starts.
+The broker is the run's own: the `nats-server` `LEGION_E2E_NATS_BIN` names, or the pinned `v2.10.22` the script installs with `go install` into a GOBIN of its own, started with JetStream on a port the kernel picks for it (`-p -1`, read back from its log) and stopped on any exit.
+So is the Envoy listener: built from this checkout's `packages/envoy/cmd/listener` and run on that broker as `envoy-session-delivery.sh` starts one, with `ENVOY_MACHINE_ID`, `NATS_URLS` and a `HOME` of its own, on a socket [`lib/held-port.py`](#libheld-portpy) holds for it (`ENVOY_LISTEN_FD`), and stopped before the broker on any exit.
+Its sessions get consumer delivery, and the run's anonymous NATS user holds the session consumers' calls and the task bucket's reads, so it relays each claim's task value to the session holding the claim's role.
+A measured run in a Legion pod took 76 s with a warm build cache, 29 s of it the proof itself and 27 s installing the pinned `nats-server`.
+The checks below are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s, with the listener this script starts as its `SERVICES`.
+
+| check | what it holds |
+| :--- | :--- |
+| `prerequisites` | `LEGION_TEST_PG_DSN` is set (the DSN itself is not printed), `go`, `awk` and `python3` are on PATH, the DSN names a loopback host ([`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s `require_loopback_dsn` reads it, and a host that is not `127.0.0.1`, `localhost` or `::1` ends the run with exit 2 before the driver is built), and a `nats-server` is named or installed |
+| `broker` | that `nats-server`, with JetStream, listening on 127.0.0.1 and ready |
+| `listener` | the Envoy listener built, holding a port, answering `/healthz` healthy on it, and named to the driver in `LEGION_E2E_ENVOY_URL` |
+| `driver` | a test binary of `TestATaskIsTakenOnceOnARealNATSLive` (`internal/daemon/task_take_live_test.go`, `-tags e2e`) |
+| `proof` | the seven steps below, each printing what it drove and the daemon's own lines it read back between its own `== <name>` and `ok <name>` |
+
+The driver boots the whole daemon through `run`, the function `legion start` calls, over that PostgreSQL and that broker, with its own task bucket (`legion_tasks`) on the broker, under the Kubernetes configuration whose idle release it reads: a pod quiet for ten minutes is released, and no backstop fires within the run.
+It seeds one root in retro, holding its tree's slot, with its implementer's claim mid-launch, which the boot relaunches.
+Each process of that claim is brought up as its pod would bring it up:
+a hello on the daemon's worker stream with its launch's boot token, as `legion worker-shim` says it;
+its session registered with the listener on a NATS connection of the process's own, under an epoch and a client instance of its own, asking for its own consumer, with the relay subject that session's frames are published on subscribed first;
+its registration with the daemon; its role, the claim token, claimed on the listener; and its ready.
+Its plugin holds the newest value it was handed, by the registration's answer or by a task frame the listener relayed, and takes it as pi-legion does, through `internal/daemon/take_driver_test.go`'s `takeDriver` given that value: `claims/task-seen`, `claims/take`, `agent_start` and `agent_end` on the stream, and `claims/turn-outcome` naming the number.
+A step reads back the daemon's own lines of its JSON log, kept in memory as well as in `daemon.log`, and prints each one it holds to beside what it drove.
+
+| step | driven by | read back as |
+| :--- | :--- | :--- |
+| `step1-a-claim-is-given-a-task-and-the-driver-sees-its-value-relayed` | the relaunched implementer's first process up and ready, which gives a phase worker never written a task its phase's resume task | a task frame on the session's relay subject naming the claim, put, the bucket's epoch and the write's revision, whose value names a number, and the daemon's line writing that number; asserted first, it is the negative control, since the base writes no value and its listener relays none |
+| `step2-the-worker-takes-the-number-and-the-daemon-names-it-taken-and-finished` | the take of that number, the take's turn started and ended, and the report naming it | one accepted take of the number, the turn's start and end lines naming it, one finish of it by the report, its value deleted, and the record holding it finished in the session |
+| `step3-a-process-killed-mid-turn-has-its-next-registration-take-the-same-number-once` | the operator's next task taken and its turn started; the process killed, its stream and its NATS connection closed and nothing deregistered, and the runtime finding it gone; the relaunched process up | the task taken back, the session resumed in a new process, whose registration answers the same number, which it takes: one accepted take of it after the kill, and one finish |
+| `step4-a-newer-task-written-meanwhile-is-taken-after-it` | the relaunched implementer moving its phase back from retro to implementing before its take, which writes the implementing task into the record while the killed turn's task is owed | that task's start waiting behind it, then written as the next number once it is finished, relayed, and taken: its take accepted after the finish of the task before it, its text naming the phase |
+| `step5-a-released-pods-wake-task-is-taken-once-across-a-relaunch` | the claims' rows back-dated past the idle period, as the package's release rigs do, and the listener's ready report made fresh; then a message to the implementer's role topic through the listener, kept nowhere | the daemon's idle rule releasing the pod, its role stop shutting the process down, which deregisters; the publish answered 404 `unclaimed`, the listener's wake taken, the session resumed in a new process, the wake's task written under origin `wake` and taken once |
+| `step6-after-a-daemon-restart-a-finished-number-is-not-taken-again` | the daemon stopped and booted again on the same store and bucket, and the worker's shim reconnecting | over five seconds no value written and none relayed, `claims/task` answering no value with the wake's task finished, and the plugin's take of that number, sent again at the value it took it at, refused `not-owed` |
+| `step7-a-finished-claim-whose-phase-waits-registers-again-and-no-value-is-written` | the pod released again, and, inside its teardown once its role stop has suspended the implementer as released, the operator's resume of that claim | the release cancelled as overtaken, the resume starting a new process in the same session, whose registration answers no value with the last task finished, the workflow's line that a ready worker that finished its last task in this session is given nothing, and over five seconds no value written and none relayed |
+
+Two steps print which way they were driven, and say so here.
+Step 4's newer task is written after the kill and the relaunch, by the relaunched worker's move back before its take of the task the killed turn was taking, while that task is owed again:
+a claim holds one pending task, and a newer one waits in the outbox until it is finished, so the proof writes the newer task then rather than while the process is down.
+Step 7 is driven through an idle release cancelled after its role stop:
+the package's fake runtime runs with `InPod`, as `phase-entry-converge.sh`'s driver runs it (dispatch://INFRA-2800, #3677), and answers what an idle release asks of a pod runtime (`releaseRuntime`, in `internal/daemon/idle_release_test.go`, wrapped as the driver's `taskTakePods`, whose pod a teardown that acts deletes and a launch makes again);
+the release is overtaken by the operator's resume of the stopped claim, made inside the teardown (`releaseRuntime.beforeAuthorize`) before it asks the store again, and that resume is what starts the new process.
+
+What the proof stands in for lies outside the rule:
+the broker is a native `nats-server` and Envoy is this checkout's listener, both of the run's own; Dispatch is the board the whole-daemon drivers share (`liveDispatch`), GitHub answers any repository with `main` as its default branch, the two Apps' tokens are placeholders, and the daemon's own Envoy publishes go to the package's `noticeListener`, since what this proof reads of Envoy is the relay, which the daemon reaches through NATS alone;
+no agent runs:
+the claim is launched by the package's fake runtime, and each of its processes is the driver above.
+The issue, its slot and the implementer's interrupted launch are seeded through the store, as every daemon test seeds its fixture.
+The configuration, the store and its migrations, the HTTP API, the claim supervision and its worker stream, the take routes, the task bucket and its watch, `openWorkflow`, the JetStream consumers, the outbox lanes, the idle release and the wake are the real ones.
+`TASK_TAKE_EVIDENCE_DIR` (default a fresh directory under `TMPDIR`, kept and printed) keeps the transcript, the `nats-server`'s log, the listener's (`listener.log`), the daemon's own, which the driver writes through `LEGION_E2E_DAEMON_LOG`, and the driver's `proof.log`.
+
 ## provider-error-retry.sh
 
 ```sh
@@ -6138,11 +6208,11 @@ Each item below names a function, then what it does.
 ## lib/live-daemon-proof.sh
 
 The run a whole-daemon live proof makes around its driver.
-`child-adoption.sh`, `conflict-no-takeover.sh`, `phase-entry-converge.sh`, `handoff-records.sh`, `provider-error-retry.sh`, `claim-compaction.sh` and `role-prompt-rule.sh` differ only in what their driver proves, so each sets its own values and makes this run.
+`child-adoption.sh`, `conflict-no-takeover.sh`, `phase-entry-converge.sh`, `task-take.sh`, `handoff-records.sh`, `provider-error-retry.sh`, `claim-compaction.sh` and `role-prompt-rule.sh` differ only in what their driver proves, so each sets its own values and makes this run.
 
 ```sh
 . "$root/scripts/e2e/lib/live-daemon-proof.sh"     # sourced, never run
-live_daemon_proof LABEL SLUG TEST EVIDENCE         # the script's last command
+live_daemon_proof LABEL SLUG TEST EVIDENCE [SERVICES]   # the script's last command
 ```
 
 The caller sets `set -euo pipefail` and `root`, the checkout.
@@ -6156,19 +6226,24 @@ The refusal line tells that case apart, and names libpq and the package to insta
 That guard reads the caller's DSN in the shell, and it reaches no further.
 The `driver` check then builds the test binary (`go test -c -tags e2e ./internal/daemon`), and that binary reads every DSN it builds from `LEGION_TEST_PG_DSN` back with pgx before anything connects or creates, which is the second of the two frames that hold the run to the server its caller named.
 `DatabaseURL` in `packages/daemon/internal/testpg/testdb/testdb.go` is where that frame is written, and the comment above `require_loopback_dsn` in [`lib/loopback-dsn.sh`](#libloopback-dsnsh) is where this one is.
-On any exit it stops the `nats-server`, removes the work directory and prints `LABEL e2e: PASS in <n>s (evidence: <dir>)`, or `LABEL e2e: FAIL at <check> after <n>s (evidence: <dir>)` on stderr.
+`SERVICES`, when the caller names one, is a function of the entry script's that starts what its driver needs beside the broker:
+the run calls it between `broker` and `driver`, with the broker's port in `port_nats` and the run's work and evidence directories in `work` and `evidence`.
+It makes checks of its own with `begin`, `note`, `pass` and `fail`, exports what the driver reads, and adds the pid of each process it starts to `service_pids`.
+[`task-take.sh`](#task-takesh)'s builds and starts the Envoy listener, as the check `listener`.
+On any exit it stops each process in `service_pids`, then the `nats-server`, removes the work directory and prints `LABEL e2e: PASS in <n>s (evidence: <dir>)`, or `LABEL e2e: FAIL at <check> after <n>s (evidence: <dir>)` on stderr.
 
 | argument | is |
 | :--- | :--- |
-| `LABEL` | the run's name in its last line: `child adoption`, `conflict no takeover`, `phase entry converge`, `handoff records`, `provider error retry`, `claim compaction` |
+| `LABEL` | the run's name in its last line: `child adoption`, `conflict no takeover`, `phase entry converge`, `task take`, `handoff records`, `provider error retry`, `claim compaction` |
 | `SLUG` | the name of the run's own files under `TMPDIR` (or `/tmp` when it is unset): the work directory `legion-e2e-SLUG.<pid>.*`, which holds the broker's store and the driver binary `SLUG.test`, and the evidence directory `legion-e2e-SLUG-evidence.*` when `EVIDENCE` is empty |
 | `TEST` | the one test the driver runs (`-test.run '^TEST$'`); `proof` fails unless the driver reports `--- PASS: TEST`, so a driver that skipped, or a pattern that matched nothing, is no pass |
-| `EVIDENCE` | the evidence directory the script's own variable names (`CHILD_ADOPTION_EVIDENCE_DIR`, `CONFLICT_NO_TAKEOVER_EVIDENCE_DIR`, `PHASE_ENTRY_CONVERGE_EVIDENCE_DIR`, `HANDOFF_RECORDS_EVIDENCE_DIR`, `PROVIDER_ERROR_RETRY_EVIDENCE_DIR`, `CLAIM_COMPACTION_EVIDENCE_DIR`), or empty for a fresh one; kept and printed, it holds `transcript.log`, the broker's `nats.log`, the daemon's own `daemon.log`, which the driver writes through `LEGION_E2E_DAEMON_LOG`, and the driver's `proof.log` |
+| `EVIDENCE` | the evidence directory the script's own variable names (`CHILD_ADOPTION_EVIDENCE_DIR`, `CONFLICT_NO_TAKEOVER_EVIDENCE_DIR`, `PHASE_ENTRY_CONVERGE_EVIDENCE_DIR`, `TASK_TAKE_EVIDENCE_DIR`, `HANDOFF_RECORDS_EVIDENCE_DIR`, `PROVIDER_ERROR_RETRY_EVIDENCE_DIR`, `CLAIM_COMPACTION_EVIDENCE_DIR`), or empty for a fresh one; kept and printed, it holds `transcript.log`, the broker's `nats.log`, the daemon's own `daemon.log`, which the driver writes through `LEGION_E2E_DAEMON_LOG`, and the driver's `proof.log` |
+| `SERVICES` | optional: the name of the function above, which starts what the driver needs beside the broker |
 
 The drivers share their Go harness the same way:
 `internal/daemon/live_proof_test.go` (`-tags e2e`) holds the broker and log variables (`LEGION_E2E_NATS_URL`, `LEGION_E2E_DAEMON_LOG`);
 the configuration the daemon boots with (`newLiveProof` reads `LEGION_E2E_NATS_URL`, skips when it is unset, and builds the workflow configuration around it);
-the stream the daemon's intake consumes;
+the stream the daemon's intake consumes, which `newLiveProofOn` creates and `readyLiveProof` leaves to the real Envoy listener `task-take.sh` runs, since that listener creates it with its own subjects at its start, as a deployment's does;
 the Dispatch board stand-in (`liveDispatch`, which holds each issue's status, parent and labels and 404s an issue it does not hold), which `handoff-records.sh`'s driver replaces with the real Dispatch server;
 the store; the seeding of a tree into the next free admission slots (`admit`);
 and the envelope, `processed_events` and notice reads and writes a step makes, the notices read by the issue whose architect they tell (`architectNotices`).

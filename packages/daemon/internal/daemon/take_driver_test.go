@@ -29,7 +29,9 @@ import (
 // The value is the one the daemon's task bucket holds: a test's daemon is given one in memory
 // (fakeRuntime), or the daemon's own on the test NATS. The driver reads it from the record's own
 // route rather than from a relayed frame, so nothing of Envoy's relay stands between the test and
-// the take.
+// the take — unless values is set: the proof that runs a real Envoy listener
+// (task_take_live_test.go) hands the driver the value the plugin holds, the newest one its
+// registration's answer or a task frame relayed on the session's delivery subject named.
 //
 // Every test that speaks the daemon's real routes and stream drives its worker through it, tagged
 // e2e or not, and so does the idle rig's role process, which runs outside any test. So it answers a
@@ -39,7 +41,11 @@ type takeDriver struct {
 	// nil leaves unread; any other status is an error naming it.
 	post func(path string, body, answer any) error
 	// send writes one frame on the claim's worker stream, as the agent's shim forwards it.
-	send       func(shimwire.Frame) error
+	send func(shimwire.Frame) error
+	// values, when set, is the value the plugin was last handed, nil for none, read in place of
+	// claims/task: the newest of the registration's answer and the task frames the Envoy listener
+	// relayed to the session (task_take_live_test.go's taskWorker).
+	values     func() (*claim.TaskValue, error)
 	caller     claim.AgentCaller
 	generation uint64
 
@@ -120,16 +126,26 @@ func (w *takeDriver) task() (claim.TaskResponse, error) {
 	return answer, err
 }
 
+// current is the claim's value as the plugin holds it now: what values hands it, where it is
+// set, and the bucket's value read through claims/task otherwise. Nil is none.
+func (w *takeDriver) current() (*claim.TaskValue, error) {
+	if w.values != nil {
+		return w.values()
+	}
+	current, err := w.task()
+	return current.Task, err
+}
+
 // poll is one look at the claim's value, as the plugin takes each value it is handed: a value it
 // has not reported is reported seen, and one it has not asked at is taken while no turn of its own
 // runs and no take it was answered waits for its turn. It answers the take it made and true, or
 // false when it asked nothing.
 func (w *takeDriver) poll() (claim.TaskValue, claim.TakeResponse, bool, error) {
-	current, err := w.task()
-	if err != nil || current.Task == nil {
+	current, err := w.current()
+	if err != nil || current == nil {
 		return claim.TaskValue{}, claim.TakeResponse{}, false, err
 	}
-	value := *current.Task
+	value := *current
 	w.mu.Lock()
 	report := value != w.seen
 	ask := value != w.asked && !w.inTurn && w.accepted == 0

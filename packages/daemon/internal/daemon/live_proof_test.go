@@ -1,9 +1,9 @@
 // The harness this package's whole-daemon live proofs share: child_adoption_live_test.go,
-// conflict_no_takeover_live_test.go, handoff_records_live_test.go and
-// admission_issues_live_test.go. The first three are built with `-tags e2e` by scripts of their
-// own (scripts/e2e/child-adoption.sh, scripts/e2e/conflict-no-takeover.sh and
-// scripts/e2e/handoff-records.sh), which make the same run
-// around them through scripts/e2e/lib/live-daemon-proof.sh; the sixth runs in the ordinary
+// conflict_no_takeover_live_test.go, handoff_records_live_test.go, task_take_live_test.go and
+// admission_issues_live_test.go. All but the last are built with `-tags e2e` by scripts of their
+// own (scripts/e2e/child-adoption.sh, scripts/e2e/conflict-no-takeover.sh,
+// scripts/e2e/handoff-records.sh and scripts/e2e/task-take.sh), which make the same run
+// around them through scripts/e2e/lib/live-daemon-proof.sh; the last runs in the ordinary
 // `go test ./internal/daemon/` on the broker that package's other tests take (newLiveProofOn over
 // workflowNATS), which is why this file carries no build tag of its own.
 //
@@ -21,6 +21,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http/httptest"
 	"os"
@@ -91,6 +92,17 @@ func newLiveProof(t *testing.T, script string) liveProof {
 // on cfg before it boots: nothing here reads more of it than the project and the store.
 func newLiveProofOn(t *testing.T, natsURL string) liveProof {
 	t.Helper()
+	p := readyLiveProof(t, natsURL)
+	testnats.CreateStream(t, p.js, jetstream.StreamConfig{Name: "ENVOY_NOTIFICATIONS", Subjects: []string{"notifications.>"}})
+	return p
+}
+
+// readyLiveProof is newLiveProofOn but for the stream, which a proof whose script runs a real Envoy
+// listener leaves to that listener: the listener creates the notification stream with its own
+// subjects at its start, before the daemon binds a consumer on it, as a deployment rolls them out
+// (task_take_live_test.go).
+func readyLiveProof(t *testing.T, natsURL string) liveProof {
+	t.Helper()
 	cfg := workflowConfig(t, natsURL)
 	p := liveProof{t: t, cfg: cfg, board: newLiveDispatch(t, cfg.Project), notices: newNoticeListener(), records: record.NewStore()}
 	p.cfg.DispatchURL = p.board.url
@@ -103,7 +115,6 @@ func newLiveProofOn(t *testing.T, natsURL string) liveProof {
 		t.Fatal(err)
 	}
 	p.js = workflowJetStream(t, natsURL)
-	testnats.CreateStream(t, p.js, jetstream.StreamConfig{Name: "ENVOY_NOTIFICATIONS", Subjects: []string{"notifications.>"}})
 	ctx := context.Background()
 	if p.st, err = store.Open(ctx, p.cfg.PostgresDSN); err != nil {
 		t.Fatalf("open the store: %v", err)
@@ -119,16 +130,28 @@ func newLiveProofOn(t *testing.T, natsURL string) liveProof {
 // across a restart, and nowhere when it names none.
 func (p *liveProof) log() *slog.Logger {
 	p.t.Helper()
+	file := p.logFile()
+	if file == nil {
+		return quietLogger()
+	}
+	return slog.New(slog.NewTextHandler(file, &slog.HandlerOptions{Level: slog.LevelDebug}))
+}
+
+// logFile is the file liveDaemonLogEnv names, opened for appending until the test ends, and nil
+// when it names none: a driver that reads the daemon's lines back writes them there as well as
+// to a buffer of its own (task_take_live_test.go).
+func (p *liveProof) logFile() io.Writer {
+	p.t.Helper()
 	path := os.Getenv(liveDaemonLogEnv)
 	if path == "" {
-		return quietLogger()
+		return nil
 	}
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		p.t.Fatalf("open the daemon's log %s: %v", path, err)
 	}
 	p.t.Cleanup(func() { file.Close() })
-	return slog.New(slog.NewTextHandler(file, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	return file
 }
 
 // step runs one of the proof's steps between its `== name` and `ok name (<s>s)` lines, as the
