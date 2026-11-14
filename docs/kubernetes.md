@@ -4595,6 +4595,7 @@ A map of a file on disk adds nothing, which is why a process that maps a databas
 A region that several processes map counts in each of them, since gVisor gives no `Pss` that would divide it.
 The guard acts only when the processes it may end hold at least `floor_percent` of the limit between them (10 by default): below that, the memory is mostly in processes it may not end, and ending one of the rest frees too little to matter.
 It then holds the largest through a pidfd, reads that process's start time again, and sends `SIGKILL` only when the start time is the one the scan read, so a pid that another process took after the scan is never signalled.
+Nor is a process that exited by itself after the scan, whether its parent has reaped it yet or not: its pidfd reads it as exited, and the guard writes no `ended` line and sends no report for it, since an exited process that is not reaped keeps its start time, and a kill of it answers no error.
 Of two processes of the same size it ends the newer, since of a parent and the child it forked, the child is the one started for the work.
 A process whose `stat`, `exe`, `ns/pid` or `smaps` the guard cannot read is not ended, is counted apart, and is logged once.
 When such a read fails, the guard reads the process's `stat` again first: a process that has ended meanwhile (gone, its pid taken by another, or now an exited zombie) is left out with no line, since under gVisor a read of a process that has just exited answers `EACCES` rather than `ENOENT`.
