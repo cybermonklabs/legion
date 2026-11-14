@@ -296,7 +296,7 @@ func (w *cutBodyWriter) begin(status int) {
 	if cut == nil || status != http.StatusBadRequest {
 		return
 	}
-	clear(w.Header())
+	keepOnlyEveryAnswersHeaders(w.Header())
 	writeError(w.ResponseWriter, cut.code, cut.status, cut.message)
 	w.replaced = true
 }

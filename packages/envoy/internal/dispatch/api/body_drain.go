@@ -147,6 +147,22 @@ func (b *drainedBody) Read(p []byte) (int, error) {
 	return n, err
 }
 
+// keepOnlyEveryAnswersHeaders deletes from header, the header of an answer a handler began and a
+// writer is replacing, every header but the ones every answer of this server carries:
+// X-Content-Type-Options: nosniff and Vary: Accept-Encoding (compressAnswers), and Vary:
+// Dispatch-Trees (varyOnDisplayTrees), which those layers set before any handler runs. The
+// replaced answer's own headers go - its media type, its Idempotency-Key, its Retry-After -
+// because they describe an answer the caller is not given. The kept ones describe the
+// replacement as much as what it replaces, and Vary keeps every value it holds. Both writers
+// that replace an answer call it (drainingWriter, cutBodyWriter).
+func keepOnlyEveryAnswersHeaders(header http.Header) {
+	for name := range header {
+		if name != "Vary" && name != "X-Content-Type-Options" {
+			delete(header, name)
+		}
+	}
+}
+
 // drainingWriter is the answer's writer: its first header, write or flush drains the body first
 // (drainBeforeAnswer).
 type drainingWriter struct {
@@ -188,7 +204,7 @@ func (w *drainingWriter) begin(status int) {
 		return
 	}
 	// The body runs past the limit: the answer is the limit's.
-	clear(w.ResponseWriter.Header())
+	keepOnlyEveryAnswersHeaders(w.ResponseWriter.Header())
 	writeError(w.ResponseWriter, w.tooLarge.code, w.tooLarge.status, w.tooLarge.message)
 	w.replaced = true
 }

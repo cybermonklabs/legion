@@ -209,6 +209,29 @@ func TestABodyCutByADeadlineNamesWhichOfTheTwoEndedIt(t *testing.T) {
 	}
 }
 
+// dispatch://INFRA-179. The refusal put in place of the 400 a write's decode makes of a body a
+// deadline cut (cutBodyWriter) keeps the headers every answer of this server carries: the nosniff
+// and both Vary values. The replacement emptied the whole header before it wrote, so a caller
+// whose body stopped arriving was answered with neither the sniffing protection nor the Vary a
+// cache between it and Dispatch needs. The body is cut for real: a message whose first bytes
+// arrive and whose rest never does, over a connection of its own, under a drain bound of a second.
+func TestARefusalOfACutBodyKeepsTheHeadersEveryAnswerCarries(t *testing.T) {
+	handler, _, _, served := newRegisteredTestServer(t, testServerOptions{})
+	served.drainReadLimit = time.Second
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+	issue := createArtifactIssue(t, handler)
+	header := http.Header{}
+	header.Set("Content-Type", "application/json")
+	header.Set("X-Dispatch-User", "alice")
+	held := sendPartOfBody(t, server.Listener.Addr().String(), "/api/v1/issues/"+issue.Key+"/messages", header, 100, []byte(`{"body":"a`))
+	response, answer := held.answer()
+	if response.StatusCode != http.StatusServiceUnavailable || refusalCode(answer) != "BODY_STALLED" {
+		t.Fatalf("a message whose body stopped arriving was answered %d %s, want 503 BODY_STALLED", response.StatusCode, answer)
+	}
+	requireEveryAnswersHeaders(t, response.Header, "the 503 of a body that stopped arriving")
+}
+
 // dispatch://INFRA-179, review 5820480859's finding 11. The slot a write holds is the one its
 // transaction takes: server.begin takes one for every transaction it opens, and limitedTx gives
 // it back as that transaction ends, so a request that opens two in turn holds one at a time and
