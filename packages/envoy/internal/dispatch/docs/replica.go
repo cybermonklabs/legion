@@ -40,13 +40,18 @@ import (
 // holds and the update leaves out, as Yjs's update event does. So the replica is the room's copy,
 // what the room holds parked included, and when the commit that fills a gap arrives the replica
 // integrates what waited behind it just as the room does. Without the parked part the replica
-// would not be the room: what a reader takes from it (readLive) and its encoded state, which
-// carries parked structs (crdt.EncodeStateAsUpdateV1), would both leave out what the room is
-// holding, and the commit that fills the gap - whose update carries only what that commit's own
-// transaction integrated - would integrate nothing of what waited, so the replica would never
-// hold it. A commit that only parked has no update observer (ygo calls none for a transaction
-// that changes nothing), so the room drains its entry right after the transaction instead, from
-// ygo's after-transaction callback (onLoadDocument), whatever path the update reached the room by.
+// would not be the room while a gap is open: what a reader takes from it (readLive) and its
+// encoded state, which carries parked structs (crdt.EncodeStateAsUpdateV1), would both leave out
+// what the room is holding. The fill repairs no more than its own arrival: the transaction that
+// fills a gap integrates what waited, so that commit's own update carries it, and a copy fed the
+// update part alone reads the room's whole text from the fill onwards - measured on this pin and
+// on the library's main, where such a copy reads the room's text once the missing update
+// arrives. So the parked part is what the store needs, the stored document holding what the room
+// parked so that the edit survives a restart, and what the window before the fill needs, where a
+// reader must not be answered a document the room is not. A commit that only parked has no
+// update observer (ygo calls none for a transaction that changes nothing), so the room drains
+// its entry right after the transaction instead, from ygo's after-transaction callback
+// (onLoadDocument), whatever path the update reached the room by.
 //
 // Applying the parked part integrates nothing, so it renders nothing new: its transaction names
 // no changed type (crdt.Transaction.ChangedTypes), so it touches no block of the record the
