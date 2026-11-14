@@ -103,7 +103,7 @@ import (
 // this command is listed here so broker-refgen can document it.
 const (
 	exitUsageError   = 2   // usage error: a flag, argument, token file, or required environment value is invalid
-	exitPending      = 75  // request still waiting for a person to approve it
+	exitPending      = 75  // request still waiting for a person to approve it, or its status could not be read when --wait ran out
 	exitRenewRefused = 76  // renew reached a refusal in terminalRenewal; the worker shim must not restart it
 	exitDenied       = 77  // request denied
 	exitCannotRun    = 126 // register --exec command exists but could not run
@@ -218,7 +218,7 @@ environment:
                              form needs a sign-in in the broker's account, and a write your own
                              Identity Center sign-in there
 
-exit codes: 0 done, 1 failed, 2 usage error, 75 still waiting for approval, 76 permanent renewal refusal, 77 denied;
+exit codes: 0 done, 1 failed, 2 usage error, 75 still waiting for approval (or its status unreadable when --wait ran out), 76 permanent renewal refusal, 77 denied;
 register --exec exits 127 when COMMAND is not found and 126 when it cannot run;
 secret create and set end by the signal on hang-up (SIGHUP), interrupt (Ctrl-C), quit (Ctrl-\)
 or termination (SIGTERM) at the value prompt: a shell reports 129, 130, 131 or 143
@@ -1184,6 +1184,11 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 	}
 
 	state, grantID, requestID, detail := result.State, result.GrantID, result.RequestID, result.Detail
+	// pollErr is the last status poll's failure while the polls fail in a way a retry can cure
+	// (retryable), and nil once one reads the request again. Such a poll does not end the wait:
+	// the approver may still decide before --wait runs out, and a grant this command has stopped
+	// waiting for is one nothing collects.
+	var pollErr error
 	if state == "pending" {
 		reportPending(stderr, requestID, result.Approver, result.ApproveURL, *wait, src())
 		deadline := time.Now().Add(*wait)
@@ -1194,18 +1199,31 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 				break
 			}
 			time.Sleep(minDuration(backoff, remaining))
+			backoff = nextBackoff(backoff)
 			status, _, err := c.GetRequest(ctx, signer, requestID)
-			if err != nil {
+			switch {
+			case err == nil:
+				pollErr = nil
+				state, grantID, detail = status.State, status.GrantID, status.Detail
+			case retryable(err):
+				// Said once per run of failed polls, not once per poll.
+				if pollErr == nil {
+					fmt.Fprintf(stderr, "agent-secrets: %s; still waiting for request %s\n", refusalText(src(), err), requestID)
+				}
+				pollErr = err
+			default:
 				refuse(stderr, "agent-secrets", src(), err)
 				return 1
 			}
-			state, grantID, detail = status.State, status.GrantID, status.Detail
-			backoff = nextBackoff(backoff)
 		}
 	}
 	switch state {
 	case "granted":
 	case "pending":
+		if pollErr != nil {
+			fmt.Fprintf(stderr, "agent-secrets: the wait for request %s to %s ran out while its status could not be read: %v; nothing was run. Check it with: agent-secrets status %s\n", requestID, src(), pollErr, requestID)
+			return exitPending
+		}
 		fmt.Fprintf(stderr, "agent-secrets: request %s to %s is still waiting for approval; nothing was run. Check it with: agent-secrets status %s\n", requestID, src(), requestID)
 		return exitPending
 	case "denied":
