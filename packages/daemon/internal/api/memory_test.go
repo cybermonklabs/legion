@@ -372,8 +372,8 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 			// before it refuses that key empty as surely as filled (withoutWakesWaiting). The
 			// `contract` mark is read apart and taken out of both: it is the one key the
 			// caller's own recorded contract decides rather than the state, and the baseline,
-			// asked from no pod, carries the daemon's number alone where a caller at a contract
-			// is told its own beside it (narrowing_test.go).
+			// asked from no pod, is told the daemon's number as its caller's where a caller at
+			// a contract is told its own (narrowing_test.go).
 			var want, got map[string]any
 			if err := json.Unmarshal(full, &want); err != nil {
 				t.Fatal(err)

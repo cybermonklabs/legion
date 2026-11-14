@@ -333,15 +333,36 @@ func TestTheRequestGateCatchesARemovedField(t *testing.T) {
 	without[route] = slices.DeleteFunc(slices.Clone(walked[route]), func(path string) bool { return path == field })
 
 	t.Run("a field leaves a request type with no declaration", func(t *testing.T) {
-		problems := requestShapeProblems(onFile, without, AcceptedByName, next)
-		if len(problems) != 1 {
-			t.Fatalf("the gate reported %d problems, want the one naming the field:\n%s", len(problems), strings.Join(problems, "\n"))
-		}
-		t.Logf("the gate reported: %s", problems[0])
-		for _, want := range []string{route, "`" + field + "`", fmt.Sprintf("contract %d", DaemonAPIVersion)} {
-			if !strings.Contains(problems[0], want) {
-				t.Errorf("the problem reads %q, want it to name %s", problems[0], want)
+		// The fixture keeps the record of every contract, and `-update` adds the record of each
+		// later contract beside it, so the removal is a problem of every recorded contract whose
+		// request holds the field: one problem each, each naming its own contract. One of them
+		// names this daemon's own contract, the record `-update` writes.
+		var holding []int
+		for _, record := range onFile {
+			if record.Route == route && slices.Contains(record.FieldPaths, field) {
+				holding = append(holding, record.Contract)
 			}
+		}
+		if !slices.Contains(holding, DaemonAPIVersion) {
+			t.Fatalf("the record of contract %d in %s holds no `%s` at %s; removing it proves nothing", DaemonAPIVersion, requestShapesFixture, field, route)
+		}
+		problems := requestShapeProblems(onFile, without, AcceptedByName, next)
+		if len(problems) != len(holding) {
+			t.Fatalf("the gate reported %d problems, want one naming the field for each recorded contract whose request holds it, %v:\n%s",
+				len(problems), holding, strings.Join(problems, "\n"))
+		}
+		// The gate reads the records in the order of the file, and so does holding.
+		for i, contract := range holding {
+			t.Logf("the gate reported: %s", problems[i])
+			for _, want := range []string{route, "`" + field + "`", fmt.Sprintf("contract %d", contract)} {
+				if !strings.Contains(problems[i], want) {
+					t.Errorf("the problem reads %q, want it to name %s", problems[i], want)
+				}
+			}
+		}
+		own := fmt.Sprintf("contract %d", DaemonAPIVersion)
+		if !slices.ContainsFunc(problems, func(problem string) bool { return strings.Contains(problem, own) }) {
+			t.Errorf("no problem names %s, this daemon's own contract:\n%s", own, strings.Join(problems, "\n"))
 		}
 	})
 

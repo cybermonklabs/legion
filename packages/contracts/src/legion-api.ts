@@ -758,9 +758,11 @@ const daemonInfo = z.object({
 
 /** `api.ContractView` — the mark of the narrowing, beside the daemon's own block: `daemon` is the
  * contract the daemon declares and served this body at (its `DaemonAPIVersion`), and `caller` the
- * contract the claims of the caller's own pod record, absent for a reader the daemon places in no
- * pod — the operator's `legion state --json`, a tmux pane, a pod whose claims record no contract
- * — whose body is served whole and narrowed by nothing (contract 75).
+ * contract the daemon shaped this body to (contract 75). From contract 118 on the daemon writes
+ * `caller` for every reader. A reader served the body whole — the operator's
+ * `legion state --json`, a tmux pane, a pod whose claims record no contract, a reader at the
+ * daemon's own contract — is told the daemon's own number. A daemon from 75 to 111 left `caller`
+ * off for such a reader, which is why the key stays optional.
  *
  * The daemon serves a caller below 75 the state with this key gone, as it strips the nine fields
  * of the decided record (`api.withoutRecordFields`): a key added to a narrowed body is exactly

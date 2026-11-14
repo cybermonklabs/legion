@@ -17367,6 +17367,7 @@
       "consumers.*.unavailable",
       "consumers.*.waiting",
       "contract",
+      "contract.caller",
       "contract.daemon",
       "controllerLocator",
       "controllerLocator.external",

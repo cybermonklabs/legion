@@ -329,13 +329,16 @@ func applyBand[T any](t *tookOff, place int, narrow func(T) (T, bool), body T) T
 // caller's contract is unknown.
 func shapeState(state State, restore, strip int, took *tookOff) State {
 	// The mark says which shape this body took: the contract this binary declares and serves,
-	// and, where the shaping served the caller a body below it, the contract it was shaped to.
-	// It is written before anything is taken out, so the band that leaves it off is the pair of
-	// the key (withoutContractMark) rather than a key written only where it is allowed.
-	state.Contract = &ContractView{Daemon: DaemonAPIVersion}
-	if strip < DaemonAPIVersion {
-		state.Contract.Caller = strip
-	}
+	// and the contract the shaping served the caller. The second is written for every caller,
+	// one at this daemon's own contract too. strip is never above DaemonAPIVersion
+	// (recordedContractAtOrBelow), so the number is always the contract whose shape the caller
+	// gets, and never a number the caller only stated. The mark has the same two keys for a
+	// caller at this daemon's own contract as for a caller below it, so the record of a contract
+	// does not change when a later contract lands above it and serves that caller a body below
+	// the daemon's own.
+	// The mark is written before anything is taken out, so the band that leaves it off is the
+	// pair of the key (withoutContractMark) rather than a key written only where it is allowed.
+	state.Contract = &ContractView{Daemon: DaemonAPIVersion, Caller: strip}
 	if restore < fixAttemptsContract {
 		state = withMaxFixAttempts(state)
 	}

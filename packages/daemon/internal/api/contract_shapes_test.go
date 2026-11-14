@@ -656,6 +656,18 @@ func (k callerKind) claims(contract int) []supervise.Claim {
 	return podClaims(contract)
 }
 
+// reaches is whether a caller of this kind can be at contract at all. A caller that states its
+// contract in the header can be at every contract. A caller of a pod can be at no contract from
+// shapedAnswersContract on: every build from that contract on states its contract in the header,
+// so podContracts leaves its claims out of the pod reading, and a pod that records such a
+// contract is served the body this daemon writes, at DaemonAPIVersion. While
+// shapedAnswersContract is the daemon's own number, that body is the shape of the same contract
+// by chance. When a later contract lands, it is the shape of the later contract, so a question to
+// the pod kind about such a contract asks about a caller that does not exist.
+func (k callerKind) reaches(contract int) bool {
+	return k.states || contract < shapedAnswersContract
+}
+
 // contracts is the pair of contracts the caller is served at, read from contractsFor itself, the
 // one function every route puts the question to.
 func (k callerKind) contracts(t *testing.T, contract int) (restore, strip int) {
@@ -723,6 +735,11 @@ func servedShapes(t *testing.T, caller callerKind) map[shapeKey]answerShape {
 	}
 	served := map[shapeKey]answerShape{}
 	for _, contract := range SupportedContracts {
+		if !caller.reaches(contract) {
+			// No pod reading places a caller here (callerKind.reaches), so no shape of this
+			// kind is read for this contract.
+			continue
+		}
 		handlers := stated
 		if handlers == nil {
 			handlers = stateHandlers(t, states, caller.claims(contract))
@@ -923,10 +940,11 @@ func TestContractShapesFixture(t *testing.T) {
 	golden(t, contractShapesFixture, updatedRecords(onFile, fresh))
 }
 
-// Every answer at every contract, served twice: to a caller stating that contract in
-// `Legion-Plugin-Contract`, and to a caller stating nothing from a pod whose claims record it.
-// Both are held to the same records, because a body is owed to the reader and not to the way it
-// said who it is, and the second is the population this change is about.
+// Every answer at every contract, served to a caller stating that contract in
+// `Legion-Plugin-Contract`, and at every contract below shapedAnswersContract to a caller stating
+// nothing from a pod whose claims record it (callerKind.reaches says why the pod kind stops
+// there). Both are held to the same records, because a body is owed to the reader and not to the
+// way it said who it is, and the second is the population this change is about.
 func TestEveryAnswerAtEveryContractIsTheShapeItsRecordDescribes(t *testing.T) {
 	if *updateGolden {
 		t.Skip("the fixture is being rewritten; run the suite again without -update")
@@ -936,6 +954,12 @@ func TestEveryAnswerAtEveryContractIsTheShapeItsRecordDescribes(t *testing.T) {
 		t.Run(caller.name, func(t *testing.T) {
 			served := servedShapes(t, caller)
 			for _, contract := range SupportedContracts {
+				if !caller.reaches(contract) {
+					// servedShapes reads no shape for a contract no caller of this kind can
+					// be at (callerKind.reaches): every build from shapedAnswersContract on
+					// states its contract in the header.
+					continue
+				}
 				for _, answer := range Answers {
 					if answer.Since > contract {
 						continue
@@ -956,18 +980,24 @@ func TestEveryAnswerAtEveryContractIsTheShapeItsRecordDescribes(t *testing.T) {
 }
 
 // The two callers are placed by different readings and served the same pair of contracts, which
-// is why one record stands for both.
+// is why one record stands for both. The pod reading is asked only about the contracts a caller
+// of a pod can be at (callerKind.reaches): every build from shapedAnswersContract on states its
+// contract in the header, so podContracts leaves its claims out, and the pod reading of such a
+// contract answers DaemonAPIVersion, which equals the contract only while it is the daemon's own.
 func TestTheTwoCallersAreServedTheSameContracts(t *testing.T) {
 	for _, contract := range SupportedContracts {
 		statedRestore, statedStrip := callerKinds[0].contracts(t, contract)
+		if statedRestore != contract || statedStrip != contract {
+			t.Errorf("contract %d is served (%d, %d), want the contract itself on both sides: every contract of SupportedContracts is a shape this daemon describes",
+				contract, statedRestore, statedStrip)
+		}
+		if !callerKinds[1].reaches(contract) {
+			continue
+		}
 		podRestore, podStrip := callerKinds[1].contracts(t, contract)
 		if statedRestore != podRestore || statedStrip != podStrip {
 			t.Errorf("contract %d is served (%d, %d) to a caller stating it and (%d, %d) to a caller of a pod recording it",
 				contract, statedRestore, statedStrip, podRestore, podStrip)
-		}
-		if statedRestore != contract || statedStrip != contract {
-			t.Errorf("contract %d is served (%d, %d), want the contract itself on both sides: every contract of SupportedContracts is a shape this daemon describes",
-				contract, statedRestore, statedStrip)
 		}
 	}
 }

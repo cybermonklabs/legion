@@ -210,7 +210,8 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 
 	// The operator's own answer, `legion state --json`: the daemon places that caller in no pod,
 	// so it is served the state whole and narrowed by nothing, and the mark names the contract it
-	// was built at and no caller's.
+	// was built at twice: as the daemon's, and as the contract the caller is served (ContractView
+	// says why a caller at the daemon's own contract is told it too).
 	t.Run("the operator's own answer says which contract it was built at", func(t *testing.T) {
 		body, narrowings := stateNarrowed(t, populatedState(t), "192.0.2.1:41000", podClaims(recordFieldsContract-1))
 
@@ -221,8 +222,8 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 		if mark["daemon"] != float64(DaemonAPIVersion) {
 			t.Errorf("the operator's answer was built at %v, want the contract the daemon declares, %d", mark["daemon"], DaemonAPIVersion)
 		}
-		if _, narrowed := mark["caller"]; narrowed || len(mark) != 1 {
-			t.Errorf("the operator's answer carries the mark %v, want the daemon's number alone: nothing narrows that reader", mark)
+		if mark["caller"] != float64(DaemonAPIVersion) || len(mark) != 2 {
+			t.Errorf("the operator's answer carries the mark %v, want the daemon's number as both the daemon's and the caller's: nothing narrows that reader", mark)
 		}
 		if len(narrowings) != 0 {
 			t.Errorf("the daemon narrowed the operator's own answer: %+v", narrowings)

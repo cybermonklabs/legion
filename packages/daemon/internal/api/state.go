@@ -37,12 +37,11 @@ const Unrecorded phase.Phase = "unrecorded"
 // State is the daemon's own facts, and nothing another system owns (spec: State and store).
 type State struct {
 	Daemon DaemonInfo `json:"daemon"`
-	// Contract is the contract this body was built at and, where the shaping served the caller a
-	// body below it, the contract it was shaped to (ContractView): the two numbers the
-	// serving-down's own log line names (shaping.go's shapeState). Absent from a body served to
-	// a caller below the contract that added it; written on every other body, the operator's
-	// `legion state --json` among them, which is served whole and says by this which contract it
-	// was built at.
+	// Contract is the contract this body was built at and the contract the shaping served the
+	// caller (ContractView): the two numbers the serving-down's own log line names (shaping.go's
+	// shapeState). Absent from a body served to a caller below the contract that added it;
+	// written on every other body, the operator's `legion state --json` among them, which is
+	// served whole and says by this which contract it was built at.
 	Contract            *ContractView        `json:"contract,omitempty"`
 	Admission           Admission            `json:"admission"`
 	Issues              map[string]Issue     `json:"issues"` // the issue record, keyed by issue key
@@ -388,11 +387,15 @@ type DaemonInfo struct {
 
 // ContractView is the mark of the serving-down: the contract this body was built at and the
 // contract it was shaped to (`contract`, contract 75). Daemon is DaemonAPIVersion, what this
-// binary declares and serves; Caller is the contract the answer was shaped to, absent for a
-// caller served this daemon's own shape — the operator's `legion state --json`, a tmux pane, a
-// pod whose claims record no contract — whose body is shaped by nothing. The two stand beside
-// the daemon's own block rather than inside it, because the second number is the caller's and
-// no fact of the daemon.
+// binary declares and serves; Caller is the contract the answer was shaped to. From contract 118
+// on, Caller is written for every caller. A caller served this daemon's own shape — the
+// operator's `legion state --json`, a tmux pane, a pod whose claims record no contract, a
+// caller that states this contract or a higher one — is told DaemonAPIVersion, which is the
+// contract whose shape it gets. Before 118 the daemon left Caller off for such a caller. Now the
+// key is in the record of the daemon's own contract (contract-shapes.json), so that record does
+// not change when a later contract lands above it and serves such a caller a body below the
+// daemon's own, which carries the key. The two stand beside the daemon's own block rather than
+// inside it, because the second number is the caller's and no fact of the daemon.
 //
 // The mark rides under the contract that decided the record (shaping.go's recordFieldsContract),
 // so a caller below that contract is served no `contract` key at all (withoutContractMark): a
@@ -402,7 +405,7 @@ type DaemonInfo struct {
 // log says it, one line per band (shaping.go's stateNarrowings).
 type ContractView struct {
 	Daemon int `json:"daemon"`
-	Caller int `json:"caller,omitempty"`
+	Caller int `json:"caller"`
 }
 
 // Admission is the issue cap and the issues under it, in Dispatch rank order. Concurrency is

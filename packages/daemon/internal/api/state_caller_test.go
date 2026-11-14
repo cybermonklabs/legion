@@ -406,8 +406,8 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		quiet bool
 		// contract is the contract a row that reaches the whole-body comparison is shaped at:
 		// the one the row's claims record, and this daemon's own where no claim of the caller's
-		// pod records one and where the caller is in no pod. It decides what servedAt applies,
-		// which no column of its own carries.
+		// pod records one, where podContracts leaves the pod's claims out, and where the caller
+		// is in no pod. It decides what servedAt applies, which no column of its own carries.
 		contract int
 	}{
 		{name: "a pod whose plugin is a contract behind", remote: statePodAddr + ":41000", claims: podClaims(supervise.PodUpdateContract - 1)},
@@ -441,10 +441,12 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		// served too, and the claim views' keys of contract 118 are the one band left above it.
 		{name: "a pod at quietTimeContract", remote: statePodAddr + ":41000", claims: podClaims(quietTimeContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, contract: quietTimeContract},
 		// The newest contract the route serves a body down by, which is what a pod must record
-		// to be served every key. What the caller is served is decided by its own recorded claim
-		// contract (podContracts) and never by the declared constant, which is why this row
-		// names shapedAnswersContract rather than the declaration.
-		{name: "a pod at the newest contract the route narrows by", remote: statePodAddr + ":41000", claims: podClaims(shapedAnswersContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, contract: shapedAnswersContract},
+		// to be served every key. Such a pod is in no pod reading: podContracts leaves out a
+		// claim at shapedAnswersContract or above, because every build from that contract on
+		// states its contract in the header. So the reading falls through to the body this daemon
+		// writes, and the row names DaemonAPIVersion. While shapedAnswersContract is the daemon's
+		// own number the two are equal; when a later contract lands, only DaemonAPIVersion is right.
+		{name: "a pod at the newest contract the route narrows by", remote: statePodAddr + ":41000", claims: podClaims(shapedAnswersContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, contract: DaemonAPIVersion},
 		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, contract: DaemonAPIVersion},
 		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(supervise.PodUpdateContract - 1), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, contract: DaemonAPIVersion},
 	} {
@@ -467,8 +469,8 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			}
 			// The mark of contract 75 and the fleet's lowest plugin contract are the two keys a
 			// full body and the baseline part on (withoutLowestContract): the baseline is asked
-			// from no pod and carries the daemon's number alone, where a caller at a contract is
-			// told its own beside it (TestANarrowedBodySaysSo), and the lowest contract reports
+			// from no pod and is told the daemon's number as its caller's, where a caller at a
+			// contract is told its own (TestANarrowedBodySaysSo), and the lowest contract reports
 			// the snapshot's claims, which are this row's own. The rest of the body is compared
 			// whole, against the baseline without the keys this row's own contract holds back: a
 			// pod at recordFieldsContract is served every claim view key the decided record added

@@ -1641,6 +1641,13 @@ package api
 // recorded field is red unless requests.go's `AcceptedByName` declares it, with the contract it
 // left at and what ignoring it means. `ready` is that table's first row.
 //
+// The state's `contract.caller` is written for every caller from this contract on. A caller at
+// the daemon's own contract is told DaemonAPIVersion, the contract whose shape it gets; before
+// this contract the daemon left the key off for that caller alone. So the record of a contract
+// holds the same keys while it is the daemon's own contract as after a later contract lands
+// above it, and `-update`, which writes only the records of the daemon's own contract, never has
+// to leave a record below it wrong.
+//
 // Two kinds of change pass both gates, because neither reads them. A change to what an answer
 // means, with no change to its shape, passes both: a later contract that does that must serve
 // the old meaning down by hand, as 104's fresh session is served above. And a refusal's `code`
