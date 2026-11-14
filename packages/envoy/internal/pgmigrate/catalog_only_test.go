@@ -462,13 +462,12 @@ func sizesATableAboveTheLimit(entry MigrationCensus) bool {
 // checked against, and every other subcommand, rename and statement kind the census does not
 // admit. So is an added column whose reading the census cannot trust: after the migration's own
 // SET of search_path, role or session_authorization, and after an earlier pending migration that
-// changes a type, a domain, a cast, a schema, an extension or a role, sets one of those settings
-// for the session, or does not parse, because the census reads the catalog as it stands before
-// any pending migration applies. The census runs with the limit at one byte, so each refused
-// migration is refused on the size of a table it touches; a form that touches no table the census
-// sizes shares its migration with an added bigint column of big, which is admitted alone, so the
-// refusal shows that the form cost the migration its exemption. A row with a searchPath runs its
-// census under that search_path.
+// turns the catalog reads off (catalogReadsOff lists what does), because the census reads the
+// catalog as it stands before any pending migration applies. The census runs with the limit at
+// one byte, so each refused migration is refused on the size of a table it touches; a form that
+// touches no table the census sizes shares its migration with an added bigint column of big,
+// which is admitted alone, so the refusal shows that the form cost the migration its exemption. A
+// row with a searchPath runs its census under that search_path.
 func TestCensusStillRefusesEveryFormThatReadsOrRewritesRows(t *testing.T) {
 	ctx := context.Background()
 	conn := catalogOnlyDatabase(t, ctx, 1)
