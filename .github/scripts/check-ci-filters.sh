@@ -254,5 +254,20 @@ cd "$(dirname "$0")/../.."
 # imported, not run as a script, so the data's `from ci_filter_coverage import ...` binds the
 # same classes.
 # PYTHONDONTWRITEBYTECODE keeps the imports from leaving a __pycache__ in the tree.
-PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.github/scripts exec python3 -c \
-  'import sys, ci_filter_coverage; sys.exit(ci_filter_coverage.main())'
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.github/scripts exec python3 -c '
+import secrets
+import sys
+import warnings
+
+token = secrets.token_hex(16)
+print(f"::stop-commands::{token}", flush=True)
+with warnings.catch_warnings(record=True) as caught:
+    warnings.simplefilter("always")
+    import ci_filter_coverage
+    import ci_job_reads
+    import ci_workflow_rules
+print(f"::{token}::", flush=True)
+for import_warning in caught:
+    ci_filter_coverage.print_import_warning(import_warning)
+sys.exit(ci_filter_coverage.main())
+'

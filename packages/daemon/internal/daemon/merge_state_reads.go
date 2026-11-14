@@ -24,6 +24,13 @@ import (
 // writes - but only once the CI settlement standing for the head says every check GitHub reported
 // on it has concluded, since until then the state says no more than that a check is running
 // (workflow's reviewRound, stuckMergeState).
+//
+// Both numbers have a second user: the outbox's merge-queue read (merge_queue_removal.go's
+// mergeQueueRead), which reads a pull request GitHub reported leaving the merge queue as this
+// ladder reads a merge state GitHub answers `unknown` for (dispatch://INFRA-3274/spec R1). It
+// makes at most mergeStateLadderReads attempts, each with at most one read, and after a failed
+// read waits mergeStateLadderWait (mergeStateWait) or GitHub's Retry-After when that is longer.
+// So a change to either number changes that read too.
 const (
 	mergeStateLadderReads = 5
 	mergeStateLadderWait  = 30 * time.Second
@@ -132,7 +139,9 @@ func (w *workflowRuntime) climbMergeState(ctx context.Context, issue string) {
 }
 
 // mergeStateWait is how long the ladder waits between reads of a head GitHub is still computing
-// the merge state of: mergeStateLadderWait, which a test shortens through the runtime's own field.
+// the merge state of, and how long the outbox's merge-queue read waits after a failed read
+// (mergeQueueRead, which attach hands this wait): mergeStateLadderWait, which a test shortens
+// through the runtime's own field.
 func (w *workflowRuntime) mergeStateWait() time.Duration {
 	if w.mergeStateRetry > 0 {
 		return w.mergeStateRetry
