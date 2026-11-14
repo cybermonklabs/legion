@@ -1886,7 +1886,8 @@ test("a scoped table lists the issues the server answers for the priority, over 
   expect(screen.queryByRole("table", { name: "Project issues table" })).toBeNull();
   // One stored layout for every scoped table, under no key that names a priority: the work
   // advancing a priority is one table, drawn in two places. It has Project and Advances, both
-  // hidden until the reader shows them, and no Moved there, since its listing asks for no move.
+  // hidden until the reader shows them, and no Moved there or Reason, since its listing asks for
+  // no move.
   expect(localStorage.getItem("dispatch.project-table.priority-work")).toBe(
     '{"sizing":{},"order":[],"visibility":{"updated":false,"project":false,"advances":false}}'
   );
@@ -1952,7 +1953,7 @@ test("the narrowing chip shows the picked issues alone, and its remove gives the
 
 // The listing columns exist only where they mean something: a project's own table would name its
 // own project on every row, it is given no priority's title, and its listing carries no move, so
-// it neither shows nor offers any of the three.
+// it neither shows nor offers any of the four.
 test("a project's table offers none of the listing columns", async () => {
   const user = userEvent.setup();
   table([issue("CORE-1")]);
@@ -1961,21 +1962,22 @@ test("a project's table offers none of the listing columns", async () => {
   const headers = within(list)
     .getAllByRole("columnheader")
     .map((header) => header.textContent ?? "");
-  for (const name of ["Project", "Advances", "Moved there"])
+  for (const name of ["Project", "Advances", "Moved there", "Reason"])
     expect(headers.some((text) => text.startsWith(name))).toBe(false);
   // Nor does it show Updated, which the fault lists open with shown: a project's table opens
   // with it hidden, as it always has.
   expect(headers.some((text) => text.startsWith("Updated"))).toBe(false);
   await user.click(screen.getByRole("button", { name: "Columns" }));
   expect(screen.getByRole("checkbox", { name: "Updated" })).not.toBeChecked();
-  for (const name of ["Project", "Advances", "Moved there"])
+  for (const name of ["Project", "Advances", "Moved there", "Reason"])
     expect(screen.queryByRole("checkbox", { name })).toBeNull();
 });
 
 // The work under one priority is every project's, so its table offers the Project column; given
 // the priorities' titles it offers Advances, which names each by its title; and its listing asks
-// for no move, so it never offers Moved there. Both open hidden, for the reader to show.
-test("a priority's work table offers Project and, given the titles, Advances, and never Moved there", async () => {
+// for no move, so it never offers Moved there, nor Reason, which says why a move was made. Both
+// open hidden, for the reader to show.
+test("a priority's work table offers Project and, given the titles, Advances, and never Moved there or Reason", async () => {
   const user = userEvent.setup();
   table([issue("CORE-1", { advances: [{ id: "ship-it", inherited: false }] })], "", undefined, {
     listing: { advances: "ship-it" },
@@ -1991,10 +1993,13 @@ test("a priority's work table offers Project and, given the titles, Advances, an
   await user.click(screen.getByRole("button", { name: "Columns" }));
   for (const name of ["Project", "Advances"])
     expect(screen.getByRole("checkbox", { name })).not.toBeChecked();
-  expect(screen.queryByRole("checkbox", { name: "Moved there" })).toBeNull();
+  for (const name of ["Moved there", "Reason"])
+    expect(screen.queryByRole("checkbox", { name })).toBeNull();
   await user.click(screen.getByRole("checkbox", { name: "Project" }));
   await user.click(screen.getByRole("checkbox", { name: "Advances" }));
   await waitFor(() => expect(headers()).toContain("Advances"));
+  for (const name of ["Moved there", "Reason"])
+    expect(headers().some((text) => text.startsWith(name))).toBe(false);
   // A listing column names a row's value and does not sort, filter or group by it: the
   // address keeps only the registry's columns (`issues-table-model.ts`).
   expect(within(list).queryByRole("button", { name: "Filter Project" })).toBeNull();
@@ -2020,7 +2025,7 @@ test("a priority's work table given no titles offers no Advances column", async 
   await within(list).findByRole("row", { name: "CORE-1 Work CORE-1" });
   await user.click(screen.getByRole("button", { name: "Columns" }));
   expect(screen.getByRole("checkbox", { name: "Project" })).toBeDefined();
-  for (const name of ["Advances", "Moved there"])
+  for (const name of ["Advances", "Moved there", "Reason"])
     expect(screen.queryByRole("checkbox", { name })).toBeNull();
 });
 

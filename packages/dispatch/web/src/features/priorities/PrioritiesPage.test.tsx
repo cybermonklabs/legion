@@ -234,6 +234,7 @@ test("the page draws the priorities table above both fault lists", async () => {
 });
 
 test("each fault table asks the issue listing for its statuses, and the parked one for the move", async () => {
+  const user = userEvent.setup();
   const { listing } = page(FIFTEEN, [
     issue("CORE-1"),
     issue("OPS-12", [], { status: "needs_review" }),
@@ -287,7 +288,7 @@ test("each fault table asks the issue listing for its statuses, and the parked o
   };
 
   // The no-priority list names each row's project and when it last changed, which is how long it
-  // has stood as it is (R6), and shows neither of the parked columns.
+  // has stood as it is (R6), and shows none of the parked columns.
   const inFlight = await cellsOf(faults, "OPS-12 Work OPS-12");
   expect(inFlight("Project").textContent).toBe("OPS");
   expect(within(inFlight("Updated")).getByRole("time").getAttribute("datetime")).toBe(
@@ -298,10 +299,11 @@ test("each fault table asks the issue listing for its statuses, and the parked o
     .map((header) => header.textContent ?? "");
   expect(faultHeaders.some((text) => text.startsWith("Advances"))).toBe(false);
   expect(faultHeaders.some((text) => text.startsWith("Moved there"))).toBe(false);
+  expect(faultHeaders.some((text) => text.startsWith("Reason"))).toBe(false);
 
   // The parked list names the project, each priority advanced by its title, linking to it, and
-  // when the work was moved there and by whom. A row answered with no move draws an empty cell:
-  // absent is absent, and no cell says a record is missing.
+  // when the work was moved there and by whom. A row answered with no move draws an empty Moved
+  // there cell: absent is absent, and that cell does not say a record is missing.
   const moved = await cellsOf(parked, "CORE-9 Work CORE-9");
   expect(moved("Project").textContent).toBe("CORE");
   expect(within(moved("Updated")).getByRole("time").getAttribute("datetime")).toBe(
@@ -324,6 +326,26 @@ test("each fault table asks the issue listing for its statuses, and the parked o
   ).toEqual(["Legion works reliably first", "OSS Verify"]);
   expect(unrecorded("Moved there").textContent).toBe("");
   expect(within(unrecorded("Moved there")).queryByRole("time")).toBeNull();
+  // Why it was moved there: nothing records that yet, so every row says so, naming the work that
+  // records one as a link to it (R6).
+  for (const reason of [moved("Reason"), unrecorded("Reason")]) {
+    expect(reason.textContent).toBe("Not recorded until INFRA-2934");
+    expect(within(reason).getByRole("link", { name: "INFRA-2934" }).getAttribute("href")).toBe(
+      "/issues/INFRA-2934"
+    );
+  }
+
+  // Nor does the list under no priority offer the parked columns among those a reader may show.
+  await user.click(
+    within(screen.getByRole("region", { name: "In flight under no priority" })).getByRole(
+      "button",
+      { name: "Columns" }
+    )
+  );
+  const menu = screen.getByRole("dialog", { name: "Columns" });
+  expect(within(menu).getByRole("checkbox", { name: "Project" })).toBeChecked();
+  for (const name of ["Advances", "Moved there", "Reason"])
+    expect(within(menu).queryByRole("checkbox", { name })).toBeNull();
 });
 
 test("with no priority the page says so, and offers a writer the way to add the first", async () => {

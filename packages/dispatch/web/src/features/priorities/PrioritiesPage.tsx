@@ -27,16 +27,16 @@ const PARKED: IssueListing = { advances: "any", statuses: PARKED_STATUSES, moved
 
 /** Each fault list's own stored layout and the columns it opens with shown. Both name each row's
  *  project, since neither stands on one, and when the issue last changed, which is how long it
- *  has stood as it is (R6); the parked list names what the work advances and when it was moved
- *  there besides. The list under no priority has no Advances column at all: every row of it
- *  advances nothing. */
+ *  has stood as it is (R6); the parked list names what the work advances, when it was moved
+ *  there and why besides, the why being, on every row, that nothing records it yet. The list
+ *  under no priority has no Advances column at all: every row of it advances nothing. */
 const NO_PRIORITY_LAYOUT = {
   key: "priorities-no-priority",
   shown: ["project", "updated"] satisfies ShownColumnId[],
 };
 const PARKED_LAYOUT = {
   key: "priorities-parked",
-  shown: ["project", "advances", "moved", "updated"] satisfies ShownColumnId[],
+  shown: ["project", "advances", "moved", "reason", "updated"] satisfies ShownColumnId[],
 };
 
 /** The per-project or per-priority counts under a fault's rule, in plain words: `CORE 12 ·

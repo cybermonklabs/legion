@@ -21,6 +21,7 @@ import { ProgressChips } from "../issue/ProgressChips";
 import { UnreachableRouteMarker } from "../issue/RouteReach";
 import { priorityPath } from "../priorities/priority-routes";
 import { AgentName } from "../refs/AgentName";
+import { ReferenceLink } from "../refs/ReferenceLink";
 import { referenceTriggerProps } from "../refs/RefPreview";
 import { buildIssuePath } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
@@ -251,9 +252,9 @@ const renderings = (
 });
 
 /** The columns only some listings have a use for: which project a row is in, which priorities
- *  it advances, and when it was moved into backlog or icebox and by whom. A table has each only
- *  where its listing gives the cell something true to say (`listingColumns`). */
-export type ListingColumnId = "project" | "advances" | "moved";
+ *  it advances, when it was moved into backlog or icebox and by whom, and why. A table has each
+ *  only where its listing gives the cell something true to say (`listingColumns`). */
+export type ListingColumnId = "project" | "advances" | "moved" | "reason";
 
 /**
  * The listing columns a table of `listing` has, `titled` when its caller gives each priority's
@@ -265,18 +266,24 @@ export type ListingColumnId = "project" | "advances" | "moved";
  *   and without them the column could name each priority only by its id.
  * - Moved there, on a listing that asks for the move (`moved`): no other listing is answered with
  *   one, so its every cell would be empty, whatever the record holds.
+ * - Reason, on that same listing and no other: why the work was moved there. Nothing records a
+ *   reason yet, and every cell says so, naming the work that records one (R6).
  */
 export function listingColumns(listing: IssueListing, titled: boolean): ListingColumnId[] {
   const scoped = "advances" in listing;
   return [
     ...(scoped ? (["project"] as const) : []),
     ...(titled ? (["advances"] as const) : []),
-    ...(scoped && listing.moved === true ? (["moved"] as const) : []),
+    ...(scoped && listing.moved === true ? (["moved", "reason"] as const) : []),
   ];
 }
 
+/** The work that records why an issue was moved into backlog or icebox. Until it lands no move
+ *  carries a reason, and the Reason cell names it. */
+const MOVE_REASON_WORK = "dispatch://INFRA-2934";
+
 /**
- * The three listing columns. They name what R6 asks each fault row to name, and none of them
+ * The four listing columns. They name what R6 asks each fault row to name, and none of them
  * sorts, filters or groups - deliberately: the table's view in the address reads only the
  * columns `features/project/issues-table-model.ts` registers (`readUrl` drops any other id), and
  * these are the cells' own, kept out of that registry. Every registered column still sorts,
@@ -338,6 +345,22 @@ const LISTING_COLUMNS: readonly {
           </span>
         );
       },
+    }),
+  },
+  {
+    id: "reason",
+    size: 240,
+    min: 140,
+    rendering: () => ({
+      header: "Reason",
+      accessorFn: () => "",
+      // The same words on every row, since no move carries a reason yet: the cell says the
+      // record is missing rather than drawing an empty cell a reader could take for no reason.
+      cell: () => (
+        <span className={textSecondaryOnCanvas}>
+          Not recorded until <ReferenceLink reference={MOVE_REASON_WORK} />
+        </span>
+      ),
     }),
   },
 ];

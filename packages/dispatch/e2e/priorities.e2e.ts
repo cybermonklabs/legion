@@ -309,6 +309,12 @@ test("the priorities page draws the order first and the two fault lists under it
     // When it last changed, which the fault lists show by default and a project's table does
     // not (`PrioritiesPage.tsx`'s two layouts).
     await expect((await clockCell("Updated")).locator("time")).toHaveCount(1);
+    // Nor does it have the parked list's Reason column: this list asks for no move.
+    expect(
+      (await unplacedTable.getByRole("columnheader").allTextContents()).some((text) =>
+        text.trim().startsWith("Reason")
+      )
+    ).toBe(false);
 
     // The second fault's one row is the child, which advances P3 through the issue above it,
     // and it names the priority it advances and when it was moved out of the way.
@@ -333,6 +339,14 @@ test("the priorities page draws the order first and the two fault lists under it
     const moved = await childCell("Moved there");
     await expect(moved.locator("time")).toHaveCount(1);
     await expect(moved).toContainText("alice");
+    // Reason: why it was moved there, which nothing records until dispatch://INFRA-2934 does,
+    // and the cell says so with a link to that work.
+    const reason = await childCell("Reason");
+    await expect(reason).toHaveText("Not recorded until INFRA-2934");
+    await expect(reason.getByRole("link", { name: "INFRA-2934" })).toHaveAttribute(
+      "href",
+      "/issues/INFRA-2934"
+    );
   } finally {
     await context.close();
   }
