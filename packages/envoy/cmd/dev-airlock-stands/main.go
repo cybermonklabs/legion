@@ -45,11 +45,13 @@
 // and the permissions it names - and serves GET /repos/{owner}/{repo} to a token it minted whose
 // scope holds that repository, so a check spends a narrowed token as a caller does. What it
 // answers a token request is set while it runs by the same device as the model's: POST
-// <records URL>/answers/github, whose body is {"mode": "ordinary"|"refuse"|"widen"}. The three
-// are the answer each body asked for; the HTTP 422 that mints nothing, as GitHub answers a body
-// naming a permission the installation does not hold; and a token wider than the body asked for,
-// which the broker must refuse to release. The report names that address (github_answer_url),
-// and until a check calls it the stand answers each token request what its body asked for.
+// <records URL>/answers/github, whose body is {"mode": "ordinary"|"refuse"|"widen"|"fail-once"}.
+// The four are the answer each body asked for; the HTTP 422 that mints nothing, as GitHub answers
+// a body naming a permission the installation does not hold; a token wider than the body asked
+// for, which the broker must refuse to release; and one HTTP 503 to the next token request, as a
+// GitHub outage answers, before the ordinary answer again, which the broker's minter retries. The
+// report names that address (github_answer_url), and until a check calls it the stand answers
+// each token request what its body asked for.
 //
 // Every stand's requests are read back at the recording route this prints for it, GET
 // <records URL>/records/<stand>, whose answer is the JSON array of what that stand was sent:
@@ -591,21 +593,21 @@ const (
 
 // githubAnswerRequest is the body POST <records URL>/answers/github takes.
 type githubAnswerRequest struct {
-	// Mode is which of the GitHub stand's three answers every token request from then on gets:
-	// ordinary, refuse or widen (airlocktest.GitHubTokenAnswer).
+	// Mode is which of the GitHub stand's four answers every token request from then on gets:
+	// ordinary, refuse, widen or fail-once (airlocktest.GitHubTokenAnswer).
 	Mode string `json:"mode"`
 }
 
 // githubAnswerOf is one such request as the answer it sets, and what is wrong with a request
-// that sets none: a mode outside the three is named back with the three, since a check that
+// that sets none: a mode outside the four is named back with the four, since a check that
 // misspelled one must read that rather than leave the last answer quietly in place.
 func githubAnswerOf(body githubAnswerRequest) (airlocktest.GitHubTokenAnswer, error) {
 	switch answer := airlocktest.GitHubTokenAnswer(body.Mode); answer {
-	case airlocktest.GitHubTokensOrdinary, airlocktest.GitHubTokensRefused, airlocktest.GitHubTokensWider:
+	case airlocktest.GitHubTokensOrdinary, airlocktest.GitHubTokensRefused, airlocktest.GitHubTokensWider, airlocktest.GitHubTokensFailOnce:
 		return answer, nil
 	default:
-		return "", fmt.Errorf("the mode %q is none of the GitHub stand's three answers: %s, %s and %s",
-			body.Mode, airlocktest.GitHubTokensOrdinary, airlocktest.GitHubTokensRefused, airlocktest.GitHubTokensWider)
+		return "", fmt.Errorf("the mode %q is none of the GitHub stand's four answers: %s, %s, %s and %s",
+			body.Mode, airlocktest.GitHubTokensOrdinary, airlocktest.GitHubTokensRefused, airlocktest.GitHubTokensWider, airlocktest.GitHubTokensFailOnce)
 	}
 }
 

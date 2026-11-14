@@ -87,6 +87,11 @@ type GoogleServiceAccount struct {
 	// alone may not choose the account a broker with Token Creator on it impersonates.
 	Accounts map[string]string
 
+	// Retry is the policy the generateAccessToken call is retried under, and the process-wide
+	// budget it draws from, as GitHubApp's is; nil makes one attempt. The broker's own
+	// credential's token (Source) is not this minter's call and is not retried here.
+	Retry *Retry
+
 	// mu guards resolved: two releases can mint at once, and only one of them resolves.
 	mu sync.Mutex
 	// resolved is the application default credentials as the first mint that needed them found
@@ -200,7 +205,7 @@ func (m *GoogleServiceAccount) Mint(ctx context.Context, req MintRequest) (Minte
 	}
 	own.SetAuthHeader(request)
 	request.Header.Set("Content-Type", "application/json")
-	payload, err := mintCall(m.HTTP, request, what, "Google", http.StatusOK, mintResponseLimit)
+	payload, err := mintCall(m.Retry.start(req.Kind), m.HTTP, request, what, "Google", http.StatusOK, mintResponseLimit)
 	if err != nil {
 		return Minted{}, err
 	}

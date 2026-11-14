@@ -18,8 +18,9 @@
 # (BROKER_AIRLOCK_TEST_GITHUB_API_BASE names it). It records every call it was sent, at the
 # recording route the banner names, and the answer it gives a token request is set while it runs,
 # at the answer route the banner names too: the ordinary mint, the HTTP 422 that mints nothing,
-# and a token wider than the body asked for. The App is installed on three accounts, each with
-# an installation id of its own.
+# a token wider than the body asked for, and one HTTP 503 before the ordinary mint, which the
+# broker's minter retries. The App is installed on three accounts, each with an installation id
+# of its own.
 #
 # Two github-app secrets are written for it, both holding that stand's App id and private key as
 # their stored value and both owned by the registered service, as DEMO_SERVICE_TOKEN is, so a pod
@@ -546,7 +547,7 @@ dev-broker: ready.
   registered service:  $SERVICE  (BROKER_SERVICE_LOGINS=$REGISTRAR_ACCOUNT, BROKER_SERVICES=$EXCHANGE_ACCOUNT)
   github stand:        $GITHUB_URL  (BROKER_AIRLOCK_TEST_GITHUB_API_BASE; plain http, since the broker's minter trusts this host's own roots and nothing else)
   github records:      $GITHUB_RECORDS_URL  (GET: every call that stand was sent, as JSON)
-  github answers:      $GITHUB_ANSWER_URL  (POST {"mode": "ordinary"|"refuse"|"widen"}: what each token request is answered from then on)
+  github answers:      $GITHUB_ANSWER_URL  (POST {"mode": "ordinary"|"refuse"|"widen"|"fail-once"}: what each token request is answered from then on; fail-once answers the next one 503, which the broker retries, and the rest as ordinary)
   stand-in files:      $STANDS_DIR  (this run's GitHub App key and the stands' certificate authority; the whole report in $STANDS_JSON, its log in $STANDS_LOG)
 
   One agent-tier secret (DEMO_READ_TOKEN, granted without asking) and one human-tier secret

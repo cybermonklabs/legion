@@ -8,15 +8,20 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"golang.org/x/oauth2"
 
 	"github.com/sjawhar/envoy/internal/broker/airlock"
+	"github.com/sjawhar/envoy/internal/broker/airlock/airlocktest"
 	"github.com/sjawhar/envoy/internal/broker/config"
 	"github.com/sjawhar/envoy/internal/broker/policy"
+	"github.com/sjawhar/envoy/internal/broker/policy/policytest"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
+	"github.com/sjawhar/envoy/internal/metrics"
 )
 
 // TestEachKindReachesItsOwnMinter: the broker's minters send a github-app secret's value to the
@@ -110,7 +115,7 @@ func TestRequestMachineReleasesAzureLoginFromTheConfiguredFile(t *testing.T) {
 	if err := os.WriteFile(file, []byte(token), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	machine := newRequestMachine(config.Config{AzureTokenFile: file, AzureLoginSecret: "AZURE_LOGIN"}, nil, nil, nil, nil, airlock.Rules{}, "")
+	machine := newRequestMachine(config.Config{AzureTokenFile: file, AzureLoginSecret: "AZURE_LOGIN"}, nil, nil, nil, nil, airlock.Rules{}, "", metrics.New())
 	for _, kind := range policy.Kinds {
 		if machine.Minters[kind] == nil {
 			t.Fatalf("request machine has no minter for %s", kind)
@@ -127,5 +132,84 @@ func TestRequestMachineReleasesAzureLoginFromTheConfiguredFile(t *testing.T) {
 	var value map[string]string
 	if json.Unmarshal([]byte(got.Value), &value) != nil || len(value) != 4 || value["tenant_id"] != "tenant" || value["client_id"] != "client" || value["federated_token"] != token || value["expires_at"] != "2100-01-01T00:00:00Z" {
 		t.Fatal("request machine did not release the Azure login from its configured token file")
+	}
+}
+
+// TestKindMintersShareOneRetryBudget: the GitHub and Google minters kindMinters copies hold one
+// Retry, so their retries draw from one process-wide budget: thirty GitHub mints, each failing at
+// a 503 three times, spend its 60 retries, and a Google login's 503 is then tried once. Two
+// seconds on, the budget holds two retries again, and the same Google minter asks three times.
+func TestKindMintersShareOneRetryBudget(t *testing.T) {
+	var githubCalls, googleCalls atomic.Int64
+	github := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		githubCalls.Add(1)
+		http.Error(w, "unavailable", http.StatusServiceUnavailable)
+	}))
+	defer github.Close()
+	google := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		googleCalls.Add(1)
+		http.Error(w, "unavailable", http.StatusServiceUnavailable)
+	}))
+	defer google.Close()
+	now := time.Date(2026, 11, 14, 12, 0, 0, 0, time.UTC)
+	retry := secrets.NewRetry(metrics.New())
+	retry.Now = func() time.Time { return now }
+	retry.Sleep = func(context.Context, time.Duration) error { return nil }
+	minters := kindMinters(
+		secrets.GitHubApp{Base: github.URL, HTTP: github.Client(), Retry: retry},
+		secrets.GoogleLogin{TokenURL: google.URL, HTTP: google.Client(), Retry: retry},
+		secrets.AzureLogin{},
+		&secrets.GoogleServiceAccount{Retry: retry},
+	)
+	app := secrets.MintRequest{Kind: policy.KindGitHubApp, Value: policytest.KindValue(policy.KindGitHubApp), GitHubOwners: []string{"acme-org"}}
+	login := secrets.MintRequest{Kind: policy.KindGoogleLogin, Value: policytest.KindValue(policy.KindGoogleLogin)}
+
+	for range 30 {
+		if _, err := minters[policy.KindGitHubApp](t.Context(), app); secrets.MintAttempts(err) != 3 {
+			t.Fatalf("a github-app mint against a 503 = %v after %d attempts; want 3", err, secrets.MintAttempts(err))
+		}
+	}
+	if githubCalls.Load() != 90 {
+		t.Fatalf("thirty github-app mints made %d calls; want 90", githubCalls.Load())
+	}
+	if _, err := minters[policy.KindGoogleLogin](t.Context(), login); googleCalls.Load() != 1 || secrets.MintAttempts(err) != 1 {
+		t.Fatalf("a google-login mint once GitHub's spent the budget = %v after %d calls; want one attempt", err, googleCalls.Load())
+	}
+	now = now.Add(2 * time.Second)
+	if _, err := minters[policy.KindGoogleLogin](t.Context(), login); googleCalls.Load() != 4 || secrets.MintAttempts(err) != 3 {
+		t.Fatalf("a google-login mint two seconds on = %v after %d calls in all; want three attempts more", err, googleCalls.Load())
+	}
+}
+
+// TestRequestMachineCountsEachMintAttemptOnItsRegistry: the minters newRequestMachine builds
+// retry under the Retry it builds on the registry it is given. A github-app mint against the
+// GitHub stand answering its token request 503 once and then as ordinary mints at the second
+// attempt, and the registry's own handler serves both attempts in broker_mint_attempts_total.
+func TestRequestMachineCountsEachMintAttemptOnItsRegistry(t *testing.T) {
+	service, err := airlocktest.NewService(airlocktest.ServiceOptions{Plain: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer service.Close()
+	stand := airlocktest.NewGitHubStand(airlocktest.GitHubOptions{Installations: map[string]int64{"acme-org": 7}, Answer: airlocktest.GitHubTokensFailOnce})
+	service.AnswerWith(stand.Answer)
+	registry := metrics.New()
+	machine := newRequestMachine(config.Config{AirlockTestGitHubAPIBase: service.URL()}, nil, nil, nil, nil, airlock.Rules{}, "", registry)
+
+	minted, err := machine.Minters[policy.KindGitHubApp](t.Context(), secrets.MintRequest{
+		Kind: policy.KindGitHubApp, Value: policytest.KindValue(policy.KindGitHubApp), GitHubOwners: []string{"acme-org"},
+	})
+	if err != nil || !strings.Contains(minted.Value, "ghs_standin_acme-org") {
+		t.Fatalf("a github-app mint through one 503 = %q, %v; want acme-org's token", minted.Value, err)
+	}
+	recorder := httptest.NewRecorder()
+	registry.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	for _, sample := range []string{
+		`broker_mint_attempts_total{kind="github-app",outcome="upstream",attempt="1"} 1`,
+		`broker_mint_attempts_total{kind="github-app",outcome="ok",attempt="2"} 1`,
+	} {
+		if !strings.Contains(recorder.Body.String(), sample+"\n") {
+			t.Errorf("the registry serves\n%s\nwant the sample %s", recorder.Body.String(), sample)
+		}
 	}
 }

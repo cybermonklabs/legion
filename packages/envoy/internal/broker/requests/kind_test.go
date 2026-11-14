@@ -5,14 +5,18 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/broker/policy"
 	"github.com/sjawhar/envoy/internal/broker/policy/policytest"
 	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
+	"github.com/sjawhar/envoy/internal/metrics"
 )
 
 // requestKindSecret is a kind secret of the fixture's operator holding a value its kind's decoder
@@ -429,6 +433,43 @@ func TestAFailedMintIsNamedAndReleasesNothing(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), policytest.KindValue(policy.KindGoogleLogin)) {
 		t.Fatal("Values error leaked the stored value")
+	}
+}
+
+// TestAFailedMintsLineNamesItsAttempts: release hands the minter the secret's kind, which the
+// minter counts its attempts under, and the mint failure line names the attempts the failed call
+// made. A google-login release whose refresh Google answers 503 every time fails after the three
+// attempts the real minter's Retry makes, its line says attempts=3, and the counter holds the
+// third attempt under kind google-login.
+func TestAFailedMintsLineNamesItsAttempts(t *testing.T) {
+	machine, enrollmentID, key, _ := newFixture(t)
+	retag(t, machine, requestKindSecret("FLAKY_LOGIN", policy.KindGoogleLogin, policy.TierAgent, ""))
+	google := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "unavailable", http.StatusServiceUnavailable)
+	}))
+	defer google.Close()
+	registry := metrics.New()
+	retry := secrets.NewRetry(registry)
+	retry.Sleep = func(context.Context, time.Duration) error { return nil }
+	machine.Minters = map[string]Minter{
+		policy.KindGoogleLogin: secrets.GoogleLogin{TokenURL: google.URL, HTTP: google.Client(), Retry: retry}.Mint,
+	}
+	request, err := machine.Create(t.Context(), enrollmentID, signRequest(t, machine, key, "read login", "FLAKY_LOGIN"), "")
+	if err != nil || request.GrantID == nil {
+		t.Fatalf("Create = %+v, %v; want an automatic grant", request, err)
+	}
+	logged := policytest.CaptureLog(t)
+	release, err := machine.Values(t.Context(), *request.GrantID, enrollmentID, nil)
+	if !errors.Is(err, ErrMintFailed) || secrets.MintAttempts(err) != 3 || release.Values != nil {
+		t.Fatalf("Values = %v, %v (%d attempts); want ErrMintFailed after 3 attempts", release.Values, err, secrets.MintAttempts(err))
+	}
+	if want := MintFailedMessage + " name=FLAKY_LOGIN kind=google-login class=upstream attempts=3 error="; !strings.Contains(logged.String(), want) {
+		t.Fatalf("the log holds %q; want a line holding %q", logged, want)
+	}
+	recorder := httptest.NewRecorder()
+	registry.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	if want := `broker_mint_attempts_total{kind="google-login",outcome="upstream",attempt="3"} 1` + "\n"; !strings.Contains(recorder.Body.String(), want) {
+		t.Fatalf("the registry serves\n%s\nwant %s", recorder.Body.String(), want)
 	}
 }
 

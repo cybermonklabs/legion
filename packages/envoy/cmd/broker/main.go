@@ -455,7 +455,7 @@ func main() {
 		VMServicesByAccount: cfg.VMServicesByAccount,
 	}
 	enr.Chain = enroll.NewChainVerifier(st, cfg.PublicURL, time.Duration(cfg.ProofSkewSeconds)*time.Second)
-	reqMachine := newRequestMachine(cfg, st, current, secretStore, enr.Replay, rules, airlockCACertificate)
+	reqMachine := newRequestMachine(cfg, st, current, secretStore, enr.Replay, rules, airlockCACertificate, registry)
 	// The model judge, on ctx rather than on serving: a run writes a grant, so an in-flight one
 	// has to end at the first SIGTERM, before the drain, leaving its request pending for the
 	// person who decides it today rather than approving it while the pod is going away.
@@ -1048,8 +1048,13 @@ func airlockCACertificatePEM(ca *airlockproxy.Authority) string {
 // secret, the one account the deployment binds it to and so the only one its release mints a
 // token for. A grant lasts the lifetime its request signed, or until its session ends. rules and
 // caCertificate are the airlock's, read at boot: a name the rules name is released as
-// placeholders, and every such release carries the proxy's URL and this certificate.
-func newRequestMachine(cfg config.Config, st *store.Store, current *policy.Current, secretStore secrets.Store, replay func(context.Context, string, time.Time) (bool, error), rules airlock.Rules, caCertificate string) *requests.Machine {
+// placeholders, and every such release carries the proxy's URL and this certificate. registry is
+// the process's own, which the minters' broker_mint_attempts_total is counted on.
+func newRequestMachine(cfg config.Config, st *store.Store, current *policy.Current, secretStore secrets.Store, replay func(context.Context, string, time.Time) (bool, error), rules airlock.Rules, caCertificate string, registry *metrics.Registry) *requests.Machine {
+	// The one retry policy and process-wide retry budget of the three minters that call an
+	// upstream over HTTP, so a GitHub brownout that spends the budget leaves a Google mint's
+	// failure unretried too: each holds the one pointer, which kindMinters' copies keep.
+	retry := secrets.NewRetry(registry)
 	m := &requests.Machine{
 		Store: st, Policy: current, Secrets: secretStore, PendingTTL: agentSecretPendingTTL,
 		Audience: cfg.PublicURL, Skew: time.Duration(cfg.ProofSkewSeconds) * time.Second, Replay: replay,
@@ -1059,8 +1064,8 @@ func newRequestMachine(cfg config.Config, st *store.Store, current *policy.Curre
 		// stand-in endpoints when it named them, and the real ones otherwise: a minter left
 		// zero mints against GitHub and Google themselves.
 		Minters: kindMinters(
-			secrets.GitHubApp{Base: cfg.AirlockTestGitHubAPIBase},
-			secrets.GoogleLogin{TokenURL: cfg.AirlockTestGoogleTokenURL},
+			secrets.GitHubApp{Base: cfg.AirlockTestGitHubAPIBase, Retry: retry},
+			secrets.GoogleLogin{TokenURL: cfg.AirlockTestGoogleTokenURL, Retry: retry},
 			secrets.AzureLogin{TokenFile: cfg.AzureTokenFile, SecretName: cfg.AzureLoginSecret},
 			// The google-service-account minter takes the deployment's binding of each such
 			// secret to the one account it may mint for (BROKER_SERVICE_ACCOUNT_SECRETS): the
@@ -1070,7 +1075,7 @@ func newRequestMachine(cfg config.Config, st *store.Store, current *policy.Curre
 			// Workload Identity credentials, which it finds on its first mint and keeps, and
 			// asks Google's own IAM endpoint. It is passed by pointer because that is where it
 			// keeps those credentials.
-			&secrets.GoogleServiceAccount{Accounts: cfg.ServiceAccountSecrets}),
+			&secrets.GoogleServiceAccount{Accounts: cfg.ServiceAccountSecrets, Retry: retry}),
 		Airlock:              rules,
 		AirlockProxyURL:      cfg.AirlockProxyURL,
 		AirlockCACertificate: caCertificate,
@@ -1272,7 +1277,9 @@ func issuerKeys(ctx context.Context, issuer string) (*oidc.Keys, error) {
 // its own binding of each google-service-account secret to the account that minter may mint for,
 // which in production is BROKER_SERVICE_ACCOUNT_SECRETS; a minter given no binding at all mints
 // no secret of that kind. The google-service-account minter is a pointer: its method value would
-// otherwise copy the credentials it caches away from the minter every later mint reads.
+// otherwise copy the credentials it caches away from the minter every later mint reads. The other
+// two are copied, and each Retry they hold is a pointer, so minters given one Retry still draw
+// from its one budget.
 func kindMinters(githubApp secrets.GitHubApp, googleLogin secrets.GoogleLogin, azureLogin secrets.AzureLogin, googleServiceAccount *secrets.GoogleServiceAccount) map[string]requests.Minter {
 	return map[string]requests.Minter{
 		policy.KindGitHubApp:            githubApp.Mint,

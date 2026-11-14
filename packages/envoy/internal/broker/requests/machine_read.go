@@ -25,8 +25,10 @@ import (
 
 // MintFailedMessage is logged, at ERROR, each time a kind secret's minter fails a release,
 // followed by name=<the secret's name>, kind=<its kind>, class=<secrets.MintErrorClass of the
-// error> and error=<the minter's message>, which never holds the stored value or a token. The
-// session's answer is 502 MINT_FAILED; this line is the operator's.
+// error>, attempts=<secrets.MintAttempts of the error: the attempts the upstream call the mint
+// failed at made, 1 to 3, and 0 for a failure that was no call's> and error=<the minter's
+// message>, which never holds the stored value or a token. The session's answer is 502
+// MINT_FAILED; this line is the operator's.
 const MintFailedMessage = "broker: mint failed"
 
 // TrailingLineEndingRemovedMessage is logged, at INFO, in release, each time the shape rule
@@ -419,7 +421,7 @@ func (m *Machine) release(ctx context.Context, g requestedSecret, served policy.
 		return secrets.Minted{}, err
 	}
 	token, err := mint(ctx, secrets.MintRequest{
-		Name: g.name, HumanTier: served.Tier == policy.TierHuman, Value: shapedValue(value, served.Shape, g.name),
+		Name: g.name, Kind: kind, HumanTier: served.Tier == policy.TierHuman, Value: shapedValue(value, served.Shape, g.name),
 		GitHubOwners: served.GitHubOwnerLogins(), GoogleScopes: served.ScopeURLs(),
 		GitHubNarrowing: narrowing,
 	})
@@ -429,7 +431,7 @@ func (m *Machine) release(ctx context.Context, g requestedSecret, served policy.
 	if err != nil {
 		// The minter's error names its class and why, never the stored value or a token, so the
 		// line is safe to log; the session sees the same words as MINT_FAILED.
-		slog.Error(MintFailedMessage, "name", g.name, "kind", kind, "class", secrets.MintErrorClass(err), "error", err)
+		slog.Error(MintFailedMessage, "name", g.name, "kind", kind, "class", secrets.MintErrorClass(err), "attempts", secrets.MintAttempts(err), "error", err)
 		if errors.Is(err, secrets.ErrMintStoredValue) {
 			m.Policy.RefuseValue(ctx, g.name, version)
 		}

@@ -22,11 +22,15 @@ import (
 const githubAPIBase = "https://api.github.com"
 
 // GitHubApp mints installation tokens from the App id and private key in a github-app secret.
-// Base, HTTP and Now let tests replace GitHub, its transport and the clock.
+// Base, HTTP and Now let tests replace GitHub, its transport and the clock. Retry is the policy
+// each of a mint's calls is retried under, and the process-wide budget it draws from; nil makes
+// one attempt of each. It is a pointer, so every copy of the minter (kindMinters takes it by
+// value) draws from the one budget.
 type GitHubApp struct {
-	Base string
-	HTTP *http.Client
-	Now  func() time.Time
+	Base  string
+	HTTP  *http.Client
+	Now   func() time.Time
+	Retry *Retry
 }
 
 type githubInstallation struct {
@@ -151,7 +155,7 @@ func (n *GitHubNarrowing) refusal(err error, appID, owner string) error {
 	if n.ReadOnly {
 		causes = append(causes, "contents: read, metadata: read or pull_requests: read, which the App does not hold")
 	}
-	return fmt.Errorf("%w: github app %s: GitHub answered HTTP 422 to the narrowed token for %s: likely %s; the caller fixes the narrowing", ErrMintNarrowingRefused, appID, owner, strings.Join(causes, ", or "))
+	return withAttempts(fmt.Errorf("%w: github app %s: GitHub answered HTTP 422 to the narrowed token for %s: likely %s; the caller fixes the narrowing", ErrMintNarrowingRefused, appID, owner, strings.Join(causes, ", or ")), err)
 }
 
 // refusedPermissions reports GitHub refusing the permissions a read-only narrowing's token
@@ -219,9 +223,10 @@ const revokedWiderMessage = "broker: GitHub did not revoke a narrowed token it m
 const missingActionsMessage = "broker: a GitHub App installation does not hold actions, so the read-only token released for it reads no Actions runs, jobs or job logs; grant the App Actions: Read and approve it on that account"
 
 // revokeInstallationToken asks GitHub to revoke token, as the token itself
-// (DELETE /installation/token), for a token Mint minted and will not release. It runs to its own
-// bound even once ctx ends, since GitHub honours an unreleased token for an hour otherwise.
-func (m GitHubApp) revokeInstallationToken(ctx context.Context, token string) error {
+// (DELETE /installation/token), for a token Mint minted and will not release, retried as the
+// mint's other calls are and from the same wait budget. It runs to its own bound even once ctx
+// ends, since GitHub honours an unreleased token for an hour otherwise.
+func (m GitHubApp) revokeInstallationToken(ctx context.Context, mint *mintRetry, token string) error {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), revokeTimeout)
 	defer cancel()
 	const what = "revoke GitHub App installation token"
@@ -229,7 +234,7 @@ func (m GitHubApp) revokeInstallationToken(ctx context.Context, token string) er
 	if err != nil {
 		return fmt.Errorf("%w: %s: %w", ErrMintUpstream, what, err)
 	}
-	_, err = mintCall(m.HTTP, request, what, "GitHub", http.StatusNoContent, mintResponseLimit)
+	_, err = mintCall(mint, m.HTTP, request, what, "GitHub", http.StatusNoContent, mintResponseLimit)
 	return err
 }
 
@@ -246,7 +251,8 @@ func (m GitHubApp) revokeInstallationToken(ctx context.Context, token string) er
 // than the narrowing asked (heldBy); a token it refuses so it revokes at GitHub first. The value is
 // the JSON object stored in the secret, decoded by ParseValue before anything else, so a value it
 // refuses is refused as the stored value even when the narrowing is refused too; it is never part
-// of an error. Every error wraps one of ErrMintStoredValue, ErrMintRefused,
+// of an error. Every call it makes is retried under m.Retry, all of them waiting from the one wait
+// budget this mint starts. Every error wraps one of ErrMintStoredValue, ErrMintRefused,
 // ErrMintNarrowingRefused or ErrMintUpstream.
 func (m GitHubApp) Mint(ctx context.Context, req MintRequest) (Minted, error) {
 	parsed, err := ParseValue(kindGitHubApp, req.Value)
@@ -276,7 +282,8 @@ func (m GitHubApp) Mint(ctx context.Context, req MintRequest) (Minted, error) {
 	if err != nil {
 		return Minted{}, fmt.Errorf("%w: sign GitHub App JWT: %w", ErrMintStoredValue, err)
 	}
-	installations, err := m.installations(ctx, jwt)
+	mint := m.Retry.start(req.Kind)
+	installations, err := m.installations(ctx, mint, jwt)
 	if err != nil {
 		return Minted{}, err
 	}
@@ -295,13 +302,13 @@ func (m GitHubApp) Mint(ctx context.Context, req MintRequest) (Minted, error) {
 		if !slices.Contains(owners, strings.ToLower(owner)) {
 			continue
 		}
-		token, err := m.installationToken(ctx, jwt, installation.ID, body)
+		token, err := m.installationToken(ctx, mint, jwt, installation.ID, body)
 		if narrowing.refusedPermissions(err) {
 			// The installation holds fewer permissions than the body named, and actions is the
 			// one of them an App is not always granted: ask once more without it, so an App that
 			// reads contents, metadata and pull requests releases those rather than nothing
 			// (optionalReadOnlyPermission). heldBy still bounds what the answer may hold.
-			token, err = m.installationToken(ctx, jwt, installation.ID, narrowing.accessTokensBody(readOnlyPermissionsWithoutActions))
+			token, err = m.installationToken(ctx, mint, jwt, installation.ID, narrowing.accessTokensBody(readOnlyPermissionsWithoutActions))
 			if err == nil {
 				slog.Warn(missingActionsMessage, "app", secret.AppID, "installation", installation.ID)
 			}
@@ -310,7 +317,7 @@ func (m GitHubApp) Mint(ctx context.Context, req MintRequest) (Minted, error) {
 			return Minted{}, narrowing.refusal(err, secret.AppID, owner)
 		}
 		if err := narrowing.heldBy(token); err != nil {
-			if revokeErr := m.revokeInstallationToken(ctx, token.Token); revokeErr != nil {
+			if revokeErr := m.revokeInstallationToken(ctx, mint, token.Token); revokeErr != nil {
 				slog.Warn(revokedWiderMessage, "app", secret.AppID, "installation", installation.ID, "expires_at", token.ExpiresAt, "error", revokeErr)
 			}
 			return Minted{}, fmt.Errorf("%w: github app %s: installation %d: %w", ErrMintUpstream, secret.AppID, installation.ID, err)
@@ -362,7 +369,7 @@ func githubRequest(ctx context.Context, method, target, bearer string, body []by
 	return request, nil
 }
 
-func (m GitHubApp) installations(ctx context.Context, jwt string) ([]githubInstallation, error) {
+func (m GitHubApp) installations(ctx context.Context, mint *mintRetry, jwt string) ([]githubInstallation, error) {
 	const what = "list GitHub App installations"
 	var installations []githubInstallation
 	for page := 1; ; page++ {
@@ -370,7 +377,7 @@ func (m GitHubApp) installations(ctx context.Context, jwt string) ([]githubInsta
 		if err != nil {
 			return nil, fmt.Errorf("%w: %s: %w", ErrMintUpstream, what, err)
 		}
-		payload, err := mintCall(m.HTTP, request, what, "GitHub", http.StatusOK, mintResponseLimit)
+		payload, err := mintCall(mint, m.HTTP, request, what, "GitHub", http.StatusOK, mintResponseLimit)
 		if err != nil {
 			return nil, err
 		}
@@ -387,13 +394,13 @@ func (m GitHubApp) installations(ctx context.Context, jwt string) ([]githubInsta
 
 // installationToken asks GitHub for installationID's token, sending body, GitHub's access_tokens
 // body, when it is not nil.
-func (m GitHubApp) installationToken(ctx context.Context, jwt string, installationID int64, body []byte) (githubInstallationToken, error) {
+func (m GitHubApp) installationToken(ctx context.Context, mint *mintRetry, jwt string, installationID int64, body []byte) (githubInstallationToken, error) {
 	const what = "mint GitHub App installation token"
 	request, err := githubRequest(ctx, http.MethodPost, m.base()+"/app/installations/"+strconv.FormatInt(installationID, 10)+"/access_tokens", jwt, body)
 	if err != nil {
 		return githubInstallationToken{}, fmt.Errorf("%w: %s: %w", ErrMintUpstream, what, err)
 	}
-	payload, err := mintCall(m.HTTP, request, what, "GitHub", http.StatusCreated, accessTokensResponseLimit)
+	payload, err := mintCall(mint, m.HTTP, request, what, "GitHub", http.StatusCreated, accessTokensResponseLimit)
 	if err != nil {
 		return githubInstallationToken{}, err
 	}

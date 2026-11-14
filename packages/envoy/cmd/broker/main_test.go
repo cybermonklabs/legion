@@ -39,6 +39,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/policy"
 	"github.com/sjawhar/envoy/internal/broker/store/storetest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
+	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -220,7 +221,7 @@ func TestTheRequestMachineCarriesTheServicesByAccount(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m := newRequestMachine(cfg, nil, nil, nil, nil, airlock.Rules{}, "")
+	m := newRequestMachine(cfg, nil, nil, nil, nil, airlock.Rules{}, "", metrics.New())
 	want := map[string]string{
 		"system:serviceaccount:example:example-sa": "example-service",
 		"system:serviceaccount:example:another-sa": "example-service",

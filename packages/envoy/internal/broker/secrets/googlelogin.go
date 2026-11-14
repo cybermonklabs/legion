@@ -16,11 +16,14 @@ const googleTokenURL = "https://oauth2.googleapis.com/token"
 
 // GoogleLogin exchanges the refresh token in a google-login secret for a Google access token.
 // TokenURL and HTTP let tests replace Google's token endpoint and its transport, and Now the
-// clock the minted token's expiry is measured from, as GitHubApp has.
+// clock the minted token's expiry is measured from, as GitHubApp has. Retry is the policy the
+// refresh is retried under, and the process-wide budget it draws from, as GitHubApp's is; nil
+// makes one attempt.
 type GoogleLogin struct {
 	TokenURL string
 	HTTP     *http.Client
 	Now      func() time.Time
+	Retry    *Retry
 }
 
 type googleTokenResponse struct {
@@ -81,14 +84,14 @@ func (m GoogleLogin) Mint(ctx context.Context, req MintRequest) (Minted, error) 
 		now = m.Now
 	}
 	asked := now()
-	payload, err := mintCall(m.HTTP, request, what, "Google", http.StatusOK, mintResponseLimit)
+	payload, err := mintCall(m.Retry.start(req.Kind), m.HTTP, request, what, "Google", http.StatusOK, mintResponseLimit)
 	if status := (*mintStatusError)(nil); errors.As(err, &status) {
 		var tokenError googleTokenError
 		if json.Unmarshal(payload, &tokenError) == nil && tokenError.Code == "invalid_grant" {
 			if tokenError.Subtype != "" {
-				return Minted{}, fmt.Errorf("%w: Google login needs a new sign-in: invalid_grant (%s)", ErrMintRefused, googleSubtype(tokenError.Subtype))
+				return Minted{}, withAttempts(fmt.Errorf("%w: Google login needs a new sign-in: invalid_grant (%s)", ErrMintRefused, googleSubtype(tokenError.Subtype)), err)
 			}
-			return Minted{}, fmt.Errorf("%w: Google login needs a new sign-in: invalid_grant", ErrMintRefused)
+			return Minted{}, withAttempts(fmt.Errorf("%w: Google login needs a new sign-in: invalid_grant", ErrMintRefused), err)
 		}
 	}
 	if err != nil {
