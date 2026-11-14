@@ -34,7 +34,7 @@ func readCapabilities(value *yaml.Node, key string) (*Capabilities, error) {
 	if value.Kind != yaml.MappingNode {
 		return nil, fmt.Errorf("%s must be a mapping", key)
 	}
-	fields, err := members(value, key, "decided")
+	fields, err := describedMembers(value, key, "capabilities")
 	if err != nil {
 		return nil, err
 	}

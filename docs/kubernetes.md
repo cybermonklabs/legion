@@ -2237,7 +2237,7 @@ A caller in a pod whose claims record a contract below 49 is served the state wi
 Store migration 20261104073148_issue_memory_group adds the three columns they are read from to `issues` — `memory_group`, `memory_draw_mode` and `memory_drawn_at` — written once, when the tree's lifecycle row is first created, and backfilled for no row.
 Store migration 20261104153554_issue_memory_carried adds `memory_carried` beside them, the hand-over's own answer about a root handed over out of another tree, which no caller of the state reads.
 It backfills the hand-overs the release before it recorded: a row whose `handed_over_from` names a tree that holds a `tree_lifecycles` row of the project's normalized token, and that carries no draw of its own, is marked carried.
-Those old trees ran with no memory, the setting having not existed then, so the mark is written and no group with it, which is the answer `record.Store.CarryMemory` writes at a hand-over made from now on.
+Those old trees ran with no memory, the setting having not existed then, so the mark is written and no group with it, which is the answer the hand-over wrote from then on: `record.Store.CarryMemory` until daemon API contract 131, and `record.Store.CarryAssignments` since, which settles the child at no variant (contract 131, below).
 A child handed over out of a tree nothing ever opened keeps the column's default, false, and is drawn at its own first open like any other new tree.
 
 To roll this release back to contract 48, put `legion.yaml` back without `projects.<KEY>.memory`, which the earlier release refuses as a key it does not know, and re-pin it.
@@ -2330,6 +2330,50 @@ two supervise starts carrying `entry`, one of them `resendEntry` beside it, a su
 The first run printed `BEGIN`, three `ALTER TABLE`s, `UPDATE 2`, six `ALTER TABLE`s, `DELETE 1` and `COMMIT`, and the second printed the nine `NOTICE`s with their `ALTER TABLE`s, `UPDATE 0`, `DELETE 0` and the same `COMMIT`; both exited 0.
 After them the three assignment columns stood, none of the six entry columns did, `claims.leak_check_cause` still stood, `schema_version` held 132 rows with none of 20261111225552 and its highest still at 20261112180548, the two supervise payloads had lost both keys and kept every other key they carried — the `assignment` the second of them carried among them — and the `notice` row kept its own `entry`.
 Running `Migrate` again then applied that one migration a second time, reporting one migration applied: the six entry columns stood on the three tables again, the three assignment columns were dropped again, and `schema_version` held 133 rows, 20261111225552 among them and 20261112180548 still the highest.
+
+**Each issue's experiment assignments in the state (daemon API contract 131).**
+A release at contract 131 carries, on every issue of `GET /legion/v1/state`, `assignments`:
+one `{experiment, variant, mode, drawnAt}` per experiment answer that applies to that issue, in the order the project's file declares the experiments:
+first the `memory` block's experiment, `settings.projects.<KEY>.memory`, which every project declares — at mode `off` where its file writes no block — unless `settings.projects.<KEY>.experiments` names `memory` itself;
+then the experiments `settings.projects.<KEY>.experiments` names, in its order;
+then any experiment the file no longer names, in the order of their names.
+An issue carries its tree's answer for an experiment whose unit is the tree, and its own answer for one whose unit is the issue.
+`variant` and `mode` ride whatever they hold, the empty string included, and `drawnAt` is absent where the row holds no instant:
+that row — no arm, no mode, no instant — is a hand-over settling a child at no arm for an experiment the tree it left held no row for, which is how a reader tells a unit settled at no arm from a unit never drawn, which is no row at all.
+The key is absent from an issue no experiment holds an answer for, so the wire carries no empty list, and absent from every issue of the body a caller in a pod whose claims record a contract below 131 is served.
+The three memory fields of contract 49 answer exactly as they did and no reader of them changes:
+they are now read off the answer of the experiment named `memory`, whichever spelling declared it, and only where that row records a draw.
+`settings.projects.<KEY>.experiments` is a key new in this release, and every project carries it: `[]` for a project whose file declares no experiment under that key.
+Store migration 20261111045636_experiment_assignments adds the table those answers are rows of, `experiment_assignments`, keyed by the issue key and the experiment name, written once and never updated, and back-fills it from the four `issues.memory_*` columns:
+every root holding a draw (`memory_drawn_at` is not null) or a hand-over's mark (`memory_carried`) takes one row, experiment `memory`, unit `tree`, with its mode, its instant and its mark verbatim and its group as the variant, but for one normalisation: a group drawn under mode `off`, which that column holds as the word `none`, becomes the empty variant.
+The four columns stay in the schema exactly as they stand, this release writes none of them, and a later release drops them.
+
+To roll this release back to contract 111, put `legion.yaml` back without `projects.<KEY>.experiments`, which the earlier release refuses as a key it does not know, and re-pin it.
+There is no SQL to run and no table to drop:
+the earlier release names neither `experiment_assignments` nor its rows, so it boots with the table in place, reads nothing of it and writes nothing to it, and an upgrade back to this release reads the rows it left.
+A `legion` of this release kept through the rollback reads the rolled-back daemon's `memory` line as the earlier release's own `legion state` prints it: that daemon serves no `assignments`, so the line counts every issue whose `memoryGroup` is set, by that group and its `memoryDrawMode` (`experimentLines` in `packages/daemon/cmd/legion/main.go`).
+What the rollback costs is the arm of every tree drawn after the upgrade, and the record of it.
+The earlier release draws into `issues.memory_*` only where it creates a tree's lifecycle row (the `if lifecycle.Created` branch of `(*Admission).promoteHolds`, `internal/admit/admit.go` at `legion-v20.13.0`), and the lifecycle row of every tree drawn after the upgrade exists already, so the rolled-back daemon creates none of them again and re-draws nothing;
+it changes arms all the same.
+That release decides a launch's memory from `issues.memory_group` alone (its `treeMemoryGroup`, `issue.MemoryGroup == "memory"`), and this release writes no `memory_*` column, so a tree drawn into the `memory` arm after the upgrade has an empty `memory_group`:
+its next role starts without the memory overlays and without the memory instructions, and the tree runs the rest of its life in the other arm than the one it was drawn into.
+The record goes with it: that tree's answer is in `experiment_assignments`, which the earlier release names nowhere, so it reads as undrawn there for the rest of its life — its lifecycle row is never created again, so nothing ever writes the columns for it — and the measurement job loses its exposure.
+The trees drawn before the upgrade are untouched: their columns are the back-fill's source and still hold their draw, so they keep their arm and read exactly as they did.
+The earlier release writes `issues.memory_*` in a second place, the hand-over, and that costs the children handed over out of those trees too.
+Its `(*Admission).readmit`, in the same file, calls `record.Store.CarryMemory` (`internal/record/store.go` at `legion-v20.13.0`) for every child that leaves another tree, and `CarryMemory` copies the old tree's root's `issues.memory_*` onto the child and marks it carried wherever that tree holds a lifecycle row.
+A tree this release drew holds one and holds empty columns, so a child handed over out of it while the rollback holds is copied no group, no mode and no instant, and marked carried:
+it is settled at no group, and the earlier release never draws it, since its `DrawMemory` passes over a carried root.
+Rolling forward does not undo that for a child whose own tree the earlier release opened during the window, and does for one whose own tree no release has opened yet.
+The back-fill does not run again, so neither child holds an assignment row.
+The child whose tree the earlier release opened has a lifecycle row that stands, so this release never draws it either:
+it comes back in no arm, whatever arm the tree it left was drawn into, and the copy by hand below gives it only the settled row, which is no variant too.
+The child whose tree no release has opened is drawn by this release at its first open after the roll forward (the `if lifecycle.Created` branch of `(*Admission).promoteHolds`), as any new tree is, unless the copy by hand below reaches it first:
+that copy takes the child's carried mark too and writes it the settled row, at no variant, and the draw at its first open then writes nothing over that row.
+Rolling forward again costs the window the earlier release ran for.
+A tree it drew in that window has its answer in `issues.memory_*` alone, and the back-fill runs once, at the first deploy of the migration, and not a second time:
+this release finds no row for that tree, runs it in no arm — so it too changes arm mid-life — and settles the children it hands over at no variant.
+Copy those trees over by hand before reading the exposure again, with the back-fill's own `select` and `on conflict (issue_key, experiment) do nothing`, since the rows copied at the first deploy stand.
+Every answer a project's other experiments drew is in that table alone, so the rolled-back release reads none of them, and a project that still declares `experiments` is refused at load until the key is taken out.
 
 ### Contract discipline
 
@@ -5579,6 +5623,10 @@ each issue's pod (every role of it alike) and the image probe's.
   a deployment that turns fallback on only for some roles, as here, reports the row open, and records that with `capabilities.decided.model-fallback: "<reason>"`.
 
 - **`projects.<KEY>.memory`** gives every role of a tree the project opens the same Oh My Pi overlays and the same block of prompt text, or gives it none, by one draw made for the whole tree.
+  The block **is** the experiment named `memory` (`projects.<KEY>.experiments` below): the daemon reads it as an experiment of unit `tree` whose arms are `memory`, carrying the block's `config_files` and `instructions`, and `none`, carrying neither, at equal weight, with `on_variant: memory`.
+  A project writes the block **or** `experiments.memory`, never both:
+  the two are one experiment spelled twice, and a project that writes both is refused (`projects.<KEY>.memory and projects.<KEY>.experiments.memory are one experiment written twice: …`).
+  The block itself is accepted and refused in no new way — every rule below is the rule it has always had — so a file that passed before passes now, unchanged.
   `mode` is `off`, `on` or `random`: `off` gives no tree a memory group and is what a project with no `memory` block gets, `on` gives every new tree one, and `random` draws a fair coin (`crypto/rand`) for each new tree.
   `config_files` are the overlays a memory-group tree's roles name, absolute paths in the operator's mounts as `role_config_files`' are, and at least one is required while the mode is not `off`.
   `instructions` is optional, and is one markdown file on the daemon's own disk rather than in a mount:
@@ -5637,7 +5685,91 @@ each issue's pod (every role of it alike) and the image probe's.
   a tree already drawn into the memory group names them, which is why the mount check and the readability check hold at `off` too.
   A project with no block at all is the pod every deployment built before the block existed.
   Every issue of `GET /legion/v1/state` carries its tree's `memoryGroup` (`memory` or `none`), `memoryDrawMode` and `memoryDrawnAt`, the three absent together while nothing has drawn for the tree (daemon API contract 49);
-  `settings` carries the project's block; and `legion state` prints one `memory:` line counting the issues drawn under each group and mode, naming no issue, since the state names no tree and a handed-over tree carries its old tree's draw verbatim.
+  `settings` carries the project's block;
+  and `legion state` prints one line per declared experiment, the `memory` line among them, counting the issues that hold each arm and naming no issue, since the state names no tree and a handed-over tree carries its old tree's draw verbatim.
+
+- **`projects.<KEY>.experiments`** declares the experiments the project draws its trees and its issues into, as a mapping of an experiment's name to its block, read and kept in the file's order.
+  An experiment's name is 1 to 32 characters of `a-z`, `0-9` and `-`, and the project names it once:
+  every draw records it.
+  `mode` is `off`, `on` or `random`: `off` draws for no unit and is what a block with no mode gets, `on` gives every new unit the arm `on_variant` names, and `random` draws among the arms by their weights (`crypto/rand`).
+  `unit` is `tree`, the default, which draws once for a whole tree and gives every issue of it the same arm, or `issue`, which draws for each issue of the project on its own.
+  `variants` are the arms it compares, and a mode other than `off` needs at least two of them, since a draw among one arm measures nothing.
+  Each arm takes a `name` (the same characters, named once in its experiment), a `weight` (a whole number above zero, `1` where the arm names none), `config_files`, the Oh My Pi overlays a role of a unit drawn into it names, and `instructions`, one markdown file on the daemon's own disk.
+  Neither file key is required:
+  the arm that names no file at all is the control the others are measured against.
+
+  ```yaml
+  # plan-length.yml: kubectl -n legion create configmap legion-operator-experiments --from-file=plan-length.yml
+  runtime:
+    kubernetes:
+      pod:
+        volumes:
+          - {name: operator-experiments, config_map: {name: legion-operator-experiments}}
+        volume_mounts:
+          - {volume: operator-experiments, mount_path: /etc/legion-experiments}
+  projects:
+    WIDGETS:
+      experiments:
+        plan-length:
+          mode: random
+          unit: issue
+          variants:
+            - {name: long, weight: 1, config_files: [/etc/legion-experiments/plan-length.yml]}
+            - {name: control, weight: 1}
+  ```
+
+  (beside the block's other volumes and mounts).
+
+- **The draw is the unit's, and is made once.**
+  A tree experiment is drawn when the tree's lifecycle row is first created, on both paths that open a tree — admission's own and the operator's `POST /legion/v1/operator/claims` — and is recorded against the tree's root key.
+  An issue experiment is drawn when the daemon first records the issue, root or child, and is recorded against that issue's own key.
+  Each answer is one row of `experiment_assignments` carrying the arm, the mode in force at the draw and the instant, written once and never updated.
+  A re-admission, a new generation and the next epoch after a cleanup keep it, and a child its finished root hands over as a tree of its own is settled at the hand-over with the answers of the tree it leaves:
+  for each experiment of unit `tree` that tree held a row for, that row's arm, mode and instant verbatim, marked carried, and no arm at all for each experiment that tree held no tree row for and the child holds no row of its own for, which is an answer and is never drawn for later.
+  A unit opened before an experiment was declared holds no row for it and runs in no arm of it.
+  An operator's spawn whose tree has no issue record records no answer and runs in no arm; nothing is refused and no record is invented.
+  The launch follows the record, not the mode:
+  a unit the daemon drew into an arm keeps that arm's overlays and its instructions while the project's file still names the arm, whatever the mode is now, so moving a mode to `off` stops new draws and takes nothing from a unit already running.
+  A unit whose recorded arm the file no longer names runs as a unit in no experiment does, and its row stays, so naming the arm again gives the unit the arm it was drawn into.
+
+- **What a role of a drawn unit is given.**
+  Its `PI_CONFIG_FILES` is the `pod.env` value, then its own files (`role_config_files`), then the `config_files` of each arm its unit was drawn into, in the order the project's file declares the experiments, which outrank both.
+  Its one `--append-system-prompt` value ends with each such arm's `instructions`, in that same order, after the deployment's own.
+  The daemon reads every declared arm's `instructions` at boot, refuses a file it cannot read or that holds nothing, and keeps its own copy under the state directory, so no pod reads the operator's file.
+  The controller is in no experiment whatever the modes say, since a unit is a tree or an issue and the controller runs in neither.
+  An arm's overlays take part in everything `role_config_files` takes part in:
+  the mount check at load (a file under no `pod.volume_mounts` mount is refused, naming `projects.<KEY>.experiments.<NAME>.variants.<ARM>.config_files`), the image probe's per-role value, the pod drift, and what a kept pod's role is told.
+
+- **The pod-replacement cost of a newly declared overlay file.**
+  An overlay file feeds pod drift, so the day a project declares an experiment whose arm names `config_files`, every live issue pod of the deployment has drifted and is replaced.
+  Nothing can avoid it:
+  a pod's volumes and mounts are fixed when the pod is created, and a role cannot read a file its pod does not mount.
+  It is every issue pod, and not the drawn units' pods alone, because any unit may be drawn into any arm;
+  the controller's pod is never replaced for it, since the controller runs in no experiment.
+  The drift is reported `projects.<KEY>.experiments.<NAME>.variants.<ARM>.config_files <file>`, naming the key the operator wrote, and it is handled as an overlay of `role_config_files` is ("Rolling it out" above):
+  the daemon opens an update round on each drifted pod, which asks each role of that issue, on the role's own Envoy topic, to push its work and answer `ready_for_update`, and replaces the pod once every role has answered and no turn runs, or at the round's bound, `pod_update_grace_minutes` after the round opened, whatever the roles answered, so a turn still running at the bound ends with the pod;
+  a pod no round covers is replaced by the first launch into it.
+  Replacing an issue pod takes its disk with it ([The disk dies with its pod](#the-disk-dies-with-its-pod)), and a role mid-turn at the boot's re-adoption is reported `StaleAddress` and relaunched at once, uncharged, so that turn is lost.
+  So turn an experiment on knowing the cost:
+  declare an arm that names files when no role of an affected issue is mid-turn and every role has pushed.
+  An arm that names no file costs nothing, since nothing new is mounted for it — which is a second reason the control arm names none.
+
+- **The kept-pod degrade: a unit in neither arm.**
+  A launch into a pod the daemon keeps builds that role's `PI_CONFIG_FILES` from the overlays the pod holds, not from the configuration as it now reads, and that list can be shorter than the configuration names.
+  It has to be:
+  Oh My Pi refuses to start on an entry that is not there, so a role started against a file its pod does not mount would never register, and never answer the round that is to replace that pod.
+  So a pod built before an arm's mount existed starts its role without that arm's files, and a unit recorded in that arm runs in **neither** arm:
+  not the control, which names no file, and not the arm it was drawn into, whose file it cannot read.
+  The launch logs one line for it, naming the issue, the role, the experiment and the arm, with the files it dropped:
+  `sandbox runtime: the pod this launch keeps was built before this variant's overlays were mounted; its role starts without them, in neither arm, until the update round replaces the pod`.
+  Nothing else says that the generation ran outside the arm its record names, so an analysis reads those lines and counts such a unit out of its exposure.
+
+- **Where an arm shows.**
+  Every issue of `GET /legion/v1/state` carries `assignments`, one `{experiment, variant, mode, drawnAt}` per answer that applies to it, in the order the project declares the experiments: the `memory` block's experiment first, unless `experiments.memory` declares it instead, then the `experiments` key's own in the file's order, then any the file no longer names (daemon API contract 131, [Rolling back the upgrade](#rolling-back-the-upgrade)).
+  `settings.projects.<KEY>.experiments` carries the `experiments` key's declaration itself, and `settings.projects.<KEY>.memory` the block's.
+  `legion state` prints one line per declared experiment, counting the issues that hold each arm; every project declares the `memory` experiment — one that writes neither the `memory` block nor `experiments.memory` declares it at mode `off`, and one that writes `experiments.memory` declares it at that key's own mode — so there is always a line, and `memory: none` is what a deployment reads until a tree is drawn.
+  `legion config-reference --json` prints every key of the block with its default, whether it is required and what it does, and reads no `legion.yaml`, no daemon and no cluster.
+  The documentation site's configuration reference page is generated from that output.
 
 - **`runtime.kubernetes.agent_secrets`** enrolls every pod the daemon runs with the secrets broker (the broker design's pod-enrollment plan), so an agent in a pod runs `agent-secrets <SECRET> -- <command>` and gets only that pod generation's grants.
   `url` is the broker's base URL (https, or http to a loopback address;

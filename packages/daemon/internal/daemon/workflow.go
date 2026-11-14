@@ -435,9 +435,11 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	engineCfg.Reserve = reserve
 	w.engine = workflow.New(w.records, engineCfg, log)
 	w.admission = admit.New(w.records, w.engine, cfg.AdmissionCap, cfg.Project, log)
-	// The project's `memory` block decides what each tree admission opens is drawn: a project the
-	// file names no entry for is the zero block, which is off.
-	w.admission.UseMemory(cfg.Projects[cfg.Project].Memory)
+	// The project's declared experiments decide what each unit admission records is drawn for.
+	// A project whose file writes neither the `memory` block nor an `experiments` key declares
+	// the memory experiment all the same, at mode off, whose draw records each new tree at no
+	// variant (config.Project.ExperimentsDeclared).
+	w.admission.UseExperiments(cfg.ExperimentsDeclared())
 	// `stalled_tree_notice_hours` is the bound the admission pass tells the controller a tree
 	// has stopped at: the loader gives six hours to a file that names no key, so the pass
 	// always runs under a number somebody chose.
@@ -547,7 +549,8 @@ func (w *workflowRuntime) wakeOutbox(issue string, kind record.OutboxKind) {
 
 // engineConfig is the workflow engine's configuration from the daemon's and the review App's bot
 // login from its boot lease: its own project's production_check is the role that works the checks
-// a merge opens (empty, it opens none). hookPrompts are the words boot read for the hooks that
+// a merge opens (empty, it opens none), and its own project's declared experiments are what each
+// issue the engine records is drawn for. hookPrompts are the words boot read for the hooks that
 // name a file (readBoot), which engineHooks puts in the place of each such hook's path.
 func engineConfig(cfg config.Config, reviewAppLogin string, hookPrompts map[string]string) workflow.Config {
 	project := cfg.Projects[cfg.Project]
@@ -557,6 +560,7 @@ func engineConfig(cfg config.Config, reviewAppLogin string, hookPrompts map[stri
 		ProductionCheckRole: project.ProductionCheck,
 		ReviewAppLogin:      reviewAppLogin,
 		RepositoryRenames:   cfg.RepositoryRenames, Hooks: engineHooks(cfg.Hooks, hookPrompts),
+		Experiments: cfg.ExperimentsDeclared(),
 	}
 }
 

@@ -258,6 +258,13 @@ type PluginsSettings struct {
 type ProjectSettings struct {
 	SlackChannels []string       `json:"slack_channels"`
 	Memory        MemorySettings `json:"memory"`
+	// Experiments is `projects.<KEY>.experiments` as the file writes it, in the file's order, and
+	// `[]` for a project that declares none under that key, as `slack_channels` is for one that
+	// names none: the key always rides the wire, so a reader tells a project that declares no
+	// experiment under the key from a daemon too old to know the key. The `memory` block is no
+	// part of it: it stands under `memory` above, as the file writes it, and the two are mapped to
+	// one list of experiments only below the loader (config.Project.ExperimentsDeclared).
+	Experiments []ExperimentSettings `json:"experiments"`
 	// ProductionCheck is `production_check` as the file writes it: the role that works the
 	// production check a merge closing one of the project's issues opens, or the word `off`
 	// for the project that opens none (config.Project.ProductionCheckWord), never the empty string
@@ -272,6 +279,50 @@ type ProjectSettings struct {
 	Deploys []DeploySettings `json:"deploys"`
 }
 
+// DeclaredExperiments is every experiment this project declares, as the daemon's own loader
+// builds the list: the `memory` block's experiment first, then the `experiments` key's own in the
+// file's order (config.Project.ExperimentsDeclared, which this reverses the two keys back
+// through). A project that declares `experiments.memory` writes no block, since the loader refuses
+// the two together, so its `memory` experiment is one of the key's own and stands at its place in
+// the file's order (config.Project.MemoryIsBlock). key
+// is the project's own Dispatch key, which is the map key the settings carry this project under
+// and which each arm's overlay key path begins with.
+//
+// The settings carry the two keys as the file writes them — the block under `memory`, the key's
+// own under `experiments` — because that is what an operator reads them for, so a reader that
+// must answer for every experiment the deployment draws, as `legion state` does when it counts
+// each one's arms, asks here rather than writing the mapping a second time.
+//
+// A project whose settings carry no `memory` block and no experiment of its own declares the
+// memory experiment all the same, at mode off: every tree such a project opens is drawn for it
+// and recorded at no arm, so `legion state` prints that project's memory line with the arms its
+// issues hold, as it printed one before any experiment was declared.
+//
+// The daemon serves the settings from the same configuration it declares its experiments from
+// (internal/daemon's source), so this answers what that daemon drew for.
+func (p ProjectSettings) DeclaredExperiments(key string) []config.Experiment {
+	project := config.Project{
+		Memory: config.Memory{
+			Mode:             p.Memory.Mode,
+			ConfigFiles:      p.Memory.ConfigFiles,
+			InstructionsPath: p.Memory.Instructions,
+		},
+		Experiments: make([]config.Experiment, 0, len(p.Experiments)),
+	}
+	for _, experiment := range p.Experiments {
+		declared := config.Experiment{
+			Name: experiment.Name, Mode: experiment.Mode, Unit: experiment.Unit, OnVariant: experiment.OnVariant,
+			Variants: make([]config.Variant, 0, len(experiment.Variants)),
+		}
+		for _, variant := range experiment.Variants {
+			declared.Variants = append(declared.Variants, config.Variant{Name: variant.Name, Weight: variant.Weight,
+				ConfigFiles: variant.ConfigFiles, InstructionsPath: variant.Instructions})
+		}
+		project.Experiments = append(project.Experiments, declared)
+	}
+	return project.ExperimentsDeclared("projects." + key)
+}
+
 // MemorySettings is a project's `memory` block as the file writes it: the mode each new tree is
 // drawn under, absent for a project that names no block, which is off (config.Memory.Word); the
 // Oh My Pi overlays every role of a memory-group tree names after the operator's and its own, `[]`
@@ -279,9 +330,33 @@ type ProjectSettings struct {
 // system prompt, absent when the block names none. The paths are the operator's own file names,
 // which no credential rides in.
 type MemorySettings struct {
-	Mode         config.MemoryMode `json:"mode,omitempty"`
-	ConfigFiles  []string          `json:"config_files"`
-	Instructions string            `json:"instructions,omitempty"`
+	Mode         config.ExperimentMode `json:"mode,omitempty"`
+	ConfigFiles  []string              `json:"config_files"`
+	Instructions string                `json:"instructions,omitempty"`
+}
+
+// ExperimentSettings is one `projects.<KEY>.experiments.<name>` block as the file writes it: the
+// name it is declared under, the mode each new unit it covers is drawn under, the unit one draw
+// covers, the arm `on` gives every unit (absent where the block names none), and the arms it
+// draws among in the file's order.
+type ExperimentSettings struct {
+	Name      string                `json:"name"`
+	Mode      config.ExperimentMode `json:"mode"`
+	Unit      config.ExperimentUnit `json:"unit"`
+	OnVariant string                `json:"on_variant,omitempty"`
+	Variants  []VariantSettings     `json:"variants"`
+}
+
+// VariantSettings is one arm of an experiment as the file writes it: its name, the weight a
+// random draw gives it against its siblings, the Oh My Pi overlays every role of a unit drawn
+// into it names, `[]` for an arm that names none, and the one instructions file such a role's
+// system prompt takes, absent where the arm names none. The paths are the operator's own file
+// names, which no credential rides in, as the `memory` block's are.
+type VariantSettings struct {
+	Name         string   `json:"name"`
+	Weight       int      `json:"weight"`
+	ConfigFiles  []string `json:"config_files"`
+	Instructions string   `json:"instructions,omitempty"`
 }
 
 // DeploySettings is the shape one `projects.<KEY>.deploys` entry had while the daemon read the
@@ -414,6 +489,7 @@ func SettingsOf(cfg config.Config) Settings {
 				ConfigFiles:  stringsOf(project.Memory.ConfigFiles),
 				Instructions: project.Memory.InstructionsPath,
 			},
+			Experiments:     experimentsOf(project.Experiments),
 			ProductionCheck: project.ProductionCheckWord(),
 			Deploys:         []DeploySettings{},
 		}
@@ -559,6 +635,26 @@ func seconds(d time.Duration) int {
 // stringsOf is a copy of values that is `[]` on the wire when values is nil.
 func stringsOf(values []string) []string {
 	return append([]string{}, values...)
+}
+
+// experimentsOf is the project's `experiments` key as the settings carry it, in the file's
+// order and `[]` on the wire for a project that declares none under that key, each with its arms
+// in the file's order too: the order a draw reads the weights in, which is why neither is a
+// mapping here.
+func experimentsOf(experiments []config.Experiment) []ExperimentSettings {
+	declared := make([]ExperimentSettings, 0, len(experiments))
+	for _, experiment := range experiments {
+		entry := ExperimentSettings{
+			Name: experiment.Name, Mode: experiment.Mode, Unit: experiment.Unit, OnVariant: experiment.OnVariant,
+			Variants: make([]VariantSettings, 0, len(experiment.Variants)),
+		}
+		for _, variant := range experiment.Variants {
+			entry.Variants = append(entry.Variants, VariantSettings{Name: variant.Name, Weight: variant.Weight,
+				ConfigFiles: stringsOf(variant.ConfigFiles), Instructions: variant.InstructionsPath})
+		}
+		declared = append(declared, entry)
+	}
+	return declared
 }
 
 // skillsRepositorySetting is repository as `<owner>/<name>`, and "" for the zero repository, which

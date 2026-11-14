@@ -1,0 +1,30 @@
+{
+  "architect": {
+    "PI_CONFIG_FILES": "/etc/legion-operator/overlay.yml:/etc/legion-operator/creds/fallback.yml:/etc/legion-operator/creds/architect.yml",
+    "--append-system-prompt": "You are the architect.\n\nLegion addressing: your role topic is `notifications.role.legion-legion-legion-208-architect`.\n\nDeployment instructions."
+  },
+  "controller": {
+    "PI_CONFIG_FILES": "/etc/legion-operator/overlay.yml:/etc/legion-operator/creds/fallback.yml:/etc/legion-operator/creds/controller.yml",
+    "--append-system-prompt": "You are the controller.\n\nLegion addressing: your role topic is `notifications.role.legion-legion-controller`.\n\nDeployment instructions."
+  },
+  "implementer": {
+    "PI_CONFIG_FILES": "/etc/legion-operator/overlay.yml:/etc/legion-operator/creds/fallback.yml:/etc/legion-operator/creds/implementer.yml",
+    "--append-system-prompt": "You are the implementer.\n\nLegion addressing: your role topic is `notifications.role.legion-legion-legion-208-implementer`.\n\nDeployment instructions."
+  },
+  "merger": {
+    "PI_CONFIG_FILES": "/etc/legion-operator/overlay.yml:/etc/legion-operator/creds/fallback.yml:/etc/legion-operator/creds/merger.yml",
+    "--append-system-prompt": "You are the merger.\n\nLegion addressing: your role topic is `notifications.role.legion-legion-legion-208-merger`.\n\nDeployment instructions."
+  },
+  "planner": {
+    "PI_CONFIG_FILES": "/etc/legion-operator/overlay.yml:/etc/legion-operator/creds/fallback.yml:/etc/legion-operator/creds/planner.yml",
+    "--append-system-prompt": "You are the planner.\n\nLegion addressing: your role topic is `notifications.role.legion-legion-legion-208-planner`.\n\nDeployment instructions."
+  },
+  "reviewer": {
+    "PI_CONFIG_FILES": "/etc/legion-operator/overlay.yml:/etc/legion-operator/creds/fallback.yml:/etc/legion-operator/creds/reviewer.yml",
+    "--append-system-prompt": "You are the reviewer.\n\nLegion addressing: your role topic is `notifications.role.legion-legion-legion-208-reviewer`.\n\nDeployment instructions."
+  },
+  "tester": {
+    "PI_CONFIG_FILES": "/etc/legion-operator/overlay.yml:/etc/legion-operator/creds/fallback.yml:/etc/legion-operator/creds/tester.yml",
+    "--append-system-prompt": "You are the tester.\n\nLegion addressing: your role topic is `notifications.role.legion-legion-legion-208-tester`.\n\nDeployment instructions."
+  }
+}

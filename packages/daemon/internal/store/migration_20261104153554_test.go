@@ -18,7 +18,7 @@ const issueMemoryCarriedVersion = 20261104153554
 // otherwise draw it and give work that has been running without memory the overlays and the memory
 // instructions at its next launch.
 //
-// The rule is record.Store.CarryMemory's: the old tree's tree_lifecycles row, matched on the
+// The rule is the memory hand-over's own: the old tree's tree_lifecycles row, matched on the
 // project's normalized token and the tree, is the fact that the tree was opened at all, and a row
 // that already carries a draw is left alone. The rows are inserted as the previous release leaves
 // them, which is after 20261104073148 (the memory columns do not exist before it) and before this

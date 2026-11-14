@@ -273,9 +273,10 @@ const (
 	defaultPort         = 13370
 	defaultBind         = "127.0.0.1"
 	defaultAdmissionCap = 4
-	// defaultWorkerWakesPerMinute is `worker_wakes_per_minute`'s default. The burst's default is a
-	// countKeys row, because that reader is the one that refuses a burst below 1; the rate is read
-	// on its own, since 0 is how an operator turns the pacing off.
+	// defaultWorkerWakesPerMinute is `worker_wakes_per_minute`'s default. The burst's default is
+	// on the key table's own row for it (keytable.go's positiveKey), because that reader is the
+	// one that refuses a burst below 1; the rate is read on its own, since 0 is how an operator
+	// turns the pacing off.
 	defaultWorkerWakesPerMinute = 8
 	defaultRuntimeName          = "tmux"
 	defaultEnvoyURL             = "http://127.0.0.1:9020"
@@ -323,37 +324,6 @@ const (
 	// of a roll (dispatch://INFRA-2981 R2).
 	defaultPodUpdateGrace = 30 * time.Minute
 )
-
-// durationKeys are the positive-second keys and their defaults (config.ts's DEFAULT_* constants,
-// and the new probe interval). Every one of them is held to the timer bound.
-var durationKeys = []struct {
-	key          string
-	defaultValue int
-	field        func(*Config) *time.Duration
-}{
-	{"worker_boot_timeout_seconds", 120, func(c *Config) *time.Duration { return &c.WorkerBootTimeout }},
-	{"worker_rpc_timeout_seconds", 5, func(c *Config) *time.Duration { return &c.WorkerRPCTimeout }},
-	{"worker_stop_timeout_seconds", 10, func(c *Config) *time.Duration { return &c.WorkerStopTimeout }},
-	{"tree_stop_timeout_seconds", 60, func(c *Config) *time.Duration { return &c.TreeStopTimeout }},
-	{"slow_command_timeout_seconds", 300, func(c *Config) *time.Duration { return &c.SlowCommandTimeout }},
-	{"probe_interval_seconds", 30, func(c *Config) *time.Duration { return &c.ProbeInterval }},
-	{"controller_wake_interval_seconds", 3600, func(c *Config) *time.Duration { return &c.ControllerWakeInterval }},
-}
-
-// countKeys are the positive-integer keys with no unit, and their defaults: the registration
-// deadline's interval count (config.ts DEFAULT_WORKER_BOOT_REGISTRATION_DEADLINE_INTERVALS), the
-// supervision budgets, and the wake pacing's burst.
-var countKeys = []struct {
-	key          string
-	defaultValue int
-	field        func(*Config) *int
-}{
-	{"worker_boot_registration_deadline_intervals", 3, func(c *Config) *int { return &c.WorkerBootRegistrationDeadlineIntervals }},
-	{"launch_failure_limit", 3, func(c *Config) *int { return &c.LaunchFailureLimit }},
-	{"prompt_failure_limit", 3, func(c *Config) *int { return &c.PromptFailureLimit }},
-	{"prompt_retire_limit", 2, func(c *Config) *int { return &c.PromptRetireLimit }},
-	{"worker_wake_burst", 1, func(c *Config) *int { return &c.WorkerWakeBurst }},
-}
 
 // tossedKeys are the settings that no longer exist, mapped to why. A file carrying one is refused
 // rather than ignored: an operator who sets one expects it to act, and the daemon has nothing that
@@ -517,8 +487,8 @@ func rootMapping(document *yaml.Node) (*yaml.Node, error) {
 	return root, nil
 }
 
-// readKeys walks the top-level keys in file order, reading the modelled ones and classifying the
-// rest.
+// readKeys walks the top-level keys in file order, dispatching each modelled one through the key
+// table (keytable.go) and classifying the rest.
 func readKeys(root *yaml.Node) (fileConfig, error) {
 	file := fileConfig{Durations: map[string]int{}, Counts: map[string]int{}}
 	if root == nil {
@@ -527,155 +497,23 @@ func readKeys(root *yaml.Node) (fileConfig, error) {
 	for i := 0; i+1 < len(root.Content); i += 2 {
 		key, value := root.Content[i].Value, root.Content[i+1]
 		var err error
-		switch key {
-		case "project":
-			file.Project, err = readString(value, key)
-		case "bind":
-			file.Bind, err = readString(value, key)
-		case "advertise_host":
-			file.AdvertiseHost, err = readAdvertiseHost(value, key)
-		case "postgres_dsn":
-			file.PostgresDSN, err = readString(value, key)
-		case "state_dir":
-			file.StateDir, err = readString(value, key)
-		case "port":
-			file.Port, err = readInt(value, key)
-		case "admission_cap":
-			file.AdmissionCap, err = readInt(value, key)
-		case "runtime":
-			file.Kubernetes, file.Tmux, err = readRuntime(value)
-		case "daemon_url":
-			file.DaemonURL, err = readString(value, key)
-		case "omp_invocation":
-			file.OmpInvocation, err = readNonEmptyString(value, key)
-		case "omp_launch_prefix":
-			file.OmpLaunchPrefix, err = readLaunchPrefix(value, key)
-		case "provider_keys":
-			file.ProviderKeys, err = readProviderKeys(value, key)
-		case "instructions":
-			file.Instructions, err = readNonEmptyString(value, key)
-		case "worker_stream_port":
-			file.WorkerStreamPort, err = readInt(value, key)
-		case "worker_wakes_per_minute":
-			file.WorkerWakesPerMinute, err = readInt(value, key)
-		case "operator_token_file":
-			file.OperatorTokenFile, err = readNonEmptyString(value, key)
-		case "envoy_url":
-			file.EnvoyURL, err = readString(value, key)
-		case "nats_urls":
-			file.NatsURLs, err = readNatsURLs(value, key)
-		case "envoy_token_file":
-			file.EnvoyTokenFile, err = readNonEmptyString(value, key)
-		case "nats_nkey_seed_file":
-			file.NatsNkeySeedFile, err = readNonEmptyString(value, key)
-		case "nats_daemon_nkey_seed_file":
-			file.NatsDaemonNkeySeedFile, err = readNonEmptyString(value, key)
-		case "dispatch_url":
-			file.DispatchURL, err = readString(value, key)
-		case "dispatch_token_file":
-			file.DispatchTokenFile, err = readNonEmptyString(value, key)
-		case "projects":
-			// The projects' own warnings join whatever a warned key above them raised, in file
-			// order: one list carries both, so neither producer may write over the other.
-			var raised []string
-			file.Projects, raised, err = readProjects(value, key)
-			file.Warnings = append(file.Warnings, raised...)
-		case "gates":
-			file.Gates, err = readGates(value, key)
-		case "github_apps":
-			file.GitHubApps, err = readGitHubApps(value, key)
-		case "linger_hours":
-			file.Linger, err = readHours(value, key)
-		case "production_check_hours":
-			file.ProductionCheckBound, err = readHours(value, key)
-		case "pod_update_grace_minutes":
-			file.PodUpdateGrace, err = readMinutes(value, key)
-		case "stalled_tree_notice_hours":
-			file.StalledTreeNotice, err = readHours(value, key)
-		case "worker_silence_minutes":
-			file.WorkerSilence, err = readMinutes(value, key)
-		case "worker_background_hours":
-			file.WorkerBackground, err = readHours(value, key)
-		// Both round caps are read here rather than through countKeys, which carries a default
-		// for every key it holds and so could never report that the operator named neither.
-		case "pod_update_max_open_rounds":
-			file.PodUpdateMaxOpenRounds, err = readPositiveInteger(value, key, 0)
-		case "pod_update_rounds_per_minute":
-			file.PodUpdateRoundsPerMinute, err = readPositiveInteger(value, key, 0)
-		case "review_round_cap":
-			file.ReviewRoundCap, err = readPositiveInteger(value, key, 0)
-		case "controller":
-			file.Controller, err = readString(value, key)
-		case "capabilities":
-			file.Capabilities, err = readCapabilities(value, key)
-		case "worker_backends":
-			file.WorkerBackends, err = readWorkerBackends(value, key)
-		case "role_config_files":
-			file.RoleConfigFiles, err = readRoleConfigFiles(value, key)
-		case stallBackstopKey:
-			file.WorkerStallBackstops, err = readStallBackstops(value, key)
-		case repositoryRenamesKey:
-			file.RepositoryRenames, err = readRepositoryRenames(value, key)
-		case hooksKey:
-			file.Hooks, err = readHooks(value, key)
+		descriptor, modelled := topLevelByName[key]
+		switch {
+		case modelled:
+			err = descriptor.Read(value, key, &file)
+		case warnedKeys[key] != "":
+			// The value is read for nothing, so no shape of it is refused: the key changes
+			// nothing whatever it says.
+			file.Warnings = append(file.Warnings,
+				fmt.Sprintf("setting %s changes nothing: %s", key, warnedKeys[key]))
 		default:
-			switch {
-			case isDurationKey(key) || isCountKey(key):
-				err = readPositive(value, key, file)
-			case warnedKeys[key] != "":
-				// The value is read for nothing, so no shape of it is refused: the key changes
-				// nothing whatever it says.
-				file.Warnings = append(file.Warnings,
-					fmt.Sprintf("setting %s changes nothing: %s", key, warnedKeys[key]))
-			default:
-				err = classify(key)
-			}
+			err = classify(key)
 		}
 		if err != nil {
 			return fileConfig{}, err
 		}
 	}
 	return file, nil
-}
-
-func isDurationKey(key string) bool {
-	for _, d := range durationKeys {
-		if d.key == key {
-			return true
-		}
-	}
-	return false
-}
-
-func isCountKey(key string) bool {
-	for _, c := range countKeys {
-		if c.key == key {
-			return true
-		}
-	}
-	return false
-}
-
-// readPositive reads a duration or count key into the file's map: a positive integer and, for a
-// duration, at most the timer bound (config.ts readPositiveInteger, and loadConfigFromFile's
-// lifecycle keys).
-func readPositive(value *yaml.Node, key string, file fileConfig) error {
-	read, err := readInt(value, key)
-	if err != nil || read == nil {
-		return err
-	}
-	if *read <= 0 {
-		return fmt.Errorf("%s must be a positive integer", key)
-	}
-	if isDurationKey(key) {
-		if *read > maxTimerSeconds {
-			return fmt.Errorf("%s must be at most %d", key, maxTimerSeconds)
-		}
-		file.Durations[key] = *read
-	} else {
-		file.Counts[key] = *read
-	}
-	return nil
 }
 
 // classify refuses an unmodelled key, naming its class.
@@ -754,6 +592,23 @@ func stringOf(value *yaml.Node, key string) (string, error) {
 	return *read, nil
 }
 
+// cleanAbsolutePath is a path key's value, refused when it is relative or unclean, the empty
+// string (`instructions: ""`) among them: the daemon reads such a file at boot from wherever it
+// starts, where a relative path resolves against no directory of the operator's. A key written
+// with no value at all never reaches it, since describedMembers leaves a null member out and the
+// key then reads as unset. The `memory` block's `instructions` and a variant's read through it
+// alike, so the two keys answer one refusal.
+func cleanAbsolutePath(value *yaml.Node, key string) (string, error) {
+	path, err := stringOf(value, key)
+	if err != nil {
+		return "", err
+	}
+	if !filepath.IsAbs(path) || filepath.Clean(path) != path {
+		return "", fmt.Errorf("%s %q must be a clean absolute path: the daemon reads it at boot from wherever it starts", key, path)
+	}
+	return path, nil
+}
+
 // optionalString is a string key a blank value refuses, "" when it is unset.
 func optionalString(value *yaml.Node, key string) (string, error) {
 	read, err := readNonEmptyString(value, key)
@@ -773,27 +628,38 @@ func requiredString(value *yaml.Node, key, why string) (string, error) {
 	return read, err
 }
 
-// unknownKeyError is members' refusal of a name the mapping may not carry.
+// unknownKeyError is describedMembers' refusal of a name the mapping may not carry.
 type unknownKeyError struct{ key, name string }
 
 func (e unknownKeyError) Error() string { return fmt.Sprintf("unknown key %s.%s", e.key, e.name) }
 
-// members returns a mapping's members by name, refusing a name it does not know or names twice. A
-// member whose value is null is left out, as an unset key.
-func members(value *yaml.Node, key string, known ...string) (map[string]*yaml.Node, error) {
+// describedMembers returns a mapping's members by name, refusing a name it does not know or names
+// twice. A member whose value is null is left out, as an unset key. It is the one reader of a
+// mapping in the loader: group is the dotted path of one nestedKeys entry (keytable.go), whose
+// members are the names the mapping may carry, each with the line `legion config-reference --json`
+// prints for it, so every nested key the loader accepts is described. key is the path this mapping
+// was reached by, which a refusal names, and which differs from group where a project key or a
+// sequence index stands in it. A group nestedKeys does not hold panics: it is a reader naming a
+// mapping the configuration reference does not know, which is a bug TestNoKeyBypassesTheKeyTable
+// catches, never a value.
+func describedMembers(value *yaml.Node, key, group string) (map[string]*yaml.Node, error) {
+	described, ok := nestedByPath[group]
+	if !ok {
+		panic("config: no nestedKeys group " + group)
+	}
 	found := map[string]*yaml.Node{}
 	seen := map[string]bool{}
 	for i := 0; i+1 < len(value.Content); i += 2 {
-		name, member := value.Content[i].Value, value.Content[i+1]
-		if !slices.Contains(known, name) {
+		name, node := value.Content[i].Value, value.Content[i+1]
+		if !slices.ContainsFunc(described.Members, func(m member) bool { return m.Name == name }) {
 			return nil, unknownKeyError{key, name}
 		}
 		if seen[name] {
 			return nil, fmt.Errorf("%s names %s twice", key, name)
 		}
 		seen[name] = true
-		if member.Tag != "!!null" {
-			found[name] = member
+		if node.Tag != "!!null" {
+			found[name] = node
 		}
 	}
 	return found, nil
@@ -1185,7 +1051,8 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 	if file.WorkerWakesPerMinute != nil {
 		cfg.WorkerWakesPerMinute = *file.WorkerWakesPerMinute
 	}
-	// 0 is the pacing off, which is why the rate is no countKeys row: that reader refuses it.
+	// 0 is the pacing off, which is why the rate's row names no positive default: that reader
+	// refuses it.
 	if cfg.WorkerWakesPerMinute < 0 {
 		return Config{}, errors.New("worker_wakes_per_minute must be 0 (the pacing off) or a positive integer")
 	}
@@ -1221,6 +1088,9 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 		return Config{}, err
 	}
 	if err := checkMemory(cfg); err != nil {
+		return Config{}, err
+	}
+	if err := checkExperiments(cfg); err != nil {
 		return Config{}, err
 	}
 	if err := checkRepositoryRenames(file, &cfg); err != nil {
@@ -1385,19 +1255,12 @@ func resolveStage2(file fileConfig, configDir string, cfg *Config) error {
 		return fmt.Errorf("worker_stream_port must differ from port (both %d)", cfg.Port)
 	}
 
-	for _, d := range durationKeys {
-		seconds, ok := file.Durations[d.key]
-		if !ok {
-			seconds = d.defaultValue
+	// Every positive-integer key, each onto the field its own row names (keytable.go's
+	// positiveKey): the number the file carries, or that row's default where it carries none.
+	for _, row := range topLevelKeys {
+		if row.Positive != nil {
+			row.Positive.resolve(row.Name, file, cfg)
 		}
-		*d.field(cfg) = time.Duration(seconds) * time.Second
-	}
-	for _, c := range countKeys {
-		count, ok := file.Counts[c.key]
-		if !ok {
-			count = c.defaultValue
-		}
-		*c.field(cfg) = count
 	}
 	// The registration deadline is one timer for the product, so each factor fitting is not
 	// enough (resolveDaemonConfig in config.ts). The product is judged by dividing the bound

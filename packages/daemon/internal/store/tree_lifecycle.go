@@ -26,7 +26,7 @@ func (s *Store) OpenTreeLifecycle(ctx context.Context, project, tree string, aut
 // OpenOperatorTreeLifecycle is the authenticated operator route's open of a root's tree, before
 // its claim is persisted (internal/api's spawn). created runs in the same transaction as the open
 // and only where this call created the tree's row (treelifecycle.Lifecycle.Created): the tree's
-// memory group is drawn there (internal/memorygroup), so no crash between the two can leave a
+// experiments are drawn there (internal/experiment), so no crash between the two can leave a
 // lifecycle whose tree was never drawn for. A failing created fails the open, and the row goes
 // with the transaction.
 func (s *Store) OpenOperatorTreeLifecycle(ctx context.Context, project, tree string,

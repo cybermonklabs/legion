@@ -33,8 +33,9 @@ type Lifecycle struct {
 	CleanupConfirmedAt time.Time
 	// Created is this call's own insert of the tree's row: true only where Open created the
 	// lifecycle, false for every read of one and for every later epoch of it. The draw of the
-	// tree's memory group (internal/memorygroup) is made exactly once, when the row is first
-	// created, so it is the one caller that asks; Read answers false, since it creates nothing.
+	// tree's declared experiments (internal/experiment) is made exactly once, when the row is
+	// first created, so it is the one caller that asks; Read answers false, since it creates
+	// nothing.
 	Created bool
 }
 

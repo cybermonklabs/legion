@@ -584,6 +584,7 @@ jobs:
               - 'packages/daemon/internal/credential/*'
               - 'packages/daemon/internal/daemon/**'
               - 'packages/daemon/internal/dispatch/*'
+              - 'packages/daemon/internal/experiment/*'
               - 'packages/daemon/internal/ghbranch/*'
               - 'packages/daemon/internal/ghconfig/*'
               - 'packages/daemon/internal/ghrepo/*'
@@ -592,7 +593,6 @@ jobs:
               - 'packages/daemon/internal/launcher/*'
               - 'packages/daemon/internal/leakguard/*'
               - 'packages/daemon/internal/lookpath/*'
-              - 'packages/daemon/internal/memorygroup/*'
               - 'packages/daemon/internal/modeltoken/*'
               - 'packages/daemon/internal/natsauth/*'
               - 'packages/daemon/internal/notify/*'
@@ -966,8 +966,9 @@ jobs:
               - 'packages/proof-editor/src/**'
               - 'packages/contracts/src/**'
               # generators/dispatch-tools.ts:12 imports envoy-client's dispatch-command.ts;
-              # generators/legion-skills.ts:11-17 reads every skill; generators/legion-config.sh:28-32
-              # renders every deploy/kubernetes example.
+              # generators/legion-skills.ts's `skills` reads every skill; generators/legion-config.ts's
+              # exampleFiles lists every tracked deploy/kubernetes example and its renderExamples reads
+              # each whole.
               - 'packages/envoy-client/src/**'
               - 'skills/**'
               - 'deploy/kubernetes/**'

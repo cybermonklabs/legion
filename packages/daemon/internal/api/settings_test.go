@@ -149,6 +149,16 @@ var settingsEmitted = map[string]string{
 	"Memory.Mode":                                    "projects.<KEY>.memory.mode",
 	"Memory.ConfigFiles":                             "projects.<KEY>.memory.config_files",
 	"Memory.InstructionsPath":                        "projects.<KEY>.memory.instructions",
+	"Project.Experiments":                            "projects.<KEY>.experiments",
+	"Experiment.Name":                                "projects.<KEY>.experiments.<name> (the mapping key the block is declared under)",
+	"Experiment.Mode":                                "projects.<KEY>.experiments.<name>.mode",
+	"Experiment.Unit":                                "projects.<KEY>.experiments.<name>.unit",
+	"Experiment.OnVariant":                           "projects.<KEY>.experiments.<name>.on_variant",
+	"Experiment.Variants":                            "projects.<KEY>.experiments.<name>.variants",
+	"Variant.Name":                                   "projects.<KEY>.experiments.<name>.variants[].name",
+	"Variant.Weight":                                 "projects.<KEY>.experiments.<name>.variants[].weight",
+	"Variant.ConfigFiles":                            "projects.<KEY>.experiments.<name>.variants[].config_files",
+	"Variant.InstructionsPath":                       "projects.<KEY>.experiments.<name>.variants[].instructions",
 	"Gates.Design":                                   "gates.design",
 	"GitHubApps.Implement":                           "github_apps.implement",
 	"GitHubApps.Review":                              "github_apps.review",
@@ -196,6 +206,8 @@ var settingsExcluded = map[string]string{
 	"StallLimits.CallGrace":           "derived: LEGION_STALL_CALL_GRACE_MS in the daemon's environment, not a legion.yaml key",
 	"StallLimits.Step":                "derived: LEGION_STALL_STEP_MS in the daemon's environment, not a legion.yaml key",
 	"Hook.Prompt":                     "the words a hook puts in front of its roles, which the deployment writes for its own agents and no pod needs to read from a route that authenticates nobody; `hooks[].prompt_file` carries the path of the file the other form holds them in, as `instructions` carries a path and never its text",
+	"Variant.ConfigFilesField":        "derived: the key an operator wrote the arm's `config_files` under, built by config.Project.ExperimentsDeclared from the project key and the names beside it, which the settings already carry",
+	"Variant.MemoryBlock":             "derived: whether the arm is the `memory` block's rather than the `experiments` key's, set by config.Project.ExperimentsDeclared, which the settings already tell by carrying the block under `memory` and the key under `experiments`",
 }
 
 // Every exported field of every struct the walk reaches (settingsConfigTypes) is named in exactly
@@ -336,8 +348,11 @@ func TestSettingsOfAKubernetesConfigurationNamesEveryKeyAndNoSecret(t *testing.T
 	assertKeys(t, "settings.github_apps.implement", keysOf(t, apps["implement"]), []string{"app_id", "installations"})
 	projects := keysOf(t, top["projects"])
 	assertKeys(t, "settings.projects", projects, []string{"LEGION", "WIDGETS"})
+	// `experiments` always rides the wire, `[]` for the fixture's projects, which declare none
+	// under that key (contract 131); what a project that declares one carries is
+	// TestSettingsOfNamesAProjectsExperiments'.
 	assertKeys(t, "settings.projects.WIDGETS", keysOf(t, projects["WIDGETS"]), []string{
-		"slack_channels", "memory", "production_check", "deploys",
+		"slack_channels", "memory", "experiments", "production_check", "deploys",
 	})
 
 	// (c) Nothing planted reaches the wire, and no key of a credential's shape does either.
@@ -555,6 +570,68 @@ func TestSettingsOfLeavesOutTheCommitIssueTrailerRepositories(t *testing.T) {
 	}
 	if bytes.Contains(encoded, []byte(stamped)) {
 		t.Errorf("settings carry the configured repository: %s", encoded)
+	}
+}
+
+// A project's `experiments` ride the settings as the file writes them: every block in the file's
+// order, under the name it is declared with, with its mode, its unit, the arm `on` would give and
+// its arms in the file's order, each with its weight and its overlays. The paths are the
+// operator's own file names, as the `memory` block's are (settingsEmitted). A project that
+// declares none under the key carries `[]`, never no key at all, which the census above reads off
+// the fixture.
+func TestSettingsOfNamesAProjectsExperiments(t *testing.T) {
+	const declared = `    experiments:
+      plan-length:
+        mode: random
+        unit: issue
+        variants:
+          - {name: short, weight: 3}
+          - name: long
+      review-depth:
+        mode: on
+        on_variant: deep
+        variants:
+          - {name: deep}
+          - {name: shallow}
+`
+	body := strings.Replace(settingsFixtureFile, "  WIDGETS:\n", "  WIDGETS:\n"+declared, 1)
+	if body == settingsFixtureFile {
+		t.Fatal("the fixture's WIDGETS project was not given the key")
+	}
+	settings := SettingsOf(loadSettingsFile(t, body))
+	want := []ExperimentSettings{
+		{Name: "plan-length", Mode: config.ExperimentRandom, Unit: config.ExperimentIssue, Variants: []VariantSettings{
+			{Name: "short", Weight: 3, ConfigFiles: []string{}},
+			{Name: "long", Weight: 1, ConfigFiles: []string{}},
+		}},
+		{Name: "review-depth", Mode: config.ExperimentOn, Unit: config.ExperimentTree, OnVariant: "deep", Variants: []VariantSettings{
+			{Name: "deep", Weight: 1, ConfigFiles: []string{}},
+			{Name: "shallow", Weight: 1, ConfigFiles: []string{}},
+		}},
+	}
+	if got := settings.Projects["WIDGETS"].Experiments; !reflect.DeepEqual(got, want) {
+		t.Fatalf("the project's experiments = %+v, want %+v", got, want)
+	}
+	if got := settings.Projects["LEGION"].Experiments; len(got) != 0 {
+		t.Fatalf("a project that declares no experiment under the key carries %+v, want none", got)
+	}
+	encoded, err := json.Marshal(settings)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	projects := keysOf(t, keysOf(t, encoded)["projects"])
+	assertKeys(t, "settings.projects.WIDGETS", keysOf(t, projects["WIDGETS"]), []string{
+		"slack_channels", "memory", "experiments", "production_check", "deploys",
+	})
+	if got := string(keysOf(t, projects["LEGION"])["experiments"]); got != "[]" {
+		t.Errorf("a project that declares no experiment under the key carries experiments = %s, want []: the key always rides the wire, so a reader tells such a project from a daemon too old to know it (contract 131)", got)
+	}
+	var document any
+	if err := json.Unmarshal(encoded, &document); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got := nullKeys(document, "settings"); len(got) != 0 {
+		t.Errorf("settings carry the null keys %q, want none: an arm that names no overlay carries `[]`", got)
 	}
 }
 

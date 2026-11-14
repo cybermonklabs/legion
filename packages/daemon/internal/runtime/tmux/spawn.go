@@ -224,13 +224,14 @@ type PaneInputs struct {
 	GHOwnersDir, GHDefault, GH string
 	// OperatorEnv is the operator's pane variables (runtime.tmux.pane_env), PiConfigFiles the
 	// operator's Oh My Pi overlays every pane names (runtime.tmux.pi_config_files),
-	// RoleConfigFiles the ones this pane's role alone names (role_config_files), and
-	// MemoryConfigFiles the project's own (memory.config_files), which only a pane whose tree is
-	// in the memory group is given (runtime.SpawnSpec.Memory); nil for none.
-	OperatorEnv       map[string]string
-	PiConfigFiles     []string
-	RoleConfigFiles   []string
-	MemoryConfigFiles []string
+	// RoleConfigFiles the ones this pane's role alone names (role_config_files), and Variants the
+	// arms of the project's declared experiments this pane's unit was drawn into
+	// (runtime.SpawnSpec.Variants), whose own overlays the pane names last, in the order the
+	// project's file declares the experiments; nil for none.
+	OperatorEnv     map[string]string
+	PiConfigFiles   []string
+	RoleConfigFiles []string
+	Variants        []runtime.Variant
 	// LeakCheck is the shared public leak check the daemon resolved on its own machine
 	// (resolveLeakCheck), the pane's PUBLIC_LEAK_CHECK; "" where the machine carries none, and
 	// the pane is then told no such variable and refuses every public write with the setup error
@@ -250,7 +251,8 @@ type PaneInputs struct {
 // LEGION_GH_PATH, the real gh the `legion gh` wrapper first on the pane's PATH runs;
 // PI_SHELL_PREFIX, which keeps this daemon's launcher directory (its legion and gh) first in the
 // agent's bash tool; PI_CONFIG_FILES, the operator's overlays, then the role's own, then the
-// project's memory overlays for a memory-group pane, and nothing of Legion's own, which names no
+// overlays of each arm this pane's unit was drawn into, in the order the project's file declares
+// the experiments, and nothing of Legion's own, which names no
 // settings overlay at all — empty where none of the three names one), the
 // four XDG base directories under `<state_dir>/home`, PUBLIC_LEAK_CHECK where the daemon
 // resolved a shared public leak check on its own machine (LeakCheck) and nothing where it
@@ -311,7 +313,7 @@ func panePairs(spec runtime.SpawnSpec, in PaneInputs, files []runtime.SecretFile
 		add("LEGION_GH_PATH", in.GH)
 	}
 	add("PI_SHELL_PREFIX", shellprefix.For(workerbin.LauncherDir(in.StateDir)))
-	add("PI_CONFIG_FILES", strings.Join(slices.Concat(in.PiConfigFiles, in.RoleConfigFiles, in.MemoryConfigFiles), ":"))
+	add("PI_CONFIG_FILES", strings.Join(slices.Concat(in.PiConfigFiles, in.RoleConfigFiles, runtime.VariantOverlays(in.Variants)), ":"))
 	add("GIT_TERMINAL_PROMPT", "0")
 	for _, dir := range xdgDirectories(in.StateDir) {
 		add(dir[0], dir[1])
@@ -487,7 +489,7 @@ func (r *Runtime) launch(ctx context.Context, spec runtime.SpawnSpec) (runtime.L
 		return runtime.Locator{}, err
 	}
 	for _, path := range slices.Concat(spec.Prompt.RolePromptPaths,
-		[]string{spec.Prompt.DeploymentInstructionsPath, spec.Prompt.MemoryInstructionsPath}) {
+		[]string{spec.Prompt.DeploymentInstructionsPath}, spec.Prompt.VariantInstructionsPaths) {
 		if path == "" {
 			continue
 		}
@@ -561,12 +563,6 @@ func (r *Runtime) launch(ctx context.Context, spec runtime.SpawnSpec) (runtime.L
 		return runtime.Locator{}, err
 	}
 	command := shimShellCommand(r.socket, path, workDir, r.legion, r.streamAddress, files[0].Path, r.providerEnvDir, inner)
-	// Only a pane whose tree was drawn into the memory group names the project's memory overlays;
-	// every other pane's PI_CONFIG_FILES is the one it had before the block existed.
-	var memoryOverlays []string
-	if spec.Memory {
-		memoryOverlays = r.memoryConfigFiles
-	}
 	// The check is resolved here, once per launch, in the daemon's own environment, because a
 	// pane can resolve none of the three places itself (resolveLeakCheck). A machine that carries
 	// none is no launch failure: the pane is told no PUBLIC_LEAK_CHECK and every public write
@@ -581,7 +577,7 @@ func (r *Runtime) launch(ctx context.Context, spec runtime.SpawnSpec) (runtime.L
 		StateDir: r.stateDir, Workspace: workDir, DaemonURL: r.daemonURL, EnvoyURL: r.envoyURL, NATSURLs: r.natsURLs,
 		DispatchURL: r.dispatchURL, DispatchTokenFile: r.dispatchToken, GHOwnersDir: credential.root, GHDefault: ghDefault, GH: r.gh,
 		OperatorEnv: r.operatorEnv, PiConfigFiles: r.piConfigFiles, RoleConfigFiles: r.roleConfigFiles[spec.Role],
-		MemoryConfigFiles: memoryOverlays, LeakCheck: leakCheck,
+		Variants: spec.Variants, LeakCheck: leakCheck,
 	}, files)
 	return r.openPane(ctx, spec, ghDefault, paneCommand(append(pairs, backendPairs...), command))
 }

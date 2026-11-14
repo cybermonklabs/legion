@@ -33,7 +33,7 @@ func readRepositoryRenames(value *yaml.Node, key string) ([]ghrepo.Rename, error
 		if entry.Kind != yaml.MappingNode {
 			return nil, fmt.Errorf("%s must be a mapping", field)
 		}
-		fields, err := members(entry, field, "from", "to")
+		fields, err := describedMembers(entry, field, repositoryRenamesKey+"[]")
 		if err != nil {
 			return nil, err
 		}

@@ -64,8 +64,10 @@ func (s *Postgres) Processed(ctx context.Context, tx pgx.Tx, source, eventID str
 }
 
 // issueColumns reads an empty ancestry as NULL, so a record with none scans as a nil Ancestry, as
-// it was written.
-const issueColumns = `key, tree, project, title, parent, phase, generation, status, rank, handed_over, taken_back, linger_until, held_from, last_dispatch_seq, coalesce(hold_reason, ''), dispatch_status, repo, default_branch, github_repo, awaiting_ask, awaiting_gate_version, coalesce(awaiting_artifact, ''), awaiting_answered_at, coalesce(awaiting_answered_by, ''), coalesce(awaiting_answered_detail, ''), awaiting_since_seq, awaiting_since, handout_seq, coalesce(declared_seq, 0), declared_at, nullif(ancestry, '{}'), handed_over_from, coalesce(told_parent, ''), memory_group, memory_draw_mode, memory_drawn_at, moved_at, tree_stalled_told_at`
+// it was written. The four issues.memory_* columns are no part of it: what a unit was drawn is an
+// assignment row of its own (AssignmentsOf, AssignmentsFor), and nothing this release's daemon
+// runs reads the columns but the back-fill of 20261111045636_experiment_assignments.
+const issueColumns = `key, tree, project, title, parent, phase, generation, status, rank, handed_over, taken_back, linger_until, held_from, last_dispatch_seq, coalesce(hold_reason, ''), dispatch_status, repo, default_branch, github_repo, awaiting_ask, awaiting_gate_version, coalesce(awaiting_artifact, ''), awaiting_answered_at, coalesce(awaiting_answered_by, ''), coalesce(awaiting_answered_detail, ''), awaiting_since_seq, awaiting_since, handout_seq, coalesce(declared_seq, 0), declared_at, nullif(ancestry, '{}'), handed_over_from, coalesce(told_parent, ''), moved_at, tree_stalled_told_at`
 
 func (s *Postgres) Issue(ctx context.Context, tx pgx.Tx, key string) (*Issue, error) {
 	issue, err := scanIssue(tx.QueryRow(ctx, "select "+issueColumns+" from issues where key = $1", key))
@@ -240,18 +242,20 @@ func (s *Postgres) PutIssue(ctx context.Context, tx pgx.Tx, issue Issue) error {
 	// The update's condition keeps a recorded issue on the repository, default branch and GitHub
 	// spelling it was recorded with: a write naming others changes no row, and is refused below.
 	// handout_seq, declared_seq and declared_at are StartHandout's, TakeInThrough's, Declare's and
-	// ClearDeclared's alone, memory_group, memory_draw_mode and memory_drawn_at are DrawMemory's
-	// and CarryMemory's, and moved_at is MarkIssueMoved's, so a copy of the issue read before any
-	// of them never writes them back. That is what makes a tree's memory group write-once: a
-	// re-admission, a new generation and ClearTreeGeneration each record the issue again from a
-	// copy read before the draw, and each keeps it; and it is what keeps the movement safe, since
-	// every write site that marks one holds a copy of the issue read before its own fact and
-	// records the issue through this statement in that same transaction. memory_carried, the
-	// hand-over's own answer, is named here no more than it is on Issue: CarryMemory writes it and
-	// DrawMemory reads it, and no other statement touches it. An insert names moved_at nowhere
+	// ClearDeclared's alone, and moved_at is MarkIssueMoved's, so a copy of the issue read before
+	// any of them never writes them back. That is what keeps the movement safe, since every write
+	// site that marks one holds a copy of the issue read before its own fact and records the
+	// issue through this statement in that same transaction. An insert names moved_at nowhere
 	// either, so a newly recorded issue takes the column's default, the moment of its own write,
 	// and tree_stalled_told_at, which is MarkTreeStalledTold's alone, is named in neither half,
-	// so a root recorded again carries the stall it was already told about with it.
+	// so a root recorded again carries the stall it was already told about with it. The four
+	// memory_* columns are named here no more than they are on Issue, which no longer carries
+	// them: nothing writes those columns from this release on, since what a unit was drawn is an
+	// assignment row of its own now (PutAssignments), and nothing this release's daemon runs reads
+	// them but the back-fill of 20261111045636_experiment_assignments, and the copy by hand an
+	// operator runs on a roll forward (docs/kubernetes.md), so an update this statement makes
+	// leaves them at whatever the draw before this release left, and a row it inserts takes the
+	// columns' defaults.
 	// ready_pending_version and ready_pending_step are neither written nor read: READY is gone,
 	// and the columns are left as the rows hold them so a rollback to a daemon that still reads
 	// them finds its data. awaiting_slot_notice_at is named nowhere because the column is gone
@@ -486,20 +490,16 @@ func scanIssue(row scanner) (*Issue, error) {
 	var answeredAt *time.Time
 	var answeredBy, answeredDetail string
 	var sinceSeq *int64
-	var since, declaredAt, memoryDrawnAt, treeStalledToldAt *time.Time
+	var since, declaredAt, treeStalledToldAt *time.Time
 	if err := row.Scan(&issue.Key, &issue.Tree, &issue.Project, &issue.Title, &issue.Parent, &phaseValue, &generation, &issue.Status,
 		&issue.Rank, &issue.HandedOver, &issue.TakenBack, &issue.LingerUntil, &heldFrom, &issue.LastDispatchSeq, &holdReason, &issue.DispatchStatus,
 		&issue.Repo, &issue.DefaultBranch, &issue.GitHubRepo, &awaitingAsk, &awaitingGate, &awaitingArtifact, &answeredAt, &answeredBy, &answeredDetail,
 		&sinceSeq, &since, &issue.HandoutSeq, &issue.DeclaredSeq, &declaredAt, &issue.Ancestry, &issue.HandedOverFrom,
-		&issue.ToldParent, &issue.MemoryGroup, &issue.MemoryDrawMode, &memoryDrawnAt, &issue.MovedAt, &treeStalledToldAt); err != nil {
+		&issue.ToldParent, &issue.MovedAt, &treeStalledToldAt); err != nil {
 		return nil, err
 	}
 	if declaredAt != nil {
 		issue.DeclaredAt = declaredAt.UTC()
-	}
-	if memoryDrawnAt != nil {
-		utc := memoryDrawnAt.UTC()
-		issue.MemoryDrawnAt = &utc
 	}
 	// The column is not null, so the movement is scanned straight into the record; it is read in
 	// UTC as every other time the record answers is.
@@ -1747,57 +1747,180 @@ func (s *Postgres) RestartCaughtUp(ctx context.Context, tx pgx.Tx, issue string)
 	return nil
 }
 
-// DrawMemory writes the memory group drawn for root's tree, once: the condition is the draw
-// itself, so a root that already carries one keeps the group, the mode and the time it was drawn
-// with, and a key with no record — an operator's spawn, whose tree's root the daemon never
-// recorded — takes none. Neither writes a row, and neither is an error.
-//
-// Nor is a root whose memory a hand-over has already settled (memory_carried, which CarryMemory
-// alone writes): a child handed over out of a tree the daemon had opened takes that tree's answer,
-// which is no draw at all when the tree had none — a tree first opened before this release, whose
-// work has been running with no memory. The refusal is the hand-over's, decided in the transaction
-// that recorded the hand-over and written down there, so the draw reads nothing that moves: of the
-// two roots, whichever is promoted first, the child's answer is the one its hand-over settled.
-//
-// A root out of a tree nothing ever opened carries no such answer, so its own first open draws it
-// like any other new tree.
-func (s *Postgres) DrawMemory(ctx context.Context, tx pgx.Tx, root, group, mode string, at time.Time) (bool, error) {
-	tag, err := tx.Exec(ctx, `update issues set memory_group = $2, memory_draw_mode = $3, memory_drawn_at = $4
-		where key = $1 and memory_drawn_at is null and not memory_carried`, root, group, mode, at)
-	if err != nil {
-		return false, fmt.Errorf("draw the memory group of %s: %w", root, err)
+const assignmentColumns = `issue_key, experiment, unit, variant, mode, drawn_at, carried`
+
+// scanAssignment reads an assignment row with the issue it is keyed by, since the readers of many
+// issues' rows group by that key and the reader of one issue's rows already knows it.
+func scanAssignment(row scanner) (string, Assignment, error) {
+	var issue string
+	var assignment Assignment
+	var drawnAt *time.Time
+	if err := row.Scan(&issue, &assignment.Experiment, &assignment.Unit, &assignment.Variant,
+		&assignment.Mode, &drawnAt, &assignment.Carried); err != nil {
+		return "", Assignment{}, err
 	}
-	return tag.RowsAffected() == 1, nil
+	if drawnAt != nil {
+		utc := drawnAt.UTC()
+		assignment.DrawnAt = &utc
+	}
+	return issue, assignment, nil
 }
 
-// CarryMemory settles the memory of key, a child handed over as a tree of its own, from the tree
-// it left: from's draw verbatim, the original draw time included, where that tree had one, and no
-// draw at all where it had none. Either way the row is marked carried, so DrawMemory writes
-// nothing for it later. It reports whether the hand-over settled this root's memory, which is
-// wider than whether a draw was copied: a tree opened with no draw settles the child at no draw
-// and reports true.
+// PutAssignments records what issue's unit runs each of rows' experiments under, once: the insert
+// does nothing where a row for that issue and experiment stands, so an experiment the unit has
+// been running under keeps the arm, the mode and the instant it was drawn with, whatever the
+// project's file says by now. Nothing here ever updates a row. It reports how many rows it wrote.
+//
+// The write is guarded by the issue's own record, which it selects from: a key the daemon holds no
+// record for — an operator's spawn, whose tree's root the daemon never recorded — writes no row
+// and raises nothing. Without the guard the row's foreign key would refuse such a write instead,
+// and an operator's tree would fail its admission rather than quietly run under no recorded arm.
+func (s *Postgres) PutAssignments(ctx context.Context, tx pgx.Tx, issue string, rows []Assignment) (int, error) {
+	if len(rows) == 0 {
+		return 0, nil
+	}
+	experiments := make([]string, len(rows))
+	units := make([]string, len(rows))
+	variants := make([]string, len(rows))
+	modes := make([]string, len(rows))
+	drawnAt := make([]*time.Time, len(rows))
+	carried := make([]bool, len(rows))
+	for i, row := range rows {
+		experiments[i], units[i] = row.Experiment, row.Unit
+		variants[i], modes[i] = row.Variant, row.Mode
+		drawnAt[i], carried[i] = row.DrawnAt, row.Carried
+	}
+	tag, err := tx.Exec(ctx, `insert into experiment_assignments (issue_key, experiment, unit, variant, mode, drawn_at, carried)
+		select target.key, drawn.experiment, drawn.unit, drawn.variant, drawn.mode, drawn.drawn_at, drawn.carried
+		from issues target
+		cross join unnest($2::text[], $3::text[], $4::text[], $5::text[], $6::timestamptz[], $7::boolean[])
+			as drawn(experiment, unit, variant, mode, drawn_at, carried)
+		where target.key = $1
+		on conflict (issue_key, experiment) do nothing`,
+		issue, experiments, units, variants, modes, drawnAt, carried)
+	if err != nil {
+		return 0, fmt.Errorf("record %d experiment assignments of %s: %w", len(rows), issue, err)
+	}
+	return int(tag.RowsAffected()), nil
+}
+
+// CarryAssignments settles the assignments of key, a child handed over as a tree of its own, from
+// the tree it left. The copy comes first: every tree-unit assignment row of from's root, onto key
+// with its arm, its mode and its instant verbatim and the carried mark set, so the work that has
+// been running under those arms goes on running under them. Then each experiment of settled — the
+// experiments declared at the hand-over — is written at no variant, no mode and no instant, under
+// the same write-once insert, so it lands only for an experiment the copy left unwritten: an
+// experiment the old tree held a tree row for keeps the copy, and one it held none for is settled
+// here at no variant and is never drawn for later. A row key already holds stands either way. It
+// reports how many rows the two wrote.
+//
+// Only the tree rows are copied. A tree row is the whole tree's answer, which every issue of the
+// tree is shown (internal/projection's assignmentViews) and which a launch of any of them reads
+// off the root's key, so the child takes it on as the root of its own tree. An issue row of the
+// old root is that one issue's own answer, drawn for it and read back under its own key alone: it
+// says nothing about the child, which held no row of its own for that experiment and so ran in no
+// arm of it before the hand-over. Copied, the child would run in the old root's arm afterwards
+// and be marked as having carried it, where the settling below is what answers for it — at no
+// variant, as for any experiment the tree it left held no row for.
 //
 // The driver row is the old tree's lifecycle row, under project, the normalized runtime token
 // tree_lifecycles is keyed by (issues.project is the Dispatch key). A tree with no such row was
-// never opened and hands nothing over: nothing is written, and key's own first open draws it. The
-// old tree's issue record is optional — an operator opened a tree the daemon recorded no root for
-// — so the source is joined in, not required: such a tree was opened and hands over the answer it
-// has, which is no draw. Writing nothing is no error, and a key that already carries a draw of its
-// own, or whose memory a hand-over settled before, keeps what it has.
-func (s *Postgres) CarryMemory(ctx context.Context, tx pgx.Tx, project, key, from string) (bool, error) {
-	tag, err := tx.Exec(ctx, `update issues target set
-		memory_group = coalesce(source.memory_group, ''),
-		memory_draw_mode = coalesce(source.memory_draw_mode, ''),
-		memory_drawn_at = source.memory_drawn_at,
-		memory_carried = true
+// never opened and hands nothing over, so key is drawn for at its own first open. The old tree's
+// root record is not required — an operator opened a tree the daemon recorded no root for —
+// since the copy reads the assignment rows themselves, of which such a tree has none, and the
+// settled rows then answer for it. key's own record is required, as PutAssignments' target is: a
+// child the daemon holds no record of takes no row and raises nothing.
+func (s *Postgres) CarryAssignments(ctx context.Context, tx pgx.Tx, project, key, from string, settled []DeclaredExperiment) (int, error) {
+	tag, err := tx.Exec(ctx, `insert into experiment_assignments (issue_key, experiment, unit, variant, mode, drawn_at, carried)
+		select target.key, source.experiment, source.unit, source.variant, source.mode, source.drawn_at, true
 		from tree_lifecycles life
-		left join issues source on source.key = $3
+		join issues target on target.key = $2
+		join experiment_assignments source on source.issue_key = $3 and source.unit = 'tree'
 		where life.project = $1 and life.tree = $3
-		and target.key = $2 and target.memory_drawn_at is null and not target.memory_carried`, project, key, from)
+		on conflict (issue_key, experiment) do nothing`, project, key, from)
 	if err != nil {
-		return false, fmt.Errorf("carry the memory group of %s to %s: %w", from, key, err)
+		return 0, fmt.Errorf("carry the experiment assignments of %s to %s: %w", from, key, err)
 	}
-	return tag.RowsAffected() == 1, nil
+	written := int(tag.RowsAffected())
+	if len(settled) == 0 {
+		return written, nil
+	}
+	experiments := make([]string, len(settled))
+	units := make([]string, len(settled))
+	for i, row := range settled {
+		experiments[i], units[i] = row.Experiment, row.Unit
+	}
+	tag, err = tx.Exec(ctx, `insert into experiment_assignments (issue_key, experiment, unit, variant, mode, drawn_at, carried)
+		select target.key, declared.experiment, declared.unit, '', '', null::timestamptz, true
+		from tree_lifecycles life
+		join issues target on target.key = $2
+		cross join unnest($4::text[], $5::text[]) as declared(experiment, unit)
+		where life.project = $1 and life.tree = $3
+		on conflict (issue_key, experiment) do nothing`, project, key, from, experiments, units)
+	if err != nil {
+		return 0, fmt.Errorf("settle %d experiments of %s at the hand-over out of %s: %w", len(settled), key, from, err)
+	}
+	return written + int(tag.RowsAffected()), nil
+}
+
+// AssignmentsOf is every assignment recorded for issue, in experiment order, so two reads of one
+// unit agree. An issue with no assignment gives none. It is the one-unit read of AssignmentsFor,
+// and no method of the Store interface: nothing the daemon runs reads one unit's rows alone — a
+// launch reads a tree's and an issue's in one call, the state reads its project's rows — so the
+// tests that check what one unit was recorded read the store itself.
+func (s *Postgres) AssignmentsOf(ctx context.Context, tx pgx.Tx, issue string) ([]Assignment, error) {
+	assignments, err := s.AssignmentsFor(ctx, tx, []string{issue})
+	return assignments[issue], err
+}
+
+// AssignmentsFor is the assignments of each of issues, by issue and then experiment, in one read;
+// an issue with no assignment has no entry, and an empty list reads nothing. It is the read of one
+// or two keys a launch makes; a reader of every issue's answers asks Assignments.
+func (s *Postgres) AssignmentsFor(ctx context.Context, tx pgx.Tx, issues []string) (map[string][]Assignment, error) {
+	if len(issues) == 0 {
+		return map[string][]Assignment{}, nil
+	}
+	rows, err := tx.Query(ctx, `select `+assignmentColumns+` from experiment_assignments
+		where issue_key = any($1) order by issue_key, experiment`, issues)
+	return assignmentsByIssue(rows, err, fmt.Sprintf("%d issues", len(issues)), len(issues))
+}
+
+// Assignments is every experiment assignment the record holds for the issues of the Dispatch
+// project, by issue and then experiment, in one read. The database is shared by every project's
+// daemon (internal/daemon's workflow), and a row is keyed by an issue of it
+// (experiment_assignments.issue_key references issues(key) on delete cascade), so the issue's own
+// record is where its project is written and the join is what keeps one daemon's state out of
+// another's rows. The state's projection asks this rather than AssignmentsFor over every issue it
+// has in hand: the join selects the same rows and costs no parameter the size of the table.
+func (s *Postgres) Assignments(ctx context.Context, tx pgx.Tx, project string) (map[string][]Assignment, error) {
+	rows, err := tx.Query(ctx, `select `+assignmentColumns+` from experiment_assignments
+		join issues on issues.key = experiment_assignments.issue_key
+		where issues.project = $1
+		order by issue_key, experiment`, project)
+	return assignmentsByIssue(rows, err, "every issue of "+project, 0)
+}
+
+// assignmentsByIssue groups the rows of an assignment query under the issue each is keyed by,
+// keeping the query's order within each issue. err is the query's own failure, read here so each
+// reader above is one statement; what names the rows a failure is about, and size is the number
+// of issues the caller expects.
+func assignmentsByIssue(rows pgx.Rows, err error, what string, size int) (map[string][]Assignment, error) {
+	if err != nil {
+		return nil, fmt.Errorf("read the experiment assignments of %s: %w", what, err)
+	}
+	defer rows.Close()
+	assignments := make(map[string][]Assignment, size)
+	for rows.Next() {
+		issue, assignment, err := scanAssignment(rows)
+		if err != nil {
+			return nil, fmt.Errorf("read the experiment assignments of %s: %w", what, err)
+		}
+		assignments[issue] = append(assignments[issue], assignment)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the experiment assignments of %s: %w", what, err)
+	}
+	return assignments, nil
 }
 
 func (s *Postgres) Declare(ctx context.Context, tx pgx.Tx, issue string, mark EventMark) error {

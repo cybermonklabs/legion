@@ -122,11 +122,13 @@ func TestQuietTimeContractIsTheContractThatAddedTheFields(t *testing.T) {
 //
 // A text names this field's contract when `contract <N>`, or the bare `below <N>` a sentence
 // writes once the passage has already said "contract", stands within 220 bytes of
-// TreeMovedAtField or QuietHoursField, and that window names none of the three neighbouring
+// TreeMovedAtField or QuietHoursField, and that window names none of the neighbouring
 // fields whose own contracts these same files discuss beside this one — the waiting line, the
-// memory draw and the gated steps. The window is where the sentences that state the boundary
-// fall, and the exclusions are what let a field declared under a neighbour's paragraph be read
-// without reading that paragraph's number as this one's. Both forms are read because a passage
+// memory draw, the gated steps and the experiment assignments, the last read by either word, since
+// a paragraph on the assignments can name the experiment answer before the key. The window is
+// where the sentences that state the boundary fall, and the exclusions are what let a field
+// declared under a neighbour's paragraph be read without reading that paragraph's number as this
+// one's. Both forms are read because a passage
 // commonly writes the number twice — a headline "Daemon API contract 100:" and then "a caller
 // from a pod below 100 is served the state without the keys" — and a reader of the first form
 // alone passes a text whose headline was corrected and whose boundary sentence was not. A file
@@ -156,7 +158,7 @@ func TestQuietTimeContractIsTheContractThatAddedTheFields(t *testing.T) {
 func TestTheShippedTextsNameTheQuietTimesOwnContract(t *testing.T) {
 	scan := contractScan{
 		fields:   []string{TreeMovedAtField, QuietHoursField},
-		without:  []string{WaitingLineField, "memoryGroup", "gatedSteps"},
+		without:  []string{WaitingLineField, "memoryGroup", "gatedSteps", "assignments", "experiment"},
 		contract: quietTimeContract,
 		files: []string{
 			"packages/daemon/internal/api/server.go",

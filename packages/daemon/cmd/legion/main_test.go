@@ -701,10 +701,63 @@ var demoProductionCheck = productionCheckTesterLine("DEMO")
 
 var demoCheckConfigOK = "Config OK: project=DEMO design-gate-steps=spec\n" + demoProductionCheck
 
-// projectsConfig is a tmux legion.yaml whose `projects` block is the given text: the Stage 1
-// keys, the operator bearer and the github_apps a file with projects must carry (with the keys
-// written out, so no command runs at boot), and a deliberately unreachable Postgres, as
-// legionConfig's is — every test of it stops before a store is opened.
+// tmuxCheckKeys are the top-level keys of a tmux legion.yaml `legion start --check-config`
+// passes: the Stage 1 keys, the operator bearer and the github_apps a file with projects must
+// carry (with the keys written out, so no command runs at boot), and a deliberately unreachable
+// Postgres, as legionConfig's is — every test of it stops before a store is opened. `state_dir`
+// and `projects` are no part of it: each caller writes its own temporary directory and its own
+// projects block. The refusal-table fixtures read it too (troubleshooting_refusals_test.go), so
+// a key a passing file needs is added once.
+const tmuxCheckKeys = `project: DEMO
+port: 13370
+postgres_dsn: postgres://legion:legion@127.0.0.1:1/legion
+operator_token_file: ./operator-token
+github_apps:
+  implement: { app_id: "1", private_key: implement-test-key }
+  review: { app_id: "2", private_key: review-test-key }
+`
+
+// kubernetesCheckKeys are the same for a kubernetes legion.yaml: the keys every pod needs,
+// without `state_dir`, without `projects` and without the `runtime` block, which is
+// kubernetesCheckRuntime and is written last so a caller's own four-space line extends it.
+const kubernetesCheckKeys = `project: DEMO
+postgres_dsn: postgres://legion:legion@127.0.0.1:1/legion
+bind: 10.0.0.5
+daemon_url: http://10.0.0.5:13370
+envoy_url: http://envoy-listener.internal.example:9020
+envoy_token_file: ./envoy-token
+operator_token_file: ./operator-token
+dispatch_url: https://dispatch.internal.example
+dispatch_token_file: ./dispatch-token
+nats_urls: [nats://nats.internal.example:4222]
+github_apps:
+  implement: { app_id: "1", private_key_command: "exit 1" }
+  review: { app_id: "2", private_key_command: "exit 1" }
+`
+
+// kubernetesCheckRuntime is the `runtime.kubernetes` block those keys go with.
+const kubernetesCheckRuntime = `runtime:
+  kubernetes:
+    namespace: legion
+    image: ghcr.io/cybermonklabs/legion-worker@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+    storage_class: gp2
+    session_store: postgres
+    session_dsn_secret: SESSION_DSN
+    kubeconfig: ./kubeconfig
+    context: legion-daemon
+`
+
+// checkConfigKubeconfig is the kubeconfig that block names: the context it names, and a server
+// no check dials.
+const checkConfigKubeconfig = `apiVersion: v1
+kind: Config
+clusters: [{name: example, cluster: {server: "https://192.0.2.20:6443"}}]
+users: [{name: legion-daemon, user: {token: placeholder}}]
+contexts: [{name: legion-daemon, context: {cluster: example, user: legion-daemon, namespace: legion}}]
+current-context: legion-daemon
+`
+
+// projectsConfig is a tmux legion.yaml (tmuxCheckKeys) whose `projects` block is the given text.
 func projectsConfig(t *testing.T, projects string) string {
 	t.Helper()
 	omp, err := os.Executable()
@@ -715,15 +768,7 @@ func projectsConfig(t *testing.T, projects string) string {
 	t.Setenv("LEGION_GH_PATH", omp)
 	dir := t.TempDir()
 	path := filepath.Join(dir, "legion.yaml")
-	body := fmt.Sprintf(`project: DEMO
-port: 13370
-postgres_dsn: postgres://legion:legion@127.0.0.1:1/legion
-state_dir: %s
-operator_token_file: ./operator-token
-%sgithub_apps:
-  implement: { app_id: "1", private_key: implement-test-key }
-  review: { app_id: "2", private_key: review-test-key }
-`, filepath.Join(dir, "state"), projects)
+	body := fmt.Sprintf("state_dir: %s\n%s%s", filepath.Join(dir, "state"), tmuxCheckKeys, projects)
 	for name, contents := range map[string]string{path: body, filepath.Join(dir, "operator-token"): "operator-token\n"} {
 		if err := os.WriteFile(name, []byte(contents), 0o600); err != nil {
 			t.Fatalf("write %s: %v", name, err)
@@ -1241,48 +1286,18 @@ runtime:
 }
 
 // kubernetesCheckConfig is a kubernetes configuration `legion start --check-config` passes: the
-// keys every pod needs, a kubeconfig naming a context the check never dials, and extra appended
-// at the top level (a four-space-indented line extends the runtime.kubernetes block, which comes
-// last before it).
+// keys every pod needs (kubernetesCheckKeys, kubernetesCheckRuntime), a kubeconfig naming a
+// context the check never dials, and extra appended at the top level (a four-space-indented
+// line extends the runtime.kubernetes block, which comes last before it).
 func kubernetesCheckConfig(t *testing.T, extra string) string {
 	t.Helper()
 	dir := t.TempDir()
-	body := fmt.Sprintf(`project: DEMO
-postgres_dsn: postgres://legion:legion@127.0.0.1:1/legion
-state_dir: %s
-bind: 10.0.0.5
-daemon_url: http://10.0.0.5:13370
-envoy_url: http://envoy-listener.internal.example:9020
-envoy_token_file: ./envoy-token
-operator_token_file: ./operator-token
-dispatch_url: https://dispatch.internal.example
-dispatch_token_file: ./dispatch-token
-nats_urls: [nats://nats.internal.example:4222]
-projects:
-  DEMO: {}
-github_apps:
-  implement: { app_id: "1", private_key_command: "exit 1" }
-  review: { app_id: "2", private_key_command: "exit 1" }
-runtime:
-  kubernetes:
-    namespace: legion
-    image: ghcr.io/cybermonklabs/legion-worker@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
-    storage_class: gp2
-    session_store: postgres
-    session_dsn_secret: SESSION_DSN
-    kubeconfig: ./kubeconfig
-    context: legion-daemon
-%s`, filepath.Join(dir, "state"), extra)
+	body := fmt.Sprintf("state_dir: %s\n%sprojects:\n  DEMO: {}\n%s%s",
+		filepath.Join(dir, "state"), kubernetesCheckKeys, kubernetesCheckRuntime, extra)
 	config := filepath.Join(dir, "legion.yaml")
 	for name, contents := range map[string]string{
 		config: body, "envoy-token": "envoy\n", "operator-token": "operator\n", "dispatch-token": "dispatch\n",
-		"kubeconfig": `apiVersion: v1
-kind: Config
-clusters: [{name: example, cluster: {server: "https://192.0.2.20:6443"}}]
-users: [{name: legion-daemon, user: {token: placeholder}}]
-contexts: [{name: legion-daemon, context: {cluster: example, user: legion-daemon, namespace: legion}}]
-current-context: legion-daemon
-`,
+		"kubeconfig": checkConfigKubeconfig,
 	} {
 		if !filepath.IsAbs(name) {
 			name = filepath.Join(dir, name)
@@ -1878,50 +1893,281 @@ func TestTheShippedWordsNameTheWaitingLineBlock(t *testing.T) {
 	}
 }
 
-// An operator reading plain `legion state` is told how many issues carry a memory draw and under
-// which group and mode, on one line however many issues the state carries. It counts issues
-// rather than trees because the state names no tree: every issue of a tree carries its root's
-// draw, and a tree handed over as one of its own carries its old tree's draw verbatim, so one
-// draw is two trees' and no draw is a tree's name. The line names no issue: the keys stay in
-// `--json`, where a line per issue would print hundreds on a live deployment.
-func TestPlainStateCountsTheIssuesDrawnIntoAMemoryGroup(t *testing.T) {
+// An operator reading plain `legion state` is told, for each experiment the deployment declares,
+// how many issues hold each of its arms: one line per experiment, in the order the settings name
+// them, which is the project's file's order, and `none` after the name of an experiment no issue
+// holds. It counts issues rather than trees because the state names no tree: every issue of a
+// tree carries its tree's draw, and a tree handed over as one of its own carries its old tree's
+// draw verbatim, so one draw is two trees' and no draw is a tree's name. The lines name no
+// issue: the keys stay in `--json`, where a line per issue would print hundreds on a live
+// deployment.
+func TestPlainStateCountsTheIssuesInEachDeclaredExperimentsArms(t *testing.T) {
 	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
 		`"admission":{"cap":2,"active":[],"waiting":[]},"pendingStatusWrites":[]`
-	// A drawn root and a child of its tree, which carries the same draw.
-	root := `"LEGION-208":{"key":"LEGION-208","generation":1,"phase":"implementing","status":"in_progress",` +
-		`"memoryGroup":"memory","memoryDrawMode":"random","memoryDrawnAt":"2026-10-25T10:00:00Z"}`
-	child := `"LEGION-209":{"key":"LEGION-209","generation":1,"phase":"admitted","status":"in_progress",` +
-		`"memoryGroup":"memory","memoryDrawMode":"random","memoryDrawnAt":"2026-10-25T10:00:00Z"}`
-	// A tree of its own, handed over from that one: its draw is the old tree's verbatim, the
-	// instant included, so it counts as one more issue under the same group and mode.
-	handedOver := `"LEGION-210":{"key":"LEGION-210","generation":1,"phase":"planning","status":"in_progress",` +
-		`"memoryGroup":"memory","memoryDrawMode":"random","memoryDrawnAt":"2026-10-25T10:00:00Z"}`
-	// A second tree the same mode drew the other way, and a third an earlier mode drew.
-	second := `"LEGION-300":{"key":"LEGION-300","generation":1,"phase":"done","status":"done",` +
-		`"memoryGroup":"none","memoryDrawMode":"random","memoryDrawnAt":"2026-10-25T11:00:00Z"}`
-	third := `"LEGION-400":{"key":"LEGION-400","generation":1,"phase":"implementing","status":"in_progress",` +
-		`"memoryGroup":"memory","memoryDrawMode":"on","memoryDrawnAt":"2026-10-26T09:00:00Z"}`
-	// A tree first opened before the setting existed carries no draw and is counted in nothing.
+	// The settings as the daemon serves them: the project's own experiments, in the file's
+	// order, which is the order the lines take — `plan-length` is declared first and printed
+	// first, though `memory` sorts before it.
+	settings := func(declared string) string {
+		return `,"settings":{"projects":{"LEGION":{"experiments":[` + declared + `]}}}`
+	}
+	const planLength = `{"name":"plan-length","mode":"random","unit":"issue","variants":[{"name":"short","weight":1,"config_files":[]},{"name":"long","weight":1,"config_files":[]}]}`
+	const memory = `{"name":"memory","mode":"random","unit":"tree","variants":[{"name":"memory","weight":1,"config_files":[]},{"name":"none","weight":1,"config_files":[]}]}`
+	issue := func(key, phase string, assignments ...string) string {
+		return `"` + key + `":{"key":"` + key + `","generation":1,"phase":"` + phase + `","status":"in_progress"` +
+			`,"assignments":[` + strings.Join(assignments, ",") + `]}`
+	}
+	drawn := func(experiment, variant string) string {
+		return `{"experiment":"` + experiment + `","variant":"` + variant + `","mode":"random","drawnAt":"2026-10-25T10:00:00Z"}`
+	}
+	// A drawn root and a child of its tree, which carries the tree's memory arm and an arm of
+	// the issue experiment drawn for itself.
+	root := issue("LEGION-208", "implementing", drawn("memory", "memory"), drawn("plan-length", "short"))
+	child := issue("LEGION-209", "admitted", drawn("memory", "memory"), drawn("plan-length", "long"))
+	// A tree of its own, handed over from that one: its memory draw is the old tree's verbatim,
+	// so it counts as one more issue under the same arm, and its hand-over settled it at no arm
+	// of the issue experiment, a row that records no draw and is counted in nothing.
+	handedOver := issue("LEGION-210", "planning", drawn("memory", "memory"),
+		`{"experiment":"plan-length","variant":"","mode":""}`)
+	// A second tree the same mode drew the other way, and a tree first opened before any
+	// experiment existed, which carries no answer and is counted in nothing.
+	second := issue("LEGION-300", "done", drawn("memory", "none"))
 	undrawn := `"LEGION-500":{"key":"LEGION-500","generation":1,"phase":"implementing","status":"in_progress"}`
 	for _, tc := range []struct {
-		name, issues, want string
+		name, declared, issues, want string
 	}{
 		{
-			name:   "four trees under two modes, one of them handed over",
-			issues: `{` + root + `,` + child + `,` + handedOver + `,` + second + `,` + third + `,` + undrawn + `}`,
-			want:   "memory: 5 issues — 1 memory (on), 3 memory (random), 1 none (random)\n",
+			name:     "two experiments, each drawn for, in the settings' order",
+			declared: planLength + "," + memory,
+			issues:   `{` + root + `,` + child + `,` + handedOver + `,` + second + `,` + undrawn + `}`,
+			want: "plan-length: 2 issues — 1 long (random), 1 short (random)\n" +
+				"memory: 4 issues — 3 memory (random), 1 none (random)\n",
 		},
 		{
-			name:   "one tree, root and child",
-			issues: `{` + root + `,` + child + `}`,
-			want:   "memory: 2 issues — 2 memory (random)\n",
+			// Two experiments declared and an answer held for one: two lines, not one.
+			name:     "an experiment no issue holds",
+			declared: planLength + "," + memory,
+			issues:   `{` + issue("LEGION-208", "implementing", drawn("memory", "memory")) + `}`,
+			want:     "plan-length: none\nmemory: 1 issue — 1 memory (random)\n",
 		},
-		{name: "one issue", issues: `{` + third + `}`, want: "memory: 1 issue — 1 memory (on)\n"},
-		{name: "nothing drawn", issues: `{` + undrawn + `}`, want: "memory: none\n"},
-		{name: "no issues", issues: `{}`, want: "memory: none\n"},
+		{
+			name:     "one experiment, a root and a child of its tree",
+			declared: memory,
+			issues:   `{` + root + `,` + child + `}`,
+			want:     "memory: 2 issues — 2 memory (random)\n",
+		},
+		{name: "nothing drawn", declared: memory, issues: `{` + undrawn + `}`, want: "memory: none\n"},
+		{name: "no issues", declared: memory, issues: `{}`, want: "memory: none\n"},
+		// A deployment whose settings name no experiment of its own still declares the memory
+		// experiment, at mode off, and reads its line.
+		{name: "no experiment declared", declared: "", issues: `{` + undrawn + `}`, want: "memory: none\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			served := "{" + daemon + `,"issues":` + tc.issues + "}"
+			served := "{" + daemon + `,"issues":` + tc.issues + settings(tc.declared) + "}"
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(served))
+			}))
+			defer server.Close()
+			t.Chdir(t.TempDir())
+			t.Setenv("LEGION_DAEMON_URL", server.URL)
+			t.Setenv("LEGION_ISSUE", "")
+
+			var out, errb bytes.Buffer
+			if code := run(context.Background(), []string{"legion", "state"}, &out, &errb); code != 0 {
+				t.Fatalf("legion state = %d, stderr %q", code, errb.String())
+			}
+			if !strings.Contains(out.String(), tc.want) {
+				t.Fatalf("legion state printed %q, want the lines %q", out.String(), tc.want)
+			}
+		})
+	}
+}
+
+// The deployment that writes the `memory` block and declares no `experiments` key counts that
+// block's arms like any other experiment: the block is the experiment named `memory`
+// (config.Project.ExperimentsDeclared), and the settings carry it under `memory` rather than in
+// `experiments`, which stays `[]`. Reading the `experiments` key alone would print
+// `experiments: none` over a deployment every issue of which holds a memory assignment. The line
+// is the one this deployment read before any experiment was declared: each arm with the mode it
+// was drawn under, and a tree drawn at mode off, which holds the empty arm, as `none (off)`.
+func TestPlainStateCountsTheMemoryBlocksArmsWithNoExperimentsKey(t *testing.T) {
+	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
+		`"admission":{"cap":2,"active":[],"waiting":[]},"pendingStatusWrites":[]`
+	drawn := func(variant, mode string) string {
+		return `{"experiment":"memory","variant":"` + variant + `","mode":"` + mode + `","drawnAt":"2026-10-25T10:00:00Z"}`
+	}
+	issue := func(key, variant, mode string) string {
+		return `"` + key + `":{"key":"` + key + `","generation":1,"phase":"implementing","status":"in_progress"` +
+			`,"assignments":[` + drawn(variant, mode) + `]}`
+	}
+	issues := `{` + issue("LEGION-208", "memory", "random") + `,` + issue("LEGION-209", "memory", "random") + `,` +
+		issue("LEGION-210", "memory", "random") + `,` + issue("LEGION-300", "none", "random") + `,` +
+		issue("LEGION-400", "", "off") + `}`
+	// The settings as the daemon serves them for such a project: the block as the file writes it,
+	// and an empty `experiments`.
+	settings := `,"settings":{"projects":{"LEGION":{"memory":{"mode":"random",` +
+		`"config_files":["/etc/legion-operator/memory.yml"]},"experiments":[]}}}`
+	served := "{" + daemon + `,"issues":` + issues + settings + "}"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(served))
+	}))
+	defer server.Close()
+	t.Chdir(t.TempDir())
+	t.Setenv("LEGION_DAEMON_URL", server.URL)
+	t.Setenv("LEGION_ISSUE", "")
+
+	var out, errb bytes.Buffer
+	if code := run(context.Background(), []string{"legion", "state"}, &out, &errb); code != 0 {
+		t.Fatalf("legion state = %d, stderr %q", code, errb.String())
+	}
+	const want = "memory: 5 issues — 3 memory (random), 1 none (off), 1 none (random)\n"
+	if !strings.Contains(out.String(), want) {
+		t.Fatalf("legion state printed %q, want the line %q", out.String(), want)
+	}
+	if strings.Contains(out.String(), "experiments: none") {
+		t.Fatalf("legion state printed %q, want no `experiments: none`: the block declares an experiment", out.String())
+	}
+}
+
+// The deployment that writes no `memory` block and declares no `experiments` key — the
+// deployment this fleet runs — counts the memory arms its issues hold all the same: such a
+// project declares the memory experiment at mode off (config.Project.ExperimentsDeclared), under
+// which every tree it opens is drawn and recorded at no arm, so the settings carry neither key
+// and the line is still the memory one, printing that empty arm as `none (off)` as it did before
+// any experiment was declared. Printing `experiments: none` over it would drop a line every such
+// deployment has read since before any experiment was declared.
+func TestPlainStateCountsTheMemoryArmsOfAProjectThatWritesNoBlock(t *testing.T) {
+	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
+		`"admission":{"cap":2,"active":[],"waiting":[]},"pendingStatusWrites":[]`
+	// What such a project's trees hold: the empty arm an experiment at mode off draws, recorded
+	// with the word `off` and the instant of the draw.
+	issue := func(key string) string {
+		return `"` + key + `":{"key":"` + key + `","generation":1,"phase":"implementing","status":"in_progress"` +
+			`,"assignments":[{"experiment":"memory","variant":"","mode":"off","drawnAt":"2026-10-25T10:00:00Z"}]}`
+	}
+	issues := `{` + issue("LEGION-208") + `,` + issue("LEGION-209") + `}`
+	// The settings as the daemon serves them for such a project: no `memory` block at all, and an
+	// empty `experiments`.
+	settings := `,"settings":{"projects":{"LEGION":{"memory":{"config_files":[]},"experiments":[]}}}`
+	served := "{" + daemon + `,"issues":` + issues + settings + "}"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(served))
+	}))
+	defer server.Close()
+	t.Chdir(t.TempDir())
+	t.Setenv("LEGION_DAEMON_URL", server.URL)
+	t.Setenv("LEGION_ISSUE", "")
+
+	var out, errb bytes.Buffer
+	if code := run(context.Background(), []string{"legion", "state"}, &out, &errb); code != 0 {
+		t.Fatalf("legion state = %d, stderr %q", code, errb.String())
+	}
+	const want = "memory: 2 issues — 2 none (off)\n"
+	if !strings.Contains(out.String(), want) {
+		t.Fatalf("legion state printed %q, want the line %q", out.String(), want)
+	}
+	if strings.Contains(out.String(), "experiments: none") {
+		t.Fatalf("legion state printed %q, want no `experiments: none`: every project declares the memory experiment", out.String())
+	}
+}
+
+// R5 holds the memory experiment's line to the count the memory line made before any experiment
+// was declared, and that line counted only issues whose tree a draw had reached. A unit a
+// hand-over settled at no arm (a carried child whose old tree held no draw) was in no count:
+// a daemon without this change served it none of the three memory fields, and legion state left
+// it out.
+// The back-fill turns every such carried child into a settled row (variant, mode and instant all
+// empty), so on a deployment that ran a release without this change those rows exist from the
+// upgrade on, and the memory line must not start counting them. The want is the line a binary of
+// legion-v20.8.1 (045ee0762538), a release without this change, printed for the same issues,
+// measured by INFRA-2566's tester on 2026-11-13.
+func TestPlainStateLeavesAMemoryUnitSettledAtNoArmOutOfTheMemoryLine(t *testing.T) {
+	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
+		`"admission":{"cap":2,"active":[],"waiting":[]},"pendingStatusWrites":[]`
+	drawn := func(key, variant, mode string) string {
+		return `"` + key + `":{"key":"` + key + `","generation":1,"phase":"implementing","status":"in_progress"` +
+			`,"assignments":[{"experiment":"memory","variant":"` + variant + `","mode":"` + mode + `","drawnAt":"2026-10-25T10:00:00Z"}]}`
+	}
+	// The settled row as the daemon serves it: no arm, no mode, no instant.
+	settled := `"LEGION-500":{"key":"LEGION-500","generation":1,"phase":"implementing","status":"in_progress"` +
+		`,"assignments":[{"experiment":"memory","variant":"","mode":""}]}`
+	issues := `{` + drawn("LEGION-208", "memory", "on") + `,` + drawn("LEGION-209", "memory", "random") + `,` +
+		drawn("LEGION-210", "memory", "random") + `,` + drawn("LEGION-300", "", "off") + `,` +
+		drawn("LEGION-301", "none", "random") + `,` + settled + `}`
+	settings := `,"settings":{"projects":{"LEGION":{"memory":{"mode":"random",` +
+		`"config_files":["/etc/legion-operator/memory.yml"]},"experiments":[]}}}`
+	served := "{" + daemon + `,"issues":` + issues + settings + "}"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(served))
+	}))
+	defer server.Close()
+	t.Chdir(t.TempDir())
+	t.Setenv("LEGION_DAEMON_URL", server.URL)
+	t.Setenv("LEGION_ISSUE", "")
+
+	var out, errb bytes.Buffer
+	if code := run(context.Background(), []string{"legion", "state"}, &out, &errb); code != 0 {
+		t.Fatalf("legion state = %d, stderr %q", code, errb.String())
+	}
+	const want = "memory: 5 issues — 1 memory (on), 2 memory (random), 1 none (off), 1 none (random)\n"
+	if !strings.Contains(out.String(), want) {
+		t.Fatalf("legion state printed %q, want the line %q, which the memory line printed before any experiment was declared", out.String(), want)
+	}
+}
+
+// R6 holds the documented rollback, to a release without this change, to a deployment that keeps
+// this `legion`: the daemon it then reads serves no `assignments` and no
+// `settings.projects.<KEY>.experiments`, and every issue's draw is in its three memory fields,
+// which every daemon from contract 49 serves.
+// The memory line counts those fields where an issue carries no `assignments`, as `memorySummary`
+// in legion-v20.13.0 (809208573a01), a release without this change, counted them, so the line is
+// the one a `legion` without this change prints.
+// Where an issue carries `assignments` the fields are not counted a second time.
+func TestPlainStateCountsTheMemoryLineFromTheMemoryFieldsOfADaemonThatServesNoAssignments(t *testing.T) {
+	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
+		`"admission":{"cap":2,"active":[],"waiting":[]},"pendingStatusWrites":[]`
+	// An issue as a daemon at contract 94 serves it: the three memory fields, and no
+	// `assignments`.
+	fields := func(key, group, mode string) string {
+		return `"` + key + `":{"key":"` + key + `","generation":1,"phase":"implementing","status":"in_progress"` +
+			`,"memoryGroup":"` + group + `","memoryDrawMode":"` + mode + `","memoryDrawnAt":"2026-10-25T10:00:00Z"}`
+	}
+	// An issue no draw reached, which that daemon serves none of the three for.
+	undrawn := `"LEGION-500":{"key":"LEGION-500","generation":1,"phase":"implementing","status":"in_progress"}`
+	rolledBack := `{` + fields("LEGION-208", "memory", "on") + `,` + fields("LEGION-209", "memory", "random") + `,` +
+		fields("LEGION-210", "memory", "random") + `,` + fields("LEGION-300", "none", "off") + `,` +
+		fields("LEGION-301", "none", "random") + `,` + undrawn + `}`
+	// The same draw as this release serves it, the row and the three fields it fills.
+	both := `{"LEGION-208":{"key":"LEGION-208","generation":1,"phase":"implementing","status":"in_progress"` +
+		`,"memoryGroup":"memory","memoryDrawMode":"random","memoryDrawnAt":"2026-10-25T10:00:00Z"` +
+		`,"assignments":[{"experiment":"memory","variant":"memory","mode":"random","drawnAt":"2026-10-25T10:00:00Z"}]}}`
+	for _, tc := range []struct {
+		name, issues, settings, want string
+	}{
+		{
+			// The settings as the daemon at contract 94 serves them: the block, no `experiments`.
+			name:     "a daemon at contract 94",
+			issues:   rolledBack,
+			settings: `,"settings":{"projects":{"LEGION":{"memory":{"mode":"random","config_files":[]},"deploys":[]}}}`,
+			want:     "memory: 5 issues — 1 memory (on), 2 memory (random), 1 none (off), 1 none (random)\n",
+		},
+		{
+			name:   "a daemon that serves no settings",
+			issues: rolledBack,
+			want:   "memory: 5 issues — 1 memory (on), 2 memory (random), 1 none (off), 1 none (random)\n",
+		},
+		{
+			name:     "an issue that carries both",
+			issues:   both,
+			settings: `,"settings":{"projects":{"LEGION":{"memory":{"mode":"random","config_files":[]},"experiments":[]}}}`,
+			want:     "memory: 1 issue — 1 memory (random)\n",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			served := "{" + daemon + `,"issues":` + tc.issues + tc.settings + "}"
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				_, _ = w.Write([]byte(served))

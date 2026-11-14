@@ -30,8 +30,9 @@ import (
 
 // maxTimerWindow is the largest worker_rpc_timeout_seconds a legion.yaml may carry: the largest
 // whole number of seconds whose milliseconds fit a signed 32-bit timer, the bound both daemons
-// hold every duration key to (maxTimerSeconds and durationKeys in
-// packages/daemon/internal/config/config.go, lines 233 and 244). The table below ends on it
+// hold every duration key to (maxTimerSeconds in
+// packages/daemon/internal/config/config.go, and the Positive rows of topLevelKeys in
+// packages/daemon/internal/config/keytable.go, which carry each duration key's own default). The table below ends on it
 // because the derivation multiplies its window by four and nothing refuses the product: a legal
 // configuration must still yield a limit a caller can hold, so the largest legal window is the
 // one row that says the arithmetic does not overflow or wrap.

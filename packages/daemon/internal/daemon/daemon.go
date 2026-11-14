@@ -36,9 +36,9 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/credential"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
+	"github.com/sjawhar/legion/daemon/internal/experiment"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/intake"
-	"github.com/sjawhar/legion/daemon/internal/memorygroup"
 	"github.com/sjawhar/legion/daemon/internal/natsauth"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/omplaunch"
@@ -365,9 +365,9 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		plan.identity = workflow.identity
 		plan.repository = workflow.issueRepository
 		plan.ensureWorkspace = workflow.ensureWorkspace
-		// The memory group is read from the daemon's own store (treeMemoryGroup), not from here:
-		// the operator's spawn draws one with no workflow configured, and the launch that follows
-		// it must honour the draw it made.
+		// The arms a launch runs in are read from the daemon's own store (launchVariants), not
+		// from here: the operator's spawn draws a tree's experiments with no workflow
+		// configured, and the launch that follows it must honour the draw it made.
 		// Only a daemon with the workflow configured has issue records to read a phase or a tree
 		// from; Stage 2's supervision runs on claims alone, where every delivery holds and every
 		// tree closes.
@@ -722,10 +722,6 @@ type plan struct {
 	// carries its seed unless it is the pane seed.
 	nats         natsConnection
 	instructions string
-	// memoryInstructions is the daemon's copy of the project's memory instructions
-	// (config.WriteMemoryInstructions), the last fragment of a memory-group launch's system
-	// prompt; "" when the project names no memory block or its block names no instructions file.
-	memoryInstructions string
 	// dispatchToken is the Dispatch bearer dispatch_token_file names; "" without Dispatch.
 	dispatchToken string
 	// hookPrompts are the words boot read for each hook whose `prompt_file` names a file, by
@@ -835,9 +831,13 @@ func prepare(cfg config.Config, log *slog.Logger, o overrides) (plan, error) {
 		}
 	}
 
-	memoryInstructions := ""
-	if reads.memoryInstructions != nil {
-		if memoryInstructions, err = config.WriteMemoryInstructions(reads.memoryInstructions, cfg.StateDir, cfg.Project); err != nil {
+	// One copy per declared variant that names an instructions file, each under its experiment's
+	// own directory, since two names may hold `-` and neither may hold `/`, and the `memory`
+	// block's arm at the block's own `memory-instructions.md` (config.VariantInstructionsFile,
+	// which is where a launch's arms read the copies back from: experiment.Launch). Boot writes
+	// them before the first pane opens.
+	for _, read := range reads.variantInstructions {
+		if err := config.WriteVariantInstructions(read.contents, cfg.StateDir, cfg.Project, read.experiment, read.variant); err != nil {
 			return plan{}, err
 		}
 	}
@@ -867,8 +867,7 @@ func prepare(cfg config.Config, log *slog.Logger, o overrides) (plan, error) {
 	p := plan{
 		repositories: newRepositories(cfg.Project, cfg.RepositoryRenames),
 		project:      reads.project, operatorToken: reads.operatorToken, secrets: reads.secrets, nats: reads.nats, instructions: instructions,
-		memoryInstructions: memoryInstructions,
-		dispatchToken:      reads.dispatchToken, hookPrompts: reads.hookPrompts, prompts: composer, roleReferences: prompts.RoleReferences(),
+		dispatchToken: reads.dispatchToken, hookPrompts: reads.hookPrompts, prompts: composer, roleReferences: prompts.RoleReferences(),
 		tools: reads.tmux.tools, clock: clock, orphanSweep: orphanSweep, controllerRetry: controllerRetry, stopBudget: stop,
 		secretsEnroller: secretsEnroller, secretsLogin: secretsLogin, strandedReported: o.strandedReported,
 		beforeServingLatched: o.beforeServingLatched,
@@ -960,84 +959,83 @@ func prepareTmux(cfg config.Config, log *slog.Logger, o overrides, dispatchToken
 // checkPaneRoleOverlays is the boot gate's read of the overlays each role names beyond the
 // operator's own, as that role's pane will start Oh My Pi: its PI_CONFIG_FILES,
 // runtime.tmux.pi_config_files then the role's own files (role_config_files) and, for a workflow
-// role of a project whose block names memory overlays, those after them, each file
-// read and the role's own each read alone by image's Oh My Pi (capabilities.CheckOverlays), so a
-// file a pane's Oh My Pi would refuse refuses the boot, naming the key and the file, rather than
-// every launch that names it. Legion names no overlay of its own, so those lists are the whole of
-// a pane's PI_CONFIG_FILES. The controller is in no memory group, so it is never probed with
-// them; the mode is not read here, since a tree already drawn into the memory group names those
-// overlays whatever the mode is now. A run that never reached an exit
-// of its own is logged, not refused, as the model-fallback read is.
+// role of a project that declares an arm naming overlays, that arm's files after them
+// (runtime.RoleOverlayValues, which the image probe's manifest builds its values with too), each
+// file read and each read alone by image's Oh My Pi (capabilities.CheckOverlays), so a file a
+// pane's Oh My Pi would refuse refuses the boot, naming the key and the file, rather than every
+// launch that names it. Legion names no overlay of its own, so those lists are the whole of a
+// pane's PI_CONFIG_FILES.
+//
+// Each distinct file is read alone once and each distinct whole value is read once, over every
+// role and every arm (capabilities.OverlayReads, which the image probe's own read holds too).
+// The refusal still names the first role and the first value that holds what Oh My Pi refuses,
+// since the loops reach them before any other.
+//
+// No mode is read here, since a unit already drawn into an arm names that arm's overlays
+// whatever the mode is now. A run that never reached an exit of its own is logged, not refused,
+// as the model-fallback read is.
 func checkPaneRoleOverlays(ctx context.Context, cfg config.Config, image capabilities.Image, log *slog.Logger) error {
 	var every []string
 	if block := cfg.Runtime.Tmux; block != nil {
 		every = block.PiConfigFiles
 	}
-	memory := cfg.Projects[cfg.Project].Memory
-	memoryField := "projects." + cfg.Project + ".memory.config_files"
-	// probed is each PI_CONFIG_FILES value already read, so one value shared by six roles costs
-	// one read of each of its files rather than six.
-	probed := make(map[string]struct{}, len(config.RoleConfigRoles))
+	declared := experiment.DeclaredVariants(cfg.ExperimentsDeclared())
+	reads := capabilities.OverlayReads{}
 	for _, role := range config.RoleConfigRoles {
 		own := cfg.RoleConfigFiles[role]
-		field := "role_config_files." + string(role)
-		// A memory-group pane of this role names the memory overlays last, so the gate reads the
-		// value that pane would start on rather than the role's half of it.
-		if len(memory.ConfigFiles) > 0 && role != claim.RoleController {
-			own = slices.Concat(own, memory.ConfigFiles)
-			if len(cfg.RoleConfigFiles[role]) == 0 {
-				field = memoryField
-			} else {
-				field += " with " + memoryField
+		ownField := "role_config_files." + string(role)
+		for _, value := range runtime.RoleOverlayValues(role, own, declared) {
+			unread, first := reads.Unread(value.Files)
+			if !first {
+				continue
 			}
-		}
-		if len(own) == 0 {
-			continue
-		}
-		// Every workflow role of a memory-group project that names no overlays of its own is
-		// given one and the same value, so each distinct value is read once rather than once per
-		// role: the runs Oh My Pi is asked for are identical, and so is their verdict. The first
-		// role holding a value Oh My Pi refuses is still the role the refusal names, since the
-		// loop reaches it before any other role of that value.
-		value := strings.Join(own, ":")
-		if _, read := probed[value]; read {
-			continue
-		}
-		probed[value] = struct{}{}
-		why, err := capabilities.CheckOverlays(ctx, image, slices.Concat(every, own), own)
-		if err != nil {
-			log.Warn("boot gate: Oh My Pi did not answer on some of a role's overlays; its files were read", "role", role, "error", err)
-		}
-		if why != "" {
-			return fmt.Errorf("boot gate: %s: the %s's Oh My Pi would not start: %s", field, role, why)
+			field := ownField
+			if value.Variant != nil {
+				field = value.Variant.ConfigFilesField
+				if len(own) > 0 {
+					field = ownField + " with " + field
+				}
+			}
+			why, err := capabilities.CheckOverlays(ctx, image, slices.Concat(every, value.Files), unread)
+			if err != nil {
+				log.Warn("boot gate: Oh My Pi did not answer on some of a role's overlays; its files were read", "role", role, "error", err)
+			}
+			if why != "" {
+				return fmt.Errorf("boot gate: %s: the %s's Oh My Pi would not start: %s", field, role, why)
+			}
 		}
 	}
 	return nil
 }
 
-// treeMemoryGroup answers whether tree's root record carries the memory group, the word the draw
-// stored on it once and every later launch of the tree reads (record.Issue.MemoryGroup,
-// memorygroup.GroupMemory). An issue's memory group is its tree root's, and the root key is the
-// claim's own tree, so there is no ancestor walk; a tree with no record, and a root first opened
-// before the setting existed, carry no group and run without memory.
+// launchVariants is the one reader a launch's arms come from: the experiments the project
+// declares, resolved against the answers the daemon's own store recorded for the launch's unit
+// (experiment.Launch, which decides which keys to read and which arms the rows put the launch
+// in). Everything here is the transaction that reads those rows.
 //
 // It reads the daemon's own store rather than the workflow's, in a transaction of its own as the
-// supervisor's predicates read a record: the operator's spawn draws a tree's group through the
-// same store with no workflow configured (api's drawMemory), and a launch that could not read
-// that draw back would run the tree against a group the daemon had already recorded for it.
-func treeMemoryGroup(st *store.Store) func(ctx context.Context, tree string) (bool, error) {
+// supervisor's predicates read a record: the operator's spawn draws a tree's experiments through
+// the same store with no workflow configured (api's drawExperiments), and a launch that could not
+// read that draw back would run the unit against an arm the daemon had already recorded for it.
+// A declaration no launch could use names no key to read, so such a deployment opens no
+// transaction per worker spawn at all (experiment.Launch.Keys).
+func launchVariants(st *store.Store, declared []config.Experiment, stateDir string) func(ctx context.Context, tree, issue string) (experiment.Arms, error) {
+	launch := experiment.ForLaunch(declared, stateDir)
 	records := record.NewStore()
-	return func(ctx context.Context, tree string) (bool, error) {
-		var issue *record.Issue
-		err := st.Tx(ctx, func(tx pgx.Tx) error {
-			var err error
-			issue, err = records.Issue(ctx, tx, tree)
-			return err
-		})
-		if err != nil {
-			return false, err
+	return func(ctx context.Context, tree, issue string) (experiment.Arms, error) {
+		keys := launch.Keys(tree, issue)
+		if len(keys) == 0 {
+			return experiment.Arms{}, nil
 		}
-		return issue != nil && issue.MemoryGroup == string(memorygroup.GroupMemory), nil
+		var recorded map[string][]record.Assignment
+		if err := st.Tx(ctx, func(tx pgx.Tx) error {
+			var err error
+			recorded, err = records.AssignmentsFor(ctx, tx, keys)
+			return err
+		}); err != nil {
+			return experiment.Arms{}, err
+		}
+		return launch.Arms(recorded, tree, issue), nil
 	}
 }
 
@@ -1108,10 +1106,7 @@ func claimRepository(issueOf func(context.Context, claim.Token) (string, error),
 // tmuxOptions translates the configuration into the tmux runtime's Options, all but the worker
 // stream and the GitHub credential function, which boot hands the factory: the `runtime.tmux`
 // block's pane variables, Oh My Pi overlays and take_over among them, each role's own overlays
-// (role_config_files), and the project's memory overlays (`memory.config_files`), handed over
-// whatever the mode is: the mode decides which new trees are drawn into the memory group, and a
-// tree already drawn into it names those overlays under any mode. A project with no block hands
-// over none, which is the pane every deployment built before the block existed.
+// (role_config_files), and every declared experiment's arms (experiment.DeclaredVariants).
 func tmuxOptions(cfg config.Config, project string, launchers map[runtime.Backend]tmux.Launcher, providerEnvDir, dispatchTokenFile string, log *slog.Logger) tmux.Options {
 	opts := tmux.Options{
 		Project:           project,
@@ -1132,7 +1127,7 @@ func tmuxOptions(cfg config.Config, project string, launchers map[runtime.Backen
 	if block := cfg.Runtime.Tmux; block != nil {
 		opts.PaneEnv, opts.PiConfigFiles, opts.TakeOver = block.PaneEnv, block.PiConfigFiles, block.TakeOver
 	}
-	opts.MemoryConfigFiles = cfg.Projects[cfg.Project].Memory.ConfigFiles
+	opts.ExperimentVariants = experiment.DeclaredVariants(cfg.ExperimentsDeclared())
 	return opts
 }
 
@@ -1443,7 +1438,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 			runtimeName: cfg.Runtime.Name, plugins: p.plugins,
 			commitIssueTrailerRepos: cfg.Projects[cfg.Project].CommitIssueTrailerRepos, same: p.repositories.same,
 			backend: cfg.BackendFor, hostWorkspaces: !rt.ProvisionsWorkspaces(), ensureWorkspace: p.ensureWorkspace,
-			memoryInstructions: p.memoryInstructions, memoryGroup: treeMemoryGroup(st),
+			variants: launchVariants(st, cfg.ExperimentsDeclared(), cfg.StateDir),
 		},
 		Identity:                adoptIdentity(p.identity, p.repository),
 		IssueInTurn:             sup.claimInTurn,
@@ -2308,6 +2303,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 			repositories: p.repositories,
 			caches:       repositoryCachesOf(s.runtime),
 			gatedSteps:   cfg.Gates.Steps(),
+			experiments:  cfg.ExperimentsDeclared(),
 			settings:     api.SettingsOf(cfg),
 			// The same rule the lane itself reads, over the same configuration, so the count
 			// the state serves and the claims the pass posts are one set (refreshStalePlugins,
@@ -2350,7 +2346,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		Grants:             grants,
 		Releaser:           s.supervisor.deps.Runtime,
 		Trees:              st,
-		Memory:             cfg.Projects[cfg.Project].Memory,
+		Experiments:        cfg.ExperimentsDeclared(),
 		ClaimReady:         claimReadyHook(keeper, claimReady),
 		HandoffCompleted:   handoffCompleted,
 		PromptAgents:       promptAgents(p.roleReferences),
@@ -2479,6 +2475,10 @@ type source struct {
 	// gatedSteps are the design-gate steps the deployment gates (config.Gates.Steps), which every
 	// root of the state answers its own state of; the empty list gates none.
 	gatedSteps []record.DesignStep
+	// experiments are the project's declared experiments (config.Project.ExperimentsDeclared),
+	// whose order every issue's `assignments` ride in; the empty list declares none. It is read
+	// once at boot for the reason settings is.
+	experiments []config.Experiment
 	// settings is the resolved configuration as the state shows it, built once here: Load reads
 	// legion.yaml once and an edit to it restarts the daemon, so once-at-boot is live.
 	settings api.Settings
@@ -2663,7 +2663,7 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 	if err != nil {
 		return api.State{}, nil, err
 	}
-	state, err := projection.Project(ctx, tx, records, s.project, s.gatedSteps, claims, stranded, s.reports(), now)
+	state, err := projection.Project(ctx, tx, records, s.project, s.gatedSteps, s.experiments, claims, stranded, s.reports(), now)
 	if err != nil {
 		return api.State{}, nil, err
 	}

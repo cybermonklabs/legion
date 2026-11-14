@@ -15,7 +15,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/intake"
-	"github.com/sjawhar/legion/daemon/internal/memorygroup"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -750,12 +749,29 @@ func populatedState(t *testing.T) State {
 	}
 	// LEGION-208's tree was drawn into the memory group, so its root and LEGION-209, a child of
 	// that tree, both show the draw as internal/projection fills them, while every other issue of
-	// the fixture belongs to a tree no draw has reached.
+	// the fixture belongs to a tree no draw has reached. `memory` is the arm of the experiment of
+	// that name (config.Project.ExperimentsDeclared), and the three memory fields are that one
+	// assignment spelled out as the readers of contract 49 have always read it.
+	//
+	// Beside it the fixture carries the shapes an assignment has: a tree experiment, which every
+	// issue of the tree shows; an issue experiment, `plan-length`, drawn for each issue of that
+	// tree on its own, so a root and its child stand in different arms of one experiment; and,
+	// on the root LEGION-210, a row a hand-over settled at no arm at all — an empty variant, an
+	// empty mode and no instant — which is how a reader tells a unit settled at no arm from a
+	// unit never drawn, which carries no row.
+	memoryDrawn := AssignmentView{Experiment: "memory", Variant: "memory", Mode: string(config.ExperimentRandom), DrawnAt: &memoryDrawnAt}
 	root := state.Issues["LEGION-208"]
-	root.MemoryGroup = string(memorygroup.GroupMemory)
-	root.MemoryDrawMode = string(config.MemoryRandom)
+	root.Assignments = []AssignmentView{
+		memoryDrawn,
+		{Experiment: "plan-length", Variant: "short", Mode: string(config.ExperimentRandom), DrawnAt: &planDrawnAt},
+	}
+	root.MemoryGroup = "memory"
+	root.MemoryDrawMode = string(config.ExperimentRandom)
 	root.MemoryDrawnAt = &memoryDrawnAt
 	state.Issues["LEGION-208"] = root
+	settled := state.Issues["LEGION-210"]
+	settled.Assignments = []AssignmentView{{Experiment: "plan-length"}}
+	state.Issues["LEGION-210"] = settled
 	state.Issues["LEGION-209"] = Issue{
 		Key:           "LEGION-209",
 		Generation:    1,
@@ -764,6 +780,10 @@ func populatedState(t *testing.T) State {
 		Repo:          "acme/widgets",
 		DefaultBranch: "main",
 		Workers:       map[claim.Role]PhaseView{},
+		Assignments: []AssignmentView{
+			memoryDrawn,
+			{Experiment: "plan-length", Variant: "long", Mode: string(config.ExperimentRandom), DrawnAt: &planDrawnAt},
+		},
 		// The child the workflow holds at `admitted`: it stands in no line, and the Dispatch
 		// links `admission.blocked` names are what hold it where it stands, which is the
 		// rendered answer it carries (`why`, api.WhyBlocked).
@@ -771,8 +791,8 @@ func populatedState(t *testing.T) State {
 			State:  WhyBlocked,
 			Reason: "It waits on LEGION-210 and LEGION-213, which are not done.",
 		},
-		MemoryGroup:    string(memorygroup.GroupMemory),
-		MemoryDrawMode: string(config.MemoryRandom),
+		MemoryGroup:    "memory",
+		MemoryDrawMode: string(config.ExperimentRandom),
 		MemoryDrawnAt:  &memoryDrawnAt,
 	}
 	// Every issue standing in a tree the admission block names carries that tree's quiet time,

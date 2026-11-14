@@ -6,6 +6,8 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -83,12 +85,55 @@ func TestProbeImageRefusesARoleOverlayAfterATimeout(t *testing.T) {
 		{"the timeout alone", "", 0},
 	} {
 		var stderr bytes.Buffer
-		code := checkRoleOverlays([]roleOverlays{{role: "merger", files: []string{"/a.yml", "/b.yml"}}}, func([]string) (string, error) { return tc.why, timedOut }, &stderr)
+		code := checkRoleOverlays([]roleOverlays{{role: "merger", files: []string{"/a.yml", "/b.yml"}}}, func([]string, []string) (string, error) { return tc.why, timedOut }, &stderr)
 		if code != tc.code || !strings.Contains(stderr.String(), "timed out after 1m0s") {
 			t.Errorf("%s: exit %d, stderr %q; want %d and the timeout", tc.name, code, stderr.String(), tc.code)
 		}
 		if refused := strings.Contains(stderr.String(), bootprobe.RoleOverlaysRefusedLine("merger", tc.why)); refused != (tc.why != "") {
 			t.Errorf("%s: stderr %q, refusal line printed %t", tc.name, stderr.String(), refused)
 		}
+	}
+}
+
+// The probe Sandbox passes a role one --role-config-files value per arm of each declared
+// experiment that names overlays (runtime/sandbox's probeManifest), so the flag takes a role more
+// than once rather than refusing the second occurrence, and every occurrence is read on its own:
+// the union of two arms is a configuration no launch produces, and Oh My Pi may take each arm and
+// refuse the pair. A value two roles share is still read once, and so is each overlay that is
+// read on its own: the role's own file stands in both arms' values and Oh My Pi answers for it
+// once.
+func TestTheRoleConfigFilesFlagTakesARoleOncePerArmAndReadsEach(t *testing.T) {
+	own := []string{"/etc/legion-operator/tester.yml"}
+	alpha, beta := append(slices.Clone(own), "/etc/legion-alpha/alpha.yml"), append(slices.Clone(own), "/etc/legion-beta/beta.yml")
+	var flag roleConfigFilesFlag
+	for _, value := range []string{
+		bootprobe.RoleConfigFilesValue("tester", alpha),
+		bootprobe.RoleConfigFilesValue("tester", beta),
+		bootprobe.RoleConfigFilesValue("merger", alpha),
+	} {
+		if err := flag.Set(value); err != nil {
+			t.Fatalf("the flag refused %q: %v; a role is named once per arm", value, err)
+		}
+	}
+	if len(flag) != 3 {
+		t.Fatalf("the flag holds %d entries, want one per occurrence: %v", len(flag), flag)
+	}
+
+	var read, alone [][]string
+	var stderr bytes.Buffer
+	code := checkRoleOverlays(flag, func(value, own []string) (string, error) {
+		read = append(read, value)
+		alone = append(alone, own)
+		return "", nil
+	}, &stderr)
+	if code != 0 || stderr.Len() != 0 {
+		t.Fatalf("checkRoleOverlays = %d, stderr %q; want 0 and nothing", code, stderr.String())
+	}
+	if want := [][]string{alpha, beta}; !reflect.DeepEqual(read, want) {
+		t.Errorf("the probe read %q, want each arm on its own and the merger's repeat of the first read once: %q", read, want)
+	}
+	want := [][]string{alpha, {"/etc/legion-beta/beta.yml"}}
+	if !reflect.DeepEqual(alone, want) {
+		t.Errorf("the probe read %q on their own, want %q: the role's own file is read alone once, not once per arm", alone, want)
 	}
 }

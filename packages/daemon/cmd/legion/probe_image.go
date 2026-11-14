@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"strconv"
 	"strings"
 
@@ -112,7 +111,7 @@ func runProbeImage(ctx context.Context, args []string, stdout, stderr io.Writer)
 	roleNamespaces := flags.String("role-namespaces", "", "run one role generation's namespaces (legion launcher role-init) over a layout of its own in this directory, on a volume of its own, and refuse when it fails; its home is an empty directory there, not the image's (the probe Sandbox passes it)")
 	testPostgres := flags.String("test-postgres", "", "prove the pod's own test database in this directory — the image's legion-testpg checked and started, a database made and dropped through LEGION_TEST_PG_DSN, and the server stopped — and refuse when it fails (the probe Sandbox passes it for a deployment that sets runtime.kubernetes.test_postgres; the image build does not)")
 	var roleOverlays roleConfigFilesFlag
-	flags.Var(&roleOverlays, strings.TrimPrefix(bootprobe.RoleConfigFilesFlag, "--"), "<role>=<file>[:<file>…]: a role's own Oh My Pi overlays (role_config_files), read after the environment's PI_CONFIG_FILES as that role's Oh My Pi starts on them; repeatable, one per role (the probe Sandbox passes it)")
+	flags.Var(&roleOverlays, strings.TrimPrefix(bootprobe.RoleConfigFilesFlag, "--"), "<role>=<file>[:<file>…]: one whole PI_CONFIG_FILES tail of a role (role_config_files, and the overlays of one arm of one declared experiment), read after the environment's PI_CONFIG_FILES as that role's Oh My Pi starts on it; repeatable, once per role per arm, and each occurrence is read on its own (the probe Sandbox passes it)")
 	if code, ok := parseFlags(flags, args); !ok {
 		return code
 	}
@@ -275,9 +274,9 @@ func runProbeImage(ctx context.Context, args []string, stdout, stderr io.Writer)
 	// Each role's own overlays, read as that role's Oh My Pi will start on them, after the table so
 	// the log still reads as the declared list first.
 	roleImage := capabilities.Image{Launch: invocation, Env: environ, WorkDir: workDir}
-	if code := checkRoleOverlays(roleOverlays, func(files []string) (string, error) {
-		overlays := append(capabilities.OverlayEntries(envValue(environ, "PI_CONFIG_FILES")), files...)
-		return capabilities.CheckOverlays(ctx, roleImage, overlays, files)
+	if code := checkRoleOverlays(roleOverlays, func(value, alone []string) (string, error) {
+		overlays := append(capabilities.OverlayEntries(envValue(environ, "PI_CONFIG_FILES")), value...)
+		return capabilities.CheckOverlays(ctx, roleImage, overlays, alone)
 	}, stderr); code != 0 {
 		return code
 	}
@@ -302,9 +301,11 @@ type roleOverlays struct {
 	files []string
 }
 
-// roleConfigFilesFlag is every --role-config-files value, in the order given; a role given twice,
-// a name that is no Legion role, and a file that is not an absolute path are refused as the flag
-// is read.
+// roleConfigFilesFlag is every --role-config-files value, in the order given, one entry per
+// occurrence: a role is named once per whole PI_CONFIG_FILES tail it starts on, so a deployment
+// that declares two arms naming overlays passes that role one value per arm, and each is read on
+// its own — the union of two arms is a configuration no launch produces. A name that is no
+// Legion role, and a file that is not an absolute path, are refused as the flag is read.
 type roleConfigFilesFlag []roleOverlays
 
 func (f *roleConfigFilesFlag) String() string {
@@ -327,9 +328,6 @@ func (f *roleConfigFilesFlag) Set(value string) error {
 	if !known {
 		return fmt.Errorf("%q is not a Legion role", role)
 	}
-	if slices.ContainsFunc(*f, func(entry roleOverlays) bool { return entry.role == role }) {
-		return fmt.Errorf("%s is given twice", role)
-	}
 	for _, file := range files {
 		if !filepath.IsAbs(file) {
 			return fmt.Errorf("%s's overlay %q is not an absolute path", role, file)
@@ -350,24 +348,26 @@ func envValue(environ []string, name string) string {
 	return value
 }
 
-// checkRoleOverlays runs check on each role's own overlays in order and answers the exit code: 1,
-// after printing the role's RoleOverlaysRefusedLine, for the first role check refuses, else 0. A
-// run check reports as unanswered (a timeout) is printed and does not stop the role's own verdict:
-// a refusal found after it still refuses.
+// checkRoleOverlays runs check on each role's whole PI_CONFIG_FILES value in order and answers
+// the exit code: 1, after printing the role's RoleOverlaysRefusedLine, for the first value check
+// refuses, else 0. A run check reports as unanswered (a timeout) is printed and does not stop
+// that value's verdict: a refusal found after it still refuses.
 //
-// A value two roles share is read once: every workflow role of a project whose memory overlays
-// reach it and that names no overlays of its own is given one and the same list, and reading it
-// again asks Oh My Pi the same question for the same answer. The refusal still names the first
-// role holding the refused value, since the loop reaches it before any other role of that value.
-func checkRoleOverlays(entries []roleOverlays, check func(files []string) (string, error), stderr io.Writer) int {
-	read := make(map[string]struct{}, len(entries))
+// check takes the whole value and, beside it, the overlays of that value to read on their own.
+// Each distinct value is read once and each distinct overlay is read alone once, over every
+// entry (capabilities.OverlayReads, which the boot gate's own read holds too): a role's own
+// files stand in the value of every arm the project declares, and Oh My Pi gives one file the
+// same answer whichever value it stands in, so a deployment that declares arms would otherwise
+// pay for the thing it added at every probe. The refusal still names the first role holding the
+// refused value, since the loop reaches it before any other role of it.
+func checkRoleOverlays(entries []roleOverlays, check func(value, alone []string) (string, error), stderr io.Writer) int {
+	reads := capabilities.OverlayReads{}
 	for _, entry := range entries {
-		value := strings.Join(entry.files, ":")
-		if _, done := read[value]; done {
+		unread, first := reads.Unread(entry.files)
+		if !first {
 			continue
 		}
-		read[value] = struct{}{}
-		why, err := check(entry.files)
+		why, err := check(entry.files, unread)
 		if err != nil {
 			fmt.Fprintf(stderr, "legion probe-image: role %s's overlays were read but Oh My Pi did not answer on some of them: %v\n", entry.role, err)
 		}

@@ -66,6 +66,47 @@ func CheckOverlays(ctx context.Context, img Image, overlays, own []string) (refu
 	return why, errors.Join(unanswered...)
 }
 
+// OverlayReads is what a reader of whole PI_CONFIG_FILES values has already asked Oh My Pi
+// through CheckOverlays, so that it asks each question once: every whole value it has read, by
+// the value's `:`-joined form, and every overlay it has read alone. Oh My Pi answers one file
+// the same whichever value that file stands in, and one value the same whichever role holds it,
+// so a value two roles or two arms produce alike is read once, and a role's own files are read
+// alone once however many arms stand them in. A deployment that declares arms would otherwise
+// pay for the thing it added at every value of every role.
+//
+// The zero value has read nothing, and both readers of these values hold one of their own: the
+// boot gate, which reads each value of each role (internal/daemon's checkPaneRoleOverlays), and
+// the image probe, which reads the values the manifest passed it (cmd/legion's
+// checkRoleOverlays). Values are offered in the caller's own order, so the first role and the
+// first value holding what Oh My Pi refuses is still the one its refusal names.
+type OverlayReads struct {
+	values map[string]struct{}
+	alone  map[string]struct{}
+}
+
+// Unread takes the next whole value: alone is the overlays of it that no read has read on their
+// own yet, which is the list CheckOverlays reads alone, and unread is false for a whole value
+// read before, which its caller passes over.
+func (r *OverlayReads) Unread(value []string) (alone []string, unread bool) {
+	if r.values == nil {
+		r.values, r.alone = map[string]struct{}{}, map[string]struct{}{}
+	}
+	joined := strings.Join(value, ":")
+	if _, read := r.values[joined]; read {
+		return nil, false
+	}
+	r.values[joined] = struct{}{}
+	alone = make([]string, 0, len(value))
+	for _, file := range value {
+		if _, read := r.alone[file]; read {
+			continue
+		}
+		r.alone[file] = struct{}{}
+		alone = append(alone, file)
+	}
+	return alone, true
+}
+
 // withOverlays is img with PI_CONFIG_FILES set to list alone.
 func (img Image) withOverlays(list []string) Image {
 	env := slices.DeleteFunc(slices.Clone(img.Env), func(pair string) bool { return strings.HasPrefix(pair, overlaysVariable+"=") })
