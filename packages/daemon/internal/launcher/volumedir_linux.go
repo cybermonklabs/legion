@@ -3,6 +3,8 @@
 package launcher
 
 import (
+	"errors"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -112,9 +114,137 @@ func openRetrying(open func() (int, error)) (int, error) {
 	}
 }
 
+// removeEntryAt removes name from the directory dir holds open, whatever it holds, and follows no
+// symbolic link on the way: it is the removal the sweep's deleter makes for every entry it is
+// asked for (removeOneRequest, volumedelete.go), in place of Root.RemoveAll, which opens every
+// directory it recurses into with the raw `openat(O_NOFOLLOW|O_DIRECTORY)` this kernel follows a
+// link under (volumedir.go).
+//
+// It works bottom up through descriptors, as Rust's std::fs::remove_dir_all does since
+// CVE-2022-21658. Every name is first unlinked as the name it is, which removes a file, a link or
+// a pipe and opens nothing. A name the kernel will not unlink that way is opened as one element of
+// the directory it is in (openElementAt: O_NOFOLLOW and no O_DIRECTORY, a directory because the
+// descriptor's own fstat says so), its names are read through that descriptor and removed the
+// same way, and it is removed last with unlinkat(AT_REMOVEDIR) from the descriptor of the
+// directory it is in. A name that became a link or a file between the unlink and the open is
+// refused by the open (ELOOP, or the fstat's ENOTDIR) and unlinked again as what it is now. A
+// directory renamed away while its names are removed is emptied where it went, through the
+// descriptor already open on it, and the link left in its place is refused by the last
+// unlinkat, which answers ENOTDIR and leaves the link standing: raced so in a test process with
+// no containment, 80 trials of 80, on 2026-11-14, kernel 4.19.0-gvisor, under go1.27.3
+// (TestTheDeletersRemovalFollowsNoLinkWithNoContainment).
+//
+// The error names what it failed on relative to dir, so a line in the pod's log is the entry's
+// path followed by a name under it.
+func removeEntryAt(dir *os.File, name string) error {
+	removal := treeRemoval{names: make([]byte, 8192)}
+	return removal.remove(int(dir.Fd()), name, name)
+}
+
+// treeRemoval is one removeEntryAt: the buffer every directory's names are read into, which is
+// one buffer for the whole tree because a directory's names are all read before any of them is
+// removed.
+type treeRemoval struct {
+	names []byte
+}
+
+// remove removes name from the directory parent holds open. path is what name is called under
+// the directory the removal began in, which the error names.
+func (r *treeRemoval) remove(parent int, name, path string) error {
+	if name == "" || name == "." || name == ".." || strings.Contains(name, "/") {
+		return &fs.PathError{Op: "unlinkat", Path: path, Err: syscall.EINVAL}
+	}
+	if err := unlinkRetrying(parent, name, 0); err == nil || errors.Is(err, syscall.ENOENT) {
+		return nil
+	}
+	fd, err := openElementAt(parent, name, path)
+	switch {
+	case errors.Is(err, syscall.ENOENT):
+		return nil
+	case errors.Is(err, syscall.ELOOP), errors.Is(err, syscall.ENOTDIR):
+		// Not a directory now, whatever the unlink met: unlinked as the name it is, or
+		// refused with the reason the kernel gives for that.
+		if err := unlinkRetrying(parent, name, 0); err != nil && !errors.Is(err, syscall.ENOENT) {
+			return &fs.PathError{Op: "unlinkat", Path: path, Err: err}
+		}
+		return nil
+	case err != nil:
+		return err
+	}
+	emptied := r.empty(fd, path)
+	_ = unix.Close(fd)
+	if emptied != nil {
+		return emptied
+	}
+	if err := unlinkRetrying(parent, name, unix.AT_REMOVEDIR); err != nil && !errors.Is(err, syscall.ENOENT) {
+		return &fs.PathError{Op: "unlinkat", Path: path, Err: err}
+	}
+	return nil
+}
+
+// empty removes every name of the directory fd holds open. It reads the names again after each
+// pass, for what was created while it removed, and stops at a pass that removed nothing, with the
+// first error of that pass, rather than read the same names for ever.
+func (r *treeRemoval) empty(fd int, path string) error {
+	for {
+		names, err := r.read(fd)
+		if err != nil {
+			return &fs.PathError{Op: "getdents", Path: path, Err: err}
+		}
+		if len(names) == 0 {
+			return nil
+		}
+		var first error
+		removed := false
+		for _, name := range names {
+			if err := r.remove(fd, name, filepath.Join(path, name)); err != nil {
+				if first == nil {
+					first = err
+				}
+				continue
+			}
+			removed = true
+		}
+		if !removed {
+			return first
+		}
+	}
+}
+
+// read is every name of the directory fd holds open but "." and "..", read from its start
+// through that descriptor.
+func (r *treeRemoval) read(fd int) ([]string, error) {
+	if _, err := unix.Seek(fd, 0, io.SeekStart); err != nil {
+		return nil, err
+	}
+	var names []string
+	for {
+		n, err := unix.Getdents(fd, r.names)
+		if err == syscall.EINTR {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		if n <= 0 {
+			return names, nil
+		}
+		_, _, names = unix.ParseDirent(r.names[:n], -1, names)
+	}
+}
+
+// unlinkRetrying is unlinkat again on an interrupted call, as openRetrying is open again.
+func unlinkRetrying(parent int, name string, flags int) error {
+	for {
+		if err := unix.Unlinkat(parent, name, flags); err != syscall.EINTR {
+			return err
+		}
+	}
+}
+
 // rootOverDescriptor is an os.Root over a descriptor already opened and checked, which is how
-// the lstats and the listing of a handle are read and how the deleter child removes an entry
-// (volumedir.go says why it goes through /proc/self/fd and what that costs).
+// the lstats and the listing of a handle are read (volumedir.go says why it goes through
+// /proc/self/fd and what that costs).
 func rootOverDescriptor(file *os.File) (*os.Root, error) {
 	return os.OpenRoot(descriptorPath(int(file.Fd())))
 }

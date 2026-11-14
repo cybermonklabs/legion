@@ -25,6 +25,10 @@ func rootOverDescriptor(*os.File) (*os.Root, error) {
 	return nil, volumeOpensNeedLinux("a descriptor")
 }
 
+func removeEntryAt(*os.File, string) error {
+	return volumeOpensNeedLinux("a removal through a descriptor")
+}
+
 func volumeOpensNeedLinux(what string) error {
 	return fmt.Errorf("launcher: opening %s as the cache trimmer does needs Linux, and this binary is built for %s", what, runtime.GOOS)
 }

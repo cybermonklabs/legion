@@ -31,10 +31,11 @@ import (
 //     waits on that goroutine at the container's stop.
 //
 // So no call of the trimmer's names more than one element, and every name is opened by
-// openVolumeDir or dirHandle.open. What no handle can answer for is what the kernel does inside
-// a call the trimmer makes once and does not drive — Root.RemoveAll re-opens the name it is
-// removing with that same raw openat — and that is what the deletions' own mount namespace is
-// for (volumedelete.go).
+// openVolumeDir or dirHandle.open. The deleter's removal of an entry keeps the same rule below
+// it: every directory it recurses into is opened by openElementAt, one name at a time, and every
+// name is unlinked from its parent's descriptor (removeEntryAt), where Root.RemoveAll, which it
+// replaces, re-opens the name it is removing with that same raw openat. The deletions' own mount
+// namespace is the bound behind it (volumedelete.go).
 type dirHandle struct {
 	// file is the descriptor the open checked. Every element below this directory is opened
 	// from it, and a sweep's deletions are made through it: the deleter child is handed this

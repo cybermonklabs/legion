@@ -32,7 +32,7 @@ type usedPaths struct {
 	Refused []string // one entry per process whose /proc the kernel refused, naming it
 }
 
-// readUsedPaths reads procRoot, leaving self's own process out.
+// readUsedPaths reads procRoot, leaving the sweep's own processes out.
 //
 // Every process is read through six entries, because no one of them is enough. An open file
 // descriptor misses a running program's own binary and every library it mapped, which is exactly
@@ -42,11 +42,18 @@ type usedPaths struct {
 // a process's threads can sit in different directories from the process's own. `root` names a
 // directory a chrooted process is confined to.
 //
-// The trimmer's own process is left out, and that is why self is an argument rather than read
+// The sweep's own processes are left out, and that is why own is an argument rather than read
 // here: listing a root and removing an entry both hold a handle under a root, and a rule that
-// read the trimmer's own handle on a root as a live use would make the sweep skip everything it
-// was about to delete. procRoot is an argument for the same reason — a test drives a fixture
-// /proc of its own — and the trimmer passes "/proc" and os.Getpid().
+// read the sweep's own handle on a root as a live use would make the sweep skip everything it
+// was about to delete. They are the trimmer's process and, once a sweep has started its deleter,
+// that child too, which holds every directory the listing opened for as long as the sweep runs
+// (startContainedRemover, volumedelete.go). Read as a use, the child was a hold on the root it
+// deletes from at the first refresh of the set (volumeUsedPathsMaxAge, sweep): a sweep of one
+// root of 2000 entries deleted none of them, on 2026-11-14, kernel 4.19.0-gvisor, under go1.27.3
+// (TestASweepsOwnDeleterIsNoHoldOnTheRootsItDeletesFrom). procRoot is an argument for the same
+// reason — a test drives a fixture /proc of its own — and the trimmer passes "/proc" and
+// os.Getpid(), and its deleter's pid too from the first refresh, which is the first reading
+// taken with a deleter running.
 //
 // A read the kernel refuses names the process it could not read and is carried back in Refused
 // rather than dropped: a refused process is one whose open files are unknown, and the caller
@@ -55,7 +62,7 @@ type usedPaths struct {
 // this pass read it is no refusal — its paths are gone with it — so ENOENT and ESRCH are passed
 // over. At most one refusal is recorded per process: a process whose /proc directory the kernel
 // refuses refuses every entry of it, and six lines would say one thing.
-func readUsedPaths(procRoot string, self int) usedPaths {
+func readUsedPaths(procRoot string, own ...int) usedPaths {
 	used := usedPaths{}
 	entries, err := os.ReadDir(procRoot)
 	if err != nil {
@@ -68,7 +75,7 @@ func readUsedPaths(procRoot string, self int) usedPaths {
 	}
 	for _, entry := range entries {
 		pid, err := strconv.Atoi(entry.Name())
-		if err != nil || pid == self {
+		if err != nil || slices.Contains(own, pid) {
 			continue
 		}
 		process := procProcess{dir: filepath.Join(procRoot, entry.Name()), pid: pid}

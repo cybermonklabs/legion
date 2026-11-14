@@ -15,29 +15,43 @@ import (
 	"time"
 )
 
-// The sweep's deletions, made where they see no more than a role sees.
+// The sweep's deletions, made by a removal that follows no symbolic link, where they see no more
+// than a role sees.
 //
 // A handle bounds what the trimmer itself reaches: it names an entry by its own name in the
 // directory the listing opened, which is the one read this kernel resolves by the descriptor
-// alone (volumedir.go). What no handle bounds is what the kernel does inside one call the
-// trimmer makes and does not drive: Root.RemoveAll unlinks a name, and on EISDIR opens it again
+// alone (volumedir.go). The removal of an entry is a walk of its own below that name, and the
+// one the deleter made before this, Root.RemoveAll, unlinks a name, and on EISDIR opens it again
 // with the raw `openat(O_NOFOLLOW|O_DIRECTORY)` this kernel follows a link under, and recurses
 // (os/removeall_at.go, go1.27.3) — it re-opens that name once more after every 1024 entries it
 // has read. A role that swaps a subdirectory for a link in either window — between the unlink
 // and the open that follows it, or between two batches — has the recursion delete the link's
 // target: measured against the uncontained code on 2026-11-12, kernel 4.19.0-gvisor, under
 // go1.27.3, where the swap landed in the batch window in four trials of four and every one of
-// them deleted a file of another role's private directory
-// (TestASubdirectorySwappedForALinkWhileARemovalRecursesReachesNoOtherRolesFiles).
+// them deleted a file of another role's private directory, and again on 2026-11-14 with
+// Root.RemoveAll called in a test process, where the first trial deleted every bait
+// (TestTheDeletersRemovalFollowsNoLinkWithNoContainment, with followingRemoval in place of
+// removeEntryAt).
 //
-// So the deletions are made in a mount namespace of their own, walked from the same list and by
-// the same walk that build a role's (RoleCover.replaced and eachReplaced, roleinit.go), each with
-// a callback of its own: every path a role's own namespace replaces with something of the
-// role's is an empty filesystem of this child's instead, with a procfs of the child's own PID
-// namespace where a role is given one and the child's working directory at the root of its own
-// namespace (containDeletions). /legion is left as the container mounted it, since that is where
-// the deletions are made. A link the recursion follows then reaches only what the role that left
-// it could delete itself, as the same uid.
+// So the first bound is the removal itself: removeEntryAt (volumedir_linux.go) walks the entry
+// bottom up through descriptors, opening each directory as one element of the one it is in and
+// unlinking each name from its parent's descriptor, and a name that is a link is unlinked as a
+// link and never opened. Raced the same way in a test process with no containment, the swap
+// landed inside the removal in 80 trials of 80 and no bait was touched, on 2026-11-14, kernel
+// 4.19.0-gvisor, under go1.27.3 (TestTheDeletersRemovalFollowsNoLinkWithNoContainment).
+//
+// The second bound is where the removal runs: in a mount namespace of its own, walked from the
+// same list and by the same walk that build a role's (RoleCover.replaced and eachReplaced,
+// roleinit.go), each with a callback of its own: every path a role's own namespace replaces with
+// something of the role's is an empty filesystem of this child's instead, with a procfs of the
+// child's own PID namespace where a role is given one and the child's working directory at the
+// root of its own namespace (containDeletions). /legion is left as the container mounted it,
+// since that is where the deletions are made. A link a removal did follow would then reach only
+// what the role that left it could delete itself, as the same uid. The cases that hold this
+// bound race a deleter that removes with Root.RemoveAll (useFollowingContainedDeleter), since a
+// removal that follows no link reaches no cover at all: so raced, with the home's cover taken
+// out of containDeletions and nothing else changed, the swap case deleted the bait under the home
+// at that path's trial, on 2026-11-14, kernel 4.19.0-gvisor, under go1.27.3.
 //
 // What that bounds, exactly. All six roles of an issue pod run as one uid — the worker image's
 // unprivileged user, roleUID — so a role can already delete anything of /legion it can reach by
@@ -64,13 +78,13 @@ import (
 //     and its /proc.
 //
 // Six of those paths were measured reached, each with the swap case below run against a cover
-// with that one path taken out of the list and nothing else changed: it landed in four trials of
-// four and deleted the bait under that path in each, on 2026-11-12, kernel 4.19.0-gvisor, under
-// go1.27.3 — the roles directory, the home mounts directory, the home, the fixed root's private
-// mount point, the container's /tmp and its /proc
-// (TestASubdirectorySwappedForALinkWhileARemovalRecursesReachesNoOtherRolesFiles, where the
-// image's own paths are a tree of the case's own, since nothing can plant a file in the
-// machine's /proc). The rest are covered because a role's namespace replaces them. That case
+// with that one path taken out of the list and nothing else changed, with the deleter removing
+// with Root.RemoveAll: it landed in four trials of four and deleted the bait under that path in
+// each, on 2026-11-12, kernel 4.19.0-gvisor, under go1.27.3 — the roles directory, the home
+// mounts directory, the home, the fixed root's private mount point, the container's /tmp and
+// its /proc (TestASubdirectorySwappedForALinkWhileARemovalRecursesReachesNoOtherRolesFiles,
+// where the image's own paths are a tree of the case's own, since nothing can plant a file in
+// the machine's /proc). The rest are covered because a role's namespace replaces them. That case
 // aims its link at every path of the list, each by its own name but /proc, so the recursion opens
 // what the deleter is shown there rather than stopping at the cover's mount point, and it reads
 // every bait back after each swap: a cover dropped from the list, or one that shows the
@@ -99,9 +113,9 @@ import (
 //     none of them, and what a link to one of them reaches is again what the role that left it
 //     reaches by the same path: the child holds no capability outside its own user namespace,
 //     so what it can unlink anywhere is what the role uid can unlink.
-//   - A name that is not a directory, the image's /dev/ptmx among them: Root.RemoveAll unlinks
-//     such a name as the name it is and never recurses through it, so a link to one costs the
-//     link and nothing else.
+//   - A name that is not a directory, the image's /dev/ptmx among them: both removals unlink such
+//     a name as the name it is and never recurse through it, so a link to one costs the link and
+//     nothing else.
 //
 // The shape: one child per sweep, started once the listing has opened every directory it will
 // delete out of and ended with the sweep. A child per entry would be a fork and an exec per
@@ -136,6 +150,10 @@ type entryRemover interface {
 	// error it refused with; an error wrapping errRemoverGone is the remover itself, which no
 	// later removal can be asked of.
 	removeAll(dir *sweepDir, name string) error
+	// process is the pid of the process the removals are made in, as the trimmer's /proc
+	// numbers it. The used-path set leaves it out with the trimmer's own (readUsedPaths): it
+	// holds the listing's directories for the whole sweep, and that is the sweep's own hold.
+	process() int
 	// close ends the remover and everything it holds.
 	close()
 }
@@ -261,6 +279,12 @@ func (r *containedRemover) ended(err error) error {
 	return r.gone
 }
 
+// process is the deleter child's pid, which the trimmer's /proc lists it under: the child's own
+// PID namespace numbers it 1, and the trimmer's numbers it as the child of the trimmer it is.
+func (r *containedRemover) process() int {
+	return r.cmd.Process.Pid
+}
+
 // close ends the deleter: the requests pipe is closed, which the child reads as the end of its
 // work, and it is killed if it has not gone when the grace is over.
 func (r *containedRemover) close() {
@@ -281,10 +305,11 @@ func (r *containedRemover) close() {
 // Every directory it removes from is a descriptor it was handed at the exec, and every request
 // names one by its number among them and an entry by its own name in it: it resolves no path of
 // the volume at all. The paths it does resolve are the ones its namespace replaces and its own
-// /proc/self/fd, where a descriptor it was handed becomes the Root a removal is made through
-// (removeOneRequest). It refuses to run anywhere but as the init of a PID namespace of its own,
-// which is what the trimmer starts it as: run by hand it holds no descriptor of the volume, and
-// the refusal says so rather than leaving a process that has covered nothing reading requests.
+// /proc/self/fd, where a descriptor it was handed is opened as the directory a removal is made
+// from (removeOneRequest). It refuses to run anywhere but as the init of a PID namespace of its
+// own, which is what the trimmer starts it as: run by hand it holds no descriptor of the volume,
+// and the refusal says so rather than leaving a process that has covered nothing reading
+// requests.
 //
 // The cover it is given is the one role-init is given, whole (RoleCover): the trimmer passes it
 // as the launcher built it, so that a role cannot have the deletions reach what no role reaches.
@@ -298,14 +323,14 @@ func VolumeTrimDelete(cover RoleCover, requests io.Reader, replies io.Writer) er
 	if err := containDeletions(cover); err != nil {
 		return fmt.Errorf("volume-trim-delete: %w", err)
 	}
-	// One open Root per descriptor, made at the first request that names it: a sweep deletes
-	// many entries out of one directory, and each Root is a descriptor of its own. The Roots
-	// this process opened are closed when the requests end; the descriptors the trimmer passed
-	// are not, and go with this process, which ends with the sweep (removeOneRequest).
-	dirs := map[int]*os.Root{}
+	// One open directory per descriptor, made at the first request that names it: a sweep
+	// deletes many entries out of one directory. The directories this process opened are closed
+	// when the requests end; the descriptors the trimmer passed are not, and go with this
+	// process, which ends with the sweep (removeOneRequest).
+	dirs := map[int]*os.File{}
 	defer func() {
-		for _, root := range dirs {
-			_ = root.Close()
+		for _, dir := range dirs {
+			_ = dir.Close()
 		}
 	}()
 	reader := bufio.NewReader(requests)
@@ -328,7 +353,7 @@ func VolumeTrimDelete(cover RoleCover, requests io.Reader, replies io.Writer) er
 }
 
 // removeOneRequest removes the entry one request names, out of the descriptor it names.
-func removeOneRequest(dirs map[int]*os.Root, request string) error {
+func removeOneRequest(dirs map[int]*os.File, request string) error {
 	number, quoted, found := strings.Cut(request, " ")
 	if !found {
 		return fmt.Errorf("the request %q names no entry", request)
@@ -344,7 +369,7 @@ func removeOneRequest(dirs map[int]*os.Root, request string) error {
 	if name == "" || name == "." || name == ".." || strings.Contains(name, "/") {
 		return fmt.Errorf("%q is not one name in one directory", name)
 	}
-	root, held := dirs[at]
+	dir, held := dirs[at]
 	if !held {
 		// The descriptors the trimmer passed begin after the standard three, in the order the
 		// listing opened the directories.
@@ -357,13 +382,37 @@ func removeOneRequest(dirs map[int]*os.Root, request string) error {
 		// opened, whatever has happened to its path since. It is the path that is opened and
 		// never the descriptor itself, so nothing here holds the trimmer's descriptor as a file
 		// that could be closed under this process and recycled onto another directory.
-		if root, err = os.OpenRoot(descriptorPath(fd)); err != nil {
-			return fmt.Errorf("the directory at descriptor %d: %w", fd, err)
+		if dir, err = openPassedDir(fd); err != nil {
+			return err
 		}
-		dirs[at] = root
+		dirs[at] = dir
 	}
-	return root.RemoveAll(name)
+	return removeListedEntry(dir, name)
 }
+
+// openPassedDir opens the directory the trimmer passed at fd, through this process's own
+// /proc/self/fd, and refuses a descriptor that is not a directory: the trimmer passes only
+// directories, so anything else at that number is not one of them.
+func openPassedDir(fd int) (*os.File, error) {
+	dir, err := os.Open(descriptorPath(fd))
+	if err != nil {
+		return nil, fmt.Errorf("the directory at descriptor %d: %w", fd, err)
+	}
+	if info, err := dir.Stat(); err != nil || !info.IsDir() {
+		_ = dir.Close()
+		if err == nil {
+			err = fmt.Errorf("it is %s", kindOf(info.Mode()))
+		}
+		return nil, fmt.Errorf("the directory at descriptor %d: %w", fd, err)
+	}
+	return dir, nil
+}
+
+// removeListedEntry is the removal every request is answered with: removeEntryAt, which follows
+// no symbolic link (volumedir_linux.go). It is a variable for the containment cases alone, which
+// give their deleter a removal that does follow one, so that what they read back is what the
+// covers bound by themselves (useContainedDeleter, volumedelete_test.go).
+var removeListedEntry = removeEntryAt
 
 // volumeDeleteFirstFD is where the directories the listing opened begin in the deleter's own
 // descriptors: the three standard ones are the request pipe, the answer pipe and its standard

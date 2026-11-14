@@ -776,8 +776,9 @@ func privateMounts() error {
 //
 // It is built from the one list a role's namespace is built from (RoleCover.replaced, which says
 // what is in it and what is not) under the same clone flags the role generations run under
-// (roleNamespaceAttr), made for a process that only deletes: a link the kernel follows inside
-// Root.RemoveAll reaches, at every path of that list, an empty filesystem of this process's own
+// (roleNamespaceAttr), made for a process that only deletes. The removal it makes follows no link
+// (removeEntryAt, volumedir_linux.go); this is the bound behind that one: a link a removal did
+// follow would reach, at every path of that list, an empty filesystem of this process's own
 // (volumedelete.go, which says what that bounds and what it does not).
 //
 // Where a role is given something of its own — its temporary directories, its memory
@@ -785,7 +786,7 @@ func privateMounts() error {
 // filesystem instead: a role reads what the image lays out there and writes under it, while this
 // process reads nothing anywhere, so the whole of its reach at such a path is what it would put
 // there itself. The one path it needs rather than hides is its own /proc, through which it opens
-// the descriptors the listing passed it (rootOverDescriptor, volumedir.go).
+// the descriptors the listing passed it (openPassedDir, volumedelete.go).
 //
 // The working directory is the launcher's until this chdir: a child inherits it, and an inherited
 // directory is a handle the cover over its path does not take away, which /proc/self/cwd names.
@@ -793,8 +794,8 @@ func privateMounts() error {
 // that must reach /legion could take away either.
 //
 // A path that cannot be covered is a refusal rather than a deletion made uncovered: the deleter
-// holds descriptors on the pod's cache directories, and the whole of what it is for is that what
-// it follows out of them reaches only the role's own.
+// holds descriptors on the pod's cache directories, and the whole of what this is for is that
+// what a removal followed out of them would reach only the role's own.
 func containDeletions(cover RoleCover) error {
 	if err := privateMounts(); err != nil {
 		return fmt.Errorf("hold the deletions' mounts to themselves: %w", err)

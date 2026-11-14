@@ -895,9 +895,10 @@ type sweepOutcome struct {
 // RemoveAll("escape/x"), with no error. A name with no separator cannot be resolved through
 // anything but the descriptor itself.
 //
-// What the handle still cannot bound is what the kernel does inside the removal itself, which
-// the sweep makes once and does not drive: that is what the deletions' own mount namespace is
-// for, and the descriptor below is what the deleter is handed (volumedelete.go).
+// Below the entry's own name the removal walks the entry through descriptors of its own and
+// follows no link (removeEntryAt, volumedir_linux.go), and it is made in the deletions' own mount
+// namespace, which bounds what a removal that did follow one would reach; the descriptor below
+// is what the deleter is handed (volumedelete.go).
 //
 // Nothing asks again afterwards whether the handle still names the directory the listing read.
 // The handle holds the descriptor that listing opened and checked, so a stat through it can
@@ -1025,7 +1026,9 @@ func (t *trimmer) sweep(ctx context.Context, set shimwire.LauncherVolumeTrim, fi
 			break
 		}
 		if t.now().Sub(usedAt) >= volumeUsedPathsMaxAge {
-			used = readUsedPaths(t.procRoot, t.self)
+			// The deleter is left out with the trimmer: it holds every directory the listing
+			// opened, and read as a use it was a hold on the root it deletes from (readUsedPaths).
+			used = readUsedPaths(t.procRoot, t.self, remover.process())
 			usedAt = t.now()
 			if len(used.Refused) > 0 {
 				// Later than the first read: what the sweep deleted stands, and it stops here

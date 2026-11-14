@@ -203,9 +203,10 @@ type roleReplacement struct {
 //
 // Every path in it is a directory. The one name a role's namespace replaces that is not —
 // /dev/ptmx, which opens into the role's own pseudo-terminals — is left to the kind that replaces
-// it (privateTerminals): what the deleter's cover is against is a link the kernel follows inside
-// Root.RemoveAll, which unlinks a name that is not a directory as the name it is rather than
-// recursing through it (volumedelete.go).
+// it (privateTerminals): what the deleter's cover is against is a link a removal follows, and
+// both the deleter's removal and Root.RemoveAll, which the containment cases race in its place,
+// unlink a name that is not a directory as the name it is rather than recursing through it
+// (volumedelete.go).
 func (c RoleCover) replaced() []roleReplacement {
 	fixed := func(name string, optional bool) roleReplacement {
 		return roleReplacement{
