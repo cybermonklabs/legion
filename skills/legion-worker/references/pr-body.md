@@ -176,8 +176,8 @@ and decides there, the only gate on such an issue.
   read CI on GitHub at the head you are judging for everything static: lint, types and the unit
   and integration suites are CI's, read there and recorded for no later step, except a `ci_check` job. A lane GitHub shows
   `queued` or `in progress` is read as such, and the tester waits for none of them but the
-  re-run `skill://legion-worker/references/red-at-the-head.md` gives it, since a required red that settles sends the work back
-  from `testing` and the reviewer reads the head's checks before it approves. A red at the head
+  re-run `skill://legion-worker/references/red-at-the-head.md` gives it, since the reviewer reads
+  the head's checks before it approves. A red at the head
   that the change did not make is the tester's to re-run once, and
   `skill://legion-worker/references/red-at-the-head.md` holds the rule.
   A `before_merge` check the implementer left with no pass standing at the head is a test failure, not a gap
