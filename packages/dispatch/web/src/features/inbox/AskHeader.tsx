@@ -256,26 +256,35 @@ function askHeaderFacts(
 
 /** The row every place draws, in the order every place draws it; what differs is the provenance
  *  each writes and the box it stands in. `line` is a place's class for one box around all of it
- *  but `trailing`, for a place whose row must not wrap before its copy control. */
+ *  but `trailing`, for a place whose row must not wrap before its copy control; `group` is the
+ *  class of a box inside it around all of it but the copy control, for a place that breaks that
+ *  part into lines of its own beside the control. */
 function AskHeaderRow({
   facts,
+  group,
   leading,
   line,
   provenance,
   trailing,
 }: {
   facts: AskHeaderFacts;
+  group?: string;
   leading: ReactNode;
   line?: string;
   provenance: ReactNode;
   trailing: ReactNode;
 }): ReactNode {
-  const head = (
+  const parts = (
     <>
       {facts.urgencyPill}
       {leading}
       {facts.stateLabel}
       {provenance}
+    </>
+  );
+  const head = (
+    <>
+      {group === undefined ? parts : <span className={group}>{parts}</span>}
       {facts.copy}
     </>
   );
@@ -376,24 +385,29 @@ function CardAskHeader({
       >
         <AskHeaderRow
           facts={facts}
+          // The label and the provenance are one group whose names truncate, and the copy
+          // control stands beside the group, so the line holding both never wraps and the
+          // control stays at the first line's right end at every width the card is drawn at.
+          // A separator that wrapped left a line opening - or ending - on a bare "·", and the
+          // agents are the only parts that can give up width ("Waiting on you" never does).
+          // Below 24rem of line (a phone, a margin) the group breaks in two: the label, as tall
+          // as the line's text, and the turn share the first line, and the asker and time take
+          // the next, with no separator - beside the turn, and beside the label, the asker's
+          // name kept a few letters. Below `md` (a phone, its review sheet) the copy control and
+          // the live link are 44 px touch boxes, so the group gives way to one wrapping line:
+          // the control ends the first line, and the asker's line is the card's whole width,
+          // which is what reads a name whole beside its live link (`e2e/agent-name.e2e.ts`).
+          // From `md` (the 280 px margin) the control's 32 px box stands beside both lines, so
+          // the card is no taller than it was before it drew a label.
+          group="flex min-w-0 items-center gap-x-1.5 whitespace-nowrap @max-sm:flex-wrap @max-sm:[&>[data-ask-state-label]]:py-0 max-md:@max-sm:contents"
           leading={leading}
-          // The label, the provenance group and the copy control are one line that never wraps:
-          // the group is what gives up width - its names truncate, and below 24rem it breaks
-          // itself in two - so the copy control stays at the first line's right end at every
-          // width the card is drawn at. A wrapping row put it on a line of its own in a margin.
-          line="flex min-w-0 items-center gap-x-1.5"
+          line="flex min-w-0 items-center gap-x-1.5 max-md:@max-sm:flex-wrap max-md:@max-sm:[&>[data-copy-ref]>button]:ml-auto"
           provenance={
             !facts.provenance || ask === undefined || author === undefined ? null : (
-              // Turn, author and time are one group whose names truncate: a separator that
-              // wrapped left a line opening - or ending - on a bare "·", and the agents are the
-              // only parts that can give up width ("Waiting on you" never does). Below 24rem of
-              // line (a phone, a margin) the turn takes a line of its own with no separator
-              // after it, and the asker and time share the next: beside the turn and the live
-              // link's 44 px touch box the asker's name kept only two letters.
-              <span className="flex min-w-0 items-center gap-x-1.5 whitespace-nowrap @max-sm:flex-wrap">
+              <>
                 {turnHolder === null ? null : (
                   <span
-                    className={`${turnHolder === "you" ? "shrink-0" : "min-w-0 truncate"} font-semibold @max-sm:basis-full ${textSecondaryOnSurface}`}
+                    className={`${turnHolder === "you" ? "shrink-0" : "min-w-0 truncate"} font-semibold ${textSecondaryOnSurface}`}
                     data-testid={`turn-${ask.id}`}
                   >
                     Waiting on{" "}
@@ -405,7 +419,7 @@ function CardAskHeader({
                     ·
                   </span>
                 )}
-                <span className="flex min-w-0 items-center gap-x-1.5">
+                <span className="flex min-w-0 items-center gap-x-1.5 @max-sm:basis-full max-md:@max-sm:order-1">
                   {session === undefined || control === undefined ? (
                     <TruncatedText className="min-w-0" title={asker?.title ?? "asked"}>
                       {asker === undefined ? "asked" : <AgentName actor={author} />}
@@ -433,7 +447,7 @@ function CardAskHeader({
                   </span>
                   {facts.askedAt}
                 </span>
-              </span>
+              </>
             )
           }
           trailing={trailing}
