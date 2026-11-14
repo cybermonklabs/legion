@@ -73,9 +73,10 @@ type fakeSecretManager struct {
 	// race, when set, runs once on the secret named by the first GetSecret or UpdateSecret after the
 	// first GetSecret, before that call is answered, as another writer's update landing between a
 	// read and the next call does; gets counts GetSecret calls.
-	race  func(*fakeSecret)
-	gets  int
-	raced bool
+	race      func(*fakeSecret)
+	gets      int
+	raced     bool
+	beforeAdd func(*fakeSecret)
 	// authorizations is the authorization metadata each call carried, in order: the sign-in it
 	// ran under (recordAuthorization).
 	authorizations []string
@@ -203,11 +204,32 @@ func (f *fakeSecretManager) AddSecretVersion(_ context.Context, req *secretmanag
 	if !ok {
 		return nil, status.Error(codes.NotFound, "not found")
 	}
+	if f.beforeAdd != nil {
+		f.beforeAdd(entry)
+		f.beforeAdd = nil
+	}
 	number := len(entry.versions) + 1
 	name := req.GetParent() + "/versions/" + strconv.Itoa(number)
 	version := &secretmanagerpb.SecretVersion{Name: name, State: secretmanagerpb.SecretVersion_ENABLED}
 	entry.versions = append(entry.versions, version)
 	return version, nil
+}
+
+func (f *fakeSecretManager) DestroySecretVersion(_ context.Context, req *secretmanagerpb.DestroySecretVersionRequest) (*secretmanagerpb.SecretVersion, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	parent := req.GetName()[:strings.LastIndex(req.GetName(), "/versions/")]
+	entry, ok := f.secrets[parent]
+	if !ok {
+		return nil, status.Error(codes.NotFound, "not found")
+	}
+	for _, version := range entry.versions {
+		if version.GetName() == req.GetName() {
+			version.State = secretmanagerpb.SecretVersion_DESTROYED
+			return version, nil
+		}
+	}
+	return nil, status.Error(codes.NotFound, "not found")
 }
 
 func (f *fakeSecretManager) GetSecretVersion(_ context.Context, req *secretmanagerpb.GetSecretVersionRequest) (*secretmanagerpb.SecretVersion, error) {
@@ -1093,6 +1115,44 @@ func TestGCPSecretSetWithOwnersLentAccessToken(t *testing.T) {
 	}
 }
 
+func TestGCPSecretSetLentOwnerChangeUndoesVersion(t *testing.T) {
+	owner := workforcePrincipal[strings.LastIndex(workforcePrincipal, "/")+1:]
+	otherOwner := strings.Replace(owner, "ada", "grace", 1)
+	fake := newFakeSecretManager()
+	id := testGCPPrefix + "scratch-test"
+	fake.secrets[id] = &fakeSecret{
+		secret: &secretmanagerpb.Secret{
+			Name:        id,
+			Annotations: map[string]string{policy.TagOwner: owner, policy.TagTier: policy.TierAgent},
+			Etag:        "1",
+		},
+	}
+	fake.beforeAdd = func(entry *fakeSecret) {
+		entry.secret.Annotations[policy.TagOwner] = otherOwner
+	}
+	startFakeSecretManager(t, fake)
+	useNoADC(t)
+	useNoGcloud(t)
+	useLentGCPAccessToken(t, "lent-owner-token", owner)
+	startSecretBrokerWith(t, gcpTestSettings(), gcpServedBy(fake, gcpTestSettings()))
+	useStdin(t, "replacement")
+
+	_, stderr, code := runSecret("set", "SCRATCH_TEST")
+	if code != 1 || !strings.Contains(stderr, "owner changed") || !strings.Contains(stderr, "write was undone") {
+		t.Fatalf("exit %d, stderr %q; want the owner-change undo", code, stderr)
+	}
+	fake.mu.Lock()
+	gotOwner := fake.secrets[id].secret.GetAnnotations()[policy.TagOwner]
+	versions := slices.Clone(fake.secrets[id].versions)
+	fake.mu.Unlock()
+	if gotOwner != otherOwner {
+		t.Fatalf("owner after the race = %q, want the concurrent owner", gotOwner)
+	}
+	if len(versions) != 1 || versions[0].GetState() == secretmanagerpb.SecretVersion_ENABLED {
+		t.Fatalf("versions after the owner change = %v, want no enabled version", versions)
+	}
+}
+
 // TestGCPSecretSetWithAnotherPersonsLentAccessTokenIsRefused: the caller's lent token cannot add
 // a version to an existing secret whose owner annotation names another person.
 func TestGCPSecretSetWithAnotherPersonsLentAccessTokenIsRefused(t *testing.T) {
@@ -1150,6 +1210,37 @@ func TestGCPSecretCreateWithLentPersonsAccessToken(t *testing.T) {
 	}
 	if got, calls := fake.calledUnder(); got != "Bearer lent-ada-token" || calls == 0 {
 		t.Fatalf("Secret Manager calls ran under %q (%d calls), want the lent token", got, calls)
+	}
+}
+
+func TestGCPSecretCreateLentOwnerChangeUndoesVersion(t *testing.T) {
+	owner := workforcePrincipal[strings.LastIndex(workforcePrincipal, "/")+1:]
+	otherOwner := strings.Replace(owner, "ada", "grace", 1)
+	fake := newFakeSecretManager()
+	fake.beforeAdd = func(entry *fakeSecret) {
+		entry.secret.Annotations[policy.TagOwner] = otherOwner
+	}
+	startFakeSecretManager(t, fake)
+	useNoADC(t)
+	useNoGcloud(t)
+	useLentGCPAccessToken(t, "lent-owner-token", owner)
+	startSecretBrokerWith(t, gcpTestSettings(), gcpServedBy(fake, gcpTestSettings()))
+	useStdin(t, "stored-value")
+
+	_, stderr, code := runSecret("create", "SCRATCH_TEST", "--owner", "me", "--tier", "agent")
+	if code != 1 || !strings.Contains(stderr, "owner changed") || !strings.Contains(stderr, "write was undone") {
+		t.Fatalf("exit %d, stderr %q; want the owner-change undo", code, stderr)
+	}
+	id := testGCPPrefix + "scratch-test"
+	fake.mu.Lock()
+	gotOwner := fake.secrets[id].secret.GetAnnotations()[policy.TagOwner]
+	versions := slices.Clone(fake.secrets[id].versions)
+	fake.mu.Unlock()
+	if gotOwner != otherOwner {
+		t.Fatalf("owner after the race = %q, want the concurrent owner", gotOwner)
+	}
+	if len(versions) != 1 || versions[0].GetState() == secretmanagerpb.SecretVersion_ENABLED {
+		t.Fatalf("versions after the owner change = %v, want no enabled version", versions)
 	}
 }
 
@@ -1423,6 +1514,41 @@ func TestGCPSecretLentOwnerDeleteRefusesARetagRace(t *testing.T) {
 	fake.mu.Unlock()
 	if deleted != nil {
 		t.Fatalf("expire time after the Etag refusal = %v, want nil", deleted)
+	}
+}
+
+func TestGCPSecretLentOwnerRestoreRefusesARetagRace(t *testing.T) {
+	owner := workforcePrincipal[strings.LastIndex(workforcePrincipal, "/")+1:]
+	fake := newFakeSecretManager()
+	id := testGCPPrefix + "scratch-test"
+	fake.secrets[id] = &fakeSecret{
+		secret: &secretmanagerpb.Secret{
+			Name:        id,
+			Annotations: map[string]string{policy.TagOwner: owner, policy.TagTier: policy.TierAgent},
+			Expiration:  &secretmanagerpb.Secret_ExpireTime{ExpireTime: timestamppb.Now()},
+			Etag:        "1",
+		},
+		etagCounter: 1,
+	}
+	fake.race = func(entry *fakeSecret) {
+		entry.etagCounter++
+		entry.secret.Etag = strconv.Itoa(entry.etagCounter)
+	}
+	startFakeSecretManager(t, fake)
+	useNoADC(t)
+	useNoGcloud(t)
+	useLentGCPAccessToken(t, "lent-owner-token", owner)
+	startSecretBrokerWith(t, gcpTestSettings(), alwaysServed)
+
+	_, stderr, code := runSecret("restore", "SCRATCH_TEST")
+	if code != 1 || !strings.Contains(stderr, "etag mismatch") {
+		t.Fatalf("exit %d, stderr %q; want the Etag refusal", code, stderr)
+	}
+	fake.mu.Lock()
+	deleted := fake.secrets[id].secret.GetExpireTime()
+	fake.mu.Unlock()
+	if deleted == nil {
+		t.Fatal("the Etag refusal cleared the expiry")
 	}
 }
 

@@ -592,22 +592,35 @@ func (b *gcpBackend) create(ctx context.Context, slug string, tags map[string]st
 	if err != nil {
 		return err
 	}
-	_, err = b.client.AddSecretVersion(ctx, &secretmanagerpb.AddSecretVersionRequest{
-		Parent:  secret.GetName(),
-		Payload: &secretmanagerpb.SecretPayload{Data: []byte(value)},
-	})
-	return err
+	return b.addVersion(ctx, secret.GetName(), value)
 }
 
 func (b *gcpBackend) set(ctx context.Context, slug, value string) error {
 	if _, err := b.requireLentOwner(ctx, slug, nil); err != nil {
 		return err
 	}
-	_, err := b.client.AddSecretVersion(ctx, &secretmanagerpb.AddSecretVersionRequest{
-		Parent:  b.id(slug),
+	return b.addVersion(ctx, b.id(slug), value)
+}
+
+func (b *gcpBackend) addVersion(ctx context.Context, parent, value string) error {
+	version, err := b.client.AddSecretVersion(ctx, &secretmanagerpb.AddSecretVersionRequest{
+		Parent:  parent,
 		Payload: &secretmanagerpb.SecretPayload{Data: []byte(value)},
 	})
-	return err
+	if err != nil || !b.lentToken {
+		return err
+	}
+	secret, err := b.client.GetSecret(ctx, &secretmanagerpb.GetSecretRequest{Name: parent})
+	if err != nil {
+		return fmt.Errorf("read the secret owner after adding version %s: %w", version.GetName(), err)
+	}
+	if strings.EqualFold(secret.GetAnnotations()[policy.TagOwner], b.lentTokenOwner) {
+		return nil
+	}
+	if _, err := b.client.DestroySecretVersion(ctx, &secretmanagerpb.DestroySecretVersionRequest{Name: version.GetName()}); err != nil {
+		return fmt.Errorf("the secret owner changed after adding version %s; the write could not be undone and the version was left behind: %w", version.GetName(), err)
+	}
+	return fmt.Errorf("the secret owner changed after adding version %s; the write was undone", version.GetName())
 }
 
 func (b *gcpBackend) currentTags(ctx context.Context, slug string) (heldTags, error) {

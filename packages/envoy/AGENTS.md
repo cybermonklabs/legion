@@ -5626,7 +5626,7 @@ under any other ADC - a service account key file, a workload identity federation
 Reads under a machine's ADC run under it.
 On a write under that lent token, `gcpUserinfo` must name a `personAccount`; an empty email or service account is refused, and its lowercased email is `--owner me`.
 `create` requires its owner tag to equal that person, and every mutation of an existing secret (`set`, both retag annotation paths, `delete`, and `restore`) requires its owner tag to equal that person before writing.
-The lent-token `delete` and `restore` carry that owner read's Etag into `UpdateSecret`, so a concurrent retag refuses the update; Secret Manager's `AddSecretVersion` takes no Etag, so `set` cannot gain that race protection.
+The lent-token `delete` and `restore` carry that owner read's Etag into `UpdateSecret`, so a concurrent retag refuses the update; `create` and `set` re-read the owner after `AddSecretVersion` and destroy the exact returned version if it changed, refusing the write and naming the left version if that undo fails. Because `AddSecretVersion` takes no Etag, that version can exist momentarily between its add and the undo.
 `gcloudLogin` borrows the login through gcloud's own interface, never its credential files:
 the first `gcloud` on PATH (`exec.LookPath`) lists its logins (`gcloud auth list --format=json`);
 a person's is an account named by a plain email the broker accepts as a person owner (`personAccount`:
