@@ -1091,9 +1091,7 @@ type SlotView struct {
 const WaitingLineField = "waitingLine"
 
 // MergeWaitField is the name `mergeWait` carries on the wire, read from here by the tests that
-// look for the field rather than repeating the string, and by the shipped-text guard of the
-// waiting line, which passes a contract number over when this field's name stands nearer to it
-// than the line's does (TestTheShippedTextsNameTheWaitingLinesOwnContract).
+// look for the field rather than repeating the string.
 const MergeWaitField = "mergeWait"
 
 // WaitingLineView is the issue's place in `admission.waiting`, where 1 is first in the line,
