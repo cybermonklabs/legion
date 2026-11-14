@@ -40,6 +40,7 @@ import {
   IssueViewTabs,
   LayoutSwitch,
   type SettingsFailure,
+  ViewControls,
   type ViewLayout,
 } from "./IssueViewTabs";
 import { useIssueFilters } from "./issue-filters";
@@ -763,13 +764,10 @@ function ViewsTable({
     <IssueViewTabs
       active={active}
       boardHeader={board.data?.header}
-      boardPending={board.isPending}
       changed={changed}
       counts={counts}
       hasLegion={hasLegion}
       onDelete={deleteSaved}
-      onReset={reset}
-      onSave={saveView}
       onSelect={selectView}
       onSelectSaved={selectSaved}
       saved={saved}
@@ -802,6 +800,16 @@ function ViewsTable({
       ) : (
         <ColumnsMenu columns={offeredColumns} size="compact" />
       )}
+      <ViewControls
+        active={active}
+        boardHeader={board.data?.header}
+        boardPending={board.isPending}
+        changed={changed}
+        hasLegion={hasLegion}
+        onSave={saveView}
+        saved={saved}
+        views={views}
+      />
     </>
   );
 
@@ -819,8 +827,10 @@ function ViewsTable({
         <IssueTableToolbar
           columns={offeredColumns}
           extraChips={extraChips}
+          layout={layoutChoice}
           // Only while the view is changed: a built-in view whose address carries more than its
-          // own parameters, or a saved view whose address differs from its saved query.
+          // own parameters, or a saved view whose address differs from its saved query. Clear
+          // filters then restores the view's own query.
           onClear={changed ? reset : undefined}
           searchRef={searchRef}
           table={table}

@@ -117,7 +117,6 @@ function SaveView({
       panelClassName={PANEL_CLASS}
       size="compact"
       title="Save view"
-      triggerClassName={smallButton}
     >
       {(close) => (
         <form
@@ -188,21 +187,17 @@ export interface SettingsFailure {
 
 /**
  * The row above the table: a tab for each view with its count (Slots against the cap), the
- * saved views after the built-in ones, the (i) hint with the daemon's numbers and read state,
- * and, in space the row keeps for them, **Reset view** and **Save view** while the view is
- * changed, so a change of the view moves no table row. Under the row, a failed read of the
- * daemon, or of the Legion setting, is an alert with its whole error.
+ * saved views after the built-in ones, and the mark of a changed view on its tab. Under the
+ * row, a failed read of the daemon, or of the Legion setting, is an alert with its whole error.
+ * The view's own controls (Save view and the (i) hint) are in the control row (`ViewControls`).
  */
 export function IssueViewTabs({
   active,
   boardHeader,
-  boardPending,
   changed,
   counts,
   hasLegion,
   onDelete,
-  onReset,
-  onSave,
   onSelect,
   onSelectSaved,
   saved,
@@ -212,14 +207,11 @@ export function IssueViewTabs({
 }: {
   active: ActiveView;
   boardHeader: LegionBoardHeader | undefined;
-  boardPending: boolean;
   changed: boolean;
   /** Each built-in view's count, by id; a view whose rows the page does not hold has none. */
   counts: ReadonlyMap<string, number | undefined>;
   hasLegion: boolean;
   onDelete: (name: string) => void;
-  onReset: () => void;
-  onSave: (name: string) => void;
   onSelect: (id: string) => void;
   onSelectSaved: (name: string) => void;
   saved: readonly SavedView[];
@@ -228,7 +220,6 @@ export function IssueViewTabs({
   settingsFailure: SettingsFailure | undefined;
   views: readonly BuiltInView[];
 }): ReactNode {
-  const [panel, setPanel] = useState<"hint" | "save" | undefined>(undefined);
   // On a phone the tab row wraps, so every tab is in view. From `md` up it is one line, which
   // scrolls sideways only if the tabs outgrow it: there the active tab is brought into it, the
   // row alone scrolling, never the page.
@@ -249,120 +240,74 @@ export function IssueViewTabs({
     if (box.left < listBox.left) list.scrollLeft += box.left - listBox.left;
     else if (box.right > listBox.right) list.scrollLeft += box.right - listBox.right;
   }, [activeTab, countsText]);
-  const activeView =
-    active.kind === "built-in" ? views.find((view) => view.id === active.id) : undefined;
   const readFailed = hasLegion && boardHeader !== undefined && !boardHeader.read_ok;
   return (
-    // On a phone the tabs wrap onto as many lines as they need, the (i) and the space kept for
-    // Reset view and Save view following the last tab in the same flow (the tablist and the
-    // group beside it are `contents` there), so no tab is cut at an edge. From `md` up the row
-    // is one line whose tabs scroll sideways if they ever outgrow it.
     <>
       <div
-        className="flex flex-wrap items-center gap-x-1 border-b md:flex-nowrap md:gap-x-2"
+        aria-label="Views"
+        className={`flex flex-wrap items-center gap-x-1 border-b md:flex-nowrap md:gap-x-0 md:overflow-x-auto md:[scrollbar-width:thin] ${borderDefault}`}
         data-view-tabs
+        ref={listRef}
+        role="tablist"
       >
-        <div
-          aria-label="Views"
-          className={`contents md:relative md:flex md:min-w-0 md:flex-1 md:gap-0 md:overflow-x-auto md:[scrollbar-width:thin] ${borderDefault}`}
-          ref={listRef}
-          role="tablist"
-        >
-          {views.map((view) => {
-            const on = active.kind === "built-in" && active.id === view.id;
-            const count = counts.get(view.id);
-            const shown =
-              count === undefined
-                ? undefined
-                : view.id === "slots" && boardHeader?.slot_cap != null
-                  ? `${count}/${boardHeader.slot_cap}`
-                  : String(count);
-            return (
+        {views.map((view) => {
+          const on = active.kind === "built-in" && active.id === view.id;
+          const count = counts.get(view.id);
+          const shown =
+            count === undefined
+              ? undefined
+              : view.id === "slots" && boardHeader?.slot_cap != null
+                ? `${count}/${boardHeader.slot_cap}`
+                : String(count);
+          return (
+            <button
+              aria-label={shown === undefined ? view.name : `${view.name} ${shown}`}
+              aria-selected={on}
+              className={tabClass(on)}
+              data-view-tab={view.id}
+              key={view.id}
+              onClick={() => onSelect(view.id)}
+              role="tab"
+              type="button"
+            >
+              {view.name}
+              {shown === undefined ? null : <span className={countClass}>{shown}</span>}
+              {on && changed ? <ChangedMark /> : null}
+            </button>
+          );
+        })}
+        {saved.map((view) => {
+          const on = active.kind === "saved" && active.name === view.name;
+          const count = savedCounts.get(view.name);
+          return (
+            <span className="inline-flex shrink-0 items-center" key={view.name}>
               <button
-                aria-label={shown === undefined ? view.name : `${view.name} ${shown}`}
+                aria-label={count === undefined ? view.name : `${view.name} ${count}`}
                 aria-selected={on}
                 className={tabClass(on)}
-                data-view-tab={view.id}
-                key={view.id}
-                onClick={() => onSelect(view.id)}
+                data-saved-view-tab={view.name}
+                onClick={() => onSelectSaved(view.name)}
                 role="tab"
                 type="button"
               >
                 {view.name}
-                {shown === undefined ? null : <span className={countClass}>{shown}</span>}
+                {count === undefined ? null : <span className={countClass}>{count}</span>}
                 {on && changed ? <ChangedMark /> : null}
               </button>
-            );
-          })}
-          {saved.map((view) => {
-            const on = active.kind === "saved" && active.name === view.name;
-            const count = savedCounts.get(view.name);
-            return (
-              <span className="inline-flex shrink-0 items-center" key={view.name}>
+              {on ? (
                 <button
-                  aria-label={count === undefined ? view.name : `${view.name} ${count}`}
-                  aria-selected={on}
-                  className={tabClass(on)}
-                  data-saved-view-tab={view.name}
-                  onClick={() => onSelectSaved(view.name)}
-                  role="tab"
+                  aria-label={`Delete saved view ${view.name}`}
+                  className={`min-h-9 rounded px-1 text-xs ${textMutedOnCanvas} ${surfaceMutedHoverBg}`}
+                  onClick={() => onDelete(view.name)}
+                  title="Delete this saved view"
                   type="button"
                 >
-                  {view.name}
-                  {count === undefined ? null : <span className={countClass}>{count}</span>}
-                  {on && changed ? <ChangedMark /> : null}
+                  ✕
                 </button>
-                {on ? (
-                  <button
-                    aria-label={`Delete saved view ${view.name}`}
-                    className={`min-h-9 rounded px-1 text-xs ${textMutedOnCanvas} ${surfaceMutedHoverBg}`}
-                    onClick={() => onDelete(view.name)}
-                    title="Delete this saved view"
-                    type="button"
-                  >
-                    ✕
-                  </button>
-                ) : null}
-              </span>
-            );
-          })}
-        </div>
-        <div className="contents md:flex md:shrink-0 md:items-center md:gap-1.5">
-          <PanelTrigger
-            align="left"
-            label="i"
-            onOpenChange={(open) => setPanel(open ? "hint" : undefined)}
-            open={panel === "hint"}
-            panelClassName={PANEL_CLASS}
-            title="About this view"
-            triggerClassName={`inline-flex size-9 shrink-0 items-center justify-center rounded-full border text-xs font-semibold italic md:size-7 ${borderDefault} ${surfaceMutedHoverBg} ${textSecondaryOnCanvas}`}
-          >
-            {() => (
-              <div className={`flex flex-col gap-2 text-xs ${textSecondaryOnCanvas}`}>
-                <p>
-                  {activeView === undefined ? "A view you saved in this browser" : activeView.hint}
-                </p>
-                {hasLegion ? <DaemonHint header={boardHeader} pending={boardPending} /> : null}
-              </div>
-            )}
-          </PanelTrigger>
-          <span
-            aria-hidden={!changed}
-            className={`flex shrink-0 items-center gap-1 md:gap-1.5 ${changed ? "" : "invisible"}`}
-            data-view-changed={changed || undefined}
-          >
-            <button className={smallButton} disabled={!changed} onClick={onReset} type="button">
-              Reset view
-            </button>
-            <SaveView
-              initial={active.kind === "saved" ? active.name : ""}
-              onOpenChange={(open) => setPanel(open ? "save" : undefined)}
-              onSave={onSave}
-              open={panel === "save"}
-              saved={saved}
-            />
-          </span>
-        </div>
+              ) : null}
+            </span>
+          );
+        })}
       </div>
       {/* A failed read takes a line of its own under the row, its whole error wrapping as it
         needs: beside seven tabs at 1440 px there is no room for it, and in that room it cut
@@ -389,6 +334,69 @@ export function IssueViewTabs({
           ) : null}
         </div>
       ) : null}
+    </>
+  );
+}
+
+/**
+ * The view's own controls in the control row, after the page's others: **Save view**, shown
+ * while the view is changed in room the row keeps for it, so its showing moves nothing, and the
+ * (i) hint with what the view lists and, in a project with a Legion daemon, the daemon's
+ * numbers and read state.
+ */
+export function ViewControls({
+  active,
+  boardHeader,
+  boardPending,
+  changed,
+  hasLegion,
+  onSave,
+  saved,
+  views,
+}: {
+  active: ActiveView;
+  boardHeader: LegionBoardHeader | undefined;
+  boardPending: boolean;
+  changed: boolean;
+  hasLegion: boolean;
+  onSave: (name: string) => void;
+  saved: readonly SavedView[];
+  views: readonly BuiltInView[];
+}): ReactNode {
+  const [panel, setPanel] = useState<"hint" | "save" | undefined>(undefined);
+  const activeView =
+    active.kind === "built-in" ? views.find((view) => view.id === active.id) : undefined;
+  return (
+    <>
+      <span
+        aria-hidden={!changed}
+        className={`flex shrink-0 ${changed ? "" : "invisible"}`}
+        data-view-changed={changed || undefined}
+      >
+        <SaveView
+          initial={active.kind === "saved" ? active.name : ""}
+          onOpenChange={(open) => setPanel(open ? "save" : undefined)}
+          onSave={onSave}
+          open={panel === "save"}
+          saved={saved}
+        />
+      </span>
+      <PanelTrigger
+        align="right"
+        label="i"
+        onOpenChange={(open) => setPanel(open ? "hint" : undefined)}
+        open={panel === "hint"}
+        panelClassName={PANEL_CLASS}
+        title="About this view"
+        triggerClassName={`inline-flex size-11 shrink-0 items-center justify-center rounded-full border text-xs font-semibold italic md:size-8 ${borderDefault} ${surfaceMutedHoverBg} ${textSecondaryOnCanvas}`}
+      >
+        {() => (
+          <div className={`flex flex-col gap-2 text-xs ${textSecondaryOnCanvas}`}>
+            <p>{activeView === undefined ? "A view you saved in this browser" : activeView.hint}</p>
+            {hasLegion ? <DaemonHint header={boardHeader} pending={boardPending} /> : null}
+          </div>
+        )}
+      </PanelTrigger>
     </>
   );
 }

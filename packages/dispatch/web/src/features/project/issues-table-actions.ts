@@ -221,7 +221,7 @@ export function useIssueTableActions({
     if (!queued.length) {
       setNotice({
         kind: "error",
-        text: "Only issues in Legion's waiting line can start next.",
+        text: "Only Todo issues labelled legion can start next.",
       });
       return;
     }
@@ -256,7 +256,7 @@ export function useIssueTableActions({
     if (confirmFirst && queued.length) {
       setConfirming({
         title: "Start these next?",
-        body: `${queued.length} issues move to the head of Legion's waiting line, one write each.`,
+        body: `${queued.length} issues move to the top of the Todo rank, one write each.`,
         confirmLabel: "Start next",
         run: () => runQueued(queued),
       });

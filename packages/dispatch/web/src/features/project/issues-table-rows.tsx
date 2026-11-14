@@ -238,7 +238,7 @@ function EpicActions({
               }}
               type="button"
             >
-              Start all its issues in the waiting line next
+              Start its Todo issues labelled legion next
             </button>
             {/* Two steps, because a merge closes an issue: the select stages a target, and
                 Merge… asks before anything is written. A closed `<select>` commits on an arrow

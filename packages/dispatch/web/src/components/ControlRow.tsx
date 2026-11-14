@@ -48,22 +48,25 @@ type ScrollSide = keyof typeof SCROLL_SIDE;
  *  (`wraps`), because a phone is 390 px wide and a row of the page's own controls - the
  *  Artifacts tab's staged upload, say - runs past that edge otherwise, where the reader cannot
  *  reach it. A wrap that is there before any narrowing adds no height when a narrowing goes on,
- *  which is R1's rule. */
+ *  which is R1's rule. A slot that `flows` is no box of its own below `sm`: its controls wrap
+ *  one by one in the line itself, beside the other slots' controls. */
 function Slot({
   children,
   className,
+  flows = false,
   gives = false,
   wraps = false,
 }: {
   children: ReactNode;
   className?: string;
+  flows?: boolean;
   gives?: boolean;
   wraps?: boolean;
 }): ReactNode {
   if (children === undefined || children === null) return null;
   const width = gives ? "min-w-0 flex-1 basis-64" : wraps ? "min-w-0 sm:shrink-0" : "shrink-0";
   const wrap = wraps ? "flex-wrap sm:flex-nowrap" : "flex-nowrap";
-  const own = `flex items-center gap-2 ${wrap} ${width}`;
+  const own = `${flows ? "contents sm:flex" : "flex"} items-center gap-2 ${wrap} ${width}`;
   return <div className={className === undefined ? own : `${own} ${className}`}>{children}</div>;
 }
 
@@ -166,11 +169,19 @@ export interface ControlRowProps {
   readonly className?: string;
   /** The display menu, drawn at the right end of the row's first line. */
   readonly display?: ReactNode;
+  /** Below `sm`, the trigger's controls and the page's own wrap one by one in the first line
+   *  rather than slot by slot, so a page with many controls of its own keeps the row on a phone
+   *  to the fewest lines they fill. The project Issues tab flows. */
+  readonly flows?: boolean;
   /** What **Clear filters** does: takes every narrowing the page counts off at once. The row
    *  draws the button only while this is given - at the end of the chips line while there is a
    *  chip, and right after the trigger while there is none (the project List's column filters
    *  and search text draw no chip in the row). */
   readonly onClear?: () => void;
+  /** While `onClear` is absent, keep the button's room in its place, drawn invisible and out of
+   *  reach, so its showing moves nothing in the row or under it. The project Issues tab keeps
+   *  it, where Clear filters shows exactly while the view is changed. */
+  readonly keepsClearRoom?: boolean;
   /** The page's search box, at the head of the row. */
   readonly search?: ReactNode;
   /** How much room the row's own controls take (`ControlSize`): **Clear filters** and the two
@@ -248,6 +259,8 @@ export function ControlRow({
   children,
   className,
   display,
+  flows = false,
+  keepsClearRoom = false,
   onClear,
   search,
   size = "comfortable",
@@ -284,7 +297,13 @@ export function ControlRow({
   const controls = ROW_CONTROL[size];
   const chipsOn = chips !== undefined && chips !== null;
   const clear =
-    onClear === undefined ? null : (
+    onClear === undefined ? (
+      keepsClearRoom ? (
+        <button aria-hidden className={`invisible ${controls.clear}`} disabled type="button">
+          Clear filters
+        </button>
+      ) : null
+    ) : (
       <button
         className={controls.clear}
         onClick={(event) => {
@@ -311,7 +330,7 @@ export function ControlRow({
           because a search box holding three characters beside a trigger is no search box. */}
       <div className="flex min-w-0 flex-wrap items-start gap-2 sm:flex-nowrap">
         <Slot gives>{search}</Slot>
-        <Slot>
+        <Slot flows={flows}>
           {chipsOn || clear === null ? (
             trigger
           ) : (
@@ -321,7 +340,9 @@ export function ControlRow({
             </>
           )}
         </Slot>
-        <Slot wraps>{children}</Slot>
+        <Slot flows={flows} wraps>
+          {children}
+        </Slot>
         <Slot className="ml-auto">{display}</Slot>
       </div>
       {chipsOn ? (

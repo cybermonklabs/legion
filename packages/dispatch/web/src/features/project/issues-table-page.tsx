@@ -8,7 +8,9 @@ import { PanelTrigger } from "../../components/PanelTrigger";
 import { SearchBox } from "../../components/SearchBox";
 import { SelectionBar } from "../../components/SelectionBar";
 import { borderDefault, card, surfaceBg, surfaceMutedHoverBg } from "../../theme/classes";
+import { useUserPreference } from "../shell/userPreference";
 import { IssueFlagChips, UnclaimedUnchecked } from "./IssueFlags";
+import type { ViewLayout } from "./IssueViewTabs";
 import { useIssueFilters } from "./issue-filters";
 import type { Item } from "./issues-table-model";
 
@@ -49,15 +51,50 @@ export interface ExtraChip {
 }
 
 /**
+ * The Board layout's Filters trigger, whose open state is the reader's, kept at
+ * `project.issue-filters` as `expanded` or `collapsed` the way INFRA-3135's Board keeps it. The
+ * Board reads it when it opens, and when the signed-in identity resolves: open while a flag is
+ * on, unless the reader last closed it. It is never read again because the count moved, so
+ * taking the last flag off from inside the panel leaves it open under the reader's pointer.
+ */
+function KeptFiltersTrigger({
+  children,
+  count,
+}: {
+  children: () => ReactNode;
+  count: number;
+}): ReactNode {
+  const [open, setOpen] = useUserPreference(
+    "project.issue-filters",
+    (stored) => count > 0 && stored !== "collapsed",
+    (next) => (next ? "expanded" : "collapsed")
+  );
+  return (
+    <PanelTrigger
+      count={count}
+      label="Filters"
+      onOpenChange={setOpen}
+      open={open}
+      panelClassName={FLAGS_PANEL_CLASS}
+      size="compact"
+    >
+      {children}
+    </PanelTrigger>
+  );
+}
+
+/**
  * The one row the view's controls sit in, for the table and the Board alike: the search box, the
  * trigger over the three flags that narrow no column, the chips of the flags and of the
  * narrowings an address carries (`exclude_tree`, `only`), **Clear filters** (which the row
- * draws), the page's own controls, and the display menu carrying the grouping (INFRA-3135, R1
- * and R3). Every narrowing that is a column's own stays on that column's header.
+ * draws, in room it keeps while the view is unchanged), the page's own controls, and the
+ * display menu carrying the grouping (INFRA-3135, R1 and R3). Every narrowing that is a
+ * column's own stays on that column's header.
  */
 export function IssueTableToolbar({
   columns,
   extraChips,
+  layout,
   onClear,
   searchRef,
   table,
@@ -67,13 +104,15 @@ export function IssueTableToolbar({
   /** The columns the Columns menu offers: those the project has. */
   columns: Column<Item>[];
   extraChips: readonly ExtraChip[];
-  /** Takes every narrowing off, back to the view as it opens; absent while nothing narrows. */
+  /** On the Board the Filters trigger keeps its open state for the reader. */
+  layout: ViewLayout;
+  /** Restores the view as it opens; absent while the view is unchanged. */
   onClear: (() => void) | undefined;
   /** The search box, which the selection bar hands the focus to when no row is left for it. */
   searchRef: RefObject<HTMLInputElement | null>;
   table: Table<Item>;
-  /** The page's own controls: the Columns menu for the table, Show Icebox and the lanes for the
-   *  Board. */
+  /** The page's own controls: the layout switch, the Columns menu for the table or Show Icebox
+   *  and the lanes for the Board, then Save view and the (i) hint. */
   trailing: ReactNode;
   /** Why the Claimed by filter cannot tell which claims have lapsed, while it is asked to. */
   unclaimedUnchecked: "refilling" | "unreachable" | undefined;
@@ -106,6 +145,14 @@ export function IssueTableToolbar({
             {label}
           </Chip>
         ));
+  const flagsPanel = () => (
+    <>
+      <IssueFlagChips />
+      <Chip onClick={() => flags.setUnclaimed(!flags.unclaimed)} selected={flags.unclaimed}>
+        Unclaimed
+      </Chip>
+    </>
+  );
   return (
     <>
       <ControlRow
@@ -140,6 +187,8 @@ export function IssueTableToolbar({
             size="compact"
           />
         }
+        flows
+        keepsClearRoom
         onClear={onClear}
         search={
           <SearchBox
@@ -154,26 +203,20 @@ export function IssueTableToolbar({
         }
         size="compact"
         trigger={
-          <PanelTrigger
-            count={flagged.length === 0 ? undefined : flagged.length}
-            label="Filters"
-            onOpenChange={(open) => setOpenPanel(open ? "flags" : undefined)}
-            open={openPanel === "flags"}
-            panelClassName={FLAGS_PANEL_CLASS}
-            size="compact"
-          >
-            {() => (
-              <>
-                <IssueFlagChips />
-                <Chip
-                  onClick={() => flags.setUnclaimed(!flags.unclaimed)}
-                  selected={flags.unclaimed}
-                >
-                  Unclaimed
-                </Chip>
-              </>
-            )}
-          </PanelTrigger>
+          layout === "board" ? (
+            <KeptFiltersTrigger count={flagged.length}>{flagsPanel}</KeptFiltersTrigger>
+          ) : (
+            <PanelTrigger
+              count={flagged.length}
+              label="Filters"
+              onOpenChange={(open) => setOpenPanel(open ? "flags" : undefined)}
+              open={openPanel === "flags"}
+              panelClassName={FLAGS_PANEL_CLASS}
+              size="compact"
+            >
+              {flagsPanel}
+            </PanelTrigger>
+          )
         }
       >
         {trailing}

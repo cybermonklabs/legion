@@ -1,5 +1,6 @@
 import type { Column } from "@tanstack/react-table";
 import { type ReactNode, useState } from "react";
+import { CONTROL } from "../../components/control-names";
 import { PanelTrigger } from "../../components/PanelTrigger";
 import {
   borderDefault,
@@ -57,6 +58,8 @@ export function RangeFilter<TData>({
   return (
     <PanelTrigger
       align="right"
+      // A column's own filter, found by the name every header's filter has.
+      control={CONTROL.columnFilter}
       label={
         <svg aria-hidden="true" className="size-3.5" fill="currentColor" viewBox="0 0 16 16">
           <title>Dates</title>
