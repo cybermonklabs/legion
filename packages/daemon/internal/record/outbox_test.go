@@ -31,7 +31,8 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 		ReassertStatusWrite("in_progress", "done"),
 		HandOverStatusWrite("todo", "in_progress", "LEGION-200", 3),
 		MessagePost{Body: "Pull request checks are blocked."},
-		MessagePost{Body: "The push check found work: dispatch://LEGION-208/artifact/rescue-pod-9d3f0c7a",
+		// The row an older daemon's rescue message queued, which still decodes and round-trips.
+		MessagePost{Body: "The full list is in this document: dispatch://LEGION-208/artifact/rescue-pod-9d3f0c7a",
 			Artifact: &MessageArtifact{Name: "rescue-pod-9d3f0c7a", Content: "```\nbranch legion/LEGION-208-rescue\n```\n"}},
 		Notice{Kind: "phase-finished", Role: claim.RoleTester, Phase: phase.Testing, Summary: "Tests passed", Verdict: "pass", Version: 4, Reason: ""},
 		ControllerNotice{Kind: "held", Role: claim.RolePlanner, Phase: phase.Planning, Reason: "escalated"},

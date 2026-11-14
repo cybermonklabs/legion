@@ -162,7 +162,12 @@ func (ClaimRelease) OutboxKind() OutboxKind { return OutboxKindClaimRelease }
 // MessagePost is a Dispatch message body. The runner posts it as Posted: the body, then its outbox
 // marker. Artifact, when set, is a document the body links (dispatch://<issue>/artifact/<name>):
 // the runner puts it on the issue before it posts the body, so the link never comes before its
-// document.
+// document. No message of this release sets Artifact: its one producer was the pod rescue's
+// message, removed with the rescue (INFRA-2848). The field stays because the outbox decodes a
+// payload strictly and refuses an unknown field, so a row an older daemon queued with an artifact
+// must still decode and still put its document up. It, MessageArtifact and the outbox's upload
+// can go once no daemon of a release before this one shares the database and no unsent
+// dispatch_message row holds an artifact.
 type MessagePost struct {
 	Body     string           `json:"body"`
 	Artifact *MessageArtifact `json:"artifact,omitempty"`
@@ -607,9 +612,9 @@ func (ControllerNotice) OutboxKind() OutboxKind { return OutboxKindControllerNot
 // neither a slot nor a place in the waiting line, which it then put in phase.Done; its reason
 // names the status the root stood at. An update-stalled notice names an issue whose update round
 // has passed its bound (`pod_update_grace_minutes` after it opened) while something still holds
-// it: an operator's suspension of a role the round asks, a failed push check, a ReplacePod the
-// runtime refused, no claim recording a process in the round's pod (or in any pod), or claims
-// recording two pods. It is told once per round (the daemon's reconcilePodUpdates). A
+// it: an operator's suspension of a role the round asks, a ReplacePod the runtime refused, no
+// claim recording a process in the round's pod (or in any pod), or claims recording two pods. It
+// is told once per round (the daemon's reconcilePodUpdates). A
 // provider-errors notice names an issue whose role has ended six turns in a row in a provider
 // error: its Role is that role, and its Reason the model and the HTTP status the provider
 // answered, where it answered one, in words built from structured fields alone (supervise's
