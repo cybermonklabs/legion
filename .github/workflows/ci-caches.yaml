@@ -60,8 +60,8 @@ name: CI caches
 
 # A push to main is what writes the default branch's cache scope; workflow_dispatch fills a family
 # by hand, after a Go bump, a move of the Lean toolchain or an eviction. No `paths:`: a key holds
-# a Go version or that toolchain file's hash, not a file list, so what the push touched decides
-# nothing, and a run whose keys are all there is seconds.
+# a Go version, that toolchain file's hash or the hash of packages/envoy/go.sum, not a file list,
+# so what the push touched decides nothing, and a run whose keys are all there is seconds.
 on:
   push:
     branches: [main]
@@ -252,13 +252,13 @@ jobs:
   # its own Go up, from packages/envoy/go.mod, and restores and saves the entry itself. It saves
   # only in a push, schedule or workflow_dispatch run, so on a push to main it fills the entry in
   # main's scope, where every pull request and merge group of this repository finds it: on a hit
-  # it restores the entry and builds nothing new; on a miss, as after a go.sum change, it builds
-  # the command from the newest entry of that Go version, or cold when there is none, and saves
-  # the entry. It also checks main's notes; the action saves before it checks, so a refused set
-  # does not cost the entry. A job of its own is one of the two placements the action's README.md
-  # gives ("The Go toolchain"). The other, in the envoy job, would run the action first, before
-  # that job's setup-go, and a refused note set on main would then stop the go-envoy fills, so it
-  # is a job of its own.
+  # it restores the entry and compiles only the command's own packages that changed since the entry
+  # was saved; on a miss, as after a go.sum change, it builds the command from the newest entry of
+  # that Go version, or cold when there is none, and saves the entry. It also checks main's notes;
+  # the action saves before it checks, so a refused set does not cost the entry. A job of its own
+  # is one of the two placements the action's README.md gives ("The Go toolchain"). The other, in
+  # the envoy job, would run the action first, before that job's setup-go, and a refused note set
+  # on main would then stop the go-envoy fills, so it is a job of its own.
   architecture-check:
     runs-on: ubuntu-24.04
     # The action takes seconds: 13 s with its own Go download and a cache miss, in ci.yaml's
