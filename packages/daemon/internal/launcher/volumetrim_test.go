@@ -452,10 +452,12 @@ func (f *trimFixture) settings() *shimwire.LauncherVolumeTrim {
 }
 
 // trimming is the trimmer's second settings seam, the one a sweep asks at every entry boundary:
-// it reads the same field through the same hook as settings, so a case that stops the trimmer
-// mid-sweep stops it here as the pod's own manager does (manager.volumeTrimming).
+// it reads the same field through the same hook as settings and answers whether the trimmer can
+// run what is there, so a case that stops the trimmer mid-sweep, with no settings or with settings
+// it refuses, stops it here as the pod's own manager does (manager.volumeTrimming).
 func (f *trimFixture) trimming() bool {
-	return f.settings() != nil
+	set := f.settings()
+	return set != nil && len(refusedTrimSettings(*set)) == 0
 }
 
 // setSettings is what the trimmer reads from now on. The interval of the last settings that
@@ -1074,11 +1076,12 @@ func TestAnAgeAMinutePastTheGreatestIsRefusedAndSweepsNothing(t *testing.T) {
 
 // A refusal the trimmer is still in is written once. Settings outside the ranges are a daemon's
 // standing answer and not an event — a daemon that widened a maximum this launcher does not
-// know sends them with every acknowledgement, and the interval loop reads them once an interval
-// (tick) — so a line per interval would put two or more lines a minute into the roles
-// container's log for the life of the pod, and that log is the only place a person sees this
-// work. A refusal whose text changes is news, and so is the same text after a spell of settings
-// the trimmer could run: the pod was not in that state a moment ago.
+// know sends them with every acknowledgement, and the trimmer they stopped reads them again
+// every volumeSettingsWait while it waits (awaitSettings) — so a line per poll would put two or
+// more lines every ten seconds into the roles container's log for the life of the pod, and that
+// log is the only place a person sees this work. A refusal whose text changes is news, and so is
+// the same text after a spell of settings the trimmer could run: the pod was not in that state a
+// moment ago.
 func TestARefusalThatDoesNotChangeIsLoggedOnce(t *testing.T) {
 	f := newTrimFixture(t, 1)
 	f.useVolume(steady(50)) // below the high mark: every interval reads the volume and sweeps nothing
@@ -1092,14 +1095,15 @@ func TestARefusalThatDoesNotChangeIsLoggedOnce(t *testing.T) {
 	wide.HighPercent = shimwire.VolumeMarkMax + 1
 	refusedHigh := fmt.Sprintf("high_percent is %d", wide.HighPercent)
 	f.setSettings(&wide)
-	const intervals = 4
-	for range intervals {
-		f.tick("nothing to sweep")
+	f.tick("it starts no ticker on refused settings")
+	const polls = 4
+	for range polls {
+		offerSettingsTick(t, f)
 	}
 	switch {
 	case f.logged(refusedHigh) != 1:
-		t.Errorf("the trimmer wrote %d lines refusing the same settings over %d intervals, want the one a standing state gets; it wrote %q",
-			f.logged(refusedHigh), intervals, f.linesWritten())
+		t.Errorf("the trimmer wrote %d lines refusing the same settings over %d polls, want the one a standing state gets; it wrote %q",
+			f.logged(refusedHigh), polls, f.linesWritten())
 	case f.logged("it starts no ticker on refused settings") != 1:
 		t.Errorf("the trimmer wrote %d of the refusal's trailing lines, want one", f.logged("it starts no ticker on refused settings"))
 	}
@@ -1108,28 +1112,136 @@ func TestARefusalThatDoesNotChangeIsLoggedOnce(t *testing.T) {
 	wider := wide
 	wider.MinAgeMinutes = 0
 	f.setSettings(&wider)
-	f.tick("nothing to sweep")
-	switch {
-	case f.logged("min_age_minutes is 0") != 1:
-		t.Errorf("the reason the daemon added was never written; the trimmer wrote %q", f.linesWritten())
-	case f.logged(refusedHigh) != 2:
-		t.Errorf("the first reason was written %d times, want it said again as part of the refusal it is now half of", f.logged(refusedHigh))
+	offerSettingsTick(t, f)
+	testwait.Eventually(t, "the trimmer to say the refusal whose text changed", func() bool {
+		return f.logged("min_age_minutes is 0") == 1
+	})
+	if said := f.logged(refusedHigh); said != 2 {
+		t.Errorf("the first reason was written %d times, want it said again as part of the refusal it is now half of", said)
 	}
 
 	// Settings the trimmer can run clear what it remembers, so the first refusal is news again.
 	f.setSettings(trimSettings())
+	offerSettingsTicksUntil(t, f, "the trimmer to start again on settings it can run", func() bool {
+		return f.logged(volumeTrimLog+"started: trimmer") == 2
+	})
 	f.tick("nothing to sweep")
 	f.setSettings(&wide)
-	f.tick("nothing to sweep")
+	f.tick("it starts no ticker on refused settings")
 	if said := f.logged(refusedHigh); said != 3 {
 		t.Errorf("the refusal that came back after settings the trimmer ran by was written %d times in all, want three: a state the pod has left is news when it returns", said)
 	}
-	// Every interval of this case read the volume: the settings in force stay in force under a
-	// refusal, which is what keeps the pod's volume guarded under a daemon of another version.
-	if reads, want := f.readCount(), intervals+4; reads != want {
-		t.Errorf("the trimmer read the volume %d times, want the %d intervals this case ticked", reads, want)
+	// Only the two intervals that ran by settings the trimmer can run read the volume: a refusal
+	// stops the trimmer at the interval that meets it (TestARefusedAnswerSwitchesARunningTrimmerOff).
+	if reads := f.readCount(); reads != 2 {
+		t.Errorf("the trimmer read the volume %d times, want the 2 intervals that ran by settings it can run", reads)
 	}
 	f.assertPrefixed()
+}
+
+// R2: "The trimmer holds the same ranges a second time, on its own side of the wire: it refuses
+// a value outside them, logs the key and the value, and stays off rather than starting its
+// ticker", and "the settings in force are that connection's latest answer alone". An answer it
+// refuses that arrives while it runs is that latest answer, so the trimmer stops as it does on a
+// first answer it refuses: it reads and sweeps nothing more, makes no interval clock, and waits
+// on the clock it asks for settings on until an answer carries settings it can run.
+//
+// A report it was holding is tried rather than discarded, since only an answer with the member
+// absent discards one and the daemon that sent these settings has a case for a report
+// (stopOnRefusal); an answer with no settings after that discards it.
+func TestARefusedAnswerSwitchesARunningTrimmerOff(t *testing.T) {
+	wide := *trimSettings()
+	wide.HighPercent = shimwire.VolumeMarkMax + 1
+	refusedHigh := fmt.Sprintf("high_percent is %d", wide.HighPercent)
+
+	t.Run("it stays off and names the key and the value", func(t *testing.T) {
+		f := newTrimFixture(t, 1)
+		f.useVolume(steady(50)) // below the high mark: the interval reads the volume and sweeps nothing
+		f.setSettings(trimSettings())
+		f.start(f.trimmer())
+		f.tick("nothing to sweep")
+
+		// The volume is at the high mark from here, so any interval that read it would sweep.
+		f.useVolume(steady(90))
+		f.setSettings(&wide)
+		f.tick("it starts no ticker on refused settings")
+		testwait.Eventually(t, "the interval clock to be stopped", func() bool {
+			_, running := f.ticks.live(f.interval())
+			return !running
+		})
+		for range 3 {
+			offerSettingsTick(t, f)
+		}
+		switch {
+		case f.logged(refusedHigh) != 1:
+			t.Errorf("the trimmer wrote %d lines naming %q, want the one refusal; it wrote %q", f.logged(refusedHigh), refusedHigh, f.linesWritten())
+		case f.readCount() != 1:
+			t.Errorf("the trimmer read the volume %d times, want only the interval before the refusal: it must stay off on settings it refuses", f.readCount())
+		case len(f.gone()) != 0:
+			t.Errorf("%d entries were deleted after the trimmer refused its settings", len(f.gone()))
+		case f.logged("sweeping") != 0:
+			t.Errorf("the trimmer swept %d times after the refusal, want none", f.logged("sweeping"))
+		}
+		f.assertProtected()
+		f.assertPrefixed()
+	})
+
+	t.Run("a report it was holding is sent on the connection that answered", func(t *testing.T) {
+		f := newTrimFixture(t, 25) // a hundred entries, ten points: the sweep ends above the low mark and reports
+		f.useVolume(f.modelled(90))
+		f.setSettings(trimSettings())
+		f.refuseSends(errors.New("no daemon connection is up to carry it"))
+		f.start(f.trimmer())
+		f.tick("the sweep ended")
+		testwait.Eventually(t, "the trimmer to hold the report the outage refused", func() bool {
+			return f.logged("holding it for the next attempt") == 1
+		})
+
+		f.refuseSends(nil)
+		f.setSettings(&wide)
+		f.tick("it starts no ticker on refused settings")
+		testwait.Eventually(t, "the held report to reach the daemon", func() bool { return len(f.reports()) == 1 })
+		if report := f.reports()[0]; report.UsedBytes != int64(percentBytes(80)) {
+			t.Errorf("the report sent carries %d used bytes, want the %d of the sweep that was held", report.UsedBytes, percentBytes(80))
+		}
+	})
+
+	t.Run("an answer with no settings afterwards discards a report it still holds", func(t *testing.T) {
+		f := newTrimFixture(t, 25)
+		f.useVolume(f.modelled(90))
+		f.setSettings(trimSettings())
+		f.refuseSends(errors.New("no daemon connection is up to carry it"))
+		f.start(f.trimmer())
+		f.tick("the sweep ended")
+		testwait.Eventually(t, "the trimmer to hold the report the outage refused", func() bool {
+			return f.logged("holding it for the next attempt") == 1
+		})
+
+		// The send fails again at the refusal, so the report is still held while the trimmer is off.
+		f.setSettings(&wide)
+		f.tick("it starts no ticker on refused settings")
+		testwait.Eventually(t, "the trimmer to try the held report at the refusal", func() bool {
+			return f.logged("the held report could not be sent either") == 1
+		})
+
+		f.setSettings(nil)
+		offerSettingsTick(t, f)
+		testwait.Eventually(t, "the trimmer to wait on an answer that carries no settings", func() bool {
+			return f.logged("no settings are in force, so the trimmer stays off") == 1
+		})
+
+		// Settings it can run come back on a connection that takes reports: the interval that
+		// starts tries any held report first (tick's flush), so a report still held is sent here.
+		f.refuseSends(nil)
+		f.setSettings(trimSettings())
+		offerSettingsTicksUntil(t, f, "the trimmer to start again on settings it can run", func() bool {
+			return f.logged(volumeTrimLog+"started: trimmer") == 2
+		})
+		f.tick("nothing to sweep")
+		if sent := f.reports(); len(sent) != 0 {
+			t.Errorf("the trimmer sent %d reports after an answer with no settings, want the held one discarded: %+v", len(sent), sent)
+		}
+	})
 }
 
 // A volume this process cannot read is said once, as a refused setting is, and said again when
@@ -2220,6 +2332,58 @@ func TestARefusedProcReadStopsTheSweepAndNamesTheProcess(t *testing.T) {
 	})
 }
 
+// R3: a refused /proc read "names the process it could not read and is carried into the next
+// report". A sweep whose later read was refused and whose last reading is at or below the low
+// mark sends no report of its own, so the refusal is kept and the next report the trimmer sends
+// names the process, though the sweep behind that report read /proc in full.
+func TestARefusedProcReadOfASweepThatSendsNoReportIsCarriedIntoTheNext(t *testing.T) {
+	f := newTrimFixture(t, 6)
+	first := f.oldestFirst()[0]
+	placed := false
+	var refused string
+	f.clock.setHook(func(clock *fakeClock) {
+		if placed || f.exists(first.path) {
+			return
+		}
+		placed = true
+		refused = strconv.Itoa(placeRefusedProcess(t, f.proc, 5303, filepath.Join(f.root, "scratch")))
+		clock.advance(volumeUsedPathsMaxAge + time.Millisecond)
+	})
+	// The first interval's reading starts a sweep, whose last reading is under the low mark; the
+	// second interval's starts another, whose last reading is above it.
+	f.useVolume(script(90, 60, 90, 80))
+	f.setSettings(trimSettings())
+	f.start(f.trimmer())
+
+	f.tick("the sweep ended")
+	if !placed {
+		t.Fatal("the case never reached the moment it stages")
+	}
+	if f.logged("a /proc read the kernel refused while the sweep ran") != 1 {
+		t.Fatalf("the first sweep did not stop on the refused read; the trimmer wrote %q", f.linesWritten())
+	}
+	if sent := len(f.reports()); sent != 0 {
+		t.Fatalf("the sweep that ended under the low mark sent %d reports, want none", sent)
+	}
+
+	// The process goes, so the second sweep reads every process of the pod.
+	if err := os.RemoveAll(filepath.Join(f.proc, refused)); err != nil {
+		t.Fatal(err)
+	}
+	f.tick("the sweep ended")
+	testwait.Eventually(t, "the report of the second sweep", func() bool { return len(f.reports()) == 1 })
+	report := f.reports()[0]
+	if len(report.RefusedReads) != 1 || !strings.Contains(report.RefusedReads[0], refused) {
+		t.Errorf("the report names the refused reads %v, want the process %s the earlier sweep could not read", report.RefusedReads, refused)
+	}
+	if strings.Contains(report.StopReason, "refused") {
+		t.Errorf("the second sweep stopped because %q, want it to have read /proc in full", report.StopReason)
+	}
+	if err := report.Validate(); err != nil {
+		t.Errorf("the daemon would refuse this report: %v", err)
+	}
+}
+
 // trimHandleHold is how long the helper child holds its handle before giving up on its own: a
 // case that failed before killing it must not leave a process holding a directory of the pod's
 // /legion open for ever.
@@ -3025,6 +3189,93 @@ func TestAPanicIsRecoveredAndThreeInARowSwitchTheTrimmerOff(t *testing.T) {
 		}
 		if report.SwitchedOff {
 			t.Error("the report says the trimmer switched itself off after one fault, want it to go on")
+		}
+	})
+}
+
+// R1 has the trimmer, "after three in a row", stay off "and send one last report saying so", and
+// R2 has it hold its report while the bound connection is down "until that connection is up
+// again". So the report of a trimmer that switched itself off with no connection up is held, and
+// sent once a connection takes it; the trimmer's loop returns only then. An answer with no
+// settings in the meantime discards it, as it discards any report the trimmer holds.
+func TestTheSwitchedOffReportIsHeldUntilTheConnectionIsUp(t *testing.T) {
+	switchOffDisconnected := func(t *testing.T) (*trimFixture, *trimmer, <-chan struct{}) {
+		t.Helper()
+		f := newTrimFixture(t, 1)
+		f.setOnRead(func(call int) { panic(fmt.Sprintf("the volume reader fell over on call %d", call)) })
+		f.useVolume(steady(50))
+		f.setSettings(trimSettings())
+		f.refuseSends(errors.New("no daemon connection is up to carry it"))
+		tr := f.trimmer()
+		_, done := f.start(tr)
+		for range volumeFaultLimit {
+			f.tick("recovered a panic")
+		}
+		testwait.Eventually(t, "the trimmer to hold its last report", func() bool {
+			return f.logged("the report could not be sent (no daemon connection is up to carry it); holding it for the next attempt") == 1
+		})
+		return f, tr, done
+	}
+
+	t.Run("it is sent once the connection is up", func(t *testing.T) {
+		f, tr, done := switchOffDisconnected(t)
+		// Three attempts while the connection is still down: nothing is sent, the reason is
+		// said once, and the loop has not returned.
+		offerSettingsTick(t, f)
+		offerSettingsTick(t, f)
+		offerSettingsTick(t, f)
+		select {
+		case <-done:
+			t.Fatal("the trimmer's loop returned with its last report still unsent")
+		default:
+		}
+		if said := f.logged("the last report of the switched-off trimmer could not be sent"); said != 1 {
+			t.Errorf("the trimmer wrote %d lines for the failed attempts of a connection that stayed down, want one", said)
+		}
+		if sent := len(f.reports()); sent != 0 {
+			t.Fatalf("the trimmer sent %d reports with no connection up", sent)
+		}
+
+		// The attempt the last tick started may still be running, and the connection can come up
+		// under it: whichever attempt finds it up sends the report.
+		f.refuseSends(nil)
+		offerSettingsTicksUntil(t, f, "the trimmer's loop to return once its last report is sent", func() bool {
+			select {
+			case <-done:
+				return true
+			default:
+				return false
+			}
+		})
+		reports := f.reports()
+		if len(reports) != 1 {
+			t.Fatalf("the trimmer sent %d reports once the connection was up, want its one last report", len(reports))
+		}
+		report := reports[0]
+		switch {
+		case !report.SwitchedOff:
+			t.Errorf("the report %+v does not say the trimmer switched itself off", report)
+		case len(report.Faults) != volumeFaultLimit:
+			t.Errorf("the last report carries %d faults, want the %d in a row that stopped it", len(report.Faults), volumeFaultLimit)
+		case report.Trimmer != tr.id:
+			t.Errorf("the last report names the trimmer %q, want %q", report.Trimmer, tr.id)
+		}
+		if err := report.Validate(); err != nil {
+			t.Errorf("the daemon would refuse the last report: %v", err)
+		}
+	})
+
+	t.Run("an answer with no settings discards it", func(t *testing.T) {
+		f, _, done := switchOffDisconnected(t)
+		f.setSettings(nil)
+		f.refuseSends(nil)
+		offerSettingsTick(t, f)
+		awaitClosed(t, done, "the trimmer's loop to return once its last report is discarded")
+		if f.logged("the last report of the switched-off trimmer is discarded") != 1 {
+			t.Errorf("the trimmer did not say it discarded its last report; it wrote %q", f.linesWritten())
+		}
+		if sent := len(f.reports()); sent != 0 {
+			t.Errorf("the trimmer sent %d reports after an answer with no settings, want none", sent)
 		}
 	})
 }

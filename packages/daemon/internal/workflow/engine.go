@@ -889,8 +889,9 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 // the four counts the failure left, each against the limit it ran out at (noticeFailure). The
 // worker-died of a role that does not work the issue's phase names it too, since that role's
 // architect decides whether to start it again on the same evidence. The tree architect's own
-// worker-died names none: nobody inside the tree is left to read it, and the operator who
-// relaunches that architect reads the claim's own record (api.ClaimFailureView).
+// worker-died carries no failure record, so its reason carries the sentence instead, with the pod
+// end when there is one (deathReason): it is the one notice of that failure the architect and the
+// controller are sent.
 //
 // A child's sub-architect works no phase and holds none: the operator starts it, and no transition
 // or admission ever starts an architect below the tree's root. Its claim failing holds nothing and
@@ -915,7 +916,7 @@ func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFa
 	}
 	if claim.IsTreeArchitect(fact.Role, issue.Key, issue.Tree) {
 		return intake.Result{}, e.noticeWithController(ctx, tx, issue.Key, record.Notice{Kind: "worker-died", Role: fact.Role, Phase: issue.Phase,
-			Reason: deathReason(fact)})
+			Reason: deathReason(fact, false)})
 	}
 	if fact.Role == claim.RoleArchitect {
 		return intake.Result{}, nil
@@ -978,30 +979,34 @@ func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFa
 		return intake.Result{}, err
 	}
 	return intake.Result{}, e.notice(ctx, tx, issue.Key, record.Notice{Kind: "worker-died", Role: fact.Role, Phase: from,
-		Failure: failure, Reason: deathReason(fact)})
+		Failure: failure, Reason: deathReason(fact, failure != nil)})
 }
 
-// deathReason is what a worker-died notice says beside the failure record on the two paths that
-// build no reason of their own — the tree architect's and the held phase's. It names the one
-// thing that record has no field for: the pod end the claim's process was last observed to have
-// died of (supervise.Claim.PodEnd), which is the cause no role chose — an eviction for
-// ephemeral storage above all — with the supervisor's own sentence before it
+// deathReason is what a worker-died notice says on the two paths that build no reason of their
+// own — the tree architect's and the held phase's. It names the pod end the claim's process was
+// last observed to have died of (supervise.Claim.PodEnd), which is the cause no role chose — an
+// eviction for ephemeral storage above all — with the supervisor's own sentence before it
 // (supervise.Claim.Failure, intake.ClaimFailed.Reason), so an architect reads the two as one
 // line. Both are persisted on the claim, so a daemon that restarted between the death and the
 // moment the budget ran out says the same thing.
 //
-// A claim the cluster did not end gets no reason at all, and that is the whole of the rule: the
-// sentence alone is what the failure record's `detail` already carries (noticeFailure), and
-// repeating it in a reason would say one thing twice; the tree architect's notice, which carries
-// no failure record, is the one whose operator reads the claim's own record (claimFailed's doc).
+// failureCarried says the notice carries a failure record beside this reason, as the held
+// phase's does whenever the fact names a cause. That record's `detail` already carries the
+// sentence (noticeFailure), so a claim the cluster did not end gets no reason there, since
+// repeating the sentence would say one thing twice. The tree architect's notice carries no
+// failure record, and neither does a held phase's whose fact names no cause, so their reason is
+// the sentence whether or not the cluster ended the claim: without it the notice would say
+// nothing of why the claim failed.
 //
 // The two paths that already build a reason keep theirs: a role that does not work the issue's
 // phase, and a checking role of a closed issue, each say what the failure meant for that issue,
 // which is more than either of these facts is.
-func deathReason(fact intake.ClaimFailed) string {
+func deathReason(fact intake.ClaimFailed, failureCarried bool) string {
 	switch {
-	case fact.PodEnd == "":
+	case fact.PodEnd == "" && failureCarried:
 		return ""
+	case fact.PodEnd == "":
+		return fact.Reason
 	case fact.Reason == "":
 		return "the pod ended: " + fact.PodEnd
 	default:

@@ -150,14 +150,17 @@ type trimmer struct {
 	// trimmer waits for settings it may run by. Nil stops the sweeping: it ends a sweep in
 	// flight at its next entry boundary with its deletions standing, sends no report, and
 	// discards a report it was holding — and the trimmer then waits here for settings to come
-	// back rather than ending with the pod (awaitSettings).
+	// back rather than ending with the pod (awaitSettings). Settings the trimmer refuses stop it
+	// the same way, except that a report it was holding is tried rather than discarded
+	// (stopOnRefusal).
 	settings func() *shimwire.LauncherVolumeTrim
-	// trimming answers whether settings are in force at all, which is the whole of what a
-	// sweep asks of them (halted). It is asked once per listed entry and once per swept entry
-	// — tens of thousands of times over one sweep of the measured pod's caches — where
-	// settings takes the launcher's mutex and returns a freshly allocated copy of the struct
-	// for a pointer compared with nil and dropped. Both seams read the one field under the one
-	// lock (manager.volumeTrim, manager.volumeTrimming), so nothing of the lifecycle changes.
+	// trimming answers whether settings the trimmer can run are in force (refusedTrimSettings),
+	// which is the whole of what a sweep asks of them (halted). It is asked once per listed
+	// entry and once per swept entry — tens of thousands of times over one sweep of the
+	// measured pod's caches — where settings takes the launcher's mutex and returns a freshly
+	// allocated copy of the struct. In the pod both seams read what one acknowledgement left,
+	// under the one lock that acknowledgement was applied under (manager.applyAck), so the two
+	// never answer from different acknowledgements.
 	trimming func() bool
 	// send writes one report on the pod's bound connection. An error holds the report, which
 	// the trimmer sends on the next attempt, as the launcher's bundleRestore holds its own: no
@@ -206,9 +209,15 @@ type trimmer struct {
 	// faultsDropped is how many older ones the rule above left out, which the next report says
 	// rather than dropping them silently.
 	faultsDropped int
-	consecutive   int // recovered panics in a row, which volumeFaultLimit bounds
-	held          *shimwire.LauncherVolumeReport
-	walk          walkResult // the last size walk, which a report between walks carries
+	// refusedReads is the refused /proc reads of sweeps that sent no report, which the next
+	// report carries (carryRefused): a sweep that ends at or below the low mark sends none, and
+	// a process the trimmer could not read is one the operator must hear of. refusedDropped is
+	// how many the bound on a report's list left out, which that report says.
+	refusedReads   []string
+	refusedDropped int
+	consecutive    int // recovered panics in a row, which volumeFaultLimit bounds
+	held           *shimwire.LauncherVolumeReport
+	walk           walkResult // the last size walk, which a report between walks carries
 	// said is the last standing state the trimmer wrote, which says keeps so that a state it is
 	// still in is not written once per interval.
 	said string
@@ -263,14 +272,16 @@ type trimEnding int
 const (
 	// trimGoesOn is no ending at all: the interval loop takes its next tick.
 	trimGoesOn trimEnding = iota
-	// trimWaits is the settings gone, in an acknowledgement that carried none or in the middle
-	// of a sweep: the interval loop ends and run waits for settings it may run by again. A pod
-	// lives through `enabled: false` and the operator turning it back on, and through a daemon
-	// rolled back to a release without this work and the roll-forward after it, and keeps its
-	// trimmer.
+	// trimWaits is the settings gone or refused, in an acknowledgement that carried none or
+	// carried values outside the trimmer's ranges, at an interval or in the middle of a sweep:
+	// the interval loop ends and run waits for settings it may run by again. A pod lives through
+	// `enabled: false` and the operator turning it back on, and through a daemon rolled back to a
+	// release without this work and the roll-forward after it, and keeps its trimmer.
 	trimWaits
 	// trimOff is the one final ending: volumeFaultLimit recovered panics in a row have switched
 	// the trimmer off, and nothing starts another before the launcher process restarts (fault).
+	// The report saying so is all that is left to do, and run does it before it returns
+	// (deliverLast).
 	trimOff
 	// trimStopping is the container going: ctx has ended, and run returns with it.
 	trimStopping
@@ -278,27 +289,35 @@ const (
 
 // run is the trimmer's whole life in this launcher process: the wait for settings it may run
 // by, the interval loop those settings start, and the wait again when they go away. It returns
-// on the container's stop and on the faults, and never on settings alone, because a pod takes
-// the settings of its bound connection's latest answer and an operator who turned the trimmer
-// off may turn it on again in the pod this process is PID 1 of.
+// on the container's stop, and on the faults once the report saying the trimmer switched itself
+// off has been sent or discarded, and never on settings alone, because a pod takes the settings
+// of its bound connection's latest answer and an operator who turned the trimmer off may turn it
+// on again in the pod this process is PID 1 of.
 func (t *trimmer) run(ctx context.Context) {
 	for {
 		inForce, ending := t.awaitSettings(ctx)
 		if ending != trimGoesOn {
 			return
 		}
-		if t.intervals(ctx, inForce) != trimWaits {
-			return
+		switch t.intervals(ctx, inForce) {
+		case trimWaits:
+			continue
+		case trimOff:
+			t.deliverLast(ctx)
 		}
+		return
 	}
 }
 
 // awaitSettings is the wait for settings the trimmer may run by: it answers the first ones it
-// can run, or the container's stop. Nothing of the trimmer's own state is touched here — the
+// can run, or the container's stop. Nothing of the trimmer's own counting is touched here — the
 // identifier, the episode, the anchor and the pause are this pod's counting line and go on
 // across a trimmer that was turned off and on again — and no interval ticker is made, so a
 // trimmer waiting sweeps nothing and reads nothing, which is what R2 asks of settings outside
-// the ranges.
+// the ranges. The one thing it does change is a report the trimmer is still holding, which an
+// answer with no settings discards here as it does in the interval loop (tick): a trimmer that
+// refused its settings keeps the report whose send failed (stopOnRefusal), and R2 has an answer
+// with the member absent discard any report the trimmer was holding.
 //
 // It polls rather than being woken: the seam is a read of what the latest acknowledgement left
 // in force (manager.volumeTrim) and nothing signals a change of it. It says what it is waiting
@@ -312,6 +331,9 @@ func (t *trimmer) awaitSettings(ctx context.Context) (shimwire.LauncherVolumeTri
 	defer func() { stop() }()
 	for {
 		set := t.settings()
+		if set == nil {
+			t.held = nil
+		}
 		var refusals []string
 		reason := "no settings are in force"
 		if set != nil {
@@ -389,10 +411,11 @@ func (t *trimmer) refuse(refusals []string) {
 
 // says is whether a standing state of the trimmer's is news, and remembers it when it is. A
 // refusal is a state rather than an event — a daemon that widened a maximum this launcher does
-// not know sends the same settings with every acknowledgement, and the trimmer meets them once
-// an interval (tick) or once every volumeSettingsWait (awaitSettings) — so saying it per
-// interval would put two lines a minute into the roles container's log for the life of the pod,
-// and that log is the only place this work is visible to a person after a deploy.
+// not know sends the same settings with every acknowledgement, a running trimmer meets them
+// where it stops on them (stopOnRefusal) and the waiting trimmer meets them again once every
+// volumeSettingsWait (awaitSettings) — so saying it per poll would put at least two lines (refuse)
+// into the roles container's log every ten seconds for the life of the pod, and that log is the
+// only place this work is visible to a person after a deploy.
 func (t *trimmer) says(state string) bool {
 	if state == t.said {
 		return false
@@ -443,25 +466,16 @@ func (t *trimmer) tick(ctx context.Context, inForce *shimwire.LauncherVolumeTrim
 		t.logf(volumeTrimLog + "no settings are in force: the trimmer sweeps nothing more until they come back, and a report it was holding is discarded")
 		return false, trimWaits
 	}
-	refusals := refusedTrimSettings(*next)
-	switch {
-	case len(refusals) > 0:
-		// The settings in force stay in force. Switching the trimmer off here would let one bad
-		// frame from a daemon of another version leave the pod's volume unguarded for the life
-		// of the container, where keeping the last settings the trimmer accepted leaves it
-		// doing what the operator last asked for. The refusal is written when it is news and
-		// not once per interval (says): what it describes is a daemon's standing answer.
-		if t.says(strings.Join(refusals, "; ")) {
-			t.refuse(refusals)
-		}
-	default:
-		t.saidNothing()
-		if *next != *inForce {
-			t.logf(volumeTrimLog+"new settings: high %d%%, low %d%%, minimum age %d min, interval %d s",
-				next.HighPercent, next.LowPercent, next.MinAgeMinutes, next.IntervalSeconds)
-			restart = next.IntervalSeconds != inForce.IntervalSeconds
-			*inForce = *next
-		}
+	if refusals := refusedTrimSettings(*next); len(refusals) > 0 {
+		t.stopOnRefusal(refusals)
+		return false, trimWaits
+	}
+	t.saidNothing()
+	if *next != *inForce {
+		t.logf(volumeTrimLog+"new settings: high %d%%, low %d%%, minimum age %d min, interval %d s",
+			next.HighPercent, next.LowPercent, next.MinAgeMinutes, next.IntervalSeconds)
+		restart = next.IntervalSeconds != inForce.IntervalSeconds
+		*inForce = *next
 	}
 	set := *inForce
 
@@ -498,8 +512,16 @@ func (t *trimmer) tick(ctx context.Context, inForce *shimwire.LauncherVolumeTrim
 	out := t.sweep(ctx, set, reading)
 	t.last = out.last
 	if out.settingsStop {
-		t.held = nil
-		t.logf(volumeTrimLog + "the settings stopped the trimmer: the sweep ended at an entry boundary with its deletions standing, no report is sent, and a report it was holding is discarded")
+		next := t.settings()
+		if next == nil {
+			t.held = nil
+			t.logf(volumeTrimLog + "the settings stopped the trimmer: the sweep ended at an entry boundary with its deletions standing, no report is sent, and a report it was holding is discarded")
+			return false, trimWaits
+		}
+		t.logf(volumeTrimLog + "the settings stopped the trimmer: the sweep ended at an entry boundary with its deletions standing, and no report is sent for it")
+		if refusals := refusedTrimSettings(*next); len(refusals) > 0 {
+			t.stopOnRefusal(refusals)
+		}
 		return false, trimWaits
 	}
 	// The reading is written as the sweep left it rather than as another "the volume is" line,
@@ -515,8 +537,33 @@ func (t *trimmer) tick(ctx context.Context, inForce *shimwire.LauncherVolumeTrim
 	if out.report {
 		t.anchorAt(percent)
 		t.deliver(t.report(ctx, out))
+	} else {
+		t.carryRefused(out.refused)
 	}
 	return true, trimGoesOn
+}
+
+// stopOnRefusal is the trimmer meeting settings it refuses while its interval loop runs, at an
+// interval or at an entry boundary of a sweep (halted): it logs each key and value (refuse) when
+// the refusal is news (says), and the loop ends, so run waits for settings it can run as it does
+// after a first answer it refuses (awaitSettings). R2 has the trimmer stay off on a value
+// outside its ranges, and the settings in force are the bound connection's latest answer alone,
+// so the answer before this one is not in force to go on running by.
+//
+// A sweep it cuts sends no report of its own, as one cut by an answer with no settings sends
+// none: the report would need a size walk of up to a minute (sizes) from a trimmer that is off.
+//
+// A report the trimmer is holding is tried now rather than discarded. R2 has only an answer
+// with the member absent discard it, because that daemon has no case for a report; the one that
+// sent these settings does (manager.sendVolumeReport writes on any connection whose answer
+// carries settings), and a held report is a volume nobody was told about. A send that fails
+// keeps it held, for the first interval of settings the trimmer can run (tick's flush) or for an
+// answer with no settings, which discards it (awaitSettings).
+func (t *trimmer) stopOnRefusal(refusals []string) {
+	if t.says(strings.Join(refusals, "; ")) {
+		t.refuse(refusals)
+	}
+	t.flush()
 }
 
 // episodeOf raises the episode number on the reading, when the reading is one of the two things
@@ -613,27 +660,30 @@ func (t *trimmer) fault(recovered any, stack []byte) bool {
 	return true
 }
 
-// switchOff sends the one report no sweep makes: the trimmer has stopped itself, and this is the
+// switchOff makes the one report no sweep makes: the trimmer has stopped itself, and this is the
 // last the daemon hears from it until the launcher restarts. It carries no sizes, because the
 // volume may be perfectly healthy and a size walk would cost a minute of the pod for a number
-// nobody asked for; and it is sent whatever else is true, which is why it goes through send
-// directly rather than through deliver, whose holding has no next attempt to be made on.
+// nobody asked for. It goes through deliver, so a connection that cannot take it holds it as any
+// other report is held, and run sends it once the connection is up again (deliverLast): R2 has
+// the trimmer hold its report until that connection is up again, and this report is the one
+// that tells the daemon the pod's volume is no longer guarded.
 //
-// The one thing that stops it is the settings being gone: send refuses a report on a connection
-// whose acknowledgement carried none (manager.sendVolumeReport), and that is the daemon this
-// trimmer could not have told anyway — one rolled back below this contract, which closes the
-// connection on a frame type it does not name.
+// It carries the faults that stopped the trimmer and the refused /proc reads no report has
+// carried yet, as a sweep's report does (report), and it is the last report there is to carry
+// them.
 func (t *trimmer) switchOff() {
 	report := shimwire.LauncherVolumeReport{
-		Trimmer:       t.id,
-		Episode:       max(t.episode, 1),
-		RaisedBy:      t.raisedBy,
-		UsedBytes:     int64(t.last.UsedBytes),
-		FreeBytes:     int64(t.last.AvailableBytes),
-		StopReason:    fmt.Sprintf("the trimmer switched itself off after %d panics in a row", t.consecutive),
-		Faults:        t.faults,
-		FaultsOmitted: t.faultsDropped,
-		SwitchedOff:   true,
+		Trimmer:             t.id,
+		Episode:             max(t.episode, 1),
+		RaisedBy:            t.raisedBy,
+		UsedBytes:           int64(t.last.UsedBytes),
+		FreeBytes:           int64(t.last.AvailableBytes),
+		StopReason:          fmt.Sprintf("the trimmer switched itself off after %d panics in a row", t.consecutive),
+		RefusedReads:        t.refusedReads,
+		RefusedReadsOmitted: t.refusedDropped,
+		Faults:              t.faults,
+		FaultsOmitted:       t.faultsDropped,
+		SwitchedOff:         true,
 	}
 	if report.RaisedBy == "" {
 		// The trimmer never saw a reading at the high mark, so no episode was ever raised; the
@@ -642,36 +692,97 @@ func (t *trimmer) switchOff() {
 		// the first thing the daemon hears of this trimmer.
 		report.RaisedBy = shimwire.VolumeEpisodeFirst
 	}
-	t.flush()
-	if err := t.send(t.bound(report)); err != nil {
-		t.logf(volumeTrimLog+"the last report of the switched-off trimmer could not be sent: %v", err)
-	}
 	t.faults, t.faultsDropped = nil, 0
+	t.refusedReads, t.refusedDropped = nil, 0
+	t.deliver(t.bound(report))
+}
+
+// deliverLast is the switched-off trimmer's one remaining duty: the report switchOff could not
+// send, tried once every volumeSettingsWait until a connection takes it. It ends when the report
+// is sent, when the container stops, and on an answer with no settings, which discards it as R2
+// has such an answer discard any report the trimmer was holding: that daemon has no case for a
+// report (manager.sendVolumeReport).
+//
+// A failed attempt is written when its reason changes and not once per attempt, for the reason
+// a refusal is (says): a connection that is down answers the same way every ten seconds for as
+// long as it is down.
+func (t *trimmer) deliverLast(ctx context.Context) {
+	if t.held == nil {
+		return
+	}
+	ticks, stop := t.ticks(volumeSettingsWait)
+	defer stop()
+	said := ""
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticks:
+		}
+		if t.settings() == nil {
+			t.held = nil
+			t.logf(volumeTrimLog + "no settings are in force: the last report of the switched-off trimmer is discarded")
+			return
+		}
+		if err := t.send(*t.held); err != nil {
+			if why := err.Error(); why != said {
+				said = why
+				t.logf(volumeTrimLog+"the last report of the switched-off trimmer could not be sent (%v); holding it for the next attempt", err)
+			}
+			continue
+		}
+		t.held = nil
+		t.logf(volumeTrimLog + "the last report of the switched-off trimmer was sent")
+		return
+	}
+}
+
+// carryRefused keeps the refused /proc reads of a sweep that sent no report for the next report
+// the trimmer sends (report, switchOff): R3 has a refused read carried into the next report,
+// because a process the trimmer cannot read may be using anything. A process already carried is
+// not carried twice, and past the most a report names (volumeReportRefusedReads) a refusal is
+// counted rather than kept, so a pod whose sweeps keep meeting one unreadable process holds one
+// line for it, and a pod that never reports holds no more than the bound for the life of the
+// launcher process.
+func (t *trimmer) carryRefused(refused []string) {
+	for _, one := range refused {
+		switch {
+		case slices.Contains(t.refusedReads, one):
+		case len(t.refusedReads) < volumeReportRefusedReads:
+			t.refusedReads = append(t.refusedReads, one)
+		default:
+			t.refusedDropped++
+		}
+	}
 }
 
 // report is one sweep as the daemon hears it, with the sizes of a fresh walk or of the last one
-// with the time it was read (sizes). It takes the faults the trimmer recovered since the last
-// report with it, whether or not the send gets across: a held report carries them, so holding
-// them twice would report them twice.
+// with the time it was read (sizes). It takes the faults the trimmer recovered and the refused
+// /proc reads it carried since the last report with it, whether or not the send gets across: a
+// held report carries them, so holding them twice would report them twice.
 func (t *trimmer) report(ctx context.Context, out sweepOutcome) shimwire.LauncherVolumeReport {
 	walk := t.sizes(ctx)
 	faults, dropped := t.faults, t.faultsDropped
 	t.faults, t.faultsDropped = nil, 0
+	t.carryRefused(out.refused)
+	refused, refusedDropped := t.refusedReads, t.refusedDropped
+	t.refusedReads, t.refusedDropped = nil, 0
 	return t.bound(shimwire.LauncherVolumeReport{
-		Trimmer:       t.id,
-		Episode:       t.episode,
-		RaisedBy:      t.raisedBy,
-		UsedBytes:     int64(out.last.UsedBytes),
-		FreeBytes:     int64(out.last.AvailableBytes),
-		FreedBytes:    out.freed,
-		StopReason:    out.reason,
-		RefusedReads:  out.refused,
-		Sizes:         walk.Sizes,
-		SizesAt:       walk.At,
-		SizesPartial:  walk.Partial,
-		SizesMissing:  walk.Missing,
-		Faults:        faults,
-		FaultsOmitted: dropped,
+		Trimmer:             t.id,
+		Episode:             t.episode,
+		RaisedBy:            t.raisedBy,
+		UsedBytes:           int64(out.last.UsedBytes),
+		FreeBytes:           int64(out.last.AvailableBytes),
+		FreedBytes:          out.freed,
+		StopReason:          out.reason,
+		RefusedReads:        refused,
+		RefusedReadsOmitted: refusedDropped,
+		Sizes:               walk.Sizes,
+		SizesAt:             walk.At,
+		SizesPartial:        walk.Partial,
+		SizesMissing:        walk.Missing,
+		Faults:              faults,
+		FaultsOmitted:       dropped,
 	})
 }
 
@@ -767,7 +878,7 @@ func (t *trimmer) bound(report shimwire.LauncherVolumeReport) shimwire.LauncherV
 
 	refused := report.RefusedReads
 	if over := len(refused) - volumeReportRefusedReads; over > 0 {
-		refused, report.RefusedReadsOmitted = refused[:volumeReportRefusedReads], over
+		refused, report.RefusedReadsOmitted = refused[:volumeReportRefusedReads], report.RefusedReadsOmitted+over
 	}
 	report.RefusedReads = cutEach(refused, volumeReportPathRunes)
 

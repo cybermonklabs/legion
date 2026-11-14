@@ -323,8 +323,8 @@ func (m *manager) serve(ctx context.Context, address string) error {
 	m.applyAck(writer, ack)
 	// The end of this connection takes its writer out of force and leaves everything else: the
 	// trimmer settings the acknowledgement carried stay in force, so the pod holds its volume
-	// under the mark while the daemon restarts, and only an acknowledgement carrying none stops
-	// the trimmer (applyAck).
+	// under the mark while the daemon restarts, and only an acknowledgement carrying none, or
+	// carrying settings the trimmer refuses, stops the trimmer (applyAck).
 	defer func() {
 		m.mu.Lock()
 		if m.writer == writer {
@@ -523,6 +523,10 @@ type manager struct {
 	// become readable in the same moment: one connection decides both the settings and where
 	// the reports go.
 	volumeTrimSettings *shimwire.LauncherVolumeTrim
+	// volumeTrimRuns is whether volumeTrimSettings are settings the trimmer can run, which is
+	// decided once per acknowledgement (applyAck) rather than at each of the tens of thousands of
+	// entry boundaries of a sweep that ask it (volumeTrimming).
+	volumeTrimRuns bool
 	// acknowledged is closed once this role's first acknowledgement has been applied, which is
 	// when this connection counts as usable at all, and applied says it has been so that a
 	// second connection's acknowledgement does not close it twice.
@@ -538,12 +542,15 @@ type manager struct {
 // the trimmer's sweeping until an acknowledgement carries settings again — that is a daemon
 // rolled back to a release that does not know this work, and turning every pod's trimmer off is
 // cheaper than meeting a frame it would close the connection on, while the roll-forward after
-// it puts every pod's trimmer back without replacing a pod (trimmer.awaitSettings).
+// it puts every pod's trimmer back without replacing a pod (trimmer.awaitSettings). Settings
+// outside the trimmer's own ranges stop its sweeping the same way (refusedTrimSettings,
+// trimmer.stopOnRefusal).
 func (m *manager) applyAck(writer *shimwire.Writer, ack shimwire.LauncherHelloAck) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.writer = writer
 	m.volumeTrimSettings = ack.VolumeTrim
+	m.volumeTrimRuns = ack.VolumeTrim != nil && len(refusedTrimSettings(*ack.VolumeTrim)) == 0
 	if !m.applied {
 		m.applied = true
 		close(m.acknowledged)
@@ -564,14 +571,14 @@ func (m *manager) volumeTrim() *shimwire.LauncherVolumeTrim {
 	return &set
 }
 
-// volumeTrimming is whether settings are in force at all, which is the whole of what a sweep
-// asks of them at every entry boundary (trimmer.halted): the same field under the same lock as
-// volumeTrim, answered as a bool so a sweep of tens of thousands of entries neither takes a
-// copy of the struct nor allocates one for an answer that is compared with nil and dropped.
+// volumeTrimming is whether settings the trimmer can run are in force, which is the whole of
+// what a sweep asks of them at every entry boundary (trimmer.halted): decided under the same
+// lock as volumeTrim reads, by the acknowledgement that wrote both, and answered as a bool so a
+// sweep of tens of thousands of entries neither takes a copy of the struct nor allocates one.
 func (m *manager) volumeTrimming() bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.volumeTrimSettings != nil
+	return m.volumeTrimRuns
 }
 
 // sendVolumeReport writes one report of the pod's cache trimmer on this role's connection and no

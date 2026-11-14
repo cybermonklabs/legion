@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
 // evictedPodEnd is a claim's stored pod end as the runtime read it off an evicted pod
@@ -49,6 +50,33 @@ func TestATreeArchitectsFailedClaimNamesWhatEndedIt(t *testing.T) {
 	}
 }
 
+// A pod that died with no pod-level reason leaves the claim a sentence and no pod end, and the
+// tree architect's worker-died still names that sentence: the notice carries no failure record,
+// so its reason is the only place the architect and the controller read why the claim failed.
+// The negative control is deathReason answering "" for a fact with no pod end, which left this
+// notice saying nothing at all.
+func TestATreeArchitectsFailedClaimNamesTheSentenceWithNoPodEnd(t *testing.T) {
+	pool := migratedPool(t)
+	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+		Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Planning, Generation: 1, Status: "in_progress", Rank: "U"})
+
+	if _, err := intake.ApplyFact(context.Background(), pool, "supervise", "architect-failed",
+		intake.ClaimFailed{Issue: "LEGION-208", Role: claim.RoleArchitect, Reason: budgetRanOut, Cause: supervise.CauseDied},
+		testEngine(config.DesignGateRootIssues, nil), admissionStub{}); err != nil {
+		t.Fatalf("ApplyFact the architect's failed claim: %v", err)
+	}
+	notices := noticesOfKind(t, pool, "LEGION-208", "worker-died")
+	if len(notices) != 1 {
+		t.Fatalf("the outbox holds %d worker-died notices for the architect, want one", len(notices))
+	}
+	if notices[0].Reason != budgetRanOut {
+		t.Errorf("the tree architect's worker-died reads %q, want the supervisor's sentence %q", notices[0].Reason, budgetRanOut)
+	}
+	if notices[0].Failure != nil {
+		t.Errorf("the tree architect's worker-died carries the failure record %+v, want none: its reason is where the sentence goes", notices[0].Failure)
+	}
+}
+
 // The held path is the other one that said nothing: the role that works the issue's phase died,
 // the phase is held for its architect to decide, and the worker-died beside that hold now names
 // what ended the worker. The negative control is the same code at the merge base.
@@ -77,6 +105,49 @@ func TestAHeldPhasesWorkerDiedNamesWhatEndedIt(t *testing.T) {
 		if !strings.Contains(notices[0].Reason, want) {
 			t.Errorf("the held phase's worker-died does not name %q: %q", want, notices[0].Reason)
 		}
+	}
+}
+
+// The held path keeps from repeating the sentence its failure record already carries: with a
+// cause and no pod end, the worker-died's failure record names the sentence in its detail and
+// the reason is empty. A held phase whose fact names no cause — a failure recorded before the
+// daemon kept one, replayed at a boot — carries no failure record at all, so its reason is the
+// sentence, as the tree architect's is.
+func TestAHeldPhasesWorkerDiedNamesTheSentenceOnceWithNoPodEnd(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		cause      supervise.FailureCause
+		wantReason string
+	}{
+		{"a fact with a cause, whose failure record carries the sentence", supervise.CauseDied, ""},
+		{"a fact with no cause, which carries no failure record", "", budgetRanOut},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+				Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "U"})
+
+			if _, err := intake.ApplyFact(context.Background(), pool, "supervise", "implementer-failed",
+				intake.ClaimFailed{Issue: "LEGION-208", Role: claim.RoleImplementer, Reason: budgetRanOut, Cause: tc.cause},
+				testEngine(config.DesignGateRootIssues, nil), admissionStub{}); err != nil {
+				t.Fatalf("ApplyFact the implementer's failed claim: %v", err)
+			}
+			notices := noticesOfKind(t, pool, "LEGION-208", "worker-died")
+			if len(notices) != 1 {
+				t.Fatalf("the outbox holds %d worker-died notices, want one beside the hold", len(notices))
+			}
+			if notices[0].Reason != tc.wantReason {
+				t.Errorf("the held phase's worker-died reads %q, want %q", notices[0].Reason, tc.wantReason)
+			}
+			detail := ""
+			if notices[0].Failure != nil {
+				detail = notices[0].Failure.Detail
+			}
+			if said := strings.Count(notices[0].Reason+"\n"+detail, budgetRanOut); said != 1 {
+				t.Errorf("the held phase's worker-died names the sentence %d times across its reason %q and its failure detail %q, want once",
+					said, notices[0].Reason, detail)
+			}
+		})
 	}
 }
 
