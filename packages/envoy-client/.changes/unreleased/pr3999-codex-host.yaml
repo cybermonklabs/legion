@@ -1,0 +1,7 @@
+kind: Added
+custom:
+  Issue: pr3999
+body: |-
+  The `dispatch` command takes a third host, `codex`, acting as the session `CODEX_THREAD_ID`
+  names. A shell that carries Codex's variable beside Claude Code's or Oh My Pi's acts as whichever
+  of the three is its nearest parent process.

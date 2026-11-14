@@ -40,6 +40,10 @@ export const BUNDLE_ENTRYPOINTS = {
   "envoy-channel": "bin/envoy-channel.ts",
   "session-hook": "hooks/session-hook.ts",
   "session-title-hook": "hooks/session-title-hook.ts",
+  // The Codex CLI's hooks (INFRA-3558): `codex-tool-hook` runs after every tool call, so it is a
+  // bundle of its own that imports the inbox alone, as `session-title-hook` is for each prompt.
+  "codex-hook": "hooks/codex-hook.ts",
+  "codex-tool-hook": "hooks/codex-tool-hook.ts",
   dispatch: "../envoy-client/bin/dispatch.ts",
 } as const
 
@@ -344,8 +348,10 @@ async function bundleFromPackageRoot(outdir: string): Promise<string[]> {
  *  manifests, its MCP and hook configuration, and the shim and skills they reach. */
 const PLUGIN_SOURCES = [
   ".claude-plugin",
+  ".codex-plugin",
   ".mcp.json",
   ".omp-plugin",
+  "codex",
   "bin",
   "hooks",
   "package.json",

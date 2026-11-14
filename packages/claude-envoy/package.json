@@ -6,9 +6,11 @@
   "type": "module",
   "files": [
     ".claude-plugin/**",
+    ".codex-plugin/**",
     ".mcp.json",
     ".omp-plugin/**",
     "bin/**",
+    "codex/**",
     "dist/**",
     "hooks/**",
     "legion/**",

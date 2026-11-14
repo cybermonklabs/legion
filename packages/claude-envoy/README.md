@@ -217,6 +217,54 @@ Dispatch asks remain on native Dispatch.
 An Envoy delivery is one-way ingress, not a remote
 human approval surface.
 
+## Codex CLI
+
+The same package is a Codex CLI plugin (INFRA-3558). Codex reads the repository's
+`.claude-plugin/marketplace.json` and installs the package from npm as Claude Code does:
+
+```bash
+codex plugin marketplace add cybermonklabs/legion
+codex plugin add claude-envoy@legion-plugins
+```
+
+Start `codex` as usual and trust the plugin's hooks when Codex asks (it asks again after an update
+that changes them; an untrusted hook does not run). The session reads the same envoy.json as every
+other session on the machine: the file `ENVOY_CONFIG_FILE` names, else
+`${XDG_CONFIG_HOME:-~/.config}/legion/envoy.json`. Under the Codex home (`CODEX_HOME`, else
+`~/.codex`) the plugin reads the session's transcript, writes only to the state directory Codex
+gives each plugin (`plugins/data/`), and adds to Codex's message queue through `codex queue`;
+it never touches Codex's configuration.
+Measured on Codex CLI 0.154.0.
+
+- `.codex-plugin/plugin.json` names the skills, `codex/hooks.json` and one MCP server,
+  `bun ./dist/envoy-channel.js --host codex`, run in the plugin's own directory (`"cwd": "./"`;
+  Codex expands no `${PLUGIN_ROOT}` in a server's arguments). Codex hands a plugin's server only
+  `HOME`, `PATH` and a few more, so `env_vars` names the ones the server reads.
+- The session appears on the Agents page at its first prompt, not when the terminal opens: Codex
+  gives the MCP server no session id, and its `SessionStart` hook, which runs at the first prompt
+  and again after `/new`, records the id under the `codex` process both are children of
+  (`hooks/codex-hook.ts`, `src/codex/codex-session-record.ts`).
+- A message reaches an idle session through `codex queue`, which Codex takes as a new turn a few
+  seconds later. One that arrives during a turn waits in the plugin's inbox, and the
+  `PostToolUse` hook (`hooks/codex-tool-hook.ts`) hands it to the model in the turn's next
+  request; one no tool call took is queued when the turn ends (`src/codex/codex-delivery.ts`).
+  A person's Send or Aside is accepted on Dispatch and arrives as their own words; a `/` message
+  is answered that it was not run.
+- A BTW is answered by a separate `codex app-server` that forks the session's conversation
+  ephemerally with plugins and hooks off, a read-only sandbox and no approvals
+  (`src/codex/codex-cli.ts`); the session's own conversation is left as it was.
+- The live view reads the session's transcript file into the frames the Agents page draws
+  (`src/codex/codex-transcript.ts`, `src/codex/codex-agent-stream.ts`).
+- Agents reach Dispatch through the server's `dispatch` tool, which takes the command's words as
+  `args` and its standard input as `stdin` and runs `dist/dispatch.js` as the session: Codex puts no
+  plugin command on the shell's `PATH`, and its default sandbox keeps shell commands off the
+  network. The manifest pre-approves that one tool, since Codex asks before every call of a
+  plugin's tool; the Envoy tools are asked about as usual. The `dispatch` command itself takes host
+  `codex` from `CODEX_THREAD_ID`, for a shell that can reach Dispatch.
+
+`tests/codex-real.test.ts` runs the real binary (`LEGION_TEST_CODEX=<path to codex>`) against a
+stand-in model; it skips without one, and nothing in CI installs Codex.
+
 ## Skills
 
 The plugin ships eleven skills, `claude-envoy:envoy`, `claude-envoy:dispatch`,

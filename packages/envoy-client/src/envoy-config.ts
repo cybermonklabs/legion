@@ -18,9 +18,9 @@ import { hasErrnoCode, messageFor } from "./errors";
 import { jsonErrorPosition } from "./json-position";
 import { sendable } from "./secret-file";
 
-/** Where a caller runs: one of the two plugins (and the `dispatch` command, which takes its host
- * plugin's rule), or a script outside any of them (`command`). */
-export type EnvoyHarness = "omp" | "claude" | "command";
+/** Where a caller runs: one of the three plugin hosts (and the `dispatch` command, which takes its
+ * host plugin's rule), or a script outside any of them (`command`). */
+export type EnvoyHarness = "omp" | "claude" | "codex" | "command";
 
 /** The variables a read consults, by name, over whatever else the environment holds. */
 export type EnvoyConfigEnvironment = {
@@ -67,7 +67,9 @@ function neutralConfig(env: EnvoyConfigEnvironment): { path: string } | { error:
   return { path: path.resolve(configHome, "legion", "envoy.json") };
 }
 
-/** The variable naming each plugin's own directory. */
+/** The variable naming each plugin's own directory. Codex has none here: `CODEX_HOME` is the
+ * person's own Codex configuration, which Envoy never reads or writes, so a Codex session reads the
+ * file `ENVOY_CONFIG_FILE` names, else the neutral one. */
 const HARNESS_DIRECTORY_VARIABLE = {
   omp: "PI_CODING_AGENT_DIR",
   claude: "CLAUDE_CONFIG_DIR",
@@ -91,6 +93,7 @@ function namedDirectory(harness: PluginHarness, env: EnvoyConfigEnvironment): st
  * (`namedDirectory`), or for a command the first one named of Oh My Pi's and Claude Code's, in
  * that order, Claude Code's only under `CLAUDE_CODE_CHILD_SESSION=1`. */
 function harnessDirectory(harness: EnvoyHarness, env: EnvoyConfigEnvironment): string | undefined {
+  if (harness === "codex") return undefined;
   for (const plugin of harness === "command" ? PLUGIN_HARNESSES : [harness]) {
     // A shell outside Claude Code can export CLAUDE_CONFIG_DIR too; only Claude Code sets
     // CLAUDE_CODE_CHILD_SESSION=1, in every Bash, hook and status line command it runs.

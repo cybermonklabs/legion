@@ -1,0 +1,10 @@
+kind: Added
+custom:
+  Issue: pr3999
+body: |-
+  The package is also a Codex CLI plugin: `codex plugin marketplace add cybermonklabs/legion`, then
+  `codex plugin add claude-envoy@legion-plugins`. A Codex session registers with Envoy under its own
+  session id at its first prompt, shows on the Agents page with its live view, takes Send, Aside
+  and BTW and Envoy messages (through `codex queue` while idle and a `PostToolUse` hook during a
+  turn), and reaches Dispatch through a pre-approved `dispatch` tool, since Codex's sandbox keeps
+  shell commands off the network.
