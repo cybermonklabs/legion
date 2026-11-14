@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 )
 
 // The directory handles every read of the trimmer goes through, and the one rule they keep: a
@@ -78,6 +79,13 @@ func handleOf(file *os.File, path string) (*dirHandle, error) {
 // off Linux before it reads a request (containDeletions).
 func descriptorPath(fd int) string {
 	return "/proc/self/fd/" + strconv.Itoa(fd)
+}
+
+// isOneName is whether name is one name in one directory: not empty, not "." or "..", and with no
+// separator in it. It is the rule every open and every removal of the trimmer's checks a name
+// against before it is resolved (openElementAt, treeRemoval.remove, removeOneRequest).
+func isOneName(name string) bool {
+	return name != "" && name != "." && name != ".." && !strings.Contains(name, "/")
 }
 
 // Close closes both descriptors of the handle.

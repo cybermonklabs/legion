@@ -1,14 +1,13 @@
+//go:build linux
+
 package launcher
 
 import (
 	"context"
 	"fmt"
-	"os"
 	"path/filepath"
 	"testing"
 	"time"
-
-	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // The removal the deleter ships with, raced in the deleter it ships in.
@@ -36,36 +35,15 @@ func TestTheShippedDeletersRemovalFollowsNoLinkIntoTheVolume(t *testing.T) {
 	at := f.clock.at.Add(-2 * time.Hour)
 	workspace := filepath.Join(t.TempDir(), "workspaces", "repo")
 	bait := plantBait(t, workspace, at, "src.go", "pkg/lib.go", "README.md")
-	victim := filepath.Join(f.roots[3].Path, "racer-victim")
-	sub := filepath.Join(victim, "sub")
 	f.useVolume(steady(90))
 	f.setSettings(trimSettings())
 
-	made, trials := 0, 0
-	deadline := time.Now().Add(testwait.Bounded(t, 2*time.Minute, 10*time.Second))
-	for made < 3 && trials < 8 && time.Now().Before(deadline) {
-		trials++
-		buildRacedEntry(t, victim, sub, at)
-		swapped := make(chan bool, 1)
-		go raceTheSwap(sub, workspace, time.Now().Add(testwait.Bounded(t, 30*time.Second, time.Second)), swapped)
+	raceSwaps(t, racedVictim(f), workspace, 3, 8, at, func(_ int, swapped <-chan bool) bool {
 		tr := f.trimmer()
 		tr.removals = startRemover // the contained deleter, with the removal it ships with
 		_ = tr.sweep(context.Background(), *trimSettings(), steady(90)(0))
-		if <-swapped {
-			made++
-		}
+		made := <-swapped
 		assertBaitHeld(t, bait, fmt.Sprintf("the shipped deleter's removal followed a link a role left where a subdirectory of the entry stood, into %s", workspace))
-		for _, left := range []string{victim, sub + ".real"} {
-			if err := os.RemoveAll(left); err != nil {
-				t.Fatal(err)
-			}
-		}
-		if t.Failed() {
-			t.Fatalf("the case ends at this trial: %d of %d swaps were made while the removal ran", made, trials)
-		}
-	}
-	t.Logf("the swap to %s was made while the removal ran in %d of %d trials", workspace, made, trials)
-	if made == 0 {
-		t.Fatalf("no swap was made while the removal ran in %d trials, so this case shows nothing", trials)
-	}
+		return made
+	})
 }

@@ -1148,7 +1148,7 @@ func TestARefusalThatDoesNotChangeIsLoggedOnce(t *testing.T) {
 //
 // A report it was holding is tried rather than discarded, since only an answer with the member
 // absent discards one and the daemon that sent these settings has a case for a report
-// (stopOnRefusal); an answer with no settings after that discards it.
+// (awaitSettings); an answer with no settings after that discards it.
 func TestARefusedAnswerSwitchesARunningTrimmerOff(t *testing.T) {
 	wide := *trimSettings()
 	wide.HighPercent = shimwire.VolumeMarkMax + 1

@@ -333,6 +333,9 @@ func VolumeTrimDelete(cover RoleCover, requests io.Reader, replies io.Writer) er
 			_ = dir.Close()
 		}
 	}()
+	// One buffer every removal reads its directories' names into, for the whole of the
+	// requests (removeEntryAt).
+	names := make([]byte, volumeRemovalNamesBytes)
 	reader := bufio.NewReader(requests)
 	for {
 		line, err := reader.ReadString('\n')
@@ -343,7 +346,7 @@ func VolumeTrimDelete(cover RoleCover, requests io.Reader, replies io.Writer) er
 			return fmt.Errorf("volume-trim-delete: read a request: %w", err)
 		}
 		answer := "removed"
-		if err := removeOneRequest(dirs, strings.TrimSuffix(line, "\n")); err != nil {
+		if err := removeOneRequest(dirs, strings.TrimSuffix(line, "\n"), names); err != nil {
 			answer = "failed " + strconv.Quote(err.Error())
 		}
 		if _, err := fmt.Fprintln(replies, answer); err != nil {
@@ -352,8 +355,9 @@ func VolumeTrimDelete(cover RoleCover, requests io.Reader, replies io.Writer) er
 	}
 }
 
-// removeOneRequest removes the entry one request names, out of the descriptor it names.
-func removeOneRequest(dirs map[int]*os.File, request string) error {
+// removeOneRequest removes the entry one request names, out of the descriptor it names. names is
+// the deleter's one buffer for the names of the directories a removal reads.
+func removeOneRequest(dirs map[int]*os.File, request string, names []byte) error {
 	number, quoted, found := strings.Cut(request, " ")
 	if !found {
 		return fmt.Errorf("the request %q names no entry", request)
@@ -366,7 +370,7 @@ func removeOneRequest(dirs map[int]*os.File, request string) error {
 	if err != nil {
 		return fmt.Errorf("the request %q names no entry: %w", request, err)
 	}
-	if name == "" || name == "." || name == ".." || strings.Contains(name, "/") {
+	if !isOneName(name) {
 		return fmt.Errorf("%q is not one name in one directory", name)
 	}
 	dir, held := dirs[at]
@@ -387,7 +391,7 @@ func removeOneRequest(dirs map[int]*os.File, request string) error {
 		}
 		dirs[at] = dir
 	}
-	return removeListedEntry(dir, name)
+	return removeListedEntry(dir, name, names)
 }
 
 // openPassedDir opens the directory the trimmer passed at fd, through this process's own
@@ -411,8 +415,13 @@ func openPassedDir(fd int) (*os.File, error) {
 // removeListedEntry is the removal every request is answered with: removeEntryAt, which follows
 // no symbolic link (volumedir_linux.go). It is a variable for the containment cases alone, which
 // give their deleter a removal that does follow one, so that what they read back is what the
-// covers bound by themselves (useContainedDeleter, volumedelete_test.go).
+// covers bound by themselves: useFollowingContainedDeleter has it set to followingRemoval in the
+// deleter it starts (launchTestDeleter with follows, read by TestVolumeTrimDeleteHelper,
+// volumedelete_test.go), and useContainedDeleter leaves it as the pod's deleter has it.
 var removeListedEntry = removeEntryAt
+
+// volumeRemovalNamesBytes is the size of the buffer a deleter reads directories' names into.
+const volumeRemovalNamesBytes = 8192
 
 // volumeDeleteFirstFD is where the directories the listing opened begin in the deleter's own
 // descriptors: the three standard ones are the request pipe, the answer pipe and its standard

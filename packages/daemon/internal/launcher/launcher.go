@@ -549,7 +549,7 @@ type manager struct {
 // cheaper than meeting a frame it would close the connection on, while the roll-forward after
 // it puts every pod's trimmer back without replacing a pod (trimmer.awaitSettings). Settings
 // outside the trimmer's own ranges stop its sweeping the same way (refusedTrimSettings,
-// trimmer.stopOnRefusal).
+// trimmer.awaitSettings).
 func (m *manager) applyAck(writer *shimwire.Writer, ack shimwire.LauncherHelloAck) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

@@ -25,7 +25,7 @@ func rootOverDescriptor(*os.File) (*os.Root, error) {
 	return nil, volumeOpensNeedLinux("a descriptor")
 }
 
-func removeEntryAt(*os.File, string) error {
+func removeEntryAt(*os.File, string, []byte) error {
 	return volumeOpensNeedLinux("a removal through a descriptor")
 }
 
