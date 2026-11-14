@@ -912,6 +912,21 @@ func (SignOff) isFact() {}
 // (dispatch.Approval.LatestReviewer), zero with neither: the notice the registration sends names
 // that person, since it goes to the controller when nobody in the tree can hear it (the daemon's
 // parkDecision).
+//
+// Basis is the ancestor's approval the registration rests the step on, or, while its Pending is
+// set, the ancestor's open approval request the step waits on (dispatch://INFRA-3320, R1), as
+// register_gate checked it against Dispatch: the ancestor and its document for the step, the
+// version, where Dispatch recorded the person's approval in the ancestor's event log and who gave
+// it (both zero while pending), the ancestor's requirement references the root's checks serve, the
+// architect's reason and the architect session that registered it. Its RegisteredAt is zero: the
+// daemon's own time of the registration is the engine's to stamp as it applies the fact. Basis is
+// nil for a registration with no basis, and for one whose basis a person's approval of the root's
+// own document at the version registered made needless.
+//
+// ViewOf is the view fact of a registration of the spec step (R4): the ancestor whose requirement
+// blocks the root's documents read as a view on, the nearest reviewed ancestor that marks
+// requirement blocks (api's viewOf), "" where there is none or the root is no view on it. A
+// registration of another step reads no view and carries "".
 type GateRegistered struct {
 	Issue string
 	// Step is the design-gate step this registration records, which register_gate resolved
@@ -930,6 +945,8 @@ type GateRegistered struct {
 	RequestAsk              string
 	RequestWaitsOnAgent     bool
 	ReviewedBy              dispatch.Actor
+	Basis                   *record.GateBasis
+	ViewOf                  string
 }
 
 func (GateRegistered) isFact() {}

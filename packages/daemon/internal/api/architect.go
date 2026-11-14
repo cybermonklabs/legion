@@ -32,12 +32,21 @@ type EmptyResponse struct{}
 // step of the deployment's design gate. Step is the step the document is for, which a deployment
 // that gates one step alone may leave out; the deployment's list says which steps it takes, and
 // each step binds to a document of its own (gateRegister).
+//
+// BasisArtifactID, BasisVersion and Reason name a basis: the same step's document of an ancestor on
+// the issue's Dispatch child_of chain, at a version a person approved or an open approval request
+// asks a person to approve, and the architect's reason, which the daemon posts on the issue
+// (dispatch://INFRA-3320, R1). The three come together or not at all (refuseBasisInput), and the
+// daemon checks the basis against what Dispatch shows before it records it (registrationBasis).
 type GateRegisterRequest struct {
-	GrantID    string            `json:"grantId"`
-	Issue      string            `json:"issue"`
-	ArtifactID string            `json:"artifactId"`
-	Version    int               `json:"version"`
-	Step       record.DesignStep `json:"step,omitempty"`
+	GrantID         string            `json:"grantId"`
+	Issue           string            `json:"issue"`
+	ArtifactID      string            `json:"artifactId"`
+	Version         int               `json:"version"`
+	Step            record.DesignStep `json:"step,omitempty"`
+	BasisArtifactID string            `json:"basisArtifactId,omitempty"`
+	BasisVersion    int               `json:"basisVersion,omitempty"`
+	Reason          string            `json:"reason,omitempty"`
 }
 
 // GateRegisterResponse confirms the gate registration fact committed.
@@ -297,6 +306,9 @@ func (s *server) gateRegister(w http.ResponseWriter, r *http.Request) {
 		writeFailure(w, http.StatusBadRequest, "INVALID_VERSION", "version must be positive")
 		return
 	}
+	if refuseBasisInput(w, req) {
+		return
+	}
 	artifactID := strings.ToLower(req.ArtifactID)
 	grant, recorded, ok := s.architectForIssue(w, r, req.GrantID, req.Issue)
 	// The gate is the tree root's: it opens planning for the whole tree, so a child's document
@@ -308,12 +320,14 @@ func (s *server) gateRegister(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	// The issue's event sequence is read before the approval, so every review that read does not
-	// show has a later sequence: a review the gate applies after this read places after it.
-	since, ok := s.issueSequence(w, r, req.Issue)
+	// The issue is read before the approval, so every review that read does not show has a later
+	// event sequence: a review the gate applies after this read places after it. The same read
+	// names the issue's parent, which a basis and the view fact walk up from.
+	root, ok := s.gateIssue(w, r, req.Issue)
 	if !ok {
 		return
 	}
+	since := root.LastSeq
 	approval, ok := s.documentOfIssue(w, r, artifactID, req.Issue)
 	if !ok {
 		return
@@ -353,12 +367,44 @@ func (s *server) gateRegister(w http.ResponseWriter, r *http.Request) {
 	if fact.ApprovedVersion != 0 {
 		fact.ApprovedMark = review
 	}
+	// A basis is checked against everything Dispatch shows of it and of the root, and recorded with
+	// the registration, or the call is refused and records nothing. Every registration of the spec
+	// step records the view fact (R4): on a basis, the ancestor it rests on, which the basis check
+	// read the root as a view on; otherwise whatever viewFact reads.
+	if req.basisNamed() {
+		if fact.Basis, ok = s.registrationBasis(w, r, grant, req, step, root, artifactID, approval); !ok {
+			return
+		}
+	}
+	switch {
+	case step != record.DesignStepSpec:
+	case fact.Basis != nil:
+		fact.ViewOf = fact.Basis.Issue
+	default:
+		if fact.ViewOf, ok = s.viewFact(w, r, root); !ok {
+			return
+		}
+	}
 	// A re-admitted root's architect registers its spec again, often at the same version: each
 	// generation's registration is its own fact. The fact's id names the read as well as the
 	// version: a second registration at one version carries what Dispatch showed when it ran, so a
 	// retry of one read stays one fact while a new read — a review or a version since — is a new
-	// fact the handlers see.
-	s.applyFact(w, r, fmt.Sprintf("gate:%s:%d:%s:%s:%d:%d", req.Issue, recorded.Generation, step, artifactID, req.Version, since), fact, GateRegisterResponse{})
+	// fact the handlers see. The ancestor's document is read too, and moves on no event of the
+	// root's, so the id names what was read of it: the basis document, its version and the request
+	// a pending basis waits on, and the ancestor the view fact names. A registration with no basis
+	// after one with a basis at the same version and sequence is a new fact, not a duplicate that
+	// answers 200 and changes nothing.
+	id := fmt.Sprintf("gate:%s:%d:%s:%s:%d:%d", req.Issue, recorded.Generation, step, artifactID, req.Version, since)
+	if fact.Basis != nil {
+		id += fmt.Sprintf(":basis:%s:%d", fact.Basis.ArtifactID, fact.Basis.Version)
+		if fact.Basis.Pending != nil {
+			id += ":pending:" + fact.Basis.Pending.Ask
+		}
+	}
+	if fact.ViewOf != "" {
+		id += ":view-of:" + fact.ViewOf
+	}
+	s.applyFact(w, r, id, fact, GateRegisterResponse{})
 }
 
 // registeredStep is the design-gate step a registration records, from the step the call named and
@@ -411,19 +457,20 @@ func stepDocument(step record.DesignStep, document dispatch.Approval) bool {
 	return false
 }
 
-// issueSequence reads the issue's latest Dispatch event sequence. A failed read records nothing,
-// so the architect's register_gate retries.
-func (s *server) issueSequence(w http.ResponseWriter, r *http.Request, issue string) (int64, bool) {
+// gateIssue reads the issue a registration is for as Dispatch shows it: its latest event sequence,
+// its parent and its documents. A failed read records nothing, so the architect's register_gate
+// retries.
+func (s *server) gateIssue(w http.ResponseWriter, r *http.Request, issue string) (dispatch.Issue, bool) {
 	if s.dispatch == nil {
 		writeFailure(w, http.StatusInternalServerError, "DISPATCH_UNAVAILABLE", "Dispatch is unavailable")
-		return 0, false
+		return dispatch.Issue{}, false
 	}
 	current, err := s.dispatch.GetIssue(r.Context(), issue)
 	if err != nil {
 		writeFailure(w, http.StatusBadGateway, "DISPATCH_FAILED", fmt.Sprintf("Dispatch read of %s failed; retry register_gate", issue))
-		return 0, false
+		return dispatch.Issue{}, false
 	}
-	return current.LastSeq, true
+	return current, true
 }
 
 // documentOfIssue refuses a gate document the issue does not carry, as the shipped daemon does: an

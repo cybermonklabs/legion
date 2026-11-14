@@ -95,6 +95,9 @@ type statusRecorder struct {
 	artifacts map[string][]dispatch.Artifact
 	reviews   map[string][]dispatch.Review
 	versions  map[string]map[int]string
+	// artifactFails names the issues whose artifacts read fails with the error given, as Dispatch's
+	// trouble.
+	artifactFails map[string]error
 	// handoffs is each Dispatch handoff record this fake knows, by id; handoffErr, when set, is
 	// every handoff read's answer instead, Dispatch's trouble.
 	handoffs   map[string]dispatch.Handoff
@@ -211,6 +214,9 @@ func (r *statusRecorder) Approval(_ context.Context, artifactID string) (dispatc
 // Artifacts answers Dispatch's list of an issue's documents and files: those the case under test
 // gave the issue.
 func (r *statusRecorder) Artifacts(_ context.Context, key string) ([]dispatch.Artifact, error) {
+	if err, fails := r.artifactFails[key]; fails {
+		return nil, err
+	}
 	return r.artifacts[key], nil
 }
 
