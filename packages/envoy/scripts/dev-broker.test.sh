@@ -628,3 +628,12 @@ if [[ "$stale_status" -eq 0 ]] || ! grep -qF "dev-postgres: dispatch-pg runs pos
   exit 1
 fi
 printf 'PASS: a dispatch-pg on another image than the pinned one is refused through dev-postgres.sh, before any database or broker\n'
+
+# INFRA-2920 runner probe (a tester's scratch commit, deleted after the run): raw control lines
+# printed while the job's own go matcher is active, before the architecture-check action runs.
+printf '%s\n' 'architecture-check: warning: /probe/cmd.go: ControlMatcher annotation through the go matcher'
+printf '%s\n' 'x##[warning title=ControlHash]y'
+printf '%s\n' '  ::warning title=ControlIndent::c'
+printf 'a\r::warning title=ControlCR::c\n'
+printf 'q#\xcd\x8f#[warning title=ControlCGJ]q\n'
+printf 's#\xc2\xad#[warning title=ControlSHY]s\n'
