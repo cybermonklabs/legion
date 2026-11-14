@@ -593,7 +593,54 @@ func TestCensusExemptsAMigrationOfOnlyCatalogStatementsFromTheTableLimit(t *test
 		t.Errorf("pending = %+v, want 0122 alone, exempt as a function and a trigger", report.Pending)
 	}
 	if out := reportText(report); !strings.Contains(out, "touches artifact_versions: ") ||
-		!strings.Contains(out, ", above the 1 bytes limit, from which the migration is exempt because its statements are only create function and create trigger, which change the catalog or the transaction's own settings and read no row, so its rows were not counted;") {
+		!strings.Contains(out, ", above the 1 bytes limit, from which the migration is exempt because its statements are only create function and create trigger, which change only the catalog or the transaction's own settings, or take a lock, and read no existing row, so its rows were not counted;") {
+		t.Errorf("report:\n%s", out)
+	}
+}
+
+// The shipped 20261103085452 adds four nullable columns with no default to artifact_versions, of
+// types bigint, text, text and integer. PostgreSQL records each of them in the catalog alone and
+// reads no stored row, so the migration is catalog-only. Until the census read an added column's
+// type from the catalog, it admitted an added column only when its type was text, so it judged
+// this migration on the size of artifact_versions, 26 GB in production, and refused it: production
+// could not apply the migration. Here the census reads the shipped file over a database at
+// 20261103085451 with the limit at one byte, where artifact_versions is above the limit. It
+// exempts the migration as alter table, refuses nothing, and prints artifact_versions above the
+// limit with why the migration is exempt.
+func TestCensusAdmitsTheShippedRenderStampMigrationAboveTheLimit(t *testing.T) {
+	ctx := context.Background()
+	store := openEmptyTestStore(t)
+	migrateThrough(t, store, 20261103085451)
+	report, err := census(ctx, store.Pool.Config().ConnString(), migrationsThrough(t, 20261103085452), pgmigrate.CensusOptions{TableLimit: 1})
+	if err != nil {
+		t.Fatalf("census: %v", err)
+	}
+	const name = "20261103085452_artifact_versions_render_stamp.up.sql"
+	if len(report.Pending) != 1 || report.Pending[0].Migration.Name != name {
+		t.Fatalf("pending = %+v, want %s alone; report:\n%s", report.Pending, name, reportText(report))
+	}
+	entry := report.Pending[0]
+	if entry.TableSizeExemption != "alter table" {
+		t.Errorf("TableSizeExemption = %q, want %q", entry.TableSizeExemption, "alter table")
+	}
+	if report.Refused() {
+		t.Errorf("%s refused: %v", name, refusals(report))
+	}
+	found := false
+	for _, table := range entry.Tables {
+		if table.Name != "artifact_versions" {
+			continue
+		}
+		found = true
+		if !table.Exists || table.Bytes <= 1 {
+			t.Errorf("artifact_versions = %+v, want it in the database and above the 1 byte limit", table)
+		}
+	}
+	if !found {
+		t.Errorf("tables = %+v, want artifact_versions among them", entry.Tables)
+	}
+	if out := reportText(report); !strings.Contains(out, "touches artifact_versions: ") ||
+		!strings.Contains(out, ", above the 1 bytes limit, from which the migration is exempt because its statements are only alter table, which change only the catalog or the transaction's own settings, or take a lock, and read no existing row, so its rows were not counted;") {
 		t.Errorf("report:\n%s", out)
 	}
 }
@@ -715,10 +762,8 @@ func TestCensusAdmitsTheSplitProjectKeyMigrationsAndRefusesTheOldIndexShape(t *t
 		}
 		// The verdict of the whole set is not this test's subject and must not be asserted: the
 		// set holds every pending migration, and under a TableLimit of one byte any of them may
-		// refuse for a table of its own - 20261110004829_drop_default_branch_commits does, where
-		// default_branch_commits already exists (measured in CI at d656b570, which is why this
-		// assertion is gone). What this test is about is the two entries below, each read on its
-		// own.
+		// still refuse for a table of its own. What this test is about is the two entries below,
+		// each read on its own.
 		found := map[int]bool{20261109120000: false, 20261110155257: false}
 		for _, entry := range report.Pending {
 			if _, wanted := found[entry.Migration.Version]; wanted {
@@ -814,20 +859,22 @@ func TestCensusDoesNotExemptACatalogMigrationAnEventTriggerRunsOn(t *testing.T) 
 }
 
 // A migration holding any statement outside the catalog-only kinds still refuses a table above
-// the limit: an index, a column with a default, a default set on a column, and a trigger beside an
-// index. A trigger only a comment or a string literal names exempts nothing.
+// the limit: an index, a volatile column default, a validated check, an altered column type, a
+// constraint validation, and a trigger beside an index. A trigger only a comment or a string
+// literal names exempts nothing. A column with a default, a not-null column with a default and a
+// default set on a column were refused here too, but none of them reads or rewrites a row, and
+// the census now admits them: internal/pgmigrate's TestCensusAdmitsEveryCatalogOnlyForm tests
+// them as `text default 'x'::text`, `bigint not null default 0` and
+// `set default gen_random_uuid()`.
 func TestCensusStillRefusesAnIndexOrAColumnDefaultOnATableAboveTheLimit(t *testing.T) {
 	for name, migration := range map[string]string{
-		"an index":                         "create index things_kind on things (kind)",
-		"a column with a default":          "alter table things add column note text default 'x'",
-		"a not-null column with a default": "alter table things add column note text not null default 'x'",
-		"a volatile column default":        "alter table things add column token uuid default gen_random_uuid()",
-		"a validated check":                "alter table things add constraint c check (kind <> '')",
-		"an altered column type":           "alter table things alter column kind type varchar",
-		"constraint validation":            "alter table things validate constraint things_kind_check",
-		"a default set on a column":        "alter table things alter column kind set default 'x'",
-		"a trigger beside an index":        "create function owe() returns trigger language plpgsql as $$ begin return null; end $$; create trigger things_owed after insert on things for each row execute function owe(); create index things_kind on things (kind);",
-		"a trigger only in a comment":      "-- create trigger things_owed after insert on things for each row execute function owe();\ncreate index things_kind on things (kind)",
+		"an index":                    "create index things_kind on things (kind)",
+		"a volatile column default":   "alter table things add column token uuid default gen_random_uuid()",
+		"a validated check":           "alter table things add constraint c check (kind <> '')",
+		"an altered column type":      "alter table things alter column kind type varchar",
+		"constraint validation":       "alter table things validate constraint things_kind_check",
+		"a trigger beside an index":   "create function owe() returns trigger language plpgsql as $$ begin return null; end $$; create trigger things_owed after insert on things for each row execute function owe(); create index things_kind on things (kind);",
+		"a trigger only in a comment": "-- create trigger things_owed after insert on things for each row execute function owe();\ncreate index things_kind on things (kind)",
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, url := migratedToOne(t)
