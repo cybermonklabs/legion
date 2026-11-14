@@ -99,8 +99,11 @@ spec; nothing else decides what must be proved.
 
 **A result** is one run of one check, recorded with
 `dispatch result --issue <issue> --check <block id> --role <your role> --verdict pass --commit <sha>`,
-with `--surface`, `--run`, `--observed` and `--negative-control` as the check asks for them. The
-command prints the pull request body's line for it, and that line goes into the body unchanged.
+with `--surface`, `--run`, `--observed` and `--negative-control` as the check asks for them. Each
+of these flags takes text and refuses a bare `-`. Text from a file or from stdin goes in
+`--run-file`, `--observed-file` or `--negative-control-file`. Only one of them per call may read
+stdin (`-`). The command prints the pull request body's line for it, and that line goes into the
+body unchanged.
 The surface is **production-like** — the repository's real-process test harness and fixtures, a
 sandbox repository, a real browser, a devN stack, staging, or a local stack with real migrations,
 one that has the resource the change touches — and `--run` or `--observed` carries a **link** to
@@ -159,6 +162,8 @@ and decides there, the only gate on such an issue.
   PR body, because the reviewer and the merger verify facts on GitHub and never from a handoff.
   The `implement` handoff carries none: Dispatch holds them, and the tester reads them with
   `dispatch results`.
+  What a handoff does carry is `head`, the 40-character lower-case commit its work was done
+  against, which the completion sends to the daemon.
 - **The tester judges the implementer's results and records its own.** It runs and records no
   check with `ci_check`, whose result `dispatch results` derives. A derived fail, or a run that
   concluded `skipped`, `neutral` or `cancelled`, is a test failure. A run still going, or GitHub

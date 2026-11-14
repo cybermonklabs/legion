@@ -603,7 +603,7 @@ const legionWakeWaiting = z.object({
   dueAt: timestamp,
 });
 
-/** `api.AssignmentView` — one experiment's answer for an issue (contract 113): the name the
+/** `api.AssignmentView` — one experiment's answer for an issue (contract 131): the name the
  * project declares the experiment under, the arm the draw gave the unit, the mode in force at
  * that draw and the instant of it. `variant` and `mode` are strings and not enums: the arms are
  * the operator's own names, the empty string is a unit settled at no arm, and a mode a later
@@ -696,7 +696,7 @@ const legionIssue = z.object({
    * off draws — is `none`. They are absent together while no `memory` answer applies to the
    * issue — a tree first opened before the setting existed — and while its only `memory` answer
    * records no draw, which is a hand-over settling the tree at no arm and which answered none
-   * of the three before contract 113 as well. Every issue of a tree carries its tree's, since
+   * of the three before contract 131 as well. Every issue of a tree carries its tree's, since
    * the draw is made once, for the unit (contract 49). */
   memoryGroup: z.enum(["memory", "none"]).optional(),
   memoryDrawMode: z.enum(["off", "on", "random"]).optional(),
@@ -725,7 +725,7 @@ const legionIssue = z.object({
    * over, which is why the bound here is `nonnegative` and no ceiling. */
   treeMovedAt: timestamp.optional(),
   quietHours: z.number().nonnegative().optional(),
-  /** Every experiment answer that applies to the issue (contract 113): its tree's, for an
+  /** Every experiment answer that applies to the issue (contract 131): its tree's, for an
    * experiment whose unit is the tree, and its own, for one whose unit is the issue, in the
    * order the project's file declares the experiments. That is the `memory` block's experiment
    * first (`settings.projects.<KEY>.memory`, which every project declares, at mode `off` where its
@@ -737,7 +737,7 @@ const legionIssue = z.object({
    * for an experiment the tree it left held no row for, which is how a reader tells a unit
    * settled at no arm from a unit never drawn, which carries no row at all. The key is absent
    * from an issue no experiment holds an answer for, and from every issue of the body the route
-   * serves a caller before 113, so a reader takes it as optional. */
+   * serves a caller before 131, so a reader takes it as optional. */
   assignments: z.array(legionAssignment).optional(),
 });
 
@@ -1497,10 +1497,17 @@ export const LegionControllerGrantRequest = z.strictObject({
  * Dispatch and refuses when it is missing (`HANDOFF_RECORD_REQUIRED`), unknown
  * (`HANDOFF_RECORD_NOT_FOUND`), unreadable (`DISPATCH_READ_FAILED`), of another issue, phase or
  * version (`HANDOFF_RECORD_MISMATCH`), or written by another session than the claim's
- * (`HANDOFF_SESSION_MISMATCH`). `commit` is the implementer's (its pushed tip for an implementing
- * round, the commit it stands on for retro) and the head the merger merged; the planner, the tester
- * and the reviewer report none, and a check report carries neither (the look pushed nothing), so
- * all three are optional here, and the daemon requires each where it applies. `verdict` is `pass`
+ * (`HANDOFF_SESSION_MISMATCH`). `commit` on such a completion is the head that record's body
+ * names (`head`, the 40-character lower-case commit the work the handoff reports was done
+ * against), which is what a completion of an earlier phase entry is taken at. The plugin refuses
+ * the implementer's completion before it goes when its `implement` record names no head, when the
+ * commit its workspace stands on (`@-`) is not on `legion/<issue>@origin`, and when the record's
+ * head is not that pushed `@-`; a record naming no head leaves the planner's, the tester's and
+ * the reviewer's completion without one. Retro and every completion of a phase its
+ * role does not work report the commit the workspace stands on instead, the merger's reports the
+ * head the merger merged, and a check report carries neither commit nor record (the look pushed
+ * nothing), so all three are optional here, and the daemon requires each where it applies.
+ * `verdict` is `pass`
  * or `fail` for the tester's completion, `pass`, `pending` or `fail` for a check report
  * (`CHECK_VERDICT_REQUIRED`), and the empty string for every other completion; it stays a string
  * on the wire, as the Go field is. `wakeAt` is the check report's alone (contract 54): when the

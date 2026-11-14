@@ -1548,7 +1548,47 @@ package api
 // Read the base's own number and every open head again at the next forward merge rather than
 // from this line.)
 //
-// 113: INFRA-2566 -- the experiments each issue was drawn for on `GET /legion/v1/state`. Every
+// 123: INFRA-3146 (cybermonklabs/legion) -- a phase completion names the head its evidence is
+// about, and the completion route judges that head rather than which phase entry the turn began
+// under. Every file-backed handoff record now carries `head`, the commit the work it reports was
+// done against, and the plugin's `handoff_complete` sends that head as the completion's `commit`
+// for the planner, the tester and the reviewer as well as the implementer, read from the record
+// and never from the shared workspace (`packages/pi-shared/src/handoff-record.ts`,
+// findHandoffReport). The route takes a completion of an earlier entry of the same phase when the
+// phase ends with a handoff record this role writes, the completion names a commit and that
+// commit is the head the record holds for the issue's pull request, and refuses it with
+// `HANDOFF_STALE_ENTRY` whatever head it names when the entry the phase stands on was raised by a
+// move back (`record.PhaseRow.EntryMovedBack`, written by the transition that raises the entry,
+// store migration `20261113090512_phase_entry_moved_back.up.sql`, which adds
+// `phases.entry_moved_back` true on every row it finds, so each refuses a behind completion as
+// the daemon before it did until that role's next entry writes what its own move was). The
+// refusal's text names what decided it: the commit given or that none was, the head the record
+// holds, and the move back where there was one. A completion of another entry than its role's
+// phases row names, from a role that does not work the phase the issue stands in, is answered
+// `HANDOFF_NOT_CURRENT_PHASE` in the workflow's words and records nothing, where daemons from 94
+// refused it `HANDOFF_STALE_ENTRY` saying a task of the phase was owed to the claim. No field is
+// added or removed on either side of the wire: `commit` was already optional on
+// `api.HandoffCompleteRequest` and `handoffCommit` on `api.PhaseView`. What moves is what the two
+// sides mean by them, so they move together: a plugin below 123 sends the three roles'
+// completions with no commit, which this daemon refuses behind their entry as every daemon from
+// 94 did, and a plugin at 123 against a daemon below it has a commit recorded for those roles and
+// named in the next role's task (`Handoff commit:`) that the daemon never judges. A plugin at 123
+// also names, on a completion sent after the issue moved on, the role's own record of the phase
+// it left (pi-shared's completedPhase, the mirror of phase.Of), which this daemon reads back
+// against that phase; a plugin below names none there and is answered as every daemon from 94
+// answers it. (Taken at the push that answered the review of 9f1d4789, with main at 922eb1d992a3,
+// whose own number is the 111 above. This entry took 104 at the merge of 8d9d1ff2 (main at 94),
+// 106 at that of 0fde2dcff6e4 (main at 98), 109 at that of 2a6ff6c03269 (main at 98), 111 at that
+// of b601d25b3fa1 (main at 104), 115 at that of 809208573a01 (main at 111), 120 at the push after
+// it and 121 at the merge of 50bfbb0dec73 (main at 111), each declared by another open head before
+// this one landed. The reading behind 123, of `const DaemonAPIVersion` at refs/pull/<n>/head for
+// every open pull request of cybermonklabs/legion at 2026-11-14T06:17Z, made with the
+// `declared_by_open_pull_requests` of `.github/scripts/check-daemon-api-contract.sh`, gives above
+// main's 111: 112 (#2731), 113 (#3575), 114 (#3730), 115 (#3937), 116 (#3715), 117 (#3711), 118
+// (#3659), 119 (#3712), 120 (#3993), 121 (#3519) and 122 (#2230); 123 is the lowest number above
+// them all.)
+//
+// 131: INFRA-2566 -- the experiments each issue was drawn for on `GET /legion/v1/state`. Every
 // issue record of the state gains `assignments`, the experiment answers that apply to it: one
 // `{experiment, variant, mode, drawnAt}` per answer, in the order the project's file declares
 // the experiments (config.Project.ExperimentsDeclared): the `memory` block's experiment first,
@@ -1573,18 +1613,18 @@ package api
 // before: a tree that answered nothing answers nothing still, and the measurement job's count
 // of the trees each group reached is the count it was. `assignments` carries that settled row
 // all the same, with its empty variant. `settings.projects.<KEY>.experiments` is a key new at
-// 113, and every project carries it, `[]` for a project whose file declares no experiment under
+// 131, and every project carries it, `[]` for a project whose file declares no experiment under
 // that key, as `slack_channels` and `memory` are always carried; every plugin reads the settings
 // loosely, so no strictly parsed shape changes with it. `packages/contracts/src/legion-api.ts` mirrors
 // `assignments` on `legionIssue`, which is a `z.object`: every answer-side schema of
 // `packages/contracts` has stripped a key it does not name since sjawhar/legion#2788, which
-// that package's own test holds it to, and 113 is later than that change, so a reader built after
-// that change and before 113 parses this state and sees no `assignments` at all rather than
+// that package's own test holds it to, and 131 is later than that change, so a reader built after
+// that change and before 131 parses this state and sees no `assignments` at all rather than
 // refusing it — and every worker's `read_record` parses the state through that schema. The
 // downgrade below is still what serves such a reader: a caller that did not ask for the field is
 // not given it.
 // `GET /legion/v1/state` authenticates nobody, so a caller from a pod whose claims record a
-// contract below 113 is served the state without the field (api's stateFor,
+// contract below 131 is served the state without the field (api's stateFor,
 // withoutAssignments), as a caller below 49 is served it without the memory fields; a caller
 // from 49 to below this contract is served the three memory fields and no assignments, whatever
 // else its own band gives it — each band is served what the narrowing at its lower edge and
@@ -1632,5 +1672,12 @@ package api
 // 105, #2731 106, #3712 107, #3519 108, #3793 109, #3937 110, #3573 and #3715 111, and #3730 112;
 // the reads of 17:53Z and 18:51:45Z, before those three moved, had named 111 and then 112. At the
 // forward merge that brought main in at 80920857, #3573's own, main declared 111, the entry then
-// right above this one, still below 113, so the number held.)
-const DaemonAPIVersion = 113
+// right above this one, still below 113, so the number held. At the forward merge that brought
+// main in at 50bfbb0d, #3982's own, main still declared 111, so the number held at 113. At the
+// forward merge that brought main in at 7df0a64c, main declared 123, #3793's own, the entry then
+// right above this one, so in that merge the number moved to the lowest free number above 123 at
+// its push, 131: of the heads of the 149 pull requests open at 2026-11-14T15:50:33Z, read at
+// refs/pull/<n>/head, #4021 declared 124, #4030 125, #2230 and #4017 126, #3519, #3659 and #3711
+// 127, #3730 and #4035 128, #3937 129, and #2731 and #3993 130; the read of 15:25:30Z, before
+// those two declared 130, had named 130.)
+const DaemonAPIVersion = 131

@@ -94,12 +94,16 @@ field from `legion.goDaemonApiVersion` when the plugin dropped its TypeScript-da
 (LEGION-223): a release before it declares the TypeScript daemon's 9 under this name and is
 refused naming that number. The split of the one plugin into this package and `@sjawhar/pi-envoy`
 (LEGION-247) moved no request, response or pane variable, so it bumped nothing of its own: the
-number is the one `DaemonAPIVersion` declares, last bumped by contract 113's experiment assignments
+number is the one `DaemonAPIVersion` declares, last bumped by contract 131's experiment assignments
 (dispatch://INFRA-2566: each issue of `GET /legion/v1/state` carries `assignments`, one
 `{experiment, variant, mode, drawnAt}` per experiment answer that applies to it, absent from an
 issue no experiment holds an answer for; the reader this plugin parses the state through takes
-the key as optional, because a caller from a pod whose claims record a contract under 113 is
-served every issue without it (`api.stateFor`, `withoutAssignments`)), after contract 111
+the key as optional, because a caller from a pod whose claims record a contract under 131 is
+served every issue without it (`api.stateFor`, `withoutAssignments`)), after contract 123's
+completion heads (dispatch://INFRA-3146: every file-backed handoff record carries `head`, the
+commit the work it reports was done against, which `handoff_complete` sends as the completion's
+`commit` for the planner, the tester and the reviewer as well as the implementer, and no field
+is added or removed on either side of the wire), after contract 111
 (dispatch://INFRA-2560: every issue of a live tree carries `treeMovedAt`, when that tree last
 moved, and `quietHours`, how long it has been still, which a caller below 111 is served
 without), after contract 104's claim recoveries (dispatch://INFRA-3161: `fresh_session` reaches
@@ -621,13 +625,22 @@ testing, reviewing) ends with a handoff record on the Dispatch issue, which the 
 `$TMPDIR` rather than the workspace, whose every file jj snapshots; no handoff is a commit or a
 push. The operation finds
 what it reports in the pane first (`@legion/pi-shared/handoff-record`): the issue's phase from
-the daemon's state, the role from the session; for a file-backed phase the role works, the newest
+the daemon's state, the role from the session; for a file-backed phase the role works or, once
+the issue has moved on, the one it left, the newest
 record of the phase's word, read from the pane's Dispatch (the envoy.json its session reads),
-refused — posting nothing — when the phase has none (write it, then complete again) or Dispatch
-does not answer (complete again once it does); the implementer's implementing round also reports
-the commit `legion/<issue>@origin` names, refused while `@-` is not on that branch (push it, then
-complete again); retro, the merger and every other phase report the commit the workspace
-stands on, `@-`. It then posts
+refused — posting nothing — when a phase the role works has none (write it, then complete again)
+or Dispatch does not answer (complete again once it does), with the head that record's own `head`
+field names reported as the completion's commit, and none reported for the planner, the tester
+and the reviewer when the body holds no readable head; while the issue stands in implementing,
+the implementer's round is refused
+when its record names no head (record the handoff again, then complete again), when the commit
+the workspace stands on, `@-`, is not on `legion/<issue>@origin` (push it, then complete again),
+and when the record's head is not that pushed `@-` (record the handoff again with `head` set to
+it, then complete again); a phase the role left runs no workspace check, and where it holds a
+record of that phase never reads as its own the `@-` of the workspace every role of the issue
+shares, which is then often a sibling's commit; retro, the merger, a left phase with no
+record and every other phase report the commit the workspace stands on, `@-`, and so does an
+implementer whose left record names no head, which sends `@-` alone, naming no record. It then posts
 `POST /legion/v1/handoff/complete` (`summary`, `verdict`, and `handoffId`,
 `handoffVersion`, `commit` and `wakeAt` where they apply). A
 report on a look of a closed issue's production check is the one call that finds neither: the

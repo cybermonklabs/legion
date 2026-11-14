@@ -1,19 +1,14 @@
 package supervise
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
-	"fmt"
 	"go/ast"
 	"go/importer"
 	"go/parser"
 	gotoken "go/token"
 	"go/types"
-	"io"
 	"os"
-	"os/exec"
 	"slices"
 	"strconv"
 	"strings"
@@ -22,6 +17,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
+	"github.com/sjawhar/legion/daemon/internal/testtypes"
 )
 
 // backstopBound is the bound the daemon's sweep would hand this claim's role: four hours for an
@@ -795,39 +791,17 @@ func TestProcessEndsListsEveryEndDeclared(t *testing.T) {
 }
 
 // compiledDependencies is where the compiler left the types of everything this package imports:
-// the build that runs this test has written them into its cache, and the go command reports the
-// file of each. The walk above reads those rather than type-checking the dependency tree from
-// its source, which this package's dependencies make tens of seconds of the test binary's run
-// (the source read sealed makes, in table_test.go, is the longest test in the package by
-// itself).
-func compiledDependencies(t *testing.T) func(string) (io.ReadCloser, error) {
+// the go command reports the file of each from its build cache (testtypes.CompiledDependencies).
+// The walk above reads those rather than type-checking the dependency tree from its source,
+// which this package's dependencies make tens of seconds of the test binary's run (the source
+// read sealed makes, in table_test.go, is the longest test in the package by itself).
+func compiledDependencies(t *testing.T) importer.Lookup {
 	t.Helper()
-	listed, err := exec.Command("go", "list", "-deps", "-export", "-json=ImportPath,Export", ".").Output()
+	compiled, err := testtypes.CompiledDependencies("github.com/sjawhar/legion/daemon/internal/supervise")
 	if err != nil {
-		var exit *exec.ExitError
-		if errors.As(err, &exit) {
-			t.Fatalf("ask the go command where this package's dependencies were compiled: %v: %s", err, exit.Stderr)
-		}
-		t.Fatalf("ask the go command where this package's dependencies were compiled: %v", err)
+		t.Fatal(err)
 	}
-	exports := map[string]string{}
-	decoder := json.NewDecoder(bytes.NewReader(listed))
-	for decoder.More() {
-		var dependency struct{ ImportPath, Export string }
-		if err := decoder.Decode(&dependency); err != nil {
-			t.Fatalf("read the go command's answer: %v", err)
-		}
-		if dependency.Export != "" {
-			exports[dependency.ImportPath] = dependency.Export
-		}
-	}
-	return func(path string) (io.ReadCloser, error) {
-		export, found := exports[path]
-		if !found {
-			return nil, fmt.Errorf("the go command reported no compiled types for %s", path)
-		}
-		return os.Open(export)
-	}
+	return compiled
 }
 
 // The one thing the claim cannot show about an end is whether the runtime made the stop that
