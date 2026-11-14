@@ -1057,9 +1057,9 @@ func memoryGuardNote(report shimwire.LauncherMemoryKill) string {
 // that begins and ends with a space, is padded with one space on each side, which a Markdown
 // reader strips, and empty text is one space, since two backticks alone are no span. Every
 // character that does not print is written as its Go escape (`\n`, `\x1b`, `\u202e`): the
-// launcher has escaped them already, but the note is read into an agent's prompt, so its shape
-// rests on this daemon and not on the sender being Legion's own launcher, as the session facts'
-// quoted details do (sessionLost).
+// launcher sends none (it reads control characters away and escapes the rest), but the note is
+// read into an agent's prompt, so its shape rests on this daemon and not on the sender being
+// Legion's own launcher, as the session facts' quoted details do (sessionLost).
 func codeSpan(text string) string {
 	var inner strings.Builder
 	longest, run := 0, 0

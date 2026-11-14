@@ -58,13 +58,13 @@ func roleName(role string) string {
 func stamp(t time.Time) string { return t.UTC().Format(time.RFC3339) }
 
 // commandText is p's arguments as one printable line with no credential in it: joined by spaces,
-// passed through the credential rules a capability report's detail is cleaned by, since an
-// argument can carry a token, and then with every character that does not print escaped. The
-// rules read the raw text, where a newline or a tab before a token is a boundary the token starts
-// at; escaped first, the `n` of `\n` or the `t` of `\t` would join the token and hide it from
-// them. A process that shows no arguments is named by its stat name in brackets, as ps names it.
-// The text is whole; each reader cuts it to its own bound (cut), after the redaction, so a cut
-// never leaves part of a credential that the whole would have matched.
+// made one line and redacted by the rules a capability report's detail is cleaned by
+// (capabilities.RedactCredentials: each run of whitespace one space, each control rune, control
+// sequence or byte that is not UTF-8 read away), since an argument can carry a token, and then
+// with each remaining rune that does not print, a `\u202e` that would reorder what follows it
+// among them, escaped. A process that shows no arguments is named by its stat name in brackets, as
+// ps names it. The text is whole; each reader cuts it to its own bound (cut), after the redaction,
+// so a cut never leaves part of a credential that the whole would have matched.
 func commandText(p *Process) string {
 	raw := "[" + p.Name + "]"
 	if len(p.Args) > 0 {

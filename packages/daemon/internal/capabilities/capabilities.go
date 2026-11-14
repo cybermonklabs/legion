@@ -274,9 +274,10 @@ func Normalize(rows []claim.CapabilityRow) (kept []Row, dropped []string) {
 //  4. Each held rune a space: a JWT right after a control rune or a sequence, which the JWT rule
 //     reads, while held stands there, as the middle of a base64url run.
 //
-// Space runs then collapse to one space with none at either end. Redaction runs on the one line, so
-// a credential a session split across lines is still found, and before the cut, so a cut never
-// leaves a credential's head too short to match. The rules run until a pass changes nothing
+// Space runs then collapse to one space with none at either end; that line, before the cut, is
+// redactedLine, which RedactCredentials gives another package whole. Redaction runs on the one
+// line, so a credential a session split across lines is still found, and before the cut, so a cut
+// never leaves a credential's head too short to match. The rules run until a pass changes nothing
 // (redactCredentials), so the line is already a fixed point of them. After a cut, trailing space
 // goes, then trailing words, and within a last word trailing characters, while the rules would
 // still change what is left — a label the cut parted from its value, or a value it parted from the
@@ -286,6 +287,25 @@ func Normalize(rows []claim.CapabilityRow) (kept []Row, dropped []string) {
 // `packages/pi-legion/src/capability-report.ts`); both are held to
 // `packages/contracts/fixtures/capability-redaction.json`.
 func cleanDetail(text string) string {
+	line := redactedLine(text)
+	cut := strings.TrimRight(truncate(line, MaxReportDetail), " ")
+	if len(cut) < len(line) {
+		for redactCredentials(cut) != cut {
+			if space := strings.LastIndexByte(cut, ' '); space > 0 {
+				cut = cut[:space]
+			} else {
+				_, size := utf8.DecodeLastRuneInString(cut)
+				cut = cut[:len(cut)-size]
+			}
+		}
+	}
+	return cut
+}
+
+// redactedLine is cleanDetail's line before its cut: text with each space rune a space and each
+// other control rune held, every credential redacted on that line and, when anything was held, on
+// each of heldReadings in turn, and space runs collapsed to one space with none at either end.
+func redactedLine(text string) string {
 	marked := strings.Map(func(r rune) rune {
 		switch {
 		case unicode.IsSpace(r):
@@ -305,19 +325,7 @@ func cleanDetail(text string) string {
 			}
 		}
 	}
-	line := strings.Join(strings.Fields(redacted), " ")
-	cut := strings.TrimRight(truncate(line, MaxReportDetail), " ")
-	if len(cut) < len(line) {
-		for redactCredentials(cut) != cut {
-			if space := strings.LastIndexByte(cut, ' '); space > 0 {
-				cut = cut[:space]
-			} else {
-				_, size := utf8.DecodeLastRuneInString(cut)
-				cut = cut[:len(cut)-size]
-			}
-		}
-	}
-	return cut
+	return strings.Join(strings.Fields(redacted), " ")
 }
 
 // held is what cleanDetail holds a control rune as while it redacts, c1Introducer what it holds
@@ -420,14 +428,14 @@ func redactJWT(match string) string {
 	return match[:strings.Index(match, "eyJ")] + "***"
 }
 
-// RedactCredentials is text with every credential shape of credentialRules masked, for another
-// package that prints text a process chose: the launcher's memory guard prints a process's
-// arguments in its log and in the note to that process's role, and an argument can carry a token.
-// It is redactCredentials itself, so both hold to the one shared fixture. The caller passes the
-// raw text and escapes its control characters after: a raw newline or tab before a token is a
-// boundary the token's rule starts at, where the letter of an escape (`\n`, `\t`) would join the
-// token and hide it from the rule.
-func RedactCredentials(text string) string { return redactCredentials(text) }
+// RedactCredentials is text as one line with every credential masked, for another package that
+// prints text a process chose: the launcher's memory guard prints a process's arguments in its log
+// and in the note to that process's role, and an argument can carry a token. The caller passes raw
+// text and gets back one line, cleanDetail's before its cut (redactedLine): each run of whitespace
+// one space, each control rune, control sequence and byte that is not UTF-8 read away, and every
+// credential shape masked exactly as a capability report's detail is, so both hold to the one
+// shared fixture. Unlike a detail, the line is not cut: the caller cuts it to its own bound.
+func RedactCredentials(text string) string { return redactedLine(text) }
 
 // redactCredentials is text with every credentialRules match replaced, rule by rule, pass after
 // pass until a pass changes nothing: a replacement can remove what kept an earlier rule from

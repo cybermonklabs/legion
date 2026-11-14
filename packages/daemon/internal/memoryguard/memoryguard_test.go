@@ -1492,7 +1492,7 @@ func TestMemoryGuardLinesCarryTheirFieldsAndAnEscapedRedactedCutCommand(t *testi
 	token := "ghp_" + strings.Repeat("A1", 18)
 	pod := newFakePod(t)
 	pod.add(agent(2*gib), fakeProcess{pid: 900, ppid: 100, anon: 1500 * mib, args: []string{
-		"python3", "-c", "import os\nprint(1)", "\x1b[31mred", "--token", token, strings.Repeat("é", 400),
+		"python3", "-c", "import os\nprint(1)", "\x1b[31mred", "\u202eabc", "--token", token, strings.Repeat("é", 400),
 	}})
 	pod.setShmem(64 * mib)
 	pod.setAnon(3600 * mib)
@@ -1504,7 +1504,9 @@ func TestMemoryGuardLinesCarryTheirFieldsAndAnEscapedRedactedCutCommand(t *testi
 	if got := h.log.with("started"); !slices.Equal(got, []string{started}) {
 		t.Fatalf("the start lines are %q, want %q", got, started)
 	}
-	prefix := `python3 -c import os\nprint(1) \x1b[31mred --token ghp_*** `
+	// The newline is one space, the colour sequence is read away, and the right-to-left override,
+	// which is no control character and does not print, shows escaped.
+	prefix := `python3 -c import os print(1) red \u202eabc --token ghp_*** `
 	commandOf := func(max int) string {
 		return prefix + strings.Repeat("é", (max-len(prefix)-len(ellipsis))/2) + ellipsis
 	}
@@ -1529,24 +1531,29 @@ func TestMemoryGuardLinesCarryTheirFieldsAndAnEscapedRedactedCutCommand(t *testi
 		t.Fatalf("the kill does not make a valid report: %v", err)
 	}
 	for _, line := range h.log.all() {
-		if strings.Contains(line, token) || strings.ContainsAny(line, "\n\x1b") {
-			t.Fatalf("a line holds the token or a control character: %q", line)
+		if strings.Contains(line, token) || strings.ContainsAny(line, "\n\t\x1b\u202e") {
+			t.Fatalf("a line holds the token, a control character or a rune that does not print: %q", line)
 		}
 	}
 }
 
-// A token right after a newline, a tab or a space in a process's arguments is masked in the kill's
-// line and in its report. The credential rules read the raw arguments, where each of the three is a
-// boundary a token starts at; escaped first, the `n` of `\n` or the `t` of `\t` would join the token
-// and hide it from the rules.
-func TestMemoryGuardMasksATokenAfterANewlineATabOrASpace(t *testing.T) {
+// A token after any whitespace, or right after a control sequence, in a process's arguments is
+// masked in the kill's line and in its report. The arguments are made the line a capability
+// report's detail is made before the credential rules read it, each run of whitespace one space and
+// each control sequence read away, since the rules are written for that line: on the raw text a
+// tab after `Bearer` keeps the bearer rule from matching, and a colour sequence's final `m` joins
+// the token after it, so the GitHub rule finds no word boundary for it to start at.
+func TestMemoryGuardMasksATokenAfterWhitespaceOrAControlSequence(t *testing.T) {
 	token := "ghp_" + strings.Repeat("A1", 18)
+	bearer := "opaque" + strings.Repeat("Z9", 12)
 	for _, tc := range []struct {
 		name, script, want string
 	}{
-		{"newline", "echo hi\n" + token, `sh -c echo hi\nghp_***`},
-		{"tab", "x\t" + token, `sh -c x\tghp_***`},
+		{"newline", "echo hi\n" + token, `sh -c echo hi ghp_***`},
+		{"tab", "x\t" + token, `sh -c x ghp_***`},
 		{"space", "x " + token, `sh -c x ghp_***`},
+		{"bearer after a tab", "curl -H Bearer\t" + bearer, `sh -c curl -H Bearer ***`},
+		{"colour sequence", "echo \x1b[1m" + token, `sh -c echo ghp_***`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pod := newFakePod(t)
