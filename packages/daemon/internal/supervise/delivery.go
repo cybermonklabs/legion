@@ -261,7 +261,10 @@ func pendingID(p *Delivery) string {
 // followed its delivery or a crash before the row finished. GivenEntry is raised here, in the
 // transaction that writes the delivery (putClaimAndDelivery), so what the claim was given is
 // durable no later than the task itself; a request carrying an entry goes through that
-// transaction whether or not it names an outbox row.
+// transaction whether or not it names an outbox row. The claim's handshake of that entry
+// (Claim.Handshake) is written in the same write: a task of another entry starts it afresh at this
+// delivery's queued time, and a second task of the entry it names keeps the time the first was
+// queued at (EntryHandshake.queued).
 //
 // One request carrying an entry is not decided by it: one marked a resend
 // (RequestDeliver.ResendEntry), which is the held phase's retry
@@ -394,20 +397,21 @@ func (m *Machine) queue(ctx context.Context, request RequestDeliver) error {
 	d := Delivery{ID: id, Task: task, Phase: request.Phase, Generation: request.Generation, Kept: request.Kept,
 		Entry: request.Entry, CheckLook: request.CheckLook, QueuedAt: m.deps.Clock.Now()}
 	if request.Row > 0 || request.Entry > 0 {
-		// The claim records the row and the entry only once the store has them with the
-		// delivery: a write that failed leaves the row undelivered and the entry ungiven, so its
-		// retry queues the task.
+		// The claim records the row, the entry and its handshake only once the store has them
+		// with the delivery: a write that failed leaves the row undelivered and the entry ungiven,
+		// so its retry queues the task.
 		stored := m.stored()
 		if request.Row > 0 {
 			stored.DeliveredRows = append(slices.Clone(m.claim.DeliveredRows), request.Row)
 		}
 		if request.Entry > 0 {
 			stored.GivenEntry = request.Entry
+			stored.Handshake = m.claim.Handshake.queued(request.Entry, request.Generation, d.QueuedAt)
 		}
 		if err := m.putClaimAndDelivery(ctx, stored, d); err != nil {
 			return err
 		}
-		m.claim.DeliveredRows, m.claim.GivenEntry = stored.DeliveredRows, stored.GivenEntry
+		m.claim.DeliveredRows, m.claim.GivenEntry, m.claim.Handshake = stored.DeliveredRows, stored.GivenEntry, stored.Handshake
 	} else if err := m.putDelivery(ctx, d); err != nil {
 		return err
 	}
@@ -1054,9 +1058,15 @@ func (m *Machine) adopt(ctx context.Context, role claim.Role, loc *runtime.Locat
 // delivery is the run of failures standing in the way of the send it is still waiting for,
 // never one an earlier turn of the same task already got past. It is cleared on the delivery the
 // claim holds, which is the row putClaimAndPending writes, so the write below carries it.
+//
+// A task of the entry the claim's handshake names records its confirmation there too, the first
+// one only (Claim.Handshake, EntryHandshake.confirmed): the delivery's own ConfirmedAt goes with
+// the delivery when the turn ends, and the handshake is what keeps when the worker took that
+// entry's work. The same write carries it, since the claim is half of it.
 func (m *Machine) confirm(ctx context.Context) error {
 	p := m.claim.Pending
 	p.ConfirmedAt = m.deps.Clock.Now()
+	m.claim.Handshake = m.claim.Handshake.confirmed(*p)
 	m.disarm(TimerTurn)
 	m.askFirst = false
 	m.claim.Budgets.PromptFailures, m.claim.Budgets.PromptRetires = 0, 0
@@ -1297,19 +1307,46 @@ func (m *Machine) markUnread(ctx context.Context) error {
 // before that write is safe here, where interrupted ends it after its own: this clears
 // ConfirmedAt in memory first, so the claim a failed write leaves is one settle reads as a task
 // still waiting rather than as a turn that is over (turnOver, resultPending).
+//
+// A confirmation taken back was never the worker's, so the claim's handshake gives back its own
+// too (takeBackConfirmation). Where it does, the claim goes with the delivery in one write, as
+// confirm wrote the two: a write that fails leaves the delivery unsaved as before, and settle's
+// write of it (putClaimAndPending) carries the claim, so the cleared handshake reaches the store
+// with the first write the store takes and no failure is handled any other way.
 func (m *Machine) takeBackPending(ctx context.Context, read bool) error {
 	m.disarm(TimerTurn)
 	m.awaitingResult = ""
 	p := m.claim.Pending
-	p.ConfirmedAt = time.Time{}
+	handshakeMoved := m.takeBackConfirmation(p)
 	if !read {
 		m.clearReadMark(p)
 	}
 	next := *p
 	next.ID = rotateTaskID(p.ID)
-	if err := m.saved(m.putDelivery(ctx, next)); err != nil {
+	var err error
+	if handshakeMoved {
+		err = m.putClaimAndDelivery(ctx, m.stored(), next)
+	} else {
+		err = m.putDelivery(ctx, next)
+	}
+	if err := m.saved(err); err != nil {
 		return err
 	}
 	p.ID = next.ID
 	return nil
+}
+
+// takeBackConfirmation clears the pending delivery p's confirmation, and the claim's handshake's
+// with it where that confirmation was p's own (EntryHandshake.unconfirmed). It answers whether the
+// handshake changed, which is whether the write that records the take-back must carry the claim.
+// A death's take-back (interrupted) does not come here: a turn did start on that task, so the
+// worker took it and the handshake keeps it.
+func (m *Machine) takeBackConfirmation(p *Delivery) bool {
+	handshake := m.claim.Handshake.unconfirmed(*p)
+	p.ConfirmedAt = time.Time{}
+	if handshake == m.claim.Handshake {
+		return false
+	}
+	m.claim.Handshake = handshake
+	return true
 }

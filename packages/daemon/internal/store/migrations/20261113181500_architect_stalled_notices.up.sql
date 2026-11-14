@@ -25,12 +25,18 @@
 -- There is no down file. This directory keeps none — migrations here are forward-only and no
 -- .down.sql file exists — so the way back is the one transaction below, run with the daemon
 -- stopped and before the one the phase entry's own header carries
--- (20261111225552_phase_entry.up.sql). It is the way back of this migration and of
--- 20261113182000_architect_entry_upgrade, whose header carries the same block and says what each
--- statement prints, why the block runs first and why it drops the wakes still unsent.
+-- (20261111225552_phase_entry.up.sql). It is the way back of this migration, of
+-- 20261113182000_architect_entry_upgrade and of 20261114020537_claim_entry_handshake, whose
+-- headers carry the same block. 20261113182000's header says what each statement prints, why the
+-- block runs first and why it drops the wakes still unsent.
 --
 --   psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
 --   begin;
+--   alter table claims drop column if exists handshake_entry;
+--   alter table claims drop column if exists handshake_generation;
+--   alter table claims drop column if exists handshake_queued_at;
+--   alter table claims drop column if exists handshake_confirmed_at;
+--   delete from schema_version where version = 20261114020537;
 --   delete from schema_version where version = 20261113182000;
 --   delete from outbox where kind = 'controller_notice' and payload->>'kind' = 'architect-stalled';
 --   drop table if exists architect_stalled_notices;

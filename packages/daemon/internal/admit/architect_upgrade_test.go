@@ -415,29 +415,34 @@ func headerWayBack(t *testing.T, version int) string {
 // phaseEntryVersion is the version of the phase entry's own migration
 // (20261111225552_phase_entry.up.sql), whose way back drops the entry columns and re-arms it.
 // stalledNoticesVersion is the version of the marks' table
-// (20261113181500_architect_stalled_notices.up.sql), whose way back is this migration's.
-// olderReleaseVersion is the newest migration of the release before the phase entry,
+// (20261113181500_architect_stalled_notices.up.sql), and claimHandshakeVersion the version of the
+// claim's handshake columns (20261114020537_claim_entry_handshake.up.sql), whose way back is this
+// migration's. olderReleaseVersion is the newest migration of the release before the phase entry,
 // 20261112180548_claim_leak_check_cause, which is the version the store reports once both ways
 // back have run.
 const (
 	phaseEntryVersion     = 20261111225552
 	stalledNoticesVersion = 20261113181500
+	claimHandshakeVersion = 20261114020537
 	olderReleaseVersion   = 20261112180548
 )
 
 // A rollback and the roll-forward after it leave every root architect settled, as the first
 // upgrade did. The ways back run in the order docs/kubernetes.md gives an operator, each as the
-// one transaction its header carries (headerWayBack): this migration's first, which
-// 20261113181500's header carries as well, and the phase entry's after it. This migration's block
-// deletes its own version row and 20261113181500's, drops the marks' table and the architect
-// wakes still unsent, so the roll-forward makes the table again and runs this fill again after
-// the phase entry's. Then the first pass prompts no architect and wakes the controller for no
-// arm, and each root is marked again at the run it stands at.
+// one transaction its header carries (headerWayBack): this migration's first, which the headers
+// of 20261113181500 and 20261114020537 carry as well, and the phase entry's after it. This
+// migration's block drops the claim's four handshake columns and deletes 20261114020537's version
+// row, deletes its own and 20261113181500's, and drops the marks' table and the architect wakes
+// still unsent, so the roll-forward makes the table and the columns again and runs this fill
+// again after the phase entry's. Then the first pass prompts no architect and wakes the
+// controller for no arm, each root is marked again at the run it stands at, and each architect
+// claim holds no handshake.
 //
 // One architect-stalled wake stands unsent before the ways back, as a rollback can find one: the
 // release before this one refuses its kind and would retry it for ever, so the block drops it and
 // none stands after the two blocks. The store between the blocks and the roll-forward is that
-// release's: it reports that release's own version and holds no marks' table.
+// release's: it reports that release's own version and holds no marks' table and no handshake
+// column.
 //
 // The record is the one the older release leaves after the rollback, written with that release's
 // own statements: two roots at admitted with no design gate registered, each holding an architect
@@ -454,9 +459,11 @@ const (
 func TestTheArchitectUpgradeRunsAgainAfterTheWayBackAndARollForward(t *testing.T) {
 	const settled, readmitted = "LEGION-850", "LEGION-851"
 	wayBack := headerWayBack(t, architectUpgradeVersion)
-	if stalled := headerWayBack(t, stalledNoticesVersion); stalled != wayBack {
-		t.Fatalf("the headers of migrations %d and %d carry two ways back, want the one block both are reversed by:\n%s\nagainst\n%s",
-			stalledNoticesVersion, architectUpgradeVersion, stalled, wayBack)
+	for _, version := range []int{stalledNoticesVersion, claimHandshakeVersion} {
+		if other := headerWayBack(t, version); other != wayBack {
+			t.Fatalf("the headers of migrations %d and %d carry two ways back, want the one block both are reversed by:\n%s\nagainst\n%s",
+				version, architectUpgradeVersion, other, wayBack)
+		}
 	}
 	for _, tc := range []struct {
 		name string
@@ -511,13 +518,18 @@ func TestTheArchitectUpgradeRunsAgainAfterTheWayBackAndARollForward(t *testing.T
 				if err != nil {
 					t.Fatalf("read the version the store reports after the way back: %v", err)
 				}
-				var marksTable bool
+				var marksTable, handshakeColumn bool
 				if err := pool.QueryRow(ctx, `select to_regclass('architect_stalled_notices') is not null`).Scan(&marksTable); err != nil {
 					t.Fatalf("look for the marks' table after the way back: %v", err)
 				}
-				if version != olderReleaseVersion || marksTable {
-					t.Fatalf("after the two ways back the store reports version %d and the marks' table stands: %v; want %d and no such "+
-						"table, the older release's store", version, marksTable, olderReleaseVersion)
+				if err := pool.QueryRow(ctx, `select exists (select 1 from information_schema.columns
+					where table_schema = current_schema() and table_name = 'claims' and column_name like 'handshake\_%')`).
+					Scan(&handshakeColumn); err != nil {
+					t.Fatalf("look for the claim's handshake columns after the way back: %v", err)
+				}
+				if version != olderReleaseVersion || marksTable || handshakeColumn {
+					t.Fatalf("after the two ways back the store reports version %d, the marks' table stands: %v, and a handshake column "+
+						"stands: %v; want %d and neither, the older release's store", version, marksTable, handshakeColumn, olderReleaseVersion)
 				}
 			}
 
@@ -534,7 +546,7 @@ func TestTheArchitectUpgradeRunsAgainAfterTheWayBackAndARollForward(t *testing.T
 			}
 			want := 1
 			if tc.rearmed {
-				want = 3
+				want = 4
 			}
 			if applied != want {
 				t.Fatalf("the roll-forward applied %d migrations, want %d: each way back re-arms its own migrations and no other", applied, want)
@@ -569,13 +581,15 @@ func TestTheArchitectUpgradeRunsAgainAfterTheWayBackAndARollForward(t *testing.T
 				if row := architectRow(t, pool, root.key); row.Entry != 1 {
 					t.Fatalf("the architect row of %s after the roll-forward = entry %d, want the 1 the second run wrote", root.key, row.Entry)
 				}
-				var given, served int64
-				if err := pool.QueryRow(ctx, `select given_entry, served_entry from claims where token = $1`,
-					string(architectToken(t, root.key))).Scan(&given, &served); err != nil {
+				var given, served, handshakeEntry int64
+				var handshakeQueued *time.Time
+				if err := pool.QueryRow(ctx, `select given_entry, served_entry, handshake_entry, handshake_queued_at from claims where token = $1`,
+					string(architectToken(t, root.key))).Scan(&given, &served, &handshakeEntry, &handshakeQueued); err != nil {
 					t.Fatalf("read the architect claim of %s: %v", root.key, err)
 				}
-				if given != 1 || served != 1 {
-					t.Fatalf("the architect claim of %s after the roll-forward = given %d, served %d, want 1 and 1", root.key, given, served)
+				if given != 1 || served != 1 || handshakeEntry != 0 || handshakeQueued != nil {
+					t.Fatalf("the architect claim of %s after the roll-forward = given %d, served %d, handshake of entry %d queued at %v; "+
+						"want 1 and 1 and no handshake, which the re-added columns hold at their defaults", root.key, given, served, handshakeEntry, handshakeQueued)
 				}
 			}
 		})

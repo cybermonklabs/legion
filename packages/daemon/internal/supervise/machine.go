@@ -167,6 +167,21 @@ type Claim struct {
 	// worker's turn. Zero is a claim that has retired no confirmed task of an entry, which every
 	// claim of a daemon upgraded in place is until its role's next start.
 	ServedEntry int64
+	// Handshake is the handshake between the daemon and this claim's worker over the last phase
+	// entry the claim was queued a task of: that entry, the issue generation the task was of, when
+	// a task of that entry was first queued to the claim and when a turn of its worker first
+	// confirmed one (EntryHandshake). It outlasts the task it was read from, which the end of the
+	// confirming turn retires, so it is what the state reads an issue's two times from
+	// (api.Issue.EntryQueuedAt and EntryConfirmedAt), and for a tree's own root it is its
+	// architect's in every phase the root stands in. The zero value names no entry, which every
+	// claim of a daemon upgraded in place is until its role's next start: the two times read as
+	// absent there. Four decisions write it, each beside GivenEntry or the delivery it records:
+	// queue and EntryGiven, where the claim is given an entry's work; confirm, where a turn
+	// confirms a task of that entry; and the take-back of that confirmation (takeBackPending,
+	// refused), which was never the worker's and so clears the handshake's own. A queue of another
+	// entry replaces it, and nothing else clears it: a retirement, a turn's end, a hold and a
+	// death's take-back (interrupted), after a turn that did start on the task, each leave it.
+	Handshake EntryHandshake
 	// ServingCheckLook is the production check look of the last confirmed delivery this claim
 	// retired, the look side of ServingGeneration: what ServingCheck answers with once no delivery
 	// backs the worker's turn. The zero value is a claim that has retired no confirmed task of a
@@ -453,6 +468,59 @@ type Claim struct {
 	ActivityBackground     bool
 	ActivityKinds          []string
 	ActivityNextReminderAt time.Time
+}
+
+// EntryHandshake is the handshake between the daemon and a claim's worker over one phase entry:
+// the entry, the issue generation the entry's task was of (Delivery.Generation), when a task of
+// that entry was first queued to the claim (the first such Delivery.QueuedAt) and when a turn of
+// the claim's worker first confirmed a task of it (the first such Delivery.ConfirmedAt). The zero
+// value names no entry, and a zero ConfirmedAt is an entry no turn has confirmed a task of.
+type EntryHandshake struct {
+	Entry       int64
+	Generation  uint64
+	QueuedAt    time.Time
+	ConfirmedAt time.Time
+}
+
+// queued is h once a task of entry, of generation's run, was queued to the claim at the moment at.
+// Where h already names that entry of that run it stands as it is: a second task of one entry is
+// a sweep's re-send after an unconfirmed retirement put the entry back (retirePending), or a held
+// phase's retry (RequestDeliver.ResendEntry), and the entry was still first queued, and perhaps
+// confirmed, when h says. Any other entry replaces h with that entry, queued at and confirmed by
+// no turn yet.
+func (h EntryHandshake) queued(entry int64, generation uint64, at time.Time) EntryHandshake {
+	if h.Entry == entry && h.Generation == generation {
+		return h
+	}
+	return EntryHandshake{Entry: entry, Generation: generation, QueuedAt: at}
+}
+
+// confirmed is h once a turn confirmed the task d: the first confirmation of a task of h's entry
+// and run is recorded at d.ConfirmedAt. Every other confirmation leaves h as it stands: a later
+// one of the same entry, which a task a death took back and sent again makes, and one of a task of
+// another entry or of no entry, a wake's or an operator's, which is no part of this handshake.
+func (h EntryHandshake) confirmed(d Delivery) EntryHandshake {
+	if d.Entry == 0 || d.Entry != h.Entry || d.Generation != h.Generation ||
+		d.ConfirmedAt.IsZero() || !h.ConfirmedAt.IsZero() {
+		return h
+	}
+	h.ConfirmedAt = d.ConfirmedAt
+	return h
+}
+
+// unconfirmed is h once the daemon took back the confirmation of the task d: a refusal or a busy
+// answer said the turn that confirmed it was not d's, so the worker never took it. Where that
+// confirmation is the one h recorded — d is of h's entry and run, and its ConfirmedAt is h's — h
+// is unconfirmed again, and the task's next real confirmation is recorded in its place. Any other
+// take-back leaves h as it stands: one of a task of another entry or of no entry, and one of a
+// later confirmation of h's entry, after the first one stood.
+func (h EntryHandshake) unconfirmed(d Delivery) EntryHandshake {
+	if d.Entry == 0 || d.Entry != h.Entry || d.Generation != h.Generation ||
+		d.ConfirmedAt.IsZero() || !d.ConfirmedAt.Equal(h.ConfirmedAt) {
+		return h
+	}
+	h.ConfirmedAt = time.Time{}
+	return h
 }
 
 // StepRecord is the claim's record of its agent's last step: the last call the agent made, when
@@ -1484,6 +1552,11 @@ func (m *Machine) StartedBy(ctx context.Context, row int64) error {
 // (record.PhaseRow.Entry) and the entry its claim was given has to close here rather than
 // through a second task of the same entry.
 //
+// The handshake is written with the number (Claim.Handshake), from the task the claim holds where
+// that task carries entry: its queued time is when that entry's work was first queued, and its
+// confirmed time, where a turn has confirmed it, when the worker took it. A claim holding no task
+// of entry has no handshake of it to record and keeps the one it holds.
+//
 // A claim already at or above entry is left alone and written nothing: the number only rises, so
 // a row run again after the claim was given a later entry's work cannot take it back.
 //
@@ -1497,6 +1570,9 @@ func (m *Machine) EntryGiven(ctx context.Context, entry int64) error {
 		return nil
 	}
 	m.claim.GivenEntry = entry
+	if p := m.claim.Pending; p != nil && p.Entry == entry {
+		m.claim.Handshake = m.claim.Handshake.queued(entry, p.Generation, p.QueuedAt).confirmed(*p)
+	}
 	return m.persist(ctx)
 }
 

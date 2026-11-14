@@ -610,19 +610,25 @@ type Issue struct {
 	// required value no reader parses empty.
 	PhaseEntry int64 `json:"phaseEntry,omitempty"`
 	GivenEntry int64 `json:"givenEntry,omitempty"`
-	// EntryQueuedAt is when the task of that entry was first queued to the role's claim
-	// (supervise.Delivery.QueuedAt), and EntryConfirmedAt is when that claim's worker confirmed
-	// it (supervise.Delivery.ConfirmedAt, the turn the task's prompt started). They are the two
-	// halves of the handshake between the daemon and the role it hands work to, beside the two
-	// numbers above, which say which work it is: a reader sees that the entry's task was queued
-	// and whether a worker took it.
+	// EntryQueuedAt is when a task of an entry was first queued to a claim, and EntryConfirmedAt
+	// is when a turn of that claim's worker first confirmed one (the turn the task's prompt
+	// started). They are the two halves of the handshake between the daemon and the role it hands
+	// work to, beside the two numbers above, which say which work it is: a reader sees that the
+	// entry's task was queued and whether a worker took it.
 	//
-	// Both are read from the task the claim holds of the entry it was given, so both are absent
-	// for a claim that was queued none: one the daemon holds no row of, one whose turn retired
-	// the task, and one of the release before this one, whose migration gives the claim the two
-	// numbers and no task. EntryConfirmedAt alone is absent while the task stands queued and no
-	// turn of its worker has confirmed it, which is the root whose architect took nothing, and
-	// the shape `legion state` names in its plain line (its entrySummary).
+	// Both are read from the claim's own record of the handshake of the last entry it was queued
+	// a task of (supervise.Claim.Handshake), which outlasts the task: the delivery is retired when
+	// the turn that confirmed it ends, and the two times stay. A tree's own root carries its
+	// architect's handshake whatever phase it stands in — admitted, awaiting_person, accepting,
+	// and each phase a phase role works, where the two numbers above are that role's and the two
+	// times are still the architect's. Any other issue carries the handshake of the claim of the
+	// role of its current phase, and none in a phase no role works. Both are absent where no entry
+	// was queued to that claim in the issue's current generation: a role the daemon holds no claim
+	// row of, a re-admitted root whose new architect entry is not queued yet, and one of the
+	// release before this one, whose migration gives the claim the two numbers and no handshake.
+	// EntryConfirmedAt alone is absent while no turn of its worker has confirmed a task of the
+	// entry, which is the root whose architect took nothing, and the shape `legion state` names in
+	// its plain line (its entrySummary).
 	EntryQueuedAt    *time.Time `json:"entryQueuedAt,omitempty"`
 	EntryConfirmedAt *time.Time `json:"entryConfirmedAt,omitempty"`
 	// TreeMovedAt is when the daemon last saw anything of this issue's tree move and QuietHours

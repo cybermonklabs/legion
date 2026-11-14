@@ -1550,15 +1550,21 @@ package api
 // for, so the two keys contract 94 added carry a root: `phase.RoleFor` answers the architect for
 // `admitted`, the phase a root's own architect works, and each root's view carries the entry its
 // architect's work stands at and the entry its claim was queued, as a child's carries its
-// implementer's. Beside them each issue of `GET /legion/v1/state` carries the two times of the
-// task that entry was queued as: `entryQueuedAt`, when the role's claim was first queued that
-// task (`supervise.Delivery.QueuedAt`), and `entryConfirmedAt`, when a turn of that claim's
-// worker confirmed it (`ConfirmedAt`). The two are read from the task the claim holds of the
-// entry it was given, so both are absent for a claim that holds none — one the daemon holds no
-// row of, one whose turn retired the task, and a root of the release before this one, whose
-// migration gives the claim the two numbers and no task, which is how a reader tells such a root
-// from one this release served — and `entryConfirmedAt` alone is absent while the task stands
-// queued and no turn has confirmed it, which is the root whose architect took nothing.
+// implementer's. Beside them each issue of `GET /legion/v1/state` carries the two times of a
+// claim's handshake of the last entry it was queued a task of: `entryQueuedAt`, when a task of
+// that entry was first queued to the claim, and `entryConfirmedAt`, when a turn of that claim's
+// worker first confirmed one. The claim keeps both in a record of its own
+// (`supervise.Claim.Handshake`, the four `claims.handshake_*` columns store migration
+// 20261114020537 adds), so they outlast the task, which the end of the confirming turn retires.
+// A tree's own root carries its architect's handshake whatever phase it stands in, through
+// `awaiting_person` and the phases a phase role works, where the two numbers are that role's and
+// the two times are still the architect's; any other issue carries the handshake of the role of
+// its current phase. Both are absent where no entry was queued to that claim in the issue's
+// current generation — a role the daemon holds no claim row of, a re-admitted root whose new
+// architect entry is not queued yet, and a root of the release before this one, whose migration
+// gives the claim the two numbers and no handshake, which is how a reader tells such a root from
+// one this release served — and `entryConfirmedAt` alone is absent while no turn has confirmed a
+// task of the entry, which is the root whose architect took nothing.
 // `GET /legion/v1/state` authenticates nobody, so a caller from a pod whose claims record a
 // contract below 117 is served the issues without both times (api's stateFor, withoutEntryTimes),
 // as a caller below 111 is served the issues without `treeMovedAt` and `quietHours`, one below 98

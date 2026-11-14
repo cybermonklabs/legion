@@ -1416,16 +1416,24 @@ func ackedInTurn(m *Machine, _ context.Context, _ Event) error {
 // unsaved (saved), and settle writes the claim and the delivery together before the next
 // decision, so the taken-back confirmation and this record reach the store on the first write
 // the store takes.
+//
+// A confirmation the refusal takes back that the claim's handshake recorded goes from the
+// handshake too (takeBackConfirmation), and the write is then of the claim and the delivery
+// together (putClaimAndPending), under the same mark and the same carrying on.
 func refused(m *Machine, ctx context.Context, ev Event) error {
 	r := ev.(PromptRefused)
 	resend := m.helloDuringSend
 	m.helloDuringSend = false
 	p := m.claim.Pending
-	p.ConfirmedAt = time.Time{}
+	handshakeMoved := m.takeBackConfirmation(p)
 	p.SendFailures++
 	p.LastSendFailureAt = m.deps.Clock.Now()
 	p.LastSendError = scrubSendError(r.Err.Error())
-	if err := m.putPending(ctx); err != nil {
+	write := m.putPending
+	if handshakeMoved {
+		write = func(ctx context.Context) error { return m.saved(m.putClaimAndPending(ctx)) }
+	}
+	if err := write(ctx); err != nil {
 		m.log.Warn("supervise: the failed send was not recorded on the delivery; settle writes it again and the charge goes on",
 			"delivery", r.DeliveryID, "error", err)
 	}

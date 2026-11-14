@@ -1,0 +1,64 @@
+-- 20261114020537_claim_entry_handshake.up.sql — the handshake a claim keeps of the last phase
+-- entry it was queued a task of (INFRA-2614).
+--
+-- The four columns are supervise.Claim.Handshake: the entry (handshake_entry), the issue
+-- generation that entry's task was of (handshake_generation), when a task of that entry was first
+-- queued to the claim (handshake_queued_at) and when a turn of its worker first confirmed one
+-- (handshake_confirmed_at). The claim's machine writes them where the claim is given an entry's
+-- work (supervise's queue and EntryGiven) and where a turn confirms a task of that entry
+-- (confirm), clears the confirmed moment where the daemon takes that confirmation back as never
+-- the worker's (takeBackPending, refused), and a queue of another entry replaces them. Nothing
+-- else clears them. The delivery the two times are first read from is deleted when the turn that
+-- confirmed it ends, and these columns stay.
+--
+-- They are what GET /legion/v1/state reads an issue's entryQueuedAt and entryConfirmedAt from
+-- (internal/projection/project.go): for a tree's own root, the handshake of its architect's claim
+-- whatever phase the root stands in, and for any other issue the handshake of the claim of the
+-- role that works its phase, in each case only where it names an entry of the issue's current
+-- generation. Read off the pending delivery instead, both times went with the task at the end of
+-- the architect's first turn, and a root this release served then read exactly as a root of the
+-- release before it.
+--
+-- Every row the table already holds takes the defaults, 0 and null, which name no entry, and
+-- nothing fills them. So the state reads both times as absent for every claim until its role's
+-- next start, which is how a root of the release before this one reads (dispatch://INFRA-2614,
+-- R8).
+--
+-- There is no down file. This directory keeps none — migrations here are forward-only and no
+-- .down.sql file exists — so the way back is the one transaction below, run with the daemon
+-- stopped and before the one the phase entry's own header carries
+-- (20261111225552_phase_entry.up.sql). It is the way back of the three migrations of contract 117:
+-- this one, 20261113182000_architect_entry_upgrade and 20261113181500_architect_stalled_notices,
+-- whose headers carry the same block. docs/kubernetes.md carries it as the step an operator runs
+-- before the phase entry's, and the header of 20261113182000_architect_entry_upgrade says what
+-- each statement prints and why the block runs first.
+--
+--   psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
+--   begin;
+--   alter table claims drop column if exists handshake_entry;
+--   alter table claims drop column if exists handshake_generation;
+--   alter table claims drop column if exists handshake_queued_at;
+--   alter table claims drop column if exists handshake_confirmed_at;
+--   delete from schema_version where version = 20261114020537;
+--   delete from schema_version where version = 20261113182000;
+--   delete from outbox where kind = 'controller_notice' and payload->>'kind' = 'architect-stalled';
+--   drop table if exists architect_stalled_notices;
+--   delete from schema_version where version = 20261113181500;
+--   commit;
+--   SQL
+--
+-- The four drops and the delete of this migration's row go together, and they come first because
+-- this is the newest of the three migrations. The release before this one needs neither: its
+-- claim read and its claim write name each column they touch (internal/store's claimSelect and
+-- putClaim), so the four columns would stand there unread and unwritten. Both are owed to the
+-- roll-forward. That release queues tasks and writes no handshake, so a handshake left standing
+-- would name an entry that release has since replaced, and after the roll-forward the state of a
+-- root still at the same generation would show the times of that older entry. With the columns
+-- dropped and the row deleted, store.apply finds no row of this version and runs this file
+-- again, which adds the four columns again at their defaults: every claim reads as having no
+-- handshake until its role's next start. The drop is also what lets this file run again at all,
+-- since an add of a column that stands fails.
+alter table claims add column handshake_entry bigint not null default 0;
+alter table claims add column handshake_generation bigint not null default 0;
+alter table claims add column handshake_queued_at timestamptz;
+alter table claims add column handshake_confirmed_at timestamptz;

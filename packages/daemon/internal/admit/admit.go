@@ -2972,11 +2972,12 @@ func (a *Admission) wakeStalledArchitects(ctx context.Context, tx pgx.Tx, stalls
 // was given, that task was queued more than workflow.StrandedReleaseWake ago, and no turn of the
 // claim has confirmed it. It answers what the record says, and "" for a root it does not read.
 //
-// The task is read as the claim's own handshake — the delivery carrying the entry the claim was
-// given, which is the pair the state shows beside the two numbers (api.Issue.EntryQueuedAt) —
-// rather than as the entry the phases row names, because a claim still holding an older entry's
-// task unconfirmed took nothing either, and the sweep writes no newer start for it while that
-// task stands (workflow.ArchitectStartPending).
+// The task is read as the delivery carrying the entry the claim was given — the task the claim's
+// own handshake was written from (supervise.Claim.Handshake), whose two times the state shows
+// beside the two numbers (api.Issue.EntryQueuedAt) — rather than as the entry the phases row
+// names, because a claim still holding an older entry's task unconfirmed took nothing either,
+// and the sweep writes no newer start for it while that task stands
+// (workflow.ArchitectStartPending).
 //
 // The root must also be one the sweep serves (architectServed): no root outside the reach is
 // sent an architect's task at all, so none can have failed to take one, and a root that cannot

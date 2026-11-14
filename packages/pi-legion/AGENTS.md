@@ -96,7 +96,9 @@ refused naming that number. The split of the one plugin into this package and `@
 (LEGION-247) moved no request, response or pane variable, so it bumped nothing of its own: the
 number is the one `DaemonAPIVersion` declares, last bumped by contract 117 (dispatch://INFRA-2614:
 a root at `admitted` carries its architect's `phaseEntry` and `givenEntry`, and every issue carries
-`entryQueuedAt` and `entryConfirmedAt`, the two times of its entry's task, which a caller below
+`entryQueuedAt` and `entryConfirmedAt`, the two times of a claim's own record of its handshake of
+its last entry, which outlast that entry's task, which a tree's own root carries from its
+architect's claim in every phase, and which a caller below
 117 is served without), after contract 111 (dispatch://INFRA-2560:
 every issue of a live tree carries `treeMovedAt`, when that tree last moved, and `quietHours`,
 how long it has been still, which a caller below 111 is served without), after contract 104's

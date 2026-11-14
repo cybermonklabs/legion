@@ -25,7 +25,9 @@
 -- default, so the row carries no handoff and no verdict. A claim at the entry its row names is
 -- owed nothing (workflow.OwedEntry), and the two numbers with no queued and no confirmed time
 -- beside them are how a reader of the state tells a root of the older release from one this
--- release served (api.Issue.EntryQueuedAt), since the fill writes no delivery.
+-- release served (api.Issue.EntryQueuedAt): the fill writes no delivery and no handshake, and
+-- the claim's handshake columns come after it, with 20261114020537_claim_entry_handshake, at
+-- defaults that name no entry.
 --
 -- It fills an architect claim whose issue is its own tree's root and no other. A child's own
 -- sub-architect claim is outside the rule the fill is for: no daemon start creates one, and
@@ -44,12 +46,18 @@
 -- There is no down file. This directory keeps none — migrations here are forward-only and no
 -- .down.sql file exists — so the way back is the one transaction below, run with the daemon
 -- stopped and before the one the phase entry's own header carries
--- (20261111225552_phase_entry.up.sql). It is the way back of this migration and of
--- 20261113181500_architect_stalled_notices, whose header carries the same block, and
--- docs/kubernetes.md carries it as the step an operator runs before the phase entry's.
+-- (20261111225552_phase_entry.up.sql). It is the way back of this migration, of
+-- 20261113181500_architect_stalled_notices and of 20261114020537_claim_entry_handshake, whose
+-- headers carry the same block, and docs/kubernetes.md carries it as the step an operator runs
+-- before the phase entry's.
 --
 --   psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
 --   begin;
+--   alter table claims drop column if exists handshake_entry;
+--   alter table claims drop column if exists handshake_generation;
+--   alter table claims drop column if exists handshake_queued_at;
+--   alter table claims drop column if exists handshake_confirmed_at;
+--   delete from schema_version where version = 20261114020537;
 --   delete from schema_version where version = 20261113182000;
 --   delete from outbox where kind = 'controller_notice' and payload->>'kind' = 'architect-stalled';
 --   drop table if exists architect_stalled_notices;
@@ -57,17 +65,22 @@
 --   commit;
 --   SQL
 --
--- The run prints BEGIN, DELETE 1, DELETE <n> for the wakes it drops, DROP TABLE, DELETE 1 and
--- COMMIT. A rerun prints BEGIN, DELETE 0, DELETE 0, a NOTICE that the table does not exist, DROP
--- TABLE, DELETE 0 and COMMIT, and changes nothing. The phase entry's block after it leaves the
--- store at the schema of the release before that migration and at that release's own version,
--- 20261112180548, the highest row the two blocks leave standing.
+-- The run prints BEGIN, four ALTER TABLEs, DELETE 1, DELETE 1, DELETE <n> for the wakes it drops,
+-- DROP TABLE, DELETE 1 and COMMIT. A rerun prints BEGIN, a NOTICE for each of the four columns
+-- that it does not exist with the same four ALTER TABLEs, DELETE 0, DELETE 0, DELETE 0, a NOTICE
+-- that the table does not exist, DROP TABLE, DELETE 0 and COMMIT, and changes nothing. The phase
+-- entry's block after it leaves the store at the schema of the release before that migration and
+-- at that release's own version, 20261112180548, the highest row the two blocks leave standing.
 --
--- This block runs first because this migration writes into three of the six columns the phase
--- entry's block drops: the architect's phases.entry and its claim's given_entry and served_entry.
--- That header names the case: a migration recorded above it that builds on those columns keeps
--- its own row through that block's delete and would never run again, so it is reversed by its own
--- way back first.
+-- The four drops and the first delete are 20261114020537_claim_entry_handshake's way back, and
+-- its header says why they go together and why they come first: that migration is the newest of
+-- the three.
+--
+-- The block runs before the phase entry's because this migration writes into three of the six
+-- columns the phase entry's block drops: the architect's phases.entry and its claim's given_entry
+-- and served_entry. That header names the case: a migration recorded above it that builds on
+-- those columns keeps its own row through that block's delete and would never run again, so it
+-- is reversed by its own way back first.
 --
 -- The older daemon needs nothing of this migration taken away: it weighs no root architect at
 -- all, and what the fill wrote either goes with the columns or is passed over. The two claim

@@ -20,13 +20,13 @@ const (
 // architectHandshakeState is a state of three roots standing at admitted, the phase a root's own
 // architect works, which the handshake answers differently:
 //
-//   - LEGION-20's architect holds the task of the entry its row names and a turn of it confirmed
-//     that task, so the root carries both numbers and both times;
-//   - LEGION-30's architect was queued that task and no turn has confirmed it, so the root
-//     carries the queued time alone, which is the root whose architect may have taken nothing;
-//   - LEGION-40's claim holds no task of its entry, so the root carries the two numbers and
-//     neither time, which is what a root of the release before this one reads as: its migration
-//     gives the claim the two numbers and no task.
+//   - LEGION-20's architect claim recorded the handshake of the entry its row names and a turn of
+//     its worker confirmed a task of that entry, so the root carries both numbers and both times;
+//   - LEGION-30's architect claim recorded that entry queued and no turn has confirmed it, so the
+//     root carries the queued time alone, which is the root whose architect may have taken nothing;
+//   - LEGION-40's claim recorded no handshake, so the root carries the two numbers and neither
+//     time, which is what a root of the release before this one reads as: its migration gives the
+//     claim the two numbers and no handshake.
 func architectHandshakeState(queued, confirmed time.Time) State {
 	architect := func(session string) *ClaimView {
 		return &ClaimView{Session: session, State: "working"}
@@ -77,9 +77,9 @@ func entryTimesServed(t *testing.T, body []byte) map[string]struct {
 }
 
 // The state route serves a root the handshake between the daemon and its architect: the entry its
-// architect's work stands at, the entry its claim was queued, the time that entry's task was
-// first queued and the time a turn of its worker confirmed it. A root whose claim holds no task
-// of that entry is served the two numbers and neither time, which is what a root of the release
+// architect's work stands at, the entry its claim was queued, the time a task of that entry was
+// first queued and the time a turn of its worker first confirmed one. A root whose claim recorded
+// no handshake is served the two numbers and neither time, which is what a root of the release
 // before this one reads as.
 func TestTheStateRouteServesARootsArchitectHandshake(t *testing.T) {
 	queued := time.Date(2026, 11, 12, 9, 15, 0, 0, time.UTC)

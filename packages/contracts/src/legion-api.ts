@@ -697,15 +697,20 @@ const legionIssue = z.object({
    * as optional. */
   phaseEntry: z.number().int().nonnegative().optional(),
   givenEntry: z.number().int().nonnegative().optional(),
-  /** The two times of the task that entry was queued as (contract 117): when the role's claim
-   * was first queued it, and when a turn of that claim's worker confirmed it. Both are read from
-   * the task the claim holds of the entry it was given, so both are absent for a claim holding
-   * none — one the daemon holds no row of, one whose turn retired the task, and a root of the
-   * release before contract 117, which carries the two numbers and no task — and
-   * `entryConfirmedAt` alone is absent while the task stands queued and no turn has confirmed it.
-   * A daemon before contract 117 writes neither, and a caller in a pod whose plugin declares a
-   * contract below 117 is served the state with neither (the daemon's `withoutEntryTimes`), which
-   * is why a reader takes both as optional. */
+  /** The two times of a claim's handshake of the last entry it was queued a task of (contract
+   * 117): when a task of that entry was first queued to the claim, and when a turn of that
+   * claim's worker first confirmed one. The claim keeps both in a record of its own, so they
+   * outlast the task, which the end of the confirming turn retires. A tree's own root carries its
+   * architect's handshake whatever phase it stands in — through `awaiting_person` and the phases
+   * a phase role works, where `phaseEntry` and `givenEntry` are that role's — and any other issue
+   * the handshake of the role of its current phase. Both are absent where no entry was queued to
+   * that claim in the issue's current generation — a role the daemon holds no claim row of, a
+   * re-admitted root whose new architect entry is not queued yet, and a root of the release
+   * before contract 117, which carries the two numbers and no handshake — and `entryConfirmedAt`
+   * alone is absent while no turn has confirmed a task of the entry. A daemon before contract
+   * 117 writes neither, and a caller in a pod whose plugin declares a contract below 117 is
+   * served the state with neither (the daemon's `withoutEntryTimes`), which is why a reader takes
+   * both as optional. */
   entryQueuedAt: timestamp.optional(),
   entryConfirmedAt: timestamp.optional(),
   /** When the daemon last saw anything of this issue's tree move, and how long that tree has

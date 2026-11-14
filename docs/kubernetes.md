@@ -2197,8 +2197,11 @@ Store migration 20261111225552_phase_entry adds the six columns, fills them from
 
 **A root's architect in the phase entry (daemon API contract 117).**
 A release at contract 117 gives a root's own architect a `phases` row, and each start that hands that architect work it was not on raises the row's entry and writes the entry's task, as a phase worker's start does.
-An issue of `GET /legion/v1/state` carries two more keys beside `phaseEntry` and `givenEntry`: `entryQueuedAt`, when the task of that entry was first queued to the role's claim, and `entryConfirmedAt`, when a turn of that claim's worker confirmed it.
-Both are read from the task the claim holds of the entry it was given (`internal/projection/project.go`), so both are absent for a claim that holds no such task, and `entryConfirmedAt` alone is absent while that task waits for a turn.
+An issue of `GET /legion/v1/state` carries two more keys beside `phaseEntry` and `givenEntry`: `entryQueuedAt`, when a task of an entry was first queued to a claim, and `entryConfirmedAt`, when a turn of that claim's worker first confirmed one.
+Both are read from the claim's own record of its handshake of the last entry it was queued a task of (`internal/projection/project.go`), so both stay after the turn that confirmed the task has ended and the task is retired.
+A tree's own root carries its architect's handshake whatever phase it stands in, through `awaiting_person` and the phases a phase role works, where `phaseEntry` and `givenEntry` are that role's;
+any other issue carries the handshake of the role of its current phase.
+Both are absent where no entry was queued to that claim in the issue's current generation, so a root re-admitted carries neither until its new architect entry is queued, and `entryConfirmedAt` alone is absent while no turn has confirmed a task of the entry.
 A caller from a pod whose claims record a contract below 117 is served the issues without either time (`withoutEntryTimes` in `internal/api/server.go`).
 The daemon wakes the project's controller with `architect-stalled on <KEY>` (`skill://legion-controller/references/wakes.md`), once for each arm in each run of the root:
 
@@ -2212,16 +2215,22 @@ The daemon reads the three arms on every admission pass, and its sweep of each m
 
 Store migration 20261113181500_architect_stalled_notices adds `architect_stalled_notices`, which marks each wake told.
 Store migration 20261113182000_architect_entry_upgrade settles every root architect of the release before it at entry 1, on its row and on its claim, and marks the first and the third arm told for each root, so the upgrade sends no running architect a first task and wakes the controller for none of them.
-The state of such a root carries its two numbers and neither time, since the upgrade queues no task.
+Store migration 20261114020537_claim_entry_handshake adds the four `claims.handshake_*` columns that hold a claim's handshake, at defaults that name no entry.
+The state of such a root carries its two numbers and neither time, since the upgrade queues no task and records no handshake.
 
 To roll a release at contract 117 back to contract 87, stop the daemon and run two blocks in this order: the block below, then the phase entry's block after it.
 A rollback below contract 111 also takes that release's own steps, which "Rolling back the release that frees the slot past review" above gives.
 To roll it back to contract 111 instead, the release just before it, run the block below alone: that release keeps the six columns, and its sweep passes over every architect, since it chooses a role through `workflow.OpenPhaseRole`, which names none for an architect.
-The block below is the way back of those two migrations, and the header of each carries it:
+The block below is the way back of those three migrations, and the header of each carries it:
 
 ```sh
 psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
 begin;
+alter table claims drop column if exists handshake_entry;
+alter table claims drop column if exists handshake_generation;
+alter table claims drop column if exists handshake_queued_at;
+alter table claims drop column if exists handshake_confirmed_at;
+delete from schema_version where version = 20261114020537;
 delete from schema_version where version = 20261113182000;
 delete from outbox where kind = 'controller_notice' and payload->>'kind' = 'architect-stalled';
 drop table if exists architect_stalled_notices;
@@ -2230,10 +2239,15 @@ commit;
 SQL
 ```
 
-It prints `BEGIN`, `DELETE 1`, `DELETE <n>` for the wakes it drops, `DROP TABLE`, `DELETE 1` and `COMMIT`;
-a rerun prints `DELETE 0` twice, a `NOTICE` that the table does not exist, the same `DROP TABLE`, `DELETE 0` and `COMMIT`, and changes nothing.
+It prints `BEGIN`, four `ALTER TABLE`s, `DELETE 1`, `DELETE 1`, `DELETE <n>` for the wakes it drops, `DROP TABLE`, `DELETE 1` and `COMMIT`;
+a rerun prints a `NOTICE` that each of the four columns does not exist beside the same four `ALTER TABLE`s, `DELETE 0` three times, a `NOTICE` that the table does not exist, the same `DROP TABLE`, `DELETE 0` and `COMMIT`, and changes nothing.
 It runs first because the upgrade writes into three of the six columns the phase entry's block drops, which is the case that block's own text covers below.
-The first `delete` re-arms the upgrade, so the roll-forward runs its fill again after the phase entry's fill and settles every root standing then.
+The four `alter table`s and the first `delete` go together, and come first because the claim handshake is the newest of the three migrations.
+The earlier release needs neither: its claim read and its claim write name each column they touch, so the four columns would stand unread and unwritten.
+Both are owed to the roll-forward.
+The earlier release queues tasks and records no handshake, so a handshake left standing would name an entry that release has since replaced, and the state of a root still at the same generation would show the times of that older entry.
+With the columns dropped and the row deleted, `Migrate` adds the four columns again at their defaults, and every claim reads as having no handshake until its role's next start.
+The `delete` of 20261113182000's row re-arms the upgrade, so the roll-forward runs its fill again after the phase entry's fill and settles every root standing then.
 Without it, `Migrate` would not run that file again, every root architect would read entry 0 on its row and on its claim, and the first pass would hand every running architect a first task at once.
 The earlier release needs nothing of the upgrade taken away.
 The two numbers the upgrade wrote on each claim go with the columns the phase entry's block drops.
@@ -2249,13 +2263,14 @@ The `drop table` and the last `delete` go together.
 The earlier release reads no such table, and the delete makes the store report that release's own version again.
 The drop is owed to the roll-forward, which cannot create the table again while it stands.
 `Migrate` makes the table again, empty, and the re-armed upgrade marks it again.
-The SQL was run on 2026-11-13 at 19:17Z against PostgreSQL 18.6, on a scratch database that `internal/store`'s own migration step (`store.apply`) took through 20261113181500 and that then held one root at `admitted` whose architect claim stood with no architect `phases` row.
-`Migrate` then applied the upgrade and left 135 versions recorded, the highest 20261113182000, with the architect's row and claim at entry 1 and two marks, and one unsent `architect-stalled` wake was written into the outbox after it.
-This block's first run printed `BEGIN`, `DELETE 1`, `DELETE 1`, `DROP TABLE`, `DELETE 1` and `COMMIT`.
-Its rerun printed `BEGIN`, `DELETE 0`, `DELETE 0`, `NOTICE:  table "architect_stalled_notices" does not exist, skipping`, `DROP TABLE`, `DELETE 0` and `COMMIT`.
+The SQL was run on 2026-11-14 at 02:21Z against PostgreSQL 18.6, on a scratch database that `internal/store`'s own migration step (`store.apply`) took through 20261113181500 and that then held one root at `admitted` whose architect claim stood with no architect `phases` row.
+`Migrate` then applied the upgrade and the claim handshake and left 139 versions recorded, the highest 20261114020537, with the architect's row and claim at entry 1 and two marks.
+After it the architect's claim was written given entry 2 with a handshake of that entry, queued and confirmed, and one unsent `architect-stalled` wake was written into the outbox.
+This block's first run printed `BEGIN`, four `ALTER TABLE`s, `DELETE 1`, `DELETE 1`, `DELETE 1`, `DROP TABLE`, `DELETE 1` and `COMMIT`.
+Its rerun printed `BEGIN`, `NOTICE:  column "handshake_entry" of relation "claims" does not exist, skipping` and the same `NOTICE` for each of the other three columns, each followed by `ALTER TABLE`, then `DELETE 0`, `DELETE 0`, `DELETE 0`, `NOTICE:  table "architect_stalled_notices" does not exist, skipping`, `DROP TABLE`, `DELETE 0` and `COMMIT`.
 The phase entry's block then printed `BEGIN`, three `ALTER TABLE`s, `UPDATE 0`, six `ALTER TABLE`s, `DELETE 1` and `COMMIT`, and all three runs exited 0.
-After them the store reported 20261112180548 with 132 versions recorded, neither `architect_stalled_notices` nor the wake stood, and the architect's `phases` row stood without its entry columns and its claim without `given_entry` and `served_entry`.
-Running `Migrate` again applied three migrations, 20261111225552, 20261113181500 and 20261113182000, and the store reported 20261113182000 with 135 versions recorded, the architect's row and claim at entry 1 again and its two marks again at the root's generation.
+After them the store reported 20261112180548 with 135 versions recorded, neither `architect_stalled_notices` nor the wake stood, the claims table held no `handshake_` column, and the architect's `phases` row stood without its entry columns and its claim without `given_entry` and `served_entry`.
+Running `Migrate` again applied four migrations, 20261111225552, 20261113181500, 20261113182000 and 20261114020537, and the store reported 20261114020537 with 139 versions recorded, the architect's row and claim at entry 1 again, its two marks again at the root's generation, and its claim with no handshake.
 
 To roll a release at contract 94 back to contract 87, stop the daemon and run the eleven statements below.
 On a store that a release at contract 117 migrated, run the contract 117 block above first.
@@ -2301,9 +2316,10 @@ The re-arm needs nothing of the other rows:
 What the block does need is that no migration recorded after this one builds on the six columns it drops.
 Such a migration keeps its own row through the `delete`, so it never runs again, while the drops take with them whatever it built on those columns, an index or a constraint on `phases.entry`, say:
 reverse such a migration by its own way back first, and run this block after it.
-Three migrations are recorded above this one at contract 117.
+Four migrations are recorded above this one at contract 117.
 20261112180548_claim_leak_check_cause adds `claims.leak_check_cause` and touches none of the six, so the block holds over it and leaves it and its column standing.
 20261113182000_architect_entry_upgrade writes into three of the six, and 20261113181500_architect_stalled_notices adds the table that upgrade marks, so the contract 117 block above reverses both first.
+20261114020537_claim_entry_handshake adds four columns of `claims` and touches none of the six, and the contract 117 block above reverses it too, because the earlier release writes no handshake into them.
 The `20261111225552` is the identifier of `20261111225552_phase_entry.up.sql`, whose header carries this same block;
 where that file carries another identifier in the release you roll back from, use that one.
 The SQL was run on 2026-11-13 at 04:00Z against PostgreSQL 18.6, on a scratch database migrated to this release's head by `internal/store`'s own `Migrate`, which applied 133 migrations and left 133 versions recorded, the highest 20261112180548, and holding four outbox rows:

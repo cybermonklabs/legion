@@ -93,19 +93,21 @@ func TestProjectShowsThePhaseEntryAndTheEntryTheRoleWasGiven(t *testing.T) {
 // A root carries the two numbers as a child does: phase.RoleFor answers the architect for
 // admitted, the phase a root's own architect works, so the entry its architect's row stands on
 // and the entry its claim was queued are the root's. Beside them the view carries the handshake:
-// the time the task of that entry was first queued to the claim and the time a turn of its
-// worker confirmed it (api.Issue.EntryQueuedAt and EntryConfirmedAt), read from the task the
-// claim holds of the entry it was given.
+// the time the task of the last entry the claim was queued was first queued and the time a turn
+// of its worker first confirmed it (api.Issue.EntryQueuedAt and EntryConfirmedAt), read from the
+// claim's own record of it (supervise.Claim.Handshake) and not from the task it holds, so the two
+// times outlast the turn that confirmed the task.
 //
-// A root whose claim holds no such task carries neither time: one the daemon holds no delivery
-// of, which is what a root of the release before this one reads as, and one holding a task of no
-// entry — a wake, a resume, an operator's own — which is not that entry's work.
+// A root whose claim has recorded no handshake carries neither time, which is what a root of the
+// release before this one reads as: its migration gives the claim the entry and no handshake. A
+// task of no entry the claim holds — a wake, a resume, an operator's own — is no part of the
+// handshake and hides none of it.
 func TestProjectShowsARootsArchitectHandshake(t *testing.T) {
 	const project = "LEGION"
 	queued := projectedAt.Add(-12 * time.Minute)
 	confirmed := projectedAt.Add(-11 * time.Minute)
 	root := func(key string) record.Issue {
-		return record.Issue{Key: key, Project: project, Tree: key, Phase: phase.Admitted,
+		return record.Issue{Key: key, Project: project, Tree: key, Phase: phase.Admitted, Generation: 2,
 			Status: "in_progress", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Rank: key}
 	}
 	architectRow := func(key string, entry int64) record.PhaseRow {
@@ -121,21 +123,24 @@ func TestProjectShowsARootsArchitectHandshake(t *testing.T) {
 			"LEGION-100": {architectRow("LEGION-100", 1)},
 		},
 	}
-	architect := func(key string, given int64, pending *supervise.Delivery) supervise.Claim {
-		return supervise.Claim{Token: claim.Token(key + "-architect"), Issue: key, Role: claim.RoleArchitect,
-			State: supervise.StateWorking, Session: "ses_architect_" + key, GivenEntry: given, Pending: pending}
+	architect := func(key string, given int64, handshake supervise.EntryHandshake, pending *supervise.Delivery) supervise.Claim {
+		return supervise.Claim{Token: claim.Token(key + "-architect"), Issue: key, Tree: key, Role: claim.RoleArchitect,
+			State: supervise.StateIdle, Session: "ses_architect_" + key, GivenEntry: given, Handshake: handshake, Pending: pending}
 	}
+	taken := supervise.EntryHandshake{Entry: 1, Generation: 2, QueuedAt: queued, ConfirmedAt: confirmed}
 	claims := []supervise.Claim{
-		// The task of entry 1, queued and confirmed by a turn of its worker.
-		architect("LEGION-70", 1, &supervise.Delivery{ID: "d-70", Entry: 1, QueuedAt: queued, ConfirmedAt: confirmed}),
+		// The task of entry 1, queued and confirmed by a turn of its worker, which ended and
+		// retired the task: the claim holds nothing and its handshake stands.
+		architect("LEGION-70", 1, taken, nil),
 		// The same task, which no turn has confirmed: the root whose architect took nothing.
-		architect("LEGION-80", 1, &supervise.Delivery{ID: "d-80", Entry: 1, QueuedAt: queued}),
-		// A wake's task, which carries no entry and leaves the given number where it stands: the
-		// claim holds no task of entry 1, so the root carries neither time.
-		architect("LEGION-90", 1, &supervise.Delivery{ID: "d-90", QueuedAt: queued, ConfirmedAt: confirmed}),
-		// A claim the daemon holds no delivery of, which a root of the release before this one
-		// is: its migration gives the claim the entry and no task.
-		architect("LEGION-100", 1, nil),
+		architect("LEGION-80", 1, supervise.EntryHandshake{Entry: 1, Generation: 2, QueuedAt: queued},
+			&supervise.Delivery{ID: "d-80", Entry: 1, Generation: 2, QueuedAt: queued}),
+		// A wake's task, which carries no entry and leaves the given number and the handshake of
+		// entry 1 where they stand, while the row has moved to entry 2.
+		architect("LEGION-90", 1, taken, &supervise.Delivery{ID: "d-90", Generation: 2, QueuedAt: confirmed}),
+		// A claim whose migration gave it the entry and recorded no handshake, which a root of the
+		// release before this one is.
+		architect("LEGION-100", 1, supervise.EntryHandshake{}, nil),
 	}
 
 	got, err := Project(context.Background(), nil, store, project, nil, claims, nil, nil, projectedAt)
@@ -145,7 +150,7 @@ func TestProjectShowsARootsArchitectHandshake(t *testing.T) {
 	for key, want := range map[string]api.Issue{
 		"LEGION-70":  {PhaseEntry: 1, GivenEntry: 1, EntryQueuedAt: &queued, EntryConfirmedAt: &confirmed},
 		"LEGION-80":  {PhaseEntry: 1, GivenEntry: 1, EntryQueuedAt: &queued},
-		"LEGION-90":  {PhaseEntry: 2, GivenEntry: 1},
+		"LEGION-90":  {PhaseEntry: 2, GivenEntry: 1, EntryQueuedAt: &queued, EntryConfirmedAt: &confirmed},
 		"LEGION-100": {PhaseEntry: 1, GivenEntry: 1},
 	} {
 		view, known := got.Issues[key]
@@ -172,54 +177,112 @@ func sameInstant(got, want *time.Time) bool {
 	return got.Equal(*want)
 }
 
-// An issue in a phase no role works carries neither entry number and neither handshake time,
-// whichever role's row and claim it holds and however far behind that claim stands: no row of it
-// is read, the sweep passes it over and a difference written for it would stand for ever. Three
-// phases are in that case: awaiting_person, done and held. Admitted is not, because the architect
-// works a root's own phase (phase.RoleFor), which TestProjectShowsARootsArchitectHandshake holds.
-func TestAPhaseNoRoleWorksCarriesNoRolesEntriesAndNoArchitectHandshake(t *testing.T) {
+// A tree's own root carries its architect's handshake of its current run in every phase it stands
+// in, and the entry numbers of the role of that phase beside it (dispatch://INFRA-2614, k5 of the
+// Verification document at version 10). A real architect registers its design gate in its first
+// turn, so its root waits on a person and then stands in a phase a phase role works: the two
+// times are still the architect's handshake there, read as the architect's and never as that
+// role's, while the two numbers are that role's and are absent in awaiting_person, a phase no role
+// works. The architect's handshake of an earlier run reads as absent, which is a re-admitted root
+// whose new architect entry is not queued yet, and so does a root whose architect recorded no
+// handshake, whatever its phase role recorded.
+//
+// An issue that is not a tree's root carries the handshake of the role of its current phase, as it
+// carries that role's numbers, and in a phase no role works — done and held — neither the numbers
+// nor the times, whichever role's row and claim it holds and however far behind that claim
+// stands: no row of it is read, the sweep passes it over and a difference written for it would
+// stand for ever.
+func TestARootCarriesItsArchitectHandshakeOfThisRunInEveryPhase(t *testing.T) {
 	const project = "LEGION"
-	issue := func(key string, p phase.Phase, status string) record.Issue {
-		return record.Issue{Key: key, Project: project, Tree: key, Phase: p, Status: status,
+	architectQueued, architectConfirmed := projectedAt.Add(-40*time.Minute), projectedAt.Add(-39*time.Minute)
+	plannerQueued, plannerConfirmed := projectedAt.Add(-10*time.Minute), projectedAt.Add(-9*time.Minute)
+	implementerQueued, implementerConfirmed := projectedAt.Add(-5*time.Minute), projectedAt.Add(-4*time.Minute)
+	issue := func(key, tree string, p phase.Phase, generation uint64) record.Issue {
+		return record.Issue{Key: key, Project: project, Tree: tree, Phase: p, Generation: generation, Status: "in_progress",
 			Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Rank: key}
 	}
-	row := func(key string, role claim.Role) []record.PhaseRow {
-		return []record.PhaseRow{{Issue: key, Role: role, Claim: claim.Token(key + "-" + string(role)),
-			Entry: 2, EntryTask: "Carry the work of " + key + " on.", EntryRaisedAt: projectedAt}}
+	row := func(key string, role claim.Role, entry int64) record.PhaseRow {
+		return record.PhaseRow{Issue: key, Role: role, Claim: claim.Token(key + "-" + string(role)),
+			Entry: entry, EntryTask: "Carry the work of " + key + " on.", EntryRaisedAt: projectedAt}
 	}
-	held := func(key string, role claim.Role) supervise.Claim {
+	held := func(key string, role claim.Role, given int64, handshake supervise.EntryHandshake) supervise.Claim {
 		return supervise.Claim{Token: claim.Token(key + "-" + string(role)), Issue: key, Role: role,
-			State: supervise.StateReady, Session: "ses_" + key, GivenEntry: 1,
-			Pending: &supervise.Delivery{ID: "d-" + key, Entry: 1, QueuedAt: projectedAt}}
+			State: supervise.StateIdle, Session: "ses_" + key + "_" + string(role), GivenEntry: given, Handshake: handshake}
 	}
+	architects := func(entry int64, generation uint64) supervise.EntryHandshake {
+		return supervise.EntryHandshake{Entry: entry, Generation: generation, QueuedAt: architectQueued, ConfirmedAt: architectConfirmed}
+	}
+	planners := supervise.EntryHandshake{Entry: 1, Generation: 2, QueuedAt: plannerQueued, ConfirmedAt: plannerConfirmed}
+	implementers := supervise.EntryHandshake{Entry: 1, Generation: 2, QueuedAt: implementerQueued, ConfirmedAt: implementerConfirmed}
+
 	store := projectionStore{
 		issues: []record.Issue{
-			issue("LEGION-70", phase.AwaitingPerson, "in_progress"),
-			issue("LEGION-90", phase.Done, "done"),
-			issue("LEGION-100", phase.Held, "in_progress"),
+			issue("LEGION-70", "LEGION-70", phase.AwaitingPerson, 2),
+			issue("LEGION-71", "LEGION-71", phase.Accepting, 2),
+			issue("LEGION-72", "LEGION-72", phase.Planning, 2),
+			issue("LEGION-73", "LEGION-73", phase.Admitted, 3),
+			issue("LEGION-74", "LEGION-74", phase.Planning, 2),
+			issue("LEGION-90", "LEGION-72", phase.Done, 2),
+			issue("LEGION-100", "LEGION-72", phase.Held, 2),
+			issue("LEGION-110", "LEGION-72", phase.Implementing, 2),
 		},
 		phases: map[string][]record.PhaseRow{
-			"LEGION-70":  row("LEGION-70", claim.RoleArchitect),
-			"LEGION-90":  row("LEGION-90", claim.RoleImplementer),
-			"LEGION-100": row("LEGION-100", claim.RoleImplementer),
+			"LEGION-70":  {row("LEGION-70", claim.RoleArchitect, 1)},
+			"LEGION-71":  {row("LEGION-71", claim.RoleArchitect, 2)},
+			"LEGION-72":  {row("LEGION-72", claim.RoleArchitect, 1), row("LEGION-72", claim.RolePlanner, 1)},
+			"LEGION-73":  {row("LEGION-73", claim.RoleArchitect, 2)},
+			"LEGION-74":  {row("LEGION-74", claim.RoleArchitect, 1), row("LEGION-74", claim.RolePlanner, 1)},
+			"LEGION-90":  {row("LEGION-90", claim.RoleImplementer, 2)},
+			"LEGION-100": {row("LEGION-100", claim.RoleImplementer, 2)},
+			"LEGION-110": {row("LEGION-110", claim.RoleImplementer, 1)},
 		},
 	}
 	got, err := Project(context.Background(), nil, store, project, nil, []supervise.Claim{
-		held("LEGION-70", claim.RoleArchitect),
-		held("LEGION-90", claim.RoleImplementer),
-		held("LEGION-100", claim.RoleImplementer),
+		// The root waiting on a person after its architect's first turn registered its gate.
+		held("LEGION-70", claim.RoleArchitect, 1, architects(1, 2)),
+		// The root its architect accepts, whose numbers are the architect's too.
+		held("LEGION-71", claim.RoleArchitect, 2, architects(2, 2)),
+		// The root its planner works: the planner's numbers and its own handshake, beside the
+		// architect's handshake.
+		held("LEGION-72", claim.RoleArchitect, 1, architects(1, 2)),
+		held("LEGION-72", claim.RolePlanner, 1, planners),
+		// The root re-admitted at run 3, whose architect's entry 2 is raised and not queued yet:
+		// the handshake it holds is of run 2.
+		held("LEGION-73", claim.RoleArchitect, 1, architects(1, 2)),
+		// The root whose architect claim recorded no handshake, the release before this one's,
+		// while its planner recorded one.
+		held("LEGION-74", claim.RoleArchitect, 1, supervise.EntryHandshake{}),
+		held("LEGION-74", claim.RolePlanner, 1, planners),
+		// The children: two in a phase no role works, each behind its row, and one its
+		// implementer works.
+		held("LEGION-90", claim.RoleImplementer, 1, implementers),
+		held("LEGION-100", claim.RoleImplementer, 1, implementers),
+		held("LEGION-110", claim.RoleImplementer, 1, implementers),
 	}, nil, nil, projectedAt)
 	if err != nil {
 		t.Fatalf("Project: %v", err)
 	}
-	for _, key := range []string{"LEGION-70", "LEGION-90", "LEGION-100"} {
+	for key, want := range map[string]api.Issue{
+		"LEGION-70":  {EntryQueuedAt: &architectQueued, EntryConfirmedAt: &architectConfirmed},
+		"LEGION-71":  {PhaseEntry: 2, GivenEntry: 2, EntryQueuedAt: &architectQueued, EntryConfirmedAt: &architectConfirmed},
+		"LEGION-72":  {PhaseEntry: 1, GivenEntry: 1, EntryQueuedAt: &architectQueued, EntryConfirmedAt: &architectConfirmed},
+		"LEGION-73":  {PhaseEntry: 2, GivenEntry: 1},
+		"LEGION-74":  {PhaseEntry: 1, GivenEntry: 1},
+		"LEGION-90":  {},
+		"LEGION-100": {},
+		"LEGION-110": {PhaseEntry: 1, GivenEntry: 1, EntryQueuedAt: &implementerQueued, EntryConfirmedAt: &implementerConfirmed},
+	} {
 		view, known := got.Issues[key]
 		if !known {
 			t.Fatalf("%s is in no issue of the projected state; this test proves nothing", key)
 		}
-		if view.PhaseEntry != 0 || view.GivenEntry != 0 || view.EntryQueuedAt != nil || view.EntryConfirmedAt != nil {
-			t.Errorf("%s at %s is projected with entry %d given %d, queued %v confirmed %v, want none of them: phase.RoleFor names no role for that phase",
-				key, view.Phase, view.PhaseEntry, view.GivenEntry, view.EntryQueuedAt, view.EntryConfirmedAt)
+		if view.PhaseEntry != want.PhaseEntry || view.GivenEntry != want.GivenEntry {
+			t.Errorf("%s at %s is projected with entry %d given %d, want entry %d given %d: the numbers are the role's that works that phase (phase.RoleFor)",
+				key, view.Phase, view.PhaseEntry, view.GivenEntry, want.PhaseEntry, want.GivenEntry)
+		}
+		if !sameInstant(view.EntryQueuedAt, want.EntryQueuedAt) || !sameInstant(view.EntryConfirmedAt, want.EntryConfirmedAt) {
+			t.Errorf("%s at %s at run %d is projected with its entry queued %v and confirmed %v, want %v and %v",
+				key, view.Phase, view.Generation, view.EntryQueuedAt, view.EntryConfirmedAt, want.EntryQueuedAt, want.EntryConfirmedAt)
 		}
 	}
 }
