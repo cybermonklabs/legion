@@ -1261,7 +1261,7 @@ func TestLegionGhChecksTheCallWithTheLeakGuard(t *testing.T) {
 	})
 
 	t.Run("unchecked: the shared check's own visibility read", func(t *testing.T) {
-		visibility := leakguard.VisibilityReadArgs("sjawhar/legion")
+		visibility := []string{"api", "--hostname", "github.com", "repos/sjawhar/legion", "--jq", ".visibility"}
 		code, stdout, stderr, ghRan, checked := call(t, ghCheckRefuses, "", map[string]string{leakguard.VisibilityReadVar: "sjawhar/legion"}, visibility...)
 		if code != 0 || stdout != "public\n" {
 			t.Errorf("the check's own visibility read = exit %d, stdout %q, stderr %q; want exit 0 and the visibility", code, stdout, stderr)
@@ -1350,6 +1350,53 @@ func TestLegionGhKeepsVisibilityAndLogsCalls(t *testing.T) {
 	}
 	if strings.Contains(string(log), "argument text must not be logged") {
 		t.Errorf("the call log holds command argument text: %q", log)
+	}
+}
+
+// Concurrent processes share one log and rotate it as one operation, so no appended line that
+// fits after the oversized prior content is lost.
+func TestAppendGhCallLogKeepsConcurrentLinesThatFit(t *testing.T) {
+	if repository := os.Getenv("LEGION_TEST_GH_CALL_LOG_REPOSITORY"); repository != "" {
+		appendGhCallLog(map[string]string{"XDG_STATE_HOME": os.Getenv("LEGION_TEST_GH_CALL_LOG_STATE")}, repository, "api", "", 0)
+		return
+	}
+
+	const calls = 128
+	state := t.TempDir()
+	dir := filepath.Join(state, "legion-gh")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "calls.log")
+	if err := os.WriteFile(path, append(bytes.Repeat([]byte{'x'}, ghCallLogBytes), '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	errs := make(chan error, calls)
+	for i := range calls {
+		repository := fmt.Sprintf("repo-%03d", i)
+		go func() {
+			command := exec.Command(os.Args[0], "-test.run=^TestAppendGhCallLogKeepsConcurrentLinesThatFit$")
+			command.Env = append(os.Environ(),
+				"LEGION_TEST_GH_CALL_LOG_REPOSITORY="+repository,
+				"LEGION_TEST_GH_CALL_LOG_STATE="+state,
+			)
+			errs <- command.Run()
+		}()
+	}
+	for range calls {
+		if err := <-errs; err != nil {
+			t.Fatal(err)
+		}
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range calls {
+		want := fmt.Sprintf(`repository="repo-%03d"`, i)
+		if got := strings.Count(string(content), want); got != 1 {
+			t.Errorf("the call log records %q %d times, want once", want, got)
+		}
 	}
 }
 

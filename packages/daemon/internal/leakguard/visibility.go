@@ -6,21 +6,18 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 )
 
-const (
-	// privateVisibilityTTL is a conservative minute because no measurement of repeated private
-	// repository calls is available. It bounds how long a newly public repository skips the rules.
-	privateVisibilityTTL = time.Minute
-	rateLimitWaitBound   = 2 * time.Minute
-)
+const rateLimitWaitBound = 2 * time.Minute
 
 // Clock supplies the time and waits visibility reads use. Tests replace it so retrying a near
 // rate-limit reset does not sleep for wall-clock time.
@@ -53,19 +50,18 @@ const (
 )
 
 // Visibility is what GitHub reports the repository slug ("owner/name") as. Public answers stay
-// for the role's pod life. Private and internal answers expire after privateVisibilityTTL.
+// for the role's pod life. Private and internal answers are read each time, so a repository made
+// public cannot skip a rule pass.
 //
-// The read is the one the shared check itself makes:
+// The header-bearing read is:
 //
 //	gh api --hostname github.com repos/<slug> --include --jq .visibility
 //
-// run with PUBLIC_LEAK_CHECK_VISIBILITY_READ=<slug> in its environment. Both of those are copied
-// from the check on purpose. A pod's gh is `legion gh`, which calls this guard, so a read that
-// looked like any other gh call would call the guard again, and the guard again: the exemption
-// `legion gh` makes for the check's own visibility read — that exact argv for that exact slug —
-// covers this read too, because it is built from the same VisibilityReadVar and
-// VisibilityReadArgs this read is. The caller reaches this through Guard.scanThrough, which lets
-// no slug the exemption would refuse get this far.
+// run with PUBLIC_LEAK_CHECK_VISIBILITY_READ=<slug> in its environment. A pod's gh is `legion
+// gh`, which calls this guard, so this read must not be mistaken for the shared check's callback
+// or it would recurse. The callback's exact argv is separate (VisibilityReadArgs): it has no
+// `--include`, while this reader needs the headers to detect a near rate limit. The caller reaches
+// this through Guard.scanThrough, which lets no slug the exemption would refuse get this far.
 func (g *Guard) Visibility(ctx context.Context, slug string) (Visibility, error) {
 	if visibility, ok := g.keptVisibility(slug); ok {
 		g.reportVisibility(VisibilityFromCache)
@@ -119,7 +115,6 @@ func (g *Guard) reportVisibility(source VisibilitySource) {
 
 type visibilityCacheEntry struct {
 	Visibility Visibility `json:"visibility"`
-	CachedAt   time.Time  `json:"cached_at"`
 }
 
 func (g *Guard) keptVisibility(slug string) (Visibility, bool) {
@@ -127,33 +122,45 @@ func (g *Guard) keptVisibility(slug string) (Visibility, bool) {
 	if path == "" {
 		return "", false
 	}
-	info, err := os.Stat(path)
+	dir, err := os.OpenFile(filepath.Dir(path), os.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return "", false
+	}
+	defer dir.Close()
+	info, err := dir.Stat()
+	if err != nil || !info.IsDir() || !ownedByCurrentUser(info) || info.Mode().Perm()&0o077 != 0 {
+		return "", false
+	}
+	fd, err := syscall.Openat(int(dir.Fd()), filepath.Base(path), syscall.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return "", false
+	}
+	cache := os.NewFile(uintptr(fd), path)
+	defer cache.Close()
+	info, err = cache.Stat()
 	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 {
 		return "", false
 	}
-	content, err := os.ReadFile(path)
+	content, err := io.ReadAll(cache)
 	if err != nil {
 		return "", false
 	}
 	var entry visibilityCacheEntry
-	if json.Unmarshal(content, &entry) != nil {
+	if json.Unmarshal(content, &entry) != nil || entry.Visibility != Public {
 		return "", false
 	}
-	switch entry.Visibility {
-	case Public:
-		return entry.Visibility, true
-	case Private, Internal:
-		now := g.clock().Now()
-		if entry.CachedAt.After(now) || now.Sub(entry.CachedAt) > privateVisibilityTTL {
-			return "", false
-		}
-		return entry.Visibility, true
-	default:
-		return "", false
-	}
+	return Public, true
+}
+
+func ownedByCurrentUser(info os.FileInfo) bool {
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	return ok && stat.Uid == uint32(os.Getuid())
 }
 
 func (g *Guard) keepVisibility(slug string, visibility Visibility) {
+	if visibility != Public {
+		return
+	}
 	path := g.visibilityCachePath(slug)
 	if path == "" {
 		return
@@ -169,7 +176,7 @@ func (g *Guard) keepVisibility(slug string, visibility Visibility) {
 	if err != nil || !info.IsDir() || info.Mode().Perm()&0o077 != 0 {
 		return
 	}
-	encoded, err := json.Marshal(visibilityCacheEntry{Visibility: visibility, CachedAt: g.clock().Now().UTC()})
+	encoded, err := json.Marshal(visibilityCacheEntry{Visibility: visibility})
 	if err != nil {
 		return
 	}
@@ -202,15 +209,21 @@ func (g *Guard) visibilityCachePath(slug string) string {
 }
 
 // VisibilityReadVar is the environment variable the shared public leak check's own visibility
-// read carries, naming the repository it reads. It is exported with VisibilityReadArgs because
-// `legion gh` has to let exactly this read through unchecked, and an exemption written from a
-// second copy of these strings is one an edit here would silently part from: the two sides
-// parted means a first write to another owner's repository recurses without end.
+// callback carries, naming the repository it reads. It is exported with VisibilityReadArgs because
+// `legion gh` has to let exactly this callback through unchecked. A callback written from a second
+// copy of these strings can silently part from this exemption, making a first write to another
+// owner's repository recurse without end.
 const VisibilityReadVar = "PUBLIC_LEAK_CHECK_VISIBILITY_READ"
 
-// VisibilityReadArgs is the visibility read's argv for slug, gh's own name aside, which is the
-// shape `legion gh`'s exemption matches a call against.
+// VisibilityReadArgs is the shared public leak check callback's exact argv for slug, gh's own
+// name aside. The callback does not request response headers.
 func VisibilityReadArgs(slug string) []string {
+	return []string{"api", "--hostname", "github.com", "repos/" + slug, "--jq", ".visibility"}
+}
+
+// VisibilityReadWithHeadersArgs is the guard's own visibility read. It is separate from the
+// shared check callback because it needs headers for rate-limit handling.
+func VisibilityReadWithHeadersArgs(slug string) []string {
 	return []string{"api", "--hostname", "github.com", "repos/" + slug, "--include", "--jq", ".visibility"}
 }
 
@@ -219,7 +232,7 @@ func VisibilityReadArgs(slug string) []string {
 // beside the --hostname the argv already carries.
 func (g *Guard) ghVisibility(ctx context.Context, slug string) (Visibility, error) {
 	status, printed, err := g.run(ctx, child{
-		argv: append([]string{"gh"}, VisibilityReadArgs(slug)...),
+		argv: append([]string{"gh"}, VisibilityReadWithHeadersArgs(slug)...),
 		env:  []string{VisibilityReadVar + "=" + slug, "GH_HOST=github.com"},
 	})
 	if err != nil {

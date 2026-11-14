@@ -185,6 +185,19 @@ func appendGhCallLog(env map[string]string, repo, commandPath, visibility string
 	if err != nil || !info.IsDir() || info.Mode().Perm()&0o077 != 0 {
 		return
 	}
+	lock, err := os.OpenFile(filepath.Join(dir, "calls.log.lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return
+	}
+	defer lock.Close()
+	if err := lock.Chmod(0o600); err != nil {
+		return
+	}
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
+		return
+	}
+	defer func() { _ = syscall.Flock(int(lock.Fd()), syscall.LOCK_UN) }()
+
 	path := filepath.Join(dir, "calls.log")
 	log, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
@@ -214,11 +227,22 @@ func ghCallLogValue(value string) string {
 }
 
 func trimGhCallLog(path string) {
-	content, err := os.ReadFile(path)
-	if err != nil || len(content) <= ghCallLogBytes {
+	log, err := os.Open(path)
+	if err != nil {
 		return
 	}
-	kept := content[len(content)-ghCallLogBytes:]
+	defer log.Close()
+	info, err := log.Stat()
+	if err != nil || info.Size() <= ghCallLogBytes {
+		return
+	}
+	if _, err := log.Seek(info.Size()-ghCallLogBytes, io.SeekStart); err != nil {
+		return
+	}
+	kept, err := io.ReadAll(io.LimitReader(log, ghCallLogBytes))
+	if err != nil {
+		return
+	}
 	if cut := bytes.IndexByte(kept, '\n'); cut >= 0 {
 		kept = kept[cut+1:]
 	}
@@ -247,21 +271,19 @@ func ghRateLimitRead(argv []string) bool {
 	return slices.Equal(argv, []string{"api", "rate_limit"})
 }
 
-// ghVisibilityRead is whether argv is the shared public leak check's own read of a repository's
-// visibility, the one gh call the guard above never sees. A pod's gh is `legion gh`, so the
-// check's read comes back through this command: checking it would run the check, whose own
-// visibility read would come back here again, and the first write to a repository of another
-// owner would recurse without end.
+// ghVisibilityRead is whether argv is one of the two visibility reads internal to the shared
+// public leak check. A pod's gh is `legion gh`, so checking either read would recurse: the
+// callback makes another call through this command, and the header-bearing read is the guard's
+// own visibility lookup.
 //
-// The match is the check's own, as its gh guard makes it: exactly the argv
+// The callback is exactly:
 //
-//	gh api --hostname github.com repos/<slug> --include --jq .visibility
+//	gh api --hostname github.com repos/<slug> --jq .visibility
 //
-// for exactly the slug the check's variable names, which must itself be a repository GitHub
-// could have (ghrepo.Parse), so that a variable someone else set lets through one read of one
-// repository and nothing else. Both halves come from leakguard, whose own visibility reader
-// (Guard.ghVisibility) is built from the same two, so the exemption and the read it exempts
-// cannot part.
+// The guard's distinct read adds `--include` to receive rate-limit headers. Each must name
+// exactly the repository the variable names, and that name must parse as a repository GitHub
+// could serve, so a variable someone else set lets through one read of one repository and nothing
+// else.
 func ghVisibilityRead(argv []string, env map[string]string) bool {
 	slug := env[leakguard.VisibilityReadVar]
 	if slug == "" {
@@ -270,7 +292,8 @@ func ghVisibilityRead(argv []string, env map[string]string) bool {
 	if _, err := ghrepo.Parse(leakguard.VisibilityReadVar, slug); err != nil {
 		return false
 	}
-	return slices.Equal(argv, leakguard.VisibilityReadArgs(slug))
+	return slices.Equal(argv, leakguard.VisibilityReadArgs(slug)) ||
+		slices.Equal(argv, leakguard.VisibilityReadWithHeadersArgs(slug))
 }
 
 // runGhChild runs the real gh as a child of this process and is the status to exit with: gh's

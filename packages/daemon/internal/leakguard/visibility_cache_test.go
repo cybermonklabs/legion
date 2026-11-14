@@ -2,6 +2,9 @@ package leakguard
 
 import (
 	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -21,6 +24,78 @@ func (c *visibilityTestClock) Sleep(ctx context.Context, wait time.Duration) err
 	c.waits = append(c.waits, wait)
 	c.now = c.now.Add(wait)
 	return ctx.Err()
+}
+
+// Kept answers can only make a guard scan more, never let it skip a scan. A cache entry outside
+// the guard's owned, private directory or anything other than public is therefore a cache miss.
+func TestKeptVisibilityRejectsUntrustedEntries(t *testing.T) {
+	const slug = "invented-org/invented-repo"
+	writeEntry := func(t *testing.T, path string, visibility Visibility) {
+		t.Helper()
+		encoded, err := json.Marshal(visibilityCacheEntry{Visibility: visibility})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, append(encoded, '\n'), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for name, prepare := range map[string]func(*testing.T, string, string){
+		"symlinked file": func(t *testing.T, path, dir string) {
+			target := filepath.Join(t.TempDir(), "entry")
+			writeEntry(t, target, Public)
+			if err := os.MkdirAll(dir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(target, path); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"symlinked directory": func(t *testing.T, path, dir string) {
+			target := t.TempDir()
+			writeEntry(t, filepath.Join(target, filepath.Base(path)), Public)
+			if err := os.MkdirAll(filepath.Dir(dir), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(target, dir); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"group-writable directory": func(t *testing.T, path, dir string) {
+			if err := os.MkdirAll(dir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(dir, 0o770); err != nil {
+				t.Fatal(err)
+			}
+			writeEntry(t, path, Public)
+		},
+		"private entry": func(t *testing.T, path, dir string) {
+			if err := os.MkdirAll(dir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			encoded, err := json.Marshal(struct {
+				Visibility Visibility `json:"visibility"`
+				CachedAt   time.Time  `json:"cached_at"`
+			}{Visibility: Private, CachedAt: time.Now().UTC()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, append(encoded, '\n'), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			state := t.TempDir()
+			guard := New(Options{Env: append(fixtureenv.Isolated(t.TempDir()), "XDG_STATE_HOME="+state)})
+			path := guard.visibilityCachePath(slug)
+			prepare(t, path, filepath.Dir(path))
+			if visibility, ok := guard.keptVisibility(slug); ok {
+				t.Errorf("kept visibility = %q, true; want cache miss", visibility)
+			}
+		})
+	}
 }
 
 // A rate limit reset close enough to the call's bound is waited out once, then the visibility is

@@ -330,8 +330,9 @@ func TestAPrivateOrInternalDestinationSkipsTheRules(t *testing.T) {
 	}
 }
 
-// A public visibility answer comes from GitHub once for a role's state directory, and a failed
-// read leaves no answer behind for a later call to mistake for a completed check.
+// Public answers remain for a role's pod life. Private and internal answers are read for every
+// guarded call, and a failed read leaves no answer behind for a later call to mistake for a
+// completed check.
 func TestVisibilityKeepsAnswersButNeverFailures(t *testing.T) {
 	t.Run("public", func(t *testing.T) {
 		var reads int
@@ -348,6 +349,28 @@ func TestVisibilityKeepsAnswersButNeverFailures(t *testing.T) {
 		}
 		if reads != 1 {
 			t.Errorf("the visibility was read %d times, want once", reads)
+		}
+	})
+
+	t.Run("private and internal", func(t *testing.T) {
+		for _, expected := range []Visibility{Private, Internal} {
+			t.Run(string(expected), func(t *testing.T) {
+				var reads int
+				env := append(fixtureenv.Isolated(t.TempDir()), "XDG_STATE_HOME="+t.TempDir())
+				read := func(context.Context, string) (Visibility, error) {
+					reads++
+					return expected, nil
+				}
+				for range 2 {
+					visibility, err := New(Options{Visibility: read, Env: env}).Visibility(bound(t), "invented-org/invented-repo")
+					if err != nil || visibility != expected {
+						t.Fatalf("read visibility = %q, %v; want %q", visibility, err, expected)
+					}
+				}
+				if reads != 2 {
+					t.Errorf("the %s visibility was read %d times, want twice", expected, reads)
+				}
+			})
 		}
 	})
 
@@ -373,8 +396,8 @@ func TestVisibilityKeepsAnswersButNeverFailures(t *testing.T) {
 	})
 }
 
-// A push asks the same role-state visibility cache a preceding guarded call populated, so the
-// shared check still runs while the destination is not read from GitHub twice.
+// A push reads a private destination again after a preceding guarded call: only public answers
+// are kept, so a repository made public cannot skip the rule pass.
 func TestPushUsesTheRoleKeptVisibility(t *testing.T) {
 	state := t.TempDir()
 	env := append(fixtureenv.Isolated(t.TempDir()), "XDG_STATE_HOME="+state)
@@ -398,8 +421,8 @@ func TestPushUsesTheRoleKeptVisibility(t *testing.T) {
 	if err != nil {
 		t.Fatalf("push after the visibility read: %v", err)
 	}
-	if reads != 1 {
-		t.Errorf("the visibility was read %d times, want once", reads)
+	if reads != 2 {
+		t.Errorf("the visibility was read %d times, want twice", reads)
 	}
 }
 
