@@ -17,7 +17,9 @@ import {
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer";
 import type { DeliveryAnswer } from "@legion/envoy-client/transport";
 import { Terminal } from "@xterm/headless";
+import { connect, type NatsConnection } from "nats";
 import { linkOmpNatives } from "./omp-natives";
+import { publishTaskFrame, taskStandIn } from "./task-stand-in";
 
 export interface Request {
   readonly path: string;
@@ -833,7 +835,7 @@ export interface LegionPaneOptions {
   readonly tree: string;
   /** `LEGION_ISSUE`; the tree itself makes the pane the tree's root: a root architect's. */
   readonly issue: string;
-  /** The daemon's assignment, sent as the RPC `prompt`. Several are sent one after another, each
+  /** The daemon's assignment, a task the pane takes. Several are given one after another, each
    * once the run the one before it started has settled: a turn a refusal ended starts no
    * continuation of its own, so a case that needs a second turn names a second assignment. */
   readonly prompt: string | readonly string[];
@@ -894,7 +896,7 @@ export interface LegionPane {
    * root and against the same stand-in, and settles it as the first life settled: what the
    * daemon does when it relaunches a worker whose process is gone. `replies` are appended to the
    * script the first life left, and `prompt` is the assignment — or assignments — the second
-   * life is given.
+   * life is given, as tasks it takes.
    */
   readonly resume: (replies: readonly Reply[], prompt: string | readonly string[]) => Promise<void>;
   /** The pane's issue workspace. */
@@ -908,9 +910,11 @@ export interface LegionPane {
  * gateway that answers the pane's turns from `replies`. The server is real: a session's only
  * inbound is the consumer the listener builds for it, which it is relayed on its own relay
  * subject, so a pane with no NATS server holds no relay subject, every registration of its fails
- * saying so, and its Legion claim fails with it (INFRA-771). The daemon's assignment arrives as
- * the RPC `prompt`. Nothing in a pane runs `legion` from bash (LEGION-631), so no stand-in
- * `legion` is on its PATH: `bin` holds what `prepare` put there.
+ * saying so, and its Legion claim fails with it (INFRA-771). The daemon's assignment is a task the
+ * pane takes (`./task-stand-in`): the stand-in holds it as the claim's value, the registration
+ * answers it, and the take is answered its text; each later one is relayed to the session as a
+ * task frame once the run before it has settled. Nothing in a pane runs `legion` from bash
+ * (LEGION-631), so no stand-in `legion` is on its PATH: `bin` holds what `prepare` put there.
  */
 export async function runLegionPane(
   binary: string,
@@ -943,6 +947,9 @@ export async function runLegionPane(
    * gateway itself still has to settle on the gateway falling silent. */
   let served = 0;
   let lastAnsweredAt = 0;
+  const tasks = taskStandIn();
+  // The session the pane registered, which a later task is relayed to.
+  let paneSession = "";
   const { requests, base } = serveStandin(cleanup, (url, body) => {
     if (url.pathname === "/anthropic/v1/messages") {
       served += 1;
@@ -979,7 +986,10 @@ export async function runLegionPane(
       });
     }
     if (url.pathname.startsWith("/anthropic/")) return Response.json({ data: [] });
+    const taskAnswer = tasks.answer(url.pathname, body);
+    if (taskAnswer !== undefined) return taskAnswer;
     if (url.pathname === "/legion/v1/claims/register") {
+      paneSession = typeof body.sessionId === "string" ? body.sessionId : "";
       return Response.json({
         ...registered,
         claimToken,
@@ -988,6 +998,7 @@ export async function runLegionPane(
         role,
         generation: 1,
         secret: `${name}-secret`,
+        ...tasks.registered(),
       });
     }
     if (url.pathname === "/legion/v1/claims/ready") return new Response(null, { status: 204 });
@@ -1016,16 +1027,30 @@ export async function runLegionPane(
   });
   await writeStandinProfile(home, base, options.config ?? [], options.providers);
 
+  // The connection a later task is relayed on, opened at the first such task.
+  let relayConnection: NatsConnection | undefined;
+  const relayTask = async (prompt: string): Promise<void> => {
+    if (relayConnection === undefined) {
+      relayConnection = await connect({ servers: options.nats });
+      const opened = relayConnection;
+      cleanup.push(() => opened.close());
+    }
+    publishTaskFrame(relayConnection, paneSession, claimToken, tasks.give(prompt));
+  };
+
   /**
-   * One life of the pane: omp started with `args` on its command line, given each prompt of
+   * One life of the pane: omp started with `args` on its command line, given each task of
    * `prompts` once the run the one before it started has settled, and left once the last has
-   * settled. A run has settled when the RPC stream reports its terminal agent_end: a continuation
-   * the host scheduled (the follow-up) starts its turn before that, under the same run. A steer
-   * the extension sends from `agent_end` instead starts its continuation after that frame, so
+   * settled. The first is the value the registration answers; each later one is relayed. A run
+   * has settled when the RPC stream reports its terminal agent_end: a continuation the host
+   * scheduled (the follow-up) starts its turn before that, under the same run. A steer the
+   * extension sends from `agent_end` instead starts its continuation after that frame, so
    * `quietMs` waits for the gateway to fall silent rather than for the frame.
    */
   const live = async (prompts: readonly string[], args: readonly string[]): Promise<void> => {
     let settled = Promise.withResolvers<void>();
+    const [first] = prompts;
+    if (first !== undefined) tasks.give(first);
     const rpc = spawnRpc(
       binary,
       {
@@ -1072,11 +1097,11 @@ export async function runLegionPane(
       },
       cleanup
     );
-    for (const prompt of prompts) {
-      settled = Promise.withResolvers<void>();
+    for (const [index, prompt] of prompts.entries()) {
+      if (index > 0) settled = Promise.withResolvers<void>();
       lastAnsweredAt = Date.now();
       const started = served;
-      rpc.send({ type: "prompt", message: prompt });
+      if (index > 0) await relayTask(prompt);
       if (options.quietMs === undefined) {
         await Promise.race([settled.promise, rpc.closed]);
       } else {

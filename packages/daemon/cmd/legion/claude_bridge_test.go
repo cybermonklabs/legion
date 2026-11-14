@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -109,11 +110,11 @@ func TestClaudeBridgeExitsOnceTheShimHasReadEveryFrame(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer shim.Close()
-	// The stand-in takes the turn's prompt, answers it, and exits 0.
-	p := startClaudeBridge(t, "touch \"$CLAUDE_STANDIN_READY\"\nread -r prompt\ncat "+turn+"\n", stdout)
+	// The stand-in takes the turn's user message, answers it, and exits 0.
+	p := startClaudeBridge(t, "touch \"$CLAUDE_STANDIN_READY\"\nread -r message\ncat "+turn+"\n", stdout)
 	// The bridge holds its own copy: the shim's end reads to its end once the bridge exits.
 	_ = stdout.Close()
-	p.send(shimwire.Prompt{ID: "p1", DeliveryID: "d-p1", Message: "go"})
+	p.deliver("ev1", "go")
 	// A shim that reads, slowly: 4 KiB every 25 ms, so the 256 KiB frame takes it over 1.5 s.
 	var read bytes.Buffer
 	chunk := make([]byte, 4<<10)
@@ -145,7 +146,7 @@ func TestClaudeBridgeExitsOnceTheShimHasReadEveryFrame(t *testing.T) {
 		}
 		types = append(types, frame.Type)
 	}
-	if want := []string{"response", "agent_start", "tool_execution_start", "agent_end", "prompt_result"}; !slices.Equal(types, want) {
+	if want := []string{"agent_start", "tool_execution_start", "agent_end"}; !slices.Equal(types, want) {
 		t.Errorf("the shim read frames %q, want %q:\n%s", types, want, p.logged())
 	}
 	if len(left) > 0 {
@@ -252,6 +253,26 @@ func (p *claudeBridgeProcess) send(f shimwire.Frame) {
 		p.t.Fatal(err)
 	}
 	if _, err := p.stdin.Write(append(line, '\n')); err != nil {
+		p.t.Fatal(err)
+	}
+}
+
+// deliver writes one Envoy delivery to the bridge's inbox, as claude-envoy's channel server does,
+// over a connection of its own that stays open until the test ends. Between turns it starts a turn
+// of the bridge's own with content as its user message, which is how a turn of the bridge's begins:
+// the daemon pushes no task on the stream.
+func (p *claudeBridgeProcess) deliver(id, content string) {
+	p.t.Helper()
+	sockets, _ := filepath.Glob(filepath.Join(p.tmp, "legion-claude-*", "inbox.sock"))
+	if len(sockets) != 1 {
+		p.t.Fatalf("the bridge's inboxes are %q, want one", sockets)
+	}
+	conn, err := net.Dial("unix", sockets[0])
+	if err != nil {
+		p.t.Fatal(err)
+	}
+	p.t.Cleanup(func() { _ = conn.Close() })
+	if err := json.NewEncoder(conn).Encode(claudebridge.InboxDelivery{ID: id, Content: content}); err != nil {
 		p.t.Fatal(err)
 	}
 }

@@ -2,6 +2,7 @@ import { expect, test } from "bun:test"
 import { createServer, type Socket } from "node:net"
 import { join } from "node:path"
 import { agentSubject } from "@legion/contracts"
+import type { RelayTaskValue } from "@legion/envoy-client/consumer-delivery"
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer"
 import {
   type DeliveryRequest,
@@ -457,6 +458,56 @@ test("a reconnect begins a new epoch and registers it at once", async () => {
     expect(renewed).toBeString()
     expect(renewed).not.toBe(firstEpoch)
   } finally {
+    await session.shutdown()
+  }
+})
+
+test("a task frame goes to the session's task values and nowhere else, and the first answer of each epoch tells them the relay began again", async () => {
+  const directory = scratchState()
+  const nats = new FakeNats()
+  const notifier = heldNotifier()
+  const { client, registrations } = listener(() => ({ ...noInterest(), delivery: CONSUMER }))
+  const relayed: RelayTaskValue[] = []
+  let epochs = 0
+  const session = await startChannelSession(
+    sessionOptions(new SessionIdentity(SESSION, "/tmp"), directory, {
+      connection: nats,
+      notifier: notifier.notifier,
+      client,
+      taskValues: {
+        relayed: (value) => relayed.push(value),
+        epoch: () => {
+          epochs += 1
+        },
+      },
+    }),
+  )
+  const claim = "legion-legion-legion-208-implementer"
+  const bucketEpoch = "2026-11-13T16:21:44.123456789Z"
+  try {
+    await waitFor(async () => epochs === 1, "the first epoch's answer")
+    nats.emitTaskFrame(SESSION, { claim, epoch: bucketEpoch, revision: 12, task: 4 })
+    nats.emitTaskFrame(SESSION, { claim, epoch: bucketEpoch, revision: 13 })
+    await waitFor(async () => relayed.length === 2, "the two task frames")
+    expect(relayed).toEqual([
+      { claim, epoch: bucketEpoch, revision: 12, op: "put", task: 4 },
+      { claim, epoch: bucketEpoch, revision: 13, op: "delete" },
+    ])
+    // A task frame is no message of the session's consumer: nothing is written into the
+    // conversation, and nothing is answered.
+    expect(notifier.written).toEqual([])
+    expect(nats.published).toEqual([])
+
+    // Another answer in the same epoch tells nothing; a reconnect begins another epoch.
+    const before = registrations.length
+    session.capabilitiesChanged()
+    await waitFor(async () => registrations.length > before, "another registration")
+    await settled()
+    expect(epochs).toBe(1)
+    nats.emitStatus("reconnect")
+    await waitFor(async () => epochs === 2, "the new epoch's answer")
+  } finally {
+    for (const write of notifier.pending) write.resolve()
     await session.shutdown()
   }
 })

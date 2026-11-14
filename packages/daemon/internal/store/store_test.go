@@ -679,15 +679,18 @@ func TestTheServingRunBackfillsForARelaunchingClaim(t *testing.T) {
 // outbox_kind_check with a kind of its own belongs in it too, as dispatch://INFRA-3274's
 // 20261114031356 does: the case of a database main migrated applies a version left out of the
 // list before the list's own rewrites of that check, which do not name the later kind, so the
-// row seeded of that kind fails the upgrade. Any other version left out makes the cases below
-// weaker, never red, which is why the comment says where the list comes from.
+// row seeded of that kind fails the upgrade. So does one that builds on a column a version of the
+// list adds, as dispatch://INFRA-2811's 20261113175649_task_numbers drops the prompted column
+// 20261029121000 adds: a database no deployment has, one that recorded it and not the version
+// under it, refuses it. Any other version left out makes the cases below weaker, never red, which
+// is why the comment says where the list comes from.
 var thisRelease = map[int]bool{
 	20261029120000: true, 20261029120100: true, 20261029120200: true, 20261029120300: true,
 	20261029120400: true, 20261029120600: true, 20261029120700: true, 20261029120800: true,
 	20261029120900: true, 20261029121000: true, 20261029121100: true, 20261029121200: true,
 	20261102003600: true, 20261105081500: true, 20261105183200: true, 20261107095842: true,
 	20261108152000: true, 20261108190000: true, 20261109130413: true, 20261111181500: true,
-	20261113082214: true, 20261113110610: true, 20261114031356: true,
+	20261113082214: true, 20261113110610: true, 20261113175649: true, 20261114031356: true,
 }
 
 const idleRelease = 20261101222956

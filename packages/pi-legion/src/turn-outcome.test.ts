@@ -17,8 +17,7 @@ const implementer: ClaimCapability = {
 };
 
 interface Rig {
-  readonly report: (sessionID: string, event: AgentEndEvent) => Promise<void>;
-  /** Every body posted to `claims/turn-outcome`, in the order the daemon received it. */
+  readonly report: (sessionID: string, event: AgentEndEvent, task?: number) => Promise<void>;
   readonly posted: Record<string, unknown>[];
   readonly debugged: string[];
   readonly warned: string[];
@@ -94,6 +93,77 @@ test("a turn the provider refused is reported refused, with the provider's own m
     outcome: "refused",
     message: "Overloaded: the model is busy",
   });
+});
+
+// The first run after an accepted take is the task's turn, and its report is what finishes the
+// task on the daemon: it names the task's number.
+test("the report of a take's turn names the task's number, and a turn of no task names none", async () => {
+  const { report, posted } = rig();
+
+  await report(SESSION, clean, 4);
+  await report(SESSION, clean);
+
+  expect(posted[0]).toEqual({
+    claimToken: "legion-legion-legion-208-implementer",
+    sessionId: SESSION,
+    secret: "U2VjcmV0",
+    generation: 3,
+    sequence: 1,
+    outcome: "clean",
+    task: 4,
+  });
+  expect(posted[1]).not.toHaveProperty("task");
+});
+
+// A provider error keeps the task under its number on the daemon, which decides by the status
+// alone; the provider and the model are what its lines and the controller's notice name.
+test("a provider error's report names its status, provider and model beside the task", async () => {
+  const { report, posted } = rig();
+
+  await report(
+    SESSION,
+    {
+      messages: [
+        {
+          role: "assistant",
+          stopReason: "error",
+          errorMessage: "529 overloaded_error",
+          errorStatus: 529,
+          provider: "anthropic",
+          model: "claude-opus-4-5",
+        },
+      ],
+    },
+    4
+  );
+  // A content filter's refusal comes with no status at all.
+  await report(SESSION, {
+    messages: [{ role: "assistant", stopReason: "error", errorMessage: "Refusal (cyber)" }],
+  });
+
+  expect(posted[0]).toMatchObject({
+    outcome: "refused",
+    message: "529 overloaded_error",
+    task: 4,
+    providerError: {
+      status: 529,
+      provider: "anthropic",
+      model: "claude-opus-4-5",
+      message: "529 overloaded_error",
+      retryable: true,
+    },
+  });
+  expect(posted[1]).toMatchObject({
+    outcome: "refused",
+    providerError: {
+      status: 0,
+      provider: "",
+      model: "",
+      message: "Refusal (cyber)",
+      retryable: false,
+    },
+  });
+  expect(posted[1]).not.toHaveProperty("task");
 });
 
 // The sequence is this producer's own: it is what keys the outcome the daemon stores, so two

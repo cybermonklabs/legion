@@ -1,0 +1,5 @@
+kind: Changed
+body: |-
+  The Envoy plugin hands each task value its listener relays to the Legion plugin, and holds an idle
+  card without a turn while a Legion task's turn is pending, so the task's turn starts first. The
+  plugin interface between the two is version 6: install both plugins from the same release.

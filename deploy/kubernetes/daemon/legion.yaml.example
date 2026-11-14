@@ -68,6 +68,17 @@ worker_wake_burst: 1                   # how many wakes may leave at once before
 #                                      # that hung from a long one, so the architect decides. 4 by
 #                                      # default, and a value at or below worker_silence_minutes is
 #                                      # refused
+# worker_take_timeout_seconds: 300     # how long a ready, idle worker under no hold that reported its
+#                                      # task's value seen has to ask to take it before it is charged;
+#                                      # a value nobody reported seeing charges nobody and is written
+#                                      # again once per this bound. 300 by default; a value that is
+#                                      # not a positive integer is refused
+# worker_turn_start_timeout_seconds: 1500  # how long after an accepted take the task's turn has to
+#                                      # start before the worker is charged and the task taken back:
+#                                      # it holds the harness's setup, an automatic compaction among
+#                                      # it. 1500 by default, twice the compaction timeout and the
+#                                      # longest measured setup added; the default is no floor, and a
+#                                      # value that is not a positive integer is refused
 
 operator_token_file: ./operator-token  # the operator's bearer, in a file only you can read
 dispatch_url: https://dispatch.example.com

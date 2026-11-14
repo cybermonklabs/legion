@@ -87,9 +87,10 @@ func sameClaim(t *testing.T, got, want supervise.Claim) {
 		return
 	}
 	// Every field but the times is compared whole, so a field added to the delivery is read back
-	// or this fails; the times are compared below as instants.
+	// or this fails; the times are compared below as instants. The push path's read mark
+	// (DeliveredAt, MarkedBy, Prompted) is memory only, so a delivery that names one fails here.
 	untimed := func(d supervise.Delivery) supervise.Delivery {
-		d.QueuedAt, d.DeliveredAt, d.ConfirmedAt, d.CheckLook.OpenedAt = time.Time{}, time.Time{}, time.Time{}, time.Time{}
+		d.QueuedAt, d.ConfirmedAt, d.CheckLook.OpenedAt = time.Time{}, time.Time{}, time.Time{}
 		return d
 	}
 	if !reflect.DeepEqual(untimed(*gotPending), untimed(*wantPending)) {
@@ -100,7 +101,6 @@ func sameClaim(t *testing.T, got, want supervise.Claim) {
 		got, want time.Time
 	}{
 		{"QueuedAt", gotPending.QueuedAt, wantPending.QueuedAt},
-		{"DeliveredAt", gotPending.DeliveredAt, wantPending.DeliveredAt},
 		{"ConfirmedAt", gotPending.ConfirmedAt, wantPending.ConfirmedAt},
 		{"CheckLook.OpenedAt", gotPending.CheckLook.OpenedAt, wantPending.CheckLook.OpenedAt},
 	} {
@@ -133,11 +133,7 @@ func TestAClaimRoundTripsWithItsLocatorAndDelivery(t *testing.T) {
 		Generation:  4,
 		CheckLook:   supervise.CheckLook{Look: 2, OpenedAt: at(3)},
 		QueuedAt:    at(1),
-		DeliveredAt: at(2),
 		Interrupted: true,
-		// The prompt that set the mark, since re-queued under delivery-1: a restart judges a late
-		// refusal against it.
-		MarkedBy: "delivery-0",
 	}
 
 	if err := store.PutClaim(ctx, want); err != nil {
@@ -187,7 +183,7 @@ func TestADeliverysFailedSendsRoundTripAndItsConfirmationClearsThem(t *testing.T
 	// upsert: a delivery read back still counting failures an earlier turn got past would name a
 	// stall that is over.
 	confirmed := failing
-	confirmed.DeliveredAt, confirmed.MarkedBy, confirmed.ConfirmedAt = at(6), failing.ID, at(7)
+	confirmed.ConfirmedAt = at(7)
 	confirmed.SendFailures, confirmed.LastSendFailureAt, confirmed.LastSendError = 0, time.Time{}, ""
 	if err := store.PutDelivery(ctx, c.Token, confirmed); err != nil {
 		t.Fatalf("put the confirmed delivery: %v", err)
@@ -543,7 +539,6 @@ func TestADeliveryIsPutConfirmedAndRetired(t *testing.T) {
 	c.Pending = &delivery
 	sameClaim(t, onlyClaim(t, store), c)
 
-	delivery.DeliveredAt = at(4)
 	delivery.ConfirmedAt = at(5)
 	if err := store.PutDelivery(ctx, c.Token, delivery); err != nil {
 		t.Fatalf("put the confirmed delivery: %v", err)
@@ -664,7 +659,7 @@ func TestPutClaimAndDeliveryWritesBothOrNeither(t *testing.T) {
 	// A generation no bigint holds: the delivery's write is refused, inside the transaction that
 	// carries the claim's.
 	confirmed := supervise.Delivery{ID: "delivery-1", Task: "test it", QueuedAt: at(1),
-		DeliveredAt: at(2), ConfirmedAt: at(3), Generation: math.MaxUint64}
+		ConfirmedAt: at(3), Generation: math.MaxUint64}
 	if err := store.PutClaimAndDelivery(ctx, working, confirmed); err == nil {
 		t.Fatal("wrote a delivery whose generation no bigint holds")
 	}

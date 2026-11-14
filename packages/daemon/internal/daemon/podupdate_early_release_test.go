@@ -1,12 +1,13 @@
 package daemon
 
 // The early release (dispatch://INFRA-2981 R5, R9, verification's c-early-release): an answer a
-// role gives stands for its round through any turn after it, an answered claim is handed no task
+// role gives stands for its round through any turn after it, an answered claim takes no task
 // until the round ends, and an answer brings the round's end forward while silence delays nothing
 // past the bound. These cases drive the pod-update rig of podupdate_test.go, with the bound of
 // podupdate_bound_test.go.
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -67,13 +68,13 @@ func TestPodUpdateEarlyReleaseAnAnswerStandsThroughATurnTheDaemonDidNotPrompt(t 
 	}
 }
 
-// An answered claim is handed no task until its round ends (sendPending's answeredOpenRound): a
-// task queued for it waits, through the sweeps of the open round, and no prompt reaches its
-// worker. The round ends with the pod's replacement once the other claim answers, and the task
-// the round held is then sent.
+// An answered claim's take is refused until its round ends (claimHold's answeredOpenRound): a
+// task queued for it waits, through the sweeps of the open round, and no take of it is accepted.
+// The round ends with the pod's replacement once the other claim answers, and the take of the
+// task the round held is then accepted.
 //
-// The negative control is the hold dropped: the task is then prompted into the worker at once,
-// and the first assertion fails.
+// The negative control is the hold dropped: the take is then accepted at once, and the first
+// assertion fails.
 func TestPodUpdateEarlyReleaseAnAnsweredClaimIsHandedNoTaskUntilTheRoundEnds(t *testing.T) {
 	const task = "review the pull request"
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
@@ -83,19 +84,18 @@ func TestPodUpdateEarlyReleaseAnAnsweredClaimIsHandedNoTaskUntilTheRoundEnds(t *
 	rig.awaitRound(claim.RoleImplementer, podUpdateRound)
 	rig.awaitRound(claim.RoleTester, podUpdateRound)
 	rig.signal(claim.RoleImplementer, "a1b2c3d")
-	conn := rig.workers[claim.RoleImplementer]
-	before := len(conn.Prompts())
 
 	rig.handle(claim.RoleImplementer, supervise.RequestDeliver{Claim: rig.tokens[claim.RoleImplementer], Task: task})
 	for _, at := range []time.Duration{time.Minute, 10 * time.Minute} {
 		rig.clockAt(podUpdateStart.Add(at))
 		rig.tick()
 		rig.settle(claim.RoleImplementer)
-		if sent := conn.Prompts()[before:]; len(sent) != 0 {
-			t.Fatalf("at %s the answered implementer was sent %+v, want nothing until its round ends", rig.clock.Now(), sent)
+		if answer := rig.take(claim.RoleImplementer); answer.Outcome != supervise.TakeOutcomeRefused || answer.Hold != supervise.HoldUpdateRound {
+			t.Fatalf("at %s the answered implementer's take = %+v, want it refused by %q until its round ends",
+				rig.clock.Now(), answer, supervise.HoldUpdateRound)
 		}
 		if p := rig.claimOf(claim.RoleImplementer).Pending; p == nil || p.Task != task || !p.ConfirmedAt.IsZero() {
-			t.Fatalf("at %s the implementer holds %+v, want the task %q held and unconfirmed", rig.clock.Now(), p, task)
+			t.Fatalf("at %s the implementer holds %+v, want the task %q held and untaken", rig.clock.Now(), p, task)
 		}
 	}
 
@@ -103,13 +103,9 @@ func TestPodUpdateEarlyReleaseAnAnsweredClaimIsHandedNoTaskUntilTheRoundEnds(t *
 	rig.awaitReplacement(1, "once the tester answered too")
 	rig.awaitSwept(claim.RoleImplementer, "its round to end with the pod", func(c supervise.Claim) bool { return c.UpdateRound == "" })
 
-	testwait.Eventually(t, "the held task to reach the implementer once its round ended", func() bool {
-		for _, sent := range conn.Prompts()[before:] {
-			if sent.Message == task {
-				return true
-			}
-		}
-		return false
+	testwait.Eventually(t, "the held task's take to be accepted once the implementer's round ended", func() bool {
+		answer := rig.take(claim.RoleImplementer)
+		return answer.Outcome == supervise.TakeOutcomeAccepted && strings.HasSuffix(answer.Text, task)
 	})
 }
 

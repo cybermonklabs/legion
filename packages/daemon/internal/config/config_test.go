@@ -214,6 +214,8 @@ func defaultsFor(port int) Config {
 		WorkerBootRegistrationDeadlineIntervals: 3,
 		WorkerRPCTimeout:                        5 * time.Second,
 		WorkerStopTimeout:                       10 * time.Second,
+		WorkerTakeTimeout:                       5 * time.Minute,
+		WorkerTurnStartTimeout:                  25 * time.Minute,
 		TreeStopTimeout:                         60 * time.Second,
 		SlowCommandTimeout:                      300 * time.Second,
 		ProbeInterval:                           30 * time.Second,
@@ -284,6 +286,8 @@ worker_boot_timeout_seconds: 90
 worker_boot_registration_deadline_intervals: 4
 worker_rpc_timeout_seconds: 7
 worker_stop_timeout_seconds: 11
+worker_take_timeout_seconds: 240
+worker_turn_start_timeout_seconds: 420
 tree_stop_timeout_seconds: 61
 slow_command_timeout_seconds: 301
 probe_interval_seconds: 15
@@ -321,6 +325,9 @@ nats_nkey_seed_file: secrets/legion-pane.nk
 	want.WorkerBootRegistrationDeadlineIntervals = 4
 	want.WorkerRPCTimeout = 7 * time.Second
 	want.WorkerStopTimeout = 11 * time.Second
+	want.WorkerTakeTimeout = 4 * time.Minute
+	// Below runtime.CompactTimeout: the second wait's default is not a floor.
+	want.WorkerTurnStartTimeout = 7 * time.Minute
 	want.TreeStopTimeout = 61 * time.Second
 	want.SlowCommandTimeout = 301 * time.Second
 	want.ProbeInterval = 15 * time.Second
@@ -1164,6 +1171,36 @@ func TestLoadRefuses(t *testing.T) {
 			want: "worker_stop_timeout_seconds must be at most 2147483",
 		},
 		{
+			name: "worker_take_timeout_seconds zero",
+			body: minimalFile + "worker_take_timeout_seconds: 0\n",
+			want: "worker_take_timeout_seconds must be a positive integer",
+		},
+		{
+			name: "worker_take_timeout_seconds negative",
+			body: minimalFile + "worker_take_timeout_seconds: -300\n",
+			want: "worker_take_timeout_seconds must be a positive integer",
+		},
+		{
+			name: "worker_take_timeout_seconds not an integer",
+			body: minimalFile + "worker_take_timeout_seconds: 5m\n",
+			want: "worker_take_timeout_seconds must be an integer",
+		},
+		{
+			name: "worker_turn_start_timeout_seconds zero",
+			body: minimalFile + "worker_turn_start_timeout_seconds: 0\n",
+			want: "worker_turn_start_timeout_seconds must be a positive integer",
+		},
+		{
+			name: "worker_turn_start_timeout_seconds negative",
+			body: minimalFile + "worker_turn_start_timeout_seconds: -1500\n",
+			want: "worker_turn_start_timeout_seconds must be a positive integer",
+		},
+		{
+			name: "worker_turn_start_timeout_seconds past the timer bound",
+			body: minimalFile + "worker_turn_start_timeout_seconds: 2147484\n",
+			want: "worker_turn_start_timeout_seconds must be at most 2147483",
+		},
+		{
 			name: "tree_stop_timeout_seconds zero",
 			body: minimalFile + "tree_stop_timeout_seconds: 0\n",
 			want: "tree_stop_timeout_seconds must be a positive integer",
@@ -1724,6 +1761,8 @@ func TestLoadClassifiesEveryShippedKey(t *testing.T) {
 		{key: "worker_boot_registration_deadline_intervals", line: "worker_boot_registration_deadline_intervals: 3", class: modelled},
 		{key: "worker_rpc_timeout_seconds", line: "worker_rpc_timeout_seconds: 5", class: modelled},
 		{key: "worker_stop_timeout_seconds", line: "worker_stop_timeout_seconds: 10", class: modelled},
+		{key: "worker_take_timeout_seconds", line: "worker_take_timeout_seconds: 300", class: modelled},
+		{key: "worker_turn_start_timeout_seconds", line: "worker_turn_start_timeout_seconds: 1500", class: modelled},
 		{key: "tree_stop_timeout_seconds", line: "tree_stop_timeout_seconds: 60", class: modelled},
 		{key: "slow_command_timeout_seconds", line: "slow_command_timeout_seconds: 300", class: modelled},
 		{key: "envoy_url", line: "envoy_url: http://127.0.0.1:9020", class: modelled},

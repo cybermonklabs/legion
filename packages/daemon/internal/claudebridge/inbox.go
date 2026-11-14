@@ -15,15 +15,25 @@ import (
 
 // InboxVariable names the inbox socket in Claude Code's environment, which its MCP servers inherit:
 // packages/claude-envoy's channel server writes each Envoy delivery there instead of a channel
-// notification, which Claude Code's print mode never delivers.
+// notification, which Claude Code's print mode never delivers, and each of the claim's task values.
 const InboxVariable = "LEGION_CLAUDE_INBOX"
 
+// InboxTask is the Kind of a task line (InboxDelivery).
+const InboxTask = "task"
+
 // InboxDelivery is one line a client writes to the inbox: an Envoy delivery, already rendered, that
-// becomes a user turn. InboxAnswer is the line the bridge writes back once Claude Code has taken the
-// delivery, re-emitting it as the user message it reads (--replay-user-messages), or with an error
-// once it never will: the delivery is in the transcript, which is what claude-envoy's `done` says.
+// becomes a user turn, or a task line, the claim's task value. InboxAnswer is the line the bridge
+// writes back: for a delivery, once Claude Code has taken it, re-emitting it as the user message it
+// reads (--replay-user-messages), or with an error once it never will — the delivery is in the
+// transcript, which is what claude-envoy's `done` says; for a task line, once the bridge's loop has
+// taken the value (take.go).
 type InboxDelivery struct {
-	ID      string `json:"id"`
+	ID string `json:"id"`
+	// Kind is "" for an Envoy delivery and InboxTask for a task line: a value of the claim's key
+	// in the task bucket, which claude-envoy hands the bridge as it is handed it — relayed, read at
+	// its registration, or read from claims/task (packages/claude-envoy, src/legion-inbox.ts). A
+	// task line carries Number, Epoch and Revision and no Content.
+	Kind    string `json:"kind,omitempty"`
 	Content string `json:"content"`
 	// Blocks is the delivery as Claude Code's own content blocks, which a line carries where the
 	// delivery is more than its text: a person's own message and the pictures it embeds
@@ -31,6 +41,12 @@ type InboxDelivery struct {
 	// to Claude Code as it came — and Content stays the delivery's text, so a line without the
 	// field is the line it always was and a bridge of any age delivers the text.
 	Blocks []json.RawMessage `json:"blocks,omitempty"`
+	// Number, Epoch and Revision are a task line's value (claim.TaskValue): the number of the task
+	// the claim is owed, 0 where the value was deleted at this revision and the claim has no task
+	// from it on; the bucket's epoch; and the key's revision in it.
+	Number   uint64 `json:"number,omitempty"`
+	Epoch    string `json:"epoch,omitempty"`
+	Revision uint64 `json:"revision,omitempty"`
 }
 
 type InboxAnswer struct {
@@ -98,13 +114,14 @@ func listenInbox(events chan<- event, stop <-chan struct{}, logger *log.Logger) 
 }
 
 const (
-	// inboxPending bounds the deliveries one client has sent and the bridge has not yet answered;
-	// past it the inbox reads that client's next line once the oldest is answered.
+	// inboxPending bounds the lines one client has sent and the bridge has not yet answered; past
+	// it the inbox reads that client's next line once the oldest is answered.
 	inboxPending = 64
 	// inboxFlushTimeout bounds writing what a client is owed once the inbox closes: the answers
 	// the loop gave before closing it, each one short line a reading client takes at once.
 	inboxFlushTimeout = 100 * time.Millisecond
 	malformedDelivery = "an inbox delivery is one JSON object with an id and content"
+	malformedTask     = "an inbox task line is one JSON object with an id, a number, an epoch and a revision"
 )
 
 // owed is one answer a client is owed, in the order it sent its deliveries.
@@ -113,9 +130,10 @@ type owed struct {
 	answer <-chan error
 }
 
-// serveInbox reads one client's deliveries, handing each to the loop as it arrives, and answers
-// them in the order they came, each once the loop has answered it. The loop answers every delivery
-// it took before the inbox closes, so those answers are written then too, within inboxFlushTimeout.
+// serveInbox reads one client's lines, handing each delivery and task value to the loop as it
+// arrives, and answers them in the order they came, each once the loop has answered it. The loop
+// answers every line it took before the inbox closes, so those answers are written then too,
+// within inboxFlushTimeout.
 func serveInbox(conn net.Conn, events chan<- event, stop <-chan struct{}, logger *log.Logger) {
 	defer conn.Close()
 	go func() {
@@ -134,9 +152,12 @@ func serveInbox(conn net.Conn, events chan<- event, stop <-chan struct{}, logger
 			}
 			answer := make(chan error, 1)
 			var d InboxDelivery
-			if err := json.Unmarshal(line, &d); err != nil || d.ID == "" || d.Content == "" {
-				answer <- errors.New(malformedDelivery)
-			} else if !send(events, stop, event{delivery: &delivery{id: d.ID, content: d.Content, blocks: d.Blocks, answer: answer}}) {
+			if err := json.Unmarshal(line, &d); err != nil {
+				d = InboxDelivery{}
+			}
+			if ev, refusal := inboxEvent(d, answer); refusal != nil {
+				answer <- refusal
+			} else if !send(events, stop, ev) {
 				return
 			}
 			select {
@@ -163,9 +184,31 @@ func serveInbox(conn net.Conn, events chan<- event, stop <-chan struct{}, logger
 			answer = InboxAnswer{ID: o.id, Error: err.Error()}
 		}
 		if err := encoder.Encode(answer); err != nil {
-			logger.Printf("could not answer inbox delivery %s: %v", o.id, err)
+			logger.Printf("could not answer inbox line %s: %v", o.id, err)
 			return
 		}
+	}
+}
+
+// inboxEvent is the event the inbox line d hands the loop, answered on answer, or why d is no line
+// the bridge takes. A line that is not JSON reaches it as the zero line, which names no id.
+func inboxEvent(d InboxDelivery, answer chan<- error) (event, error) {
+	if d.ID == "" {
+		return event{}, errors.New(malformedDelivery)
+	}
+	switch d.Kind {
+	case "":
+		if d.Content == "" {
+			return event{}, errors.New(malformedDelivery)
+		}
+		return event{delivery: &delivery{id: d.ID, content: d.Content, blocks: d.Blocks, answer: answer}}, nil
+	case InboxTask:
+		if d.Epoch == "" || d.Revision == 0 {
+			return event{}, errors.New(malformedTask)
+		}
+		return event{task: &taskLine{value: taskValue{number: d.Number, epoch: d.Epoch, revision: d.Revision}, answer: answer}}, nil
+	default:
+		return event{}, fmt.Errorf("an inbox line of kind %q is none the bridge takes", d.Kind)
 	}
 }
 

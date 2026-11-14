@@ -228,11 +228,12 @@ func workingOverADeadProcessTheTakeBackMissed(t *testing.T) (*harness, runtime.L
 // suspendForFreshSession): refused here, the claim it is asked over would have no door left.
 //
 // What runs is the take-back of the dead turn and the stop, in that order (suspendOverADeadProcess,
-// letProcessGoFor): the task goes back unconfirmed under a new id, the process is let go, the
-// claim is suspended by whoever asked, and nothing is charged.
+// letProcessGoFor): the task goes back unconfirmed under its own id and number, which a take-back
+// keeps so the relaunched worker takes the same value again, the process is let go, the claim is
+// suspended by whoever asked, and nothing is charged.
 func TestASuspendOverADeadProcessLandsWhereItArrives(t *testing.T) {
 	h, dead := workingOverADeadProcessTheTakeBackMissed(t)
-	held := h.pending().ID
+	held := h.pending()
 
 	err := h.handle(RequestSuspend{Claim: testToken, Reason: "a fresh session was asked for",
 		By: SuspendedByOperator, NeverHold: true})
@@ -248,8 +249,9 @@ func TestASuspendOverADeadProcessLandsWhereItArrives(t *testing.T) {
 	if suspend := h.wantCalls("Suspend", 1)[0]; suspend.Locator != dead {
 		t.Errorf("the runtime was asked to stop %+v, want the dead process the claim recorded, %+v", suspend.Locator, dead)
 	}
-	if p := h.pending(); p.ID == held || !p.ConfirmedAt.IsZero() || !p.Interrupted {
-		t.Errorf("the claim holds %+v, want the task of the dead turn back under a new id, unconfirmed and marked interrupted", p)
+	if p := h.pending(); p.ID != held.ID || p.Number != held.Number || !p.ConfirmedAt.IsZero() || !p.Interrupted {
+		t.Errorf("the claim holds %+v, want the task of the dead turn back under its own id and number %d, unconfirmed and marked interrupted",
+			p, held.Number)
 	}
 	h.wantBudgets(Budgets{})
 	h.wantCalls("Spawn", 1)
@@ -350,9 +352,9 @@ func TestASuspendOverAProcessTheReadFoundGoneStopsTheDeadSessionAndKeepsTheEndsN
 					t.Errorf("stopped sessions %v, want the dead process's own session once", *stopped)
 				}
 				p := h.pending()
-				if p.ID == held.ID || !p.ConfirmedAt.IsZero() || !p.Interrupted || p.OutOfMemory != verdict.outOfMemory {
-					t.Errorf("the claim holds %+v, want the dead turn's task back under a new id, unconfirmed, interrupted and marked out of memory %v",
-						p, verdict.outOfMemory)
+				if p.ID != held.ID || p.Number != held.Number || !p.ConfirmedAt.IsZero() || !p.Interrupted || p.OutOfMemory != verdict.outOfMemory {
+					t.Errorf("the claim holds %+v, want the dead turn's task back under its own id and number %d, unconfirmed, interrupted and marked out of memory %v",
+						p, held.Number, verdict.outOfMemory)
 				}
 				cause := deathCause(runtime.Observation{Kind: runtime.Gone})
 				if c := h.claim().LastDeathCause; c != cause {
@@ -363,7 +365,7 @@ func TestASuspendOverAProcessTheReadFoundGoneStopsTheDeadSessionAndKeepsTheEndsN
 					want = interruptedTask(cause) + outOfMemoryTask + held.Task
 				}
 				if got := p.message(h.claim()); got != want {
-					t.Errorf("the task taken back is sent as %q, want %q", got, want)
+					t.Errorf("the task taken back is taken as %q, want %q", got, want)
 				}
 				if stored := h.store.load(testToken).Pending; stored == nil || stored.OutOfMemory != verdict.outOfMemory {
 					t.Errorf("the stored task is %+v, want it marked out of memory %v", stored, verdict.outOfMemory)

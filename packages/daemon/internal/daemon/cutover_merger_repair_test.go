@@ -61,7 +61,7 @@ var cutoverReleaseText = []string{"0067_phase_assignment", "20261109191929_outbo
 // other message of the daemon's says.
 const (
 	cutoverRepairLine = "cutover merger repair:"
-	cutoverOwedLine   = "workflow: the cutover owes a stopped merger its merging task"
+	cutoverOwedLine   = "workflow: the cutover owes a merger its merging task"
 	cutoverTold       = "cutover owed the merger its merging task"
 )
 
@@ -130,8 +130,11 @@ const cutoverIdleTick = 250 * time.Millisecond
 // work:
 //
 //   - A: an open pull request and a live, idle merger on plugin contract 68. The boot relaunches it
-//     onto this daemon's contract (pluginRelaunchable), and the relaunch's ready gives it its
-//     merging task (workflow's readyWorkerTask). This is the merger something else starts.
+//     onto this daemon's contract (pluginRelaunchable). The fill of 20261113175649_task_numbers
+//     records the merging task it took as finished in the session it holds, so the relaunch's
+//     ready gives it nothing (workflow's readyWorkerTask, dispatch://INFRA-2811 R4), and the
+//     repair owes it its merging task instead, under a phase start's origin: the merging work is
+//     new to it. It is not stopped, so it gets no cutover message.
 //   - G: an open pull request, and a merger the idle release suspended with no backstop row, its
 //     implementer, tester and reviewer released too. Only the repair starts it.
 //   - E: like G, with the root's design gate closed by a newer version of the spec than the one
@@ -184,12 +187,12 @@ const cutoverIdleTick = 250 * time.Millisecond
 // Dispatch is liveDispatch, which records every message the daemon posts and lists every issue
 // at a sequence below the one the record stores (cutoverStoredSeq). A claim's process is
 // cutoverAgent, which says hello on the worker stream with the launch's boot token, registers and
-// says ready over the claim routes as the plugin does, and records every prompt and ends its turn
-// at once.
+// says ready over the claim routes as the plugin does, takes each task its claim is given as the
+// plugin does (takeDriver), records what it took and ends that take's turn at once.
 //
 // The first boot:
 //
-//   - The repair writes one record naming 2 mergers, G and E: the selection of
+//   - The repair writes one record naming 3 mergers, A, G and E: the selection of
 //     cutoverMergerRepair, read on the ten kinds of merger the old record holds.
 //   - Its line for each of them names the slot mark of the start it owed, and that mark is the one
 //     workflow.StartOrOwe writes for a start of `merging`, read here from a start StartOrOwe
@@ -199,13 +202,15 @@ const cutoverIdleTick = 250 * time.Millisecond
 //     (record.KeepsSlot), so it is claimable at once, as any start of `merging` is.
 //   - E's merger is not started while its gate is closed, and gets exactly one task once the test
 //     opens the gate.
-//   - A's merger is relaunched and gets exactly one task, the merging task; G's merger claim is
-//     resumed and gets exactly one task, the same merging task. That is the architect's case,
-//     decision D8 of the plan: no start the boot makes gives either a second merging task. The
-//     count is read after the boot's resume by rule and admission's pass on DaemonBooted have
-//     run, after the relaunch's ready and the repair have each given their task, and once nothing
-//     is left in the outbox to start either merger, and it is read again at the end of the first
-//     daemon's life.
+//   - A's merger is relaunched and gets exactly one task, the merging task, and so does G's
+//     merger claim, which is resumed. That is the architect's case, decision D8 of the plan: no
+//     start the boot makes gives either a second merging task. The repair gives each its task
+//     whatever the fill says the merger finished: the merging task is work the cutover gave it,
+//     which the resume rule does not hold back (workflow's startSuspendedOwner), and A's is
+//     written under a phase start's origin. The count is read after the boot's resume by rule and
+//     admission's pass on DaemonBooted have run, after the relaunch's ready and the repair have
+//     each decided what they give, and once nothing is left in the outbox to start either merger,
+//     and it is read again at the end of the first daemon's life.
 //   - D's merger gets no task, and no role but the merger starts on G or E: their implementer,
 //     tester and reviewer claims stay released. T's tester is not started either.
 //   - The repair passes over the mergers of O, B, N, C and T. Each keeps its phase row as the
@@ -259,7 +264,8 @@ func TestTheCutoverStartsTheMergersTheOldBuildLeftStopped(t *testing.T) {
 	rig.keptItsReady(t, rig.s, "S's merger: the start the old record queued for it already covers it (StartFor)")
 
 	// A and G: each merger the boot starts is started, and gets one merging task, whatever else of
-	// the boot ran. Nothing but the repair starts G's merger, so a boot with no repair fails here.
+	// the boot ran. Nothing but the repair starts G's merger or gives A's its task, so a boot with
+	// no repair fails here.
 	rig.connect(t, rig.a)
 	rig.connect(t, rig.g)
 	if resumed := rig.launches(rig.g.merger, 0); len(resumed) != 1 || resumed[0].Method != "Resume" {
@@ -272,30 +278,36 @@ func TestTheCutoverStartsTheMergersTheOldBuildLeftStopped(t *testing.T) {
 	rig.settled(t, rig.g)
 	rig.toldOnce(t, rig.a)
 	rig.toldOnce(t, rig.g)
+	// A's task is new work to A's merger, so its value is written under a phase start's origin
+	// and not a resume's.
+	rig.wroteUnderOrigin(t, first, rig.a, supervise.OriginPhaseStart)
 	// S: the start the old record queued starts S's merger, and its task is the one task the
 	// merger gets: no start of the boot gives it a second.
 	rig.connect(t, rig.s)
 	rig.settled(t, rig.s)
 	rig.toldTheQueuedTask(t, rig.s)
 
-	// The repair's own record of what it did: G and E, each start with StartOrOwe's mark.
+	// The repair's own record of what it did: A, G and E, each start with StartOrOwe's mark.
 	repairs := cutoverLogged(t, first, cutoverRepairLine)
 	if len(repairs) != 1 {
 		t.Fatalf("the first boot wrote %d records starting %q, want one: %v", len(repairs), cutoverRepairLine, repairs)
 	}
-	if count, issues := repairs[0]["count"], cutoverIssues(repairs[0]["issues"]); count != float64(2) ||
-		!slices.Equal(issues, []string{rig.g.key, rig.e.key}) {
-		t.Fatalf("the first boot's repair record %v names %v mergers, %v; want 2, %s and %s: G's and E's mergers are the ones the old build left released with no backstop",
-			repairs[0]["msg"], count, issues, rig.g.key, rig.e.key)
+	if count, issues := repairs[0]["count"], cutoverIssues(repairs[0]["issues"]); count != float64(3) ||
+		!slices.Equal(issues, []string{rig.a.key, rig.g.key, rig.e.key}) {
+		t.Fatalf("the first boot's repair record %v names %v mergers, %v; want 3, %s, %s and %s: A's merger is the one the old build left live, and G's and E's the ones it left released with no backstop",
+			repairs[0]["msg"], count, issues, rig.a.key, rig.g.key, rig.e.key)
 	}
 	owed := cutoverLogged(t, first, cutoverOwedLine)
-	if len(owed) != 2 {
-		t.Fatalf("the repair wrote %d lines %q, want one for each of G and E: %v", len(owed), cutoverOwedLine, owed)
+	if len(owed) != 3 {
+		t.Fatalf("the repair wrote %d lines %q, want one for each of A, G and E: %v", len(owed), cutoverOwedLine, owed)
 	}
 	for _, line := range owed {
 		if line["needsSlot"] != mark {
 			t.Fatalf("the repair owed %v a start whose slot mark is %v, want %v, the mark StartOrOwe writes for a start of merging",
 				line["issue"], line["needsSlot"], mark)
+		}
+		if stopped := line["issue"] != rig.a.key; line["stopped"] != stopped {
+			t.Fatalf("the repair's line for %v says stopped %v, want %v: only A's merger was left live", line["issue"], line["stopped"], stopped)
 		}
 	}
 
@@ -826,8 +838,9 @@ func (r *cutoverRig) notStarted(t *testing.T, token claim.Token, why string) {
 
 // connect is the process of issue's merger coming up in its latest launch: it says hello with
 // that launch's boot token, and once the machine has the hello it registers in the session the
-// claim recorded and says ready, as the plugin does. The ready is what gives a relaunched merger
-// its task (workflow's readyWorkerTask), and what a task already pending waits for.
+// claim recorded and says ready, as the plugin does, and from then on takes each task its claim
+// is given. The ready is what gives a relaunched merger its task (workflow's readyWorkerTask),
+// and what a task already pending waits for.
 func (r *cutoverRig) connect(t *testing.T, issue cutoverIssue) {
 	t.Helper()
 	r.await(t, "a launch of "+issue.key+"'s merger", func() bool {
@@ -858,12 +871,14 @@ func (r *cutoverRig) connect(t *testing.T, issue cutoverIssue) {
 		SessionID: held.Session, Secret: registered.Secret, Generation: registered.Generation}, false); status != http.StatusNoContent {
 		t.Fatalf("ready %s's merger = %d; body %s", issue.key, status, body)
 	}
+	agent.takes(t, newTakeDriver(r.daemon.post, agent.write,
+		claim.AgentCaller{ClaimToken: issue.merger, SessionID: held.Session, Secret: registered.Secret}, registered.Generation))
 }
 
 // settled waits until issue's merger has been told something and nothing more is coming for it:
 // no start of it left in the outbox, and its claim idle with no task pending. A start that would
-// give it a second task is one of those two until its prompt is sent, and the agent ends every
-// turn at once, so a task delivered after this shows as a second prompt or a pending task.
+// give it a second task is one of those two until its worker takes it, and the agent ends every
+// turn at once, so a task delivered after this shows as a second take or a pending task.
 func (r *cutoverRig) settled(t *testing.T, issue cutoverIssue) {
 	t.Helper()
 	r.await(t, issue.key+"'s merger to be told its task and hold nothing more", func() bool {
@@ -875,9 +890,30 @@ func (r *cutoverRig) settled(t *testing.T, issue cutoverIssue) {
 	})
 }
 
-// toldOnce holds that issue's merger was given exactly one prompt over its whole life in this
-// test, and that it is the merging task: the resume task of the phase it holds
-// (workflow.ResumePhaseTask), read from the issue as the record holds it now.
+// taskValueWrittenLine is what a claim's machine logs for each task value it writes, with the
+// claim and the origin of the task (supervise's putValue).
+const taskValueWrittenLine = "supervise: a task value was written"
+
+// wroteUnderOrigin holds that the daemon whose log is logs wrote issue's merger at least one task
+// value, and every one of them under origin.
+func (r *cutoverRig) wroteUnderOrigin(t *testing.T, logs *syncBuffer, issue cutoverIssue, origin string) {
+	t.Helper()
+	written := slices.DeleteFunc(cutoverLogged(t, logs, taskValueWrittenLine), func(entry map[string]any) bool {
+		return entry["claim"] != string(issue.merger)
+	})
+	if len(written) == 0 {
+		t.Fatalf("%s's merger was written no task value, want its merging task under origin %q", issue.key, origin)
+	}
+	for _, entry := range written {
+		if entry["origin"] != origin {
+			t.Fatalf("%s's merger was written task %v under origin %v, want %q", issue.key, entry["task"], entry["origin"], origin)
+		}
+	}
+}
+
+// toldOnce holds that issue's merger took exactly one task over its whole life in this test, and
+// that it is the merging task: the resume task of the phase it holds (workflow.ResumePhaseTask),
+// read from the issue as the record holds it now.
 func (r *cutoverRig) toldOnce(t *testing.T, issue cutoverIssue) {
 	t.Helper()
 	stands := readIssue(t, r.pool, issue.key)
@@ -886,23 +922,23 @@ func (r *cutoverRig) toldOnce(t *testing.T, issue cutoverIssue) {
 	}
 	want := workflow.ResumePhaseTask(*stands)
 	if told := r.prompts(issue.merger); len(told) != 1 || told[0] != want {
-		t.Fatalf("%s's merger was prompted %q, want once with its merging task %q", issue.key, told, want)
+		t.Fatalf("%s's merger took %q, want once its merging task %q", issue.key, told, want)
 	}
 }
 
-// toldTheQueuedTask holds that issue's merger was given exactly one prompt over its whole life in
-// this test, and that it is the task of the start the old record queued for it
+// toldTheQueuedTask holds that issue's merger took exactly one task over its whole life in this
+// test, and that it is the task of the start the old record queued for it
 // (cutoverSlotRepairTask).
 func (r *cutoverRig) toldTheQueuedTask(t *testing.T, issue cutoverIssue) {
 	t.Helper()
 	want := cutoverSlotRepairTask(issue.key)
 	if told := r.prompts(issue.merger); len(told) != 1 || told[0] != want {
-		t.Fatalf("%s's merger was prompted %q, want once with the task of the start the old record queued for it, %q: no other start gives it a second task",
+		t.Fatalf("%s's merger took %q, want once the task of the start the old record queued for it, %q: no other start gives it a second task",
 			issue.key, told, want)
 	}
 }
 
-// prompts is every prompt token's processes were given, oldest first.
+// prompts is the text of every task token's processes took, oldest first.
 func (r *cutoverRig) prompts(token claim.Token) []string {
 	r.mu.Lock()
 	agents := slices.Clone(r.agents[token])
@@ -1177,15 +1213,15 @@ func cutoverMethods(calls []fake.Call) []string {
 
 // cutoverAgent is one launch of a claim's process on the daemon's worker stream: the shim and the
 // Oh My Pi behind it, as far as this test needs them. It says hello with the launch's boot token,
-// answers the protocol negotiation and every question about whether a turn is running, records
-// each prompt, and takes the prompt's turn to its end at once, so a task the daemon gives it is
-// over before the next one could arrive and every task it is ever given is a prompt it recorded.
-// It is the shape of daemon_test.go's shim and wake_wave_refresh_test.go's waveTurn, serving on a
-// goroutine of its own because the daemon prompts it whenever a task reaches its claim.
+// answers the protocol negotiation and every question about whether a turn is running, and takes
+// each task its claim is given over the claim routes (takes), running the take's turn to its end
+// at once, so a task the daemon gives it is over before the next one could arrive and every task
+// it is ever given is a take it recorded. It is the shape of daemon_test.go's shim, serving on a
+// goroutine of its own.
 type cutoverAgent struct {
 	conn  net.Conn
 	lines *bufio.Reader
-	// mu orders the serving goroutine's writes and its record of prompts against the test's reads.
+	// mu orders the serving goroutine's writes and its record of takes against the test's reads.
 	mu      sync.Mutex
 	writer  *shimwire.Writer
 	prompts []string
@@ -1246,14 +1282,6 @@ func (a *cutoverAgent) serve() {
 				return
 			}
 			a.send(shimwire.Response{ID: f.ID, Command: shimwire.TypeGetState, Success: true, Data: data})
-		case shimwire.Prompt:
-			a.mu.Lock()
-			a.prompts = append(a.prompts, f.Message)
-			a.mu.Unlock()
-			a.send(shimwire.Response{ID: f.ID, Command: shimwire.TypePrompt, Success: true})
-			a.send(shimwire.AgentStart{})
-			a.send(shimwire.AgentEnd{})
-			a.send(shimwire.PromptResult{ID: f.ID, AgentInvoked: true})
 		case shimwire.Shutdown:
 			_ = a.conn.Close()
 			return
@@ -1264,12 +1292,31 @@ func (a *cutoverAgent) serve() {
 // send writes one frame. A write that fails is left to the assertions that follow it, since this
 // runs on the serving goroutine and the test may already be over.
 func (a *cutoverAgent) send(frame shimwire.Frame) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	_ = a.writer.WriteFrame(frame)
+	_ = a.write(frame)
 }
 
-// told is every prompt this process was given, oldest first.
+// write writes one frame and answers the write's error, which the take driver reports.
+func (a *cutoverAgent) write(frame shimwire.Frame) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.writer.WriteFrame(frame)
+}
+
+// takes is the plugin of this process taking each task its claim is given, for as long as t
+// runs (takeDriver.watch): it records the text it took, and the take's turn ends at once, with
+// its report naming the task.
+func (a *cutoverAgent) takes(t *testing.T, driver *takeDriver) {
+	driver.watch(t, func(took takenTask) {
+		a.mu.Lock()
+		a.prompts = append(a.prompts, took.Text)
+		a.mu.Unlock()
+		if err := driver.endTurn(); err != nil {
+			t.Errorf("end the turn of task %d: %v", took.Number, err)
+		}
+	})
+}
+
+// told is the text of every task this process took, oldest first.
 func (a *cutoverAgent) told() []string {
 	a.mu.Lock()
 	defer a.mu.Unlock()

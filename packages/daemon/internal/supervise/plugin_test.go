@@ -86,7 +86,7 @@ func TestAStaleControllerPluginMidTurnInterruptsTheTaskChargingNothing(t *testin
 	h.reach(StateReady)
 	h.must(RequestDeliver{Claim: h.token, Task: "Legion controller start"})
 	h.must(StreamTurnStart{Claim: h.token})
-	sent := h.wantPrompts(1)[0].DeliveryID
+	sent := h.wantPrompts(1)[0]
 	h.m.deps.PluginContract = 25
 
 	if err := h.handle(StalePlugin{Claim: h.token}); err != nil {
@@ -95,8 +95,8 @@ func TestAStaleControllerPluginMidTurnInterruptsTheTaskChargingNothing(t *testin
 
 	h.wantState(StateLaunching)
 	h.wantBudgets(Budgets{})
-	if p := h.pending(); !p.Interrupted || p.ID == sent || !p.ConfirmedAt.IsZero() {
-		t.Fatalf("pending after the stale-plugin relaunch = %+v, want the task taken back, unconfirmed and interrupted", p)
+	if p := h.pending(); !p.Interrupted || p.ID != sent.DeliveryID || p.Number != sent.Number || p.taken() {
+		t.Fatalf("pending after the stale-plugin relaunch = %+v, want the task taken back under its number and interrupted", p)
 	}
 }
 

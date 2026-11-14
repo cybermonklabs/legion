@@ -3,24 +3,25 @@
 // Pi's RPC frames to the shim on its stdin and stdout and Claude Code's stream-json to the
 // `claude -p` it runs, so the daemon's worker stream, the shim and supervision stay as they are:
 //
-//   - a `prompt` becomes a user message and starts a turn (`agent_start`); a prompt that arrives
-//     during a turn is acknowledged and then refused the way Oh My Pi refuses it ("Agent is already
-//     processing"), which the daemon takes back uncharged and sends again at the turn's end;
-//   - `get_state` and `negotiate_protocol` are the bridge's own to answer;
+//   - the daemon sends no task on the stream (a task is a value the worker takes); `get_state`
+//     and `negotiate_protocol` are the bridge's own to answer;
 //   - every other request that names an id, `abort` among them, is answered with a refusal naming
 //     the frame type the bridge does not support;
-//   - each user message's `result` ends one step of the turn, and the turn ends (`agent_end`) once
-//     no Envoy delivery waits, with a `prompt_result` behind the `agent_end` of a turn a `prompt`
-//     started, which is what names the prompt that turn ran;
+//   - the claim's task value, which claude-envoy hands the bridge over its inbox, is reported seen
+//     and, when Claude Code is in no turn, taken from the daemon; an accepted take's text starts a
+//     turn ahead of every Envoy delivery, and no delivery starts a turn while a take is pending
+//     (take.go);
+//   - a turn of the bridge's own starts (`agent_start`) when a task's text or an Envoy delivery
+//     becomes a user message, each user message's `result` ends one step of the turn, and the
+//     turn ends (`agent_end`) once no Envoy delivery waits;
 //   - a turn Claude Code starts by itself, when a background task it had left running finishes, is
 //     a turn of the daemon's too: the `system` `init` line Claude Code writes at the start of every
 //     turn is `agent_start` when it arrives between turns, and that turn's one `result` is
 //     `agent_end`. Claude Code's background tasks are on under either runtime
 //     (`claudelaunch.Environment`), so a role may leave work running past a turn's end and read
 //     its result in the turn it starts.
-//   - a turn the provider failed ends with an error in that `prompt_result`, and a turn that
-//     ended any other way with none (bridge.go's result), which is what tells the daemon the
-//     turn it must send the task again for from the turn it may retire the task on.
+//   - every turn's outcome, refused with how the provider failed a step of it and clean
+//     otherwise, is reported to the daemon, naming the task whose turn it was (turnoutcome.go).
 //
 // The bridge is transport: the phase-stall machine — a worker whose turn ends with its phase still
 // open is reminded — runs in the pane's `legion` MCP server
@@ -53,10 +54,11 @@ type Config struct {
 	SessionID string
 	Seed      bool
 	Title     string
-	// DaemonURL, BootTokenFile and Generation are what the bridge reports each turn's outcome
-	// with (turnoutcome.go): the daemon's API, the launch's own boot token file, and the launch
-	// generation, as the pane is told them (LEGION_DAEMON_URL, LEGION_BOOT_TOKEN_FILE,
-	// LEGION_GENERATION). A bridge run outside a pane has none of them and reports nothing.
+	// DaemonURL, BootTokenFile and Generation are what the bridge reports each turn's outcome and
+	// takes the claim's task with (daemonlink.go): the daemon's API, the launch's own boot token
+	// file, and the launch generation, as the pane is told them (LEGION_DAEMON_URL,
+	// LEGION_BOOT_TOKEN_FILE, LEGION_GENERATION). A bridge run outside a pane has none of them,
+	// and reports and takes nothing.
 	DaemonURL     string
 	BootTokenFile string
 	Generation    uint64
@@ -65,6 +67,9 @@ type Config struct {
 	Stdin  io.Reader
 	Stdout io.Writer
 	Log    io.Writer
+	// calls is the timing and the network of the seen reports and the takes, which a test of this
+	// package shortens and stands in for; the zero value is production's (daemonCalls).
+	calls daemonCalls
 }
 
 // Configure reads a bridge's configuration from the claude argv and the environment the runtime

@@ -30,18 +30,18 @@
 // The forward entry of step 2 is raised on the path the daemon has for it: the tester asks for the
 // work back with its own backward move to implementing and ends its turn, and the implementer
 // pushes a head of its own and completes, which hands testing out again. The tester's first turn
-// cannot still be running then, because the daemon sends no role a task that adopts the issue's
-// working copy while another role of the issue is in a turn (supervise's sendPending), so the
-// implementer's task waits for that turn to end; the tester's completions come instead from a
-// turn of its own, begun while the implementer works and so before the new entry's task could
-// reach it. Neither of the moves the daemon makes on its own serves here. A CI red moves no issue,
-// since the daemon judges no check, so the proof publishes no settlement; and the daemon reads a
-// head's mergeability at its start, after a handoff, and for an approved review round in reviewing
-// alone, so a head that starts conflicting with its base while the tester tests is not read until
-// the next handoff (dispatch://INFRA-3164). The move back into testing is the reviewer's own
-// request over POST /legion/v1/phase/backward, from reviewing, under a grant its registered
-// session minted, because the engine takes a backward move from no role but the one running the
-// issue's phase (workflow's Engine.backward, BACKWARD_REFUSED).
+// cannot still be running then, because the daemon refuses a take of a task that adopts the
+// issue's working copy while another role of the issue is in a turn (supervise's take, hold
+// issue-in-turn), so the implementer's task waits for that turn to end; the tester's completions
+// come instead from a turn of its own, begun while the implementer works and so before it could
+// take the new entry's task. Neither of the moves the daemon makes on its own serves here. A CI
+// red moves no issue, since the daemon judges no check, so the proof publishes no settlement; and
+// the daemon reads a head's mergeability at its start, after a handoff, and for an approved review
+// round in reviewing alone, so a head that starts conflicting with its base while the tester tests
+// is not read until the next handoff (dispatch://INFRA-3164). The move back into testing is the
+// reviewer's own request over POST /legion/v1/phase/backward, from reviewing, under a grant its
+// registered session minted, because the engine takes a backward move from no role but the one
+// running the issue's phase (workflow's Engine.backward, BACKWARD_REFUSED).
 //
 // The daemon is the whole daemon: run, the function `legion start` calls, through this package's
 // own whole-daemon harness (startDaemonWithin), so the proof exercises the real configuration, the
@@ -49,8 +49,9 @@
 // stream, the real openWorkflow, the real JetStream consumers and the real outbox lanes. Facts
 // enter only as production's do: GitHub envelopes on the ENVOY_NOTIFICATIONS stream for the
 // implementer's push and its synchronize; the daemon's own HTTP routes for each role's
-// registration, readiness, grants, completions and backward moves; and the daemon's worker stream
-// for each role's turns, which this driver speaks as `legion worker-shim` does (shimwire frames).
+// registration, readiness, task takes, grants, completions and backward moves; and the daemon's
+// worker stream for each role's turns, which this driver speaks as `legion worker-shim` does
+// (shimwire frames), each role's plugin taking its task as the package's takeDriver does.
 // Almost every assertion is a read of GET /legion/v1/state or of the operator's claim listing.
 // What neither shows is what the proof reads from the daemon's own store: the tester's phases row,
 // for the fence's own input, whether the entry the row stands on was raised by a move back, and
@@ -194,7 +195,7 @@ func (r *behindEntryFenceLive) testerWorksItsEntry() {
 	t := r.t
 	r.imp = r.claimant(claim.RoleImplementer, "ses_implementer")
 	r.note("the implementer is registered and ready on the launch this boot made for the claim the fixture left mid-launch")
-	r.imp.startTurn("")
+	r.imp.startTurn()
 	if status, failure := r.imp.complete("implemented it", behindFenceFirstHead, "", r.imp.handoff("implement")); status != http.StatusOK {
 		t.Fatalf("the implementer's completion = %d %s %s, want 200", status, failure.Code, failure.Error)
 	}
@@ -203,26 +204,27 @@ func (r *behindEntryFenceLive) testerWorksItsEntry() {
 	got := r.waitFor("the issue in testing", func(got api.Issue) bool { return got.Phase == phase.Testing })
 
 	r.test = r.claimant(claim.RoleTester, "ses_tester")
-	prompt := r.test.takeTask("Phase: testing")
+	task := r.test.takeTask("Phase: testing")
 	working := r.d.claim(r.test.token)
 	if working.State != string(supervise.StateWorking) || working.Pending == nil || working.Pending.ConfirmedAt == nil {
-		t.Fatalf("the tester is %s holding %+v, want working on a confirmed delivery of its testing task", working.State, working.Pending)
+		t.Fatalf("the tester is %s holding %+v, want working on a taken delivery of its testing task", working.State, working.Pending)
 	}
 	r.served, r.entry, r.delivery = got.PhaseEntry, got.PhaseEntry, working.Pending.ID
-	r.note("read back: %s is in %s on entry %d at head %s, and the tester is %s on the delivery %s of that entry's task (%s)",
-		r.key, got.Phase, r.entry, got.PullRequest.Head, working.State, r.delivery, firstLine(prompt.Message))
+	r.note("read back: %s is in %s on entry %d at head %s, and the tester is %s on the delivery %s of that entry's task, task %d (%s)",
+		r.key, got.Phase, r.entry, got.PullRequest.Head, working.State, r.delivery, task.Number, firstLine(task.Text))
 }
 
 // Step 2. The tester asks for the work back with its own backward move to implementing, from the
-// turn it is in, and ends that turn: the daemon sends no role a task that adopts the issue's
-// working copy while another role of the issue is in a turn (supervise's sendPending), so the
-// implementer's task waits for it. The implementer is prompted, and while it works the tester
-// begins a turn of its own, as an agent that goes on working does, before any task of a later
-// entry has reached it. The implementer pushes a head of its own and completes there, which moves
-// the issue forward into testing and raises the tester's second entry, at the head the implementer
-// pushed and by no move back. That entry's task waits on the claim, since the tester is in a turn,
-// and the claim still serves the entry before it: every completion of steps 3 to 8 is reported
-// from a turn that began before its entry's task reached the session.
+// turn it is in, and ends that turn: the daemon refuses a take of a task that adopts the issue's
+// working copy while another role of the issue is in a turn (supervise's take, hold
+// issue-in-turn), so the implementer's task waits for it. The implementer takes its task, and
+// while it works the tester begins a turn of its own, as an agent that goes on working does,
+// before it has taken any task of a later entry. The implementer pushes a head of its own and
+// completes there, which moves the issue forward into testing and raises the tester's second
+// entry, at the head the implementer pushed and by no move back. That entry's task waits on the
+// claim untaken, since the tester is in a turn and its plugin takes nothing while one runs, and
+// the claim still serves the entry before it: every completion of steps 3 to 8 is reported from a
+// turn that began before its entry's task was taken.
 func (r *behindEntryFenceLive) testingIsEnteredAgain() {
 	t := r.t
 	const reason = "the tests show a fault in the code; back to implementing"
@@ -233,8 +235,8 @@ func (r *behindEntryFenceLive) testingIsEnteredAgain() {
 	r.test.endTurn()
 	r.note("the tester's turn on entry %d's task ended", r.served)
 	fix := r.imp.takeTask("Phase: implementing")
-	r.note("read back: the implementer was prompted its implementing task once the tester's turn ended (%s)", firstLine(fix.Message))
-	r.test.startTurn("")
+	r.note("read back: the implementer took its implementing task once the tester's turn ended (%s)", firstLine(fix.Text))
+	r.test.startTurn()
 	r.note("the tester began a turn of its own while the implementer works")
 	r.push(behindFenceFirstHead, behindFenceSecondHead, "fix the fault the tests showed")
 	r.note("drove the implementer's push of %s onto %s and GitHub's synchronize of #%d to it", behindFenceSecondHead, behindFenceFirstHead, r.number)
@@ -304,10 +306,10 @@ func (r *behindEntryFenceLive) behindAtTheHead() {
 // phase. The daemon answers each 409 HANDOFF_NOT_CURRENT_PHASE, the code every worker's prompt
 // names for a completion of a phase it no longer works, in the engine's words: never
 // HANDOFF_STALE_ENTRY, and with no words telling the worker a task is owed to it, since the second
-// testing entry's task is queued for testing, which the issue has left, and is dropped rather than
-// sent (supervise's phaseHolds). Each records nothing — the tester's phases row still holds step
-// 5's completion, and the daemon has processed no completion of the tester's beyond it — and the
-// issue stays in reviewing.
+// testing entry's task is queued for testing, which the issue has left, and its take is answered
+// dropped rather than accepted (supervise's phaseHolds). Each records nothing — the tester's
+// phases row still holds step 5's completion, and the daemon has processed no completion of the
+// tester's beyond it — and the issue stays in reviewing.
 func (r *behindEntryFenceLive) afterATakenBehindCompletion() {
 	t := r.t
 	row := rolePhaseRow(t, r.st.Pool(), r.key, claim.RoleTester)
@@ -322,22 +324,22 @@ func (r *behindEntryFenceLive) afterATakenBehindCompletion() {
 	r.heldOn()
 }
 
-// Step 7. The reviewer's own move back. Its claim was started by the tester's pass, and its task
-// waits while the tester's turn runs, so that turn ends first; the reviewer then registers, takes
-// its review task, and the tester begins another turn of its own before the move, which no task
-// of its has reached. The reviewer requests the move to testing from the turn its task began, with
-// a grant its session minted. The engine takes a backward move from the role running the issue's
-// phase alone, so this is the one way the proof can reach a move back into testing. Nothing is
-// pushed with it: the head the record holds is the one the tester reported on in step 5, and the
-// entry the move raises says it was raised by a move back.
+// Step 7. The reviewer's own move back. Its claim was started by the tester's pass, and its take
+// is refused while the tester's turn runs, so that turn ends first; the reviewer then registers,
+// takes its review task, and the tester begins another turn of its own before the move, having
+// taken no task of its own. The reviewer requests the move to testing from the turn its task
+// began, with a grant its session minted. The engine takes a backward move from the role running
+// the issue's phase alone, so this is the one way the proof can reach a move back into testing.
+// Nothing is pushed with it: the head the record holds is the one the tester reported on in step
+// 5, and the entry the move raises says it was raised by a move back.
 func (r *behindEntryFenceLive) reviewerMovesTheWorkBack() {
 	t := r.t
 	r.test.endTurn()
 	r.note("the tester's own turn ended")
 	r.review = r.claimant(claim.RoleReviewer, "ses_reviewer")
-	prompt := r.review.takeTask("Phase: reviewing")
-	r.note("the reviewer is registered, ready and working the review task the tester's pass started it with (%s)", firstLine(prompt.Message))
-	r.test.startTurn("")
+	task := r.review.takeTask("Phase: reviewing")
+	r.note("the reviewer is registered, ready and working the review task the tester's pass started it with (%s)", firstLine(task.Text))
+	r.test.startTurn()
 	r.note("the tester began another turn of its own while the reviewer reviews")
 	const reason = "the fix needs a test of its own; back to testing"
 	if status, failure := r.review.moveBack(phase.Testing, reason); status != http.StatusOK {
@@ -462,20 +464,20 @@ func (r *behindEntryFenceLive) testerCompletionsProcessed() int {
 }
 
 // heldOn holds that the tester is in a turn while the phases row stands on a later entry than the
-// one whose task the tester took in step 1, and that no task of a later entry has reached it: the
-// task the claim holds, if any, is unconfirmed and undelivered, so the claim still serves the
-// first entry. That is the state every completion of steps 3 to 8 is reported from, and it says so.
+// one whose task the tester took in step 1, and that it has taken no task of a later entry: the
+// task the claim holds, if any, is untaken, so the claim still serves the first entry. That is the
+// state every completion of steps 3 to 8 is reported from, and it says so.
 func (r *behindEntryFenceLive) heldOn() {
 	t := r.t
 	t.Helper()
 	held := r.d.claim(r.test.token)
-	if held.State != string(supervise.StateWorking) || (held.Pending != nil && (held.Pending.ConfirmedAt != nil || held.Pending.DeliveredAt != nil)) {
-		t.Fatalf("the tester is %s holding %+v, want it in a turn of its own with no later task delivered: its claim serves entry %d",
+	if held.State != string(supervise.StateWorking) || (held.Pending != nil && held.Pending.ConfirmedAt != nil) {
+		t.Fatalf("the tester is %s holding %+v, want it in a turn of its own with no later task taken: its claim serves entry %d",
 			held.State, held.Pending, r.served)
 	}
 	waiting := "no task"
 	if held.Pending != nil {
-		waiting = "the task " + held.Pending.ID + ", undelivered,"
+		waiting = "the task " + held.Pending.ID + ", untaken,"
 	}
 	r.note("read back: the tester is %s in a turn of its own holding %s while its row stands on entry %d; the last task it took is %s, of entry %d",
 		held.State, waiting, r.entry, r.delivery, r.served)

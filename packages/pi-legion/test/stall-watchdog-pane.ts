@@ -19,6 +19,7 @@ import {
   spawnRpc,
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
+import { taskStandIn } from "@legion/pi-shared/test/task-stand-in";
 import { writtenLines } from "@legion/test-fixtures/transcript-lines";
 import { STALL_RESTART_MESSAGE } from "../src/stall-abort";
 import {
@@ -42,7 +43,7 @@ export const ROLE = "implementer";
 const TREE = "WATCH-1";
 export const ISSUE = "WATCH-2";
 
-/** The daemon's assignment, sent as the RPC prompt. Every turn of the pane's own conversation
+/** The daemon's assignment, a task the pane takes. Every turn of the pane's own conversation
  * carries it, which is what tells a turn from a side request. */
 const ASSIGNMENT = `Implement ${ISSUE}. WATCH-ROLE-ASSIGNMENT.`;
 
@@ -379,6 +380,9 @@ export async function startPane(options: PaneOptions): Promise<StallPane> {
   const turns: Request[] = [];
   let sides = 0;
   let grants = 0;
+  // The daemon's assignment: a task the pane takes, not a prompt the daemon writes.
+  const tasks = taskStandIn();
+  tasks.give(ASSIGNMENT);
   const { requests, base } = serveStandin(cleanup, (url, body) => {
     if (url.pathname === "/anthropic/v1/messages") {
       const request: Request = { path: url.pathname, body };
@@ -401,6 +405,8 @@ export async function startPane(options: PaneOptions): Promise<StallPane> {
       );
     }
     if (url.pathname.startsWith("/anthropic/")) return Response.json({ data: [] });
+    const taskAnswer = tasks.answer(url.pathname, body);
+    if (taskAnswer !== undefined) return taskAnswer;
     if (url.pathname === "/legion/v1/claims/register") {
       return Response.json({
         ...registered,
@@ -410,6 +416,7 @@ export async function startPane(options: PaneOptions): Promise<StallPane> {
         role: ROLE,
         generation: 1,
         secret: `${PROJECT}-secret`,
+        ...tasks.registered(),
       });
     }
     if (url.pathname === "/legion/v1/claims/ready") return new Response(null, { status: 204 });
@@ -510,7 +517,6 @@ export async function startPane(options: PaneOptions): Promise<StallPane> {
   void rpc.exited.then(() => {
     running = false;
   });
-  rpc.send({ type: "prompt", message: ASSIGNMENT });
 
   /** This launch's transcript entries of `customType`. The file is appended to as the session
    * runs, so a case reads it while the pane is still running — and after it has ended itself.

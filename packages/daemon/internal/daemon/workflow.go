@@ -129,6 +129,15 @@ type workflowRuntime struct {
 	idleStore   *store.Store
 	idleRuntime issuePods
 	idleTick    time.Duration
+	// idleFixedPlugin is which roles' launches install no plugin (noPluginInstall), the rule's
+	// reading of a claim whose plugin no relaunch moves (workflow.IdleRelease's old plugin), and
+	// idleImage the worker image the configuration names (runtime.kubernetes.image), which the
+	// error a pod already on it logs for such a claim names. oldPluginTold is the contract that
+	// error was last logged at for each claim, so it is logged once rather than at every tick
+	// (tellOldPluginOnImage); the idle pass is its one reader and writer.
+	idleFixedPlugin func(claim.Role) bool
+	idleImage       string
+	oldPluginTold   map[claim.Token]int
 	// entrySweep is tickEntrySweep's period, zero being entrySweepInterval; a test shortens it
 	// so it waits out its own period rather than the daemon's minute.
 	entrySweep time.Duration
@@ -581,35 +590,23 @@ func engineHooks(hooks []config.Hook, prompts map[string]string) []workflow.Hook
 	return running
 }
 
-// connect opens Envoy's JetStream and this project's durable consumers, so a missing
-// notification stream refuses boot rather than leaving a daemon that reads no events. Boot runs it
-// before reconcile, whose Dispatch listing covers only what precedes a consumer created now. It
-// connects as nc, the user readBoot chose (natsConnection), and logs what the server reports about
-// the connection: every permission it refuses at error, every disconnect at warn and every
-// reconnect at info (natsauth.LogEvents), under natsauth.ReconnectForever so a reconnect never
-// gives up: a NATS outage mid-run never closes the connection for good. A failed attempt here
-// closes whatever it opened and clears it, so a later call — this one retried after an unreachable
-// NATS — starts clean rather than leaking the connection this one could not finish setting up.
-// Close comes before natsauth.WithLastError on both failure paths, never after: WithLastError only
-// looks once the connection reports itself closed, and Close does not clear what the connection
-// last recorded.
-func (w *workflowRuntime) connect(ctx context.Context, cfg config.Config, nc natsConnection) error {
-	conn, err := natsauth.Connect(cfg.NatsURLs, nc.seed, "legion-daemon "+cfg.Project, natsauth.LogEvents(w.log), natsauth.ReconnectForever())
-	if err != nil {
-		return fmt.Errorf("connect Envoy NATS: %w", err)
-	}
+// connect opens Envoy's JetStream and this project's durable consumers on conn, the daemon's own
+// connection to Envoy's NATS, so a missing notification stream refuses boot rather than leaving a
+// daemon that reads no events. Boot runs it before reconcile, whose Dispatch listing covers only
+// what precedes a consumer created now, as part of its attempt at NATS (connectNATS), which dials
+// conn and closes it again when this fails. A failed call clears the connection it kept, so the
+// attempt after it — the boot waits out an unreachable NATS — keeps the one it dials.
+func (w *workflowRuntime) connect(ctx context.Context, cfg config.Config, conn *nats.Conn) error {
 	w.conn.Store(conn)
 	js, err := jetstream.New(conn)
 	if err != nil {
-		conn.Close()
 		w.conn.Store(nil)
-		return fmt.Errorf("open Envoy JetStream: %w", natsauth.WithLastError(err, conn))
+		return fmt.Errorf("open Envoy JetStream: %w", err)
 	}
 	w.log.Info("legion workflow boot stage", "stage", "intake")
 	logIntakeHandlerLimit(ctx, w.log, cfg)
 	heard, err := w.heardAtBoot(ctx)
 	if err != nil {
-		conn.Close()
 		w.conn.Store(nil)
 		return err
 	}
@@ -620,9 +617,8 @@ func (w *workflowRuntime) connect(ctx context.Context, cfg config.Config, nc nat
 		RepositoryMapping: w.mappingChange, PrepareRepository: w.prepareRepository, PrepareArtifact: w.prepareArtifact,
 	})
 	if err != nil {
-		conn.Close()
 		w.conn.Store(nil)
-		return natsauth.WithLastError(err, conn)
+		return err
 	}
 	w.bootID = fmt.Sprintf("%d", time.Now().UnixNano())
 	return nil
@@ -1080,10 +1076,13 @@ func (w *workflowRuntime) attach(supervision *supervision) {
 // attachIdleRelease wires the idle tick, and leaves it off unless the deployment releases pods:
 // `runtime: kubernetes` with a non-zero idle_minutes, over a runtime that can say whether an
 // issue's pod runs the image the configuration names and whether it still holds the issue's
-// Sandbox (issuePods).
+// Sandbox (issuePods). The release of a pod whose Claude Code role runs a plugin that takes no
+// task rides the same tick and the same wakes (workflow.IdleRelease's old plugin), so a
+// deployment with release off releases no such pod either.
 func (w *workflowRuntime) attachIdleRelease(supervision *supervision) {
-	k := supervision.cfg.Runtime.Kubernetes
-	if supervision.cfg.Runtime.Name != "kubernetes" || k == nil || !k.IdleRelease.Releases() {
+	cfg := supervision.cfg
+	k := cfg.Runtime.Kubernetes
+	if cfg.Runtime.Name != "kubernetes" || k == nil || !k.IdleRelease.Releases() {
 		return
 	}
 	podRuntime, ok := supervision.supervisor.deps.Runtime.(issuePods)
@@ -1092,6 +1091,8 @@ func (w *workflowRuntime) attachIdleRelease(supervision *supervision) {
 		return
 	}
 	w.idlePeriod, w.idleStore, w.idleRuntime = k.IdleRelease.Idle(), supervision.supervisor.store, podRuntime
+	w.idleFixedPlugin = func(role claim.Role) bool { return noPluginInstall(cfg, role) }
+	w.idleImage = k.Image
 	w.outbox.backstop = k.IdleRelease.Backstop()
 }
 
@@ -1723,11 +1724,13 @@ func (w *workflowRuntime) claimReady(c supervise.Claim) {
 }
 
 // taskConfirmed applies the fact that a role's agent took the work the daemon gave it
-// (supervise's Deps.TaskConfirmed): admission decides on it whether a root whose architect owed
-// that task now waits on a person (workflow's ReconcileAwaiting), which otherwise waits for the
-// next tick. The machine calls it inside its own decision, so the fact is applied on a goroutine
-// of its own, bounded by readyReleaseTimeout; a failure is logged and not the daemon's end, since
-// the tick decides the same thing again.
+// (supervise's Deps.TaskConfirmed, at an accepted take): admission decides on it whether a root
+// whose architect owed that task now waits on a person (workflow's ReconcileAwaiting), which
+// otherwise waits for the next tick. The machine calls it inside its own decision, so the fact is
+// applied on a goroutine of its own, bounded by readyReleaseTimeout; a failure is logged and not
+// the daemon's end, since the tick decides the same thing again. The event id names the claim's
+// task number, which is the task's own whatever takes of it are made, so a task taken again after
+// it was taken back is applied once.
 func (w *workflowRuntime) taskConfirmed(c supervise.Claim) {
 	if c.Issue == "" || c.Role == claim.RoleController {
 		return
@@ -1739,7 +1742,10 @@ func (w *workflowRuntime) taskConfirmed(c supervise.Claim) {
 		defer cancel()
 		fact := intake.TaskConfirmed{Issue: c.Issue, Role: c.Role, Generation: c.Generation}
 		id := fmt.Sprintf("task-confirmed:%s:%d", c.Token, c.Generation)
-		if p := c.Pending; p != nil {
+		switch p := c.Pending; {
+		case p != nil && p.Number != 0:
+			id = fmt.Sprintf("task-confirmed:%s:task-%d", c.Token, p.Number)
+		case p != nil:
 			id = fmt.Sprintf("task-confirmed:%s:%s", c.Token, p.ID)
 		}
 		if _, err := intake.ApplyFact(ctx, w.pool, "supervise", id, fact, w.handlers...); err != nil {

@@ -462,6 +462,9 @@ jobs:
               - 'packages/envoy/internal/testnats/*'
               # storetest's DatabaseURL makes a test's own database with internal/testpg.
               - 'packages/envoy/internal/testpg/*'
+              # The task bucket's names, which daemonpermissions' grant is built from: the daemon's
+              # real-server grant test (internal/daemon/nats_permissions_test.go) compiles both.
+              - 'packages/envoy/legiontasks/*'
               - 'packages/envoy/listenfd/*'
               - 'packages/envoy/migrationid/*'
               # The reasons the listener refuses a publish to a role no session holds, which the
@@ -638,6 +641,9 @@ jobs:
               - 'packages/envoy/internal/dispatch/pmdoc/**'
               - 'packages/envoy/internal/dispatch/text/*'
               - 'packages/envoy/internal/googleidentity/*'
+              # packages/envoy/legiontasks names the task bucket, its keys and its value, which the
+              # daemon's task bucket (internal/daemon/taskbucket.go) writes and reads.
+              - 'packages/envoy/legiontasks/*'
               - 'packages/envoy/listenfd/*'
               # packages/envoy/migrationid is the identifier rule the daemon's embedded
               # migrations are held to, in the envoy module so both sets keep one rule.
@@ -681,6 +687,9 @@ jobs:
               - 'packages/envoy/internal/store/*'
               - 'packages/envoy/internal/verify/*'
               - 'packages/envoy/internal/webhook/*'
+              # The task bucket's name, key rule, value and relay frame headers, which the
+              # listener's task relay (cmd/listener/task_relay.go) reads and relays.
+              - 'packages/envoy/legiontasks/*'
               - 'packages/envoy/listenfd/*'
               - 'packages/envoy/roleholder/*'
             # What `go test ./cmd/dispatch` reads under both its memory and its multiprocess tag:
@@ -757,7 +766,8 @@ jobs:
             # GitHub App helper internal/api/real_github_test.go:88 sources, and the examples and
             # docs its tests hold to the code (cmd/legion/config_example_test.go:24,
             # internal/config/controller_test.go:179, internal/config/kubernetes_test.go:1322,
-            # internal/runtime/sandbox/reclaim_doc_test.go:144). The root manifest, lockfile and
+            # internal/runtime/sandbox/reclaim_doc_test.go:144,
+            # internal/supervise/costreading_test.go:75). The root manifest, lockfile and
             # patches the packs resolve through are bun_install's.
             daemon_go_tests: &daemon_go_tests
               - *go_workspace
@@ -779,6 +789,7 @@ jobs:
               - 'deploy/kubernetes/daemon/legion.yaml.example'
               - 'deploy/kubernetes/operator-route/pod.yml'
               - 'docs/kubernetes.md'
+              - 'docs/site/src/content/docs/legion/task-delivery-cost.md'
 
             # `go vet -tags e2e ./...` in packages/daemon.
             typecheck:
@@ -1202,8 +1213,9 @@ jobs:
               - 'packages/daemon/internal/**'
               # daemon-pane.go compiles the daemon module, which reaches these envoy packages:
               # the migration identifier rule, the generated session timings the daemon reads
-              # through their one public package, and the Dispatch body check the close route and
-              # the merger's READY completion make with the server's own splitter
+              # through their one public package, the task bucket's names the daemon's task bucket
+              # is built on (packages/envoy/legiontasks), and the Dispatch body check the close
+              # route and the merger's READY completion make with the server's own splitter
               # (packages/envoy/dispatchbody, and the parser and contracts under it).
               - 'packages/envoy/dispatchbody/*'
               - 'packages/envoy/internal/contracts/*'
@@ -1212,6 +1224,7 @@ jobs:
               - 'packages/envoy/internal/dispatch/model/*'
               - 'packages/envoy/internal/dispatch/pmdoc/**'
               - 'packages/envoy/internal/dispatch/text/*'
+              - 'packages/envoy/legiontasks/*'
               - 'packages/envoy/migrationid/*'
               - 'packages/envoy/roleholder/*'
               - 'packages/envoy/sessiontiming/*'
@@ -1490,6 +1503,8 @@ jobs:
               - *dispatch_server
               - *listener_command
               - 'packages/envoy/daemonpermissions/*'
+              # The task bucket's names, which infra/core's grants and daemonpermissions import.
+              - 'packages/envoy/legiontasks/*'
               - 'packages/envoy/internal/cmdtest/*'
               - 'packages/envoy/internal/contracts/**'
               - 'packages/envoy/internal/dispatch/githubapp/**'
@@ -1828,6 +1843,9 @@ jobs:
               - 'packages/envoy/listenfd/**'
               - 'packages/envoy/migrationid/**'
               - 'packages/envoy/roleholder/**'
+              # The Dockerfile copies it, and infra/core's grants and daemonpermissions, which the
+              # infra steps below compile, import it.
+              - 'packages/envoy/legiontasks/**'
               - 'packages/envoy/docker/rds-global-bundle.pem'
               # TestSmoke compiles in the root workspace.
               - 'go.work'
@@ -1957,6 +1975,7 @@ jobs:
               - 'packages/envoy/docs/**'
               - 'packages/envoy/going/**'
               - 'packages/envoy/internal/**'
+              - 'packages/envoy/legiontasks/**'
               - 'packages/envoy/listenfd/**'
               - 'packages/envoy/loadtest/**'
               - 'packages/envoy/migrationid/**'
@@ -2049,6 +2068,7 @@ jobs:
               - 'packages/envoy/cmd/agent-secrets-helper/*'
               - *listener_command
               - 'packages/envoy/daemonpermissions/*'
+              - 'packages/envoy/legiontasks/*'
               - 'packages/envoy/infra/go.mod'
               - 'packages/envoy/infra/go.sum'
               - 'packages/envoy/infra/go.work'

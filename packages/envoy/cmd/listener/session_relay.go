@@ -708,6 +708,9 @@ func (m *sessionRelays) listConsumers() map[string]*jetstream.ConsumerInfo {
 	listed, err := m.delivery.consumers.ListSessionConsumers(ctx)
 	switch {
 	case err == nil:
+		// The list is one of the session consumers' calls, which only a listener that gives
+		// consumer delivery may make, so its answer says this one does (the task relay waits on it).
+		m.delivery.holdsConsumerGrant()
 		return listed
 	case consumerGrantRefused(err):
 		if !m.listRefusedLogged {

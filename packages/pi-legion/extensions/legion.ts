@@ -378,16 +378,30 @@ export default function legionExtension(pi: PiApi): void {
     log: logger,
   });
 
+  // An accepted take's text, sent as the turn's user message (dispatch://INFRA-2811 R2): it is no
+  // turn the Envoy entry sent in, so the phase-stall check reads it as the assignment
+  // (`inboundKind`). The take sends it only while no run of the session is going
+  // (`@legion/pi-shared/task-take`). On an idle host a plain send starts its turn, and while a
+  // compaction runs Oh My Pi holds the prompt until it ends; on a host setting a prompt up, a
+  // follow-up joins the run that setup starts, the first run after the take, which is the task's
+  // turn as both the take and the daemon count it.
+  const runTask = (text: string): void => {
+    if (paneContext?.isIdle?.() === false) pi.sendUserMessage(text, { deliverAs: "followUp" });
+    else pi.sendUserMessage(text);
+  };
+
   // A root architect's or phase worker's claim, and the operator-launched controller's.
   const claimSession = createClaimSession({
     daemon: roleDaemon,
     persistedTranscript,
+    runTask,
     exitProcess: (code) => exitProcess(code),
   });
   const controllerSession = createControllerSession({
     daemon: roleDaemon,
     persistedTranscript,
     pi,
+    runTask,
     exitProcess: (code) => exitProcess(code),
   });
 
@@ -647,9 +661,10 @@ export default function legionExtension(pi: PiApi): void {
       }
       await claimSession.bootstrap(context);
       // The claim is registered. A phase worker relaunched into an open phase gets its reminder
-      // from a timer, since nothing else would wake it. The guard drops that timer when any turn
-      // started meanwhile, which is exactly the case to drop — the daemon re-sending an
-      // interrupted task arrives as a prompt.
+      // from a timer, since nothing else would wake it: the daemon gives a relaunched worker that
+      // finished its last task in this session nothing (R4 of INFRA-2811). The guard drops that
+      // timer when any turn started meanwhile, which is exactly the case to drop — a task the
+      // claim still owes is taken once the ready has answered, and its turn starts first.
       if (phaseWorkerSession(context)) phaseReminder.armResumeReminder();
       /**
        * INFRA-927: the session measures its six capability rows on this interval, while it is
@@ -721,7 +736,7 @@ export default function legionExtension(pi: PiApi): void {
     await activateLegionTool();
   });
 
-  // A prompt (the daemon's task as an RPC `prompt`, or a person's direct message pi-envoy
+  // A prompt (a task's take, or a person's direct message pi-envoy
   // delivers as a user turn) first recovers a failed last turn, and Oh My Pi recovers an empty
   // `length` stop by moving the branch back to that turn's parent, which takes the copy saved
   // after it off the branch. before_agent_start runs after that recovery, so it puts the notice
@@ -742,14 +757,14 @@ export default function legionExtension(pi: PiApi): void {
     clearStartupTurn(context.sessionManager.getSessionId());
     // The operator moved on: a session change's re-claim outcome left in its widget comes down.
     controllerSession.handleAgentStart(context);
-    // INFRA-1573: a turn of this session has started, whatever started it, so the claim boot
-    // takes the session's Envoy name now rather than at its bound — the lane the listener kept
-    // for the role is then handed over inside a turn that is already running, instead of taking
-    // the session's first turn ahead of the daemon's task. A `task` subagent's event is not a
-    // turn of this session (`subagentEvent`), and the controller's own claim is not this one's:
-    // it sends its first turn and claims its role after it (`src/controller-session.ts`), and
-    // this signal reaches a claim session that booted nothing there.
-    if (!subagentEvent(context)) claimSession.firstTurnStarted();
+    // A turn of this session has started, whatever started it: the claim's take, and the
+    // daemon-launched controller's, no longer find the host idle, and the first run after an
+    // accepted take is that task's turn (`@legion/pi-shared/task-take`). A `task` subagent's
+    // event is not a turn of this session (`subagentEvent`).
+    if (!subagentEvent(context)) {
+      claimSession.runStarted();
+      controllerSession.runStarted(context.sessionManager.getSessionId());
+    }
   });
   pi.on("session_shutdown", async (_event, context) => {
     clearStartupTurn(context.sessionManager.getSessionId());
@@ -855,12 +870,16 @@ export default function legionExtension(pi: PiApi): void {
   });
 
   // Every turn this pane's claim ends, as the daemon counts them: `agent_end` is the one event
-  // that says how a turn ended, so it is where the outcome is reported (`src/turn-outcome.ts`).
-  // The host does not await this handler and nothing of the turn waits on the report, but the
-  // report is awaited inside it all the same, so its failure is the handler's own promise rather
-  // than a floating one, and the reporter never rejects.
+  // that says how a turn ended, so it is where the outcome is reported (`src/turn-outcome.ts`),
+  // naming the task whose turn it was. The host does not await this handler and nothing of the
+  // turn waits on the report, but the report is awaited inside it all the same, so its failure
+  // is the handler's own promise rather than a floating one, and the reporter never rejects. The
+  // takes hear the end before the report goes: a take the end of the run allows is asked at once.
   pi.on("agent_end", async (event, context) => {
-    await turnOutcomes.report(context.sessionManager.getSessionId(), event);
+    const sessionID = context.sessionManager.getSessionId();
+    const task = subagentEvent(context) ? undefined : claimSession.runEnded();
+    if (!subagentEvent(context)) controllerSession.runEnded(sessionID);
+    await turnOutcomes.report(sessionID, event, task);
   });
 
   // The run is about to settle with nothing left for the host to continue: a phase still open

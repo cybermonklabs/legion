@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	configpkg "github.com/sjawhar/legion/daemon/internal/config"
 )
@@ -175,6 +176,25 @@ func TestShippedLegionYAMLExampleRefusesAWorkerBackgroundAtTheSilenceBound(t *te
 	want := "legion start: worker_background_hours (30m0s) is at or below worker_silence_minutes (30m0s): the bound on background work a worker reports must be above the bound on its silence, since a shorter one would name a job that has barely begun and would race the repair that sends the same worker its phase's task again\n"
 	if code != 1 || out.Len() != 0 || errb.String() != want {
 		t.Fatalf("exit code = %d, stdout %q, stderr %q; want 1, nothing, and %q", code, out.String(), errb.String(), want)
+	}
+}
+
+// The example's two commented wait bounds, uncommented as the file ships them, pass the check
+// and are read as the defaults they state: R5's first bound of five minutes and second of
+// twenty-five. The lines stay commented in the file itself, as the silence key's do.
+func TestShippedLegionYAMLExampleCheckConfigReadsTheTwoWaitBoundsItStates(t *testing.T) {
+	config := checkShippedExample(t, func(example string) string {
+		return uncommentExample(t, example,
+			"# worker_take_timeout_seconds: 300",
+			"# worker_turn_start_timeout_seconds: 1500",
+		)
+	})
+	cfg, err := configpkg.LoadForValidation(config, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.WorkerTakeTimeout != 5*time.Minute || cfg.WorkerTurnStartTimeout != 25*time.Minute {
+		t.Fatalf("the example's wait bounds read as %s and %s, want 5m0s and 25m0s", cfg.WorkerTakeTimeout, cfg.WorkerTurnStartTimeout)
 	}
 }
 

@@ -252,7 +252,7 @@ type sessionDelivery struct {
 	deleteMu   sync.Mutex
 	deletes    sync.WaitGroup
 	deletesOff bool
-	// grantMu guards the refusal episode below.
+	// grantMu guards the refusal episode below, and grantHeld.
 	grantMu sync.Mutex
 	// noGrantUntil is when the registrations' calls may probe the grant again after a refusal for
 	// want of it; zero while no refusal episode runs. noGrantLogged is set once the episode's one
@@ -260,6 +260,11 @@ type sessionDelivery struct {
 	// registration. A consumer call that succeeds ends the episode.
 	noGrantUntil  time.Time
 	noGrantLogged bool
+	// grantHeld is closed once a session consumer call of this listener has succeeded: its NATS
+	// user holds the session consumers' calls, so this listener gives its sessions consumer
+	// delivery (consumerGrantHeld). It is made on first use, so a sessionDelivery a test builds
+	// as a literal has one too.
+	grantHeld chan struct{}
 }
 
 // connectSessionDelivery opens the session-consumer connection (bus.ConnectSessionConsumers) on
@@ -855,12 +860,56 @@ func (m *sessionDelivery) grantRefused() bool {
 }
 
 // granted ends a refusal episode once a consumer call succeeds: the grant now carries session
-// consumers, and a later refusal is logged again.
+// consumers, and a later refusal is logged again. It also says this listener gives consumer
+// delivery (holdsConsumerGrant).
 func (m *sessionDelivery) granted() {
 	m.grantMu.Lock()
 	defer m.grantMu.Unlock()
 	m.noGrantUntil = time.Time{}
 	m.noGrantLogged = false
+	m.holdsConsumerGrantLocked()
+}
+
+// holdsConsumerGrant records that a session consumer call of this listener succeeded: granted's
+// record of a registration's or a delete's call, and the list of the session consumers that gaining
+// the durable binding reads (sessionRelays.listConsumers), which ends no refusal episode of the
+// creates, since a grant may allow the list and refuse them. Any of them says the NATS user holds
+// the session consumers' calls, which only the grant of a listener that gives its sessions
+// consumer delivery holds (envoy-infra's ListenerPermissions and ListenerHostPermissions). The
+// server's answer is how this listener learns it gives consumer delivery: nothing in its
+// configuration says so, and a listener connecting as a host or Dispatch user is refused every one
+// of those calls. consumerGrantHeld is closed from here on.
+func (m *sessionDelivery) holdsConsumerGrant() {
+	m.grantMu.Lock()
+	defer m.grantMu.Unlock()
+	m.holdsConsumerGrantLocked()
+}
+
+// holdsConsumerGrantLocked is holdsConsumerGrant, with grantMu held.
+func (m *sessionDelivery) holdsConsumerGrantLocked() {
+	held := m.consumerGrantLocked()
+	select {
+	case <-held:
+	default:
+		close(held)
+	}
+}
+
+// consumerGrantHeld is closed once a session consumer call of this listener has succeeded
+// (holdsConsumerGrant): from then on the listener gives its sessions consumer delivery, and the
+// task relay, which relays only to such sessions, opens the task bucket (taskRelay.run).
+func (m *sessionDelivery) consumerGrantHeld() <-chan struct{} {
+	m.grantMu.Lock()
+	defer m.grantMu.Unlock()
+	return m.consumerGrantLocked()
+}
+
+// consumerGrantLocked is grantHeld, made on first use, with grantMu held.
+func (m *sessionDelivery) consumerGrantLocked() chan struct{} {
+	if m.grantHeld == nil {
+		m.grantHeld = make(chan struct{})
+	}
+	return m.grantHeld
 }
 
 // refollow sets the filter of sessionID's consumer to its stored interest topics after a change

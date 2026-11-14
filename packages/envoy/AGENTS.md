@@ -145,6 +145,14 @@ Each item below names a task and where its code is, then notes on it.
   the relay of each consumer the listener owns, as core frames on the session's deliver subject (`sessionRelays`).
   "Session consumers" below
 
+- **Legion task relay**: `cmd/listener/task_relay.go`, `legiontasks/`
+
+  the relay of each Legion claim's task value from the Legion daemons' task bucket, `legion_tasks` (`legiontasks.Bucket`), to the session that holds the claim's role, as a core frame on that session's relay subject carrying the four `Envoy-Task-*` headers (`legiontasks`), from the listener that relays that session's consumer (`sessionRelays.wanted`).
+  A key of the bucket is a claim token, and a claim token is the role its worker's session claims, so the session a key goes to is the holder of that role, read from that role's claim record (`roleLaneClaims.RoleClaim`) and never from the role claim copy, as every listener act that turns on who holds a role reads it.
+  It relays each put and delete its watch delivers, and a key's current record, read from that watch's copy of the bucket, when the role's entry changes in the role claim copy (`store.Registry.OnRoleHolderChange`: a claim, a renewal, a delete, and the copy's repair putting a claim back or taking one out) and the claim record then names a holder it has not relayed that record to.
+  It runs only on a listener that gives its sessions consumer delivery, opens the bucket and never creates or writes it (the daemons create it, and the daemon is its one writer), and a bucket that does not exist yet or a grant that refuses its reads stops no other route.
+  The value is the delivered copy of the daemon's record, not a second keeper: "Session consumers" below
+
 - **Role lane**: `internal/bus/role_lane.go`, `cmd/listener/role_lane.go`, `internal/bus/nats.go` (`StartRequestStoredTo`)
 
   the role lane's own connection under high finite pending limits (`bus.RoleLanePendingMsgs`, `bus.RoleLanePendingBytes`), in the queue group `envoy-roles` (`bus.RoleLaneQueue`) or the machine's;
@@ -3363,6 +3371,8 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   The route's bounded retry inside its window is the one retry a role message gets:
   do not add a durable role consumer, or retry role messages anywhere else
   — the role lane stays core, and a holder's stored forward is its own session consumer's to deliver.
+  A Legion claim's task value, which the listener relays to the session holding the claim's role ("Legion task relay" above), is not such a consumer and not such a retry:
+  it is the delivered copy of the Legion daemon's record of the claim's task, which the daemon alone writes and repairs, so it keeps nothing the record does not and is no second keeper of a role message.
 
 - Role ownership is durable in the `envoy_roles` JetStream KV bucket.
   Each role key records `holder_session_id`, `claimed_at` and `previous_session_id`, and, where the claimant named them, `client_instance_id`, the process that holds the claim, and `renewed_at`, the moment that process last answered for it.
@@ -3852,7 +3862,7 @@ that is the rule and not a transitional measure, and it is what lets Dispatch de
   The view can drift from the bucket while it follows it, losing a claim the bucket holds or keeping one the bucket dropped, so the role claim watcher's scheduled read (above) reads the bucket whole a minute after each read that completed and repairs both directions within 2 minutes (`store.RoleClaimRepairBound`).
   That read applies what it finds through the copy's own read protocol (`roleCache`, over `kvwatch.Copy`'s `BeginRead`, `Delivered` and `CompleteRead`), so a claim granted while it runs is not rolled back, and it counts what it repaired (`roleClaimRepair`):
   a claim it stored where the copy held none or another holder is put back, one it removed while the copy held it is taken out, and the first read of an epoch, which fills the copy, counts neither.
-  The view decides no act: every act on a role reads the role's claim record from the bucket, and the view only answers the session routes and `sender.roles` and names roles for the renewal and the deregistration release to read.
+  The view decides no act: every act on a role reads the role's claim record from the bucket, and the view only answers the session routes and `sender.roles`, names roles for the renewal and the deregistration release to read, and wakes the Legion task relay to read a role's claim record again when that role's entry changes, a change the repair makes included (`store.Registry.OnRoleHolderChange`).
   Within one read epoch every update is fenced by revision (`setOwnRoleHolder` and `forgetRoleHolder`, `internal/store/roles.go`, the two writers of that view), the registry's own claim writes included, so none undoes a later one, and a read of a recreated bucket starts a new epoch rather than emptying the view under the old one.
 
 - A deregistration (`store.Registry.Remove` with no topics, which `DELETE /v1/interests/<session_id>` and `POST /v1/interests/unsubscribe` with an empty topic list reach) releases every role either of two sources names, each once and each as its own claim record says (`releaseAllRoleClaims`, one claim read per role):
@@ -4652,6 +4662,9 @@ an Oh My Pi session's `message_end`, the user message Claude Code re-emits under
 Every start of a relay restarts at the ack floor, so a break replays what was not acknowledged and the plugin's persisted ledger drops the repeats.
 No session receives from a plain NATS subscription:
 there is no second delivery design and no fallback, and a registration this listener cannot give a consumer is refused by name with nothing written ("No consumer" below).
+A Legion claim's task frame is no exception to the rule:
+it travels on the session's own relay subject beside its consumer's messages, from the listener that relays that consumer ("Legion task relay" above), and is the delivered copy of the Legion daemon's record of the claim's task, not a message and not a second keeper of one.
+It carries no message of the stream, the session acknowledges nothing for it and counts it in no ledger, and a session that missed one reads the claim's value from the daemon, whose record it copies, so it is not a second delivery design either.
 This section is the one statement of that rule; every other document points here by path rather than restating it.
 
 The one topic shape a session can follow that is not its own agent subject is a topic the stream captures, `notifications.team.<name>` included (`bus.StreamSubjects`):

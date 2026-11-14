@@ -20,12 +20,14 @@ import (
 	tcnats "github.com/testcontainers/testcontainers-go/modules/nats"
 
 	"github.com/sjawhar/envoy/daemonpermissions"
+	"github.com/sjawhar/envoy/legiontasks"
 	"github.com/sjawhar/envoy/testnatsimages"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/natsauth"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
@@ -141,7 +143,7 @@ func TestDaemonPermissionsOnRealServers(t *testing.T) {
 				attempt, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 				defer cancel()
 				w := grantWorkflow(t, logs)
-				if err := w.connect(attempt, cfg, natsConnection{seed: daemonSeed}); err == nil {
+				if err := w.connect(attempt, cfg, dialDaemonGrant(t, cfg, daemonSeed, logs)); err == nil {
 					t.Fatal("the daemon connected without the dispatch consumer-create permission")
 				}
 
@@ -164,7 +166,137 @@ func TestDaemonPermissionsOnRealServers(t *testing.T) {
 				t.Logf("observed daemon refusal: %s", daemonLine)
 				t.Logf("observed server refusal: %s", serverLine)
 			})
+
+			t.Run("the daemon creates the task bucket, and writes, reads, watches and deletes a claim's value", func(t *testing.T) {
+				daemonSeed, admin, js, server, uri := startDaemonGrantServer(t, image.Ref, daemonpermissions.Grant())
+				defer admin.Close()
+				logs := &syncBuffer{}
+				bucket := createTaskBucketUnderGrant(t, js, uri, daemonSeed, logs)
+
+				epoch, revision, err := bucket.Write(t.Context(), taskGrantKey, 1)
+				if err != nil {
+					t.Fatalf("the daemon writes the claim's value: %v", err)
+				}
+				read, held, err := bucket.Read(t.Context(), taskGrantKey)
+				if err != nil {
+					t.Fatalf("the daemon reads the claim's value: %v", err)
+				}
+				if want := (supervise.TaskValue{Number: 1, Epoch: epoch, Revision: revision}); !held || read != want {
+					t.Fatalf("the claim's value read back = %+v (held %t), want %+v", read, held, want)
+				}
+
+				watching, stopWatching := context.WithCancel(t.Context())
+				defer stopWatching()
+				kv, _ := bucket.handle()
+				watcher, err := kv.WatchAll(watching)
+				if err != nil {
+					t.Fatalf("the daemon watches the task bucket: %v", err)
+				}
+				defer watcher.Stop()
+				if update := nextTaskGrantUpdate(t, watcher); update == nil || update.Operation() != jetstream.KeyValuePut || update.Revision() != revision {
+					t.Fatalf("the watch's first update = %v, want the claim's value at revision %d", update, revision)
+				}
+				if update := nextTaskGrantUpdate(t, watcher); update != nil {
+					t.Fatalf("the watch delivered %s at revision %d past the bucket's one key", update.Key(), update.Revision())
+				}
+				if err := bucket.Delete(t.Context(), taskGrantKey); err != nil {
+					t.Fatalf("the daemon deletes the claim's value: %v", err)
+				}
+				if update := nextTaskGrantUpdate(t, watcher); update == nil || update.Key() != taskGrantKey || update.Operation() != jetstream.KeyValueDelete {
+					t.Fatalf("the watch's update after the delete = %v, want the claim's delete", update)
+				}
+
+				if strings.Contains(logs.String(), "NATS refused the daemon a permission") {
+					t.Fatalf("the daemon logged a permission refusal:\n%s", logs.String())
+				}
+				if serverLog := daemonGrantServerLogs(t, server); strings.Contains(serverLog, "Permissions Violation") {
+					t.Fatalf("the server logged a permissions violation:\n%s", serverLog)
+				}
+				t.Log("the daemon created the task bucket, opened it again, and wrote, read, watched and deleted a claim's value without a permission refusal")
+			})
+
+			t.Run("without the task bucket's key writes, the daemon and server report the refused write", func(t *testing.T) {
+				removed := "$KV." + legiontasks.Bucket + ".>"
+				grant := daemonpermissions.Grant()
+				held := len(grant.Publish)
+				grant.Publish = slices.DeleteFunc(grant.Publish, func(subject string) bool { return subject == removed })
+				if len(grant.Publish) != held-1 {
+					t.Fatalf("the daemon grant does not contain %s: %v", removed, grant.Publish)
+				}
+
+				daemonSeed, admin, js, server, uri := startDaemonGrantServer(t, image.Ref, grant)
+				defer admin.Close()
+				logs := &syncBuffer{}
+				bucket := createTaskBucketUnderGrant(t, js, uri, daemonSeed, logs)
+				attempt, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+				defer cancel()
+				if _, _, err := bucket.Write(attempt, taskGrantKey, 1); err == nil {
+					t.Fatalf("the daemon wrote a claim's value without %s", removed)
+				}
+
+				denied := "$KV." + legiontasks.Bucket + "." + taskGrantKey
+				var daemonLine, serverLine string
+				testwait.Eventually(t, "the daemon log naming the refused write", func() bool {
+					daemonLine = matchingLogLine(logs.String(), "NATS refused the daemon a permission", denied)
+					return daemonLine != ""
+				})
+				var serverLogErr error
+				testwait.Eventually(t, "the server log naming the refused write", func() bool {
+					var serverLog string
+					serverLog, serverLogErr = readDaemonGrantServerLogs(server)
+					serverLine = matchingLogLine(serverLog, "Publish Violation", denied)
+					return serverLine != ""
+				})
+				if serverLogErr != nil {
+					t.Fatalf("read the server log: %v", serverLogErr)
+				}
+				t.Logf("observed daemon refusal: %s", daemonLine)
+				t.Logf("observed server refusal: %s", serverLine)
+			})
 		})
+	}
+}
+
+// taskGrantKey is one claim's key in the task bucket, a claim of the grant tests' project.
+const taskGrantKey = "legion-capture-capture-1-implementer"
+
+// createTaskBucketUnderGrant connects to uri as the daemon's user, whose seed is seed, logging what
+// the server reports as the daemon does (natsauth.LogEvents) to logs, has the daemon's own
+// open-or-create make the task bucket as the plan's decision 4 shapes it (openTaskBucket: one
+// revision of each key, kept on file, no TTL, at the replica count of the notification stream,
+// which admin's js creates first), and returns the bucket opened again, as a restarted daemon
+// opens it.
+func createTaskBucketUnderGrant(t *testing.T, js jetstream.JetStream, uri, seed string, logs *syncBuffer) *taskBucket {
+	t.Helper()
+	createDaemonNotificationStream(t, js)
+	conn, err := natsauth.Connect([]string{uri}, seed, t.Name(), natsauth.LogEvents(grantLogger(logs)), nats.Timeout(5*time.Second))
+	if err != nil {
+		t.Fatalf("connect the daemon: %v", err)
+	}
+	t.Cleanup(conn.Close)
+	if _, err := openTaskBucket(t.Context(), conn, "capture", natsConnection{seed: seed}, grantLogger(logs)); err != nil {
+		t.Fatalf("the daemon creates the task bucket: %v", err)
+	}
+	bucket, err := openTaskBucket(t.Context(), conn, "capture", natsConnection{seed: seed}, grantLogger(logs))
+	if err != nil {
+		t.Fatalf("the daemon opens the task bucket: %v", err)
+	}
+	return bucket
+}
+
+// nextTaskGrantUpdate is the watcher's next update, nil for its marker that it has delivered every
+// key the bucket held.
+func nextTaskGrantUpdate(t *testing.T, watcher jetstream.KeyWatcher) jetstream.KeyValueEntry {
+	t.Helper()
+	select {
+	case update, ok := <-watcher.Updates():
+		if !ok {
+			t.Fatal("the task bucket's watch ended")
+		}
+		return update
+	case <-time.After(10 * time.Second):
+		t.Fatal("the task bucket's watch delivered nothing within 10 s")
+		return nil
 	}
 }
 
@@ -196,10 +328,22 @@ func connectDaemonGrant(t *testing.T, uri, seed string, logs *syncBuffer) *workf
 	t.Helper()
 	cfg := daemonGrantConfig(uri)
 	w := grantWorkflow(t, logs)
-	if err := w.connect(t.Context(), cfg, natsConnection{seed: seed}); err != nil {
+	if err := w.connect(t.Context(), cfg, dialDaemonGrant(t, cfg, seed, logs)); err != nil {
 		t.Fatalf("connect the daemon: %v", err)
 	}
 	return w
+}
+
+// dialDaemonGrant is the daemon's own NATS connection to cfg's server as the user seed is the seed
+// of, logging what the server reports as the daemon does to logs (dialNATS), closed when t ends.
+func dialDaemonGrant(t *testing.T, cfg config.Config, seed string, logs *syncBuffer) *nats.Conn {
+	t.Helper()
+	conn, err := dialNATS(cfg, natsConnection{seed: seed}, grantLogger(logs), natsauth.ReconnectForever())
+	if err != nil {
+		t.Fatalf("connect the daemon: %v", err)
+	}
+	t.Cleanup(conn.Close)
+	return conn
 }
 
 func runDaemonGrantConsumers(t *testing.T, w *workflowRuntime, handlers ...intake.Handler) func() {
@@ -289,18 +433,8 @@ func startDaemonGrantServer(t *testing.T, image string, grant daemonpermissions.
 	t.Helper()
 	daemonSeed, daemonPublic := testnats.User(t)
 	adminSeed, adminPublic := testnats.User(t)
-	// The server's configuration reads JSON, but not Go's HTML escaping of '>' as \u003e.
-	var permissions strings.Builder
-	encoder := json.NewEncoder(&permissions)
-	encoder.SetEscapeHTML(false)
-	if err := encoder.Encode(map[string]map[string][]string{
-		"publish":   {"allow": grant.Publish},
-		"subscribe": {"allow": grant.Subscribe},
-	}); err != nil {
-		t.Fatalf("encode the daemon permissions: %v", err)
-	}
 	server, uri := testnats.StartNkeyAuthorizedUsers(t, image,
-		testnats.NkeyUser{Public: daemonPublic, Permissions: strings.TrimSpace(permissions.String())},
+		testnats.NkeyUser{Public: daemonPublic, Permissions: grantPermissions(t, grant)},
 		testnats.NkeyUser{Public: adminPublic})
 	admin, err := natsauth.Connect([]string{uri}, adminSeed, t.Name()+" admin", nats.Timeout(5*time.Second))
 	if err != nil {
@@ -311,6 +445,23 @@ func startDaemonGrantServer(t *testing.T, image string, grant daemonpermissions.
 		t.Fatalf("open JetStream as the admin user: %v", err)
 	}
 	return daemonSeed, admin, js, server, uri
+}
+
+// grantPermissions is grant as a server's permissions block for one user
+// (testnats.NkeyUser.Permissions).
+func grantPermissions(t *testing.T, grant daemonpermissions.Permissions) string {
+	t.Helper()
+	// The server's configuration reads JSON, but not Go's HTML escaping of '>' as \u003e.
+	var permissions strings.Builder
+	encoder := json.NewEncoder(&permissions)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(map[string]map[string][]string{
+		"publish":   {"allow": grant.Publish},
+		"subscribe": {"allow": grant.Subscribe},
+	}); err != nil {
+		t.Fatalf("encode the permissions: %v", err)
+	}
+	return strings.TrimSpace(permissions.String())
 }
 
 func daemonGrantServerLogs(t *testing.T, server *tcnats.NATSContainer) string {

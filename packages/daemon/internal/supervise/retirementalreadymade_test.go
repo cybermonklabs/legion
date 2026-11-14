@@ -87,10 +87,9 @@ func TestARetirementAlreadyMadeIsReadAsTheStoresOwnRatherThanAFailure(t *testing
 //
 // That decision is the only one lost. The refusal says exactly what the row is missing — the
 // delivery memory holds — so that delivery is marked unsaved, and the settle that follows writes
-// it over the row the rotation left and retires it there. Here that happens inside the decision
-// that met the refusal, because a prompt's result settles twice: once in its own row, which is
-// where the refusal is met, and once at the end of Handle, which is where the mark is read. The
-// claim then takes every event after it, which is what the count below holds.
+// it over the row the rotation left. The finish the refusal met is made again at the end-frame
+// bound, which the refused finish arms again (finishTask), and that retirement finds the delivery
+// it is of. The claim then takes every event after it, which is what the count below holds.
 //
 // The negative control is the mark taken back out (retirePending): nothing then writes that row,
 // since this path owes no claim write and no repair makes one, so the settle at the head of
@@ -109,7 +108,7 @@ func TestARetirementUnderAnotherIdLeavesTheClaimDeciding(t *testing.T) {
 	h.store.deliveries[testToken] = rotated
 	h.store.mu.Unlock()
 
-	// The turn ends, and the settle behind it retires the task the turn ran.
+	// The turn ends and the worker's report of it finishes the task the turn ran.
 	attempted := counted.mark()
 	err := h.handle(StreamTurnEnd{Claim: testToken})
 
@@ -125,9 +124,8 @@ func TestARetirementUnderAnotherIdLeavesTheClaimDeciding(t *testing.T) {
 		}
 	}
 	// The retirement was asked for and refused: the answer came from the store's own delete
-	// rather than from a guard ahead of it. What the mark then does is the two writes behind it:
-	// the delivery memory holds written over the row the rotation left, and the retirement that
-	// now finds the delivery it is of.
+	// rather than from a guard ahead of it. What the mark then does is the write behind it: the
+	// delivery memory holds written over the row the rotation left.
 	asked := counted.writes()[attempted:]
 	refused := slices.Index(asked, "RetireDelivery")
 	if refused < 0 {
@@ -135,8 +133,15 @@ func TestARetirementUnderAnotherIdLeavesTheClaimDeciding(t *testing.T) {
 	}
 	// These are errors rather than fatal, so that the count at the end is reached and reported
 	// whatever they say: it is the one this test turns on.
-	if want := []string{"RetireDelivery", "PutClaimAndDelivery", "RetireDelivery"}; !slices.Equal(asked[refused:], want) {
+	if want := []string{"RetireDelivery", "PutClaimAndDelivery"}; !slices.Equal(asked[refused:], want) {
 		t.Errorf("the refusal was followed by %v, want %v: the row lacks exactly the delivery memory holds", asked[refused:], want)
+	}
+
+	// The end-frame bound finishes the task again, and that retirement finds its delivery.
+	attempted = counted.mark()
+	h.advance(testRPC)
+	if asked := counted.writes()[attempted:]; !slices.Equal(asked, []string{"RetireDelivery"}) {
+		t.Errorf("the end-frame bound asked for %v, want the retirement of the delivery memory wrote back", asked)
 	}
 
 	// Memory and the row agree again, and on memory's own delivery: the rotation's row was

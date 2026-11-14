@@ -9,6 +9,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/sjawhar/envoy/infra/core"
+	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/legiontasks"
 )
 
 // listenerBasePublish is the publish grant every user that runs a listener holds for
@@ -98,9 +100,23 @@ var sessionConsumerPublish = []string{
 	"$JS.ACK.ENVOY_NOTIFICATIONS.*.>",
 }
 
+// taskBucketReadPublish are the reads of the Legion daemons' task bucket that the listener's task
+// relay makes (its stream's info, its direct and stored-message gets, its watch's consumer create
+// and delete, and their flow-control replies), which ListenerPermissions alone adds after the
+// session consumers' calls: no create, update or write of the bucket, whose one writer is the
+// daemon.
+var taskBucketReadPublish = []string{
+	"$JS.API.STREAM.INFO.KV_legion_tasks",
+	"$JS.API.DIRECT.GET.KV_legion_tasks.>",
+	"$JS.API.STREAM.MSG.GET.KV_legion_tasks",
+	"$JS.API.CONSUMER.CREATE.KV_legion_tasks.>",
+	"$JS.API.CONSUMER.DELETE.KV_legion_tasks.>",
+	"$JS.FC.KV_legion_tasks.>",
+}
+
 // listenerPublish is the listener's own publish grant: the base grant, then the session consumers'
-// calls.
-var listenerPublish = append(append([]string{}, listenerBasePublish...), sessionConsumerPublish...)
+// calls, then the task bucket's reads.
+var listenerPublish = append(append(append([]string{}, listenerBasePublish...), sessionConsumerPublish...), taskBucketReadPublish...)
 
 // listenerSubscribe is the listener's subscribe grant for example-host-a: reply inboxes, then the
 // role lanes in the machine's queue group and in the one every listener shares.
@@ -347,7 +363,9 @@ func TestASetIsAUsersRules(t *testing.T) {
 }
 
 // The expected daemon grant is written out literally rather than built from Envoy's subject names,
-// so a change to the grant or to the names it is built from fails here until reviewed.
+// so a change to the grant or to the names it is built from fails here until reviewed: the
+// notification stream's calls, then JetStream's account info and the task bucket's, which the
+// daemon creates, reads, writes and watches.
 func TestDaemonPermissions(t *testing.T) {
 	require.Equal(t, core.Permissions{
 		Publish: core.Rules{Allow: []string{
@@ -357,10 +375,130 @@ func TestDaemonPermissions(t *testing.T) {
 			"$JS.API.CONSUMER.CREATE.ENVOY_NOTIFICATIONS.>",
 			"$JS.API.CONSUMER.MSG.NEXT.ENVOY_NOTIFICATIONS.>",
 			"$JS.ACK.ENVOY_NOTIFICATIONS.>",
+			"$JS.API.INFO",
+			"$JS.API.STREAM.INFO.KV_legion_tasks",
+			"$JS.API.STREAM.CREATE.KV_legion_tasks",
+			"$JS.API.STREAM.UPDATE.KV_legion_tasks",
+			"$JS.API.DIRECT.GET.KV_legion_tasks.>",
+			"$JS.API.STREAM.MSG.GET.KV_legion_tasks",
+			"$KV.legion_tasks.>",
+			"$JS.API.CONSUMER.CREATE.KV_legion_tasks.>",
+			"$JS.API.CONSUMER.DELETE.KV_legion_tasks.>",
+			"$JS.FC.KV_legion_tasks.>",
 		}},
 		Subscribe: core.Rules{Allow: []string{
 			"notifications.envoy.exceptions.notifications.role.>",
 			"_INBOX.>",
 		}},
 	}, core.DaemonPermissions())
+}
+
+// taskBucketCalls are subjects of every call a client makes on the task bucket, one of each: its
+// stream's info, create and update, a key's direct and stored-message gets, a key's write or
+// delete, a watch's consumer create and delete, and a flow-control reply.
+var taskBucketCalls = []string{
+	"$JS.API.STREAM.INFO.KV_legion_tasks",
+	"$JS.API.STREAM.CREATE.KV_legion_tasks",
+	"$JS.API.STREAM.UPDATE.KV_legion_tasks",
+	"$JS.API.DIRECT.GET.KV_legion_tasks.$KV.legion_tasks.legion-example-infra-1-implementer",
+	"$JS.API.STREAM.MSG.GET.KV_legion_tasks",
+	"$KV.legion_tasks.legion-example-infra-1-implementer",
+	"$JS.API.CONSUMER.CREATE.KV_legion_tasks.example.$KV.legion_tasks.>",
+	"$JS.API.CONSUMER.DELETE.KV_legion_tasks.example",
+	"$JS.FC.KV_legion_tasks.example.1.2",
+}
+
+// subjectAdmits reports whether pattern, a grant's entry with any queue group after a space cut
+// off, admits subject as NATS matches them: token by token, `*` taking any one token and a last
+// `>` the one or more that are left.
+func subjectAdmits(pattern, subject string) bool {
+	want, got := strings.Split(strings.Fields(pattern)[0], "."), strings.Split(subject, ".")
+	for i, token := range want {
+		if token == ">" && i == len(want)-1 {
+			return len(got) > i
+		}
+		if i >= len(got) || (token != "*" && token != got[i]) {
+			return false
+		}
+	}
+	return len(want) == len(got)
+}
+
+// requireNoTaskBucketGrant requires that no entry of p names the task bucket or its stream and
+// that no publish entry admits any call on the bucket, a wildcard's included.
+func requireNoTaskBucketGrant(t *testing.T, p core.Permissions) {
+	t.Helper()
+	for _, entry := range append(append([]string{}, p.Publish.Allow...), p.Subscribe.Allow...) {
+		require.NotContains(t, entry, "legion_tasks", "the entry %q names the task bucket", entry)
+	}
+	for _, entry := range p.Publish.Allow {
+		for _, call := range taskBucketCalls {
+			require.False(t, subjectAdmits(entry, call), "the publish entry %q admits %q", entry, call)
+		}
+	}
+}
+
+// The matcher the no-grant tests read every entry with admits what NATS admits, so a set passes
+// them for holding no entry that reaches the bucket and not for a matcher that admits nothing.
+func TestTheTaskBucketMatcherAdmitsWhatNATSAdmits(t *testing.T) {
+	for _, c := range []struct {
+		pattern, subject string
+		want             bool
+	}{
+		{"$KV.legion_tasks.>", "$KV.legion_tasks.legion-example-infra-1-implementer", true},
+		{"$KV.>", "$KV.legion_tasks.legion-example-infra-1-implementer", true},
+		{">", "$KV.legion_tasks.legion-example-infra-1-implementer", true},
+		{"$KV.*.*", "$KV.legion_tasks.legion-example-infra-1-implementer", true},
+		{"$JS.API.STREAM.INFO.KV_legion_tasks", "$JS.API.STREAM.INFO.KV_legion_tasks", true},
+		{"$JS.API.STREAM.INFO.* envoy-roles", "$JS.API.STREAM.INFO.KV_legion_tasks", true},
+		{"$JS.API.STREAM.INFO.KV_legion_tasks.>", "$JS.API.STREAM.INFO.KV_legion_tasks", false},
+		{"$KV.envoy_roles.>", "$KV.legion_tasks.legion-example-infra-1-implementer", false},
+		{"$KV.*", "$KV.legion_tasks.legion-example-infra-1-implementer", false},
+		{"$JS.API.STREAM.INFO.KV_legion_tasks.x", "$JS.API.STREAM.INFO.KV_legion_tasks", false},
+	} {
+		require.Equal(t, c.want, subjectAdmits(c.pattern, c.subject), "%q admits %q", c.pattern, c.subject)
+	}
+}
+
+// The listener's two sets hold the task bucket's reads and none of its writes: the daemon is the
+// bucket's one writer.
+func TestListenerPermissionsReadTheTaskBucketAndWriteNothingOfIt(t *testing.T) {
+	for name, p := range map[string]core.Permissions{
+		"listener":      core.ListenerPermissions("example-host-a"),
+		"listener host": core.ListenerHostPermissions("example-host-a"),
+	} {
+		require.Subset(t, p.Publish.Allow, taskBucketReadPublish, "the %s set", name)
+		for _, call := range []string{
+			"$JS.API.STREAM.CREATE.KV_legion_tasks",
+			"$JS.API.STREAM.UPDATE.KV_legion_tasks",
+			"$KV.legion_tasks.legion-example-infra-1-implementer",
+		} {
+			for _, entry := range p.Publish.Allow {
+				require.False(t, subjectAdmits(entry, call), "the %s set's entry %q admits %q", name, entry, call)
+			}
+		}
+	}
+}
+
+// A host's user is shared by its sessions, so it holds nothing of the task bucket: no session reads
+// another claim's value, and the listener connecting as it relays no task.
+func TestHostPermissionsHoldNoTaskBucketGrant(t *testing.T) {
+	requireNoTaskBucketGrant(t, core.HostPermissions("example-host-a"))
+}
+
+// Dispatch's user, which envoy-dispatch and the listener beside it share, holds nothing of the task
+// bucket.
+func TestDispatchPermissionsHoldNoTaskBucketGrant(t *testing.T) {
+	requireNoTaskBucketGrant(t, core.DispatchPermissions("example-host-a"))
+}
+
+// A session reads its value from the relay frame its listener publishes, never from the bucket.
+func TestSessionPermissionsHoldNoTaskBucketGrant(t *testing.T) {
+	requireNoTaskBucketGrant(t, core.SessionPermissions())
+}
+
+// The task bucket is the daemon's, not one of the buckets the listener keeps and raises, so the
+// listener grant every user that runs a listener holds grants it nothing.
+func TestListenerBucketsHoldNoTaskBucket(t *testing.T) {
+	require.NotContains(t, bus.ListenerBuckets(), legiontasks.Bucket)
 }

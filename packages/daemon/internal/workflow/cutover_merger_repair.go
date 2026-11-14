@@ -14,14 +14,14 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// cutoverMergerTold is the Dispatch message the cutover's repair posts on each issue whose merger
-// it owed a start (cutoverMergerRepair): the message dispatch://INFRA-3274/spec R2 asks for, which
-// says in plain words that the cutover left the merger stopped and owed the merger its merging
-// task. It says the daemon queued that task, not that it gave it: the start takes the slot mark
-// the slot rule gives `merging` (StartOrOwe), which is none, since merging is past the issue's
-// review (record.KeepsSlot), so admission holds nothing of it; but the daemon's outbox holds it
-// while the tree's design gate is closed (the outbox's mergerWaitsForTheDesignGate), so the boot
-// may give the merger nothing yet.
+// cutoverMergerTold is the Dispatch message the cutover's repair posts on each issue whose
+// stopped merger it owed a start (cutoverMergerRepair): the message dispatch://INFRA-3274/spec
+// R2 asks for, which says in plain words that the cutover left the merger stopped and owed the
+// merger its merging task. It says the daemon queued that task, not that it gave it: the start
+// takes the slot mark the slot rule gives `merging` (StartOrOwe), which is none, since merging
+// is past the issue's review (record.KeepsSlot), so admission holds nothing of it; but the
+// daemon's outbox holds it while the tree's design gate is closed (the outbox's
+// mergerWaitsForTheDesignGate), so the boot may give the merger nothing yet.
 const cutoverMergerTold = "The cutover from a Legion build with the phase `awaiting_merge` left the merger of this issue stopped. " +
 	"The idle release stopped the pod of the merger while the issue waited for its merge. " +
 	"Nothing would start the merger again. " +
@@ -30,45 +30,59 @@ const cutoverMergerTold = "The cutover from a Legion build with the phase `await
 	"The merger starts when the design gate of its tree allows it."
 
 // cutoverMergerRepair is the boot's one-time repair of the mergers the `awaiting_merge` cutover
-// left stopped (intake.CutoverMergerRepair, dispatch://INFRA-3274/spec R2). A build with that
-// phase moved an issue there when its merger completed merging with a READY head, since the
-// daemon merged then, and no role worked the phase, so the idle release stopped the merger's pod
-// while the issue waited and armed no backstop for it. Migration 20261029120700 moved each such
-// issue back to merging, where the merger now merges, and wrote no task. Nothing else would start
-// that merger again: the boot's resume by rule (booted) passes over a released claim; admission's
-// slot repair and the entry sweep (admit's owedEntryRoles) pass over a released claim level with
-// the entry its phases row names, which is where the upgrade to the phase entry puts a merger
-// that took its merging task (migration 20261111225552); the relaunch's ready (readyWorkerTask)
-// and the silence repair read only a live claim; no backstop is armed; and no CI result or
-// message may ever come. Its pull request would stay open unless GitHub's queue or auto-merge
-// still held it. The boot applies the fact once per project under a fixed event id, so
-// processed_events is its once-only record and a later boot repairs nothing.
+// left (intake.CutoverMergerRepair, dispatch://INFRA-3274/spec R2). A build with that phase moved
+// an issue there when its merger completed merging with a READY head, since the daemon merged
+// then, and no role worked the phase, so the idle release stopped the merger's pod while the
+// issue waited and armed no backstop for it. Migration 20261029120700 moved each such issue back
+// to merging, where the merger now merges, and wrote no task. Nothing else would start a stopped
+// merger again: the boot's resume by rule (booted) passes over a released claim; admission's slot
+// repair and the entry sweep (admit's owedEntryRoles) pass over a released claim level with the
+// entry its phases row names, which is where the upgrade to the phase entry puts a merger that
+// took its merging task (migration 20261111225552); the relaunch's ready (readyWorkerTask) and
+// the silence repair read only a live claim; no backstop is armed; and no CI result or message
+// may ever come. Its pull request would stay open unless GitHub's queue or auto-merge still held
+// it. The boot applies the fact once per project under a fixed event id, so processed_events is
+// its once-only record and a later boot repairs nothing.
 //
-// It reads its mergers from the suspended owners of the project's unfinished phases in running
-// trees (suspendedPhaseOwners), the read booted starts its owners from, so the repair and the
-// boot's resume by rule pick an owner by one rule. By that rule the issue is in the workflow; its
-// tree runs (record.RunningRoots), since a lingering tree's claims wait for its re-admission and
-// a queued root's members for its promotion, each of which starts every mid-phase member (admit's
+// A merger the cutover left live — its pod kept, idle in the issue that moved — is told nothing
+// either. The upgrade to the task numbers (migration 20261113175649) records the merging task it
+// took as finished in the session it holds, so its relaunch's ready gives it nothing
+// (readyWorkerTask, dispatch://INFRA-2811 R4), and a live merger the boot does not relaunch has
+// no ready to come at all. Its merging work is new all the same: the merge was the daemon's when
+// it took that task. So the repair owes it the merging task too, under a phase start's origin,
+// which is R4's "unless something new is owed to it"; every ordinary relaunch keeps R4.
+//
+// It reads its mergers from the owners of the project's unfinished phases in running trees
+// (suspendedPhaseOwners), the read booted starts its owners from, so the repair and the boot's
+// resume by rule pick an owner by one rule. By that rule the issue is in the workflow; its tree
+// runs (record.RunningRoots), since a lingering tree's claims wait for its re-admission and a
+// queued root's members for its promotion, each of which starts every mid-phase member (admit's
 // startMidPhaseMembers); its phase is not finished (PhaseFinished), since a merged pull request's
 // merge closes the issue and leaves the merger nothing to do; and the owner's claim at the issue's
-// generation stands suspended. Of those owners it selects each merger the old build left so, by
-// all of these:
+// generation stands suspended, or has a process (liveOwner). Of those owners it selects each
+// merger the old build left so, by all of these (cutoverLeftMerger):
 //   - the issue stands in merging, whose owner is the merger. The migration put every
 //     awaiting_merge issue there, and a hold from merging is the architect's to retry, which
 //     starts the merger (restart).
-//   - the merger's claim is suspended by `released`: every other claim has a starter of its own.
-//     A claim the daemon or its exit suspended gets booted's resume, and an operator's suspension
-//     holds for the operator. The owners' read answers no live claim, which the boot relaunches
-//     onto this daemon's plugin and whose ready gives it its phase's task (readyWorkerTask), and
-//     no failed claim, which waits for the architect.
 //   - its pull request record is open: the merger merges an open pull request, and the architect
 //     is told of one closed unmerged.
 //   - the merger's phase row holds a READY head (HandoffCommit): the old build moved the issue
 //     to awaiting_merge on that completion.
+//
+// A suspended merger is selected by three terms more (cutoverStoppedMerger):
+//   - its claim is suspended by `released`: every other suspended claim has a starter of its own.
+//     A claim the daemon or its exit suspended gets booted's resume, and an operator's suspension
+//     holds for the operator. The owners' read answers no failed claim, which waits for the
+//     architect.
 //   - no backstop of the merger is open (Pods.OpenPodBackstop): a release of a role that works
 //     its phase arms one, which wakes it, and the old build armed none in awaiting_merge, since
 //     no role worked it there.
 //   - StartFor answers true: a role a start already covers gets no second, as in booted.
+//
+// A live merger is selected by two terms more (cutoverIdleMerger), the ones a ready asks before
+// it gives a live worker its phase's task (readyWorkerTask): it holds no task, and no row the
+// outbox holds for it covers merging (queuedRowCovers). StartFor answers false for every live
+// claim, since a live claim needs no launch, so it is not asked.
 //
 // For each issue it selects, in the fact's transaction, it clears the merger's handoff
 // (clearHandoff): the READY was a completion under the old rule, and kept it would read as a
@@ -76,31 +90,32 @@ const cutoverMergerTold = "The cutover from a Legion build with the phase `await
 // merger's phases row and builds the start with the builder of booted's resume by rule
 // (startSuspendedOwner), from the entry that row names: a merger behind that entry (OwedEntry) is
 // sent the work of that entry at that entry (sendOwedEntry), and a merger level with it is sent
-// the merging resume task (ResumePhaseTask) at entry 0. It builds the start that way, and not as
-// one fixed request, for the reason booted gives: the resume task tells a claim to carry on work
-// it already holds, so a merger behind its entry would spend its first turn on the wrong prompt,
-// and the completion it answered with would be refused as behind that entry. Neither start raises
-// an entry, and both carry booted's ruleResume mark, since each starts a claim the daemon itself
-// suspended and the mark tells the outbox to finish the row rather than retry a claim that spends
-// its launch budget. Both are built by Engine.started and written through StartOrOwe, so the slot
-// mark is StartOrOwe's and this handler sets none. It posts one Dispatch message on the issue
-// (cutoverMergerTold).
+// the merging resume task (ResumePhaseTask) at entry 0. Both carry a phase start's origin, since
+// the merging work is new to the merger. It builds the start that way, and not as one fixed
+// request, for the reason booted gives: the resume task tells a claim to carry on the work of
+// the phase it stands in, so a merger behind its entry would spend its first turn on the wrong
+// prompt, and the completion it answered with would be refused as behind that entry. Neither
+// start raises an entry, and both carry booted's ruleResume mark, which tells the outbox to
+// finish the row rather than retry a claim that spends its launch budget. Both are built by
+// Engine.started and written through StartOrOwe, so the slot mark is StartOrOwe's and this
+// handler sets none. For a stopped merger it posts one Dispatch message on the issue
+// (cutoverMergerTold); a live merger was not stopped, and the task it takes is what tells it.
 //
 // No later start of that boot gives the merger a second task. booted passes over a released
-// claim, and StartFor sees the queued start. Admission's slot repair and the entry sweep send
-// nothing to a claim level with its entry, and for a claim behind it OwedEntry reads the queued
-// start that carries that entry. readyWorkerTask gives nothing to a claim holding a task or
-// covered by a queued start of its phase (queuedRowCovers). The silence repair reads no
-// suspended claim and no claim a queued start covers (unpromptedPhaseWorker). A later start
-// through StartOrOwe that carries the same slot mark, which a start of merging or of another
-// phase past the review does, takes the owed start out while it is still queued and unleased
-// (held by a closed design gate, or not yet run) and writes its own in its place
-// (Store.EnqueueStart). A later start of a phase that holds a slot, such as implementing after a
-// conflict, leaves it queued, and the outbox's phase fence ends it, since it serves a phase the
-// issue has left. It starts no other role. Once the fact commits, it logs one line per merger
-// with the slot mark of the queued start, and one line with the count and each issue, zero
-// included. It owes nothing without the daemon's pod records (Config.Pods), since it cannot read
-// a backstop without them.
+// claim and every live one, and StartFor sees the queued start. Admission's slot repair and the
+// entry sweep send nothing to a claim level with its entry, and for a claim behind it OwedEntry
+// reads the queued start that carries that entry. readyWorkerTask gives nothing to a claim
+// holding a task or covered by a queued start of its phase (queuedRowCovers), which is the
+// relaunched live merger's ready. The silence repair reads no suspended claim and no claim a
+// queued start covers (unpromptedPhaseWorker). A later start through StartOrOwe that carries the
+// same slot mark, which a start of merging or of another phase past the review does, takes the
+// owed start out while it is still queued and unleased (held by a closed design gate, or not yet
+// run) and writes its own in its place (Store.EnqueueStart). A later start of a phase that holds
+// a slot, such as implementing after a conflict, leaves it queued, and the outbox's phase fence
+// ends it, since it serves a phase the issue has left. It starts no other role. Once the fact
+// commits, it logs one line per merger with whether it was stopped and the slot mark of the
+// queued start, and one line with the count and each issue, zero included. It owes nothing
+// without the daemon's pod records (Config.Pods), since it cannot read a backstop without them.
 func (e *Engine) cutoverMergerRepair(ctx context.Context, tx pgx.Tx, _ intake.CutoverMergerRepair) (intake.Result, error) {
 	owed := []string{}
 	if e.cfg.Pods != nil {
@@ -116,7 +131,20 @@ func (e *Engine) cutoverMergerRepair(ctx context.Context, tx pgx.Tx, _ intake.Cu
 			if !stopped {
 				continue
 			}
-			if err := e.oweCutoverMerger(ctx, tx, owner); err != nil {
+			if err := e.oweCutoverMerger(ctx, tx, owner, true); err != nil {
+				return intake.Result{}, err
+			}
+			owed = append(owed, owner.issue.Key)
+		}
+		for _, owner := range owners.live {
+			idle, err := e.cutoverIdleMerger(ctx, tx, owner)
+			if err != nil {
+				return intake.Result{}, err
+			}
+			if !idle {
+				continue
+			}
+			if err := e.oweCutoverMerger(ctx, tx, owner, false); err != nil {
 				return intake.Result{}, err
 			}
 			owed = append(owed, owner.issue.Key)
@@ -131,11 +159,42 @@ func (e *Engine) cutoverMergerRepair(ctx context.Context, tx pgx.Tx, _ intake.Cu
 }
 
 // cutoverStoppedMerger is whether owner, a suspended owner of an unfinished phase in a running
-// tree (suspendedPhaseOwners), is a merger the cutover left stopped, by the terms of its own that
-// cutoverMergerRepair states.
-func (e *Engine) cutoverStoppedMerger(ctx context.Context, tx pgx.Tx, owner suspendedOwner) (bool, error) {
+// tree (suspendedPhaseOwners), is a merger the cutover left stopped: one it left
+// (cutoverLeftMerger), suspended by the idle release, with no backstop open, and with no start
+// already covering it (StartFor).
+func (e *Engine) cutoverStoppedMerger(ctx context.Context, tx pgx.Tx, owner phaseOwner) (bool, error) {
+	if owner.run.Claim.SuspendedBy != supervise.SuspendedByReleased {
+		return false, nil
+	}
+	left, err := e.cutoverLeftMerger(ctx, tx, owner)
+	if err != nil || !left {
+		return false, err
+	}
+	armed, err := e.cfg.Pods.OpenPodBackstop(ctx, tx, owner.issue.Key, claim.RoleMerger)
+	if err != nil || armed {
+		return false, err
+	}
+	return StartFor(owner.run, owner.root, owner.issue.Generation, phase.Merging), nil
+}
+
+// cutoverIdleMerger is whether owner, a live owner of an unfinished phase in a running tree
+// (suspendedPhaseOwners), is a merger the cutover left idle with its merging work untold: one
+// it left (cutoverLeftMerger) that holds no task, and that no row the outbox holds for it covers
+// (queuedRowCovers), the two terms a ready asks of a live worker (readyWorkerTask).
+func (e *Engine) cutoverIdleMerger(ctx context.Context, tx pgx.Tx, owner phaseOwner) (bool, error) {
+	if owner.run.Claim.Pending != nil || queuedRowCovers(owner.run, owner.root, phase.Merging) {
+		return false, nil
+	}
+	return e.cutoverLeftMerger(ctx, tx, owner)
+}
+
+// cutoverLeftMerger is whether owner, an owner of an unfinished phase in a running tree
+// (suspendedPhaseOwners), stands where the cutover left a merger, by the terms
+// cutoverMergerRepair states for every merger it selects: the issue stands in merging, its pull
+// request record is open, and the merger's phase row holds a READY head.
+func (e *Engine) cutoverLeftMerger(ctx context.Context, tx pgx.Tx, owner phaseOwner) (bool, error) {
 	issue := owner.issue
-	if issue.Phase != phase.Merging || owner.run.Claim.SuspendedBy != supervise.SuspendedByReleased {
+	if issue.Phase != phase.Merging {
 		return false, nil
 	}
 	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
@@ -143,22 +202,16 @@ func (e *Engine) cutoverStoppedMerger(ctx context.Context, tx pgx.Tx, owner susp
 		return false, err
 	}
 	row, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleMerger)
-	if err != nil || row.HandoffCommit == "" {
-		return false, err
-	}
-	armed, err := e.cfg.Pods.OpenPodBackstop(ctx, tx, issue.Key, claim.RoleMerger)
-	if err != nil || armed {
-		return false, err
-	}
-	return StartFor(owner.run, owner.root, issue.Generation, phase.Merging), nil
+	return row.HandoffCommit != "", err
 }
 
-// oweCutoverMerger owes the stopped merger owner its merging task (cutoverMergerRepair): it
-// clears the merger's handoff, reads the merger's phases row, owes the start the boot gives a
-// claim the daemon itself suspended (startSuspendedOwner) from the entry that row names, posts the
-// cutover's message on the issue, and logs on commit the slot mark the queued start carries, read
-// back from the merger's queued rows, since the mark is StartOrOwe's to set.
-func (e *Engine) oweCutoverMerger(ctx context.Context, tx pgx.Tx, owner suspendedOwner) error {
+// oweCutoverMerger owes the merger owner its merging task (cutoverMergerRepair): it clears the
+// merger's handoff, reads the merger's phases row, owes the start the boot builds for a phase
+// owner (startSuspendedOwner) from the entry that row names, under a phase start's origin, posts
+// the cutover's message on the issue of a stopped merger, and logs on commit the slot mark the
+// queued start carries, read back from the merger's queued rows, since the mark is StartOrOwe's
+// to set.
+func (e *Engine) oweCutoverMerger(ctx context.Context, tx pgx.Tx, owner phaseOwner, stopped bool) error {
 	issue := owner.issue
 	if err := e.clearHandoff(ctx, tx, issue.Key, claim.RoleMerger); err != nil {
 		return err
@@ -170,11 +223,13 @@ func (e *Engine) oweCutoverMerger(ctx context.Context, tx pgx.Tx, owner suspende
 	if err != nil {
 		return err
 	}
-	if _, err := e.startSuspendedOwner(ctx, tx, owner, row); err != nil {
+	if _, err := e.startSuspendedOwner(ctx, tx, owner, row, supervise.OriginPhaseStart); err != nil {
 		return err
 	}
-	if err := e.enqueue(ctx, tx, issue.Key, record.MessagePost{Body: cutoverMergerTold}); err != nil {
-		return err
+	if stopped {
+		if err := e.enqueue(ctx, tx, issue.Key, record.MessagePost{Body: cutoverMergerTold}); err != nil {
+			return err
+		}
 	}
 	run, err := e.store.RoleRun(ctx, tx, owner.token, issue.Key, claim.RoleMerger, issue.Generation)
 	if err != nil {
@@ -189,6 +244,7 @@ func (e *Engine) oweCutoverMerger(ctx context.Context, tx pgx.Tx, owner suspende
 	if queued == nil {
 		return fmt.Errorf("the cutover owed the merger of %s its merging task, and no start of it is queued", issue.Key)
 	}
-	e.logOnCommit(ctx, "workflow: the cutover owes a stopped merger its merging task", "issue", issue.Key, "needsSlot", queued.NeedsSlot)
+	e.logOnCommit(ctx, "workflow: the cutover owes a merger its merging task", "issue", issue.Key, "stopped", stopped,
+		"needsSlot", queued.NeedsSlot)
 	return nil
 }

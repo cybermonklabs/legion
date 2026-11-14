@@ -8,7 +8,7 @@
  */
 import { randomBytes } from "node:crypto"
 import type { DeliveryCapability } from "@legion/contracts"
-import { deliverSubject, RelayHeader } from "@legion/envoy-client/consumer-delivery"
+import { deliverSubject, RelayHeader, TaskHeader } from "@legion/envoy-client/consumer-delivery"
 import { sessionConfigFile } from "@legion/envoy-client/session-settings"
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer"
 import type { EnvoyClient, SubscribeResult } from "@legion/envoy-client/transport"
@@ -131,20 +131,11 @@ export class FakeNats implements ChannelConnection {
 
   /** A message published on `subject` reaches the subscription `pattern`, which matches it. */
   emitOn(pattern: string, subject: string, raw: string, reply?: string): void {
-    const queue = this.subscriptions.get(pattern)
-    if (queue === undefined) throw new Error(`no subscription for ${pattern}`)
-    const message = {
+    this.enqueue(pattern, {
       subject,
       data: new TextEncoder().encode(raw),
       ...(reply === undefined ? {} : { reply }),
-    }
-    if (queue.waiter === undefined) {
-      queue.messages.push(message)
-      return
-    }
-    const waiter = queue.waiter
-    queue.waiter = undefined
-    waiter.resolve(message)
+    })
   }
 
   /**
@@ -165,8 +156,6 @@ export class FakeNats implements ChannelConnection {
     },
   ): void {
     const subject = deliverSubject(sessionID)
-    const queue = this.subscriptions.get(subject)
-    if (queue === undefined) throw new Error(`no subscription for ${subject}`)
     const headers = new Map<string, string>([
       [RelayHeader.subject, frame.subject],
       [RelayHeader.streamSeq, String(frame.seq)],
@@ -175,12 +164,49 @@ export class FakeNats implements ChannelConnection {
       [RelayHeader.storedAt, frame.storedAt ?? new Date().toISOString()],
       ...(frame.gap === true ? [[RelayHeader.gap, "true"] as [string, string]] : []),
     ])
-    const message: ChannelBrokerMessage = {
+    this.enqueue(subject, {
       subject,
       data: new TextEncoder().encode(frame.raw),
       reply: frame.reply,
       headers: { get: (name) => headers.get(name) },
-    }
+    })
+  }
+
+  /**
+   * The owning listener relays a write of the task bucket's key `claim` to `sessionID`'s relay
+   * subject: a put of task `task`, or, with none, a delete, at `revision` of the bucket's `epoch`,
+   * with a reply subject of the listener's that reads no answer.
+   */
+  emitTaskFrame(
+    sessionID: string,
+    frame: {
+      readonly claim: string
+      readonly epoch: string
+      readonly revision: number
+      readonly task?: number
+    },
+  ): void {
+    const subject = deliverSubject(sessionID)
+    const headers = new Map<string, string>([
+      [TaskHeader.claim, frame.claim],
+      [TaskHeader.epoch, frame.epoch],
+      [TaskHeader.revision, String(frame.revision)],
+      [TaskHeader.op, frame.task === undefined ? "delete" : "put"],
+    ])
+    this.enqueue(subject, {
+      subject,
+      data: new TextEncoder().encode(
+        frame.task === undefined ? "" : JSON.stringify({ task: frame.task }),
+      ),
+      reply: `_INBOX.task.${frame.revision}`,
+      headers: { get: (name) => headers.get(name) },
+    })
+  }
+
+  /** Hands `message` to the subscription `subject`, or queues it until that subscription pulls. */
+  private enqueue(subject: string, message: ChannelBrokerMessage): void {
+    const queue = this.subscriptions.get(subject)
+    if (queue === undefined) throw new Error(`no subscription for ${subject}`)
     if (queue.waiter === undefined) {
       queue.messages.push(message)
       return

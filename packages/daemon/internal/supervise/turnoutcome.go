@@ -106,17 +106,98 @@ func (m *Machine) freshRun() { m.claim.TurnOutcomes = nil }
 // refused turns from the window that leaves. At the launch failure limit the claim fails: the
 // provider has refused every turn since the last one it took, so nothing of the issue's work is
 // being done and every later turn of that session would be refused the same way
-// (dispatch://INFRA-714). A run short of the limit is the report written and nothing else.
+// (dispatch://INFRA-714). A run short of the limit is the report written, and then what the
+// report says of the claim's task (reportedTask).
 func turnOutcome(m *Machine, ctx context.Context, ev Event) error {
 	r := ev.(RequestTurnOutcome)
 	m.recordTurnOutcome(TurnOutcome{Generation: r.Generation, Sequence: r.Sequence, Refused: r.Refused, Message: r.Message})
 	run := m.claim.RefusedRun()
 	m.log.Info("supervise: a turn ended", "generation", r.Generation, "sequence", r.Sequence,
 		"refused", r.Refused, "refusedRun", run, "limit", m.deps.Limits.LaunchFailures)
-	if run < m.deps.Limits.LaunchFailures {
-		return m.persist(ctx)
+	if run >= m.deps.Limits.LaunchFailures {
+		return m.fail(ctx, CauseProviderError, refusalCause(run, m.claim.LastRefusal()))
 	}
-	return m.fail(ctx, CauseProviderError, refusalCause(run, m.claim.LastRefusal()))
+	if err := m.persist(ctx); err != nil {
+		return err
+	}
+	return m.reportedTask(ctx, r)
+}
+
+// reportedTask is what a turn-outcome report says of the claim's task. A report that names the
+// number of the task a take holds is that task's turn reported over: one that ends in a provider
+// error keeps the task under its number and starts the ladder's wait (providerErrored), and any
+// other finishes it (finishTask) and ends the claim's run of provider-error turns. A report that
+// names another number, or none, is logged and finishes nothing: a late report of a task already
+// finished must not touch the one that replaced it, and a worker whose plugin names no number has
+// its task finished by the end of the turn instead (finishAtTurnsEnd).
+//
+// A report can name the accepted take's number before this daemon saw that take's turn start:
+// the report comes over HTTP and the start over the worker stream, and nothing orders the two.
+// The turn ran all the same, so what its start does for the take is done first (startedUnseen),
+// and the task is then finished, or taken back, as the turn's report says.
+//
+// A report that beats the end of its turn finishes the task while the claim is still working,
+// and the end then runs what was held for the turn (turnEnded); one that follows the end runs it
+// here (afterTurn).
+func (m *Machine) reportedTask(ctx context.Context, r RequestTurnOutcome) error {
+	p := m.claim.Pending
+	if r.Task == 0 || p == nil || p.Number != r.Task || !p.taken() {
+		if r.Task != 0 {
+			m.log.Info("supervise: a turn's report names a task that no take of this claim holds; it finishes nothing",
+				"task", r.Task, "pending", pendingNumber(p))
+		}
+		return nil
+	}
+	if p.awaitsTurn() {
+		if err := m.startedUnseen(ctx); err != nil {
+			return err
+		}
+	}
+	if r.ProviderError != nil {
+		if err := m.providerErrored(ctx, *r.ProviderError); err != nil {
+			return err
+		}
+	} else {
+		if m.claim.ProviderErrorRun != 0 {
+			m.log.Info("supervise: a turn of this task ended with no provider error; the run of provider errors is over",
+				"task", p.Number, "providerErrorRun", m.claim.ProviderErrorRun)
+			m.claim.ProviderErrorRun = 0
+		}
+		if err := m.finishTask(ctx, "report"); err != nil {
+			return err
+		}
+	}
+	if (m.claim.State != StateReady && m.claim.State != StateIdle) || m.compacting != nil {
+		return nil
+	}
+	return m.afterTurn(ctx)
+}
+
+// startedUnseen is the start of the accepted take's turn, done at that turn's report because the
+// report came first (reportedTask). The turn is the take's: its text goes and the claim and the
+// delivery are written with it (startTakesTurn), so the finish that follows earns the claim the
+// serving credit a finished take's turn earns (retireTask) rather than reading the task as never
+// run; and the prompt budgets go to zero, as at any turn's start (R5).
+//
+// The claim stays where it is, ready or idle: the report says the turn is over, and no turn's
+// times are written. The start frame still to come is this turn's, which the machine remembers
+// (Machine.reportedAhead), so its arrival names this task and starts no second turn of it
+// (turnStarted).
+func (m *Machine) startedUnseen(ctx context.Context) error {
+	p := m.claim.Pending
+	m.log.Info("supervise: a turn's report names the accepted take's task before its turn start was seen; the turn is the take's",
+		"task", p.Number)
+	m.resetPromptBudgets()
+	m.reportedAhead = p.Number
+	return m.startTakesTurn(ctx)
+}
+
+// pendingNumber is the number of the task pending, 0 for none.
+func pendingNumber(p *Delivery) uint64 {
+	if p == nil {
+		return 0
+	}
+	return p.Number
 }
 
 // refusalCause is the failure a spent run of refused turns names: what refused the claim, how many

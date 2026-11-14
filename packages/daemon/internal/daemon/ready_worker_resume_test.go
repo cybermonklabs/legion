@@ -1,13 +1,15 @@
 package daemon
 
-// Every way a phase holder's claim comes back to ready ends in its phase's task, within two
-// minutes of that ready: dispatch://INFRA-714 R7, acceptance A9. An operator's resume on
-// 2026-10-30 brought about eight phase holders back ready with no task, and each sat idle for two
-// to five hours. The three come-backs here are the ones a claim has — an operator's suspend and
-// resume, a relaunch after a death, and a resume after the daemon replaced the pod (the displaced
-// path) — each driven through the supervisor that observes it, the ready fact it fires
-// (workflowRuntime.terminal), the workflow's readyWorkerTask and the outbox row it queues, to the
-// task the agent is prompted with.
+// Every way a phase holder's claim comes back to ready in a session that has not read its task
+// ends in its phase's task, within two minutes of that ready: dispatch://INFRA-714 R7, acceptance
+// A9. An operator's resume on 2026-10-30 brought about eight phase holders back ready with no task,
+// and each sat idle for two to five hours. A phase holder that comes back in the session it
+// finished its last task in is given nothing instead (dispatch://INFRA-2811 R4): it waits, and its
+// session's own resume reminder wakes it while its phase is open. The three come-backs here are the
+// ones a claim has — an operator's suspend and resume, a relaunch after a death, and a resume after
+// the daemon replaced the pod (the displaced path) — each driven through the supervisor that
+// observes it, the ready fact it fires (workflowRuntime.terminal), the workflow's readyWorkerTask
+// and the outbox row it queues, to the task the agent's claim holds for its worker to take.
 
 import (
 	"context"
@@ -30,7 +32,7 @@ import (
 // taskWithinOfReady is how long a phase holder may stand ready with no task before the daemon has
 // failed it (dispatch://INFRA-714 acceptance A9). It is measured where an operator reads it, over
 // the two times the claim view carries: the claim's last ready (supervise.Claim.LastReady) and the
-// acknowledgement of the task's prompt (supervise.Delivery.DeliveredAt).
+// moment its task was queued (supervise.Delivery.QueuedAt).
 const taskWithinOfReady = 2 * time.Minute
 
 // readyWorkerRig is a tester at work in its issue's testing phase, as the daemon leaves one: the
@@ -50,7 +52,7 @@ type readyWorkerRig struct {
 	issue   record.Issue
 }
 
-// newReadyWorkerRig starts the tester of a testing issue and prompts it with the start's task.
+// newReadyWorkerRig starts the tester of a testing issue and queues it the start's task.
 func newReadyWorkerRig(t *testing.T) *readyWorkerRig {
 	t.Helper()
 	ctx := context.Background()
@@ -97,7 +99,7 @@ func newReadyWorkerRig(t *testing.T) *readyWorkerRig {
 		t.Fatalf("the start left no claim for the tester of %s", issue.Key)
 	}
 	rig.machine = machine
-	rig.boot()
+	rig.boot(testerSession)
 	if held := rig.claim().Pending; held == nil || held.Task != "Test it." {
 		t.Fatalf("the started tester holds %+v, want the start's task", held)
 	}
@@ -105,15 +107,16 @@ func newReadyWorkerRig(t *testing.T) *readyWorkerRig {
 }
 
 // boot drives the launched process through its shim's hello, its agent's registration and its
-// ready, at the generation the claim is launching, and waits for what the ready set going.
-func (r *readyWorkerRig) boot() {
+// ready, at the generation the claim is launching, as session, and waits for what the ready set
+// going.
+func (r *readyWorkerRig) boot(session string) {
 	r.t.Helper()
 	ctx := context.Background()
 	generation := r.claim().Generation
 	for _, ev := range []supervise.Event{
 		supervise.StreamHello{Claim: r.token, Generation: generation},
-		supervise.RequestRegister{Claim: r.token, Generation: generation, Session: "ses-tester", SessionFile: "/tmp/tester.jsonl"},
-		supervise.RequestReady{Claim: r.token, Generation: generation, Session: "ses-tester"},
+		supervise.RequestRegister{Claim: r.token, Generation: generation, Session: session, SessionFile: "/tmp/" + session + ".jsonl"},
+		supervise.RequestReady{Claim: r.token, Generation: generation, Session: session},
 	} {
 		if err := r.machine.Handle(ctx, ev); err != nil {
 			r.t.Fatalf("boot the tester: handle %T: %v", ev, err)
@@ -122,12 +125,12 @@ func (r *readyWorkerRig) boot() {
 	r.machine.Wait()
 }
 
-// workTheTask runs the turn the delivered task starts and ends it, then sends the prompt's own
-// result, which is what retires the task: with background work on, an agent_end names no prompt —
-// a background result wakes a settled session and starts turns the daemon never prompted — so a
-// delivery's life ends at its StreamPromptResult rather than at any turn end. The tester is then
-// the phase holder the issue waits on, idle with nothing pending, where CI, a review or an
-// operator's resume leaves one.
+// workTheTask has the worker take the delivered task, runs the turn the take answers and ends it,
+// then sends the turn-outcome report naming the task, which is what finishes it: with background
+// work on, an agent_end names no task — a background result wakes a settled session and starts
+// turns the daemon never gave a task — so a task's life ends at the report of its number rather
+// than at any turn end. The tester is then the phase holder the issue waits on, idle with nothing
+// pending, where CI, a review or an operator's resume leaves one.
 func (r *readyWorkerRig) workTheTask() {
 	r.t.Helper()
 	ctx := context.Background()
@@ -135,10 +138,11 @@ func (r *readyWorkerRig) workTheTask() {
 	if pending == nil {
 		r.t.Fatal("the tester holds no task to work")
 	}
+	acceptTake(ctx, r.t, r.machine)
 	for _, ev := range []supervise.Event{
 		supervise.StreamTurnStart{Claim: r.token},
 		supervise.StreamTurnEnd{Claim: r.token},
-		supervise.StreamPromptResult{Claim: r.token, DeliveryID: pending.ID, AgentInvoked: true},
+		supervise.RequestTurnOutcome{Claim: r.token, Generation: r.claim().Generation, Sequence: turnSequence.Add(1), Task: pending.Number},
 	} {
 		if err := r.machine.Handle(ctx, ev); err != nil {
 			r.t.Fatalf("work the task: handle %T: %v", ev, err)
@@ -176,10 +180,19 @@ func (r *readyWorkerRig) observe(kind runtime.ObservationKind, displaced bool) {
 	r.machine.Wait()
 }
 
+// testerSession is the session the tester's agent registers at its launch, and resumes at every
+// come-back that keeps it; replacedSession is the one a come-back registers whose recorded
+// session no store held any more (supervise's startFresh), which has read nothing of the tester's
+// task.
+const (
+	testerSession   = "ses-tester"
+	replacedSession = "ses-tester-replaced"
+)
+
 // comeBacks are the ways a phase holder's claim comes back to ready, each ending in the relaunched
-// process booting its agent.
-var comeBacks = map[string]func(*readyWorkerRig){
-	"an operator's suspend and resume": func(r *readyWorkerRig) {
+// process booting its agent as the session given.
+var comeBacks = map[string]func(r *readyWorkerRig, session string){
+	"an operator's suspend and resume": func(r *readyWorkerRig, session string) {
 		r.t.Helper()
 		ctx := context.Background()
 		operatorSuspend(r.t, r.sup, r.token)
@@ -187,26 +200,29 @@ var comeBacks = map[string]func(*readyWorkerRig){
 			r.t.Fatalf("the operator's resume: %v", err)
 		}
 		r.machine.Wait()
-		r.boot()
+		r.boot(session)
 	},
-	"a relaunch after a death": func(r *readyWorkerRig) {
+	"a relaunch after a death": func(r *readyWorkerRig, session string) {
 		r.t.Helper()
 		r.observe(runtime.Gone, false)
-		r.boot()
+		r.boot(session)
 	},
-	"a resume after a pod replacement": func(r *readyWorkerRig) {
+	"a resume after a pod replacement": func(r *readyWorkerRig, session string) {
 		r.t.Helper()
 		r.observe(runtime.Gone, true)
-		r.boot()
+		r.boot(session)
 	},
 }
 
-// A phase holder that comes back ready with nothing pending is given its phase's task, whichever
-// way it came back, and within taskWithinOfReady of that ready: the resume relaunches the session,
-// the ready fires the workflow fact, and the row it queues reaches the agent in the outbox pass
-// that follows. Before, nothing was sent at all — the start row that moved the issue into testing
-// had run long before the restart — and the issue waited for as long as the worker did.
-func TestEveryComeBackToReadyGivesAPhaseHolderItsTaskWithinTwoMinutes(t *testing.T) {
+// A phase holder that comes back ready with nothing pending in a session that replaced the one it
+// finished its task in — the one it recorded was in no session store, so the come-back started a
+// fresh agent — is given its phase's task, whichever way it came back, and within
+// taskWithinOfReady of that ready: the resume relaunches the claim, the ready fires the workflow
+// fact, and the row it queues reaches the agent in the outbox pass that follows. Before, nothing
+// was sent at all — the start row that moved the issue into testing had run long before the
+// restart — and the issue waited for as long as the worker did; a new session has no reminder of
+// its own to wake it.
+func TestEveryComeBackInANewSessionGivesAPhaseHolderItsTaskWithinTwoMinutes(t *testing.T) {
 	for name, comeBack := range comeBacks {
 		t.Run(name, func(t *testing.T) {
 			rig := newReadyWorkerRig(t)
@@ -214,8 +230,9 @@ func TestEveryComeBackToReadyGivesAPhaseHolderItsTaskWithinTwoMinutes(t *testing
 			if rows := outboxRows(t, rig.pool); rows != 0 {
 				t.Fatalf("the tester that worked its task was queued %d outbox rows, want none before it comes back", rows)
 			}
+			rig.rt.OnResume = func(context.Context) error { return runtime.ErrSessionFileMissing }
 
-			comeBack(rig)
+			comeBack(rig, replacedSession)
 
 			if rows, relaunched := outboxRows(t, rig.pool), rig.relaunched(); rows != 1 || relaunched != 1 {
 				t.Fatalf("the come-back relaunched the session %d times and left %d outbox rows, want one relaunch and the one start that carries the phase's task",
@@ -223,21 +240,52 @@ func TestEveryComeBackToReadyGivesAPhaseHolderItsTaskWithinTwoMinutes(t *testing
 			}
 			rig.run()
 			held, last := rig.claim().Pending, rig.claim().LastReady
-			if held == nil || held.Task != workflow.ResumePhaseTask(rig.issue) || held.Phase != phase.Testing {
+			if held == nil || held.Task != workflow.ResumePhaseTask(rig.issue) || held.Phase != phase.Testing ||
+				held.Origin != supervise.OriginResume {
 				t.Fatalf("after the come-back the tester holds %+v, want the testing phase's resume task", held)
 			}
-			if held.DeliveredAt.IsZero() || held.DeliveredAt.Before(last) || held.DeliveredAt.Sub(last) > taskWithinOfReady {
-				t.Fatalf("the task was acknowledged at %s, %s after the claim became ready at %s; want it within %s of that ready",
-					held.DeliveredAt, held.DeliveredAt.Sub(last), last, taskWithinOfReady)
+			if held.QueuedAt.IsZero() || held.QueuedAt.Before(last) || held.QueuedAt.Sub(last) > taskWithinOfReady {
+				t.Fatalf("the task was queued at %s, %s after the claim became ready at %s; want it within %s of that ready",
+					held.QueuedAt, held.QueuedAt.Sub(last), last, taskWithinOfReady)
+			}
+		})
+	}
+}
+
+// A phase holder that comes back ready with nothing pending in the session it finished its last
+// task in is given nothing, whichever way it came back (dispatch://INFRA-2811 R4): the ready
+// queues no start, the claim holds no task, and the record writes it no task number, so no value
+// is written for it. It waits, and its session's resume reminder wakes it while its phase is open.
+func TestEveryComeBackInTheSessionThatFinishedItsTaskGivesThePhaseHolderNothing(t *testing.T) {
+	for name, comeBack := range comeBacks {
+		t.Run(name, func(t *testing.T) {
+			rig := newReadyWorkerRig(t)
+			rig.workTheTask()
+			finished := rig.claim()
+			if finished.TaskFinished != finished.TaskWritten || finished.TaskFinishedSession != testerSession {
+				t.Fatalf("the tester that worked its task records task %d of %d finished in %q, want its last task finished in %s",
+					finished.TaskFinished, finished.TaskWritten, finished.TaskFinishedSession, testerSession)
+			}
+
+			comeBack(rig, testerSession)
+
+			if rows, relaunched := outboxRows(t, rig.pool), rig.relaunched(); rows != 0 || relaunched != 1 {
+				t.Fatalf("the come-back relaunched the session %d times and left %d outbox rows, want one relaunch and no row",
+					relaunched, rows)
+			}
+			rig.run()
+			if held := rig.claim(); held.Pending != nil || held.TaskWritten != finished.TaskWritten {
+				t.Fatalf("after the come-back the tester holds %+v with task %d written, want nothing held and no task written past %d",
+					held.Pending, held.TaskWritten, finished.TaskWritten)
 			}
 		})
 	}
 }
 
 // A phase holder that comes back still holding its task is given no second copy: the task it holds
-// is the work under way, and a second prompt for it would be a second turn of the same work. The
-// one it holds is sent again on the same delivery, which is the relaunch's own resend, not a task
-// of its own.
+// is the work under way, and a second task for it would be a second turn of the same work. The one
+// it holds is the one its worker takes, under the same delivery, which is the relaunch's own
+// resend, not a task of its own.
 func TestAComeBackWithATaskStillPendingGivesNoSecondCopy(t *testing.T) {
 	for name, comeBack := range comeBacks {
 		t.Run(name, func(t *testing.T) {
@@ -247,7 +295,7 @@ func TestAComeBackWithATaskStillPendingGivesNoSecondCopy(t *testing.T) {
 				t.Fatalf("the first ready of a tester that holds its task left %d outbox rows, want none", rows)
 			}
 
-			comeBack(rig)
+			comeBack(rig, testerSession)
 
 			if rows, relaunched := outboxRows(t, rig.pool), rig.relaunched(); rows != 0 || relaunched != 1 {
 				t.Fatalf("the come-back of a tester that holds its task relaunched the session %d times and left %d outbox rows, want one relaunch and no row",
@@ -256,10 +304,8 @@ func TestAComeBackWithATaskStillPendingGivesNoSecondCopy(t *testing.T) {
 			if held := rig.claim().Pending; held == nil || held.ID != delivered || held.Task != "Test it." {
 				t.Fatalf("after the come-back the tester holds %+v, want the one task it held, %s", held, delivered)
 			}
-			for i, prompt := range rig.conn.Prompts() {
-				if prompt.DeliveryID != delivered {
-					t.Fatalf("prompt %d carried delivery %s, want every prompt to carry the one task the tester holds, %s", i+1, prompt.DeliveryID, delivered)
-				}
+			if take, accepted := takeOffered(context.Background(), t, rig.machine); !accepted || take.DeliveryID != delivered {
+				t.Fatalf("the tester's take after the come-back = %+v (accepted %v), want the one task it holds, %s", take, accepted, delivered)
 			}
 		})
 	}

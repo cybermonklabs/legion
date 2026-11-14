@@ -102,10 +102,11 @@ type fleetRig struct {
 	// handoffs is the Dispatch that route reads a completion's handoff record back from.
 	handoffs *fleetHandoffs
 	tokens   map[fleetClaim]claim.Token
-	// workers is the connection each claim's agent is reached over, which records every prompt
-	// the daemon sends it.
+	// workers is the connection each claim's agent is reached over.
 	workers map[claim.Token]*fake.Conn
-	pods    map[string]string
+	// taken is every task each claim's worker took and the daemon accepted, in order (sent).
+	taken map[claim.Token][]acceptedTake
+	pods  map[string]string
 	// noPod is every issue whose claims a sweep reads as recording no pod (podless).
 	noPod map[string]bool
 	// wire is what the rig set on its supervisor's Deps before any machine was made
@@ -372,13 +373,31 @@ func (r *fleetRig) handle(issue string, role claim.Role, ev supervise.Event) {
 	}
 }
 
-// sent waits for every send the machine of issue's role has in flight to be over, the prompt's
-// acknowledgement or refusal decided with it. A decision that sends runs the prompt on a
-// goroutine of its own (supervise's startSend), so what the agent was sent is read only once this
-// has returned.
+// sent waits for the decision the machine of issue's role is making to be over, and then has its
+// worker take the task its claim holds where it may, as its plugin does once its host is idle: a
+// take the daemon accepts is recorded with the text it answered (prompts), and one a hold refuses
+// is left for a later call. An adoption the take makes runs inside the take, so what the agent was
+// given is read only once this has returned.
 func (r *fleetRig) sent(issue string, role claim.Role) {
 	r.t.Helper()
-	r.machineOf(issue, role).Wait()
+	m := r.machineOf(issue, role)
+	m.Wait()
+	c := m.Claim()
+	p := c.Pending
+	if p == nil || !p.ConfirmedAt.IsZero() || (c.State != supervise.StateReady && c.State != supervise.StateIdle) {
+		return
+	}
+	answer, err := m.Take(r.ctx, supervise.RequestTake{Claim: c.Token, Generation: c.Generation, Session: c.Session, Number: p.Number})
+	if err != nil {
+		r.t.Fatalf("%s's %s took task %d: %v", issue, role, p.Number, err)
+	}
+	if answer.Outcome == supervise.TakeOutcomeAccepted {
+		if r.taken == nil {
+			r.taken = map[claim.Token][]acceptedTake{}
+		}
+		r.taken[c.Token] = append(r.taken[c.Token], acceptedTake{DeliveryID: p.ID, Message: answer.Text})
+	}
+	m.Wait()
 }
 
 func (r *fleetRig) machineOf(issue string, role claim.Role) *supervise.Machine {
@@ -390,10 +409,10 @@ func (r *fleetRig) machineOf(issue string, role claim.Role) *supervise.Machine {
 	return m
 }
 
-// prompts is every prompt the daemon sent the agent of issue's role, in order.
-func (r *fleetRig) prompts(issue string, role claim.Role) []fake.Prompt {
+// prompts is every task the worker of issue's role took, in order (sent).
+func (r *fleetRig) prompts(issue string, role claim.Role) []acceptedTake {
 	r.t.Helper()
-	return r.workers[r.token(issue, role)].Prompts()
+	return slices.Clone(r.taken[r.token(issue, role)])
 }
 
 // fleetHandoffs is the Dispatch the completion route reads a handoff record back from: the
@@ -705,65 +724,94 @@ func TestPodUpdateReplacesEachIssuesPodOnlyAfterItsOwnWorkersAnswer(t *testing.T
 }
 
 // The round serves a worker on the plugin contract it registered with, whatever this daemon's own
-// is: the whole point of the round is that the process pushes its work before it is replaced, and
-// it cannot push without the daemon it already speaks to (api's staleClaim). With no round open
-// the same claim is refused the stale-caller 409 — the negative control — and the round is what
-// turns that refusal into the 200 a completion needs.
-func TestPodUpdateRoundServesAWorkerOnItsPreviousContract(t *testing.T) {
-	rig := newFleetRig(t,
-		fleetIssue{key: fleetIssueB, phase: phase.Planning, pod: fleetPodB,
-			roles: []claim.Role{claim.RoleArchitect, claim.RolePlanner}},
-	)
-	before := rig.claimOf(fleetIssueB, claim.RolePlanner)
-	m, ok := rig.sup.Machine(before.Token)
-	if !ok {
-		t.Fatalf("%s's planner is not supervised", fleetIssueB)
-	}
-	// The planner's process registered on the contract before this daemon's, which is what a
-	// deployment's own release leaves running until each pod is replaced.
-	if err := m.Handle(rig.ctx, supervise.RequestRegister{
-		Claim: before.Token, Generation: before.Generation, Session: before.Session, SessionFile: before.SessionFile,
-		CapabilityHash: []byte("previous-contract"), PluginContract: api.DaemonAPIVersion - 1,
-	}); err != nil {
-		t.Fatalf("register the planner on the previous contract: %v", err)
-	}
+// is, where that worker's plugin takes tasks: the whole point of the round is that the process
+// pushes its work before it is replaced, and it cannot push without the daemon it already speaks
+// to (api's staleClaim). With no round open the same claim is refused the stale-caller 409 — the
+// negative control — and the round is what turns that refusal into the 200 a completion needs.
+// This daemon's contract is the one that takes tasks, so the worker on another contract whose
+// plugin takes them is one ahead of it.
+//
+// A worker whose plugin takes no task, on a contract below supervise.TaskTakeContract, is refused
+// inside the round as outside it: on its old contract it takes none of its tasks, so the
+// stale-plugin lane relaunches it onto the current plugin there rather than leave it waiting out
+// the round (supervise.StaleRefusesCalls, staleForTheLane), and its completion meets the 409 that
+// says so.
+func TestPodUpdateRoundServesAWorkerOnAnotherContractWhosePluginTakesTasks(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		contract int
+		// served is whether the completion inside the round is served.
+		served bool
+	}{
+		{name: "a plugin that takes tasks", contract: api.DaemonAPIVersion + 1, served: true},
+		{name: "a plugin that takes no task", contract: supervise.TaskTakeContract - 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newFleetRig(t,
+				fleetIssue{key: fleetIssueB, phase: phase.Planning, pod: fleetPodB,
+					roles: []claim.Role{claim.RoleArchitect, claim.RolePlanner}},
+			)
+			before := rig.claimOf(fleetIssueB, claim.RolePlanner)
+			m, ok := rig.sup.Machine(before.Token)
+			if !ok {
+				t.Fatalf("%s's planner is not supervised", fleetIssueB)
+			}
+			// The planner's process registered on a contract other than this daemon's, which is
+			// what a deployment's own release leaves running until each pod is replaced.
+			if err := m.Handle(rig.ctx, supervise.RequestRegister{
+				Claim: before.Token, Generation: before.Generation, Session: before.Session, SessionFile: before.SessionFile,
+				CapabilityHash: []byte("another-contract"), PluginContract: tc.contract,
+			}); err != nil {
+				t.Fatalf("register the planner on contract %d: %v", tc.contract, err)
+			}
 
-	status, body := rig.complete(fleetIssueB, claim.RolePlanner, "planned")
-	if status != http.StatusConflict || !strings.Contains(body, "STALE_PLUGIN_CONTRACT") {
-		t.Fatalf("the completion of a claim on the previous contract with no round open = %d %s, want 409 STALE_PLUGIN_CONTRACT", status, body)
-	}
-	if got := readIssue(t, rig.pool, fleetIssueB); got.Phase != phase.Planning {
-		t.Fatalf("%s moved to %s on a refused completion, want nothing recorded by it", fleetIssueB, got.Phase)
-	}
+			status, body := rig.complete(fleetIssueB, claim.RolePlanner, "planned")
+			if status != http.StatusConflict || !strings.Contains(body, "STALE_PLUGIN_CONTRACT") {
+				t.Fatalf("the completion of a claim on contract %d with no round open = %d %s, want 409 STALE_PLUGIN_CONTRACT", tc.contract, status, body)
+			}
+			if got := readIssue(t, rig.pool, fleetIssueB); got.Phase != phase.Planning {
+				t.Fatalf("%s moved to %s on a refused completion, want nothing recorded by it", fleetIssueB, got.Phase)
+			}
 
-	rig.drifts(fleetIssueB, fleetDrift)
-	rig.tick()
-	rig.awaitRound(fleetIssueB, claim.RoleArchitect)
-	testwait.Eventually(t, "the planner to be in the round of "+fleetIssueB, func() bool {
-		return rig.claimOf(fleetIssueB, claim.RolePlanner).UpdateRound == rig.round(fleetIssueB)
-	})
+			rig.drifts(fleetIssueB, fleetDrift)
+			rig.tick()
+			rig.awaitRound(fleetIssueB, claim.RoleArchitect)
+			testwait.Eventually(t, "the planner to be in the round of "+fleetIssueB, func() bool {
+				return rig.claimOf(fleetIssueB, claim.RolePlanner).UpdateRound == rig.round(fleetIssueB)
+			})
 
-	status, body = rig.complete(fleetIssueB, claim.RolePlanner, "planned; pushed for the round")
-	if status != http.StatusOK {
-		t.Fatalf("the same completion while the round is open = %d %s, want 200: the round serves the claim on its previous contract", status, body)
+			status, body = rig.complete(fleetIssueB, claim.RolePlanner, "planned; pushed for the round")
+			if !tc.served {
+				if status != http.StatusConflict || !strings.Contains(body, "STALE_PLUGIN_CONTRACT") {
+					t.Fatalf("the same completion while the round is open = %d %s, want 409 STALE_PLUGIN_CONTRACT: the round asks a task this plugin cannot take", status, body)
+				}
+				if got := readIssue(t, rig.pool, fleetIssueB); got.Phase != phase.Planning {
+					t.Fatalf("%s moved to %s on a refused completion, want nothing recorded by it", fleetIssueB, got.Phase)
+				}
+				return
+			}
+			if status != http.StatusOK {
+				t.Fatalf("the same completion while the round is open = %d %s, want 200: the round serves the claim on its contract", status, body)
+			}
+			if got := readIssue(t, rig.pool, fleetIssueB); got.Phase != phase.Implementing {
+				t.Fatalf("%s after the completion the round let through = %s, want its phase moved on to implementing", fleetIssueB, got.Phase)
+			}
+			rig.assertNoRootLeftTheWorkflow(fleetIssueB)
+		})
 	}
-	if got := readIssue(t, rig.pool, fleetIssueB); got.Phase != phase.Implementing {
-		t.Fatalf("%s after the completion the round let through = %s, want its phase moved on to implementing", fleetIssueB, got.Phase)
-	}
-	rig.assertNoRootLeftTheWorkflow(fleetIssueB)
 }
 
 // An update round's asks adopt nothing, so none of them waits on another role's turn or moves the
 // working copy under one. Every role of an issue works one jj workspace, and a task that adopts it
 // snapshots that workspace and then runs `jj metaedit --update-author` or `jj new` on its `@`
 // under whoever is working there, so the daemon adopts only for a task that names a phase and
-// holds such a task while another claim of the issue is in a turn (supervise's adopts
-// and sendPending). A round's ask is no task at all: the sweep publishes it to each role's own
-// Envoy topic (askRound, record.UpdateAsk), so it queues nothing on a claim, prompts no process
-// and adopts nothing, whoever is in a turn. So with the implementer in the turn of its own phase
-// task, the architect and the planner record the round and are sent nothing, and the end of the
-// implementer's turn queues nothing for the round either, with no adoption beyond the one its
-// phase task made.
+// refuses the take of such a task while another claim of the issue is in a turn (supervise's
+// adopts and takeable). A round's ask is no task at all: the sweep publishes it to each role's own
+// Envoy topic (askRound, record.UpdateAsk), so it queues nothing on a claim, gives no worker a
+// task and adopts nothing, whoever is in a turn. So with the implementer in the turn of its own
+// phase task, the architect and the planner record the round and are given nothing, and the end
+// of the implementer's turn queues nothing for the round either, with no adoption beyond the one
+// its phase task made.
 //
 // The releases those projects' daemons ran, from before cybermonklabs/legion#2539, adopted before
 // every send and held none, which is the shape OSSV-343, OSSV-388, OSSV-400, BET-846 and
@@ -826,13 +874,15 @@ func TestPodUpdateTheRoundsAsksAdoptNothingWhileTheImplementerIsInATurn(t *testi
 		t.Fatalf("the implementer in its turn holds %+v once its round opened, want its own phase task", c.Pending)
 	}
 
-	// The turn ends as Oh My Pi reports it, through the inbox the worker's stream feeds: the
+	// The turn ends as the worker reports it, through the inbox the worker's stream feeds: the
 	// agent_end, which the daemon tells the issue's other claims of (wakeIssue), and behind it the
-	// result of the prompt whose turn it was, which retires the phase task. Nothing of the round
-	// takes the slot that frees.
+	// turn-outcome report naming the phase task, which finishes it. Nothing of the round takes the
+	// slot that frees.
+	working := rig.claimOf(fleetIssueA, claim.RoleImplementer)
 	rig.sup.post(implementer, supervise.StreamTurnEnd{Claim: implementer})
-	rig.sup.post(implementer, supervise.StreamPromptResult{Claim: implementer, DeliveryID: phaseTask, AgentInvoked: true})
-	testwait.Eventually(t, "the implementer's phase task to retire with its turn", func() bool {
+	rig.sup.post(implementer, supervise.RequestTurnOutcome{Claim: implementer, Generation: working.Generation,
+		Sequence: turnSequence.Add(1), Task: working.Pending.Number})
+	testwait.Eventually(t, "the implementer's phase task to finish with its turn", func() bool {
 		c := rig.claimOf(fleetIssueA, claim.RoleImplementer)
 		return c.Pending == nil && c.State != supervise.StateWorking
 	})

@@ -439,7 +439,11 @@ func (m *Machine) refreshOverturned() bool {
 // What replaces such a claim's plugin is a new image, which the update round over its pod is
 // opened for: it is asked like every other worker, answers with the op or not at all, and the
 // round's replacement brings the image, at the latest at the round's bound (internal/daemon's
-// refreshStalePlugins, which posts no relaunch for it either).
+// refreshStalePlugins, which posts no relaunch for it either). A claim of such a role whose
+// plugin takes no task (TakesNoTask) takes none of its tasks until a new image reaches its pod,
+// so the idle release replaces its pod instead, at once when it is idle and at its turn's end
+// when it is working, past the image, contract and round holds that would keep that pod
+// (workflow's IdleRelease, internal/daemon's releaseIdlePod).
 //
 // A registration that arrives while a launch the pacing holds waits over the process it comes
 // from relaunches nothing and is charged nothing. PluginRelaunchFor is written where the
@@ -518,11 +522,21 @@ func (m *Machine) staleRegistration(ctx context.Context, got int) error {
 // Kubernetes mode) every stale claim is served, since no relaunch is coming for any of them.
 // Refused there, such a worker would wait on a replacement process that is never started.
 //
+// The round term holds for a claim whose plugin can take a task and for no other. A claim whose
+// plugin declares a contract below TaskTakeContract (TakesNoTask) takes no task at all, so the
+// rule that a round serves a claim on its old contract is reversed for these claims alone: such a
+// claim is refused inside a round as outside one, and internal/daemon's stale-plugin lane
+// relaunches it onto the current plugin there (staleForTheLane), whose process then takes its
+// tasks. Served on its old contract instead, it would take none of them until its pod's round
+// ended, which is the whole fleet at the rollout that moves the daemon and its image together,
+// since that image change opens a round over every issue pod (internal/runtime/sandbox's
+// PodDrift).
+//
 // Each caller adds the term that is its own, and neither may copy the other's. internal/api's
 // staleClaim adds that the claim is in no turn, because a worker in a turn is served so that it
 // can push what that turn holds before the relaunch its end releases (holdStaleRelaunch);
 // staleRefusesClaim below adds nothing, because the one place it is asked has answered that
-// term already (sendPending). Holding the three shared terms here is what keeps the two from
+// term already (claimHold). Holding the three shared terms here is what keeps the two from
 // drifting apart: drift one way and a task is held back for a claim the API serves, which waits
 // for a relaunch nothing is making; drift the other and a task reaches a claim whose every
 // `legion` call is refused, which buys a model turn the worker can do nothing in and puts the
@@ -531,11 +545,11 @@ func StaleRefusesCalls(c Claim, daemonContract int, pluginRelaunchable bool, noP
 	if noPluginInstall != nil && noPluginInstall(c) {
 		return false
 	}
-	return pluginRelaunchable && c.PluginContract != daemonContract && c.UpdateRound == ""
+	return pluginRelaunchable && c.PluginContract != daemonContract && (c.UpdateRound == "" || TakesNoTask(c.PluginContract))
 }
 
 // staleRefusesClaim is whether this daemon would refuse the claim's own `legion` calls because
-// its plugin is stale, and it is what holds a pending delivery back (sendPending): a task handed
+// its plugin is stale, and it is what refuses a take of a pending task (claimHold): a task handed
 // to a claim whose every `legion` call is refused buys a model turn in which the worker can read
 // the task and do nothing with it — no grant, no handoff, no phase op — and the turn puts the
 // claim in a turn, which postpones the one thing the claim is waiting for, the relaunch this
@@ -545,7 +559,7 @@ func StaleRefusesCalls(c Claim, daemonContract int, pluginRelaunchable bool, noP
 // states the rule and what each caller adds to it), rather than a second copy of it or a
 // question put to internal/api, which imports this package and not the other way round.
 // staleClaim's fourth term, that the claim is in no turn, is answered before this is asked:
-// sendPending hands nothing to a claim that is not ready or idle, so every claim that reaches
+// claimHold refuses a take of a claim that is not ready or idle first, so every claim that reaches
 // this is out of a turn, which is the claim staleClaim refuses.
 func (m *Machine) staleRefusesClaim() bool {
 	return StaleRefusesCalls(m.claim, m.deps.PluginContract, m.deps.PluginRelaunchable, m.deps.NoPluginInstall)

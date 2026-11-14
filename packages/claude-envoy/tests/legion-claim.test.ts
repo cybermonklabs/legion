@@ -8,7 +8,6 @@ import { createLegionDaemonClient } from "@legion/pi-shared/daemon-client"
 import { legion } from "../package.json" with { type: "json" }
 import type { RoleRegainHook } from "../src/envoy-channel-server"
 import {
-  type LegionClaim,
   legionPane,
   ROLE_CLAIM_RETRY_MS,
   ROLE_CLAIM_WAIT_MS,
@@ -16,17 +15,12 @@ import {
   startLegionClaim,
   waitForTranscript,
 } from "../src/legion-claim"
+import type { InboxTaskValue } from "../src/legion-inbox"
+import { waitFor } from "./channel-session-harness"
 
 const SESSION = "0b9c2f4e-2d3a-4c55-9a1e-6f7d8e9a0b1c"
 /** The channel server's client instance, which the pane's claim names as its process. */
 const INSTANCE = "a1b2c3d4e5f60718293a4b5c6d7e8f90"
-/** The first-turn signal a case whose subject is the claim itself passes: the turn is reported
- * the moment the boot registers the signal, so the name is taken as soon as `claims/ready` has
- * answered. It is not the channel server's own wiring, which reports a prompt submitted after
- * that registration and nothing before it (`registeredPane` below). */
-const firstTurnNow = (started: () => void): void => {
-  started()
-}
 const scratch: string[] = []
 afterEach(async () => {
   for (const dir of scratch.splice(0)) await rm(dir, { recursive: true, force: true })
@@ -43,9 +37,6 @@ async function daemonFixture(name: string): Promise<Record<string, unknown>> {
   const file = resolve(import.meta.dir, "../../contracts/fixtures/daemon-api", name)
   return JSON.parse(await readFile(file, "utf8"))
 }
-
-/** The registration the cases below share, for the token and secret they assert against. */
-const registeredClaim = await daemonFixture("register.json")
 
 interface Posted {
   readonly path: string
@@ -117,16 +108,29 @@ test("the transcript wait answers the file Claude Code wrote under any project, 
   )
 })
 
-test("registers once the transcript exists, claims the claim token's role soft, says ready, and says it again on a regain", async () => {
+/** The task bucket's epoch the fixture's values are written at (`register.json`'s). */
+const EPOCH = "2026-11-13T16:21:44.123456789Z"
+
+/** A task value the daemon's bucket holds for the fixture's claim, at `revision`. */
+function valueAt(number: number, revision: number): InboxTaskValue {
+  return { number, epoch: EPOCH, revision }
+}
+
+test("registers once the transcript exists, says ready, hands the bridge the registration's value and claims the role soft right after, and reads the value again on a regain", async () => {
   const configDir = await tempDir()
   const registered = await daemonFixture("register.json")
-  const { posted, fetch } = daemonAnswering((path) =>
-    path.endsWith("/claims/register")
-      ? Response.json(registered)
-      : new Response(null, { status: 204 }),
-  )
+  const reading = { task: valueAt(5, 13), finished: 3 }
+  // The daemon's requests and the claim's own steps, in the one order they happened in.
+  const steps: string[] = []
+  const { posted, fetch } = daemonAnswering((path) => {
+    steps.push(path)
+    if (path.endsWith("/claims/register")) return Response.json(registered)
+    if (path.endsWith("/claims/task")) return Response.json(reading)
+    return new Response(null, { status: 204 })
+  })
   const setRoles: SetRoleInput[] = []
   const remembered: string[] = []
+  const handed: InboxTaskValue[] = []
   let regain: RoleRegainHook | undefined
   const lines: string[] = []
   let stops = 0
@@ -137,6 +141,7 @@ test("registers once the transcript exists, claims the claim token's role soft, 
     clientInstanceID: INSTANCE,
     client: {
       setRole: async (input): Promise<SetRoleResult> => {
+        steps.push(`setRole ${input.role}`)
         setRoles.push(input)
         return {
           claimed: true,
@@ -152,12 +157,15 @@ test("registers once the transcript exists, claims the claim token's role soft, 
         regain = hook
       },
     },
+    task: (value) => {
+      steps.push(`task ${value.number} at ${value.revision}`)
+      handed.push(value)
+    },
     signal: new AbortController().signal,
     log: (line) => lines.push(line),
     stop: () => {
       stops += 1
     },
-    onFirstTurn: firstTurnNow,
     pollMs: 5,
   })
 
@@ -166,9 +174,10 @@ test("registers once the transcript exists, claims the claim token's role soft, 
   const transcript = join(configDir, "projects", "-work-legion-208", `${SESSION}.jsonl`)
   await mkdir(join(configDir, "projects", "-work-legion-208"), { recursive: true })
   await writeFile(transcript, "{}\n")
-  await claim.claimed
+  await claim.booted
 
-  const ready = {
+  const token = String(registered["claimToken"])
+  const caller = {
     claimToken: registered["claimToken"],
     sessionId: SESSION,
     secret: registered["secret"],
@@ -185,39 +194,116 @@ test("registers once the transcript exists, claims the claim token's role soft, 
         pluginContract: legion.daemonApiVersion,
       },
     },
-    { path: "/legion/v1/claims/ready", body: ready },
+    { path: "/legion/v1/claims/ready", body: caller },
   ])
+  // The registration's value goes to the bridge once the ready has answered — the daemon refuses
+  // a take before it — and before the role is claimed, so every card the role's kept lane hands
+  // over waits behind the take.
+  expect(steps).toEqual([
+    "/legion/v1/claims/register",
+    "/legion/v1/claims/ready",
+    "task 4 at 12",
+    `setRole ${token}`,
+  ])
+  expect(handed).toEqual([valueAt(4, 12)])
   // Soft, and naming this process: the listener holds the claim for this channel server alone,
   // so a second `claude` on the same session id neither takes nor releases it.
   expect(setRoles).toEqual([
     {
       sessionID: SESSION,
-      role: String(registered["claimToken"]),
+      role: token,
       soft: true,
       clientInstanceID: INSTANCE,
     },
   ])
-  expect(remembered).toEqual([String(registered["claimToken"])])
+  expect(remembered).toEqual([token])
   expect(claim.capability()).toEqual({
     sessionID: SESSION,
     tree: String(registered["tree"]),
     issue: String(registered["issue"]),
     role: registered["role"] as never,
     secret: String(registered["secret"]),
-    claimToken: String(registered["claimToken"]),
+    claimToken: token,
     generation: Number(registered["generation"]),
     promptAgents: registered["promptAgents"] as never,
   })
   expect(stops).toBe(0)
   expect(lines).toEqual([])
 
+  // Another role's regain reads nothing; this claim's reads its value and hands it to the bridge,
+  // and sends no second ready: a ready makes the daemon send nothing.
   await regain?.("some-other-role", "reclaimed")
-  expect(posted).toHaveLength(2)
-  await regain?.(String(registered["claimToken"]), "reregistered")
-  expect(posted.at(-1)).toEqual({ path: "/legion/v1/claims/ready", body: ready })
-  expect(lines).toEqual([
-    `re-ran claims/ready after role ${registered["claimToken"]} was reregistered`,
-  ])
+  await regain?.(token, "reregistered")
+  expect(posted.slice(2)).toEqual([{ path: "/legion/v1/claims/task", body: caller }])
+  expect(handed).toEqual([valueAt(4, 12), valueAt(5, 13)])
+  expect(lines).toEqual([`read claims/task after role ${token} was reregistered`])
+})
+
+test("hands the bridge each value relayed for its own claim, the newest held until the ready, a deleted one as no task, and none naming a task the claim finished", async () => {
+  const configDir = await tempDir()
+  await mkdir(join(configDir, "projects", "p"), { recursive: true })
+  await writeFile(join(configDir, "projects", "p", `${SESSION}.jsonl`), "{}\n")
+  const registered = await daemonFixture("register.json")
+  const token = String(registered["claimToken"])
+  const ready = Promise.withResolvers<void>()
+  const readings = [
+    { task: valueAt(7, 17), finished: 6 },
+    { task: valueAt(6, 18), finished: 6 },
+  ]
+  const stub = (async (input) => {
+    const path = new URL(input.toString()).pathname
+    if (path.endsWith("/claims/register")) return Response.json(registered)
+    if (path.endsWith("/claims/task")) return Response.json(readings.shift())
+    await ready.promise
+    return new Response(null, { status: 204 })
+  }) as typeof fetch
+  const handed: InboxTaskValue[] = []
+  const claim = startLegionClaim({
+    pane: { daemonUrl: "http://daemon.test", bootToken: "boot-1", configDir, launcherSaves: false },
+    sessionID: SESSION,
+    daemon: createLegionDaemonClient("http://daemon.test", stub),
+    clientInstanceID: INSTANCE,
+    client: {
+      setRole: async (): Promise<SetRoleResult> => ({
+        claimed: true,
+        interest: { session_id: SESSION, machine_id: "m", dir: "/w", topics: [] },
+      }),
+    },
+    session: { rememberRole: async () => undefined, onRoleRegained: () => undefined },
+    task: (value) => handed.push(value),
+    signal: new AbortController().signal,
+    log: () => undefined,
+    stop: () => undefined,
+    pollMs: 5,
+  })
+  const relay = (revision: number, task?: number, claimToken = token) =>
+    claim.relayed(
+      task === undefined
+        ? { claim: claimToken, epoch: EPOCH, revision, op: "delete" }
+        : { claim: claimToken, epoch: EPOCH, revision, op: "put", task },
+    )
+
+  // Registered and not yet ready: a value relayed now is newer than the registration's, and is
+  // the one handed over once the ready has answered. Another claim's value is no one's here.
+  await waitFor(async () => claim.capability() !== undefined, "the claim to register")
+  relay(13, 5)
+  relay(14, 9, "legion-legion-legion-999-tester")
+  expect(handed).toEqual([])
+  ready.resolve()
+  await claim.booted
+  expect(handed).toEqual([valueAt(5, 13)])
+
+  // Task 3 is one the registration says the claim finished; a deleted value is no task.
+  relay(15, 3)
+  relay(16)
+  relay(17, 6)
+  expect(handed).toEqual([valueAt(5, 13), valueAt(0, 16), valueAt(6, 17)])
+
+  // A new epoch of the relay reads the value from the daemon; a reading that says the task it
+  // names is finished hands nothing over.
+  await claim.readTask()
+  await claim.readTask()
+  expect(handed).toEqual([valueAt(5, 13), valueAt(0, 16), valueAt(6, 17), valueAt(7, 17)])
 })
 
 test("a registration the daemon refuses logs the refusal, stops the pane, and claims no role", async () => {
@@ -241,14 +327,14 @@ test("a registration the daemon refuses logs the refusal, stops the pane, and cl
       },
     },
     session: { rememberRole: async () => undefined, onRoleRegained: () => undefined },
+    task: () => undefined,
     signal: new AbortController().signal,
     log: (line) => lines.push(line),
     stop: () => {
       stops += 1
     },
-    onFirstTurn: firstTurnNow,
   })
-  await claim.claimed
+  await claim.booted
   expect(lines).toEqual([`claims/register registration failed (409): ${refusal["error"]}`])
   expect(stops).toBe(1)
   expect(setRoles).toEqual([])
@@ -274,17 +360,17 @@ test("a role another live session holds stops the pane after it has said it is r
     clientInstanceID: INSTANCE,
     client: { setRole: async () => ({ claimed: false, holder: "ses_other" }) },
     session: { rememberRole: async () => undefined, onRoleRegained: () => undefined },
+    task: () => undefined,
     signal: new AbortController().signal,
     log: (line) => lines.push(line),
     stop: () => {
       stops += 1
     },
-    onFirstTurn: firstTurnNow,
   })
-  await claim.claimed
+  await claim.booted
   // The role is claimed after `claims/ready`, so the daemon has already been told this pane is
-  // ready when the refusal stops it: the relaunch re-sends a delivery that is pending and
-  // unconfirmed, the path a death inside a turn already takes.
+  // ready when the refusal stops it: the relaunch reads the claim's task value at its own
+  // registration, the path a death inside a turn already takes.
   expect(posted.map(({ path }) => path)).toEqual([
     "/legion/v1/claims/register",
     "/legion/v1/claims/ready",
@@ -336,6 +422,7 @@ test("a claim refused by a standing claim under this session's own id is asked a
       },
       onRoleRegained: () => undefined,
     },
+    task: () => undefined,
     signal: new AbortController().signal,
     log: (line) => lines.push(line),
     stop: () => {
@@ -344,9 +431,8 @@ test("a claim refused by a standing claim under this session's own id is asked a
     pollMs: 5,
     roleRetryMs: 5,
     roleWaitMs: 5_000,
-    onFirstTurn: firstTurnNow,
   })
-  await claim.claimed
+  await claim.booted
 
   const token = String(registered["claimToken"])
   expect(setRoles).toEqual(
@@ -373,8 +459,8 @@ test("a claim refused by a standing claim under this session's own id is asked a
 test("the wait asks on its own interval until the live window passes, and the grant lands one interval after it", async () => {
   // The worst relaunch: the process this pane replaced renewed its claim at the moment this pane
   // first asked, so the listener holds the claim for a whole live window. `claims/ready` is
-  // answered before the first attempt goes out — the role is claimed last, at the session's
-  // first turn — so the daemon's registration deadline is already met and nothing outside this
+  // answered before the first attempt goes out — the role is claimed right after it — so the
+  // daemon's registration deadline is already met and nothing outside this
   // pane is counting the wait. What the interval buys is how soon a session that is ready, and
   // may already have been given a task, becomes addressable once the window passes.
   //
@@ -417,6 +503,7 @@ test("the wait asks on its own interval until the live window passes, and the gr
       },
     },
     session: { rememberRole: async () => undefined, onRoleRegained: () => undefined },
+    task: () => undefined,
     signal: new AbortController().signal,
     log: () => undefined,
     stop: () => {
@@ -424,9 +511,8 @@ test("the wait asks on its own interval until the live window passes, and the gr
     },
     pollMs: 5,
     roleRetryMs: 5,
-    onFirstTurn: firstTurnNow,
   })
-  await claim.claimed
+  await claim.booted
 
   // Ready was said before the asking began, and the schedule says when the grant came: the first
   // attempt past the live window, 31 attempts in, 300,000 ms after the first.
@@ -476,6 +562,7 @@ test("a claim under this session's own id that is never granted stops the pane o
       },
     },
     session: { rememberRole: async () => undefined, onRoleRegained: () => undefined },
+    task: () => undefined,
     signal: new AbortController().signal,
     log: (line) => lines.push(line),
     stop: () => {
@@ -484,9 +571,8 @@ test("a claim under this session's own id that is never granted stops the pane o
     pollMs: 5,
     roleRetryMs: 5,
     roleWaitMs: 40,
-    onFirstTurn: firstTurnNow,
   })
-  await claim.claimed
+  await claim.booted
 
   const token = String(registered["claimToken"])
   expect(posted.map(({ path }) => path)).toEqual([
@@ -516,16 +602,16 @@ test("a registration the daemon failed (5xx) is logged and leaves the pane to th
     clientInstanceID: INSTANCE,
     client: { setRole: async () => ({ claimed: false, holder: "x" }) },
     session: { rememberRole: async () => undefined, onRoleRegained: () => undefined },
+    task: () => undefined,
     signal: new AbortController().signal,
     log: (line) => lines.push(line),
     stop: () => {
       stops += 1
     },
-    onFirstTurn: firstTurnNow,
   })
   // A boot that failed before a registration claims nothing, and says so at once rather than
   // leaving a caller waiting for a step that is never coming.
-  await claim.claimed
+  await claim.booted
   expect(lines).toEqual([
     "claims/register registration failed (503): register failed",
     "claim boot failed before a registration; the daemon's registration deadline relaunches the pane: POST /legion/v1/claims/register failed with 503: register failed",
@@ -569,10 +655,10 @@ async function bootOn(env: Record<string, string>): Promise<{
       }),
     },
     session: { rememberRole: async () => undefined, onRoleRegained: () => undefined },
+    task: () => undefined,
     signal: new AbortController().signal,
     log: () => undefined,
     stop: () => undefined,
-    onFirstTurn: firstTurnNow,
     pollMs: 5,
   })
   return { posted, transcript, booted: claim.booted }
@@ -602,148 +688,4 @@ test("a pane no launcher keeps registers once the transcript exists, waiting for
     "/legion/v1/claims/ready",
   ])
   expect(posted[0]?.body["ompSessionFile"]).toBe(transcript)
-})
-
-/** A registered pane whose claim step the case drives itself: `submitPrompt` is the phase hook's
- * `UserPromptSubmit` as the channel server answers it — it runs the step the boot put in the
- * server's slot, and nothing at all before the boot has put one there — `env` is the
- * environment the bound is read from, and the boot is awaited before this answers.
- * `beforeRegistration` runs the moment the claim starts, before its boot has registered: the
- * bridge's seeding `/rename` turn arrives there. */
-async function registeredPane(options: {
-  readonly env: Record<string, string>
-  readonly beforeRegistration?: (submitPrompt: () => void) => void
-}): Promise<{
-  readonly submitPrompt: () => void
-  readonly claim: LegionClaim
-  readonly posted: Posted[]
-  readonly setRoles: SetRoleInput[]
-  readonly remembered: string[]
-  readonly lines: string[]
-  readonly stops: () => number
-}> {
-  const configDir = await tempDir()
-  await mkdir(join(configDir, "projects", "p"), { recursive: true })
-  await writeFile(join(configDir, "projects", "p", `${SESSION}.jsonl`), "{}\n")
-  const { posted, fetch } = daemonAnswering((path) =>
-    path.endsWith("/claims/register")
-      ? Response.json(registeredClaim)
-      : new Response(null, { status: 204 }),
-  )
-  const setRoles: SetRoleInput[] = []
-  const remembered: string[] = []
-  const lines: string[] = []
-  let stops = 0
-  let reportFirstTurn: (() => void) | undefined
-  const submitPrompt = (): void => reportFirstTurn?.()
-  const claim = startLegionClaim({
-    pane: { daemonUrl: "http://daemon.test", bootToken: "boot-1", configDir, launcherSaves: false },
-    sessionID: SESSION,
-    daemon: createLegionDaemonClient("http://daemon.test", fetch),
-    clientInstanceID: INSTANCE,
-    client: {
-      setRole: async (input): Promise<SetRoleResult> => {
-        setRoles.push(input)
-        return {
-          claimed: true,
-          interest: { session_id: SESSION, machine_id: "m", dir: "/w", topics: [] },
-        }
-      },
-    },
-    session: {
-      rememberRole: async (role) => {
-        remembered.push(role)
-      },
-      onRoleRegained: () => undefined,
-    },
-    signal: new AbortController().signal,
-    log: (line) => lines.push(line),
-    stop: () => {
-      stops += 1
-    },
-    // The server's own wiring: the signal goes in a slot the phase hook's `UserPromptSubmit`
-    // calls, and a prompt that finds it empty reports nothing (`onFirstTurn` in
-    // `src/envoy-channel-server.ts`).
-    onFirstTurn: (started) => {
-      reportFirstTurn = started
-    },
-    env: options.env,
-    pollMs: 5,
-  })
-  options.beforeRegistration?.(submitPrompt)
-  await claim.booted
-  return { submitPrompt, claim, posted, setRoles, remembered, lines, stops: () => stops }
-}
-
-test("the name is taken at the turn the server signals, not at the boot, and two turns take it once", async () => {
-  // Ten minutes: nothing but the signal can claim the name inside this case.
-  const pane = await registeredPane({ env: { LEGION_CLAIM_FIRST_TURN_BOUND_MS: "600000" } })
-
-  // Ready has answered and the pane is still nameless, so a message the listener kept for this
-  // role is handed over inside a turn rather than ahead of the daemon's task.
-  expect(pane.posted.map(({ path }) => path)).toEqual([
-    "/legion/v1/claims/register",
-    "/legion/v1/claims/ready",
-  ])
-  expect(pane.setRoles).toEqual([])
-
-  pane.submitPrompt()
-  pane.submitPrompt()
-  await pane.claim.claimed
-
-  const token = String(registeredClaim["claimToken"])
-  expect(pane.setRoles).toEqual([
-    { sessionID: SESSION, role: token, soft: true, clientInstanceID: INSTANCE },
-  ])
-  expect(pane.remembered).toEqual([token])
-  expect(pane.stops()).toBe(0)
-  expect(pane.lines).toEqual([])
-})
-
-test("a prompt submitted before the boot registered its step takes no name, the next one does", async () => {
-  // The bridge's seeding `/rename`, which every fresh pane's Claude Code submits before any
-  // claim exists: it is what writes the transcript the boot waits for. The server keeps no
-  // signal from before its step is registered, or the name would be taken one microtask after
-  // `claims/ready` answers — ahead of the daemon's task, the order this change exists to end.
-  const pane = await registeredPane({
-    env: { LEGION_CLAIM_FIRST_TURN_BOUND_MS: "600000" },
-    beforeRegistration: (submitPrompt) => submitPrompt(),
-  })
-
-  // The assertion below is that nothing happened, and nothing has a signal to await, so this
-  // waits out the one thing that could: the claim step runs on a microtask of its own, and the
-  // ten-minute bound is the only other way the name could be taken inside this case.
-  await Bun.sleep(20)
-  expect(pane.posted.map(({ path }) => path)).toEqual([
-    "/legion/v1/claims/register",
-    "/legion/v1/claims/ready",
-  ])
-  expect(pane.setRoles).toEqual([])
-
-  // The daemon's own task, which reaches Claude Code as a `UserPromptSubmit` of its own: that
-  // turn is already running when the name is taken.
-  pane.submitPrompt()
-  await pane.claim.claimed
-  expect(pane.remembered).toEqual([String(registeredClaim["claimToken"])])
-  expect(pane.stops()).toBe(0)
-})
-
-test("a pane that submits no prompt takes its name at the bound its environment sets", async () => {
-  // A role the daemon brought back with no task of its own starts no turn, and the bound is what
-  // keeps it from staying unaddressable: it claims anyway, and the lane kept for it is handed
-  // over then. This case submits no prompt at all.
-  const pane = await registeredPane({ env: { LEGION_CLAIM_FIRST_TURN_BOUND_MS: "5" } })
-  await pane.claim.claimed
-  expect(pane.remembered).toEqual([String(registeredClaim["claimToken"])])
-  expect(pane.stops()).toBe(0)
-})
-
-test("a bound this pane's environment states badly is warned about on the pane's own log line", async () => {
-  const pane = await registeredPane({ env: { LEGION_CLAIM_FIRST_TURN_BOUND_MS: "soon" } })
-  pane.submitPrompt()
-  await pane.claim.claimed
-  expect(pane.lines).toEqual([
-    'warn: legion: LEGION_CLAIM_FIRST_TURN_BOUND_MS is not an integer of 0 or more; using 30000 {"value":"soon"}',
-  ])
-  expect(pane.remembered).toEqual([String(registeredClaim["claimToken"])])
 })

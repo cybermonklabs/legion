@@ -20,6 +20,7 @@ import {
   spawnRpc,
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
+import { taskStandIn } from "@legion/pi-shared/test/task-stand-in";
 
 // What the pinned Oh My Pi reports of a role session's own background work (INFRA-945), which is
 // the whole input to the daemon's idle rule: a claim that reports background work keeps its pod,
@@ -59,7 +60,7 @@ const TREE = "ACT-1";
 const ISSUE = "ACT-2";
 
 /**
- * The daemon's assignment, sent as the RPC prompt. Every turn of the role's own conversation
+ * The daemon's assignment, a task the pane takes. Every turn of the role's own conversation
  * carries it, and nothing else the pane sends the gateway does, so it is what tells a role turn
  * from the subagent's turn and from a side request.
  */
@@ -184,6 +185,9 @@ async function startRolePane(): Promise<RolePane> {
   const malformed: string[] = [];
   let sides = 0;
   let grants = 0;
+  // The daemon's assignment: a task the pane takes, not a prompt the daemon writes.
+  const tasks = taskStandIn();
+  tasks.give(ASSIGNMENT);
   const { requests, base } = serveStandin(cleanup, async (url, body) => {
     if (url.pathname === "/anthropic/v1/messages") {
       const request: Request = { path: url.pathname, body };
@@ -207,6 +211,8 @@ async function startRolePane(): Promise<RolePane> {
       });
     }
     if (url.pathname.startsWith("/anthropic/")) return Response.json({ data: [] });
+    const taskAnswer = tasks.answer(url.pathname, body);
+    if (taskAnswer !== undefined) return taskAnswer;
     if (url.pathname === "/legion/v1/claims/register") {
       return Response.json({
         ...registered,
@@ -216,6 +222,7 @@ async function startRolePane(): Promise<RolePane> {
         role: ROLE,
         generation: 1,
         secret: "act-secret",
+        ...tasks.registered(),
       });
     }
     if (url.pathname === "/legion/v1/claims/ready") return new Response(null, { status: 204 });
@@ -289,7 +296,6 @@ async function startRolePane(): Promise<RolePane> {
   rpc.closed.catch((error: unknown) => {
     closed.error = error;
   });
-  rpc.send({ type: "prompt", message: ASSIGNMENT });
 
   await until(
     "the pane's registration with the Envoy listener",

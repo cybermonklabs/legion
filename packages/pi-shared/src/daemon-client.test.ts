@@ -644,3 +644,87 @@ test("a 502 refusal keeps its stable code through a key no schema names, and is 
   expect(attempts).toBe(1);
   expect(waits).toEqual([]);
 });
+
+test("reads the claim's task value and finished number over claims/task, in either caller form", async () => {
+  const value = daemonFixture("register.json").task;
+  const answers = [daemonFixture("task.json"), { task: value, finished: 3 }];
+  const { fetch, requests } = daemon(() => Response.json(answers.shift()));
+  const client = createLegionDaemonClient("http://daemon.test", fetch);
+  const agent = {
+    claimToken: "legion-legion-legion-208-architect",
+    sessionId: "ses_architect_208",
+    secret: "U3VwZXJ2aXNlZEJ5TGVnaW9u",
+    generation: 3,
+  };
+
+  await expect(client.task(agent)).resolves.toEqual({ task: null, finished: 4 });
+  await expect(client.task({ bootToken: "boot-1", generation: 3 })).resolves.toEqual({
+    task: value as never,
+    finished: 3,
+  });
+  expect(requests).toEqual([
+    { method: "POST", url: "http://daemon.test/legion/v1/claims/task", body: agent },
+    {
+      method: "POST",
+      url: "http://daemon.test/legion/v1/claims/task",
+      body: { bootToken: "boot-1", generation: 3 },
+    },
+  ]);
+});
+
+test("reports a task value seen and takes it, reading every take answer the daemon's golden tests wrote, with the caller's signal", async () => {
+  const taken = {
+    claimToken: "legion-legion-legion-209-implementer",
+    sessionId: "ses_implementer_209",
+    secret: "U2VjcmV0",
+    generation: 3,
+    number: 4,
+    epoch: "2026-11-13T16:21:44.123456789Z",
+    revision: 12,
+  };
+  const answers = [
+    new Response(null, { status: 204 }),
+    Response.json(daemonFixture("take-accepted.json")),
+    Response.json(daemonFixture("take-refused.json")),
+    Response.json(daemonFixture("take-dropped.json")),
+  ];
+  const signals: (AbortSignal | null | undefined)[] = [];
+  const requests: Recorded[] = [];
+  const client = createLegionDaemonClient("http://daemon.test", (async (input, init) => {
+    requests.push({
+      method: init?.method ?? "GET",
+      url: input.toString(),
+      body: JSON.parse(String(init?.body)),
+    });
+    signals.push(init?.signal);
+    return answers.shift();
+  }) as typeof fetch);
+  const abort = new AbortController();
+
+  await expect(client.taskSeen(taken, { signal: abort.signal })).resolves.toBeUndefined();
+  await expect(client.take(taken, { signal: abort.signal })).resolves.toEqual(
+    daemonFixture("take-accepted.json") as never
+  );
+  await expect(client.take(taken)).resolves.toEqual({ outcome: "refused", hold: "stale-plugin" });
+  await expect(client.take(taken)).resolves.toEqual({ outcome: "dropped" });
+
+  expect(requests.map(({ url }) => url)).toEqual([
+    "http://daemon.test/legion/v1/claims/task-seen",
+    "http://daemon.test/legion/v1/claims/take",
+    "http://daemon.test/legion/v1/claims/take",
+    "http://daemon.test/legion/v1/claims/take",
+  ]);
+  expect(requests.every(({ body }) => JSON.stringify(body) === JSON.stringify(taken))).toBe(true);
+  expect(signals.slice(0, 2)).toEqual([abort.signal, abort.signal]);
+
+  // A seen report is answered 204 and nothing else, and a take a body the contract does not
+  // describe.
+  const talkative = createLegionDaemonClient(
+    "http://daemon.test",
+    daemon(() => Response.json({ outcome: "postponed" })).fetch
+  );
+  await expect(talkative.taskSeen(taken)).rejects.toBeInstanceOf(LegionDaemonContractError);
+  await expect(talkative.take(taken)).rejects.toBeInstanceOf(LegionDaemonContractError);
+  // A request the contract does not describe never leaves the pane.
+  expect(() => client.take({ ...taken, number: 0 })).toThrow();
+});

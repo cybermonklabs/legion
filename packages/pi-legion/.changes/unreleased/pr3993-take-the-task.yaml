@@ -1,0 +1,5 @@
+kind: Changed
+body: |-
+  A Legion worker on Oh My Pi takes its task from the daemon when its session is idle, rather than
+  being sent it as a prompt, and claims its Envoy role right after `claims/ready`. The
+  `LEGION_CLAIM_FIRST_TURN_BOUND_MS` setting is gone.

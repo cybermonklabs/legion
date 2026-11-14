@@ -36,6 +36,9 @@ const (
 // activity route alone and are deliberately absent from the claim insert's conflict update, so a
 // machine's in-memory claim shows their zero values until the claim is read again.
 type IdleClaim struct {
+	// Token names the claim, which a decision about one claim of the pod is logged under
+	// (workflow.IdleDecision.OldPlugin).
+	Token          claim.Token
 	Role           claim.Role
 	State          supervise.ClaimState
 	PluginContract int
@@ -61,9 +64,9 @@ type IdleClaim struct {
 	// before the boundary and already run from one of the release's own rows.
 	LastStartRow int64
 	// LastTurnAt is the newest moment a turn of this claim is known to have been under way: the
-	// latest of its pending delivery's send acknowledgement and the confirmation of the turn that
-	// send started, zero for a claim holding no delivery. A session's report counts only when it
-	// was read after it (IdleClaim.Reported).
+	// confirmation of its pending delivery, the moment the daemon recorded its task as taken, zero
+	// for a claim holding no delivery and for one whose delivery is not confirmed. A session's
+	// report counts only when it was read after it (IdleClaim.Reported).
 	LastTurnAt time.Time
 	// ActivityAt, ActivityBackground, ActivityKinds and ActivityNextReminderAt are the last
 	// activity report of the process the claim runs now (POST /legion/v1/claims/activity): when

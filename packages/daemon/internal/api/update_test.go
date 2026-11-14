@@ -85,7 +85,8 @@ func TestReadyForUpdateTakesTheOpenRoundsAnswerAndRefusesAnother(t *testing.T) {
 // ends every plugin round an earlier daemon left, over every claim, because nothing of this
 // release carries such a round and one left standing holds the claim's next task behind it for
 // ever (internal/daemon's endPluginRounds). A turn that was in flight across the restart still
-// holds the round's task, and its `ready_for_update` arrives at a claim in no round at all.
+// works the ask that earlier daemon gave it, and its `ready_for_update` arrives at a claim in no
+// round at all.
 //
 // Nothing new refuses it: podUpdateSignalled already refuses an answer for a round its claim is
 // not in, and this is that case with the round removed rather than replaced. The worker reads a

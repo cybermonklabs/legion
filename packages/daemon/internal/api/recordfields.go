@@ -74,6 +74,19 @@ var ClaimRecordFields = []RecordFieldDecision{
 	{Field: "GivenEntry", Column: ColumnAgents, Keys: []string{"givenEntry"},
 		Reason: "the entry the role's claim was last queued a task of, which its issue carries beside the entry that role's phases row stands on (api.Issue.GivenEntry): the pair says whether the daemon has still to send that role the entry's own work"},
 	{Field: "ServedEntry", Column: ColumnWithheld, Reason: BookkeepingReason},
+	// The claim's task numbers and the bucket marks beside them: a worker reads its task from its
+	// own value and takes it there, so no reader of these surfaces acts on the record's copy. The
+	// text an accepted take was answered with stands on the pending delivery and is withheld with
+	// the task's own text (`Pending`).
+	{Field: "TaskWritten", Column: ColumnWithheld, Reason: BookkeepingReason},
+	{Field: "TaskTaken", Column: ColumnWithheld, Reason: BookkeepingReason},
+	{Field: "TaskFinished", Column: ColumnWithheld, Reason: BookkeepingReason},
+	{Field: "TaskFinishedSession", Column: ColumnWithheld, Reason: BookkeepingReason},
+	{Field: "TaskSeenEpoch", Column: ColumnWithheld, Reason: BookkeepingReason},
+	{Field: "TaskSeenRevision", Column: ColumnWithheld, Reason: BookkeepingReason},
+	{Field: "TaskTakeState", Column: ColumnWithheld, Reason: BookkeepingReason},
+	{Field: "TaskWrittenEpoch", Column: ColumnWithheld, Reason: BookkeepingReason},
+	{Field: "TaskWrittenRevision", Column: ColumnWithheld, Reason: BookkeepingReason},
 	{Field: "ServingCheckLook", Column: ColumnWithheld, Reason: BookkeepingReason},
 	{Field: "LastStartRow", Column: ColumnWithheld, Reason: BookkeepingReason},
 	{Field: "DeliveredRows", Column: ColumnWithheld, Reason: BookkeepingReason},

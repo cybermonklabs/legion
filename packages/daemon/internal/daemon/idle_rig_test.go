@@ -33,6 +33,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/stream"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/supervise/supervisetest"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
 	"github.com/sjawhar/legion/daemon/internal/testtmp"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -107,9 +108,13 @@ type idleWakeRig struct {
 	issues []idleRigIssue
 	// daemonLog is where a copy of the daemon's log is kept.
 	daemonLog *os.File
-	// baseline is how many tasks each role had been given when markPrompts was called, so a
-	// subtest counts the tasks a wake gave and not the phase start the daemon's boot gave.
+	// baseline is how many tasks each role had taken when markPrompts was called, so a subtest
+	// counts the tasks a wake gave and not the phase start the daemon's boot gave.
 	baseline map[string]int
+	// values is the task bucket every boot of the rig's daemon writes to (overrides.taskValues),
+	// one for the rig's life as the daemon's own bucket outlives a restart, which each role
+	// process reads its claim's value back from.
+	values supervise.TaskValues
 	// toolsPath holds the rig's `legion` and `omp` stand-ins, made once.
 	toolsPath string
 
@@ -422,10 +427,14 @@ func (r *idleWakeRig) boot() {
 	// registered after r.stopDaemon and so run before it, printing a log that ends where the
 	// shutdown begins, or none at all when the stop is what failed.
 	logger := slog.New(slog.NewJSONHandler(io.MultiWriter(r.logs, r.logFile()), &slog.HandlerOptions{Level: slog.LevelDebug}))
+	if r.values == nil {
+		r.values = supervisetest.NewTaskValues()
+	}
 	go func() {
 		done <- run(ctx, r.cfg, logger, overrides{
 			listen: heldListen, runtime: r.newRuntime, clock: stillClock{}, idleTick: idleRigTick,
 			workflowTokens: idleRigAppTokens{workflowTokenRecorder: &workflowTokenRecorder{}}, githubAPI: repositoriesGitHub(r.t),
+			taskValues: r.values,
 		})
 	}()
 	r.stopMu.Lock()
@@ -706,10 +715,9 @@ func (r *idleWakeRig) token(issue idleRigIssue) claim.Token {
 	return token
 }
 
-// markPrompts records how many tasks each role has been given, which newPrompts counts from: the
+// markPrompts records how many tasks each role has taken, which newPrompts counts from: the
 // daemon's boot starts the implementer of an admitted issue whose phase is its own and gives it
-// that phase's task, so a role of the rig has already been prompted once before its pod is ever
-// released.
+// that phase's task, so a role of the rig has already taken one before its pod is ever released.
 func (r *idleWakeRig) markPrompts() {
 	r.baseline = map[string]int{}
 	for _, issue := range r.issues {
@@ -717,7 +725,7 @@ func (r *idleWakeRig) markPrompts() {
 	}
 }
 
-// newPrompts is every task the issue's role has been given since markPrompts.
+// newPrompts is every task the issue's role has taken since markPrompts.
 func (r *idleWakeRig) newPrompts(issue idleRigIssue) []idleRigMessage {
 	prompts := r.agents.prompts(issue.key, string(issue.role))
 	from := r.baseline[issue.key]
@@ -728,7 +736,7 @@ func (r *idleWakeRig) newPrompts(issue idleRigIssue) []idleRigMessage {
 }
 
 // adoptionsAhead is every adopt-working-copy frame the issue's role was sent ahead of the task at
-// index i of its prompts: after the task before that one was given, and before that one was.
+// index i of its tasks: after the task before that one was taken, and before that one was.
 func (r *idleWakeRig) adoptionsAhead(issue idleRigIssue, i int) []idleRigAdoption {
 	var ahead []idleRigAdoption
 	for _, adoption := range r.agents.adoptions(issue.key, string(issue.role)) {

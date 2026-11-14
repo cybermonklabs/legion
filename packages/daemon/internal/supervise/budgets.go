@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"time"
 )
 
 // Budgets are a claim's retry counters, each a separate policy with its own reset point.
@@ -21,13 +22,14 @@ import (
 //     through what it was doing. A death with no turn open and nothing pending is not counted: a
 //     parked agent — idle, holding no task — that the environment kills now and then is relaunched
 //     however often it happens. Bounded by the launch failure limit.
-//   - PromptFailures: prompts the agent refused, acknowledged prompts that started no turn, and
-//     prompts refused after their acknowledgement. A prompt lost to the transport, not sent for
-//     want of a connection, or refused because the agent is in a turn of its own (Oh My Pi's busy
-//     answer, before or after its acknowledgement), is re-queued at no charge. Reset by a started
-//     turn.
-//   - PromptRetires: processes retired because PromptFailures ran out. Reset by a started turn,
-//     never by the relaunch itself — a claim that keeps acknowledging and never turning runs out.
+//   - PromptFailures: the charges a worker earns where it is the one that did not act (chargePrompt):
+//     a value it reported seeing and asked no take of within R5's first bound, an accepted take
+//     whose turn did not start within the second (waits.go), and a take whose adoption of the
+//     working copy the shim refused (refusedAdoption). An adoption lost to the transport or an
+//     identity the daemon could not mint charges nothing, and neither does a value nobody reported
+//     seeing. Reset by a turn's start or end, never by a take.
+//   - PromptRetires: processes retired because PromptFailures ran out. Reset where PromptFailures
+//     is, never by the relaunch itself — a claim that keeps taking and never turning runs out.
 type Budgets struct {
 	LaunchFailures int
 	Deaths         int
@@ -62,6 +64,10 @@ const (
 	// never said it was ready, until the launch budget ran out (registrationDeadline). The one
 	// word covers both, which is what the deadline itself does.
 	CauseNeverRegistered FailureCause = "never_registered"
+	// CauseNeverReconnected: the shim of a claim a daemon start restored with its agent ready,
+	// idle or working never said hello before the reconnect deadline while its process lived, and
+	// the relaunches that followed ran the launch budget out (reconnectDeadline).
+	CauseNeverReconnected FailureCause = "never_reconnected"
 	// CauseStalePlugin: a relaunch onto the daemon's own plugin contract that ran out
 	// (staleRegistration).
 	CauseStalePlugin FailureCause = "stale_plugin"
@@ -93,6 +99,7 @@ var FailureCauses = []FailureCause{
 	CauseLaunchRefused,
 	CauseDied,
 	CauseNeverRegistered,
+	CauseNeverReconnected,
 	CauseStalePlugin,
 	CausePromptRetiresExhausted,
 	CauseProviderError,
@@ -161,18 +168,31 @@ func (m *Machine) turnOpen() bool {
 	return m.claim.State == StateWorking || m.claim.LastTurnStart.After(m.claim.LastTurnEnd)
 }
 
+// The two lines a charge is logged under, at Warn: a prompt failure short of the limit, and the
+// retirement the charge at the limit makes. They are pinned as constants for the reason the turn
+// lines are (turnStartedLine): the daemon's cost reading counts them by wait (ReadTaskCost), and
+// R9's first verdict reads the bound beside each.
+const (
+	promptFailureLine = "supervise: prompt failure"
+	promptRetiredLine = "supervise: retired after prompt failures"
+)
+
 // chargePrompt counts one prompt failure. At the limit the process is retired — suspended, the
 // session kept — and the same session relaunched, or, once retirements run out too, the claim
 // fails with its prompt count left at the limit. A suspension that fails charges nothing: the next
 // failure reaches the limit again and retries the retirement. So does a relaunch the tree lifecycle
 // refuses, checked before the suspension so the process is kept (checkLaunch). A retirement while a
 // suspension is held is that suspension's stop instead, charged nothing (suspendHeld).
-func (m *Machine) chargePrompt(ctx context.Context, why string) error {
+//
+// wait names what the charge is for (WaitTake, WaitTurnStart, WaitAdoption), and both lines carry
+// it, with the bound that wait waited where it has one (chargeBound), so a reading of the log
+// counts charges by wait and can tell a charge made inside its bound from one made at it.
+func (m *Machine) chargePrompt(ctx context.Context, wait, why string) error {
 	failures := m.claim.Budgets.PromptFailures + 1
 	if failures < m.deps.Limits.PromptFailures {
 		m.claim.Budgets.PromptFailures = failures
-		m.log.Warn("supervise: prompt failure", "why", why, "promptFailures", failures,
-			"limit", m.deps.Limits.PromptFailures)
+		m.log.Warn(promptFailureLine, "wait", wait, "bound", m.chargeBound(wait), "why", why,
+			"promptFailures", failures, "limit", m.deps.Limits.PromptFailures)
 		return m.persist(ctx)
 	}
 	if m.held != nil {
@@ -190,12 +210,25 @@ func (m *Machine) chargePrompt(ctx context.Context, why string) error {
 		return fmt.Errorf("retire %s after %d prompt failures: suspend: %w", m.claim.Token, failures, err)
 	}
 	m.claim.Budgets.PromptRetires = retires
-	m.log.Warn("supervise: retired after prompt failures", "why", why, "promptFailures", failures,
-		"relaunchCycle", retires, "limit", m.deps.Limits.PromptRetires)
+	m.log.Warn(promptRetiredLine, "wait", wait, "bound", m.chargeBound(wait), "why", why,
+		"promptFailures", failures, "relaunchCycle", retires, "limit", m.deps.Limits.PromptRetires)
 	if last {
 		m.claim.Budgets.PromptFailures = failures
 		return m.fail(ctx, CausePromptRetiresExhausted, "prompt retirements ran out")
 	}
 	m.claim.Budgets.PromptFailures = 0
 	return m.launch(ctx)
+}
+
+// chargeBound is the bound the wait a charge names waited (R5's two bounds, Timeouts.Take and
+// Timeouts.TurnStart), and 0 for a charge that waited none: a refused adoption is charged at the
+// shim's answer.
+func (m *Machine) chargeBound(wait string) time.Duration {
+	switch wait {
+	case WaitTake:
+		return m.deps.Timeouts.Take
+	case WaitTurnStart:
+		return m.deps.Timeouts.TurnStart
+	}
+	return 0
 }

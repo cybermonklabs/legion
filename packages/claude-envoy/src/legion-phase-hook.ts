@@ -174,14 +174,6 @@ export interface PhaseHookDeps {
    * reminder and the recreated-workspace notice both need the claim, and neither is sent before
    * one exists. Never rejects. */
   readonly booted: Promise<void>
-  /** A turn of this session has started, whatever started it: the daemon's task, an Envoy
-   * delivery, a reminder, a person. The channel server answers it by firing the claim boot's
-   * deferred role claim (`startLegionClaim`'s `onFirstTurn`), so the session takes its Envoy
-   * name inside a turn that is already running (INFRA-1573). It is called for every
-   * `UserPromptSubmit`, and the server decides which of them counts: one before the boot
-   * registered its step — the bridge's seeding `/rename` — signals nothing, and one after the
-   * name is taken costs nothing. */
-  readonly firstTurnStarted: () => void
   /** The daemon's whole state, for the reminder's record check, aborted with `signal` once the
    * check's bound passes (`PhaseReminderDeps.readState`). */
   readonly readState: (signal: AbortSignal) => Promise<LegionState>
@@ -498,13 +490,6 @@ export function createPhaseHookEndpoint(deps: PhaseHookDeps): PhaseHookEndpoint 
       // itself: it is refused, and no state moves, so it cannot zero its own count.
       if (!parsed.success) return { error: PHASE_HOOK_REFUSAL }
       const event = parsed.data
-      // Before the gate below, and before anything else this endpoint does: the claim's own
-      // first-turn signal is not the reminder's business, and a turn is a turn whether or not a
-      // claim has registered yet (the bridge's seeding `/rename` turn runs before one has) and
-      // whatever role this pane holds, an architect's included. What a prompt before the boot
-      // registered its step comes to is the server's to decide, not this endpoint's: it holds
-      // the step the signal runs (`src/envoy-channel-server.ts`).
-      if (event.event === "UserPromptSubmit") deps.firstTurnStarted()
       // The same gate as `phaseWorkerSession` in `packages/pi-legion/extensions/legion.ts`: the
       // machine runs for a phase worker whose claim has booted, and for nobody else. The bridge's
       // seeding `/rename` turn is what writes the transcript the claim boot waits for

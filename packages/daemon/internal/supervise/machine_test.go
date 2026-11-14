@@ -802,29 +802,29 @@ func TestAstraDuplicateObservations(t *testing.T) {
 	h.wantCalls("Resume", 1)
 }
 
-// The daemon sent the task, the agent acknowledged it and started the turn, and the daemon went
-// down before it recorded the turn. After the restart the delivery reads as sent and unconfirmed;
-// the agent reporting a turn in flight confirms it, and nothing is sent twice.
+// The worker took the task and started its turn, and the daemon went down before it recorded the
+// turn. After the restart the delivery reads as taken and its turn not started; the turn start the
+// shim replays on its reconnect is that take's turn, and nothing is taken twice.
 func TestAstraCrashBetweenTurnStartAndDeliveryPersistence(t *testing.T) {
 	h := newHarness(t)
 	h.reach(StateReady)
 	h.must(RequestDeliver{Claim: testToken, Task: "implement the plan"})
 	sent := h.wantPrompts(1)[0]
-	if stored, ok := h.store.delivery(testToken); !ok || stored.DeliveredAt.IsZero() || !stored.ConfirmedAt.IsZero() {
-		t.Fatalf("stored delivery %+v, want it acknowledged and unconfirmed", stored)
+	if stored, ok := h.store.delivery(testToken); !ok || !stored.awaitsTurn() {
+		t.Fatalf("stored delivery %+v, want it taken and its turn still to come", stored)
 	}
 
 	h.restart()
-	h.conn.SetStreaming(true)
 	h.connect()
+	h.must(StreamTurnStart{Claim: testToken})
 
 	h.wantState(StateWorking)
 	h.wantPrompts(1)
-	if p := h.pending(); p.ID != sent.DeliveryID || p.ConfirmedAt.IsZero() {
-		t.Errorf("pending %+v, want the sent delivery confirmed", p)
+	if p := h.pending(); p.Number != sent.Number || !p.turnStarted() {
+		t.Errorf("pending %+v, want the taken task's turn started", p)
 	}
-	if stored, _ := h.store.delivery(testToken); stored.ConfirmedAt.IsZero() {
-		t.Error("the confirmation was not persisted")
+	if stored, _ := h.store.delivery(testToken); !stored.turnStarted() {
+		t.Error("the turn's start was not persisted")
 	}
 	h.must(StreamTurnEnd{Claim: testToken})
 	h.wantState(StateIdle)
@@ -833,20 +833,37 @@ func TestAstraCrashBetweenTurnStartAndDeliveryPersistence(t *testing.T) {
 	}
 }
 
-// The same crash with an agent that is not streaming: the delivery is sent again under the same
-// id, which the shim answers without a second turn if it already had it.
-func TestAfterARestartAnIdleAgentIsSentTheSameDelivery(t *testing.T) {
-	h := newHarness(t)
+// The same crash before the take's turn started, with the take's answer lost on the way: the worker
+// sends the same take again to the restarted daemon, which answers it from the record with the
+// same text, and applies nothing of the take a second time — no write, no second telling of the
+// workflow, no change of the take the record holds (departure 7 of dispatch://INFRA-2811).
+func TestTakeRepeatedAfterARestartIsAnsweredTheSameAndRecordsNothing(t *testing.T) {
+	h := newBareHarness(t)
+	confirmed := 0
+	h.deps.TaskConfirmed = func(Claim) { confirmed++ }
+	h.store.PutClaim(h.ctx, queuedClaim())
+	h.start(queuedClaim())
 	h.reach(StateReady)
 	h.must(RequestDeliver{Claim: testToken, Task: "implement the plan"})
 	first := h.wantPrompts(1)[0]
+	value, _ := h.values.value(testToken)
 
 	h.restart()
-	h.connect()
+	before, puts := h.store.load(testToken), len(h.store.history())
 
-	second := h.wantPrompts(2)[1]
-	if second.DeliveryID != first.DeliveryID {
-		t.Errorf("re-sent under %s, want the same delivery id %s", second.DeliveryID, first.DeliveryID)
+	answer, err := h.takeValue(value)
+	if err != nil || answer.Outcome != TakeOutcomeAccepted || answer.Text != first.Message {
+		t.Fatalf("the take sent again after the restart = %+v, %v, want it accepted with the text %q", answer, err, first.Message)
+	}
+	if got := len(h.store.history()); got != puts {
+		t.Errorf("the repeated take wrote the claim %d times, want none", got-puts)
+	}
+	if after := h.store.load(testToken); after.TaskTaken != before.TaskTaken || after.Pending == nil ||
+		!after.Pending.ConfirmedAt.Equal(before.Pending.ConfirmedAt) || after.Pending.TakenText != before.Pending.TakenText {
+		t.Errorf("the stored claim moved from %+v to %+v, want the take the record holds untouched", before, after)
+	}
+	if confirmed != 1 {
+		t.Errorf("the workflow was told %d times, want once: the repeated take tells nobody", confirmed)
 	}
 	h.wantState(StateReady)
 }

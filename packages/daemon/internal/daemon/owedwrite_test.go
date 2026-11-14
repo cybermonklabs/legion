@@ -433,12 +433,12 @@ func (r *owedWriteRig) turnStart(role claim.Role) supervise.Event {
 	return supervise.StreamTurnStart{Claim: r.token(role)}
 }
 
-// nudge is an event that drives a decision and writes nothing of its own: a prompt result naming
-// a delivery the claim does not hold, which the fence drops before the table. The repair at the
-// head of Handle still runs, so what a test measures around it is the owed write alone.
+// nudge is an event that drives a decision and writes nothing of its own: a timer the claim
+// never armed, which the fence drops before the table. The repair at the head of Handle still
+// runs, so what a test measures around it is the owed write alone.
 func (r *owedWriteRig) nudge(role claim.Role) supervise.Event {
 	r.t.Helper()
-	return supervise.StreamPromptResult{Claim: r.token(role), DeliveryID: "no delivery of this claim", AgentInvoked: true}
+	return supervise.Timer{Claim: r.token(role), Kind: supervise.TimerFinish, Generation: r.machine(role).Claim().Generation, Seq: 1 << 62}
 }
 
 // held is the claim as its machine holds it.

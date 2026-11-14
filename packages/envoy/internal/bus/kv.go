@@ -441,8 +441,16 @@ func SetKeyValueMaxAge(js nats.JetStreamContext, bucket string, maxAge time.Dura
 // OpenKeyValue opens the existing KV bucket named bucket on conn, through js, and creates nothing,
 // as a rebuild does. It raises nothing either: the start that opened the bucket with EnsureKeyValue
 // did that.
+//
+// A lookup the server refuses under the connection's grant ends with that refusal, as
+// EnsureKeyValue's lookup does (refusedSend): an error naming ErrPublishDenied and the subject,
+// `bus: NATS denied the publish to "$JS.API.STREAM.INFO.KV_<bucket>": ...`, after the one wait of
+// js's MaxWait, where the server's silence would otherwise read as a bare timeout. So a caller that
+// opens a bucket its grant may not cover - the listener's task relay, which reads a bucket only
+// some listener users may read - names the subject the grant is missing.
 func OpenKeyValue(conn *nats.Conn, js nats.JetStreamContext, bucket string) (KeyValue, error) {
-	kv, err := js.KeyValue(bucket)
+	lookup := []string{"$JS.API.STREAM.INFO.KV_" + bucket}
+	kv, err := refusedSend(conn, lookup, func() (nats.KeyValue, error) { return js.KeyValue(bucket) })
 	if err != nil {
 		return KeyValue{}, err
 	}

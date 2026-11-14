@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -194,9 +195,9 @@ func TestAnAnswerOnARunningTreeSendsNothing(t *testing.T) {
 }
 
 // A root re-admitted after the daemon relayed a person's decision on it starts its architect with
-// a task naming that decision's ref, and the start row names the row it read, which its delivery
-// forgets (the outbox's start): until then the decision stays kept, so a start that never reaches
-// its architect is not the last word on it.
+// a task naming that decision's ref, under a notice's origin, and the start row names the row it
+// read, which its delivery forgets (the outbox's start): until then the decision stays kept, so a
+// start that never reaches its architect is not the last word on it.
 func TestARootReadmittedAfterARelayedDecisionStartsItsArchitectNamingIt(t *testing.T) {
 	ctx := context.Background()
 	pool := migratedPool(t)
@@ -211,6 +212,9 @@ func TestARootReadmittedAfterARelayedDecisionStartsItsArchitectNamingIt(t *testi
 	if len(starts) != 1 || starts[0].Task != "While nobody in LEGION-ROOT's tree could hear it, a person decided on the tree: "+
 		"dispatch://LEGION-ROOT/ask/ask-1 (ask-answered by user:alice). Read each before you continue." {
 		t.Fatalf("architect starts %#v, want one naming dispatch://LEGION-ROOT/ask/ask-1", starts)
+	}
+	if starts[0].Origin != supervise.OriginNotice {
+		t.Fatalf("the architect's start names origin %q, want %q: its task is a notice of what the tree was told", starts[0].Origin, supervise.OriginNotice)
 	}
 	if kept := starts[0].Kept; kept == nil || len(kept.Decisions) != 1 || kept.Decisions[0].Ref != "dispatch://LEGION-ROOT/ask/ask-1" ||
 		!kept.Decisions[0].At.Equal(fixedNow) || kept.Approved != 0 {

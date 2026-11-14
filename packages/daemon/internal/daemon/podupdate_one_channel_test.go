@@ -33,14 +33,15 @@ func (r *podUpdateRig) asks() []record.UpdateAsk {
 	return asks
 }
 
-// prompts is how many prompts every role's connection has received, by role.
-func (r *podUpdateRig) prompts() map[claim.Role]int {
+// written is the highest task number each role's claim has been written, by role
+// (Claim.TaskWritten): a task queued for a claim raises it, whoever takes it.
+func (r *podUpdateRig) written() map[claim.Role]uint64 {
 	r.t.Helper()
-	sent := map[claim.Role]int{}
-	for role, conn := range r.workers {
-		sent[role] = len(conn.Prompts())
+	written := map[claim.Role]uint64{}
+	for role := range r.workers {
+		written[role] = r.claimOf(role).TaskWritten
 	}
-	return sent
+	return written
 }
 
 // One pod round, over the five kinds of claim a pod holds: a role in a turn, an idle role, the
@@ -49,10 +50,10 @@ func (r *podUpdateRig) prompts() map[claim.Role]int {
 // role, the round, the pod and the round's one text: the reasons the round opened with and the
 // moment it ends, its opening plus pod_update_grace_minutes. The failed claim and the claim that
 // left the pod are asked nothing, although each records the round with no publish mark. No claim
-// is sent a prompt for the round: the machine queues no task.
+// is queued a task for the round: the machine queues no task.
 //
 // The negative controls are the ones c-one-channel names. A task queued beside the publish is a
-// prompt on a role's connection. A publish at every sweep is ten rows a role, not one.
+// task number written to a role's claim. A publish at every sweep is ten rows a role, not one.
 func TestPodUpdateAsksEachRoleOnceOnItsOwnTopicOverTenSweeps(t *testing.T) {
 	rig := newPodUpdateRig(t,
 		podUpdateRole{role: claim.RoleImplementer, state: supervise.StateWorking, session: true, inPod: true, contract: api.DaemonAPIVersion},
@@ -65,7 +66,7 @@ func TestPodUpdateAsksEachRoleOnceOnItsOwnTopicOverTenSweeps(t *testing.T) {
 	)
 	rig.drifts(podUpdateDrift)
 	asked := []claim.Role{claim.RoleArchitect, claim.RoleImplementer, claim.RoleTester}
-	before := rig.prompts()
+	before := rig.written()
 
 	for sweep := range 10 {
 		if sweep > 0 {
@@ -110,10 +111,10 @@ func TestPodUpdateAsksEachRoleOnceOnItsOwnTopicOverTenSweeps(t *testing.T) {
 	for role := range rig.workers {
 		rig.settle(role)
 	}
-	after := rig.prompts()
+	after := rig.written()
 	for role, n := range after {
 		if n != before[role] {
-			t.Errorf("the %s was sent %d prompts while the round ran, want none: the round's ask is no task", role, n-before[role])
+			t.Errorf("the %s was written task %d after task %d while the round ran, want none: the round's ask is no task", role, n, before[role])
 		}
 	}
 	for _, role := range asked {
@@ -183,7 +184,7 @@ func TestPodUpdateWithNoOutboxPublishesNothingAndStillRunsTheRound(t *testing.T)
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer))
 	rig.s.enqueue = nil
 	rig.drifts(podUpdateDrift)
-	before := rig.prompts()
+	before := rig.written()
 
 	rig.tick()
 	rig.awaitRound(claim.RoleImplementer, podUpdateRound)
@@ -199,8 +200,8 @@ func TestPodUpdateWithNoOutboxPublishesNothingAndStillRunsTheRound(t *testing.T)
 		t.Fatalf("the implementer = round %q asked at %v, want the round recorded and no ask marked", c.UpdateRound, c.UpdateTaskedAt)
 	}
 	rig.settle(claim.RoleImplementer)
-	if after := rig.prompts(); after[claim.RoleImplementer] != before[claim.RoleImplementer] {
-		t.Fatalf("the implementer was sent %d prompts, want none", after[claim.RoleImplementer]-before[claim.RoleImplementer])
+	if after := rig.written(); after[claim.RoleImplementer] != before[claim.RoleImplementer] {
+		t.Fatalf("the implementer was written task %d after task %d, want none", after[claim.RoleImplementer], before[claim.RoleImplementer])
 	}
 
 	rig.signal(claim.RoleImplementer, "a1b2c3d")

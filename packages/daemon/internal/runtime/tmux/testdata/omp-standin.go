@@ -4,11 +4,11 @@
 // the file LEGION_BOOT_TOKEN_FILE names, registers with the daemon at LEGION_DAEMON_URL as the
 // session it became (resuming the one --resume names, when given), and declares itself ready —
 // with the request and response shapes of internal/claim, the ones the real daemon routes serve.
-// Then it speaks OMP's RPC frames on stdin and stdout: negotiate_protocol, get_state, and a
-// prompt, acknowledged and followed by one turn (agent_start, agent_end).
+// Then it speaks OMP's RPC frames on stdin and stdout: negotiate_protocol, get_state, and the
+// test's own `standin_turn`, acknowledged and followed by one turn (agent_start, agent_end).
 //
 // It records what it was started with — its argv, the session, whether it resumed — in
-// <cwd>/standin-<pid>.json once registered, for the test to read. A prompt whose message is
+// <cwd>/standin-<pid>.json once registered, for the test to read. A turn whose message is
 // "ignore SIGTERM" makes it ignore SIGTERM from then on: a process that will not end itself, so a
 // stop has to fall back to killing its pane.
 package main
@@ -176,12 +176,19 @@ func serve(in io.Reader, out io.Writer) error {
 			err = writer.WriteFrame(shimwire.Response{ID: f.ID, Command: shimwire.TypeNegotiateProtocol, Success: true})
 		case shimwire.GetState:
 			err = writer.WriteFrame(shimwire.Response{ID: f.ID, Command: shimwire.TypeGetState, Success: true, Data: json.RawMessage(`{"isStreaming":false}`)})
-		case shimwire.Prompt:
-			if f.Message == "ignore SIGTERM" {
+		case shimwire.Raw:
+			if f.Type != standinTurn {
+				err = writer.WriteLine([]byte(fmt.Sprintf(`{"type":"response","command":%q,"success":false,"error":"unsupported"}`, f.Type)))
+				break
+			}
+			var turn struct{ ID, Message string }
+			if err = json.Unmarshal(f.JSON, &turn); err != nil {
+				return err
+			}
+			if turn.Message == "ignore SIGTERM" {
 				signal.Ignore(syscall.SIGTERM)
 			}
-			// OMP acknowledges before the turn starts, which is why the ack is not a delivery.
-			if err = writer.WriteFrame(shimwire.Response{ID: f.ID, Command: shimwire.TypePrompt, Success: true}); err == nil {
+			if err = writer.WriteFrame(shimwire.Response{ID: turn.ID, Command: standinTurn, Success: true}); err == nil {
 				if err = writer.WriteFrame(shimwire.AgentStart{}); err == nil {
 					err = writer.WriteFrame(shimwire.AgentEnd{})
 				}
@@ -194,3 +201,7 @@ func serve(in io.Reader, out io.Writer) error {
 		}
 	}
 }
+
+// standinTurn is the frame the test sends to have the stand-in run one turn: `{type, id,
+// message}`, which the shim forwards as it forwards every frame it does not act on itself.
+const standinTurn = "standin_turn"

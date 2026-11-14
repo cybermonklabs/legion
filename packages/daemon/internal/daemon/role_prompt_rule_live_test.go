@@ -239,7 +239,7 @@ func newRolePromptRuleLive(t *testing.T) *rolePromptRuleLive {
 	r.overlays = r.writeOverlays(work)
 
 	r.rt = newLocalRuntime(t, r.cfg.StateDir, r.legion, omp, r.home, r.profile)
-	r.rt.daemonURL, r.rt.envoyURL, r.rt.natsURLs = r.cfg.DaemonURL, newPaneListener(t), r.cfg.NatsURLs
+	r.rt.daemonURL, r.rt.envoyURL, r.rt.natsURLs = r.cfg.DaemonURL, newPaneListener(t, r.cfg.NatsURLs), r.cfg.NatsURLs
 	r.rt.overlays = func(token claim.Token) []string { return r.overlays[token] }
 
 	r.seed()
@@ -318,9 +318,16 @@ func (r *rolePromptRuleLive) seed() {
 	}
 	for _, seeded := range r.seededRoles() {
 		token := r.token(seeded.role)
+		// The planner's claim holds its first task, numbered as a claim's first task is queued
+		// (Claim.TaskWritten, Delivery.Number), so the boot writes its value to the task bucket;
+		// the architect's holds none.
+		var written uint64
+		if seeded.role != claim.RoleArchitect {
+			written = 1
+		}
 		if _, err := r.st.AdmitClaim(ctx, supervise.Claim{
 			Token: token, Project: r.project, Tree: r.issue, Issue: r.issue, Role: seeded.role,
-			Generation: 1, State: supervise.StateLaunching,
+			Generation: 1, State: supervise.StateLaunching, TaskWritten: written,
 			BootTokenHash: supervise.HashBootToken("interrupted-" + randomSuffix(t)), ServingGeneration: 1,
 		}); err != nil {
 			t.Fatalf("record the unfinished launch of %s: %v", token, err)
@@ -328,11 +335,11 @@ func (r *rolePromptRuleLive) seed() {
 		if seeded.role == claim.RoleArchitect {
 			continue
 		}
-		// Unconfirmed and unread: the launch this seed interrupts never put the task in front of
-		// an agent, so the relaunched pane is sent it once it reports ready.
+		// Untaken: the launch this seed interrupts never had the task taken, so the relaunched
+		// pane takes it once it reports ready.
 		if err := r.st.PutDelivery(ctx, token, supervise.Delivery{
 			ID: "seeded-start-" + randomSuffix(t), Task: startTask(seeded.role), Generation: 1,
-			Phase: phase.Planning, QueuedAt: time.Now(),
+			Phase: phase.Planning, QueuedAt: time.Now(), Number: written, Origin: supervise.OriginPhaseStart,
 		}); err != nil {
 			t.Fatalf("record the task %s's start left pending: %v", token, err)
 		}

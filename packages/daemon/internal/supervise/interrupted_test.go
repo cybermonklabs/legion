@@ -1,9 +1,9 @@
 package supervise
 
 // A worker whose process dies in a turn of its task is relaunched as the same session, and Oh My Pi
-// does not continue an interrupted turn on resume, so the task goes back to waiting for the
-// relaunched agent (interrupted). These tests pin what that take-back keeps, what it changes, and
-// what a write that fails leaves behind.
+// does not continue an interrupted turn on resume, so the task is taken back for the relaunched
+// agent to take again under the same number (interrupted). These tests pin what that take-back
+// keeps, what it changes, and what a write that fails leaves behind.
 
 import (
 	"testing"
@@ -12,32 +12,35 @@ import (
 )
 
 // A worker whose process dies mid-turn is relaunched as the same session, and Oh My Pi does not
-// continue an interrupted turn on resume. So the task goes back to waiting: unconfirmed, under a
-// new id the new process's shim has no record of, and re-sent when the relaunched agent is ready,
-// behind the one sentence that says its turn was interrupted — once, however often that happens,
-// and never written into the task text, which stays the workflow's. The task is not retired and
-// its run is not marked served until a turn of it ends.
-func TestATaskInterruptedByADeathIsResentToTheRelaunchedAgent(t *testing.T) {
+// continue an interrupted turn on resume. So the task is taken back: its take goes, its number and
+// its id stay, and the relaunched worker's take of it is answered behind the one sentence that says
+// its turn was interrupted — once, however often that happens, and never written into the task
+// text, which stays the workflow's. The task is not retired and its run is not marked served until
+// a turn of it is finished.
+func TestTakeBackByADeathKeepsItsNumberAndItsNextTakeNamesTheDeath(t *testing.T) {
 	h := newHarness(t)
 	h.reach(StateReady)
 	h.must(RequestDeliver{Claim: testToken, Task: "implement the plan", Generation: 5})
 	h.must(StreamTurnStart{Claim: testToken})
-	sent := h.wantPrompts(1)[0].DeliveryID
+	first := h.wantPrompts(1)[0]
 
 	for death := 1; death <= 2; death++ {
 		h.observe(runtime.Gone)
+		if p := h.pending(); p.taken() || p.Number != first.Number {
+			t.Fatalf("death %d: pending %+v, want the task taken back under its number %d", death, p, first.Number)
+		}
 		h.relaunched()
 
 		prompts := h.wantPrompts(1 + death)
-		resent := prompts[death]
-		if resent.DeliveryID == sent {
-			t.Fatalf("death %d: the task was re-sent as %s, the id the dead process's turn ran under", death, sent)
+		again := prompts[death]
+		if again.DeliveryID != first.DeliveryID || again.Number != first.Number {
+			t.Fatalf("death %d: the task was taken again as %+v, want the same task %s, number %d", death, again, first.DeliveryID, first.Number)
 		}
-		if want := interruptedTask(h.claim().LastDeathCause) + "implement the plan"; resent.Message != want {
-			t.Fatalf("death %d: re-sent %q, want %q", death, resent.Message, want)
+		if want := interruptedTask(h.claim().LastDeathCause) + "implement the plan"; again.Message != want {
+			t.Fatalf("death %d: the take was answered %q, want %q", death, again.Message, want)
 		}
-		if p := h.pending(); !p.ConfirmedAt.IsZero() || p.ID != resent.DeliveryID {
-			t.Fatalf("death %d: pending %+v, want the re-sent task, unconfirmed until its turn starts", death, p)
+		if p := h.pending(); !p.awaitsTurn() {
+			t.Fatalf("death %d: pending %+v, want the task taken again and its turn still to come", death, p)
 		}
 		stored := h.store.load(testToken)
 		if stored.ServingGeneration != 0 || stored.Pending == nil {
@@ -47,16 +50,18 @@ func TestATaskInterruptedByADeathIsResentToTheRelaunchedAgent(t *testing.T) {
 		if p := stored.Pending; p.Task != "implement the plan" || !p.Interrupted {
 			t.Fatalf("death %d: stored task %q interrupted=%v, want the workflow's text marked interrupted", death, p.Task, p.Interrupted)
 		}
-		sent = resent.DeliveryID
+		if written := h.claim().TaskWritten; written != first.Number {
+			t.Fatalf("death %d: the claim has written %d tasks, want the one: a take-back writes no new number", death, written)
+		}
 		h.must(StreamTurnStart{Claim: testToken})
 		h.wantState(StateWorking)
 	}
 
 	h.must(StreamTurnEnd{Claim: testToken})
 
-	if stored := h.store.load(testToken); stored.ServingGeneration != 5 || stored.Pending != nil {
-		t.Fatalf("stored claim serving run %d with pending %+v, want run 5 served once the re-sent turn ended",
-			stored.ServingGeneration, stored.Pending)
+	if stored := h.store.load(testToken); stored.ServingGeneration != 5 || stored.Pending != nil || stored.TaskFinished != first.Number {
+		t.Fatalf("stored claim serving run %d with pending %+v, finished %d; want run 5 served and task %d finished once its turn ended",
+			stored.ServingGeneration, stored.Pending, stored.TaskFinished, first.Number)
 	}
 }
 
@@ -64,7 +69,7 @@ func TestATaskInterruptedByADeathIsResentToTheRelaunchedAgent(t *testing.T) {
 // same task was something else: interrupted writes OutOfMemory on every take-back, true or false,
 // rather than only when true. A task left marked would tell an agent its pod ran out of memory
 // after a turn that ended for an unrelated reason, and send it to the worker guide for nothing.
-func TestAnInterruptedTasksNoteIsTheEndThatCutItsLastTurn(t *testing.T) {
+func TestTakeAfterADeathCarriesTheNoteOfTheEndThatCutItsLastTurn(t *testing.T) {
 	h := newHarness(t)
 	h.reach(StateReady)
 	h.must(RequestDeliver{Claim: testToken, Task: "implement the plan", Generation: 5})
@@ -75,7 +80,7 @@ func TestAnInterruptedTasksNoteIsTheEndThatCutItsLastTurn(t *testing.T) {
 	}})
 	h.relaunched()
 	if want := interruptedTask(deathCause(runtime.Observation{Kind: runtime.Gone})) + outOfMemoryTask + "implement the plan"; h.wantPrompts(2)[1].Message != want {
-		t.Fatalf("after the out-of-memory end the task was re-sent as %q, want %q", h.wantPrompts(2)[1].Message, want)
+		t.Fatalf("after the out-of-memory end the take was answered %q, want %q", h.wantPrompts(2)[1].Message, want)
 	}
 	if p := h.store.load(testToken).Pending; p == nil || !p.OutOfMemory {
 		t.Fatalf("stored task %+v, want the out-of-memory mark kept for the relaunch", p)
@@ -86,7 +91,7 @@ func TestAnInterruptedTasksNoteIsTheEndThatCutItsLastTurn(t *testing.T) {
 	h.observe(runtime.Gone)
 	h.relaunched()
 	if want := interruptedTask(deathCause(runtime.Observation{Kind: runtime.Gone})) + "implement the plan"; h.wantPrompts(3)[2].Message != want {
-		t.Fatalf("after the ordinary end the task was re-sent as %q, want %q: the note describes no end of this turn",
+		t.Fatalf("after the ordinary end the take was answered %q, want %q: the note describes no end of this turn",
 			h.wantPrompts(3)[2].Message, want)
 	}
 	if p := h.store.load(testToken).Pending; p == nil || p.OutOfMemory {
@@ -94,10 +99,10 @@ func TestAnInterruptedTasksNoteIsTheEndThatCutItsLastTurn(t *testing.T) {
 	}
 }
 
-// The interrupted turn ran, so the agent read its task, and the task keeps that read mark while it
-// waits for the relaunch: for a claim that has served no run, it is what attributes a completion
-// reported before the re-send's acknowledgement to the task's run (ServingRun), where a task that
-// lost it would have that completion refused.
+// The interrupted turn ran, so the worker read its task, and the claim keeps the take it made
+// while the task waits for the relaunch (Claim.TaskTaken): for a claim that has served no run, it
+// is what attributes a completion reported before the relaunched worker takes the task again to
+// the task's run (ServingRun), where a task that lost it would have that completion refused.
 func TestAnInterruptedTaskKeepsItsReadMarkUntilTheResend(t *testing.T) {
 	h := newHarness(t)
 	h.reach(StateReady)
@@ -107,16 +112,16 @@ func TestAnInterruptedTaskKeepsItsReadMarkUntilTheResend(t *testing.T) {
 	h.observe(runtime.Gone)
 
 	h.wantState(StateLaunching)
-	if p := h.pending(); p.DeliveredAt.IsZero() || !p.ConfirmedAt.IsZero() {
-		t.Fatalf("pending after the death = %+v, want it unconfirmed with its read mark kept", p)
+	if p := h.pending(); !p.TakenWith(h.claim()) || p.taken() {
+		t.Fatalf("pending after the death = %+v, want it taken back with the worker's take of it kept", p)
 	}
 	if run := h.claim().ServingRun(); run != 5 {
 		t.Fatalf("ServingRun() = %d after the death, want 5", run)
 	}
 }
 
-// A task acknowledged and not yet begun when the process died was never run, so the relaunched
-// agent is sent it as it was: nothing was interrupted.
+// A task taken and not yet begun when the process died was never run, so the relaunched agent's
+// take of it is answered as it was: nothing was interrupted.
 func TestATaskNotYetBegunWhenTheProcessDiedIsResentAsItWas(t *testing.T) {
 	h := newHarness(t)
 	h.reach(StateReady)
@@ -127,27 +132,7 @@ func TestATaskNotYetBegunWhenTheProcessDiedIsResentAsItWas(t *testing.T) {
 	h.relaunched()
 
 	if resent := h.wantPrompts(2)[1]; resent.Message != "implement the plan" {
-		t.Fatalf("re-sent %q, want the task as it was", resent.Message)
-	}
-}
-
-// The re-sent task keeps the read mark the interrupted turn earned, and the relaunched agent's
-// acknowledgement takes that mark over: a refusal of the re-sent prompt is judged against it, so
-// the task goes back unread and the prompt is charged, as for any prompt its agent refused.
-func TestARefusalOfTheResentTaskIsJudgedAgainstItsOwnAcknowledgement(t *testing.T) {
-	h := newHarness(t)
-	h.reach(StateReady)
-	h.must(RequestDeliver{Claim: testToken, Task: "implement the plan", Generation: 5})
-	h.must(StreamTurnStart{Claim: testToken})
-	h.observe(runtime.Gone)
-	h.relaunched()
-	resent := h.wantPrompts(2)[1].DeliveryID
-
-	h.must(StreamLateRefusal{Claim: testToken, DeliveryID: resent, Error: "the model provider refused the request"})
-
-	h.wantBudgets(Budgets{Deaths: 1, PromptFailures: 1})
-	if p := h.pending(); p.ID == resent || !p.DeliveredAt.IsZero() || !p.ConfirmedAt.IsZero() {
-		t.Fatalf("pending after the refusal = %+v, want the task kept unread and unconfirmed under a new id", p)
+		t.Fatalf("the take after the relaunch was answered %q, want the task as it was", resent.Message)
 	}
 }
 

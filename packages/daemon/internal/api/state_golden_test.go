@@ -59,6 +59,8 @@ worker_boot_timeout_seconds: 180
 worker_boot_registration_deadline_intervals: 2
 worker_rpc_timeout_seconds: 8
 worker_stop_timeout_seconds: 30
+worker_take_timeout_seconds: 240
+worker_turn_start_timeout_seconds: 1800
 tree_stop_timeout_seconds: 90
 slow_command_timeout_seconds: 600
 probe_interval_seconds: 20
@@ -693,6 +695,13 @@ func populatedState(t *testing.T) State {
 		// the pacing is holding now, which is the pair a reader of a running wave needs
 		// (contract 73).
 		ClaimsToRefresh: 4,
+		// One claim whose task value went a first bound with nobody reporting it seen: the relay to
+		// LEGION-209's tester failed, so the daemon wrote task 2 again at the bound and charged
+		// nobody (R5 of dispatch://INFRA-2811).
+		UnseenTaskValues: []UnseenTaskValue{
+			{Claim: "legion-legion-legion-209-tester", Issue: "LEGION-209", Role: claim.RoleTester,
+				Task: 2, WrittenAt: time.Date(2026, 9, 22, 9, 15, 30, 0, time.UTC)},
+		},
 		ControllerLocator: &ControllerLocator{
 			Runtime:      "kubernetes",
 			External:     true,
@@ -951,8 +960,9 @@ func golden(t *testing.T, name string, value any) {
 	}
 }
 
-// The register response is what the plugin reads its claim, its secret and the task agents its
-// role's prompts dispatch from.
+// The register response is what the plugin reads its claim, its secret, the task agents its
+// role's prompts dispatch and its claim's current task from: a claim holding task 4 at revision
+// 12 of the bucket's epoch, having finished task 3.
 func TestRegisterResponseGolden(t *testing.T) {
 	golden(t, "register.json", claim.RegisterResponse{
 		ClaimToken:   "legion-legion-legion-208-architect",
@@ -962,7 +972,25 @@ func TestRegisterResponseGolden(t *testing.T) {
 		Generation:   3,
 		Secret:       "U3VwZXJ2aXNlZEJ5TGVnaW9u",
 		PromptAgents: []string{"deep-worker", "oracle", "plan-gap-analyst", "plan-reviewer", "thermonuclear-code-quality", "thermonuclear-deep-review"},
+		Task:         &claim.TaskValue{Number: 4, Epoch: "2026-11-13T16:21:44.123456789Z", Revision: 12},
+		Finished:     3,
 	})
+}
+
+// What `claims/task` answers a claim whose bucket holds no value: `task` is null, never absent,
+// beside the number of the last task the claim finished. The register golden above holds the
+// value's own shape.
+func TestTaskResponseGolden(t *testing.T) {
+	golden(t, "task.json", claim.TaskResponse{Finished: 4})
+}
+
+// What `claims/take` answers, one fixture for each outcome: the accepted take's text, the hold a
+// refused take met, and a dropped take, which carries neither.
+func TestTakeResponseGolden(t *testing.T) {
+	golden(t, "take-accepted.json", claim.TakeResponse{Outcome: string(supervise.TakeOutcomeAccepted),
+		Text: "Implement LEGION-209 on its branch, then complete the phase with legion handoff_complete."})
+	golden(t, "take-refused.json", claim.TakeResponse{Outcome: string(supervise.TakeOutcomeRefused), Hold: supervise.HoldStalePlugin})
+	golden(t, "take-dropped.json", claim.TakeResponse{Outcome: string(supervise.TakeOutcomeDropped)})
 }
 
 // The ready request is what the plugin posts once its session can be prompted, and again carrying
@@ -1133,7 +1161,7 @@ func TestErrorResponseGolden(t *testing.T) {
 
 // operatorClaim carries every optional an operator's view of a claim has.
 func operatorClaim() OperatorClaim {
-	delivered := time.Date(2026, 9, 22, 9, 31, 4, 0, time.UTC)
+	confirmed := time.Date(2026, 9, 22, 9, 31, 4, 0, time.UTC)
 	lastSendFailure := time.Date(2026, 9, 22, 9, 31, 2, 0, time.UTC)
 	return OperatorClaim{
 		Token:       "legion-legion-legion-209-implementer",
@@ -1156,8 +1184,7 @@ func operatorClaim() OperatorClaim {
 			ID:          "OVXA3ZC6BPIKTOQHKXHRZ7TYVB",
 			Task:        "Implement the plan recorded on the issue, which `dispatch handoff-read --issue LEGION-208 --phase plan` reads.",
 			QueuedAt:    time.Date(2026, 9, 22, 9, 30, 58, 0, time.UTC),
-			DeliveredAt: &delivered,
-			ConfirmedAt: &delivered,
+			ConfirmedAt: &confirmed,
 			Interrupted: true,
 			// The record of the sends that failed, carried here beside the confirmation the way
 			// this fixture carries every other optional at once. A live delivery shows one or

@@ -85,7 +85,7 @@ func TestConcurrentFramesNeverInterleaveOnTheWire(t *testing.T) {
 			for i := range 20 {
 				frame := Response{
 					ID:      fmt.Sprintf("w%d-%d", w, i),
-					Command: TypePrompt,
+					Command: TypeGetState,
 					Success: true,
 					// Long enough that a partial write would land inside another frame.
 					Data: json.RawMessage(`"` + strings.Repeat("x", 4096) + `"`),
@@ -148,12 +148,12 @@ func TestAFrameOverThePlainFrameLimitIsRefusedRatherThanSent(t *testing.T) {
 func TestEachFrameIsOneNewlineTerminatedLine(t *testing.T) {
 	var sink bytes.Buffer
 	writer := NewWriter(&sink)
-	for _, frame := range []Frame{Shutdown{}, AgentStart{DeliveryID: "d1"}, AgentEnd{}} {
+	for _, frame := range []Frame{Shutdown{}, GetState{ID: "r1"}, AgentStart{}, AgentEnd{}} {
 		if err := writer.WriteFrame(frame); err != nil {
 			t.Fatalf("WriteFrame(%#v): %v", frame, err)
 		}
 	}
-	want := "{\"type\":\"shutdown\"}\n{\"type\":\"agent_start\",\"deliveryId\":\"d1\"}\n{\"type\":\"agent_end\"}\n"
+	want := "{\"type\":\"shutdown\"}\n{\"type\":\"get_state\",\"id\":\"r1\"}\n{\"type\":\"agent_start\"}\n{\"type\":\"agent_end\"}\n"
 	if sink.String() != want {
 		t.Fatalf("wrote %q, want %q", sink.String(), want)
 	}

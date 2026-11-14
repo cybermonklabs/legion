@@ -427,7 +427,8 @@ func waitSubject(asks []record.RootAsk, steps []record.DesignStep, gates map[rec
 }
 
 // owed says whether the architect has not yet taken the work it was last given, and how: a start
-// still queued for it, no claim yet, a claim still starting, or a task it has not confirmed.
+// still queued for it, no claim yet, a claim still starting, or a task no take of it holds
+// (ConfirmedAt is the accepted take, supervise's accept).
 func owed(run record.RoleRun) (string, bool) {
 	for _, queued := range run.Queued {
 		if queued.Request.Op == "start" {
@@ -566,6 +567,7 @@ func (e *Engine) ResumeAwaitedRoot(ctx context.Context, tx pgx.Tx, root record.I
 	task := resumeTask(root.Key, waiting, step, gate, asks[root.Key], e.armed())
 	if err := e.enqueue(ctx, tx, root.Key, record.SuperviseRequest{
 		Op: "start", Tree: root.Tree, Role: claim.RoleArchitect, Generation: root.Generation, Task: task,
+		Origin: supervise.OriginNotice,
 	}); err != nil {
 		return err
 	}

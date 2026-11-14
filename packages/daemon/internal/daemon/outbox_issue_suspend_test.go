@@ -458,7 +458,7 @@ func newFenceRig(t *testing.T, setup fenceSetup) *fenceRig {
 		seeded = append(seeded, supervise.Claim{Token: "legion-legion-legion-208-implementer", Project: "legion", Tree: root.Key, TreeEpoch: 1, Issue: root.Key, Role: claim.RoleImplementer,
 			State: supervise.StateWorking, Generation: 1, Session: "saved-implementer", SessionFile: "/legion/sessions/implementer.jsonl",
 			Pending: &supervise.Delivery{ID: "outbox:1", Task: "Continue root. Issue: LEGION-208. Phase: implementing.", Generation: 1,
-				Phase: phase.Implementing, QueuedAt: time.Now(), DeliveredAt: time.Now(), ConfirmedAt: time.Now()}})
+				Phase: phase.Implementing, QueuedAt: time.Now(), ConfirmedAt: time.Now()}})
 	}
 	stopped := make([]supervise.Claim, 0, len(setup.children))
 	for i, spec := range setup.children {

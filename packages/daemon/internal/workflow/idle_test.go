@@ -259,7 +259,10 @@ func TestTheIdleRuleNamesTheOneConditionThatHeldEachPod(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got := IdleRelease(tc.view, idleNow, idlePeriod, tc.image, idleContract)
+			got := IdleRelease(tc.view, idleNow, idlePeriod, tc.image, idleContract, nil)
+			if got.OldPlugin != nil {
+				t.Fatalf("the decision names the old plugin %+v, want none where no role's launch installs no plugin", *got.OldPlugin)
+			}
 			if got.Hold != tc.want {
 				t.Fatalf("hold = %s, want %s", got.Hold, tc.want)
 			}
@@ -273,6 +276,126 @@ func TestTheIdleRuleNamesTheOneConditionThatHeldEachPod(t *testing.T) {
 				if got.Roles[i] != role {
 					t.Fatalf("roles = %v, want %v", got.Roles, tc.roles)
 				}
+			}
+		})
+	}
+}
+
+// oldPluginChild is idleChild as the rollout that moves the daemon and its worker image together
+// leaves it: its implementer a Claude Code role whose claude-envoy declared the contract just
+// below the one that takes tasks, the update round that image change opens recorded on it, and
+// its last write a minute old, well inside the idle period. The pod's image is the table's own
+// column, as it is above. Every condition the old-plugin release passes over stands on it, and
+// each row below changes exactly one thing about it.
+func oldPluginChild() pods.IdleView {
+	v := idleChild()
+	v.Claims[0].PluginContract = supervise.TaskTakeContract - 1
+	v.Claims[0].UpdateRound = supervise.PodRound(idlePod)
+	v.Claims[0].UpdatedAt = idleNow.Add(-time.Minute)
+	v.Claims[0].ActivityAt = idleNow.Add(-time.Minute)
+	return v
+}
+
+// claudeImplementer is the deployment's rule for which roles' launches install no plugin, as the
+// daemon hands it to the rule (internal/daemon's noPluginInstall): the implementer runs on
+// Claude Code in a pod, and every other role on a plugin its launch installs.
+func claudeImplementer(role claim.Role) bool { return role == claim.RoleImplementer }
+
+// A Claude Code role whose plugin takes no task is released out of a pod behind the configured
+// image at once, past the image, the contract and the round that hold every other such pod, and
+// at the end of its turn when it is in one; every other condition holds it as it holds any pod.
+// A pod already on the configured image is kept and names the claim, which is what the daemon
+// logs. The rows below the release are the controls: a role whose launch installs a plugin, a
+// Claude Code role at the contract that takes tasks, and one still launching, whose recorded
+// contract is its last process's, are each held as any pod behind its image is.
+func TestTheIdleRuleReleasesAnOldPluginsPodOntoTheConfiguredImage(t *testing.T) {
+	old := pods.IdleClaim{Role: claim.RoleImplementer, PluginContract: supervise.TaskTakeContract - 1}
+	for _, tc := range []struct {
+		name  string
+		view  pods.IdleView
+		image bool
+		fixed func(claim.Role) bool
+		want  IdleHold
+		// named is whether the decision names the old plugin's claim.
+		named bool
+	}{
+		{
+			name: "behind the image, in its round, inside the idle period", view: oldPluginChild(),
+			fixed: claudeImplementer, want: IdleHoldNone, named: true,
+		},
+		{
+			name: "on the configured image", view: oldPluginChild(), image: true,
+			fixed: claudeImplementer, want: IdleHoldPluginContract, named: true,
+		},
+		{
+			name:  "in a turn",
+			view:  func() pods.IdleView { v := oldPluginChild(); v.Claims[0].State = supervise.StateWorking; return v }(),
+			fixed: claudeImplementer, want: IdleHoldInTurn,
+		},
+		{
+			name:  "a bundle of the pod's work is still waiting to be restored",
+			view:  func() pods.IdleView { v := oldPluginChild(); v.BundleUnrestored = true; return v }(),
+			fixed: claudeImplementer, want: IdleHoldBundleUnrestored,
+		},
+		{
+			name:  "a task waits for delivery to a role of the pod",
+			view:  func() pods.IdleView { v := oldPluginChild(); v.Waiting = true; return v }(),
+			fixed: claudeImplementer, want: IdleHoldDelivery,
+		},
+		{
+			name: "its session reported background work of its own",
+			view: func() pods.IdleView {
+				v := oldPluginChild()
+				v.Claims[0].ActivityBackground = true
+				v.Claims[0].ActivityKinds = []string{"claude-background-task"}
+				return v
+			}(),
+			fixed: claudeImplementer, want: IdleHoldBackgroundWork,
+		},
+		{
+			name:  "its session has reported nothing",
+			view:  func() pods.IdleView { v := oldPluginChild(); v.Claims[0].ActivityAt = time.Time{}; return v }(),
+			fixed: claudeImplementer, want: IdleHoldUnreported,
+		},
+		{
+			name: "a role whose launch installs a plugin", view: oldPluginChild(),
+			fixed: func(claim.Role) bool { return false }, want: IdleHoldImage,
+		},
+		{
+			name: "a daemon that reads no role's backend", view: oldPluginChild(), want: IdleHoldImage,
+		},
+		{
+			name: "a Claude Code role at the contract that takes tasks",
+			view: func() pods.IdleView {
+				v := oldPluginChild()
+				v.Claims[0].PluginContract = supervise.TaskTakeContract
+				return v
+			}(),
+			fixed: claudeImplementer, want: IdleHoldImage,
+		},
+		{
+			name:  "a Claude Code role still launching",
+			view:  func() pods.IdleView { v := oldPluginChild(); v.Claims[0].State = supervise.StateLaunching; return v }(),
+			fixed: claudeImplementer, want: IdleHoldImage,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := IdleRelease(tc.view, idleNow, idlePeriod, tc.image, supervise.TaskTakeContract, tc.fixed)
+			if got.Hold != tc.want {
+				t.Fatalf("hold = %s, want %s", got.Hold, tc.want)
+			}
+			if want := tc.want == IdleHoldNone; got.Release != want {
+				t.Fatalf("release = %v, want %v (hold %s)", got.Release, want, got.Hold)
+			}
+			if got.Release && (len(got.Roles) != 1 || got.Roles[0] != claim.RoleImplementer) {
+				t.Fatalf("roles = %v, want the pod's one live role", got.Roles)
+			}
+			if named := got.OldPlugin != nil; named != tc.named {
+				t.Fatalf("the decision names the old plugin = %v, want %v", named, tc.named)
+			}
+			if tc.named && (got.OldPlugin.Role != old.Role || got.OldPlugin.PluginContract != old.PluginContract) {
+				t.Fatalf("the decision names %s at %d, want %s at %d",
+					got.OldPlugin.Role, got.OldPlugin.PluginContract, old.Role, old.PluginContract)
 			}
 		})
 	}

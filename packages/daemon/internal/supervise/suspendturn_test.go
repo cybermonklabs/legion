@@ -361,55 +361,11 @@ func TestAProcessThatDiesWhileItsSuspensionWaitsIsSuspendedNotRelaunched(t *test
 		t.Errorf("suspended %+v, want the dead process's %+v", suspend.Locator, loc)
 	}
 	h.wantBudgets(Budgets{})
-	if p := h.pending(); !p.ConfirmedAt.IsZero() || !p.Interrupted {
-		t.Errorf("pending %+v, want the dead turn's task back unconfirmed and marked interrupted", p)
+	if p := h.pending(); p.taken() || !p.Interrupted {
+		t.Errorf("pending %+v, want the dead turn's task taken back and marked interrupted", p)
 	}
 	h.advance(testStop)
 	h.wantCalls("Suspend", 1)
-}
-
-// A prompt retirement while a suspension is held is that suspension's stop: the process is alive,
-// so a stop the runtime refuses leaves the claim working and still holding the suspension, retried
-// at the probe interval, rather than marked suspended over a process that still runs. Nothing is
-// charged — here the retirement would be the claim's last, which would fail it. The prompt was on
-// its way when a turn began, and the agent refuses it at the prompt-failure limit.
-func TestAPromptRetirementWhileASuspensionIsHeldRunsTheHeldStop(t *testing.T) {
-	h := newBareHarness(t)
-	h.deps.Limits = Limits{LaunchFailures: 3, PromptFailures: 1, PromptRetires: 1}
-	if err := h.store.PutClaim(h.ctx, queuedClaim()); err != nil {
-		t.Fatal(err)
-	}
-	h.start(queuedClaim())
-	h.reach(StateReady)
-	gated := newGatedConn()
-	gated.RefusePrompt("the model provider refused the request")
-	h.conns.Register(testToken, gated)
-	if err := h.m.Handle(h.ctx, RequestDeliver{Claim: testToken, Task: "the task"}); err != nil {
-		t.Fatal(err)
-	}
-	waitFor(t, "the send", gated.entered)
-	if err := h.m.Handle(h.ctx, StreamTurnStart{Claim: testToken}); err != nil {
-		t.Fatal(err)
-	}
-	if err := h.m.Handle(h.ctx, RequestSuspend{Claim: testToken, By: SuspendedByOperator}); !errors.Is(err, ErrSuspendHeld) {
-		t.Fatalf("suspend mid-turn returned %v, want ErrSuspendHeld", err)
-	}
-	h.rt.FailSuspend(errBoom)
-
-	gated.release <- struct{}{}
-	h.m.Wait()
-
-	h.wantState(StateWorking)
-	if c := h.claim(); !c.SuspensionHeld || c.Locator == nil {
-		t.Fatalf("after the refused stop the claim is %+v, want its process kept and the suspension still held", c)
-	}
-	h.wantCalls("Suspend", 1)
-	h.rt.FailSuspend(nil)
-	h.advance(testProbe)
-	h.wantState(StateSuspended)
-	h.wantCalls("Suspend", 2)
-	h.wantCalls("Resume", 0)
-	h.wantBudgets(Budgets{})
 }
 
 // Only a held suspension lets a row end in suspended without naming that state. A row that

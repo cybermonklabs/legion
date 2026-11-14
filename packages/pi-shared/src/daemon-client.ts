@@ -27,6 +27,13 @@ import {
   LegionSignOffRequest,
   type LegionState,
   LegionStateResponse,
+  type LegionTake,
+  LegionTakeRequest,
+  LegionTakeResponse,
+  type LegionTask,
+  LegionTaskRequest,
+  LegionTaskResponse,
+  LegionTaskSeenRequest,
   LegionTurnOutcomeRequest,
   LegionTurnOutcomeResponse,
   LegionWaveReleaseRequest,
@@ -107,6 +114,25 @@ export interface LegionDaemonClient {
   readonly turnOutcome: (
     input: z.input<typeof LegionTurnOutcomeRequest>
   ) => Promise<z.output<typeof LegionTurnOutcomeResponse>>;
+  /** `claim.TaskRequest`: the claim's task value as the task bucket holds it now, null where it
+   * holds none, and the number of the last task the claim finished. The worker reads it when its
+   * relay begins a new epoch and when it gains its role again, since a value relayed while the
+   * session was not subscribed is lost (`src/task-take.ts`). */
+  readonly task: (input: z.input<typeof LegionTaskRequest>) => Promise<LegionTask>;
+  /** `claim.TaskSeenRequest`: the worker's report of a task value it was handed, whether or not
+   * its host is idle; it answers 204. `signal` aborts the request, as a sender that bounds each
+   * attempt does (`src/task-take.ts`). */
+  readonly taskSeen: (
+    input: z.input<typeof LegionTaskSeenRequest>,
+    options?: { readonly signal?: AbortSignal }
+  ) => Promise<void>;
+  /** `claim.TakeRequest`: the worker's ask to take the task its value names, because its host is
+   * idle. The answer is `accepted` with the text the worker runs as its turn's user message,
+   * `refused` naming the hold that stands, or `dropped`. `signal` aborts the request. */
+  readonly take: (
+    input: z.input<typeof LegionTakeRequest>,
+    options?: { readonly signal?: AbortSignal }
+  ) => Promise<LegionTake>;
   /** The session's report of what it is doing, after each of its turns and whenever the report's
    * content changes. It is authenticated by the claim, as `ready` is, and answers 204. */
   readonly activity: (input: ActivityInput) => Promise<void>;
@@ -457,13 +483,15 @@ export function createLegionDaemonClient(
     return parsed.value;
   };
 
-  /** Parses the request before it leaves the pane, then reads the route's success body. */
+  /** Parses the request before it leaves the pane, then reads the route's success body. `signal`
+   * aborts the request, its answer's body included. */
   const post = <Input, Output>(
     path: string,
     request: z.ZodType<Input>,
     response: z.ZodType<Output>,
-    body: Input
-  ): Promise<Output> => read("POST", path, response, request.parse(body) as object);
+    body: Input,
+    signal?: AbortSignal
+  ): Promise<Output> => read("POST", path, response, request.parse(body) as object, signal);
 
   /** The claim routes that answer 204 and nothing else. */
   const acknowledge = async (path: string, body: object, signal?: AbortSignal): Promise<void> => {
@@ -494,6 +522,15 @@ export function createLegionDaemonClient(
         LegionTurnOutcomeResponse,
         input
       ),
+    task: (input) => post("/legion/v1/claims/task", LegionTaskRequest, LegionTaskResponse, input),
+    taskSeen: (input, options) =>
+      acknowledge(
+        "/legion/v1/claims/task-seen",
+        LegionTaskSeenRequest.parse(input),
+        options?.signal
+      ),
+    take: (input, options) =>
+      post("/legion/v1/claims/take", LegionTakeRequest, LegionTakeResponse, input, options?.signal),
     activity: (input) => acknowledge("/legion/v1/claims/activity", input),
     releaseRecords: (input) =>
       post(

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/http"
 	"os"
 	"os/exec"
 	"slices"
@@ -17,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
 
@@ -38,10 +40,6 @@ const (
 	// 4.1 s, which leaves 0.9 s of the 5 s the shim gives it before killing it (shim.DefaultGrace)
 	// for the process to exit on a loaded machine; its inbox is gone 0.5 s before that.
 	flushTimeout = 500 * time.Millisecond
-	// Busy is the refusal of a prompt that arrives during a turn. It begins with Oh My Pi's own
-	// words, which the daemon reads as a turn of the agent's own (supervise's agentBusy): the task
-	// goes back unread, uncharged, and is sent again when the turn ends.
-	Busy = "Agent is already processing a turn; the Claude Code bridge takes a prompt only between turns"
 )
 
 var (
@@ -52,10 +50,19 @@ var (
 	errNotTaken = errors.New("Claude Code ended the step without taking the delivery")
 )
 
-// event is a frame from the shim or an Envoy delivery from the inbox, for the bridge's loop.
+// event is a frame from the shim, or an Envoy delivery or a task value from the inbox, for the
+// bridge's loop.
 type event struct {
 	daemon   []byte    // a frame from the shim
 	delivery *delivery // an Envoy delivery from the inbox
+	task     *taskLine // the claim's task value from the inbox
+}
+
+// taskLine is the claim's task value, handed to the loop from the inbox (take.go). answer,
+// buffered, is answered once the loop has taken it.
+type taskLine struct {
+	value  taskValue
+	answer chan<- error
 }
 
 // delivery is one Envoy delivery waiting to be a user turn. answer, buffered, is answered once:
@@ -82,10 +89,8 @@ type bridge struct {
 	encoded          lineCopy
 
 	// seeding is the fresh session's `/rename`, sent before anything else and answered by a
-	// result that is no turn of the daemon's; held are the prompts that arrived during it, handled
-	// once it is over.
+	// result that is no turn of the daemon's.
 	seeding bool
-	held    [][]byte
 
 	// inRun is a turn the daemon was told of (agent_start) and not yet told is over; stepping is a
 	// user message whose result Claude Code has yet to give. In a turn the bridge itself started it
@@ -94,20 +99,33 @@ type bridge struct {
 	// from the `system` `init` line that begins every turn (systemInit) — it is in a turn with no
 	// step of its own open, and that turn's one result ends it.
 	inRun, stepping bool
-	// refusal is what the provider said about a step of the turn running that it refused, and ""
-	// for a turn no step of which has failed: the turn's own outcome, reported when the turn ends.
-	// It begins each turn empty, so a turn is refused when a step of it failed, however many steps
-	// the turn took.
-	refusal string
-	// reports is this backend's producer of turn outcomes, nil for a pane that names no daemon
-	// (turnoutcome.go).
+	// refusal is how the provider failed a step of the turn running, and nil for a turn no step of
+	// which has failed: the turn's own outcome, reported when the turn ends. It begins each turn
+	// nil, so a turn is refused when a step of it failed, however many steps the turn took. model
+	// is the model Claude Code named in the init line of the newest turn, which the refusal names.
+	refusal *claim.ProviderError
+	model   string
+	// daemon is the claim's daemon (daemonlink.go), nil for a pane that names none; reports is this
+	// backend's producer of turn outcomes (turnoutcome.go), nil with it.
+	daemon  *daemonLink
 	reports *turnReports
-	// promptRun is the request id of the daemon's prompt whose turn is running, and "" in a turn
-	// no prompt of the daemon's started — an Envoy delivery's, or one Claude Code started by
-	// itself when a background task finished. The bridge reports it as Oh My Pi reports its own
-	// (shimwire.PromptResult), right behind that turn's agent_end: with background work on it is
-	// the only thing that tells the daemon which of the turns it saw was its task's.
-	promptRun string
+	// requests is the context of every seen report and take the bridge sends, ended once Run
+	// returns; stop is Run's own end, which a take's answer is not sent past; takeAnswers carries
+	// each take's answer back to the loop (take.go).
+	requests    context.Context
+	stop        <-chan struct{}
+	takeAnswers chan takeAnswer
+	// task is the newest task value the inbox handed over, nil before the first; seen and asked are
+	// the pairs the bridge reported seen and asked to take, in this process's memory alone; seeing
+	// and asking are the seen report and the take being sent, nil when none is (take.go).
+	task           *taskValue
+	seen, asked    map[pair]bool
+	seeing, asking *call
+	// heldText is the text of a take the daemon accepted while a turn ran, and heldTask its number:
+	// that task starts a turn of its own once the turn ends (idle). runTask is the number of the
+	// task whose turn is running (startTask), 0 for a turn of no task.
+	heldText          string
+	heldTask, runTask uint64
 	// command is the command_uuid of the slash command Claude Code is running for a mod of the
 	// plugin's ($.command.run), and "" when it runs none. A command writes a block of its own on
 	// the same stream — a `system` `init` of its own and a `result` of its own, between the
@@ -154,13 +172,19 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 	if logOut == nil {
 		logOut = io.Discard
 	}
-	b := &bridge{cfg: cfg, log: log.New(logOut, "[claude-bridge] ", 0)}
-	b.frames = shimwire.NewWriter(&b.encoded)
-	b.reports = startTurnReports(cfg, b.log)
+	// requests ends every seen report and take still being sent once Run returns: nothing is left to
+	// run an answer.
+	requests, endRequests := context.WithCancel(context.Background())
+	defer endRequests()
 	// stop ends the outputs' writers and every reader's send, once Run returns. It does not
 	// interrupt a readLines blocked in ReadBytes, and Run does not wait for those readers.
 	stop := make(chan struct{})
 	defer close(stop)
+	b := &bridge{cfg: cfg, log: log.New(logOut, "[claude-bridge] ", 0), requests: requests, stop: stop,
+		takeAnswers: make(chan takeAnswer), seen: map[pair]bool{}, asked: map[pair]bool{}}
+	b.frames = shimwire.NewWriter(&b.encoded)
+	b.daemon = dialDaemon(cfg, b.log)
+	b.reports = newTurnReports(b.daemon)
 	b.toShim = newOutput("the shim", cfg.Stdout, stop, b.log)
 	events := make(chan event)
 	// inboxStop releases a delivery's send blocked on the loop and closes every inbox connection,
@@ -248,6 +272,8 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 			answerAll(b.taking, errClaudeExited)
 			answerAll(b.queue, errClaudeExited)
 			b.taking, b.queue = nil, nil
+			// No turn can run a task now: a take still being sent is sent no more.
+			endRequests()
 			closeInbox()
 			if b.toShim.waiting() == 0 {
 				return status, nil
@@ -275,6 +301,10 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 			b.toShim.written()
 		case <-b.toClaude.wrote:
 			b.toClaude.written()
+		case answered := <-b.takeAnswers:
+			if !claudeDone {
+				b.takeAnswered(answered)
+			}
 		case ev := <-events:
 			switch {
 			case claudeDone:
@@ -282,6 +312,9 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 				// the end of the shim's input still reaches the loop.
 				if ev.delivery != nil {
 					ev.delivery.answer <- errClaudeExited
+				}
+				if ev.task != nil {
+					ev.task.answer <- errClaudeExited
 				}
 				if !ignoring {
 					ignoring = true
@@ -291,6 +324,9 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 				b.fromDaemon(ev.daemon)
 			case ev.delivery != nil:
 				b.deliver(*ev.delivery)
+			case ev.task != nil:
+				ev.task.answer <- nil
+				b.valueHanded(ev.task.value)
 			}
 		case <-done:
 			done, stopping = nil, true
@@ -391,8 +427,10 @@ func exitStatus(state *os.ProcessState) int {
 	return state.ExitCode()
 }
 
-// fromDaemon answers one frame the shim forwarded: the three RPC commands the daemon sends a
-// worker, and a refusal for any other request that names an id.
+// fromDaemon answers one frame the shim forwarded: the two RPC commands the daemon sends a
+// worker's agent, and a refusal for any other request that names an id. The daemon sends no task
+// on this stream (a task is a value the worker takes), so a `prompt` an older daemon would have
+// sent is such a request.
 func (b *bridge) fromDaemon(line []byte) {
 	frame, err := shimwire.Decode(line)
 	if err != nil {
@@ -405,12 +443,6 @@ func (b *bridge) fromDaemon(line []byte) {
 	case shimwire.GetState:
 		data, _ := json.Marshal(map[string]bool{"isStreaming": b.inRun})
 		b.respond(shimwire.Response{ID: f.ID, Command: shimwire.TypeGetState, Success: true, Data: data})
-	case shimwire.Prompt:
-		if b.seeding {
-			b.held = append(b.held, line)
-			return
-		}
-		b.prompt(f)
 	default:
 		var request struct {
 			ID string `json:"id"`
@@ -425,30 +457,22 @@ func (b *bridge) fromDaemon(line []byte) {
 	}
 }
 
-// prompt is the daemon's task. Between turns it starts one; during a turn, the bridge's own or one
-// Claude Code started by itself, it is acknowledged and then refused as Oh My Pi refuses it, so the
-// daemon sends it again once the turn ends.
-func (b *bridge) prompt(p shimwire.Prompt) {
-	b.respond(shimwire.Response{ID: p.ID, Command: shimwire.TypePrompt, Success: true})
-	if b.inRun {
-		b.respond(shimwire.Response{ID: p.ID, Command: shimwire.TypePrompt, Success: false, Error: Busy})
-		return
-	}
-	b.startRun(p.Message, nil, p.ID)
-}
-
 // deliver queues an Envoy delivery: between turns it starts one at once; during a turn of the
 // bridge's own it is the next step's message, and during one Claude Code started by itself it is
-// the turn the bridge starts when that one ends. It is answered once Claude Code has taken it
-// (echoed).
+// the turn the bridge starts when that one ends. While a take of the claim's task is pending it
+// starts nothing: the task's turn goes first, and the delivery is a later step of it (take.go). It
+// is answered once Claude Code has taken it (echoed).
 func (b *bridge) deliver(d delivery) {
 	b.queue = append(b.queue, d)
-	if b.inRun || b.seeding {
+	switch {
+	case b.inRun || b.seeding:
 		b.log.Printf("Envoy delivery %s waits for the next step", d.id)
-		return
+	case b.takePending():
+		b.log.Printf("Envoy delivery %s waits for the take of the claim's task", d.id)
+	default:
+		b.log.Printf("Envoy delivery %s starts a turn", d.id)
+		b.sendQueued()
 	}
-	b.log.Printf("Envoy delivery %s starts a turn", d.id)
-	b.sendQueued()
 }
 
 // sendQueued sends the oldest queued delivery as the next user message, a step of the turn running
@@ -461,24 +485,20 @@ func (b *bridge) sendQueued() {
 		b.step(d.content, d.blocks)
 		return
 	}
-	b.startRun(d.content, d.blocks, "")
+	b.startRun(d.content, d.blocks)
 }
 
-// beginRun marks a turn running and tells the daemon it began. prompt is the request id of the
-// daemon's prompt that started it, and "" for a turn nothing of the daemon's did — an Envoy
-// delivery's, or one Claude Code started by itself — which is why it is written rather than
-// assumed to be clear already. The turn begins with no refusal against it: what the provider said
-// about an earlier turn is not this turn's outcome.
-func (b *bridge) beginRun(prompt string) {
-	b.inRun, b.promptRun, b.refusal = true, prompt, ""
+// beginRun marks a turn running and tells the daemon it began. The turn begins with no refusal
+// against it — what the provider said about an earlier turn is not this turn's outcome — and as
+// the turn of no task, which startTask makes it once the turn has begun.
+func (b *bridge) beginRun() {
+	b.inRun, b.refusal, b.runTask = true, nil, 0
 	b.emit(shimwire.AgentStart{})
 }
 
-// startRun tells the daemon a turn of the bridge's own starts and sends its first message. prompt
-// is the request id of the daemon's prompt that started it, and "" for a turn nothing of the
-// daemon's did.
-func (b *bridge) startRun(message string, blocks []json.RawMessage, prompt string) {
-	b.beginRun(prompt)
+// startRun tells the daemon a turn of the bridge's own starts and sends its first message.
+func (b *bridge) startRun(message string, blocks []json.RawMessage) {
+	b.beginRun()
 	b.step(message, blocks)
 }
 
@@ -500,10 +520,10 @@ func (b *bridge) fromClaude(line []byte) {
 		Errors      []string        `json:"errors"`
 		CommandUUID string          `json:"command_uuid"`
 		State       string          `json:"state"`
-		// TerminalReason is what a result says ended the turn: the prompt_result carries an
-		// error only for the one value a provider failure takes, `api_error` (result). It is a
-		// member of the result line itself, measured on the pinned Claude Code
-		// (testdata/api-error-529.jsonl:5, testdata/refusal-turn.jsonl:5).
+		// TerminalReason is what a result says ended the turn: a provider failure is the one
+		// value `api_error` (providerFailed). It is a member of the result line itself, measured
+		// on the pinned Claude Code (testdata/api-error-529.jsonl:5,
+		// testdata/refusal-turn.jsonl:5).
 		TerminalReason string `json:"terminal_reason"`
 		// APIErrorStatus is the HTTP status of the provider request a result failed on, read raw
 		// because it is `null` on a result that did not fail
@@ -511,6 +531,9 @@ func (b *bridge) fromClaude(line []byte) {
 		// cost the status alone: a result line the decode refused whole would be a turn whose
 		// end the daemon never learns.
 		APIErrorStatus json.RawMessage `json:"api_error_status"`
+		// Model is the model a `system` `init` line names, which every turn begins with
+		// (testdata/api-error-529.jsonl:1): the model a provider failure of that turn names.
+		Model string `json:"model"`
 	}
 	if err := json.Unmarshal(line, &head); err != nil {
 		b.log.Printf("ignoring a line from Claude Code that is not JSON (%d bytes)", len(line))
@@ -527,6 +550,9 @@ func (b *bridge) fromClaude(line []byte) {
 		}
 	case "system":
 		if head.Subtype == "init" {
+			if head.Model != "" {
+				b.model = head.Model
+			}
 			b.systemInit()
 		}
 	case "command_lifecycle":
@@ -547,9 +573,9 @@ func (b *bridge) fromClaude(line []byte) {
 }
 
 // resultLine is what the bridge reads of one `result` line: what ended the step or the turn, and
-// how. subtype, errors and httpStatus are what Claude Code returned, which the prompt_result
-// says; isError and terminalReason are whether that end was a provider failure, which is the
-// only end the prompt_result carries an error for (result).
+// how. subtype, errors and httpStatus are what Claude Code returned, which the log line and the
+// turn's outcome report say; isError and terminalReason are whether that end was a provider
+// failure, which is the only end the turn's own outcome report counts (result).
 type resultLine struct {
 	subtype        string
 	isError        bool
@@ -574,13 +600,13 @@ const (
 	subtypeMaxTurns = "error_max_turns"
 )
 
-// providerFailed is whether the provider failed the turn res ended, which is the one end the
-// prompt_result carries an error for (dispatch://INFRA-956/comment/4fa88c00-3313-4008-8eea-d7f95a04e24d).
-// A turn that ended any other way — Claude Code's own turn limit, a tool that failed — is a turn
-// the daemon retires the task on, as a turn that ended well is. It is also what the turn's own
-// outcome report carries (turnoutcome.go): counting a turn the agent worked to Claude Code's own
-// cap, or one a tool failed in, would walk a working claim to the launch failure limit and
-// abandon the session it is working in (dispatch://INFRA-714).
+// providerFailed is whether the provider failed the turn res ended
+// (dispatch://INFRA-956/comment/4fa88c00-3313-4008-8eea-d7f95a04e24d). A turn that ended any other
+// way — Claude Code's own turn limit, a tool that failed — is a turn the agent worked, as a turn
+// that ended well is. It is what the turn's own outcome report carries (turnoutcome.go): counting a
+// turn the agent worked to Claude Code's own cap, or one a tool failed in, would walk a working
+// claim to the launch failure limit and abandon the session it is working in
+// (dispatch://INFRA-714).
 func providerFailed(res resultLine) bool {
 	return res.isError && res.terminalReason == terminalAPIError && res.subtype != subtypeMaxTurns
 }
@@ -595,6 +621,21 @@ func httpStatusOf(raw json.RawMessage) int {
 		return 0
 	}
 	return status
+}
+
+// claudeProvider is the provider every request of Claude Code's goes to: the Anthropic API, at
+// whatever endpoint ANTHROPIC_BASE_URL names for it.
+const claudeProvider = "anthropic"
+
+// providerError is how the provider failed the step res ended, as the turn's outcome report names
+// it (claim.ProviderError): the status Claude Code named in api_error_status, zero when it named
+// none — a content filter's refusal names none (testdata/refusal-turn.jsonl:5) —, the provider,
+// the model the turn's init line named, Claude Code's own words, and whether the status is one a
+// provider answers "not now" with (a 408, a 429 or a 5xx), as pi-legion reads an Oh My Pi
+// failure. The daemon decides from the status alone (supervise's providerErrored).
+func (b *bridge) providerError(res resultLine, message string) *claim.ProviderError {
+	return &claim.ProviderError{Status: res.httpStatus, Provider: claudeProvider, Model: b.model, Message: message,
+		Retryable: res.httpStatus == http.StatusRequestTimeout || res.httpStatus == http.StatusTooManyRequests || res.httpStatus >= 500}
 }
 
 // commandLifecycle opens and closes the slash command Claude Code is running for a mod of the
@@ -617,16 +658,15 @@ func (b *bridge) commandLifecycle(command, state string) {
 }
 
 // systemInit acts on the `init` line Claude Code writes at the start of every turn and at no other
-// time: of a turn the daemon's prompt, an Envoy delivery or the seed started, and of one Claude
-// Code started by itself when a background task it had left running finished. Between turns it is
-// that second kind, a turn no step of the bridge's is open in, and the daemon is told of it as it
-// is told of any other, so the background result is read inside a turn rather than after one the
-// daemon thinks has ended. During a turn or the seeding it is the turn already begun: the bridge
-// set that state when it wrote the user message, before this line came back. The init a command's
-// `started` owes is that command's, which starts no turn: no prompt and no delivery asked for it,
-// and a turn reported for it would be one the daemon never sees end. Once that one init is spent,
-// the next is a turn's again, so a `started` whose `completed` was lost leaves every turn after
-// it reported.
+// time: of a turn an Envoy delivery or the seed started, and of one Claude Code started by itself
+// when a background task it had left running finished. Between turns it is that second kind, a
+// turn no step of the bridge's is open in, and the daemon is told of it as it is told of any
+// other, so the background result is read inside a turn rather than after one the daemon thinks
+// has ended. During a turn or the seeding it is the turn already begun: the bridge set that state
+// when it wrote the user message, before this line came back. The init a command's `started` owes
+// is that command's, which starts no turn: no delivery asked for it, and a turn reported for it
+// would be one the daemon never sees end. Once that one init is spent, the next is a turn's again,
+// so a `started` whose `completed` was lost leaves every turn after it reported.
 func (b *bridge) systemInit() {
 	if b.commandInit {
 		b.commandInit = false
@@ -637,7 +677,7 @@ func (b *bridge) systemInit() {
 		return
 	}
 	b.log.Printf("Claude Code started a turn of its own")
-	b.beginRun("")
+	b.beginRun()
 }
 
 // contentBlock is one block of a stream-json message's content.
@@ -673,8 +713,8 @@ func (b *bridge) assistant(message json.RawMessage) {
 }
 
 // echoed answers the delivery Claude Code has just taken: the oldest one sent, not yet answered,
-// whose text is the re-emitted user message's. The bridge's own user messages (the daemon's prompt,
-// the seed) are no delivery sent, so their echoes answer none.
+// whose text is the re-emitted user message's. The bridge's own user message (the seed) is no
+// delivery sent, so its echo answers none.
 func (b *bridge) echoed(message json.RawMessage) {
 	var texts []string
 	for _, block := range blocksOf(message) {
@@ -709,13 +749,15 @@ func answerAll(deliveries []delivery, err error) {
 // bridge writes while that command still runs is answered by a result of Claude Code's own, so
 // two results are owed, and this reads the first as the command's and the second as the step's:
 // whichever order they come in, one result is left to end the step. The seed's own result is
-// read before that: the seed goes out before Claude Code can run a command of anyone's, and
-// nothing but it releases the prompts the seeding holds.
+// read before that: the seed goes out before Claude Code can run a command of anyone's.
 //
 // The turn's outcome is the outcome of its newest step (refusal), reported when the turn ends
 // with the bridge's own sequence (turnoutcome.go): a step the provider failed is the turn
 // refused, and a step that ran clears what an earlier failed one left, since the provider
-// answered after all.
+// answered after all. The report names the task whose turn it was (runTask).
+//
+// Once Claude Code is in no turn, what waits for that runs (idle): a task whose take was accepted
+// during the turn, then a take of the claim's task value, then the next Envoy delivery.
 //
 // Which turn a delivery belongs to is decided by the queue as this result reads it, and by
 // nothing else. In a turn the bridge stepped, a delivery already queued is sent as the next step
@@ -727,10 +769,8 @@ func answerAll(deliveries []delivery, err error) {
 // on its way, since such a wait would hold every refused turn open for as long as the inbox might
 // still speak, and the daemon's count of refusals is of turns that ended.
 //
-// The turn's end also carries a prompt_result when a prompt of the daemon's started it, and that
-// frame says whether the provider failed the turn (providerFailed). A result that ends a step
-// and not the turn says nothing — the turn runs on — so a turn of several steps is answered by
-// the result that ended it. A command's result ends neither, so it carries no prompt_result.
+// A result that ends a step and not the turn says nothing of the turn's outcome — the turn runs
+// on — so a turn of several steps is answered by the result that ended it.
 func (b *bridge) result(res resultLine) {
 	if b.seeding {
 		b.seeding = false
@@ -739,14 +779,7 @@ func (b *bridge) result(res resultLine) {
 		} else {
 			b.log.Printf("seeded session %s as %q", b.cfg.SessionID, b.cfg.Title)
 		}
-		held := b.held
-		b.held = nil
-		for _, line := range held {
-			b.fromDaemon(line)
-		}
-		if !b.inRun && len(b.queue) > 0 {
-			b.sendQueued()
-		}
+		b.idle()
 		return
 	}
 	if b.commandResult {
@@ -760,17 +793,16 @@ func (b *bridge) result(res resultLine) {
 	}
 	stepped := b.stepping
 	b.stepping = false
-	b.refusal = ""
+	b.refusal = nil
 	answerAll(b.taking, errNotTaken)
 	b.taking = nil
-	failure := ""
 	if res.isError {
 		// Oh My Pi reports a failed step as the assistant message that ends it, stopReason "error";
 		// the daemon reads neither, so the log line is what puts the failure on the pane and the
 		// turn's own report is what the daemon counts.
-		failure = "Claude Code: " + res.subtype + " " + strings.Join(res.errors, "; ")
+		failure := "Claude Code: " + res.subtype + " " + strings.Join(res.errors, "; ")
 		if providerFailed(res) {
-			b.refusal = failure
+			b.refusal = b.providerError(res, failure)
 			b.log.Printf("the turn failed: %s", failure)
 		} else {
 			b.log.Printf("the turn failed, for a reason that is not the provider failing it, so it counts toward no run of refusals: %s", failure)
@@ -778,39 +810,17 @@ func (b *bridge) result(res resultLine) {
 		b.emitRaw(map[string]any{"type": "message_end", "message": map[string]any{
 			"role": "assistant", "stopReason": "error", "errorMessage": failure}})
 	}
-	if stepped && len(b.queue) > 0 {
+	// A task whose take was accepted during this turn ends it here rather than wait behind the
+	// queue: its turn goes ahead of every queued delivery.
+	if stepped && len(b.queue) > 0 && b.heldText == "" {
 		b.sendQueued()
 		return
 	}
-	refusal := b.refusal
-	b.inRun, b.refusal = false, ""
+	refusal, task := b.refusal, b.runTask
+	b.inRun, b.refusal, b.runTask = false, nil, 0
 	b.emit(shimwire.AgentEnd{})
-	b.reports.turnEnded(refusal)
-	if prompt := b.promptRun; prompt != "" {
-		// The turn that ran the daemon's prompt is over, and this is what says it was that
-		// prompt's: an agent_end names no prompt, and a turn Claude Code started by itself when a
-		// background task finished ends with one just like it.
-		//
-		// A turn the provider failed says so here as Oh My Pi does, in the frame's error object:
-		// a prompt_result without one is a turn that ended, which the daemon retires the task
-		// on. Only a provider failure carries one (providerFailed), because the daemon keeps the
-		// task and sends it again for every error in this frame: a turn Claude Code's own limit
-		// ended, or one a tool failed in, is work the agent did and no provider's fault, and the
-		// daemon counts neither as a provider-error turn. The message is Claude Code's own
-		// words, the same the message_end above carries, and the status is the one Claude Code
-		// named in api_error_status, zero when it named none — a content filter's refusal names
-		// none (testdata/refusal-turn.jsonl:5). Retryable stays false: the daemon decides from
-		// the status alone (supervise's holdsTheIssue).
-		b.promptRun = ""
-		result := shimwire.PromptResult{ID: prompt, AgentInvoked: true}
-		if providerFailed(res) {
-			result.Error = &shimwire.PromptError{Message: failure, HTTPStatus: res.httpStatus}
-		}
-		b.emit(result)
-	}
-	if len(b.queue) > 0 {
-		b.sendQueued()
-	}
+	b.reports.turnEnded(task, refusal)
+	b.idle()
 }
 
 // writeUser sends text to Claude Code as one user message: blocks as its content where a delivery
@@ -821,10 +831,9 @@ func (b *bridge) result(res resultLine) {
 // A user message of the bridge's own closes no command's block: the command runs on, and writes
 // its own result whether or not Claude Code has read this message first. Closing it here would
 // leave that result ending this message's step — the delivery the step carried answered
-// errNotTaken and sent to the agent a second time, a prompt answered with its prompt_result
-// before its turn had run — and a person's `/compact` runs for 6 to 29 s (measured in this
-// issue), long enough for a delivery or the daemon's prompt to arrive inside the block. A block
-// is closed by its own `completed` row (commandLifecycle).
+// errNotTaken and sent to the agent a second time — and a person's `/compact` runs for 6 to 29 s
+// (measured in this issue), long enough for a delivery to arrive inside the block. A block is
+// closed by its own `completed` row (commandLifecycle).
 func (b *bridge) writeUser(text string, blocks []json.RawMessage) {
 	content := any([]map[string]string{{"type": "text", "text": text}})
 	if len(blocks) > 0 {

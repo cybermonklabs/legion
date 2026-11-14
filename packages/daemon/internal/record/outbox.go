@@ -707,6 +707,12 @@ type SuperviseRequest struct {
 	Tree string      `json:"tree"`
 	Role claim.Role  `json:"role"`
 	Task string      `json:"task,omitempty"`
+	// Origin is the source that queued Task — phase-start, resume, silence, wake, notice, operator,
+	// check-look — carried onto the claim's delivery (supervise.RequestDeliver.Origin), so a task's
+	// origin comes from the row that wrote it and never from its text. A row that names none is
+	// read as a phase start where it names a phase and an operator's task otherwise
+	// (supervise's originOf).
+	Origin string `json:"origin,omitempty"`
 	// Kept is what an architect start's Task named of the decisions its root keeps
 	// (workflow.Engine.ParkedDecisionTask). The start settles them once it has run (the outbox's
 	// settleKept): a task the root architect's claim queued forgets them
@@ -757,7 +763,7 @@ type SuperviseRequest struct {
 	// the same generation and phase is given it once it is ready, so the start delivers none.
 	ResumeTask bool `json:"resumeTask,omitempty"`
 	// RuleResume marks the boot's resume-by-rule start, and the boot's one-time start of a merger
-	// the `awaiting_merge` cutover left released (workflow's cutoverMergerRepair). If its resumed
+	// the `awaiting_merge` cutover left released or live (workflow's cutoverMergerRepair). If its
 	// claim spends its launch budget, the runner finishes this row rather than retrying it as
 	// RequestRetry with fresh budgets: the failed claim stays failed for the boot report to name.
 	RuleResume bool `json:"ruleResume,omitempty"`

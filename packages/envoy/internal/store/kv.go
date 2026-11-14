@@ -54,6 +54,14 @@ type Registry struct {
 	// renewalFailures is this registry's record of the role claim renewals that failed, by role
 	// and holder session (RenewalFailedWithin), under a mutex of its own (role_renewal.go).
 	renewalFailures renewalFailures
+	// changedRoles is every role whose holder the work under holdersMu stored or removed, which
+	// unlockHoldersAndNotify reports once that lock is released. Guarded by holdersMu.
+	changedRoles []string
+	// roleChangeMu guards onRoleChange, the functions OnRoleHolderChange registered, by
+	// registration number.
+	roleChangeMu   sync.Mutex
+	onRoleChange   map[uint64]func(role string)
+	nextRoleChange uint64
 }
 
 // OpenOption configures the registry.

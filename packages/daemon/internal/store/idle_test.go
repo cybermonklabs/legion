@@ -19,7 +19,7 @@ import (
 
 // The idle view is one read per issue and it reads the four activity columns from the store, not
 // from a machine: a report that arrived between a machine's writes is exactly the fact the rule
-// turns on, and putClaim never carries it. It also reads the pending delivery's turn marks, the
+// turns on, and putClaim never carries it. It also reads the pending delivery's confirmation, the
 // claims' states and contracts, the rows queued for a role of the pod, and the issue's place in
 // the workflow beside its root's.
 func TestTheIdleViewReadsTheStoredActivityReportAndTheQueuedRows(t *testing.T) {
@@ -36,9 +36,9 @@ func TestTheIdleViewReadsTheStoredActivityReportAndTheQueuedRows(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := st.Pool().Exec(ctx, `insert into pending_task_deliveries
-		(claim_token, delivery_id, task, queued_at, delivered_at, confirmed_at, phase, generation)
-		values ($1, 'd-1', 'implement it', $2, $3, $4, 'implementing', 1)`,
-		string(token), now.Add(-time.Hour), now.Add(-50*time.Minute), now.Add(-45*time.Minute)); err != nil {
+		(claim_token, delivery_id, task, queued_at, confirmed_at, phase, generation)
+		values ($1, 'd-1', 'implement it', $2, $3, 'implementing', 1)`,
+		string(token), now.Add(-time.Hour), now.Add(-45*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	// The report arrives the way the route sends it, after the machine's own last write.

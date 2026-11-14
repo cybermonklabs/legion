@@ -3,8 +3,8 @@ package stream_test
 // The shim–listener integration test: the real `legion worker-shim` binary, built from
 // cmd/legion by this test, dials the real Listener — over a unix socket and over TCP — and
 // bridges a fake Oh My Pi, which is this test binary re-executed. Neither end is a stand-in: the
-// hello, its ack, the spawn that waits for the ack, the prompt and its turn, the shim's dedupe of a
-// repeated delivery, and the reconnect across a daemon restart all run through the code that ships.
+// hello, its ack, the spawn that waits for the ack, a request and its answer, a turn, and the
+// reconnect across a daemon restart all run through the code that ships.
 
 import (
 	"bufio"
@@ -92,9 +92,10 @@ func runRemovingTheBuiltLegion(m *testing.M) int {
 }
 
 // fakeOMP speaks the RPC frames the listener sends as Oh My Pi does — the negotiation answered, a
-// prompt acknowledged and then its turn reported — records every line it reads, and on SIGUSR1
-// reports gapTurns turns of its own. Those turns carry `deliveryId` markers, which OMP's own
-// agent_start never does, so the order in which they reach the listener is observable.
+// get_state answered — records every line it reads, runs one turn on SIGUSR2, and on SIGUSR1
+// reports gapTurns turns of its own. Each gap turn names its number in the one tool call it makes
+// (the call id), which is a fact the listener reports, so the order in which they reach it is
+// observable.
 func fakeOMP() int {
 	var mu sync.Mutex
 	emit := func(line string) {
@@ -118,11 +119,17 @@ func fakeOMP() int {
 	}
 
 	signals := make(chan os.Signal, 1)
-	signal.Notify(signals, syscall.SIGUSR1)
+	signal.Notify(signals, syscall.SIGUSR1, syscall.SIGUSR2)
 	go func() {
-		for range signals {
+		for sig := range signals {
+			if sig == syscall.SIGUSR2 {
+				emit(`{"type":"agent_start"}`)
+				emit(`{"type":"agent_end"}`)
+				continue
+			}
 			for n := range gapTurns {
-				emit(fmt.Sprintf(`{"type":"agent_start","deliveryId":"gap-%d"}`, n))
+				emit(`{"type":"agent_start"}`)
+				emit(fmt.Sprintf(`{"type":"tool_execution_start","toolCallId":"gap-%d","toolName":"gap"}`, n))
 				emit(`{"type":"agent_end"}`)
 			}
 		}
@@ -136,12 +143,10 @@ func fakeOMP() int {
 		var frame struct{ Type, ID string }
 		_ = json.Unmarshal(line, &frame)
 		switch frame.Type {
-		case shimwire.TypeNegotiateProtocol, shimwire.TypePrompt:
+		case shimwire.TypeNegotiateProtocol:
 			emit(fmt.Sprintf(`{"type":"response","id":%q,"command":%q,"success":true}`, frame.ID, frame.Type))
-			if frame.Type == shimwire.TypePrompt {
-				emit(`{"type":"agent_start"}`)
-				emit(`{"type":"agent_end"}`)
-			}
+		case shimwire.TypeGetState:
+			emit(fmt.Sprintf(`{"type":"response","id":%q,"command":%q,"success":true,"data":{"isStreaming":false}}`, frame.ID, frame.Type))
 		}
 	}
 	return 0
@@ -300,8 +305,7 @@ func count(lines []string, want string) int {
 	return n
 }
 
-// childFrames is every line the fake OMP read on its stdin, as the frame type and the delivery id
-// a prompt carries.
+// childFrames is the type of every line the fake OMP read on its stdin.
 func childFrames(t *testing.T, path string) []string {
 	t.Helper()
 	body, err := os.ReadFile(path)
@@ -314,11 +318,7 @@ func childFrames(t *testing.T, path string) []string {
 		if err != nil {
 			t.Fatalf("decode a line the fake OMP read: %v", err)
 		}
-		entry := frame.FrameType()
-		if prompt, ok := frame.(shimwire.Prompt); ok {
-			entry += " " + prompt.DeliveryID
-		}
-		frames = append(frames, entry)
+		frames = append(frames, frame.FrameType())
 	}
 	return frames
 }
@@ -526,8 +526,8 @@ func TestTheRealShimRefusesAnAdoptionAStaleLockWedges(t *testing.T) {
 	if !strings.Contains(refused.Reason, lock) {
 		t.Fatalf("the refusal's reason %q does not name the lock %s the adoption failed on", refused.Reason, lock)
 	}
-	if errors.Is(err, runtime.ErrPromptRefused) {
-		t.Fatalf("the refused adoption %v reads as a refused prompt", err)
+	if errors.Is(err, runtime.ErrTokenRefused) {
+		t.Fatalf("the refused adoption %v reads as a refused token request", err)
 	}
 	if _, err := os.Lstat(lock); err != nil {
 		t.Fatalf("the lock after the failed adoption: %v, want it left in place", err)
@@ -564,20 +564,17 @@ func bridge(t *testing.T, legion, addr string) {
 		t.Fatalf("Await: %v", err)
 	}
 
-	// A prompt is acknowledged, and its turn is observed through Events().
-	if err := conn.Prompt(ctx, "delivery-1", "the first task"); err != nil {
-		t.Fatalf("Prompt(delivery-1): %v", err)
+	// A request crosses the shim to OMP and its answer comes back.
+	if state, err := conn.GetState(ctx); err != nil || state.IsStreaming {
+		t.Fatalf("GetState = %+v, %v; want OMP's answer, not streaming", state, err)
+	}
+	// A turn OMP runs is observed through Events().
+	if err := syscall.Kill(shim.childPID(t), syscall.SIGUSR2); err != nil {
+		t.Fatalf("signal the fake OMP: %v", err)
 	}
 	first.expect(t, stream.TurnStart{Claim: integrationClaim}, stream.TurnEnd{Claim: integrationClaim})
-
-	// The same delivery again: the shim acknowledges it itself and replays the turn it already
-	// saw, naming the delivery; OMP is not prompted a second time.
-	if err := conn.Prompt(ctx, "delivery-1", "the first task"); err != nil {
-		t.Fatalf("Prompt(delivery-1) repeated: %v", err)
-	}
-	first.expect(t, stream.TurnStart{Claim: integrationClaim, DeliveryID: "delivery-1"}, stream.TurnEnd{Claim: integrationClaim})
-	if got, want := childFrames(t, shim.stdinRecord), []string{"negotiate_protocol", "prompt delivery-1"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("the fake OMP read %q, want %q: a repeated delivery reached it", got, want)
+	if got, want := childFrames(t, shim.stdinRecord), []string{"negotiate_protocol", "get_state"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("the fake OMP read %q, want %q", got, want)
 	}
 
 	// The daemon goes away. The connection's Closed is the last thing the listener reports.
@@ -612,24 +609,24 @@ func bridge(t *testing.T, legion, addr string) {
 	if _, hellos := g.state(); hellos <= hellosBefore {
 		t.Fatalf("the restarted listener resolved no new hello (%d before, %d after)", hellosBefore, hellos)
 	}
-	for n := range gapTurns {
-		second.expect(t,
-			stream.TurnStart{Claim: integrationClaim, DeliveryID: fmt.Sprintf("gap-%d", n)},
-			stream.TurnEnd{Claim: integrationClaim})
-	}
-
-	// The new connection carries a new delivery to OMP.
 	await, cancelAwait = context.WithTimeout(ctx, integrationWait)
 	defer cancelAwait()
 	conn, err = second.listener.Await(await, integrationClaim)
 	if err != nil {
 		t.Fatalf("Await after the restart: %v", err)
 	}
-	if err := conn.Prompt(ctx, "delivery-2", "the second task"); err != nil {
-		t.Fatalf("Prompt(delivery-2): %v", err)
+	for n := range gapTurns {
+		second.expect(t,
+			stream.TurnStart{Claim: integrationClaim},
+			stream.ToolStep{Claim: integrationClaim, Tool: "gap", CallID: fmt.Sprintf("gap-%d", n), ConnSequence: conn.Sequence()},
+			stream.TurnEnd{Claim: integrationClaim})
 	}
-	second.expect(t, stream.TurnStart{Claim: integrationClaim}, stream.TurnEnd{Claim: integrationClaim})
-	want := []string{"negotiate_protocol", "prompt delivery-1", "negotiate_protocol", "prompt delivery-2"}
+
+	// The new connection carries a new request to OMP.
+	if _, err := conn.GetState(ctx); err != nil {
+		t.Fatalf("GetState after the restart: %v", err)
+	}
+	want := []string{"negotiate_protocol", "get_state", "negotiate_protocol", "get_state"}
 	if got := childFrames(t, shim.stdinRecord); !reflect.DeepEqual(got, want) {
 		t.Fatalf("the fake OMP read %q, want %q", got, want)
 	}

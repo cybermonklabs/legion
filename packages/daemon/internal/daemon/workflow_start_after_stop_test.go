@@ -155,7 +155,7 @@ func stoppableWorker(cfg config.Config, project string, token claim.Token, tree,
 		PluginContract: api.DaemonAPIVersion, Locator: workingPane(token),
 		Budgets: supervise.Budgets{LaunchFailures: 2, Deaths: 1, PromptFailures: 2, PromptRetires: 1},
 		Pending: &supervise.Delivery{ID: "outbox:11", Task: "Carry on.", Generation: 1, Phase: stands,
-			QueuedAt: now, DeliveredAt: now, ConfirmedAt: now}}
+			QueuedAt: now, ConfirmedAt: now}}
 }
 
 // seedSlottedMember records member as an issue of a tree seedWorkflowTree has already opened,

@@ -44,7 +44,10 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 
+	"github.com/sjawhar/envoy/legiontasks"
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -368,14 +371,23 @@ func installProofPlugins(t *testing.T, root, work, home, profile, omp string) {
 // no topics, for every path, and on `/v1/interests/subscribe` the consumer delivery too
 // (paneListenerDelivery), which the plugin refuses a registration without.
 //
+// It relays each claim's task value as well, as the real listener's task relay does
+// (packages/envoy/cmd/listener's taskRelay): a worker learns of a task its claim is given after
+// its registration only from that relay (dispatch://INFRA-2811), so without it a pane would take
+// its first task, which its registration's answer carries, and never the operator's task or a
+// task written again after a provider error. The relay is paneListener's, over natsURLs, the
+// broker the daemon writes its task bucket on and the panes subscribe to their relay subjects on.
+//
 // Nothing the proof reads comes from here. What an architect or the controller is told is read
 // from the daemon's own listener, which is the fixture's and another server.
-func newPaneListener(t *testing.T) string {
+func newPaneListener(t *testing.T, natsURLs []string) string {
 	t.Helper()
+	listener := startPaneTaskRelay(t, natsURLs)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		var sent struct {
 			SessionID string `json:"session_id"`
 			Dir       string `json:"dir"`
+			Role      string `json:"role"`
 		}
 		if body, err := io.ReadAll(req.Body); err == nil {
 			_ = json.Unmarshal(body, &sent)
@@ -397,9 +409,172 @@ func newPaneListener(t *testing.T) string {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(answer)
+		if req.URL.Path == "/v1/roles/set" && sent.Role != "" && sent.SessionID != "" {
+			// The claim's answer goes out first, so the plugin holds its role before the value.
+			if flusher, ok := w.(http.Flusher); ok {
+				flusher.Flush()
+			}
+			listener.claimed(sent.Role, sent.SessionID)
+		}
 	}))
 	t.Cleanup(server.Close)
 	return server.URL
+}
+
+// paneTaskRelay is the pane listener's relay of the claims' task values: it watches the task
+// bucket (legiontasks.Bucket) on the proof's broker and publishes each key's newest record to the
+// session that last claimed that key's role through the pane listener, as a task frame on the
+// session's relay subject (paneListenerDelivery) carrying the four legiontasks headers and the
+// value's bytes, which the plugin hands its take (packages/envoy-client's decodeTaskFrame). A
+// key's record is relayed when the watch delivers a newer one and when its role is claimed, each
+// record once to each holder, and a record superseded before it was relayed is not, as the real
+// relay does. It never creates the bucket: the daemon does at its boot, which comes after the
+// pane listener starts, so the relay looks the bucket up until it exists.
+type paneTaskRelay struct {
+	nc *nats.Conn
+
+	mu sync.Mutex
+	// stopped is set by the test's cleanup, after which nothing is published.
+	stopped bool
+	// holders is the session that last claimed each role, and records each key's newest record
+	// in the bucket of epoch, once the watch has opened it.
+	holders map[string]string
+	epoch   string
+	records map[string]jetstream.KeyValueEntry
+	// relayed is what was last relayed of each key: the session and the record's revision.
+	relayed map[string]paneTaskRelayed
+}
+
+// paneTaskRelayed is one record of a key relayed to one session.
+type paneTaskRelayed struct {
+	session  string
+	revision uint64
+}
+
+// startPaneTaskRelay connects to natsURLs and watches the task bucket there for as long as t
+// runs; the cleanup stops the watch and waits for it before t ends.
+func startPaneTaskRelay(t *testing.T, natsURLs []string) *paneTaskRelay {
+	t.Helper()
+	if len(natsURLs) == 0 {
+		t.Fatal("the pane listener's task relay needs the proof's broker: the configuration names no nats_urls")
+	}
+	nc, err := nats.Connect(strings.Join(natsURLs, ","), nats.Name("live-agent-proof-task-relay"), nats.MaxReconnects(-1))
+	if err != nil {
+		t.Fatalf("connect the pane listener's task relay to %v: %v", natsURLs, err)
+	}
+	js, err := jetstream.New(nc)
+	if err != nil {
+		nc.Close()
+		t.Fatalf("open JetStream for the pane listener's task relay: %v", err)
+	}
+	r := &paneTaskRelay{nc: nc, holders: map[string]string{}, records: map[string]jetstream.KeyValueEntry{},
+		relayed: map[string]paneTaskRelayed{}}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		r.watch(ctx, js)
+	}()
+	t.Cleanup(func() {
+		r.mu.Lock()
+		r.stopped = true
+		r.mu.Unlock()
+		cancel()
+		<-done
+		nc.Close()
+	})
+	return r
+}
+
+// watch looks the task bucket up until the daemon has created it, reads its epoch, and relays
+// every record its watch delivers, until ctx ends.
+func (r *paneTaskRelay) watch(ctx context.Context, js jetstream.JetStream) {
+	var kv jetstream.KeyValue
+	for {
+		bucket, err := js.KeyValue(ctx, legiontasks.Bucket)
+		if err == nil {
+			kv = bucket
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+	stream, err := js.Stream(ctx, legiontasks.Stream)
+	if err != nil {
+		fmt.Printf("   the pane listener's task relay could not read the stream of %s: %v\n", legiontasks.Bucket, err)
+		return
+	}
+	epoch := legiontasks.Epoch(stream.CachedInfo().Created)
+	watcher, err := kv.WatchAll(ctx)
+	if err != nil {
+		fmt.Printf("   the pane listener's task relay could not watch %s: %v\n", legiontasks.Bucket, err)
+		return
+	}
+	defer func() { _ = watcher.Stop() }()
+	r.mu.Lock()
+	r.epoch = epoch
+	r.mu.Unlock()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case entry, open := <-watcher.Updates():
+			if !open {
+				return
+			}
+			// A nil entry ends the watch's first read of the bucket.
+			if entry == nil {
+				continue
+			}
+			r.mu.Lock()
+			r.records[entry.Key()] = entry
+			r.mu.Unlock()
+			r.relay(entry.Key())
+		}
+	}
+}
+
+// claimed records session as role's holder, as a role claim through the pane listener makes it,
+// and relays the key's current record to it.
+func (r *paneTaskRelay) claimed(role, session string) {
+	r.mu.Lock()
+	r.holders[role] = session
+	r.mu.Unlock()
+	r.relay(role)
+}
+
+// relay publishes key's newest record to its role's holder, when the watch holds a record of key,
+// the role has a holder, and that record has not been relayed to that holder already.
+func (r *paneTaskRelay) relay(key string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	entry, held := r.records[key]
+	holder := r.holders[key]
+	if r.stopped || !held || holder == "" {
+		return
+	}
+	sent := paneTaskRelayed{session: holder, revision: entry.Revision()}
+	if r.relayed[key] == sent {
+		return
+	}
+	op, data := legiontasks.OpPut, entry.Value()
+	if entry.Operation() != jetstream.KeyValuePut {
+		op, data = legiontasks.OpDelete, nil
+	}
+	header := nats.Header{}
+	header.Set(legiontasks.HeaderClaim, key)
+	header.Set(legiontasks.HeaderEpoch, r.epoch)
+	header.Set(legiontasks.HeaderRevision, strconv.FormatUint(entry.Revision(), 10))
+	header.Set(legiontasks.HeaderOp, op)
+	if err := r.nc.PublishMsg(&nats.Msg{Subject: idleRigDeliverSubjectPrefix + holder, Header: header, Data: data}); err != nil {
+		fmt.Printf("   the pane listener's task relay could not publish %s's value at revision %d to %s: %v\n",
+			key, entry.Revision(), holder, err)
+		return
+	}
+	r.relayed[key] = sent
 }
 
 // paneListenerDelivery is the `delivery` the pane listener answers a registration with: the
@@ -409,8 +584,8 @@ func newPaneListener(t *testing.T) string {
 // answered without one (packages/envoy-client/src/transport.ts, parseSubscribeAnswer), and the
 // claim boot that registration belongs to exits the pane before its claim is ready. The mode and
 // the subject's prefix are the idle rig's constants (idle_rig_agent_test.go), which say whose
-// they are. Nothing is published to the subject: what the proof reads comes from the daemon's own
-// listener.
+// they are. The one thing published to the subject is the pane listener's task frames
+// (paneTaskRelay): what the proof reads comes from the daemon's own listener.
 func paneListenerDelivery(sessionID string) map[string]any {
 	return map[string]any{
 		"mode":      idleRigDeliveryConsumer,

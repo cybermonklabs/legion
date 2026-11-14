@@ -183,7 +183,7 @@ func TestConsumerLagCountsEveryConsumerWhileNATSRefusesTheOldestMessageRead(t *t
 		testnats.NkeyUser{Public: daemonPublic, Permissions: `{ publish: { deny: ["$JS.API.STREAM.MSG.GET.>"] } }`},
 		testnats.NkeyUser{Public: adminPublic})
 	admin := jetStreamAs(t, uri, adminSeed, "admin")
-	if _, err := admin.CreateStream(ctx, jetstream.StreamConfig{Name: notificationStream, Subjects: []string{"notifications.>"}}); err != nil {
+	if _, err := admin.CreateStream(ctx, jetstream.StreamConfig{Name: NotificationStream, Subjects: []string{"notifications.>"}}); err != nil {
 		t.Fatalf("create the notification stream: %v", err)
 	}
 	clock := &lagClock{now: time.Now()}

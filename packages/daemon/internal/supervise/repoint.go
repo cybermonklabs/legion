@@ -23,7 +23,7 @@ import (
 // A relaunch the runtime refuses is charged as any launch failure is. The process runs on, so a
 // compaction of its session runs on with it: the end of one gives the claim back as it would have
 // without the repoint, and the task that end owes waits for the relaunch's turn rather than going
-// to a process that turn replaces (ownsCompaction, sendPending). A compaction asked for after the
+// to a process that turn replaces (ownsCompaction, claimHold). A compaction asked for after the
 // relaunch is parked is refused before anything is sent (compactStart).
 func (m *Machine) repoint(ctx context.Context, observation runtime.Observation) error {
 	// The process is read through the guard backstopStalledTurn's comment gives the reason for:

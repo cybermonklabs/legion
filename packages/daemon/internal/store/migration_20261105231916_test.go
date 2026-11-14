@@ -162,8 +162,8 @@ func TestTheServingCheckLookColumnsArriveEmptyWith20261105231916(t *testing.T) {
 		`insert into claims (token, project, tree, issue, role, generation, session, session_file, state,
 			launch_failures, prompt_failures, prompt_retires, uncertain_streak, serving_generation)
 			values ('legion-LEGION-209-tester', 'legion', 'LEGION-209', 'LEGION-209', 'tester', 1, 'ses_t', '', 'working', 0, 0, 0, 0, 1)`,
-		`insert into pending_task_deliveries (claim_token, delivery_id, task, phase, generation, queued_at, marked_by, interrupted)
-			values ('legion-LEGION-209-tester', 'outbox:7', 'Production check of LEGION-209.', '', 1, now(), '', false)`,
+		`insert into pending_task_deliveries (claim_token, delivery_id, task, phase, generation, queued_at, interrupted)
+			values ('legion-LEGION-209-tester', 'outbox:7', 'Production check of LEGION-209.', '', 1, now(), false)`,
 	} {
 		if _, err := store.Pool().Exec(ctx, seed); err != nil {
 			t.Fatalf("record before the migration: %v", err)

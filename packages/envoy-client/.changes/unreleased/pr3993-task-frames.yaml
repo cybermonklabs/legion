@@ -1,0 +1,4 @@
+kind: Added
+body: |-
+  The consumer delivery hands a relayed task frame to its `onTaskValue` handler. A task frame is
+  never answered, counted in the ledger or ordered with messages, and changes no resume point.

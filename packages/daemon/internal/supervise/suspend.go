@@ -51,7 +51,7 @@ func suspend(m *Machine, ctx context.Context, ev Event) error {
 //     process and its capability.
 //   - A stop the runtime refuses keeps it held and tries again every probe interval (suspendHeld),
 //     so the deadline bounds the wait only while the runtime can stop the process. A claim
-//     whose turn ended stays idle meanwhile and is handed nothing (sendPending); a turn it starts
+//     whose turn ended stays idle meanwhile and a take of it is refused (claimHold); a turn it starts
 //     anyway is cut off at the next try.
 //   - A process that dies first, or is found at a stale address (repoint), leaves the claim
 //     suspended, charged nothing (endHeld). A prompt retirement meanwhile is the held stop itself
@@ -346,16 +346,16 @@ func (m *Machine) endHeld(ctx context.Context) error {
 // what a death with a suspension already held does (died, endHeld), for a suspension that
 // arrives after the death rather than before it.
 //
-// The task of the dead turn goes back to waiting first, unconfirmed and under a new id, exactly
-// as a death in a turn takes it back (interrupted): the turn ran, the agent read the task, and
-// no process finished it. It carries the note of a pod that ran out of memory where the report
-// that found the process gone said so (goneOutOfMemory), and the claim records that report's
-// account of the death (goneCause, Claim.LastDeathCause), as died records the death it judges,
-// so the task is sent again saying why the process died. A take-back the store will not write
-// stops everything — nothing is stopped, nothing is sent and the claim is left as it stands, its
-// last death's cause put back, as died leaves it — so the caller's next request takes it back
-// then, rather than this leaving a suspended claim holding a task settle would retire as a
-// finished turn.
+// The task of the dead turn goes back to waiting first, unconfirmed and under its own number,
+// exactly as a death in a turn takes it back (interrupted): the turn ran, the worker took the
+// task, and no process finished it. Its next accepted take carries the note of a pod that ran out
+// of memory where the report that found the process gone said so (goneOutOfMemory), and the
+// claim records that report's account of the death (goneCause, Claim.LastDeathCause), as died
+// records the death it judges, so the task is taken again saying why the process died. A
+// take-back the store will not write stops everything — nothing is stopped, nothing is sent and
+// the claim is left as it stands, its last death's cause put back, as died leaves it — so the
+// caller's next request takes it back then, rather than this leaving a suspended claim holding a
+// task settle would retire as a finished turn.
 //
 // The clean stop of the dead process's Envoy session is sent once that write has landed, and
 // before the process is let go (sessionGone, letProcessGoFor). Sent before the write, a write

@@ -6,7 +6,6 @@ import { ROLE_TOPIC_PREFIX } from "@legion/contracts";
 import {
   type Block,
   type Cleanup,
-  call,
   deliveryFor,
   messageStream,
   ompRoot,
@@ -16,12 +15,13 @@ import {
   spawnRpc,
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
+import { taskStandIn } from "@legion/pi-shared/test/task-stand-in";
 import { connect, headers, StringCodec } from "nats";
 import { z } from "zod";
 
-// INFRA-1573 on the real binary: a phase worker takes its Envoy name once its first turn has
-// started, so a message the listener kept for a role no session held is handed over inside a turn
-// that is already running rather than ahead of the daemon's task.
+// Decision 15 of INFRA-2811 on the real binary: a phase worker claims its Envoy name right after
+// its `claims/ready` has answered, and a message the listener kept for the role, handed over at
+// that claim, does not take the turn of the task the worker takes.
 //
 // The worker is the pinned Oh My Pi in RPC mode, as the daemon launches a phase worker, with both
 // plugin entries from this checkout. One stand-in is the model gateway — each Messages request
@@ -62,8 +62,7 @@ const TREE = "INFRA-1573";
 const ISSUE = "INFRA-1573";
 const CLAIM_TOKEN = "legion-claim-boot-order-infra-1573-implementer";
 
-/** The daemon's assignment, written to the worker as one RPC `prompt`, as the shim writes it
- * (packages/daemon/internal/shimwire `Prompt`). */
+/** The daemon's assignment: a task the worker takes, its take answered with this text. */
 const TASK = "Legion task: implement INFRA-1573 and report.";
 
 /**
@@ -106,17 +105,8 @@ interface Worker {
   readonly turns: readonly Turn[];
   /** The next Messages request after the ones already taken, once it arrives. */
   nextTurn(what: string): Promise<Turn>;
-  /**
-   * Writes the daemon's delivery of `message` as the shim writes it to Oh My Pi's stdin: one RPC
-   * `prompt`. Its response is not awaited here, as the daemon's delivery reads only the turn it
-   * starts.
-   */
-  deliver(message: string): void;
-  /**
-   * Oh My Pi's own refusal of that prompt, once it has answered with one, else undefined: a
-   * prompt the host takes is answered only when its turn ends, a prompt it refuses at once.
-   */
-  refusal(): string | undefined;
+  /** The takes the worker made, their bodies, in order. */
+  takes(): readonly Record<string, unknown>[];
   /** The summary of the message the stand-in listener kept for this worker's role. */
   readonly kept: string;
   /** Resolves once the session has taken that message: the word it answers the relay frame with
@@ -137,12 +127,12 @@ interface Worker {
 }
 
 /**
- * Starts one phase worker against its stand-in: the daemon's claim routes, the Envoy listener
- * that keeps one message for the worker's role, and the model gateway, with `boundMs` as the
- * claim boot's first-turn bound (LEGION_CLAIM_FIRST_TURN_BOUND_MS), so a case drives that bound
- * rather than waiting out the 30 seconds a deployment runs on.
+ * Starts one phase worker against its stand-in: the daemon's claim and task routes, the Envoy
+ * listener that keeps one message for the worker's role, and the model gateway. `task` is the
+ * task the daemon owes the claim, which its registration answers; none for a role brought back
+ * with nothing owed.
  */
-async function startWorker(options: { readonly boundMs: number }): Promise<Worker> {
+async function startWorker(options: { readonly task: string | undefined }): Promise<Worker> {
   const { binary, nats } = setup();
   const { root, home, workspace, sessions } = await ompRoot(
     binary,
@@ -200,6 +190,8 @@ async function startWorker(options: { readonly boundMs: number }): Promise<Worke
     receipt.catch(() => undefined);
   };
 
+  const tasks = taskStandIn();
+  if (options.task !== undefined) tasks.give(options.task);
   const turns: Turn[] = [];
   let readyAt = 0;
   let claimAt = 0;
@@ -219,6 +211,8 @@ async function startWorker(options: { readonly boundMs: number }): Promise<Worke
       });
     }
     if (url.pathname.startsWith("/anthropic/")) return Response.json({ data: [] });
+    const taskAnswer = tasks.answer(url.pathname, body);
+    if (taskAnswer !== undefined) return taskAnswer;
     if (url.pathname === "/legion/v1/claims/register") {
       return Response.json({
         ...registered,
@@ -228,11 +222,12 @@ async function startWorker(options: { readonly boundMs: number }): Promise<Worke
         role: ROLE,
         generation: 1,
         secret: "claim-boot-order-secret",
+        ...tasks.registered(),
       });
     }
     if (url.pathname === "/legion/v1/claims/ready") {
-      // The boot's own, which the deferred claim's bound is armed after; a capability report
-      // later in the session's life is a ready of its own and moves nothing.
+      // The boot's own, right after which the role is claimed; a capability report later in the
+      // session's life is a ready of its own and moves nothing.
       if (readyAt === 0) readyAt = Date.now();
       return new Response(null, { status: 204 });
     }
@@ -280,7 +275,6 @@ async function startWorker(options: { readonly boundMs: number }): Promise<Worke
   });
   await writeStandinProfile(home, base);
 
-  const responses = new Map<string, PromiseWithResolvers<Record<string, unknown>>>();
   const closed: { error?: unknown } = {};
   let runsEnded = 0;
   const spawnedAt = Date.now();
@@ -300,14 +294,10 @@ async function startWorker(options: { readonly boundMs: number }): Promise<Worke
         LEGION_BOOT_TOKEN: "claim-boot-order-boot",
         LEGION_STATE_DIR: state,
         LEGION_WORKSPACE: workspace,
-        LEGION_CLAIM_FIRST_TURN_BOUND_MS: String(options.boundMs),
         ENVOY_URL: base,
         ENVOY_NATS_URL: nats,
       },
       onFrame: (frame) => {
-        if ("type" in frame && frame.type === "response" && "id" in frame) {
-          responses.get(String(frame.id))?.resolve(frame as Record<string, unknown>);
-        }
         if (
           "type" in frame &&
           frame.type === "agent_end" &&
@@ -341,7 +331,6 @@ async function startWorker(options: { readonly boundMs: number }): Promise<Worke
   };
 
   let taken = 0;
-  let prompt: Record<string, unknown> | undefined;
   return {
     turns,
     async nextTurn(what) {
@@ -349,17 +338,7 @@ async function startWorker(options: { readonly boundMs: number }): Promise<Worke
       taken += 1;
       return turn;
     },
-    deliver(message) {
-      const id = randomUUID();
-      const waiting = Promise.withResolvers<Record<string, unknown>>();
-      responses.set(id, waiting);
-      void waiting.promise.then((response) => {
-        prompt = response;
-      });
-      rpc.send({ type: "prompt", id, message });
-    },
-    refusal: () =>
-      prompt === undefined || prompt.success === true ? undefined : JSON.stringify(prompt),
+    takes: () => tasks.takes(),
     kept,
     async handedOver(what) {
       const sent = await until(what, () => receipt);
@@ -386,81 +365,50 @@ function conversation(request: Request): string {
   return JSON.stringify(request.body.messages ?? null);
 }
 
-/**
- * The request of the running turn that carries `text`, the run kept going meanwhile: each
- * request before it is answered with a tool call the host runs to its end, so a message the
- * session took while a request was in flight reaches the model at one of the steps that follow.
- * An aside the host never put into this run reaches none of them, and the search fails.
- */
-async function stepUntilRead(worker: Worker, text: string, steps: number): Promise<Turn> {
-  for (let step = 0; step < steps; step += 1) {
-    const turn = await worker.nextTurn(`the run's model request carrying ${text}`);
-    if (conversation(turn.request).includes(text)) return turn;
-    turn.replyBlocks([call("read", { path: "." })]);
-  }
-  throw new Error(`${text} reached no model request within ${steps} steps of the task's run`);
-}
-
-// The first state the issue's third check names: the stand-in daemon answers `claims/ready` and
-// then sends the task, as the daemon does. The session's first turn is the task's, the task is
-// not refused, and the message kept for the role reaches the session inside that turn, because
-// the name is taken as that turn starts and the lane is handed over then. The case holds the
-// task's model request until the session has acknowledged the kept message, then keeps the run
-// going with tool calls: the aside the host took reaches the model at one of the run's next
-// steps, with no run of this session ended, and the host's own record of the hand-over says the
-// session took it with a run of its own active.
-//
-// At the commit before this change the boot claims the role before it calls ready, so the
-// stand-in listener hands the kept message over inside Oh My Pi's startup, where it is a startup
-// card whose wake starts the session's first turn. **The first assertion, that the session's
-// first model request carries the daemon's task, is the one that fails there**: that request is
-// the wake's, "1 Envoy message above arrived with no turn to read it". The daemon's prompt,
-// written once ready answered and read only when the startup drain is over, is refused with Oh
-// My Pi's own words — "Agent is already processing. Use steer() or followUp() to queue messages,
-// or wait for completion." — which the second assertion would name had the first one held (both
-// measured at 0c803aaa9 on 2026-11-09).
+// The first state: the stand-in daemon owes the claim a task, whose value its registration
+// answers. The role is claimed right after the ready, inside Oh My Pi's startup, and the stand-in
+// listener hands the kept message over then; the worker's take holds the task-turn mark from the
+// registration on, so the card that finds the session idle starts no turn. The session's first
+// turn is the task's, taken once its host is idle, and the kept message is woken after that
+// turn's end.
 test.skipIf(skip)(
-  "the daemon's task is the session's first turn, and the message kept for its role arrives inside that turn",
+  "the task the worker takes is the session's first turn, and the message kept for its role is held for it and woken after it",
   async () => {
-    // Past every wait of this case, so only the first turn can take the name.
-    const worker = await startWorker({ boundMs: 120_000 });
-    worker.deliver(TASK);
+    const worker = await startWorker({ task: TASK });
+    await worker.handedOver("the session to take the message kept for its role");
 
     const task = await worker.nextTurn("the task's model request");
     expect(conversation(task.request)).toContain(TASK);
-    expect(worker.refusal()).toBeUndefined();
+    expect(conversation(task.request)).not.toContain("arrived with no turn to read");
+    expect(worker.takes()).toHaveLength(1);
+    expect(worker.claimedAfterReadyMs()).toBeGreaterThanOrEqual(0);
+    // The host wrote the card as one held while the task's turn was pending.
+    expect(await worker.handOverOf(worker.kept)).toBe("task-pending");
+    task.reply("Task done.");
 
-    await worker.handedOver("the session to take the message kept for its role");
-    task.replyBlocks([call("read", { path: "." })]);
-    const read = await stepUntilRead(worker, worker.kept, 3);
-    // Inside the task's own turn: no run of this session has ended since it started, and the
-    // host wrote the card as one taken while a run was active.
-    expect(worker.runsEnded()).toBe(0);
-    expect(await worker.handOverOf(worker.kept)).toBe("run-active");
-    read.reply("Read the task and the message.");
+    const wake = await worker.nextTurn("the held message's wake");
+    expect(conversation(wake.request)).toContain("1 Envoy message above arrived with no turn");
+    expect(conversation(wake.request)).toContain(worker.kept);
+    wake.reply("Read the message.");
   },
   CASE_TIMEOUT_MS
 );
 
-// The second state: the stand-in daemon sends no task at all, which is a role brought back with
-// none. No turn starts of its own accord, so the claim boot takes the name at its bound, the
-// stand-in listener hands the kept message over then, and that message starts the session's turn
-// — a worker that is only brought back still hears what waited for it.
-//
-// At the commit before this change the name is taken during the boot, before `claims/ready`, so
-// the first assertion — the claim reached the listener no sooner than the bound after the ready
-// — fails there with a negative measurement (−4 ms at 0c803aaa9 on 2026-11-09).
+// The second state: the stand-in daemon owes the claim nothing, which is a role brought back with
+// no task. The role is claimed right after the ready all the same, the stand-in listener hands the
+// kept message over then, and that message starts the session's turn — a worker that is only
+// brought back still hears what waited for it, with no bound to wait out.
 test.skipIf(skip)(
-  "a role brought back with no task takes its name at the bound, and the message kept for it starts its turn",
+  "a role brought back with no task takes its name right after its ready, and the message kept for it starts its turn",
   async () => {
-    const boundMs = 5_000;
-    const worker = await startWorker({ boundMs });
+    const worker = await startWorker({ task: undefined });
 
     const woken = await worker.nextTurn("the turn the kept message started");
-    expect(worker.claimedAfterReadyMs()).toBeGreaterThanOrEqual(boundMs);
+    expect(worker.claimedAfterReadyMs()).toBeGreaterThanOrEqual(0);
     expect(conversation(woken.request)).toContain(worker.kept);
-    // This session was sent nothing, so the turn it ran is the kept message's own.
+    // This session was given nothing, so the turn it ran is the kept message's own.
     expect(worker.turns).toHaveLength(1);
+    expect(worker.takes()).toEqual([]);
     woken.reply("Read the message.");
   },
   CASE_TIMEOUT_MS

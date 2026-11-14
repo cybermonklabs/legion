@@ -128,7 +128,8 @@ func TestAnOpenIssueThatIsWorkingHasNoClaimStopped(t *testing.T) {
 		if pending == nil {
 			t.Fatalf("%s has no pending task", token)
 		}
-		if err := machine.Handle(ctx, supervise.StreamTurnStart{Claim: token, DeliveryID: pending.ID}); err != nil {
+		acceptTake(ctx, t, machine)
+		if err := machine.Handle(ctx, supervise.StreamTurnStart{Claim: token}); err != nil {
 			t.Fatalf("start %s turn: %v", token, err)
 		}
 	}

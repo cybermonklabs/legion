@@ -47,7 +47,10 @@
 // review App submits one: approved, by the App's bot login, with the Legion footer naming the
 // reviewer's own session and the head it read. The two Apps' tokens are workflowTokenRecorder's
 // placeholders, and Envoy's listener is the package's noticeListener, with each pane registering
-// at a listener of its own (newPaneListener).
+// at a listener of its own (newPaneListener), which relays each claim's task value from the
+// daemon's task bucket to the pane holding its role (paneTaskRelay): the operator's task of steps
+// 2 and 4, given to a pane after its registration, reaches it by that relay alone, as a worker's
+// task does in production (dispatch://INFRA-2811).
 //
 // The seed is one issue in implementing, on an open pull request at the implementer's pushed
 // head, with its implementer's claim mid-launch holding the task its phase's start left pending.
@@ -262,7 +265,7 @@ func newLateCompletionLive(t *testing.T) *lateCompletionLive {
 	r.writeOverlays(work)
 
 	r.rt = newLocalRuntime(t, r.cfg.StateDir, r.legion, omp, r.home, r.profile)
-	r.rt.daemonURL, r.rt.envoyURL, r.rt.natsURLs = r.cfg.DaemonURL, newPaneListener(t), r.cfg.NatsURLs
+	r.rt.daemonURL, r.rt.envoyURL, r.rt.natsURLs = r.cfg.DaemonURL, newPaneListener(t, r.cfg.NatsURLs), r.cfg.NatsURLs
 	r.rt.dispatchURL, r.rt.dispatchTokenFile = r.cfg.DispatchURL, r.cfg.DispatchTokenFile
 	r.rt.overlays = func(token claim.Token) []string {
 		if overlays, driven := r.overlays[token]; driven {
@@ -394,8 +397,10 @@ func (r *lateCompletionLive) overrides() overrides {
 // than waiting for GitHub's answer), holding its tree's admission slot with its lifecycle open,
 // and its implementer's claim mid-launch, which this boot relaunches. The claim holds the task its
 // phase's start left pending, written as the daemon writes a phase's task line, which is what
-// admission's repair of a slotted worker passes over. Every pane's role prompt is an operator's
-// short prompt file (writePrompt): nothing here reads a prompt.
+// admission's repair of a slotted worker passes over, under the number a claim's first task is
+// queued under (Claim.TaskWritten, Delivery.Number), so the boot writes its value to the task
+// bucket and the relaunched pane takes it. Every pane's role prompt is an operator's short prompt
+// file (writePrompt): nothing here reads a prompt.
 func (r *lateCompletionLive) seed() {
 	t := r.t
 	t.Helper()
@@ -426,7 +431,7 @@ func (r *lateCompletionLive) seed() {
 	implementer := r.token(claim.RoleImplementer)
 	if _, err := r.st.AdmitClaim(ctx, supervise.Claim{
 		Token: implementer, Project: r.project, Tree: r.key, Issue: r.key, Role: claim.RoleImplementer,
-		Generation: 1, State: supervise.StateLaunching,
+		Generation: 1, State: supervise.StateLaunching, TaskWritten: 1,
 		BootTokenHash: supervise.HashBootToken("interrupted-" + randomSuffix(t)), ServingGeneration: 1,
 	}); err != nil {
 		t.Fatalf("record the implementer's unfinished launch: %v", err)
@@ -434,6 +439,7 @@ func (r *lateCompletionLive) seed() {
 	task := fmt.Sprintf("Continue %s. Issue: %s. Phase: implementing. Pull request: #%d.", listed.Title, r.key, r.number)
 	if err := r.st.PutDelivery(ctx, implementer, supervise.Delivery{
 		ID: "seeded-start-" + randomSuffix(t), Task: task, Generation: 1, Phase: phase.Implementing, QueuedAt: time.Now(),
+		Number: 1, Origin: supervise.OriginPhaseStart,
 	}); err != nil {
 		t.Fatalf("record the task the implementer's start left pending: %v", err)
 	}

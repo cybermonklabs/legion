@@ -1097,7 +1097,7 @@ func TestEveryEventOnAWaitingClaimIsDecidedWhileTheWakesStillWait(t *testing.T) 
 	if parked.State != string(supervise.StateLaunching) || parked.Locator != nil || parked.Generation != 1 {
 		t.Fatalf("the waiting claim is %+v, want launching at its generation with no process: what a launch in flight looks like", parked)
 	}
-	if parked.Pending == nil || parked.Pending.DeliveredAt != nil {
+	if parked.Pending == nil || parked.Pending.ConfirmedAt != nil {
 		t.Fatalf("the task delivered to a waiting claim is %+v, want it queued for the ready that follows", parked.Pending)
 	}
 

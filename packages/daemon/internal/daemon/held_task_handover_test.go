@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -51,9 +52,6 @@ func TestAHeldTaskIsSentWithoutTheDecisionsAHandOverGaveToTheChild(t *testing.T)
 	if pending == nil || !strings.Contains(pending.Task, onTheRoot) || !strings.Contains(pending.Task, onTheChild) {
 		t.Fatalf("the architect's held task = %#v, want the start's task naming %s and %s", pending, onTheRoot, onTheChild)
 	}
-	if prompts := rig.conn.Prompts(); len(prompts) != 0 {
-		t.Fatalf("the lingering root's architect was prompted %#v, want the task held while nobody hears it", prompts)
-	}
 	held := keptDecisions(t, rig.pool, rig.records, heldTaskRoot)
 	if len(held) != 2 {
 		t.Fatalf("%s keeps %s, want both decisions standing, held by the task the claim took: a held task's decisions are "+
@@ -65,7 +63,14 @@ func TestAHeldTaskIsSentWithoutTheDecisionsAHandOverGaveToTheChild(t *testing.T)
 		}
 	}
 
+	// The start applies the running architect's ready (the outbox's start-running fact), and
+	// admission puts the waiting root into its free slot inside that same row, so the root hears
+	// again once the row is done. The worker in this rig takes when the test reads, so its take
+	// is read where nobody in the tree hears the task: the root lingering.
 	rig.linger()
+	if taken := rig.takes(); len(taken) != 0 {
+		t.Fatalf("the lingering root's architect took %#v, want the task held while nobody hears it", taken)
+	}
 	rig.handOver()
 	if kept := keptDecisions(t, rig.pool, rig.records, heldTaskChild); len(kept) != 1 || kept[0].Ref != onTheChild {
 		t.Fatalf("the handed-over child keeps %s, want the one decision the held task named of it", keptRefs(kept))
@@ -73,33 +78,33 @@ func TestAHeldTaskIsSentWithoutTheDecisionsAHandOverGaveToTheChild(t *testing.T)
 
 	rig.readmit()
 	rig.runRow(rig.enqueueStart())
-	prompts := rig.conn.Prompts()
-	if len(prompts) != 1 {
-		t.Fatalf("the architect was prompted %d times, want the held task sent once once its root ran again: %#v", len(prompts), prompts)
+	taken := rig.takes()
+	if len(taken) != 1 {
+		t.Fatalf("the architect took %d tasks, want the held task taken once once its root ran again: %#v", len(taken), taken)
 	}
-	if !strings.Contains(prompts[0].Message, onTheRoot) {
-		t.Fatalf("the prompt %q does not name %s, the decision still owed to this root", prompts[0].Message, onTheRoot)
+	if !strings.Contains(taken[0].Message, onTheRoot) {
+		t.Fatalf("the take %q does not name %s, the decision still owed to this root", taken[0].Message, onTheRoot)
 	}
-	if strings.Contains(prompts[0].Message, onTheChild) {
-		t.Fatalf("the prompt %q names %s, which the hand-over gave to %s's own architect", prompts[0].Message, onTheChild, heldTaskChild)
+	if strings.Contains(taken[0].Message, onTheChild) {
+		t.Fatalf("the take %q names %s, which the hand-over gave to %s's own architect", taken[0].Message, onTheChild, heldTaskChild)
 	}
-	// What was sent is what the store holds, so a restart sends no more than this one did.
+	// What was taken is what the store holds, so a restart answers no more than this take did.
 	sent := rig.storedDelivery()
-	if sent == nil || sent.Task != prompts[0].Message {
-		t.Fatalf("the stored task = %#v, want the text the prompt carried", sent)
+	if sent == nil || sent.Task != taken[0].Message {
+		t.Fatalf("the stored task = %#v, want the text the take carried", sent)
 	}
 	if named := rig.named(*sent); len(named.Decisions) != 1 || named.Decisions[0].Ref != onTheRoot {
 		t.Fatalf("the stored task names %#v, want %s alone", named.Decisions, onTheRoot)
 	}
 	restored := rig.restoredPending()
-	if restored == nil || restored.Task != prompts[0].Message {
-		t.Fatalf("the task a restart restores = %#v, want the one this send carried", restored)
+	if restored == nil || restored.Task != taken[0].Message {
+		t.Fatalf("the task a restart restores = %#v, want the one this take carried", restored)
 	}
 }
 
-// A held task the hand-over leaves naming nothing is retired rather than sent: everything it
+// A held task the hand-over leaves naming nothing is retired rather than taken: everything it
 // carried is owed to the child's architect now, the start row that queued it is recorded on the
-// claim (supervise.Claim.DeliveredRows) so no retry gives it again, and a prompt would tell this
+// claim (supervise.Claim.DeliveredRows) so no retry gives it again, and a take would tell this
 // architect a decision of a tree it no longer holds.
 func TestAHeldTaskNamingOnlyTheHandedOverChildsDecisionsIsRetired(t *testing.T) {
 	rig := newHeldTaskRig(t)
@@ -118,8 +123,8 @@ func TestAHeldTaskNamingOnlyTheHandedOverChildsDecisionsIsRetired(t *testing.T) 
 
 	rig.readmit()
 	rig.runRow(rig.enqueueStart())
-	if prompts := rig.conn.Prompts(); len(prompts) != 0 {
-		t.Fatalf("the architect was prompted %#v, want a task that names nothing of its own tree retired rather than sent", prompts)
+	if taken := rig.takes(); len(taken) != 0 {
+		t.Fatalf("the architect took %#v, want a task that names nothing of its own tree retired rather than taken", taken)
 	}
 	if pending := rig.pending(); pending != nil {
 		t.Fatalf("the claim still holds %#v, want the held task retired", pending)
@@ -145,11 +150,13 @@ type heldTaskRig struct {
 	sup       *supervisor
 	runner    *outbox
 	conn      *fake.Conn
-	token     claim.Token
-	root      record.Issue
-	child     record.Issue
-	at        time.Time
-	decided   int
+	// taken is every task the architect's worker took that the daemon accepted, in order (takes).
+	taken   []acceptedTake
+	token   claim.Token
+	root    record.Issue
+	child   record.Issue
+	at      time.Time
+	decided int
 }
 
 func newHeldTaskRig(t *testing.T) *heldTaskRig {
@@ -361,6 +368,22 @@ func (r *heldTaskRig) pending() *supervise.Delivery {
 		r.t.Fatalf("%s has no architect claim", heldTaskRoot)
 	}
 	return machine.Claim().Pending
+}
+
+// takes is every task the architect's worker took, in order. The worker takes the task its claim
+// holds whenever the test reads what reached it, as a worker takes once its host is idle
+// (takeOffered); a take a hold refuses leaves the task where it is, and one the record dropped
+// leaves nothing.
+func (r *heldTaskRig) takes() []acceptedTake {
+	r.t.Helper()
+	machine, found := r.sup.Machine(r.token)
+	if !found {
+		r.t.Fatalf("%s has no architect claim", heldTaskRoot)
+	}
+	if take, accepted := takeOffered(r.ctx, r.t, machine); accepted {
+		r.taken = append(r.taken, take)
+	}
+	return slices.Clone(r.taken)
 }
 
 // storedDelivery is the task the claim store holds for the architect, nil for none: what a restart

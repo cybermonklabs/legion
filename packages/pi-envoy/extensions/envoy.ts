@@ -172,6 +172,7 @@ import {
   type SessionIdentityContext,
   subagentSessionCheck,
 } from "@legion/pi-shared/subagent-session";
+import { publishTaskSignal } from "@legion/pi-shared/task-values";
 import { toolFailure, toolSuccess } from "@legion/pi-shared/tool-result";
 import * as host from "@oh-my-pi/pi-coding-agent";
 import type { UserInputBuiltinCommand } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/send-user-input-handler";
@@ -1218,13 +1219,14 @@ export default function envoyExtension(pi: PiApi): void {
 
   // How a card that starts a turn goes, and the wake for one the host folds into the context with
   // no turn (`../src/card-wake`). A card the host's dispose flushes at shutdown wakes nothing. The
-  // start-turn mark the Legion entry keeps, as published at this build's interface version, holds
-  // the startup phase while it names the session open here (`sessionOpen`: this instance's own and
-  // the host's live one), never a `task` subagent's.
+  // start-turn mark and the task-turn mark the Legion entry keeps, as published at this build's
+  // interface version, each hold an idle card back while it names the session open here
+  // (`sessionOpen`: this instance's own and the host's live one), never a `task` subagent's.
   const cardWake = new CardWake({
     now: () => Date.now(),
     sendMessage: (message, options) => pi.sendMessage(message, options),
     startupTurn: () => publishedInterface?.startupTurn,
+    taskTurnPending: () => publishedInterface?.taskTurnPending,
     isOwnSession: (session) => sessionOpen(session),
   });
 
@@ -2388,8 +2390,15 @@ export default function envoyExtension(pi: PiApi): void {
     readonly sessionID: string;
     readonly delivery: ConsumerDelivery;
     subscription: Subscription | undefined;
+    /** The epoch of the last registration answer taken for this relay (`takeDeliveryAnswer`). */
+    answeredEpoch: string | undefined;
   }
   let relay: Relay | undefined;
+
+  // The Legion entry's taker of the task values throwing is that entry's failure, not the
+  // relay's: it is logged, and the relay goes on.
+  const logTaker = (message: string, error: unknown): void =>
+    logger.warn(`envoy: ${message}`, { error: messageFor(error) });
 
   // A relay frame for a session the host is no longer on (a switch, before the next pass closes
   // its relay), or one that drains in while the session shuts down, is one the session cannot
@@ -2423,6 +2432,14 @@ export default function envoyExtension(pi: PiApi): void {
             `envoy: ${message}`,
             error === undefined ? undefined : { error: messageFor(error) }
           ),
+        // A claim's task value, which the listener relays to the session holding the claim's
+        // role: handed to the Legion entry's claim through the interface, whose take decides what
+        // to do with it (`@legion/pi-shared/task-values`). A relay this instance has closed, or
+        // one that drains in while the session shuts down, hands over nothing.
+        onTaskValue: (value) => {
+          if (shuttingDown || relay?.delivery !== delivery) return;
+          publishTaskSignal(publishedInterface, { kind: "value", session: id, value }, logTaker);
+        },
       },
       publish: (reply, body) => {
         if (connection === undefined) throw new Error("no NATS connection");
@@ -2445,7 +2462,7 @@ export default function envoyExtension(pi: PiApi): void {
     const restored = consumerSnapshot(entries, id);
     if (restored !== undefined) delivery.restore(restored);
     persistedFollows = JSON.stringify(delivery.snapshot().follows);
-    return { sessionID: id, delivery, subscription: undefined };
+    return { sessionID: id, delivery, subscription: undefined, answeredEpoch: undefined };
   };
 
   // Subscribes the relay subject, unless it is open: a subscription on a connection the listener
@@ -2549,6 +2566,12 @@ export default function envoyExtension(pi: PiApi): void {
   // What a registration's answer says of consumer delivery, for the session it registered and
   // the relay it asked for. An answer for a session this instance has left, or for a relay since
   // closed, changes nothing.
+  //
+  // The first answer of each epoch of the relay (its first subscription, a resubscribe, a NATS
+  // reconnect) tells the Legion entry's claim that its relay began again: a task frame the
+  // listener relayed while this session was not subscribed is lost, so the claim reads its value
+  // from the daemon (`@legion/pi-shared/task-values`). It goes once the listener has answered,
+  // which is when it relays to this session's subject again.
   const takeDeliveryAnswer = (
     registeredSession: string,
     asked: Relay,
@@ -2556,6 +2579,10 @@ export default function envoyExtension(pi: PiApi): void {
   ): void => {
     if (sessionID !== registeredSession || relay !== asked) return;
     asked.delivery.answered(result.delivery);
+    const epoch = asked.delivery.epoch().id;
+    if (asked.answeredEpoch === epoch) return;
+    asked.answeredEpoch = epoch;
+    publishTaskSignal(publishedInterface, { kind: "epoch", session: asked.sessionID }, logTaker);
   };
 
   // The live agent conversation stream (LEGION-232). This session's own turns, tool calls and

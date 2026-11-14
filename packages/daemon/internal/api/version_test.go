@@ -24,10 +24,10 @@ func TestDaemonAPIVersionGolden(t *testing.T) {
 // fixture written again (`go test ./internal/api/ -update`) then fails the contracts case until
 // the enum names the word too.
 //
-// The seven words are written out here beside it, so a constant renamed on the Go side — which
+// The eight words are written out here beside it, so a constant renamed on the Go side — which
 // would otherwise rewrite the fixture with nobody reading the diff — fails here by its own name.
 func TestFailureCausesGolden(t *testing.T) {
-	want := []supervise.FailureCause{"launch_refused", "died", "never_registered", "stale_plugin",
+	want := []supervise.FailureCause{"launch_refused", "died", "never_registered", "never_reconnected", "stale_plugin",
 		"prompt_retires_exhausted", "provider_error", "unrecorded"}
 	if !slices.Equal(supervise.FailureCauses, want) {
 		t.Fatalf("supervise.FailureCauses = %q, want the wire words %q", supervise.FailureCauses, want)
@@ -57,5 +57,23 @@ func TestPodUpdateContractIsTheContractThatIntroducedTheOp(t *testing.T) {
 	if supervise.PodUpdateContract > DaemonAPIVersion {
 		t.Fatalf("supervise.PodUpdateContract = %d, above DaemonAPIVersion %d: no claim could answer an update round",
 			supervise.PodUpdateContract, DaemonAPIVersion)
+	}
+}
+
+// supervise.TaskTakeContract is the contract that brought the take (the task, task-seen and take
+// routes, and `unseenTaskValues` on the state), and supervise cannot read DaemonAPIVersion. So
+// the number is written here with the entry of api/version.go that introduced the take, pinned
+// rather than bounded for the reason TestPodUpdateContractIsTheContractThatIntroducedTheOp gives:
+// a merge that renumbers this change moves its entry, this constant and supervise's together, and
+// a later contract bump changes none of them.
+func TestTaskTakeContractIsTheContractThatIntroducedTheTake(t *testing.T) {
+	const introducedTheTake = 130
+	if supervise.TaskTakeContract != introducedTheTake {
+		t.Fatalf("supervise.TaskTakeContract = %d, want %d, the contract whose entry in version.go introduced the take",
+			supervise.TaskTakeContract, introducedTheTake)
+	}
+	if supervise.TaskTakeContract > DaemonAPIVersion {
+		t.Fatalf("supervise.TaskTakeContract = %d, above DaemonAPIVersion %d: no worker could take a task",
+			supervise.TaskTakeContract, DaemonAPIVersion)
 	}
 }

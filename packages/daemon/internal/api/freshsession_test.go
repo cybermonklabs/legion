@@ -102,16 +102,18 @@ func idleOnTheLadder(t *testing.T, h *harness) claim.Token {
 	if pending == nil {
 		t.Fatal("the delivered task is on no claim")
 	}
-	if err := m.Handle(h.ctx, supervise.StreamTurnStart{Claim: token, DeliveryID: pending.ID}); err != nil {
+	acceptTake(t, m)
+	if err := m.Handle(h.ctx, supervise.StreamTurnStart{Claim: token}); err != nil {
 		t.Fatalf("start the turn: %v", err)
-	}
-	if err := m.Handle(h.ctx, supervise.StreamPromptResult{
-		Claim: token, DeliveryID: pending.ID, AgentInvoked: true, Error: "overloaded_error", HTTPStatus: 529,
-	}); err != nil {
-		t.Fatalf("the turn's provider error: %v", err)
 	}
 	if err := m.Handle(h.ctx, supervise.StreamTurnEnd{Claim: token}); err != nil {
 		t.Fatalf("end the turn: %v", err)
+	}
+	if err := m.Handle(h.ctx, supervise.RequestTurnOutcome{
+		Claim: token, Generation: m.Claim().Generation, Sequence: 1, Task: pending.Number,
+		ProviderError: &supervise.ProviderError{Message: "overloaded_error", Status: 529},
+	}); err != nil {
+		t.Fatalf("the turn's provider error: %v", err)
 	}
 	if c := m.Claim(); c.State != supervise.StateIdle || c.ProviderErrorRun != 1 {
 		t.Fatalf("the claim is %s with a run of %d provider errors, want it idle on the ladder after one", c.State, c.ProviderErrorRun)

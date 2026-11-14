@@ -530,10 +530,11 @@ func TestABehindCompletionOfAPhaseWithNoRecordIsRefused(t *testing.T) {
 }
 
 // What keeps an accepted behind completion from having the worker do the entry again is the rule
-// every task is sent under: a task carries the phase it was queued for, and the issue has left
-// that phase, so the delivery is dropped rather than sent (supervise's phaseHolds). Without that
-// the worker would be given the second entry's task after its own answer had moved the issue on,
-// and would do the same work again at the same head for the same answer.
+// every task is taken under: a task carries the phase it was queued for, and the issue has left
+// that phase, so the take of it is answered dropped and its value deleted rather than accepted
+// (supervise's phaseHolds, at the take). Without that the worker would be given the second entry's
+// task after its own answer had moved the issue on, and would do the same work again at the same
+// head for the same answer.
 func TestTheCurrentEntrysTaskIsDroppedAfterAnAcceptedBehindCompletion(t *testing.T) {
 	h, _, _ := newEntryHarness(t)
 	holdPhases(h)
@@ -547,23 +548,17 @@ func TestTheCurrentEntrysTaskIsDroppedAfterAnAcceptedBehindCompletion(t *testing
 	assertIssuePhase(t, h, phase.Reviewing)
 
 	// The second testing entry's task reaches the claim, queued for the phase the completion has
-	// just taken the issue out of. The claim is given a connection first, since a delivery the
-	// daemon has nothing to send over waits for the shim's hello and is never put to the question
-	// at all (supervise's sendPending); the harness registers none of its own.
-	conn := connected(h, tester.token)
+	// just taken the issue out of, and its worker takes it.
 	deliverPhaseTask(t, h, tester.token, "outbox:78", "test LEGION-208 again", phase.Testing, 2, 1)
-	settled(h, tester.token)
 	machine, ok := h.supervisor.Machine(tester.token)
 	if !ok {
 		t.Fatal("no machine for the tester")
 	}
+	if answer := takePending(t, machine); answer.Outcome != supervise.TakeOutcomeDropped {
+		t.Fatalf("the take of entry 2's task = %+v, want it dropped rather than worked a second time: the issue has left the phase it was queued for", answer)
+	}
 	if p := machine.Claim().Pending; p != nil {
 		t.Fatalf("the tester holds %+v, want entry 2's task dropped: the issue has left the phase it was queued for", p)
-	}
-	for _, prompt := range conn.Prompts() {
-		if prompt.DeliveryID == "outbox:78" {
-			t.Fatalf("entry 2's task was sent as %+v, want it dropped rather than worked a second time", prompt)
-		}
 	}
 }
 
@@ -739,7 +734,7 @@ func takeStart(t *testing.T, h *harness, token claim.Token, issue string, role c
 }
 
 // takeTask ends whatever turn the claim is in, which retires the task it held, and gives it task
-// of entry in a turn of its own: a worker taking the next phase's work.
+// of entry, taken by its worker, in a turn of its own: a worker taking the next phase's work.
 func takeTask(t *testing.T, h *harness, token claim.Token, id, task string, entry int64, generation uint64) {
 	t.Helper()
 	queueTask(t, h, token, id, task, entry, generation)
@@ -747,15 +742,16 @@ func takeTask(t *testing.T, h *harness, token claim.Token, id, task string, entr
 	if !ok {
 		t.Fatalf("no machine for %s", token)
 	}
-	if err := machine.Handle(context.Background(), supervise.StreamTurnStart{Claim: token, DeliveryID: id}); err != nil {
+	acceptTake(t, machine)
+	if err := machine.Handle(context.Background(), supervise.StreamTurnStart{Claim: token}); err != nil {
 		t.Fatalf("start the turn of %s: %v", token, err)
 	}
 }
 
-// queueTask is takeTask's delivery without the turn that confirms it: the task waits on the claim
-// unacknowledged, as one the outbox sent and the worker has not read, so the claim goes on serving
-// the entry its last confirmed task carried (supervise.Claim.ServingEntry). It is deliverPhaseTask
-// for a delivery of no phase, which is what every task these tests queue by hand carries.
+// queueTask is takeTask's delivery without the take: the task waits on the claim untaken, as one
+// the outbox queued and the worker has not taken, so the claim goes on serving the entry its last
+// taken task carried (supervise.Claim.ServingEntry). It is deliverPhaseTask for a delivery of no
+// phase, which is what every task these tests queue by hand carries.
 func queueTask(t *testing.T, h *harness, token claim.Token, id, task string, entry int64, generation uint64) {
 	t.Helper()
 	deliverPhaseTask(t, h, token, id, task, "", entry, generation)

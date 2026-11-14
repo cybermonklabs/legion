@@ -286,8 +286,8 @@ func TestAnOperatorsDeliveryOverTheRefreshsParkedRelaunchRunsItNow(t *testing.T)
 	if held := h.m.View().WakeWaiting; held != nil {
 		t.Fatalf("the claim names wake %+v, want none: an operator's task waits for no turn", held)
 	}
-	if p := h.pending(); p.Task != task || !p.DeliveredAt.IsZero() {
-		t.Fatalf("the task is %+v, want %q queued unread: it goes to the process this relaunch starts", p, task)
+	if p := h.pending(); p.Task != task || p.taken() {
+		t.Fatalf("the task is %+v, want %q untaken: it goes to the process this relaunch starts", p, task)
 	}
 	h.wantWakeLine(h.token, "kind=plugin-refresh", "waited=true", "waitedFor="+wakePart.String(), "paced=false")
 

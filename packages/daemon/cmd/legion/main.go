@@ -111,6 +111,7 @@ var commands = map[string]commandEntry{
 	"probe-image":    {runProbeImage, "run the worker image's launch probes (the image build and the daemon's probe Sandbox run it)"},
 	"workspace-init": {runWorkspaceInit, "an issue pod's init containers: fetch the repository, clone the skills marketplace, provision the issue's workspace; and a repository cache pod's process"},
 	"skills-check":   {runSkillsCheck, "compare the skills a role installed with the commit its pod's init container recorded (a role's start wrapper runs it, never a person)"},
+	"task-cost":      {runTaskCost, "read the daemon's JSON log on stdin and print what a window of it says task delivery cost: turns by cause, numbers written, taken and finished, charges, retirements and three verdicts"},
 	"controller":     {runController, "start the operator's controller, the interactive Oh My Pi session an operator talks to"},
 	"git-credential": {runGitCredential, "git's credential helper in every shared clone: answers git with the token of the owner the repository's path names (git runs it, never a person)"},
 	"gh":             {runGh, "the gh first on a pane's or pod's PATH: runs the real gh with the gh directory of the owner the command names (a pane runs it, never a person)"},
@@ -289,6 +290,9 @@ func pluginsLine(cfg config.Config) string {
 // top level — in the words boot logs it with: what the key would have been refused for, and what
 // to change. A deprecation is the first thing an operator reads that way, and the exit stays 0,
 // since such a key is ignored and never refused.
+// Then, for a file that names no NATS (`nats_urls`), the line a booting daemon logs for it
+// (daemon.NoNATSLine): such a daemon boots and launches no worker, since it has no task bucket to
+// hand one its task through. It is a report, so the exit stays 0.
 // Then one line per project, in key order, naming its `production_check` and what the word
 // decides (productionCheckLine), so an operator reads back which projects open a production
 // check at a merge. After them, one line per configured repository rename
@@ -337,6 +341,9 @@ func checkStartConfig(configPath string, stdout, stderr io.Writer) int {
 	fmt.Fprintln(stdout, ok)
 	for _, warning := range cfg.Warnings {
 		fmt.Fprintln(stdout, warning)
+	}
+	if line := daemon.NoNATSLine(cfg); line != "" {
+		fmt.Fprintln(stdout, line)
 	}
 	for _, key := range slices.Sorted(maps.Keys(cfg.Projects)) {
 		fmt.Fprintln(stdout, productionCheckLine(key, cfg.Projects[key]))
@@ -634,6 +641,7 @@ func runState(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	fmt.Fprintln(stdout, roundsSummary(state.Issues))
 	fmt.Fprintln(stdout, openCallsSummary(state.Issues))
 	fmt.Fprintln(stdout, entrySummary(state.Issues))
+	fmt.Fprintln(stdout, unseenTaskValuesSummary(state.UnseenTaskValues))
 	fmt.Fprintln(stdout, pendingSummary(state.PendingStatusWrites))
 	fmt.Fprintln(stdout, heldSummary(state.HeldOutboxRows))
 	fmt.Fprintln(stdout, strandedSummary(state.StrandedClaims, strandedSuspenders(ctx, op, state.StrandedClaims)))
@@ -1146,6 +1154,24 @@ func entrySummary(issues map[string]api.Issue) string {
 		named[i] = fmt.Sprintf("%s %s: entry %d, given %d", row.issue, row.role, row.entry, row.given)
 	}
 	return fmt.Sprintf("roles not given their phase entry: %d — %s", len(behind), strings.Join(named, "; "))
+}
+
+// unseenTaskValuesSummary is the one line an operator reads for the claims whose task value
+// nobody reported seeing for a whole first bound (api.State.UnseenTaskValues): how many, and each
+// by claim with the task its value names and when the daemon last wrote it. The relay that
+// carries a value to its worker failed for each — a listener stopped, or a session no listener
+// relays to — so the daemon charges nobody and writes the value again once per bound; a claim
+// that stays on this line through several reads is one no rewrite reaches. With none the line
+// says so.
+func unseenTaskValuesSummary(unseen []api.UnseenTaskValue) string {
+	if len(unseen) == 0 {
+		return "task values nobody reported seeing: none"
+	}
+	named := make([]string, len(unseen))
+	for i, value := range unseen {
+		named[i] = fmt.Sprintf("%s task %d written %s", value.Claim, value.Task, value.WrittenAt.Format(time.RFC3339))
+	}
+	return fmt.Sprintf("task values nobody reported seeing: %d — %s", len(unseen), strings.Join(named, "; "))
 }
 
 // wakesWaitingSummary is the line an operator reads for the wakes the daemon's pacing is holding

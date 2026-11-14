@@ -57,7 +57,10 @@ const (
 	refreshWaveTurns = 8
 	// refreshWaveRounded is the stale claim seeded in a pod update round, which the lane passes
 	// over for as long as the round stands (refreshStalePlugins, InPodRound) and which the count
-	// of claims left to refresh leaves out (claimsToRefresh).
+	// of claims left to refresh leaves out (claimsToRefresh). Its plugin takes tasks — its
+	// contract is ahead of this daemon's, an image the operator pinned ahead of it — since a claim
+	// whose plugin takes no task is the lane's inside a round as outside one (supervise.TakesNoTask,
+	// dispatch://INFRA-2811 decision 18), and the round could carry no claim on the earlier contract.
 	refreshWaveRounded = refreshWaveTurns + 1
 	// refreshWaveSweep is the orphan sweep of these cases, on the wall clock as the daemon's own
 	// ticker is: the sweep is what re-fills the gate, so a wave of fifteen minutes' refresh would
@@ -310,8 +313,9 @@ func awaitFullGate(t *testing.T, d *daemon) bool {
 // staleClaimsListed is how many claims the stale-plugin lane still has to refresh, counted from
 // the operator's own claim list rather than from the state body: the rule requirement R4 states —
 // a recorded session, a process that holds a capability, a recorded contract that is not this
-// daemon's, no pod update round, and a launch that installs a plugin — read off a surface of its
-// own, so that the count the state serves is checked against something other than itself.
+// daemon's, no pod update round unless the claim's plugin takes no task (supervise.TakesNoTask),
+// and a launch that installs a plugin — read off a surface of its own, so that the count the
+// state serves is checked against something other than itself.
 func staleClaimsListed(t *testing.T, d *daemon) int {
 	t.Helper()
 	left := 0
@@ -319,7 +323,7 @@ func staleClaimsListed(t *testing.T, d *daemon) int {
 		if c.Session == "" || c.PluginContract == api.DaemonAPIVersion || !supervise.HoldsCapability(supervise.ClaimState(c.State)) {
 			continue
 		}
-		if supervise.IsPodRound(c.UpdateRound) || c.Role == refreshNoInstallRole {
+		if (supervise.IsPodRound(c.UpdateRound) && !supervise.TakesNoTask(c.PluginContract)) || c.Role == refreshNoInstallRole {
 			continue
 		}
 		left++
@@ -461,6 +465,7 @@ func TestTheRefreshLaneHoldsOneMinuteOfThePacingWhileAWholeFleetsWaveDrains(t *t
 			c.BootTokenHash = supervise.HashBootToken(bootTokenOf(i))
 		case i == refreshWaveRounded:
 			c.UpdateRound = supervise.PodRound(fmt.Sprintf("pod-of-%s-%d", cfg.Project, i))
+			c.PluginContract = api.DaemonAPIVersion + 1
 		}
 		return c
 	})
@@ -690,14 +695,19 @@ func TestTheRefreshLaneHoldsOneMinuteOfThePacingWhileAWholeFleetsWaveDrains(t *t
 	// The claim in a round and the claim no install reaches are where the boot found them: the
 	// lane posted neither, and the count named neither.
 	for _, each := range []struct {
-		token claim.Token
-		why   string
-	}{{rounded, "its pod update round is carrying it"}, {noInstall, "no install of this daemon's reaches its plugin"}} {
+		token    claim.Token
+		contract int
+		why      string
+	}{
+		{rounded, api.DaemonAPIVersion + 1, "its pod update round is carrying it"},
+		{noInstall, supervise.PodUpdateContract - 1, "no install of this daemon's reaches its plugin"},
+	} {
 		if got := rt.launchesOf(each.token); got != 0 {
 			t.Fatalf("%s was relaunched %d times, want none: the lane passes it over while %s", each.token, got, each.why)
 		}
-		if c := d.claim(each.token); c.PluginContract != supervise.PodUpdateContract-1 || c.State != string(supervise.StateIdle) {
-			t.Fatalf("%s is %s on contract %d after the wave, want it left idle on the contract the boot found: %s", each.token, c.State, c.PluginContract, each.why)
+		if c := d.claim(each.token); c.PluginContract != each.contract || c.State != string(supervise.StateIdle) {
+			t.Fatalf("%s is %s on contract %d after the wave, want it left idle on the contract the boot found, %d: %s",
+				each.token, c.State, c.PluginContract, each.contract, each.why)
 		}
 	}
 

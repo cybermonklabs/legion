@@ -18,6 +18,12 @@ import {
   legionRoleClaimBridge,
 } from "./role-claim-bridge";
 import { clearStartupTurn, markStartupTurnPending, markStartupTurnSent } from "./startup-turn";
+import {
+  clearTaskTurnPending,
+  markTaskTurnPending,
+  publishTaskSignal,
+  takeTaskSignals,
+} from "./task-values";
 
 const store = globalThis as typeof globalThis & { [key: symbol]: unknown };
 
@@ -46,6 +52,8 @@ function foreignInterface(version: number, from: string): EnvoyPluginInterface {
     injectedUserTurns: new Map(),
     bootstrappedSession: { file: undefined },
     startupTurn: undefined,
+    taskValues: { taker: undefined },
+    taskTurnPending: undefined,
   };
 }
 
@@ -189,5 +197,52 @@ describe("the Envoy plugin interface", () => {
     store[ENVOY_PLUGIN_INTERFACE_KEY] = foreign;
     clearStartupTurn("ses_controller");
     expect(foreign.startupTurn).toEqual({ session: "ses_controller", sentAt: undefined });
+  });
+
+  // Version 6: the claims' task values, which the Envoy entry publishes and the Legion entry's
+  // claim takes, and the mark the Legion entry's take keeps while a task's turn is pending.
+  test("is version 6, carrying the task values' one taker and the task-turn mark", () => {
+    expect(ENVOY_PLUGIN_INTERFACE_VERSION).toBe(6);
+    const published = publishEnvoyPluginInterface("file:///plugins/pi-envoy/dist/envoy.js");
+    const iface = envoyPluginInterface();
+    expect(published).toBe(iface);
+    expect(iface.taskValues.taker).toBeUndefined();
+    expect(iface.taskTurnPending).toBeUndefined();
+
+    // A signal with no taker reaches nobody; the last taker set takes every signal after it.
+    const failures: string[] = [];
+    const log = (message: string) => failures.push(message);
+    const value = {
+      kind: "value",
+      session: "ses_pane",
+      value: { claim: "legion-a-a-1-implementer", epoch: "e1", revision: 2, op: "put", task: 3 },
+    } as const;
+    publishTaskSignal(iface, value, log);
+    const first: unknown[] = [];
+    const second: unknown[] = [];
+    takeTaskSignals((signal) => first.push(signal));
+    takeTaskSignals((signal) => second.push(signal));
+    publishTaskSignal(iface, value, log);
+    publishTaskSignal(iface, { kind: "epoch", session: "ses_pane" }, log);
+    expect(first).toEqual([]);
+    expect(second).toEqual([value, { kind: "epoch", session: "ses_pane" }]);
+    // An interface the Envoy entry did not publish into is none to publish on.
+    publishTaskSignal(undefined, value, log);
+    expect(second).toHaveLength(2);
+
+    // A taker that throws is reported, and the publisher goes on.
+    takeTaskSignals(() => {
+      throw new Error("the taker failed");
+    });
+    publishTaskSignal(iface, value, log);
+    expect(failures).toEqual(["the Legion entry's task value taker threw"]);
+
+    // The mark names one session, and only that session clears it.
+    markTaskTurnPending("ses_pane");
+    expect(iface.taskTurnPending).toEqual({ session: "ses_pane" });
+    clearTaskTurnPending("ses_task_subagent");
+    expect(iface.taskTurnPending).toEqual({ session: "ses_pane" });
+    clearTaskTurnPending("ses_pane");
+    expect(iface.taskTurnPending).toBeUndefined();
   });
 });

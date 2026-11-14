@@ -73,8 +73,6 @@ interface Harness {
   readonly reports: readonly ActivityInput[]
   /** Settles the claim's boot, as `startLegionClaim`'s `booted` does. */
   readonly boot: () => void
-  /** How often the endpoint has said a turn of this session started (`firstTurnStarted`). */
-  readonly turnsStarted: () => number
   readonly lines: readonly string[]
   readonly close: () => Promise<void>
 }
@@ -127,15 +125,11 @@ async function harness(
   const inbox: string[] = []
   const published: PublishInput[] = []
   const reports: ActivityInput[] = []
-  let turnsStarted = 0
   const booted = Promise.withResolvers<void>()
   const endpoint = createPhaseHookEndpoint({
     stateFile: file,
     claim: () => options.claim,
     booted: booted.promise,
-    firstTurnStarted: () => {
-      turnsStarted += 1
-    },
     readState: (signal) => daemon.state({ signal }),
     reportActivity: async (input) => {
       reports.push(input)
@@ -164,7 +158,6 @@ async function harness(
     published,
     reports,
     boot: booted.resolve,
-    turnsStarted: () => turnsStarted,
     lines,
     close: async () => {
       // As the server's own `stop` does: no armed timer outlives the case that armed it.
@@ -487,42 +480,6 @@ test("the prompt that carries this endpoint's own reminder does not reset its co
   }
 })
 
-test("every prompt submitted says a turn of this session has started, before the phase gate", async () => {
-  // The claim's first-turn signal, which the channel server answers by taking this session's
-  // Envoy name when its claim boot has registered the step by then, and by nothing when it has
-  // not (`onFirstTurn`, `src/envoy-channel-server.ts`). This endpoint draws no such line: it
-  // fires the signal before the gate below, for the bridge's seeding `/rename` turn — which
-  // runs before any claim exists, since it writes the transcript the boot waits for — as for
-  // an architect's turn, and the server decides what each comes to.
-  const seeding = await harness()
-  expect(await seeding.endpoint.handle({ event: "UserPromptSubmit", prompt: "/rename" })).toEqual(
-    {},
-  )
-  expect(seeding.turnsStarted()).toBe(1)
-  await seeding.close()
-
-  const architect = await harness({ claim: { ...implementer, role: "architect" } })
-  await architect.endpoint.handle({ event: "UserPromptSubmit", prompt: "plan it" })
-  expect(architect.turnsStarted()).toBe(1)
-  await architect.close()
-
-  const worker = await harness({ record: recorded("open", 0), claim: implementer })
-  await worker.endpoint.handle({ event: "PostToolUse", toolName: "Bash" })
-  await worker.endpoint.handle({ event: "Stop" })
-  expect(worker.turnsStarted()).toBe(0)
-  await worker.endpoint.handle({ event: "UserPromptSubmit", prompt: "implement it" })
-  await worker.endpoint.handle({ event: "UserPromptSubmit", prompt: "and again" })
-  // Once per prompt: the step behind the signal claims once however often it is run
-  // (`claimRoleAtFirstTurn`, `@legion/pi-shared/legion-claim-core`).
-  expect(worker.turnsStarted()).toBe(2)
-  // A call the model made itself is refused before anything moves, this signal included.
-  expect(await worker.endpoint.handle({ event: "WhateverIsThis" })).toEqual({
-    error: PHASE_HOOK_REFUSAL,
-  })
-  expect(worker.turnsStarted()).toBe(2)
-  await worker.close()
-})
-
 test("a prompt carrying a line this server wrote for a delivery is that delivery's turn", async () => {
   const delivery = "Envoy delivery from the architect: the architect asks for a status"
   const open = await harness({ record: recorded("open", 2), claim: implementer })
@@ -557,6 +514,29 @@ test("a prompt carrying anything else is the daemon's assignment and opens the p
     expect(
       await endpoint.handle({ event: "UserPromptSubmit", prompt: "Implement INFRA-220." }),
     ).toEqual({})
+    expect(await record()).toEqual({ state: "open", count: 0, reported: false })
+  } finally {
+    await close()
+  }
+})
+
+// A task's turn starts with the text its accepted take answered, which the bridge writes to Claude
+// Code itself (`packages/daemon/internal/claudebridge/take.go`): it is no line this server wrote,
+// so its prompt is the assignment, a note the daemon put in front of the text included. A card
+// this server wrote while the take was pending is that turn's next step, an inbound event of it.
+test("a taken task's prompt is the assignment, with a card waiting behind it and a note in front of it", async () => {
+  const card = "Envoy delivery from the architect: the architect asks for a status"
+  const taken =
+    "Your previous turn on this task stopped because of a provider error (HTTP 529). Your work did not cause it.\n\nImplement INFRA-220."
+  const { endpoint, record, close } = await harness({
+    record: recorded("closed", 0),
+    claim: implementer,
+  })
+  try {
+    endpoint.deliveryWritten(card)
+    expect(await endpoint.handle({ event: "UserPromptSubmit", prompt: taken })).toEqual({})
+    expect(await record()).toEqual({ state: "open", count: 0, reported: false })
+    expect(await endpoint.handle({ event: "UserPromptSubmit", prompt: card })).toEqual({})
     expect(await record()).toEqual({ state: "open", count: 0, reported: false })
   } finally {
     await close()

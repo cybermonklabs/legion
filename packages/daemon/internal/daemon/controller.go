@@ -162,7 +162,8 @@ func (k *controllerKeeper) ready(c supervise.Claim) {
 	}
 	// The ready route calls this on its own goroutine, beside the keeper's loop, so the decision
 	// takes a fresh hold mark at the call.
-	err := m.Handle(store.ForConcurrentWorker(k.ctx), supervise.RequestDeliver{Claim: c.Token, Task: ControllerStartMessage})
+	err := m.Handle(store.ForConcurrentWorker(k.ctx), supervise.RequestDeliver{Claim: c.Token, Task: ControllerStartMessage,
+		Origin: supervise.OriginControllerStart})
 	switch {
 	case err == nil:
 	case errors.Is(err, supervise.ErrDeliveryPending):
