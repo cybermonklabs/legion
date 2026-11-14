@@ -12,17 +12,16 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"sync"
 	"testing"
 	"testing/fstest"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/pgmigrate"
 	"github.com/sjawhar/envoy/internal/pgmigrate/pgmigratetest"
+	"github.com/sjawhar/envoy/internal/testpg/pgtemplate"
 	"github.com/sjawhar/envoy/migrationid"
 )
 
@@ -35,50 +34,27 @@ func testDatabaseURL(t *testing.T) string {
 	return databaseURL
 }
 
-// The databases these tests run on. This package cannot import its own storetest, which imports
-// it, so it keeps that harness's shape here: one migrated template per run, a file copy of it
-// per test that wants the current schema, a file copy of template1 per test that migrates, and
-// a drop when the test that took it ends (docs/testing.md, "A database a Go test creates",
-// dispatch://INFRA-1075).
-var shared struct {
-	once     sync.Once
-	err      error
-	server   url.URL
-	admin    *pgxpool.Pool
-	template string
+// templates is where the databases these tests run on come from: a file copy of Dispatch's
+// migrated template for a test that wants the current schema, or of template1 for a test that
+// migrates, each dropped once the test that took it ends (internal/testpg/pgtemplate,
+// docs/testing.md, "A database a Go test creates"). This package cannot import its own
+// storetest, which imports it, so it holds a harness of its own on storetest's template
+// (pgtemplate.Dispatch), which whichever test process gets there first builds and every other
+// clones.
+var templates = pgtemplate.New(pgtemplate.Dispatch, MigrationsFingerprint, migrateTemplate)
 
-	drops     sync.WaitGroup
-	dropMu    sync.Mutex
-	dropFails []string
-}
+// TestMain runs the package's tests and waits for their databases to drop.
+func TestMain(m *testing.M) { os.Exit(templates.Main(m)) }
 
-// TestMain runs the package's tests, waits for their databases to drop, then drops the template
-// the current-schema tests cloned.
-func TestMain(m *testing.M) { os.Exit(runTests(m)) }
-
-func runTests(m *testing.M) int {
-	code := m.Run()
-	if shared.admin == nil {
-		return code
+// migrateTemplate applies every migration to the database a build of the template runs in, under
+// production's discipline (a zero Locking), as storetest's build does: the two build one template.
+func migrateTemplate(ctx context.Context, url string) error {
+	database, err := Open(ctx, url, WithMaxConns(testPoolSize))
+	if err != nil {
+		return fmt.Errorf("open the template database: %w", err)
 	}
-	defer shared.admin.Close()
-	shared.drops.Wait()
-	for _, failure := range shared.dropFails {
-		fmt.Fprintf(os.Stderr, "store test: %s\n", failure)
-		if code == 0 {
-			code = 1
-		}
-	}
-	if shared.template == "" {
-		return code
-	}
-	if _, err := shared.admin.Exec(context.Background(), "drop database "+shared.template); err != nil {
-		fmt.Fprintf(os.Stderr, "store test: drop template database %s: %v\n", shared.template, err)
-		if code == 0 {
-			code = 1
-		}
-	}
-	return code
+	defer database.Pool.Close()
+	return database.Migrate(ctx)
 }
 
 // eventWait is how long a test here waits FOR AN EVENT: a statement joining a lock queue, a
@@ -90,105 +66,6 @@ func runTests(m *testing.M) int {
 // length - keeps its own number.
 const eventWait = 30 * time.Second
 
-// prepareClones opens the admin pool and migrates the template every current-schema test clones.
-func prepareClones(raw string) error {
-	server, err := url.Parse(raw)
-	if err != nil {
-		return fmt.Errorf("parse DISPATCH_TEST_DATABASE_URL: %w", err)
-	}
-	shared.server = *server
-	ctx := context.Background()
-	// The admin pool is on the server's postgres database: neither create database nor drop
-	// database may run against the database it names.
-	config, err := pgxpool.ParseConfig(testDatabaseURLFor("postgres"))
-	if err != nil {
-		return fmt.Errorf("parse admin database URL: %w", err)
-	}
-	// One create and one drop a test run on this pool, so it is sized for the tests this
-	// package runs at once rather than for the drops alone.
-	config.MaxConns = 8
-	admin, err := pgxpool.NewWithConfig(ctx, config)
-	if err != nil {
-		return fmt.Errorf("open admin pool: %w", err)
-	}
-	shared.admin = admin
-
-	suffix, err := randomSuffix()
-	if err != nil {
-		return err
-	}
-	name := "dispatch_store_template_" + suffix
-	// The template is a file copy of template1, for the reason each clone of it is one.
-	if _, err := admin.Exec(ctx, "create database "+name+" strategy file_copy"); err != nil {
-		return fmt.Errorf("create template database: %w", err)
-	}
-	shared.template = name
-	database, err := Open(ctx, testDatabaseURLFor(name), WithMaxConns(testPoolSize))
-	if err != nil {
-		return fmt.Errorf("open template database: %w", err)
-	}
-	database.Locking = testLocking
-	err = database.Migrate(ctx)
-	database.Pool.Close()
-	if err != nil {
-		return fmt.Errorf("migrate template database: %w", err)
-	}
-	// Postgres refuses to clone a database another session is connected to.
-	if _, err := admin.Exec(ctx, "alter database "+name+" with allow_connections false"); err != nil {
-		return fmt.Errorf("close template database to connections: %w", err)
-	}
-	return nil
-}
-
-// testDatabaseURLFor is the server's DSN pointed at one database of this package's own.
-func testDatabaseURLFor(database string) string {
-	server := shared.server
-	server.Path = "/" + database
-	return server.String()
-}
-
-// cloneTestDatabase makes a database of this test's own, a file copy of a template, and drops it
-// in the background when t ends; TestMain waits for the drops. The template is the migrated one
-// when migrated is set, or template1 for a test that migrates.
-func cloneTestDatabase(t *testing.T, prefix string, migrated bool) string {
-	t.Helper()
-	raw := testDatabaseURL(t)
-	shared.once.Do(func() { shared.err = prepareClones(raw) })
-	if shared.err != nil {
-		t.Fatalf("prepare the migrated template database: %v", shared.err)
-	}
-	// Read after the once: a caller that passed shared.template read it before prepareClones set it.
-	template := "template1"
-	if migrated {
-		template = shared.template
-	}
-	suffix, err := randomSuffix()
-	if err != nil {
-		t.Fatalf("%v", err)
-	}
-	name := prefix + suffix
-	statement := "create database " + name + " template " + template + " strategy file_copy"
-	if _, err := shared.admin.Exec(context.Background(), statement); err != nil {
-		t.Fatalf("clone isolated database from %s: %v", template, err)
-	}
-	t.Cleanup(func() { dropTestDatabase(name) })
-	return name
-}
-
-// dropTestDatabase drops name without waiting for it; TestMain waits for every drop before it
-// drops the template and returns. Dropping a database forces a checkpoint and waits for it,
-// which a test that waited would spend on its own clock; drops in flight together share one
-// checkpoint.
-func dropTestDatabase(name string) {
-	shared.drops.Go(func() {
-		if _, err := shared.admin.Exec(context.Background(), "drop database "+name+" with (force)"); err != nil {
-			shared.dropMu.Lock()
-			shared.dropFails = append(shared.dropFails, fmt.Sprintf("drop isolated database %s: %v", name, err))
-			shared.dropMu.Unlock()
-		}
-	})
-}
-
 // openTestStore returns a store on a migrated database of its own, dropped when t ends. The
 // database carries what every migration left and nothing any test wrote, so a test that wants
 // the current schema and only its own rows takes one: running the whole set on an empty
@@ -196,8 +73,7 @@ func dropTestDatabase(name string) {
 // about the runner itself migrates, and there from an empty database (openEmptyTestStore).
 func openTestStore(t *testing.T) *Store {
 	t.Helper()
-	name := cloneTestDatabase(t, "dispatch_test_", true)
-	store, err := Open(context.Background(), testDatabaseURLFor(name), WithMaxConns(testPoolSize))
+	store, err := Open(context.Background(), templates.Clone(t, testDatabaseURL(t), "dispatch_test_"), WithMaxConns(testPoolSize))
 	if err != nil {
 		t.Fatalf("open isolated database: %v", err)
 	}
@@ -211,8 +87,7 @@ func openTestStore(t *testing.T) *Store {
 // current schema and takes a clone of the migrated template (openTestStore).
 func openEmptyTestStore(t *testing.T) *Store {
 	t.Helper()
-	name := cloneTestDatabase(t, "dispatch_empty_test_", false)
-	store, err := Open(context.Background(), testDatabaseURLFor(name), WithMaxConns(testPoolSize))
+	store, err := Open(context.Background(), templates.Unmigrated(t, testDatabaseURL(t), "dispatch_unmigrated_test_"), WithMaxConns(testPoolSize))
 	if err != nil {
 		t.Fatalf("open isolated database: %v", err)
 	}
@@ -233,10 +108,11 @@ var testLocking = pgmigrate.Locking{Timeout: 500 * time.Millisecond, Attempts: 3
 
 // testPoolSize bounds the shared pool of every store these tests open, in place of
 // production's sharedPoolSize, for the reason storetest bounds its own at the same number: the
-// tests of this package run beside each other now, against one Postgres whose max_connections is
-// PostgreSQL's default 100, and a test that fully acquires a 64-connection pool
-// (TestListenerIsServedWhileTheSharedPoolIsFullyAcquired) would leave the tests beside it with
-// none. The pools Pool.separate opens keep their own sizes.
+// tests of this package run beside each other now, against one Postgres every package of the run
+// shares (its max_connections is 500 on the services of .github/workflows/ci.yaml), and a test
+// that fully acquires a 64-connection pool (TestListenerIsServedWhileTheSharedPoolIsFullyAcquired)
+// would hold that many of the server's connections while the tests beside it open their own. The
+// pools Pool.separate opens keep their own sizes.
 const testPoolSize = 16
 
 func randomDatabaseSuffix(t *testing.T) string {

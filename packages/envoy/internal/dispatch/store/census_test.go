@@ -18,10 +18,13 @@ import (
 	"github.com/sjawhar/envoy/internal/pgmigrate/pgmigratetest"
 )
 
-// censusTestLockTimeout is how long a census these tests take waits for a touched table's lock,
-// in place of pgmigrate.LockTimeout. The refusal it proves is the same at any bound, and the two
-// tests of it waited five seconds each for a holder that never lets go (dispatch://INFRA-1075).
-// The refusals name the bound, so each test reads it from here rather than spelling it out.
+// censusTestLockTimeout is how long a census these tests take waits for a touched table's lock
+// (CensusOptions.Locking's timeout), in place of pgmigrate.LockTimeout, wherever that wait is not
+// the test's subject: the refusal a lock holder causes is the same at any bound, and waiting five
+// seconds for a holder that never lets go costs each such test that long (dispatch://INFRA-1075).
+// The refusals name the bound, so a test reads it from here rather than spelling it out. The one
+// test of the bound itself, TestCensusRefusesATouchedTableItCannotReadWithinTheLockTimeout, takes
+// the census's own default.
 const censusTestLockTimeout = 300 * time.Millisecond
 
 var censusBase = fstest.MapFS{
@@ -1343,22 +1346,25 @@ func TestCensusFollowsAForeignKeyAnEarlierPendingMigrationAdds(t *testing.T) {
 // A touched table the census cannot read within the lock timeout - another session holds ACCESS
 // EXCLUSIVE on it, which every read of its size or rows waits behind - refuses naming the table,
 // the SQLSTATE and the holder, and the census still finishes its report: the wait gave up inside a
-// savepoint, so it left the transaction usable.
+// savepoint, so it left the transaction usable. The census runs on no options, as production's
+// Census does, so the bound is the census's own default: the five seconds a migration would wait
+// for the same lock, spelled out rather than read from pgmigrate.LockTimeout so that a default
+// changed or lost fails here. The test is parallel, so those five seconds pass beside the others.
 func TestCensusRefusesATouchedTableItCannotReadWithinTheLockTimeout(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	store, url := migratedToOne(t)
 	pid := holdLock(t, store, "things", "access exclusive")
 	started := time.Now()
-	report, err := census(ctx, url, withCheck("select 0"), pgmigrate.CensusOptions{LockTimeout: censusTestLockTimeout})
+	report, err := census(ctx, url, withCheck("select 0"), pgmigrate.CensusOptions{})
 	if err != nil {
 		t.Fatalf("census: %v (after %s)", err, time.Since(started).Round(time.Millisecond))
 	}
-	if got := refusals(report); len(got) != 1 || !strings.Contains(got[0], "could not read things within "+censusTestLockTimeout.String()+" (SQLSTATE 55P03)") || !strings.Contains(got[0], "pid "+strconv.FormatUint(uint64(pid), 10)) {
+	if got := refusals(report); len(got) != 1 || !strings.Contains(got[0], "could not read things within 5s (SQLSTATE 55P03)") || !strings.Contains(got[0], "pid "+strconv.FormatUint(uint64(pid), 10)) {
 		t.Errorf("refusals = %v, want one naming the table, 55P03 and pid %d", got, pid)
 	}
 	out := reportText(report)
-	if !strings.Contains(out, "touches things: not read, its lock was not granted within "+censusTestLockTimeout.String()) || !strings.Contains(out, "census: transactions open longer than 1m0s, or of an age the census cannot see: none") {
+	if !strings.Contains(out, "touches things: not read, its lock was not granted within 5s") || !strings.Contains(out, "census: transactions open longer than 1m0s, or of an age the census cannot see: none") {
 		t.Errorf("report:\n%s", out)
 	}
 }
@@ -1422,7 +1428,7 @@ func TestCensusChecksTheTablesAForeignKeyReachesFromARowTheMigrationWrites(t *te
 	}
 
 	exclusive := "pid " + strconv.FormatUint(uint64(holdLock(t, store, "ask_followers", "access exclusive")), 10)
-	report, err = census(ctx, url, set, pgmigrate.CensusOptions{LockTimeout: censusTestLockTimeout})
+	report, err = census(ctx, url, set, pgmigrate.CensusOptions{Locking: pgmigrate.Locking{Timeout: censusTestLockTimeout}})
 	if err != nil {
 		t.Fatalf("census: %v", err)
 	}

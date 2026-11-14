@@ -221,7 +221,7 @@ func (s *Store) migrate(ctx context.Context, fsys fs.FS) error {
 		if applied {
 			continue
 		}
-		if err := pgmigrate.Exec(ctx, tx, migration, s.Pool.Config().BeforeConnect); err != nil {
+		if err := (pgmigrate.Locking{}).Exec(ctx, tx, migration, s.Pool.Config().BeforeConnect); err != nil {
 			return err
 		}
 		if _, err := tx.Exec(ctx, `insert into broker_schema_migrations (version) values ($1)`, migration.Version); err != nil {

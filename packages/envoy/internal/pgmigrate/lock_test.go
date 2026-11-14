@@ -297,13 +297,13 @@ func TestDiagnoseHoldersReturnsWhenTheCleanupCannotFinish(t *testing.T) {
 // the one place that holds the zero value to the constants a deployment gets.
 func TestAZeroLockingIsProductionsDiscipline(t *testing.T) {
 	zero := Locking{}.resolve()
-	if zero != DefaultLocking {
-		t.Errorf("a zero Locking resolves to %+v, want %+v", zero, DefaultLocking)
+	if want := (Locking{Timeout: LockTimeout, Attempts: LockTimeoutAttempts, RetryPause: LockTimeoutRetryPause}); zero != want {
+		t.Errorf("a zero Locking resolves to %+v, want the package's constants %+v", zero, want)
 	}
 	if zero.Timeout != 5*time.Second || zero.Attempts != 3 || zero.RetryPause != 2*time.Second {
 		t.Errorf("production's discipline is %+v, want a five-second timeout, three attempts and two-second pauses", zero)
 	}
-	if got := (Locking{}).setting(); got != "5000ms" {
+	if got := (Locking{}).Setting(); got != "5000ms" {
 		t.Errorf("lock_timeout is set to %q, want 5000ms", got)
 	}
 	if got := (Locking{}).watchInterval(); got != 200*time.Millisecond {

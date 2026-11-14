@@ -235,7 +235,7 @@ func auditMigrationLocks(ctx context.Context, conn *pgx.Conn, migration pgmigrat
 			return fmt.Errorf("migration %s: install concurrent lock audit: %w", migration.Name, err)
 		}
 		defer conn.Exec(ctx, "drop event trigger pgmigrate_audit_locks; drop function pg_temp.pgmigrate_audit_locks(); drop table pgmigrate_audit_locks")
-		if err := pgmigrate.ExecNonTransactional(ctx, conn, migration, nil); err != nil {
+		if err := (pgmigrate.Locking{}).ExecNonTransactional(ctx, conn, migration, nil); err != nil {
 			return err
 		}
 		query = "select relation, mode from pgmigrate_audit_locks"
@@ -352,7 +352,7 @@ func CheckCensusNamesTheMigrationsItReads(ctx context.Context, conn *pgx.Conn, f
 			}
 		}
 		if migration.NonTransactional {
-			if err := pgmigrate.ExecNonTransactional(ctx, conn, migration, nil); err != nil {
+			if err := (pgmigrate.Locking{}).ExecNonTransactional(ctx, conn, migration, nil); err != nil {
 				return err
 			}
 		} else {

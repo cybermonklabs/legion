@@ -23,11 +23,12 @@ import (
 // Store is the shared Dispatch database handle.
 type Store struct {
 	Pool *Pool
-	// Locking is the discipline Migrate applies each migration under: how long it waits for a
-	// lock, how many attempts it makes of one whose wait outlasts that, and how long it holds
-	// nothing between them. The zero value is production's (pgmigrate.DefaultLocking); the tests
-	// of the runner itself set their own short, so that proving the bound, the retry and the
-	// give-up costs a fraction of a second rather than three five-second waits.
+	// Locking is the discipline Migrate applies each migration under, in both execution modes:
+	// how long it waits for a lock, how many attempts it makes of one whose wait outlasts that,
+	// and how long it holds nothing between them. A zero Locking is production's discipline
+	// (pgmigrate.Locking); the tests of the runner itself set their own short, so that proving the
+	// bound, the retry and the give-up costs a fraction of a second rather than three five-second
+	// waits.
 	Locking pgmigrate.Locking
 }
 
@@ -157,8 +158,9 @@ func (s *Store) Migrate(ctx context.Context) error {
 
 // MigrationsFingerprint is pgmigrate.Fingerprint of the set Migrate applies, and the error
 // Migrate would refuse that set with. The test harness names the template database every test's
-// database is cloned from after it (internal/dispatch/store/storetest), so the test processes of
-// one run share one migrated template; nothing in production reads it.
+// database is cloned from after it (internal/testpg/pgtemplate, which storetest and this
+// package's own tests use), so the test processes of one run share one migrated template; nothing
+// in production reads it.
 func MigrationsFingerprint() (string, error) {
 	migrations, err := pgmigrate.Load(migrationFiles, "migrations")
 	if err != nil {
@@ -435,12 +437,13 @@ func (s *Store) applyNonTransactionalMigration(ctx context.Context, migration pg
 	if applied {
 		return nil
 	}
-	// Keep the version insert bounded too, just as the transactional runner's SET LOCAL
-	// remains in force until commit. ExecNonTransactional restores this same session bound.
-	if _, err := conn.Exec(ctx, "select set_config('lock_timeout', $1, false)", pgmigrate.LockTimeout.String()); err != nil {
+	// Keep the version insert bounded too, by the runner's own timeout, just as the transactional
+	// runner's SET LOCAL remains in force until commit. ExecNonTransactional restores this same
+	// session bound.
+	if _, err := conn.Exec(ctx, "select set_config('lock_timeout', $1, false)", s.Locking.Setting()); err != nil {
 		return fmt.Errorf("bound migration version lock waits: %w", err)
 	}
-	if err := pgmigrate.ExecNonTransactional(ctx, conn, migration, s.Pool.Config().BeforeConnect); err != nil {
+	if err := s.Locking.ExecNonTransactional(ctx, conn, migration, s.Pool.Config().BeforeConnect); err != nil {
 		return err
 	}
 	if _, err := conn.Exec(ctx, "insert into schema_migrations (version) values ($1::bigint)", migration.Version); err != nil {

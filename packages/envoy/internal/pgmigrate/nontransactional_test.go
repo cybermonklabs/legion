@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 	"testing/fstest"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/testpg"
@@ -96,10 +97,10 @@ func TestExecNonTransactionalBuildsAnIndexAndRestoresTimeout(t *testing.T) {
 		t.Fatal(err)
 	}
 	migration := Migration{Name: "0001_index.up.sql", SQL: "create index concurrently if not exists things_kind on things (kind)", NonTransactional: true}
-	if err := ExecNonTransactional(ctx, conn, migration, nil); err != nil {
+	if err := (Locking{}).ExecNonTransactional(ctx, conn, migration, nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := ExecNonTransactional(ctx, conn, migration, nil); err != nil {
+	if err := (Locking{}).ExecNonTransactional(ctx, conn, migration, nil); err != nil {
 		t.Fatalf("idempotent retry: %v", err)
 	}
 	var valid bool
@@ -195,9 +196,9 @@ func TestExecNonTransactionalRebuildsAfterATimedOutBuild(t *testing.T) {
 	migration := indexMigration()
 	var attempts int
 	var leftover uint32
-	runErr := DefaultLocking.RetryLockTimeouts(ctx, migration.Name, func(ctx context.Context) error {
+	runErr := Locking{}.RetryLockTimeouts(ctx, migration.Name, func(ctx context.Context) error {
 		attempts++
-		err := ExecNonTransactional(ctx, conn, migration, nil)
+		err := Locking{}.ExecNonTransactional(ctx, conn, migration, nil)
 		if attempts == 1 {
 			got := indexState(t, ctx, conn, "things_kind")
 			// The oid is the leftover's, read here and compared after the rebuild.
@@ -236,7 +237,7 @@ func TestExecNonTransactionalDropsTheLeftoverOfAKilledBuild(t *testing.T) {
 		t.Fatal(err)
 	}
 	leftover := leaveInvalidIndex(t, ctx, conn, "things_kind", "things", "kind")
-	if err := ExecNonTransactional(ctx, conn, indexMigration(), nil); err != nil {
+	if err := (Locking{}).ExecNonTransactional(ctx, conn, indexMigration(), nil); err != nil {
 		t.Fatalf("ExecNonTransactional = %v, want nil after dropping its own leftover", err)
 	}
 	got := indexState(t, ctx, conn, "things_kind")
@@ -255,7 +256,7 @@ func TestExecNonTransactionalRefusesAnIndexItDidNotBuild(t *testing.T) {
 	// Every refusal names the relation; the remedy is each case's own, so the subtest brings it.
 	refusal := func(t *testing.T, conn *pgx.Conn, remedy ...string) {
 		t.Helper()
-		err := ExecNonTransactional(context.Background(), conn, indexMigration(), nil)
+		err := Locking{}.ExecNonTransactional(context.Background(), conn, indexMigration(), nil)
 		if err == nil || !strings.Contains(err.Error(), "things_kind") {
 			t.Fatalf("ExecNonTransactional = %v, want a refusal naming things_kind", err)
 		}
@@ -320,7 +321,7 @@ func TestExecNonTransactionalLeavesAnIndexOfAnotherNameAlone(t *testing.T) {
 		t.Fatal(err)
 	}
 	other := leaveInvalidIndex(t, ctx, conn, "things_other", "things", "other")
-	if err := ExecNonTransactional(ctx, conn, indexMigration(), nil); err != nil {
+	if err := (Locking{}).ExecNonTransactional(ctx, conn, indexMigration(), nil); err != nil {
 		t.Fatalf("ExecNonTransactional = %v, want nil: the INVALID index is not the migration's", err)
 	}
 	got := indexState(t, ctx, conn, "things_kind")
@@ -334,7 +335,9 @@ func TestExecNonTransactionalLeavesAnIndexOfAnotherNameAlone(t *testing.T) {
 
 // The DROP of the runner's own leftover takes locks too. One that outlasts lock_timeout must come
 // back as a *LockTimeoutError, which is what RetryLockTimeouts finds with errors.As and retries,
-// and it must be the drop's own: the error carries the wrapping only the drop adds.
+// and it must be the drop's own: the error carries the wrapping only the drop adds. The wait is
+// the runner's Locking's, not production's: a runner on a short timeout gives up after it and
+// names it, where one that ignored its Locking would wait LockTimeout and name that.
 func TestExecNonTransactionalReportsADropTimeoutAsALockTimeoutError(t *testing.T) {
 	ctx := context.Background()
 	url := testpg.URL(t)
@@ -353,12 +356,21 @@ func TestExecNonTransactionalReportsADropTimeoutAsALockTimeoutError(t *testing.T
 	if _, err := tx.Exec(ctx, "lock table things in share update exclusive mode"); err != nil {
 		t.Fatal(err)
 	}
-	err = ExecNonTransactional(ctx, conn, indexMigration(), nil)
+	short := Locking{Timeout: 300 * time.Millisecond}
+	started := time.Now()
+	err = short.ExecNonTransactional(ctx, conn, indexMigration(), nil)
+	waited := time.Since(started)
 	var timedOut *LockTimeoutError
 	if !errors.As(err, &timedOut) {
 		t.Fatalf("ExecNonTransactional = %v, want a *LockTimeoutError from the DROP of the leftover", err)
 	}
 	if !strings.HasPrefix(err.Error(), "drop the INVALID index") {
 		t.Fatalf("error %q is not the one the DROP of the leftover wraps; it came from elsewhere", err)
+	}
+	if timedOut.Timeout != short.Timeout || !strings.Contains(err.Error(), "(300ms unless the migration sets its own)") {
+		t.Errorf("the error carries a %s timeout and reads %q; want the runner's %s, named", timedOut.Timeout, err, short.Timeout)
+	}
+	if waited >= LockTimeout {
+		t.Errorf("the drop gave up after %s, past production's %s: the session waited under another timeout than the runner's %s", waited.Round(time.Millisecond), LockTimeout, short.Timeout)
 	}
 }

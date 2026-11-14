@@ -111,9 +111,17 @@ func TestMigrateRefusesTwoMigrationsSharingAVersionBeforeApplyingAny(t *testing.
 // out on every one of its attempts, naming itself, the lock it wanted and the session that held
 // it, and applies nothing. Unbounded, it waits for as long as the holder lives, and every read and
 // write of the table queues behind its request for that long.
+//
+// Serial: its subject is how long the runner waits, which tests running beside it would stretch.
 func TestMigrateBoundsTheWaitForALockAnotherTransactionHolds(t *testing.T) {
 	ctx := context.Background()
 	store := openEmptyTestStore(t)
+	// The pauses are this row's one reading of the retry pause, so they must outweigh what else
+	// an attempt spends: each one also dials the lock watch and the holder's diagnosis, and at
+	// testLocking's 150 ms three attempts' dials could make up two missing pauses. Two pauses of a
+	// second are 2 s of the 3.5 s the runner should wait, which a runner that skipped them would
+	// make up only by spending two seconds on its dials.
+	store.Locking.RetryPause = time.Second
 	lockTimeout := store.Locking.Timeout
 	// Every attempt waits out the lock timeout, with the runner's pause between attempts.
 	gaveUp := time.Duration(store.Locking.Attempts)*lockTimeout + time.Duration(store.Locking.Attempts-1)*store.Locking.RetryPause

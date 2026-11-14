@@ -120,7 +120,8 @@ func TestSearchTextKeepsEveryLexeme(t *testing.T) {
 
 	// Every body in one statement, which answers only the ones whose lexemes differ: the two
 	// vectors are the work, and a round trip for each of two hundred bodies was most of the rest
-	// (dispatch://INFRA-1075).
+	// (dispatch://INFRA-1075). `is distinct from` rather than `<>`, so a body search_text answers
+	// NULL for is a row too: `<>` against NULL is NULL, which the filter drops.
 	rows, err := store.Pool.Query(ctx, `
 		select name,
 		       array(select unnest(tsvector_to_array(raw)) except select unnest(tsvector_to_array(broken))),
@@ -128,7 +129,7 @@ func TestSearchTextKeepsEveryLexeme(t *testing.T) {
 		  from unnest($1::text[], $2::text[]) as corpus(name, body),
 		       lateral (select to_tsvector('english', corpus.body) as raw,
 		                       to_tsvector('english', search_text(corpus.body)) as broken) vectors
-		 where raw <> broken`, names, bodies)
+		 where raw is distinct from broken`, names, bodies)
 	if err != nil {
 		t.Fatalf("compare vectors: %v", err)
 	}

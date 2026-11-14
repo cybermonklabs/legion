@@ -71,10 +71,10 @@ func concurrentIndex(sql string) (index indexStatement, err error) {
 // builds the index again, so a timed-out or killed build does not stop every later boot. A
 // relation of that name that is not an index on the target table is refused instead, because the
 // runner did not build it and IF NOT EXISTS would skip over it.
-// The session lock_timeout is bounded exactly as Exec's transaction-local setting is, restored
-// on return, and the same lock watch diagnoses failures, the drop's as well as the build's.
+// The session lock_timeout is l's timeout, as Exec's transaction-local setting is, restored on
+// return, and the same lock watch diagnoses failures, the drop's as well as the build's.
 // signIn has Exec's meaning.
-func ExecNonTransactional(ctx context.Context, conn *pgx.Conn, migration Migration, signIn func(context.Context, *pgx.ConnConfig) error) (err error) {
+func (l Locking) ExecNonTransactional(ctx context.Context, conn *pgx.Conn, migration Migration, signIn func(context.Context, *pgx.ConnConfig) error) (err error) {
 	if !migration.NonTransactional {
 		return fmt.Errorf("migration %s is not marked non-transactional", migration.Name)
 	}
@@ -85,14 +85,14 @@ func ExecNonTransactional(ctx context.Context, conn *pgx.Conn, migration Migrati
 	if err != nil {
 		return fmt.Errorf("migration %s: %w", migration.Name, err)
 	}
-	// The settings are set before the leftover check so the drop below is bounded by
-	// LockTimeout for every caller, whatever bound the caller's session carries (the server's
+	// The settings are set before the leftover check so the drop below is bounded by l's
+	// timeout for every caller, whatever bound the caller's session carries (the server's
 	// default is none at all).
 	var previous, stringsSetting string
 	if err := conn.QueryRow(ctx, "select current_setting('lock_timeout'), current_setting('standard_conforming_strings')").Scan(&previous, &stringsSetting); err != nil {
 		return fmt.Errorf("migration %s: read session settings: %w", migration.Name, err)
 	}
-	if _, err := conn.Exec(ctx, "select set_config('lock_timeout', $1, false), set_config('standard_conforming_strings', 'on', false)", lockTimeoutSetting); err != nil {
+	if _, err := conn.Exec(ctx, "select set_config('lock_timeout', $1, false), set_config('standard_conforming_strings', 'on', false)", l.Setting()); err != nil {
 		return fmt.Errorf("migration %s: set session settings: %w", migration.Name, err)
 	}
 	defer func() {
@@ -102,10 +102,10 @@ func ExecNonTransactional(ctx context.Context, conn *pgx.Conn, migration Migrati
 			err = errors.Join(err, fmt.Errorf("migration %s: restore lock_timeout: %w", migration.Name, restore))
 		}
 	}()
-	if err := dropOwnLeftover(ctx, conn, migration, index, signIn); err != nil {
+	if err := l.dropOwnLeftover(ctx, conn, migration, index, signIn); err != nil {
 		return err
 	}
-	return DefaultLocking.execWatched(ctx, conn, migration, signIn)
+	return l.execWatched(ctx, conn, migration, signIn)
 }
 
 // dropOwnLeftover reads the one relation of the index's name in the target table's schema and
@@ -114,8 +114,9 @@ func ExecNonTransactional(ctx context.Context, conn *pgx.Conn, migration Migrati
 // that name on that table is the index this migration builds, already built, and the build's
 // IF NOT EXISTS skips over it. Any other relation of that name is one the runner did not build,
 // and it is refused. An index of another name is neither dropped nor refused.
-// The caller must have bounded the session's lock_timeout already: the drop takes locks too.
-func dropOwnLeftover(ctx context.Context, conn *pgx.Conn, migration Migration, index indexStatement, signIn func(context.Context, *pgx.ConnConfig) error) error {
+// The caller must have bounded the session's lock_timeout already: the drop takes locks too, and
+// l's watch reads what it waits for.
+func (l Locking) dropOwnLeftover(ctx context.Context, conn *pgx.Conn, migration Migration, index indexStatement, signIn func(context.Context, *pgx.ConnConfig) error) error {
 	table := pgx.Identifier{index.Relation.Relname}
 	if index.Relation.Schemaname != "" {
 		table = pgx.Identifier{index.Relation.Schemaname, index.Relation.Relname}
@@ -165,7 +166,7 @@ func dropOwnLeftover(ctx context.Context, conn *pgx.Conn, migration Migration, i
 	// block. execWatched reports a drop cancelled by lock_timeout as a *LockTimeoutError, which
 	// RetryLockTimeouts finds with errors.As through this wrapping and runs the whole attempt
 	// again.
-	if err := DefaultLocking.execWatched(ctx, conn, drop, signIn); err != nil {
+	if err := l.execWatched(ctx, conn, drop, signIn); err != nil {
 		return fmt.Errorf("drop the INVALID index %s of this migration's own name, left by a build that failed or is still running: %w", qualified, err)
 	}
 	return nil

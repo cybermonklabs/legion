@@ -48,16 +48,17 @@ const (
 )
 
 // CensusOptions are the census's bounds. A zero field takes its package constant
-// (CensusTableLimit, CensusLongTransaction, CensusStatementTimeout, LockTimeout); tests set
-// smaller ones. LockTimeout is how long the census waits for a touched table's lock before it
-// refuses that table; it is the runner's own bound because a migration queued behind the same
-// holder would give up there, and a test of that refusal sets it short rather than waiting five
-// seconds out.
+// (CensusTableLimit, CensusLongTransaction, CensusStatementTimeout); tests set smaller ones.
+// Locking is the runner's discipline, of which the census reads the timeout alone: how long it
+// waits for a touched table's lock before it refuses that table. It is the runner's own bound
+// because a migration queued behind the same holder would give up there, and it resolves as the
+// runner's does, so a zero Locking is production's five seconds (LockTimeout); a test of that
+// refusal sets it short rather than waiting five seconds out.
 type CensusOptions struct {
 	TableLimit       int64
 	LongTransaction  time.Duration
 	StatementTimeout time.Duration
-	LockTimeout      time.Duration
+	Locking          Locking
 }
 
 // TableCensus is one table a pending migration touches.
@@ -145,7 +146,8 @@ func (r *Report) Refused() bool { return r.refusals() > 0 }
 // It refuses (MigrationCensus.Refusals, not an error):
 //   - a table the migration names above TableLimit, unless its statements only change the
 //     catalog (tableSizeExemption) or it is a marked single concurrent index build; or a table
-//     the census cannot read within LockTimeout or the statement timeout;
+//     the census cannot read within its Locking's timeout (LockTimeout unless set) or the
+//     statement timeout;
 //   - a lock holder on a touched table that would hold the migration past LockTimeout
 //     (holderRefusal): a transaction at least LongTransaction old, one whose age Postgres hides
 //     from the census's role or does not record (track_activities off), or an autovacuum Postgres
@@ -177,9 +179,7 @@ func Census(ctx context.Context, conn *pgx.Conn, migrations []Migration, version
 	if options.StatementTimeout == 0 {
 		options.StatementTimeout = CensusStatementTimeout
 	}
-	if options.LockTimeout == 0 {
-		options.LockTimeout = LockTimeout
-	}
+	options.Locking = options.Locking.resolve()
 	tx, err := conn.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
 		return nil, fmt.Errorf("census: begin read-only transaction: %w", err)
@@ -189,7 +189,7 @@ func Census(ctx context.Context, conn *pgx.Conn, migrations []Migration, version
 	// find the census's string literals where Load's check found them (censusTokens): off, a
 	// backslash in '…' escapes the quote after it, and a literal can run on over a call.
 	if _, err := tx.Exec(ctx, "select set_config('statement_timeout', $1, true), set_config('lock_timeout', $2, true), set_config('standard_conforming_strings', 'on', true)",
-		strconv.FormatInt(options.StatementTimeout.Milliseconds(), 10)+"ms", Locking{Timeout: options.LockTimeout}.setting()); err != nil {
+		strconv.FormatInt(options.StatementTimeout.Milliseconds(), 10)+"ms", options.Locking.Setting()); err != nil {
 		return nil, fmt.Errorf("census: set timeouts and string syntax: %w", err)
 	}
 	var schema *string
@@ -522,8 +522,8 @@ func censusTable(ctx context.Context, tx pgx.Tx, touched TouchedTable, options C
 		return nil
 	case errors.As(err, &pgErr) && pgErr.Code == lockNotAvailable:
 		_ = nested.Rollback(ctx)
-		table.Unread = fmt.Sprintf("its lock was not granted within %s", options.LockTimeout)
-		entry.refuse("could not read %s within %s (SQLSTATE %s); %s%s", name, options.LockTimeout, pgErr.Code, lockedBy(table.Holders), holderDiagnoses(ctx, tx, table.Holders))
+		table.Unread = fmt.Sprintf("its lock was not granted within %s", options.Locking.Timeout)
+		entry.refuse("could not read %s within %s (SQLSTATE %s); %s%s", name, options.Locking.Timeout, pgErr.Code, lockedBy(table.Holders), holderDiagnoses(ctx, tx, table.Holders))
 		return nil
 	case errors.As(err, &pgErr) && pgErr.Code == queryCanceled:
 		_ = nested.Rollback(ctx)
