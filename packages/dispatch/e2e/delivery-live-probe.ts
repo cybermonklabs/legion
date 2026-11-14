@@ -32,10 +32,11 @@
  *  a FIFO with no writer or no reader does; whoever named the file ends that wait. The probe takes
  *  such a file, since `--token-file <(...)` and `/dev/stdin` are uses it serves.
  *
- *  Ctrl-C or SIGTERM ends the watch at any time, and Dispatch refusing the view ends it at once.
- *  Then `--body-file` writes the body it holds, and `--compare` reads the matching GET routes for
- *  the last window it applied and writes, for each, whether the pull request ids, run ids and every
- *  measure are equal.
+ *  Ctrl-C or SIGTERM ends the watch at any time. Then `--body-file` writes the body it holds, and
+ *  `--compare` reads the matching GET routes for the last window it applied and writes, for each,
+ *  whether the pull request ids, run ids and every measure are equal. Dispatch refusing the view
+ *  ends the watch at once and the probe exits 1 with neither: no body is written and no route is
+ *  read.
  *
  *    bun e2e/delivery-live-probe.ts --url <dispatch> --token-file <file> \
  *      --view '{"kind":"timeline","window":{"preset":28},"query":""}' --minutes 10 --compare
@@ -475,10 +476,10 @@ function frameLine(frame: DeliveryServerFrame, bytes: number): ProbeFrameLine {
   }
 }
 
-/** Watches `options.view` until `--minutes` pass from its socket's first open, a Ctrl-C or
- *  SIGTERM, or Dispatch refuses the view, and resolves with the body the probe holds then, or null
- *  when no snapshot arrived. Rejects when the first connection is refused or does not open within
- *  `--open-within`, the view is refused, or a frame breaks the contract. */
+/** Watches `options.view` until `--minutes` pass from its socket's first open, or a Ctrl-C or
+ *  SIGTERM, and resolves with the body the probe holds then, or null when no snapshot arrived.
+ *  Rejects when the first connection is refused or does not open within `--open-within`,
+ *  Dispatch refuses the view, or a frame breaks the contract. */
 async function watch(options: Options, token: string): Promise<ProbeHeld | null> {
   const liveUrl = new URL("/ws/live", options.url);
   liveUrl.protocol = options.url.protocol === "https:" ? "wss:" : "ws:";
@@ -490,9 +491,9 @@ async function watch(options: Options, token: string): Promise<ProbeHeld | null>
   // Armed at the first dial for `--open-within`, which fails the watch; the first open arms it
   // again for `--minutes` from then, which ends the watch cleanly.
   let timer: Timer | undefined;
-  // Set at the first open and read only as whether that open has come; the time `--minutes`
-  // counts from goes to `timeUp` as its argument.
-  let openedAt: number | undefined;
+  // Whether the first open has come; the time `--minutes` counts from goes to `timeUp` as its
+  // argument.
+  let opened = false;
   // Settles once, with why the watch ended early, or with nothing once its time is up.
   const ended = Promise.withResolvers<Error | undefined>();
   const fail = (reason: string) => ended.resolve(new Error(reason));
@@ -579,9 +580,9 @@ async function watch(options: Options, token: string): Promise<ProbeHeld | null>
     next.addEventListener("open", () => {
       if (socket !== next) return;
       const at = Date.now();
-      if (openedAt === undefined) {
+      if (!opened) {
         clearTimeout(timer);
-        openedAt = at;
+        opened = true;
         timer = setTimeout(timeUp, options.minutesMs, at);
       }
       lastFrameAt = at;
@@ -598,7 +599,7 @@ async function watch(options: Options, token: string): Promise<ProbeHeld | null>
 
   const lost = (code: number, reason: string) => {
     socket = null;
-    if (openedAt === undefined) {
+    if (!opened) {
       write({ at: now(), code, reason, retry_ms: null, type: "close" });
       fail(`Dispatch refused the connection to ${liveUrl.href}: ${reason || `close ${code}`}`);
       return;
@@ -623,11 +624,7 @@ async function watch(options: Options, token: string): Promise<ProbeHeld | null>
   // After the first open, a socket that carried no frame for three heartbeats is dead without
   // knowing it: replace it. Before the first open, `--open-within` judges the dial.
   const silence = setInterval(() => {
-    if (
-      openedAt === undefined ||
-      socket === null ||
-      Date.now() - lastFrameAt <= LIVE_SOCKET_SILENT_MS
-    ) {
+    if (!opened || socket === null || Date.now() - lastFrameAt <= LIVE_SOCKET_SILENT_MS) {
       return;
     }
     const silent = socket;

@@ -145,8 +145,12 @@
  * bound to, under parentheses and `as` alone. Where the `await` stands deeper -
  * `const code = (await runBounded(...)).code` - the name is read as bound to the call, so it is
  * a waiting name although it holds a number, and a row that refers to `code` and states no
- * `rowLimit` is refused as a row that waits for a bounded child: a false refusal. No test file
- * of this directory writes that shape.
+ * `rowLimit` is refused as a row that waits for a bounded child: a false refusal. The second
+ * false refusal comes from `reachOf`, which matches a call to a waiting function of the file's
+ * own by its bare name: a row that declares a name of its own - `const helper = ...` - where
+ * `helper` also names a waiting function of the file, and calls it, is read as waiting for what
+ * the file's `helper` reaches, and is refused where it states no `rowLimit`. No test file of
+ * this directory writes either shape.
  *
  * WHAT A ROWLIMIT COVERS. A `rowLimit` call is checked against the bounds of what its row waits
  * for wherever the scan reads them: a `listing` call is the `listing` bound, a `runBounded` call
@@ -243,8 +247,9 @@ export type WallClockLimit = {
   line: number;
   /** The limit the row, the hook or the file writes itself. Undefined for a row or hook that
    *  waits for a bounded child and states no limit of its own, the one call that states none and
-   *  is recorded at all: its limit is then the file's own `rowLimit`, where the file states one,
-   *  and the lane's `--timeout` where it does not. */
+   *  is recorded at all: its limit is then the file's own `rowLimit` where the file states one,
+   *  the file's own `setDefaultTimeout` of any other kind where it states that, and the lane's
+   *  `--timeout` where it states neither. */
   stated: StatedLimit | undefined;
   /** Whether a row, a hook or the file states it. */
   kind: LimitKind;
@@ -1132,7 +1137,11 @@ function shortOfBound(limit: WallClockLimit, total: number | undefined): string 
 /** Why `limit`, a row or hook that waits for bounded children and states no limit of its own, is
  *  refused, or nothing where its file's own `rowLimit` covers it. That limit is the row's where
  *  the file states one, and the largest of them is read where it states more than one; one whose
- *  total the scan cannot read covers the row as stated. */
+ *  total the scan cannot read covers the row as stated. Where the file states its limit only
+ *  otherwise - `setDefaultTimeout(90_000)` - the refusal names that limit as what stops the row,
+ *  and the lane's `--timeout` where the file states none. Where that limit is a number written as
+ *  digits, the refusal says it fires before the row's bound only when it is below that bound,
+ *  and otherwise that it does not move with the bound. */
 function unstatedRefusal(
   limit: WallClockLimit,
   limits: readonly WallClockLimit[]
@@ -1145,12 +1154,32 @@ function unstatedRefusal(
       : []
   );
   if (fileLimits.length === 0) {
-    return (
-      `${at} waits for ${waits} and states no limit, so the lane's \`--timeout\` stops it, and ` +
-      "that clock can fire before the bound of the child or the poll it waits for, and name " +
-      "neither: " +
-      waitingRemedy(limit)
+    const otherwise = limits.filter(
+      (other) => other.file === limit.file && other.kind === "file" && other.stated !== undefined
     );
+    const where = otherwise.map((other) => `${other.title} on line ${other.line}`).join(" or ");
+    const written = otherwise.map((other) => other.stated?.text ?? "");
+    const clock =
+      otherwise.length === 0
+        ? "the lane's `--timeout` stops it"
+        : `the file's own ${where} stops it at ${written.join(" or ")}`;
+    // A number written as digits is read, so the refusal says which clock fires first; a name or
+    // an expression is not, and the refusal says only that the file's clock can fire first.
+    const numbers = written
+      .filter((text) => /^\d[\d_]*$/.test(text))
+      .map((text) => Number(text.replaceAll("_", "")));
+    const bound = limit.bound === undefined ? undefined : bounds[limit.bound];
+    let order =
+      "that clock can fire before the bound of the child or the poll it waits for, and name neither";
+    if (otherwise.length > 0 && bound !== undefined && numbers.length === written.length) {
+      order =
+        Math.min(...numbers) < bound
+          ? `that clock fires before the \`${limit.bound}\` bound of ${bound} ms of the child or ` +
+            "the poll it waits for, and names neither"
+          : `that number is not read from the bounds, so it does not move when the ` +
+            `\`${limit.bound}\` bound of ${bound} ms moves`;
+    }
+    return `${at} waits for ${waits} and states no limit, so ${clock}, and ${order}: ${waitingRemedy(limit)}`;
   }
   let widest = fileLimits[0];
   for (const fileLimit of fileLimits) {

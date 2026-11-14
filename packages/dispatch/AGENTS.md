@@ -2133,7 +2133,10 @@ awaited call (`const options = await helpOptions()`) is no wait either, since it
 holds what the call answered, but only where the `await` is outermost:
 `const code = (await runBounded(...)).code` is read as a waiting name, so a row
 that refers to `code` and states no `rowLimit` is refused although `code` is a
-number.
+number. A call is matched to a waiting function of the file by its bare name, so
+a row that declares a name of its own that a waiting function of the file also
+bears (`const helper = ...`) and calls it is refused the same way. No test file
+under `e2e/__tests__/` writes either shape.
 `e2e/__tests__/fixtures/row-limits.fixture.ts` and
 `e2e/__tests__/fixtures/row-limits-spellings.fixture.ts` are its planted
 controls, one limit of every shape the rule answers.

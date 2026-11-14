@@ -75,6 +75,10 @@ test.skipIf(commandLines() === undefined)(
       writeFileSync(join(directory, "b.test.ts"), row);
       // This row drives the runner, so it is no bounded child: it leads a process group of its
       // own, as the runner does when a terminal starts it, and that group is what SIGINT is sent to.
+      // So an interrupt of the outer run reaches neither the runner nor its workers, and where it
+      // ends this run before the `finally` below, they and their `bash` and `sleep` pairs run on
+      // until the inner rows' short bound kills each pair, about 60 s after it started, and the
+      // runner then exits by itself.
       runner = Bun.spawn(["bun", "test", "--parallel=2", "./a.test.ts", "./b.test.ts"], {
         cwd: directory,
         detached: true,

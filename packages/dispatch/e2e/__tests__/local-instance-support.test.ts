@@ -60,10 +60,13 @@ function pidOf(running: { readonly child: { readonly pid?: number } }): number {
   return pid;
 }
 
-/** How long each `sleep` the `Supervisor.stop` rows start runs, in seconds: the limit of the
- *  first two of them, the largest of the four, so every such sleep outlasts its own row. A sleep
- *  no stop ended is then still running at every read its row makes, and never meets a check that
- *  it is gone by ending on its own. */
+/** How long each `sleep` the `Supervisor.stop` rows start runs, and how long the held process's
+ *  `read` waits for the line that releases it, in seconds: the limit of the first two of those
+ *  rows, the largest of the four, so every such sleep and `read` outlasts its own row. A sleep no
+ *  stop ended is then still running at every check its row makes, and never meets a check that it
+ *  is gone by ending on its own. No held process ends by itself inside its row either: the line
+ *  that releases it ends it, or the row's own kill does, and where the run is killed first it
+ *  ends by itself once its `read` gives up, after its row. */
 const outlastsRow = rowLimit("short", "short", "short", "short", "short") / 1000;
 
 /** Sends SIGKILL to `pid`, a process or, when negative, a process group, where it is still
@@ -78,9 +81,10 @@ function killLeft(pid: number): void {
 }
 
 /** One macrotask turn. It resolves on a `setImmediate`, which comes only once the microtask
- *  queue has drained, and which Bun's fake clock leaves real. So the runtime's report of an
- *  unhandled rejection has come by then, and so has every promise already chained, however deep,
- *  without a fake clock moving. */
+ *  queue has drained, and which Bun's fake clock leaves real, so every promise already chained,
+ *  however deep, has run by then without a fake clock moving. The `untilInterrupted` row waits
+ *  two turns before it stops listening for an unhandled rejection: Bun 1.4.4 reports one within
+ *  the first turn, and the second keeps the row from resting on which turn that is. */
 const nextTurn = () => new Promise<void>((resolve) => setImmediate(resolve));
 
 /** Answers whether `waiting` has settled yet, without awaiting it. */

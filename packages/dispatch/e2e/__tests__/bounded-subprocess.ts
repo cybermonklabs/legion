@@ -121,23 +121,49 @@ export function rowLimit(...waits: readonly (BoundName | AtOnce)[]): number {
   return spent.reduce((total, ms) => total + ms, 0) + rowHeadroom;
 }
 
+/** What `beforeDeadline` answers where the deadline came before the answer. */
+const pastDeadline = Symbol("past the deadline");
+
+/** Answers `answer` where it settles before `deadline`, a `performance.now()` reading, and
+ *  `pastDeadline` where the deadline comes first. A rejection before the deadline rejects here.
+ *  The timer is cleared either way. */
+async function beforeDeadline<T>(
+  answer: T | Promise<T>,
+  deadline: number
+): Promise<T | typeof pastDeadline> {
+  const timeUp = Promise.withResolvers<typeof pastDeadline>();
+  const timer = setTimeout(
+    () => timeUp.resolve(pastDeadline),
+    Math.max(0, deadline - performance.now())
+  );
+  try {
+    return await Promise.race([answer, timeUp.promise]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /** Reads `holds` until it answers true, and answers true; answers false once `ended` answers true
  *  first, or once the short bound has passed. A state another process reaches - a write to a
  *  file, a process leaving the table, a log line - raises no event a row can await, so the row
- *  reads it until it is there. The short bound only ends a wait for a state that never comes. A
- *  row that waits here, or in `eventually` below, names `"short"` in its `rowLimit` for each such
- *  wait, so the row's clock fires after this one. The reads are 25 ms apart, a gap no verdict
- *  reads: it is only how soon after its coming a state is seen. */
+ *  reads it until it is there. The short bound only ends a wait that would not end by itself: a
+ *  state that never comes, or a read of `holds` that never settles. Each read races the time
+ *  left, so a read still pending at the bound answers false there. A row that waits here, or in
+ *  `eventually` below, names `"short"` in its `rowLimit` for each such wait, so the row's clock
+ *  fires after this one. The reads are 25 ms apart, a gap no verdict reads: it is only how soon
+ *  after its coming a state is seen. */
 export async function whether(
   holds: () => boolean | Promise<boolean>,
   ended: () => boolean = () => false
 ): Promise<boolean> {
   const deadline = performance.now() + bounds.short;
-  while (!(await holds())) {
+  for (;;) {
+    const answer = await beforeDeadline(holds(), deadline);
+    if (answer === pastDeadline) return false;
+    if (answer) return true;
     if (ended() || performance.now() > deadline) return false;
     await Bun.sleep(25);
   }
-  return true;
 }
 
 /** Waits as `whether` does, with no `ended`, and throws naming `what`, the state the row waited
