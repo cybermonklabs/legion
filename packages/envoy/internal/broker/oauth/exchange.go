@@ -731,8 +731,8 @@ func launcherCredentialAsked(form url.Values) (bool, error) {
 // A person's sign-in exists to hold a launcher credential: `agent-secrets login` reads the
 // credential id out of the answer and refuses one without it, and the sessions that sign-in
 // enrols read the person's own secrets under it. A trade that declined would leave a sign-in
-// holding none, which is a sign-in that does nothing and an answer its only caller refuses, so
-// the parameter is refused here rather than ignored: a caller that sends it has misread what a
+// holding none, which is a sign-in that does nothing and an answer `agent-secrets login` refuses,
+// so the parameter is refused here rather than ignored: a caller that sends it has misread what a
 // person's trade is for, and reading it as "true" instead would be the kind of guess
 // launcherCredentialAsked refuses to make for a misspelling.
 //

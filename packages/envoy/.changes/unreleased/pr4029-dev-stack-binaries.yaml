@@ -1,0 +1,8 @@
+kind: Added
+body: |-
+  `scripts/dev-stack.sh --binaries <dir>` runs seven binaries built elsewhere in place of its own
+  `go build`: `broker`, `dev-oidc-issuer`, `dispatch`, `listener`, `agent-secrets`,
+  `agent-secrets-helper` and `natsd`. It refuses before it starts anything when one of them is
+  missing or is not executable, and names each such file.
+custom:
+    Issue: pr4029

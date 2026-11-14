@@ -1,0 +1,10 @@
+kind: Changed
+body: |-
+  `legion controller start` sets `AGENT_SECRETS_SIGNIN_DIR` to `<state_dir>/controller-signins`, a
+  sign-in directory of the controller's own, under `dispatch_token_broker` and
+  `dispatch_token_file` alike. The start makes the directory 0700. It refuses to start, naming the
+  directory, when the directory holds any entry or is not a directory. So the controller's Dispatch
+  and Envoy credentials never trade the operator's `agent-secrets login` sign-in: they trade the
+  machine.
+custom:
+    Issue: pr4029

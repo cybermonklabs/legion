@@ -54,8 +54,9 @@ export function processIo(): CliIo {
 }
 
 /** Dispatch's address and what a request to it presents: the bearer a variable or a file gave,
- * or this machine's own identity traded at the secrets broker, which signs a DPoP proof for each
- * request (`ActiveDispatchConfig.credential`). */
+ * or an access token the secrets broker traded for this machine's identity, or for a person's
+ * sign-in on it, presented with a DPoP proof for each request
+ * (`ActiveDispatchConfig.credential`). */
 export interface DispatchCredentials {
   readonly url: string;
   readonly credential: RequestCredential;

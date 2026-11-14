@@ -49,9 +49,9 @@ export interface ActiveDispatchConfig {
   readonly url: string;
   /**
    * What every request presents: the bearer a variable or a file gave (`bearerCredential`), or
-   * the access token this machine traded its own identity for at the secrets broker, presented
-   * under the `DPoP` scheme with a fresh proof of this process's key on each request
-   * (`brokerCredential`). One field, so no caller can present half of it.
+   * the access token the secrets broker traded this machine's identity for, or the identity of a
+   * person signed in on it, presented under the `DPoP` scheme with a fresh proof of the token's
+   * key on each request (`brokerCredential`). One field, so no caller can present half of it.
    */
   readonly credential: RequestCredential;
   readonly publicUrl?: string;
@@ -162,11 +162,12 @@ export function lostDispatchUrlNotice(
  * `options.commands` is `kept`: then only an outcome a run already kept in this process answers,
  * and with none Dispatch is off with an error saying the command has not run (`fileValue`).
  * Dispatch is on when its URL resolves and a credential does: one of those bearers, or — when no
- * bearer is configured at all — this machine's own identity traded at the secrets broker
- * (`AGENT_SECRETS_URL` with `AGENT_SECRETS_MACHINE_IDENTITY`, `brokerCredential`), which is a
- * DPoP-bound access token rather than a bearer, traded under `options.session`. The bearers are
- * resolved first and unchanged, so a session that has one keeps behaving exactly as it did. Off,
- * it says why: a `notice` when nothing names it or a file turns it off, an `error` otherwise.
+ * bearer is configured at all — an access token traded at the secrets broker (`AGENT_SECRETS_URL`
+ * with `AGENT_SECRETS_MACHINE_IDENTITY`, `brokerCredential`) for this machine's identity, or for
+ * a person's sign-in on it where one is there, which is a DPoP-bound access token rather than a
+ * bearer, traded under `options.session`. The bearers are resolved first and unchanged, so a
+ * session that has one keeps behaving exactly as it did. Off, it says why: a `notice` when nothing
+ * names it or a file turns it off, an `error` otherwise.
  * Nothing naming it while a token variable is set is said as the `DISPATCH_URL` the shell lost
  * (`lostDispatchUrlNotice`).
  *
@@ -175,8 +176,10 @@ export function lostDispatchUrlNotice(
  * `dispatch.token` — and a machine that can trade nothing turns Dispatch off with an error saying
  * so, rather than presenting whatever bearer the box happens to hold. It is a deployment's word
  * about the session it launches, which `legion controller start` sets under `dispatch_token_broker`
- * so that the operator's own envoy.json cannot write Dispatch as the operator. Any other value is
- * a mistake in the deployment, refused rather than read as on or as off.
+ * so that the operator's own envoy.json cannot write Dispatch as the operator, beside a sign-in
+ * directory of the controller's own (`AGENT_SECRETS_SIGNIN_DIR`) so that the broker route trades
+ * this machine's identity rather than the operator's sign-in. Any other value is a mistake in the
+ * deployment, refused rather than read as on or as off.
  */
 export function dispatchSettings(
   env: DispatchEnvironment,
@@ -234,11 +237,11 @@ export function dispatchUrl(env: DispatchEnvironment, config: EnvoyConfig): stri
 }
 
 /** Where Dispatch's credential comes from: a variable, a file with the server written beside it,
- * or the secrets broker, which this machine's own identity is traded at. */
+ * or the secrets broker, where this machine's identity, or a person's sign-in on it, is traded. */
 type TokenSource = Exclude<BearerSource, { readonly kind: "none" }> | { readonly kind: "broker" };
 
 /** `DISPATCH_TOKEN_BROKER`'s value as a question dispatchTarget can ask: true where the deployment
- * has said this session's Dispatch credential is this machine's own identity and nothing else,
+ * has said this session's Dispatch credential is traded at the secrets broker and nothing else,
  * false where it says nothing, and a refusal for any other value, which is a deployment that meant
  * one of the two and wrote neither. */
 function brokerRouteForced(env: DispatchEnvironment): boolean | SectionOff {
@@ -246,7 +249,7 @@ function brokerRouteForced(env: DispatchEnvironment): boolean | SectionOff {
   if (written === "") return false;
   if (written === "1") return true;
   return offWithError(
-    `DISPATCH_TOKEN_BROKER is "${written}" and takes 1: set it to 1 where this session's Dispatch credential is this machine's own identity traded at the secrets broker, and leave it unset where a bearer is read as usual`
+    `DISPATCH_TOKEN_BROKER is "${written}" and takes 1: set it to 1 where this session's Dispatch credential is traded at the secrets broker (the person signed in on this machine, else the machine's own identity), and leave it unset where a bearer is read as usual`
   );
 }
 
@@ -320,7 +323,7 @@ function dispatchTarget(
     }
     if (forced) {
       return offWithError(
-        `DISPATCH_TOKEN_BROKER is set, so this session's Dispatch credential is this machine's own identity traded at the secrets broker, and ${route.gap}: Dispatch is off rather than written with whatever bearer this box holds`
+        `DISPATCH_TOKEN_BROKER is set, so this session's Dispatch credential is traded at the secrets broker (the person signed in on this machine, else the machine's own identity), and ${route.gap}: Dispatch is off rather than written with whatever bearer this box holds`
       );
     }
     return offWithError(
