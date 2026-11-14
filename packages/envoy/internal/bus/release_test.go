@@ -238,6 +238,12 @@ func TestDrainSubscriptionWhileTheConnectionIsDownLeavesNoPushBindingBehind(t *t
 	relay.refuse.Store(true)
 	relay.drop()
 	waitFor(t, 10*time.Second, "the client to start reconnecting", client.Conn.IsReconnecting)
+	// The server learns of the drop on its own, not when the client does: nats-server releases the
+	// dropped link's binding once its read of that connection ends and the consumer's own goroutine
+	// applies the lost interest. A probe published before then is delivered over the dead link, and
+	// the durable holds it awaiting an ack until its AckWait (the server's default, 30 s) ends, so
+	// the fresh binding below is handed it only then. Waiting for the release leaves it pending.
+	awaitPushBound(t, direct, consumer, false, "the server to release the dropped link's binding")
 	publishReleaseProbe(t, direct, "notifications.github.test.released")
 
 	drained, err := client.DrainSubscription(sub)
@@ -353,6 +359,10 @@ func TestDrainSubscriptionWhileTheDrainIsInFlightLeavesNoPushBindingBehind(t *te
 	relay.refuse.Store(true)
 	relay.drop()
 	waitFor(t, 10*time.Second, "the client to start reconnecting", client.Conn.IsReconnecting)
+	// The server learns of the drop on its own, as in the row above: a probe published before it
+	// releases the dropped link's binding is delivered over the dead link and held until the
+	// durable's AckWait ends, past the fresh binding's wait below.
+	awaitPushBound(t, direct, consumer, false, "the server to release the dropped link's binding")
 	publishReleaseProbe(t, direct, "notifications.github.test.released")
 
 	relay.refuse.Store(false)
