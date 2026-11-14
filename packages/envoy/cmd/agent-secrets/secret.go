@@ -50,8 +50,8 @@ func init() {
 			"List every agent secret under your own cloud sign-in: its name, owner, tier, kind, shape,\nmax grant, default grant, whether it has a value, and its deletion once it is deleted, with\nthe earliest purge beside it on Secrets Manager; --json also prints each one's store,\nsecret name, github-owners, requesters, scopes and admin mark, and its created and\nlast-changed times where the store gives them. Name the store the rows are in."}, cmdSecretList},
 		{command{"secret show", "agent-secrets secret show NAME [--json] [--profile P]",
 			"Print an agent secret's name, store, secret name, owner, tier, kind, github-owners,\nrequesters, scopes, admin mark, shape, max grant, default grant, its created and\nlast-changed times, its deletion once it is deleted, with the earliest purge beside\nit on Secrets Manager, and its versions; --json prints those and whether it has a value.\nNever print its value."}, cmdSecretShow},
-		{command{"secret create", "agent-secrets secret create NAME --owner me|shared --tier agent|human [--kind " + strings.Join(policy.Kinds, "|") + "|none] [--github-owners LOGINS] [--requesters LIST] [--scopes LIST] [--admin true] [--shape " + strings.Join(policy.Shapes, "|") + "] [--max-grant DURATION] [--default-grant session] [--profile P]",
-			"Create an agent secret under your own cloud sign-in. On Google Cloud, a person may lend their\naccess token in CLOUDSDK_AUTH_ACCESS_TOKEN only to create a new secret that person owns. Then\nask the broker to serve it. Read its value from standard input, or type it at a prompt with echo off."}, cmdSecretCreate},
+		{command{"secret create", "agent-secrets secret create NAME --owner me|shared --tier agent|human [--kind " + strings.Join(policy.Kinds, "|") + "|none] [--github-owners LOGINS] [--requesters LIST] [--scopes LIST] [--admin true] [--shape " + strings.Join(policy.Shapes, "|") + "] [--max-grant DURATION] [--default-grant session] [--profile P] [--lent-login NAME --reason TEXT [--wait DURATION]]",
+			"Create an agent secret under your own cloud sign-in. On Google Cloud, --lent-login requests\none Google login from the broker and uses the token and owner from the same release; it requires\n--owner me and --reason. A raw CLOUDSDK_AUTH_ACCESS_TOKEN cannot create a secret. Then ask the\nbroker to serve it. Read its value from standard input, or type it at a prompt with echo off."}, cmdSecretCreate},
 		{command{"secret set", "agent-secrets secret set NAME [--profile P]",
 			"Set a new agent-secret value under your own cloud sign-in. Then ask the broker to serve it.\nRead the value from standard input, or type it at a prompt with echo off."}, cmdSecretSet},
 		{command{"secret retag", "agent-secrets secret retag NAME [--owner me|shared] [--tier agent|human] [--kind " + strings.Join(policy.Kinds, "|") + "|none] [--github-owners LOGINS|none] [--requesters LIST|none] [--scopes LIST|none] [--admin true|none] [--shape " + strings.Join(policy.Shapes, "|") + "|none] [--max-grant DURATION|none] [--default-grant session|none] [--profile P]",
@@ -160,7 +160,7 @@ func secretFail(stderr io.Writer, form string, err error) int {
 }
 
 // secretFlagValues are the secret forms' flags that take a value.
-var secretFlagValues = map[string]bool{"owner": true, "tier": true, "kind": true, "github-owners": true, "requesters": true, "scopes": true, "admin": true, "shape": true, "max-grant": true, "default-grant": true, "profile": true}
+var secretFlagValues = map[string]bool{"owner": true, "tier": true, "kind": true, "github-owners": true, "requesters": true, "scopes": true, "admin": true, "shape": true, "max-grant": true, "default-grant": true, "profile": true, "lent-login": true, "reason": true, "wait": true}
 
 // secretFlags is form's flag set with --profile, which every secret form takes but only the AWS
 // backend uses (GCP uses your Google sign-in instead, gcpBackend; a non-empty --profile there is a
@@ -468,7 +468,7 @@ func secretFailIn(stderr io.Writer, form string, s *secretSession, err error) in
 // openSession reads the broker's settings from AGENT_SECRETS_URL and opens the backend its
 // `store` field names (openSecretBackend). It checks nothing about the sign-in: connectReader
 // and connectWriter do.
-func openSession(ctx context.Context, profile string) (*secretSession, error) {
+func openSession(ctx context.Context, profile string, lent *gcpLentLogin) (*secretSession, error) {
 	base := brokerBaseURL()
 	if base == "" {
 		return nil, usageErr{fmt.Errorf("%s is required: it names the secrets broker whose store these forms read and write", brokerURLVar)}
@@ -481,7 +481,7 @@ func openSession(ctx context.Context, profile string) (*secretSession, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read the settings of %s: %w", brokerSource(base), err)
 	}
-	backend, err := openSecretBackend(ctx, profile, settings)
+	backend, err := openSecretBackend(ctx, profile, settings, lent)
 	if err != nil {
 		return nil, err
 	}
@@ -493,9 +493,12 @@ func openSession(ctx context.Context, profile string) (*secretSession, error) {
 // broker that predates `store` names neither - or GCP Secret Manager, pinned to the project
 // secrets_prefix and kms_key_name's own shape agree on (checkSettingsKMSKeyName), for
 // secrets.StoreGCP. Any other value is refused before any cloud call.
-func openSecretBackend(ctx context.Context, profile string, settings Settings) (secretBackend, error) {
+func openSecretBackend(ctx context.Context, profile string, settings Settings, lent *gcpLentLogin) (secretBackend, error) {
 	switch settings.Store {
 	case "", secrets.StoreAWS:
+		if lent != nil {
+			return nil, usageErr{errors.New("--lent-login is available only when the broker's store is GCP")}
+		}
 		if err := checkSettingsKeyARN(settings); err != nil {
 			return nil, err
 		}
@@ -511,7 +514,7 @@ func openSecretBackend(ctx context.Context, profile string, settings Settings) (
 		if err := checkSettingsKMSKeyName(settings); err != nil {
 			return nil, err
 		}
-		return newGCPBackend(ctx, settings)
+		return newGCPBackend(ctx, settings, lent)
 	default:
 		return nil, fmt.Errorf("the broker's settings name an unknown secret store %q", settings.Store)
 	}
@@ -521,7 +524,7 @@ func openSecretBackend(ctx context.Context, profile string, settings Settings) (
 // (backend.requireAccount), whose secrets are not the agent secrets; GCP needs no equivalent. Any
 // sign-in that can read there reads: IAM decides what it may read.
 func connectReader(ctx context.Context, profile string) (*secretSession, error) {
-	s, err := openSession(ctx, profile)
+	s, err := openSession(ctx, profile, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -535,7 +538,7 @@ func connectReader(ctx context.Context, profile string) (*secretSession, error) 
 // connectWriter is openSession for a write: it makes sure the write runs under a person's own
 // sign-in (backend.requireWriteSignIn) before anything is written, and answers their email.
 func connectWriter(ctx context.Context, profile string) (*secretSession, string, error) {
-	s, err := openSession(ctx, profile)
+	s, err := openSession(ctx, profile, nil)
 	if err != nil {
 		return nil, "", err
 	}
@@ -545,6 +548,98 @@ func connectWriter(ctx context.Context, profile string) (*secretSession, string,
 		return nil, "", err
 	}
 	return s, email, nil
+}
+
+// connectLentWriter requests one named Google login, then opens the GCP backend with the token
+// and owner the same broker release returned.
+func connectLentWriter(ctx context.Context, profile, name, reason string, wait time.Duration, stderr io.Writer) (*secretSession, string, error) {
+	if profile != "" {
+		return nil, "", usageErr{errors.New("--lent-login cannot use --profile")}
+	}
+	base := brokerBaseURL()
+	if base == "" {
+		return nil, "", usageErr{fmt.Errorf("%s is required: it names the secrets broker whose store this form writes", brokerURLVar)}
+	}
+	if err := requireSecretBrokerURL(base); err != nil {
+		return nil, "", err
+	}
+	settings, err := newClient(base).Settings(ctx)
+	if err != nil {
+		return nil, "", fmt.Errorf("read the settings of %s: %w", brokerSource(base), err)
+	}
+	if settings.Store != secrets.StoreGCP {
+		return nil, "", usageErr{errors.New("--lent-login is available only when the broker's store is GCP")}
+	}
+	lent, err := requestLentGCPLogin(ctx, name, reason, wait, stderr)
+	if err != nil {
+		return nil, "", err
+	}
+	s, err := openSession(ctx, profile, &lent)
+	if err != nil {
+		return nil, "", err
+	}
+	email, err := s.backend.requireWriteSignIn(ctx)
+	if err != nil {
+		s.Close()
+		return nil, "", err
+	}
+	return s, email, nil
+}
+
+// requestLentGCPLogin asks the broker for one Google login and takes its token and owner from the
+// same authorized release. It deliberately never reads CLOUDSDK_AUTH_ACCESS_TOKEN.
+func requestLentGCPLogin(ctx context.Context, name, reason string, wait time.Duration, stderr io.Writer) (gcpLentLogin, error) {
+	base, _, signer, err := sessionContext()
+	if err != nil {
+		return gcpLentLogin{}, err
+	}
+	c := newClient(base)
+	result, _, err := c.CreateRequest(ctx, signer, []string{name}, reason, nil, requestSessionID())
+	if err != nil {
+		return gcpLentLogin{}, err
+	}
+	state, grantID, requestID, detail := result.State, result.GrantID, result.RequestID, result.Detail
+	if state == "pending" {
+		src := c.source(ctx)
+		reportPending(stderr, requestID, result.Approver, result.ApproveURL, wait, src)
+		deadline := time.Now().Add(wait)
+		backoff := 2 * time.Second
+		for state == "pending" {
+			remaining := time.Until(deadline)
+			if remaining <= 0 {
+				break
+			}
+			time.Sleep(minDuration(backoff, remaining))
+			status, _, err := c.GetRequest(ctx, signer, requestID)
+			if err != nil {
+				return gcpLentLogin{}, err
+			}
+			state, grantID, detail = status.State, status.GrantID, status.Detail
+			backoff = nextBackoff(backoff)
+		}
+	}
+	switch state {
+	case "granted":
+	case "pending":
+		return gcpLentLogin{}, fmt.Errorf("request %s is still waiting for approval", requestID)
+	case "denied":
+		return gcpLentLogin{}, fmt.Errorf("request %s was denied%s", requestID, deniedBecause(detail))
+	default:
+		return gcpLentLogin{}, fmt.Errorf("request %s is %s", requestID, state)
+	}
+	if grantID == nil {
+		return gcpLentLogin{}, fmt.Errorf("request %s was granted but its grant is no longer live", requestID)
+	}
+	values, err := c.GrantValues(ctx, signer, *grantID, nil)
+	if err != nil {
+		return gcpLentLogin{}, err
+	}
+	token, tokenOK := values.Values[name]
+	owner, ownerOK := values.GoogleLoginOwners[name]
+	if !tokenOK || token == "" || !ownerOK || owner == "" {
+		return gcpLentLogin{}, fmt.Errorf("the broker release of %s did not bind a Google login token to an owner", name)
+	}
+	return gcpLentLogin{token: token, owner: owner}, nil
 }
 
 // displayName is the NAME a session asks for the secret named id, or id itself when its name
@@ -806,6 +901,19 @@ func cmdSecretCreate(args []string, stdout, stderr io.Writer) int {
 	shape := flags.String("shape", "", "token: the value is one line, so the broker removes its trailing line endings before it spends it; document: every byte of the value is part of it, so the broker releases it unchanged. Unset, the broker removes a trailing line ending only from a value that holds none inside it")
 	maxGrant := flags.String("max-grant", "", "the longest grant duration this secret allows")
 	defaultGrant := flags.String("default-grant", "", "session: a request with no --ttl lasts until its session ends, not 12 hours")
+	reason := flags.String("reason", "", "why the broker should release --lent-login; required where a person approves")
+	wait := flags.Duration("wait", 30*time.Minute, "how long to wait for --lent-login approval")
+	var lentLogins []string
+	flags.Func("lent-login", "request this Google login from the broker and use its token for this create", func(name string) error {
+		lentLogins = append(lentLogins, name)
+		if len(lentLogins) > 1 {
+			return errors.New("--lent-login may be given once")
+		}
+		if name == "" {
+			return errors.New("--lent-login needs a secret name")
+		}
+		return nil
+	})
 	if err := flags.Parse(flagArgs); err != nil {
 		return exitUsage(err)
 	}
@@ -815,6 +923,19 @@ func cmdSecretCreate(args []string, stdout, stderr io.Writer) int {
 	}
 	if err == nil {
 		err = checkOwnerTier(*owner, *tier)
+	}
+	lentLogin := ""
+	if err == nil && len(lentLogins) == 1 {
+		lentLogin = lentLogins[0]
+		switch {
+		case *owner != "me":
+			err = usageErr{errors.New("--lent-login requires --owner me; it cannot create a shared secret")}
+		case strings.TrimSpace(*reason) == "":
+			err = usageErr{errors.New("--lent-login requires --reason")}
+		}
+	}
+	if err == nil && lentLogin == "" && (*reason != "" || flagGiven(flags, "wait")) {
+		err = usageErr{errors.New("--reason and --wait require --lent-login")}
 	}
 	if err == nil {
 		err = checkKind(*kind)
@@ -846,7 +967,13 @@ func cmdSecretCreate(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return secretFail(stderr, form, err)
 	}
-	s, email, err := connectWriter(context.Background(), *profile)
+	var s *secretSession
+	var email string
+	if lentLogin == "" {
+		s, email, err = connectWriter(context.Background(), *profile)
+	} else {
+		s, email, err = connectLentWriter(context.Background(), *profile, lentLogin, *reason, *wait, stderr)
+	}
 	if err != nil {
 		return secretFail(stderr, form, err)
 	}
@@ -897,6 +1024,12 @@ func cmdSecretCreate(args []string, stdout, stderr io.Writer) int {
 	}
 	if *defaultGrant != "" {
 		command = append(command, "--default-grant", *defaultGrant)
+	}
+	if lentLogin != "" {
+		command = append(command, "--lent-login", lentLogin, "--reason", *reason)
+		if flagGiven(flags, "wait") {
+			command = append(command, "--wait", wait.String())
+		}
 	}
 	value, err := readSecretValue(name, pipeCommand(s.backend.signInPrefix(), *profile, command...), *shape, stderr)
 	if err != nil {

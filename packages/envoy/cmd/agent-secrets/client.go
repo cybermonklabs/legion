@@ -432,15 +432,17 @@ type GitHubNarrowing struct {
 	ReadOnly     bool     `json:"read_only,omitempty"`
 }
 
-// GrantValues is POST /v1/grants/{id}/values's exact response shape. GitHubApp is the narrowing
-// the broker applied: nil when it applied none, and always from a broker from before narrowing.
-// Airlock is how to reach the values this release did not hand over, nil when every granted name
-// was handed over — which is every release of a broker with no rules file.
+// GrantValues is POST /v1/grants/{id}/values's exact response shape. GoogleLoginOwners binds a
+// Google login token to the owner in the broker policy used to release it. GitHubApp is the
+// narrowing the broker applied: nil when it applied none, and always from a broker from before
+// narrowing. Airlock is how to reach the values this release did not hand over, nil when every
+// granted name was handed over — which is every release of a broker with no rules file.
 type GrantValues struct {
-	Values    map[string]string `json:"values"`
-	ExpiresAt *time.Time        `json:"expires_at"`
-	GitHubApp *GitHubNarrowing  `json:"github_app"`
-	Airlock   *AirlockRelease   `json:"airlock"`
+	Values            map[string]string `json:"values"`
+	GoogleLoginOwners map[string]string `json:"google_login_owners"`
+	ExpiresAt         *time.Time        `json:"expires_at"`
+	GitHubApp         *GitHubNarrowing  `json:"github_app"`
+	Airlock           *AirlockRelease   `json:"airlock"`
 }
 
 // AirlockRelease is POST /v1/grants/{id}/values's airlock object: how a session reaches the
