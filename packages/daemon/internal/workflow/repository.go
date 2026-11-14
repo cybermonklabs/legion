@@ -52,6 +52,21 @@ func (e *Engine) ResolveRepository(resolved string) (Resolution, error) {
 	return e.cfg.Repositories.ResolveRepository(resolved)
 }
 
+// ResolveIssueRepository is the repository fact's issue is recorded on, or why it is not: the
+// refusal fact's own preparation read from GitHub when it carries one
+// (intake.DispatchIssue.RepositoryRefusal), and otherwise what the daemon holds in memory
+// (ResolveRepository). A preparation carries its refusal on the fact because nothing of it is
+// kept: an issue on a repository no mapping names is read from GitHub at each preparation, so a
+// role App installed since is taken at the next one, with no wait, no restart and no mapping
+// change. It is the one resolution that records an issue: admission's roots and orphans
+// (putNewRoot) and the engine's children (recordChild).
+func (e *Engine) ResolveIssueRepository(fact intake.DispatchIssue) (Resolution, error) {
+	if fact.RepositoryRefusal != "" {
+		return Resolution{Refusal: fact.RepositoryRefusal, LeftOut: true}, nil
+	}
+	return e.ResolveRepository(fact.ResolvedRepo)
+}
+
 // SettleRetainedRepository is fact with a retained event's missing repository
 // (intake.DispatchIssue.ResolvedRepoMissing) settled from the issue's record, recorded: an issue's
 // repository is its record's, so the event is applied with it, keeping its own actor and sequence.
@@ -73,14 +88,21 @@ func SettleRetainedRepository(fact intake.DispatchIssue, recorded *record.Issue)
 const setRepositoryHint = "the issue header's Repository picker, or dispatch issue-update --repo owner/name"
 
 // RefuseRecording says on the Dispatch issue key why Legion did not record it: its repository,
-// resolved, resolves to none or to one Legion does not serve (refused). It says it once per
-// resolution (record.RepoNote), so a repeated event of the issue says nothing again, and reports
-// whether it said it now. A child's refusal is also told to its tree's architect (refuseChild). An
-// Unread resolution says nothing, to the issue or to an architect: the daemon recovers the issue
-// from Dispatch's listing once GitHub answers for its repository, with nothing for anyone to move,
-// and it is noted for that recovery (Config.NoteUnread), so an issue whose resolution moves off
-// the repository meanwhile (its parent's repository, or the project's default, changed) is still
-// recovered.
+// resolved, resolves to none, or GitHub does not answer for it as one a role App reaches
+// (refused). It says it once per resolution (record.RepoNote), so a repeated event of the issue
+// says nothing again, and reports whether it said it now. A child's refusal is also told to its
+// tree's architect (refuseChild). An Unread resolution says nothing, to the issue or to an
+// architect: the daemon recovers the issue from Dispatch's listing once GitHub answers for its
+// repository, with nothing for anyone to move, and it is noted for that recovery
+// (Config.NoteUnread), so an issue whose resolution moves off the repository meanwhile (its
+// parent's repository, or the project's default, changed) is still recovered.
+//
+// The two notes are the two refusals that stay. An issue whose repository resolves to none is
+// asked for one. An issue whose repository a role App does not reach is told which App and that
+// GitHub answers for the repository neither as installed nor as present, since one answer covers
+// a repository that does not exist and one the App is not installed on, and nothing of that
+// refusal is kept: installing the App, or correcting the name, admits the issue at its next
+// preparation, which is why the note asks for either and for a move back to todo.
 func (e *Engine) RefuseRecording(ctx context.Context, tx pgx.Tx, key, resolved string, refused Resolution) (bool, error) {
 	if refused.Unread {
 		if note := e.cfg.NoteUnread; note != nil {
@@ -90,7 +112,8 @@ func (e *Engine) RefuseRecording(ctx context.Context, tx pgx.Tx, key, resolved s
 	}
 	note := "Legion did not admit this issue: " + refused.Refusal + ". Set its repository (" + setRepositoryHint + ") and move it to todo again."
 	if refused.LeftOut {
-		note = "Legion did not admit this issue: " + refused.Refusal + ". Install it on " + resolved + ", or set another repository (" + setRepositoryHint + "), and move the issue to todo again."
+		note = "Legion did not admit this issue: " + refused.Refusal + ". GitHub answers for " + resolved +
+			" neither as installed nor as present: install the App on it, or correct the repository (" + setRepositoryHint + "), and move the issue to todo again."
 	}
 	return e.noteOnce(ctx, tx, key, resolved, note)
 }
@@ -130,13 +153,16 @@ func (e *Engine) noteOnce(ctx context.Context, tx pgx.Tx, key, resolved, note st
 }
 
 // refuseChild says on a child, and to its tree's architect, why the child was not recorded under
-// the tree: its repository resolves to none or to one Legion does not serve.
+// the tree: its repository resolves to none, or GitHub does not answer for it as one a role App
+// reaches. The architect is told what the issue is told, since the repository is no longer the
+// project's mapping to choose from: any repository both role Apps are installed on records an
+// issue, so what is wrong is the name or the installation.
 func (e *Engine) refuseChild(ctx context.Context, tx pgx.Tx, root record.Issue, key, resolved string, refused Resolution) error {
 	noted, err := e.RefuseRecording(ctx, tx, key, resolved, refused)
 	if err != nil || !noted {
 		return err
 	}
-	e.logOnCommit(ctx, "workflow: child not recorded; its repository is not one Legion serves", "issue", key, "tree", root.Key, "resolved", resolved, "reason", refused.Refusal)
+	e.logOnCommit(ctx, "workflow: child not recorded; GitHub does not answer for its repository as one Legion's Apps reach", "issue", key, "tree", root.Key, "resolved", resolved, "reason", refused.Refusal)
 	return e.notice(ctx, tx, root.Key, record.Notice{Kind: "child-not-recorded", Role: claim.RoleArchitect,
-		Reason: fmt.Sprintf("%s was not recorded under your tree: %s; the daemon said so on the issue. Set its repository to one of the project's (dispatch issue-update --repo owner/name), then release it again.", key, refused.Refusal)})
+		Reason: fmt.Sprintf("%s was not recorded under your tree: %s; the daemon said so on the issue. Set a repository both Legion Apps are installed on, spelled as GitHub spells it (dispatch issue-update --repo owner/name), then release it again.", key, refused.Refusal)})
 }

@@ -19,38 +19,38 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
-// implementTokens is the harness's ProvisionTokens: the implement App's installation token
-// narrowed to reading, on the owner of the repository it is minted for, from the token command
-// the script hands the harness (resolveApp), so the harness holds no App key. repos are the run's
-// repositories, the first the run's own; a lease is cached under the one it is minted for and
-// reaches every repository of that owner's installation, as every mint of the daemon's does.
-// left is the one record of what those mints find GitHub refuses, which
-// the bundles write and the directory set reads, as the daemon's three share one
-// (appauth.LeftOut, internal/daemon's sandboxRuntime).
+// implementTokens is the harness's ProvisionTokens: the implement App's installation token on
+// the owner of the repository it is minted for, narrowed to reading, from the token command the
+// script hands the harness (resolveApp), so the harness holds no App key. repos are the run's
+// repositories, the first the run's own. installed and left are the two records the bundles
+// write and the directory set reads — the owners each App's last bundle read installed, and
+// what those mints find GitHub refuses — as the daemon's three share one pair
+// (appauth.Installed, appauth.LeftOut, internal/daemon's sandboxRuntime).
 type implementTokens struct {
-	apps  *appauth.Manager
-	repos []ghrepo.Repository
-	left  *appauth.LeftOut
+	apps      *appauth.Manager
+	repos     []ghrepo.Repository
+	installed *appauth.Installed
+	left      *appauth.LeftOut
 }
 
 func (t implementTokens) Token(ctx context.Context, repo ghrepo.Repository) (string, error) {
 	// The reading lease and nothing else, as the daemon's own adapter mints it (internal/daemon's
 	// implementTokens): a refusal is returned as it came, since the App is this run's own and a
 	// refusal here is a misconfigured proof that must fail the run loudly.
-	lease, err := t.apps.ReadToken(ctx, appauth.Implement, repo.Owner(), []string{repo.Name()})
+	lease, err := t.apps.ReadToken(ctx, appauth.Implement, repo.Owner())
 	return lease.Token, err
 }
 
 // Credential is the harness's GitHubCredential: the daemon's own bundle
-// (appauth.GitHubCredential) over the run's repositories, with every lease minted as the
-// implement App, the one App the harness holds — its write lease for the repository the role
-// works, a read-only lease cached under each other repository of its owner, and a read-only
-// lease per other owner, each reaching its owner's whole installation. Every role is rendered as the
-// implementer's, so Stage 4a proves the files reach each role, follow the lease and pick the
-// directory a command names, not which App a role writes as; Stage 4b's daemon hands each role
-// its own.
+// (appauth.GitHubCredential) over the owners the implement App is installed on, with every
+// lease minted as that App, the one the harness holds — one directory per owner, each holding
+// that owner's own installation lease at the App's permissions (INFRA-2543). Every role is
+// rendered as the implementer's, so Stage 4a proves the files reach each role, follow the lease
+// and pick the directory a command names, not which App a role writes as; Stage 4b's daemon
+// hands each role its own.
 func (t implementTokens) Credential(ctx context.Context, _ claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
-	return appauth.GitHubCredential(t.apps, t.repositories, ghrepo.Renames{}, t.left, slog.Default())(ctx, claim.RoleImplementer, repo)
+	return appauth.GitHubCredential(t.apps, implementApp{t.apps}, t.repositories, ghrepo.Renames{},
+		t.installed, t.left, slog.Default())(ctx, claim.RoleImplementer, repo)
 }
 
 // ControllerCredential is the harness's ControllerCredential (Options.ControllerCredential): the
@@ -58,26 +58,32 @@ func (t implementTokens) Credential(ctx context.Context, _ claim.Role, repo ghre
 // pod's refresh asks for the owner its Secret records. It mints as the implement App, the one App
 // the harness holds, where the daemon's own mints as the review App (implementApp).
 func (t implementTokens) ControllerCredential(ctx context.Context, defaultOwner string) (ghconfig.Bundle, error) {
-	return appauth.ControllerCredential(implementApp{t.apps}, t.repositories, ghrepo.Renames{}, t.left, slog.Default())(ctx, defaultOwner)
+	return appauth.ControllerCredential(implementApp{t.apps}, implementApp{t.apps}, t.repositories, ghrepo.Renames{},
+		t.installed, t.left, slog.Default())(ctx, defaultOwner)
 }
 
-// implementApp mints every lease as the implement App, whichever App role asks for one: the
-// harness holds that App alone.
-type implementApp struct{ apps appauth.Tokens }
+// implementApp mints every lease, and reads every installation, as the implement App, whichever
+// App role asks: the harness holds that App alone.
+type implementApp struct{ apps *appauth.Manager }
 
-func (a implementApp) Token(ctx context.Context, _ appauth.AppRole, repo ghrepo.Repository) (appauth.Lease, error) {
-	return a.apps.Token(ctx, appauth.Implement, repo)
+func (a implementApp) Token(ctx context.Context, _ appauth.AppRole, owner string) (appauth.Lease, error) {
+	return a.apps.Token(ctx, appauth.Implement, owner)
 }
 
-func (a implementApp) ReadToken(ctx context.Context, _ appauth.AppRole, owner string, repos []string) (appauth.Lease, error) {
-	return a.apps.ReadToken(ctx, appauth.Implement, owner, repos)
+func (a implementApp) ReadToken(ctx context.Context, _ appauth.AppRole, owner string) (appauth.Lease, error) {
+	return a.apps.ReadToken(ctx, appauth.Implement, owner)
+}
+
+func (a implementApp) InstalledOwners(ctx context.Context, _ appauth.AppRole) ([]string, error) {
+	return a.apps.InstalledOwners(ctx, appauth.Implement)
 }
 
 // ProjectDirs is the harness's GitHubDirs (Options.GitHubDirs): the directories a bundle built
-// now for repo would hold (appauth.GitHubDirs), which is what Credential renders, so the two
-// answers move together as the daemon's own do.
+// now for repo would hold (appauth.GitHubDirs), from the record the last bundle of each App
+// wrote, which is what Credential renders, so the two answers move together as the daemon's own
+// do.
 func (t implementTokens) ProjectDirs(repo ghrepo.Repository, roles []appauth.AppRole) []string {
-	return appauth.GitHubDirs(t.repositories, ghrepo.Renames{}, t.left, roles, repo)
+	return appauth.GitHubDirs(t.repositories, ghrepo.Renames{}, t.installed, t.left, roles, repo)
 }
 
 // repositories is the run's repositories, as the daemon's mapping would serve them.
@@ -102,7 +108,7 @@ func (r *liveRig) resolveApp() (err error) {
 	branches := make([]string, 2)
 	var identity runtime.GitIdentity
 	for i, repo := range []ghrepo.Repository{r.env.repo, r.env.repoSecondOwner} {
-		lease, err := apps.Token(r.ctx, appauth.Implement, repo)
+		lease, err := apps.Token(r.ctx, appauth.Implement, repo.Owner())
 		if err != nil {
 			return fmt.Errorf("minting the implement App's installation token for %s: %w", repo.Owner(), err)
 		}
@@ -113,7 +119,8 @@ func (r *liveRig) resolveApp() (err error) {
 			identity = lease.Identity
 		}
 	}
-	r.tokens = implementTokens{apps: apps, repos: []ghrepo.Repository{r.env.repo, r.env.repoSecondOwner}, left: appauth.NewLeftOut()}
+	r.tokens = implementTokens{apps: apps, repos: []ghrepo.Repository{r.env.repo, r.env.repoSecondOwner},
+		installed: appauth.NewInstalled(), left: appauth.NewLeftOut()}
 	r.identity, r.defaultBranch, r.secondDefaultBranch = identity, branches[0], branches[1]
 	return nil
 }

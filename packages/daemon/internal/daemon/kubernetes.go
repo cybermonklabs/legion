@@ -183,7 +183,7 @@ func prepareSandbox(cfg config.Config, o overrides, reads sandboxReads, p *plan)
 	if err != nil {
 		return err
 	}
-	p.newRuntime = sandboxRuntime(reads.client, reads.opts, p.repositories.Accepted, p.repositories.serving, cfg.RepositoryRenames, o.githubAPI)
+	p.newRuntime = sandboxRuntime(reads.client, reads.opts, p.repositories.Accepted, p.repositories.serving, cfg.RepositoryRenames, p.installed, o.githubAPI)
 	p.clusterCheck = boot.clusterCheck
 	p.claimsCheck = func(ctx context.Context, st *store.Store) error {
 		legacy, err := st.HasLegacySandboxClaims(ctx, p.project)
@@ -475,25 +475,26 @@ func requirements(key string, reservation config.Reservation) (corev1.ResourceRe
 // sandboxRuntime builds the Agent Sandbox runtime, whose informers run for ctx (supervision's
 // lifetime), over the worker stream and with the workflow's App tokens as every pod's provisioning
 // token source (the implement App's, minted for the repository's owner) and every tree role's gh
-// bundle (gitHubCredential, a directory for each owner of repos, one for each owner a configured
-// rename moved a repository away from while repos holds the name it moved to, and one for each
-// repository the pod's recorded owner and the owner whose installation serves its repository
-// serve beside the one it writes to), with the
+// bundle (gitHubCredential, a directory for each owner the role's App is installed on, read from
+// GitHub at every bundle, and one for each owner a configured rename moved a repository away
+// from while repos holds the name it moved to), with the
 // controller's own bundle beside it
 // (appauth.ControllerCredential), which a controller's launch and its refresh both ask by owner,
-// and the directory set those directories are compared with (appauth.GitHubDirs), whose owner
-// directories the runtime reads a running pod's gh projection against — a pod lacking an owner's
-// directory holds no token of that owner, where one lacking a `<owner>/<repo>` directory reads
-// that repository through its owner's and is left where it is (sandbox's movedGhDirs) — the
-// three over one record of what the mints found GitHub refuses (appauth.NewLeftOut), so the set
+// and the directory set those directories are compared with (appauth.GitHubDirs), which the
+// runtime reads a running pod's gh projection against — a pod lacking an owner's directory
+// holds no token of that owner (sandbox's movedGhDirs) — the three over two records of what
+// the bundles found: the owners each App's last bundle read installed (appauth.NewInstalled),
+// which is what the drift check may honestly compare a pod against without a call to GitHub of
+// its own, and the directories the mints found GitHub refuses (appauth.NewLeftOut), so the set
 // a pod is compared against is the set a mint produces and an owner left out of every bundle of
 // the Apps that pod runs is named by no comparison of it — the roles the runtime asks for being
 // its pod's own, so the implement App's refusal of an owner costs the controller's pod, which
 // runs the review App alone, nothing — with
 // serving as the rule every provisioning token's repository is read through
 // (repositories.serving, the mapping's own, so a configured rename's mint follows the owner
-// whose installation holds the repository now), with the workflow's mapping as the repositories
-// its repository caches follow (mapped), with the store's own workspace bundles as what a
+// whose installation holds the repository now), with the repositories the project works as the
+// ones its repository caches follow (mapped: the mapping's and those of its live issue records,
+// workflowRuntime.cacheRepositories), with the store's own workspace bundles as what a
 // replacement pod's launcher is sent and what its restore drops, and registers its launcher
 // acceptor on the stream listener. A daemon with no GitHub Apps hands it neither tokens nor a
 // mapping, and sandbox.New's own refusal names what is missing. Boot has already run the cluster
@@ -502,7 +503,7 @@ func requirements(key string, reservation config.Reservation) (corev1.ResourceRe
 // root ("" is https://api.github.com), which the shared public leak check is read under
 // (leakCheckSource).
 func sandboxRuntime(rc *rest.Config, opts sandbox.Options, repos func() []ghrepo.Repository,
-	serving func(ghrepo.Repository) ghrepo.Repository, renames ghrepo.Renames, githubAPI string) runtimeFactory {
+	serving func(ghrepo.Repository) ghrepo.Repository, renames ghrepo.Renames, installed *appauth.Installed, githubAPI string) runtimeFactory {
 	return func(ctx context.Context, listener *stream.Listener, address string, apps appauth.Tokens,
 		_ func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, mapped func() []ghrepo.Repository) (runtime.Runtime, error) {
 		opts.Conns, opts.StreamURL, opts.Store, opts.Mapped = listener, address, st, mapped
@@ -521,15 +522,24 @@ func sandboxRuntime(rc *rest.Config, opts sandbox.Options, repos func() []ghrepo
 		// launcher names a tag with the cause that says so.
 		opts.LeakCheck = leakCheckSource(apps, githubAPI)
 		if apps != nil {
-			// One record per project, written by the two credentials and read by the directory
-			// set for the Apps of the pod it answers for, so no pod is replaced for a directory
-			// no mint of its own Apps can produce (appauth.LeftOut).
+			installations, ok := apps.(appauth.OwnerInstallations)
+			if !ok {
+				return nil, fmt.Errorf("the GitHub App token source answers no App installations, " +
+					"which every role's gh bundle holds one directory per owner of")
+			}
+			// Two records per project, written by the two credentials and read by the directory
+			// set for the Apps of the pod it answers for: the owners each App's last bundle read
+			// installed (appauth.Installed), which is all the drift check may say about a pod
+			// without calling GitHub per pod per sweep, and the directories a mint found GitHub
+			// refuses, so no pod is replaced for a directory no mint of its own Apps can produce
+			// (appauth.LeftOut). installed is the daemon's own (plan.installed), which every
+			// launch's addressing reads its role's App's owners out of beside the drift check.
 			left := appauth.NewLeftOut()
 			opts.Tokens = newImplementTokens(apps, serving)
-			opts.GitHubCredential = appauth.GitHubCredential(apps, repos, renames, left, opts.Log)
-			opts.ControllerCredential = appauth.ControllerCredential(apps, repos, renames, left, opts.Log)
+			opts.GitHubCredential = appauth.GitHubCredential(apps, installations, repos, renames, installed, left, opts.Log)
+			opts.ControllerCredential = appauth.ControllerCredential(apps, installations, repos, renames, installed, left, opts.Log)
 			opts.GitHubDirs = func(repo ghrepo.Repository, roles []appauth.AppRole) []string {
-				return appauth.GitHubDirs(repos, renames, left, roles, repo)
+				return appauth.GitHubDirs(repos, renames, installed, left, roles, repo)
 			}
 		}
 		rt, err := sandbox.New(ctx, rc, opts)
@@ -585,7 +595,7 @@ func (t *implementTokens) Token(ctx context.Context, repo ghrepo.Repository) (st
 	if t.serving != nil {
 		repo = t.serving(repo)
 	}
-	lease, err := t.apps.ReadToken(ctx, appauth.Implement, repo.Owner(), []string{repo.Name()})
+	lease, err := t.apps.ReadToken(ctx, appauth.Implement, repo.Owner())
 	if err != nil {
 		return "", err
 	}
@@ -595,9 +605,9 @@ func (t *implementTokens) Token(ctx context.Context, repo ghrepo.Repository) (st
 // leakCheckSource is the daemon's reader of the shared public leak check, minting through apps
 // (leakCheckToken) and reading under githubAPI, GitHub's REST root ("" is
 // https://api.github.com), which the Sandbox runtime pushes to each pod's launcher before any role
-// of the pod starts (sandbox.Options.LeakCheck). Where apps drops a read scope
-// (appauth.ReadScopeForgetter), a read GitHub answers 401 drops the lease leakCheckToken mints, so
-// the next read mints a new one. A daemon with no GitHub Apps has no reader: the answer is then
+// of the pod starts (sandbox.Options.LeakCheck). Where apps drops an owner's leases
+// (appauth.Forgetter), a read GitHub answers 401 drops the lease leakCheckToken mints, so the next
+// read mints a new one. A daemon with no GitHub Apps has no reader: the answer is then
 // the nil interface, never a nil *leakguard.Source inside one, so the runtime's comparison with
 // nil reads the daemon as holding no credential.
 func leakCheckSource(apps appauth.Tokens, githubAPI string) sandbox.LeakCheckReader {
@@ -605,10 +615,8 @@ func leakCheckSource(apps appauth.Tokens, githubAPI string) sandbox.LeakCheckRea
 		return nil
 	}
 	source := &leakguard.Source{Token: leakCheckToken(apps), API: githubAPI}
-	if forgetter, ok := apps.(appauth.ReadScopeForgetter); ok {
-		source.Forget = func() {
-			forgetter.ForgetReadScope(appauth.Implement, leakguard.CheckRepository.Owner(), []string{leakguard.CheckRepository.Name()})
-		}
+	if forgetter, ok := apps.(appauth.Forgetter); ok {
+		source.Forget = func() { forgetter.Forget(appauth.Implement, leakguard.CheckRepository.Owner()) }
 	}
 	return source
 }
@@ -628,7 +636,7 @@ func leakCheckSource(apps appauth.Tokens, githubAPI string) sandbox.LeakCheckRea
 // owner.
 func leakCheckToken(apps appauth.Tokens) func(context.Context) (string, error) {
 	return func(ctx context.Context) (string, error) {
-		lease, err := apps.ReadToken(ctx, appauth.Implement, leakguard.CheckRepository.Owner(), []string{leakguard.CheckRepository.Name()})
+		lease, err := apps.ReadToken(ctx, appauth.Implement, leakguard.CheckRepository.Owner())
 		switch {
 		case err == nil:
 			return lease.Token, nil

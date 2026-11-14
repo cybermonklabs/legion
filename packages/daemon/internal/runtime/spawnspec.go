@@ -34,19 +34,21 @@ func SecretsDir(stateDir string) string { return filepath.Join(stateDir, "secret
 func SecretFilePath(stateDir, name string) string { return filepath.Join(SecretsDir(stateDir), name) }
 
 // GitHubCredential is the daemon's one function a runtime calls for a role's GitHub credential
-// files: a gh bundle (ghconfig.Bundle), one directory of gh files per GitHub owner of the project
-// — the role's App token for the one repository repo names, the one the agent writes to (its
-// issue's), in that repository's owner's directory, and a token of the same App narrowed to
-// reading for every other owner — with a directory of its own under the write owner for each
-// other repository that owner serves, holding a token narrowed to that repository alone. The
-// bundle's default, which GH_CONFIG_DIR names, is repo's own recorded owner's directory. The
-// runtime writes it under the agent's bundle root (LEGION_GH_OWNERS_DIR) and rewrites it from the
-// same function, asked for the same repository, as the leases near their expiry. A call that
-// names no repository writes to nothing: every directory is read-only and the first owner,
-// sorted, is the default, which is what a tmux tree pane whose claim the daemon records no
-// repository for gets. A controller's bundle is no call of this at all, at its launch as at its
-// refresh: it comes from ControllerCredential, which answers by owner. A project with no GitHub
-// owner at all to mint for is ErrNoGitHubOwner.
+// files: a gh bundle (ghconfig.Bundle), one directory of gh files per owner account the role's
+// GitHub App is installed on, each holding that account's installation lease minted at the
+// role's own permissions — the implement App's write set, the review App's review set — and no
+// directory holding a narrower one, since a token reaches every repository its installation
+// holds and the daemon asks GitHub to narrow it no further (INFRA-2543). The bundle's default,
+// which GH_CONFIG_DIR names, is repo's own recorded owner's directory, and that is the whole of
+// what repo decides: a role writes in every repository its App reaches, whichever owner's it is.
+// The runtime writes the bundle under the agent's bundle root (LEGION_GH_OWNERS_DIR) and
+// rewrites it from the same function, asked for the same repository, as the leases near their
+// expiry. A call that names no repository takes the first owner the mint answered for, sorted,
+// as its default, which is what a tmux tree pane whose claim the daemon records no repository
+// for gets; its directories hold the role's own leases as any other call's do. A controller's
+// bundle is no call of this at all, at its launch as at its refresh: it comes from
+// ControllerCredential, which answers by owner and is the one bundle of reading leases. A
+// project with no GitHub owner at all to mint for is ErrNoGitHubOwner.
 type GitHubCredential func(ctx context.Context, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error)
 
 // ControllerCredential is the daemon's one function a runtime calls for the project controller's

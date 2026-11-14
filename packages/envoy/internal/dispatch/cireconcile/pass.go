@@ -186,10 +186,10 @@ func (r *Reconciler) Pass(ctx context.Context) {
 	r.report(&c, at, time.Since(started))
 }
 
-// reconcile is one pass over the mapped repositories from the cursor onwards, and the stop that
-// ended it early.
+// reconcile is one pass over the repositories covered() answers — the ones repo_projects maps and
+// the ones an issue names as its own — from the cursor onwards, and the stop that ended it early.
 //
-// The order is mapped()'s, which is sorted, and within a repository its open pull requests by
+// The order is covered()'s, which is sorted, and within a repository its open pull requests by
 // number (headsQuery orders them, and the REST fallback sorts them): one order every pass
 // walks, so a pass that does not reach the end of it can say where the next pass is to take it
 // up. A pass starts at the cursor, reads to the end of the order and ends there -- it does not
@@ -200,7 +200,7 @@ func (r *Reconciler) Pass(ctx context.Context) {
 // the end of the order closes it (closeCycle) and leaves the cursor at the start of the order,
 // so the pass after it begins the next cycle there.
 func (r *Reconciler) reconcile(ctx context.Context, writer Writer, c *counts) *stop {
-	rows, err := r.mapped(ctx)
+	rows, err := r.covered(ctx)
 	if err != nil {
 		r.Logger.Warn("ci reconcile read no repository mappings", "error", err)
 		return nil
@@ -236,7 +236,7 @@ func (r *Reconciler) reconcile(ctx context.Context, writer Writer, c *counts) *s
 
 // visitRepository reads one repository of the order from the cursor the pass begins it at: the
 // checks every repository is read under -- the pass's own bound, the shared rate limits, and
-// what the mapped row resolves to -- and then the walk of its pages. It answers the ending that
+// what the covered name resolves to -- and then the walk of its pages. It answers the ending that
 // stopped the pass within this repository, and nil for a repository the pass read to the end
 // of, which includes one it passed over.
 func (r *Reconciler) visitRepository(ctx context.Context, writer Writer, from cursor, c *counts, read map[int64]struct{}) *ending {
@@ -575,7 +575,7 @@ func (r *Reconciler) cutShort(ctx context.Context, c *counts) bool {
 }
 
 // order is the repositories a pass reads, in the order it reads them and each as the cursor the
-// pass begins it at: mapped()'s own order from the cursor onwards and no further. A pass ends at
+// pass begins it at: covered()'s own order from the cursor onwards and no further. A pass ends at
 // the last repository rather than beginning the order again, so the order holds each repository
 // once and the pass that reaches the end of it closes the cycle.
 //

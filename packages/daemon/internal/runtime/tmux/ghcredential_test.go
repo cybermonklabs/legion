@@ -4,10 +4,13 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -29,15 +32,18 @@ func staticCredentialToken(role claim.Role) string {
 	return "ghs_" + string(appauth.AppRoleFor(role)) + "_token"
 }
 
-// staticReadToken is the read-only token staticCredential renders for role on owner.
-func staticReadToken(role claim.Role, owner string) string {
-	return "ghs_" + string(appauth.AppRoleFor(role)) + "_read_" + owner
+// staticOwnerToken is the lease staticCredential renders for role on an owner other than the
+// pane's own: that owner's own installation lease, which a role's bundle holds at the role's
+// own permissions and no narrower (appauth.GitHubCredential, INFRA-2543).
+func staticOwnerToken(role claim.Role, owner string) string {
+	return "ghs_" + string(appauth.AppRoleFor(role)) + "_lease_" + owner
 }
 
 // staticCredential is the runtime's GitHubCredential in every test that needs one: a bundle of
-// the two owners acme and sjawhar (and repo's own, when it is another), the role's App's write
-// token (appauth.AppRoleFor) in the directory of repo's owner — acme when repo is the zero
-// Repository — and its read token in every other, rendered as gh's files with a fixed expiry.
+// the two owners acme and sjawhar (and repo's own, when it is another), the role's App's token
+// for repo's owner (appauth.AppRoleFor) in that owner's directory — acme when repo is the zero
+// Repository — and each other owner's own lease in its own, rendered as gh's files with a fixed
+// expiry.
 func staticCredential(_ context.Context, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
 	app := string(appauth.AppRoleFor(role))
 	owner := strings.ToLower(repo.Owner())
@@ -46,7 +52,7 @@ func staticCredential(_ context.Context, role claim.Role, repo ghrepo.Repository
 	}
 	bundle := ghconfig.Bundle{Default: owner, Dirs: map[string]ghconfig.Rendered{}}
 	for _, name := range []string{"acme", "sjawhar", owner} {
-		bundle.Dirs[name] = ghconfig.Render(staticReadToken(role, name), app, staticCredentialExpiry)
+		bundle.Dirs[name] = ghconfig.Render(staticOwnerToken(role, name), app, staticCredentialExpiry)
 	}
 	bundle.Dirs[owner] = ghconfig.Render(staticCredentialToken(role), app, staticCredentialExpiry)
 	return bundle, nil
@@ -256,8 +262,9 @@ func TestARuntimeWithoutACredentialFunctionSpawnsPanesWithNoGhFiles(t *testing.T
 
 // A spawn writes the claim's gh bundle beside its other secret files, from the daemon's function
 // for the pane's role and its repository's owner: a 0700 root `<state_dir>/secrets/<claim>-gh`
-// holding one 0700 directory per owner — acme's with the role's App write token, sjawhar's with its
-// read token, each a 0600 hosts.yml and config.yml — and the default owner's name; the pane is told
+// holding one 0700 directory per owner — acme's with the role's App token for the pane's own
+// owner, sjawhar's with sjawhar's own lease, each a 0600 hosts.yml and config.yml — and the
+// default owner's name; the pane is told
 // GH_CONFIG_DIR, acme's directory, with GH_TOKEN, GITHUB_TOKEN and GH_HOST emptied,
 // LEGION_GH_OWNERS_DIR, the root, and LEGION_GH_PATH, the real gh, and no other tool path; the log
 // line names the claim, role, App, expiry and owners. A mint that fails fails the launch before
@@ -289,10 +296,10 @@ func TestSpawnWritesTheClaimsGhBundleAndNamesItOnThePane(t *testing.T) {
 	if info, err := os.Stat(root); err != nil || !info.IsDir() || info.Mode().Perm() != 0o700 {
 		t.Fatalf("gh root stat = %v, %v; want a 0700 directory", info, err)
 	}
-	if entries := ghDirEntries(t, root); !slices.Equal(entries, []string{"acme", "sjawhar"}) {
-		t.Errorf("the gh root holds %v, want one directory per owner and nothing else", entries)
+	if entries := ghDirEntries(t, root); !slices.Equal(entries, []string{"acme", ghconfig.PairsFile, "sjawhar"}) {
+		t.Errorf("the gh root holds %v, want one directory per owner, the bundle's pairs file and nothing else", entries)
 	}
-	for owner, token := range map[string]string{"acme": staticCredentialToken(claim.RoleTester), "sjawhar": staticReadToken(claim.RoleTester, "sjawhar")} {
+	for owner, token := range map[string]string{"acme": staticCredentialToken(claim.RoleTester), "sjawhar": staticOwnerToken(claim.RoleTester, "sjawhar")} {
 		dir := ghconfig.Dir(root, owner)
 		for _, name := range []string{ghconfig.HostsFile, ghconfig.ConfigFile} {
 			if info, err := os.Stat(filepath.Join(dir, name)); err != nil || info.Mode().Perm() != 0o600 {
@@ -314,7 +321,7 @@ func TestSpawnWritesTheClaimsGhBundleAndNamesItOnThePane(t *testing.T) {
 		if strings.HasSuffix(name, "_PATH") && name != "LEGION_GH_PATH" {
 			t.Errorf("the pane is told a tool path %q", pair)
 		}
-		if strings.Contains(value, staticCredentialToken(claim.RoleTester)) || strings.Contains(value, "_read_") {
+		if strings.Contains(value, staticCredentialToken(claim.RoleTester)) || strings.Contains(value, "_lease_") {
 			t.Errorf("the pane's %s carries a token", name)
 		}
 	}
@@ -421,8 +428,8 @@ func TestTheRefresherRewritesOnlyTheOwnersWhoseHostsAreStale(t *testing.T) {
 	}
 	r.refreshGitHubCredentials(ctx)
 
-	if got := readHostsToken(t, ghconfig.Dir(root(stale), "sjawhar")); got != staticReadToken(claim.RoleTester, "sjawhar") {
-		t.Errorf("the stale owner's hosts.yml holds %q, want %q", got, staticReadToken(claim.RoleTester, "sjawhar"))
+	if got := readHostsToken(t, ghconfig.Dir(root(stale), "sjawhar")); got != staticOwnerToken(claim.RoleTester, "sjawhar") {
+		t.Errorf("the stale owner's hosts.yml holds %q, want %q", got, staticOwnerToken(claim.RoleTester, "sjawhar"))
 	}
 	if info, err := os.Stat(filepath.Join(root(stale), "sjawhar", ghconfig.HostsFile)); err != nil || info.Mode().Perm() != 0o600 {
 		t.Errorf("the replaced hosts.yml stat = %v, %v; want mode 0600", info, err)
@@ -445,8 +452,8 @@ func TestTheRefresherRewritesOnlyTheOwnersWhoseHostsAreStale(t *testing.T) {
 		t.Errorf("the refresher made a gh directory for %s (%v)", nameless, err)
 	}
 	for _, token := range []claim.Token{stale, current, gone, controller} {
-		if entries := ghDirEntries(t, root(token)); !slices.Equal(entries, []string{"acme", "sjawhar"}) {
-			t.Errorf("%s's gh root holds %v, want the two owners' directories alone", token, entries)
+		if entries := ghDirEntries(t, root(token)); !slices.Equal(entries, []string{"acme", ghconfig.PairsFile, "sjawhar"}) {
+			t.Errorf("%s's gh root holds %v, want the two owners' directories and the bundle's pairs file alone", token, entries)
 		}
 	}
 	refreshed := logLines(logs.String(), "github credential refreshed")
@@ -489,10 +496,10 @@ func TestTheRefresherRewritesOnlyTheOwnersWhoseHostsAreStale(t *testing.T) {
 		return bundle, err
 	}
 	r.refreshGitHubCredentials(ctx)
-	if got := readHostsToken(t, ghconfig.Dir(root(stale), "sjawhar")); got != staticReadToken(claim.RoleTester, "sjawhar") {
-		t.Errorf("after a failed mint the pane's hosts.yml holds %q, want its last token %q", got, staticReadToken(claim.RoleTester, "sjawhar"))
+	if got := readHostsToken(t, ghconfig.Dir(root(stale), "sjawhar")); got != staticOwnerToken(claim.RoleTester, "sjawhar") {
+		t.Errorf("after a failed mint the pane's hosts.yml holds %q, want its last token %q", got, staticOwnerToken(claim.RoleTester, "sjawhar"))
 	}
-	for owner, want := range map[string]string{"sjawhar": staticCredentialToken(claim.RoleReviewer), "acme": staticReadToken(claim.RoleReviewer, "acme")} {
+	for owner, want := range map[string]string{"sjawhar": staticCredentialToken(claim.RoleReviewer), "acme": staticOwnerToken(claim.RoleReviewer, "acme")} {
 		if got := readHostsToken(t, ghconfig.Dir(root(gone), owner)); got != want {
 			t.Errorf("after a render naming another default the reviewer's %s hosts.yml holds %q, want its last token %q", owner, got, want)
 		}
@@ -527,7 +534,7 @@ func TestTheRefresherRewritesOnlyTheOwnersWhoseHostsAreStale(t *testing.T) {
 // The repository of a pane the runtime adopted after a restart is the daemon's own record
 // (Options.ClaimRepository), never anything under the pane's gh directory, which the pane's user
 // can write: a bundle root whose default and files were rewritten to name another owner is
-// brought back to the recorded repository's write token and the other owner's read token. An
+// brought back to the recorded repository's own token and the other owner's own lease. An
 // adopted controller's bundle is every owner read-only, its default the first owner, and asks the
 // record nothing. A record that cannot name the repository is logged and nothing is written.
 func TestAnAdoptedPanesRepositoryIsTheDaemonsRecordNotItsGhDirectory(t *testing.T) {
@@ -576,15 +583,15 @@ func TestAnAdoptedPanesRepositoryIsTheDaemonsRecordNotItsGhDirectory(t *testing.
 
 	r.refreshGitHubCredentials(ctx)
 
-	for owner, want := range map[string]string{"acme": staticCredentialToken(claim.RoleTester), "sjawhar": staticReadToken(claim.RoleTester, "sjawhar")} {
+	for owner, want := range map[string]string{"acme": staticCredentialToken(claim.RoleTester), "sjawhar": staticOwnerToken(claim.RoleTester, "sjawhar")} {
 		if got := readHostsToken(t, ghconfig.Dir(root(tester), owner)); got != want {
 			t.Errorf("the adopted tester's %s hosts.yml holds %q, want %q", owner, got, want)
 		}
 	}
-	if entries := ghDirEntries(t, root(tester)); !slices.Equal(entries, []string{"acme", "sjawhar"}) {
-		t.Errorf("the adopted tester's gh root holds %v, want the two owners' directories alone", entries)
+	if entries := ghDirEntries(t, root(tester)); !slices.Equal(entries, []string{"acme", ghconfig.PairsFile, "sjawhar"}) {
+		t.Errorf("the adopted tester's gh root holds %v, want the two owners' directories and the bundle's pairs file alone", entries)
 	}
-	for owner, want := range map[string]string{"acme": staticCredentialToken(claim.RoleController), "sjawhar": staticReadToken(claim.RoleController, "sjawhar")} {
+	for owner, want := range map[string]string{"acme": staticCredentialToken(claim.RoleController), "sjawhar": staticOwnerToken(claim.RoleController, "sjawhar")} {
 		if got := readHostsToken(t, ghconfig.Dir(root(controller), owner)); got != want {
 			t.Errorf("the adopted controller's %s hosts.yml holds %q, want %q", owner, got, want)
 		}
@@ -662,27 +669,44 @@ func TestAControllerPaneIsRefreshedForTheOwnerItsLaunchRecorded(t *testing.T) {
 // test reads which mint each owner's directory holds.
 type leaseTokens struct{}
 
-func (leaseTokens) Token(_ context.Context, _ appauth.AppRole, repo ghrepo.Repository) (appauth.Lease, error) {
-	return appauth.Lease{Token: "write-" + repo.Owner(), ExpiresAt: staticCredentialExpiry}, nil
+func (leaseTokens) Token(_ context.Context, _ appauth.AppRole, owner string) (appauth.Lease, error) {
+	return appauth.Lease{Token: "write-" + owner, ExpiresAt: staticCredentialExpiry}, nil
 }
 
-func (leaseTokens) ReadToken(_ context.Context, _ appauth.AppRole, owner string, _ []string) (appauth.Lease, error) {
+func (leaseTokens) ReadToken(_ context.Context, _ appauth.AppRole, owner string) (appauth.Lease, error) {
 	return appauth.Lease{Token: "read-" + owner, ExpiresAt: staticCredentialExpiry}, nil
 }
 
-// A pane that holds no write token keeps holding none. A tree pane launched on no repository gets
-// every owner read-only, its default the first owner; a refresh renders it for that same absent
-// repository, never for its default. A tree pane the runtime adopted, whose claim the daemon
-// records no repository for (ClaimRepository answers the zero Repository), is refreshed read-only
-// the same way, and neither is logged as a failure.
-func TestARefreshNeverGivesAReadOnlyPaneAWriteToken(t *testing.T) {
+// leaseTokens also answers the owners each App is installed on, which a bundle reads at every
+// build (appauth.OwnerInstallations): the two accounts the pane's project serves repositories
+// of, which is the ordinary deployment.
+func (leaseTokens) InstalledOwners(context.Context, appauth.AppRole) ([]string, error) {
+	return []string{"acme", "sjawhar"}, nil
+}
+
+// A pane whose claim the daemon records no repository for is rendered for that same absent
+// repository, at its launch and at every refresh, and never for its default owner: a tree pane
+// launched on no repository, and one the runtime adopted whose record answers the zero
+// Repository (ClaimRepository), are both of them that pane. What its directories hold is what
+// every role's bundle holds — the lease of the owner each one is named for, at the role's own
+// permissions — since what a role may do is its App's installation and not what its claim
+// records (appauth.GitHubCredential, INFRA-2543 R2). Neither pane is logged as a failure.
+func TestAPaneWithNoRepositoryIsRenderedForThatSameAbsentRepository(t *testing.T) {
 	ctx := context.Background()
 	var logs strings.Builder
-	credential := appauth.GitHubCredential(leaseTokens{},
+	bundle := appauth.GitHubCredential(leaseTokens{}, leaseTokens{},
 		func() []ghrepo.Repository {
 			return []ghrepo.Repository{ghrepo.MustParse("sjawhar/legion"), ghrepo.MustParse("acme/widgets")}
 		},
-		ghrepo.Renames{}, nil, slog.Default())
+		ghrepo.Renames{}, nil, nil, slog.Default())
+	var mu sync.Mutex
+	var asked []string
+	credential := func(ctx context.Context, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
+		mu.Lock()
+		asked = append(asked, repo.String())
+		mu.Unlock()
+		return bundle(ctx, role, repo)
+	}
 	f := newFakeServerRuntime(t, credential, slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo})))
 	spec := f.spec(t, claim.RoleImplementer)
 	spec.Repository, spec.DefaultBranch = ghrepo.Repository{}, ""
@@ -703,23 +727,123 @@ func TestARefreshNeverGivesAReadOnlyPaneAWriteToken(t *testing.T) {
 		Runtime: runtime.RuntimeTmux, Claim: adopted, Incarnation: "4242:7",
 		Tmux: &runtime.TmuxLocator{Window: "@1", Pane: "%7"},
 	}, "", ghrepo.Repository{}, "")
-	readOnly := func(when string, tokens ...claim.Token) {
+	ownLeases := func(when string, tokens ...claim.Token) {
 		t.Helper()
 		for _, token := range tokens {
 			root := runtime.GHConfigDir(f.stateDir, token)
 			for _, owner := range []string{"acme", "sjawhar"} {
-				if got := readHostsToken(t, ghconfig.Dir(root, owner)); got != "read-"+owner {
-					t.Errorf("%s, %s's %s hosts.yml holds %q, want the read-only read-%s", when, token, owner, got, owner)
+				if got := readHostsToken(t, ghconfig.Dir(root, owner)); got != "write-"+owner {
+					t.Errorf("%s, %s's %s hosts.yml holds %q, want that owner's own lease write-%s", when, token, owner, got, owner)
 				}
 			}
 		}
 	}
-	readOnly("after the launch", spec.Claim)
+	ownLeases("after the launch", spec.Claim)
 
 	f.refreshGitHubCredentials(ctx)
 
-	readOnly("after a refresh", spec.Claim, adopted)
+	ownLeases("after a refresh", spec.Claim, adopted)
+	var absent ghrepo.Repository
+	mu.Lock()
+	for _, repo := range asked {
+		if repo != absent.String() {
+			t.Errorf("a bundle was asked for the repository %q, want the absent repository every one of these panes records", repo)
+		}
+	}
+	mu.Unlock()
 	if failed := logLines(logs.String(), "github credential refresh failed"); len(failed) != 0 {
 		t.Errorf("the runtime logged failures %q, want none", failed)
+	}
+}
+
+// One walk of the tracked panes builds one gh bundle per App role and repository
+// (appauth.Bundles): a bundle is that pair and no more, and each build opens with a live read
+// of every page of its App's installations under a fresh JWT (appauth.GitHubCredential), so
+// the panes of one issue running as one App cost the tick one read rather than one apiece. The
+// memo is the walk's own: the next walk builds afresh, which is what a bundle's directories
+// must rest on (INFRA-2543 R2). A build that fails is kept by nothing, so the walk's next pane
+// of that App asks again and its failure names its own claim.
+func TestAWalkBuildsOneBundlePerAppRoleAndRepository(t *testing.T) {
+	ctx := context.Background()
+	var logs strings.Builder
+	type built struct {
+		app  appauth.AppRole
+		repo string
+	}
+	var mu sync.Mutex
+	builds := map[built]int{}
+	var fail atomic.Bool
+	r := &Runtime{
+		stateDir:             t.TempDir(),
+		controllerCredential: staticControllerCredential,
+		log:                  slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo})),
+		tracked:              map[string]*trackedProcess{},
+	}
+	r.gitHubCredential = func(ctx context.Context, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
+		mu.Lock()
+		builds[built{appauth.AppRoleFor(role), strings.ToLower(repo.String())}]++
+		mu.Unlock()
+		if fail.Load() && appauth.AppRoleFor(role) == appauth.Implement {
+			return ghconfig.Bundle{}, errors.New("no installation token: GitHub is down")
+		}
+		return staticCredential(ctx, role, repo)
+	}
+	token := func(issue string, role claim.Role) claim.Token {
+		t.Helper()
+		token, err := claim.NewToken("omp", issue, role)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return token
+	}
+	widgets, tools := ghrepo.MustParse("acme/widgets"), ghrepo.MustParse("sjawhar/widgets")
+	panes := []struct {
+		issue string
+		role  claim.Role
+		repo  ghrepo.Repository
+	}{
+		{"LEGION-43", claim.RoleTester, widgets},
+		{"LEGION-43", claim.RoleReviewer, widgets},
+		{"LEGION-43", claim.RoleImplementer, widgets},
+		{"LEGION-43", claim.RoleMerger, widgets},
+		{"LEGION-44", claim.RoleTester, tools},
+	}
+	for i, pane := range panes {
+		r.track(runtime.Locator{
+			Runtime: runtime.RuntimeTmux, Claim: token(pane.issue, pane.role), Incarnation: "4242:" + string(rune('1'+i)),
+			Tmux: &runtime.TmuxLocator{Window: "@1", Pane: "%" + string(rune('1'+i))},
+		}, pane.issue, pane.repo, strings.ToLower(pane.repo.Owner()))
+	}
+
+	walk := func() map[built]int {
+		t.Helper()
+		mu.Lock()
+		builds = map[built]int{}
+		mu.Unlock()
+		r.refreshGitHubCredentials(ctx)
+		mu.Lock()
+		defer mu.Unlock()
+		return maps.Clone(builds)
+	}
+	want := map[built]int{
+		{appauth.Review, "acme/widgets"}:    1,
+		{appauth.Implement, "acme/widgets"}: 1,
+		{appauth.Review, "sjawhar/widgets"}: 1,
+	}
+	if got := walk(); !maps.Equal(got, want) {
+		t.Fatalf("the walk built %v, want one bundle per App role and repository: %v", got, want)
+	}
+	if got := walk(); !maps.Equal(got, want) {
+		t.Fatalf("the next walk built %v, want it to read GitHub afresh: %v", got, want)
+	}
+
+	fail.Store(true)
+	if got := walk()[built{appauth.Implement, "acme/widgets"}]; got != 2 {
+		t.Fatalf("the walk asked the failing App %d times, want once for each of its two panes", got)
+	}
+	for _, pane := range []claim.Role{claim.RoleImplementer, claim.RoleMerger} {
+		if claim := string(token("LEGION-43", pane)); !strings.Contains(logs.String(), "claim="+claim) {
+			t.Errorf("the runtime logged %q, want the failure of %s named", logs.String(), claim)
+		}
 	}
 }

@@ -82,8 +82,9 @@
 # (under aws-private-ip, a port the devbox's security group admits from the Legion nodes; under
 # bridge, forwarded through the same tunnel); LEGION_E2E_REPO_SECOND_OWNER (required) `<owner>/<name>`,
 # a repository under an owner other than sjawhar on which both Legion Apps are installed, where
-# second-owner provisions an issue and proves its pod's gh and git read sjawhar/legion-smoke with
-# read-only tokens (nothing is pushed to it); LEGION_E2E_IMPLEMENT_APP_ID and
+# second-owner provisions an issue and proves its pod's gh and git read sjawhar/legion-smoke and
+# that GitHub serves its credential for it the receive-pack advertisement, the answer a token that
+# may write gets (nothing is pushed to either repository); LEGION_E2E_IMPLEMENT_APP_ID and
 # LEGION_E2E_IMPLEMENT_APP_SECRET (this deployment's implement App by default) the App's numeric
 # id and the secrets broker github-app secret the `agent-secrets` client releases its installation
 # tokens from (agent tier: no person's grant), which prerequisites proves is that id's App from its

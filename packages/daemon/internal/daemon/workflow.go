@@ -182,10 +182,26 @@ type workflowRuntime struct {
 	releaseWaits      map[string]map[string]releaseWait
 	recoveryHeldSince time.Time
 	recheckAfter      func(time.Duration) <-chan time.Time
+	// heard is what GitHub intake hears now (heardRepositories): the boot's set (heardAtBoot) and
+	// then each read of the mapping's (refreshMapping), kept under mappingMu so a record that
+	// first names a repository can add it with no read of the records (hearRecorded) and no read
+	// of the mapping can overwrite what a record just added. heardPending marks a consumer update
+	// a record's repository could not be given, which the refresher's next read publishes in
+	// full. unread is each repository no mapping names whose GitHub reads a preparation could not
+	// make (leaveUnread), lowercased, with why, under recoveringMu: while any is, the refresher
+	// reads again of its own and recovers the issues each left. cacheRepos is what the runtime
+	// keeps a repository cache of (cacheRepositories), published for the sweep to read without a
+	// lock.
+	heard        []ghrepo.Repository
+	heardPending atomic.Bool
+	unread       map[string]string
+	cacheReposMu sync.Mutex
+	cacheRepos   atomic.Pointer[[]ghrepo.Repository]
 	// commitIssueTrailerRepos is the project's `commit_issue_trailer_repos`, the repositories
-	// whose commits a pane stamps with the issue key, as the file names them. The boot's mapping
-	// load says of each one the project does not serve that it stamps nothing
-	// (logUnservedCommitIssueTrailerRepos); nothing else in the daemon reads it.
+	// whose commits a pane stamps with the issue key, as the file names them: a launch stamps
+	// when its own repository is one of these names, whatever the mapping holds. The boot's
+	// mapping load names each of these the mapping does not hold, which catches a typo
+	// (logUnmappedCommitIssueTrailerRepos); nothing else in the daemon reads it.
 	commitIssueTrailerRepos []ghrepo.Repository
 	// reviewAppLogin is the review App's bot login from its boot lease, as the engine holds it: a
 	// review it submits decides a round by that login and the reviewer's recorded session
@@ -309,19 +325,19 @@ func appLoginsAtBoot(ctx context.Context, apps appauth.Logins, log *slog.Logger)
 	return logins[appauth.Review], nil
 }
 
-// mintAtBoot mints the implement and then the review App token for repo, as one attempt run again
-// after a failure GitHub reports as its own trouble (appauth.TransientError); any other failure is
-// refused at once. The token manager keeps a lease it minted, so an attempt after the implement
-// token passed asks GitHub only for the review token. A mint asks for what each App's
-// installation is granted of the role's set and says on stderr what it left out (appauth's
-// exchangeGranted), so a permission an account has not approved no longer stops the boot: what
-// does is an installation granted none of the role's set, an answer the mint refuses, an App not
-// installed on the owner, or GitHub's own trouble lasting past the retries.
-func mintAtBoot(ctx context.Context, tokens appauth.Tokens, repo ghrepo.Repository, log *slog.Logger) error {
+// mintAtBoot mints the implement and then the review App token on owner's installation, as one
+// attempt run again after a failure GitHub reports as its own trouble (appauth.TransientError);
+// any other failure is refused at once. The token manager keeps a lease it minted, so an attempt
+// after the implement token passed asks GitHub only for the review token. A mint asks for what
+// each App's installation is granted of the role's set and says on stderr what it left out
+// (appauth's exchangeGranted), so a permission an account has not approved no longer stops the
+// boot: what does is an App with no installation on the owner, an installation granted none of
+// the set at all, an answer the mint refuses, or GitHub's own trouble lasting past the retries.
+func mintAtBoot(ctx context.Context, tokens appauth.Tokens, owner string, log *slog.Logger) error {
 	return bootprobe.Run(ctx, "GitHub App tokens mint", appMintRetry, log, appAttempt(func(ctx context.Context) error {
 		for _, role := range appauth.Roles {
-			if _, err := tokens.Token(ctx, role, repo); err != nil {
-				return fmt.Errorf("mint %s GitHub App token at boot for %s: %w", role, repo, err)
+			if _, err := tokens.Token(ctx, role, owner); err != nil {
+				return fmt.Errorf("mint %s GitHub App token at boot for %s: %w", role, owner, err)
 			}
 		}
 		return nil
@@ -330,8 +346,9 @@ func mintAtBoot(ctx context.Context, tokens appauth.Tokens, repo ghrepo.Reposito
 
 // openWorkflow opens the workflow in the order a refusal names its cause: the configuration, the
 // Dispatch bearer prepare read, the project's repository mapping from Dispatch (each repository
-// checked for both GitHub Apps) into repos, the served repositories every role's gh bundle reads
-// its directories from, the Apps' logins, the App tokens minted for every served repository, the
+// checked for both GitHub Apps) into repos, the owner accounts every role's gh bundle reads its
+// directories from, which each App's own installations give (appauth.InstalledOwners) and no
+// repository list decides, the Apps' logins, the App tokens minted on each served owner account, the
 // fill of any record written before the record carried its repository, then the deployment's
 // design-gate steps queued for the project's Dispatch row (queueGatedStepsPublish) and the
 // recorded gate of every issue Dispatch has not closed queued for its own
@@ -397,18 +414,22 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	if err != nil {
 		return nil, err
 	}
-	// A lease is keyed by the repository it is minted for, so the boot mints each App's write
-	// lease for every repository the mapping serves rather than once per owner. No mint names its
-	// repository to GitHub (INFRA-2543), so each App's mints for one owner's repositories all send
-	// that owner's installation the same request, and what stops the boot is about the owner: an
-	// App not installed on it, or an installation granted none of the permissions a role's write
-	// token asks for, stops the boot naming the repository it was minting for (mintAtBoot), where
-	// it would otherwise leave a role with no gh files at its launch. An installation granted some
-	// of the set mints with what it is granted, and the mint says the rest on stderr (appauth's
-	// exchangeGranted), so one permission awaiting an account's approval costs the role no gh
-	// files at all.
-	for _, repo := range w.repositories.Accepted() {
-		if err := mintAtBoot(ctx, tokens, repo, log); err != nil {
+	// A token reaches every repository its App's installation holds, and the account that
+	// installs the App chooses those, so the boot proves each App's key once for each owner
+	// account of the repositories the mapping serves rather than once for each repository: an
+	// App with no installation on an owner, or one granted none of the permissions a role's
+	// write token asks for, stops the boot naming that owner, where it would otherwise leave a
+	// role with no gh files at its launch. An installation granted some of the set mints with
+	// what it is granted, and the mint says the rest on stderr (appauth's exchangeGranted), so
+	// one permission awaiting an account's approval costs the role no gh files at all. An owner
+	// the App is installed on that the mapping does not reach is not proved at boot: the boot
+	// would then depend on installations no work of this project needs.
+	//
+	// The owners are the mapping's own answer (repositories.Owners), deduplicated as a token's
+	// scope is (appauth's leaseScope: lowercased), so two repositories of one account are one
+	// mint, and minted in their sorted order, so one boot's log reads like the next's.
+	for _, owner := range w.repositories.Owners() {
+		if err := mintAtBoot(ctx, tokens, owner, log); err != nil {
 			return nil, err
 		}
 	}
@@ -427,7 +448,8 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	if engineCfg.Pods, err = st.PodRecordsOf(cfg.Project); err != nil {
 		return nil, err
 	}
-	engineCfg.Repositories, engineCfg.NoteUnread, engineCfg.ReadMergeState = w, w.noteUnread, w.queueMergeState
+	engineCfg.Repositories, engineCfg.NoteUnread = w, w.noteUnread
+	engineCfg.ReadMergeState, engineCfg.HearRepository = w.queueMergeState, w.hearRecorded
 	// The one wake the engine causes is the catch-up a start writes in place of a launch
 	// (workflow's claimReady), and it is paced with the launches it stands among, from the one
 	// limiter run built for both lanes. A deployment that paces nothing passes no reserve at all,
@@ -875,7 +897,10 @@ func (w *workflowRuntime) reconcileListing(ctx context.Context, issues []dispatc
 			if err != nil {
 				return fmt.Errorf("prepare the repository of %s for admission: %w", summary.Key, err)
 			}
-			fact.Ancestry = prepared.Ancestry
+			// What the preparation read: the chain it walked, and the refusal GitHub answered for
+			// a repository no mapping names, which this listing's own apply says on the issue
+			// (intake.DispatchIssue.RepositoryRefusal).
+			fact.Ancestry, fact.RepositoryRefusal = prepared.Ancestry, prepared.RepositoryRefusal
 		case labelledTriageRoot && records[summary.Key] == nil:
 			// The listing carries no actor, so the setter is read from the log as an event's is;
 			// a recorded root a person moved back to triage is never queued again, so its log is
@@ -943,7 +968,7 @@ func (w *workflowRuntime) reconcileListing(ctx context.Context, issues []dispatc
 // every launch of a tree open at the transfer.
 func (w *workflowRuntime) identity(ctx context.Context, role claim.Role, recorded ghrepo.Repository) (runtime.GitIdentity, error) {
 	served := w.repositories.serving(recorded)
-	lease, err := w.tokens.Token(ctx, appauth.AppRoleFor(role), served)
+	lease, err := w.tokens.Token(ctx, appauth.AppRoleFor(role), served.Owner())
 	if err != nil {
 		return runtime.GitIdentity{}, fmt.Errorf("mint the %s App lease for %s on %s: %w", appauth.AppRoleFor(role), role, served, err)
 	}

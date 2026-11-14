@@ -17,103 +17,179 @@ import (
 )
 
 // ErrOwnerOutsideProject is ControllerCredential's refusal of a controller asked for a default
-// owner that is neither one of the project's nor a configured rename's alias owner.
-var ErrOwnerOutsideProject = errors.New("is not an owner of the project's repositories")
+// owner whose directory the review App's bundle does not hold: an owner that App is installed
+// on none of, and that no configured rename moved a repository away from.
+var ErrOwnerOutsideProject = errors.New("is no owner the controller's App is installed on")
 
 // GitHubCredential is the one function every role's gh files come from (runtime.GitHubCredential)
 // over tokens: a bundle whose directories (GitHubDirs, built from the same description) each hold
 // one lease of the role's App, rendered as gh's hosts.yml and config.yml and named for the App and
-// its expiry so a log can say whose token it wrote. Every lease reaches its owner's whole
-// installation at its own permissions, so a directory's name says which lease a command is served,
-// not which repositories the token reaches:
+// its expiry so a log can say whose token it wrote. A directory is an owner account and nothing
+// smaller, because a lease is: every token this package mints reaches every repository its
+// installation holds and names no repository at all (INFRA-2543), so the installation is the
+// whole of what a role reaches and the bundle holds one directory per owner the role's App is
+// installed on.
 //
-//   - the directory named for the issue's recorded owner and the directory named for the owner
-//     whose installation serves that repository hold the one write lease for it (Tokens.Token),
-//     and each other repository the mapping serves under the owner that lease is minted for has
-//     a directory of its own, `<owner>/<repo>`, holding a read-only lease (Tokens.ReadToken)
-//     cached under that repository alone;
-//   - each other repository the issue's recorded owner serves beside the one the role writes to
-//     has such a directory under that owner's own name too (bundleDirs' recorded clause). A
-//     write lease is minted on one installation, so where a configured pair resolves the recorded
-//     owner's directory writes its issue's repository — the one the owner the pair moved it to
-//     serves — and reaches none of the recorded owner's others, which the project serves and
-//     the role may read; without a directory of their own those repositories are named by no
-//     lease of the bundle at all. Whichever of the two clauses names a `<owner>/<repo>`
-//     directory, it holds the lease of the repository its own name resolves to and exists for
-//     no other (bundleDirs): the owner it is named for is the owner its token is minted for,
-//     unless that name is one a rename moved a repository away from, where it is the
-//     repository's owner now; a name resolving to a repository the project does not serve, and
-//     one resolving to the repository its own owner directory writes, is no directory at all.
-//     So no directory named for one owner answers for another owner's repository, which is
-//     what a `gh` command or a git credential request spelling `<owner>/<repo>` would be
-//     refused for. The directory costs no pod: the drift check compares owner directories
-//     alone (sandbox's movedGhDirs through ghOwnerDirs), so a `<owner>/<repo>` name added or
-//     dropped here moves no running pod;
-//   - every other directory holds one read-only lease: a directory named for an owner the
-//     project serves repositories of under its own name reads that owner's own repositories,
-//     and one only a configured rename puts in the bundle reads the repositories of the owner
-//     whose installation serves the moved one.
+// Every one of those directories holds the lease of the owner it is named for, minted at the
+// role's own permissions — the implement App's write set, the review App's review set
+// (writePermissions, Tokens.Token) — and no directory holds a narrower one. A role's token is
+// its App's installation lease on one account: the account chose what that installation reaches
+// when it installed the App, the daemon asks GitHub to narrow it no further, and there is
+// therefore nothing narrower for a bundle to hold. So a role pushes to, opens a pull request in
+// and reviews a pull request of every repository its App reaches, whichever owner's it is, and
+// which repository its own issue names decides the bundle's default directory and nothing else
+// (INFRA-2543 R2). A reading lease in another owner's directory, which this bundle held until
+// that ruling, refused a role the work its App is installed for.
+//
+// The one directory whose lease is minted on another account is the one a configured rename puts
+// in the bundle — an owner the App is installed on none of, which a resolving pair moved a
+// repository away from: it holds the lease of the owner whose installation serves the moved
+// repository, which is what a reader spelling the old name means (bundleDirs).
+//
+// Where the App is installed on both accounts of a configured pair, each of the two directories
+// holds its own account's lease, since the pair moved one repository and not the account, and
+// the repository it moved is reached by the routing the bundle's pairs carry: a request for the
+// pair's `from` repository is answered from the `to` owner's directory, and every other
+// repository of the `from` owner from its own (bundleDirs, ghconfig.Bundle.Pairs). That is this
+// deployment's case, where the implement App's sjawhar installation holds 151 repositories and
+// not cybermonklabs/legion.
+//
+// A controller's bundle is the one bundle of reading leases, and is built from this same
+// description (ControllerCredential, Tokens.ReadToken): the two callers differ in the lease they
+// ask for and not at all in the directories they hold.
+//
+// installations is read at every bundle, GitHub asked each time (OwnerInstallations): the
+// daemon keeps no owner set of its own and runs no timer, so an account that installs the App
+// is reachable at the next bundle and one that removes it stops minting there. A read that
+// fails fails the bundle, naming the App: a bundle built from a set the daemon could not read
+// would narrow or widen a role's reach silently, and failing closed is this rule's whole point
+// (dispatch://INFRA-3136). What it read is recorded in installed for the drift check to compare
+// a pod against (Installed, GitHubDirs), which may call no GitHub of its own.
 //
 // Default is the issue's own owner's directory, which GH_CONFIG_DIR names, lowercased: the owner
 // the daemon's record names, which over a configured transfer is still the one the repository
 // moved from. A pod's GH_CONFIG_DIR is fixed at its launch, and the directory's name authorises
 // nothing — the token in it does. A call that names no repository at all, which a tmux tree pane
-// whose claim the daemon records no repository for makes, gets every directory read-only and the
-// first owner the mint answered for, sorted, as its default, since it writes to no repository; a
-// project with no owner at all to mint for is runtime.ErrNoGitHubOwner. Every controller bundle,
-// the launch's and the API route's both, is asked for by owner instead (ControllerCredential).
+// whose claim the daemon records no repository for makes, takes the first owner the mint answered
+// for, sorted, as its default; its directories hold the role's own leases as any other call's do,
+// since what a role may do is its App's installation and not what its claim records. An App
+// installed nowhere at all is runtime.ErrNoGitHubOwner. Every controller bundle, the launch's and
+// the API route's both, is asked for by owner instead (ControllerCredential).
 //
-// A read lease GitHub refuses the narrowing of costs only the repositories it names: those are
-// dropped and the rest of the bundle is minted and served (mintBundle), each dropped repository
-// said once on log. The write lease is not softened — a role cannot work its own repository
-// without it — so its refusal fails the whole bundle.
+// A lease GitHub refuses (ErrNarrowingRefused) costs that owner's directory alone: it is left
+// out, the rest of the bundle is minted and served, and the directory is said once on log
+// (mintBundle). The one directory that cannot be left out is the bundle's own default, which the
+// caller named: that is ErrNarrowingRefused, naming the owner, since a bundle whose GH_CONFIG_DIR
+// holds no token is no bundle to launch a role on, and a role that cannot act on its own issue's
+// repository has nothing to do (bundleDefault).
 //
-// A directory whose every repository is refused is left out of the bundle and recorded in left
-// (LeftOut), which GitHubDirs reads, so the drift check never asks a pod for a directory no mint
-// produces. The one directory that cannot be left out is the bundle's own default, which the
-// caller named: that is ErrNarrowingRefused, naming the owner and the repositories the lease
-// would have reached, since a bundle whose GH_CONFIG_DIR holds no token is no bundle to launch
-// a role on.
+// A directory left out is recorded in left (LeftOut), which GitHubDirs reads, so the drift check
+// never asks a pod for a directory no mint produces.
 //
 // A Manager holds every lease and re-mints it as it nears its expiry, so a launch and every
 // refresh ask GitHub only when a lease turns over, and one lease is minted per scope however many
-// directories carry it: a configured rename's two owner directories hold the one lease, as do the
-// repository directories under them.
-func GitHubCredential(tokens Tokens, repos func() []ghrepo.Repository, renames ghrepo.Renames, left *LeftOut, log *slog.Logger) runtime.GitHubCredential {
+// directories carry it: a configured rename's two owner directories hold the one lease.
+func GitHubCredential(tokens Tokens, installations OwnerInstallations, repos func() []ghrepo.Repository,
+	renames ghrepo.Renames, installed *Installed, left *LeftOut, log *slog.Logger) runtime.GitHubCredential {
 	return func(ctx context.Context, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
 		appRole := AppRoleFor(role)
-		layout, err := bundleDirs(repos, renames, repo)
+		owners, err := installations.InstalledOwners(ctx, appRole)
+		if err != nil {
+			return ghconfig.Bundle{}, fmt.Errorf("read the owners the %s App is installed on for %s: %w", appRole, role, err)
+		}
+		installed.record(appRole, owners)
+		layout, err := bundleDirs(owners, repos, renames, repo)
 		if err != nil {
 			return ghconfig.Bundle{}, err
 		}
 		if len(layout.owners) == 0 {
 			return ghconfig.Bundle{}, fmt.Errorf("the %s App for %s: %w", appRole, role, runtime.ErrNoGitHubOwner)
 		}
-		return mintBundle(ctx, tokens, appRole, role, strings.ToLower(repo.Owner()), layout, left, log)
+		return mintBundle(ctx, tokens, appRole, role, false, strings.ToLower(repo.Owner()), layout, left, log)
 	}
+}
+
+// Bundles holds the gh bundles one walk of a runtime has built, so the walk builds each bundle
+// once: a runtime makes one per walk and drops it at the walk's end (sandbox's
+// refreshGitHubCredentials and gitHubBundles, tmux's refreshGitHubCredentials).
+//
+// It is worth having because a bundle is a function of two things and no more: the App role the
+// claim role runs as (AppRoleFor) and the repository it is built for. The six roles of an issue
+// pod are therefore two bundles, where each build opens with a live read of every page of its
+// App's installations under a fresh JWT (GitHubCredential) — the walk of a twenty-pod project
+// made 120 of those reads a minute where 40 answer every bundle it needs, and a pod's launch
+// made six serial round trips to GitHub before its first role could start.
+//
+// It is a memo of one walk and no cache: every walk reads GitHub for what its bundles hold, as
+// INFRA-2543 R2 asks, and what stops is one walk asking the same question four times. A build
+// that fails is not kept either, so the walk's next role of that App asks again and fails
+// naming its own role, exactly as it did when every role built its own.
+//
+// A controller's bundle is asked for by owner (ControllerCredential) and belongs here not at
+// all: a controller pod and a controller pane hold the one role.
+type Bundles struct {
+	credential runtime.GitHubCredential
+	built      map[bundleKey]ghconfig.Bundle
+}
+
+// bundleKey is what one bundle of a walk is held under: the App role it is minted as and the
+// repository it is built for, lowercased as GitHub compares a repository's two halves.
+type bundleKey struct {
+	app  AppRole
+	repo string
+}
+
+// NewBundles is one walk's memo over credential, the runtime's own bundle function
+// (sandbox.Options.GitHubCredential, tmux.Options.GitHubCredential).
+func NewBundles(credential runtime.GitHubCredential) *Bundles {
+	return &Bundles{credential: credential, built: map[bundleKey]ghconfig.Bundle{}}
+}
+
+// Bundle is role's gh bundle for repo, built once per App role and repository of the walk. A
+// walk is one goroutine, so the memo needs no lock of its own.
+func (b *Bundles) Bundle(ctx context.Context, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
+	key := bundleKey{app: AppRoleFor(role), repo: strings.ToLower(repo.String())}
+	if built, held := b.built[key]; held {
+		return built, nil
+	}
+	built, err := b.credential(ctx, role, repo)
+	if err != nil {
+		return ghconfig.Bundle{}, err
+	}
+	b.built[key] = built
+	return built, nil
 }
 
 // ControllerCredential is the controller's own bundle, and the one producer of it: a controller's
 // launch asks for it, and the API's controller route serves `legion controller start` from it
-// (internal/api's controllerGitHubCredential). It is the review App's
-// read-only lease for every owner of the project, each narrowed to the repositories that owner
-// serves, with no repository directory under any of them, since a controller writes to none and
-// reads them all. Its default is the owner it is asked for — the one its launch recorded, which
-// its GH_CONFIG_DIR names, and which over a configured rename may be an alias owner — or the
-// first owner the mint answered for, sorted, when it is asked for none.
+// (internal/api's controllerGitHubCredential). It is the review App's read-only lease for every
+// owner that App is installed on, each reaching every repository its installation holds, since a
+// controller writes to none and reads them all: it is the one bundle whose directories hold a
+// lease narrower than the App's own installation (Tokens.ReadToken, where a role's bundle holds
+// Tokens.Token in every directory), and it holds exactly the directories a role's bundle holds
+// for the same App (bundleDirs). Its default is the owner it is asked for — the
+// one its launch recorded, which its GH_CONFIG_DIR names, and which over a configured rename may
+// be an alias owner — or the first owner the mint answered for, sorted, when it is asked for none.
 //
-// An owner outside the project is refused (ErrOwnerOutsideProject) before anything is minted: the
-// controller asks for its default over the API, and a default is no authority to read another
-// owner's repositories. A project with no owner at all is runtime.ErrNoGitHubOwner, which the
-// route answers as a daemon with nothing to act as. An owner whose every repository GitHub
-// refuses the narrowing for is left out of the bundle, as it is of a role's, and recorded in
-// left (mintBundle, LeftOut); the one it is asked for cannot be left out, and is
-// ErrNarrowingRefused naming that owner and its repositories, since the controller's
-// GH_CONFIG_DIR names that directory and nothing else.
-func ControllerCredential(tokens Tokens, repos func() []ghrepo.Repository, renames ghrepo.Renames, left *LeftOut, log *slog.Logger) runtime.ControllerCredential {
+// An owner the bundle holds no directory for is refused (ErrOwnerOutsideProject) before anything
+// is minted: the controller asks for its default over the API, and a default is no authority to
+// read an owner the review App is not installed on. That refusal is what bounds the owner this
+// route may be asked for, as the directories of a role's bundle bound `legion gh`. An App
+// installed nowhere at all is runtime.ErrNoGitHubOwner, which the route answers as a daemon with
+// nothing to act as. An owner whose lease GitHub refuses is left out of the bundle, as it is of a
+// role's, and recorded in left (mintBundle, LeftOut); the one it is asked for cannot be left out,
+// and is ErrNarrowingRefused naming that owner, since the controller's GH_CONFIG_DIR names that
+// directory and nothing else.
+func ControllerCredential(tokens Tokens, installations OwnerInstallations, repos func() []ghrepo.Repository,
+	renames ghrepo.Renames, installed *Installed, left *LeftOut, log *slog.Logger) runtime.ControllerCredential {
 	return func(ctx context.Context, defaultOwner string) (ghconfig.Bundle, error) {
 		appRole := AppRoleFor(claim.RoleController)
-		layout, err := bundleDirs(repos, renames, ghrepo.Repository{})
+		owners, err := installations.InstalledOwners(ctx, appRole)
+		if err != nil {
+			return ghconfig.Bundle{}, fmt.Errorf("read the owners the %s App is installed on for %s: %w", appRole, claim.RoleController, err)
+		}
+		installed.record(appRole, owners)
+		layout, err := bundleDirs(owners, repos, renames, ghrepo.Repository{})
 		if err != nil {
 			return ghconfig.Bundle{}, err
 		}
@@ -124,16 +200,16 @@ func ControllerCredential(tokens Tokens, repos func() []ghrepo.Repository, renam
 		if len(layout.owners) == 0 {
 			return ghconfig.Bundle{}, fmt.Errorf("the %s App for %s: %w", appRole, claim.RoleController, runtime.ErrNoGitHubOwner)
 		}
-		return mintBundle(ctx, tokens, appRole, claim.RoleController, owner, layout, left, log)
+		return mintBundle(ctx, tokens, appRole, claim.RoleController, true, owner, layout, left, log)
 	}
 }
 
 // LeftOut is the daemon's record of the gh bundle directories a mint found GitHub refuses a lease
-// for: one record per project, made by internal/daemon and handed to GitHubCredential,
-// ControllerCredential and GitHubDirs alike, so the set a pod's gh projection is compared against
-// is the set a mint really produces.
+// for: one record per project, made by internal/daemon beside the Installed record and handed to
+// GitHubCredential, ControllerCredential and GitHubDirs alike, so the set a pod's gh projection
+// is compared against is the set a mint really produces.
 //
-// Without it an owner whose every repository GitHub refuses costs the pod more than that owner:
+// Without it an owner whose lease GitHub refuses costs the pod more than that owner:
 // no bundle holds the directory, so no pod projects it, while the comparison names it at every
 // sweep (sandbox's movedGhDirs), an update round asks every worker in the pod to push, the pod is
 // replaced, and its new bundle lacks the directory again — for ever (INFRA-513).
@@ -202,31 +278,123 @@ func (l *LeftOut) left(dir string, roles []AppRole) bool {
 	return false
 }
 
+// Installed is the daemon's record of the owner accounts each App's last bundle build read from
+// GitHub (OwnerInstallations): one record per project, made by internal/daemon beside the
+// LeftOut record and handed to the same three, so the drift check has an owner set to compare a
+// pod against without asking GitHub for one.
+//
+// It is what it says and no more: the installations as the last bundle build of that App read
+// them, which may be a minute old and may have been read for another role of the same App.
+// That is what an honest comparison a pod is replaced on may use, while every bundle reads
+// GitHub itself: a pod is a thing of the last launch, so comparing it against the last read is
+// the question the drift check asks, and the bundle a replacement pod is handed is read fresh
+// whenever it is built. A role whose App no bundle has built for yet is recorded nothing, and
+// GitHubDirs then names no directory at all and leaves every pod where it is, as it does for a
+// bundle it cannot describe.
+//
+// A nil record records nothing and answers for nothing, as a nil LeftOut does: the API's
+// controller route builds a bundle of its own per request (internal/api's
+// controllerGitHubCredential), and no pod's projection is ever compared against that one.
+type Installed struct {
+	mu sync.Mutex
+	// owners holds, per App role, the owner accounts that App's last bundle build read,
+	// lowercased and sorted.
+	owners map[AppRole][]string
+}
+
+// NewInstalled is a record of nothing: no App has been read yet, so no pod is compared against
+// anything until the first bundle of its Apps is built.
+func NewInstalled() *Installed { return &Installed{owners: map[AppRole][]string{}} }
+
+// record holds the owners role's App was read installed on, replacing what an earlier bundle
+// read: an account that removed the App is gone from the answer at once, as it is from the
+// bundle that read it.
+func (i *Installed) record(role AppRole, owners []string) {
+	if i == nil {
+		return
+	}
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if i.owners == nil {
+		i.owners = map[AppRole][]string{}
+	}
+	i.owners[role] = slices.Clone(owners)
+}
+
+// Owners is the owner accounts role's App was installed on when its last bundle was built, and
+// whether any bundle of it has been built at all: what internal/daemon tells a launch its own
+// App reaches (daemon.RepositoriesClause), which may be a minute old and may have been read for
+// another role of the same App, as this record's own doc says. It is no set to mint from — a
+// bundle reads GitHub itself, at every build (GitHubCredential) — and the answer is the
+// record's own slice copied, so a caller that sorts or appends to it moves nothing here.
+func (i *Installed) Owners(role AppRole) ([]string, bool) {
+	if i == nil {
+		return nil, false
+	}
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	owners, read := i.owners[role]
+	return slices.Clone(owners), read
+}
+
+// shared is the owners every one of roles' Apps was last read installed on — their
+// intersection — and whether every one of them has been read at all. A pod's gh projection is
+// its roles' bundles intersected (sandbox's gitHubBundles), so an owner one of its Apps is not
+// installed on is in no such pod's projection however readily the other App mints it. A role
+// nothing has been read for leaves the answer unknown: a set built without it would name a pod
+// lacking for a directory an App that has never been read may well not hold.
+func (i *Installed) shared(roles []AppRole) ([]string, bool) {
+	if i == nil {
+		return nil, false
+	}
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	var shared []string
+	for at, role := range roles {
+		owners, read := i.owners[role]
+		if !read {
+			return nil, false
+		}
+		if at == 0 {
+			shared = slices.Clone(owners)
+			continue
+		}
+		shared = slices.DeleteFunc(shared, func(owner string) bool { return !slices.Contains(owners, owner) })
+	}
+	return shared, true
+}
+
 // GitHubDirs is the directory names a gh bundle built now for repo would hold, sorted: the answer
 // the Sandbox runtime's drift check reads a running pod's gh projection against
 // (sandbox.Options.GitHubDirs), since a pod's projection is fixed at the directories of its
 // creation. A zero repo is the controller's owner-only set, the bundle its pod was launched with.
 //
-// roles are the App roles of the pod that pod projection belongs to, which is what the record of
-// the directories a mint found GitHub refuses is read for (left, LeftOut): an issue pod runs
-// both Apps and projects what both their bundles hold, so a directory either App is refused is
-// in no projection of it, while the project controller's pod runs the review App alone and is
-// handed every directory that App mints, whatever the implement App's installation reaches
-// (sandbox's movedGhDirs, which maps its pod's kind's roles through AppRoleFor).
+// roles are the App roles of the pod that pod projection belongs to, which both records are read
+// for: the owners those Apps were last read installed on, intersected (installed, Installed),
+// less every directory a mint of those Apps found GitHub refuses (left, LeftOut). An issue pod
+// runs both Apps and projects what both their bundles hold, so an owner either App is not
+// installed on, and a directory either App is refused, is in no projection of it; the project
+// controller's pod runs the review App alone and is handed every directory that App mints,
+// whatever the implement App's installation reaches (sandbox's movedGhDirs, which maps its pod's
+// kind's roles through AppRoleFor).
 //
-// It and GitHubCredential are built from one description of the bundle (bundleDirs), so the set a
-// pod is compared against and the set a pod would be handed cannot drift apart. It mints nothing
-// and calls GitHub not at all, reading the mapping, the configured renames and what the mints
-// before it recorded, since the drift check reads it on every evaluation: a
-// repository whose name no directory may carry is left out of both (bundleDirs), and a directory
-// GitHub refuses every lease of is left out of both as well — of the bundle by the mint that met
-// the refusal, and of this answer by the record that mint wrote, so a pod lacking a directory no
-// mint produces is no pod to replace.
-// A bundle no launch could write — an owner directory ghconfig refuses a name for, which is what
-// GitHubCredential fails on — is no set to compare a pod against and answers none, leaving every
-// pod where it is.
-func GitHubDirs(repos func() []ghrepo.Repository, renames ghrepo.Renames, left *LeftOut, roles []AppRole, repo ghrepo.Repository) []string {
-	layout, err := bundleDirs(repos, renames, repo)
+// It mints nothing and calls GitHub not at all — the drift check reads it on every evaluation of
+// every pod, so a call to GitHub here would be one per pod per sweep — which is what the
+// Installed record is for: a bundle reads the installations itself, and this answers from what
+// the last bundle of those Apps read. Beside that it reads the same inputs a bundle does, the
+// configured renames and the repositories Dispatch maps to the project, through the same one
+// description (bundleDirs), so the set a pod is compared against and the set a pod would be
+// handed cannot drift apart.
+//
+// Two answers are no set at all, and leave every pod where it is: an App no bundle has read the
+// installations of yet (Installed.shared), and a bundle no launch could write — an owner
+// directory ghconfig refuses a name for, which is what GitHubCredential fails on.
+func GitHubDirs(repos func() []ghrepo.Repository, renames ghrepo.Renames, installed *Installed, left *LeftOut, roles []AppRole, repo ghrepo.Repository) []string {
+	owners, read := installed.shared(roles)
+	if !read {
+		return nil
+	}
+	layout, err := bundleDirs(owners, repos, renames, repo)
 	if err != nil {
 		return nil
 	}
@@ -240,182 +408,114 @@ func GitHubDirs(repos func() []ghrepo.Repository, renames ghrepo.Renames, left *
 	return names
 }
 
-// bundleDir is one directory of a gh bundle: name, its path under the bundle's root, and the one
-// lease it holds.
+// bundleDir is one directory of a gh bundle: name, its path under the bundle's root, and owner,
+// the account whose installation mints the lease it holds. The two are the same name but for a
+// configured rename's alias directory, which holds the lease of the owner that serves the
+// repository the pair moved (bundleDirs).
 type bundleDir struct {
-	name string
-	hold dirLease
-}
-
-// dirLease is the ask that mints one directory's lease: the write lease for repo, the one
-// repository a role works, or a read-only lease over owner's repos. Both name the repositories
-// they reach, which is what keeps a directory's token no wider than its name.
-type dirLease struct {
-	write bool
-	repo  ghrepo.Repository
+	name  string
 	owner string
-	repos []string
 }
 
-// scope is what two directories hold the one lease under: the lease's kind and what it reaches,
-// as the Manager keys its cache (leaseScope), so the grouping here and the Manager's are the one
-// rule. A configured rename's two owner directories share one scope, as do the repository
-// directories under them.
-func (d dirLease) scope(role AppRole) scope {
-	if d.write {
-		return leaseScope(false, role, d.repo.Owner(), []string{d.repo.Name()})
-	}
-	return leaseScope(true, role, d.owner, d.repos)
+// dirLease is the ask that mints one directory's lease: the owner whose installation mints it,
+// and whether it is that installation's reading lease — a controller's bundle, which holds
+// nothing else — or the App's own, which every directory of a role's bundle holds. Either is
+// minted on one account's installation and reaches every repository that installation holds
+// (INFRA-2543), which is why a directory names an owner and never a repository: there is no
+// narrower lease for a narrower directory to hold.
+type dirLease struct {
+	read  bool
+	owner string
 }
+
+// scope is what two directories hold the one lease under: the lease's kind and the owner whose
+// installation mints it, as the Manager keys its cache (leaseScope), so the grouping here and
+// the Manager's are the one rule. A configured rename's two owner directories share one scope.
+func (d dirLease) scope(role AppRole) scope { return leaseScope(d.read, role, d.owner) }
 
 // mint asks tokens for the lease, as the App role.
 func (d dirLease) mint(ctx context.Context, tokens Tokens, role AppRole) (Lease, error) {
-	if d.write {
-		return tokens.Token(ctx, role, d.repo)
+	if d.read {
+		return tokens.ReadToken(ctx, role, d.owner)
 	}
-	return tokens.ReadToken(ctx, role, d.owner, d.repos)
+	return tokens.Token(ctx, role, d.owner)
 }
 
-// over is d's read lease narrowed to repos: the ask made again, one repository at a time and then
-// over the ones that answered, when GitHub refuses the narrowing of the whole (dirEntry).
-func (d dirLease) over(repos []string) dirLease {
-	return dirLease{owner: d.owner, repos: repos}
-}
-
-// where names what the lease reaches, for a refusal to say which mint failed: the repository a
-// write lease names, and the owner and repositories a read lease does. It carries no token, a
-// refusal being about the ask.
-func (d dirLease) where() string {
-	if d.write {
-		return d.repo.String()
-	}
-	return d.owner + " (" + strings.Join(d.repos, ", ") + ")"
-}
-
-// bundleLayout is a role's gh bundle as bundleDirs describes it: dirs, every directory it holds
-// with the lease each one carries, owners, the owner directories it holds, and unnamed, the
-// repository directories left out because ghconfig holds their name to be no directory's
-// (ghconfig.IsDirName), which a mint says once on the log.
+// bundleLayout is a gh bundle as bundleDirs describes it: dirs, every directory it holds with
+// the owner each one's lease is minted on, owners, the same names as a set, which the
+// bundle's default is chosen from and a controller's asked-for owner is read against, and
+// pairs, the configured renames the bundle routes a request by (ghconfig.Bundle.Pairs).
 type bundleLayout struct {
-	dirs    []bundleDir
-	owners  map[string]bool
-	unnamed []bundleDir
+	dirs   []bundleDir
+	owners map[string]bool
+	pairs  []ghrepo.Rename
 }
 
-// bundleDirs is the one description of a role's gh bundle: every directory it holds, sorted by
-// name, with the lease each one carries, and the owner directories the bundle holds — the
-// mapping's owners lowercased, every owner a configured rename moved a repository away from
-// (ghrepo.Renames.OwnerAliases) beside them, and repo's own recorded owner, which is the role's
-// and not the project's. GitHubCredential mints from it and GitHubDirs names it, so neither can
-// hold a directory the other does not.
+// bundleDirs is the one description of a gh bundle's directories: every directory it holds,
+// sorted by name, with the owner whose installation mints the lease each one carries.
+// GitHubCredential mints the role's own lease of those owners from it, ControllerCredential
+// the reading lease of the same owners, and GitHubDirs names it, so no two of the three can
+// hold a directory the others do not.
 //
-// A rename's alias owner is no owner of its own where the project serves no repository under
-// its name: its directory's lease is minted for the owner the repository moved to, whose
-// installation holds it now (mintOwner below), which makes the pair's two directories one
-// entry. Where the project does serve repositories under that name, the owner is one of the
-// project's own and its directory reads them, since the pair moved one repository and not the
-// owner. repo is read as the project serves it now (ghrepo.Renames.Serving over the
-// repositories the project serves, the rule repositories.serving reads), so the write lease
-// names the repository as GitHub holds it rather than as the record does.
+// It takes two inputs rather than one. installed is the owner accounts the role's App is
+// installed on, which decides the directories: a lease reaches every repository its
+// installation holds and names no repository at all (INFRA-2543), so the installation is the
+// whole of a role's reach and there is nothing smaller for a directory to stand for. repos is
+// the repositories Dispatch maps to the project, which the rename rule reads and nothing else
+// does: a pair resolves on whether the project serves each of its two repositories, never on
+// where an App is installed, which is the production failure the paragraph below records.
 //
-// Both reads of the rule ask one question of the served set — does the project serve this
-// repository (ghrepo.Serves) — and never whether it serves any repository of a pair's owners. An
-// owner test is the wrong question and was the production failure this rule replaces: a project
-// that serves one more repository of the owner a pair moved a repository away from serves no
-// more of the moved repository, yet an owner test reads that as the old owner being the
-// project's own, stops resolving the pair, and mints every token of it on the installation the
-// repository has left. Asked per repository, a pair resolves or does not on its own two names,
-// so this is a pure function of its inputs and may be built per call.
+// The directories are one per installed owner, every owner a configured rename moved a
+// repository away from (ghrepo.Renames.OwnerAliases) beside them, and repo's own recorded
+// owner, which is the role's and not the project's. That last one is here because the bundle's
+// default is that directory and the pod's GH_CONFIG_DIR names it (GitHubCredential): an owner
+// no installation of the App answers for is then GitHub's own refusal of that mint, said where
+// the ask was made, rather than a bundle quietly missing the directory it is served from.
 //
-// Two clauses cut the `<owner>/<repo>` directories. The serving clause cuts, under every
-// directory whose lease is minted for the owner that serves the role's own repository, that
-// owner's other repositories; the recorded clause cuts, under the directory named for the
-// issue's recorded owner, that owner's own repositories beside the one the role writes to.
-// Where the issue's own repository resolves through a pair those are two owners, and the
-// recorded clause is what keeps the recorded owner's other repositories reachable: the write
-// lease in that owner's directory names the repository the pair moved, which is the other
-// owner's, so without the clause a repository the project serves is named by no lease of the
-// bundle at all. Everywhere else the recorded owner is the serving owner, and the recorded
-// clause names nothing the serving clause has not. The name costs no pod, repository
-// directories being no address the drift check compares (sandbox's movedGhDirs, ghOwnerDirs).
+// A rename's alias owner is no owner of its own where the App is installed on no such account:
+// its directory's lease is minted for the owner the repository moved to, whose installation
+// holds it now, which makes the pair's two directories one entry — the deployment's own case,
+// where the bundle holds sjawhar for sjawhar/legion, which GitHub serves as
+// cybermonklabs/legion. Where the App is installed on that account, the owner is one in its own
+// right and its directory holds its own lease, since the pair moved one repository and not the
+// account: that lease is the only one in the bundle that reaches the account's other
+// repositories, while the repository the pair moved is reached through the directory of the
+// owner whose installation holds it now — the name every GitHub call the daemon makes for such
+// a tree already uses (internal/daemon's repositories.serving).
 //
-// What each of those names holds is one rule, asked of the directory's own name and of nothing
-// else, whichever cut named it (repositoryLease): a repository directory holds the lease of the
-// repository its own name resolves to, and exists for no other. The directory's name is what
-// decides, because the name is what a reader asks by: a `gh` command or a git credential
-// request spelling `<owner>/<repo>` means that repository, and the bundle answers it with the
-// token of the directory of that name, so a directory holding another owner's repository hands
-// out a token that cannot reach what was asked for — the installation it was minted on does not
-// cover the repository the name means, and GitHub refuses it. The name resolves exactly as a
-// recorded repository does (ghrepo.Renames.Serving over the repositories the project serves),
-// which is why `<from-owner>/<repo>` legitimately holds the lease of the repository the pair
-// moved it to: that name is the one GitHub redirects, and a reader spelling it means the moved
-// repository. Three answers follow, and the rule is written once rather than per cut, since a
-// fix conditioned on one cut's owner would leave the other standing:
+// The rename rule is asked one question of the served set — does the project serve this
+// repository (ghrepo.Serves) — and never whether it serves any repository of a pair's owners.
+// An owner test is the wrong question and was the production failure this rule replaces: a
+// project that serves one more repository of the owner a pair moved a repository away from
+// serves no more of the moved repository, yet an owner test reads that as the old owner being
+// the project's own, stops resolving the pair, and mints every token of it on the installation
+// the repository has left. Asked per repository, a pair resolves or does not on its own two
+// names, so this is a pure function of its inputs and may be built per call.
 //
-//   - a name whose resolved repository the project does not serve is no directory of the
-//     bundle. No lease could be minted for it — the mapping holds no such repository and no
-//     installation of the project is asked for one — so a directory of that name could only
-//     carry some other repository's token, which is the fault itself. This is reachable
-//     whenever the two owners of a pair serve repositories of different names: the serving
-//     clause cuts the serving owner's repository names under the recorded owner's directory
-//     too, and a name the recorded owner serves nothing under resolves to nothing served.
-//   - a name whose resolved repository is the one that directory's own owner directory writes
-//     is no directory of the bundle either: the owner's own directory already holds the write
-//     lease for it, and a read-only directory beside it would stand for a repository the
-//     directory above it reaches more widely.
-//   - every other name holds the read lease of the repository it resolves to, minted for that
-//     repository's owner and narrowed to it alone. So `<recorded-owner>/<repo>` is the recorded
-//     owner's own repository where the project serves one of that name, the other owner's
-//     repository of the same name stays reachable under its own `<owner>/<repo>`, and no
-//     directory name answers for two repositories.
+// The pairs the layout carries are the configured renames that resolve and move a repository to
+// another owner's installation (ghrepo.Renames.Moving), which is the same walk the alias map is
+// keyed from. They go into the bundle, and from there into its root's pairs file
+// (ghconfig.Bundle.Pairs, ghconfig.PairsFile), because a directory per owner cannot answer for
+// both repositories of a pair whose two owners the App is installed on: `legion gh` and `legion
+// git-credential` route the pair's `from` repository to the `to` owner's directory and every
+// other repository of that owner to its own, which is a question about the repository and not
+// about the owner (cmd/legion's ghConfigDirFor).
 //
-// A repository whose directory name ghconfig refuses (ghconfig.IsDirName) is left out of the
-// bundle and named in unnamed: a repository called hosts.yml or config.yml would want a directory
-// where gh keeps the owner's own file of that name, and leaving the one repository out costs the
-// role that repository alone, where failing would cost it every repository of every owner. An
-// owner directory ghconfig refuses a name for is an error: it carries the owner's whole lease and
-// may be the bundle's default, so a bundle is refused rather than written from a name that is not
-// one.
-func bundleDirs(repos func() []ghrepo.Repository, renames ghrepo.Renames, repo ghrepo.Repository) (bundleLayout, error) {
+// A directory ghconfig holds to be no directory's name (ghconfig.IsDirName) is an error: every
+// directory here carries an owner's whole lease and may be the bundle's default, so a bundle is
+// refused rather than written from a name that is not one.
+func bundleDirs(installed []string, repos func() []ghrepo.Repository, renames ghrepo.Renames, repo ghrepo.Repository) (bundleLayout, error) {
 	serves := repos()
-	owners, served := map[string]bool{}, map[string][]string{}
-	for _, mapped := range serves {
-		owner := strings.ToLower(mapped.Owner())
-		owners[owner] = true
-		served[owner] = append(served[owner], strings.ToLower(mapped.Name()))
-	}
 	// The rename rule is read per repository: a pair resolves exactly when the project serves
 	// its `to` and not its `from`, which is asked of the two repositories themselves.
 	servesRepository := func(candidate ghrepo.Repository) bool { return ghrepo.Serves(serves, candidate) }
 	aliases := renames.OwnerAliases(servesRepository)
-	serving := renames.Serving(repo, servesRepository)
-	for owner, names := range served {
-		slices.Sort(names)
-		served[owner] = slices.Compact(names)
+	moving := renames.Moving(servesRepository)
+	owners := make(map[string]bool, len(installed))
+	for _, owner := range installed {
+		owners[strings.ToLower(owner)] = true
 	}
-	// mintOwner is the owner a directory's lease is minted for: its own, or, where the name is
-	// one a resolving pair moved a repository away from and the project serves no repository
-	// under it, the owner that repository moved to.
-	//
-	// An owner the project serves repositories of under its own name is never redirected: that
-	// owner has an installation of its own, so the lease the daemon can mint for that name is
-	// that owner's, and a pair moved one of its repositories and not the owner. It is the
-	// answer the switch below already gives such an owner's directory (case owners[name]), and
-	// the serving clause's own owner needs it too: where the project serves the role's own
-	// repository, the owner whose installation serves it is served under its own name, so
-	// write is that owner and the repository directories are cut over the repositories it
-	// serves. Redirected, write would name the owner a second pair moved one of that owner's
-	// repositories to — a chain of owners NewRenames accepts, its chain check comparing whole
-	// repositories — and the clause would cut that third owner's repositories instead, leaving
-	// every other repository the serving owner serves named by no lease of the bundle.
-	mintOwner := func(name string) string {
-		if to, alias := aliases[name]; alias && !owners[name] {
-			return to
-		}
-		return name
-	}
-	layout := bundleLayout{owners: maps.Clone(owners)}
+	layout := bundleLayout{owners: maps.Clone(owners), pairs: moving}
 	for from := range aliases {
 		layout.owners[from] = true
 	}
@@ -423,201 +523,55 @@ func bundleDirs(repos func() []ghrepo.Repository, renames ghrepo.Renames, repo g
 	if recorded != "" {
 		layout.owners[recorded] = true
 	}
-	servingOwner, servingName := strings.ToLower(serving.Owner()), strings.ToLower(serving.Name())
-	// cutBeside is whether a clause cuts a `<owner>/<repo>` directory for held under a directory
-	// whose lease is minted for mintedFor: that owner serves held, and held is not the
-	// repository the role writes to, which the owner directory's own write lease names. Each of
-	// the two clauses below asks it of its own owner, and a name both of them cut is one
-	// directory, which repositoryLease holds to the same rule as every other name.
-	cutBeside := func(mintedFor, held string) bool {
-		if mintedFor == servingOwner && held == servingName {
-			return false
-		}
-		_, serves := slices.BinarySearch(served[mintedFor], held)
-		return serves
-	}
-	// writeAt is the two directories the write lease stands in, and no others: the one named for
-	// the issue's recorded owner, which the record keeps for the tree's whole life and the pod's
-	// GH_CONFIG_DIR names, and the one named for the owner whose installation serves that
-	// repository now. Where no pair resolves those two are one directory. A call that names no
-	// repository has neither, and every directory of its bundle is read-only: every controller
-	// bundle, and a tree pane whose claim the daemon records no repository for, write to none.
-	//
-	// Both hold the one lease, minted once for the repository the project serves, so a role of a
-	// tree recorded before a transfer writes through either name. No third directory holds it.
-	// Redirecting an alias owner's directory to the write lease, as the lease of its mint owner
-	// once did, puts a write lease for one owner's repository in a directory named for another
-	// as soon as a pair resolves while the issue's own repository is somebody else's — and it
-	// costs the owner that directory is named for every repository the project serves under it,
-	// which is then reachable from no directory of the bundle at all.
-	//
-	// write is the owner whose installation serves the role's own repository, which is the owner
-	// the bundle's repository directories are cut for below. It is servingOwner itself wherever
-	// the project serves that repository, since mintOwner redirects no owner the project serves
-	// repositories of under its own name: serving is already resolved, so a further redirect of
-	// it would cut the repositories of the owner a second pair moved one of the serving owner's
-	// repositories away to, and leave every other repository the serving owner serves named by
-	// no lease of the bundle.
-	write := ""
-	writeAt := map[string]bool{}
-	if !serving.IsZero() {
-		write = mintOwner(servingOwner)
-		writeAt[recorded], writeAt[servingOwner] = true, true
-	}
-	// repositoryLease is the rule every `<owner>/<repo>` directory of the bundle is held to,
-	// whichever cut named it: the lease the directory carries, and whether the bundle holds a
-	// directory of that name at all. It asks the name and nothing else, because the name is
-	// what a reader asks by — a `gh` command or a git credential request spelling
-	// `<owner>/<repo>` is answered with the token of the directory of that name — so a
-	// directory whose token reaches another repository answers an ask it cannot serve.
-	//
-	// The name resolves exactly as a recorded repository does, through the rename rule itself
-	// (ghrepo.Renames.Serving over the repositories the project serves) rather than a second
-	// writing of it here, so a pair means one thing wherever the daemon asks about it: a name
-	// the pair moved a repository away from resolves to the repository it moved to, which is
-	// what a reader spelling the old name means, and every other name resolves to itself.
-	//
-	// A name ghrepo refuses names no repository of GitHub's at all, so no directory: the two
-	// cuts build their names from an owner and a repository name the mapping or the daemon's
-	// own record already parsed, so this is the answer for a name that could not have come
-	// from either.
-	repositoryLease := func(name string) (dirLease, bool) {
-		named, err := ghrepo.Parse("the gh bundle directory", name)
-		if err != nil {
-			return dirLease{}, false
-		}
-		resolved := renames.Serving(named, servesRepository)
-		// A repository the project does not serve has no lease of its own to hold: the mapping
-		// holds no such repository, so the only token this directory could carry is another
-		// repository's, which is what its name may never answer with.
-		if !servesRepository(resolved) {
-			return dirLease{}, false
-		}
-		owner, held := strings.ToLower(resolved.Owner()), strings.ToLower(resolved.Name())
-		// The repository a directory's own owner directory writes needs no directory of its
-		// own: that owner's directory already holds the write lease for it, which reaches more
-		// than this read-only one could.
-		if writeAt[strings.ToLower(named.Owner())] && owner == servingOwner && held == servingName {
-			return dirLease{}, false
-		}
-		return dirLease{owner: owner, repos: []string{held}}, true
-	}
 	dirs := make([]bundleDir, 0, len(layout.owners))
-	// beside is the `<owner>/<repo>` directory names the two cuts produce, as a set: a name both
-	// cuts name is one directory, and repositoryLease decides what each of them holds once the
-	// cuts have named them all.
-	beside := map[string]bool{}
 	for _, name := range slices.Sorted(maps.Keys(layout.owners)) {
-		target := mintOwner(name)
-		switch {
-		case writeAt[name]:
-			dirs = append(dirs, bundleDir{name: name, hold: dirLease{write: true, repo: serving}})
-		case owners[name]:
-			// An owner the project serves a repository of under its own name is an owner in its
-			// own right, whatever a resolving pair moved away from it: its directory reads its
-			// own repositories, on its own installation.
-			dirs = append(dirs, bundleDir{name: name, hold: dirLease{owner: name, repos: served[name]}})
-		default:
-			// A directory only a resolving rename puts in the bundle names an owner the project
-			// serves no repository of, so the one lease it can hold is that of the owner whose
-			// installation serves the moved repository.
-			dirs = append(dirs, bundleDir{name: name, hold: dirLease{owner: target, repos: served[target]}})
+		// A directory holds the lease of the owner its own name means, which is what a `gh`
+		// command or a git remote spelling that name asks for. The one name that means another
+		// account is one no installation of the App answers for — an owner a resolving pair
+		// moved a repository away from, which is the only reason such a name is in the set at
+		// all: it means the repository the pair moved, GitHub redirects that to the owner it
+		// moved to, and the directory therefore holds that owner's lease, which makes the
+		// pair's two directories one entry.
+		mint := name
+		if alias := aliases[name]; !owners[name] && alias != "" {
+			mint = alias
 		}
-		// The serving clause: a repository directory is named under every directory whose lease
-		// is minted for the owner that serves the role's own repository, for each other
-		// repository that owner serves, as it has since each lease named the repositories it
-		// reaches. Which of those directories holds the write lease does not decide the names:
-		// a pod's gh projection is fixed when the pod is created, so a name added or dropped
-		// here would be drift the sweep answers with an update round over every worker in the
-		// pod (GitHubDirs, sandbox's movedGhDirs) — were a repository directory an address at
-		// all, which it is not: movedGhDirs runs both sides through ghOwnerDirs, which drops
-		// every name holding a slash. So a directory holding its own read lease may carry a
-		// repository directory of the same scope under it, which costs one name, no second mint
-		// and no pod.
-		if write != "" && target == write {
-			for _, held := range served[target] {
-				if cutBeside(target, held) {
-					beside[name+"/"+held] = true
-				}
-			}
-		}
-		if name != recorded {
-			continue
-		}
-		// The recorded clause: under the directory named for the issue's recorded owner a
-		// repository directory is named for each repository that owner serves beside the one the
-		// role writes to. Where the issue's own repository resolves through a pair, the recorded
-		// owner's directory holds the write lease for a repository another owner's installation
-		// serves, so it reaches none of the recorded owner's other repositories, which the
-		// project serves and the role may read, and the serving clause names them none: it names
-		// them for the owner that serves the role's repository, which is the owner the pair moved
-		// it to. Without this, a repository the project serves is named by no lease of the bundle
-		// at all. Where the issue's repository resolves through no pair, the recorded owner is
-		// the serving owner and this clause names what the serving clause already named.
-		for _, held := range served[recorded] {
-			if cutBeside(recorded, held) {
-				beside[name+"/"+held] = true
-			}
-		}
+		dirs = append(dirs, bundleDir{name: name, owner: mint})
 	}
-	// Every name the cuts produced, held to the one rule: the lease of the repository the name
-	// resolves to, or no directory where the name resolves to a repository no lease of this
-	// bundle may hold.
-	for _, name := range slices.Sorted(maps.Keys(beside)) {
-		hold, holds := repositoryLease(name)
-		if !holds {
-			continue
-		}
-		dirs = append(dirs, bundleDir{name: name, hold: hold})
-	}
-	slices.SortFunc(dirs, func(a, b bundleDir) int { return strings.Compare(a.name, b.name) })
 	for _, dir := range dirs {
-		switch {
-		case ghconfig.IsDirName(dir.name):
-			layout.dirs = append(layout.dirs, dir)
-		case dir.hold.write || !strings.Contains(dir.name, "/"):
-			return bundleLayout{owners: layout.owners}, fmt.Errorf("the gh bundle directory %q is no lowercased GitHub login or owner/repository", dir.name)
-		default:
-			layout.unnamed = append(layout.unnamed, dir)
+		if !ghconfig.IsDirName(dir.name) {
+			return bundleLayout{owners: layout.owners}, fmt.Errorf("the gh bundle directory %q is no lowercased GitHub login", dir.name)
 		}
+		layout.dirs = append(layout.dirs, dir)
 	}
 	return layout, nil
 }
 
-// leftOutRepository is the key one line of a repository left out of a role's gh bundle is said
-// under: the App role, and the owner and repository lowercased as a scope's are.
-type leftOutRepository struct {
+// leftOutDirectory is the key one line of a directory left out of a role's gh bundle is said
+// under: the App role and the owner, lowercased as a scope's is.
+type leftOutDirectory struct {
 	role  AppRole
 	owner string
-	repo  string
 }
 
-// saidLeftOut holds every repository already said to be left out of a bundle, so the line is said
+// saidLeftOut holds every directory already said to be left out of a bundle, so the line is said
 // once for the life of the process however many bundles are built after it, as a Manager says a
 // grant shortfall once (sayShortfalls). It is the package's own, not a bundle's or a Manager's:
 // the API builds a controller's bundle per request (internal/api's controllerGitHubCredential),
-// and a repository GitHub refuses a lease for is refused at every one of them.
+// and an owner GitHub refuses a lease for is refused at every one of them.
 var (
 	saidLeftOutMu sync.Mutex
-	saidLeftOut   = map[leftOutRepository]bool{}
+	saidLeftOut   = map[leftOutDirectory]bool{}
 )
 
-// refusedNarrowing and refusedName are why a repository is left out of a bundle, as its line says
-// it: GitHub refusing the read lease the repository's directory is cached under, or gh keeping the
-// owner's own file of that name where the repository's directory would be. No token request
-// names a repository, so a refused lease is the installation's grant, not its reach.
-const (
-	refusedNarrowing = "GitHub refused the App's read lease on its owner: the installation is not granted what the lease asks for"
-	refusedName      = "gh keeps the owner's own file of that name where the repository's directory would be"
-)
-
-// sayLeftOut says on log, at warn, that repo of owner is left out of role's gh bundle and why,
-// once per App role, owner and repository for the life of the process (saidLeftOut): the role's
-// other repositories are served, and what its bundle does not hold is said once rather than at
-// every launch and every refresh. It carries no token, a bundle's shortfall being about the ask.
-// A caller that holds no logger of its own (sandbox.Options.Log is one) says it on slog.Default.
-func sayLeftOut(log *slog.Logger, role AppRole, owner, repo, because string) {
-	key := leftOutRepository{role: role, owner: strings.ToLower(strings.TrimSpace(owner)), repo: strings.ToLower(strings.TrimSpace(repo))}
+// sayLeftOut says on log, at warn, that owner's directory is left out of role's gh bundle
+// because GitHub refuses a lease on that installation, once per App role and owner for the
+// life of the process (saidLeftOut): the role's other owners are served, and what its bundle
+// does not hold is said once rather than at every launch and every refresh. It carries no
+// token, a bundle's shortfall being about the ask. A caller that holds no logger of its own
+// (sandbox.Options.Log is one) says it on slog.Default.
+func sayLeftOut(log *slog.Logger, role AppRole, owner string) {
+	key := leftOutDirectory{role: role, owner: strings.ToLower(strings.TrimSpace(owner))}
 	saidLeftOutMu.Lock()
 	said := saidLeftOut[key]
 	saidLeftOut[key] = true
@@ -628,68 +582,55 @@ func sayLeftOut(log *slog.Logger, role AppRole, owner, repo, because string) {
 	if log == nil {
 		log = slog.Default()
 	}
-	log.Warn("appauth: a repository the project serves is left out of the role's gh bundle",
-		"app", string(role), "owner", owner, "repository", repo, "because", because)
-}
-
-// sayDirectoryLeftOut says on log, at warn, that owner's directory is left out of role's gh
-// bundle though every repository it names answered a probe of its own: GitHub refuses the lease
-// over them together (dirEntry's second round), so there is no one token the directory could
-// hold. It is said each time it happens rather than once for the life of the process, as
-// sayLeftOut's lines are: no repository of the set is refused on its own, so none of them is
-// what the record is keyed by, and an answer that disagrees with itself this way is worth a line
-// at every bundle until it stops. So it repeats at every launch and every refresh while GitHub
-// keeps answering that way, which is the point: nothing else says that the installation's two
-// answers cannot both be true, and the line stops the moment one of them changes. It carries no
-// token.
-func sayDirectoryLeftOut(log *slog.Logger, role AppRole, owner string, repos []string) {
-	if log == nil {
-		log = slog.Default()
-	}
 	log.Warn("appauth: an owner's directory is left out of the role's gh bundle",
-		"app", string(role), "owner", owner, "repositories", strings.Join(repos, ", "),
-		"because", "each of them answered a token of its own, and GitHub refused the one naming them together")
+		"app", string(role), "owner", owner,
+		"because", "GitHub refused a token on that installation: it does not hold the permissions the lease asks for")
 }
 
 // mintBundle is the bundle layout describes: one mint per scope, shared by every directory that
 // holds it, each rendered as gh's two files, with dflt its default directory — the owner the
 // caller named, or, for a caller that named none, the first owner the mint answered for, sorted
-// (bundleDefault).
+// (bundleDefault). read is the lease every directory of this bundle holds, which is the caller's
+// and not the directory's: the reading one for a controller, the App's own for a role, whose
+// every directory holds the lease of the owner it is named for (GitHubCredential).
 //
-// A write mint that fails fails the whole bundle, naming the role, the App and what the lease
-// would have reached, and never the token: a role cannot work its own repository without it. A
-// read mint GitHub refuses the narrowing of (ErrNarrowingRefused) costs only the repositories it
-// names, which is what a repository dropped from the App's selected repositories, deleted, or
-// transferred without a configured rename makes: the lease is asked for again one repository at a
-// time, the directory holds a lease over the ones that answered, and every refused repository is
-// said once on log (sayLeftOut). A narrowing refused over those too sends the probes back to
-// GitHub past the leases cached for them, and a refusal past that round costs the directory and
-// no more (dirEntry): a directory whose every repository is refused is left out of the bundle, as
-// is one ghconfig holds no name for (layout.unnamed), where failing would cost the role every
-// owner and the launch. Every other failure of a read mint fails the bundle as a write mint's
-// does.
+// A mint GitHub refuses (ErrNarrowingRefused) costs that one owner's directory: it is left out,
+// and every other directory is minted and served, where failing would cost the role every owner
+// and the launch (INFRA-513). The one directory that cannot be left out is the bundle's default,
+// which bundleDefault refuses the whole bundle for: a role that cannot act on its own issue's
+// repository has nothing to do, and a bundle whose GH_CONFIG_DIR holds no token is no bundle to
+// launch on. Every other failure fails the bundle, naming the role, the App and the owner the
+// lease would have been minted on, and never the token: a refusal is about the ask.
+//
+// What was left out is said on log once the bundle stands and not as each mint answers
+// (sayLeftOut): a line is said once for the life of the process, so a bundle that fails on its
+// own default would otherwise spend that one line saying a directory was left out of a bundle
+// nothing was served from.
 //
 // Every directory of the layout is recorded in left as this mint found it, minted or left out
 // (LeftOut), so the drift check's own answer (GitHubDirs) names what a bundle built now holds and
 // nothing more.
-func mintBundle(ctx context.Context, tokens Tokens, appRole AppRole, role claim.Role, dflt string, layout bundleLayout, left *LeftOut, log *slog.Logger) (ghconfig.Bundle, error) {
-	for _, dir := range layout.unnamed {
-		sayLeftOut(log, appRole, dir.hold.owner, strings.Join(dir.hold.repos, ", "), refusedName)
-	}
-	bundle := ghconfig.Bundle{Dirs: make(map[string]ghconfig.Rendered, len(layout.dirs))}
+func mintBundle(ctx context.Context, tokens Tokens, appRole AppRole, role claim.Role, read bool, dflt string, layout bundleLayout, left *LeftOut, log *slog.Logger) (ghconfig.Bundle, error) {
+	// The pairs are the layout's, whatever the mints answer: a pair whose `to` owner is left out
+	// of the bundle stays in the file and is refused where a request routes to that missing
+	// directory, which is the one answer that cannot send a request the wrong owner's token
+	// (ghconfig.Bundle.Pairs).
+	bundle := ghconfig.Bundle{Dirs: make(map[string]ghconfig.Rendered, len(layout.dirs)), Pairs: layout.pairs}
 	minted := make(map[scope]ghconfig.Rendered, len(layout.dirs))
 	refused := map[scope]bool{}
+	var leftOut []string
 	for _, dir := range layout.dirs {
-		key := dir.hold.scope(appRole)
+		hold := dirLease{read: read, owner: dir.owner}
+		key := hold.scope(appRole)
 		entry, held := minted[key]
 		if !held && !refused[key] {
-			rendered, reached, err := dirEntry(ctx, tokens, appRole, dir.hold, log)
+			rendered, reached, err := dirEntry(ctx, tokens, appRole, hold)
 			if err != nil {
-				how := "read-only "
-				if dir.hold.write {
-					how = ""
+				how := ""
+				if read {
+					how = "read-only "
 				}
-				return ghconfig.Bundle{}, fmt.Errorf("mint the %s%s App lease for %s on %s: %w", how, appRole, role, dir.hold.where(), err)
+				return ghconfig.Bundle{}, fmt.Errorf("mint the %s%s App lease for %s on %s: %w", how, appRole, role, hold.owner, err)
 			}
 			if reached {
 				entry, held = rendered, true
@@ -700,6 +641,7 @@ func mintBundle(ctx context.Context, tokens Tokens, appRole AppRole, role claim.
 		}
 		left.record(appRole, dir.name, !held)
 		if !held {
+			leftOut = append(leftOut, hold.owner)
 			continue
 		}
 		bundle.Dirs[dir.name] = entry
@@ -708,29 +650,30 @@ func mintBundle(ctx context.Context, tokens Tokens, appRole AppRole, role claim.
 	if err != nil {
 		return ghconfig.Bundle{}, err
 	}
+	for _, owner := range leftOut {
+		sayLeftOut(log, appRole, owner)
+	}
 	bundle.Default = dflt
 	return bundle, nil
 }
 
 // bundleDefault is the directory the bundle's GH_CONFIG_DIR names: dflt, the owner the caller
-// asked for, or, where it asked for none, the first owner directory the mint answered for,
-// sorted (layout.dirs comes sorted by name).
+// asked for, or, where it asked for none, the first directory the mint answered for, sorted
+// (layout.dirs comes sorted by name).
 //
 // An owner the caller named whose directory no mint answered for is ErrNarrowingRefused, naming
-// the owner and the repositories the lease would have reached: the bundle is served from that
-// directory, so a bundle without it would be refused later as one whose default holds no gh
-// files (ghconfig.Bundle.Validate), long after the ask that could say why. A caller that named
-// none and whose every owner was refused is the same refusal over every owner at once.
+// the owner the lease would have been minted on: the bundle is served from that directory, so a
+// bundle without it would be refused later as one whose default holds no gh files
+// (ghconfig.Bundle.Validate), long after the ask that could say why. A caller that named none
+// and whose every owner was refused is the same refusal over every owner at once.
 func bundleDefault(bundle ghconfig.Bundle, appRole AppRole, role claim.Role, dflt string, layout bundleLayout) (string, error) {
 	if dflt == "" {
 		for _, dir := range layout.dirs {
-			if layout.owners[dir.name] {
-				if _, held := bundle.Dirs[dir.name]; held {
-					return dir.name, nil
-				}
+			if _, held := bundle.Dirs[dir.name]; held {
+				return dir.name, nil
 			}
 		}
-		return "", fmt.Errorf("the %s App's gh bundle for %s holds no owner of the project (%s): %w",
+		return "", fmt.Errorf("the %s App's gh bundle for %s holds no owner the App is installed on (%s): %w",
 			appRole, role, strings.Join(slices.Sorted(maps.Keys(layout.owners)), ", "), ErrNarrowingRefused)
 	}
 	if _, held := bundle.Dirs[dflt]; held {
@@ -738,130 +681,33 @@ func bundleDefault(bundle ghconfig.Bundle, appRole AppRole, role claim.Role, dfl
 	}
 	reaches := dflt
 	if at := slices.IndexFunc(layout.dirs, func(dir bundleDir) bool { return dir.name == dflt }); at >= 0 {
-		reaches = layout.dirs[at].hold.where()
+		reaches = layout.dirs[at].owner
 	}
-	return "", fmt.Errorf("the %s App's gh bundle for %s holds no directory for its default owner %s: the lease over %s: %w",
+	return "", fmt.Errorf("the %s App's gh bundle for %s holds no directory for its default owner %s: the lease on %s: %w",
 		appRole, role, dflt, reaches, ErrNarrowingRefused)
 }
 
 // dirEntry is the directory's lease, rendered as gh's two files; reached is false where GitHub
-// refuses the narrowing of every repository the lease names, which leaves the directory out of
-// the bundle.
+// refuses the lease, which leaves the directory out of the bundle (mintBundle).
 //
-// A read lease over several repositories that GitHub refuses is asked for again one repository at
-// a time: each refusal names that repository alone, so the ones that answered are known, and the
-// lease the directory holds is minted over those (probeReached, overReached). The Manager caches
-// a lease by the repositories it reaches (leaseScope), so the lease over a single repository that
-// answered is the one its own ask already minted, and a directory of one repository is not asked
-// for twice. A write lease is never softened, and no other failure is read as a refusal of what
-// it named.
+// A refused lease is the owner's whole directory, since the lease is the owner's whole
+// installation: there is nothing narrower to ask for and nothing to probe, so the directory is
+// left out and the bundle's other owners are served, where failing would cost a launch every
+// owner for one account's grant (INFRA-513). That is what an account that has not granted the
+// App what the lease asks for makes of the ask. The one directory a refusal may not be
+// answered this way for is the bundle's own default, which its caller is served from and which
+// bundleDefault refuses the whole bundle for.
 //
-// What a probe is worth is what decides the rest. An answer served from the Manager's cache says
-// a token naming that one repository was minted within the hour, not that GitHub reaches the
-// repository now, and those single-repository leases are nearly always cached: every issue pod's
-// `<owner>/<repo>` directory mints one, for both Apps, as does the provisioning adapter
-// (internal/daemon's kubernetes.go). So a probe can call a repository reached that the
-// installation has just dropped, and the ask over the repositories that answered is then refused
-// as the first ask was.
-//
-// That last ask is made past any refusal the Manager remembers for their scope (RefusalForgetter,
-// narrowingRefusalWindow), since serving a memory met before those repositories answered would
-// cost the directory a call to GitHub it must make. Where it is refused all the same, the probes
-// are made once more, after dropping what the Manager holds for each of those one-repository read
-// scopes, the cached lease and the remembered refusal both (ReadScopeForgetter): a lease over a
-// repository that left the installation reaches nothing, so each probe of this round is GitHub's
-// answer now, and the directory holds a lease over what answers then. One extra round, never a
-// loop: a second refusal of the ask over them leaves the directory out of the bundle, as every
-// repository being refused does, rather than failing the bundle the write lease and the launch
-// are in for repositories GitHub reaches (mintBundle, INFRA-513).
-//
-// A Tokens that caches nothing and remembers nothing implements neither optional interface and is
-// asked for neither: its probes are GitHub's answer already, so the second round repeats the
-// first and answers what the first answered.
-func dirEntry(ctx context.Context, tokens Tokens, appRole AppRole, hold dirLease, log *slog.Logger) (entry ghconfig.Rendered, reached bool, err error) {
+// No other failure is read as a refusal of the ask: GitHub's own trouble (TransientError, a
+// rate-limited 422 among it) fails the bundle, so the caller asks again rather than record an
+// owner unreachable on the strength of a rate limit (NarrowingRefused).
+func dirEntry(ctx context.Context, tokens Tokens, appRole AppRole, hold dirLease) (ghconfig.Rendered, bool, error) {
 	lease, err := hold.mint(ctx, tokens, appRole)
-	if err == nil {
+	switch {
+	case err == nil:
 		return ghconfig.Render(lease.Token, string(appRole), lease.ExpiresAt), true, nil
-	}
-	if hold.write || !NarrowingRefused(err) {
-		return ghconfig.Rendered{}, false, err
-	}
-	if len(hold.repos) == 1 {
-		sayLeftOut(log, appRole, hold.owner, hold.repos[0], refusedNarrowing)
+	case NarrowingRefused(err):
 		return ghconfig.Rendered{}, false, nil
 	}
-	answered, only, err := probeReached(ctx, tokens, appRole, hold, hold.repos, log)
-	if err != nil {
-		return ghconfig.Rendered{}, false, err
-	}
-	lease, held, err := overReached(ctx, tokens, appRole, hold, answered, only)
-	if NarrowingRefused(err) {
-		if forgetter, ok := tokens.(ReadScopeForgetter); ok {
-			for _, repo := range answered {
-				forgetter.ForgetReadScope(appRole, hold.owner, []string{repo})
-			}
-		}
-		if answered, only, err = probeReached(ctx, tokens, appRole, hold, answered, log); err != nil {
-			return ghconfig.Rendered{}, false, err
-		}
-		if lease, held, err = overReached(ctx, tokens, appRole, hold, answered, only); NarrowingRefused(err) {
-			sayDirectoryLeftOut(log, appRole, hold.owner, answered)
-			return ghconfig.Rendered{}, false, nil
-		}
-	}
-	if err != nil {
-		return ghconfig.Rendered{}, false, err
-	}
-	if !held {
-		return ghconfig.Rendered{}, false, nil
-	}
-	return ghconfig.Render(lease.Token, string(appRole), lease.ExpiresAt), true, nil
-}
-
-// probeReached asks for the directory's read lease over one of repos at a time, which is the one
-// way the repositories the installation reaches are told apart: GitHub refuses a request whole
-// over any one repository it does not reach, so a refusal here names that repository alone, and
-// each one refused is said once on log (sayLeftOut). It answers the repositories that answered
-// and the last lease it was given, which is the directory's own where that one is all of them.
-// Any other failure is the caller's to fail on: it is no answer about what the lease named.
-func probeReached(ctx context.Context, tokens Tokens, appRole AppRole, hold dirLease, repos []string, log *slog.Logger) ([]string, Lease, error) {
-	answered := make([]string, 0, len(repos))
-	// The lease of the one repository that answered, where that is all of them: no other probed
-	// lease is of use, and a token is held no longer than it is needed.
-	var only Lease
-	for _, repo := range repos {
-		one, err := hold.over([]string{repo}).mint(ctx, tokens, appRole)
-		switch {
-		case NarrowingRefused(err):
-			sayLeftOut(log, appRole, hold.owner, repo, refusedNarrowing)
-			continue
-		case err != nil:
-			return nil, Lease{}, err
-		}
-		answered = append(answered, repo)
-		only = one
-	}
-	return answered, only, nil
-}
-
-// overReached is the lease the directory holds over the repositories that answered the probes,
-// and held, whether there is one to hold: none where no repository answered, the probe's own
-// lease where one did — the Manager caches a lease by what it reaches, so that ask is already
-// made — and otherwise the ask over them together, made past the refusal the Manager remembers
-// for their scope. A refusal of that ask is answered as it is, ErrNarrowingRefused and all, for
-// the caller to probe again past the cache (dirEntry).
-func overReached(ctx context.Context, tokens Tokens, appRole AppRole, hold dirLease, answered []string, only Lease) (lease Lease, held bool, err error) {
-	switch len(answered) {
-	case 0:
-		return Lease{}, false, nil
-	case 1:
-		return only, true, nil
-	}
-	if forgetter, ok := tokens.(RefusalForgetter); ok {
-		forgetter.ForgetNarrowingRefusal(appRole, hold.owner, answered)
-	}
-	if lease, err = hold.over(answered).mint(ctx, tokens, appRole); err != nil {
-		return Lease{}, false, err
-	}
-	return lease, true, nil
+	return ghconfig.Rendered{}, false, err
 }

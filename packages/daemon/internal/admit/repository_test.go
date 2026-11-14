@@ -68,15 +68,16 @@ func TestARootIsRecordedOnItsResolvedRepositoryAndItsDefaultBranch(t *testing.T)
 	}
 }
 
-// A root whose repository resolves to none, or to one Legion does not serve, is not admitted, and
-// the daemon says why on the issue once for that resolution: a repeated event and the boot listing
-// say nothing again, and once its repository resolves to one Legion serves, it is admitted.
+// A root whose repository resolves to none, or one GitHub does not answer for as a repository a
+// role App reaches, is not admitted, and the daemon says why on the issue once for that
+// resolution: a repeated event and the boot listing say nothing again, and once its repository
+// resolves to one GitHub answers for, it is admitted.
 func TestARootOnARepositoryLegionDoesNotServeIsNotAdmittedAndSaysWhy(t *testing.T) {
 	for _, tc := range []struct {
 		name, resolved, want string
 	}{
 		{"none", "", "Legion did not admit this issue: its repository resolves to none. Set its repository (the issue header's Repository picker, or dispatch issue-update --repo owner/name) and move it to todo again."},
-		{"left out", "acme/gadgets", "Legion did not admit this issue: the review App is not installed on acme/gadgets. Install it on acme/gadgets, or set another repository (the issue header's Repository picker, or dispatch issue-update --repo owner/name), and move the issue to todo again."},
+		{"left out", "acme/gadgets", "Legion did not admit this issue: the review App is not installed on acme/gadgets. GitHub answers for acme/gadgets neither as installed nor as present: install the App on it, or correct the repository (the issue header's Repository picker, or dispatch issue-update --repo owner/name), and move the issue to todo again."},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)

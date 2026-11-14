@@ -125,8 +125,9 @@ type Runtime struct {
 	// stored one against it (PodDrift, once per claim of the deployment per tick) read a string
 	// rather than marshalling that configuration again.
 	podShapes map[podKind]string
-	// cacheConfig is how each repository's cache is made, mapped the repositories the project's
-	// mapping names now (Options.RepositoryCache, Options.Mapped), and cacheDial opens every
+	// cacheConfig is how each repository's cache is made, over the repositories the project works
+	// now — the mapping's and those of its live issue records (Options.RepositoryCache,
+	// Options.Mapped) — and cacheDial opens every
 	// connection the health read makes (net.Dialer's own; a test routes the Service's name itself).
 	cacheConfig RepositoryCache
 	mapped      func() []ghrepo.Repository
@@ -243,7 +244,7 @@ func checkSupervision(opts Options) error {
 	case opts.Conns == nil:
 		return refuse("no connection directory")
 	case opts.Mapped == nil:
-		return refuse("no repository mapping for the repository caches")
+		return refuse("no repository set for the repository caches")
 	}
 	if err := opts.RepositoryCache.check(); err != nil {
 		return refuse("%v", err)

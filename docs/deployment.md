@@ -95,18 +95,16 @@ launcher and its `gh`, a script that runs `legion gh`. Nothing else of Legion's 
 jj of 0.38 or later — the jj bound it refuses to boot below (`resolveTools`, naming
 `LEGION_JJ_PATH`, its own override for the jj it runs) — and the real `gh` (`LEGION_GH_PATH`, or the
 first `gh` on its `PATH`, refused when that is a script), which every pane is told as `LEGION_GH_PATH`. A pane's GitHub identity is
-a set of files that binary reads, one directory per GitHub owner of the project, one more per owner
-a configured rename moved a repository away from while the project serves the name it moved to,
-and an `<owner>/<repo>` directory for each other repository the issue's recorded owner and the
-owner serving the issue's repository serve: the
+a set of files that binary reads, one directory per GitHub owner the role's App is installed on,
+one more per owner a configured rename moved a repository away from while the project serves the
+name it moved to, and one for the issue's own recorded owner: the
 daemon writes gh's own `hosts.yml` (an App installation token, user `x-access-token`) and
 `config.yml` under `<state_dir>/secrets/<claim>-gh/<dir>` (0700, files 0600) when it opens the
 pane — in two directories, the issue's recorded owner's and the one named for the owner whose
 installation serves that repository now, which are one directory unless a rename moved the issue's
-repository, the role's App token for the issue's repository and no other, and in every
+repository, the role's App write token on that owner's installation, and in every
 other directory that App's token narrowed to reading contents, pull requests, Actions and metadata
-over the repositories that directory names, an `<owner>/<repo>` directory's over the one repository
-its own name resolves to (each token asks for what the App's installation on
+on that owner's installation (each token asks for what the App's installation on
 that owner is granted of the set, and a permission it is granted none of is left out, named on
 the daemon's stderr) — names the issue owner's directory as `GH_CONFIG_DIR`
 and the bundle's root as `LEGION_GH_OWNERS_DIR`, with `GH_TOKEN`, `GITHUB_TOKEN` and `GH_HOST` set
@@ -114,9 +112,15 @@ empty so nothing outranks the files, and rewrites each directory's `hosts.yml` i
 minute from its cached leases (the log lines `tmux runtime: github credential written` and `github
 credential refreshed`, with the claim, role, App, `expiresAt` and the directories written); a pane
 it adopted after a restart is refreshed for the repository its claim's issue works, read from the
-daemon's own state, never one read from the pane's directory. `legion gh` runs the real gh with
-`GH_CONFIG_DIR` at the directory of the repository the command targets where the bundle holds one,
-and of its owner otherwise, the target read as gh reads it, with pflag's rules, from the real gh's own help of
+daemon's own state, never one read from the pane's directory. Each of those tokens reaches every
+repository its own installation holds, which the account chose when it installed the App, and the
+daemon asks GitHub to narrow none of them to a repository. The bundle's root also holds one file
+of its own, `renames.txt`, the configured renames the project's pairs resolve to, which both
+wrappers route a repository a rename moved by and read from there and from nowhere else
+(`ghconfig.PairsFile`). `legion gh` runs the real gh with
+`GH_CONFIG_DIR` at the directory of the owner of the repository the command targets, or of the
+owner a configured rename moved that one repository to,
+the target read as gh reads it, with pflag's rules, from the real gh's own help of
 each command down to its leaf (`-R`/`--repo` before or after the command, a repository or owner
 argument, before `--` or as a clone's or fork's first after it, a `github.com` URL argument — for a
 `pr` command or `agent-task view` only a pull request's, since gh reads any other as a branch of
@@ -137,7 +141,9 @@ search qualifier gh or GitHub could read otherwise, a gh alias or an extension, 
 `gh help`'s target, whose help it never reads since reading it runs them, `gh copilot` and `gh
 extension exec`), one naming two owners (an option or a second repository naming one owner while
 gh acts on another's, or a workspace whose remotes name two), one naming an owner the bundle
-holds no directory for, every command where `PATH`'s first `gh` is not Legion's wrapper (a script
+holds no directory for, one naming a repository a configured rename moved to an owner the bundle
+holds no directory for, which names the pair, every command where `PATH`'s first `gh` is not
+Legion's wrapper (a script
 that execs `legion gh` by its absolute path), and every command under a `GH_HOST` other than
 `github.com` or a set `GH_TOKEN` or `GITHUB_TOKEN` are refused with exit 2, naming the argument,
 and send nothing. The real gh runs with `GH_PATH`
@@ -150,8 +156,9 @@ which the wrapper's tables know (`packages/daemon/cmd/legion/testdata`, with the
 regenerates it when that pin moves; `.github/scripts/check-gh-version.sh` fails the build until
 the saved help is the pin's).
 The shared clone's `credential.helper` is `!legion git-credential` with `credential.useHttpPath`
-on, so a pane's `git` and `jj git push` read the hosts.yml of the repository in the path git asks
-about where the bundle holds its directory, the owner's otherwise, and nothing else.
+on, so a pane's `git` and `jj git push` read the hosts.yml of the owner of the repository in the
+path git asks about — of the owner a configured rename moved that repository to where a pair
+names it — and nothing else.
 
 A pane keeps the machine's own `git` and `jj`, unwrapped.
 Legion's leak-guard wrappers and its pre-push hook are the worker image's, root-owned under
@@ -453,10 +460,10 @@ provider_keys:
   A pane working one of them is told that key, and its jj appends a `Dispatch: <KEY>` line to
   every commit the pane makes in its own workspace, beside the `Omp-Session:` line every pane's
   commits carry, so a squash landing that branch carries the issue key in its message.
-  A repository the key names must be one Dispatch maps to the project (Settings → Repositories →
-  Projects): the mapping is what the project serves, and this key only selects among it, so a name
-  the project does not serve stamps nothing and boot says so once, naming the name and the
-  project.
+  A pane stamps the commit when its launch's repository is one of the names, whatever Dispatch
+  maps to the project (Settings → Repositories → Projects).
+  Boot checks each name against that mapping alone and says once, naming the name and the
+  project, that the mapping does not hold it, which catches a typo.
   A pane of a repository the key does not name is told no key and its commits carry the session
   line alone, as does a commit the pane's shell makes in any other jj repository.
   The variable the pane is told is the runtime's own, so a spec, a `pane_env` and a

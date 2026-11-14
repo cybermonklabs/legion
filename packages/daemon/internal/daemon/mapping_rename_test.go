@@ -24,8 +24,10 @@ var renamedWidgets = ghrepo.MustRename("acme/widgets", "cybermonklabs/widgets")
 
 // A rename configured before the transfer names a repository Dispatch does not map: the boot's
 // mapping read answers all the same, the project serves exactly what Dispatch maps, and the owners
-// every role's gh bundle holds a directory for are the served repositories' alone — the pair never
-// widens the served set, which is Dispatch's mapping and nothing else. What it does change is what
+// the mapping names are the served repositories' alone — the pair never widens the served set,
+// which is Dispatch's mapping and nothing else. What a role's gh bundle holds a directory for is
+// another question, which the mapping does not answer: it is every owner account the role's App is
+// installed on (appauth.InstalledOwners, INFRA-2543 R2). What it does change is what
 // GitHub intake hears: the consumer's filter subjects carry both names, so an event arrives
 // whichever name GitHub sends it under on the day the repository moves, and an issue Dispatch
 // resolves to the name it moved to is served by the one the mapping holds, under that one name.
@@ -56,7 +58,7 @@ func TestARenameConfiguredBeforeTheTransferIsHeardWhileTheServedSetIsUnchanged(t
 				t.Fatalf("served %v, want Dispatch's mapping alone: a configured pair widens nothing", got)
 			}
 			if got := w.repositories.Owners(); !slices.Equal(got, []string{"acme", "zeta"}) {
-				t.Fatalf("owners = %v, want the served repositories' alone", got)
+				t.Fatalf("owners = %v, want the owners of what Dispatch maps alone", got)
 			}
 			heard, err := w.heardAtBoot(context.Background())
 			if err != nil {
@@ -81,8 +83,8 @@ func TestARenameConfiguredBeforeTheTransferIsHeardWhileTheServedSetIsUnchanged(t
 			}
 			switch {
 			case tc.renames.IsZero():
-				if resolved.Refusal != "cybermonklabs/widgets is not mapped to project LEGION in Dispatch" {
-					t.Fatalf("ResolveRepository(cybermonklabs/widgets) = %#v, want it refused as a repository the project does not map", resolved)
+				if !resolved.Unread || resolved.Refusal != "GitHub has not been read for cybermonklabs/widgets yet" {
+					t.Fatalf("ResolveRepository(cybermonklabs/widgets) = %#v, want it unread: no pair joins it to a repository the daemon has read", resolved)
 				}
 			case resolved.Repo != "acme/widgets" || resolved.GitHubRepo != "acme/widgets" || resolved.DefaultBranch != "main":
 				t.Fatalf("ResolveRepository(cybermonklabs/widgets) = %#v, want acme/widgets@main under one name", resolved)
@@ -277,15 +279,14 @@ type mintingTokens struct {
 	minted []string
 }
 
-func (t *mintingTokens) Token(ctx context.Context, role appauth.AppRole, repo ghrepo.Repository) (appauth.Lease, error) {
-	owner := repo.Owner()
+func (t *mintingTokens) Token(ctx context.Context, role appauth.AppRole, owner string) (appauth.Lease, error) {
 	t.mu.Lock()
 	t.minted = append(t.minted, strings.ToLower(owner))
 	t.mu.Unlock()
 	if !slices.ContainsFunc(t.installed, func(held string) bool { return strings.EqualFold(held, owner) }) {
 		return appauth.Lease{}, fmt.Errorf("no installation of the %s App on %s covers the repository", role, owner)
 	}
-	return t.roleTokens.Token(ctx, role, repo)
+	return t.roleTokens.Token(ctx, role, owner)
 }
 
 // owners is every owner a token was minted for, lowercased, sorted and once each.

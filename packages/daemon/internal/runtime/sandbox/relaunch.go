@@ -17,6 +17,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
+	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
@@ -855,7 +856,8 @@ func (r *Runtime) waitedOut(ctx context.Context, s *sandbox) string {
 // authenticate with tokens no earlier pod held; a role's launch credentials travel in its
 // launcher's start command instead (launcherCommand). The Secret also carries the role's GitHub
 // credential, its gh bundle (gitHubBundles): each directory of that role's own bundle as its
-// hosts.yml and config.yml (GitHubHostsKey, GitHubConfigKey) and the default owner
+// hosts.yml and config.yml (GitHubHostsKey, GitHubConfigKey), the bundle's configured renames
+// (GitHubPairsKey, empty where the project has none that resolve) and the default owner
 // (GitHubDefaultKey), which its container projects at GHConfigDir.
 //
 // The Secret holds the role's own directories, where the pod projects only the ones every role
@@ -873,7 +875,11 @@ func (r *Runtime) writeLauncherSecrets(ctx context.Context, s *sandbox, l *launc
 			return err
 		}
 		bundle := bundles[role]
-		data := map[string][]byte{LauncherTokenFile: []byte(token), GitHubDefaultKey: []byte(bundle.Default)}
+		data := map[string][]byte{
+			LauncherTokenFile: []byte(token),
+			GitHubDefaultKey:  []byte(bundle.Default),
+			GitHubPairsKey:    []byte(ghconfig.RenderPairs(bundle.Pairs)),
+		}
 		for _, dir := range bundle.DirNames() {
 			rendered := bundle.Dirs[dir]
 			data[GitHubHostsKey(dir)], data[GitHubConfigKey(dir)] = []byte(rendered.Hosts), []byte(rendered.Config)
@@ -916,18 +922,26 @@ func (r *Runtime) writeLauncherSecrets(ctx context.Context, s *sandbox, l *launc
 // bundles' default, an empty set included — GH_CONFIG_DIR would then name a directory the pod
 // does not carry — and where a role's own default is not the pod's, which would leave that
 // role's Secret recording a directory its container never reads from (refreshGitHubCredential).
-// A refused write lease still fails its own bundle (appauth's mintBundle), so every role that
-// reaches here holds the directory it writes to.
+// A lease GitHub refuses costs that owner's directory alone (appauth's mintBundle). The bundle
+// fails only where the directory left out is the one it was asked for, the default that
+// GH_CONFIG_DIR names (appauth's bundleDefault). Every role that reaches here therefore holds
+// the directory it works its issue's repository in.
 //
 // The controller's bundle is asked for by owner (Options.ControllerCredential), the one function
 // a controller's bundle is made from here, by this launch and by the refresh of the pod it makes
 // (refreshGitHubCredential). The launch asks for no owner, which takes the first owner the
 // project serves that the mint answered for, sorted, and records it as the pod's default; a
 // controller works no repository, so its every directory is read-only.
+//
+// The launch's roles run as two Apps and work the one repository, and a bundle is that pair and
+// nothing else, so the six roles of an issue pod are two bundles built once each (appauth.Bundles):
+// the launch opens with two live reads of the Apps' installations rather than six serial round
+// trips to GitHub before its first role starts.
 func (r *Runtime) gitHubBundles(ctx context.Context, l *launch) (map[claim.Role]ghconfig.Bundle, error) {
 	l.gitHubDirs, l.gitHubDefault = nil, ""
 	bundles := make(map[claim.Role]ghconfig.Bundle, len(l.roles))
 	held := make(map[claim.Role][]string, len(l.roles))
+	memo := appauth.NewBundles(r.gitHubCredential)
 	for i, role := range l.roles {
 		minting, cancel := call(ctx)
 		var bundle ghconfig.Bundle
@@ -935,7 +949,7 @@ func (r *Runtime) gitHubBundles(ctx context.Context, l *launch) (map[claim.Role]
 		if role == claim.RoleController {
 			bundle, err = r.controllerCredential(minting, "")
 		} else {
-			bundle, err = r.gitHubCredential(minting, role, l.spec.Repository)
+			bundle, err = memo.Bundle(minting, role, l.spec.Repository)
 		}
 		cancel()
 		switch {

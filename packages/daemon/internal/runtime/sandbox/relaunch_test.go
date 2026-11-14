@@ -97,13 +97,15 @@ func TestSpawnCreatesTheIssueSandboxAndRoleLocator(t *testing.T) {
 		t.Fatalf("provision secret data %v", provision.Data)
 	}
 	secret := g.secret(roleSecretName(name, spec.Role))
-	wantKeys := []string{LauncherTokenFile, GitHubConfigKey("acme"), GitHubConfigKey("sjawhar"), GitHubDefaultKey, GitHubHostsKey("acme"), GitHubHostsKey("sjawhar")}
+	wantKeys := []string{LauncherTokenFile, GitHubConfigKey("acme"), GitHubConfigKey("sjawhar"), GitHubDefaultKey,
+		GitHubHostsKey("acme"), GitHubHostsKey("sjawhar"), GitHubPairsKey}
 	slices.Sort(wantKeys)
 	if keys := slices.Sorted(maps.Keys(secret.Data)); !slices.Equal(keys, wantKeys) || len(secret.Data[LauncherTokenFile]) == 0 ||
-		string(secret.Data[GitHubConfigKey("sjawhar")]) != ghconfig.Config || string(secret.Data[GitHubDefaultKey]) != "sjawhar" {
-		t.Fatalf("role secret keys %v, want the launcher token, the default owner sjawhar and each owner's two gh files %v", keys, wantKeys)
+		string(secret.Data[GitHubConfigKey("sjawhar")]) != ghconfig.Config || string(secret.Data[GitHubDefaultKey]) != "sjawhar" ||
+		len(secret.Data[GitHubPairsKey]) != 0 {
+		t.Fatalf("role secret keys %v, want the launcher token, the default owner sjawhar, each owner's two gh files and an empty renames file %v", keys, wantKeys)
 	}
-	for owner, want := range map[string]string{"sjawhar": staticCredentialToken(spec.Role), "acme": staticReadToken(spec.Role, "acme")} {
+	for owner, want := range map[string]string{"sjawhar": staticCredentialToken(spec.Role), "acme": staticOwnerToken(spec.Role, "acme")} {
 		if token, err := ghconfig.TokenFromHosts(secret.Data[GitHubHostsKey(owner)]); err != nil || token != want {
 			t.Fatalf("the tester's %s hosts.yml holds token %q (%v), want %q", owner, token, err, want)
 		}
@@ -130,9 +132,9 @@ func TestTheControllersSecretHoldsTheReviewAppsGhFilesBesideTheLauncherToken(t *
 	g.spawn(controllerSpec(t))
 	name := SandboxName(controllerToken)
 	secret := g.secret(roleSecretName(name, claim.RoleController))
-	if secret == nil || len(secret.Data) != 6 || len(secret.Data[LauncherTokenFile]) == 0 || string(secret.Data[GitHubDefaultKey]) != "sjawhar" ||
+	if secret == nil || len(secret.Data) != 7 || len(secret.Data[LauncherTokenFile]) == 0 || string(secret.Data[GitHubDefaultKey]) != "sjawhar" ||
 		len(secret.Data[GitHubHostsKey("sjawhar")]) == 0 || len(secret.Data[GitHubConfigKey("acme")]) == 0 {
-		t.Fatalf("the controller's Secret holds %v, want the launcher token, the default and the review App's gh files of each owner", secret)
+		t.Fatalf("the controller's Secret holds %v, want the launcher token, the default, the bundle's renames and the review App's gh files of each owner", secret)
 	}
 	found := false
 	for _, volume := range g.pod(name).Spec.Volumes {

@@ -253,8 +253,8 @@ type PluginsSettings struct {
 	PiEnvoy  string `json:"pi_envoy"`
 }
 
-// ProjectSettings is one `projects.<KEY>` entry; its repositories are Dispatch's mapping, which
-// the state's `repositories` shows, never this file's.
+// ProjectSettings is one `projects.<KEY>` entry. Dispatch holds the project's repository mapping,
+// which the state's `repositories` shows, and this file holds none of it.
 type ProjectSettings struct {
 	SlackChannels []string       `json:"slack_channels"`
 	Memory        MemorySettings `json:"memory"`

@@ -98,7 +98,7 @@ func memorySpecs(t *testing.T, instructions string) specs {
 		t.Fatalf("compose the shipped prompts: %v", err)
 	}
 	return specs{
-		stateDir: t.TempDir(), project: "test", prompts: composer, repositories: noRepositoriesView,
+		stateDir: t.TempDir(), project: "test", prompts: composer, appOwners: noAppOwners,
 		instructions: "/state/deployment-instructions.md", memoryInstructions: instructions,
 		memoryGroup: func(_ context.Context, tree string) (bool, error) { return tree == "LEGION-1", nil },
 	}

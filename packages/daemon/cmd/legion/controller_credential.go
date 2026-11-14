@@ -15,6 +15,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 )
 
 // controllerGitHubRefreshInterval is how often startControllerGitHubRefresh re-fetches the
@@ -54,9 +55,11 @@ func controllerCredentialSuperseded(err error) bool {
 // controller is asking, defaultOwner names the owner whose directory its GH_CONFIG_DIR names (empty
 // on the first fetch, which the daemon answers with the first owner), and the daemon answers the
 // review App's read-only token for every owner of the project, each rendered as the two files gh
-// reads, as a gh bundle (ghconfig.Bundle) whose every owner carries the answer's App and its
+// reads, and the configured renames its gh routes a moved repository by, as a gh bundle
+// (ghconfig.Bundle) whose every owner carries the answer's App and its
 // expiry, parsed from the API's RFC 3339 nanosecond timestamp (time.RFC3339Nano, the format
-// api.ControllerCredentialResponse's ExpiresAt is written in). An answer that is no valid bundle is
+// api.ControllerCredentialResponse's ExpiresAt is written in). An answer that is no valid bundle,
+// a rename of it naming a repository GitHub could hold no name for included, is
 // an error. A failed request names the daemon URL, as fetchControllerSecret's does, and never
 // tries another address. A refusal is a *controllerCredentialFailure carrying the daemon's code
 // when the body parses as one (api.Failure), quoting its sentence through refusal otherwise.
@@ -87,6 +90,17 @@ func fetchControllerCredential(ctx context.Context, daemonURL, secret, defaultOw
 	bundle := ghconfig.Bundle{Default: answer.Default, Dirs: make(map[string]ghconfig.Rendered, len(answer.Owners))}
 	for owner, files := range answer.Owners {
 		bundle.Dirs[owner] = ghconfig.Rendered{Hosts: files.Hosts, Config: files.Config, App: answer.App, ExpiresAt: expiresAt}
+	}
+	for _, pair := range answer.Renames {
+		from, err := ghrepo.Parse("the repository a rename moved", pair.From)
+		if err != nil {
+			return ghconfig.Bundle{}, fmt.Errorf("%s%s answered a rename that names no repository: %w", daemonURL, route, err)
+		}
+		to, err := ghrepo.Parse("the repository a rename moved it to", pair.To)
+		if err != nil {
+			return ghconfig.Bundle{}, fmt.Errorf("%s%s answered a rename that names no repository: %w", daemonURL, route, err)
+		}
+		bundle.Pairs = append(bundle.Pairs, ghrepo.Rename{From: from, To: to})
 	}
 	if err := bundle.Validate(); err != nil {
 		return ghconfig.Bundle{}, fmt.Errorf("%s%s answered a credential that is no gh bundle: %w", daemonURL, route, err)

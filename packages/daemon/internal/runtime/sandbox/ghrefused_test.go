@@ -17,35 +17,35 @@ import (
 
 // refusedProjectRepos is the project's mapping for the tests below: the repository every test
 // spec works, under the owner its roles write to, and one repository of a second owner, which a
-// bundle holds one read-only directory for.
+// bundle holds that owner's own directory for.
 func refusedProjectRepos() []ghrepo.Repository {
 	return []ghrepo.Repository{ghrepo.MustParse("sjawhar/legion-smoke"), ghrepo.MustParse("acme/widgets")}
 }
 
-// refusingOwnerTokens answers every lease naming a repository of owner with the refusal GitHub
-// gives a request naming a repository its installation does not reach (422,
-// appauth.ErrNarrowingRefused) while refuse holds, and an ordinary lease for every other owner
-// and once refuse is cleared. app, when set, is the one App role that refuses, the other minting
-// as readily as ever: two Apps' installations answer for themselves.
+// refusingOwnerTokens answers every lease of owner with the refusal GitHub gives a request its
+// installation cannot answer (422, appauth.ErrNarrowingRefused) while refuse holds, and an
+// ordinary lease for every other owner and once refuse is cleared. app, when set, is the one App
+// role that refuses, the other minting as readily as ever: two Apps' installations answer for
+// themselves.
 type refusingOwnerTokens struct {
 	refuse *atomic.Bool
 	owner  string
 	app    appauth.AppRole
 }
 
-func (t refusingOwnerTokens) Token(_ context.Context, role appauth.AppRole, repo ghrepo.Repository) (appauth.Lease, error) {
-	return t.lease(role, repo.Owner(), repo.Name())
+func (t refusingOwnerTokens) Token(_ context.Context, role appauth.AppRole, owner string) (appauth.Lease, error) {
+	return t.lease(role, owner, "write")
 }
 
-func (t refusingOwnerTokens) ReadToken(_ context.Context, role appauth.AppRole, owner string, repos []string) (appauth.Lease, error) {
-	return t.lease(role, owner, strings.Join(repos, "+"))
+func (t refusingOwnerTokens) ReadToken(_ context.Context, role appauth.AppRole, owner string) (appauth.Lease, error) {
+	return t.lease(role, owner, "read")
 }
 
-func (t refusingOwnerTokens) lease(role appauth.AppRole, owner, repos string) (appauth.Lease, error) {
+func (t refusingOwnerTokens) lease(role appauth.AppRole, owner, kind string) (appauth.Lease, error) {
 	if t.refuse.Load() && strings.EqualFold(owner, t.owner) && (t.app == "" || t.app == role) {
-		return appauth.Lease{}, fmt.Errorf("the %s App on %s (%s): %w", role, owner, repos, appauth.ErrNarrowingRefused)
+		return appauth.Lease{}, fmt.Errorf("the %s App on %s: %w", role, owner, appauth.ErrNarrowingRefused)
 	}
-	return appauth.Lease{Token: "ghs_" + string(role) + "_" + strings.ToLower(owner) + "_" + repos, ExpiresAt: staticCredentialExpiry}, nil
+	return appauth.Lease{Token: "ghs_" + string(role) + "_" + strings.ToLower(owner) + "_" + kind, ExpiresAt: staticCredentialExpiry}, nil
 }
 
 // eachAppsTokens answers each App role's lease from that App's own tokens: the two Apps'
@@ -53,12 +53,12 @@ func (t refusingOwnerTokens) lease(role appauth.AppRole, owner, repos string) (a
 // one entry per App role of appauth.Roles, a role it held none for minting nothing.
 type eachAppsTokens map[appauth.AppRole]refusingOwnerTokens
 
-func (e eachAppsTokens) Token(ctx context.Context, role appauth.AppRole, repo ghrepo.Repository) (appauth.Lease, error) {
-	return e[role].Token(ctx, role, repo)
+func (e eachAppsTokens) Token(ctx context.Context, role appauth.AppRole, owner string) (appauth.Lease, error) {
+	return e[role].Token(ctx, role, owner)
 }
 
-func (e eachAppsTokens) ReadToken(ctx context.Context, role appauth.AppRole, owner string, repos []string) (appauth.Lease, error) {
-	return e[role].ReadToken(ctx, role, owner, repos)
+func (e eachAppsTokens) ReadToken(ctx context.Context, role appauth.AppRole, owner string) (appauth.Lease, error) {
+	return e[role].ReadToken(ctx, role, owner)
 }
 
 // withRefusedOwner gives the rig the daemon's three gh answers over tokens that refuse every
@@ -69,15 +69,18 @@ func withRefusedOwner(owner string, refuse *atomic.Bool) rigOption {
 
 // withProjectTokens gives the rig the daemon's own three gh answers (appauth.GitHubCredential,
 // appauth.ControllerCredential and appauth.GitHubDirs) over refusedProjectRepos and tokens, the
-// three sharing one record of what their mints found GitHub refuses, as internal/daemon's
-// sandboxRuntime builds them for a project.
+// three sharing the two records their bundles write — the owners each App was read installed on
+// and what the mints found GitHub refuses — as internal/daemon's sandboxRuntime builds them for
+// a project. Each App is installed on every owner the project serves a repository of, so what
+// a bundle holds here is what the mints answer for.
 func withProjectTokens(tokens appauth.Tokens) rigOption {
 	return withOptions(func(o *Options) {
-		left := appauth.NewLeftOut()
-		o.GitHubCredential = appauth.GitHubCredential(tokens, refusedProjectRepos, ghrepo.Renames{}, left, o.Log)
-		o.ControllerCredential = appauth.ControllerCredential(tokens, refusedProjectRepos, ghrepo.Renames{}, left, o.Log)
+		installed, left := appauth.NewInstalled(), appauth.NewLeftOut()
+		installs := installedOnMapped{served: refusedProjectRepos}
+		o.GitHubCredential = appauth.GitHubCredential(tokens, installs, refusedProjectRepos, ghrepo.Renames{}, installed, left, o.Log)
+		o.ControllerCredential = appauth.ControllerCredential(tokens, installs, refusedProjectRepos, ghrepo.Renames{}, installed, left, o.Log)
 		o.GitHubDirs = func(repo ghrepo.Repository, roles []appauth.AppRole) []string {
-			return appauth.GitHubDirs(refusedProjectRepos, ghrepo.Renames{}, left, roles, repo)
+			return appauth.GitHubDirs(refusedProjectRepos, ghrepo.Renames{}, installed, left, roles, repo)
 		}
 	})
 }
@@ -152,7 +155,8 @@ func TestAPodProjectsTheGhDirectoriesEveryRolesBundleHolds(t *testing.T) {
 	refuse.Store(true)
 	tokens := refusingOwnerTokens{refuse: &refuse, owner: "acme", app: appauth.Review}
 	g := newRig(t, nil, withOptions(func(o *Options) {
-		o.GitHubCredential = appauth.GitHubCredential(tokens, refusedProjectRepos, ghrepo.Renames{}, nil, o.Log)
+		o.GitHubCredential = appauth.GitHubCredential(tokens, installedOnMapped{served: refusedProjectRepos},
+			refusedProjectRepos, ghrepo.Renames{}, nil, nil, o.Log)
 	}))
 
 	loc := g.spawn(workerSpec(t))

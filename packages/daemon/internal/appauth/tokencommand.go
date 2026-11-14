@@ -94,8 +94,8 @@ type releasedInstallation struct {
 	expiresAt time.Time
 }
 
-// commandRun is one run of a token_command, which every caller asking for the same scope while it
-// runs shares: the owner, the read-only flag and the repositories the lease is cached under.
+// commandRun is one run of a token_command, which every caller asking for the same owner and
+// read-only flag while it runs shares.
 type commandRun struct {
 	done          chan struct{}
 	installations map[string]releasedInstallation
@@ -568,8 +568,7 @@ func (m *Manager) installedFromCommand(ctx context.Context, role AppRole, repo g
 }
 
 // listInstallation reads whether repo is among the repositories of its owner's installation,
-// under that owner's read lease cached under repo; refused reports a 401, a token GitHub no
-// longer honours.
+// under that owner's read lease; refused reports a 401, a token GitHub no longer honours.
 //
 // The listing is the whole answer. No token request names a repository any longer
 // (INFRA-2543), so neither GitHub nor the broker refuses one, and the one thing that says
@@ -587,8 +586,8 @@ func (m *Manager) installedFromCommand(ctx context.Context, role AppRole, repo g
 // which the bundles refreshing behind the check would otherwise ask for again at once, and the
 // next mapping read drops it again as this one did.
 func (m *Manager) listInstallation(ctx context.Context, role AppRole, repo ghrepo.Repository) (installed, refused bool, err error) {
-	m.ForgetNarrowingRefusal(role, repo.Owner(), []string{repo.Name()})
-	lease, err := m.ReadToken(ctx, role, repo.Owner(), []string{repo.Name()})
+	m.ForgetNarrowingRefusal(role, repo.Owner())
+	lease, err := m.ReadToken(ctx, role, repo.Owner())
 	if errors.Is(err, ErrNotInstalled) {
 		return false, false, nil
 	}

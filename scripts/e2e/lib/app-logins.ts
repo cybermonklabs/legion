@@ -20,15 +20,20 @@
 // admits exactly one (internal/config, readGitHubApp):
 //   `token_command`, which lib/github-apps.sh writes for the implement role, is run as the daemon
 //     runs it (internal/appauth, runTokenCommand): `sh -c`, stdin closed, the environment less the
-//     NATS seed variables (internal/runtime, WithoutNATSSeeds) with LEGION_GITHUB_OWNER,
-//     LEGION_GITHUB_REPOS and LEGION_GITHUB_READ_ONLY set empty (the release of every
-//     installation, narrowed to nothing, as AppLogin asks), and its stdout read as the secrets
-//     broker's release, whose first installation token is the one proved.
+//     NATS seed variables (internal/runtime, WithoutNATSSeeds) and less every inherited
+//     LEGION_GITHUB_ variable, with LEGION_GITHUB_OWNER and LEGION_GITHUB_READ_ONLY then set by
+//     this runner alone, as the daemon sets those two and drops what it inherited under them. The
+//     one difference, which is this proof's own ask rather than the daemon's shape: both are set
+//     empty here, where a daemon mint names the owner it is minting on, because AppLogin proves
+//     the release of every installation. So a command branching on `${LEGION_GITHUB_OWNER:+…}`
+//     takes the broad branch here and the owner's branch under the daemon.
+//     Its stdout is read as the secrets broker's release, whose first installation token is the
+//     one proved.
 //   `private_key_command`, which lib/github-apps.sh writes for the review role so that the daemon
 //     mints and renews that App's tokens out of its key by itself, as a reviewer pod does, is run
 //     as the daemon runs that one (internal/config, executePrivateKeyCommand): the same `sh -c`
-//     with stdin closed and the NATS seed variables dropped, but none of those three variables
-//     touched, since the daemon sets none of them for a key command. Its trimmed stdout is the
+//     with stdin closed and the NATS seed variables dropped, but neither of those two variables
+//     touched, since the daemon sets neither of them for a key command. Its trimmed stdout is the
 //     App's PEM, which signs an App JWT here, and that JWT mints the token that is proved.
 // Either command's stderr is relayed and kept for a failure's message alone. The key path proves
 // at least what the token path proves: the token it mints goes through the same viewer and
@@ -208,13 +213,20 @@ async function runCredentialCommand(
 ): Promise<string> {
   const env: Record<string, string | undefined> = { ...process.env };
   for (const name of natsSeedVariables) delete env[name];
-  // The daemon sets the three narrowing variables empty for a token command, which it runs for
-  // every installation, and sets none of them for a key command, which reads a key no
-  // installation narrows (internal/config, executePrivateKeyCommand). So a key command here sees
-  // whatever this process's environment holds under those names, as the daemon's would.
+  // A token command is run with the two narrowing variables this runner sets and with no value it
+  // inherited under any LEGION_GITHUB_ name, because the daemon drops what it inherited under the
+  // two it sets (internal/appauth, runTokenCommand: slices.DeleteFunc over os.Environ before it
+  // appends its own), and a command reading an inherited third would read something no daemon mint
+  // ever gives it. Both are set empty, which is AppLogin's own ask - the release of every
+  // installation - where a daemon mint names its owner.
+  // A key command reads a key no installation narrows and the daemon sets neither variable for it
+  // (internal/config, executePrivateKeyCommand), so it sees whatever this process's environment
+  // holds under those names, as the daemon's would.
   if (kind === "token_command") {
+    for (const name of Object.keys(env)) {
+      if (name.startsWith("LEGION_GITHUB_")) delete env[name];
+    }
     env.LEGION_GITHUB_OWNER = "";
-    env.LEGION_GITHUB_REPOS = "";
     env.LEGION_GITHUB_READ_ONLY = "";
   }
   let child: Bun.Subprocess<"ignore", "pipe", "pipe">;

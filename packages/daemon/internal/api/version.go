@@ -1585,4 +1585,72 @@ package api
 // main's 111: 112 (#2731), 113 (#3575), 114 (#3730), 115 (#3937), 116 (#3715), 117 (#3711), 118
 // (#3659), 119 (#3712), 120 (#3993), 121 (#3519) and 122 (#2230); 123 is the lowest number above
 // them all.)
-const DaemonAPIVersion = 123
+//
+// 128: INFRA-2543 -- the GitHub App installation, and no longer the project's Dispatch repository
+// mapping, decides which repositories a project works in, so the `repositories` block of
+// `GET /legion/v1/state` stops being that mapping. `mapped` is every repository the daemon
+// serves, the ones the mapping names and the ones the project's own records name, and each entry
+// gains `apps`, the installation of each role App on that repository (`implement` and `review`,
+// both always written): that is the answer an operator and a plugin ask of a repository, and no
+// reader should have to parse it out of a refusal's prose. `refused` keeps `repo` and `reason`
+// and holds a repository a role App is not installed on, or one whose installation could not be
+// read, and never one for want of a mapping; `withoutWebhookApp` and `caches` cover the
+// repositories the records name beside the mapped ones. `packages/contracts/src/legion-api.ts`
+// mirrors the entry and reads `apps` as optional, so a plugin of this contract meeting a daemon
+// of an earlier one mid-roll loses that one answer rather than refusing the whole body, and a
+// plugin of an earlier contract loses it the same way, its answer side stripping a key it does
+// not name. The bump is for what a reader takes the block to mean — a plugin built before it
+// reads `mapped` as the project's mapping, which it no longer is, and `refused` as the mapping's
+// leftovers — and the boot gate and `legion probe-image` are what keep daemon and plugin from
+// meeting across it at all. The addressing every pane, pod and controller is launched with moves
+// with the same change: it names the issue's own repository and then the owner accounts the
+// role's App is installed on, in place of the project's repositories, which are no bound on the
+// work any more and would be a whole installation's worth of names
+// (`daemon.RepositoriesClause`).
+// The bundle a pane and a pod hold gains one file of its own with the same change, in the root
+// beside the owner directories: `renames.txt`, the configured renames the project's pairs
+// resolve to (`ghconfig.PairsFile`), projected from the role Secret's `github-renames` key. For
+// a pair the routing key is the repository rather than the owner — the image's `legion gh` and
+// `legion git-credential` answer a request for the pair's `from` repository from the `to`
+// owner's directory, every other repository of that owner from its own, and a pair whose `to`
+// owner the bundle holds no directory for from nothing at all, naming the pair — so an image
+// built before it reads none of the file and answers the moved repository with the old owner's
+// token, a push GitHub refuses; `legion probe-image` is what keeps that pair apart.
+// `POST /legion/v1/controller/github-credential` carries the same pairs as `renames`, each with
+// its `from` and `to`, absent where the project has none that resolve, so the controller's own
+// bundle routes as a pod's does.
+// (This branch's own base carried 59; it declared 80 until the forward merge of 2026-11-12 that
+// brought main in at 85, and then 86, which five other open heads declared as well, and then 88,
+// which the forward merge that brought main in at 86 left standing, and then 102 at the forward
+// merge of 2026-11-13 that brought main in at 94 — main stands at 104, the entry right above
+// this one, after the merge of 17:3xZ that day — since 88 is
+// below that base, which the gate refuses (.github/scripts/check-daemon-api-contract.sh), and
+// since the two keys contract 94 added are served to a caller at the declared number alone
+// (api's phaseEntriesContract). It took 106 at the merge after that, because
+// cybermonklabs/legion#3659 declares 105 and is the change that gives every later contract its
+// own serving-down, so a number below its own would be served without that machinery, and 112
+// at the merge after that, which #2731 had taken thirteen minutes earlier and which is
+// therefore its number rather than this one's. It takes 114 here: a census of
+// `const DaemonAPIVersion` at refs/pull/<n>/head over all 148 open pull requests of this
+// repository, taken at 2026-11-13T19:38:05Z, reads 104 ten times, then 105, 107, 108, 109, 110,
+// 111 twice, 112 twice and 113 once, with nothing above, so 114 is the lowest number above
+// main's 104 that no open head declares. The gate
+// compares a head with main alone, so every head at a number another head holds passes it today
+// and all but the first to land are renumbered after their review has run; that is
+// dispatch://INFRA-1569's to cure. Read main's own number and every open pull request's again at
+// the next forward merge rather than from this line, as
+// docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
+// says. main at 61685f973c9a declares 111, and a census of `const DaemonAPIVersion` at
+// refs/pull/<n>/head over all open pull requests of this repository, taken at
+// 2026-11-14T00:08Z, reads 104 sixteen times, 107 once, 111 twice, 112 once (#2731), 113 once
+// (#3575), 114 once (this head), 115 four times and 116 once — so 114 is above main's 111 and
+// no other open head declares it, and this merge keeps it rather than renumbering.)
+// (The forward merge of 2026-11-14 that brought main in at 123 takes this entry to 128. A census
+// of `const DaemonAPIVersion` at refs/pull/<n>/head over every open pull request of this
+// repository, taken at 2026-11-14T13:0xZ, reads above main's 123: 123 three times (#2733, #3995,
+// #4000), 124 (#4021), 125 (#4030), 126 twice (#2230, #4017) and 127 (#3519), with nothing above,
+// so 128 is the lowest number above main's that no open head declares. Read main's own number and
+// every open pull request's again at the next forward merge rather than from this line, as
+// docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
+// says.)
+const DaemonAPIVersion = 128

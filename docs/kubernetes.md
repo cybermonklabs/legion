@@ -78,7 +78,7 @@ It carries:
 
 - the shared public leak check those wrappers and that hook run, which is not in the image:
   it is published by tag from a private repository, and the image carries the pin alone (`ARG LEAK_CHECK_TAG`, exported as `ENV LEGION_LEAK_CHECK_TAG`), so moving the pin is an image build and no deployment's to do.
-  The pod's launcher names that pin in its hello, and the daemon reads the check at that tag with a read-only token of its own, which its implement App mints for theorem-labs/agent-infra alone (`leakCheckToken`, `internal/daemon/kubernetes.go`).
+  The pod's launcher names that pin in its hello, and the daemon reads the check at that tag with a read-only token of its own, which its implement App mints as a read lease on theorem-labs (`leakCheckToken`, `internal/daemon/kubernetes.go`).
   The daemon reads each tag once and keeps that copy in its memory (`leakguard.Source`).
   It pushes the check's directory to the launcher before it sends a saved workspace bundle or any start (`serveLeakCheck`, `internal/runtime/sandbox/launcher.go`).
   The launcher installs it once per launcher process, before any role starts:
@@ -2261,8 +2261,8 @@ where handed_over_from <> '' and memory_drawn_at is null
 **The issue key in a pane's commits (daemon API contract 52).**
 A release at contract 52 tells a pane the issue key it stamps into its commits, `LEGION_ISSUE_TRAILER`, whenever `projects.<KEY>.commit_issue_trailer_repos` names the repository that pane works:
 the pane's jj then appends a `Dispatch: <KEY>` line to every commit made in the pane's own workspace, beside the `Omp-Session:` line it already appended, so a squash landing that branch carries the issue key in its message.
-The repositories a project serves stay Dispatch's mapping (Settings → Repositories → Projects), and the key only selects among them:
-a name the project does not serve stamps nothing, and boot says so once per name, `workflow: commit_issue_trailer_repos names a repository this project does not serve, so no pane stamps a commit with the issue key for it`, serving the project as before.
+Dispatch's mapping (Settings → Repositories → Projects) names the project's default repository and the repositories the daemon prepares before an issue names one, and this key names repositories of its own:
+a pane stamps the commit when its launch's repository is one of the names, whatever the mapping holds, and boot says once per name that the mapping does not hold it, which catches a typo.
 The variable is the runtime's own under both runtimes, so `runtime.kubernetes.pod.env` and `runtime.tmux.pane_env` are refused for setting it, and a pane of a repository the key does not name is told nothing and carries the session line alone.
 
 To roll this release back to contract 51, put `legion.yaml` back without `projects.<KEY>.commit_issue_trailer_repos`, which the earlier release refuses as a key it does not know (`unknown key projects.<KEY>.commit_issue_trailer_repos`), and re-pin it.
@@ -3231,10 +3231,14 @@ The clone's object store owns its links to that feed, and no agent writes what t
 The kubelet makes the directory on first use.
 Each role's Secret, `<sandbox>-<role>-boot`, holds that role's launcher token and its gh bundle:
 for every directory of the bundle, `github-hosts-<dir>`, gh's `hosts.yml` carrying a GitHub App installation token under user `x-access-token`, and `github-config-<dir>`, a `config.yml` of `version: "1"`, and `github-default`, the owner of the issue's repository.
-A directory names a GitHub owner of the project, or one repository of that owner as `<owner>/<repo>`, whose `/` the key writes as a `.`, since a Secret key holds no slash.
-The bundle holds one directory per owner, one more per owner a configured rename moved a repository away from while the project serves the name it moved to, and `<owner>/<repo>` directories beside them, cut under the directory named for the issue's recorded owner and under the one named for the owner whose installation serves that repository, less every directory GitHub refuses the role's App a lease for: an owner whose every repository that App's installation does not reach is left out of that role's bundle, said once on the daemon's stderr, where the role's own repository refused fails its launch instead.
-The write token is the role's App's (the implement App's for the implementer and the merger, the review App's for every other role), it reaches the issue's repository and no other, and it stands in two directories, the one named for the issue's recorded owner, which `GH_CONFIG_DIR` names, and the one named for the owner whose installation serves that repository now, which are one directory unless a rename moved the issue's repository;
-every other directory's token is the same App's narrowed to reading contents, pull requests, Actions and metadata over the repositories that directory names, an `<owner>/<repo>` directory's over the one repository its own name resolves to.
+A directory names a GitHub owner, and the bundle holds no repository directory.
+The bundle holds one directory per owner the role's App is installed on, one more per owner a configured rename moved a repository away from while the project serves the name it moved to, and one for the issue's recorded owner, less every directory GitHub refuses the role's App a lease for: an owner whose installation does not hold the permissions a lease asks for is left out of that role's bundle, said once on the daemon's stderr, where the directory of the role's own repository refused fails its launch instead.
+Every directory's token is the role's own App's: the implement App's for the implementer and the merger, the review App's for every other role.
+Each one is the installation lease of the owner its directory is named for, minted at the role's own permissions — the implement App's write set, the review App's review set.
+No directory holds a reading lease of another owner, and each token reaches every repository its own installation holds.
+A role therefore pushes to, opens a pull request in and reviews a pull request of every repository its App reaches, whichever owner's it is.
+`GH_CONFIG_DIR` names the directory of the issue's recorded owner, and which repository the issue names decides that default and nothing else.
+The one directory minted on another owner's installation is the one a configured rename adds: it holds the lease of the owner whose installation serves the moved repository.
 Each mint asks for what the App's installation on that owner is granted of the set it names, so a permission the account has not approved — Actions most often — is left out of the request and said once on the daemon's stderr, rather than costing the role the whole bundle.
 
 The `roles` container mounts each role `<r>`'s own volumes under its directory of `/var/run/legion/roles`:
@@ -3257,7 +3261,7 @@ An owner added to the project is also a reason to replace the pod: a pod project
 An owner the daemon serves whose every lease GitHub refuses is no such reason: no bundle holds it, so no pod could project it, and replacing the pod would only make another pod without it.
 The daemon keeps one record per project of what its mints found refused, and the next mint that answers for such an owner clears it, so the pod is then replaced once.
 A repository added under an owner the pod already projects is not a reason either: the pod keeps running until something else replaces it.
-Until then it reads that repository through that owner's directory, whose token reaches the new repository where the owner is one the pod's roles only read, and names the pod's own repository alone — so reaches the new one not at all — where the owner is the one the role writes to.
+Until then it works that repository through that owner's directory, whose token reaches every repository that owner's installation holds, the new one included.
 The issue's `-boot` Secret holds the provisioning token, projected into `workspace-fetch` alone.
 
 **Each role in namespaces of its own.**
@@ -3326,7 +3330,7 @@ They are an issue pod's role's; `<generation>` is the role's own generation coun
 | variable | value | renderer |
 | :--- | :--- | :--- |
 | `PATH` | `/opt/legion/bin` first, then the image's own | `podPath`, `manifest.go` |
-| `GH_CONFIG_DIR` | `/var/run/legion/gh/<owner>`, the issue's repository's owner's directory in the role's gh bundle, whose token reaches that one repository | `ghAgentEnv`, `podkind.go` |
+| `GH_CONFIG_DIR` | `/var/run/legion/gh/<owner>`, the issue's repository's owner's directory in the role's gh bundle, whose token reaches every repository that owner's installation holds | `ghAgentEnv`, `podkind.go` |
 | `LEGION_GRANT_FILE` | the runtime sets it in no container: the `legion` tool mints the grants for its own daemon calls in-process | — |
 | `LEGION_STATE_DIR` | `/var/run/legion/state` | `StateDir`, `names.go`; `manifest.go` |
 | `LEGION_CREDENTIAL_HELPER` | the runtime sets it in no container | — |
@@ -3363,10 +3367,11 @@ What the broker can already issue is [The Dispatch identity the broker can issue
 `dispatch://INFRA-267` is where Legion's pods and its daemon get tokens of their own, and `dispatch://INFRA-264` is where Dispatch accepts one.
 
 Every role is told `LEGION_GH_OWNERS_DIR=/var/run/legion/gh`, the bundle's root (its own, bound there in its namespaces), `GH_CONFIG_DIR` at the issue's repository's owner's directory under it (the table above), and `LEGION_GH_PATH=/usr/local/bin/gh`, the image's real gh.
+The root holds one directory per owner account the role's App is installed on and one file of its own, `renames.txt`, the configured renames the project's pairs resolve to, which both wrappers route a moved repository by and read from there and from nowhere else (`ghconfig.PairsFile`; the role Secret's `github-renames` key, projected like the gh files).
 The `gh` first on its PATH is `/opt/legion/bin/gh`, which runs `legion gh`:
-it runs the real gh with `GH_CONFIG_DIR` at the directory of the repository the command targets where the bundle holds one, at its owner's otherwise, read as gh reads it from the real gh's own help (see docs/deployment.md, "What a pane's gh, git and jj are"), and at the issue owner's when the command names no repository at all;
-a command it cannot read for certain, one naming two owners, and one naming an owner the bundle holds no directory for are refused with exit 2 and send nothing.
-`git` reads the same files through `!legion git-credential` (`workspace.GitHubCredentialHelper`) with `credential.useHttpPath` on, so the helper answers from the `hosts.yml` of the repository in the path git asks about where the bundle holds its directory, from the owner's otherwise, and from nothing else.
+it runs the real gh with `GH_CONFIG_DIR` at the directory of the owner of the repository the command targets, read as gh reads it from the real gh's own help (see docs/deployment.md, "What a pane's gh, git and jj are"), at the directory of the owner a configured rename moved that one repository to where a pair names it, and at the issue owner's when the command names no repository at all;
+a command it cannot read for certain, one naming two owners, one naming an owner the bundle holds no directory for, and one naming a repository a pair moved to an owner the bundle holds no directory for are refused with exit 2 and send nothing.
+`git` reads the same files through `!legion git-credential` (`workspace.GitHubCredentialHelper`) with `credential.useHttpPath` on, so the helper answers from the `hosts.yml` of the owner of the repository in the path git asks about — of the owner that repository moved to where a pair names it — and from nothing else.
 The shared clone names it as its `credential.helper`: `workspace-init provision` is passed it as `--credential-helper '!legion git-credential'`.
 Every role is also told it outside any clone, as five git configuration entries git reads after every configuration file, the clone's own `.git/config` among them (`gitConfigPairs`, `manifest.go`):
 `GIT_CONFIG_COUNT=5`, `credential.https://github.com.helper` reset to empty and then set to `!legion git-credential`, `credential.https://github.com.useHttpPath=true`, `core.fsmonitor` set to empty and `core.hooksPath=/dev/null`.
@@ -5099,10 +5104,12 @@ and when the workspace's `.jj/repo` names any other directory, followed through 
 The worker image's jj is 0.45; on the tmux runtime, which runs the host's jj through the same code, the daemon refuses to start with a jj older than 0.38 (`resolveTools`, naming `LEGION_JJ_PATH`), since before 0.38 `.jj/repo/config.toml` is the repository's live configuration.
 
 The boundary above protects the provisioning token alone.
-Since LEGION-631 each role holds its own App's tokens, read-only, in the gh bundle its `LEGION_GH_OWNERS_DIR` names, which only its own namespaces bind ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)):
-an implement role (the implementer, the merger) holds the implement App's tokens
-— for the issue's repository the App's own installation token, which writes, where the provisioning token is that same App over that same repository narrowed to reading, so the two are no longer one lease
-— and a review role (the architect, planner, tester, reviewer) the review App's, every directory but the two the write lease stands in narrowed to reading (the issue's recorded owner's and the serving owner's, one directory unless a rename moved the issue's repository).
+Since LEGION-631 each role holds its own App's tokens in the gh bundle its `LEGION_GH_OWNERS_DIR` names, which only its own namespaces bind ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)):
+an implement role (the implementer, the merger) holds the implement App's tokens, and a review role (the architect, planner, tester, reviewer) the review App's.
+Every directory of the bundle holds that owner's installation lease at the role's own permissions: the implement App's write set, or the review App's review set.
+No directory holds a reading lease of another owner.
+The provisioning token is the implement App's token on the issue owner's installation narrowed to reading.
+That is what makes it and an implement role's own token two different leases.
 No review role holds the implement App's token, and no implement role the review App's (the review App cannot resolve a review thread on the implementer's pull request, so the reviewer names the bot threads it accepted to the implementer, which resolves them with its own `gh`; the daemon serves no thread route).
 That split keeps each role's tokens out of a sibling's own reads.
 It is not a boundary against code an agent of the same issue plants:
@@ -5388,7 +5395,7 @@ Legion holds no model, provider or route.
 Everything a pod's Oh My Pi needs to reach a model is the operator's, and the daemon hands the same pieces to every pod it runs:
 each issue's pod (every role of it alike) and the image probe's.
 
-- **The project's repositories** are Dispatch's mapping (Settings → Repositories → Projects), one of them the project's default;
+- **The project's repositories** are Dispatch's mapping (Settings → Repositories → Projects), which names the project's default repository and the repositories the daemon prepares before an issue names one;
   `legion.yaml`'s `projects.<KEY>` names none and refuses `repo`.
   The daemon reads the mapping at boot and on Dispatch's `settings.repo_project.updated` of its project, and checks, per repository, that both GitHub Apps are installed on it (`GET
   /repos/{owner}/{repo}/installation` under each App's JWT):
@@ -5399,8 +5406,8 @@ each issue's pod (every role of it alike) and the image probe's.
   one read of Dispatch's project listing, applied as the boot applies it, to the unrecorded issues on it, under a parent on it, or whose event it applied silently for it during the outage (a labelled root admitted, a child of a live tree recorded under it, parents first, a person's issue left as it is), tried again on a failed listing;
   the mapping is read again, 30 s doubling to 10 min, until GitHub answers, then the repository is served with no restart (a served repository whose read fails stays served on its last answer, with the name and default branch GitHub last gave it and no further read of GitHub, and is read again the same way);
   a project with no repository mapped does not boot, one whose every repository lacks an App boots serving none, admitting nothing until an App is installed, and one whose every repository's installation read fails boots serving none and logs so at ERROR (the boot's own reads of the Apps, their logins and their tokens, still refuse it when they fail).
-  Every role's gh bundle holds a directory for each served repository's owner, one for each owner a configured rename moved a repository away from while the project serves the name it moved to, and an `<owner>/<repo>` directory for each other repository served by the issue's recorded owner and by the owner whose installation serves the issue's repository ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)).
-  An issue is recorded on the repository Dispatch resolves for it, with that repository's default branch as GitHub names it, when the daemon first records it, and keeps both.
+  Every role's gh bundle holds one directory for each owner account that role's App is installed on, one for each owner a configured rename moved a repository away from while the project serves the name it moved to, and one for the issue's recorded owner ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)).
+  An issue is recorded on the repository Dispatch resolves for it, which is any `owner/name` an issue or its parent chain names, whether or not Dispatch maps it to the project, with that repository's default branch as GitHub names it, when the daemon first records it, and keeps both.
   A claim on an issue the workflow does not record, such as an operator's tree, works the project's default repository as it is at each launch, and its launch is refused while the project serves no default.
   **Upgrade order:** Dispatch first (it resolves each issue's repository), then map the project's repositories there with the old `projects.<KEY>.repo` as the project's default, then delete the key and start this daemon;
   its first boot fills every record written before the record carried its repository from Dispatch's resolution, and refuses to boot, naming each record, while Dispatch resolves none, or resolves one other than the repository of the issue's pull request.
@@ -6232,8 +6239,8 @@ In order, and keeping nothing until the daemon has answered, the command:
    print mode, …; run `legion controller start` at a terminal``), since given step 6's positional word with no terminal Oh My Pi runs headless print mode, which would run the start command only after step 3's mint had revoked the running controller;
    then a `dispatch_url` whose file names neither Dispatch credential, a blank or unreadable Envoy or Dispatch token file, a secrets broker that refuses this machine under `dispatch_token_broker` (which also refuses a machine proving no identity and a deployment naming no broker), a `nats_nkey_seed_file` that is blank, unreadable, readable by its group or others, or holds no nkey user seed, a missing or blank instructions file, and an Oh My Pi invocation that does not resolve;
 
-2. reads the project's repositories from the daemon's unauthenticated `GET /legion/v1/state` (`repositories`), since the controller's addressing names them, and refuses a daemon that does not answer, a body with no `repositories` object, and a mapped entry that is not `owner/name`;
-   an empty mapping, or one whose every repository the daemon leaves out, launches the controller all the same, its addressing saying `The daemon maps no repository to this project now` with each repository left out and why.
+2. reads the project's repositories from the daemon's unauthenticated `GET /legion/v1/state` (`repositories`), and refuses a daemon that does not answer, a body with no `repositories` object, and a mapped entry that is not `owner/name`;
+   an empty mapping, or one whose every repository the daemon leaves out, launches the controller all the same, its addressing naming the owners the review App is installed on, or saying it is installed on no owner, while `legion state` names each repository left out and why.
    Then it probes that Oh My Pi as the controller will run it, with `omp models`, which starts no session, and refuses a pi-legion it does not load, or one speaking another daemon API contract, loaded without pi-envoy or with a pi-envoy at another plugin interface version, or loaded beside the pre-split package;
 
 3. asks `POST /legion/v1/controller/secret` with the operator token as `Authorization: Bearer` and the contract step 2 held the plugin to (`{"pluginContract": <N>}`).

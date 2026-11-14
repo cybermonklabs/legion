@@ -195,6 +195,10 @@
                 {
                   "key": "github-config-sjawhar",
                   "path": "sjawhar/config.yml"
+                },
+                {
+                  "key": "github-renames",
+                  "path": "renames.txt"
                 }
               ],
               "secretName": "legion-legion-controller-controller-boot"

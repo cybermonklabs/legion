@@ -390,12 +390,12 @@ It runs under the lease `ci-reconcile` with that 5 minutes as its period, so one
 
 - Requests are serial, as GitHub asks a poller for, and queries and REST reads are paced apart by the two budgets GitHub keeps them under.
   After each query the pass waits a third of what that query took, so its queries never take more than 45 seconds of a minute, inside GitHub's secondary limit of 60 seconds of GraphQL processing a minute for the whole App.
-  Before each REST request it leaves the gap it set itself: the requests the last pass learned this one will take — the pages of each listing of each head a query could not answer, and one identity read for each mapped repository — divided into nine tenths of its own deadline.
+  Before each REST request it leaves the gap it set itself: the requests the last pass learned this one will take — the pages of each listing of each head a query could not answer, and one identity read for each repository the pass covers — divided into nine tenths of its own deadline.
   That gap is never below `cireconcile.FastestRequestPace` (100ms, ten requests a second, inside GitHub's secondary limit of 900 points a minute) and never above `cireconcile.RequestPace` (500ms), which is the pace a deployment configures and the slowest the pass reads.
   The first pass of a process knows of no work and reads at the floor, and the pass after it knows the real count.
 
 - A pass is bound at the interval its loop runs it on, so it always ends before the pass after it is due and always logs its one line.
-  The pass walks one stable order — the mapped repositories, and within each its open pull requests by number — from the first repository to the last page of the last one, and keeps a cursor in it.
+  The pass walks one stable order — the repositories a pass covers (`cireconcile.covered`: the ones `repo_projects` maps and the ones an issue names as its own), and within each its open pull requests by number — from the first repository to the last page of the last one, and keeps a cursor in it.
   A pass starts at the cursor, reads to the end of the order and ends there rather than beginning the order again, and ends early when its deadline is up or at a rate limit.
   A pass cut short leaves the cursor at the first page or REST head it did not finish, which the pass after it takes up, so no head starves behind the heads the order holds before it; a pass that reaches the end of the order leaves the cursor at the start of it.
   One walk of the order, however many passes it takes, is a cycle, and only the pass that closes a cycle forgets what the cycle no longer lists, by what every pass of that cycle reached.
@@ -3142,7 +3142,7 @@ Each item below names a path with its method and identity, then its purpose.
 
   Create or replace, or remove, a repository mapping; PUT takes `{project, default?, renamed_to?}`, and `default: true` moves the project's one default to it.
   `renamed_to` is the full `owner/name` the repository is called today, which every comparison Dispatch makes of a repository canonicalises through (`refs.CanonicalRepo`): absent or null leaves the stored pair as it is, `""` clears it, and a pair naming this repository itself, one naming a repository that is itself renamed, or one on a repository another mapping is already renamed to is `400 INVALID_REPO_PROJECT`.
-  A mapping an issue names as its `repo` is neither deleted nor moved: `409 REPO_PROJECT_IN_USE`.
+  A mapping an issue names as its `repo` is deleted and moved like any other: an issue's own repository needs no mapping.
   `AGENTS.md` gives the rules and the `settings.repo_project.updated` events.
 
 - `/api/v1/github/app-installation/{owner}/{repo}` (GET; cookie, trusted header, or bearer)
@@ -3382,8 +3382,8 @@ Each item below names a path with its method and identity, then its purpose.
 
   Create an issue and its primary document.
   Omitting or leaving `spec` blank gives an empty primary document at version 1.
-  `repo` (`owner/name`) is the issue's own repository and must be mapped to its project:
-  `400 INVALID_ISSUE` when it is not `owner/name`, `400 REPO_NOT_MAPPED` when it is not mapped.
+  `repo` (`owner/name`) is the issue's own repository, any repository at all, one its project maps, one another project maps, or one no project maps:
+  `400 INVALID_ISSUE` when it is not `owner/name`.
   A title over 1,000 characters (`contracts.IssueTitleMax`, UTF-16 units after trimming) is `400 CAP_EXCEEDED` before the duplicate check.
   Refuses a near copy of an open issue of the project, other than the new issue's ancestors, with `409 POSSIBLE_DUPLICATE` and candidates unless `force` is true; external references skip the check.
   A forced create records the issues it went past on its `issue.created` event, under `forced.past`.

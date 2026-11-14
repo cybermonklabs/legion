@@ -171,7 +171,7 @@ async function githubApps(inputs: Record<string, string | undefined>, then: stri
 const line = (stdout: string, prefix: string) =>
   (stdout.split("\n").find((l) => l.startsWith(prefix)) ?? "").slice(prefix.length);
 const tokenCommand = (name: string) =>
-  `agent-secrets ${name} --ttl 12h --reason=legion-live-proof-github-app-token \${LEGION_GITHUB_OWNER:+--github-owner "$LEGION_GITHUB_OWNER"} \${LEGION_GITHUB_REPOS:+$(printf ' --github-repo %s' $LEGION_GITHUB_REPOS)} \${LEGION_GITHUB_READ_ONLY:+--github-read-only} -- sh -c 'printf %s "$${name}"'`;
+  `agent-secrets ${name} --ttl 12h --reason=legion-live-proof-github-app-token \${LEGION_GITHUB_OWNER:+--github-owner "$LEGION_GITHUB_OWNER"} \${LEGION_GITHUB_READ_ONLY:+--github-read-only} -- sh -c 'printf %s "$${name}"'`;
 // The review role's private_key_command in every block the lib writes: a `cat` of the key file it
 // resolved the operator's command into, under the credential directory the caller named.
 const keyFileCommand = (dir: string) => `cat -- '${join(dir, "review", "key.pem")}'`;
@@ -348,7 +348,7 @@ env "\${app_key_unsets[@]}" sh -c "echo \\"left \\$(env | grep -c -E '^($names)=
     holdsNoKey(stdout + stderr, keyIDs);
   });
 
-  test("app_token_command prints the broker client's command, its owner, repository and read-only words left to the daemon's sh", async () => {
+  test("app_token_command prints the broker client's command, its owner and read-only words left to the daemon's sh", async () => {
     const { code, stdout, stderr } = await githubApps(
       appInputs,
       `require_app_inputs implement review
@@ -359,7 +359,7 @@ printf 'command %s\\n' "$(app_token_command "$implement_app_secret")"`
     expect(line(stdout, "command ")).toBe(tokenCommand("IMPLEMENT_APP"));
   });
 
-  test("the token command asks agent-secrets for the owner, repositories and read-only flag the daemon names, and prints the release", async () => {
+  test("the token command asks agent-secrets for the owner and read-only flag the daemon names, and prints the release", async () => {
     const argvLog = join(dir, "argv-command");
     const cases: [Record<string, string>, string][] = [
       [
@@ -371,23 +371,11 @@ printf 'command %s\\n' "$(app_token_command "$implement_app_secret")"`
         'IMPLEMENT_APP --ttl 12h --reason=legion-live-proof-github-app-token --github-owner Acme-Org -- sh -c printf %s "$IMPLEMENT_APP"',
       ],
       [
-        { LEGION_GITHUB_OWNER: "Acme-Org", LEGION_GITHUB_REPOS: "legion" },
-        'IMPLEMENT_APP --ttl 12h --reason=legion-live-proof-github-app-token --github-owner Acme-Org --github-repo legion -- sh -c printf %s "$IMPLEMENT_APP"',
-      ],
-      [
-        {
-          LEGION_GITHUB_OWNER: "Acme-Org",
-          LEGION_GITHUB_REPOS: "legion nats-server",
-          LEGION_GITHUB_READ_ONLY: "1",
-        },
-        'IMPLEMENT_APP --ttl 12h --reason=legion-live-proof-github-app-token --github-owner Acme-Org --github-repo legion --github-repo nats-server --github-read-only -- sh -c printf %s "$IMPLEMENT_APP"',
-      ],
-      [
         { LEGION_GITHUB_OWNER: "Acme-Org", LEGION_GITHUB_READ_ONLY: "1" },
         'IMPLEMENT_APP --ttl 12h --reason=legion-live-proof-github-app-token --github-owner Acme-Org --github-read-only -- sh -c printf %s "$IMPLEMENT_APP"',
       ],
       [
-        { LEGION_GITHUB_OWNER: "", LEGION_GITHUB_REPOS: "", LEGION_GITHUB_READ_ONLY: "" },
+        { LEGION_GITHUB_OWNER: "", LEGION_GITHUB_READ_ONLY: "" },
         'IMPLEMENT_APP --ttl 12h --reason=legion-live-proof-github-app-token -- sh -c printf %s "$IMPLEMENT_APP"',
       ],
     ];

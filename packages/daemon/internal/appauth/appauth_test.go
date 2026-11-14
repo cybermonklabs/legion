@@ -18,14 +18,15 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
-	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
 )
 
@@ -267,20 +268,20 @@ func TestTokensMintsRefreshesAndCachesIdentity(t *testing.T) {
 		Review:    config.GitHubApp{AppID: "67890", PrivateKey: privatePEM},
 	}, Options{BaseURL: server.URL, HTTPClient: server.Client(), Now: func() time.Time { return now }})
 
-	first, err := tokens.Token(context.Background(), Implement, ghrepo.MustParse("sjawhar/legion"))
+	first, err := tokens.Token(context.Background(), Implement, "sjawhar")
 	if err != nil {
 		t.Fatalf("first token: %v", err)
 	}
 	if first.Token != "installation-1" || first.Identity.Name != "legion-implementer[bot]" || first.Identity.Email != "271566630+legion-implementer[bot]@users.noreply.github.com" {
 		t.Fatalf("first lease = %+v", first)
 	}
-	if _, err := tokens.Token(context.Background(), Implement, ghrepo.MustParse("SJAWHAR/legion")); err != nil {
+	if _, err := tokens.Token(context.Background(), Implement, "SJAWHAR"); err != nil {
 		t.Fatalf("cached token: %v", err)
 	}
 
 	// The hour-long lease has fewer than refreshWindow's twenty minutes left: the next call mints.
 	now = now.Add(40*time.Minute + time.Second)
-	refreshed, err := tokens.Token(context.Background(), Implement, ghrepo.MustParse("sjawhar/legion"))
+	refreshed, err := tokens.Token(context.Background(), Implement, "sjawhar")
 	if err != nil {
 		t.Fatalf("refreshed token: %v", err)
 	}
@@ -347,7 +348,7 @@ func TestAnInstallationRemovedAfterItWasFoundIsAnsweredNotInstalled(t *testing.T
 		Implement: config.GitHubApp{AppID: "12345", PrivateKey: privatePEM},
 		Review:    config.GitHubApp{AppID: "67890", PrivateKey: privatePEM},
 	}, Options{BaseURL: server.URL, HTTPClient: server.Client(), Now: func() time.Time { return now }})
-	if _, err := tokens.Token(context.Background(), Review, ghrepo.MustParse("acme/legion")); err != nil {
+	if _, err := tokens.Token(context.Background(), Review, "acme"); err != nil {
 		t.Fatalf("first token: %v", err)
 	}
 
@@ -355,7 +356,7 @@ func TestAnInstallationRemovedAfterItWasFoundIsAnsweredNotInstalled(t *testing.T
 	installation = ""
 	mu.Unlock()
 	now = now.Add(time.Hour)
-	_, err := tokens.Token(context.Background(), Review, ghrepo.MustParse("acme/legion"))
+	_, err := tokens.Token(context.Background(), Review, "acme")
 	if !errors.Is(err, ErrNotInstalled) {
 		t.Fatalf("a mint after the App was removed = %v, want ErrNotInstalled", err)
 	}
@@ -363,7 +364,7 @@ func TestAnInstallationRemovedAfterItWasFoundIsAnsweredNotInstalled(t *testing.T
 	mu.Lock()
 	installation = "88"
 	mu.Unlock()
-	lease, err := tokens.Token(context.Background(), Review, ghrepo.MustParse("acme/legion"))
+	lease, err := tokens.Token(context.Background(), Review, "acme")
 	if err != nil || lease.Token != "installation-88" {
 		t.Fatalf("a mint after the App was installed again = %+v, %v; want the new installation's token", lease, err)
 	}
@@ -411,9 +412,9 @@ func TestForgetMakesTheNextTokenAndReadTokenMintAgain(t *testing.T) {
 	ctx := context.Background()
 	mint := func(read bool) Lease {
 		t.Helper()
-		lease, err := tokens.Token(ctx, Review, ghrepo.MustParse("acme/legion"))
+		lease, err := tokens.Token(ctx, Review, "acme")
 		if read {
-			lease, err = tokens.ReadToken(ctx, Review, "acme", []string{"legion"})
+			lease, err = tokens.ReadToken(ctx, Review, "acme")
 		}
 		if err != nil {
 			t.Fatal(err)
@@ -480,15 +481,15 @@ func TestReadTokenMintsANarrowedTokenCachedApartFromToken(t *testing.T) {
 		Review:    config.GitHubApp{AppID: "67890", PrivateKey: privatePEM},
 	}, Options{BaseURL: server.URL, HTTPClient: server.Client(), Now: func() time.Time { return now }})
 
-	read, err := tokens.ReadToken(context.Background(), Implement, "acme", []string{"legion"})
+	read, err := tokens.ReadToken(context.Background(), Implement, "acme")
 	if err != nil {
 		t.Fatalf("read token: %v", err)
 	}
-	write, err := tokens.Token(context.Background(), Implement, ghrepo.MustParse("Acme/legion"))
+	write, err := tokens.Token(context.Background(), Implement, "Acme")
 	if err != nil {
 		t.Fatalf("write token: %v", err)
 	}
-	again, err := tokens.ReadToken(context.Background(), Implement, "ACME", []string{"Legion"})
+	again, err := tokens.ReadToken(context.Background(), Implement, "ACME")
 	if err != nil {
 		t.Fatalf("cached read token: %v", err)
 	}
@@ -536,7 +537,7 @@ func TestGrantedWriteSetAsksForTheThreeTheInstallationGrants(t *testing.T) {
 	}
 	tokens := keyModeManager(t, github, &now, &stderr)
 
-	lease, err := tokens.Token(context.Background(), Implement, ghrepo.MustParse("cybermonklabs/legion"))
+	lease, err := tokens.Token(context.Background(), Implement, "cybermonklabs")
 	if err != nil || lease.Token != "ghs_1" {
 		t.Fatalf("Token = %q, %v; want the lease the three granted permissions mint", lease.Token, err)
 	}
@@ -579,7 +580,7 @@ func TestGrantedAccessBelowTheSetIsAskedForAtWhatIsGranted(t *testing.T) {
 	}
 	tokens := keyModeManager(t, github, &now, &stderr)
 
-	if _, err := tokens.Token(context.Background(), Review, ghrepo.MustParse("acme/legion")); err != nil {
+	if _, err := tokens.Token(context.Background(), Review, "acme"); err != nil {
 		t.Fatalf("Token: %v", err)
 	}
 
@@ -623,7 +624,7 @@ func TestGrantedAnAccessThisDoesNotKnowIsGrantedNone(t *testing.T) {
 	}
 	tokens := keyModeManager(t, github, &now, &stderr)
 
-	if _, err := tokens.Token(context.Background(), Implement, ghrepo.MustParse("acme/legion")); err != nil {
+	if _, err := tokens.Token(context.Background(), Implement, "acme"); err != nil {
 		t.Fatalf("Token: %v", err)
 	}
 
@@ -665,14 +666,14 @@ func TestGrantedReadSetLeavesOutActionsAndSaysSoOncePerOwner(t *testing.T) {
 	// Each owner's read token is asked for on its own, which is what a controller's bundle does
 	// for it (ControllerCredential): one mint per owner, on that owner's own installation.
 	for _, owner := range []string{"acme", "sjawhar"} {
-		lease, err := tokens.ReadToken(context.Background(), Review, owner, []string{"legion"})
+		lease, err := tokens.ReadToken(context.Background(), Review, owner)
 		if err != nil || lease.Token == "" {
 			t.Fatalf("read token for %s = %q, %v; want the lease the three granted reads mint", owner, lease.Token, err)
 		}
 	}
 	// Forget drops acme's lease, so the next read token of that scope mints again.
 	tokens.Forget(Review, "ACME")
-	if _, err := tokens.ReadToken(context.Background(), Review, "acme", []string{"legion"}); err != nil {
+	if _, err := tokens.ReadToken(context.Background(), Review, "acme"); err != nil {
 		t.Fatalf("read token after Forget: %v", err)
 	}
 
@@ -714,7 +715,7 @@ func TestGrantedNoneOfTheSetRefusesTheMintBeforeTheTokenEndpoint(t *testing.T) {
 	}
 	tokens := keyModeManager(t, github, &now, &stderr)
 
-	lease, err := tokens.Token(context.Background(), Implement, ghrepo.MustParse("acme/legion"))
+	lease, err := tokens.Token(context.Background(), Implement, "acme")
 	if lease.Token != "" || err == nil {
 		t.Fatalf("a mint on an installation granted none of the set = %q, %v; want no lease and a refusal", lease.Token, err)
 	}
@@ -754,7 +755,7 @@ func TestGrantedPermissionsReadIsTransientOn5xxAndGoneOn404(t *testing.T) {
 			}
 			tokens := keyModeManager(t, github, &now, &stderr)
 
-			lease, err := tokens.Token(context.Background(), Implement, ghrepo.MustParse("acme/legion"))
+			lease, err := tokens.Token(context.Background(), Implement, "acme")
 			var trouble *TransientError
 			if lease.Token != "" {
 				t.Fatalf("a mint whose permissions read failed = %q, want no lease", lease.Token)
@@ -821,7 +822,7 @@ func TestARateLimited422IsGitHubsTroubleAndNotAGrant(t *testing.T) {
 				Options{BaseURL: server.URL, HTTPClient: server.Client(), Now: func() time.Time { return now }, Stderr: &stderr})
 			defer tokens.Close()
 
-			lease, err := tokens.ReadToken(context.Background(), Review, "acme", []string{"legion"})
+			lease, err := tokens.ReadToken(context.Background(), Review, "acme")
 			var trouble *TransientError
 			if lease.Token != "" || !errors.As(err, &trouble) {
 				t.Fatalf("read token under a rate limit = %q, %v; want no lease and a TransientError", lease.Token, err)
@@ -885,7 +886,7 @@ func TestTokensDeduplicatesConcurrentRequests(t *testing.T) {
 	errs := make(chan error, 2)
 	for range 2 {
 		go func() {
-			lease, err := tokens.Token(context.Background(), Implement, ghrepo.MustParse("sjawhar/legion"))
+			lease, err := tokens.Token(context.Background(), Implement, "sjawhar")
 			if err != nil {
 				errs <- err
 				return
@@ -989,7 +990,7 @@ func TestGitHubsTroubleIsTransientAndItsAnswersAreNot(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 			defer cancel()
 
-			_, err := tokens.Token(ctx, Implement, ghrepo.MustParse("acme/legion"))
+			_, err := tokens.Token(ctx, Implement, "acme")
 			if err == nil {
 				t.Fatal("Token succeeded, want a failure")
 			}
@@ -1008,6 +1009,14 @@ func TestGitHubsTroubleIsTransientAndItsAnswersAreNot(t *testing.T) {
 // whether a request named a repository must read. answer decides each exchange from the body it
 // carried and how many came before it, and granted, when it is set, answers the permissions
 // read of an installation instead of its grants.
+//
+// refuses, when it is set, is the owners whose every token exchange is answered 422 before
+// answer is asked, as an installation that is granted none of what the request asks for is: a
+// bundle holds one lease per owner and asks each installation for the same permissions
+// (appauth's bundleDirs), so which owner the exchange was addressed to is the whole of what a
+// refusal now turns on, and a stand-in that read the permissions asked for instead could not
+// tell one owner's refusal from another's. The exchange is recorded before it is refused, as
+// GitHub's own refusal of one is a request it answered.
 type keyModeGitHub struct {
 	mu      sync.Mutex
 	owners  []string
@@ -1018,6 +1027,19 @@ type keyModeGitHub struct {
 	reads   []string
 	answer  func(exchange int, body accessTokensBody) (int, string)
 	granted func(installation string, read int) (int, string)
+	refuses func(owner string) bool
+}
+
+// ownerOf is the account the installation id names, as /app/installations lists them.
+func (g *keyModeGitHub) ownerOf(installation string) string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for i, owner := range g.owners {
+		if installation == strconv.Itoa(101+i) {
+			return strings.ToLower(owner)
+		}
+	}
+	return ""
 }
 
 func (g *keyModeGitHub) serve(t *testing.T) *httptest.Server {
@@ -1025,8 +1047,11 @@ func (g *keyModeGitHub) serve(t *testing.T) *httptest.Server {
 	return githubtest.Serve(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.URL.Path == "/app/installations":
-			listed := make([]string, 0, len(g.owners))
-			for i, owner := range g.owners {
+			g.mu.Lock()
+			owners := slices.Clone(g.owners)
+			g.mu.Unlock()
+			listed := make([]string, 0, len(owners))
+			for i, owner := range owners {
 				listed = append(listed, fmt.Sprintf(`{"id":%d,"account":{"login":%q}}`, 101+i, owner))
 			}
 			fmt.Fprintf(w, "[%s]", strings.Join(listed, ","))
@@ -1035,8 +1060,13 @@ func (g *keyModeGitHub) serve(t *testing.T) *httptest.Server {
 			g.mu.Lock()
 			g.bodies = append(g.bodies, body)
 			g.raw = append(g.raw, text)
-			exchange := len(g.bodies)
+			exchange, refuses := len(g.bodies), g.refuses
 			g.mu.Unlock()
+			if owner := g.ownerOf(strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/app/installations/"), "/access_tokens")); refuses != nil && refuses(owner) {
+				w.WriteHeader(http.StatusUnprocessableEntity)
+				fmt.Fprint(w, refusedNarrowingAnswer)
+				return
+			}
 			status, answer := g.answer(exchange, body)
 			w.WriteHeader(status)
 			fmt.Fprint(w, answer)
@@ -1064,6 +1094,14 @@ func (g *keyModeGitHub) serve(t *testing.T) *httptest.Server {
 			t.Errorf("unexpected GitHub path %s", r.URL.Path)
 		}
 	}})
+}
+
+// installOn gives the App an installation on owner, as an account installing it does: the next
+// read of /app/installations lists it, and nothing else about the stand-in changes.
+func (g *keyModeGitHub) installOn(owner string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.owners = append(g.owners, owner)
 }
 
 // exchanges is every access_tokens body GitHub was sent, in the order it got them.
@@ -1132,7 +1170,7 @@ func TestTokenAsksForNoRepositoryAndTheAppsWritePermissions(t *testing.T) {
 			}
 			tokens := keyModeManager(t, github, &now, &stderr)
 
-			if _, err := tokens.Token(context.Background(), tc.role, ghrepo.MustParse("sjawhar/legion")); err != nil {
+			if _, err := tokens.Token(context.Background(), tc.role, "sjawhar"); err != nil {
 				t.Fatalf("Token: %v", err)
 			}
 
@@ -1171,7 +1209,7 @@ func TestReadTokenAsksForTheFourReadsAndNoRepository(t *testing.T) {
 			}
 			tokens := keyModeManager(t, github, &now, &stderr)
 
-			if _, err := tokens.ReadToken(context.Background(), tc.role, "acme", []string{"legion"}); err != nil {
+			if _, err := tokens.ReadToken(context.Background(), tc.role, "acme"); err != nil {
 				t.Fatalf("ReadToken: %v", err)
 			}
 
@@ -1206,10 +1244,10 @@ func TestNoMintEverNamesARepositoryToGitHub(t *testing.T) {
 
 	for _, role := range Roles {
 		for _, owner := range []string{"acme", "sjawhar"} {
-			if _, err := tokens.Token(context.Background(), role, ghrepo.MustParse(owner+"/legion")); err != nil {
+			if _, err := tokens.Token(context.Background(), role, owner); err != nil {
 				t.Fatalf("the %s App's write mint for %s: %v", role, owner, err)
 			}
-			if _, err := tokens.ReadToken(context.Background(), role, owner, []string{"legion"}); err != nil {
+			if _, err := tokens.ReadToken(context.Background(), role, owner); err != nil {
 				t.Fatalf("the %s App's read mint for %s: %v", role, owner, err)
 			}
 		}
@@ -1257,11 +1295,11 @@ func TestAnAnswerNamingTheInstallationsRepositoriesIsServed(t *testing.T) {
 			github.answer = func(int, accessTokensBody) (int, string) { return http.StatusOK, tc.answer }
 			tokens := keyModeManager(t, github, &now, &stderr)
 
-			lease, err := tokens.Token(context.Background(), Implement, ghrepo.MustParse("sjawhar/legion"))
+			lease, err := tokens.Token(context.Background(), Implement, "sjawhar")
 			if err != nil || lease.Token != "ghs_all" {
 				t.Fatalf("the lease = %q, %v; want the token GitHub minted", lease.Token, err)
 			}
-			if _, err := tokens.Token(context.Background(), Implement, ghrepo.MustParse("sjawhar/legion")); err != nil {
+			if _, err := tokens.Token(context.Background(), Implement, "sjawhar"); err != nil {
 				t.Fatalf("the second call: %v", err)
 			}
 			if asked := github.exchanges(); len(asked) != 1 {
@@ -1297,7 +1335,7 @@ func TestTokenRefusesATokenWiderThanThePermissionsAsked(t *testing.T) {
 			}
 			tokens := keyModeManager(t, github, &now, &stderr)
 
-			lease, err := tokens.ReadToken(context.Background(), Review, "acme", []string{"legion"})
+			lease, err := tokens.ReadToken(context.Background(), Review, "acme")
 			if err == nil || lease.Token != "" {
 				t.Fatalf("a token wider than the permissions asked = %q, %v; want no lease and a refusal", lease.Token, err)
 			}
@@ -1336,7 +1374,7 @@ func TestTokenRefusesATokenWhoseAnswerNamesNoPermissions(t *testing.T) {
 			github.answer = func(int, accessTokensBody) (int, string) { return http.StatusOK, tc.answer }
 			tokens := keyModeManager(t, github, &now, &stderr)
 
-			lease, err := tokens.ReadToken(context.Background(), Review, "acme", []string{"legion"})
+			lease, err := tokens.ReadToken(context.Background(), Review, "acme")
 			if err == nil || lease.Token != "" {
 				t.Fatalf("a token whose answer names no permission = %q, %v; want no lease and a refusal", lease.Token, err)
 			}
@@ -1350,29 +1388,29 @@ func TestTokenRefusesATokenWhoseAnswerNamesNoPermissions(t *testing.T) {
 	}
 }
 
-// Every caller names the repositories its lease is cached under, and those names reach GitHub
-// not at all (TestNoMintEverNamesARepositoryToGitHub): they key the lease, its command run and
-// its refusal memory. A call that names none, or names one with nothing in it, is a caller's
-// mistake, so every door into a mint refuses it, and refuses it before any exchange is sent.
-func TestNoMintWithoutRepositoriesEverReachesGitHub(t *testing.T) {
+// A mint names the account it mints on, and nothing else says which installation GitHub is to
+// use: a call that names no account would hand its caller a token for an account it never asked
+// about. So every door into a mint refuses a call that names none, and refuses it before any
+// exchange is sent.
+func TestNoMintWithoutAnOwnerEverReachesGitHub(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		mint func(tokens *Manager) error
 	}{
-		{"a write token for the zero repository", func(tokens *Manager) error {
-			_, err := tokens.Token(context.Background(), Implement, ghrepo.Repository{})
+		{"a write token for no owner", func(tokens *Manager) error {
+			_, err := tokens.Token(context.Background(), Implement, "")
 			return err
 		}},
-		{"a read token for no repository", func(tokens *Manager) error {
-			_, err := tokens.ReadToken(context.Background(), Implement, "sjawhar", nil)
+		{"a read token for no owner", func(tokens *Manager) error {
+			_, err := tokens.ReadToken(context.Background(), Implement, "")
 			return err
 		}},
-		{"a read token for an empty list", func(tokens *Manager) error {
-			_, err := tokens.ReadToken(context.Background(), Implement, "sjawhar", []string{})
+		{"a write token for an owner of blanks", func(tokens *Manager) error {
+			_, err := tokens.Token(context.Background(), Implement, "   ")
 			return err
 		}},
-		{"a read token for a repository with no name", func(tokens *Manager) error {
-			_, err := tokens.ReadToken(context.Background(), Implement, "sjawhar", []string{" "})
+		{"a read token for an owner of blanks", func(tokens *Manager) error {
+			_, err := tokens.ReadToken(context.Background(), Implement, " ")
 			return err
 		}},
 	} {
@@ -1386,10 +1424,10 @@ func TestNoMintWithoutRepositoriesEverReachesGitHub(t *testing.T) {
 			tokens := keyModeManager(t, github, &now, &stderr)
 
 			if err := tc.mint(tokens); err == nil {
-				t.Fatal("the mint succeeded, want a call naming no repository refused")
+				t.Fatal("the mint succeeded, want a call naming no account refused")
 			}
 			if asked := github.exchanges(); len(asked) != 0 {
-				t.Errorf("%d exchanges, want none: a call naming no repository is refused before anything is minted", len(asked))
+				t.Errorf("%d exchanges, want none: a mint with no account has no installation to ask", len(asked))
 			}
 		})
 	}
@@ -1410,7 +1448,7 @@ func TestA422ForAPermissionTheInstallationIsNotGrantedIsTheNarrowingRefusal(t *t
 	}
 	tokens := keyModeManager(t, github, &now, &stderr)
 
-	lease, err := tokens.Token(context.Background(), Implement, ghrepo.MustParse("sjawhar/legion"))
+	lease, err := tokens.Token(context.Background(), Implement, "sjawhar")
 	var trouble *TransientError
 	if lease.Token != "" || !errors.Is(err, ErrNarrowingRefused) || errors.As(err, &trouble) {
 		t.Fatalf("a 422 to a write mint = %q, %v; want no lease and the narrowing refusal", lease.Token, err)
@@ -1444,7 +1482,7 @@ func TestTheReadAndWriteScopesOfEachOwnerAreCachedApart(t *testing.T) {
 
 	read := func(owner string) string {
 		t.Helper()
-		lease, err := tokens.ReadToken(context.Background(), Review, owner, []string{"legion"})
+		lease, err := tokens.ReadToken(context.Background(), Review, owner)
 		if err != nil {
 			t.Fatalf("ReadToken for %s: %v", owner, err)
 		}
@@ -1452,7 +1490,7 @@ func TestTheReadAndWriteScopesOfEachOwnerAreCachedApart(t *testing.T) {
 	}
 	write := func() string {
 		t.Helper()
-		lease, err := tokens.Token(context.Background(), Review, ghrepo.MustParse("acme/legion"))
+		lease, err := tokens.Token(context.Background(), Review, "acme")
 		if err != nil {
 			t.Fatalf("Token: %v", err)
 		}
@@ -1505,7 +1543,7 @@ func TestANarrowingRefusalIsServedFromMemoryInsideItsWindow(t *testing.T) {
 	tokens := keyModeManager(t, github, &now, &stderr)
 	refused := func(which string) error {
 		t.Helper()
-		lease, err := tokens.ReadToken(context.Background(), Review, "acme", []string{"legion"})
+		lease, err := tokens.ReadToken(context.Background(), Review, "acme")
 		if !errors.Is(err, ErrNarrowingRefused) || lease.Token != "" {
 			t.Fatalf("the %s mint of the refused scope = %q, %v; want no lease and ErrNarrowingRefused", which, lease.Token, err)
 		}
@@ -1534,7 +1572,7 @@ func TestANarrowingRefusalIsServedFromMemoryInsideItsWindow(t *testing.T) {
 	}
 
 	for i := range 2 {
-		lease, err := tokens.Token(context.Background(), Review, ghrepo.MustParse("acme/legion"))
+		lease, err := tokens.Token(context.Background(), Review, "acme")
 		if err != nil || lease.Token == "" {
 			t.Fatalf("mint %d of the scope the installation grants = %q, %v", i+1, lease.Token, err)
 		}
@@ -1545,16 +1583,14 @@ func TestANarrowingRefusalIsServedFromMemoryInsideItsWindow(t *testing.T) {
 }
 
 // GitHub's answer to a token exchange lists one object for every repository the installation
-// holds, whatever the request named, and a Legion installation holds hundreds, so the bound a
-// mint reads its answer under is 16 MiB: about 3,000 repositories at the 4.9 to 5.3 KB one
-// object measures. An answer of 3,000 objects of 5,300 bytes is read whole and its lease served,
-// though the mint names one repository; one past the bound is refused naming the bound, and the
-// refusal carries neither the token nor anything else the body held.
+// holds, and a Legion installation holds hundreds, so the bound a mint reads its answer under is
+// 16 MiB (exchangeAnswerBound): about 3,000 repositories at the 4.9 to 5.3 KB one object
+// measures. An answer of 3,000 is read whole and its lease served; one past the bound is refused
+// naming the bound, and the refusal carries neither the token nor anything else the body held.
 func TestAnAnswerOfThreeThousandRepositoriesIsReadAndOnePastTheBoundIsRefused(t *testing.T) {
 	expires := time.Date(2026, 11, 6, 13, 0, 0, 0, time.UTC).Format(time.RFC3339)
 	// Each repository object is of the size GitHub's answer carries, the padding standing for
 	// the fields a repository object holds that this daemon never reads.
-	const repositoryObject = 5300
 	answerOf := func(repositories int) string {
 		var answer strings.Builder
 		fmt.Fprintf(&answer, `{"token":"ghs_many","expires_at":%q,"repository_selection":"selected","permissions":{"actions":"read","contents":"read","metadata":"read","pull_requests":"read"},"repositories":[`, expires)
@@ -1562,10 +1598,8 @@ func TestAnAnswerOfThreeThousandRepositoriesIsReadAndOnePastTheBoundIsRefused(t 
 			if i > 0 {
 				answer.WriteByte(',')
 			}
-			object := fmt.Sprintf(`{"id":%d,"name":"repo-%04d","full_name":"acme/repo-%04d","description":"`, i, i, i)
-			answer.WriteString(object)
-			answer.WriteString(strings.Repeat("x", repositoryObject-len(object)-len(`"}`)))
-			answer.WriteString(`"}`)
+			fmt.Fprintf(&answer, `{"id":%d,"name":"repo-%04d","full_name":"acme/repo-%04d","description":%q}`,
+				i, i, i, strings.Repeat("x", 4900))
 		}
 		answer.WriteString("]}")
 		return answer.String()
@@ -1576,12 +1610,12 @@ func TestAnAnswerOfThreeThousandRepositoriesIsReadAndOnePastTheBoundIsRefused(t 
 		served       bool
 	}{
 		{"three thousand repositories", 3000, true},
-		{"an answer past the bound", 3200, false},
+		{"an answer past the bound", 3600, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			answer := answerOf(tc.repositories)
-			if past := len(answer) > 16<<20; past == tc.served {
-				t.Fatalf("the answer of %d repositories is %d bytes against a bound of %d", tc.repositories, len(answer), 16<<20)
+			if past := len(answer) > exchangeAnswerBound; past == tc.served {
+				t.Fatalf("the answer of %d repositories is %d bytes against a bound of %d", tc.repositories, len(answer), exchangeAnswerBound)
 			}
 			now := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
 			var stderr bytes.Buffer
@@ -1589,7 +1623,7 @@ func TestAnAnswerOfThreeThousandRepositoriesIsReadAndOnePastTheBoundIsRefused(t 
 			github.answer = func(int, accessTokensBody) (int, string) { return http.StatusOK, answer }
 			tokens := keyModeManager(t, github, &now, &stderr)
 
-			lease, err := tokens.ReadToken(context.Background(), Review, "acme", []string{"legion"})
+			lease, err := tokens.ReadToken(context.Background(), Review, "acme")
 			if tc.served {
 				if err != nil || lease.Token != "ghs_many" {
 					t.Fatalf("the lease of an answer of %d repositories = %q, %v; want the token GitHub minted", tc.repositories, lease.Token, err)
@@ -1599,12 +1633,74 @@ func TestAnAnswerOfThreeThousandRepositoriesIsReadAndOnePastTheBoundIsRefused(t 
 			if err == nil || lease.Token != "" {
 				t.Fatalf("an answer past the bound = %q, %v; want no lease and a refusal", lease.Token, err)
 			}
-			if !strings.Contains(err.Error(), "16777216") {
+			if !strings.Contains(err.Error(), fmt.Sprint(exchangeAnswerBound)) {
 				t.Errorf("the refusal does not name the bound it met: %v", err)
 			}
-			if strings.Contains(err.Error(), "ghs_many") || strings.Contains(err.Error(), "repo-") {
+			if strings.Contains(err.Error(), "ghs_many") || strings.Contains(err.Error(), "repo-0000") {
 				t.Errorf("the refusal carries what the body held: %v", err)
 			}
 		})
+	}
+}
+
+// Two reads of one App's installations that overlap in time make one read of GitHub, as two
+// reads of one App's identity do: every gh bundle opens with this read, and the bundles of a
+// project's pods are built side by side, so an overlapping pair asking GitHub the same question
+// twice costs a page walk under a fresh JWT for nothing. It is no cache: a read made once the
+// first has ended reads GitHub again, which is what a bundle's directories must rest on
+// (INFRA-2543 R2).
+func TestOverlappingInstallationReadsOfOneAppShareOneRead(t *testing.T) {
+	_, privatePEM := testAppKey(t)
+	now := time.Date(2026, 11, 12, 12, 0, 0, 0, time.UTC)
+	var reads atomic.Int64
+	reading, release := make(chan struct{}), make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/app/installations" {
+			t.Errorf("unexpected GitHub path %s", r.URL.Path)
+			return
+		}
+		if reads.Add(1) == 1 {
+			close(reading)
+			<-release
+		}
+		fmt.Fprint(w, `[{"id":77,"account":{"login":"Acme"}}]`)
+	}))
+	defer server.Close()
+	tokens := New(config.GitHubApps{
+		Implement: config.GitHubApp{AppID: "12345", PrivateKey: privatePEM},
+		Review:    config.GitHubApp{AppID: "67890", PrivateKey: privatePEM},
+	}, Options{BaseURL: server.URL, HTTPClient: server.Client(), Now: func() time.Time { return now }})
+
+	answers := make(chan []string, 2)
+	read := func() {
+		owners, err := tokens.InstalledOwners(context.Background(), Implement)
+		if err != nil {
+			t.Errorf("InstalledOwners: %v", err)
+		}
+		answers <- owners
+	}
+	go read()
+	<-reading
+	// The second caller joins while the first is still inside GitHub's answer. Were it not
+	// sharing that read, its own request would reach the handler here and count a second read,
+	// since the first is held until release is closed.
+	go read()
+	time.Sleep(50 * time.Millisecond)
+	close(release)
+	for range 2 {
+		if owners := <-answers; !slices.Equal(owners, []string{"acme"}) {
+			t.Fatalf("the owners read = %v, want acme", owners)
+		}
+	}
+	if got := reads.Load(); got != 1 {
+		t.Fatalf("two overlapping reads asked GitHub %d times, want once", got)
+	}
+
+	// Nothing is kept: the next read, made once the first has ended, is GitHub's own again.
+	if _, err := tokens.InstalledOwners(context.Background(), Implement); err != nil {
+		t.Fatalf("the read after the shared one: %v", err)
+	}
+	if got := reads.Load(); got != 2 {
+		t.Fatalf("the read after the shared one left GitHub asked %d times, want it read again", got)
 	}
 }

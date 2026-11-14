@@ -827,9 +827,13 @@ var unknownIDRouteProbes = map[string]unknownIDRouteProbe{
 	"PATCH /api/v1/asks/{id}": {body: map[string]any{"question": "Which way?"}},
 	// The hand-on reads who it hands the ask to before it reads the ask (the pool refuses a
 	// second connection under the transaction), so its probe names a person who has signed in.
-	"PUT /api/v1/asks/{id}/asked-of":                         {body: map[string]any{"asked_of": "alice"}},
-	"POST /api/v1/asks/{id}/resolve":                         {body: map[string]any{"kind": "resolved", "reason": "Settled elsewhere."}},
-	"PUT /api/v1/me/asks/{id}/snooze":                        {body: map[string]any{"snoozed_until": time.Now().Add(time.Hour).UTC().Format(time.RFC3339)}},
+	"PUT /api/v1/asks/{id}/asked-of": {body: map[string]any{"asked_of": "alice"}},
+	"POST /api/v1/asks/{id}/resolve": {body: map[string]any{"kind": "resolved", "reason": "Settled elsewhere."}},
+	// The snooze reads its time before it reads the ask, and this table is built once when the
+	// test binary starts, so a time an hour ahead is in the past for any run of this package
+	// that lasts an hour: the route then answers 400 SNOOZE_INPUT and the row reads as the 404
+	// it is looking for having gone missing. A year is further ahead than any run reaches.
+	"PUT /api/v1/me/asks/{id}/snooze":                        {body: map[string]any{"snoozed_until": time.Now().AddDate(1, 0, 0).UTC().Format(time.RFC3339)}},
 	"PATCH /api/v1/comments/{id}":                            {body: map[string]any{"body": "A remark."}},
 	"POST /api/v1/comments/{id}/deliveries":                  {body: map[string]any{"actor": sessionActor(), "delivery": "btw"}},
 	"POST /api/v1/comments/{id}/reply":                       {body: map[string]any{"actor": sessionActor(), "attempt": 1, "body": "A reply."}, bearer: true},
