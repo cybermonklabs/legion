@@ -200,11 +200,12 @@ func (r *seedRun) askAnswer(ask askPlan, options []model.AskOption) model.AskAns
 //
 // Who wrote a comment is written as the server's comment write writes it (api/comment_create.go).
 // The row holds the author as the model encodes it, which is the value the comment's node holds
-// as made_by, and the batch states what graphstore.Authored states of each comment: the author's
-// node and the comment's authored_by tuple to it (commentStoreWrite). The store census holds each
-// comment row to both, so a seeded comment answers it as a comment the server wrote does.
-// seedActor's display name is a key no model.Actor carries, so a row holding seedActor would
-// disagree with its own node.
+// as made_by, and the batch states what graphstore.Authored states of each comment
+// (graphstore.AuthorFacts): the author's node, the comment's authored_by tuple to it and the
+// aliases the server proved of the author (commentStoreWrite). The store census holds each
+// comment row to its node and its authored_by, so a seeded comment answers it as a comment the
+// server wrote does. seedActor's display name is a key no model.Actor carries, so a row holding
+// seedActor would disagree with its own node.
 func (r *seedRun) writeComments(ctx context.Context) error {
 	var hasAnswers bool
 	if err := r.database.Pool.QueryRow(ctx, `select exists (
@@ -229,11 +230,11 @@ func (r *seedRun) writeComments(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("encode the comments' author: %w", err)
 	}
-	// The node the seed's author is in the store, read once for every batch the way
-	// graphstore.Authored reads it: a person, named by the canonical login.
-	authorKind, authorLogin, ok := graphstore.AuthorOf(seedAuthor)
-	if !ok || authorKind != graphstore.KindPerson {
-		return fmt.Errorf("the seed's author %s names no person of the store", seedAuthor.ID)
+	// AuthorFacts states nothing of an author that names nobody, so a comment of such an author
+	// would name an author on its row and hold no authored_by. The seed refuses that author once,
+	// before its first batch, and commentStoreWrite relies on it.
+	if _, _, ok := graphstore.AuthorOf(seedAuthor); !ok {
+		return fmt.Errorf("the seed's author %s names nobody the store can name", seedAuthor.ID)
 	}
 	return r.inBatches(ctx, "comments", len(r.plan.comments), batchItems, func(ctx context.Context, tx pgx.Tx, from, to int) error {
 		// The nodes the batch's rows project, their author's node, and what each of them
@@ -241,7 +242,7 @@ func (r *seedRun) writeComments(ctx context.Context) error {
 		// (node_kind, node_address) is checked inside the statement that writes the row, so a
 		// node written after it would be too late. The seed appends no event of its own, so
 		// all of it takes the sentinel.
-		nodes, tuples := r.commentStoreWrite(from, to, authorLogin)
+		nodes, tuples := r.commentStoreWrite(from, to)
 		if err := graphstore.Write(ctx, tx, nodes, tuples); err != nil {
 			return fmt.Errorf("write the comment nodes of %d to %d: %w", from, to, err)
 		}
@@ -341,22 +342,23 @@ const (
 
 // commentStoreWrite is what the comments from..to are in the node and tuple store: each
 // comment's node - project-visible, live, made by the seed's author at the row's own time -
-// the two base attributes every node carries, the comment's authored_by tuple to its author,
-// and the artifact the comment is anchored to and the artifact that owns it, each stated only
-// where the comment has one. All of it is drawn from the plan alone, so the batch can state it
-// before it writes a row.
+// the two base attributes every node carries, who wrote the comment, and the artifact the
+// comment is anchored to and the artifact that owns it, each stated only where the comment has
+// one. All of it is drawn from the plan alone, so the batch can state it before it writes a row.
 //
-// The author is the person node author names, the login graphstore.AuthorOf reads off
-// seedAuthor, and what this states of it is what graphstore.Authored states for a comment of
-// that author, in one statement for the batch rather than one for each comment. The author's
-// node is among the nodes of every batch, and only the first batch makes it, at the time of the
-// first comment the seed writes, as Authored makes it at the first comment that names it: Write
-// moves nothing on a node that is already there, so its base attributes are stated once.
-// Authored would state no alias of this author either. seedAuthor carries no Act, so no session
-// is proved to be its, and its id is already its canonical login, so no recorded_as is owed.
-func (r *seedRun) commentStoreWrite(from, to int, author string) ([]graphstore.Node, []graphstore.Tuple) {
+// Who wrote a comment is what graphstore.AuthorFacts states of it, which is what
+// graphstore.Authored writes for a comment of the server's: the comment's authored_by tuple and
+// the aliases the server proved of its author go among the comment's own tuples, and the
+// author's node goes among the batch's nodes once, as AuthorFacts makes it for the batch's first
+// comment. The batch's one graphstore.Write then takes every node row before it appends a tuple,
+// which is the store's lock order. Write moves nothing on a node that is already there, so only
+// the first batch makes the author's node, at the time of the first comment the seed writes, as
+// Authored makes it at the first comment that names it. writeComments refused an author that
+// names nobody before its first batch, so every comment here names one.
+func (r *seedRun) commentStoreWrite(from, to int) ([]graphstore.Node, []graphstore.Tuple) {
 	nodes := make([]graphstore.Node, 0, to-from+1)
 	tuples := make([]graphstore.Tuple, 0, 3*(to-from))
+	var author graphstore.Node
 	for index := from; index < to; index++ {
 		comment := r.plan.comments[index]
 		node := graphstore.Node{
@@ -373,7 +375,11 @@ func (r *seedRun) commentStoreWrite(from, to int, author string) ([]graphstore.N
 		}
 		states("visibility", graphstore.KindValue, graphstore.VisibilityProject)
 		states("state", graphstore.KindValue, graphstore.StateLive)
-		states(graphstore.TupleAuthoredBy, graphstore.KindPerson, author)
+		made, facts, _ := graphstore.AuthorFacts(commentNodeKind, comment.ID, seedAuthor, comment.CreatedAt, graphstore.NoEvent)
+		if index == from {
+			author = made
+		}
+		tuples = append(tuples, facts...)
 		if comment.Document >= 0 {
 			// A seeded comment is anchored only to the document it belongs to, which is the
 			// document whose address its row's artifact_id names.
@@ -384,7 +390,7 @@ func (r *seedRun) commentStoreWrite(from, to int, author string) ([]graphstore.N
 			states("owned_by", "artifact", address)
 		}
 	}
-	nodes = append(nodes, graphstore.PersonNode(author, seedAuthor, r.plan.comments[from].CreatedAt, graphstore.NoEvent))
+	nodes = append(nodes, author)
 	return nodes, tuples
 }
 
