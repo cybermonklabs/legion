@@ -137,12 +137,18 @@ func openRetrying(open func() (int, error)) (int, error) {
 //
 // The error names what it failed on below dir by the entry's name, the name that failed and how
 // deep that name lay (removalFailure), so a line in the pod's log is the entry's path followed by
-// those two. names is the buffer every directory's names are read into, which the deleter makes
-// once for all its removals (VolumeTrimDelete): a directory's names are all read before any of
-// them is removed, so one buffer serves the whole tree.
+// those two. A failure of the entry itself names it by that name alone, as a removalFailure at
+// depth 0, so every error of the removal quotes the names it carries. names is the buffer every
+// directory's names are read into, which the deleter makes once for all its removals
+// (VolumeTrimDelete): a directory's names are all read before any of them is removed, so one
+// buffer serves the whole tree.
 func removeEntryAt(dir *os.File, name string, names []byte) error {
 	removal := treeRemoval{names: names}
-	return removal.remove(int(dir.Fd()), name)
+	err := removal.remove(int(dir.Fd()), name)
+	if failed, ok := err.(*fs.PathError); ok {
+		return &removalFailure{op: failed.Op, top: failed.Path, name: failed.Path, err: failed.Err}
+	}
+	return err
 }
 
 // treeRemoval is one removeEntryAt: the buffer every directory's names are read into.
@@ -214,7 +220,9 @@ func under(name string, err error) error {
 // logs it, so a failure deep in a tree is an error of a size set by two names rather than by the
 // tree's depth (TestARemovalThatFailsDeepInATreeAnswersABoundedError). It reads as the
 // fs.PathError of the same failure would, with the levels between top and name written as "..."
-// and the depth beside them where there are any.
+// and the depth beside them where there are any, and with the path quoted: every name in it is
+// one a role chose, and a name holding a newline would otherwise begin a line of its own in the
+// pod's log (TestARemovalErrorQuotesTheNamesARoleChose).
 type removalFailure struct {
 	op    string
 	top   string
@@ -226,11 +234,11 @@ type removalFailure struct {
 func (f *removalFailure) Error() string {
 	switch f.depth {
 	case 0:
-		return f.op + " " + f.top + ": " + f.err.Error()
+		return fmt.Sprintf("%s %q: %v", f.op, f.top, f.err)
 	case 1:
-		return f.op + " " + f.top + "/" + f.name + ": " + f.err.Error()
+		return fmt.Sprintf("%s %q: %v", f.op, f.top+"/"+f.name, f.err)
 	}
-	return fmt.Sprintf("%s %s/.../%s (depth %d): %v", f.op, f.top, f.name, f.depth, f.err)
+	return fmt.Sprintf("%s %q (depth %d): %v", f.op, f.top+"/.../"+f.name, f.depth, f.err)
 }
 
 func (f *removalFailure) Unwrap() error { return f.err }
@@ -252,7 +260,10 @@ var errStillFilling = fmt.Errorf("names were still appearing in it after %d pass
 // That answer is the first error any pass's names failed with, and errStillFilling only where
 // none failed: a name that cannot be removed is what would still stand once the writer stopped,
 // and errStillFilling in its place would hide it
-// (TestARemovalOfADirectoryStillBeingWrittenInNamesTheErrorItMet). Its errors name what they
+// (TestARemovalOfADirectoryStillBeingWrittenInNamesTheErrorItMet). The same holds among the
+// names of one pass: a subdirectory still filling answers errStillFilling from below, and an
+// error of another name is preferred to it whichever the directory lists first (stillStanding,
+// TestARemovalNamesASiblingsErrorBeforeASubdirectoryStillFilling). Its errors name what they
 // failed on from this directory, and the directory itself by no path at all (under).
 func (r *treeRemoval) empty(fd int) error {
 	var failed error
@@ -274,9 +285,7 @@ func (r *treeRemoval) empty(fd int) error {
 		removed := false
 		for _, name := range names {
 			if err := r.remove(fd, name); err != nil {
-				if first == nil {
-					first = err
-				}
+				first = stillStanding(first, err)
 				continue
 			}
 			removed = true
@@ -284,10 +293,19 @@ func (r *treeRemoval) empty(fd int) error {
 		if !removed {
 			return first
 		}
-		if failed == nil {
-			failed = first
-		}
+		failed = stillStanding(failed, first)
 	}
+}
+
+// stillStanding is which of two errors a removal answers: held, the one it holds so far, unless
+// held is nil, or is errStillFilling and next, the one it met after, is an error of another kind.
+// A name that failed for a reason of its own is what would still stand once a writer stopped,
+// and a directory still being written in is not (empty).
+func stillStanding(held, next error) error {
+	if held == nil || next != nil && errors.Is(held, errStillFilling) && !errors.Is(next, errStillFilling) {
+		return next
+	}
+	return held
 }
 
 // read is every name of the directory fd holds open but "." and "..", read from its start

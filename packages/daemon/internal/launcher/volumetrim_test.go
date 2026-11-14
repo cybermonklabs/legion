@@ -2882,6 +2882,50 @@ func TestARemovalThatFailsPartWayIsReportedAndLeavesAnOrdinaryEntry(t *testing.T
 	}
 }
 
+// The sweep's line for a removal that failed part way names the entry and the removal's error
+// with every name a role chose quoted, so a name holding a newline is written with it escaped and
+// the line stays one line of the pod's log, as every line of the trimmer's is behind its prefix.
+// The entry here is an immediate child of bun's install cache whose name holds a newline and a
+// line of text after it, holding a directory made 0555 whose file cannot be unlinked. The
+// negative control is the line and removalFailure writing the names as they are, which put the
+// role's line of text in the log as a line of its own.
+func TestARemovalThatFailsPartWayIsLoggedWithTheRoleChosenNameQuoted(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("the test process is root, which removes a directory it has no write permission on: a removal that fails part way cannot be staged for it")
+	}
+	f := newTrimFixture(t, 1)
+	root := f.roots[3]
+	if root.Entry != ImmediateChildren {
+		t.Fatalf("the fourth reclaimable root is %+v, want bun's install cache, whose entries are its immediate children", root)
+	}
+	entry := f.addTree(filepath.Join(root.Path, "tool\nforged: a line the role wrote"), root.Entry)
+	blocked := filepath.Join(entry.path, "b1")
+	if err := os.Chmod(blocked, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(blocked, 0o755) })
+	f.useVolume(steady(90))
+	f.setSettings(trimSettings())
+	tr := f.trimmer()
+
+	tr.sweep(context.Background(), *trimSettings(), steady(90)(0))
+	var failed []string
+	for _, line := range f.linesWritten() {
+		if strings.Contains(line, "\n") {
+			t.Errorf("the trimmer wrote %q, which holds a newline of the name a role chose", line)
+		}
+		if strings.Contains(line, "failed part way") {
+			failed = append(failed, line)
+		}
+	}
+	if len(failed) != 1 {
+		t.Fatalf("the trimmer reported %d removals that failed part way, want the one of %q; it wrote %q", len(failed), entry.path, f.linesWritten())
+	}
+	if want := "removing " + strconv.Quote(entry.path) + " failed part way"; !strings.Contains(failed[0], want) {
+		t.Errorf("the trimmer wrote %q, want it to name the entry as %s", failed[0], want)
+	}
+}
+
 // No sweep starts while one is running, and the next reading comes one interval after the sweep
 // ends rather than one interval after it began: the trimmer makes a new interval clock when the
 // sweep returns, so a sweep that ran for ten intervals is not followed by ten readings at once.

@@ -98,7 +98,7 @@ func TestARemovalOfADirectoryStillBeingWrittenInEnds(t *testing.T) {
 	if !errors.Is(removal, errStillFilling) {
 		t.Fatalf("the removal answered %v, want %v for the directory still being written in", removal, errStillFilling)
 	}
-	if want := filepath.Join("entry", "filling"); !strings.Contains(removal.Error(), want+":") {
+	if want := strconv.Quote(filepath.Join("entry", "filling")); !strings.Contains(removal.Error(), want+":") {
 		t.Errorf("the removal answered %q, want it to name %s, the directory that was still filling", removal, want)
 	}
 }
@@ -138,6 +138,80 @@ func TestARemovalOfADirectoryStillBeingWrittenInNamesTheErrorItMet(t *testing.T)
 	if !strings.Contains(removal.Error(), "kept") {
 		t.Errorf("the removal answered %q, want it to name kept, the name that could not be removed", removal)
 	}
+}
+
+// Among the names of one directory a subdirectory still being written in is no more the answer
+// than it is within one: an entry holding such a subdirectory beside a name whose removal fails
+// for a reason of its own is answered with that reason, whichever of the two the directory lists
+// first. Here the entry lists first the subdirectory a writer keeps filling, whose removal
+// answers errStillFilling, and beside it holds a directory made 0500 holding a file, whose unlink
+// fails with EACCES. The negative control is empty answering the first error its pass met, which
+// was the filling subdirectory's.
+func TestARemovalNamesASiblingsErrorBeforeASubdirectoryStillFilling(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root unlinks in a directory whatever its mode, so a directory made 0500 is no failure that lasts for it")
+	}
+	dir := t.TempDir()
+	held, err := os.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Close()
+	// The filling subdirectory must be the name the entry's getdents lists first, which is the
+	// order removeEntryAt reads them in. A directory lists its names in its filesystem's own
+	// order — the order they were made in on some, a hash of the name on others — so the pair
+	// is made under fresh names until the entry lists the filling one first.
+	entry := filepath.Join(dir, "entry")
+	locked := filepath.Join(entry, "locked")
+	filling := ""
+	for try := 0; filling == "" && try < 64; try++ {
+		candidate := filepath.Join(entry, fmt.Sprintf("filling-%d", try))
+		mkdirFixture(t, candidate)
+		mkdirFixture(t, locked)
+		if listed := listedNames(t, entry); listed[0] == filepath.Base(candidate) {
+			filling = candidate
+			continue
+		}
+		if err := os.RemoveAll(entry); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if filling == "" {
+		t.Fatalf("no pair of names made %s list its filling subdirectory first, so the case would stage nothing", entry)
+	}
+	if err := os.WriteFile(filepath.Join(locked, "kept"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(locked, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o700) })
+	if listed := listedNames(t, entry); listed[0] != filepath.Base(filling) {
+		t.Fatalf("%s lists %q, want %s first", entry, listed, filepath.Base(filling))
+	}
+
+	removal := removeWhileFilling(t, held, filling)
+	if !errors.Is(removal, syscall.EACCES) {
+		t.Fatalf("the removal answered %v, want the %v its sibling's unremovable name failed with", removal, syscall.EACCES)
+	}
+	if !strings.Contains(removal.Error(), "kept") {
+		t.Errorf("the removal answered %q, want it to name kept, the name that could not be removed", removal)
+	}
+}
+
+// listedNames is the names of dir in the order its getdents lists them.
+func listedNames(t *testing.T, dir string) []string {
+	t.Helper()
+	f, err := os.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	names, err := f.Readdirnames(-1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return names
 }
 
 // removeWhileFilling removes held's entry while a writer creates names in filling, a directory
@@ -250,9 +324,62 @@ func TestARemovalThatFailsDeepInATreeAnswersABoundedError(t *testing.T) {
 		t.Errorf("the removal answered an error of %d bytes for a failure %d bytes of path below the entry, want at most %d: %.200s…",
 			len(said), pathBytes, errorBytes, said)
 	}
-	if want := fmt.Sprintf("entry/.../kept (depth %d)", depth+1); !strings.Contains(said, want) {
+	if want := fmt.Sprintf("%q (depth %d)", "entry/.../kept", depth+1); !strings.Contains(said, want) {
 		t.Errorf("the removal answered %.200q…, want it to name %q", said, want)
 	}
+}
+
+// A removal's error quotes the names it carries, each one a role chose: a name holding a newline
+// is written with the newline escaped, so the deleter's reply and the sweep's line in the pod's
+// log stay one line however a role named its files (removalFailure). The names are a file below
+// the entry whose unlink fails, and an entry whose own removal fails. The negative control is
+// removalFailure writing the names as they are, which put the newline in the error, and for the
+// entry itself removeEntryAt answering the fs.PathError of its own removal, which does the same.
+func TestARemovalErrorQuotesTheNamesARoleChose(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root unlinks in a directory whatever its mode, so a directory made 0500 is no failure that lasts for it")
+	}
+	const forged = "x\nvolume trim: a line the role wrote"
+	answer := func(t *testing.T, dir, name, want string) {
+		t.Helper()
+		held, err := os.Open(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer held.Close()
+		removal := removeEntryAt(held, name, make([]byte, volumeRemovalNamesBytes))
+		if !errors.Is(removal, syscall.EACCES) {
+			t.Fatalf("the removal answered %q, want the %v its unremovable name failed with", removal, syscall.EACCES)
+		}
+		if strings.Contains(removal.Error(), "\n") {
+			t.Errorf("the removal answered %q, which holds a newline of the name a role chose", removal)
+		}
+		if !strings.Contains(removal.Error(), want) {
+			t.Errorf("the removal answered %q, want it to name %s", removal, want)
+		}
+	}
+	t.Run("a name below the entry", func(t *testing.T) {
+		dir := t.TempDir()
+		locked := filepath.Join(dir, "entry", "locked")
+		mkdirFixture(t, locked)
+		if err := os.WriteFile(filepath.Join(locked, forged), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(locked, 0o500); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(locked, 0o700) })
+		answer(t, dir, "entry", strconv.Quote("entry/.../"+forged)+" (depth 2): ")
+	})
+	t.Run("the entry itself", func(t *testing.T) {
+		dir := t.TempDir()
+		mkdirFixture(t, filepath.Join(dir, forged))
+		if err := os.Chmod(dir, 0o500); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+		answer(t, dir, forged, strconv.Quote(forged)+": ")
+	})
 }
 
 // The sweeps TestASweepsOwnDeleterIsNoHoldOnTheRootsItDeletesFrom runs, each in a child of its own

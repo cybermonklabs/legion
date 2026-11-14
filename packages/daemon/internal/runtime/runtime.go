@@ -437,13 +437,22 @@ type Observation struct {
 	OutOfMemory bool
 	// PodEnd is the pod's own reason for the end and the kubelet's message with it, as
 	// `<reason>: <message>` and empty where the pod carries neither: `Evicted: The node was low
-	// on resource: ephemeral-storage. ...` is the one that costs an issue its work. It is the
-	// one part of a terminal observation a notice can carry whole, and it is a field rather than
-	// a shape of Detail for the reason Displaced is: Detail is prose for an operator and nothing
-	// else, and it ends with a tail of the role's own log, which is unbounded. Keeping Detail
-	// whole on the claim and in a notice would put that log tail in a store column and in an
-	// Envoy role topic; this field is what the worker-died notice names the cause from
-	// (workflow's claimFailed).
+	// on resource: ephemeral-storage. ...` is the one that costs an issue its work. It is a field
+	// rather than a shape of Detail for the reason Displaced is: Detail is prose for an operator
+	// and nothing else. The Detail the Sandbox runtime writes beside a pod end holds this same
+	// reason and message, and after them a tail of the role's log and the container's, over many
+	// lines and the role's own in words a role chose: it reads a container's own log to its
+	// logTailBytes and the issue pod's one container's, which every role writes to, to its
+	// sharedLogBytes, and quotes at most logTailLines of the role's lines and as many of the
+	// container's own from what it read.
+	//
+	// Detail is kept whole on the claim, behind its verdict (supervise.Claim.LastDeathCause), and
+	// reaches a notice two ways: as the `death` of the failure record a claim that failed with a
+	// cause carries (workflow's noticeFailure), and as part of the worker-died's reason on the two
+	// paths that carry no failure record — the tree architect's, and a held phase's whose fact
+	// names no cause — for a death with no pod end alone (workflow's deathReason). Where there is
+	// one, that reason names this field in Detail's place: the pod's cause once, on one line, and
+	// nothing of the log.
 	//
 	// It is bounded at PodEndRunes, which is a kubelet message with room to spare: the eviction
 	// message above is 120 runes, and the longest the kubelet writes names each resource it

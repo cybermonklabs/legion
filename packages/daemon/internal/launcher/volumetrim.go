@@ -979,16 +979,16 @@ func (t *trimmer) list(ctx context.Context, used usedPaths, cutoff, deadline tim
 		case errors.Is(err, fs.ErrNotExist):
 			return true
 		case err != nil:
-			t.logf(volumeTrimLog+"%s could not be read and is passed over: %v", path, err)
+			t.logf(volumeTrimLog+"%q could not be read and is passed over: %v", path, err)
 			return true
 		case !ok:
-			t.logf(volumeTrimLog+"%s is passed over: %s", path, why)
+			t.logf(volumeTrimLog+"%q is passed over: %s", path, why)
 			return true
 		}
 		at, err := newestModTime(from.handle, name)
 		if err != nil {
 			if !errors.Is(err, fs.ErrNotExist) {
-				t.logf(volumeTrimLog+"the age of %s could not be read and it is passed over: %v", path, err)
+				t.logf(volumeTrimLog+"the age of %q could not be read and it is passed over: %v", path, err)
 			}
 			return true
 		}
@@ -1119,13 +1119,13 @@ func (t *trimmer) listShard(root *sweepDir, name string) ([]fs.DirEntry, *sweepD
 	path := root.pathOf(name)
 	handle, err := root.handle.open(name)
 	if err != nil {
-		t.logf(volumeTrimLog+"the shard %s could not be opened and is skipped: %v", path, err)
+		t.logf(volumeTrimLog+"the shard %q could not be opened and is skipped: %v", path, err)
 		return nil, nil
 	}
 	shard := &sweepDir{root: root.root, shard: name, handle: handle}
 	children, err := handle.ReadDir()
 	if err != nil {
-		t.logf(volumeTrimLog+"the shard %s could not be listed and is skipped: %v", path, err)
+		t.logf(volumeTrimLog+"the shard %q could not be listed and is skipped: %v", path, err)
 		return nil, shard
 	}
 	return children, shard
@@ -1151,17 +1151,17 @@ func (t *trimmer) remove(remover entryRemover, entry sweepEntry) (removed bool, 
 	case errors.Is(err, fs.ErrNotExist):
 		return false, nil // a role's own tool deleted it between the listing and now
 	case err != nil:
-		t.logf(volumeTrimLog+"%s could not be read and is passed over: %v", entry.path, err)
+		t.logf(volumeTrimLog+"%q could not be read and is passed over: %v", entry.path, err)
 		return false, nil
 	case !ok:
-		t.logf(volumeTrimLog+"%s is passed over: %s", entry.path, why)
+		t.logf(volumeTrimLog+"%q is passed over: %s", entry.path, why)
 		return false, nil
 	}
 	switch moved, err := t.moved(entry); {
 	case errors.Is(err, fs.ErrNotExist):
 		return false, nil
 	case err != nil:
-		t.logf(volumeTrimLog+"%s could not be read again before the delete and is passed over: %v", entry.path, err)
+		t.logf(volumeTrimLog+"%q could not be read again before the delete and is passed over: %v", entry.path, err)
 		return false, nil
 	case moved:
 		// Something wrote in it between the listing and this moment: a build that started
@@ -1176,7 +1176,7 @@ func (t *trimmer) remove(remover entryRemover, entry sweepEntry) (removed bool, 
 		// and passed over, and the part-removed entry a later sweep meets is an ordinary
 		// entry of that root: the removal moved its modification time, so it is eligible
 		// again one minimum age from now.
-		t.logf(volumeTrimLog+"removing %s failed part way and the sweep passed it over: %v", entry.path, err)
+		t.logf(volumeTrimLog+"removing %q failed part way and the sweep passed it over: %v", entry.path, err)
 		return false, nil
 	}
 	return true, nil

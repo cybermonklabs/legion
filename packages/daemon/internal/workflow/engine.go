@@ -964,35 +964,44 @@ func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFa
 
 // deathReason is what a worker-died notice says on the two paths that build no reason of their
 // own — the tree architect's and the held phase's. It names the supervisor's own sentence
-// (supervise.Claim.Failure, intake.ClaimFailed.Reason), then the runtime's account of the
-// process's last death (supervise.Claim.LastDeathCause, intake.ClaimFailed.Death), then the pod
-// end that process was last observed to have died of (supervise.Claim.PodEnd), which is the
-// cause no role chose — an eviction for ephemeral storage above all — joined with "; " so an
-// architect reads them as one line, and leaving out each the fact does not hold. All three are
-// persisted on the claim, so a daemon that restarted between the death and the moment the budget
-// ran out says the same thing.
+// (supervise.Claim.Failure, intake.ClaimFailed.Reason), then what ended the process: the pod end
+// it was last observed to have died of (supervise.Claim.PodEnd), which is the cause no role
+// chose — an eviction for ephemeral storage above all — or, where the claim holds no pod end,
+// the runtime's account of its last death (supervise.Claim.LastDeathCause,
+// intake.ClaimFailed.Death). They are joined with "; " so an architect reads them as one line,
+// and any of them the fact does not hold is left out. All three are persisted on the claim, so
+// a daemon that restarted between the death and the moment the budget ran out says the same
+// thing.
+//
+// The death is named only where there is no pod end, because on a pod the cluster ended it is
+// the runtime's whole detail (sandbox's Runtime.ended): the pod's reason and the kubelet's
+// message, which are the pod end, and after them a tail of the role's log and the container's.
+// Beside the pod end it would name the kubelet's message twice, put the pod end after that log,
+// and spread the reason over as many lines as the log has. The death begins with the verdict the
+// runtime reached (supervise's deathCause), `gone` above all, so it is written after "the
+// process was last found " as it stands.
 //
 // failureCarried says the notice carries a failure record beside this reason, as the held
 // phase's does whenever the fact names a cause. That record's `detail` already carries the
 // sentence and its `death` the runtime's account (noticeFailure), so such a reason is the pod
 // end alone, and empty when there is none, since repeating either would say one thing twice.
 // The tree architect's notice carries no failure record, and neither does a held phase's whose
-// fact names no cause, so their reason carries the sentence and the death whether or not the
-// cluster ended the claim: without them the notice would say nothing of why the claim failed.
+// fact names no cause, so their reason carries the sentence, and the pod end or, where there is
+// none, the death: without them the notice would say nothing of why the claim failed.
 //
 // The two paths that already build a reason keep theirs: a role that does not work the issue's
 // phase, and a checking role of a closed issue, each say what the failure meant for that issue,
 // which is more than either of these facts is.
 func deathReason(fact intake.ClaimFailed, failureCarried bool) string {
-	said := make([]string, 0, 3)
+	said := make([]string, 0, 2)
 	if !failureCarried && fact.Reason != "" {
 		said = append(said, fact.Reason)
 	}
-	if !failureCarried && fact.Death != "" {
-		said = append(said, "the process was last found gone: "+fact.Death)
-	}
-	if fact.PodEnd != "" {
+	switch {
+	case fact.PodEnd != "":
 		said = append(said, "the pod ended: "+fact.PodEnd)
+	case !failureCarried && fact.Death != "":
+		said = append(said, "the process was last found "+fact.Death)
 	}
 	return strings.Join(said, "; ")
 }
