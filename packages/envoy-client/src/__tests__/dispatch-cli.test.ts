@@ -546,7 +546,8 @@ async function run(
   argv: readonly string[],
   extra: Record<string, string | undefined>,
   stdin = "",
-  fetchImpl?: typeof fetch
+  fetchImpl?: typeof fetch,
+  nearestAncestorNamed?: (names: readonly string[]) => string | undefined
 ): Promise<{ code: number; stdout: string; stderr: string }> {
   let stdout = "";
   let stderr = "";
@@ -560,6 +561,7 @@ async function run(
     readText: (path) => (path === "-" ? stdin : readFileSync(path, "utf-8")),
     cwd: stateDir,
     ...(fetchImpl === undefined ? {} : { fetchImpl }),
+    ...(nearestAncestorNamed === undefined ? {} : { nearestAncestorNamed }),
   });
   return { code, stdout, stderr };
 }
@@ -1779,6 +1781,32 @@ describe("the dispatch CLI's envoy.json", () => {
     expect(code).toBe(0);
     const posted = requests.find((request) => request.path === "/api/v1/issues/DSP-1/messages");
     expect(posted?.body).toMatchObject({ actor: { id: "codex-thread-2" } });
+  });
+
+  // A Codex session started from a Claude Code shell inherits that shell's DISPATCH_HOST=claude,
+  // CLAUDE_CODE_CHILD_SESSION=1 and Claude session id, and a Claude Code session started from a
+  // Codex shell inherits CODEX_THREAD_ID: the nearer of the two processes decides.
+  test("a shell carrying both hosts' variables acts as the nearer of codex and claude", async () => {
+    serverConfig(join(stateDir, ".config", "legion"));
+    const both = {
+      ...fromFile,
+      DISPATCH_HOST: "claude",
+      DISPATCH_SESSION_ID: undefined,
+      CLAUDE_CODE_CHILD_SESSION: "1",
+      CLAUDE_CODE_SESSION_ID: "claude-ses",
+      CODEX_THREAD_ID: "codex-thread-3",
+    };
+    const argv = ["message", "--issue", "DSP-1", "--body", "hello"];
+    const underCodex = await run(argv, both, "", undefined, () => "codex");
+    expect(underCodex.code).toBe(0);
+    const underClaude = await run(argv, both, "", undefined, () => "claude");
+    expect(underClaude.code).toBe(0);
+    const unknown = await run(argv, both, "", undefined, () => undefined);
+    expect(unknown.code).toBe(0);
+    const actors = requests
+      .filter((request) => request.path === "/api/v1/issues/DSP-1/messages")
+      .map((request) => (request.body as { actor: { id: string } }).actor.id);
+    expect(actors).toEqual(["codex-thread-3", "claude-ses", "claude-ses"]);
   });
 
   test("DISPATCH_HOST=codex with no CODEX_THREAD_ID refuses naming it, sending nothing", async () => {

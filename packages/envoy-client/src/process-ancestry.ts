@@ -68,3 +68,42 @@ export function isAncestor(candidate: string, pid: number = process.pid): boolea
   }
   return false;
 }
+
+/** A process's command name as the kernel keeps it (`/proc/<pid>/comm`), or undefined. */
+function procCommand(pid: number): string | undefined {
+  try {
+    return readFileSync(`/proc/${pid}/comm`, "utf8").trim();
+  } catch {
+    return undefined;
+  }
+}
+
+/** How a walk reads one process: its command name and its parent. */
+export interface ProcessReader {
+  readonly command: (pid: number) => string | undefined;
+  readonly parent: (pid: number) => number | undefined;
+}
+
+const PROC_READER: ProcessReader = { command: procCommand, parent: procParentPid };
+
+/**
+ * Which of `names` the nearest ancestor of `pid` (itself included) runs as, or undefined when the
+ * walk meets none of them, reaches init, or takes `MAX_ANCESTORS` steps. It reads `/proc`, so off
+ * Linux it answers undefined and a caller keeps the rule it had without it. A shell that carries
+ * both Claude Code's and the Codex CLI's variables, because one was started from the other's shell,
+ * asks this which of the two its command runs under.
+ */
+export function nearestAncestorNamed(
+  names: readonly string[],
+  pid: number = process.pid,
+  reader: ProcessReader = PROC_READER
+): string | undefined {
+  if (reader === PROC_READER && process.platform !== "linux") return undefined;
+  let current: number | undefined = pid;
+  for (let step = 0; current !== undefined && current > 1 && step < MAX_ANCESTORS; step++) {
+    const command = reader.command(current);
+    if (command !== undefined && names.includes(command)) return command;
+    current = reader.parent(current);
+  }
+  return undefined;
+}

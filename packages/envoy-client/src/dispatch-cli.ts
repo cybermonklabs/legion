@@ -18,6 +18,7 @@ import {
 } from "./dispatch-command";
 import type { ActiveDispatchConfig } from "./dispatch-config";
 import type { DispatchHost } from "./dispatch-cwd";
+import { nearestAncestorNamed } from "./process-ancestry";
 import { checkDispatchCall, dispatchServerUrls, executeDispatchTool } from "./dispatch-execute";
 import { DispatchWriteLandedError } from "./dispatch-http";
 import { sessionDirectory, sessionStateRoot } from "./dispatch-session-directory";
@@ -51,6 +52,9 @@ export interface DispatchCliIo {
   readText(path: string): string;
   readonly cwd: string;
   readonly fetchImpl?: typeof fetch;
+  /** Which of `names` this process's nearest ancestor runs as; `/proc` by default, a seam for a
+   *  test of a shell that carries two hosts' variables. */
+  readonly nearestAncestorNamed?: (names: readonly string[]) => string | undefined;
 }
 
 /** Exit codes, as `skill://dispatch` states them: written or read, a refusal, and a usage error.
@@ -200,15 +204,27 @@ export function fitOutput(
  * an outer session left there. Memory a long-lived host kept across calls lives in the session's
  * state directory.
  */
-/** The host a shell with no `DISPATCH_HOST` belongs to: Claude Code's when it carries
- *  `CLAUDE_CODE_CHILD_SESSION=1`, Codex's when it carries `CODEX_THREAD_ID`, else none. Claude
- *  Code is asked first, as it was before Codex was a host, so a Claude Code session started from a
- *  Codex shell (which carries both) keeps acting as itself; a Codex session started from a Claude
- *  Code shell is told apart by the Codex plugin's shim, which sets `DISPATCH_HOST`. */
-function fallbackHost(env: Readonly<Record<string, string>>): string | undefined {
-  if (env.CLAUDE_CODE_CHILD_SESSION === "1") return "claude";
-  if (env.CODEX_THREAD_ID !== undefined) return "codex";
-  return undefined;
+/**
+ * The host this command runs under. `DISPATCH_HOST` names it, else Claude Code's
+ * `CLAUDE_CODE_CHILD_SESSION=1` or the Codex CLI's `CODEX_THREAD_ID`, which each sets in every
+ * shell command it runs. A shell that carries Codex's variable beside Claude Code's (a
+ * `DISPATCH_HOST=claude` its hook exported, or `CLAUDE_CODE_CHILD_SESSION=1`) belongs to whichever
+ * of `codex` and `claude` is the command's nearer ancestor, since one was started from the
+ * other's shell and inherited its variables: a Codex session started from a Claude Code shell
+ * must not act as the Claude Code session. Where the walk finds neither, Claude Code's variables
+ * win, as they did before Codex was a host.
+ */
+function commandHost(
+  env: Readonly<Record<string, string>>,
+  nearest: (names: readonly string[]) => string | undefined
+): string | undefined {
+  const claudeSignal = env.DISPATCH_HOST === "claude" || env.CLAUDE_CODE_CHILD_SESSION === "1";
+  if (env.CODEX_THREAD_ID !== undefined && (claudeSignal || env.DISPATCH_HOST === undefined)) {
+    if (!claudeSignal) return "codex";
+    if (nearest(["codex", "claude"]) === "codex") return "codex";
+  }
+  if (env.DISPATCH_HOST !== undefined) return env.DISPATCH_HOST;
+  return env.CLAUDE_CODE_CHILD_SESSION === "1" ? "claude" : undefined;
 }
 
 export async function runDispatchCli(
@@ -274,7 +290,9 @@ export async function runDispatchCli(
       : refuse(new ToolInputError(parsed.tool, parsed.problems).message, USAGE, parsed.tool);
   }
 
-  const hostName = env.DISPATCH_HOST ?? fallbackHost(env);
+  const hostName = commandHost(env, (names) =>
+    (io.nearestAncestorNamed ?? nearestAncestorNamed)(names)
+  );
   const host = HOSTS.find((name) => name === hostName);
   if (host === undefined) {
     return refuse(

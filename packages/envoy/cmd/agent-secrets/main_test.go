@@ -1284,7 +1284,7 @@ func TestRequestSignsARequestObject(t *testing.T) {
 	// behavior TestRequestAndExecFormSendSessionIDWithFallbackOrder pins), and a Claude Code or
 	// Envoy-registered session sets the other two the same way.
 	stdout, stderr, exit := runAgentSecrets(t, binary, srv.URL, keyDir,
-		[]string{"OMP_SESSION_ID=", "ENVOY_SESSION_ID=", "CLAUDE_CODE_SESSION_ID="},
+		[]string{"OMP_SESSION_ID=", "ENVOY_SESSION_ID=", "CLAUDE_CODE_SESSION_ID=", "CODEX_THREAD_ID="},
 		"request", "GRANT_ME", "--reason", "need it for the build")
 	if exit != 0 {
 		t.Fatalf("exit = %d, want 0: stdout=%q stderr=%q", exit, stdout, stderr)
@@ -1569,7 +1569,7 @@ func TestRequestAndExecFormSendSessionIDWithFallbackOrder(t *testing.T) {
 	broker, counters := fakeBroker(t)
 	defer broker.Close()
 	keyDir := newKeyDir(t)
-	clearFallbacks := []string{"ENVOY_SESSION_ID=", "CLAUDE_CODE_SESSION_ID="}
+	clearFallbacks := []string{"ENVOY_SESSION_ID=", "CLAUDE_CODE_SESSION_ID=", "CODEX_THREAD_ID="}
 
 	stdout, stderr, exit := runAgentSecrets(t, binary, broker.URL, keyDir,
 		append([]string{"OMP_SESSION_ID=sess-request-123"}, clearFallbacks...), "request", "GRANT_ME")
@@ -1591,7 +1591,7 @@ func TestRequestAndExecFormSendSessionIDWithFallbackOrder(t *testing.T) {
 
 	// OMP_SESSION_ID unset: the request form falls back to ENVOY_SESSION_ID.
 	stdout, stderr, exit = runAgentSecrets(t, binary, broker.URL, keyDir,
-		[]string{"OMP_SESSION_ID=", "ENVOY_SESSION_ID=sess-envoy-789", "CLAUDE_CODE_SESSION_ID="},
+		[]string{"OMP_SESSION_ID=", "ENVOY_SESSION_ID=sess-envoy-789", "CLAUDE_CODE_SESSION_ID=", "CODEX_THREAD_ID="},
 		"request", "GRANT_ME")
 	if exit != 0 {
 		t.Fatalf("exit = %d, want 0: stdout=%q stderr=%q", exit, stdout, stderr)
@@ -1606,6 +1606,38 @@ func TestRequestAndExecFormSendSessionIDWithFallbackOrder(t *testing.T) {
 // set. This process's own environment may already carry one of the three (a Pi session sets its
 // own OMP_SESSION_ID), so every case sets all three explicitly rather than relying on any being
 // unset already.
+// TestRequestSessionIDCodex pins where CODEX_THREAD_ID stands (INFRA-3558): in Claude Code's place,
+// and, when both are set, the nearer of the two harness processes decides.
+func TestRequestSessionIDCodex(t *testing.T) {
+	cases := []struct {
+		name          string
+		claude, codex string
+		nearest       string
+		omp           string
+		want          string
+	}{
+		{"CODEX_THREAD_ID alone", "", "thread-codex", "", "", "thread-codex"},
+		{"Codex nearer than Claude Code", "sess-claude", "thread-codex", "codex", "", "thread-codex"},
+		{"Claude Code nearer than Codex", "sess-claude", "thread-codex", "claude", "", "sess-claude"},
+		{"neither found: Claude Code, as before", "sess-claude", "thread-codex", "", "", "sess-claude"},
+		{"OMP_SESSION_ID still wins", "", "thread-codex", "codex", "sess-omp", "sess-omp"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Setenv("OMP_SESSION_ID", c.omp)
+			t.Setenv("ENVOY_SESSION_ID", "")
+			t.Setenv("CLAUDE_CODE_SESSION_ID", c.claude)
+			t.Setenv("CODEX_THREAD_ID", c.codex)
+			saved := nearestHarness
+			nearestHarness = func(...string) string { return c.nearest }
+			t.Cleanup(func() { nearestHarness = saved })
+			if got := requestSessionID(); got != c.want {
+				t.Fatalf("requestSessionID() = %q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
 func TestRequestSessionIDFallbackOrder(t *testing.T) {
 	cases := []struct {
 		name               string
@@ -1623,6 +1655,7 @@ func TestRequestSessionIDFallbackOrder(t *testing.T) {
 			t.Setenv("OMP_SESSION_ID", c.omp)
 			t.Setenv("ENVOY_SESSION_ID", c.envoy)
 			t.Setenv("CLAUDE_CODE_SESSION_ID", c.claude)
+			t.Setenv("CODEX_THREAD_ID", "")
 			if got := requestSessionID(); got != c.want {
 				t.Fatalf("requestSessionID() = %q, want %q", got, c.want)
 			}

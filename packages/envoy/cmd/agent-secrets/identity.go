@@ -19,12 +19,15 @@
 package main
 
 import (
+	"bytes"
 	"cmp"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/broker/helper"
@@ -121,8 +124,53 @@ func approveURL() string {
 // enrollment session_id of its own, so an unset result here is what the broker's requests.
 // Session answers for both Request and Enrollment, and the credential request names no session
 // at all.
+//
+// The Codex CLI sets CODEX_THREAD_ID in every shell command it runs (INFRA-3558), and it stands
+// where CLAUDE_CODE_SESSION_ID stands. A shell that carries both, because a Codex session was
+// started from a Claude Code shell or the other way round, names whichever of `codex` and
+// `claude` is this process's nearer ancestor; where the walk finds neither, Claude Code's id, as
+// before Codex was a host.
 func requestSessionID() string {
-	return cmp.Or(os.Getenv("OMP_SESSION_ID"), os.Getenv("ENVOY_SESSION_ID"), os.Getenv("CLAUDE_CODE_SESSION_ID"))
+	harness := os.Getenv("CLAUDE_CODE_SESSION_ID")
+	if codex := os.Getenv("CODEX_THREAD_ID"); codex != "" && (harness == "" || nearestHarness("codex", "claude") == "codex") {
+		harness = codex
+	}
+	return cmp.Or(os.Getenv("OMP_SESSION_ID"), os.Getenv("ENVOY_SESSION_ID"), harness)
+}
+
+// nearestHarness answers which of names the nearest ancestor of this process (itself included)
+// runs as, by the command name Linux keeps in /proc/<pid>/comm, or "" when the walk meets none of
+// them within 64 steps, reaches init, or cannot read /proc (off Linux). A variable so a test can
+// stand in for the process tree.
+var nearestHarness = func(names ...string) string {
+	pid := os.Getpid()
+	for step := 0; pid > 1 && step < 64; step++ {
+		comm, err := os.ReadFile(fmt.Sprintf("/proc/%d/comm", pid))
+		if err != nil {
+			return ""
+		}
+		name := strings.TrimSpace(string(comm))
+		for _, wanted := range names {
+			if name == wanted {
+				return name
+			}
+		}
+		stat, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+		if err != nil {
+			return ""
+		}
+		// The command name, in parentheses, may hold spaces; the parent is the second field after it.
+		fields := strings.Fields(string(stat[bytes.LastIndexByte(stat, ')')+1:]))
+		if len(fields) < 2 {
+			return ""
+		}
+		parent, err := strconv.Atoi(fields[1])
+		if err != nil {
+			return ""
+		}
+		pid = parent
+	}
+	return ""
 }
 
 func exists(path string) bool {
