@@ -254,19 +254,19 @@ func settlementRetraction(resolution model.AskResolution) bool {
 // answers settlement writes back into returning blocks are weighed against (withholdAnswers).
 //
 // issueClosed is whether the issue row, as the settlement's transaction locked it, reads closed
-// (settlement.issueClosed), and on a closed issue no ask changes: the close withdrew the issue's
-// asks, so an ask opened now would reach nobody, and an ask restored or edited now would
-// contradict the close. A new block opens no ask and is indexed by no row. It is written
-// state="resolved", as the close's own sweep writes such a block (resolveUnindexedAskBlock), and
-// its author is recorded in tx (recordAskAuthors, the first registration winning): this
-// settlement deletes the document's pending row, whose latest edit source would otherwise name
-// the author. The reopen marks the document owed (MarkUnindexedAskDocumentsOwed), and the
-// settlement after it opens the block's ask, credited to that author. A block whose observer has
-// not run is left as it is here too. An ask a settlement retracted stays retracted when its block
-// comes back, and its block shows it resolved: the reopen marks its document owed too, and the
-// settlement after the reopen restores it, as a returning block's ask is restored on an open
-// issue. No open ask whose block left is retracted, and no open ask takes its block's new
-// wording; a copy shows its source's state as on an open issue.
+// (settlement.issueClosed), and on a closed issue no ask changes: the close withdrew every ask of
+// the issue, so an ask opened, restored or edited now would contradict the close. A new block
+// opens no ask and is indexed by no row. It is written state="resolved", as the close's own sweep
+// writes such a block (resolveUnindexedAskBlock), and its author is recorded in tx
+// (recordAskAuthors, the first registration winning): this settlement deletes the document's
+// pending row, whose latest edit source would otherwise name the author. The reopen marks the
+// document owed (MarkUnindexedAskDocumentsOwed), and the settlement after it opens the block's
+// ask, credited to that author. A block whose observer has not run is left as it is here too. An
+// ask a settlement retracted stays retracted when its block comes back, and its block shows it
+// resolved: the reopen marks its document owed too, and the settlement after the reopen restores
+// it, as a returning block's ask is restored on an open issue. No open ask whose block left is
+// retracted, and no open ask takes its block's new wording; a copy shows its source's state as on
+// an open issue.
 func (s *Service) reconcileAskBlocks(
 	ctx context.Context,
 	tx pgx.Tx,
