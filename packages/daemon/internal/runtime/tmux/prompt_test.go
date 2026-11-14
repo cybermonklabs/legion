@@ -9,9 +9,9 @@ import (
 // The OMP command inside the shim, as runtime-tmux.ts:430 builds it: prefix and invocation,
 // `--model @default`, `--resume=<file>` when resuming, `--mode rpc`, the prompt word
 // (processes.test.ts:1126 fresh, :3950 resumed). The model flag rides both launches: a resumed
-// session would otherwise run the model it saved rather than the one the pod's overlay puts on
-// the `default` role, and a launch under the flag records no model of its own, so a later launch
-// without it would read the saved pin again.
+// session would otherwise run its recorded model rather than the one the pod's overlay puts on
+// the `default` role. On the pinned release, a resumed launch under the role alias appends a
+// replacement `model_change`, which later launches without the flag read.
 func TestInnerCommand(t *testing.T) {
 	parts := runtime.PromptParts{RolePromptPaths: []string{"/roles/architect-root.md"}}
 	prompt := `--append-system-prompt "$(cat /roles/architect-root.md)"`

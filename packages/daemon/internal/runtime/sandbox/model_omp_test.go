@@ -38,6 +38,32 @@ func runOmp(t *testing.T, argv []string, dir string, environ []string, stdin str
 	return out.String(), errOut.String(), err
 }
 
+// recordedModelChanges returns the models in the session file's model-change records.
+func recordedModelChanges(t *testing.T, path string) []string {
+	t.Helper()
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var models []string
+	for _, line := range bytes.Split(contents, []byte("\n")) {
+		if len(line) == 0 {
+			continue
+		}
+		var record struct {
+			Type  string `json:"type"`
+			Model string `json:"model"`
+		}
+		if err := json.Unmarshal(line, &record); err != nil {
+			t.Fatalf("parse session record %q: %v", line, err)
+		}
+		if record.Type == "model_change" {
+			models = append(models, record.Model)
+		}
+	}
+	return models
+}
+
 // A pod's agent resumes the session its claim recorded and runs the model the pod's overlay puts
 // on the `default` role, not the one that session saved: `--model @default` rides the recorded
 // argv, and @default is Oh My Pi's own name for that role. Measured on the pinned binary: a
@@ -45,10 +71,17 @@ func runOmp(t *testing.T, argv []string, dir string, environ []string, stdin str
 // recorded argv's own answer naming the profile's current model. The same argv with the flag
 // taken out is the control, and reports the saved model instead.
 //
-// The resume leaves the session's earlier bytes alone and adds no second file, and — because a
-// launch under the flag writes no `model_change` entry of its own — the saved pin is still in
-// there, which is why the flag rides every launch and not the resuming one alone
-// (TestAgentArgvCarriesTheConfiguredModel).
+// **The control runs first, and it must.** A resume carrying a role alias writes a
+// `model_change` of its own into the session it resumed, naming what the role resolved to
+// (upstream oh-my-pi #18534, in the fork from 18.18.6; through 18.16.0 it wrote nothing). So the
+// flagged arm leaves the session pinned to `operator/configured`, and a control run after it
+// would read that back and measure nothing but the arm before it. Run before the flagged arm,
+// the control reads the pin the saving turn wrote, which is the only thing it was ever asking
+// about, and it reads the same on either build.
+//
+// The resumes leave the session's earlier bytes alone and add no second file. That is worth
+// checking but explains nothing about role resolution: the flag rides every launch because the
+// operator's current role is resolved per launch (TestAgentArgvCarriesTheConfiguredModel).
 func TestTheResumedAgentRunsTheConfiguredModel(t *testing.T) {
 	omp := testbin.OMP(t)
 	dir := t.TempDir()
@@ -92,15 +125,9 @@ func TestTheResumedAgentRunsTheConfiguredModel(t *testing.T) {
 	}
 
 	argv := launch{spec: runtime.SpawnSpec{ResumeSessionFile: saved[0]}, prompt: "The test's system prompt."}.agentArgv([]string{omp})
-	stdout, stderr, err := runOmp(t, argv, work, environ, `{"type":"get_state","id":"1"}`+"\n")
-	if err != nil {
-		t.Fatalf("omp %s: %v\nstdout: %s\nstderr: %s", strings.Join(argv[1:], " "), err, stdout, stderr)
-	}
-	if got := testbin.StateModel(t, stdout); got != "operator/configured" {
-		t.Errorf("the resumed agent runs %s, want the profile's operator/configured\nstderr: %s", got, stderr)
-	}
 
-	// The control: the same launch with the flag taken out reads the session's own pin.
+	// The control, and it runs first: the same launch with the flag taken out reads the session's
+	// own pin, which at this point is the one the saving turn wrote and nothing else.
 	without := slices.DeleteFunc(slices.Clone(argv), func(word string) bool { return word == "--model" || word == "@default" })
 	plain, stderr, err := runOmp(t, without, work, environ, `{"type":"get_state","id":"1"}`+"\n")
 	if err != nil {
@@ -108,6 +135,35 @@ func TestTheResumedAgentRunsTheConfiguredModel(t *testing.T) {
 	}
 	if got := testbin.StateModel(t, plain); got != "operator/saved" {
 		t.Errorf("without the flag the resumed agent runs %s, want the session's own operator/saved", got)
+	}
+	if got, want := recordedModelChanges(t, saved[0]), []string{"operator/saved"}; !slices.Equal(got, want) {
+		t.Errorf("after the plain control, recorded model changes = %q, want %q", got, want)
+	}
+
+	// The recorded argv itself, which carries the flag: it answers on the profile's role whatever
+	// the session was pinned to.
+	stdout, stderr, err := runOmp(t, argv, work, environ, `{"type":"get_state","id":"1"}`+"\n")
+	if err != nil {
+		t.Fatalf("omp %s: %v\nstdout: %s\nstderr: %s", strings.Join(argv[1:], " "), err, stdout, stderr)
+	}
+	if got := testbin.StateModel(t, stdout); got != "operator/configured" {
+		t.Errorf("the resumed agent runs %s, want the profile's operator/configured\nstderr: %s", got, stderr)
+	}
+	if got, want := recordedModelChanges(t, saved[0]), []string{"operator/saved", "operator/configured"}; !slices.Equal(got, want) {
+		t.Errorf("after the role-alias resume, recorded model changes = %q, want %q", got, want)
+	}
+
+	// Moving the role back cannot recover the old pin: a later plain resume reads the role-alias
+	// resume's durable replacement.
+	if err := os.WriteFile(filepath.Join(agent, "config.yml"), []byte("modelRoles:\n  default: operator/saved\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	plain, stderr, err = runOmp(t, without, work, environ, `{"type":"get_state","id":"1"}`+"\n")
+	if err != nil {
+		t.Fatalf("omp %s: %v\nstdout: %s\nstderr: %s", strings.Join(without[1:], " "), err, plain, stderr)
+	}
+	if got, want := testbin.StateModel(t, plain), "operator/configured"; got != want {
+		t.Errorf("after the role moves back, the plain resumed agent runs %s, want the durable %s", got, want)
 	}
 
 	after, err := os.ReadFile(saved[0])

@@ -2488,12 +2488,11 @@ func TestARecordedSessionIsHeldToItsHarnesssRule(t *testing.T) {
 
 // Every Oh My Pi launch names the model the pod's overlay puts on the `default` role, resuming or
 // not: @default is Oh My Pi's own name for that role, and without the flag a resumed session runs
-// the model its first launch saved for ever. The flag rides the launch that starts a session too,
-// because a launch under it records no model of its own: the session file keeps the pin its first
-// launch wrote, so a later launch without the flag would read that pin again
-// (TestTheResumedAgentRunsTheConfiguredModel measures both on the real binary). Its place in the
-// argv is fixed here, after the two extension roots and before `--resume`. A Claude role's command
-// is claudelaunch's and names no model at all.
+// the session file's recorded model. On the pinned release, a resumed launch under this role
+// alias appends a replacement `model_change`, which later launches without the flag read.
+// (TestTheResumedAgentRunsTheConfiguredModel measures that durable replacement on the real
+// binary.) Its place in the argv is fixed here, after the two extension roots and before
+// `--resume`. A Claude role's command is claudelaunch's and names no model at all.
 func TestAgentArgvCarriesTheConfiguredModel(t *testing.T) {
 	r, err := configure(goldenOptions())
 	if err != nil {
