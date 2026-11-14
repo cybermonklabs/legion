@@ -193,6 +193,65 @@ everything the image does not carry, the one documented step is a pinned run thr
 three package runners it does — plus `uv run --with` when what you need is a library rather than
 a command — and a tool no runner reaches is an image change ("When no runner reaches it", below).
 
+## The disk your pod works on, and what the trimmer deletes
+
+Your pod has one volume, mounted at `/legion`, and the six roles of the issue share it: the
+clone, every workspace, the temporary directory, the cache home, the data home, the bun install
+cache, the Go build and module caches, and uv's cache and Pythons are all on it. Nothing else of
+the pod is: a role's own home and `/tmp` are on the node's disk, which is small and whose limit
+evicts the whole pod. Read its free space with `df -h /legion`.
+
+A cache trimmer in the pod's launcher process holds part of it under a mark. At the high mark
+its deployment sets, 85 per cent used by default, it deletes, oldest first, until the volume is
+back to the low mark, 70 per cent by default, and it deletes only these:
+
+- a `go-build*` directory of `$TMPDIR`, which Go names and owns, and **nothing else of `$TMPDIR`**;
+- a `-a` or `-d` entry of the Go build cache, `/legion/go/build`, the entries Go's own cache
+  trim removes by age;
+- an immediate child of the cache home, `/legion/scratch/cache`, except `ms-playwright` and
+  `legion-claude-code`;
+- an immediate child of the bun install cache, `/legion/scratch/bun/install/cache`.
+
+An ordinary sweep deletes nothing a role put anywhere else: not your workspace, not the clone,
+not the feed, not a role's state home, not the data home, not the Go module cache, not uv's
+cache or its Pythons, and no clone, toolchain or database you wrote under `$TMPDIR`.
+It skips anything a process of the pod has open, anything touched inside the minimum age,
+fifteen minutes by default, and anything that is not the kind of file its row names.
+A `-a` or `-d` entry of the Go build cache has an hour more than that: Go moves such an entry's
+modification time on use at most once an hour, so one a build used a minute ago can read
+fifty-nine minutes old, and the trimmer takes it only once it is older than the minimum age and
+that hour together.
+It opens every directory one name at a time and refuses a symbolic link at that name, so what it
+lists is what it opened and not what a name came to mean later.
+Its removal of an entry keeps that rule below the name: it opens each directory inside the entry
+one name at a time, unlinks a link as the link it is, and follows none.
+Those guards are what keep it off your work, and they are guards rather than a wall: every role
+of this pod runs as one uid, and `/legion` is wholly visible to the process that deletes.
+What it cannot be led to at all, even by a link it did follow, is what the container holds for
+the roles and no role holds itself: another role's private, state and agent-secrets directories,
+its launcher token, the pod's shared configuration home, the home every role's own is built
+over, and the container's own temporary directories, lock directories, shared memory, terminals,
+message queues and `/proc`. The deletions are made in a mount namespace built from the one list
+a role's own namespace is built from, where every path a role is given something of its own at
+is an empty filesystem instead, and `/proc` is a procfs of the deleting process's own, which
+shows nothing of any other process.
+
+That cuts both ways: **`$TMPDIR` is yours to clean.** What you leave there lives as long as the
+pod does and counts against the volume for every role. Delete the paths you made, each by its
+exact path, when you are done with them.
+
+One shell rule follows from a directory that can go away under you. A command that enters a
+scratch directory chains with `&&`:
+
+```bash
+cd -- "$TMPDIR/probe" && ./run.sh          # right: a deleted directory stops the command
+cd -- "$TMPDIR/probe"; ./run.sh            # wrong: `cd` fails and `./run.sh` runs where the shell last stood
+```
+
+Your bash tool keeps one shell for the whole session, so the second form runs in whatever
+directory your previous command left, which is often the shared workspace. That is how one
+tester's probe files landed in the workspace of every role of its issue.
+
 ## What the withheld capability is, and what it is not
 
 What the withheld row says, the three artefacts that draw the line between it and a pinned runner

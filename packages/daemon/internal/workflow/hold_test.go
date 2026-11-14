@@ -151,8 +151,9 @@ func TestAFinishedRolesFailedClaimIsNoticedAndHoldsNothing(t *testing.T) {
 // The other three shapes of worker-died are here beside it, because the evidence each carries is
 // a decision of its own: the worker-died of a role that does not work the issue's phase names the
 // failure too, since that role's architect decides whether to start it again on the same
-// evidence; the tree architect's own names none, as R5 has it, and neither does the one that ends
-// a closed issue's production-check look, whose reason already names the cause.
+// evidence; the tree architect's own carries no failure record and names the sentence in its
+// reason instead, as R5 has it, and the one that ends a closed issue's production-check look
+// carries no failure record either, since its reason already names the cause.
 func TestTheHeldNoticeNamesTheFailure(t *testing.T) {
 	const sentence = "the planner's process died with its task outstanding, and its relaunches ran out"
 	failed := func(issue string, role claim.Role) intake.ClaimFailed {
@@ -208,16 +209,16 @@ func TestTheHeldNoticeNamesTheFailure(t *testing.T) {
 		}
 	})
 
-	t.Run("a tree architect's claim names none", func(t *testing.T) {
+	t.Run("a tree architect's claim names no failure record and its reason names the sentence", func(t *testing.T) {
 		pool := migratedPool(t)
 		seedIssue(t, pool, root)
 
 		if _, err := intake.ApplyFact(context.Background(), pool, "supervise", "architect-failed", failed(root.Key, claim.RoleArchitect), testEngine(config.DesignGateRootIssues, nil), admissionStub{}); err != nil {
 			t.Fatalf("ApplyFact the architect's failed claim: %v", err)
 		}
-		died := record.Notice{Kind: "worker-died", Role: claim.RoleArchitect, Phase: phase.Planning}
+		died := record.Notice{Kind: "worker-died", Role: claim.RoleArchitect, Phase: phase.Planning, Reason: sentence}
 		if got, want := noticeRows(t, pool), []record.OutboxPayload{died, record.ControllerNotice(died)}; !sameNotices(got, want) {
-			t.Fatalf("notice rows = %+v, want %+v, naming no failure", got, want)
+			t.Fatalf("notice rows = %+v, want %+v, naming no failure record and the sentence as the reason", got, want)
 		}
 	})
 

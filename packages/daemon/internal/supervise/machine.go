@@ -205,6 +205,18 @@ type Claim struct {
 	// Failure is the reason a terminally failed claim could not continue. It is cleared before a
 	// retry and persisted so a daemon restart can report the same failure to the workflow.
 	Failure string
+	// PodEnd is the last pod end this claim's process was observed to have died of, as the
+	// runtime read it off the pod itself (runtime.Observation.PodEnd): `Evicted: The node was low
+	// on resource: ephemeral-storage. ...` and nothing of the role's own log. It is what lets the
+	// failure the workflow is told name the cause a role never chose, where Failure alone says
+	// only that the relaunch budget ran out.
+	//
+	// It is written where the death is recorded (died) and cleared before a retry exactly as
+	// Failure is, so a claim that comes back and later fails for something else carries nothing
+	// of the earlier end. It is durable for the one reason Failure is: the deaths a claim is
+	// charged can run out hours after the end that started them, with a daemon restart in
+	// between, and the restarted daemon reports the failure from the claim it read back.
+	PodEnd string
 	// FailureCause is the one word for what failed the claim, written beside that sentence by the
 	// site that failed it (fail), and FailedAt is when it did. Both are cleared where Failure is,
 	// by the retry that gives the claim another run and by the launch of that run (retry,
@@ -2089,7 +2101,9 @@ func (m *Machine) launchNow(ctx context.Context, charged, exempt bool) error {
 		m.claim.BootTokenHash = HashBootToken(token)
 
 		m.claim.State = StateLaunching
-		m.claim.Failure, m.claim.FailureCause, m.claim.FailedAt = "", "", time.Time{}
+		// The pod end goes with the failure: a claim being retried carries nothing of the end
+		// that stopped the process before it (Claim.PodEnd).
+		m.claim.Failure, m.claim.FailureCause, m.claim.FailedAt, m.claim.PodEnd = "", "", time.Time{}, ""
 		if err := m.persist(starting); err != nil {
 			err = errors.Join(err, m.stopPrevious(starting))
 			if starting.Err() != nil {
@@ -2455,8 +2469,14 @@ func (m *Machine) stopPrevious(ctx context.Context) error {
 // report found gone, for a death no judgement here reached (suspendOverADeadProcess).
 func (m *Machine) died(ctx context.Context, observation runtime.Observation) error {
 	m.log.Warn("supervise: process died", "incarnation", m.claim.Locator.Incarnation, "observed", string(observation.Kind),
-		"detail", observation.Detail, "chargedBefore", m.claim.DeathCharged)
+		"detail", observation.Detail, "podEnd", observation.PodEnd, "chargedBefore", m.claim.DeathCharged)
 	m.claim.LastDeathCause = deathCause(observation)
+	// The pod's own reason for this end is kept on the claim, so the failure the workflow is told
+	// of — which can come hours and a daemon restart later, when the deaths this one is charged
+	// against run out — still names the cause the role never chose (Claim.PodEnd). It is written
+	// before any branch below returns: each of them persists the claim or leaves it to the next
+	// decision's write, and every path out of here has had the end recorded.
+	m.claim.PodEnd = observation.PodEnd
 	m.sessionGone()
 	if err := m.interrupted(ctx, "the process died in the task's turn", observation.OutOfMemory); err != nil {
 		return err

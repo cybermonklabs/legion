@@ -1277,7 +1277,12 @@ func (w *workflowRuntime) applyTerminal(ctx context.Context, c supervise.Claim, 
 	case supervise.StateReady:
 		fact = intake.ClaimReady{Issue: c.Issue, Role: c.Role, Launch: c.Generation}
 	case supervise.StateFailed:
-		fact = intake.ClaimFailed{Issue: c.Issue, Role: c.Role, Reason: c.Failure,
+		// Everything the claim persists about its end: the sentence the supervisor wrote when it
+		// gave up (Claim.Failure), what the runtime last said of the death and of the start that
+		// never produced an agent (Claim.LastDeathCause, Claim.LastStartFailure), and the pod end
+		// its process was last observed to have died of (Claim.PodEnd), so a notice written after
+		// a daemon restart still names the cause the role never chose — an eviction above all.
+		fact = intake.ClaimFailed{Issue: c.Issue, Role: c.Role, Reason: c.Failure, PodEnd: c.PodEnd,
 			Death: c.LastDeathCause, StartFailure: c.LastStartFailure,
 			Cause: c.FailureCause, Budgets: c.Budgets, Limits: w.limits}
 	default:

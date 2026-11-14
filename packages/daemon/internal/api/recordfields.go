@@ -87,6 +87,8 @@ var ClaimRecordFields = []RecordFieldDecision{
 		Reason: "the four counts a failed claim failed with, read against the limits in `settings`; served inside the failure record, which is where a reader acts on them"},
 	{Field: "Failure", Column: ColumnAgents, Keys: []string{"failure.detail"},
 		Reason: "the sentence the site that failed the claim wrote, which names what no one word can"},
+	{Field: "PodEnd", Column: ColumnWithheld,
+		Reason: "the pod end the claim's process was last observed to have died of, which the workflow reads off the claim to name the cluster's cause in a worker-died notice's reason; no claim view carries it under a key"},
 	{Field: "FailureCause", Column: ColumnAgents, Keys: []string{"failure.cause"},
 		Reason: "the one word for what failed the claim, which a retry, an escalation or a re-admission turns on"},
 	{Field: "FailedAt", Column: ColumnAgents, Keys: []string{"failure.at"},

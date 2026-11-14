@@ -320,7 +320,7 @@ func TestLaunchesInFlightAtARestartOutwaitTheReconnectingLaunchersReads(t *testi
 		go func() {
 			for {
 				sent.Add(1)
-				if handler, _ := accept(hello); handler != nil {
+				if handler, _, _ := accept(hello); handler != nil {
 					accepted.Add(1)
 					return
 				}
@@ -397,7 +397,7 @@ func TestAFailedLauncherCredentialReadHoldsOffTheNextForTheRetryInterval(t *test
 	accept := secondRuntime(t, g, func(*Options) {})().LauncherResolver()
 
 	for range 5 {
-		if handler, _ := accept(hello); handler != nil {
+		if handler, _, _ := accept(hello); handler != nil {
 			t.Fatal("the launcher was accepted while its Secret could not be read")
 		}
 	}
@@ -405,12 +405,12 @@ func TestAFailedLauncherCredentialReadHoldsOffTheNextForTheRetryInterval(t *test
 		t.Fatalf("five hellos read the Secret %d times, want once", got)
 	}
 	g.advance(credentialRetry - time.Second)
-	if handler, _ := accept(hello); handler != nil || reads.Load() != 1 {
+	if handler, _, _ := accept(hello); handler != nil || reads.Load() != 1 {
 		t.Fatalf("a hello inside the retry interval: accepted %t after %d reads, want refused without a read", handler != nil, reads.Load())
 	}
 	failing.Store(false)
 	g.advance(time.Second)
-	if handler, reason := accept(hello); handler == nil {
+	if handler, _, reason := accept(hello); handler == nil {
 		t.Fatalf("the first hello after the retry interval was refused: %s", reason)
 	}
 	if got := reads.Load(); got != 2 {
@@ -439,7 +439,7 @@ func TestAKeptPodsBindingCheckLiftsItsLaunchersHoldOff(t *testing.T) {
 	})
 	r2 := secondRuntime(t, g, func(*Options) {})()
 	accept := r2.LauncherResolver()
-	if handler, _ := accept(hello); handler != nil {
+	if handler, _, _ := accept(hello); handler != nil {
 		t.Fatal("the launcher was accepted while its Secret could not be read")
 	}
 	failing.Store(false)
@@ -451,7 +451,7 @@ func TestAKeptPodsBindingCheckLiftsItsLaunchersHoldOff(t *testing.T) {
 	if bound, err := r2.launcherBound(g.ctx, s, r2.storedPod(loc.Sandbox.Name), &kept); err != nil || !bound || kept.gitHubDefault != "sjawhar" {
 		t.Fatalf("launcherBound = %t, %v, default %q; want the kept pod bound with its Secret's default, sjawhar", bound, err, kept.gitHubDefault)
 	}
-	if handler, reason := accept(hello); handler == nil {
+	if handler, _, reason := accept(hello); handler == nil {
 		t.Fatalf("the kept pod's launcher was refused after its binding was read: %s", reason)
 	}
 }

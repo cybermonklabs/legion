@@ -1,0 +1,28 @@
+-- 20261111091500_claim_pod_end.up.sql — the pod end a claim's process was last observed to have
+-- died of, kept on the claim so the failure the workflow is told can name it.
+--
+-- A pod the kubelet evicts — "The node was low on resource: ephemeral-storage" — kills every role
+-- of an issue through no fault of theirs. The runtime reads that reason and the kubelet's message
+-- off the pod (runtime.Observation.PodEnd); the supervisor charges the death and relaunches, and
+-- only when the relaunch budget runs out is the workflow told, in a worker-died notice. Until now
+-- that notice carried a kind, a role and a phase and nothing of the cause, because the only place
+-- the cause was written was the observation's Detail, which ends with a tail of the role's own log
+-- and is prose for an operator (INFRA-2009).
+--
+-- The column holds that reason and message alone, bounded where it is built
+-- (runtime.PodEndRunes), never the detail: an unbounded log tail in a claims column would be
+-- copied into every claim read and published to an Envoy role topic with the notice.
+--
+-- It is written where the death is recorded (supervise's Machine.died) and cleared before a retry
+-- exactly as failure is (launchNow), so a claim that comes back and later fails for something else
+-- carries nothing of the earlier end. It is durable for the reason failure is: the deaths a claim
+-- is charged can run out hours after the end that started them, with a daemon restart in between,
+-- and the restarted daemon replays the failure from the claim it read back
+-- (workflowRuntime.replayTerminal).
+--
+-- Not null with an empty default, as failure is: a claim that has observed no pod end holds the
+-- empty string, so every read of it is one branch and no scan takes a pointer.
+--
+-- There is no down file: migrations here are forward-only. A rollback to an image before this one
+-- leaves the column in place, unread and unwritten, which costs the deployment nothing.
+alter table claims add column pod_end text not null default '';

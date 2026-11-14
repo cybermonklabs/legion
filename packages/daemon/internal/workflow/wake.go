@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -59,6 +60,16 @@ type Pods interface {
 	ClosePodGoneResume(ctx context.Context, tx pgx.Tx, issue string, role claim.Role) (int64, error)
 	// FirePodBackstop marks the backstop fired and answers whether this call fired it.
 	FirePodBackstop(ctx context.Context, tx pgx.Tx, id int64) (bool, error)
+	// VolumeNoticeCounts and RecordVolumeNotice are the bounds on what an issue's architect is
+	// told about its pod's volume filling, counted in the store rather than in this process:
+	// a daemon that restarts in the middle of a filling pod's episode must not start the count
+	// over and tell that architect three more times (volumeNearFull). The read answers the
+	// notices already written for this trimmer and episode and the newest notice of the pod
+	// whatever line it was on; the write counts one against that line and answers the count it
+	// now stands at. Both run inside the fact's transaction, the one that writes the notice's
+	// outbox row, so a notice held for an absent architect has still spent its count.
+	VolumeNoticeCounts(ctx context.Context, tx pgx.Tx, issue, podUID, trimmer string, episode int) (store.VolumeNoticeCounts, error)
+	RecordVolumeNotice(ctx context.Context, tx pgx.Tx, issue, podUID, trimmer string, episode int, at time.Time) (int, error)
 	// OpenPodBackstop is whether issue's role has a backstop armed and not yet fired: a release
 	// that left the role with its phase open armed it, so the backstop brings the pod back. The
 	// cutover's repair reads it to pass over a merger something will still wake

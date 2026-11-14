@@ -54,29 +54,34 @@ const credentialRetry = 10 * time.Second
 // (launcherCredential), so a restart's reconnecting launchers cost one read each and
 // unauthenticated hellos cannot turn into an unbounded stream of Kubernetes requests. A hello waits
 // for that read up to apiTimeout.
+//
+// An accepted launcher is handed what its cache trimmer runs by (Options.VolumeTrim), and only on
+// an issue pod: the controller's launcher returns in its single-role form before the background
+// block that would run a trimmer, and the volume it works on is its Sandbox's own, no issue's
+// cache. Every refusal hands none, as does a deployment that configured none.
 func (r *Runtime) LauncherResolver() stream.LauncherResolver {
-	return func(hello shimwire.LauncherHello) (stream.LauncherHandler, string) {
+	return func(hello shimwire.LauncherHello) (stream.LauncherHandler, *shimwire.LauncherVolumeTrim, string) {
 		role := claim.Role(hello.Role)
 		view, err := r.view(hello.Sandbox)
 		if err != nil || view.sandbox == nil || view.pod == nil || string(view.pod.UID) != hello.PodUID {
-			return nil, "launcher pod is not the current controller-owned pod"
+			return nil, nil, "launcher pod is not the current controller-owned pod"
 		}
 		kind, err := podKindOf(view.sandbox.Labels)
 		if err != nil || !slices.Contains(kind.roles(), role) {
-			return nil, "launcher role is not one of its pod's roles"
+			return nil, nil, "launcher role is not one of its pod's roles"
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), apiTimeout)
 		defer cancel()
 		credential, err := r.launcherCredential(ctx, view.sandbox, role)
 		if err != nil {
-			return nil, "launcher credential is unavailable"
+			return nil, nil, "launcher credential is unavailable"
 		}
 		hash := sha256.Sum256([]byte(hello.Token))
 		if subtle.ConstantTimeCompare(credential.hash[:], hash[:]) != 1 {
-			return nil, "launcher token is not current"
+			return nil, nil, "launcher token is not current"
 		}
 		if credential.podUID != hello.PodUID {
-			return nil, "launcher pod UID is not bound to its Secret epoch"
+			return nil, nil, "launcher pod UID is not bound to its Secret epoch"
 		}
 		// Options.Project is the legion.dev/project label's value (its own doc comment), not
 		// necessarily already a claim.ProjectToken: a deployment's own project name may carry
@@ -84,16 +89,20 @@ func (r *Runtime) LauncherResolver() stream.LauncherResolver {
 		// under either daemon), and go through it before naming a claim.
 		project, err := claim.ProjectToken(r.project)
 		if err != nil {
-			return nil, "launcher credential does not name this pod's role"
+			return nil, nil, "launcher credential does not name this pod's role"
 		}
 		token, err := kind.claimToken(project, credential.issue, role)
 		if err != nil || SandboxName(token) != hello.Sandbox {
-			return nil, "launcher credential does not name this pod's role"
+			return nil, nil, "launcher credential does not name this pod's role"
 		}
 		// The pod the connection is accepted for carries the instant the API server created it,
 		// which decides whether a release's saved work is this pod's to restore
 		// (launchers.restoreWorkspace).
-		return r.launchers.accept(token, credential.issue, view.pod.CreationTimestamp.Time, hello), ""
+		var trim *shimwire.LauncherVolumeTrim
+		if _, issue := kind.(issuePod); issue {
+			trim = r.volumeTrim
+		}
+		return r.launchers.accept(token, credential.issue, view.pod.CreationTimestamp.Time, hello), trim, ""
 	}
 }
 

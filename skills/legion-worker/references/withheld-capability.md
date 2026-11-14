@@ -129,8 +129,9 @@ filesystem is what `roleEnvironment` (`packages/daemon/internal/runtime/sandbox/
 exists for, after GKE Autopilot evicted issue pods that charged their caches to it — so an install
 under `$HOME` fails the first condition and is outside the sanctioned form, however little else it
 changes. The three artefacts above are the whole of that line's ground. Disk is not: every cache is
-already relocated onto the issue's volume, which has the room for them (`docs/kubernetes.md`, "The
-tools a role's own work needs", carries the figure), and a sanctioned install is paid once per
+already relocated onto the issue's volume (`docs/kubernetes.md`, "The tools a role's own work
+needs", carries the figures, and the cache trimmer that holds part of that volume under a mark is
+in `skill://legion-worker/references/tools.md`), and a sanctioned install is paid once per
 issue pod, on the issue's own disk, by the issue's roles together.
 
 **The worked case, and the one a role actually meets: the Dispatch e2e stack.** A change to

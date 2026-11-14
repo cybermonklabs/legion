@@ -67,6 +67,11 @@ const (
 	TypeLauncherBundle        = "launcher_bundle"
 	TypeLauncherBundleResult  = "launcher_bundle_result"
 	TypeLauncherRestored      = "launcher_restored"
+	// The cache trimmer in a launcher process reports a sweep of the pod's volume, unasked: the
+	// daemon reads it as the one word it has on a volume filling under the roles that share it,
+	// and tells the issue's architect (INFRA-2009). The settings the trimmer runs by travel the
+	// other way, on the launcher_hello_ack (LauncherVolumeTrim).
+	TypeLauncherVolumeReport = "launcher_volume_report"
 	// The shared public leak check's two directions: the daemon pushing the check's packed
 	// directory, in slices under the frame limit, to a launcher whose hello named a tag, and the
 	// launcher answering each slice, the last with the outcome of its install.
@@ -179,8 +184,141 @@ type LauncherHello struct {
 	LeakCheckInstalled bool   `json:"leakCheckInstalled,omitempty"`
 }
 
-// LauncherHelloAck admits a launcher to receive child process commands.
-type LauncherHelloAck struct{}
+// LauncherHelloAck admits a launcher to receive child process commands, and hands it the
+// settings its cache trimmer runs by, when this daemon has any to hand it.
+type LauncherHelloAck struct {
+	// VolumeTrim is absent rather than zero when no settings are sent, and that absence is the
+	// whole of what "run no trimmer" means: a daemon built before this work and a deployment
+	// that turned the trimmer off both send no member at all, where a present member whose
+	// numbers are zero is settings the launcher would act on. The pointer is what tells the two
+	// apart, as it does for Hello2.AgentSecrets, StateData.IsStreaming and LauncherState.Child.
+	VolumeTrim *LauncherVolumeTrim `json:"volumeTrim,omitempty"`
+}
+
+// LauncherVolumeTrim is what a launcher's cache trimmer runs by: it reads the pod's volume every
+// IntervalSeconds, sweeps the cache roots when the used fraction reaches HighPercent, deletes
+// only what nothing has touched for MinAgeMinutes, and stops once the fraction is back under
+// LowPercent.
+//
+// It holds no `enabled` member: a deployment that turns the trimmer off sends no member at all,
+// which is the same absence a daemon that does not know this work sends, so one rule in the
+// launcher covers both rather than two that could disagree (LauncherHelloAck.VolumeTrim).
+type LauncherVolumeTrim struct {
+	HighPercent     int `json:"highPercent"`
+	LowPercent      int `json:"lowPercent"`
+	MinAgeMinutes   int `json:"minAgeMinutes"`
+	IntervalSeconds int `json:"intervalSeconds"`
+}
+
+// The ranges LauncherVolumeTrim's four numbers must be in. Both sides of the wire read them:
+// the daemon's loader refuses a file outside them (config's readVolumeTrim) and the launcher's
+// trimmer refuses a frame outside them a second time, on its own side of a connection this
+// design expects to carry version skew both ways (launcher's refusedTrimSettings). The two
+// checks are deliberate; their values are one source here, because a widening of the loader's
+// maximum the trimmer did not know would load cleanly and then be refused by every pod's
+// trimmer, which stays off for the life of its launcher process.
+//
+// A mark at 100 is a volume already full, the one fraction no sweep can reach down from.
+// VolumeIntervalMax is an hour, the longest wait between two looks that is still a trimmer: a
+// pod's caches can fill a volume inside one. VolumeMinAgeMax is seven days, a generous age for a
+// cache entry and far below where the arithmetic breaks: the sweep's cutoff is its start less
+// MinAgeMinutes of time.Duration, which is int64 nanoseconds, so 153,722,868 minutes and above
+// wrap the cutoff past the sweep's own start and make every entry of every root eligible however
+// recently it was written (launcher's sweep). At the maximum, with the Go build cache's extra
+// hour taken off as well (launcher's goCacheMtimeSlack), the cutoff is about 6.1e14 nanoseconds
+// back, against an int64 limit of 9.2e18. The daemon bounds its other keys written in minutes for
+// the same overflow (config's maxTimerMinutes). The bound says nothing about how long a pod
+// lives, which configuration decides (`idle_release`'s `idle_minutes: 0` turns release off and a
+// pod then lives as long as its issue runs), and a trimmer is switched off with `enabled: false`,
+// never with an age. The minima are what a trimmer can be armed with at all: time.NewTicker
+// panics on a non-positive period, in the process that is PID 1 of the roles container with six
+// live roles under it, and a high mark of 0 would sweep the caches of a volume that is empty.
+const (
+	VolumeMarkMin     = 1
+	VolumeMarkMax     = 99
+	VolumeMinAgeMin   = 1
+	VolumeMinAgeMax   = 7 * 24 * 60
+	VolumeIntervalMin = 1
+	VolumeIntervalMax = 3600
+)
+
+// LauncherVolumeSize is one directory two levels under the pod's volume root as the trimmer's
+// size walk measured it: the bytes under it, and of those the bytes whose newest modification
+// time is more than an hour old and more than a day old, which are what tell a reader a working
+// set from cold bytes.
+type LauncherVolumeSize struct {
+	Path          string `json:"path"`
+	Bytes         int64  `json:"bytes"`
+	BytesOverHour int64  `json:"bytesOverHour"`
+	BytesOverDay  int64  `json:"bytesOverDay"`
+}
+
+// The three things that raise an episode, which a report's RaisedBy names. An episode is the run
+// of readings the daemon's notice bounds count against, so what raised it is what a reader needs
+// to tell a volume that has just filled from one that is filling faster than the trimmer frees
+// it.
+const (
+	// VolumeEpisodeFirst is the trimmer's first episode: its reading reached the high mark.
+	VolumeEpisodeFirst = "first"
+	// VolumeEpisodeRecovery is a reading that fell below the low mark after having been at or
+	// above the high mark.
+	VolumeEpisodeRecovery = "recovery"
+	// VolumeEpisodeRise is a reading five percentage points above the highest reading at the
+	// start of any sweep that reported in this episode: the volume is still filling under a
+	// trimmer that is already sweeping it, which is worth another notice where a steady reading
+	// is not.
+	VolumeEpisodeRise = "rise"
+)
+
+// LauncherVolumeReport is one sweep of the pod's volume as the launcher's cache trimmer ran it.
+// The launcher sends it unasked, and the daemon tells the issue's architect: nothing else in the
+// system sees a volume the roles of an issue share fill under them (INFRA-2009).
+//
+// Trimmer is the identifier the trimmer minted for itself when the launcher process started. It
+// is what makes a restarted roles container a new counting line for the daemon's notice bounds
+// rather than a repeat of the first episode. Episode is the trimmer's own episode number, from
+// 1, and RaisedBy which of the three things above raised it.
+//
+// UsedBytes and FreeBytes are the volume as the sweep's last reading saw it, and FreedBytes what
+// the sweep freed, read from the volume itself and never counted from the bytes unlinked: a
+// deletion the kernel has not accounted for yet is not space anything can use. StopReason is why
+// the sweep stopped, in the trimmer's own words, and RefusedReads names each process whose
+// /proc the kernel refused while the sweep ran.
+//
+// Sizes are the directories two levels under the volume root and SizesAt when they were
+// measured: a report made between walks carries the last walk's numbers with that walk's time,
+// so a reader never reads a stale measurement as this sweep's. SizesPartial is a walk that ended
+// early, and SizesMissing what such a walk did not measure.
+//
+// Faults are the panics the trimmer recovered from, each with its stack, and SwitchedOff the one
+// report no sweep produces: the trimmer has stopped itself after three faults in a row, and this
+// is the last the daemon hears from it until the launcher restarts.
+//
+// Every list above is bounded by the launcher that built the report, because a path two levels
+// under /legion is a name a role of the pod chose and a pod may hold thousands of them
+// (internal/launcher's bound): the four Omitted counts are how many entries that bound left
+// out, so a reader is never shown a cut list as the whole of what the trimmer measured. Each
+// path, the stop reason and each fault are cut in runes there too.
+type LauncherVolumeReport struct {
+	Trimmer             string               `json:"trimmer"`
+	Episode             int                  `json:"episode"`
+	RaisedBy            string               `json:"raisedBy"`
+	UsedBytes           int64                `json:"usedBytes"`
+	FreeBytes           int64                `json:"freeBytes"`
+	FreedBytes          int64                `json:"freedBytes"`
+	StopReason          string               `json:"stopReason"`
+	RefusedReads        []string             `json:"refusedReads,omitempty"`
+	RefusedReadsOmitted int                  `json:"refusedReadsOmitted,omitempty"`
+	Sizes               []LauncherVolumeSize `json:"sizes"`
+	SizesOmitted        int                  `json:"sizesOmitted,omitempty"`
+	SizesAt             time.Time            `json:"sizesAt"`
+	SizesPartial        bool                 `json:"sizesPartial,omitempty"`
+	SizesMissing        []string             `json:"sizesMissing,omitempty"`
+	SizesMissingOmitted int                  `json:"sizesMissingOmitted,omitempty"`
+	Faults              []string             `json:"faults,omitempty"`
+	FaultsOmitted       int                  `json:"faultsOmitted,omitempty"`
+	SwitchedOff         bool                 `json:"switchedOff,omitempty"`
+}
 
 // LauncherChild is the actual worker-shim child the launcher has running, if any.
 type LauncherChild struct {
@@ -626,6 +764,7 @@ func (BundleWorkspaceResult) FrameType() string        { return TypeBundleWorksp
 func (LauncherBundle) FrameType() string               { return TypeLauncherBundle }
 func (LauncherBundleResult) FrameType() string         { return TypeLauncherBundleResult }
 func (LauncherRestored) FrameType() string             { return TypeLauncherRestored }
+func (LauncherVolumeReport) FrameType() string         { return TypeLauncherVolumeReport }
 func (LauncherLeakCheck) FrameType() string            { return TypeLauncherLeakCheck }
 func (LauncherLeakCheckResult) FrameType() string      { return TypeLauncherLeakCheckResult }
 
@@ -732,8 +871,9 @@ func (f LauncherHello) MarshalJSON() ([]byte, error) {
 	return marshalFrame(TypeLauncherHello, plain(f))
 }
 
-func (LauncherHelloAck) MarshalJSON() ([]byte, error) {
-	return marshalFrame(TypeLauncherHelloAck, struct{}{})
+func (f LauncherHelloAck) MarshalJSON() ([]byte, error) {
+	type plain LauncherHelloAck
+	return marshalFrame(TypeLauncherHelloAck, plain(f))
 }
 
 func (f LauncherState) MarshalJSON() ([]byte, error) {
@@ -784,6 +924,18 @@ func (f LauncherBundleResult) MarshalJSON() ([]byte, error) {
 func (f LauncherRestored) MarshalJSON() ([]byte, error) {
 	type plain LauncherRestored
 	return marshalFrame(TypeLauncherRestored, plain(f))
+}
+
+// MarshalJSON keeps `sizes` an array on the wire, empty rather than `null`, as
+// record.UpdateStalled.MarshalJSON keeps `waiting` one and for the same reason: a strict reader
+// refuses a null. The `plain` alias is what keeps the method from re-entering itself.
+func (f LauncherVolumeReport) MarshalJSON() ([]byte, error) {
+	type plain LauncherVolumeReport
+	out := plain(f)
+	if out.Sizes == nil {
+		out.Sizes = []LauncherVolumeSize{}
+	}
+	return marshalFrame(TypeLauncherVolumeReport, out)
 }
 
 func (f LauncherLeakCheck) MarshalJSON() ([]byte, error) {
@@ -1164,6 +1316,19 @@ func (f LauncherStop) Validate() error {
 	return nil
 }
 
+// Validate refuses a volume report the daemon could not count: one naming no trimmer, which is
+// the identity its notice bounds count a restarted roles container apart by, and one whose
+// episode is below the 1 the trimmer counts from.
+func (f LauncherVolumeReport) Validate() error {
+	switch {
+	case f.Trimmer == "":
+		return fmt.Errorf("%w: launcher_volume_report carries no trimmer", ErrMalformedFrame)
+	case f.Episode < 1:
+		return fmt.Errorf("%w: launcher_volume_report episode is %d", ErrMalformedFrame, f.Episode)
+	}
+	return nil
+}
+
 // Validate refuses an enrollment frame with no request id or no enrollment id: the daemon is its
 // only sender, so either is a bug to name.
 func (f AgentSecretsEnrollment) Validate() error {
@@ -1247,7 +1412,7 @@ func Decode(line []byte) (Frame, error) {
 	case TypeLauncherHello:
 		return decodeInto[LauncherHello](trimmed)
 	case TypeLauncherHelloAck:
-		return LauncherHelloAck{}, nil
+		return decodeInto[LauncherHelloAck](trimmed)
 	case TypeLauncherState:
 		return decodeInto[LauncherState](trimmed)
 	case TypeLauncherStart:
@@ -1268,6 +1433,8 @@ func Decode(line []byte) (Frame, error) {
 		return decodeInto[LauncherBundleResult](trimmed)
 	case TypeLauncherRestored:
 		return decodeInto[LauncherRestored](trimmed)
+	case TypeLauncherVolumeReport:
+		return decodeInto[LauncherVolumeReport](trimmed)
 	case TypeLauncherLeakCheck:
 		return decodeInto[LauncherLeakCheck](trimmed)
 	case TypeLauncherLeakCheckResult:

@@ -24,6 +24,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
 
 // Kubernetes is the settled `runtime.kubernetes` block: where the Sandbox runtime runs its pods and
@@ -118,6 +119,12 @@ type Kubernetes struct {
 	// defaults apply when the file sets no block, so release is on for every Kubernetes
 	// deployment; `idle_minutes: 0` turns it off.
 	IdleRelease IdleReleaseConfig
+	// VolumeTrim is `runtime.kubernetes.volume_trim`, settled: what the cache trimmer in each
+	// issue pod's launcher process runs by, bounding the four cache roots under a size mark.
+	// Every default applies when the file sets no block, so the trimmer is on for every
+	// Kubernetes deployment, as idle release is; `enabled: false` turns it off, and the pod's
+	// launcher is then handed no settings at all (sandbox.Options.VolumeTrim nil).
+	VolumeTrim VolumeTrimConfig
 }
 
 // RepositoryCacheConfig is `runtime.kubernetes.repository_cache`: the volume each repository's
@@ -178,6 +185,30 @@ var defaultIdleRelease = IdleReleaseConfig{IdleMinutes: 10, BackstopMinutes: 60}
 
 // DefaultIdleRelease is the idle release's settled configuration when the file sets none.
 func DefaultIdleRelease() IdleReleaseConfig { return defaultIdleRelease }
+
+// VolumeTrimConfig is `runtime.kubernetes.volume_trim`: what the cache trimmer in each issue
+// pod's launcher process runs by. The trimmer reads the pod's volume every IntervalSeconds,
+// sweeps the four cache roots once the used fraction reaches HighPercent, deletes only what
+// nothing has touched for MinAgeMinutes, and stops once the fraction is back under LowPercent
+// (shimwire.LauncherVolumeTrim, which the launcher is handed on the answer to its hello).
+// Enabled false runs no trimmer at all, and an issue volume then fills as it did before this
+// work.
+type VolumeTrimConfig struct {
+	Enabled         bool
+	HighPercent     int
+	LowPercent      int
+	MinAgeMinutes   int
+	IntervalSeconds int
+}
+
+// defaultVolumeTrim is the trimmer when the file sets none of it: a sweep at 85% of the issue
+// volume down to 70%, touching nothing used inside the last quarter hour, looking every minute.
+// Every deployment's issue volume is a fixed size whose caches grow with the issue's work, so the
+// defaults are on, as idle release's are (defaultIdleRelease).
+var defaultVolumeTrim = VolumeTrimConfig{Enabled: true, HighPercent: 85, LowPercent: 70, MinAgeMinutes: 15, IntervalSeconds: 60}
+
+// DefaultVolumeTrim is the cache trimmer's settled configuration when the file sets none.
+func DefaultVolumeTrim() VolumeTrimConfig { return defaultVolumeTrim }
 
 // PluginsConfig is `runtime.kubernetes.plugins`: the pi-legion and pi-envoy sources a
 // stale-plugin relaunch installs, each an exact semver version, an absolute tarball path, or an
@@ -504,7 +535,7 @@ func readKubernetes(value *yaml.Node) (*Kubernetes, error) {
 	fields, err := members(value, kubernetesKey, "namespace", "image", "storage_class", "issue_volume", "tree_volume",
 		"kubeconfig", "context", "scheduling", "resources", "gateway", "pod", "session_store", "session_dsn_secret",
 		"session_database", "role_profiles", "agent_secrets", "plugins", "repository_cache", "setup",
-		"skills_repository", "test_postgres", "idle_release")
+		"skills_repository", "test_postgres", "idle_release", "volume_trim")
 	if err != nil {
 		return nil, err
 	}
@@ -578,6 +609,9 @@ func readKubernetes(value *yaml.Node) (*Kubernetes, error) {
 		return nil, err
 	}
 	if block.IdleRelease, err = readIdleRelease(fields["idle_release"]); err != nil {
+		return nil, err
+	}
+	if block.VolumeTrim, err = readVolumeTrim(fields["volume_trim"]); err != nil {
 		return nil, err
 	}
 	return block, nil
@@ -733,6 +767,77 @@ func readIdleRelease(value *yaml.Node) (IdleReleaseConfig, error) {
 	if settled.BackstopMinutes < settled.IdleMinutes {
 		return IdleReleaseConfig{}, fmt.Errorf("%s.backstop_minutes (%d) is below %s.idle_minutes (%d): a backstop that short would wake a pod the daemon has only just released",
 			key, settled.BackstopMinutes, key, settled.IdleMinutes)
+	}
+	return settled, nil
+}
+
+// readVolumeTrim reads `runtime.kubernetes.volume_trim`, settled: each member the file sets and
+// the default (DefaultVolumeTrim) for each it leaves out, so the trimmer runs wherever the file
+// says nothing. `enabled` is read from the settled default rather than from the key's presence,
+// as every number of the block is and unlike `test_postgres` (readTestPostgres), because this
+// block's default is on: an operator writing `enabled: true` back must get the trimmer, and a
+// value that is no YAML boolean — `off` and `yes` among them, which this loader's reader tags
+// as strings, as `production_check`'s `off` reaches readProject as one — is refused rather than
+// read as a word nobody meant. Each mark is a whole percentage of the volume from 1 to
+// shimwire.VolumeMarkMax, and the low mark must be strictly below the high one, refused naming
+// both: marks that met would leave the sweep no fraction to stop at. min_age_minutes is bounded
+// at shimwire.VolumeMinAgeMax and interval_seconds at shimwire.VolumeIntervalMax, and neither
+// may be 0: the trimmer arms a time.Ticker with the interval, which panics on a non-positive
+// period, in the process that is PID 1 of the pod's roles container, taking the six live roles
+// under it down with it.
+//
+// The maximum of a mark, of the age and of the interval are the wire's own
+// (shimwire.VolumeMarkMax, shimwire.VolumeMinAgeMax, shimwire.VolumeIntervalMax), which the
+// launcher's trimmer checks the settings against a second time on its side of the connection: a
+// maximum widened here alone would load cleanly and then be refused by every pod's trimmer,
+// which stays off for the life of its launcher process.
+func readVolumeTrim(value *yaml.Node) (VolumeTrimConfig, error) {
+	const key = kubernetesKey + ".volume_trim"
+	settled := defaultVolumeTrim
+	if value == nil || value.Tag == "!!null" {
+		return settled, nil
+	}
+	if value.Kind != yaml.MappingNode {
+		return VolumeTrimConfig{}, fmt.Errorf("%s must be a mapping", key)
+	}
+	fields, err := members(value, key, "enabled", "high_percent", "low_percent", "min_age_minutes", "interval_seconds")
+	if err != nil {
+		return VolumeTrimConfig{}, err
+	}
+	if enabled := fields["enabled"]; enabled != nil {
+		var on bool
+		if enabled.Tag != "!!bool" || enabled.Decode(&on) != nil {
+			return VolumeTrimConfig{}, fmt.Errorf("%s.enabled must be true or false", key)
+		}
+		settled.Enabled = on
+	}
+	for _, number := range []struct {
+		field string
+		max   int
+		into  *int
+	}{
+		{"high_percent", shimwire.VolumeMarkMax, &settled.HighPercent},
+		{"low_percent", shimwire.VolumeMarkMax, &settled.LowPercent},
+		// The age is bounded because an unbounded one is not the trimmer switched off but the
+		// trimmer deleting everything: the sweep's cutoff is its start less min_age_minutes of
+		// time.Duration, which is int64 nanoseconds, so a large age wraps the cutoff past the
+		// sweep's own start and every entry of every root is then eligible however recently it
+		// was written (launcher's sweep, shimwire.VolumeMinAgeMax). `enabled: false` is how an
+		// operator switches the trimmer off.
+		{"min_age_minutes", shimwire.VolumeMinAgeMax, &settled.MinAgeMinutes},
+		{"interval_seconds", shimwire.VolumeIntervalMax, &settled.IntervalSeconds},
+	} {
+		read, err := readPositiveInteger(fields[number.field], key+"."+number.field, number.max)
+		if err != nil {
+			return VolumeTrimConfig{}, err
+		}
+		if read != nil {
+			*number.into = *read
+		}
+	}
+	if settled.LowPercent >= settled.HighPercent {
+		return VolumeTrimConfig{}, fmt.Errorf("%s.low_percent (%d) is not below %s.high_percent (%d): the sweep stops at the low mark, so marks that meet leave it nothing to stop at",
+			key, settled.LowPercent, key, settled.HighPercent)
 	}
 	return settled, nil
 }

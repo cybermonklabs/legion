@@ -157,3 +157,25 @@ func TestRoleInitIsHiddenAndRefusesToRunOutsideARolesNamespaces(t *testing.T) {
 		t.Fatalf("role-init outside a role's namespaces: exit %d, %q; want a refusal with exit %d", code, stderr.String(), launcher.RoleInitSetupFailedExit)
 	}
 }
+
+// `legion launcher volume-trim-delete` is the launcher's second hidden subcommand, the deleter
+// one sweep of the pod's cache trimmer makes its removals through. It takes every directory it
+// covers — the roles directory, the directory the container mounts the home's volumes under and
+// the home, which the trimmer passes it as role-init is given them — and it refuses to run
+// anywhere but as the init of a PID namespace of its own: run by hand it holds no descriptor of
+// the volume, and a flag it does not know would end it with its usage and exit 2 instead of the
+// refusal below.
+func TestVolumeTrimDeleteIsHiddenAndTakesEveryDirectoryItCovers(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if code := run(context.Background(), []string{"legion", "launcher", "--help"}, &stdout, &stderr); code != 0 || strings.Contains(stderr.String(), "volume-trim-delete") {
+		t.Fatalf("launcher --help: exit %d, %q; want its usage without the hidden volume-trim-delete", code, stderr.String())
+	}
+	stderr.Reset()
+	code := run(context.Background(), []string{
+		"legion", "launcher", "volume-trim-delete",
+		"--roles-dir", "/var/run/legion/roles", "--home-mounts", "/var/run/legion/home", "--home", "/home/legion",
+	}, &stdout, &stderr)
+	if code != 1 || !strings.Contains(stderr.String(), "volume-trim-delete: not the init of a PID namespace of its own") {
+		t.Fatalf("volume-trim-delete outside its own namespaces: exit %d, %q; want exit 1 and that refusal, with every directory it covers taken as a flag", code, stderr.String())
+	}
+}

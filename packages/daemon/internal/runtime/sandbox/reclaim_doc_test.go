@@ -1,9 +1,11 @@
 package sandbox
 
 import (
+	"maps"
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -41,45 +43,59 @@ import (
 // 4000-line document would otherwise satisfy the check while the remedy itself stays silent about
 // it, which is the same miss wearing a pass.
 const (
-	reclaimParagraphStart = "The remedy for a volume near full is manual"
+	reclaimParagraphStart = "The remedy for a volume the trimmer cannot bring down is manual"
 	reclaimParagraphEnd   = "As for the rest:"
 	reclaimDeleteHeading  = "Delete list"
 	reclaimExemptHeading  = "Exempt, each for a reason"
 )
 
-// Every directory roleEnvironment and the pod's uv variables put on the issue's volume is on the
+// Every directory the start environment (mainEnvironment) puts on the issue's volume is on the
 // delete list or in an exemption of docs/kubernetes.md's reclaim paragraph. The rendered set comes
 // from the renderer, never from a list written beside it: a list would have to be edited by whoever
-// adds a cache, which is exactly the edit that gets forgotten.
+// adds a cache, which is exactly the edit that gets forgotten. The same holds for the backends:
+// each one the role runs on renders its own start environment (a Claude Code launch adds its
+// configuration directory), so the walk runs once for each (backendsRunning) rather than for a
+// backend named here.
 func TestTheReclaimParagraphNamesEveryDirectoryTheRendererPutsOnTheIssueVolume(t *testing.T) {
 	const issue = "LEGION-1234"
 	const role = claim.RoleImplementer
 
 	deleted, exempt := reclaimParagraphLists(t)
-	for _, dir := range issueVolumeDirectories(issue, role) {
-		// A per-role or per-issue directory reaches the prose as a placeholder, since no document can
-		// name every role and every issue. Rewrite the rendered value's last segment to the form the
-		// paragraph uses rather than matching it loosely, so an unrelated path that happens to share a
-		// prefix cannot stand in for it.
-		documented := dir
-		switch dir {
-		case roleStateHome(role):
-			documented = path.Dir(dir) + "/<role>"
-		case uvPythonDir(issue):
-			documented = path.Dir(dir) + "/<issue>"
-		}
-		onDeleteList := namesPathOrAncestor(deleted, documented)
-		isExempt := namesPathOrAncestor(exempt, documented)
-		switch {
-		case onDeleteList && isExempt:
-			t.Errorf("docs/kubernetes.md's reclaim paragraph both deletes and exempts %s: the operator is "+
-				"told to remove it and to leave it, so one of the two bullets is wrong", documented)
-		case !onDeleteList && !isExempt:
-			t.Errorf("docs/kubernetes.md's reclaim paragraph accounts for %s in neither list, though the "+
-				"renderer puts it on the issue's volume: it belongs on the delete list or in an exemption, "+
-				"and a mention inside an exemption's reason is neither", documented)
-		}
+	for _, backend := range backendsRunning(t, role) {
+		t.Run(string(backend), func(t *testing.T) {
+			for _, dir := range issueVolumeDirectories(t, issue, role, backend) {
+				documented := documentedPath(dir, issue, role)
+				onDeleteList := namesPathOrAncestor(deleted, documented)
+				isExempt := namesPathOrAncestor(exempt, documented)
+				switch {
+				case onDeleteList && isExempt:
+					t.Errorf("docs/kubernetes.md's reclaim paragraph both deletes and exempts %s: the operator is "+
+						"told to remove it and to leave it, so one of the two bullets is wrong", documented)
+				case !onDeleteList && !isExempt:
+					t.Errorf("docs/kubernetes.md's reclaim paragraph accounts for %s in neither list, though the "+
+						"renderer puts it on the issue's volume: it belongs on the delete list or in an exemption, "+
+						"and a mention inside an exemption's reason is neither", documented)
+				}
+			}
+		})
 	}
+}
+
+// documentedPath is dir as the paragraph spells it. A per-role or per-issue directory reaches the
+// prose as a placeholder, since no document can name every role and every issue, so its segment is
+// rewritten to the form the paragraph uses rather than matched loosely, and an unrelated path that
+// happens to share a prefix cannot stand in for it. The role's state home is rewritten wherever it
+// opens the path, not only as the whole of it: a backend puts its own directories under it (Claude
+// Code's CLAUDE_CONFIG_DIR, claudeConfigDir), and those reach the prose under `<role>` as well.
+func documentedPath(dir, issue string, role claim.Role) string {
+	home := roleStateHome(role)
+	if rest, under := strings.CutPrefix(dir, home); under && (rest == "" || strings.HasPrefix(rest, "/")) {
+		return path.Dir(home) + "/<role>" + rest
+	}
+	if dir == uvPythonDir(issue) {
+		return path.Dir(dir) + "/<issue>"
+	}
+	return dir
 }
 
 // No path the delete list names is an ancestor of, or equal to, a path the exemptions hold back.
@@ -107,19 +123,29 @@ func TestTheReclaimParagraphNeverDeletesWhatItExempts(t *testing.T) {
 	}
 }
 
-// issueVolumeDirectories is what a role and the pod are told to write under the issue's
-// volume, taken from the two renderers that tell them: roleEnvironment, which carries the role's
-// temporary directory, its XDG homes and the three tool caches, and the issue pod's agentEnv, which
-// carries uv's cache and Pythons. A value under TreeRoot is on that volume, since TreeRoot is where
-// the issue's claim is mounted (issueVolume); XDG_CONFIG_HOME, under the pod's in-memory home, is
-// outside it and drops out here without being listed.
-func issueVolumeDirectories(issue string, role claim.Role) []string {
-	l := launch{
-		spec:      runtime.SpawnSpec{Tree: "legion", Issue: issue},
-		workspace: TreeRoot + "/workspaces/owner/repo/" + issue,
+// issueVolumeDirectories is what a role and the pod are told to write under the issue's volume,
+// taken from the start environment the runtime renders for a launch of the issue's pod on backend
+// (mainEnvironment): the issue pod's agentEnv, which carries uv's cache and Pythons;
+// roleEnvironment, which carries the role's temporary directory, its XDG homes and the three tool
+// caches; the backend's own variables, such as a Claude Code launch's CLAUDE_CONFIG_DIR; and
+// PUBLIC_LEAK_CHECK, the check the pod's launcher installs under the scratch, whose value is the
+// check's file and is accounted for by its directory. A value under TreeRoot is on that volume,
+// since TreeRoot is where the issue's claim is mounted (issueVolume); XDG_CONFIG_HOME, under the
+// pod's in-memory home, is outside it and drops out here without being listed.
+func issueVolumeDirectories(t *testing.T, issue string, role claim.Role, backend runtime.Backend) []string {
+	t.Helper()
+	r, err := configure(goldenOptions())
+	if err != nil {
+		t.Fatal(err)
 	}
+	token, err := claim.NewToken(testProject, issue, role)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := testSpec(t, token, role, issue)
+	spec.Backend = backend
 	var dirs []string
-	for _, env := range append(roleEnvironment(role), issuePod{}.agentEnv(l)...) {
+	for _, env := range r.mainEnvironment(launchOf(t, r, spec)) {
 		// LEGION_WORKSPACE is on the volume but is not a directory this layout creates to absorb what a
 		// tool writes: it is the issue's checkout, the work itself, and the remedy deletes nothing in
 		// it. Every other variable pointing under TreeRoot is scratch and belongs in the accounting.
@@ -129,6 +155,23 @@ func issueVolumeDirectories(issue string, role claim.Role) []string {
 		dirs = append(dirs, env.Value)
 	}
 	return dirs
+}
+
+// backendsRunning is every backend runtime.Backends declares for role, in name order: what the two
+// accounting checks walk, so a backend added to that table is checked with no edit to them. None
+// at all fails, since a walk of no start environment would report agreement.
+func backendsRunning(t *testing.T, role claim.Role) []runtime.Backend {
+	t.Helper()
+	var backends []runtime.Backend
+	for _, backend := range slices.Sorted(maps.Keys(runtime.Backends)) {
+		if runtime.Backends[backend].Runs(role) {
+			backends = append(backends, backend)
+		}
+	}
+	if len(backends) == 0 {
+		t.Fatalf("runtime.Backends declares no backend that runs %s, so there is no start environment to read", role)
+	}
+	return backends
 }
 
 // reclaimParagraphLists reads the paragraph's two markdown lists: the paths the delete list tells
