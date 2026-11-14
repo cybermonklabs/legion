@@ -153,6 +153,10 @@ export const borderStrongHover = "hover:border-slate-300 dark:hover:border-slate
 export const focusBorder = "focus:border-sky-600 dark:focus:border-sky-400";
 export const focusRing = "focus:ring-sky-600 dark:focus:ring-sky-400";
 export const focusVisibleRing = "focus-visible:ring-sky-600 dark:focus-visible:ring-sky-400";
+/** `focusVisibleRing` drawn on a mark inside its control (a `group`): the rewrite badge's pill,
+ *  whose button is a larger tap target around it. */
+export const groupFocusVisibleRing =
+  "group-focus-visible:ring-2 group-focus-visible:ring-sky-600 dark:group-focus-visible:ring-sky-400";
 /** `focusVisibleRing` for a wrapper whose focusable control is invisible inside it (e.g. a
  * native `<select>` laid over a badge): the ring shows on the wrapper when the control has
  * keyboard focus. */

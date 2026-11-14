@@ -9,6 +9,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { createPortal } from "react-dom";
 
 import { type ArtifactOwner, api, type DeclineAskInput, type WriteBounds } from "../../api/client";
 import { inboxQuery, whoAmIQuery } from "../../api/queries";
@@ -20,6 +21,7 @@ import type {
   CreateCommentInput,
   InboxRow,
 } from "../../api/types";
+import { AnchoredPanel } from "../../components/AnchoredPanel";
 import { CopyButton } from "../../components/CopyButton";
 import { ChevronIcon } from "../../components/DisclosureToggle";
 import { QueryError } from "../../components/QueryError";
@@ -36,6 +38,7 @@ import {
   inputClasses,
   linkHoverText,
   linkText,
+  menuRule,
   primaryButtonBg,
   primaryButtonDisabled,
   primaryButtonEnabledHoverBg,
@@ -67,6 +70,7 @@ import {
 } from "./AskCompletionCard";
 import { AskHandOnPicker } from "./AskHandOnPicker";
 import { AskChoiceRow } from "./AskOptionRow";
+import { AskRecipients } from "./AskRecipients";
 import { AskRewriteBadge } from "./AskRewriteBadge";
 import { type AskMenuItem, AskSplitButton } from "./AskSplitButton";
 import { AskThread } from "./AskThread";
@@ -156,6 +160,10 @@ export interface AskCardProps {
   /** The reply a deep link named: the Conversation marks that reply and opens the card's
    *  collapsed thread over it. No other surface lands on a reply. */
   currentReplyId?: string;
+  /** A decision block's header, where the card draws its provenance line (`frame="block"`):
+   *  null while the block has not mounted it yet. A block host that passes none gets the line
+   *  in the card. */
+  provenanceSlot?: HTMLElement | null;
 }
 
 /** Moves focus from inside the form to the nearest focusable ancestor (in the Inbox, the row, so
@@ -241,6 +249,7 @@ export function AskCard({
   markRead = false,
   unread,
   currentReplyId,
+  provenanceSlot,
 }: AskCardProps): ReactNode {
   const {
     answerFailure,
@@ -289,7 +298,9 @@ export function AskCard({
     onAnswered,
   });
   const [ownWordsOpen, setOwnWordsOpen] = useState(false);
-  const [handlesOpen, setHandlesOpen] = useState(false);
+  // The asker's chevron opens a popover: the session's handles and whom the answer reaches.
+  const [askerOpen, setAskerOpen] = useState(false);
+  const askerRef = useRef<HTMLButtonElement>(null);
   const [referencesOpen, setReferencesOpen] = useState(false);
   // A change seeds the current answer's note; a compact card shows it rather than folding text
   // the save would send behind its disclosure. Set while rendering the first changing render,
@@ -407,6 +418,16 @@ export function AskCard({
       : rewrite;
   const original =
     showingOriginal && shownRewrite?.state === "done" ? shownRewrite.original : undefined;
+  // In a decision block the agent's wording stands in place of the document's text: the block's
+  // frame is marked while it does, and its content hole hides (`styles.css`). The mark is on the
+  // frame, outside the editor's content, so the editor reads nothing of it.
+  const showsOriginalInBlock = inBlock && original !== undefined;
+  useLayoutEffect(() => {
+    const frameElement = articleRef.current?.closest('[data-proof-block-type="ask"]');
+    if (!showsOriginalInBlock || frameElement == null) return undefined;
+    frameElement.setAttribute("data-ask-original", "");
+    return () => frameElement.removeAttribute("data-ask-original");
+  }, [showsOriginalInBlock]);
   const startRewrite = () => {
     if (isApproval || rewriteRunning) return;
     setShowingOriginal(false);
@@ -784,12 +805,84 @@ export function AskCard({
     );
   }
 
+  // The provenance line's parts, drawn in the card or in a decision block's header.
+  const provenanceItems = (
+    <>
+      <span className="flex min-w-0 items-center gap-x-1.5 whitespace-nowrap">
+        {turnLabel === null ? null : (
+          <span
+            className={`min-w-0 truncate font-semibold ${textSecondaryOnSurface}`}
+            data-testid={`turn-${displayedAsk.id}`}
+          >
+            {turnLabel}
+          </span>
+        )}
+        {turnLabel === null ? null : (
+          <span className="shrink-0" aria-hidden="true">
+            ·
+          </span>
+        )}
+        <span className="flex min-w-0 items-center gap-x-1.5">
+          {displayedAsk.author.id === "" ? (
+            "asked"
+          ) : (
+            // The asker's button keeps its name and opens the popover; a session's live link
+            // sits beside it, outside the button. `whitespace-pre` keeps the space before an
+            // attribution suffix, which a flex item would drop.
+            <AgentName
+              actor={displayedAsk.author}
+              className="flex min-w-0 items-center whitespace-pre"
+              control={(name) => (
+                <button
+                  aria-expanded={askerOpen}
+                  aria-haspopup="dialog"
+                  className={`flex min-w-0 items-center gap-1 ${textMutedHoverToSecondary}`}
+                  data-ask-asker=""
+                  onClick={() => setAskerOpen((open) => !open)}
+                  ref={askerRef}
+                  type="button"
+                >
+                  <TruncatedText className="min-w-0" title={askerTitle}>
+                    {name}
+                  </TruncatedText>
+                  <ChevronIcon expanded={askerOpen} />
+                </button>
+              )}
+              kind="control"
+            />
+          )}
+          <span className="shrink-0" aria-hidden="true">
+            ·
+          </span>
+          <Timestamp at={displayedAsk.created_at} />
+        </span>
+      </span>
+      {isApproval ? null : (
+        <AskRewriteBadge
+          onRetry={startRewrite}
+          onToggle={() => setShowingOriginal((shown) => !shown)}
+          rewrite={shownRewrite}
+          running={rewriting.isPending}
+          showingOriginal={showingOriginal}
+        />
+      )}
+      {reference === undefined ? null : (
+        <span className="ml-auto shrink-0">
+          <CopyRefButton route={reference} />
+        </span>
+      )}
+    </>
+  );
+
   return (
     <article
       aria-label={`Urgency: ${URGENCY_LABELS[urgency]}`}
       className={
         inBlock
-          ? "relative mt-3"
+          ? // The agent's wording takes the place of the hidden text, right under the header.
+            showsOriginalInBlock
+            ? "relative"
+            : "relative mt-3"
           : `relative rounded-xl border-l-4 shadow-sm ${isCompact ? "px-3 pt-3 pb-3" : "px-4 pt-4 pb-4"} ${card} ${askUrgencyAccent[urgency]}`
       }
       // The one handle on a card as a whole, carrying the question the card draws: a page-level
@@ -826,105 +919,83 @@ export function AskCard({
         {/* One provenance line, above the question as a message's sender is: whose turn it is
             where it is not the reader's own, who asked, when, the rewrite's badge, and the ask's
             own reference at the line's end. Above the question it stays where it is when the
-            badge swaps the wording in place, so the badge is pressed back where it was pressed.
-            The session's own handles - its ID, its title, its tmux target - are chrome a reader
-            wants perhaps once a week, so they fold behind the author chip and open onto their
-            own row. The names are the parts that give up width: a separator that wrapped left a
-            line opening - or ending - on a bare "·". A block ask the server indexed with no
-            pending author has an empty label and still says when it was asked. The reader's own
-            question is waiting on them wherever it is drawn, so "Waiting on you" is a line they
-            do not need and the turn is named only where it is somebody else's. */}
-        <div
-          // One line, whose names truncate before the copy control wraps away from it; the
-          // session's handles, once opened, take a row of their own beneath it.
-          className={`mb-1.5 flex items-center gap-x-1.5 text-xs ${handlesOpen ? "flex-wrap" : ""} ${textMutedOnSurface}`}
-        >
-          <span className="flex min-w-0 items-center gap-x-1.5 whitespace-nowrap">
-            {turnLabel === null ? null : (
-              <span
-                className={`min-w-0 truncate font-semibold ${textSecondaryOnSurface}`}
-                data-testid={`turn-${displayedAsk.id}`}
+            badge swaps the wording in place, so the badge is pressed back where it was pressed;
+            in a decision block it stands in the block's own header, above the document's text,
+            for the same reason. The names are the parts that give up width: a separator that
+            wrapped left a line opening - or ending - on a bare "·". A block ask the server
+            indexed with no pending author has an empty label and still says when it was asked.
+            The reader's own question is waiting on them wherever it is drawn, so "Waiting on
+            you" is a line they do not need and the turn is named only where it is somebody
+            else's. */}
+        {inBlock && provenanceSlot != null ? (
+          createPortal(
+            <>
+              <span aria-hidden="true">·</span>
+              {provenanceItems}
+            </>,
+            provenanceSlot
+          )
+        ) : inBlock && provenanceSlot === null ? null : (
+          <div className={`mb-1.5 flex items-center gap-x-1.5 text-xs ${textMutedOnSurface}`}>
+            {provenanceItems}
+          </div>
+        )}
+        {askerOpen ? (
+          // What a reader wants perhaps once a week, one click away behind the asker's chevron:
+          // the session's own handles - its ID, its title, its tmux target - and every session
+          // a person's answer and replies reach, each of which the reader can take off the ask.
+          <AnchoredPanel
+            anchorRef={askerRef}
+            className={`z-50 w-80 space-y-3 rounded-lg border p-3 shadow-lg outline-none ${card} ${borderDefault}`}
+            flip
+            label={askerTitle}
+            onDismiss={() => setAskerOpen(false)}
+            role="dialog"
+          >
+            {sessionAuthor === undefined ? null : (
+              <div
+                className={`flex flex-wrap items-center gap-x-3 gap-y-1 text-xs ${textMutedOnSurface}`}
               >
-                {turnLabel}
-              </span>
-            )}
-            {turnLabel === null ? null : (
-              <span className="shrink-0" aria-hidden="true">
-                ·
-              </span>
-            )}
-            <span className="flex min-w-0 items-center gap-x-1.5">
-              {sessionAuthor === undefined ? (
-                <TruncatedText className="min-w-0" title={askerTitle}>
-                  {displayedAsk.author.id === "" ? (
-                    "asked"
-                  ) : (
-                    <AgentName actor={displayedAsk.author} />
-                  )}
-                </TruncatedText>
-              ) : (
-                // The asker's button keeps its name and opens the session's copy handles; the
-                // component's live link sits beside it, outside the button. `whitespace-pre`
-                // keeps the space before an attribution suffix, which a flex item would drop.
-                <AgentName
-                  actor={sessionAuthor}
-                  className="flex min-w-0 items-center whitespace-pre"
-                  control={(name) => (
-                    <button
-                      aria-expanded={handlesOpen}
-                      className={`flex min-w-0 items-center gap-1 ${textMutedHoverToSecondary}`}
-                      onClick={() => setHandlesOpen((open) => !open)}
-                      type="button"
-                    >
-                      <TruncatedText className="min-w-0" title={askerTitle}>
-                        {name}
-                      </TruncatedText>
-                      <ChevronIcon expanded={handlesOpen} />
-                    </button>
-                  )}
-                  kind="control"
-                />
-              )}
-              <span className="shrink-0" aria-hidden="true">
-                ·
-              </span>
-              <Timestamp at={displayedAsk.created_at} />
-            </span>
-          </span>
-          {isApproval ? null : (
-            <AskRewriteBadge
-              onRetry={startRewrite}
-              onToggle={() => setShowingOriginal((shown) => !shown)}
-              rewrite={shownRewrite}
-              running={rewriting.isPending}
-              showingOriginal={showingOriginal}
-            />
-          )}
-          {reference === undefined ? null : (
-            <span className="ml-auto shrink-0">
-              <CopyRefButton route={reference} />
-            </span>
-          )}
-          {!handlesOpen ? null : (
-            <span className="flex basis-full flex-wrap items-center gap-x-1.5">
-              {sessionAuthor === undefined ? null : (
                 <CopyButton value={sessionAuthor.id} what="session ID">
                   ID
                 </CopyButton>
-              )}
-              {sessionTitle === undefined || sessionTitle === "" ? null : (
-                <CopyButton value={sessionTitle} what="session title">
-                  title
-                </CopyButton>
-              )}
-              {tmuxTarget === undefined ? null : (
-                <CopyButton value={tmuxTarget} what="tmux target">
-                  {tmuxTarget}
-                </CopyButton>
-              )}
-            </span>
-          )}
-        </div>
+                {sessionTitle === undefined || sessionTitle === "" ? null : (
+                  <CopyButton value={sessionTitle} what="session title">
+                    title
+                  </CopyButton>
+                )}
+                {tmuxTarget === undefined ? null : (
+                  <CopyButton value={tmuxTarget} what="tmux target">
+                    {tmuxTarget}
+                  </CopyButton>
+                )}
+              </div>
+            )}
+            {sessionAuthor === undefined ? null : (
+              <div aria-hidden="true" className={`h-px ${menuRule}`} />
+            )}
+            <AskRecipients
+              askId={displayedAsk.id}
+              claimant={threadQuery.data?.claimant ?? null}
+              followers={threadQuery.data?.followers ?? []}
+              owner={displayedAsk}
+              route={threadQuery.data?.route ?? null}
+              routeHolder={threadQuery.data?.route_holder ?? null}
+              routeStatus={threadQuery.data?.route_status ?? null}
+            />
+          </AnchoredPanel>
+        ) : null}
+        {/* The agent's wording in a decision block stands in place of the document's text,
+            which the block hides while it does (`data-ask-original`); the document still holds
+            the rewrite. */}
+        {inBlock && original !== undefined ? (
+          <div
+            className={`text-[15px] leading-relaxed font-medium ${textPrimaryOnSurface} ${askQuestionProse}`}
+            data-ask-question=""
+          >
+            <MarkdownBody markdown={original.question} source={source} />
+          </div>
+        ) : null}
         {/* An approval request names the document and version it asks for, as a link: the
             question under it begins "Approve", so no label repeats that it is one. */}
         {isApproval && documentLink ? (

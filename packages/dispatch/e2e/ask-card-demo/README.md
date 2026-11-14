@@ -11,11 +11,19 @@ the back end is stubbed and the text invented.
 ## What it shows
 
 - The card's split button: Answer, a thin rule, and a chevron that opens one menu with Rewrite
-  (`r`), Define selected words (`d`), Ask back (`b`), Hand this question to… (`a`) and Decline
-  to answer (`n`). An approval request's menu holds Define, Ask back and Hand this question to.
+  (`r`), Ask back (`b`), Hand this question to… (`a`), Decline to answer (`n`) and Define
+  selected words (`d`). An approval request's menu holds Ask back, Hand this question to and
+  Define.
 - One badge for a rewrite: **Rewriting…**, **Rewritten** (press it, or `w`, for the original
   wording in place; it then reads **Original**), and **Rewrite failed** (press it, or `r`, to
-  try again). The ask Dispatch's check rewrote before the reader saw it wears the same badge.
+  try again; why it failed is the badge's tooltip and nowhere else). The ask Dispatch's check
+  rewrote before the reader saw it wears the same badge.
+- A rewritten decision block in a document: the block's header carries the badge, and the badge
+  or `w` shows the agent's question and options in the block in place of the document's text,
+  which still holds the rewrite.
+- The chevron beside the asking agent's name opens a popover: the session's handles to copy, and
+  under **Reaches N** every session a person's answer and replies reach, each with its Unfollow
+  or Unsubscribe.
 - Define: select words in an ask's question or options and press `d` (or the menu item). A small
   popover beside the words says what they mean, from the issue's record, with a link to where
   the documents define them; the asking agent's own words join it under the agent's name.
@@ -35,6 +43,7 @@ The fixtures to try it on (project PANE, signed in as `alice`):
 - PANE-2: the ask Dispatch's check rewrote before it reached the Inbox.
 - PANE-1: an approval request; its document reads in the Inbox's reading pane, and its card is on
   the issue's Conversation tab.
+- PANE-6: a decision block in the issue's spec that the check rewrote (`/issues/PANE-6/spec`).
 
 ## Files
 
@@ -119,3 +128,7 @@ opens by its fragment address.
   the prototype's own; no Dispatch contract holds it yet.
 - Document edits are acknowledged and kept for the tab only, and every past version of a
   document reads as its current text.
+- The rewritten decision block comes already rewritten: its spec holds the rewrite as its live
+  text. The server's rewrite of a block writes that new version of the document itself.
+- An Unsubscribe on the Reaches list lasts until the page reloads, and an Unfollow for the tab;
+  the server cuts the route and tells the session.

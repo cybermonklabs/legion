@@ -23,6 +23,7 @@ import {
   PROJECT,
   PROJECTS,
   READER,
+  SUBSCRIBERS,
   USERS,
 } from "./fixtures";
 import { type DemoAnswer, type DemoRoute, goTime, notFound, ok } from "./http";
@@ -54,6 +55,11 @@ export class DemoServer {
   private readonly replies = new Map<string, Comment[]>();
   private readonly definitions = new Map<string, HeldDefinition>();
   private readonly failedOnce = new Set<string>();
+  /** Each issue's subscribers, which an Unsubscribe on a card's Reaches list takes away for the
+   *  page's lifetime. */
+  private readonly subscribers = new Map(
+    Object.entries(SUBSCRIBERS).map(([key, list]) => [key, [...list]])
+  );
   private eventId = 1_000;
   private readonly eventListeners = new Set<(id: string, event: DispatchEvent) => void>();
   /** Every request no route of the stub answered, for the screenshot run to read. */
@@ -205,7 +211,41 @@ export class DemoServer {
     { method: "GET", pattern: /^\/api\/v1\/schema\/blocks$/, answer: () => ok(blockSchema) },
     { method: "GET", pattern: /^\/api\/v1\/credential-requests$/, answer: () => ok(null) },
     { method: "GET", pattern: /^\/api\/v1\/settings\/legion$/, answer: () => ok([]) },
-    { method: "GET", pattern: /^\/api\/v1\/issues\/[^/]+\/subscribers$/, answer: () => ok([]) },
+    {
+      method: "GET",
+      pattern: /^\/api\/v1\/issues\/([^/]+)\/subscribers$/,
+      answer: ([key]) => ok(this.subscribers.get(key) ?? []),
+    },
+    {
+      method: "DELETE",
+      pattern: /^\/api\/v1\/issues\/([^/]+)\/subscribers\/([^/]+)$/,
+      answer: ([key, session]) => {
+        const list = this.subscribers.get(key) ?? [];
+        this.subscribers.set(
+          key,
+          list.filter((one) => one.session_id !== session)
+        );
+        return { status: 204, body: null };
+      },
+    },
+    {
+      method: "DELETE",
+      pattern: /^\/api\/v1\/asks\/([^/]+)\/followers\/([^/]+)$/,
+      answer: ([id, session]) => {
+        this.update(
+          id,
+          (row) => ({
+            ...row,
+            thread: {
+              ...row.thread,
+              followers: (row.thread.followers ?? []).filter((one) => one.session_id !== session),
+            },
+          }),
+          "ask.unfollowed"
+        );
+        return { status: 204, body: null };
+      },
+    },
     { method: "POST", pattern: /^\/auth\/logout$/, answer: () => ({ status: 204, body: null }) },
   ];
 

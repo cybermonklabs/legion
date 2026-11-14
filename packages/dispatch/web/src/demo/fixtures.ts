@@ -2,7 +2,7 @@
 // project, PANE, with the open questions and documents the pictures show. Every word here is
 // invented; no production read went into it, so the fixtures live in the repository and the
 // single file inlines them with the app.
-import type { Agent, InboxRow, IssueSummary, Project } from "../api/types";
+import type { Agent, InboxRow, IssueSummary, Project, Subscriber } from "../api/types";
 import type { AskRewrite } from "../features/inbox/ask-rewrite";
 
 /** The moment the page's clock starts from (`clock.ts`), so every age reads the same. */
@@ -29,20 +29,41 @@ const ORDER = {
   kind: "session",
   origin: { session_title: "rollout architect" },
 } as const;
+/** A session that asked nothing and hears PANE-5 through a subscription to the issue. */
+const REVIEWER = {
+  id: "5e6f7a8b-9c0d-4e1f-8a2b-3c4d5e6f7a8b",
+  kind: "session",
+  origin: { session_title: "lease-mirror reviewer" },
+} as const;
 
-export const AGENTS: Agent[] = [MIRROR, TOOL, ORDER].map((actor, index) => ({
+export const AGENTS: Agent[] = [MIRROR, TOOL, ORDER, REVIEWER].map((actor, index) => ({
   capabilities: ["btw"],
   dir: "/work/pane",
   host: "devbox",
   last_activity: minutesAgo(2 + index),
   last_seen: Math.floor(Date.parse(DEMO_CLOCK) / 1000) - 30,
   machine_id: "machine-1",
-  open_asks: 1,
+  open_asks: actor === REVIEWER ? 0 : 1,
   roles: [],
   session_id: actor.id,
   state: "running",
   title: actor.origin.session_title,
 }));
+
+/** The sessions subscribed to each issue's topics (`GET /api/v1/issues/{key}/subscribers`):
+ *  what an ask's Reaches list shows beside its followers. */
+export const SUBSCRIBERS: Record<string, Subscriber[]> = {
+  "PANE-5": [
+    {
+      last_seen: Math.floor(Date.parse(DEMO_CLOCK) / 1000) - 30,
+      live: true,
+      removable: true,
+      session_id: REVIEWER.id,
+      title: REVIEWER.origin.session_title,
+      topics: ["notifications.dispatch.issue.PANE-5.>"],
+    },
+  ],
+};
 
 export const USERS = ["alice", "bruno", "chen", "dana"];
 
@@ -108,17 +129,21 @@ export function issueSummary(issue: DemoIssue, openAsks: number): IssueSummary {
   } as unknown as IssueSummary;
 }
 
-const EMPTY_THREAD = {
-  answers: [],
-  claimant: null,
-  edits: [],
-  followers: [],
-  replies: [],
-  route: null,
-  route_holder: null,
-  route_status: null,
-  route_status_reason: null,
-};
+/** An ask's thread as the Inbox row carries it: its asking session follows it, as every asker
+ *  does, and nobody has replied yet. */
+function threadOf(author: InboxRow["author"], at: string): InboxRow["thread"] {
+  return {
+    answers: [],
+    claimant: null,
+    edits: [],
+    followers: author.kind === "session" ? [{ session_id: author.id, since: at }] : [],
+    replies: [],
+    route: null,
+    route_holder: null,
+    route_status: null,
+    route_status_reason: null,
+  };
+}
 
 /** An Inbox row as the stub answers it: the read the design adds a rewrite to. */
 export type DemoRow = InboxRow & { rewrite?: AskRewrite };
@@ -165,7 +190,7 @@ function ask(
     question: "",
     snoozed_until: null,
     state: "open",
-    thread: EMPTY_THREAD,
+    thread: threadOf(author, minutesAgo(minutes)),
     urgency: "med",
     waiting_on: "human",
     waiting_on_person: READER,
@@ -181,6 +206,26 @@ export const CHECKED_ASK_ID = "a2000000-0000-4000-8000-000000000002";
 export const ORDER_ASK_ID = "a3000000-0000-4000-8000-000000000003";
 /** The approval request. */
 export const APPROVAL_ASK_ID = "a1000000-0000-4000-8000-000000000001";
+
+/** The decision block in PANE-6's spec, and its ask: the check rewrote it, so the document holds
+ *  the rewritten text and the ask keeps the agent's wording (`document-fixtures.ts`). */
+export const COLD_START_ASK_ID = "a6000000-0000-4000-8000-000000000006";
+export const COLD_START_BLOCK_ID = "cold-start";
+export const COLD_START = {
+  question:
+    "Should a cold start of the mirror replay the whole ledger, or load the last snapshot and replay only what came after it?\n\nA full replay takes about 40 minutes on today's ledger. The mirror writes a snapshot every 6 hours, so loading one leaves at most 6 hours of leases to replay, about 4 minutes.\n\n**Recommended: from the snapshot.** A snapshot holds every lease a full replay would rebuild, and the mirror is back 36 minutes sooner.",
+  options: [
+    {
+      label: "Full replay",
+      description: "The mirror replays every lease from the ledger's start, about 40 minutes.",
+    },
+    {
+      label: "From the snapshot",
+      description:
+        "The mirror loads the last snapshot and replays what came after it, about 4 minutes.",
+    },
+  ],
+};
 
 const DRY_RUN_ORIGINAL = {
   question: "Ship `--dry-run` as is, or hold it for the R3 flip audit?",
@@ -291,10 +336,22 @@ export const ASKS: DemoAsk[] = [
     },
   },
   {
-    row: ask("a6000000-0000-4000-8000-000000000006", "PANE-6", MIRROR, 60 * 23, {
-      question: "Does a cold start replay the whole ledger?",
-      options: [{ label: "Yes" }, { label: "No, from the last snapshot" }],
+    row: ask(COLD_START_ASK_ID, "PANE-6", MIRROR, 60 * 23, {
+      block_id: COLD_START_BLOCK_ID,
+      block_artifact: { id: "PANE-6-spec", primary: true, slug: "spec-md" },
+      question: COLD_START.question,
+      options: COLD_START.options,
       urgency: "med",
+      edited_at: minutesAgo(60 * 23 - 1),
+      rewrite: {
+        by: "check",
+        state: "done",
+        at: minutesAgo(60 * 23 - 1),
+        original: {
+          question: "Cold start: full replay or snap + tail?",
+          options: [{ label: "Full replay" }, { label: "From the snapshot" }],
+        },
+      },
     }),
   },
 ];

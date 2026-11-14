@@ -34,6 +34,19 @@ const FLIP = "a5000000-0000-4000-8000-000000000005";
 const CHECKED = "a2000000-0000-4000-8000-000000000002";
 const ORDER = "a3000000-0000-4000-8000-000000000003";
 const APPROVAL = "a1000000-0000-4000-8000-000000000001";
+/** The decision block in PANE-6's spec, which the check rewrote. */
+const COLD_START = "a6000000-0000-4000-8000-000000000006";
+const BLOCK = '[data-proof-block-type="ask"]';
+
+/** PANE-6's spec with its rewritten decision block in the middle of the window. */
+async function openBlock(page: Page): Promise<void> {
+  await open(page, "/issues/PANE-6/spec", `${BLOCK} [data-ask-rewrite="done"]`);
+  await page
+    .locator(BLOCK)
+    .first()
+    .evaluate((element) => element.scrollIntoView({ block: "center" }));
+  await page.waitForTimeout(400);
+}
 
 interface Shot {
   name: string;
@@ -177,6 +190,15 @@ const shots: Shot[] = [
     take: async (page) => {
       await inbox(page, ORDER);
       await rewrite(page, ORDER, "failed");
+      // The reason is the badge's tooltip alone: the picture needs no hover, and no other part
+      // of the card says why.
+      const badge = page.locator(`${card(ORDER)} [data-ask-rewrite="failed"]`);
+      const reason = "changed an option's label";
+      check(
+        (await badge.getAttribute("title"))?.includes(reason) === true &&
+          (await page.locator(card(ORDER)).innerText()).includes(reason) === false,
+        "a failed rewrite says why in its badge's tooltip and nowhere else on the card"
+      );
     },
   },
   {
@@ -309,6 +331,52 @@ const shots: Shot[] = [
         `the approval menu holds Ask back, Hand this question to and Define (${items.join(",")})`
       );
       await rest(page);
+    },
+  },
+  {
+    name: "ask-card-17-reaches",
+    viewport: DESKTOP,
+    take: async (page) => {
+      await inbox(page, FLIP);
+      await page.locator(`${card(FLIP)} [data-ask-asker]`).click();
+      const recipients = page.getByRole("dialog").locator('section[aria-label="Recipients"]');
+      await recipients.getByText("lease-mirror reviewer").waitFor();
+      await page.waitForTimeout(300);
+      check(
+        (await recipients.getByRole("button", { name: "Unfollow" }).count()) === 1 &&
+          (await recipients.getByRole("button", { name: "Unsubscribe" }).count()) === 1,
+        "the asker's popover lists the follower and the subscriber, each removable"
+      );
+      await rest(page);
+    },
+  },
+  {
+    name: "ask-card-18-block-rewritten",
+    viewport: DESKTOP,
+    take: openBlock,
+  },
+  {
+    name: "ask-card-19-block-original",
+    viewport: DESKTOP,
+    take: async (page) => {
+      await openBlock(page);
+      await page.locator(`${BLOCK} [data-ask-rewrite="done"]`).click();
+      await page.locator(`${BLOCK} [data-ask-rewrite="original"]`).waitFor();
+      await rest(page);
+      await page.waitForTimeout(300);
+      const shown = await page
+        .locator(`${BLOCK} [data-ask-card="${COLD_START}"] [data-ask-question]`)
+        .textContent();
+      const documentText = await page.locator(`${BLOCK} [data-proof-block-content]`).textContent();
+      const hidden = await page
+        .locator(`${BLOCK} [data-proof-block-content]`)
+        .evaluate((element) => getComputedStyle(element).display === "none");
+      check(
+        shown?.startsWith("Cold start: full replay") === true &&
+          hidden &&
+          documentText?.startsWith("Should a cold start") === true,
+        "the block's card shows the original wording in place; the document still holds the rewrite"
+      );
     },
   },
 ];

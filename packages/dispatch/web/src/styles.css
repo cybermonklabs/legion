@@ -496,6 +496,13 @@ a {
   display: block;
 }
 
+/* A rewritten decision whose card shows the agent's original wording (`AskCard`, the badge or
+   `w`): the card draws that wording in place of the document's text, so the content hole hides
+   while the card marks the frame `data-ask-original`. The document still holds the rewrite. */
+.proof-typed-block-ask[data-ask-original] > [data-proof-block-content] {
+  display: none;
+}
+
 /* A malformed decision shows its source list, the only place its options show. A blank item in
    that list (`-` alone: an empty item, an empty paragraph, or the editor's trailing break) is no
    option, so it shows no bullet where nothing is edited: in a body (`.dispatch-markdown`, a reply

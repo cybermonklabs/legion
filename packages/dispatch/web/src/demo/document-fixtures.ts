@@ -1,7 +1,13 @@
 // The ask card demo's documents (packages/dispatch/e2e/ask-card-demo/README.md): each issue's
 // spec, as its live text and its versions read. Every word here is invented, as in fixtures.ts.
 import type { ArtifactApprovalWithTrees } from "../api/types";
-import { APPROVAL_ASK_ID, DEMO_CLOCK, SPEC_MARKDOWN } from "./fixtures";
+import {
+  APPROVAL_ASK_ID,
+  COLD_START,
+  COLD_START_BLOCK_ID,
+  DEMO_CLOCK,
+  SPEC_MARKDOWN,
+} from "./fixtures";
 
 const hoursAgo = (hours: number) =>
   new Date(Date.parse(DEMO_CLOCK) - hours * 3_600_000).toISOString().replace(/\.000Z$/, "Z");
@@ -37,6 +43,21 @@ const HANDOVER_MARKDOWN = `# Lease handover
 ## Summary
 
 When a mirror stops, the leases it holds go back to the ledger in one batch, so the next holder does not wait for each lease to time out.
+`;
+
+/** The spec of PANE-6, with its open decision as the check's rewrite left it: the document holds
+ *  the rewritten question and options, and the ask keeps the wording the agent wrote. */
+const COLD_START_MARKDOWN = `# Cold start
+
+## Summary
+
+When the mirror starts with no leases of its own, it rebuilds them from the ledger before it takes any new ones.
+
+:::ask{#${COLD_START_BLOCK_ID} urgency="med"}
+${COLD_START.question}
+
+${COLD_START.options.map((option) => `- ${option.label}: ${option.description}`).join("\n")}
+:::
 `;
 
 /** One issue's spec: its text now, how many versions it has, and its approval. */
@@ -90,7 +111,7 @@ export const DOCUMENTS: DemoDocument[] = [
     version: 1,
   }),
   spec("PANE-5", SPEC_MARKDOWN, ["Retry for 60 seconds", "Renewal", "Flip audit"]),
-  plain("PANE-6", "Cold start"),
+  spec("PANE-6", COLD_START_MARKDOWN, ["Cold start", "Rewritten by the check"]),
 ];
 
 /** The spec's artifact id, as `issueSummary` and the approval requests name it. */
