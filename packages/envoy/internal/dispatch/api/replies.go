@@ -749,9 +749,9 @@ const threadReadMoves = `login = $1 and thread_id = $2 and read_through < least(
 // the first to take (events' lockEventOwner), after the update had already given this
 // transaction a transaction id to wait on it with.
 //
-// The owner is taken exclusively (store.LockOwner), where this route once took it in shared
-// mode, and that is what lets the project be taken before the row. Why that order closes no
-// cycle with any other writer of the row, the Inbox's Mark all read and its dismissal among
+// The owner is taken exclusively (store.LockOwnerAndRead), where this route once took it in
+// shared mode, and that is what lets the project be taken before the row. Why that order closes
+// no cycle with any other writer of the row, the Inbox's Mark all read and its dismissal among
 // them, is written once, on markInboxReadThreads (api/inbox_read.go), with the rest of the
 // read-mark lock order.
 func (s *server) putThreadRead(w http.ResponseWriter, r *http.Request) {

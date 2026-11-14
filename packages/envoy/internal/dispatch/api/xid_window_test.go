@@ -853,12 +853,13 @@ func TestXidWindowMessageDeliveryReply(t *testing.T) {
 	})
 }
 
-// A session takes a person's direct message as its own user turn. The route changes no code for
-// INFRA-636 and this test is what records why: its window is wider than one batch, and every
-// statement in it is a database statement - the message row's lock, the one read its ten checks
-// are judged by, the attempt's update and the batch appending message.accepted - with no
-// document work and no write advice among them. The event's owners are locked before the message
-// row (Events.LockOwners), and that lock assigns no transaction id.
+// A session takes a person's direct message as its own user turn. Its window is wider than one
+// batch, and every statement in it is a database statement - the message row's lock, the one
+// read its ten checks are judged by, the attempt's update and the batch appending
+// message.accepted - with no document work and no write advice among them. The route takes no
+// owner lock: the event of a direct message has no owner, and a message on an issue is refused
+// before any write, so the message row's lock, the window's first statement, is the one that
+// orders two accepts.
 func TestXidWindowDeliveryAccepted(t *testing.T) {
 	f := newXidDeliveryFixture(t)
 	created := postAgentMessage(t, f.handler, "s1", map[string]any{
