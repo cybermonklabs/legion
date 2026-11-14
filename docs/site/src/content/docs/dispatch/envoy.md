@@ -265,7 +265,13 @@ by name — `503` with reason `no_grant`, `consumer_limit` or `consumer_error`, 
 `not_requested` or `invalid_session_id` — and nothing is registered, so a session nothing delivers
 to never appears live. `consumer_limit` is the stream at its `max_consumers`: it can hold no
 further consumer, so that session receives nothing until an operator raises the cap. There is no
-second path: no session receives from a plain NATS subscription.
+second path: no session receives from a plain NATS subscription. A Legion worker's session also
+gets its claim's task value on its delivery subject, from the listener that relays its consumer:
+that value is the delivered copy of the Legion daemon's record of the claim's task, relayed from
+the daemons' task bucket, `legion_tasks`, and not a message, so it is no second path either. A
+listener relays it only when its NATS user holds the bucket's reads, which the `envoy-infra` grant
+for a listener, `ListenerPermissions`, includes beside the consumers' calls; no session's user
+holds anything of the bucket.
 A session's own NATS user may subscribe to every session's delivery subject, so a client holding
 one can read another session's delivery frames and answer one as delivered; it may read no other
 notification topic.
@@ -402,7 +408,8 @@ consumer per project for each: `legion-go-<project>-dispatch` (filtering
 `notifications.dispatch.issue.>` and the project's repository-mapping subject),
 `legion-go-<project>-github` (filtering each of the project's repositories) and
 `legion-go-<project>-wake` (filtering `notifications.legion.wake`, the listener's own wake).
-It sends its own notices to roles and to the
+It keeps each claim's task number in the task bucket `legion_tasks`, which it creates when it is
+missing and is the one writer of, and watches. It sends its own notices to roles and to the
 controller through the listener's HTTP API, not over NATS.
 
 So the NATS user the daemon connects as needs these permissions:
@@ -418,14 +425,37 @@ When `envoy-infra:gcp:NatsHub` renders this user, set its `daemon` field to `tru
 | `$JS.API.CONSUMER.CREATE.ENVOY_NOTIFICATIONS.>` | |
 | `$JS.API.CONSUMER.MSG.NEXT.ENVOY_NOTIFICATIONS.>` | |
 | `$JS.ACK.ENVOY_NOTIFICATIONS.>` | |
+| `$JS.API.INFO` | |
+| `$JS.API.STREAM.INFO.KV_legion_tasks` | |
+| `$JS.API.STREAM.CREATE.KV_legion_tasks` | |
+| `$JS.API.STREAM.UPDATE.KV_legion_tasks` | |
+| `$JS.API.DIRECT.GET.KV_legion_tasks.>` | |
+| `$JS.API.STREAM.MSG.GET.KV_legion_tasks` | |
+| `$KV.legion_tasks.>` | |
+| `$JS.API.CONSUMER.CREATE.KV_legion_tasks.>` | |
+| `$JS.API.CONSUMER.DELETE.KV_legion_tasks.>` | |
+| `$JS.FC.KV_legion_tasks.>` | |
 
-The last row is the subject a consumer acknowledges a message on. Replies to the API requests come
-back on `_INBOX.>`. The stored-message get (`STREAM.MSG.GET`) is how `legion state` reads each
-consumer's oldest waiting message, whose time is the consumer's lag; it only reads, one message at
-a time. A daemon whose user lacks it still runs. NATS does not answer a request it refuses, so the
-daemon's state shows each consumer with messages waiting as `unavailable: read the oldest waiting
-message: context deadline exceeded`, its waiting count still shown and the other consumers
-unchanged, and the daemon's log names the refused subject.
+The sixth row is the subject a consumer acknowledges a message on. Replies to the API requests come
+back on `_INBOX.>`. The stream's stored-message get (`STREAM.MSG.GET.ENVOY_NOTIFICATIONS`) is how
+`legion state` reads each consumer's oldest waiting message, whose time is the consumer's lag; it
+only reads, one message at a time. A daemon whose user lacks it still runs. NATS does not answer a
+request it refuses, so the daemon's state shows each consumer with messages waiting as
+`unavailable: read the oldest waiting message: context deadline exceeded`, its waiting count still
+shown and the other consumers unchanged, and the daemon's log names the refused subject.
+
+The rows from `$JS.API.INFO` on are the task bucket's. The daemon creates the bucket when it is
+missing (nats.go asks JetStream's account info, `$JS.API.INFO`, before it creates one), reads the
+bucket's epoch from its stream's creation time, and, when another project's daemon created it
+first, sends the update of the configuration it already holds; it reads one key with the two gets,
+writes and deletes each claim's value under `$KV.legion_tasks.>`, and watches the whole bucket
+through an ordered consumer, whose create, delete and flow-control replies are the last three
+rows. The watch delivers on `_INBOX.>`, so the bucket adds no subscribe. The bucket serves every
+project and the grant reaches every project's keys; a daemon writes and deletes only its own
+project's, the keys that start `legion-<project>-`. Unlike the stored-message get above, these
+rows are not optional: a daemon whose user lacks any of them refuses to boot, naming the bucket
+and the subject NATS refused, and so does a daemon that connects as the agents' shared session
+user, which holds nothing of the bucket by design.
 
 The consumer subjects end in `>`, so the grant reaches every consumer of `ENVOY_NOTIFICATIONS`,
 not just the daemon's three: a holder of the daemon's seed can read, recreate with another filter,
@@ -444,7 +474,8 @@ The `$JS.API` subjects are chosen by the NATS client library, not by Legion's co
 consumers written against another client library ask for different ones. So a grant is proven by
 running the daemon's consumers under exactly that grant, against a real server, and watching for a
 refusal: create them all, restart onto them, have Dispatch and GitHub events
-acknowledged, and read their lag as `legion state` does. The daemon logs every refusal at error as
+acknowledged, and read their lag as `legion state` does; create the task bucket, open it again, and
+write, read, watch and delete a claim's value. The daemon logs every refusal at error as
 `NATS refused the daemon a permission: its NATS user lacks that grant`, with the operation and the
 subject. `packages/daemon/internal/daemon/nats_permissions_test.go` in the repository runs that
 proof against the server images the hub runs, and `docs/kubernetes.md` says how the daemon's

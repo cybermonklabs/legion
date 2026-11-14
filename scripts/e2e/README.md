@@ -2070,6 +2070,11 @@ Its project names no `production_check`, so the role its checks are handed to is
 Its instructions tell each look to ask for its next one an hour on, which falls at or past that bound and so names no look of its own:
 the first look and the bound's last are the only two, which is what the root's pod reads between them need.
 
+Since daemon API contract 120 a worker takes its task from a value the Envoy listener relays out of the task bucket `legion_tasks` on NATS, and this is the only `elsewhere` script that drives tasks through a production listener ([`.github/e2e-scripts.json`](../../.github/e2e-scripts.json)).
+So a run of a branch at that contract passes only once production carries the bucket: its NATS grants (the envoy-infra release) and a listener image that runs the relay, the first two steps of dispatch://INFRA-3388.
+The run's daemon inherits the operator's environment, and it connects as a daemon's own NATS user only where that environment names one (`NATS_DAEMON_NKEY_SEED_FILE` or `NATS_DAEMON_NKEY_SEED`):
+on the agents' seed (`NATS_NKEY_SEED_FILE`) it refuses to boot, since that user holds no grant on the bucket, and with the grants but a listener older than the relay a worker is handed its value only at its registration and at each new epoch of its relay.
+
 ```sh
 LEGION_E2E_RUNTIME_CONTEXT=<restricted context> LEGION_E2E_IMAGE=ghcr.io/cybermonklabs/legion-worker@sha256:<digest> \
   LEGION_E2E_POD_SERVICE_ACCOUNT=<ServiceAccount the pods run as> \
@@ -4319,9 +4324,9 @@ Each pane's Oh My Pi overlay sets `retry.enabled: false`, so the host walks no c
 
 | step | driven by | read back as |
 | :--- | :--- | :--- |
-| `step1-a-529-keeps-the-task-and-walks-the-30-60-120-ladder` | nothing: the task the planner's claim has held since the daemon booted, whose stand-in answers 529 | the daemon's own first send of it, read off the delivery's read mark, then its five re-sends of that same task to that same session, each at its own armed wait (30 s, 60 s and 120 s of wall clock, then the two driven ones), the claim neither failed nor empty-handed, the issue not held, and the stand-in asked once per send for a request carrying the task itself |
+| `step1-a-529-keeps-the-task-and-walks-the-30-60-120-ladder` | nothing: the task the planner's claim has held since the daemon booted, whose stand-in answers 529 | the daemon's own first giving of it, read off the start of the first turn the claim began after the task was queued (the read mark it was read off before migration 20261113175649_task_numbers is gone), then the five times the daemon gives that same task to that same session again, each after its own armed wait (30 s, 60 s and 120 s of wall clock, then the two driven ones), the claim neither failed nor empty-handed, the issue not held, and the stand-in asked once per take for a request carrying the task itself |
 | `step2-the-sixth-turn-in-a-row-tells-the-controller` | nothing: the sixth turn of that run | exactly one `provider-errors` notice on the project's controller topic, naming the run of six turns, with the issue still in its phase — the notice is the run's one exit, and no attempt limit holds the issue |
-| `step3-a-content-filter-carries-no-status-and-the-task-goes-again` | one task delivered to the implementer once it has answered the warm-up task its seed left pending, with its stand-in then armed to end every turn with a content filter | the turn reported with no HTTP status at all, the task sent again after 30 s, the claim still holding it, the issue still `implementing` and its architect told nothing |
+| `step3-a-content-filter-carries-no-status-and-the-task-goes-again` | one task delivered to the implementer once it has answered the warm-up task its seed left pending, with its stand-in then armed to end every turn with a content filter | the turn reported with no HTTP status at all, the task given again after 30 s, the claim still holding it, the issue still `implementing` and its architect told nothing |
 | `step4-an-error-that-cannot-clear-fails-the-claim-and-holds-the-issue` | one task delivered to the tester once it has answered its own warm-up task, with its stand-in then armed to answer 400 | the turn reported with status 400, the claim failed and the issue held for its architect |
 | `step5-the-operator-stops-retries-and-reads-the-claims` | `legion claims stop`, then `legion claims retry --fresh-session`, then `legion claims list`, and the same retry of the claim step 4 failed, each the built `legion` against that daemon | the stopped planner retired, its retry running in a session that is not the one it recorded, the task its ladder kept sent to that fresh session, and the failed tester's claim running again |
 

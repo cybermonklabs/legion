@@ -99,10 +99,11 @@ which Oh My Pi runs after its startup, and that send marks it sent; the daemon's
 mode is marked sent right before its `claims/ready`, after which the daemon writes its start
 task's value, which the controller takes.
 Without the mark, a terminal's idle card would start its turn ahead of the start command, and in
-RPC mode a card's wake would fire once the host is idle after its startup, which can be before the
-daemon's prompt arrives. While the mark names this session (the instance's own and the host's live
-one) and its start was sent less than 30 s ago (`STARTUP_TURN_CAP_MS`), or is unsent and pi-envoy
-first read that unsent mark less than 30 s ago, the startup phase holds whatever `ctx.mode` is: an
+RPC mode a card's wake would fire once the host is idle after its startup, which can be before
+the controller has taken its start task. While the mark names this session (the instance's own
+and the host's live one) and its start was sent less than 30 s ago (`STARTUP_TURN_CAP_MS`), or is
+unsent and pi-envoy first read that unsent mark less than 30 s ago, the startup phase holds
+whatever `ctx.mode` is: an
 idle card goes as a `followUp` with no turn, and an idle check sends no wake, keeps the phase and
 checks again at the sent mark's cap, or every second while the start is unsent
 (`STARTUP_TURN_POLL_MS`, since no event tells pi-envoy of the send, nor of a start claim refused

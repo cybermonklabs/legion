@@ -1042,9 +1042,9 @@ var ErrNoSuchDelivery = errors.New("the claim holds no such delivery")
 // another id than the one being retired. Because pending_task_deliveries is keyed on the claim,
 // a delete that removes no row says one of two things, and they call for opposite answers: the
 // row holds nothing, which is the retirement this daemon already made (ErrNoSuchDelivery), or it
-// holds another delivery, which is a write that rotated the id — an interruption, a take-back —
-// whose answer the claim-write bound cut off and which committed all the same, so the store
-// holds B where memory holds A.
+// holds another delivery, which is a write of another delivery under the claim whose answer the
+// claim-write bound cut off and which committed all the same, so the store holds B where memory
+// holds A.
 //
 // The two are told apart because reading the second as a retirement already made would drop A
 // from memory and leave B stored: a delivery no machine holds, unconfirmed and never retired,

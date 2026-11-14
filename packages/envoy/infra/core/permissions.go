@@ -109,18 +109,20 @@ func sessionConsumerCalls() []string {
 	}
 }
 
-// taskBucketReads are the calls the listener's task relay makes on the Legion daemons' task bucket
-// (legiontasks.Bucket), which it opens and watches but never creates or writes: the bucket's
-// stream info (the open, and the epoch it reads, the stream's creation time), its direct and
-// stored-message gets (a key's current value, read when the key's role changes holder), its
-// watch's consumer create and delete, and their flow-control replies. The watch delivers on a
-// reply inbox, which the listener grant's subscribe already admits. The daemon is the bucket's
-// one writer (daemonpermissions.Grant), so these hold no account info, no create or update of the
-// stream and no publish to its keys: a listener that tried any of them is refused. Only the sets
-// of a user no session shares hold them (ListenerPermissions, and through it
-// ListenerHostPermissions), the sets of the listeners that give their sessions consumer delivery
-// and so relay their tasks; the bucket is not one of bus.ListenerBuckets, so listenerGrant, and
-// HostPermissions, DispatchPermissions and SessionPermissions with it, hold none of them.
+// taskBucketReads are the calls the listener's task relay may make on the Legion daemons' task
+// bucket (legiontasks.Bucket), which it opens and watches but never creates or writes: the
+// bucket's stream info (the open, and the epoch it reads, the stream's creation time), its direct
+// and stored-message gets, which read one key's value and allow nothing else, its watch's consumer
+// create and delete, and their flow-control replies. The relay itself makes no get: it relays each
+// key from its watch's copy of the bucket, a key's current record on a change of its role's holder
+// included (cmd/listener's taskRelay). The watch delivers on a reply inbox, which the listener
+// grant's subscribe already admits. The daemon is the bucket's one writer
+// (daemonpermissions.Grant), so these hold no account info, no create or update of the stream and
+// no publish to its keys: a listener that tried any of them is refused. Only the sets of a user no
+// session shares hold them (ListenerPermissions, and through it ListenerHostPermissions), the sets
+// of the listeners that give their sessions consumer delivery and so relay their tasks; the bucket
+// is not one of bus.ListenerBuckets, so listenerGrant, and HostPermissions, DispatchPermissions
+// and SessionPermissions with it, hold none of them.
 func taskBucketReads() []string {
 	return []string{
 		jsAPI + "STREAM.INFO." + legiontasks.Stream,

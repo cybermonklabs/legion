@@ -18,7 +18,7 @@ your cluster, from one published worker image.
 | A host for the daemon | Reachable from the pods on two ports: the API (`port`, 13370 by default) and the worker stream (`worker_stream_port`, the API port plus one). |
 | Postgres | Two databases: one for the daemon's record (`postgres_dsn`, or `LEGION_POSTGRES_DSN` in its environment), and one for the agents' conversations, which every pod reaches directly (`runtime.kubernetes.session_store`, required, with its key: `postgres` with `session_dsn_secret`, or `cloudsql-iam` with `session_database`; an issue pod's disk is deleted with the pod, so a conversation kept on it would die with it). The second may be another database of the same server; its login needs `USAGE, CREATE ON SCHEMA public`, since Oh My Pi creates its own two tables there. |
 | [Dispatch](/legion/dispatch/) | Its URL and a bearer token for Legion's agents, and the project's repositories mapped to it in Dispatch's Settings → Repositories → Projects, one of them the project's default ([below](#the-projects-repositories)). |
-| The Envoy listener and NATS | The listener's URL and API token, and the NATS URLs. The daemon reads Dispatch's issue events and each repository's GitHub events from Envoy's notification stream on NATS, and reaches agents through the listener. [Envoy](/legion/dispatch/envoy/) covers how a repository's webhooks reach the listener and the NATS subjects the daemon's user needs. |
+| The Envoy listener and NATS | The listener's URL and API token, and the NATS URLs. The daemon reads Dispatch's issue events and each repository's GitHub events from Envoy's notification stream on NATS, and reaches agents through the listener. It also hands each worker its task through a key-value bucket on that NATS, `legion_tasks`, which it creates at boot and writes, and which the listener relays to each worker's session; with no NATS a daemon launches no worker. [Envoy](/legion/dispatch/envoy/) covers how a repository's webhooks reach the listener and the NATS subjects the daemon's user needs, which a daemon that lacks any of the bucket's refuses to boot on. |
 | Three GitHub Apps | An **implement** App (the implementer's and merger's identity), a **review** App (every other role's) and an **Envoy** App (the webhook that feeds Envoy, and Dispatch's GitHub reads), each installed on the owner of every repository Legion works, with its private key ([below](#the-github-apps)). |
 | The worker image | `ghcr.io/cybermonklabs/legion-worker`, pinned by digest. |
 | A model route | An Oh My Pi provider file and settings overlay, and the credential they read ([below](#the-model-route)). |
@@ -554,6 +554,8 @@ What each part is for:
   store and its key, and have the database reachable from the pods, before the daemon boots.
 - **`nats_nkey_seed_file`** and **`nats_daemon_nkey_seed_file`** (optional) are the NATS nkey user
   seeds for the agents and for the daemon's own connection, each in a file only its owner can read.
+  Give the daemon a user of its own: a daemon that connects as the agents' seed, the user every
+  pane shares, holds no grant on the task bucket and refuses to boot, saying so.
 - **`runtime.kubernetes.agent_secrets`** (optional) enrolls every pod with the
   [Secrets Broker](/legion/broker/): `url` is the broker, and `token_file` is where the daemon's own
   projected ServiceAccount token for the broker's audience is mounted. The daemon logs in with that
@@ -598,6 +600,20 @@ What each part is for:
   `controller_wake_interval_seconds` also sets the period of the daemon's status repair, which
   puts back the Dispatch status of every issue it works whose status is not the status of the
   phase that issue stands in, so raising it to quiet the controller slows that repair with it.
+- **`worker_take_timeout_seconds`** (300) and **`worker_turn_start_timeout_seconds`** (1500) are
+  the two waits a worker's prompt budget (`prompt_failure_limit`) is charged on. A worker takes
+  its task: the daemon writes the task's number for the worker's claim, the worker reports seeing
+  it and asks to take it once its session is idle, and the take's answer carries the task's text.
+  The first bound is how long a ready, idle worker under no hold that reported seeing its task has
+  to ask for it; the second is how long after an accepted take the task's turn has to start, which
+  holds the harness's setup, an automatic compaction among it, and its default is twice the
+  compaction timeout and the longest measured setup added, not a floor. Past the first the worker
+  is charged; past the second it is charged and the task taken back under its number. A value
+  nobody reported seeing charges nobody, since what failed is the relay: the daemon writes it
+  again once per first bound and `legion state` names the claim ([Observe](#observe)). A turn's
+  start or end resets the count and a take does not, so a worker that takes and never starts a
+  turn is still retired at the limit. Time the daemon was not serving counts toward neither bound.
+  Each is a positive whole number of seconds; any other value is refused by name.
 - **`worker_wakes_per_minute`** (8) and **`worker_wake_burst`** (1) pace the wakes the daemon
   causes: the role processes it starts, and the tasks and notices it queues to wake a session that
   already runs. Each wake has its session read its whole context again, which the provider charges
@@ -975,6 +991,35 @@ Closing the terminal leaves the project without one, and the daemon logs
    at no counts: the migration fills none in from the past. An issue already in flight therefore
    reads counts that add up to less than its `rounds`, and a hook of `hooks:` counts from the
    first move back after the upgrade.
+
+   **The first upgrade to a release where a worker takes its task** (daemon API contract 120)
+   goes out in this order, so nothing is used before it exists: first the `envoy-infra` release
+   whose grants carry the task bucket `legion_tasks` (the daemon's user may create, update, read
+   and write it, the listener's user may only read it, and no session user gets anything of it);
+   then the Envoy listener image of the same release, which relays each claim's value to its
+   worker; then the daemon and the worker image together, in one apply. The daemon refuses to boot
+   without its grant, naming the bucket and the subject refused, and `legion probe-boot` reports
+   the same. With the listener left behind, a worker is handed its value only when it registers,
+   and `legion state` names each running claim whose value nobody reported seeing
+   ([Observe](#observe)). A worker whose plugin predates the release takes no task, so the daemon
+   moves it: a worker it can relaunch is relaunched onto the current plugin even inside the update
+   round the new image opens, and a role on Claude Code, whose plugin only its pod's image moves,
+   has its pod released by the idle release once nothing else holds it, its unpushed work saved
+   first. Beside that, the operator restarts two kinds of worker the daemon cannot move: a
+   controller an operator started (stop `legion controller start` and run it again from this
+   release, which the daemon's refusal of the old plugin asks for anyway), and every worker of a
+   daemon that cannot relaunch plugins, one that knows no plugin pair
+   (`runtime.kubernetes.plugins` unset and a binary that links none), which takes no task until a
+   pod built from the new image replaces its pod: its update round does that at its bound at the
+   latest, and deleting the issue's Sandbox once its roles have pushed
+   (`kubectl -n legion delete sandbox <name>`) does it at once. A daemon whose idle release is off
+   (`runtime.kubernetes.idle_release.idle_minutes: 0`) releases no pod for an old Claude Code role
+   either, since that release runs on the idle release's tick: each issue pod that runs a Claude
+   Code role on the old plugin waits for its update round, and its operator replaces it sooner at
+   the rollout the same way, by deleting its Sandbox once its roles have pushed.
+   Deleting the pod alone does not move it, since the Sandbox recreates the pod on the image it was
+   launched with. The repository's `docs/kubernetes.md` ("Pinning a release that drops what a
+   running pod still uses") has the details.
 4. **Running agents carry on.** The restarted daemon re-adopts every running pod and its session. A
    pod keeps the image it started with; every pod the daemon starts afterwards, for the next phase
    or a resumed worker, runs the new one. To move a long-running agent over now, suspend and resume
@@ -987,7 +1032,7 @@ Closing the terminal leaves the project without one, and the daemon logs
    ```
 
    An operator's suspension of an agent in a turn waits for that turn to land, at most
-   `worker_stop_timeout_seconds`, and the cut-off task is re-sent on the resume. One that reaches
+   `worker_stop_timeout_seconds`, and the cut-off task is taken again after the resume. One that reaches
    a claim whose start is still running stops that start — which is charged nothing — and suspends
    the claim at once, rather than waiting out a launch that can take minutes. Every `legion
    claims` subcommand takes a `--wait`, one minute by default, that bounds the whole call: a call
@@ -1070,6 +1115,7 @@ Closing the terminal leaves the project without one, and the daemon logs
   open production checks: 1; the oldest, WIDGETS-12 #42 at 4b7d2a1, worked by the tester, look 1 woken by merge at 2026-10-03T10:15:02Z, next look 2026-10-03T14:15:02Z
   open update rounds: none
   agents in a tool call: 1 — WIDGETS-12 implementer "bash toolu_01F3 since 2026-10-03T10:41:07Z"
+  task values nobody reported seeing: none
   pending Dispatch status writes: none
   held lifecycle rows: none
   claims nothing will wake: none
@@ -1135,6 +1181,14 @@ Closing the terminal leaves the project without one, and the daemon logs
   A shell command Oh My Pi backgrounded (a plain one still running after about a minute, or at
   once when a message is steered into the turn) is an ended call here while its process runs on:
   `none` says no agent is parked in a call, not that nothing runs on its machine.
+
+  The `task values nobody reported seeing` line names every claim whose task value went a whole
+  `worker_take_timeout_seconds` with no session reporting it seen: how many, and each by claim
+  token with the task number and when the daemon last wrote it (`none` when there is none;
+  `unseenTaskValues` in `--json`). What failed for each is the relay that carries the value to
+  the worker — an Envoy listener stopped or older than the relay, or a session no listener relays
+  to — so the daemon charges nobody and writes the value again once per that bound. A claim that
+  stays on the line through several reads is one no rewrite reaches: read the listener's log.
 
   The `webhook App missing` lines name each served repository Dispatch's GitHub App is not known
   to be installed on, one line each with why (`webhook App missing on <repo>: <reason>`), or say

@@ -495,8 +495,9 @@ from its architect.
 ## Supervision
 
 The daemon counts what goes wrong with each agent: launches that fail, deaths while it had work
-outstanding, prompts it acknowledged without taking a turn, and the times it was relaunched for
-that. When a budget runs out (`launch_failure_limit`, `prompt_failure_limit` and
+outstanding, tasks it saw and did not ask to take, or took and started no turn for, within their
+bounds (`worker_take_timeout_seconds` and `worker_turn_start_timeout_seconds`), and the times it
+was relaunched for those. When a budget runs out (`launch_failure_limit`, `prompt_failure_limit` and
 `prompt_retire_limit` in the configuration) the daemon stops relaunching that agent and **holds**
 the issue. A held phase worker is its architect's to retry or escalate to the controller; an
 architect that runs out goes to the controller, which restarts a running tree when it finds no
@@ -504,8 +505,9 @@ cause or the cause is gone, and otherwise asks a person whether to park it.
 [Troubleshooting](/legion/legion/troubleshooting/) shows how to see each of these.
 
 The daemon says why the claim failed rather than leaving that in its log alone. It keeps one word
-for it — the runtime refused the launch, the process died, the agent never registered, its plugin
-was stale, its prompt retirements ran out, or a provider error ended its turn — with the sentence
+for it — the runtime refused the launch, the process died, the agent never registered, its shim
+never reconnected after a daemon restart, its plugin was stale, its prompt retirements ran out, or
+a provider error ended its turn — with the sentence
 written beside that word, the moment, and the four counts against the limits above. The
 architect of the tree reads it on the claim, the controller reads it with the limits beside it,
 and the notice of the hold carries it as well, so the first reader of a hold already knows what

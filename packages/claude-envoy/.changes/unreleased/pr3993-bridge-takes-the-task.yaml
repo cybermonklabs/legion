@@ -1,0 +1,5 @@
+kind: Changed
+body: |-
+  A Legion worker on Claude Code hands each of its claim's task values to `legion claude-bridge`,
+  which takes the task when Claude Code is idle, ahead of any queued message. The worker claims its
+  Envoy role right after `claims/ready`, and the `LEGION_CLAIM_FIRST_TURN_BOUND_MS` setting is gone.

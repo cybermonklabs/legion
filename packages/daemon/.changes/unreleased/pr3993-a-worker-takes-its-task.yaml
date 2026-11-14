@@ -1,0 +1,15 @@
+kind: Changed
+body: |-
+  The daemon no longer pushes a task to a worker as a prompt. It writes the number of each claim's
+  task to the task bucket `legion_tasks` on Envoy's NATS, the Envoy listener relays it to the
+  worker's session, and the worker takes the task once it is idle. A worker is charged only when it
+  saw a task and did not take it within `worker_take_timeout_seconds` (300 by default), or took it
+  and started no turn within `worker_turn_start_timeout_seconds` (1500 by default). A daemon that
+  cannot open or create the bucket refuses to boot and names the missing grant, and so does one
+  that connects as the agents' shared NATS user; `legion probe-boot` makes the same check. A daemon
+  with no `nats_urls` boots and launches no worker, and says so. `legion state` names each claim
+  whose task nobody reported seeing, and the new `legion task-cost` reads from the daemon's log what
+  task delivery cost in a window. Roll out in this order: the envoy-infra release with the bucket
+  grants first, then the listener image, then each project's daemon and worker image together in
+  one apply, then restart any controller an operator started and every worker of a daemon that
+  knows no plugin pair to relaunch onto.

@@ -420,8 +420,9 @@ daemon's start command (`controllerSession` in
 `src/controller-session.ts`): the session registers on `claims/register` with that boot
 token in place of a capability, is answered with the same controller registration, claims the role,
 subscribes to the controller topic, sets the interface's `startupTurn` to its session with the
-start sent now (`sentAt`), and then calls `claims/ready`, which is when the daemon sends its start
-message; the session sends none of its own ("The controller's start turn" below). Any step of
+start sent now (`sentAt`), and then calls `claims/ready`, after which the daemon writes its start
+task's value and the session takes it as any claim takes its task (`@legion/pi-shared/task-take`);
+the session sends no start message of its own ("The controller's start turn" below). Any step of
 that claim that fails exits Oh My Pi, so the daemon relaunches it;
 the operator's controller logs and stays up instead. Only a session classified as the controller
 (`LEGION_CONTROLLER=1`) registers its boot token that way: `/legion-claim-controller` in a root

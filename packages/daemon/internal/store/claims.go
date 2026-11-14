@@ -632,11 +632,11 @@ func (s *Store) PutClaimAndDelivery(ctx context.Context, c supervise.Claim, d su
 // the claim: the row holds no delivery at all, or it holds one under another id. The first is
 // the retirement this call already committed and whose answer the caller lost, and it carries
 // supervise.ErrNoSuchDelivery so that the caller can read it as its own write made good rather
-// than as a fresh failure. The second is a different claim altogether — a write that rotated the
-// delivery's id committed after its answer was cut off, so the row holds the new delivery while
-// the caller is retiring the old one — and it carries supervise.ErrOtherDelivery, naming both
-// ids, which is not ErrNoSuchDelivery and must never be read as one: that would drop the
-// delivery memory holds and leave the stored one behind, pending and unretired. Which it is can
+// than as a fresh failure. The second is a different claim altogether — a write of another
+// delivery under the claim committed after its answer was cut off, so the row holds that delivery
+// while the caller is retiring the one memory holds — and it carries supervise.ErrOtherDelivery,
+// naming both ids, which is not ErrNoSuchDelivery and must never be read as one: that would drop
+// the delivery memory holds and leave the stored one behind, pending and unretired. Which it is can
 // only be read from the row, so it is read here, in the same transaction as the delete that
 // found nothing.
 func (s *Store) RetireDelivery(ctx context.Context, c supervise.Claim, deliveryID string) error {

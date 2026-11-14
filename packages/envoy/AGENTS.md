@@ -145,6 +145,14 @@ Each item below names a task and where its code is, then notes on it.
   the relay of each consumer the listener owns, as core frames on the session's deliver subject (`sessionRelays`).
   "Session consumers" below
 
+- **Legion task relay**: `cmd/listener/task_relay.go`, `legiontasks/`
+
+  the relay of each Legion claim's task value from the Legion daemons' task bucket, `legion_tasks` (`legiontasks.Bucket`), to the session that holds the claim's role, as a core frame on that session's relay subject carrying the four `Envoy-Task-*` headers (`legiontasks`), from the listener that relays that session's consumer (`sessionRelays.wanted`).
+  A key of the bucket is a claim token, and a claim token is the role its worker's session claims, so the session a key goes to is the holder of that role (`store.Registry.CachedRoleHolder`).
+  It relays each put and delete its watch delivers, and a key's current record, read from that watch's copy of the bucket, when the role's claim changes to a holder it has not relayed that record to.
+  It runs only on a listener that gives its sessions consumer delivery, opens the bucket and never creates or writes it (the daemons create it, and the daemon is its one writer), and a bucket that does not exist yet or a grant that refuses its reads stops no other route.
+  The value is the delivered copy of the daemon's record, not a second keeper: "Session consumers" below
+
 - **Role lane**: `internal/bus/role_lane.go`, `cmd/listener/role_lane.go`, `internal/bus/nats.go` (`StartRequestStoredTo`)
 
   the role lane's own connection under high finite pending limits (`bus.RoleLanePendingMsgs`, `bus.RoleLanePendingBytes`), in the queue group `envoy-roles` (`bus.RoleLaneQueue`) or the machine's;
@@ -3309,6 +3317,8 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   The route's bounded retry inside its window is the one retry a role message gets:
   do not add a durable role consumer, or retry role messages anywhere else
   — the role lane stays core, and a holder's stored forward is its own session consumer's to deliver.
+  A Legion claim's task value, which the listener relays to the session holding the claim's role ("Legion task relay" above), is not such a consumer and not such a retry:
+  it is the delivered copy of the Legion daemon's record of the claim's task, which the daemon alone writes and repairs, so it keeps nothing the record does not and is no second keeper of a role message.
 
 - Role ownership is durable in the `envoy_roles` JetStream KV bucket.
   Each role key records `holder_session_id`, `claimed_at` and `previous_session_id`, and, where the claimant named them, `client_instance_id`, the process that holds the claim, and `renewed_at`, the moment that process last answered for it.
@@ -4550,6 +4560,9 @@ an Oh My Pi session's `message_end`, the user message Claude Code re-emits under
 Every start of a relay restarts at the ack floor, so a break replays what was not acknowledged and the plugin's persisted ledger drops the repeats.
 No session receives from a plain NATS subscription:
 there is no second delivery design and no fallback, and a registration this listener cannot give a consumer is refused by name with nothing written ("No consumer" below).
+A Legion claim's task frame is no exception to the rule:
+it travels on the session's own relay subject beside its consumer's messages, from the listener that relays that consumer ("Legion task relay" above), and is the delivered copy of the Legion daemon's record of the claim's task, not a message and not a second keeper of one.
+It carries no message of the stream, the session acknowledges nothing for it and counts it in no ledger, and a session that missed one reads the claim's value from the daemon, whose record it copies, so it is not a second delivery design either.
 This section is the one statement of that rule; every other document points here by path rather than restating it.
 
 The one topic shape a session can follow that is not its own agent subject is a topic the stream captures, `notifications.team.<name>` included (`bus.StreamSubjects`):

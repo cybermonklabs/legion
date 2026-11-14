@@ -1,0 +1,5 @@
+kind: Added
+body: |-
+  The daemon API's schemas for the take: `claims/task`, `claims/task-seen` and `claims/take`, the
+  task value on the registration's answer, the task number and provider error on a turn's report,
+  `unseenTaskValues` on the state, and the `never_reconnected` failure cause.

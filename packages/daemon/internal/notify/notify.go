@@ -201,6 +201,12 @@ func New(baseURL, token string) *HTTPPublisher {
 // when the role is unheld. One message has one keeper, so this sender keeps its own
 // (packages/daemon/internal/daemon/outbox.go).
 //
+// A claim's task value in the task bucket (legiontasks.Bucket, which the daemon writes through
+// internal/daemon's taskBucket) is not a second keeper of anything: it is the delivered copy of
+// the daemon's record of the claim's task, which the record writes, repairs from itself and
+// deletes, and which the listener relays to the session holding the claim's role. The record
+// stays the one keeper of the task, as the outbox stays the one keeper of a notice.
+//
 // THIS BINARY SHIPS BEFORE THE ENVOY LISTENER THAT CARRIES THE KEPT LANE. The Envoy listener and
 // this binary are separate releases (.github/workflows/release-envoy-listener.yaml and
 // release.yaml), and a binary of the release before this one sends no keep field at all. Against

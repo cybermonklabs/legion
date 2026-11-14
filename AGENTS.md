@@ -69,7 +69,7 @@ The daemon (`packages/daemon`, Go) runs every root architect and phase worker as
 one pane of its private tmux server per process under `runtime: tmux`, or, under `runtime: kubernetes`, one Agent Sandbox pod per issue running the published worker image, with one container whose `legion launcher` runs every resident role (`docs/kubernetes.md`;
 `scripts/e2e/stage4a-sandbox-runtime.sh` is that runtime's live proof).
 A phase worker whose role `legion.yaml`'s `worker_backends` puts on `claude` runs Claude Code in Oh My Pi's place under either runtime:
-the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's Oh My Pi RPC frames on one side and Claude Code's stream-json on the other (`packages/daemon/internal/claudebridge`, transport only), with `packages/claude-envoy` as the worker's MCP server and plugins
+the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's Oh My Pi RPC frames on one side and Claude Code's stream-json on the other and takes the claim's task from the daemon when Claude Code is idle (`packages/daemon/internal/claudebridge`, transport and the take, no phase rule), with `packages/claude-envoy` as the worker's MCP server and plugins
 — a built checkout of it under tmux, the worker image's copy in a pod.
 
 - **Daemon** — Dispatch and GitHub intake, the fixed workflow table, the durable issue record in Postgres, admission, process supervision under either runtime, each role's GitHub App credential, session grants, and recovery.
@@ -257,7 +257,9 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
 
   Run the daemon in the foreground for the project that file names (./legion.yaml by default);
   with `LEGION_LISTEN_FD=<n>` it serves its API on that inherited listening socket instead of binding, and refuses to start unless the file's `bind` and `port` name the socket's address (docs/deployment.md "Serving on a socket the harness holds");
-  --check-config never reads it, and also prints the configuration's open capability gaps after its OK line (exit 0), the intake handler limit under either runtime when `worker_rpc_timeout_seconds` derives one above the ten-minute floor (the daemon's boot log names it at every boot, derived or not), and under `runtime: kubernetes` the repository cache each mapped repository gets (docs/kubernetes.md "The repository cache") and the plugin pair a stale-plugin relaunch would install or the gap that leaves it relaunching none (docs/kubernetes.md "Contract discipline")
+  --check-config never reads it, and also prints the configuration's open capability gaps after its OK line (exit 0), the intake handler limit under either runtime when `worker_rpc_timeout_seconds` derives one above the ten-minute floor (the daemon's boot log names it at every boot, derived or not), and under `runtime: kubernetes` the repository cache each mapped repository gets (docs/kubernetes.md "The repository cache") and the plugin pair a stale-plugin relaunch would install or the gap that leaves it relaunching none (docs/kubernetes.md "Contract discipline");
+  for a file that names no NATS (`nats_urls`) it prints, after the OK line and its warnings, the line a booting daemon logs for it (`daemon.NoNATSLine`), still exiting 0:
+  such a daemon boots and serves, and launches no worker, since a worker takes its task from the task bucket on Envoy's NATS (`legion_tasks`) and with no NATS the daemon has no bucket to write it in
 
 - `legion status <team>`
 
@@ -305,7 +307,15 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
 
   An operator and coordinator command: read daemon state;
   `--json` carries the deployment's capability report (`capabilities`) and the daemon's resolved non-secret `legion.yaml` (`settings`).
+  Its summary also names every claim whose task value nobody reported seeing for a whole `worker_take_timeout_seconds` (`unseenTaskValues`), which is a relay that failed to carry the value and charges no worker: the daemon writes such a value again once per that bound.
   Agents never run it: a role reads its issue record with the `legion` tool's `read_record`, the controller the whole state with `read_state`
+
+- `legion task-cost --from <RFC 3339> --to <RFC 3339> [--claim <token>]`
+
+  An operator's reading of the daemon's JSON log on standard input (`kubectl -n legion logs deploy/legion-<project>-daemon -c legion --since-time <from> | legion task-cost …`):
+  for the window from `--from` to `--to`, and for one claim with `--claim`, it prints the turns by cause, the turns each task number took, the numbers written by origin and to a claim whose phase waited, taken and finished, the charges by wait, the retirements and three verdicts, each figure a lower bound, since the log reaches back only as far as the node keeps it.
+  It is the daemon's own reader (`supervise.ReadTaskCost`, `supervise.ParseTaskCostArgs`) and adds nothing of its own;
+  the documentation site's "Task delivery cost" page (`docs/site/src/content/docs/legion/task-delivery-cost.md`) says what each figure means, and a test runs that page's commands over the log sample beside the reader
 
 - `legion worker-shim --connect <unix:///path|tcp://host:port> --boot-token-file <path> [--provider-env-dir <dir>] [--pod-safety] [--stop-grace <duration>] [--warm-codegraph] [--agent-secrets-key-dir <dir> --pod-token-file <path> --agent-secrets-bin <path>] -- <omp argv…>`
 
@@ -331,8 +341,11 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
 
   What `legion worker-shim` runs in Oh My Pi's place for a phase worker whose role `worker_backends` puts on claude, under either runtime (the daemon builds the argv, `claude -p --input-format stream-json --output-format stream-json --thinking-display summarized …` with `--session-id <new id>` on a fresh launch or `--resume <id>` on a relaunch;
   one definition of it, `packages/daemon/internal/claudelaunch`):
-  answers the daemon's get_state and negotiate_protocol frames (the daemon sends no task on the stream: a task is a value the worker takes), turns Claude Code's stream-json into agent_start/agent_end — a background task finishing makes Claude Code start a turn of its own, reported as agent_start…agent_end like any other — and reports each turn's outcome to the daemon (`POST /legion/v1/claims/turn-outcome`), seeds a fresh session with `/rename` so its transcript exists before registration, takes Envoy deliveries as user turns from the unix socket it exports as LEGION_CLAUDE_INBOX, and exits with Claude Code's status.
-  It is transport: the phase reminder runs in the worker's own MCP server (`packages/claude-envoy`), driven by Claude Code's hooks
+  answers the daemon's get_state and negotiate_protocol frames, and turns Claude Code's stream-json into agent_start/agent_end — a background task finishing makes Claude Code start a turn of its own, reported as agent_start…agent_end like any other;
+  takes the claim's task, of which the daemon sends nothing on the stream:
+  claude-envoy hands it each of the claim's task values as a `task` line of its inbox, and the bridge reports each one seen (`POST /legion/v1/claims/task-seen`), asks to take it once per value while Claude Code is in no turn (`POST /legion/v1/claims/take`, with the launch's boot token), holds the inbox's deliveries while that take waits, and starts an accepted take's text as a turn ahead of them, sending a seen report or a take that got no answer again until the daemon answers it or a newer value replaces it (`packages/daemon/internal/claudebridge/take.go`);
+  reports each turn's outcome to the daemon, with the task's number on the turn of an accepted take (`POST /legion/v1/claims/turn-outcome`), seeds a fresh session with `/rename` so its transcript exists before registration, takes Envoy deliveries as user turns from the unix socket it exports as LEGION_CLAUDE_INBOX, and exits with Claude Code's status.
+  It holds no phase rule: the phase reminder runs in the worker's own MCP server (`packages/claude-envoy`), driven by Claude Code's hooks
 
 - `legion launcher --connect tcp://<host>:<port> --sandbox <name> --roles-dir <dir> --role <r>… [--pod-uid <uid>] [--stop-grace <d>] [--session-instance <project:region:instance> --session-database <name> --session-user <login>] | legion launcher --connect tcp://<host>:<port> --token-file <path> --sandbox <name> --role <role> [--pod-uid <uid>] [--stop-grace <d>] [--session-instance <project:region:instance> --session-database <name> --session-user <login>] --private-dir <dir>`
 
@@ -395,12 +408,13 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
 
 - `legion probe-boot [--config <legion.yaml>]`
 
-  runtime: kubernetes only — the part of the daemon's boot its worker pod can refuse, from the file and with no workflow:
-  boot's reads of the file, the caller's environment and the files they name (no App key command runs), then the cluster check and the daemon's own image probe, its Sandbox built from the operator's pod under a name of its own run, so it may run while the daemon boots;
+  runtime: kubernetes only — the part of the daemon's boot its worker pod and its NATS grant can refuse, from the file and with no workflow:
+  boot's reads of the file, the caller's environment and the files they name (no App key command runs), then the cluster check, then the open of the task bucket `legion_tasks` on Envoy's NATS, and last the daemon's own image probe, its Sandbox built from the operator's pod under a name of its own run, so it may run while the daemon boots;
+  the bucket is opened once, with no reconnect, as the daemon's own NATS user (`nats_daemon_nkey_seed_file`, else the pane seed), and created where it does not exist yet, as a booting daemon creates it, so a grant that lacks a subject of the bucket, or a daemon that connects as the pane seed's user, which holds no grant on it, is refused with boot's own refusal, naming the bucket and the subject;
   run the `legion` of the release the daemon will restart on, since the probe's contract, references, command, reservation and verdicts are compiled into it;
   under the credentials runtime.kubernetes names (a pod's own ServiceAccount in a pod), which give the daemon's result only as the daemon's identity, best as a one-shot pod of the image of the release the daemon will restart on, under its ServiceAccount with the daemon pod's environment and mounts, so no daemon credential leaves the cluster;
   run it with the daemon's environment (NATS_NKEY_SEED_FILE or NATS_NKEY_SEED shapes the probe when nats_nkey_seed_file is unset);
-  no store, GitHub App mint, NATS or Dispatch;
+  no store, GitHub App mint, workflow consumer or Dispatch, and it writes nothing but the task bucket, where it creates it, and its probe Sandbox, which it deletes;
   a pass holds only against the cluster's ConfigMaps, Secrets, ServiceAccount and the shares the pod block mounts (its claims and NFS servers) as they are at the run, so a change that adds one applies it first;
   it waits on pool capacity without limit, as the daemon does, so the caller bounds it, and its pod competes with live issue pods for that capacity;
   prints `probe-boot: OK project=… image=… model-fallback=… capacity-waits=…` and exits 0, or boot's refusal and exits 1 (docs/kubernetes.md "Probing a configuration before the daemon boots on it")
@@ -416,6 +430,8 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
   - stop
 
   - state
+
+  - task-cost
 
   - legions
 

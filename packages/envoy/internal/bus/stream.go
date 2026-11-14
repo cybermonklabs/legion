@@ -126,6 +126,9 @@ const DeliverSubjectPrefix = NotificationTopicPrefix + "envoy.deliver."
 // session publishes each message of its consumer (SessionConsumerName) on, and the session
 // subscribes to. Every message a session on NATS gets travels on it: no session takes a message
 // from a plain NATS subscription of its own ("Session consumers" in packages/envoy/AGENTS.md).
+// The same listener publishes a Legion claim's task frame on it too (cmd/listener's taskRelay):
+// that frame is the delivered copy of the Legion daemon's record of the claim's task, not a message
+// of the consumer and not a second keeper of one, so it is no second delivery design beside it.
 func DeliverSubject(sessionID string) string {
 	return DeliverSubjectPrefix + sessionID
 }

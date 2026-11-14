@@ -1,0 +1,9 @@
+kind: Added
+body: |-
+  The listener relays each Legion claim's task value from the Legion daemons' task bucket,
+  `legion_tasks`, to the session that holds the claim's role, on that session's delivery subject.
+  It only reads the bucket and never creates it, and a bucket that does not exist yet, or a grant
+  that lacks its reads, stops no other route. envoy-infra grants the daemon's NATS user create,
+  update, read and write of the bucket, the listener's user its reads, and no session user
+  anything of it. Roll out in this order: the envoy-infra release first, then this listener, then
+  each project's Legion daemon and worker image together.
