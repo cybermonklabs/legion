@@ -30,7 +30,7 @@ import {
 } from "@legion/contracts";
 import { encode } from "@toon-format/toon";
 import { z } from "zod";
-import { askAnswerText, textHead } from "./ask-answer";
+import { askAnswerText, dispatchWordsText, textHead } from "./ask-answer";
 import { commandLine } from "./dispatch-command";
 import type { ActiveDispatchConfig } from "./dispatch-config";
 import { DispatchClient } from "./dispatch-http";
@@ -55,12 +55,12 @@ const InboundSenderSchema = z.object({
 /**
  * What an inbound frame may say about the reply it wants, read as the envelope's one vocabulary:
  * the string `"none"` the field carried before the literal `false` replaced it parses as
- * `false`. A replayed frame and a session on an older plugin build still write that word, so the
- * card reads it rather than discarding the field, and the replay engine reads a stored frame
- * with this schema (`replay.ts`) rather than keeping a second list of the same words. The
- * reading happens here and nowhere else, so no reader of a parsed frame is ever shown the old
- * spelling. `EnvelopeSchema` itself stays strict: it is what a producer of this repository is
- * held to.
+ * `false`. A frame the stream stored before that change and a session on an older plugin build
+ * still write that word, so the card reads it rather than discarding the field. A session reads
+ * every frame from its own consumer through `renderInbound` below, which parses with
+ * `InboundEnvelopeSchema`, so this is the one reader of the field and no reader of a parsed
+ * frame is ever shown the old spelling. `EnvelopeSchema` itself stays strict: it is what a
+ * producer of this repository is held to.
  */
 export const InboundExpectsReplySchema = z
   .literal([...EXPECTS_REPLY_VALUES, "none"] as const)
@@ -166,32 +166,6 @@ export async function postDeliveryReply(
   );
 }
 
-/**
- * Whether an inbound frame is a forwarded role lane waiting for a receipt on `reply`. The
- * listener forwards a role-lane event to the holder's direct subject as a core request with
- * the envelope's `topic` still the role topic, and reports a missing receipt as a failed
- * delivery. Every other frame on the direct subject — a Dispatch author route, a peer
- * envoy_send — is a JetStream publish whose reply inbox belongs to the server's PubAck; an
- * empty receipt there fails the publisher with `nats: invalid jetstream publish response`.
- * `reply` is absent as `""` (nats.js's getter) or `undefined` (a host that omits the field).
- */
-export function expectsLaneReceipt<
-  Frame extends {
-    readonly subject: string;
-    readonly directSubject: string;
-    readonly envelopeTopic: string | undefined;
-    readonly reply: string | undefined;
-  },
->(frame: Frame): frame is Frame & { readonly reply: string } {
-  return (
-    frame.reply !== undefined &&
-    frame.reply !== "" &&
-    frame.subject === frame.directSubject &&
-    frame.envelopeTopic !== undefined &&
-    frame.envelopeTopic !== frame.directSubject
-  );
-}
-
 /** A message a subscription yielded, and when it arrived. */
 export interface Arrival<Message> {
   readonly message: Message;
@@ -278,8 +252,8 @@ export type DedupeIdentity = z.infer<typeof DedupeIdentitySchema>;
 /**
  * What one claim recorded. `release` undoes exactly that, and only once. `settle` says the host is
  * done with the frame without undoing the record: it was handed over, or the host chose not to
- * show it. Until one of the two, the frame is pending (`DeliveryDedupe.pending`), and a replay
- * sweep leaves the stream's copy for later rather than show it beside the live one.
+ * show it. Until one of the two, the frame is pending (`DeliveryDedupe.pending`), and a card the
+ * ledger asks for on that same frame waits for the delivery in flight rather than stand beside it.
  */
 export interface DeliveryClaim {
   release(): void;
@@ -288,17 +262,18 @@ export interface DeliveryClaim {
 
 /**
  * A host's record of the frames it handed its agent, which drops a repeat. The whole promise it is
- * part of is stated once, on `DELIVERY_DUPLICATE_WINDOW_MS` in `@legion/contracts`; every host that
- * subscribes over core NATS (the Oh My Pi extension, the Claude Code channel) keeps one.
+ * part of is stated once, on `DELIVERY_DUPLICATE_WINDOW_MS` in `@legion/contracts`; every host the
+ * listener relays a consumer to (the Oh My Pi extension, the Claude Code channel) keeps one.
  *
  * A host claims a frame before anything it awaits, so a repeat that arrives while the first is
- * still being delivered (on an overlapping subscription, or behind a Dispatch reply in flight) is
- * already a repeat. It releases the claim when its agent was not handed the frame after all: the
- * hand-off threw, or the host answered the frame with an error instead (a BTW whose side turn
- * failed, a frame it could not read). Dispatch records that attempt failed, and a same-mode
- * re-send of it must then reach the agent. Otherwise it settles the claim once it is done with the
- * frame, shown or not: a claim left open reads as `pending` forever, and a replay sweep then never
- * moves its stream cursor past that frame.
+ * still being delivered (a frame the relay delivers again because the first delivery was never
+ * answered, or behind a Dispatch reply in flight) is already a repeat. It releases the claim when
+ * its agent was not handed the frame after all: the hand-off threw, or the host answered the frame
+ * with an error instead (a BTW whose side turn failed, a frame it could not read). Dispatch records
+ * that attempt failed, and a same-mode re-send of it must then reach the agent. Otherwise it
+ * settles the claim once it is done with the frame, shown or not: a claim left open reads as
+ * `pending` forever, and a card the ledger raises for that frame then waits on a delivery that
+ * ended.
  */
 export interface DeliveryDedupe {
   /**
@@ -310,8 +285,9 @@ export interface DeliveryDedupe {
   /**
    * Whether a claim of the frame is still being delivered: neither settled nor released. A claim
    * of its event id, or of a key that names its event, is that frame's claim, by the same identity
-   * rule `claim` drops a repeat by. A settled claim says nothing of whether the frame was shown: a
-   * host that shows it records that in the replay ledger, which a replay sweep reads first.
+   * rule `claim` drops a repeat by. A settled claim says nothing of whether the frame was shown:
+   * what was shown is in the delivery ledger (`DeliveryLedger.delivered`), which the card the
+   * ledger raises reads first.
    */
   pending(frame: DedupeIdentity): boolean;
 }
@@ -342,8 +318,9 @@ const DELIVERY_EVENT_ID_LIMIT = 10_000;
  * A key is recorded only when it names its event (`dedupeKeyNamesItsEvent` in `@legion/contracts`),
  * for `DELIVERY_DUPLICATE_WINDOW_MS`, the window the retry promise is made for. Any other key is not
  * a dedupe key, and dropping on it would lose a distinct event that shares it. A frame's event id
- * is recorded whatever its key: distinct events never share one, so it recognises the second copy
- * of a frame that arrived on two subscriptions, which a key that does not name its event cannot.
+ * is recorded whatever its key: distinct events never share one, so it recognises a frame the
+ * relay delivered again after an unanswered delivery, which a key that does not name its event
+ * cannot.
  *
  * A key is kept no longer than the window, because a repeat never refreshes it and every claim
  * first evicts the keys past the window, so the record holds at most the keys the host was handed
@@ -648,9 +625,10 @@ export function replyWith(envelope: DeliveryEnvelope): ReplyHint | undefined {
 }
 
 // Dispatch event payloads follow the wire contract: issue.* carries the Issue,
-// ask.opened/anchor_refreshed/handed_back/answered/resolved the Ask, ask.edited the edited Ask plus
-// its prior fields and editor, message.created the Message, comment.*/suggestion.* the Comment plus
-// artifact_name, artifact.created {artifact}, artifact.version {artifact_id, name, version, diff?},
+// ask.opened/anchor_refreshed/handed_back/asked_of/answered/resolved the Ask, ask.edited the
+// edited Ask plus its prior fields and editor, message.created the Message,
+// comment.*/suggestion.* the Comment plus artifact_name, artifact.created {artifact},
+// artifact.version {artifact_id, name, version, diff?},
 // artifact.human_edited {artifact_id, name, from_version, to_version, editors, diff, diff_truncated},
 // and child.status {child_key, from, to}.
 // Bus frames are untrusted, so each schema below declares exactly the fields
@@ -670,6 +648,7 @@ const DISPATCH_PAYLOAD_SCHEMAS: Readonly<Record<string, z.ZodType>> = {
   "ask.anchor_refreshed": AskPayloadSchema,
   "ask.edited": AskEditedPayloadSchema,
   "ask.handed_back": AskPayloadSchema,
+  "ask.asked_of": AskPayloadSchema,
   "ask.answered": AskPayloadSchema,
   "ask.resolved": AskPayloadSchema,
   "comment.created": CommentPayloadSchema,
@@ -753,13 +732,20 @@ interface CompactDispatch {
   readonly askId: string | undefined;
 }
 
+// How a closed ask reads on the card: the kind, the person's own reason where the record holds
+// one, and the words Dispatch wrote for the asking agent where it holds those (a decline), under
+// the label every reader of them names them with (`dispatchWordsText`), so nobody reads
+// Dispatch's instruction as the person's note. A decline the person wrote no note with is the
+// ordinary one, so an empty reason leaves no separator behind.
 function askResolutionText(
   resolution: z.infer<typeof AskPayloadSchema>["resolution"]
 ): string | undefined {
   if (resolution === null || resolution === undefined) return undefined;
   const kind = resolution.kind ?? "resolved";
   const reason = resolution.reason ?? "";
-  return reason === "" ? kind : `${kind}: ${reason}`;
+  const closed = reason === "" ? kind : `${kind}: ${reason}`;
+  const words = dispatchWordsText(resolution.dispatch_words);
+  return words === undefined ? closed : `${closed} · ${words}`;
 }
 
 function dispatchCompact(
@@ -829,6 +815,20 @@ function dispatchCompact(
         ...(previousAnswer === null || previousAnswer === undefined
           ? {}
           : { previous_answer: askAnswerText(previousAnswer) }),
+      };
+      break;
+    }
+    case "ask.asked_of": {
+      // Whom the ask waits on from now on, and who handed it there. An empty `asked_of` is a
+      // hand-on to the assignee of the ask's own issue: the ask follows that issue again, and
+      // the payload names no login for the person, so the line says where it went instead.
+      const handedOnBy = ask.data.asked_of_by;
+      record = {
+        ...record,
+        asked_of: ask.data.asked_of ?? "the assignee of its issue",
+        ...(handedOnBy === null || handedOnBy === undefined || handedOnBy === ""
+          ? {}
+          : { handed_on_by: handedOnBy }),
       };
       break;
     }

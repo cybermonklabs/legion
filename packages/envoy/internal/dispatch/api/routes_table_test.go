@@ -209,6 +209,58 @@ func TestRoutesTablePinsEveryRegisteredRoute(t *testing.T) {
 	}
 }
 
+// The Inbox route's description states the rule the person a question reaches is resolved by —
+// the person it was handed to, then the issue's assignee, then the project's default assignee —
+// and the four descriptions that rule narrowed no longer carry what it replaced. This is a test
+// of its own because the two route tests above read every description and assert no word of
+// one: the index leaves descriptions out (routeIndexLines) and the pin only holds each row to
+// having one, so nothing else fails when a description outlives the code it describes.
+func TestTheInboxRouteDescriptionStatesTheRule(t *testing.T) {
+	descriptions := map[string]string{}
+	for _, route := range (&server{}).routes() {
+		descriptions[route.Method+" "+route.Pattern] = route.Description
+	}
+	for _, want := range []struct{ route, says string }{
+		// The three steps, in the order the read resolves them.
+		{"GET /api/v1/inbox", "handed to"},
+		{"GET /api/v1/inbox", "the issue's assignee"},
+		{"GET /api/v1/inbox", "the project's default assignee"},
+		// A create names the person, and says what happens when it names nobody.
+		{"POST /api/v1/projects", "default_assignee"},
+		{"POST /api/v1/projects", "ASSIGNEE_NOT_ALLOWED"},
+		// The settings list holds every project, not only the ones that named somebody.
+		{"GET /api/v1/settings/project-default-assignees", "every project"},
+		// The write moves a default and refuses to clear it.
+		{"PUT /api/v1/projects/{key}/default-assignee", "cannot be cleared"},
+	} {
+		description, mounted := descriptions[want.route]
+		if !mounted {
+			t.Fatalf("the table mounts no %s", want.route)
+		}
+		if !strings.Contains(description, want.says) {
+			t.Errorf("%s does not say %q: %s", want.route, want.says, description)
+		}
+	}
+	for _, stale := range []struct{ route, says string }{
+		// A null no longer clears a default, so the write's description cannot offer one.
+		{"PUT /api/v1/projects/{key}/default-assignee", "null to clear"},
+		// Every project names a default, so the list leaves none out.
+		{"GET /api/v1/settings/project-default-assignees", "that names a default assignee"},
+		// The create chain's last step always lands, so it carries no qualification.
+		{"POST /api/v1/issues", "still names a person who has signed in"},
+		// The inbox resolves three steps and stops at none of them.
+		{"GET /api/v1/inbox", "until somebody hands it on"},
+	} {
+		description, mounted := descriptions[stale.route]
+		if !mounted {
+			t.Fatalf("the table mounts no %s", stale.route)
+		}
+		if strings.Contains(description, stale.says) {
+			t.Errorf("%s still says %q, which the three-step rule made false: %s", stale.route, stale.says, description)
+		}
+	}
+}
+
 // TestEveryIDRouteIsNamed: every route whose pattern carries {id} or {block_id} says what that
 // id names — a kind whose prefix is resolved into it and the 404 that route answers for an id
 // it does not hold, or a reason it resolves none — and every name in the table is a route the
@@ -519,6 +571,13 @@ func TestEveryRouteThatWasABrowsersAloneNamesThePersonScope(t *testing.T) {
 		"GET /api/v1/broadcasts",
 		"GET /api/v1/broadcasts/{id}",
 		"POST /api/v1/asks/{id}/answer",
+		// A decline is the person's own word that they will not answer, which nobody may give
+		// for them: no agent and no deployment credential declines a question on their behalf.
+		"POST /api/v1/asks/{id}/decline",
+		// Handing an ask to another person is this change's own row, and it is the person's as
+		// the answer above it is: Dispatch takes who hands the question on from the credential,
+		// and a credential the deployment configured is nobody to hand one on.
+		"PUT /api/v1/asks/{id}/asked-of",
 		"POST /api/v1/comments/{id}/reopen",
 		"POST /api/v1/comments/{id}/accept",
 		"PATCH /api/v1/comments/{id}",
@@ -527,6 +586,12 @@ func TestEveryRouteThatWasABrowsersAloneNamesThePersonScope(t *testing.T) {
 		"DELETE /api/v1/artifacts/{id}/subscribers/{session_id}",
 		"POST /api/v1/artifacts/{id}/rebuild",
 		"POST /api/v1/artifacts/{id}/reviews",
+		// The title correction is this change's own row: a document's title is what every
+		// reader sees it by, so the person whose credential it is corrects one.
+		"PATCH /api/v1/artifacts/{id}",
+		// The removal is this change's own row: a document made by mistake is removed by the
+		// person whose credential it is, as that person's title correction is.
+		"DELETE /api/v1/artifacts/{id}",
 		"GET /api/v1/me/state",
 		"PUT /api/v1/me/issues/{key}/state",
 		"GET /api/v1/me/agents/state",

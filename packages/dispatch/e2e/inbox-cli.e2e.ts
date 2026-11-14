@@ -1,7 +1,6 @@
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { expect, type Locator, type Page, test } from "@playwright/test";
 
 import { type FakeSession, setLiveSessions } from "./agents";
 import {
@@ -25,7 +24,7 @@ import { cliSession, runDispatch } from "./dispatch-cli";
 import { setPendingCredentialRequests } from "./fake-broker-helpers";
 import { askCard, inboxRow, READING_PANE_WIDTH } from "./inbox-pane";
 import { agentRowId, isThreadRow, replyRowId } from "./inbox-threads";
-import { resetDatabase } from "./seed";
+import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -194,8 +193,9 @@ interface SeededInbox {
 /**
  * One person's workspace as the Inbox shows it: questions waiting on them, one waiting on an
  * agent, one they deferred, an approval request, a credential request from the broker, a question
- * on someone else's issue and one on a document (neither is theirs, and neither list holds them),
- * an unread reply thread and a one-off message to a session that has been answered.
+ * on someone else's issue (not theirs, so neither list holds it) and one on a project document
+ * (which waits on the project's default assignee, the reader, so both lists hold it), an unread
+ * reply thread and a one-off message to a session that has been answered.
  */
 async function seedInbox(): Promise<SeededInbox> {
   await setLiveSessions([worker]);
@@ -242,7 +242,8 @@ async function seedInbox(): Promise<SeededInbox> {
   const approval = withOpenedAsk(await requestApproval(gate.primary_artifact_id, {}, asker));
   await createAsk(elsewhere.key, { question: "Does this block bob's release?" }, asker);
 
-  // A document has no assignee, so its question is nobody's own: neither list holds it.
+  // A document has no assignee, so its question waits on CORE's default assignee: alice, who
+  // created CORE naming nobody else. It is her own, and both lists hold it.
   const runbook = await createProjectDocument("CORE", {
     content: "# Runbook\n\nRestart, reseed, reopen the signed-in URL.\n",
     name: "Runbook",
@@ -297,15 +298,10 @@ async function seedInbox(): Promise<SeededInbox> {
   };
 }
 
-test.beforeEach(async () => {
-  await resetDatabase();
-});
-
 // @pr: Sign-in and tokens: `dispatch inbox` under a person's own token lists what the page lists, and every act it makes is theirs.
 test("dispatch inbox under the person's own token lists the Inbox page's own rows, and every act the token makes is the person's with their agent beside it @pr", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "chromium", "the command runs outside the browser");
+}) => {
   // Cold `bun` starts for the command, a seeded workspace and a page of its own.
   test.setTimeout(240_000);
   const seeded = await seedInbox();
@@ -332,6 +328,27 @@ test("dispatch inbox under the person's own token lists the Inbox page's own row
     const inbox = await runDispatch(["inbox"], home, token);
     expect(inbox.code, `${inbox.stdout}${inbox.stderr}`).toBe(0);
     const sections = printedSections(inbox.stdout);
+    const printedRequests = section(sections, "Credential requests");
+
+    // 2. The counts, read off the sidebar rather than summed here, and taken while the page is
+    // still on Settings: the Inbox's reading pane selects its first row and marks that thread
+    // read (`features/inbox/pane-selection.ts`, `ThreadRowCard`), so a count read after the Inbox
+    // opens races that mark and can take one thread fewer than the command printed.
+    //
+    // The rail carries one number for the Inbox and no `Replies` entry at all
+    // (`features/sidebar/Sidebar.tsx`, `features/inbox/useInboxCount.ts`): the work waiting on
+    // the reader plus the threads they have not caught up with, which is the command's
+    // `Needs you` and `Unread threads` together. The seed leaves two threads unread, so the
+    // thread term is load-bearing rather than a zero that would pass either way.
+    const needsYou = section(sections, "Needs you").count;
+    const unreadThreads = section(sections, "Unread threads").count;
+    expect(needsYou).toBe(section(sections, "Needs you").rows.length + printedRequests.count);
+    expect(unreadThreads).toBeGreaterThan(0);
+    expect(unreadThreads).toBe(
+      (await listMyReplies({ kind: ["reply", "agent"] }, { login: "alice" })).total
+    );
+    await expect.poll(() => railCount(page, /^Inbox/)).toBe(needsYou + unreadThreads);
+    expect(await railCount(page, /^Replies/)).toBeUndefined();
 
     await page.goto("/");
     await expect(inboxRow(page, seeded.ordinaryAsk)).toBeVisible();
@@ -349,10 +366,10 @@ test("dispatch inbox under the person's own token lists the Inbox page's own row
       (await bandAsks(page, "agent")).length
     );
     expect(section(sections, "Later").count).toBe((await bandAsks(page, "later")).length);
-    // Neither list holds a question that is not the person's own: bob's issue's and the
-    // document's are on the server's list and in neither of these. The Inbox list holds the
-    // reader's own threads beside the asks, and those are the command's `Unread threads`, so
-    // each kind of row is counted against the bands that list it.
+    // Neither list holds a question that is not the person's own: bob's issue's is on the
+    // server's list and in neither of these, and the document's is hers through CORE's default.
+    // The Inbox list holds the reader's own threads beside the asks, and those are the command's
+    // `Unread threads`, so each kind of row is counted against the bands that list it.
     const listed = await listedRows(page);
     expect(listed.filter((id) => !isThreadRow(id))).toHaveLength(
       section(sections, "Needs you").rows.length +
@@ -366,7 +383,6 @@ test("dispatch inbox under the person's own token lists the Inbox page's own row
     // The credential requests, line for line: the page lists one row per request the command
     // prints, each naming the same secret.
     const requests = page.getByRole("region", { name: "Credential requests" });
-    const printedRequests = section(sections, "Credential requests");
     expect(printedRequests.count).toBe(printedRequests.rows.length);
     await expect(requests.getByRole("listitem")).toHaveCount(printedRequests.rows.length);
     for (const [index, row] of printedRequests.rows.entries()) {
@@ -374,24 +390,6 @@ test("dispatch inbox under the person's own token lists the Inbox page's own row
       expect(identifiers).not.toBe("");
       await expect(requests.getByRole("listitem").nth(index)).toContainText(identifiers);
     }
-
-    // 2. The counts, read off the sidebar rather than summed here.
-    //
-    // The rail carries one number for the Inbox and no `Replies` entry at all
-    // (`features/sidebar/Sidebar.tsx`, `features/inbox/useInboxCount.ts`): the work waiting on
-    // the reader plus the threads they have not caught up with, which is the command's
-    // `Needs you` and `Unread threads` together. The seed leaves two threads unread, so the
-    // thread term is load-bearing rather than a zero that would pass either way.
-    const needsYou = section(sections, "Needs you").count;
-    const unreadThreads = section(sections, "Unread threads").count;
-    const inboxEntry = await railCount(page, /^Inbox/);
-    expect(await railCount(page, /^Replies/)).toBeUndefined();
-    expect(needsYou).toBe(section(sections, "Needs you").rows.length + printedRequests.count);
-    expect(unreadThreads).toBeGreaterThan(0);
-    expect(unreadThreads).toBe(
-      (await listMyReplies({ kind: ["reply", "agent"] }, { login: "alice" })).total
-    );
-    expect(needsYou + unreadThreads).toBe(inboxEntry);
 
     // 3. An answer the agent makes with the token is the person's answer, with the agent beside
     // it. The reading column keeps a question the reader had begun answering when it is answered
@@ -503,8 +501,7 @@ test("dispatch inbox under the person's own token lists the Inbox page's own row
 
 test("dispatch inbox lists the reader's unread threads, the page's own thread rows: the thread an agent wrote in and the message a session answered, each with its owner, its replier and its age", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "chromium", "the command runs outside the browser");
+}) => {
   // A cold `bun` start for the command, a seeded workspace and a page of its own.
   test.setTimeout(240_000);
   await seedInbox();

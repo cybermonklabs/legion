@@ -16,9 +16,11 @@ import { movedRowNotes, unchangedByTheMove } from "../stub/moved-row-notes";
 const dispatchPackage = fileURLToPath(new URL("../..", import.meta.url));
 const mapPath = fileURLToPath(new URL("../row-map.md", import.meta.url));
 
-/** The generation reads a `playwright test --list` of the whole config, which costs about five
- *  seconds on a two-core runner; a minute and a half is the ceiling at which something is wrong
- *  rather than slow, as the other listing tests of this directory take it. */
+/** The generation reads two `playwright test --list` subprocesses rather than one, since a
+ *  listing that names no project holds no wall-clock row and a second names the three `-alone`
+ *  projects (`e2e/tools/row-map.ts`). The whole generation costs about four seconds on a
+ *  two-core pod, measured at this head; a minute and a half is the ceiling at which something
+ *  is wrong rather than slow, as the other listing tests of this directory take it. */
 const generationTimeout = 90_000;
 
 test(
@@ -26,8 +28,8 @@ test(
   async () => {
     const child = Bun.spawn(["bun", "e2e/tools/row-map.ts"], {
       cwd: dispatchPackage,
-      // The generation lists the config in a subprocess of its own, which the config exempts
-      // from its unset-port refusal, so no harness port of this shell reaches it.
+      // The generation lists the config in a subprocess of its own, and a listing runs no
+      // `globalSetup`, so it starts no stack and nothing of this shell's environment reaches it.
       env: { HOME: process.env.HOME ?? "", PATH: process.env.PATH ?? "" },
       stderr: "pipe",
       stdout: "pipe",

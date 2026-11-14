@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -238,8 +237,14 @@ func TestAChildClosedDoneDeletesItsSandboxWhileItsParentRuns(t *testing.T) {
 	if _, touched := api.deleted(rootSandbox); touched || api.pvcRequests != 0 {
 		t.Fatalf("the child's close deleted the root's Sandbox (%t) or sent %d PVC requests, want neither", touched, api.pvcRequests)
 	}
-	if got := storedClaim(planner.Token); got.State != supervise.StateRetired || got.Session != planner.Session || got.SessionFile != "" || got.Locator != nil {
-		t.Fatalf("done child's planner after the close = %+v, want retired with session evidence, no resume path, and no locator", got)
+	// The claim keeps both halves of the session it recorded: a done issue is reopened, and its
+	// roles are then started again on the same issue, where only the resume path brings the
+	// worker that did the work back (dispatch://INFRA-714 R8, A10). This deployment's sessions
+	// are rows in a session database (Options.SessionStore above), not files on the volume the
+	// close deletes, so the path still names a session its store holds and the close leaves it
+	// alone.
+	if got := storedClaim(planner.Token); got.State != supervise.StateRetired || got.Session != planner.Session || got.SessionFile != planner.SessionFile || got.Locator != nil {
+		t.Fatalf("done child's planner after the close = %+v, want retired with its session, its resume path and no locator", got)
 	}
 	if got := storedClaim(architect.Token); got.State != supervise.StateWorking || got.Session != "saved-architect" {
 		t.Fatalf("root architect after the child's close = %+v, want it working with its session", got)
@@ -274,7 +279,8 @@ func TestAChildClosedDoneDeletesItsSandboxWhileItsParentRuns(t *testing.T) {
 	}
 
 	// (b) The done child set back to todo re-enters under its live tree and its planner starts
-	// again: a fresh spawn into a new Sandbox whose workspace-init expects no volume. The fixture
+	// again: a new Sandbox whose workspace-init expects no volume, resuming the planner's own
+	// recorded session. The fixture
 	// runs no controller, so the launch ends at its wait for a pod; what it asked of the API is
 	// what the assertion reads.
 	if _, err := intake.ApplyFact(ctx, pool, "dispatch", "child-todo", intake.DispatchIssue{Key: done.Key, ResolvedRepo: "acme/widgets", Seq: 3, Type: "issue.updated", Status: "todo", Title: done.Title, Parent: root.Key, Rank: "V"}, engine, admission); err != nil {
@@ -292,8 +298,15 @@ func TestAChildClosedDoneDeletesItsSandboxWhileItsParentRuns(t *testing.T) {
 	if !slices.Contains(env, "PATH") {
 		t.Fatalf("the re-entered child's workspace-init environment %v names no PATH; the Running patch wrote no pod template", env)
 	}
-	if got := storedClaim(planner.Token); got.SessionFile != "" {
-		t.Fatalf("re-entered child's planner = %+v, want a fresh launch with no session to resume", got)
+	// The pod and its disk are new, and the session is not: the planner that worked this issue is
+	// started again on the session it recorded, where a fresh agent would have read none of its
+	// own earlier work (dispatch://INFRA-714 R8, A10). Both halves of that record survive the
+	// close here — the id, which the session database holds and the volume reaping reads as its
+	// evidence, and the resume path, which is the only handle a runtime resumes by. No session
+	// store the configuration accepts keeps a session on the deleted disk (config's
+	// readSessionStore refuses pvc), so the close never clears the path.
+	if got := storedClaim(planner.Token); got.Session != "saved-planner" || got.SessionFile != planner.SessionFile {
+		t.Fatalf("re-entered child's planner = %+v, want the session and resume path it recorded kept", got)
 	}
 }
 
@@ -340,7 +353,7 @@ type fenceIssue struct {
 // once.
 type fenceRig struct {
 	ctx       context.Context
-	pool      *pgxpool.Pool
+	pool      *store.Pool
 	st        *store.Store
 	api       *issueSandboxAPI
 	engine    *workflow.Engine
@@ -433,6 +446,7 @@ func newFenceRig(t *testing.T, setup fenceSetup) *fenceRig {
 		Limits:         supervise.Limits{LaunchFailures: 1, PromptFailures: 2, PromptRetires: 2},
 		Timeouts:       supervise.Timeouts{Boot: time.Second, RegistrationIntervals: 2, RPC: time.Second, Probe: time.Second, Stop: time.Second, LaunchBackoff: time.Millisecond},
 		PluginContract: 24,
+		RefreshGate:    supervise.NewRefreshGate(0),
 	}
 	t.Cleanup(sup.stop)
 	// The root's architect works on, with its session, so the tree runs and never lingers. Each
@@ -723,8 +737,8 @@ func TestAnIssueThatComesBackIsNotStrandedByTheStartFence(t *testing.T) {
 		}
 		// Nothing of the old run is wanted back: the one start the re-entry queued is the
 		// planner's, of the new generation and the new run's first phase, carrying that phase's
-		// own task and the assignment it minted, which is no resume of anything
-		// (workflow.StartOrOwe).
+		// own task at the entry the transition raised on the planner's phases row, which is no
+		// resume of anything (workflow.StartOrOwe).
 		queued := startRequestsOf(t, rig.pool, child.Key)
 		if len(queued) != 1 {
 			t.Fatalf("the re-entry queued %d starts, want the one of the planner's first phase: %+v", len(queued), queued)
@@ -732,8 +746,8 @@ func TestAnIssueThatComesBackIsNotStrandedByTheStartFence(t *testing.T) {
 		if row := queued[0]; row.Role != claim.RolePlanner || row.Generation != back.Generation || row.Phase != phase.Planning || row.ResumeTask {
 			t.Fatalf("the re-entry queued %+v, want a start of the planner at %s generation %d carrying no resume of the old run", row, phase.Planning, back.Generation)
 		}
-		if row := queued[0]; row.Task == "" || row.Assignment == "" {
-			t.Fatalf("the re-entry's start = %+v, want it carrying the phase's own task and the assignment it minted", row)
+		if row := queued[0]; row.Task == "" || row.Entry == 0 {
+			t.Fatalf("the re-entry's start = %+v, want it carrying the phase's own task at the entry the transition raised", row)
 		}
 
 		// The fixture runs no controller, so the planner's launch ends at its wait for a pod and
@@ -951,7 +965,7 @@ func TestAnIssueThatComesBackIsNotStrandedByTheStartFence(t *testing.T) {
 // that queued it wrote it. The rows a drain has run are gone, so a reader must take them before
 // it drains. The name is this file's own: internal/daemon's stopped_worker_test.go has a
 // startRowsOf of its own, which answers the same rows as rendered strings.
-func startRequestsOf(t *testing.T, pool *pgxpool.Pool, issue string) []record.SuperviseRequest {
+func startRequestsOf(t *testing.T, pool *store.Pool, issue string) []record.SuperviseRequest {
 	t.Helper()
 	rows, err := pool.Query(context.Background(), `select payload from outbox where issue = $1 and kind = 'supervise'
 		and payload->>'op' = 'start' order by id`, issue)

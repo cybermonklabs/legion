@@ -54,6 +54,51 @@ func TestLegionSessionFindsTheLastFooterInAReviewsBody(t *testing.T) {
 	}
 }
 
+// The same footer names the head the review read, which is the only word a review has for the
+// code it saw: GitHub moves a review's commit_id to the pull request's current head
+// (dispatch://INFRA-1557), so the workflow holds a review-App review to its footer's head
+// instead (workflow's refusesRound). Only a whole commit name counts - 40 lowercase hexadecimal
+// characters - since a prefix or a branch name names no commit to compare with the head.
+func TestLegionHeadReadsTheHeadTheReviewSaysItRead(t *testing.T) {
+	const head = "8848896da05779c592221b1199ee55ddb11cc3f3"
+	for _, tc := range []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "the head the review read",
+			body: "Round 2: APPROVE.\n\n<!-- legion: {\"session\":\"ses-reviewer\",\"phase\":\"review\",\"head\":\"" + head + "\"} -->",
+			want: head,
+		},
+		{
+			name: "a short head names nothing",
+			body: "<!-- legion: {\"session\":\"ses-reviewer\",\"head\":\"" + head[:39] + "\"} -->",
+			want: "",
+		},
+		{
+			name: "an upper-case head names nothing: GitHub spells every head it reports in lower case",
+			body: "<!-- legion: {\"session\":\"ses-reviewer\",\"head\":\"8848896DA05779C592221B1199EE55DDB11CC3F3\"} -->",
+			want: "",
+		},
+		{name: "a footer with no head", body: "<!-- legion: {\"session\":\"ses-reviewer\",\"phase\":\"review\"} -->", want: ""},
+		{name: "no footer", body: "Ship it.", want: ""},
+		{
+			name: "two footers; the last one wins",
+			body: "<!-- legion: {\"session\":\"ses-reviewer\",\"head\":\"1111111111111111111111111111111111111111\"} -->\n\nedit: re-read at the new head.\n\n<!-- legion: {\"session\":\"ses-reviewer\",\"head\":\"" + head + "\"} -->",
+			want: head,
+		},
+		{name: "broken JSON", body: "<!-- legion: {\"session\":\"ses-reviewer\",\"head\":\"" + head + "\" -->", want: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			review := PullRequestReview{Body: tc.body}
+			if got := review.LegionHead(); got != tc.want {
+				t.Fatalf("LegionHead() of %q = %q, want %q", tc.body, got, tc.want)
+			}
+		})
+	}
+}
+
 // A carried approval is the review Dispatch writes in a person's name when their answer to a
 // decision block was the whole change since the version they approved; its reason opens with
 // CarriedApprovalReasonPrefix, mirrored from Dispatch's carryReason

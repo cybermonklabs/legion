@@ -27,6 +27,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/promptrefs"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 	"github.com/sjawhar/legion/daemon/internal/runtime/tmux"
 	workershim "github.com/sjawhar/legion/daemon/internal/shim"
@@ -176,6 +177,14 @@ type pluginGate struct {
 // each provider key the pane's shim exports from providerEnvDir as the shim exports it
 // (shim.ReadProviderEnv), so a task agent whose model's key comes only through a provider key
 // resolves as it will in a pane.
+//
+// The spend attributes are composed as a pane's are (runtime.SpendResourceAttributes, which
+// tmux.panePairs calls for a launch), with the zero spec: the probe serves no issue and runs in
+// no role, so the composition gives the operator's own value back alone, with no legion.issue and
+// no legion.role, and the probe's minutes are billed under the deployment's own attributes rather
+// than under some launch's issue. The call stands here, adding no attribute of its own, so that a
+// pane and the gate compose the one variable through the one function and cannot drift; an
+// operator who sets none leaves the gate told none, rather than an empty variable invented for it.
 func gateEnvironment(environ []string, stateDir, providerEnvDir string, block *config.Tmux) (map[string]string, error) {
 	env := tmux.PaneEnvironment(environ, stateDir)
 	if block != nil {
@@ -183,6 +192,9 @@ func gateEnvironment(environ []string, stateDir, providerEnvDir string, block *c
 		if len(block.PiConfigFiles) > 0 {
 			env["PI_CONFIG_FILES"] = strings.Join(block.PiConfigFiles, ":")
 		}
+	}
+	if attributes := runtime.SpendResourceAttributes(env[runtime.SpendAttributesVariable], runtime.SpawnSpec{}); attributes != "" {
+		env[runtime.SpendAttributesVariable] = attributes
 	}
 	if providerEnvDir == "" {
 		return env, nil
@@ -967,7 +979,14 @@ func (g pluginGate) run(ctx context.Context, script string, args ...string) (ran
 	if job.interrupted(cmd.ProcessState) {
 		return ran{}, errors.New("the probe was interrupted at the terminal")
 	}
-	if runErr := procgroup.Err(err); runErr != nil {
+	// The budget's kill is read before the run's own error is propagated: the attempt's end stops
+	// the group with SIGTERM before its SIGKILL (procgroup.Configure), and exec reports a command
+	// whose Cancel succeeded and which then exited cleanly as the context's error (watchCtx),
+	// which procgroup.Err passes through. A probe that handles its SIGTERM and leaves inside the
+	// grace is the budget killing it, judged below like any other budget kill, not a probe that
+	// could not be run.
+	timedOut := killed()
+	if runErr := procgroup.Err(err); runErr != nil && !timedOut {
 		return ran{}, runErr
 	}
 	tail := strings.TrimSpace(stderr.String())
@@ -980,7 +999,7 @@ func (g pluginGate) run(ctx context.Context, script string, args ...string) (ran
 		stdout:   stdout.String(),
 		output:   stderr.String() + "\n" + stdout.String(),
 		tail:     tail,
-		timedOut: killed(),
+		timedOut: timedOut,
 		elapsed:  time.Since(started),
 	}, nil
 }

@@ -7,9 +7,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
-	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/podsafety"
 	"github.com/sjawhar/legion/daemon/internal/shim"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
@@ -45,14 +46,27 @@ const workerShimUsage = "legion worker-shim --connect <unix:///path|tcp://host:p
 // earlier build left partial is repaired as workspace.nextCodegraphStep decides.
 //
 // Before the wrapped process is started, and before any frame the daemon sends is read, the shim
-// installs the pod's shared public leak check, once per pod, where its own environment carries
-// the pin the worker image sets (leakguard.Install, leakCheckInstaller): the runtime tells every
-// role of the pod that installed check as PUBLIC_LEAK_CHECK, and where the environment names
-// none — a pod whose image carries the install under a daemon that predates it — the shim names
-// what it installed itself (shim's spawnOnce). A pod whose check could not be installed fails
-// its launch rather than running an agent whose every write path would refuse. On a tmux pane
-// there is no pin and nothing is installed.
+// reads the pod's shared public leak check where its own environment carries the pin the worker
+// image sets (leakguard.Installed, shim's spawnOnce). The daemon reads the check and pushes it to
+// the pod's launcher, which installs it once for the pod before any role starts; the shim installs
+// nothing. The runtime tells every role of the pod that installed check as PUBLIC_LEAK_CHECK, and
+// where the environment names none the shim names the install itself. A role whose install is
+// absent or of another tag fails its launch rather than running an agent whose every write path
+// would refuse. On a tmux pane there is no pin and nothing is read.
 func runWorkerShim(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	// SIGHUP stops this shim as SIGTERM does: tmux's kill-pane gives every process of the pane
+	// the hangup, and it is the only signal this process gets under that runtime — the daemon
+	// ends a pane with its shutdown frame and then kills the pane, never signalling the shim
+	// (internal/runtime/tmux's stop). The shim's own end is what ends the agent and the git and
+	// jj it has running, each of which sits in a process group of its own the pane's signal does
+	// not reach (internal/procgroup, internal/shim's Run), so a shim killed outright by the
+	// hangup's default action would leave a save's or an adoption's jj running against the
+	// issue's shared clone for the rest of its budget. It is armed here and in `legion
+	// claude-bridge` alone, never in main's shared context: `legion gh` reads
+	// signal.Ignored(syscall.SIGHUP) to leave a nohuped gh alone (gh.go), and arming the signal
+	// for every subcommand would un-ignore it there.
+	ctx, stop := signal.NotifyContext(ctx, syscall.SIGHUP)
+	defer stop()
 	flags := newFlags("worker-shim", "usage: legion worker-shim [flags] -- <omp argv…>", stderr)
 	var given workerShimFlags
 	flags.StringVar(&given.connect, "connect", "", "the daemon's worker stream: unix:///<path> or tcp://<host>:<port>")
@@ -79,31 +93,12 @@ func runWorkerShim(ctx context.Context, args []string, stdout, stderr io.Writer)
 		return 1
 	}
 	cfg.Log = stdout
-	cfg.InstallLeakCheck = leakCheckInstaller(stdout)
 	code, err := shim.Run(ctx, cfg)
 	if err != nil {
 		fmt.Fprintf(stderr, "legion worker-shim: %v\n", err)
 		return 1
 	}
 	return code
-}
-
-// leakCheckInstaller is shim.Config.InstallLeakCheck: the pod's one install of the pinned shared
-// public leak check (leakguard.Install), whose lines go to the pane as the shim's own do, and
-// whose answer is the installed check's path — what the shim then names in PUBLIC_LEAK_CHECK for
-// everything it starts, where its environment names none. It is set in every runtime and
-// installs nothing, answering "", where the shim's environment names no pin
-// (leakguard.TagVariable, which the worker image sets and a tmux pane does not), so the pin, not
-// a flag, decides whether a shim installs.
-func leakCheckInstaller(stdout io.Writer) func(context.Context, []string) (string, error) {
-	return func(ctx context.Context, env []string) (string, error) {
-		return leakguard.Install(ctx, leakguard.InstallOptions{
-			Env: env,
-			Log: func(format string, args ...any) {
-				fmt.Fprintf(stdout, "[worker-shim] "+format+"\n", args...)
-			},
-		})
-	}
 }
 
 // podSafeEnvironment is environ on the pod's baseline: PI_CONFIG_DIR and OMP_SESSION_STORAGE set

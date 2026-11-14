@@ -12,11 +12,13 @@ import {
 import { askThreadsIssue, eventRefreshTargets } from "../api/event-refresh";
 import {
   architectureSourcesQuery,
+  askThreadQuery,
   inboxQuery,
   inboxThreadsQuery,
   issueQuery,
   myRepliesCountQuery,
   projectArchitectureSourcesQuery,
+  projectDefaultAssigneesQuery,
   projectIssuesQuery,
   projectsQuery,
   userStateQuery,
@@ -48,6 +50,8 @@ const READS = {
     key: ["references", "to", "dispatch://CORE-9/ask/ask-9"],
   },
   asks: { key: ["asks", "CORE-1"] },
+  // The Conversation tab's list of CORE-1's asks, each with its thread, beneath the issue's.
+  askThreads: { key: ["asks", "CORE-1", "thread"] },
   collaborators: { key: ["issue", "CORE-1", "collaborators"] },
   comment: { key: commentQuery("comment-1").queryKey },
   // Block b2 of CORE-1's comment-1, read by a link to it and, pinned to the comment's revision 1,
@@ -114,6 +118,7 @@ const READS = {
   otherDocumentPage: { data: { id: "artifact-2" }, key: ["artifact-ref", "CORE/notes-md"] },
   otherHandoffs: { key: ["handoffs", "CORE-9"] },
   otherIssueMessage: { key: messageQuery("CORE-9", "message-9").queryKey },
+  otherProjectAsks: { key: ["asks", "OTHER-1"] },
   otherProjectList: { key: projectIssuesQuery("OTHER", []).queryKey },
   // Another block of CORE-1's spec, which a link elsewhere on the page names.
   otherSpecBlock: {
@@ -131,6 +136,7 @@ const READS = {
   },
   parentSummary: { key: issueSummaryQuery("CORE-0").queryKey },
   pinned: { key: ["issues", "pinned"] },
+  projectDefaultAssignees: { key: projectDefaultAssigneesQuery().queryKey },
   projectInbox: { key: ["inbox", "CORE"] },
   projectList: { key: projectIssuesQuery("CORE", []).queryKey },
   projects: { key: projectsQuery().queryKey },
@@ -159,6 +165,56 @@ const READS = {
     key: ["references", "to", "dispatch://CORE-1/artifact/spec"],
   },
   summary: { key: issueSummaryQuery("CORE-1").queryKey },
+  // The Reply-thread card's reads (`askThreadQuery`, `GET /asks/{id}`), each cut to the fields
+  // the rules read: an open question on CORE-1 nobody handed on, one handed on, one answered, an
+  // open one on CORE-9, one on another project's issue, and one on a project document of CORE and
+  // of another project.
+  thread: {
+    data: { ask: { asked_of: null, id: "ask-1", issue_key: "CORE-1", state: "open" } },
+    key: askThreadQuery("ask-1").queryKey,
+  },
+  threadAnswered: {
+    data: { ask: { asked_of: null, id: "ask-3", issue_key: "CORE-1", state: "answered" } },
+    key: askThreadQuery("ask-3").queryKey,
+  },
+  threadHandedOn: {
+    data: {
+      ask: { asked_of: "dave@example.com", id: "ask-2", issue_key: "CORE-1", state: "open" },
+    },
+    key: askThreadQuery("ask-2").queryKey,
+  },
+  threadOnDocument: {
+    data: {
+      ask: {
+        anchor_artifact: { name: "plan.md", primary: false, project: "CORE", slug: "plan-md" },
+        asked_of: null,
+        id: "ask-7",
+        issue_key: null,
+        state: "open",
+      },
+    },
+    key: askThreadQuery("ask-7").queryKey,
+  },
+  threadOnOtherDocument: {
+    data: {
+      ask: {
+        anchor_artifact: { name: "notes.md", primary: false, project: "OTHER", slug: "notes-md" },
+        asked_of: null,
+        id: "ask-8",
+        issue_key: null,
+        state: "open",
+      },
+    },
+    key: askThreadQuery("ask-8").queryKey,
+  },
+  threadOnOtherIssue: {
+    data: { ask: { asked_of: null, id: "ask-9", issue_key: "CORE-9", state: "open" } },
+    key: askThreadQuery("ask-9").queryKey,
+  },
+  threadOnOtherProject: {
+    data: { ask: { asked_of: null, id: "ask-6", issue_key: "OTHER-1", state: "open" } },
+    key: askThreadQuery("ask-6").queryKey,
+  },
   unrelatedDetail: { key: issueQuery("CORE-9").queryKey },
   unrelatedPanel: {
     data: { edges: [], node: { id: "CORE-9", kind: "issue" } },
@@ -179,6 +235,10 @@ interface PageOptions {
   readonly treeLists: "component" | "unassigned" | "nowhere";
   /** Whether the Inbox's thread rows hold a thread on CORE-1. */
   readonly threadsHold: boolean;
+  /** The rows both Inbox reads hold, in place of the two `inboxHolds` names. */
+  readonly inboxRows?: readonly Partial<InboxRow>[];
+  /** The rows every issue's ask list and the project document's hold, in place of their own. */
+  readonly askRows?: readonly Partial<Ask>[];
 }
 
 function dataFor(name: ReadName, page: PageOptions): unknown {
@@ -186,12 +246,19 @@ function dataFor(name: ReadName, page: PageOptions): unknown {
     return page.pinned ? [{ key: "CORE-1" }] : [{ key: "CORE-5" }];
   }
   if (name === "inbox" || name === "projectInbox") {
+    if (page.inboxRows !== undefined) return page.inboxRows;
     return page.inboxHolds
       ? [
           { id: "ask-1", issue_key: "CORE-1" },
           { id: "ask-9", issue_key: "CORE-9" },
         ]
       : [{ id: "ask-5", issue_key: "CORE-5" }];
+  }
+  if (
+    page.askRows !== undefined &&
+    (name === "asks" || name === "askThreads" || name === "otherProjectAsks" || name === "docAsks")
+  ) {
+    return page.askRows;
   }
   if (name === "architecture") {
     const listed = [{ key: page.treeLists === "nowhere" ? "CORE-5" : "CORE-1" }];
@@ -491,12 +558,36 @@ const rules: Record<string, Rule> = {
     refreshes: ["detail", "parent", "grandparent", "unrelatedDetail"],
     spares: ["summary", "pinned"],
   },
-  "an assignee change leaves an Inbox that does not list the issue alone": {
+  // An assignee write moves the questions nobody has handed on from one person to another, and
+  // every reader's Inbox read holds every open question of the issue, so a test against the rows
+  // she holds finds every list it moves. An Inbox holding no row of the issue has nothing to move
+  // whoever the event names - nobody, as a server mid-deploy writes it, or the reader herself -
+  // and only her thread rows, which the names decide, are read again.
+  "an assignee change naming nobody leaves an Inbox that lists no row of the issue alone": {
     event: event("issue.updated", issue({ ancestors: [], changed: ["assignee"] })),
     page: { inboxHolds: false },
-    refreshes: ["detail"],
-    spares: ["inbox", "projectInbox"],
+    refreshes: ["detail", "replies"],
+    spares: ["inbox", "projectInbox", "summary", "pinned"],
   },
+  "an assignee move naming the viewer leaves an Inbox that lists no row of the issue alone": {
+    event: event(
+      "issue.updated",
+      issue({ ancestors: [], changed: ["assignee"], thread_logins: ["alice"] })
+    ),
+    page: { inboxHolds: false },
+    refreshes: ["detail", "replies"],
+    spares: ["inbox", "projectInbox", "summary", "pinned"],
+  },
+  "an assignee move between two other people leaves an Inbox that lists no row of the issue alone":
+    {
+      event: event(
+        "issue.updated",
+        issue({ ancestors: [], changed: ["assignee"], thread_logins: ["bob", "carol"] })
+      ),
+      page: { inboxHolds: false, threadsHold: false },
+      refreshes: ["detail"],
+      spares: ["inbox", "projectInbox", "replies", "inboxThreads"],
+    },
   "a blocker change refreshes the detail of each blocker it names, whose Referenced by count moved":
     {
       event: event(
@@ -1055,6 +1146,213 @@ const rules: Record<string, Rule> = {
     refreshes: ["inbox"],
     spares: ["inboxThreads", "replies"],
   },
+  // The Reply-thread card draws a question's Asked-of badge from its thread, which never goes
+  // stale on its own: an assignee move reads again the thread of each open question of the issue
+  // nobody handed on, and no thread of another issue, a question handed on or one answered.
+  "an assignee move refreshes the Reply-thread reads of the issue's open questions nobody handed on":
+    {
+      event: event(
+        "issue.updated",
+        issue({ ancestors: ["CORE-0"], changed: ["assignee"], thread_logins: ["bob"] })
+      ),
+      refreshes: ["thread"],
+      spares: [
+        "threadOnOtherIssue",
+        "threadHandedOn",
+        "threadAnswered",
+        "threadOnDocument",
+        "threadOnOtherProject",
+      ],
+    },
+  // A project's default assignee is the last step of the chain that decides who a question
+  // reaches, so moving it carries every open ask on an issue of that project nobody holds out
+  // of one person's lists and into the other's. The event names both of them.
+  "a project's default assignee moving to the viewer refreshes their Inbox and thread rows with the Settings table":
+    {
+      event: event(
+        "settings.project_default_assignee.updated",
+        { assignee: "alice", project: "CORE", thread_logins: ["alice", "bob"] },
+        { issue_key: null }
+      ),
+      refreshes: ["projectDefaultAssignees", "inbox", "projectInbox", "inboxThreads", "replies"],
+      spares: ["detail", "projects", "projectList", "summary"],
+    },
+  // A reader the event does not name still holds, in her one unfiltered Inbox read, every open
+  // question she can see with the person it waits on, which her assignee filter and the Asked-of
+  // badge read. A question the default decides - nobody handed it on, and nobody holds its issue
+  // or it is on a project document - changes person in her list too.
+  "a project's default assignee moving between two other people refreshes a reader's Inbox holding a question on an issue nobody holds":
+    {
+      event: event(
+        "settings.project_default_assignee.updated",
+        { assignee: "carol", project: "CORE", thread_logins: ["bob", "carol"] },
+        { issue_key: null }
+      ),
+      page: {
+        inboxRows: [
+          {
+            asked_of: null,
+            id: "ask-1",
+            issue: { assignee: null, key: "CORE-1", title: "Ship the release" },
+            issue_key: "CORE-1",
+            state: "open",
+          },
+        ],
+      },
+      refreshes: ["projectDefaultAssignees", "inbox", "projectInbox"],
+      spares: ["inboxThreads", "replies", "detail"],
+    },
+  "a project's default assignee moving between two other people refreshes a reader's Inbox holding a question on one of its documents":
+    {
+      event: event(
+        "settings.project_default_assignee.updated",
+        { assignee: "carol", project: "CORE", thread_logins: ["bob", "carol"] },
+        { issue_key: null }
+      ),
+      page: {
+        inboxRows: [
+          {
+            asked_of: null,
+            document: { name: "plan.md", project: "CORE", slug: "plan-md" },
+            id: "ask-7",
+            issue_key: null,
+            state: "open",
+          },
+        ],
+      },
+      refreshes: ["projectDefaultAssignees", "inbox", "projectInbox"],
+      spares: ["inboxThreads", "replies", "detail"],
+    },
+  // Every question here waits on a step above the default, or belongs to another project, so the
+  // move changes none of them.
+  "a project's default assignee moving between two other people leaves alone a reader whose lists hold no question it decides":
+    {
+      event: event(
+        "settings.project_default_assignee.updated",
+        { assignee: "carol", project: "CORE", thread_logins: ["bob", "carol"] },
+        { issue_key: null }
+      ),
+      page: {
+        inboxRows: [
+          {
+            asked_of: null,
+            id: "ask-1",
+            issue: { assignee: "alice@example.com", key: "CORE-1", title: "Ship the release" },
+            issue_key: "CORE-1",
+            state: "open",
+          },
+          {
+            asked_of: "dave@example.com",
+            id: "ask-2",
+            issue: { assignee: null, key: "CORE-2", title: "Handed on" },
+            issue_key: "CORE-2",
+            state: "open",
+          },
+          {
+            asked_of: "dave@example.com",
+            document: { name: "plan.md", project: "CORE", slug: "plan-md" },
+            id: "ask-7",
+            issue_key: null,
+            state: "open",
+          },
+          {
+            asked_of: null,
+            id: "ask-8",
+            issue: { assignee: null, key: "OTHER-1", title: "Another project's" },
+            issue_key: "OTHER-1",
+            state: "open",
+          },
+          {
+            asked_of: null,
+            document: { name: "notes.md", project: "OTHER", slug: "notes-md" },
+            id: "ask-9",
+            issue_key: null,
+            state: "open",
+          },
+        ],
+      },
+      refreshes: ["projectDefaultAssignees"],
+      spares: ["inbox", "projectInbox", "inboxThreads", "replies", "detail"],
+    },
+  // The issue page and the document page draw the same Asked-of badge from their own ask lists,
+  // each row with the person the server resolved for it: a list of the project holding a
+  // question nobody handed on reads again. The document list's key and rows do not name its
+  // project, so it reads again whichever project's document it is.
+  "a project's default assignee moving refreshes the issue and document ask lists holding a question nobody handed on":
+    {
+      event: event(
+        "settings.project_default_assignee.updated",
+        { assignee: "carol", project: "CORE", thread_logins: ["bob", "carol"] },
+        { issue_key: null }
+      ),
+      page: { askRows: [{ asked_of: null, id: "ask-1", question: "Ship it?", state: "open" }] },
+      refreshes: ["projectDefaultAssignees", "asks", "askThreads", "docAsks"],
+      spares: ["otherProjectAsks", "docBlocks", "ask", "detail", "inboxThreads"],
+    },
+  "a project's default assignee moving leaves alone the ask lists whose every question was handed on":
+    {
+      event: event(
+        "settings.project_default_assignee.updated",
+        { assignee: "carol", project: "CORE", thread_logins: ["bob", "carol"] },
+        { issue_key: null }
+      ),
+      page: {
+        askRows: [
+          { asked_of: "dave@example.com", id: "ask-1", question: "Ship it?", state: "open" },
+        ],
+      },
+      refreshes: ["projectDefaultAssignees"],
+      spares: ["asks", "askThreads", "docAsks", "otherProjectAsks"],
+    },
+  // An answered or closed question's card draws no Asked-of badge, so a list whose every question
+  // nobody handed on is answered holds nothing the move changes.
+  "a project's default assignee moving leaves alone the ask lists whose every question nobody handed on is answered":
+    {
+      event: event(
+        "settings.project_default_assignee.updated",
+        { assignee: "carol", project: "CORE", thread_logins: ["bob", "carol"] },
+        { issue_key: null }
+      ),
+      page: {
+        askRows: [{ asked_of: null, id: "ask-1", question: "Ship it?", state: "answered" }],
+      },
+      refreshes: ["projectDefaultAssignees"],
+      spares: ["asks", "askThreads", "docAsks", "otherProjectAsks"],
+    },
+  // The Inbox's Reply-thread card draws the same badge from the question's thread: a thread of
+  // the project's open question nobody handed on reads again, on an issue or on a project
+  // document, and a thread of another project's, of a question handed on or of one answered does
+  // not. A thread does not say who holds its issue, so CORE-9's reads again too.
+  "a project's default assignee moving refreshes the Reply-thread reads of the questions it carries and no other":
+    {
+      event: event(
+        "settings.project_default_assignee.updated",
+        { assignee: "carol", project: "CORE", thread_logins: ["bob", "carol"] },
+        { issue_key: null }
+      ),
+      refreshes: ["projectDefaultAssignees", "thread", "threadOnOtherIssue", "threadOnDocument"],
+      spares: ["threadHandedOn", "threadAnswered", "threadOnOtherProject", "threadOnOtherDocument"],
+    },
+  // The project list carries no default assignee, so a new project's is in the defaults read
+  // alone; an update of a project moves no default.
+  "a new project refreshes the defaults read the Settings table reads its default from": {
+    event: event(
+      "project.created",
+      { created_at: "2026-10-26T00:00:00Z", key: "CORE", name: "Core" },
+      { issue_key: null }
+    ),
+    refreshes: ["projects", "projectDefaultAssignees"],
+    spares: ["inbox", "detail"],
+  },
+  "a project's update leaves the defaults read alone": {
+    event: event(
+      "project.updated",
+      { created_at: "2026-10-26T00:00:00Z", key: "CORE", name: "Core" },
+      { issue_key: null }
+    ),
+    refreshes: ["projects"],
+    spares: ["projectDefaultAssignees", "inbox", "detail"],
+  },
 };
 
 test.each(Object.entries(rules))("%s", (_name, rule) => {
@@ -1141,6 +1439,26 @@ test("a recorded result refreshes the results of the check's issue and of the re
   ]);
 });
 
+// A retraction moves exactly the two reads a record moves, for the same reason: the result
+// stays in both listings and stops counting as evidence there. A tab that did not refetch would
+// keep showing a retracted result as proof.
+test("a retracted result refreshes the results of the check's issue and of the recording issue", () => {
+  const retracted = event("result.retracted", {
+    check_block_id: "k1",
+    check_issue: "CORE-1",
+    commit_sha: "1111111111111111111111111111111111111111",
+    issue: "CORE-9",
+    reason: "The run was against the wrong commit.",
+  });
+  expect(eventRefreshTargets(retracted, "alice").map((target) => target.queryKey)).toEqual([
+    ["issue", "CORE-1"],
+    ["events", "CORE-1"],
+    ["issues", "project", "CORE"],
+    ["issue", "CORE-1", "results"],
+    ["issue", "CORE-9", "results"],
+  ]);
+});
+
 // A document version moves what the Spec tab's gap pills and the Verification tab's checks
 // read: adding a `check` to verification.md, or a `requirement` to the spec, changes both. Both
 // reads hang under the issue's key, and every issue target is `exact`, so the branch names them
@@ -1192,6 +1510,13 @@ const eventsByType: Record<EventType, DispatchEvent> = {
     ask_id: "ask-1",
   }),
   "artifact.created": event("artifact.created", { artifact: { id: "artifact-3" } }),
+  "artifact.renamed": event("artifact.renamed", {
+    artifact: { id: "artifact-3", name: "Launch notes" },
+    previous_name: "Lanuch notes",
+  }),
+  "artifact.removed": event("artifact.removed", {
+    artifact: { id: "artifact-3", name: "Launch notes" },
+  }),
   "artifact.version": event("artifact.version", { artifact_id: "artifact-3" }),
   "artifact.human_edited": event("artifact.human_edited", {
     artifact_id: "artifact-3",
@@ -1200,6 +1525,7 @@ const eventsByType: Record<EventType, DispatchEvent> = {
   }),
   "ask.anchor_refreshed": event("ask.anchor_refreshed", { anchor: null, id: "ask-1" }),
   "ask.answered": event("ask.answered", { anchor: null, id: "ask-1" }),
+  "ask.asked_of": event("ask.asked_of", { anchor: null, id: "ask-1", asked_of: "bob" }),
   "ask.edited": event("ask.edited", { anchor: null, id: "ask-1" }),
   "ask.follower_added": event("ask.follower_added", { ask_id: "ask-1", session_id: "s1" }),
   "ask.follower_removed": event("ask.follower_removed", { ask_id: "ask-1", session_id: "s1" }),
@@ -1247,6 +1573,21 @@ const eventsByType: Record<EventType, DispatchEvent> = {
     issue: "CORE-1",
     role: "implementer",
     verdict: "pass",
+  }),
+  "result.retracted": event("result.retracted", {
+    check_block_id: "k1",
+    check_issue: "CORE-1",
+    commit_sha: "1111111111111111111111111111111111111111",
+    issue: "CORE-1",
+    reason: "The run was against the wrong commit.",
+  }),
+  "issue.pull_request_attribution_changed": event("issue.pull_request_attribution_changed", {
+    repo: "acme/widgets",
+    number: 42,
+    url: "https://github.com/acme/widgets/pull/42",
+    from: "CORE-1",
+    to: "CORE-2",
+    source: "branch",
   }),
   "settings.architecture_source.updated": event(
     "settings.architecture_source.updated",

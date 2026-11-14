@@ -152,20 +152,25 @@ const RoleTopicPrefix = "notifications.role."
 // cannot replace (`update-stalled`, the daemon's reconcilePodUpdates), a question to a stopped
 // agent the daemon's answer loop passed on (`agent-question`, the daemon's controllerPassOn), a
 // claim whose turns keep ending in a provider error (`provider-errors`, supervise's
-// tellControllerOfProviderErrors), and the slot wakes admission sends through wakeController,
-// `slot-free`, `todo` and `tick`
+// tellControllerOfProviderErrors), a tree of the project that has stopped (`tree-stalled`, admit's
+// tellStalledTrees, once for each stall), and the slot wakes admission sends through
+// wakeController, `slot-free`, `todo` and `tick`
 // (admit.Admission.wakeController and its callers say when; the tick alone carries
 // `openCapabilities`, the deployment capabilities with no decision,
 // admit.Admission.ReportCapabilities). The controller takes no issue for `slot-free`,
 // `todo` or `awaiting-person`: it names the free slots in its summary and report, and work reaches
 // Legion only when a person hands it over or a role reports a clear defect the controller files
 // (skill://legion-controller, "Free slots"). It sits among the issue topics, where no
-// issue key (`[A-Z][A-Z0-9]*-[0-9]+`) can be `controller`, and the plugin's controller subscribes to it
-// while it holds the controller role (legionControllerNoticeSubject,
+// issue key (`[A-Z][A-Z0-9]*-[0-9]+`) can be `controller`, and the plugin's controller registers it
+// as an interest while it holds the controller role (legionControllerNoticeSubject,
 // packages/contracts/src/subject.ts). project is the project token panes are told as LEGION_PROJECT
-// (packages/pi-legion/src/controller-session.ts), never the Dispatch project key. It is a live
-// wake only: the stream retains it, but an Oh My Pi session subscribes over core NATS and is never
-// handed a retained copy, so a controller learns what happened before it started from `legion
+// (packages/pi-legion/src/controller-session.ts), never the Dispatch project key. The stream
+// retains it and the controller's session receives it from its own JetStream consumer, whose
+// filter that registration carries the lane into (Envoy's bus.ReachesPrivateStreamSubject lets
+// the project's controller role holder register it, and no other session), so a notice published
+// while that session was away is delivered when it registers again, its consumer keeping the
+// place it acknowledged. A session new to the lane is given a consumer at the stream's end, so a
+// freshly started controller is handed none of what came before it and learns that from `legion
 // state` and Dispatch.
 func ControllerTopic(project string) string {
 	return "notifications.legion." + project + ".controller"

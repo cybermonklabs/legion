@@ -98,7 +98,7 @@ func seedIssue(t *testing.T, database *store.Store, projectKey, issueKey, title 
 	t.Helper()
 	ctx := context.Background()
 	if _, err := database.Pool.Exec(ctx, `
-		insert into projects (key, name) values ($1, 'Test') on conflict (key) do nothing
+		insert into projects (key, name, default_assignee) values ($1, 'Test', 'alice') on conflict (key) do nothing
 	`, projectKey); err != nil {
 		t.Fatalf("seed project: %v", err)
 	}
@@ -728,7 +728,7 @@ func seedManyIssues(t *testing.T, database *store.Store, projectKey string, coun
 	t.Helper()
 	ctx := context.Background()
 	if _, err := database.Pool.Exec(ctx, `
-		insert into projects (key, name) values ($1, 'Test') on conflict (key) do nothing
+		insert into projects (key, name, default_assignee) values ($1, 'Test', 'alice') on conflict (key) do nothing
 	`, projectKey); err != nil {
 		t.Fatalf("seed project: %v", err)
 	}
@@ -1444,9 +1444,9 @@ func runHub(t *testing.T, hub *pglisten.Hub) {
 	})
 }
 
-// insertCommentWithWindow writes a comment on issueKey and the one window its indexer writes
-// for it in the same transaction (refs.IndexItem), which is what enqueues it now that the
-// comment's own write-time trigger is gone.
+// insertCommentWithWindow writes a comment on issueKey and the one window the block-index
+// tick's window arm writes for it (refs.WriteItemWindows), which is what enqueues it now that
+// the comment's own write-time trigger is gone.
 func insertCommentWithWindow(t *testing.T, q querier, issueKey, body string) {
 	t.Helper()
 	var comment string

@@ -3,7 +3,7 @@
  *  (`E2E_MEASURE_FILE`, e2e/measure-reporter.ts). One markdown table per input file, so a
  *  merge-base run and a head run read side by side (INFRA-317's A10).
  *
- *    E2E_MEASURE_FILE=/tmp/measure/head.jsonl bun e2e/run.ts -- bunx playwright test \
+ *    E2E_MEASURE_FILE=/tmp/measure/head.jsonl bunx playwright test \
  *      --config e2e/playwright.config.ts --project=chromium e2e/smoke.e2e.ts
  *    bun e2e/tools/measure-summary.ts /tmp/measure/base.jsonl /tmp/measure/head.jsonl
  *
@@ -53,6 +53,8 @@ export interface Summary {
   sum: PartSummary;
 }
 
+/** The middle of `values`, the mean of the middle two when there is an even number of them, and
+ *  0 when there are none. */
 function median(values: readonly number[]): number {
   if (values.length === 0) return 0;
   const sorted = [...values].sort((a, b) => a - b);

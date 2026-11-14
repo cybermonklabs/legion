@@ -1,6 +1,7 @@
 package record
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"crypto/rand"
@@ -41,6 +42,18 @@ func (s *Postgres) MarkProcessed(ctx context.Context, tx pgx.Tx, source, eventID
 	return tag.RowsAffected() == 1, nil
 }
 
+// ForgetProcessed removes the processed-events row of one fact, so the same fact id applies again
+// when it is sent anew. ApplyFact uses it for a refused production check report — the report of
+// a look is one fact id, and a refusal of it must not stand as the answer to the implementer's
+// next report of that same look (dispatch://INFRA-714/spec R12) — and for a fact a handler left
+// unspent (intake.Result.Unspent).
+func (s *Postgres) ForgetProcessed(ctx context.Context, tx pgx.Tx, source, eventID string) error {
+	if _, err := tx.Exec(ctx, "delete from processed_events where source = $1 and event_id = $2", source, eventID); err != nil {
+		return fmt.Errorf("forget processed event %s/%s: %w", source, eventID, err)
+	}
+	return nil
+}
+
 func (s *Postgres) Processed(ctx context.Context, tx pgx.Tx, source, eventID string) (bool, error) {
 	var marked bool
 	if err := tx.QueryRow(ctx, "select exists (select 1 from processed_events where source = $1 and event_id = $2)",
@@ -52,7 +65,7 @@ func (s *Postgres) Processed(ctx context.Context, tx pgx.Tx, source, eventID str
 
 // issueColumns reads an empty ancestry as NULL, so a record with none scans as a nil Ancestry, as
 // it was written.
-const issueColumns = `key, tree, project, title, parent, phase, generation, status, rank, handed_over, taken_back, linger_until, held_from, last_dispatch_seq, ready_pending_version, ready_pending_step, coalesce(hold_reason, ''), dispatch_status, repo, default_branch, github_repo, awaiting_ask, awaiting_gate_version, coalesce(awaiting_artifact, ''), awaiting_answered_at, coalesce(awaiting_answered_by, ''), coalesce(awaiting_answered_detail, ''), awaiting_since_seq, awaiting_since, handout_seq, coalesce(declared_seq, 0), declared_at, nullif(ancestry, '{}'), handed_over_from, memory_group, memory_draw_mode, memory_drawn_at`
+const issueColumns = `key, tree, project, title, parent, phase, generation, status, rank, handed_over, taken_back, linger_until, held_from, last_dispatch_seq, coalesce(hold_reason, ''), dispatch_status, repo, default_branch, github_repo, awaiting_ask, awaiting_gate_version, coalesce(awaiting_artifact, ''), awaiting_answered_at, coalesce(awaiting_answered_by, ''), coalesce(awaiting_answered_detail, ''), awaiting_since_seq, awaiting_since, handout_seq, coalesce(declared_seq, 0), declared_at, nullif(ancestry, '{}'), handed_over_from, coalesce(told_parent, ''), memory_group, memory_draw_mode, memory_drawn_at, moved_at, tree_stalled_told_at`
 
 func (s *Postgres) Issue(ctx context.Context, tx pgx.Tx, key string) (*Issue, error) {
 	issue, err := scanIssue(tx.QueryRow(ctx, "select "+issueColumns+" from issues where key = $1", key))
@@ -205,12 +218,6 @@ func (s *Postgres) PutIssue(ctx context.Context, tx pgx.Tx, issue Issue) error {
 	if issue.Hold != nil {
 		heldFrom, holdReason = string(issue.Hold.From), issue.Hold.Reason
 	}
-	// The refused READY's version and step are one value here and two columns in the row, which
-	// the stored shape check holds to both or neither.
-	var readyPendingStep, readyPendingVersion any
-	if issue.ReadyPending != nil {
-		readyPendingStep, readyPendingVersion = string(issue.ReadyPending.Step), issue.ReadyPending.Version
-	}
 	var awaitingAsk, awaitingGate, awaitingArtifact, answeredAt, sinceSeq, since any
 	var answeredBy Answer
 	var answeredDetail string
@@ -233,35 +240,45 @@ func (s *Postgres) PutIssue(ctx context.Context, tx pgx.Tx, issue Issue) error {
 	// The update's condition keeps a recorded issue on the repository, default branch and GitHub
 	// spelling it was recorded with: a write naming others changes no row, and is refused below.
 	// handout_seq, declared_seq and declared_at are StartHandout's, TakeInThrough's, Declare's and
-	// ClearDeclared's alone, and memory_group, memory_draw_mode and memory_drawn_at are DrawMemory's
-	// and CarryMemory's, so a copy of the issue read before any of them never writes them back.
-	// That last is what makes a tree's memory group write-once: a re-admission, a new generation
-	// and ClearTreeGeneration each record the issue again from a copy read before the draw, and
-	// each keeps it. memory_carried, the hand-over's own answer, is named here no more than it is
-	// on Issue: CarryMemory writes it and DrawMemory reads it, and no other statement touches it.
-	tag, err := tx.Exec(ctx, `insert into issues (key, tree, project, title, parent, phase, generation, status, rank, handed_over, taken_back, linger_until, held_from, last_dispatch_seq, ready_pending_version, hold_reason, dispatch_status, repo, default_branch, github_repo,
+	// ClearDeclared's alone, memory_group, memory_draw_mode and memory_drawn_at are DrawMemory's
+	// and CarryMemory's, and moved_at is MarkIssueMoved's, so a copy of the issue read before any
+	// of them never writes them back. That is what makes a tree's memory group write-once: a
+	// re-admission, a new generation and ClearTreeGeneration each record the issue again from a
+	// copy read before the draw, and each keeps it; and it is what keeps the movement safe, since
+	// every write site that marks one holds a copy of the issue read before its own fact and
+	// records the issue through this statement in that same transaction. memory_carried, the
+	// hand-over's own answer, is named here no more than it is on Issue: CarryMemory writes it and
+	// DrawMemory reads it, and no other statement touches it. An insert names moved_at nowhere
+	// either, so a newly recorded issue takes the column's default, the moment of its own write,
+	// and tree_stalled_told_at, which is MarkTreeStalledTold's alone, is named in neither half,
+	// so a root recorded again carries the stall it was already told about with it.
+	// ready_pending_version and ready_pending_step are neither written nor read: READY is gone,
+	// and the columns are left as the rows hold them so a rollback to a daemon that still reads
+	// them finds its data. awaiting_slot_notice_at is named nowhere because the column is gone
+	// with the notice it marked (20261109060737_drop_awaiting_slot_notice): a root keeps its row
+	// through its wait, so no architect is ever told a slot has freed under it.
+	tag, err := tx.Exec(ctx, `insert into issues (key, tree, project, title, parent, phase, generation, status, rank, handed_over, taken_back, linger_until, held_from, last_dispatch_seq, hold_reason, dispatch_status, repo, default_branch, github_repo,
 		awaiting_ask, awaiting_gate_version, awaiting_artifact, awaiting_answered_at, awaiting_answered_by, awaiting_answered_detail, awaiting_since_seq, awaiting_since,
-		ancestry, handed_over_from, ready_pending_step)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, nullif($16::text, ''), $17, $18, $19, $20, $21, $22, $23, $24, nullif($25::text, ''), nullif($26::text, ''), $27, $28,
-		coalesce($29::text[], '{}'), $30, $31)
+		ancestry, handed_over_from, told_parent)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, nullif($15::text, ''), $16, $17, $18, $19, $20, $21, $22, $23, nullif($24::text, ''), nullif($25::text, ''), $26, $27,
+		coalesce($28::text[], '{}'), $29, nullif($30::text, ''))
 		on conflict (key) do update set tree = excluded.tree, project = excluded.project, title = excluded.title,
 		parent = excluded.parent, phase = excluded.phase, generation = excluded.generation,
 		status = excluded.status, rank = excluded.rank, handed_over = excluded.handed_over, taken_back = excluded.taken_back,
 		linger_until = excluded.linger_until,
 		held_from = excluded.held_from, last_dispatch_seq = excluded.last_dispatch_seq,
-		ready_pending_version = excluded.ready_pending_version, ready_pending_step = excluded.ready_pending_step,
 		hold_reason = excluded.hold_reason, dispatch_status = excluded.dispatch_status,
 		awaiting_ask = excluded.awaiting_ask, awaiting_gate_version = excluded.awaiting_gate_version,
 		awaiting_artifact = excluded.awaiting_artifact,
 		awaiting_answered_at = excluded.awaiting_answered_at, awaiting_answered_by = excluded.awaiting_answered_by,
 		awaiting_answered_detail = excluded.awaiting_answered_detail,
 		awaiting_since_seq = excluded.awaiting_since_seq, awaiting_since = excluded.awaiting_since,
-		ancestry = excluded.ancestry, handed_over_from = excluded.handed_over_from
+		ancestry = excluded.ancestry, handed_over_from = excluded.handed_over_from, told_parent = excluded.told_parent
 		where issues.repo = excluded.repo and issues.default_branch = excluded.default_branch and issues.github_repo = excluded.github_repo`,
 		issue.Key, issue.Tree, issue.Project, issue.Title, issue.Parent, string(issue.Phase), int64(issue.Generation), issue.Status,
-		issue.Rank, issue.HandedOver, issue.TakenBack, issue.LingerUntil, heldFrom, issue.LastDispatchSeq, readyPendingVersion, string(holdReason), issue.DispatchStatus,
+		issue.Rank, issue.HandedOver, issue.TakenBack, issue.LingerUntil, heldFrom, issue.LastDispatchSeq, string(holdReason), issue.DispatchStatus,
 		issue.Repo, issue.DefaultBranch, issue.GitHubRepo, awaitingAsk, awaitingGate, awaitingArtifact, answeredAt, string(answeredBy), answeredDetail,
-		sinceSeq, since, issue.Ancestry, issue.HandedOverFrom, readyPendingStep,
+		sinceSeq, since, issue.Ancestry, issue.HandedOverFrom, issue.ToldParent,
 	)
 	if err != nil {
 		return fmt.Errorf("put issue %s: %w", issue.Key, err)
@@ -272,6 +289,48 @@ func (s *Postgres) PutIssue(ctx context.Context, tx pgx.Tx, issue Issue) error {
 			return fmt.Errorf("put issue %s: read the repository it is recorded on: %w", issue.Key, err)
 		}
 		return fmt.Errorf("record issue %s: it is recorded on %s@%s (GitHub's %s), and an issue's repository and default branch never change", issue.Key, repo, branch, github)
+	}
+	return nil
+}
+
+// MarkIssueMoved records at as when the daemon last saw key move. It is the one writer of
+// moved_at: PutIssue names the column nowhere, so the write sites can hold a copy of the issue
+// read before their own fact and still record that fact's movement.
+//
+// The statement is monotone — `moved_at <= $2` — so a time at or before the recorded one changes
+// no row. The facts that move an issue do not arrive in the order they were made: a GitHub
+// webhook can be delivered behind a later one, a boot applies a listing beside live events, and
+// a redelivery replays a fact the record already took. Without the condition any of those would
+// take the record back to an older moment, and a tree would read as quieter than it is, which is
+// the one error this measure must not make.
+//
+// A key with no record matches no row and writes nothing, which is right: a fact of an issue the
+// daemon does not run moves nothing, and the caller has no record to tell apart from a stale
+// one. The write is the caller's own transaction, so the movement commits with the fact that
+// made it or with neither.
+func (s *Postgres) MarkIssueMoved(ctx context.Context, tx pgx.Tx, key string, at time.Time) error {
+	if _, err := tx.Exec(ctx, "update issues set moved_at = $2 where key = $1 and moved_at <= $2", key, at); err != nil {
+		return fmt.Errorf("mark issue %s moved at %s: %w", key, at, err)
+	}
+	return nil
+}
+
+// MarkTreeStalledTold records at as the movement the daemon told root's tree stopped for. It is
+// the one writer of tree_stalled_told_at: PutIssue names the column nowhere, so the pass can
+// hold a copy of the root read before the telling and still mark it.
+//
+// The write is not monotone, unlike MarkIssueMoved's, because the column is not a movement of
+// the tree but the movement a notice was written for. The rule writes it only where it has
+// just told the controller of a tree whose newest movement stands after the mark (admit's
+// tellStalledTrees), so every write carries the row forwards; a statement that compared the
+// two would say the same thing in SQL and hide the rule's own condition.
+//
+// A key with no record matches no row and writes nothing. The write is the caller's own
+// transaction, so the mark commits with the notice it was written for or with neither: a stall
+// told to nobody is a stall the next pass tells.
+func (s *Postgres) MarkTreeStalledTold(ctx context.Context, tx pgx.Tx, root string, at time.Time) error {
+	if _, err := tx.Exec(ctx, "update issues set tree_stalled_told_at = $2 where key = $1", root, at); err != nil {
+		return fmt.Errorf("mark the tree of %s told stalled at %s: %w", root, at, err)
 	}
 	return nil
 }
@@ -427,18 +486,13 @@ func scanIssue(row scanner) (*Issue, error) {
 	var answeredAt *time.Time
 	var answeredBy, answeredDetail string
 	var sinceSeq *int64
-	var readyPendingStep *string
-	var readyPendingVersion *int
-	var since, declaredAt, memoryDrawnAt *time.Time
+	var since, declaredAt, memoryDrawnAt, treeStalledToldAt *time.Time
 	if err := row.Scan(&issue.Key, &issue.Tree, &issue.Project, &issue.Title, &issue.Parent, &phaseValue, &generation, &issue.Status,
-		&issue.Rank, &issue.HandedOver, &issue.TakenBack, &issue.LingerUntil, &heldFrom, &issue.LastDispatchSeq, &readyPendingVersion, &readyPendingStep, &holdReason, &issue.DispatchStatus,
+		&issue.Rank, &issue.HandedOver, &issue.TakenBack, &issue.LingerUntil, &heldFrom, &issue.LastDispatchSeq, &holdReason, &issue.DispatchStatus,
 		&issue.Repo, &issue.DefaultBranch, &issue.GitHubRepo, &awaitingAsk, &awaitingGate, &awaitingArtifact, &answeredAt, &answeredBy, &answeredDetail,
 		&sinceSeq, &since, &issue.HandoutSeq, &issue.DeclaredSeq, &declaredAt, &issue.Ancestry, &issue.HandedOverFrom,
-		&issue.MemoryGroup, &issue.MemoryDrawMode, &memoryDrawnAt); err != nil {
+		&issue.ToldParent, &issue.MemoryGroup, &issue.MemoryDrawMode, &memoryDrawnAt, &issue.MovedAt, &treeStalledToldAt); err != nil {
 		return nil, err
-	}
-	if readyPendingStep != nil && readyPendingVersion != nil {
-		issue.ReadyPending = &ReadyPending{Step: DesignStep(*readyPendingStep), Version: *readyPendingVersion}
 	}
 	if declaredAt != nil {
 		issue.DeclaredAt = declaredAt.UTC()
@@ -446,6 +500,13 @@ func scanIssue(row scanner) (*Issue, error) {
 	if memoryDrawnAt != nil {
 		utc := memoryDrawnAt.UTC()
 		issue.MemoryDrawnAt = &utc
+	}
+	// The column is not null, so the movement is scanned straight into the record; it is read in
+	// UTC as every other time the record answers is.
+	issue.MovedAt = issue.MovedAt.UTC()
+	if treeStalledToldAt != nil {
+		utc := treeStalledToldAt.UTC()
+		issue.TreeStalledToldAt = &utc
 	}
 	if generation < 0 {
 		return nil, fmt.Errorf("issue %s has negative generation %d", issue.Key, generation)
@@ -473,7 +534,7 @@ func scanIssue(row scanner) (*Issue, error) {
 }
 
 func (s *Postgres) Phases(ctx context.Context, tx pgx.Tx, issue string) ([]PhaseRow, error) {
-	rows, err := tx.Query(ctx, `select issue, role, claim, handoff_commit, handoff_record, handoff_version, rounds, conflict_rounds, verdict, summary, last_handoff, decision, completed_at, merge_note, assignment from phases
+	rows, err := tx.Query(ctx, `select issue, role, claim, handoff_commit, pass, handoff_record, handoff_version, rounds, conflict_rounds, backward_moves, cap_told, verdict, summary, last_handoff, decision, completed_at, entry, entry_task, entry_raised_at from phases
 		where issue = $1 order by role`, issue)
 	if err != nil {
 		return nil, fmt.Errorf("list phases for %s: %w", issue, err)
@@ -501,16 +562,36 @@ func (s *Postgres) PutPhase(ctx context.Context, tx pgx.Tx, phase PhaseRow) erro
 			return fmt.Errorf("put %s phase on %s: encode the review decision: %w", phase.Role, phase.Issue, err)
 		}
 	}
-	_, err := tx.Exec(ctx, `insert into phases (issue, role, claim, handoff_commit, handoff_record, handoff_version, rounds, conflict_rounds, verdict, summary, last_handoff,
-		decision, completed_at, merge_note, assignment)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+	// backward_moves is not null and defaults to the empty object, so a row with no move counted
+	// yet holds '{}' rather than null: a nil or empty map is written as that same empty object,
+	// which is what scanPhase reads back as nil.
+	backwardMoves := []byte("{}")
+	if len(phase.BackwardMoves) > 0 {
+		var err error
+		if backwardMoves, err = json.Marshal(phase.BackwardMoves); err != nil {
+			return fmt.Errorf("put %s phase on %s: encode the backward move counts: %w", phase.Role, phase.Issue, err)
+		}
+	}
+	// entry_raised_at is the one nullable column of the row: a row no entry has been raised on
+	// has no moment to record, and the zero time would read as one.
+	var raisedAt any
+	if !phase.EntryRaisedAt.IsZero() {
+		raisedAt = phase.EntryRaisedAt
+	}
+	_, err := tx.Exec(ctx, `insert into phases (issue, role, claim, handoff_commit, pass, handoff_record, handoff_version, rounds, conflict_rounds, backward_moves, cap_told, verdict, summary, last_handoff,
+		decision, completed_at, entry, entry_task, entry_raised_at)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
 		on conflict (issue, role) do update set claim = excluded.claim,
-		handoff_commit = excluded.handoff_commit, handoff_record = excluded.handoff_record, handoff_version = excluded.handoff_version,
-		rounds = excluded.rounds, conflict_rounds = excluded.conflict_rounds, verdict = excluded.verdict,
+		handoff_commit = excluded.handoff_commit, pass = excluded.pass,
+		handoff_record = excluded.handoff_record, handoff_version = excluded.handoff_version,
+		rounds = excluded.rounds, conflict_rounds = excluded.conflict_rounds, backward_moves = excluded.backward_moves,
+		cap_told = excluded.cap_told, verdict = excluded.verdict,
 		summary = excluded.summary, last_handoff = excluded.last_handoff, decision = excluded.decision,
-		completed_at = excluded.completed_at, merge_note = excluded.merge_note, assignment = excluded.assignment`,
-		phase.Issue, string(phase.Role), string(phase.Claim), phase.HandoffCommit, phase.HandoffRecord, phase.HandoffVersion, phase.Rounds, phase.ConflictRounds,
-		phase.Verdict, phase.Summary, phase.LastHandoff, decision, phase.CompletedAt, phase.MergeNote, phase.Assignment,
+		completed_at = excluded.completed_at,
+		entry = excluded.entry, entry_task = excluded.entry_task, entry_raised_at = excluded.entry_raised_at`,
+		phase.Issue, string(phase.Role), string(phase.Claim), phase.HandoffCommit, phase.Pass, phase.HandoffRecord, phase.HandoffVersion, phase.Rounds, phase.ConflictRounds,
+		backwardMoves, phase.CapTold, phase.Verdict, phase.Summary, phase.LastHandoff, decision, phase.CompletedAt,
+		phase.Entry, phase.EntryTask, raisedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("put %s phase on %s: %w", phase.Role, phase.Issue, err)
@@ -521,10 +602,15 @@ func (s *Postgres) PutPhase(ctx context.Context, tx pgx.Tx, phase PhaseRow) erro
 func scanPhase(row scanner) (PhaseRow, error) {
 	var phase PhaseRow
 	var role, token string
-	var decision []byte
-	if err := row.Scan(&phase.Issue, &role, &token, &phase.HandoffCommit, &phase.HandoffRecord, &phase.HandoffVersion, &phase.Rounds, &phase.ConflictRounds,
-		&phase.Verdict, &phase.Summary, &phase.LastHandoff, &decision, &phase.CompletedAt, &phase.MergeNote, &phase.Assignment); err != nil {
+	var decision, backwardMoves []byte
+	var raisedAt *time.Time
+	if err := row.Scan(&phase.Issue, &role, &token, &phase.HandoffCommit, &phase.Pass, &phase.HandoffRecord, &phase.HandoffVersion, &phase.Rounds, &phase.ConflictRounds,
+		&backwardMoves, &phase.CapTold, &phase.Verdict, &phase.Summary, &phase.LastHandoff, &decision, &phase.CompletedAt,
+		&phase.Entry, &phase.EntryTask, &raisedAt); err != nil {
 		return PhaseRow{}, err
+	}
+	if raisedAt != nil {
+		phase.EntryRaisedAt = raisedAt.UTC()
 	}
 	phase.CompletedAt = phase.CompletedAt.UTC()
 	if decision != nil {
@@ -533,14 +619,30 @@ func scanPhase(row scanner) (PhaseRow, error) {
 			return PhaseRow{}, fmt.Errorf("decode the review decision: %w", err)
 		}
 	}
+	// A row that counted no backward move reads as a nil map and never as an empty one: the
+	// column holds the empty object for it, and a scanned row of a phase nothing went back from
+	// is then equal to the PhaseRow a caller builds for it. The empty object is what nearly every
+	// row holds, and this scan runs on every phase row of every state read, so those bytes answer
+	// the nil map without a decode of their own, as the decision column above answers nil without
+	// one. Any other bytes, a null among them, still go through json.Unmarshal and still answer
+	// its error.
+	if !bytes.Equal(backwardMoves, []byte("{}")) {
+		moves := map[string]int{}
+		if err := json.Unmarshal(backwardMoves, &moves); err != nil {
+			return PhaseRow{}, fmt.Errorf("decode the backward move counts: %w", err)
+		}
+		if len(moves) > 0 {
+			phase.BackwardMoves = moves
+		}
+	}
 	phase.Role, phase.Claim = claim.Role(role), claim.Token(token)
 	return phase, nil
 }
 
-const pullRequestColumns = `issue, repo, number, branch, head_sha, head_updated_at,
+const pullRequestColumns = `issue, repo, number, branch, base, base_moved, head_sha, head_updated_at,
 	failing, cancelled, check_runs,
-	generation, snapshot, pushes, head_moves, head_run, planned_red, review_seen, review_seen_at, state,
-	checked_head, required, required_workflows, required_workflows_head, mergeability, conflicting_head, merge_sha`
+	generation, snapshot, pushes, head_moves, head_run, review_seen, review_seen_at, state,
+	checked_head, mergeability, merge_state, conflicting_head, merge_sha`
 
 func (s *Postgres) PullRequest(ctx context.Context, tx pgx.Tx, issue string) (*PullRequest, error) {
 	pr, err := scanPullRequest(tx.QueryRow(ctx, "select "+pullRequestColumns+" from pull_requests where issue = $1", issue))
@@ -615,24 +717,82 @@ func PullRequestRecorded(ctx context.Context, q RowQuerier, repo string, number 
 
 // OpenPullRequests is every open pull request of the Dispatch project's issues, by issue key.
 func (s *Postgres) OpenPullRequests(ctx context.Context, tx pgx.Tx, project string) ([]PullRequest, error) {
+	describe := fmt.Sprintf("list the open pull requests of %s", project)
 	rows, err := tx.Query(ctx, "select "+pullRequestColumns+" from pull_requests where state = $1 and issue in (select key from issues where project = $2) order by issue",
 		PullRequestOpen, project)
 	if err != nil {
-		return nil, fmt.Errorf("list the open pull requests of %s: %w", project, err)
+		return nil, fmt.Errorf("%s: %w", describe, err)
 	}
+	return collectPullRequests(rows, describe)
+}
+
+// OpenPullRequestsOnBase is every open pull request of repo whose recorded base branch is base, by
+// issue key. It is one indexed lookup (pull_requests_open_on_base, a partial index of the open rows
+// by repository and base), so a push onto a branch no open pull request sits on - the common case
+// for a repository other automation pushes to many times a minute - reads one index and no row. A
+// base recorded as "" is every pull request written before the daemon kept the base at all, so it
+// matches none: the caller never asks for one, and the next GitHub read fills those rows.
+func (s *Postgres) OpenPullRequestsOnBase(ctx context.Context, tx pgx.Tx, repo, base string) ([]PullRequest, error) {
+	if base == "" {
+		return nil, nil
+	}
+	describe := fmt.Sprintf("list the open pull requests of %s on %s", repo, base)
+	rows, err := tx.Query(ctx, "select "+pullRequestColumns+" from pull_requests where repo = $1 and base = $2 and state = $3 order by issue",
+		repo, base, PullRequestOpen)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", describe, err)
+	}
+	return collectPullRequests(rows, describe)
+}
+
+// collectPullRequests reads every row of a pull request listing, naming the listing in any failure
+// as describe.
+func collectPullRequests(rows pgx.Rows, describe string) ([]PullRequest, error) {
 	defer rows.Close()
 	open := []PullRequest{}
 	for rows.Next() {
 		pr, err := scanPullRequest(rows)
 		if err != nil {
-			return nil, fmt.Errorf("list the open pull requests of %s: %w", project, err)
+			return nil, fmt.Errorf("%s: %w", describe, err)
 		}
 		open = append(open, *pr)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("list the open pull requests of %s: %w", project, err)
+		return nil, fmt.Errorf("%s: %w", describe, err)
 	}
 	return open, nil
+}
+
+// PullRequestsOf is the pull request of each of issues, by issue key, in one query whatever the
+// number of issues: a caller that must name the pull request of every issue of a tree makes no
+// read per issue (admit's tellStalledTrees). An issue the record holds no pull request for has
+// no entry, and no issues at all reads nothing — the query is not made.
+//
+// It reads the state the record holds, whichever it is. OpenPullRequests, the other read of
+// several of this table, answers the open ones alone and could not serve this caller: a tree
+// that has stopped with its work already merged is exactly the tree that caller reports, and a
+// merged pull request is the fact its controller most needs to read.
+func (s *Postgres) PullRequestsOf(ctx context.Context, tx pgx.Tx, issues []string) (map[string]PullRequest, error) {
+	if len(issues) == 0 {
+		return nil, nil
+	}
+	rows, err := tx.Query(ctx, "select "+pullRequestColumns+" from pull_requests where issue = any($1)", issues)
+	if err != nil {
+		return nil, fmt.Errorf("read the pull requests of %v: %w", issues, err)
+	}
+	defer rows.Close()
+	requests := make(map[string]PullRequest, len(issues))
+	for rows.Next() {
+		pr, err := scanPullRequest(rows)
+		if err != nil {
+			return nil, fmt.Errorf("read the pull requests of %v: %w", issues, err)
+		}
+		requests[pr.Issue] = *pr
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the pull requests of %v: %w", issues, err)
+	}
+	return requests, nil
 }
 
 func (s *Postgres) PutPullRequest(ctx context.Context, tx pgx.Tx, pr PullRequest) error {
@@ -656,17 +816,6 @@ func (s *Postgres) PutPullRequest(ctx context.Context, tx pgx.Tx, pr PullRequest
 	if err != nil {
 		return fmt.Errorf("put pull request for %s: encode moves: %w", pr.Issue, err)
 	}
-	// A set never read is null, never an empty list, which is a base that requires no check.
-	var required []byte
-	if pr.Required != nil {
-		if required, err = json.Marshal(pr.Required); err != nil {
-			return fmt.Errorf("put pull request for %s: encode required checks: %w", pr.Issue, err)
-		}
-	}
-	workflows, err := json.Marshal(append([]RequiredWorkflow{}, pr.Workflows...))
-	if err != nil {
-		return fmt.Errorf("put pull request for %s: encode required workflows: %w", pr.Issue, err)
-	}
 	// No head run is null.
 	var run []byte
 	if pr.Run != nil {
@@ -675,30 +824,32 @@ func (s *Postgres) PutPullRequest(ctx context.Context, tx pgx.Tx, pr PullRequest
 		}
 	}
 	// fix_attempts, blocked_attempts and head_counted are stopped columns: nothing counts a fix
-	// attempt or caps one since dispatch://INFRA-956 R4, and they are kept rather than dropped so
-	// a rollback to the daemon before it still runs. Each is `not null` with no default (migration
-	// 0004), so a new row is given its zero here and no write ever touches it again.
-	_, err = tx.Exec(ctx, `insert into pull_requests (issue, repo, number, branch, head_sha, head_updated_at,
+	// attempt since dispatch://INFRA-956 R4, and nothing reads them at all since a CI result
+	// stopped moving an issue (dispatch://INFRA-714/spec R1), so they are kept rather than
+	// dropped so a rollback to the daemon before either still runs. Each is `not null` with no
+	// default (migration 0004), so a new row is given its zero here and no write ever touches it
+	// again; planned_red, required, required_workflows and required_workflows_head are stopped too
+	// and need not be named at all, being nullable or defaulted (migrations 0013, 0028, 0029).
+	_, err = tx.Exec(ctx, `insert into pull_requests (issue, repo, number, branch, base, base_moved, head_sha, head_updated_at,
 		failing, cancelled, check_runs, generation, snapshot, pushes, head_moves,
-		head_run, planned_red, review_seen, review_seen_at, state, checked_head, required,
-		required_workflows, required_workflows_head, mergeability, conflicting_head, merge_sha,
+		head_run, review_seen, review_seen_at, state, checked_head, mergeability, merge_state, conflicting_head, merge_sha,
 		fix_attempts, blocked_attempts, head_counted)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, 0, 0, '')
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, 0, 0, '')
 		on conflict (issue) do update set repo = excluded.repo, number = excluded.number, branch = excluded.branch,
+		base = excluded.base, base_moved = excluded.base_moved,
 		head_sha = excluded.head_sha, head_updated_at = excluded.head_updated_at,
 		failing = excluded.failing, cancelled = excluded.cancelled, check_runs = excluded.check_runs,
 		generation = excluded.generation, snapshot = excluded.snapshot,
 		pushes = excluded.pushes, head_moves = excluded.head_moves, head_run = excluded.head_run,
-		planned_red = excluded.planned_red, review_seen = excluded.review_seen,
+		review_seen = excluded.review_seen,
 		review_seen_at = excluded.review_seen_at, state = excluded.state, checked_head = excluded.checked_head,
-		required = excluded.required, required_workflows = excluded.required_workflows,
-		required_workflows_head = excluded.required_workflows_head, mergeability = excluded.mergeability,
+		mergeability = excluded.mergeability, merge_state = excluded.merge_state,
 		conflicting_head = excluded.conflicting_head, merge_sha = excluded.merge_sha`,
-		pr.Issue, pr.Repo, pr.Number, pr.Branch, pr.HeadSHA, pr.HeadUpdatedAt,
+		pr.Issue, pr.Repo, pr.Number, pr.Branch, pr.Base, pr.BaseMoved, pr.HeadSHA, pr.HeadUpdatedAt,
 		failing, cancelled, checkRuns,
-		pr.Generation, pr.Snapshot, pushes, moves, run, pr.PlannedRed,
-		pr.ReviewSeen.ID, pr.ReviewSeen.SubmittedAt, pr.State, pr.CheckedHead, required,
-		workflows, pr.WorkflowsHead, pr.Mergeability, pr.ConflictingHead, pr.MergeSHA,
+		pr.Generation, pr.Snapshot, pushes, moves, run,
+		pr.ReviewSeen.ID, pr.ReviewSeen.SubmittedAt, pr.State, pr.CheckedHead,
+		pr.Mergeability, pr.MergeState, pr.ConflictingHead, pr.MergeSHA,
 	)
 	if err != nil {
 		return fmt.Errorf("put pull request for %s: %w", pr.Issue, err)
@@ -718,6 +869,46 @@ func (s *Postgres) SessionClaimsAnywhere(ctx context.Context, tx pgx.Tx, session
 	var claims bool
 	if err := tx.QueryRow(ctx, "select exists (select 1 from claims where session = $1 and session <> '')", session).Scan(&claims); err != nil {
 		return false, fmt.Errorf("read the claims of session %s: %w", session, err)
+	}
+	return claims, nil
+}
+
+// ProjectClaims reads the claims of one project as the quiet measure reads them, in one
+// statement and no order: the five columns TreeClaim holds, for every claim of the project that
+// stands on an issue. The two step columns are nullable — a claim whose agent has made no call
+// has no step_at, one whose agent has begun no turn has no turn_started_at — and each reads back
+// as the zero time, which moves no tree (QuietTrees).
+//
+// project is the claim project token, the spelling `claims.project` holds, which the caller
+// converts to (the interface's own doc).
+func (s *Postgres) ProjectClaims(ctx context.Context, tx pgx.Tx, project string) ([]TreeClaim, error) {
+	rows, err := tx.Query(ctx, "select token, issue, state, step_at, turn_started_at from claims where project = $1 and issue <> ''", project)
+	if err != nil {
+		return nil, fmt.Errorf("read the claims of project %s: %w", project, err)
+	}
+	defer rows.Close()
+	var claims []TreeClaim
+	for rows.Next() {
+		var (
+			held                TreeClaim
+			token, state        string
+			stepAt, turnStarted *time.Time
+		)
+		if err := rows.Scan(&token, &held.Issue, &state, &stepAt, &turnStarted); err != nil {
+			return nil, fmt.Errorf("read the claims of project %s: %w", project, err)
+		}
+		held.Token = claim.Token(token)
+		held.State = supervise.ClaimState(state)
+		if stepAt != nil {
+			held.StepAt = *stepAt
+		}
+		if turnStarted != nil {
+			held.TurnStartedAt = *turnStarted
+		}
+		claims = append(claims, held)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the claims of project %s: %w", project, err)
 	}
 	return claims, nil
 }
@@ -1071,24 +1262,24 @@ func (s *Postgres) ClaimSession(ctx context.Context, tx pgx.Tx, token claim.Toke
 }
 
 // ClearGeneration empties one issue's generation-scoped facts: a merged or closed pull request,
-// the counters of one still open, its design gate, its recorded handoffs and a READY the gate
-// refused.
-func (s *Postgres) ClearGeneration(ctx context.Context, tx pgx.Tx, issue string) error {
-	return clearGeneration(ctx, tx, "issue = $1", "key = $1", issue, fmt.Sprintf("clear the generation of %s", issue))
+// the counters of one still open, its design gate and its recorded handoffs. now is when the
+// publication a cleared gate queues is due.
+func (s *Postgres) ClearGeneration(ctx context.Context, tx pgx.Tx, issue string, now time.Time) error {
+	return s.clearGeneration(ctx, tx, "issue = $1", "key = $1", issue, fmt.Sprintf("clear the generation of %s", issue), now)
 }
 
 // ClearTreeGeneration empties them for every issue of the tree. A root set back to todo starts a
 // new generation of the whole tree, and its children carried the old one's pull request, gate and
-// handoffs into it — a child re-entered at the new generation read a handoff of the last — and a
-// child's READY the old gate refused would wait on a packet cleared with those handoffs.
-func (s *Postgres) ClearTreeGeneration(ctx context.Context, tx pgx.Tx, tree string) error {
-	return clearGeneration(ctx, tx, "issue in (select key from issues where tree = $1)", "tree = $1", tree,
-		fmt.Sprintf("clear the generation of tree %s", tree))
+// handoffs into it — a child re-entered at the new generation read a handoff of the last.
+func (s *Postgres) ClearTreeGeneration(ctx context.Context, tx pgx.Tx, tree string, now time.Time) error {
+	return s.clearGeneration(ctx, tx, "issue in (select key from issues where tree = $1)", "tree = $1", tree,
+		fmt.Sprintf("clear the generation of tree %s", tree), now)
 }
 
 // clearGeneration runs each statement with key as $1: where selects the cleared issues' rows by
-// their issue column, and issues selects the same issues in the issues table.
-func clearGeneration(ctx context.Context, tx pgx.Tx, where, issues, key, describe string) error {
+// their issue column, and issues selects the same issues in the issues table. The design gates go
+// with them, in a statement of their own (clearGates).
+func (s *Postgres) clearGeneration(ctx context.Context, tx pgx.Tx, where, issues, key, describe string, now time.Time) error {
 	for _, statement := range []string{
 		"delete from pull_requests where " + where + " and state <> 'open'",
 		// An open pull request is kept across a new generation, but the last one's reading of it is
@@ -1105,17 +1296,48 @@ func clearGeneration(ctx context.Context, tx pgx.Tx, where, issues, key, describ
 		"update pull_requests set " +
 			"head_run = null, planned_red = false, checked_head = '', failing = '[]'::jsonb, cancelled = '[]'::jsonb, " +
 			"check_runs = '[]'::jsonb where " + where,
-		"delete from design_gates where " + where,
-		// The assignment goes with the run too: the start that re-enters the phase mints the next
-		// one, and until it does the cleared row names none, which the completion route reads as
-		// nothing to compare rather than as a mismatch to refuse.
-		"update phases set handoff_commit = '', handoff_record = '', handoff_version = 0, rounds = 0, conflict_rounds = 0, verdict = '', summary = '', decision = null, merge_note = '', " +
-			"assignment = '' where " + where,
-		// A READY the gate refused waits on the merger's packet, which the statement above clears.
-		// The step goes with the version: the stored shape holds both or neither.
-		"update issues set ready_pending_version = null, ready_pending_step = null where " + issues,
+		// The entry's task goes with the run, and the entry itself stays where it stands: the
+		// number is never reset, so a worker still holding the old entry's task is behind the row
+		// rather than level with it, and the re-admitted tree's promotion raises the entry again
+		// and writes the task of that entry beside it (admit's startMidPhaseMembers). The time
+		// the entry was raised stays with the number it belongs to. The counts go with the
+		// rounds: the new generation counts its moves back from nothing, and the cap mark goes
+		// with them, so the architect is told again at the new generation's own first crossing of
+		// the cap.
+		"update phases set handoff_commit = '', handoff_record = '', handoff_version = 0, rounds = 0, conflict_rounds = 0, " +
+			"backward_moves = '{}'::jsonb, cap_told = 0, verdict = '', summary = '', decision = null, " +
+			"entry_task = '' where " + where,
 	} {
 		if _, err := tx.Exec(ctx, statement, key); err != nil {
+			return fmt.Errorf("%s: %w", describe, err)
+		}
+	}
+	return s.clearGates(ctx, tx, where, key, describe, now)
+}
+
+// clearGates deletes the design gates of every issue the clear covers and queues one publication
+// of the empty set for each issue it emptied: those gates recorded a document until this
+// statement, and Dispatch holds the set they recorded until something tells it otherwise. The
+// delete names the issues it emptied rather than the clear naming every issue it covers, so an
+// issue that held no gate row — the ordinary child of a re-entry, and every member of a
+// re-admitted tree whose architect registered nothing — costs no Dispatch write. A row comes back
+// for each step, so an issue gated on several steps is published once.
+//
+// The publication is queued through this store, which knows nothing of the lanes beside it, so no
+// lane is woken for it: the row waits on its issue's board lane for the next sweep, among the
+// status writes the clearing pass queues with it.
+func (s *Postgres) clearGates(ctx context.Context, tx pgx.Tx, where, key, describe string, now time.Time) error {
+	rows, err := tx.Query(ctx, "delete from design_gates where "+where+" returning issue", key)
+	if err != nil {
+		return fmt.Errorf("%s: %w", describe, err)
+	}
+	emptied, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return fmt.Errorf("%s: %w", describe, err)
+	}
+	slices.Sort(emptied)
+	for _, issue := range slices.Compact(emptied) {
+		if err := s.EnqueueDesignGates(ctx, tx, DesignGatesPublish{Issue: issue, Gates: GateDocuments(nil)}, now); err != nil {
 			return fmt.Errorf("%s: %w", describe, err)
 		}
 	}
@@ -1124,11 +1346,11 @@ func clearGeneration(ctx context.Context, tx pgx.Tx, where, issues, key, describ
 
 func scanPullRequest(row scanner) (*PullRequest, error) {
 	var pr PullRequest
-	var failing, cancelled, checkRuns, pushes, moves, required, workflows, run []byte
-	if err := row.Scan(&pr.Issue, &pr.Repo, &pr.Number, &pr.Branch, &pr.HeadSHA, &pr.HeadUpdatedAt,
+	var failing, cancelled, checkRuns, pushes, moves, run []byte
+	if err := row.Scan(&pr.Issue, &pr.Repo, &pr.Number, &pr.Branch, &pr.Base, &pr.BaseMoved, &pr.HeadSHA, &pr.HeadUpdatedAt,
 		&failing, &cancelled, &checkRuns, &pr.Generation, &pr.Snapshot,
-		&pushes, &moves, &run, &pr.PlannedRed, &pr.ReviewSeen.ID, &pr.ReviewSeen.SubmittedAt, &pr.State,
-		&pr.CheckedHead, &required, &workflows, &pr.WorkflowsHead, &pr.Mergeability, &pr.ConflictingHead, &pr.MergeSHA); err != nil {
+		&pushes, &moves, &run, &pr.ReviewSeen.ID, &pr.ReviewSeen.SubmittedAt, &pr.State,
+		&pr.CheckedHead, &pr.Mergeability, &pr.MergeState, &pr.ConflictingHead, &pr.MergeSHA); err != nil {
 		return nil, err
 	}
 	if err := json.Unmarshal(failing, &pr.Failing); err != nil {
@@ -1145,14 +1367,6 @@ func scanPullRequest(row scanner) (*PullRequest, error) {
 	}
 	if err := json.Unmarshal(moves, &pr.Moves); err != nil {
 		return nil, fmt.Errorf("decode moves: %w", err)
-	}
-	if required != nil {
-		if err := json.Unmarshal(required, &pr.Required); err != nil {
-			return nil, fmt.Errorf("decode required checks: %w", err)
-		}
-	}
-	if err := json.Unmarshal(workflows, &pr.Workflows); err != nil {
-		return nil, fmt.Errorf("decode required workflows: %w", err)
 	}
 	if run != nil {
 		if err := json.Unmarshal(run, &pr.Run); err != nil {
@@ -1341,6 +1555,29 @@ func (s *Postgres) Gates(ctx context.Context, tx pgx.Tx, issues []string) (map[s
 	return gates, nil
 }
 
+// GatedIssues is the key of each issue of project that holds at least one design gate and that
+// Dispatch does not show as done, in key order. It is the boot's look over every recorded gate
+// (the daemon's queueRecordedGatesPublish), which publishes the gates of these issues (Gates):
+// two queries whatever the number of issues the project has recorded, rather than a read per
+// record. The done ones are left out here rather than by the caller, since the rows nobody
+// publishes are rows nobody need read, and the key is the whole of what the caller carries on
+// with. The status read is dispatch_status, what Dispatch last showed (DoneStatus), rather than
+// status, which is what the daemon means by the issue.
+func (s *Postgres) GatedIssues(ctx context.Context, tx pgx.Tx, project string) ([]string, error) {
+	rows, err := tx.Query(ctx, `select key from issues
+		where project = $1 and dispatch_status <> 'done'
+		and exists (select 1 from design_gates where design_gates.issue = issues.key)
+		order by key`, project)
+	if err != nil {
+		return nil, fmt.Errorf("list the gated issues of project %s: %w", project, err)
+	}
+	keys, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, fmt.Errorf("list the gated issues of project %s: %w", project, err)
+	}
+	return keys, nil
+}
+
 // GatesForArtifact is every gate registered on artifactID, in issue and then step order: one row
 // for each step of the document's owner that names it, and each copy a hand-over carried to a
 // child of its tree. Each row carries its own step.
@@ -1369,16 +1606,12 @@ func (s *Postgres) GatesForArtifact(ctx context.Context, tx pgx.Tx, artifactID s
 // reason and mark only with its version (scanGate). It is the single writer of every gate change,
 // so it is also the only place ever_opened can rise.
 //
-// A gate built with no step is written as DesignStepSpec. Go names no missing field at build time,
-// so a caller that forgets the step would otherwise be found only by the stored column's check,
-// at run time, in whatever deployment reached that path first. Spec is the step every deployment
-// requires — `root-issues` resolves to it alone, and a deployment that gates nothing still holds
-// its row — so defaulting writes the row the readers ask for rather than one nobody reads.
+// A gate built with no step is written as DesignStepSpec (DesignStep.OrSpec, the one place that
+// rule is written). Go names no missing field at build time, so a caller that forgets the step
+// would otherwise be found only by the stored column's check, at run time, in whatever deployment
+// reached that path first.
 func (s *Postgres) PutGate(ctx context.Context, tx pgx.Tx, gate DesignGate) error {
-	step := gate.Step
-	if step == "" {
-		step = DesignStepSpec
-	}
+	step := gate.Step.OrSpec()
 	approvedSeq, approvedAt := markValues(gate.ApprovedMark)
 	if gate.ApprovedVersion == nil {
 		approvedSeq, approvedAt = nil, nil
@@ -1410,13 +1643,22 @@ func (s *Postgres) PutGate(ctx context.Context, tx pgx.Tx, gate DesignGate) erro
 	return nil
 }
 
+// A row keeps a decline as three columns and Go as one optional value (RootAsk.Decline): declined
+// is the column that says there is one, and the note and the words are its two parts, each null
+// where Dispatch recorded none. The scan below builds the value from the three, and the write
+// takes it apart again.
 const rootAskColumns = `issue, ask, coalesce(kind, ''), coalesce(artifact, ''), open, seq, coalesce(waiting_on, ''), waiting_on_seq,
-	coalesce(closed_by, ''), closed_seq, by_tree, person_seq, person_answer_seq`
+	coalesce(closed_by, ''), closed_seq, by_tree, person_seq, person_answer_seq, declined, coalesce(declined_note, ''), coalesce(declined_words, '')`
 
 func scanRootAsk(row scanner) (RootAsk, error) {
 	var ask RootAsk
+	var declined bool
+	var decline AskDecline
 	err := row.Scan(&ask.Issue, &ask.Ask, &ask.Kind, &ask.Artifact, &ask.Open, &ask.Seq, &ask.WaitingOn, &ask.WaitingOnSeq, &ask.ClosedBy,
-		&ask.ClosedSeq, &ask.ByTree, &ask.PersonSeq, &ask.PersonAnswerSeq)
+		&ask.ClosedSeq, &ask.ByTree, &ask.PersonSeq, &ask.PersonAnswerSeq, &declined, &decline.Note, &decline.Words)
+	if err == nil && declined {
+		ask.Decline = &decline
+	}
 	return ask, err
 }
 
@@ -1432,18 +1674,24 @@ func (s *Postgres) RootAsk(ctx context.Context, tx pgx.Tx, issue, ask string) (*
 }
 
 func (s *Postgres) PutRootAsk(ctx context.Context, tx pgx.Tx, ask RootAsk) error {
+	declined, note, words := false, "", ""
+	if ask.Decline != nil {
+		declined, note, words = true, ask.Decline.Note, ask.Decline.Words
+	}
 	if _, err := tx.Exec(ctx, `insert into root_asks (issue, ask, kind, artifact, open, seq, waiting_on, waiting_on_seq, closed_by, closed_seq,
-		by_tree, person_seq, person_answer_seq)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+		by_tree, person_seq, person_answer_seq, declined, declined_note, declined_words)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
 		on conflict (issue, ask) do update set kind = excluded.kind, artifact = excluded.artifact, open = excluded.open, seq = excluded.seq,
 		waiting_on = excluded.waiting_on, waiting_on_seq = excluded.waiting_on_seq, closed_by = excluded.closed_by,
 		closed_seq = excluded.closed_seq, by_tree = excluded.by_tree,
-		person_seq = excluded.person_seq, person_answer_seq = excluded.person_answer_seq
+		person_seq = excluded.person_seq, person_answer_seq = excluded.person_answer_seq,
+		declined = excluded.declined, declined_note = excluded.declined_note, declined_words = excluded.declined_words
 		where root_asks.seq <= excluded.seq and root_asks.waiting_on_seq <= excluded.waiting_on_seq
 		and root_asks.closed_seq <= excluded.closed_seq and root_asks.person_seq <= excluded.person_seq
 		and root_asks.person_answer_seq <= excluded.person_answer_seq`,
 		ask.Issue, ask.Ask, nullableText(ask.Kind), nullableText(ask.Artifact), ask.Open, ask.Seq, nullableText(ask.WaitingOn), ask.WaitingOnSeq,
-		nullableText(ask.ClosedBy), ask.ClosedSeq, ask.ByTree, ask.PersonSeq, ask.PersonAnswerSeq); err != nil {
+		nullableText(ask.ClosedBy), ask.ClosedSeq, ask.ByTree, ask.PersonSeq, ask.PersonAnswerSeq,
+		declined, nullableText(note), nullableText(words)); err != nil {
 		return fmt.Errorf("put ask %s of %s: %w", ask.Ask, ask.Issue, err)
 	}
 	return nil
@@ -1682,19 +1930,47 @@ func (s *Postgres) ControllerNoticePending(ctx context.Context, tx pgx.Tx, proje
 	return pending, nil
 }
 
-func (s *Postgres) DisarmPending(ctx context.Context, tx pgx.Tx, issue string) (bool, error) {
-	var pending bool
-	if err := tx.QueryRow(ctx, "select exists (select 1 from outbox where kind = $1 and issue = $2)",
-		string(OutboxKindAutoMergeDisable), issue).Scan(&pending); err != nil {
-		return false, fmt.Errorf("read whether %s has a disarm pending: %w", issue, err)
+// ControllerNoticesPending reads that same row for many issues in one query: the statement above
+// with the issue term taken as a list rather than one key, and with the project and the role
+// terms exactly as they stand there, so each issue's answer is the answer the single read gives
+// it and a caller asking of a hundred roots makes one round trip instead of a hundred. It names
+// the issues a row was found for, which is the set a caller filtering its own roots asks for; an
+// issue with no unpublished notice is simply absent, and no issues at all reads nothing — the
+// query is not made.
+//
+// Distinct, because a kind that stands per claim can have a row per role of one issue
+// (NoticePerClaim) and the caller asks about issues; a project-wide ask names no issue and is
+// ControllerNoticePending's, which this does not serve.
+func (s *Postgres) ControllerNoticesPending(ctx context.Context, tx pgx.Tx, project string, kind NoticeKind, issues []string, role claim.Role) (map[string]struct{}, error) {
+	if len(issues) == 0 {
+		return nil, nil
+	}
+	rows, err := tx.Query(ctx, `select distinct issue from outbox
+		where kind = $1 and split_part(issue, '-', 1) = $2 and payload->>'kind' = $3
+		and issue = any($4) and ($5 = '' or payload->>'role' = $5)`,
+		string(OutboxKindControllerNotice), project, string(kind), issues, string(role))
+	if err != nil {
+		return nil, fmt.Errorf("read which of %v have a %s controller notice pending: %w", issues, kind, err)
+	}
+	defer rows.Close()
+	pending := make(map[string]struct{}, len(issues))
+	for rows.Next() {
+		var issue string
+		if err := rows.Scan(&issue); err != nil {
+			return nil, fmt.Errorf("read which of %v have a %s controller notice pending: %w", issues, kind, err)
+		}
+		pending[issue] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read which of %v have a %s controller notice pending: %w", issues, kind, err)
 	}
 	return pending, nil
 }
 
 func (s *Postgres) PersonHandoverPending(ctx context.Context, tx pgx.Tx, issue string) (bool, error) {
 	var pending bool
-	if err := tx.QueryRow(ctx, "select exists (select 1 from outbox where kind = $1 and issue = $2 and payload->>'personHandover' = 'true')",
-		string(OutboxKindDispatchStatus), issue).Scan(&pending); err != nil {
+	if err := tx.QueryRow(ctx, "select exists (select 1 from outbox where kind = $1 and issue = $2 and payload->>'kind' = $3)",
+		string(OutboxKindDispatchStatus), issue, string(PersonHandoverStatusRow)).Scan(&pending); err != nil {
 		return false, fmt.Errorf("read whether %s has a person's handover pending: %w", issue, err)
 	}
 	return pending, nil
@@ -1728,21 +2004,45 @@ func (s *Postgres) EnqueueGatedSteps(ctx context.Context, tx pgx.Tx, publish Gat
 	return nil
 }
 
-const outboxColumns = `id, kind, issue, payload, attempts, next_at, last_error, created_at, lease_token, lease_until`
+// EnqueueDesignGates writes the one design_gates_publish row of publish's issue: it replaces the
+// payload of the row the outbox still holds for that issue, and inserts one when it holds none.
+// The unique partial index of 20261110235320_design_gates_publish makes that rule the table's, so
+// no path can leave an issue with two, and the upsert is one statement, so two gate changes in
+// flight at once never queue beside each other.
+//
+// A replacement is what keeps the queued set the latest one. The row waits on its issue's board
+// lane until Dispatch takes it, and every gate change inside that window writes the whole set
+// again; queueing beside the pending row would send Dispatch the older set after the newer one.
+// Replacing the payload keeps the row's attempts and its next_at, because the row is the same
+// publish waiting on the same lane and only the set it carries is newer, and a payload that
+// already says this set is left alone.
+//
+// The lease rotation is what the project's gated-steps publish needs none of: that one is written
+// at boot, before any lane claims a row, while an issue's gates change under a running daemon,
+// whose board lane may hold this very row and be inside the PUT. That worker read the older set,
+// so its finish, its retry and its payload replacement, each matched on its lease token, must
+// touch nothing — a finish that deleted the row would leave Dispatch holding the older set until
+// something changed a gate again. The row decides again on the newer payload once the lease
+// expires. Enqueue's statement already carries readyMergeConflict's one `on conflict` clause and
+// PostgreSQL takes one per statement, so this is a statement of its own.
+func (s *Postgres) EnqueueDesignGates(ctx context.Context, tx pgx.Tx, publish DesignGatesPublish, nextAt time.Time) error {
+	row, err := NewOutboxRow(publish.Issue, publish, nextAt)
+	if err != nil {
+		return fmt.Errorf("enqueue the design-gates publish of %s: %w", publish.Issue, err)
+	}
+	if _, err := tx.Exec(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error)
+		values ($1, $2, $3::jsonb, 0, $4, '')
+		on conflict (issue) where kind = 'design_gates_publish'
+		do update set payload = excluded.payload,
+			lease_token = case when outbox.lease_token = '' then '' else gen_random_uuid()::text end
+		where outbox.payload is distinct from excluded.payload`,
+		string(row.Kind), row.Issue, string(row.Payload), row.NextAt); err != nil {
+		return fmt.Errorf("enqueue %s for %s: %w", row.Kind, row.Issue, err)
+	}
+	return nil
+}
 
-// readyMergeConflict makes a ready_merge enqueue one durable submission per issue and READY head:
-// the unique partial index 0044 turns the race between a reopen and a retry into one row. A
-// duplicate enqueue keeps the existing row's next_at, a GitHub rate-limit deadline included,
-// restarts its attempts, takes the payload it brings, and takes the row from any worker holding it:
-// that worker read the record before the reopen, so its finish, retry and payload replacement, each
-// matched on its lease token, must touch nothing, and the row decides again on the new record once
-// the lease expires. The new payload starts the row over unarmed (ReadyMerge.Armed): a reopen's
-// queue submits READY's merge again, since the close took away whatever was armed. Its target is
-// that partial index, which holds ready_merge rows alone, so no other kind's insert conflicts on
-// it.
-const readyMergeConflict = `
-	on conflict (issue, (payload ->> 'head')) where kind = 'ready_merge' do update set attempts = 0, payload = excluded.payload,
-		lease_token = case when outbox.lease_token = '' then '' else gen_random_uuid()::text end`
+const outboxColumns = `id, kind, issue, payload, attempts, next_at, last_error, created_at, lease_token, lease_until`
 
 func (s *Postgres) Enqueue(ctx context.Context, tx pgx.Tx, row OutboxRow) error {
 	if !json.Valid(row.Payload) {
@@ -1751,11 +2051,11 @@ func (s *Postgres) Enqueue(ctx context.Context, tx pgx.Tx, row OutboxRow) error 
 	var err error
 	if row.CreatedAt.IsZero() {
 		_, err = tx.Exec(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error, lease_token, lease_until)
-			values ($1, $2, $3, $4, $5, $6, $7, $8)`+readyMergeConflict,
+			values ($1, $2, $3, $4, $5, $6, $7, $8)`,
 			string(row.Kind), row.Issue, string(row.Payload), row.Attempts, row.NextAt, row.LastError, row.LeaseToken, row.LeaseUntil)
 	} else {
 		_, err = tx.Exec(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error, created_at, lease_token, lease_until)
-			values ($1, $2, $3, $4, $5, $6, $7, $8, $9)`+readyMergeConflict,
+			values ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
 			string(row.Kind), row.Issue, string(row.Payload), row.Attempts, row.NextAt, row.LastError, row.CreatedAt, row.LeaseToken, row.LeaseUntil)
 	}
 	if err != nil {
@@ -1765,9 +2065,6 @@ func (s *Postgres) Enqueue(ctx context.Context, tx pgx.Tx, row OutboxRow) error 
 }
 
 func (s *Postgres) EnqueueID(ctx context.Context, tx pgx.Tx, row OutboxRow) (int64, error) {
-	if row.Kind == OutboxKindReadyMerge {
-		return 0, fmt.Errorf("enqueue %s for %s with its id: a ready_merge row may update an existing row", row.Kind, row.Issue)
-	}
 	if !json.Valid(row.Payload) {
 		return 0, fmt.Errorf("enqueue %s for %s: payload is not JSON", row.Kind, row.Issue)
 	}
@@ -1780,74 +2077,148 @@ func (s *Postgres) EnqueueID(ctx context.Context, tx pgx.Tx, row OutboxRow) (int
 	return id, nil
 }
 
-// ReplaceOwedStart writes row's payload over the start the issue already owes its worker — its
-// oldest supervise start marked needsSlot that no live lease holds — and says whether it found
-// one. The caller enqueues row itself when it did not (workflow.StartOrOwe), which is the
-// back-to-back case the daemon has always had: two transitions before the worker runs leave one
-// start, the later one.
+// pendingPhaseStart is an issue's queued start of a phase worker: the supervise start row that
+// names a phase and carries that phase's task, which workflow.StartOrOwe alone writes and
+// refuses to write without either. $1 is the issue. It is the shape of the row an issue holds
+// one of per wait, so it is what EnqueueStart takes out; the slot mark alone cannot do that work,
+// since a start of a phase past its review carries none (PhaseKeepsSlot).
 //
-// It updates that row in place rather than deleting it and inserting a fresh one because the
-// row's id and created_at are the waiting line's own ordering key (OwedStart): the issue queued
-// when its work first came back, and a second transition arriving while it waits is the same
-// wait carrying a newer task, not a new turn at the back of the line. The earlier task is
-// already dead whichever path wrote it — the transition minted a new assignment onto the role's
-// phases row in its own transaction, so a completion of the earlier one is refused
-// HANDOFF_STALE_ASSIGNMENT — so no information is lost with it.
+// The issue's other supervise starts name no phase or carry no task — the tree architect's
+// (admit's promotion), the roles brought back beside a member's phase worker (admit's
+// startMidPhaseMembers), a production check's look, a pod wake and the resume of a cancelled
+// idle release — and each of them is a start of its own that must still run. None of them is
+// ever taken out here.
+const pendingPhaseStart = `issue = $1 and kind = 'supervise'
+				and payload->>'op' = 'start' and payload ? 'task' and payload ? 'phase'`
+
+// EnqueueStart writes a phase worker's start as a row of its own, in one statement that takes
+// out the start the issue already owes its worker for the same wait — its oldest pending start
+// of a phase worker (pendingPhaseStart) whose slot mark is the mark row carries and that no live
+// lease holds — and writes row in its place, carrying that row's attempts, next_at, last_error
+// and created_at. Where the issue owes no such row, row is written with its own values, which is
+// the first start of a phase. So two transitions before the worker runs leave one start, the
+// later one, and its caller (workflow.StartOrOwe) has one call to make either way.
 //
-// A row under a live lease is not updated: its slot came, its lane has it, and the caller's own
-// row is the next start. A lapsed lease is no lane holding anything — the outbox's own due
-// predicate reads it as free (outboxUnleasedDue) and only a finished delivery takes the row
-// away — so such a row is still the start this issue is owed and is replaced like any other.
-// The lease is tested in the update's own where clause and not only in the sub-select that picks
-// the row: a lane claiming the row while this statement waits on its row lock would otherwise
-// have the task under it changed, and deliver the earlier task while the phases row already
-// carries the later assignment. It is ClaimRow's own shape — one conditional update, never a
+// Two start rows of one issue the outbox cannot tell apart start that issue's worker twice for
+// one piece of work, and that is what this keeps to one row. The outbox's fences end a row that
+// serves a phase the issue has left, an older generation, or an entry a later entry of the same
+// role has passed; what no fence reaches is two rows that serve the phase the issue stands in,
+// at its own generation and at one entry, which is the pair the held phase's retry writes
+// (workflow's restart sends the entry its row already names, marked ResendEntry) while the
+// first start is still queued. While every start of a phase worker was marked for the slot, the
+// mark could stand for the row's shape; a start of a phase past its review carries none, so the
+// shape is read from the row itself, and a retro's or a merger's retry is written over the
+// queued row as an implementer's is.
+//
+// The mark is part of what the row must match, because a start that waits for a slot and one
+// that waits for none are two different waits and neither may be taken out for the other. A
+// start that waits for a slot takes its place in the waiting line from the row it replaces —
+// the line is ordered by that row's created_at (OwedStart) — and a start of a phase past its
+// review stands in no line at all (OwedStarts lists a marked row alone), so an issue would wait
+// from the moment a row it never waited on was queued, ahead of issues that came to wait before
+// it. The other way round, a start that waits for nothing is claimable at once, so taking out a
+// row that is waiting would move the start ahead of anything its lane has still to run behind
+// that row, a close's suspend among them (admit's promotion of a re-admitted tree queues its own
+// start behind that suspend, so the worker comes back after the stop rather than before it). Two
+// rows can stand together only where they were written for different phases — the mark is read
+// from the phase (PhaseKeepsSlot) and every caller writes the phase on the record before it
+// calls — so the issue stands in the newer row's phase and the outbox's phase fence finishes the
+// older without acting, as admission's repair does where that row waits in the line.
+//
+// The row written carries the replaced row's created_at because the waiting line is ordered on
+// created_at before id (OwedStart): the issue queued when its work first came back, and a second
+// transition arriving while it waits is the same wait carrying a newer task, not a new turn at
+// the back of the line. The earlier task is already dead whichever path wrote it — the
+// transition raised the role's phase entry on its phases row in its own transaction, so a
+// completion of the earlier entry is refused against the entry the record now names — so no
+// information is lost with it.
+//
+// Which row is the oldest is read the same way, created_at before id, and not by id alone: a row
+// written here carries a creation time from before its own id, so an issue owing two rows — one
+// this replaced and one written behind a lease that has since lapsed — would otherwise have the
+// younger of the two replaced next, and the oldest wait left carrying a task nothing would
+// replace again.
+//
+// What the row written does not keep is its place among rows of the very same creation time,
+// which the line breaks by id (Waiting): such a tie is two rows written in one transaction's
+// now(), and the issue's own age, which is what the line is for, is unmoved.
+//
+// The id is the one thing it may not keep, and that is what this function is: one outbox row is
+// one task. A claim gives its worker nothing from a row it has already queued a task from
+// (supervise.Claim.DeliveredRows), so that no retry of a row prompts the same work twice, and
+// that record is kept by the row alone. A row rewritten in place could therefore be one whose
+// earlier payload had already reached the claim — RetryOutbox clears the lease for any failure
+// that follows a delivery, and an unleased row is taken out like any other below — and the lane
+// running it then recognised the row and dropped the later task, finishing clean. What that left
+// was a phase with no task and nothing saying so: no error and no row behind it, a claim owing
+// no task of the new work, so every completion its worker reported was refused, and no restart
+// cured it, since the record a restart rebuilds the claim from carries that same row. Only a
+// start under a row of its own did (dispatch://INFRA-2800).
+//
+// A row under a live lease is left where it is: its slot came, its lane has it, and the caller's
+// row is the next start, written beside it. A lapsed lease is no lane holding anything — the
+// outbox's own due predicate reads it as free (outboxUnleasedDue) and only a finished delivery
+// takes the row away — so such a row is still the start this issue is owed and is taken out like
+// any other. The lease is tested in the delete's own where clause and not only in the sub-select
+// that picks the row: a lane claiming the row while this statement waits on its row lock would
+// otherwise have the row taken from under it, and deliver the earlier task while the phases row
+// already names the later entry. It is ClaimRow's own shape — one conditional write, never a
 // read and then a write — because Postgres rechecks the quals against the row's new version once
-// the lock is released, so the claim's lease is seen and nothing is written. ClaimRow's advisory
+// the lock is released, so the claim's lease is seen and nothing is deleted. ClaimRow's advisory
 // lock is for the one rule of its own the row lock does not cover, a subquery over other rows;
-// this statement's lease test is on the row it writes, so it needs none. The moment the test is
-// made against is the one the caller is acting at, which rides in on the row it hands over
+// this statement's lease test is on the row it takes out, so it needs none. The moment the test
+// is made against is the one the caller is acting at, which rides in on the row it hands over
 // (NewOutboxRow's nextAt), so one transition reads one clock throughout.
 //
-// A row whose lease has lapsed takes a fresh lease token with its new payload, in the shape the
-// ready_merge conflict already uses: the lane that wrote the lapsed lease may be slow rather
-// than dead, and every move it has left is matched on the token it holds — RenewOutboxLease
-// renews by the token alone, and FinishOutbox deletes by the id and the token. Left in place,
-// that token would let such a lane renew its lease, deliver the earlier task it had already
-// read, and then finish the row now carrying the later one, which would delete the later task
-// with nothing to re-place it: the issue's pending delivery holds the resume pass off
-// (StillWorked) and every completion of it is refused HANDOFF_STALE_ASSIGNMENT. A row that has
-// never been leased keeps the empty token, which is what an unleased row carries.
+// A row whose lease has lapsed is taken out with the rest, which is stronger than the rotated
+// lease token a rewrite in place had to take: the lane that wrote that lease may be slow rather
+// than dead, and every move it has left is matched on the row it holds — RenewOutboxLease renews
+// by the id and the token, and FinishOutbox deletes by the id and the token — so with the row
+// gone it renews nothing and finishes nothing. Rewritten in place, that lane could renew its
+// lease, deliver the earlier task it had already read, and then finish the row now carrying the
+// later one, which would delete the later task with nothing to re-place it: the issue's pending
+// delivery holds the resume pass off (StillWorked) and every completion of it is refused.
 //
-// The rewrite takes a fresh number from outbox_write_mark_seq, the sequence an insert takes one
-// from through the column's own default. The row keeps the id that holds its place in the line,
-// so its id says when the issue first came to wait and nothing about when this payload was
-// written; the write mark says the second, which is what the stop rule needs of it (admit's
-// stopOutlivedStart, and store's putClaim for what the sequence orders). A rewrite that left
-// the mark where it stood would hand that rule a start written after an operator's stop under
-// the number the row took before it, and the rule would end the start the retry had just
+// Every insert takes a fresh number from outbox_write_mark_seq through the column's own default.
+// A row written over the one an issue owed keeps the created_at that holds its place in the
+// line, so its created_at says when the issue first came to wait and nothing about when this
+// payload was written; the write mark says the second, which is what the stop rule needs of it
+// (admit's stopOutlivedStart, and store's putClaim for what the sequence orders). A row that
+// carried the earlier row's mark would hand that rule a start written after an operator's stop
+// under the number the row took before it, and the rule would end the start the retry had just
 // written.
+//
+// Everything else of the replaced row rides over unchanged — its attempts, when it is next due
+// and the error it last recorded — so a row backing off keeps its backoff and carries the later
+// task into it.
 //
 // A partial unique index on the pending start would be the other way to keep one row, and is not
 // available: Enqueue allows one `on conflict` target per statement and already spends it on
 // ready_merge (readyMergeConflict).
-func (s *Postgres) ReplaceOwedStart(ctx context.Context, tx pgx.Tx, row OutboxRow) (bool, error) {
+func (s *Postgres) EnqueueStart(ctx context.Context, tx pgx.Tx, row OutboxRow) error {
 	if !json.Valid(row.Payload) {
-		return false, fmt.Errorf("replace the owed start of %s: payload is not JSON", row.Issue)
+		return fmt.Errorf("enqueue the start of %s: payload is not JSON", row.Issue)
 	}
-	tag, err := tx.Exec(ctx, `update outbox set payload = $2, lease_until = null,
-			write_mark = nextval('outbox_write_mark_seq'),
-			lease_token = case when lease_token = '' then '' else gen_random_uuid()::text end
-		where id = (select id from outbox
-			where issue = $1 and kind = 'supervise' and payload->>'op' = 'start'
-				and payload->>'needsSlot' = 'true' and (lease_until is null or lease_until <= $3)
-			order by id limit 1)
-			and (lease_until is null or lease_until <= $3)`,
-		row.Issue, string(row.Payload), row.NextAt)
-	if err != nil {
-		return false, fmt.Errorf("replace the owed start of %s: %w", row.Issue, err)
+	// The row taken out is one that waits for what row waits for, read from the payload the
+	// caller hands over rather than asked of the caller again: a payload that names no mark
+	// carries the mark's zero (SuperviseRequest.NeedsSlot is omitempty), which is a start that
+	// waits for no slot.
+	if _, err := tx.Exec(ctx, `with owed as (
+			delete from outbox where id = (select id from outbox
+				where `+pendingPhaseStart+`
+					and coalesce(payload->>'needsSlot', 'false') = coalesce(($2::jsonb)->>'needsSlot', 'false')
+					and (lease_until is null or lease_until <= $3)
+				order by created_at, id limit 1)
+				and (lease_until is null or lease_until <= $3)
+			returning attempts, next_at, last_error, created_at)
+		insert into outbox (kind, issue, payload, attempts, next_at, last_error, created_at, lease_token, lease_until)
+		select 'supervise', $1, $2, coalesce(owed.attempts, $4), coalesce(owed.next_at, $3), coalesce(owed.last_error, $5),
+			coalesce(owed.created_at, now()), '', null
+		from (values (1)) as caller(one) left join owed on true`,
+		row.Issue, string(row.Payload), row.NextAt, row.Attempts, row.LastError); err != nil {
+		return fmt.Errorf("enqueue the start of %s: %w", row.Issue, err)
 	}
-	return tag.RowsAffected() > 0, nil
+	return nil
 }
 
 // OwedStarts is every pending worker start of project's issues that waits for its issue's
@@ -2304,43 +2675,6 @@ func (s *Postgres) RetryOutbox(ctx context.Context, tx pgx.Tx, id int64, leaseTo
 	return nil
 }
 
-// ReplaceOutboxPayload replaces the payload of a leased row with one of the row's own kind,
-// answering false for a row the lease no longer holds.
-//
-// The rewrite takes a fresh number from outbox_write_mark_seq, as ReplaceOwedStart's rewrite
-// and an insert through the column's own default do: the mark is the write that last put a
-// payload in the row, and a rewrite that left it where it stood would be a payload written at
-// one moment carrying the number of another. No reader weighs this caller's row — auto-merge's
-// ready_merge row, which the stop rule never reads. The two upserts that rewrite a payload of
-// their own kind in place (EnqueueGatedSteps' and readyMergeConflict's) leave the mark the row's
-// first insert took, so the column is held to say when a payload was written only for the
-// supervise start rows the stop rule reads (OwedStarts).
-func (s *Postgres) ReplaceOutboxPayload(ctx context.Context, tx pgx.Tx, id int64, leaseToken string, payload OutboxPayload) (bool, error) {
-	if err := validateOutboxPayload(payload); err != nil {
-		return false, fmt.Errorf("replace the payload of outbox row %d: %w", id, err)
-	}
-	encoded, err := json.Marshal(payload)
-	if err != nil {
-		return false, fmt.Errorf("replace the payload of outbox row %d: %w", id, err)
-	}
-	var kind string
-	err = tx.QueryRow(ctx, "select kind from outbox where id = $1 and lease_token = $2 for update", id, leaseToken).Scan(&kind)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return false, nil
-	}
-	if err != nil {
-		return false, fmt.Errorf("replace the payload of outbox row %d: %w", id, err)
-	}
-	if kind != string(payload.OutboxKind()) {
-		return false, fmt.Errorf("replace the payload of outbox row %d: the row is %s, and the payload %s", id, kind, payload.OutboxKind())
-	}
-	if _, err := tx.Exec(ctx, `update outbox set payload = $2,
-		write_mark = nextval('outbox_write_mark_seq') where id = $1`, id, string(encoded)); err != nil {
-		return false, fmt.Errorf("replace the payload of outbox row %d: %w", id, err)
-	}
-	return true, nil
-}
-
 // RoleRun reads one role's run of an issue generation as the store holds it. RoleRuns owns the
 // query shape, so the one-role caller and a state-report batch share it.
 func (s *Postgres) RoleRun(ctx context.Context, tx pgx.Tx, token claim.Token, issue string, role claim.Role, generation uint64) (RoleRun, error) {
@@ -2488,7 +2822,9 @@ func (s *Postgres) RoleClaims(ctx context.Context, tx pgx.Tx, tokens []claim.Tok
 // RoleClaims share, with the task pending on each claim read beside it (the two tables are
 // written apart and read together, as claimSelect reads them).
 func readRoleClaims(ctx context.Context, tx pgx.Tx, tokens []string, found func(claim.Token, *RoleClaim)) error {
-	rows, err := tx.Query(ctx, `select c.token, c.state, c.tree, c.suspended_by, c.last_start_row, c.retired_at_write_mark,
+	rows, err := tx.Query(ctx, `select c.token, c.state, c.tree, c.suspended_by, c.last_start_row, c.retired_at_write_mark, c.given_entry,
+		c.update_round, c.step_at, c.turn_started_at,
+		c.activity_at, c.activity_background, c.activity_next_reminder_at,
 		d.claim_token is not null, coalesce(d.generation, 0), coalesce(d.phase, ''), d.confirmed_at
 		from claims c left join pending_task_deliveries d on d.claim_token = c.token where c.token = any($1)`, tokens)
 	if err != nil {
@@ -2501,9 +2837,31 @@ func readRoleClaims(ctx context.Context, tx pgx.Tx, tokens []string, found func(
 		var pending bool
 		var task supervise.Delivery
 		var confirmed *time.Time
+		// Both step columns are nullable (migration 20261107052815_claim_step_record): a claim
+		// whose agent has neither stepped nor begun a turn has neither, and the zero time left
+		// in the step record is what says so to its reader (supervise.StepRecord.LastStep).
+		var stepped, turnStarted *time.Time
+		// Both activity moments are nullable (migration 20261101214123_claim_session_activity):
+		// a session that has reported nothing has no activity_at, and one that armed no reminder
+		// has no activity_next_reminder_at. The zero time left in each is what says so to the
+		// rule that reads them (workflow.SilentPhaseWorker).
+		var reported, reminder *time.Time
 		if err := rows.Scan(&token, &held.State, &held.Tree, &held.SuspendedBy, &held.LastStartRow, &held.RetiredAtWriteMark,
+			&held.GivenEntry, &held.UpdateRound, &stepped, &turnStarted, &reported, &held.ActivityBackground, &reminder,
 			&pending, &task.Generation, &task.Phase, &confirmed); err != nil {
 			return fmt.Errorf("read the claims of %d role runs: %w", len(tokens), err)
+		}
+		if stepped != nil {
+			held.Step.At = *stepped
+		}
+		if turnStarted != nil {
+			held.Step.TurnStartedAt = *turnStarted
+		}
+		if reported != nil {
+			held.ActivityAt = *reported
+		}
+		if reminder != nil {
+			held.ActivityNextReminderAt = *reminder
 		}
 		if pending {
 			if confirmed != nil {

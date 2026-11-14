@@ -38,9 +38,11 @@ func TestComposeOrdersSharedRolePartsBeforeTheGoDaemonParts(t *testing.T) {
 		goParts  []string
 		contains []string
 	}{
-		// Every architect is told what a pull-request-missing notice asks of it, whatever its tree.
-		{"root architect", claim.RoleArchitect, true, []string{"architect-root.md"}, []string{"architect-root.md", "architect-common.md"}, append([]string{"it chooses and starts the next role", "`register_gate`", "end the tree with `close_root`", "Every notice about an issue you own arrives on your own role topic", "The merge carries no handoff onto the pull request's base", "A `pull-request-missing` notice"}, architectOperations...)},
-		{"sub-architect", claim.RoleArchitect, false, []string{"architect.md"}, []string{"architect.md", "architect-common.md"}, append([]string{"it chooses and starts the next role", "`register_gate` refuses a child issue", "Every notice about an issue you own arrives on your own role topic", "The merge carries no handoff onto the pull request's base", "A `pull-request-missing` notice"}, architectOperations...)},
+		// Every architect is told what a pull-request-missing notice asks of it, whatever its tree,
+		// and which code each of the two pre-checked texts is refused with: its length, and the
+		// decision block it holds (INFRA-1201).
+		{"root architect", claim.RoleArchitect, true, []string{"architect-root.md"}, []string{"architect-root.md", "architect-common.md"}, append([]string{"it chooses and starts the next role", "`register_gate`", "end the tree with `close_root`", "Every notice about an issue you own arrives on your own role topic", "The merge carries no handoff onto the pull request's base", "A `pull-request-missing` notice", "`close_root` answers `CLOSE_REASON_TOO_LONG`", "`CLOSE_REASON_DECISION_BLOCK`"}, architectOperations...)},
+		{"sub-architect", claim.RoleArchitect, false, []string{"architect.md"}, []string{"architect.md", "architect-common.md"}, append([]string{"it chooses and starts the next role", "`register_gate` refuses a child issue", "Every notice about an issue you own arrives on your own role topic", "The merge carries no handoff onto the pull request's base", "A `pull-request-missing` notice", "`close_root` answers `CLOSE_REASON_TOO_LONG`", "`CLOSE_REASON_DECISION_BLOCK`"}, architectOperations...)},
 		{"planner", claim.RolePlanner, false, []string{"core/common.md", "core/planner.md", "mechanics/headless.md", "planner.md"}, []string{"planner.md", "worker-common.md"}, []string{`op: "handoff_complete"`, "jj -R \"$LEGION_WORKSPACE\" git push --bookmark legion/<issue>", "dispatch handoff-write --issue <issue> --phase <word> --body-file", "dispatch handoff-read --issue <issue> --phase <word> --version <n>", "A handoff is never committed or pushed", "`HANDOFF_SESSION_MISMATCH`", "A refusal records nothing"}},
 		// A root with no code of its own pushes one empty commit to open its pull request. The
 		// implementer is also told the completion of implementing the handoff route refuses with no
@@ -53,12 +55,18 @@ func TestComposeOrdersSharedRolePartsBeforeTheGoDaemonParts(t *testing.T) {
 			"read CI for everything static", "try to break it", "dispatch handoff-write --issue <issue> --phase test"}},
 		{"reviewer", claim.RoleReviewer, false, []string{"core/common.md", "core/reviewer.md", "mechanics/headless.md", "reviewer.md"}, []string{"reviewer.md", "worker-common.md"}, []string{`op: "handoff_complete"`,
 			"Retro commits nothing, so nothing of retro's sits above your approved head", "`pullRequest.head` is the commit the pull request stands on"}},
-		// The merger is told how its over-long packet is refused, at the call that carries it.
-		{"merger", claim.RoleMerger, false, []string{"mechanics/headless.md", "merger.md"}, []string{"merger.md", "worker-common.md"}, []string{`op: "handoff_complete"`, "`ready: true`", "`READY_HEAD_CONFLICTS`: the pull request conflicts with its base",
-			"a compare entry whose every path is under `.legion/`", "`READY_DISARM_PENDING`",
-			"refused at `handoff_complete` with `READY_PACKET_TOO_LONG`, which names the bound and how far over the packet is",
-			"`READY_HEAD_MOVED`", "`READY_FILES_TRUNCATED`", "`READY_PULL_REQUEST_CLOSED`",
-			"`GITHUB_READ_FAILED`", "`DESIGN_GATE_CLOSED`", "`NO_PULL_REQUEST`", "`READY_REQUIRED`"}},
+		// The merge the merger is told to run names the head GitHub must match, on a queue base and
+		// off it, and carries the message it writes itself; its completion is an ordinary phase
+		// completion, refused only on the grounds every phase worker's is (dispatch://INFRA-714, R2).
+		// It also disarms an auto-merge an older release armed, since GitHub holds an armed pull
+		// request to no head, and it merges nothing while the design gate is closed (R5).
+		{"merger", claim.RoleMerger, false, []string{"mechanics/headless.md", "merger.md"}, []string{"merger.md", "worker-common.md"}, []string{`op: "handoff_complete"`,
+			"gh pr merge <n> --squash --match-head-commit <head> --subject '<pull request title> (#<n>)' --body ''",
+			"enqueuePullRequest", "squash_merge_commit_message",
+			"gh pr merge <n> --disable-auto", "autoMergeRequest", "dequeuePullRequest",
+			"The design gate of <tree> closed: version <n> of its <step> document (<id>)",
+			"`HANDOFF_NOT_CURRENT_PHASE`", "`HANDOFF_STALE_GENERATION`", "`HANDOFF_NO_RUN`",
+			"`HANDOFF_ALREADY_RECORDED`", "`TREE_LINGERING`"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			parts, err := composer.Compose(tc.role, tc.isRoot)
@@ -111,6 +119,12 @@ func TestComposeOrdersSharedRolePartsBeforeTheGoDaemonParts(t *testing.T) {
 				// daemon answered a shape it does not read (INFRA-1048): the phrase pinned is the
 				// plugin's own refusal text, which survives a rewording of the clauses around it.
 				"the daemon API contract does not describe",
+				// Every role is told the update round's terms (dispatch://INFRA-2981): its ask comes
+				// as a message on the role's own topic, the end of a turn answers nothing, and the
+				// round ends at the moment the ask names whatever the role answers.
+				"The daemon can send an update message to your role topic.",
+				"The end of a turn is no answer",
+				"The round ends at the moment the message names, whether or not you answer.",
 			}, tc.contains...) {
 				if !strings.Contains(text.String(), requirement) {
 					t.Errorf("the composed %s prompt omits %q", tc.name, requirement)
@@ -193,10 +207,9 @@ func composedText(t *testing.T, composer *Composer, role claim.Role, isRoot bool
 // composed prompt still teaches the committed handoff file, its commit and push, the trailer that
 // kept a handoff-only push from starting CI, or retro's removal of the handoffs from the head that
 // merges. Nor does any carry the rules that removal replaced: that the approved and the merged
-// head keep .legion/, and that the daemon strips the leftovers from the next issue's branch.
-// READY, not the merger, holds the commits above the approved head to retro's docs/solutions/
-// ones, so no prompt carries the merger's own fileset check any more, and the merger's names
-// READY's refusals.
+// head keep .legion/, and that the daemon strips the leftovers from the next issue's branch. No
+// prompt names READY either: the merger submits the merge itself (dispatch://INFRA-714, R2), so
+// the refusals READY answered with went with it.
 func TestNoComposedPromptCommitsAHandoff(t *testing.T) {
 	stateDir := t.TempDir()
 	composer, err := New(stateDir)
@@ -206,7 +219,7 @@ func TestNoComposedPromptCommitsAHandoff(t *testing.T) {
 	retired := []string{"No role pushes a `.legion/` deletion", "No role removes `.legion/`", "nobody removes it before the merge", "strips whatever `.legion/`", "still carries `.legion/`",
 		"Retro then commits only `docs/solutions/`", "no file changes above the approved head", "the same sha when retro added nothing", "Retro's `docs/solutions/` commit is never",
 		"'~(docs/solutions | .legion/<issue>)'", ".legion/<issue>/<phase>.json", "record handoff", "handoff-only", "Retro's last commit removes",
-		"committed handoff"}
+		"committed handoff", "`READY_UNREVIEWED_CHANGE`", "`READY_NOT_APPROVED`", "Approved head:"}
 	for _, role := range []claim.Role{claim.RolePlanner, claim.RoleImplementer, claim.RoleTester, claim.RoleReviewer, claim.RoleMerger} {
 		text := composedText(t, composer, role, false)
 		for _, phrase := range retired {
@@ -214,20 +227,28 @@ func TestNoComposedPromptCommitsAHandoff(t *testing.T) {
 				t.Errorf("the composed %s prompt still says %q", role, phrase)
 			}
 		}
-		for _, want := range []string{"`READY_UNREVIEWED_CHANGE`", "`READY_NOT_APPROVED`"} {
-			if role == claim.RoleMerger && !strings.Contains(text, want) {
-				t.Errorf("the merger's prompt does not name %s, READY's refusal of a change above the approved head no review approved", want)
+		// Every phrase above is one sentence that said READY, and a new one would pass them all,
+		// so the word itself is censused: the only READY a composed prompt may hold is the one
+		// inside HANDOFF_ALREADY_RECORDED, the refusal that outlived the packet.
+		for at := 0; ; {
+			found := strings.Index(text[at:], "READY")
+			if found < 0 {
+				break
+			}
+			at += found + len("READY")
+			if !strings.HasSuffix(text[:at], "ALREADY") {
+				t.Errorf("the composed %s prompt names READY: %q", role, text[max(0, at-120):min(len(text), at+120)])
 			}
 		}
 	}
 }
 
 // GitHub, under each repository's base-branch rules, decides whether a merge happens, and no
-// prompt may tell an agent that Legion refuses one over a check (dispatch://INFRA-83). READY reads
-// none of the head's checks and judges none, so no composed prompt — any phase worker's, and the
-// architect's in both its shapes — still names the refusal that read them, the packet note that
-// said which checks went unread, or a trailer the daemon turns away for the CI it leaves the head
-// without.
+// prompt may tell an agent that Legion refuses one over a check (dispatch://INFRA-83). The daemon
+// reads none of the head's checks and judges none, so no composed prompt — any phase worker's,
+// and the architect's in both its shapes — still names the refusal that read them, the packet
+// note that said which checks went unread, or a trailer the daemon turns away for the CI it
+// leaves the head without.
 func TestNoComposedPromptSaysLegionRefusesAMergeOverACheck(t *testing.T) {
 	composer, err := New(t.TempDir())
 	if err != nil {
@@ -367,7 +388,7 @@ func TestNoComposedPromptTeachesAnE2ELineOrAProofArray(t *testing.T) {
 // A state directory outlives the daemon binary that wrote its prompt snapshot, so a boot of a newer
 // daemon finds the older daemon's words there. A part whose content is not the running binary's is
 // rewritten, shared or the daemon's own: a prompt that contradicts the daemon's own behaviour (who
-// posts READY) is the defect, and nothing treats these files as the operator's to edit (the
+// posts the merge) is the defect, and nothing treats these files as the operator's to edit (the
 // operator's text is `instructions`). A part already holding the running binary's content is left
 // as it is, so an ordinary restart writes nothing.
 func TestNewRewritesAPartTheRunningDaemonDidNotWrite(t *testing.T) {
@@ -605,5 +626,97 @@ func TestTheComposedPushingPromptsPinTheReadOfThePullRequestHead(t *testing.T) {
 		if strings.Contains(text, headRead) {
 			t.Errorf("the composed %s prompt (root %t) says %q", claim.RoleArchitect, isRoot, headRead)
 		}
+	}
+}
+
+// A review the review App submits decides a round only when the head its Legion footer names is
+// the pull request's current head (`intake.PullRequestReview.LegionHead`, `workflow.refusesRound`),
+// so a reviewer whose prompt teaches the footer without the head submits a review every round
+// sets aside. The composed reviewer prompt therefore carries the footer's own shape with the
+// head in it, which head that is — the one whose diff and checks the review read, never the head
+// GitHub happens to show at the moment of submission, since a review of an unread head is the
+// fault the rule exists to stop — the read that tells the reviewer a push landed under it
+// (`--json headRefOid`), the reason GitHub's own `commit_id` cannot stand in for the footer, and
+// what a wrong head costs. This shows the text is loaded, never that a reviewer follows it.
+func TestTheComposedReviewerPromptWritesTheHeadItReviewedInItsFooter(t *testing.T) {
+	composer, err := New(t.TempDir())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	text := foldWhitespace(composedText(t, composer, claim.RoleReviewer, false))
+	for _, phrase := range []string{
+		`"phase":"review","head":"<the head you reviewed>"`,
+		`\"phase\":\"review\",\"head\":\"<head-sha>\"`,
+		"gh pr view <n> --repo <owner>/<repo> --json headRefOid --jq .headRefOid",
+		"the head whose diff and checks you read",
+		"rather than renaming the footer to a head you have not read",
+		"GitHub rewrites `commit_id` to the pull request's current head",
+		"A review whose footer names another head, or no head, decides no round",
+	} {
+		if !strings.Contains(text, phrase) {
+			t.Errorf("the composed reviewer prompt omits %q", phrase)
+		}
+	}
+}
+
+// A pod holds every role of one issue in a single container under one memory limit, and its
+// sandbox ends the container rather than the process that filled it, so a heavy run started by
+// any role ends every role's turn. The rule that says so has to reach each role through the
+// prompt Compose builds, not through the part that happens to hold it today: the phase workers
+// read it from the headless mechanics, which is the only part the merger shares with the four
+// roles that compose a core, and both architect shapes read it from the one common part they
+// share, so the root's wording and the sub-architect's cannot drift apart. Composing and reading
+// the parts back is what makes a part dropped from Compose fail here. This shows the text is
+// loaded, never that a role obeys it.
+func TestEveryComposedPromptCarriesThePodMemoryRule(t *testing.T) {
+	composer, err := New(t.TempDir())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	const (
+		sandboxEndsTheContainer = "where that pod's sandbox ends the whole container rather than the one process that filled it"
+		everyRolesTurn          = "a command that fills the limit ends every role's turn and not only yours"
+		ciWork                  = "A whole module's test run (`go test ./...`), a whole Postgres-backed package, a browser suite run whole, and `make -j` or `lake build` are CI's work on the pull request"
+	)
+	worker := []string{
+		"In an issue pod every role of this issue runs in one container and shares its memory limit",
+		sandboxEndsTheContainer,
+		everyRolesTurn,
+		ciWork,
+		"what a role runs in the pod is what `skill://legion-worker/references/tools.md` names",
+		"Every other heavy run goes where your deployment's instructions say",
+		"instructions that name no such route are a gap you report to the architect that owns your issue",
+		"Each subagent you start runs its commands in this pod, so put these facts in its context",
+	}
+	architect := []string{
+		"Your subagents run their commands in your own issue pod",
+		sandboxEndsTheContainer,
+		everyRolesTurn,
+		ciWork,
+		"what may run in the pod is what `skill://legion-worker/references/tools.md` names",
+		"every other heavy run goes where your deployment's instructions say and instructions that name no such route are a gap to report, and you put these facts in the context of each subagent you start",
+	}
+	for _, tc := range []struct {
+		name   string
+		role   claim.Role
+		isRoot bool
+		rule   []string
+	}{
+		{"root architect", claim.RoleArchitect, true, architect},
+		{"sub-architect", claim.RoleArchitect, false, architect},
+		{"planner", claim.RolePlanner, false, worker},
+		{"implementer", claim.RoleImplementer, false, worker},
+		{"tester", claim.RoleTester, false, worker},
+		{"reviewer", claim.RoleReviewer, false, worker},
+		{"merger", claim.RoleMerger, false, worker},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			text := foldWhitespace(composedText(t, composer, tc.role, tc.isRoot))
+			for _, phrase := range tc.rule {
+				if !strings.Contains(text, phrase) {
+					t.Errorf("the composed %s prompt omits %q", tc.name, phrase)
+				}
+			}
+		})
 	}
 }

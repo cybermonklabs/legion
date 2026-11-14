@@ -42,6 +42,9 @@ function editedAskEvent(): Extract<DispatchEvent, { type: "ask.edited" }> {
     payload: {
       anchor: null,
       artifact_id: null,
+      asked_of: null,
+      asked_of_at: null,
+      asked_of_by: null,
       block_id: null,
       answer: null,
       author: { id: "session-1", kind: "session" },
@@ -88,6 +91,9 @@ function answeredAskEvent(
     payload: {
       anchor: null,
       artifact_id: null,
+      asked_of: null,
+      asked_of_at: null,
+      asked_of_by: null,
       block_id: null,
       answer: { at: "2026-09-11T00:00:00Z", selected: ["Hold"], text: null, user: "alice" },
       author: { id: "session-1", kind: "session" },
@@ -142,6 +148,29 @@ test("eventDescription labels a malformed decision", () => {
 
   expect(eventDescription(event)).toEqual([
     'marked decision ask-block malformed: ask block "ask-block" has an option without a label',
+  ]);
+});
+
+test("eventDescription reads a refused ci_check as the check's refusal", () => {
+  const event: Extract<DispatchEvent, { type: "block.invalid" }> = {
+    actor: { id: "session-1", kind: "session" },
+    created_at: "2026-09-13T17:01:00Z",
+    id: 4,
+    issue_key: "CORE-1",
+    notify: false,
+    payload: {
+      block_id: "k1",
+      version: 4,
+      reason: "a check proved by CI carries no run",
+      disturbed_by: { id: "session-1", kind: "session" },
+      block_type: "check",
+    },
+    seq: 4,
+    type: "block.invalid",
+  };
+
+  expect(eventDescription(event)).toEqual([
+    "refused check k1: a check proved by CI carries no run",
   ]);
 });
 
@@ -285,6 +314,31 @@ test("eventDescription names the repository an architecture import came from; a 
   ]);
   expect(failed({ error: "duplicate component id api" })).toEqual([
     "Architecture sync failed: duplicate component id api",
+  ]);
+});
+
+test("eventDescription names the person a project's default moved to; a retained clear reads as cleared", () => {
+  const base = {
+    actor: { id: "alice", kind: "user" },
+    created_at: "2026-10-25T00:00:00Z",
+    id: 4,
+    issue_key: null,
+    notify: false,
+    project: "CORE",
+    seq: 4,
+    type: "settings.project_default_assignee.updated",
+  } as const;
+
+  expect(
+    eventDescription({
+      ...base,
+      payload: { assignee: "bob", project: "CORE", thread_logins: ["alice", "bob"] },
+    })
+  ).toEqual(["Default assignee updated: CORE → bob"]);
+  // Written before every project named a default: the stored row of a clear, and no
+  // `thread_logins`.
+  expect(eventDescription({ ...base, payload: { assignee: null, project: "CORE" } })).toEqual([
+    "Default assignee cleared: CORE",
   ]);
 });
 

@@ -1,5 +1,4 @@
 import { INBOX_DISMISSED_PAGE, type InboxDismissSeen, inboxThreadRow } from "@legion/contracts";
-import { type BrowserContext, expect, type Page, type Request, test } from "@playwright/test";
 import { GROUP_PAGE } from "../web/src/features/inbox/InboxGroups";
 
 import { setLiveSessions } from "./agents";
@@ -25,8 +24,8 @@ import {
   THREAD_SESSION,
   unreadThreadRows,
 } from "./inbox-threads";
-import { resetDatabase } from "./seed";
 import { refusePosts, WRITE_REFUSED } from "./sends";
+import { type BrowserContext, expect, type Page, type Request, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -173,10 +172,6 @@ async function chooseShow(page: Page, label: string): Promise<void> {
   if ((await menu.count()) !== 0) await page.locator("[data-inbox-view]").click();
   await expect(menu).toHaveCount(0);
 }
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 // ---------------------------------------------------------------------------
 // A thread stays until it is dismissed.

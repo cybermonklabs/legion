@@ -17,7 +17,8 @@ export function plainHttpOriginAt(port: number): string {
 }
 
 /** The plain-HTTP project's browser origin: the harness proxy's, from `PLAIN_HTTP_PORT`, which
- *  `e2e/run.ts` exports from the proxy's report before Playwright starts. */
+ *  this worker's stack carries (`e2e/harness-ports.ts`), written there by `e2e/global-setup.ts`
+ *  before any worker started. */
 export const plainHttpOrigin = plainHttpOriginAt(harnessPorts().plainHttp.port);
 
 /** This run targets a deployed https server, which the proxy cannot stand in front of: it forwards

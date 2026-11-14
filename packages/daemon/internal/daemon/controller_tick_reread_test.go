@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/admit"
 	"github.com/sjawhar/legion/daemon/internal/blockers"
@@ -212,6 +211,7 @@ func TestThePeriodicTurnsReReadMirrorsTheClaim(t *testing.T) {
 // Dispatch answers for an issue it no longer serves — and fails every read while err is set.
 // Nothing else of the client is reached by a turn.
 type tickDispatch struct {
+	noArtifacts
 	mu        sync.Mutex
 	issues    map[string]dispatch.Issue
 	summaries []dispatch.IssueSummary
@@ -260,6 +260,9 @@ func (d *tickDispatch) listings() int {
 func (d *tickDispatch) SetStatus(context.Context, string, string) (dispatch.Issue, error) {
 	return dispatch.Issue{}, nil
 }
+func (d *tickDispatch) SetStatusAt(ctx context.Context, issue dispatch.Issue, status string) (dispatch.Issue, error) {
+	return d.SetStatus(ctx, issue.Key, status)
+}
 func (d *tickDispatch) PostMessage(context.Context, string, string) error { return nil }
 func (d *tickDispatch) HandOver(context.Context, dispatch.Issue, string) error {
 	return nil
@@ -282,6 +285,9 @@ func (d *tickDispatch) ListRepoProjects(context.Context) ([]dispatch.RepoProject
 }
 func (d *tickDispatch) WebhookAppInstalled(context.Context, string) (bool, error) { return true, nil }
 func (d *tickDispatch) PutGatedSteps(context.Context, string, []string) error     { return nil }
+func (d *tickDispatch) PutDesignGates(context.Context, string, []dispatch.DesignGateDocument) error {
+	return nil
+}
 
 // tickRecords is the record store the boot gives the runtime (openWorkflow): this project's
 // issues alone, with no outbox wake, since no outbox runs in a tick test.
@@ -291,7 +297,7 @@ func tickRecords() record.Store {
 
 // tickRuntime is a runtime whose turn reads client, with the production handler chain — the
 // mirror first, then the two handlers that judge from its rows — and one admission slot.
-func tickRuntime(t *testing.T, pool *pgxpool.Pool, client dispatch.Client) *workflowRuntime {
+func tickRuntime(t *testing.T, pool *store.Pool, client dispatch.Client) *workflowRuntime {
 	t.Helper()
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	records := tickRecords()
@@ -307,7 +313,7 @@ func tickRuntime(t *testing.T, pool *pgxpool.Pool, client dispatch.Client) *work
 
 // seedWaitingRoot records a handed-over root of this project in todo, where it waits for a slot
 // (record.Waiting).
-func seedWaitingRoot(t *testing.T, pool *pgxpool.Pool, key, rank string) {
+func seedWaitingRoot(t *testing.T, pool *store.Pool, key, rank string) {
 	t.Helper()
 	seedTickIssue(t, pool, record.Issue{
 		Key: key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "CAPTURE",
@@ -318,7 +324,7 @@ func seedWaitingRoot(t *testing.T, pool *pgxpool.Pool, key, rank string) {
 
 // seedHeldChild records a child of tree where a blocker holds it: admitted into its tree and
 // started by nothing until the last issue it waits on is done.
-func seedHeldChild(t *testing.T, pool *pgxpool.Pool, key, tree string) {
+func seedHeldChild(t *testing.T, pool *store.Pool, key, tree string) {
 	t.Helper()
 	parent := tree
 	seedTickIssue(t, pool, record.Issue{
@@ -330,7 +336,7 @@ func seedHeldChild(t *testing.T, pool *pgxpool.Pool, key, tree string) {
 
 // seedBlockedRoots records count roots, each waiting on a distinct blocker of its own that the
 // mirror has never seen a row for, so the waiting set holds exactly count keys.
-func seedBlockedRoots(t *testing.T, pool *pgxpool.Pool, count int) {
+func seedBlockedRoots(t *testing.T, pool *store.Pool, count int) {
 	t.Helper()
 	for i := 1; i <= count; i++ {
 		key := fmt.Sprintf("LEGION-%d", i)
@@ -339,7 +345,7 @@ func seedBlockedRoots(t *testing.T, pool *pgxpool.Pool, count int) {
 	}
 }
 
-func seedTickIssue(t *testing.T, pool *pgxpool.Pool, issue record.Issue) {
+func seedTickIssue(t *testing.T, pool *store.Pool, issue record.Issue) {
 	t.Helper()
 	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
 		return record.NewStore().PutIssue(context.Background(), tx, issue)
@@ -348,7 +354,7 @@ func seedTickIssue(t *testing.T, pool *pgxpool.Pool, issue record.Issue) {
 	}
 }
 
-func seedTickMirror(t *testing.T, pool *pgxpool.Pool, key, status string, seq int64, blocked ...string) {
+func seedTickMirror(t *testing.T, pool *store.Pool, key, status string, seq int64, blocked ...string) {
 	t.Helper()
 	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
 		return record.NewStore().PutDispatchIssue(context.Background(), tx, record.DispatchIssueRow{
@@ -361,7 +367,7 @@ func seedTickMirror(t *testing.T, pool *pgxpool.Pool, key, status string, seq in
 // registerTickController registers a controller for this project, the daemon's own path: `legion
 // controller start` mints the capability and its session registers with it, both under the
 // project token (api/controller.go). Without one, a tick's wake is queued for nobody.
-func registerTickController(t *testing.T, pool *pgxpool.Pool) {
+func registerTickController(t *testing.T, pool *store.Pool) {
 	t.Helper()
 	st, err := store.Open(context.Background(), pool.Config().ConnString())
 	if err != nil {
@@ -381,7 +387,7 @@ func registerTickController(t *testing.T, pool *pgxpool.Pool) {
 	}
 }
 
-func tickSlotted(t *testing.T, pool *pgxpool.Pool) []string {
+func tickSlotted(t *testing.T, pool *store.Pool) []string {
 	t.Helper()
 	var slots []record.Slot
 	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
@@ -399,7 +405,7 @@ func tickSlotted(t *testing.T, pool *pgxpool.Pool) []string {
 	return keys
 }
 
-func tickMirrored(t *testing.T, pool *pgxpool.Pool) map[string]record.DispatchIssueRow {
+func tickMirrored(t *testing.T, pool *store.Pool) map[string]record.DispatchIssueRow {
 	t.Helper()
 	var mirrored []record.DispatchIssueRow
 	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
@@ -416,7 +422,7 @@ func tickMirrored(t *testing.T, pool *pgxpool.Pool) map[string]record.DispatchIs
 	return rows
 }
 
-func tickProcessed(t *testing.T, pool *pgxpool.Pool) int {
+func tickProcessed(t *testing.T, pool *store.Pool) int {
 	t.Helper()
 	var processed int
 	if err := pool.QueryRow(context.Background(),
@@ -426,7 +432,7 @@ func tickProcessed(t *testing.T, pool *pgxpool.Pool) int {
 	return processed
 }
 
-func tickNotices(t *testing.T, pool *pgxpool.Pool) int {
+func tickNotices(t *testing.T, pool *store.Pool) int {
 	t.Helper()
 	var notices int
 	if err := pool.QueryRow(context.Background(), `select count(*) from outbox where kind = $1 and payload->>'kind' = 'tick'`,

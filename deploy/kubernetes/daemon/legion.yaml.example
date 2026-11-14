@@ -57,6 +57,17 @@ worker_wakes_per_minute: 8             # how many wakes a minute the daemon lets
                                        # the live proofs under scripts/e2e set.
 worker_wake_burst: 1                   # how many wakes may leave at once before the rate holds the next one
                                        # back; 1 by default, and a value below 1 is refused
+# worker_silence_minutes: 30           # how long a phase worker that is up, between turns and holding
+#                                      # no task may go with no recorded step before the daemon sends it
+#                                      # its phase's task again; 30 by default, and a value under 16 is
+#                                      # refused, since a healthy worker that says it is waiting stays
+#                                      # quiet for 15 minutes before its own reminder comes again
+# worker_background_hours: 4           # how long the background work a phase worker's own session
+#                                      # reports may stand before the daemon names that worker to its
+#                                      # architect, once and with nothing sent: nothing can tell a job
+#                                      # that hung from a long one, so the architect decides. 4 by
+#                                      # default, and a value at or below worker_silence_minutes is
+#                                      # refused
 
 operator_token_file: ./operator-token  # the operator's bearer, in a file only you can read
 dispatch_url: https://dispatch.example.com
@@ -141,6 +152,43 @@ projects:
 #                                      # refuses acme/a -> acme/b beside acme/c -> d/c.
 #                                      # --check-config prints one line
 #                                      # per pair, to read the equivalence back before a transfer.
+# hooks:                               # optional: the words the daemon puts in front of an
+#   - name: work-back                  # issue's workers when its work keeps going back to an
+#     on: work_back                    # earlier phase. A file that names no hooks key runs this
+#     moves: any                       # one hook, hooks: [] runs none, and a file that names the
+#     every: 5                         # key runs what it names and no default. name is the
+#     roles: [implementer, tester, reviewer] # hook's own and is named once in the file. on is
+#                                      # the event: work_back, a move to an earlier phase, is the
+#                                      # one event the daemon has. moves are the moves back the
+#                                      # hook counts, each written <from>-<to> of two workflow
+#                                      # phases (testing-implementing, reviewing-implementing,
+#                                      # merging-implementing and the 18 other pairs), or
+#                                      # the word any, which a hook that leaves the key out takes
+#                                      # as well. every is a positive whole number: the hook
+#                                      # fires when the counts of the moves it counts, added up,
+#                                      # are a whole multiple of it. roles are the roles it
+#                                      # writes to, at least one of implementer, tester,
+#                                      # reviewer, planner and merger; the architect is refused,
+#                                      # since the daemon's own wake to an architect is a notice.
+#                                      # The words are prompt here or prompt_file below, never
+#                                      # both and never neither. Each refusal at load names the
+#                                      # hook by its place in the list and the key at fault, as
+#                                      # hooks[0].every.
+#     prompt: >-
+#       We read no progress on this issue: its work has gone back the number of times recorded
+#       below. Report to the architect what is in your way, in your own words. The architect
+#       takes a step back, reads what each of you says, and decides the path. Carry on with the
+#       work while you wait, and say so if you read it as on track.
+#   - name: back-to-implementing       # a second hook on the same event, counting one kind of
+#     on: work_back                    # move back alone and writing to two roles: each hook
+#     moves: [reviewing-implementing]  # counts its own moves and fires on its own multiple.
+#     every: 3
+#     roles: [implementer, reviewer]
+#     prompt_file: ./hooks/back-to-implementing.md # the words, read at boot and resolved against
+#                                      # this file's directory, as instructions is: an edited
+#                                      # file reaches the workers at the next start of the
+#                                      # daemon, and a missing, unreadable or empty one refuses
+#                                      # the boot and --check-config with it.
 gates:
   design: [spec]                       # the design gate steps, in the order a person approves
                                        # them: decisions (the root issue's decisions document),
@@ -215,6 +263,25 @@ github_apps:
 #                                      # start ending healthy turns. The issue's architect is told
 #                                      # what the record held, and a tree architect's own stall
 #                                      # reaches the controller too.
+# stalled_tree_notice_hours: 6         # how long a tree this daemon runs may be quiet before the
+#                                      # project's controller is told about it once: a tree is quiet
+#                                      # while no issue of it moves — no Dispatch event of the issue,
+#                                      # no GitHub event of its pull request, no phase change, no
+#                                      # handoff, no start, no completion — and no agent of it steps,
+#                                      # so a turn that runs for a day keeps its tree moving. A tree
+#                                      # with a role at work is never told, and neither is one
+#                                      # whose every quiet issue waits by design — a root awaiting a
+#                                      # person, an issue a blocked-by link holds, an issue held for
+#                                      # its open children, or one that needs an admission slot and
+#                                      # holds none — while the project's line can still move: some
+#                                      # issue of the project holds a slot and waits by no such
+#                                      # rule, or some claim of the project is at work. Where that
+#                                      # line cannot move, the controller is told about every tree
+#                                      # of the project, however its members wait. 6 by
+#                                      # default, a decimal number of hours. No value turns the
+#                                      # notice off; a deployment that wants fewer notices raises
+#                                      # the number, to 596 at most, and 0, a negative number and a
+#                                      # value that is not a number are each refused at load by name.
 # Under runtime: tmux — the daemon and every pane on one host, as one Unix user — the runtime block
 # is instead (docs/deployment.md, "The runtime.tmux block"):
 # runtime:
@@ -304,6 +371,17 @@ runtime:
       env:
         PI_CONFIG_FILES: /etc/legion-operator/overlay.yml
         CLAUDE_CODE_USE_FOUNDRY: "0"
+        # Your own OpenTelemetry resource attributes, the ones this deployment's spend is
+        # billed under: Legion keeps them and appends the launch's legion.issue and
+        # legion.role, so a pod's attributes name the issue it serves (the controller's pod,
+        # which serves no issue, carries the role alone). Both keys reach the spend collector
+        # today, and its keep-list of six theorem.* attributes drops every other key, so no
+        # spend row names an issue yet. A row grouped by issue follows when the collector keeps
+        # them (dispatch://INFRA-1835). The loader refuses a member the agent's parser would
+        # throw on — one that is no single key=value, an empty key, a side that does not
+        # percent-decode or runs past 255 characters, or one naming legion.issue or legion.role
+        # — since one such member costs the pod every attribute of the variable:
+        # OTEL_RESOURCE_ATTRIBUTES: theorem.project=widgets,theorem.lane=widgets-platform
       service_account: legion-worker
       volumes:
         - name: operator-route

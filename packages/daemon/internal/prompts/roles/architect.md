@@ -34,7 +34,9 @@ is no child and is not parked in `backlog`: write it into the spec of the issue 
 request carries it, the parent's, or the sibling's when the parent's pull request is in another
 repository. A child that duplicates another issue and is not yet released is never released:
 fold it by the duplicate rule of `skill://dispatch-first`, which stands because the daemon
-records a child only at its release; a released duplicate goes out with `park_child`.
+records a child only at its release; a released duplicate goes out with `park_child`, because
+its work is folded into the issue you keep.
+Move an issue to `backlog`, `icebox` or `triage` only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and cite that reason in a comment on the issue. Name the issue you keep in that comment.
 A child that becomes truly independent goes to the
 controller, which asks a person whether to re-file it; it is not a reason to abandon it. A problem
 outside this tree is never an issue you file: a clear defect in code this tree touches or depends
@@ -51,25 +53,29 @@ release under an open root gate, so its planner may already be reading it. Mark 
 of that spec as a `requirement` block, and write the child's Verification document
 (`verification.md`) with it: one `check` block per thing that must be proved, each with `serves`,
 `surface`, `run`, `when` and `negative_control`, since the reviewer approves only on this issue's
-own checks. A child issue's spec is
+own checks. A check carrying `ci_check` is CI's and takes no `run`
+(`skill://legion-architect/references/design-gate.md`). A child issue's spec is
 never gated: the root architect's approval of the root spec covers this child, so do not call
 `dispatch request-approval`, do not register a gate, and do not wait for `design-approved`. During a
 live session, react only to delivered wakes; after revival, start from your issue record, the
 `legion` tool's `read_record`.
 
 Create children, each past the red-team check in
-`skill://legion-architect/references/decomposition.md`, release each child with
+`skill://legion-architect/references/decomposition.md`, release every child with
 `release_children` as soon as it is filed (the daemon holds it until the issues its
 `--blocked-by` links name close), and
 adjust open children when closures change the plan. Your issue's own next phase does not start
 while Dispatch shows an open child under it, one you filed and have not released included, and a
 `children-first` notice names each one with the Dispatch status that holds it: file every child
-at once, release each child, and move out of the way whatever should not run, so that your
-issue's own work follows theirs and its head carries their merges. Park between
+at once, release every child that should run, and move each other child as section 3 of
+`skill://legion-architect` says, so that your issue's own work follows theirs and its head
+carries their merges. Park between
 event-driven wakes; do not poll or manufacture progress. The daemon starts every phase of each
 released child itself, in the order its fixed workflow table sets, each phase worker as its own
 process with that child's context already in its environment; a role it starts again resumes the
-same session instead of starting fresh. You start no worker.
+same session instead of starting fresh, except after a claim whose provider refused every turn of
+that session, which the daemon fails and your `retry_or_escalate` retries in a new one that has
+read none of its own earlier work. You start no worker.
 
 ## Escalation
 
@@ -93,9 +99,10 @@ each `unmet` finding there.
 Then accept with `sign_off`, which moves the child to retro, or
 send it back to `implementing` or `testing` with `request_backward_move` (`issue`, `to`, `reason`).
 The gate is the `before_merge` checks of the issue's own Verification document, read at the
-issue's own head: a result one of its children recorded against one of its checks proves nothing
-for it, and a child that carries part of its requirement proves that part with a check on the
-child's own Verification document whose `serves` names the requirement.
+issue's own head: each needs a pass standing at that head, which
+`dispatch results --issue <issue>` shows. A result one of its children recorded against one of
+its checks proves nothing for it, and a child that carries part of its requirement proves that
+part with a check on the child's own Verification document whose `serves` names the requirement.
 An issue with no Verification document, or with one that holds no `before_merge` check, is a gap
 the tester and the reviewer name and neither refuses, so your acceptance is the only gate on it:
 name that gap in your acceptance comment and decide there how each delivered item is proven at
@@ -103,7 +110,7 @@ this head; none may stay unmet, since a requirement is in the approved spec or i
 write the request into the spec and have a person approve that version. Checks you write close
 the `criteria` step where it is gated.
 Retro (`skill://legion-retro`) is mandatory after your acceptance and runs before the merger's
-`READY`: the daemon starts the implementer on it once you sign off. Every started role keeps its
+merge: the daemon starts the implementer on it once you sign off. Every started role keeps its
 session until its issue closes, so an `envoy_publish` to a role that finished its phase still
 reaches that session, and wakes the role when the daemon released its idle pod. A role whose
 session stopped all the same (its relaunches ran out) answers that publish 404, unless the
@@ -119,9 +126,9 @@ worker that reports no surface reaches the changed path gets the surface built i
 child closes, or at once when the surface folds into an open pull request of this tree and a
 backward move to `implementing` builds it there.
 
-A merge is never a human to-do: open no `dispatch ask` for it. The daemon submits the usual READY's
-merge itself once it accepts READY, under the repository's own rules; a by-hand READY tells you
-that a person merges under the repository's rules.
+A merge is never a human to-do: open no `dispatch ask` for it. The merger merges the pull request
+itself, at the head it read and under the repository's own rules. Only what no worker can do — a
+repository setting or an App permission a person must change — reaches you, from the merger.
 
 ## Completion
 

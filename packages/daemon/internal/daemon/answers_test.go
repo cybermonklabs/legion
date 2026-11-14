@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/admit"
 	"github.com/sjawhar/legion/daemon/internal/answer"
@@ -290,7 +289,7 @@ func TestADecisionGoesOnceToTheRunningArchitectElseToTheController(t *testing.T)
 // of the status its close left it in does (admission's releaseUnslotted leaves one at in_progress
 // too): it still lingers, but it is nobody's parked tree, so the parked-decision relay sends
 // nothing for a decision on it (record.RelayNotParked, record.ParkedTree).
-func movedBackIntoTheWorkflow(t *testing.T, pool *pgxpool.Pool, records record.Store, key string) {
+func movedBackIntoTheWorkflow(t *testing.T, pool *store.Pool, records record.Store, key string) {
 	t.Helper()
 	ctx := context.Background()
 	var root *record.Issue

@@ -453,28 +453,58 @@ func owed(run record.RoleRun) (string, bool) {
 // from the acts the ask handlers record under one rule, personAct). A review of one of those
 // documents is not read here: the architect is already live, and the daemon's own
 // design-changes-requested notice is the work that reaches it (a handout of its own).
+//
+// A decline is named only where the act that answered is the decline itself: a decline closes the
+// ask, so the row's ClosedSeq is that close's own sequence (askChange.apply writes ClosedBy and
+// ClosedSeq from it), while a later act of the person's — a reply in the thread of the ask they
+// declined — raises PersonSeq above it and answers as the reply it is. The row is all this path
+// has to read, because a decline reaches it when it falls between the architect's hand-back and
+// the pass that would put the root in the wait, and there is no event in hand; the live path has
+// the close itself and reads the decline from that (personAnswered), since the row's decline
+// never comes off it.
 func answeredSince(waiting record.Awaiting, asks []record.RootAsk, gateArtifacts []string) (record.Answer, string, bool) {
 	since := waiting.Since.Seq
 	for _, ask := range asks {
-		if ask.Ask == waiting.Ask && ask.PersonActSeq(gateArtifacts...) > since {
-			return record.AnsweredByAsk, ask.Ask, true
+		if seq := ask.PersonActSeq(gateArtifacts...); ask.Ask == waiting.Ask && seq > since {
+			return answerOfAct(ask, seq, record.AnsweredByAsk), ask.Ask, true
 		}
 	}
 	for _, ask := range asks {
-		if ask.PersonActSeq(gateArtifacts...) > since {
-			return record.AnsweredByReply, ask.Ask, true
+		if seq := ask.PersonActSeq(gateArtifacts...); seq > since {
+			return answerOfAct(ask, seq, record.AnsweredByReply), ask.Ask, true
 		}
 	}
 	return "", "", false
 }
 
+// answerOfAct is how the person's act at seq on ask answered the wait: their decline of it where
+// that act is the ask's own close and the mirror records a decline, else otherwise, which is
+// whether the ask is the one the wait names.
+func answerOfAct(ask record.RootAsk, seq int64, otherwise record.Answer) record.Answer {
+	if ask.Decline != nil && seq == ask.ClosedSeq {
+		return record.AnsweredByDecline
+	}
+	return otherwise
+}
+
 // enterAwaiting moves root into awaiting_person on waiting, which keeps the slot the root holds:
-// an issue keeps its row until it is done, leaves the workflow or waits only for its merge
-// (record.KeepsSlot). The architect stays live to read the person's answer, and the controller
-// is told.
+// an issue holds one of the cap's slots from the moment the daemon starts it until its work is
+// past its review — accepting, retro and merging hold none — or until it is done or Dispatch
+// takes it out of the workflow (record.KeepsSlot). The architect stays live to read the
+// person's answer, and the controller is told.
 func (e *Engine) enterAwaiting(ctx context.Context, tx pgx.Tx, root record.Issue, waiting record.Awaiting, reason string) error {
 	root.Phase, root.Awaiting = phase.AwaitingPerson, &waiting
 	if err := e.store.PutIssue(ctx, tx, root); err != nil {
+		return err
+	}
+	// The root moves from admitted into awaiting_person here, which is a phase change and so a
+	// movement (record.Store.MarkIssueMoved, the rule in dispatchIssue). The wait is reached
+	// from a root standing at admitted (ReconcileAwaiting's own read), so this write never
+	// re-asserts the phase the record carries, and no fact of its own brings it: the pass
+	// decides it from the record on any fact at all, so nothing else would mark it. Unmarked,
+	// a root that waits on a person carries the stamp of whatever last moved it before the
+	// wait, and the stall rule would read the wait itself as stillness of that age.
+	if err := e.store.MarkIssueMoved(ctx, tx, root.Key, e.now()); err != nil {
 		return err
 	}
 	waitReason := fmt.Sprintf("%s waits on a person (%s): it keeps its admission slot until they answer", root.Key, reason)
@@ -504,6 +534,22 @@ func (e *Engine) tellInPlace(ctx context.Context, tx pgx.Tx, root record.Issue, 
 // next wait. The members an open gate releases are not started here: each is an issue the cap
 // counts, so each takes its own place in the waiting line and starts at its own slot
 // (record.Waiting's LineFirstPhase), in the same admission pass that resumed this root.
+//
+// The resume starts the root's architect, which is a movement of the issue
+// (record.Store.MarkIssueMoved, the rule in dispatchIssue). It is marked here rather than at
+// either caller, so that both of them carry it: the promotion of a root a person answered
+// (admit's promoteHolds) and the root whose person had already acted, which keeps its phase and
+// is told where it stands (tellInPlace). Nothing else writes the mark for either of them. The
+// act that answered the wait was recorded on Dispatch and is read from the record rather than
+// carried by a fact of this issue; the start below is queued through Engine.enqueue, which waits
+// for no slot and so never reaches StartOrOwe, where a phase worker's start marks one; and the
+// architect's claim stands idle through the resume, which the quiet measure counts as no work
+// (record's restingStates). Unmarked, the root would keep the moved_at of its last real
+// movement, which is where it stood when it handed the question to the person, while it stands
+// at admitted holding a slot: the next pass would read that stamp, find no wait of the daemon's
+// own and tell the controller that a tree the daemon has just resumed has stopped. The resume
+// and that rule run in the one admission pass (admit's ReconcileAwaiting and tellStalledTrees),
+// so the pass that resumes the root is itself a pass that could tell it stopped.
 func (e *Engine) ResumeAwaitedRoot(ctx context.Context, tx pgx.Tx, root record.Issue, waiting record.Awaiting) error {
 	gates, err := e.store.GatesOf(ctx, tx, root.Key)
 	if err != nil {
@@ -523,7 +569,7 @@ func (e *Engine) ResumeAwaitedRoot(ctx context.Context, tx pgx.Tx, root record.I
 	}); err != nil {
 		return err
 	}
-	return nil
+	return e.store.MarkIssueMoved(ctx, tx, root.Key, e.now())
 }
 
 // gateInQuestion is the step a resume speaks of and the row that step holds (resumeTask): the
@@ -617,6 +663,21 @@ func resumeTask(key string, waiting record.Awaiting, step record.DesignStep, gat
 	case record.AnsweredByTurn:
 		fmt.Fprintf(&task, "A session's reply handed your question %s on %s to your turn, so no person is asked anything there; read its thread.",
 			waiting.AnsweredDetail, key)
+	case record.AnsweredByDecline:
+		// The sentences and the note are Dispatch's record of the decline, printed as the mirror
+		// row holds them (record.RootAsk.Decline): the daemon writes neither, so the architect
+		// reads the person's words and not the daemon's paraphrase of them. The note is quoted,
+		// as a review's reason is (changesDetail), so the architect reads where the person's own
+		// words begin and end. A decline the person wrote no note with ends after the sentences.
+		fmt.Fprintf(&task, "A person declined to answer your ask %s on %s.", waiting.AnsweredDetail, key)
+		if decline := recordedDecline(asks, waiting.AnsweredDetail); decline != nil {
+			if decline.Words != "" {
+				fmt.Fprintf(&task, " %s", decline.Words)
+			}
+			if decline.Note != "" {
+				fmt.Fprintf(&task, " Their note: %q", decline.Note)
+			}
+		}
 	default:
 		fmt.Fprintf(&task, "A person acted on %s; read the issue's asks and its spec.", key)
 	}
@@ -688,4 +749,17 @@ func resumeTask(key string, waiting record.Awaiting, step record.DesignStep, gat
 		task.WriteString(" Continue.")
 	}
 	return task.String()
+}
+
+// recordedDecline is the decline the mirror holds for ask, nil where no person declined it: it
+// carries the sentences Dispatch wrote for the asking agent and the person's own note, which the
+// resume prints. A record holding no such row — a decline mirrored by a release before this one,
+// or a row a later read has not reached — leaves the resume naming the ask alone.
+func recordedDecline(asks []record.RootAsk, ask string) *record.AskDecline {
+	for i := range asks {
+		if asks[i].Ask == ask && asks[i].Decline != nil {
+			return asks[i].Decline
+		}
+	}
+	return nil
 }

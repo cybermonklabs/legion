@@ -36,8 +36,8 @@ func controllerSpec(t *testing.T, project string) runtime.SpawnSpec {
 // A controller pane is told the controller's marker in place of a tree pane's tree, issue and the
 // issue key a tree pane stamps its commits with, and the empty Slack channel list the plugin
 // requires of a daemon-launched controller in place of the workspace: exactly the runtime's own
-// names for a tree pane, less those four, plus the controller's two (controllerOwned), so a spec
-// can override none of them.
+// names for a tree pane, less those four, plus the controller's two (controllerOwned) and the
+// composed ones, which every pane carries (composed), so a spec can override none of them.
 func TestAControllerPaneIsToldTheControllerMarkerInPlaceOfATree(t *testing.T) {
 	spec := controllerSpec(t, "omp")
 	spec.Env = nil
@@ -67,6 +67,7 @@ func TestAControllerPaneIsToldTheControllerMarkerInPlaceOfATree(t *testing.T) {
 		}
 	}
 	maps.Copy(want, controllerOwned)
+	maps.Copy(want, composed)
 	names := map[string]bool{}
 	for name := range told {
 		names[name] = true

@@ -1,5 +1,3 @@
-import { expect, type Locator, test } from "@playwright/test";
-
 import { RECONNECT_SPREAD_MS } from "../web/src/api/live-socket";
 import { MIN_REFETCH_INTERVAL_MS } from "../web/src/api/query-refresh";
 import { agentRow, setInterests, setLiveSessions } from "./agents";
@@ -34,8 +32,9 @@ import {
 } from "./inbox-filter";
 import { askCard, askControls, inboxRow } from "./inbox-pane";
 import { expectInboxCount } from "./inbox-threads";
-import { resetDatabase, setCreatedAt } from "./seed";
+import { setCreatedAt } from "./seed";
 import { navigateInApp } from "./sends";
+import { expect, type Locator, test } from "./test";
 import { asUser } from "./users";
 
 const session = {
@@ -46,9 +45,6 @@ const session = {
   },
   as: "agent" as const,
 };
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 test("ask cards show urgency accents and copy their session ID, title, and tmux target", async ({
   browser,
@@ -219,6 +215,9 @@ test("a reply on the live event feed refreshes a thread hydrated by the Inbox re
     await page.goto("/");
     const card = page.getByTestId(`ask-${ask.id}`);
     await expect(card).toBeVisible();
+    // The Inbox response carried this thread, so nothing reads it again: a refresh of the card
+    // would go out in the frame after it mounted, and 300 ms of real time is many frames past
+    // that. A read that never happens leaves no mark to wait on, so the window is the check.
     await page.waitForTimeout(300);
     expect(askReads).toBe(0);
 
@@ -268,6 +267,11 @@ test("an event before a delayed Inbox response refreshes that ask's thread", asy
     const navigation = page.goto("/");
     await Promise.all([listRequested.promise, streamResponse]);
     await createComment(issue.key, { ask_id: ask.id, body: "Reply after the snapshot." }, session);
+    // The reply has to reach the page before the held snapshot does, and the page shows nothing
+    // to wait on meanwhile: its only Inbox read is the one held open above. So the hold is the
+    // measurement - 150 ms for the server's event to cross the live socket, against a snapshot
+    // that lands only when the line below releases it. A failure here means that crossing took
+    // longer than the window, not that the refresh regressed.
     await page.waitForTimeout(150);
     releaseList.resolve();
     await navigation;
@@ -519,7 +523,7 @@ test("inbox shows current asks and answers issue asks in the margin @pr", async 
   await textOnlyCard
     .getByLabel("Your answer")
     .fill("Neither option fits; going with a third path.");
-  await textOnlyCard.getByRole("button", { name: "Answer" }).click();
+  await textOnlyCard.getByRole("button", { exact: true, name: "Answer" }).click();
   await expect(textOnlyCard).toHaveCount(0);
   await expect
     .poll(() => getAsk(textOnlyAsk.id), { intervals: [50, 50, 100, 200, 500] })
@@ -543,18 +547,20 @@ test("inbox shows current asks and answers issue asks in the margin @pr", async 
     { question: "Does this design need review?" },
     session
   );
-  // A document has no assignee, so its question is nobody's: the reader's own list does not
-  // hold it, and the Unassigned filter is where it is listed. This visit stays cold, so that
-  // absence is read from the server rather than from the list the page already held.
+  // A document has no assignee, so its question reaches the default assignee of its project -
+  // alice, who made CORE - and her own list holds it. This visit stays cold, so the row is read
+  // from the server rather than from the list the page already held.
   await alicePage.goto("/");
-  await expect(inboxRow(alicePage, documentAsk.id)).toHaveCount(0);
-  await navigateInApp(alicePage, "/?assignee=unassigned");
   const documentCard = await askCard(alicePage, documentAsk.id);
   await expect(documentCard).toContainText("Does this design need review?");
   // The document a question belongs to names the row it is listed on.
   await expect(
     inboxRow(alicePage, documentAsk.id).getByText("CORE · Design notes", { exact: true })
   ).toBeVisible();
+  // And nobody is left holding it: the filter for what no person was resolved for lists nothing.
+  await navigateInApp(alicePage, "/?assignee=unassigned");
+  await expect(inboxRow(alicePage, documentAsk.id)).toHaveCount(0);
+  await expect(alicePage.locator("[data-inbox-row]")).toHaveCount(0);
 
   await alice.close();
 });
@@ -653,7 +659,7 @@ test("a clarification moves an ask under Waiting on agents until the asker hands
     // what waits for it.
     const questionCard = await askCard(page, questionShaped.id);
     await questionCard.getByLabel("Your answer").fill("How does this fit our release plan?");
-    await questionCard.getByRole("button", { name: "Answer" }).click();
+    await questionCard.getByRole("button", { exact: true, name: "Answer" }).click();
     const clarification = questionCard.getByRole("button", { name: "Ask back instead" });
     await expect(clarification).toBeFocused();
     await clarification.press("Enter");
@@ -705,44 +711,6 @@ test("under Waiting on, Sort by priority puts a P0 ask ahead of a P2 ask clarifi
         rows.map((row) => row.getAttribute("data-inbox-row"))
       )
     ).toEqual([p0Ask.id, p2Ask.id]);
-  } finally {
-    await alice.close();
-  }
-});
-
-test("the Unassigned filter lists a P0 ask above a P2 ask opened before it", async ({
-  browser,
-}, testInfo) => {
-  await createProject({ key: "CORE", name: "Core" });
-  // Both issues are the shared token's, so nobody holds them and the Unassigned filter is where
-  // their questions are listed. Both wait on a person, so the **Waiting on** banding holds both
-  // in one band and only **Sort by** Priority decides which leads. Opened P0 first, so recency
-  // alone would put the P2 one on top.
-  const p0Issue = await createIssue({ project: "CORE", title: "Unassigned P0 issue" }, session);
-  await patchIssue(p0Issue.key, { priority: 0 });
-  const p0Ask = await createAsk(p0Issue.key, { question: "P0 waiting on a human" }, session);
-  const p2Issue = await createIssue({ project: "CORE", title: "Unassigned P2 issue" }, session);
-  await patchIssue(p2Issue.key, { priority: 2 });
-  const p2Ask = await createAsk(p2Issue.key, { question: "P2 waiting on a human" }, session);
-
-  const alice = await asUser(browser, "alice");
-  try {
-    const page = await alice.newPage();
-    await page.goto("/?assignee=unassigned&group=waiting-on&sort=priority");
-    // A question nobody holds is not the reader's own, so the band is not headed "you".
-    await expect(page.getByRole("heading", { name: "Waiting on a person" })).toBeVisible();
-    await expect(page.getByRole("heading", { name: "Waiting on you" })).toHaveCount(0);
-    const band = page.locator('[data-inbox-section="human"]');
-    await expect(band).toHaveCount(2);
-    expect(
-      await band.evaluateAll((rows) => rows.map((row) => row.getAttribute("data-inbox-row")))
-    ).toEqual([p0Ask.id, p2Ask.id]);
-    const shot = testInfo.outputPath(`inbox-unassigned-priority-${testInfo.project.name}.png`);
-    await page.screenshot({ path: shot, fullPage: true });
-    await testInfo.attach(
-      `Unassigned filter, P0 above P2 under Waiting on a person (${testInfo.project.name})`,
-      { contentType: "image/png", path: shot }
-    );
   } finally {
     await alice.close();
   }
@@ -1297,16 +1265,18 @@ test("an unanchored issue-level comment reaches Conversation, not document revie
 test("the Inbox opens on the reader's own questions, every visit, and ?assignee= names whose it lists", async ({
   browser,
 }, testInfo) => {
-  await createProject({ key: "CORE", name: "Core" });
+  // CORE names carol, a third person: creating it as her is how the server takes a default, and
+  // it keeps every question nobody was handed out of the two lists this row reads.
+  await createProject({ key: "CORE", name: "Core" }, "carol");
   // Nothing here is Alice's: Bob's own issue (a human's issue is assigned to its creator), an
-  // issue the shared token created (nobody holds it), and a project-document ask (a document has
-  // no assignee).
+  // issue the shared token created (which falls to CORE's default), and a project-document ask
+  // (a document has no assignee, so its question falls to the same person).
   const theirs = await createIssue({ project: "CORE", title: "Bob's issue" }, { login: "bob" });
   expect(theirs.assignee).toBe("bob");
   const theirsAsk = await createAsk(theirs.key, { question: "Bob's decision" }, session);
-  const nobodys = await createIssue({ project: "CORE", title: "Nobody's issue" }, session);
-  expect(nobodys.assignee).toBeNull();
-  const nobodysAsk = await createAsk(nobodys.key, { question: "Anyone's decision" }, session);
+  const carols = await createIssue({ project: "CORE", title: "Carol's issue" }, session);
+  expect(carols.assignee).toBe("carol");
+  const carolsAsk = await createAsk(carols.key, { question: "Anyone's decision" }, session);
   const document = await createProjectDocument("CORE", {
     content: "# Design notes\n",
     name: "Design notes",
@@ -1339,12 +1309,12 @@ test("the Inbox opens on the reader's own questions, every visit, and ?assignee=
       path: shot,
     });
 
-    // Bob holds one issue: his question is listed and nobody else's is - not the unassigned
-    // issue's, not the document's - and a reload opens the same way.
+    // Bob holds one issue: his question is listed and nobody else's is - not the question CORE's
+    // default holds, not the document's - and a reload opens the same way.
     await bobPage.goto("/");
     await expect(bobPage.getByTestId(`ask-${theirsAsk.id}`)).toBeVisible();
     await expect(bobPage.locator("[data-inbox-row]")).toHaveCount(1);
-    await expect(bobPage.getByTestId(`ask-${nobodysAsk.id}`)).toHaveCount(0);
+    await expect(bobPage.getByTestId(`ask-${carolsAsk.id}`)).toHaveCount(0);
     await expect(bobPage.getByTestId(`ask-${documentAsk.id}`)).toHaveCount(0);
     await bobPage.reload();
     await expect(bobPage.getByTestId(`ask-${theirsAsk.id}`)).toBeVisible();
@@ -1368,47 +1338,59 @@ test("the Inbox opens on the reader's own questions, every visit, and ?assignee=
   }
 });
 
-test("an agent's issue in a project with a default assignee reaches that person's Inbox, and one without a default reaches nobody's", async ({
+test("an agent's issue reaches the Inbox of the person its own project names, and no other", async ({
   browser,
 }, testInfo) => {
+  // Two projects, each naming a different person: every project names one, so there is no
+  // project whose issue reaches nobody and the other project's person is the control.
   await createProject({ key: "CORE", name: "Core" });
-  await createProject({ key: "OPS", name: "Ops" });
+  await createProject({ key: "OPS", name: "Ops" }, "bob");
   await putProjectDefaultAssignee("CORE", { assignee: "alice" }, { as: "user", login: "alice" });
+  await putProjectDefaultAssignee("OPS", { assignee: "bob" }, { as: "user", login: "bob" });
 
-  // The shared token holds nothing and names nobody: only CORE's default can assign this.
-  const defaulted = await createIssue({ project: "CORE", title: "Defaulted issue" }, session);
-  expect(defaulted.assignee).toBe("alice");
-  const defaultedAsk = await createAsk(defaulted.key, { question: "Defaulted decision" }, session);
-  // Negative control: OPS names nobody, so its issue stays unassigned and reaches no Inbox.
-  const unowned = await createIssue({ project: "OPS", title: "Unowned issue" }, session);
-  expect(unowned.assignee).toBeNull();
-  const unownedAsk = await createAsk(unowned.key, { question: "Unowned decision" }, session);
+  // The shared token holds nothing and names nobody: only each project's default can assign
+  // these, and the two defaults are two different people.
+  const hers = await createIssue({ project: "CORE", title: "Core issue" }, session);
+  expect(hers.assignee).toBe("alice");
+  const hersAsk = await createAsk(hers.key, { question: "Core decision" }, session);
+  const his = await createIssue({ project: "OPS", title: "Ops issue" }, session);
+  expect(his.assignee).toBe("bob");
+  const hisAsk = await createAsk(his.key, { question: "Ops decision" }, session);
 
   const alice = await asUser(browser, "alice");
+  const bob = await asUser(browser, "bob");
   try {
-    const page = await alice.newPage();
-    await page.goto("/");
-    await expect(page.getByTestId(`ask-${defaultedAsk.id}`)).toBeVisible();
-    await expect(page.getByTestId(`ask-${unownedAsk.id}`)).toHaveCount(0);
-    await page.screenshot({
+    const alicePage = await alice.newPage();
+    await alicePage.goto("/");
+    await expect(alicePage.getByTestId(`ask-${hersAsk.id}`)).toBeVisible();
+    await expect(alicePage.getByTestId(`ask-${hisAsk.id}`)).toHaveCount(0);
+    await alicePage.screenshot({
       path: testInfo.outputPath(`inbox-project-default-assignee-${testInfo.project.name}.png`),
       fullPage: true,
     });
+
+    const bobPage = await bob.newPage();
+    await bobPage.goto("/");
+    await expect(bobPage.getByTestId(`ask-${hisAsk.id}`)).toBeVisible();
+    await expect(bobPage.getByTestId(`ask-${hersAsk.id}`)).toHaveCount(0);
   } finally {
     await alice.close();
+    await bob.close();
   }
 });
 
 test("the assignee filter takes several people and Unassigned, narrows its rows, and lives in the address", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
+  // CORE names carol: the question on an issue nobody holds and the document's both reach her,
+  // as the server's last step resolves them, so each of the three people here holds one row.
+  await createProject({ key: "CORE", name: "Core" }, "carol");
   const hers = await createIssue({ project: "CORE", title: "Alice's issue" });
   const hersAsk = await createAsk(hers.key, { question: "Alice's decision" }, session);
   const theirs = await createIssue({ project: "CORE", title: "Bob's issue" }, { login: "bob" });
   const theirsAsk = await createAsk(theirs.key, { question: "Bob's decision" }, session);
-  const nobodys = await createIssue({ project: "CORE", title: "Nobody's issue" }, session);
-  const nobodysAsk = await createAsk(nobodys.key, { question: "Anyone's decision" }, session);
+  const carols = await createIssue({ project: "CORE", title: "Carol's issue" }, session);
+  const carolsAsk = await createAsk(carols.key, { question: "Anyone's decision" }, session);
   const document = await createProjectDocument("CORE", {
     content: "# Design notes\n",
     name: "Design notes",
@@ -1446,22 +1428,28 @@ test("the assignee filter takes several people and Unassigned, narrows its rows,
     await search.fill("");
     await pickAssignee(page, "bob");
     await expect(page).toHaveURL(`/?item=${hersAsk.id}&assignee=alice&assignee=bob`);
-    await pickAssignee(page, "Unassigned");
-    await expect(page).toHaveURL(
-      `/?item=${hersAsk.id}&assignee=alice&assignee=bob&assignee=unassigned`
-    );
+    await pickAssignee(page, "carol");
+    await expect(page).toHaveURL(`/?item=${hersAsk.id}&assignee=alice&assignee=bob&assignee=carol`);
     await expect(assigneeFilter(page)).toHaveText("Assignee · 3");
     await closeAssigneeFilter(page);
-    for (const ask of [hersAsk, theirsAsk, nobodysAsk, documentAsk]) {
+    for (const ask of [hersAsk, theirsAsk, carolsAsk, documentAsk]) {
       await expect(inboxRow(page, ask.id)).toBeVisible();
     }
+    await expect(page.locator("[data-inbox-row]")).toHaveCount(4);
+
+    // Unassigned is still a value of this filter, and it adds no row: every project names a
+    // person, so no question the server answers is held by nobody.
+    await openAssigneeFilter(page);
+    await pickAssignee(page, "Unassigned");
+    await expect(assigneeFilter(page)).toHaveText("Assignee · 4");
+    await closeAssigneeFilter(page);
     await expect(page.locator("[data-inbox-row]")).toHaveCount(4);
 
     // The address is the whole filter: a second browser opening it sees the same list.
     const second = await asUser(browser, "alice");
     try {
       const linked = await second.newPage();
-      await linked.goto("/?assignee=alice&assignee=bob&assignee=unassigned");
+      await linked.goto("/?assignee=alice&assignee=bob&assignee=carol&assignee=unassigned");
       await expect(linked.locator("[data-inbox-row]")).toHaveCount(4);
       await expect(inboxRow(linked, documentAsk.id)).toBeVisible();
     } finally {
@@ -1479,14 +1467,16 @@ test("the assignee filter takes several people and Unassigned, narrows its rows,
   }
 });
 
-test("clearing the filter lists every question, and Assign to me takes one under the Unassigned filter", async ({
+test("clearing the filter lists every question, and the Unassigned filter lists none of them", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
+  // CORE names carol, so the question on the issue nobody holds and the document's both reach
+  // her rather than the reader.
+  await createProject({ key: "CORE", name: "Core" }, "carol");
   const hers = await createIssue({ project: "CORE", title: "Alice's issue" });
   const hersAsk = await createAsk(hers.key, { question: "Alice's decision" }, session);
-  const nobodys = await createIssue({ project: "CORE", title: "Nobody's issue" }, session);
-  const nobodysAsk = await createAsk(nobodys.key, { question: "Anyone's decision" }, session);
+  const carols = await createIssue({ project: "CORE", title: "Carol's issue" }, session);
+  const carolsAsk = await createAsk(carols.key, { question: "Anyone's decision" }, session);
   // Named for the page's own `document`, which this test's blur below needs unshadowed.
   const notes = await createProjectDocument("CORE", {
     content: "# Design notes\n",
@@ -1509,7 +1499,7 @@ test("clearing the filter lists every question, and Assign to me takes one under
     await closeAssigneeFilter(page);
     await expect(page).toHaveURL(`/?item=${hersAsk.id}&assignee=everyone`);
     await expect(assigneeFilter(page)).toHaveText("Assignee · everyone");
-    for (const ask of [hersAsk, nobodysAsk, documentAsk]) {
+    for (const ask of [hersAsk, carolsAsk, documentAsk]) {
       await expect(inboxRow(page, ask.id)).toBeVisible();
     }
     await expect(page.locator("[data-inbox-row]")).toHaveCount(3);
@@ -1519,38 +1509,21 @@ test("clearing the filter lists every question, and Assign to me takes one under
     await expect(page.getByTestId(`ask-${hersAsk.id}`)).toBeVisible();
     await expect(page.locator("[data-inbox-row]")).toHaveCount(1);
 
-    // Under the Unassigned filter both unheld questions are listed, in a turn band rather than
-    // a band of their own, and only the one on an issue offers to be taken: a question on a
-    // document has no issue to assign.
+    // Under the Unassigned filter nothing is listed at all: who a question reaches is three
+    // steps, and every project names a default assignee, so none of these is held by nobody.
     await page.goto("/?assignee=unassigned");
-    await expect(page.locator("[data-inbox-row]")).toHaveCount(2);
-    await expect(inboxRow(page, nobodysAsk.id)).toHaveAttribute("data-inbox-section", "human");
-    await expect(
-      (await askControls(page, documentAsk.id)).getByRole("button", { name: /^Assign / })
-    ).toHaveCount(0);
+    await expect(page.getByText("Nothing matches this filter")).toBeVisible();
+    await expect(page.locator("[data-inbox-row]")).toHaveCount(0);
 
-    const assign = (await askControls(page, nobodysAsk.id)).getByRole("button", {
-      name: `Assign ${nobodys.key} to me`,
-    });
-    const patch = page.waitForRequest(
-      (request) =>
-        request.method() === "PATCH" &&
-        new URL(request.url()).pathname === `/api/v1/issues/${nobodys.key}`
-    );
-    await assign.click();
-    expect((await patch).postDataJSON()).toEqual({ assignee: "alice" });
-    await expect.poll(() => getIssue(nobodys.key)).toMatchObject({ assignee: "alice" });
-
-    // The row is hers now, so it leaves the list of what nobody holds. A row the reader's hand
-    // is still on is held where they last saw it (`heldRow`), and a tap leaves a touch device's
-    // hand on it, so the list is read again rather than waiting for a release this test is not
-    // about.
-    await page.reload();
-    await expect(inboxRow(page, nobodysAsk.id)).toHaveCount(0);
-    await expect(page.locator("[data-inbox-row]")).toHaveCount(1);
-    await page.goto("/");
-    await expect(inboxRow(page, nobodysAsk.id)).toHaveAttribute("data-inbox-section", "human");
-    await expect(page.locator("[data-inbox-row]")).toHaveCount(2);
+    // And no row offers to be taken, wherever it is listed: "Assign to me" is what a row nobody
+    // holds carries, and there is none.
+    await navigateInApp(page, "/?assignee=everyone");
+    await expect(page.locator("[data-inbox-row]")).toHaveCount(3);
+    for (const ask of [hersAsk, carolsAsk, documentAsk]) {
+      await expect(
+        (await askControls(page, ask.id)).getByRole("button", { name: /^Assign / })
+      ).toHaveCount(0);
+    }
   } finally {
     await alice.close();
   }
@@ -1564,15 +1537,17 @@ test("the Inbox count, the banner and an Agents card count the reader's own work
   browser,
 }) => {
   await setLiveSessions([{ session_id: session.actor.id, title: "e2e-session-title" }]);
-  await createProject({ key: "CORE", name: "Core" });
+  // CORE names carol: a person's own new issue is still theirs, and the agent's falls to her,
+  // so neither of the two counts below is moved by a question the reader does not hold.
+  await createProject({ key: "CORE", name: "Core" }, "carol");
   const first = await createIssue({ project: "CORE", title: "Alice's first" });
   await createAsk(first.key, { question: "First decision" }, session);
   const second = await createIssue({ project: "CORE", title: "Alice's second" });
   await createAsk(second.key, { question: "Second decision" }, session);
   const theirs = await createIssue({ project: "CORE", title: "Bob's issue" }, { login: "bob" });
   await createAsk(theirs.key, { question: "Bob's decision" }, session);
-  const nobodys = await createIssue({ project: "CORE", title: "Nobody's issue" }, session);
-  await createAsk(nobodys.key, { question: "Anyone's decision" }, session);
+  const carols = await createIssue({ project: "CORE", title: "Carol's issue" }, session);
+  await createAsk(carols.key, { question: "Anyone's decision" }, session);
 
   const alice = await asUser(browser, "alice");
   try {
@@ -1710,7 +1685,12 @@ test("a stale Inbox body landing inside the debounce seeds a later card's thread
     // signal to wait on: a failure here means the window slipped, not that the marker regressed.
     await page.waitForTimeout(30);
     releaseSecond.resolve();
-    await page.waitForTimeout(400);
+    // The page asks the Inbox again once the stale body has landed and the flushed event batch
+    // has marked that list stale, so that second read - held open here like every later one - is
+    // the page saying it applied the body and acted on the batch. It is the barrier the row
+    // needs: the marker is set while the hidden ask is still off screen, and the filter widens
+    // below on a page that has been through the whole of it.
+    await expect.poll(() => inboxLoads).toBeGreaterThan(1);
 
     // Widening the filter lists the hidden ask without reloading: the page's one Inbox read is
     // still held, and a client-side pick asks for no other.
@@ -1797,10 +1777,9 @@ for (const refusal of [
   });
 }
 
-test("an ask card's time stays with its author, never opening a line of its own @phone", async ({
+test("an ask card's time stays with its author, never opening a line of its own @phone @phone-only", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "iphone", "the provenance line only wraps where it must");
+}) => {
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "Provenance line" });
   // A live session names itself in a sentence, so the author fills the line and the time is what

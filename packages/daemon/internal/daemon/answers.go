@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/answer"
 	"github.com/sjawhar/legion/daemon/internal/answerloop"
@@ -147,7 +146,7 @@ func (t ghTool) Close() error { return t.answer.Close() }
 // transaction commits (projectRecords). `legion state` lists the question from the mark
 // (questionsForController).
 type controllerPassOn struct {
-	pool    *pgxpool.Pool
+	pool    *store.Pool
 	records record.Store
 	now     func() time.Time
 	log     *slog.Logger

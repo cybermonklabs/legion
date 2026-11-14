@@ -326,37 +326,6 @@ func TestPodUpdateMaxOpenRoundsPodless(t *testing.T) {
 	rig.awaitRounds("three sweeps with a free slot and nothing left that has drifted", "INFRA-1")
 }
 
-// An issue a limit holds back is still carried: the plugin round of one of its claims is one
-// process to replace, not a pod, and it ends as soon as that worker answers. Held behind the pod
-// round the issue is waiting for, it would hold that claim's next task for as long as the issue
-// waits for a slot, which under a fleet-wide roll is as long as the roll.
-func TestPodUpdateMaxOpenRoundsPluginRound(t *testing.T) {
-	// The architect of the issue the cap holds back runs on the contract before this daemon's,
-	// and the stale-plugin lane has a round of its own open over it.
-	held := limitIssue(2, "INFRA-2")
-	held.pluginRound = true
-	rig := newFleetRig(t, limitIssue(1, "INFRA-1"), held)
-	for _, key := range []string{"INFRA-1", "INFRA-2"} {
-		rig.drifts(key, limitDrift)
-	}
-	rig.s.cfg.PodUpdateMaxOpenRounds = new(1)
-	plugin := supervise.PluginRound(api.DaemonAPIVersion)
-
-	rig.tick()
-	rig.awaitRounds("the first sweep under a cap of one", "INFRA-1")
-	if got := rig.claimOf("INFRA-2", claim.RoleArchitect).UpdateRound; got != plugin {
-		t.Fatalf("the architect of the held-back issue is in round %q, want its plugin round %q", got, plugin)
-	}
-
-	rig.answer("INFRA-2")
-	rig.tick()
-
-	testwait.Eventually(t, "the plugin round of INFRA-2's architect to end at a sweep that held its issue back", func() bool {
-		return rig.claimOf("INFRA-2", claim.RoleArchitect).UpdateRound == ""
-	})
-	rig.awaitRounds("the plugin round ended under the cap", "INFRA-1")
-}
-
 // An opening is an ask that reached a worker. An issue no agent has run for has nobody to ask,
 // so the sweep posts it nothing and its claims record no round: charged a slot and an opening all
 // the same, such an issue would take the one opening of every sweep for ever — it can never
@@ -714,27 +683,41 @@ func TestPodUpdateRoundsPerMinute(t *testing.T) {
 	rig.s.cfg.PodUpdateRoundsPerMinute = new(1)
 
 	asked := map[string]time.Time{}
-	for i, key := range keys {
+	for i := range keys {
 		if i > 0 {
 			rig.clock.advance(time.Minute)
 		}
 		rig.tick()
 		rig.awaitRounds(fmt.Sprintf("sweep %d at one round a minute", i+1), keys[:i+1]...)
-		opened := rig.claimOf(key, claim.RoleArchitect)
-		if opened.UpdateTaskedAt == nil {
-			t.Fatalf("%s holds the round with no ask recorded: %+v", key, opened)
+		// The sweep asks a round's roles at the tick after the one that opened it, once the
+		// claims record the round, and never again.
+		for _, prev := range keys[:i] {
+			c := rig.claimOf(prev, claim.RoleArchitect)
+			if c.UpdateTaskedAt == nil {
+				t.Fatalf("%s holds the round with no ask recorded a sweep after it opened: %+v", prev, c)
+			}
+			if at, ok := asked[prev]; ok && !c.UpdateTaskedAt.Equal(at) {
+				t.Errorf("%s was asked at %v, want the first ask at %v: the limit asks no open round again", prev, c.UpdateTaskedAt, at)
+			}
+			asked[prev] = *c.UpdateTaskedAt
 		}
-		asked[key] = *opened.UpdateTaskedAt
+	}
+	// The last key opened is asked at the sweep after its opening, as every key before it was.
+	rig.clock.advance(time.Minute)
+	rig.tick()
+	for _, key := range keys {
+		c := rig.claimOf(key, claim.RoleArchitect)
+		if c.UpdateTaskedAt == nil {
+			t.Fatalf("%s holds the round with no ask recorded a sweep after the last opening: %+v", key, c)
+		}
+		if at, ok := asked[key]; ok && !c.UpdateTaskedAt.Equal(at) {
+			t.Errorf("%s was asked at %v, want the first ask at %v: the limit asks no open round again", key, c.UpdateTaskedAt, at)
+		}
 	}
 
 	for _, key := range keys {
-		held := rig.claimOf(key, claim.RoleArchitect)
-		if held.UpdateRound != rig.round(key) {
+		if held := rig.claimOf(key, claim.RoleArchitect); held.UpdateRound != rig.round(key) {
 			t.Errorf("%s records round %q after the five sweeps, want its own open round: the limit ends none", key, held.UpdateRound)
-		}
-		if held.UpdateTaskedAt == nil || !held.UpdateTaskedAt.Equal(asked[key]) {
-			t.Errorf("%s was asked at %v, want the ask it was opened with at %v: the limit asks no open round again",
-				key, held.UpdateTaskedAt, asked[key])
 		}
 	}
 

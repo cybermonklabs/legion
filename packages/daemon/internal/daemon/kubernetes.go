@@ -7,8 +7,6 @@ import (
 	"net"
 	"net/http"
 	"strconv"
-	"strings"
-	"sync"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -22,6 +20,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/natsauth"
 	"github.com/sjawhar/legion/daemon/internal/promptrefs"
 	"github.com/sjawhar/legion/daemon/internal/prompts"
@@ -186,7 +185,7 @@ func prepareSandbox(cfg config.Config, o overrides, reads sandboxReads, p *plan)
 	if err != nil {
 		return err
 	}
-	p.newRuntime = sandboxRuntime(reads.client, reads.opts, p.repositories.Accepted, p.repositories.serving, cfg.RepositoryRenames)
+	p.newRuntime = sandboxRuntime(reads.client, reads.opts, p.repositories.Accepted, p.repositories.serving, cfg.RepositoryRenames, o.githubAPI)
 	p.clusterCheck = boot.clusterCheck
 	p.claimsCheck = func(ctx context.Context, st *store.Store) error {
 		legacy, err := st.HasLegacySandboxClaims(ctx, p.project)
@@ -501,9 +500,11 @@ func requirements(key string, reservation config.Reservation) (corev1.ResourceRe
 // acceptor on the stream listener. A daemon with no GitHub Apps hands it neither tokens nor a
 // mapping, and sandbox.New's own refusal names what is missing. Boot has already run the cluster
 // check (plan.clusterCheck): Agent Sandbox is installed and no Sandbox of a layout before this
-// one — per-claim pods, or issue pods on one tree volume — remains.
+// one — per-claim pods, or issue pods on one tree volume — remains. githubAPI is GitHub's REST
+// root ("" is https://api.github.com), which the shared public leak check is read under
+// (leakCheckSource).
 func sandboxRuntime(rc *rest.Config, opts sandbox.Options, repos func() []ghrepo.Repository,
-	serving func(ghrepo.Repository) ghrepo.Repository, renames ghrepo.Renames) runtimeFactory {
+	serving func(ghrepo.Repository) ghrepo.Repository, renames ghrepo.Renames, githubAPI string) runtimeFactory {
 	return func(ctx context.Context, listener *stream.Listener, address string, apps appauth.Tokens,
 		_ func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, mapped func() []ghrepo.Repository) (runtime.Runtime, error) {
 		opts.Conns, opts.StreamURL, opts.Store, opts.Mapped = listener, address, st, mapped
@@ -516,12 +517,17 @@ func sandboxRuntime(rc *rest.Config, opts sandbox.Options, repos func() []ghrepo
 		// bundle is sent or that pod is refused as no newer than the save, and nothing is
 		// answered for that bundle again.
 		opts.SavedWorkspaceBundle, opts.WorkspaceBundleRestored = st.TakeWorkspaceBundleForRestore, st.DeleteRestoredWorkspaceBundle
+		// The shared public leak check each pod's launcher is pushed before any role of the pod
+		// starts, read with the implement App's read lease on the check's owner (leakCheckToken);
+		// a daemon with no Apps reads none, and the runtime refuses the start of a role whose
+		// launcher names a tag with the cause that says so.
+		opts.LeakCheck = leakCheckSource(apps, githubAPI)
 		if apps != nil {
 			// One record per project, written by the two credentials and read by the directory
 			// set for the Apps of the pod it answers for, so no pod is replaced for a directory
 			// no mint of its own Apps can produce (appauth.LeftOut).
 			left := appauth.NewLeftOut()
-			opts.Tokens = newImplementTokens(apps, serving, opts.Log)
+			opts.Tokens = newImplementTokens(apps, serving)
 			opts.GitHubCredential = appauth.GitHubCredential(apps, repos, renames, left, opts.Log)
 			opts.ControllerCredential = appauth.ControllerCredential(apps, repos, renames, left, opts.Log)
 			opts.GitHubDirs = func(repo ghrepo.Repository, roles []appauth.AppRole) []string {
@@ -538,16 +544,21 @@ func sandboxRuntime(rc *rest.Config, opts sandbox.Options, repos func() []ghrepo
 }
 
 // implementTokens is the workflow's implement App as a sandbox's provisioning token source: every
-// pod's workspace-fetch clones with an installation token minted for the repository it fetches
-// and narrowed to reading it (contents, pull requests, Actions and metadata at read,
-// appauth.Tokens.ReadToken), which is all a clone, a fetch and a repository cache do. An
-// installation that refuses that narrowing (appauth.ErrNarrowingRefused, GitHub's 422 to a
-// request naming a repository it does not reach, since the permissions it names are what the
-// installation was granted a moment before) is served the owner's own write token for that
-// repository instead, the one fallback there is, said once for that owner on the daemon's log.
-// Every other refusal — GitHub's trouble (appauth.TransientError, a 5xx or a rate-limited 422)
-// or an App with no installation on the owner (appauth.ErrNotInstalled) — is returned as it
-// came, with no second mint and nothing logged.
+// pod's workspace-fetch clones with an installation token minted for the owner of the repository
+// it fetches and narrowed to reading (contents, pull requests, Actions and metadata at read,
+// appauth.Tokens.ReadToken), which is all a clone, a fetch and a repository cache do. Every
+// refusal is returned as it came, with no second mint: GitHub's trouble
+// (appauth.TransientError, a 5xx or a rate-limited 422), an App with no installation on the
+// owner (appauth.ErrNotInstalled), and an installation that is not granted what the reading
+// lease asks for (appauth.ErrNarrowingRefused) alike.
+//
+// That last one once fell back to the owner's own write token, since a request naming a
+// repository the installation did not reach was refused with the same 422 as a permission it
+// was not granted, and a pod that could not clone was worth a wider token. No request names a
+// repository any longer (INFRA-2543), so the owner's write token now reaches every repository of
+// the owner's installation: a fallback would answer a refused reading lease with the widest
+// credential the daemon holds, handed to the process that provisions a pod. A refused reading
+// lease fails the mint instead.
 //
 // It is the one token source the Sandbox runtime's three mint sites share (runtime/sandbox's
 // provision, its gh credential refresh and its repository cache Secret), so the repository a
@@ -564,18 +575,12 @@ func sandboxRuntime(rc *rest.Config, opts sandbox.Options, repos func() []ghrepo
 type implementTokens struct {
 	apps    appauth.Tokens
 	serving func(ghrepo.Repository) ghrepo.Repository
-	// log receives the fallback's line; slog.Default() when nil, as the runtime's own Log is.
-	log *slog.Logger
-
-	// mu guards warned, the set of owners the fallback has already been said of.
-	mu     sync.Mutex
-	warned map[string]bool
 }
 
 // newImplementTokens is the adapter over apps, with serving as the map a mint's repository goes
-// through and log as what the fallback's line is written to, slog.Default() when nil.
-func newImplementTokens(apps appauth.Tokens, serving func(ghrepo.Repository) ghrepo.Repository, log *slog.Logger) *implementTokens {
-	return &implementTokens{apps: apps, serving: serving, log: log, warned: map[string]bool{}}
+// through.
+func newImplementTokens(apps appauth.Tokens, serving func(ghrepo.Repository) ghrepo.Repository) *implementTokens {
+	return &implementTokens{apps: apps, serving: serving}
 }
 
 func (t *implementTokens) Token(ctx context.Context, repo ghrepo.Repository) (string, error) {
@@ -583,36 +588,56 @@ func (t *implementTokens) Token(ctx context.Context, repo ghrepo.Repository) (st
 		repo = t.serving(repo)
 	}
 	lease, err := t.apps.ReadToken(ctx, appauth.Implement, repo.Owner(), []string{repo.Name()})
-	if err == nil {
-		return lease.Token, nil
-	}
-	if !appauth.NarrowingRefused(err) {
-		return "", err
-	}
-	lease, err = t.apps.Token(ctx, appauth.Implement, repo)
 	if err != nil {
 		return "", err
 	}
-	t.warnOwnToken(repo.Owner())
 	return lease.Token, nil
 }
 
-// warnOwnToken writes the fallback's line the first time owner's pods are provisioned with the
-// owner's own installation token, and nothing on every mint after it, for the life of the process
-// (appauth's sayShortfalls, the same rule for a grant the mint had to cut its request down to).
-func (t *implementTokens) warnOwnToken(owner string) {
-	key := strings.ToLower(owner)
-	t.mu.Lock()
-	warned := t.warned[key]
-	t.warned[key] = true
-	t.mu.Unlock()
-	if warned {
-		return
+// leakCheckSource is the daemon's reader of the shared public leak check, minting through apps
+// (leakCheckToken) and reading under githubAPI, GitHub's REST root ("" is
+// https://api.github.com), which the Sandbox runtime pushes to each pod's launcher before any role
+// of the pod starts (sandbox.Options.LeakCheck). Where apps drops a read scope
+// (appauth.ReadScopeForgetter), a read GitHub answers 401 drops the lease leakCheckToken mints, so
+// the next read mints a new one. A daemon with no GitHub Apps has no reader: the answer is then
+// the nil interface, never a nil *leakguard.Source inside one, so the runtime's comparison with
+// nil reads the daemon as holding no credential.
+func leakCheckSource(apps appauth.Tokens, githubAPI string) sandbox.LeakCheckReader {
+	if apps == nil {
+		return nil
 	}
-	log := t.log
-	if log == nil {
-		log = slog.Default()
+	source := &leakguard.Source{Token: leakCheckToken(apps), API: githubAPI}
+	if forgetter, ok := apps.(appauth.ReadScopeForgetter); ok {
+		source.Forget = func() {
+			forgetter.ForgetReadScope(appauth.Implement, leakguard.CheckRepository.Owner(), []string{leakguard.CheckRepository.Name()})
+		}
 	}
-	log.Warn("daemon: this owner's installation refuses a read-only provisioning token, "+
-		"so its pods clone with the owner's own installation token rather than a reading lease", "owner", owner)
+	return source
+}
+
+// leakCheckToken mints the token the shared public leak check is read with: the implement App's
+// read lease on the check's owner (appauth.Tokens.ReadToken, whose four read permissions are all a
+// tarball read needs). No request names a repository any longer (INFRA-2543), so the lease reaches
+// every repository that owner's installation holds and the reading permissions are the whole of
+// what keeps it from writing. It mints nothing else: an installation the account has not granted
+// those permissions is refused, with no wider token in its place, since the owner's own write
+// token would add only what a tarball read never uses.
+//
+// The error's text is the cause sentence's own words after leakguard.RefusalPrefix
+// (leakguard.Source.Token): GitHub refusing the reading permissions (appauth.NarrowingRefused) is
+// told from every other failed mint, since the two are fixed in different places — what the
+// account grants the App's installation, and the App's configuration or its installation on the
+// owner.
+func leakCheckToken(apps appauth.Tokens) func(context.Context) (string, error) {
+	return func(ctx context.Context) (string, error) {
+		lease, err := apps.ReadToken(ctx, appauth.Implement, leakguard.CheckRepository.Owner(), []string{leakguard.CheckRepository.Name()})
+		switch {
+		case err == nil:
+			return lease.Token, nil
+		case appauth.NarrowingRefused(err):
+			return "", fmt.Errorf("GitHub refused the daemon's implement App the reading permissions on %s, and the daemon reads %s with no wider token: %w", leakguard.CheckRepository.Owner(), leakguard.CheckSlug, err)
+		default:
+			return "", fmt.Errorf("the daemon could not mint its read-only token for %s: %w", leakguard.CheckSlug, err)
+		}
+	}
 }

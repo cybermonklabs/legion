@@ -1,22 +1,25 @@
 //go:build e2e
 
-// What the two live proofs that drive real Oh My Pi panes share below the daemon: the constants
-// both read off the daemon, the run each one is (liveAgentProof) with its reads of a claim, of a
+// What the three live proofs that drive real Oh My Pi panes share below the daemon: the constants
+// each reads off the daemon, the run each one is (liveAgentProof) with its reads of a claim, of a
 // pane and of the daemon's own log, the database, the `legion` binary, the plugins and the pane
 // listener a run builds before the daemon boots, the model stand-in each pane talks to, the
 // provider answers those stand-ins write, the overlay writers that point a pane at one, and the
-// log handler those reads of the daemon's own decisions go through. The two are
-// provider_error_retry_live_test.go, the driver of scripts/e2e/provider-error-retry.sh, and
-// claim_compaction_live_test.go, the driver of scripts/e2e/claim-compaction.sh. What belongs to
-// one proof stays in that proof's own file: its issues and their seed, its steps, its stand-ins'
-// handlers, and the Oh My Pi profile and operator overlay its panes run under.
+// log handler those reads of the daemon's own decisions go through. The three are
+// provider_error_retry_live_test.go, the driver of scripts/e2e/provider-error-retry.sh,
+// claim_compaction_live_test.go, the driver of scripts/e2e/claim-compaction.sh, and
+// role_prompt_rule_live_test.go, the driver of scripts/e2e/role-prompt-rule.sh. What belongs to
+// one proof stays in that proof's own file: its issues and their seed, its steps, and the Oh My
+// Pi profile and operator overlay its panes run under.
 //
-// A stand-in's handler is its own proof's, because the two differ in what decides an answer: the
-// retry proof's three answer by the provider name each is given in the run's models.yml, and the
-// compaction proof's four answer by what the step before them set, a turn's request apart from a
-// compaction's summary request. What they hold in common is here: the HTTP server, the bodies
-// they were sent, and the three answers both of them write — the overloaded status, a refused
-// request, and the Messages stream of a turn that ends.
+// A stand-in's handler belongs to the proof that decides an answer with it. Two have one: the
+// retry proof's three stand-ins answer by the provider name each is given in the run's
+// models.yml, and the compaction proof's four answer by what the step before them set, a turn's
+// request apart from a compaction's summary request. The prompt-rule proof decides nothing by an
+// answer and writes no handler of its own: its two stand-ins are the compaction proof's
+// paneStandin at its default, which answers every turn alike. What every proof holds in common
+// is here: the HTTP server, the bodies they were sent, and the three answers they write — the
+// overloaded status, a refused request, and the Messages stream of a turn that ends.
 package daemon
 
 import (
@@ -46,9 +49,9 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
 )
 
-// ---- the constants both proofs read --------------------------------------------------------------
+// ---- the constants every proof reads -------------------------------------------------------------
 
-// liveOmpPathEnv names the Oh My Pi every pane of either proof runs. It is the pod's own build,
+// liveOmpPathEnv names the Oh My Pi every pane of every such proof runs. It is the pod's own build,
 // which is the fleet's pin rather than this branch's fetch, so a proof prints which build it
 // ran. Unset, the driver skips rather than guess one, as each proof's script refuses to start
 // without it.
@@ -74,9 +77,9 @@ var ladderDelays = []time.Duration{30 * time.Second, time.Minute, 2 * time.Minut
 // liveAgentProof is what a live proof that drives real Oh My Pi panes holds beyond liveProof, and
 // the reads such a proof makes: the runtime that started each pane, the daemon's own log as a
 // step reads it back, and the `legion` binary this checkout built, which is both the panes' shim
-// and the operator's command line. providerErrorLive and claimCompactionLive
-// (claim_compaction_live_test.go) are both one, so the two proofs read a claim, wait for a pane
-// and run `legion claims` the same way.
+// and the operator's command line. providerErrorLive, claimCompactionLive
+// (claim_compaction_live_test.go) and rolePromptRuleLive (role_prompt_rule_live_test.go) are each
+// one, so the three proofs read a claim, wait for a pane and run `legion claims` the same way.
 type liveAgentProof struct {
 	liveProof
 	rt     *localRuntime
@@ -358,7 +361,8 @@ func installProofPlugins(t *testing.T, root, work, home, profile, omp string) {
 // calls — the fixture's noticeListener, which the daemon itself publishes its notices to, serves
 // the publish route alone and 404s the rest. It answers as the plugins' own pane harness does
 // (packages/pi-shared/test/omp-harness.ts, runLegionPane's stand-in): the session, a machine and
-// no topics, for every path.
+// no topics, for every path, and on `/v1/interests/subscribe` the consumer delivery too
+// (paneListenerDelivery), which the plugin refuses a registration without.
 //
 // Nothing the proof reads comes from here. What an architect or the controller is told is read
 // from the daemon's own listener, which is the fixture's and another server.
@@ -378,16 +382,38 @@ func newPaneListener(t *testing.T) string {
 		if dir == "" {
 			dir = "/"
 		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
+		answer := map[string]any{
 			"session_id": sent.SessionID,
 			"machine_id": "live-agent-proof",
 			"dir":        dir,
 			"topics":     []string{},
-		})
+		}
+		if req.URL.Path == "/v1/interests/subscribe" {
+			answer["delivery"] = paneListenerDelivery(sent.SessionID)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(answer)
 	}))
 	t.Cleanup(server.Close)
 	return server.URL
+}
+
+// paneListenerDelivery is the `delivery` the pane listener answers a registration with: the
+// session's own relay subject, as every stand-in listener of the plugins builds it
+// (packages/envoy-client/test/subscribe-answer.ts, consumerDelivery, with omp-harness.ts's
+// stream id). Since the core receive path was removed (#2603), the plugin refuses a registration
+// answered without one (packages/envoy-client/src/transport.ts, parseSubscribeAnswer), and the
+// claim boot that registration belongs to exits the pane before its claim is ready. The mode and
+// the subject's prefix are the idle rig's constants (idle_rig_agent_test.go), which say whose
+// they are. Nothing is published to the subject: what the proof reads comes from the daemon's own
+// listener.
+func paneListenerDelivery(sessionID string) map[string]any {
+	return map[string]any{
+		"mode":      idleRigDeliveryConsumer,
+		"subject":   idleRigDeliverSubjectPrefix + sessionID,
+		"stream_id": "standin-stream",
+		"gap":       false,
+	}
 }
 
 // ---- the model stand-ins -------------------------------------------------------------------------

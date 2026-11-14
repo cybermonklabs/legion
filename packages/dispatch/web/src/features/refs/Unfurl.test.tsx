@@ -5,6 +5,7 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import type { Window as HappyDOMWindow } from "happy-dom";
 
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
+import { displayTree } from "../../__tests__/display-trees";
 import { ApiError, api } from "../../api/client";
 import type {
   AskRead,
@@ -13,12 +14,19 @@ import type {
   IssueReferenceSummary,
   ReferenceQuestions,
 } from "../../api/types";
+import { warmMarkdownRenderer } from "./markdown-engine";
 import { Unfurl } from "./Unfurl";
 
 /** The test DOM is happy-dom's window (`__tests__/setup.ts` registers it), which TypeScript
  *  knows only as the DOM's; a dashboard address is read against the page's own origin, so the
  *  test that writes one puts the page on an origin first. */
 const testWindow = window as unknown as HappyDOMWindow;
+
+/** A wall-clock budget, not one of the machine-sensitive waits this package's defaults cover
+ *  (`web/src/__tests__/setup.ts`): the regression the rows that read it guard, catastrophic
+ *  backtracking, costs minutes rather than milliseconds, so a budget far above what any loaded
+ *  pod spends on a single pass fails a rewrite that backtracks and nothing else. */
+const BACKTRACKING_BUDGET_MS = 2_000;
 
 function renderUnfurl(body: string, source?: Parameters<typeof Unfurl>[0]["source"]) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -183,15 +191,22 @@ test("Unfurl unfurls a dispatch project document reference with its name and doc
 });
 
 test("Unfurl unfurls a dispatch ask reference with the question, reading no issue", async () => {
+  await warmMarkdownRenderer();
   const askRead: AskRead = {
     ask: {
       artifact_id: null,
+      asked_of: null,
+      asked_of_at: null,
+      asked_of_by: null,
       block_id: null,
       id: "ask-1",
       issue_key: "CORE-1",
       kind: "question",
       author: { id: "alice", kind: "user" },
       question: "Should we ship this on Friday or wait for the review to land first?",
+      question_tree: displayTree(
+        "Should we ship this on Friday or wait for the review to land first?"
+      ),
       options: [],
       multiple: false,
       urgency: "med",
@@ -239,12 +254,14 @@ test("Unfurl unfurls a dispatch ask reference with the question, reading no issu
 });
 
 test("Unfurl unfurls a dispatch comment reference with its own words, reading no issue", async () => {
+  await warmMarkdownRenderer();
   const commentRead: CommentRead = {
     comment: {
       id: "comment-1",
       issue_key: "CORE-1",
       author: { id: "alice", kind: "user" },
       body: "**Looks** good overall.\nOne nit below.",
+      body_tree: displayTree("**Looks** good overall.\nOne nit below."),
       anchor: null,
       reply_to: null,
       ask_id: null,
@@ -297,6 +314,9 @@ const blockAsk: IssueAskRow = {
   anchor: null,
   answer: null,
   artifact_id: null,
+  asked_of: null,
+  asked_of_at: null,
+  asked_of_by: null,
   author: { id: "alice", kind: "user" },
   block_artifact: { id: "artifact-1", primary: true, slug: "design" },
   block_id: "q1",
@@ -494,7 +514,9 @@ test(`Unfurl reads ${DISPATCH_BLOCK_UNITS}-character bodies of repeated schemes 
     for (const view of views) {
       expect(view.container.querySelector("section")).toBeNull();
     }
-    expect(performance.now() - start).toBeLessThan(2000);
+    // This row reads 0.03 s idle and 0.16 s loaded on a 2-core pod, and the budget is 12 times
+    // that slowest loaded reading, so no loaded pod can fail it by being slow.
+    expect(performance.now() - start).toBeLessThan(BACKTRACKING_BUDGET_MS);
   } finally {
     for (const view of views) {
       view.unmount();
@@ -535,7 +557,8 @@ test("Unfurl reads a GitHub link trailed by a long closing run in one pass", () 
   );
 
   try {
-    expect(performance.now() - start).toBeLessThan(2000);
+    // This row reads 0.01 s idle and 0.07 s loaded on a 2-core pod.
+    expect(performance.now() - start).toBeLessThan(BACKTRACKING_BUDGET_MS);
     expect(view.container.querySelector("section")).toBeNull();
     expect(githubRest).not.toHaveBeenCalled();
   } finally {

@@ -78,6 +78,9 @@ const blockAsk: Ask = {
   answer: null,
   author: { id: "01a086ad", kind: "session", origin: { session_title: "Architect for CORE-1" } },
   artifact_id: null,
+  asked_of: null,
+  asked_of_at: null,
+  asked_of_by: null,
   block_artifact: { id: "artifact-1", primary: true, slug: "spec" },
   block_id: "b-1",
   created_at: new Date(Date.now() - 3 * 60_000).toISOString(),
@@ -272,6 +275,11 @@ test("a closed issue's current document shows a withdrawn block's record from it
     authors: [{ id: "alice", kind: "user" }],
     created_at: "2026-09-09T00:00:00Z",
     markdown: "The saved version",
+    // The reading the server sends of that text: what the version view draws (`VersionView`).
+    markdown_tree: {
+      content: [{ content: [{ text: "The saved version", type: "text" }], type: "paragraph" }],
+      type: "doc",
+    },
     named: false,
     number: 1,
     summary: null,

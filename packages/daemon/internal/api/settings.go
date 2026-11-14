@@ -75,13 +75,32 @@ type Settings struct {
 	// file takes them, decimal numbers of hours.
 	LingerHours          float64 `json:"linger_hours"`
 	ProductionCheckHours float64 `json:"production_check_hours"`
-	// PodUpdateRetaskHours and PodUpdateNoticeHours are `pod_update_retask_hours` and
-	// `pod_update_notice_hours`, decimal numbers of hours as the two above are: how long an open
-	// update round waits before it asks a worker again, and how long after the round opened the
-	// controller is told it is stalled. They are decimals so a live proof and the production
-	// check can drive each bound inside one run.
-	PodUpdateRetaskHours float64 `json:"pod_update_retask_hours"`
-	PodUpdateNoticeHours float64 `json:"pod_update_notice_hours"`
+	// PodUpdateGraceMinutes is `pod_update_grace_minutes`, a decimal number of minutes: how long
+	// a pod's update round waits for its roles after it opens. An answer from every role ends the
+	// round before it, and no answer holds the round past it. It is a decimal so a live proof can
+	// drive the bound inside one run.
+	PodUpdateGraceMinutes float64 `json:"pod_update_grace_minutes"`
+	// StalledTreeNoticeHours is `stalled_tree_notice_hours`, a decimal number of hours as the two
+	// hour keys above are: how long a tree this daemon runs may be quiet before the daemon tells the
+	// project's controller once for that tree. The daemon sends it only where nothing of the tree is
+	// at work, and either at least one quiet issue of it waits by no rule of the daemon's own or the
+	// project's line can no longer move: that line can still move while some issue of the project
+	// holds a slot and waits by no such rule, or some claim of the project is at work
+	// (dispatch://INFRA-2560 R5). No value turns that notice off, since the loader refuses zero for
+	// every key in hours; a deployment that wants fewer notices raises the number.
+	StalledTreeNoticeHours float64 `json:"stalled_tree_notice_hours"`
+	// WorkerSilenceMinutes is `worker_silence_minutes`, a decimal number of minutes: how long a
+	// phase worker's last recorded step may be in the past before the daemon reads that worker as
+	// one nothing will prompt and sends it its phase's task again. It is in minutes, where the
+	// three hour keys above are in hours, because the bound is tens of minutes and the file takes
+	// it that way (config's readMinutes).
+	WorkerSilenceMinutes float64 `json:"worker_silence_minutes"`
+	// WorkerBackgroundHours is `worker_background_hours`, a decimal number of hours: how long
+	// the background work a phase worker's own session reports may stand before the daemon names
+	// that worker to its architect, which it does once and with nothing sent. It is in hours,
+	// where the bound above is in minutes, because this bound is hours and the file takes it
+	// that way (config's readHours).
+	WorkerBackgroundHours float64 `json:"worker_background_hours"`
 	// PodUpdateMaxOpenRounds and PodUpdateRoundsPerMinute are `pod_update_max_open_rounds` and
 	// `pod_update_rounds_per_minute`: how many issues may hold an open update round at once, and
 	// how many rounds one sweep may open in a minute. Each is null, and neither is omitted, when
@@ -111,6 +130,10 @@ type Settings struct {
 	// repository wherever a name is compared, in configured order, `[]` while the file
 	// configures none.
 	RepositoryRenames []RepositoryRenameSettings `json:"repository_renames"`
+	// Hooks is `hooks`, every hook the daemon runs, in the order the file names them, and the
+	// one default hook for a file that names no key. It carries no hook's words: see
+	// HookSettings.
+	Hooks []HookSettings `json:"hooks"`
 }
 
 // RuntimeSettings is `runtime`: its name, the kubernetes block under that runtime alone, and the
@@ -238,10 +261,8 @@ type PluginsSettings struct {
 // ProjectSettings is one `projects.<KEY>` entry; its repositories are Dispatch's mapping, which
 // the state's `repositories` shows, never this file's.
 type ProjectSettings struct {
-	MergeQueueRole string         `json:"merge_queue_role,omitempty"`
-	Merge          MergeSettings  `json:"merge"`
-	SlackChannels  []string       `json:"slack_channels"`
-	Memory         MemorySettings `json:"memory"`
+	SlackChannels []string       `json:"slack_channels"`
+	Memory        MemorySettings `json:"memory"`
 	// ProductionCheck is `production_check` as the file writes it: the role that works the
 	// production check a merge closing one of the project's issues opens, or the word `off`
 	// for the project that opens none (config.Project.ProductionCheckWord), never the empty string
@@ -283,11 +304,6 @@ type DeploySettings struct {
 type RepositoryRenameSettings struct {
 	From string `json:"from"`
 	To   string `json:"to"`
-}
-
-// MergeSettings is a project's `merge` policy: the by-hand expressions as written, never compiled.
-type MergeSettings struct {
-	ByHand []string `json:"by_hand"`
 }
 
 // GatesSettings is `gates`. Design is the design-gate steps the deployment gates, in the order
@@ -353,6 +369,24 @@ type AnswerBoundsSettings struct {
 	DailyUSD      float64 `json:"daily_usd"`
 }
 
+// HookSettings is one `hooks` entry as the state shows it: the hook's name, the event it stands
+// on, the moves back it selects, how many of them fire it, the roles its words are put in front
+// of, and the path those words are read from. The words themselves are never shown — neither the
+// `prompt` a hook writes inline nor the text of the file `prompt_file` names — because this route
+// authenticates nobody and serves the path of `instructions` rather than its text.
+type HookSettings struct {
+	Name string `json:"name"`
+	On   string `json:"on"`
+	// Moves are the moves back the hook selects, each written "<from>-<to>"; a hook that selects
+	// every move back carries the one-element list `["any"]`, the word the operator writes for it
+	// (config's readHookMoves).
+	Moves []string `json:"moves"`
+	Every int      `json:"every"`
+	Roles []string `json:"roles"`
+	// PromptFile is absent for a hook whose words the file writes inline.
+	PromptFile string `json:"prompt_file,omitempty"`
+}
+
 // SettingsOf is cfg as the state shows it: every setting of the resolved file the audience of an
 // unauthenticated route may read, and no credential, credential source or credential file path
 // (Settings). Of the URLs it emits, the four address keys and each answer provider's base URL ride
@@ -396,8 +430,10 @@ func SettingsOf(cfg config.Config) Settings {
 		Gates:                                   GatesSettings{Design: append([]record.DesignStep{}, cfg.Gates.Steps()...)},
 		LingerHours:                             cfg.Linger.Hours(),
 		ProductionCheckHours:                    cfg.ProductionCheckBound.Hours(),
-		PodUpdateRetaskHours:                    cfg.PodUpdateRetask.Hours(),
-		PodUpdateNoticeHours:                    cfg.PodUpdateNotice.Hours(),
+		PodUpdateGraceMinutes:                   cfg.PodUpdateGrace.Minutes(),
+		StalledTreeNoticeHours:                  cfg.StalledTreeNotice.Hours(),
+		WorkerSilenceMinutes:                    cfg.WorkerSilence.Minutes(),
+		WorkerBackgroundHours:                   cfg.WorkerBackground.Hours(),
 		PodUpdateMaxOpenRounds:                  cfg.PodUpdateMaxOpenRounds,
 		PodUpdateRoundsPerMinute:                cfg.PodUpdateRoundsPerMinute,
 		ReviewRoundCap:                          cfg.ReviewRoundCap,
@@ -406,6 +442,7 @@ func SettingsOf(cfg config.Config) Settings {
 		WorkerBackends:                          make(map[string]string, len(cfg.WorkerBackends)),
 		RoleConfigFiles:                         make(map[string][]string, len(cfg.RoleConfigFiles)),
 		RepositoryRenames:                       repositoryRenamesOf(cfg.RepositoryRenames),
+		Hooks:                                   hooksSettingsOf(cfg.Hooks),
 	}
 	for i, key := range cfg.ProviderKeys {
 		settings.ProviderKeys[i] = key.Env
@@ -415,9 +452,7 @@ func SettingsOf(cfg config.Config) Settings {
 	}
 	for key, project := range cfg.Projects {
 		entry := ProjectSettings{
-			MergeQueueRole: project.MergeQueueRole,
-			Merge:          MergeSettings{ByHand: make([]string, len(project.Merge.ByHand))},
-			SlackChannels:  stringsOf(project.SlackChannels),
+			SlackChannels: stringsOf(project.SlackChannels),
 			Memory: MemorySettings{
 				Mode:         project.Memory.Mode,
 				ConfigFiles:  stringsOf(project.Memory.ConfigFiles),
@@ -425,9 +460,6 @@ func SettingsOf(cfg config.Config) Settings {
 			},
 			ProductionCheck: project.ProductionCheckWord(),
 			Deploys:         []DeploySettings{},
-		}
-		for i, pattern := range project.Merge.ByHand {
-			entry.Merge.ByHand[i] = pattern.Expression
 		}
 		settings.Projects[key] = entry
 	}
@@ -489,6 +521,34 @@ func repositoryRenamesOf(renames ghrepo.Renames) []RepositoryRenameSettings {
 	settings := make([]RepositoryRenameSettings, len(pairs))
 	for i, pair := range pairs {
 		settings[i] = RepositoryRenameSettings{From: pair.From.String(), To: pair.To.String()}
+	}
+	return settings
+}
+
+// hooksSettingsOf is the hooks the daemon runs as the state shows them, in configured order and
+// `[]` for a deployment that runs none. A hook that names no move back selects every one, which
+// rides as the one-element list `["any"]`, the word the operator writes for it (config's
+// readHookMoves); the words a hook puts in front of its roles ride never, whichever key carries
+// them (HookSettings).
+func hooksSettingsOf(hooks []config.Hook) []HookSettings {
+	settings := make([]HookSettings, len(hooks))
+	for i, hook := range hooks {
+		moves := stringsOf(hook.Moves)
+		if len(moves) == 0 {
+			moves = []string{"any"}
+		}
+		roles := make([]string, len(hook.Roles))
+		for j, role := range hook.Roles {
+			roles[j] = string(role)
+		}
+		settings[i] = HookSettings{
+			Name:       hook.Name,
+			On:         hook.On,
+			Moves:      moves,
+			Every:      hook.Every,
+			Roles:      roles,
+			PromptFile: hook.PromptFile,
+		}
 	}
 	return settings
 }

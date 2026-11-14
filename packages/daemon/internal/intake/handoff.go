@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -220,7 +219,7 @@ type Handoffs struct {
 // notifications.legion.<P>.agents.>, as OpenConsumers does its own: one it creates starts at the
 // stream time pool keeps for it, or at the next hand-off when it keeps none, and one that exists
 // keeps its position.
-func OpenHandoffs(ctx context.Context, js jetstream.JetStream, pool *pgxpool.Pool, spec HandoffSpec) (*Handoffs, error) {
+func OpenHandoffs(ctx context.Context, js jetstream.JetStream, pool Pool, spec HandoffSpec) (*Handoffs, error) {
 	spec, err := normalizedHandoffSpec(spec)
 	if err != nil {
 		return nil, err

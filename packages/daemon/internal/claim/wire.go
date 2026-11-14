@@ -68,18 +68,25 @@ type CapabilityRow struct {
 	Detail string `json:"detail"`
 }
 
-// ReadyForUpdateRequest is the worker's answer to the update task: it has pushed everything it
-// wants kept, and the process holding this claim may now be replaced. The daemon opens an update
-// round over a pod whose configuration has drifted, and over a claim whose plugin is behind the
-// daemon's contract, tasks every claim of the round to push and answer here, and replaces the
-// process only once every claim of the round has answered — so nothing unpushed dies with a disk
-// the replacement deletes. `Round` is the round the worker answers for, as the task it read named
-// it: an answer counts only for the round whose task the worker has in front of it, so the daemon
-// refuses one that names any other round (supervise.ErrForeignUpdateRound). `Head` is the commit
-// the worker reports as the head of its issue branch at `origin`, empty when the branch is not
-// there (a planner before its first push). The daemon records the worker's word and verifies
-// nothing, exactly as `api.HandoffCompleteRequest.Commit` is the worker's report of the commit it
-// completed at.
+// ReadyForUpdateRequest is the worker's answer to its update round's ask: it has pushed
+// everything it wants kept, and the process holding this claim may now be replaced. The daemon
+// opens an update round over a pod whose configuration has drifted, and asks every claim of the
+// round, on its own role topic, to push and answer here. The round replaces the pod once every
+// claim it asks has answered and no turn runs, or at its bound (pod_update_grace_minutes)
+// whatever the claims answered, so an answer only brings the replacement forward. The daemon's
+// push check of the pod's disk runs before every replacement and saves the issue's own line (the
+// working copy and its ancestors, the issue branch, git HEAD) and the workspace's files to the
+// issue's rescue branch (rescue.Target). The disk the replacement deletes still takes a commit
+// that is not on that line, a file outside the workspace or one that .gitignore ignores, and all
+// unpushed work on a pod whose shim predates that check, which is why the round's ask tells the
+// worker to push every commit it wants kept and to put scratch evidence on Dispatch before it
+// answers. `Round` is the round the worker answers for, as the ask it read named it: an answer
+// counts only for the round whose ask the worker has in front of it, so the daemon refuses one
+// that names any other round (supervise.ErrForeignUpdateRound). `Head` is the commit the worker
+// reports as the head of its issue branch at `origin`, empty when the branch is not there (a
+// planner before its first push).
+// The daemon records the worker's word and verifies nothing, exactly as
+// `api.HandoffCompleteRequest.Commit` is the worker's report of the commit it completed at.
 type ReadyForUpdateRequest struct {
 	ClaimToken Token  `json:"claimToken"`
 	SessionID  string `json:"sessionId"`
@@ -97,6 +104,88 @@ type ExitRequest struct {
 	Secret     string `json:"secret"`
 	Generation uint64 `json:"generation"`
 	Reason     string `json:"reason"`
+}
+
+// Turn outcomes are what a producer reports a turn ended as: the provider took the turn, or
+// refused it. They are the two values of TurnOutcomeRequest.Outcome, and nothing else is accepted.
+const (
+	TurnClean   = "clean"
+	TurnRefused = "refused"
+)
+
+// TurnOutcomeCaller is one of the two identities a turn outcome is reported under, and the type
+// of whichever one its body named (TurnOutcomeRequest.Caller). They are two types rather than
+// five fields of one, so the route reads the identity the caller gave rather than guessing from
+// which fields are filled in which combination.
+type TurnOutcomeCaller interface{ isTurnOutcomeCaller() }
+
+// AgentCaller is the producer inside the agent's own session, which holds the secret its
+// registration was issued and names the claim with it, as the ready and the exit do: pi-legion's
+// agent_end hook for an Oh My Pi session.
+type AgentCaller struct {
+	ClaimToken Token  `json:"claimToken,omitempty"`
+	SessionID  string `json:"sessionId,omitempty"`
+	Secret     string `json:"secret,omitempty"`
+}
+
+// BootCaller is the producer beside the agent rather than inside it, which holds no secret — the
+// Claude bridge, whose pane's registration is claude-envoy's, inside Claude Code, and the secret
+// never leaves that process. It presents the launch's own boot token, the 0600 file its pane is
+// told, which names the same claim (api's turnOutcome).
+type BootCaller struct {
+	BootToken string `json:"bootToken,omitempty"`
+}
+
+func (AgentCaller) isTurnOutcomeCaller() {}
+func (BootCaller) isTurnOutcomeCaller()  {}
+
+// named is whether a body named this identity at all. Any one of the agent's three fields counts:
+// a body that named two of them meant this identity and gave it incompletely, which the route
+// answers by naming the field it left out rather than by reading it as the other caller.
+func (c AgentCaller) named() bool {
+	return c.ClaimToken != "" || c.SessionID != "" || c.Secret != ""
+}
+
+func (c BootCaller) named() bool { return c.BootToken != "" }
+
+// TurnOutcomeRequest is the outcome of one turn, reported by the producer that ended it.
+// Sequence is that producer's own count of the turns it has ended at Generation, from 1, and the
+// daemon keeps the report under the pair: a report that arrives late or out of order lands in its
+// own place, and the run of refused turns the daemon derives is the same either way. Message is
+// what the provider said about a refusal, and is left out of a clean turn.
+//
+// The caller is exactly one of AgentCaller and BootCaller, embedded so that each is a shape of
+// its own on the wire as well as in Go (@legion/contracts' LegionTurnOutcomeRequest is the same
+// union).
+type TurnOutcomeRequest struct {
+	AgentCaller
+	BootCaller
+	Generation uint64 `json:"generation"`
+	Sequence   uint64 `json:"sequence"`
+	Outcome    string `json:"outcome"`
+	Message    string `json:"message,omitempty"`
+}
+
+// Caller is the identity the body named, and false when it named both or neither: each says who
+// is calling, and a caller that cannot say is not answered.
+func (r TurnOutcomeRequest) Caller() (TurnOutcomeCaller, bool) {
+	if r.AgentCaller.named() == r.BootCaller.named() {
+		return nil, false
+	}
+	if r.BootCaller.named() {
+		return r.BootCaller, true
+	}
+	return r.AgentCaller, true
+}
+
+// TurnOutcomeResponse is what the daemon made of the report: the run of refused turns the claim's
+// reports now end with (RefusedRun), and whether this report took that run to the launch failure
+// limit and failed the claim. A producer acts on neither — its turn is over — but a pane's log
+// saying the daemon has counted three refusals in a row is the one place an operator sees the
+// count that failed the claim being made.
+type TurnOutcomeResponse struct {
+	RefusedRun int  `json:"refusedRun"`
+	Failed     bool `json:"failed"`
 }
 
 // ActivityRequest is a live role's session reporting what it is doing, after each of its turns
@@ -126,6 +215,21 @@ type SessionActivity struct {
 type BackgroundWork struct {
 	Running bool     `json:"running"`
 	Kinds   []string `json:"kinds"`
+}
+
+// KnownKinds is w's kinds with every string that is none of the three known kinds dropped, in
+// the session's own order; nil when none is left. The session chooses every word it sends, and
+// the kinds reach the architect's worker-background-stalled notice and the daemon's log, so the
+// store keeps only these three (store's PutClaimActivity).
+func (w BackgroundWork) KnownKinds() []string {
+	var known []string
+	for _, kind := range w.Kinds {
+		switch kind {
+		case "async-job", "subagent", "claude-background-task":
+			known = append(known, kind)
+		}
+	}
+	return known
 }
 
 // PhaseActivity is when the reminder armed for the session's phase is due; NextReminderAt is null

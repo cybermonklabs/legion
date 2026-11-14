@@ -259,6 +259,9 @@ func checkSupervision(opts Options) error {
 // defaults, touching no cluster. A runtime it builds alone runs the image probe and nothing else
 // (newProber); configure adds supervision's requirements to it.
 func configureProber(opts Options) (*Runtime, error) {
+	// The three provisioning phases' bounds together (ProvisionBound): the fetch's clocked budget,
+	// which its stream from the repository cache runs outside of, the shared clone's own, and the
+	// issue's own checkout's.
 	provisionBound := workspace.FetchBudget + workspace.CloneTimeout + workspace.CheckoutTimeout
 	refuse := func(format string, args ...any) (*Runtime, error) {
 		return nil, fmt.Errorf("sandbox runtime: "+format, args...)
@@ -380,9 +383,10 @@ func configureProber(opts Options) (*Runtime, error) {
 	if r.log == nil {
 		r.log = slog.Default()
 	}
-	// The launchers carry one pod's saved workspace bundle to it before any of its roles start,
-	// and log what they could not carry, so they are built once the runtime's log is settled.
-	r.launchers = newLaunchers(opts.SavedWorkspaceBundle, opts.WorkspaceBundleRestored, r.log)
+	// The launchers carry the shared public leak check and one pod's saved workspace bundle to it
+	// before any of its roles start, and log what they could not carry, so they are built once the
+	// runtime's log is settled.
+	r.launchers = newLaunchers(opts.LeakCheck, opts.SavedWorkspaceBundle, opts.WorkspaceBundleRestored, r.log)
 	// Last, after the logger a failed encoding is reported through: every input is settled above
 	// and none is written again, so each kind's shape is encoded here and only read afterwards.
 	r.podShapes = map[podKind]string{issuePod{}: podShape(r, issuePod{}), controllerPod{}: podShape(r, controllerPod{})}
@@ -717,12 +721,12 @@ func terminal(p *corev1.Pod) bool {
 // A pod is built whole from one image, so one container's drift is the pod's: it was launched by
 // another release of the daemon, and its agents call this daemon as that release — for a route it
 // no longer serves, a variable it no longer sets — until the pod is replaced. A launch into an
-// issue pod on another image keeps it (relaunch): such a pod is replaced by its update round, once
-// every worker in it has pushed its work and signalled (PodDrift, ReplacePod). The controller's
-// pod, which no round covers, is replaced by the next launch into it that installs nothing
-// (roundCovers), and the repository cache's own pod, which holds no worker, by its next sweep
-// (reconcileCachePod). ReconcileOrphans warns of each one it finds. A nil pod holds no drift: it
-// is replaced for being absent.
+// issue pod on another image keeps it (relaunch): such a pod is replaced by its update round,
+// once every role in it has answered the update message and no turn runs, or at the round's
+// bound (PodDrift, ReplacePod). The controller's pod, which no round covers, is replaced by the
+// next launch into it that installs nothing (roundCovers), and the repository cache's own pod,
+// which holds no worker, by its next sweep (reconcileCachePod). ReconcileOrphans warns of each
+// one it finds. A nil pod holds no drift: it is replaced for being absent.
 func imageDrift(p *corev1.Pod, image string) (string, bool) {
 	if p == nil {
 		return "", false

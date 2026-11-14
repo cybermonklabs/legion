@@ -56,10 +56,12 @@ func windowKey(spec runtime.SpawnSpec) string {
 	return spec.Issue
 }
 
-// runtimeOwned are the variables every pane gets from the runtime itself: exactly the names
-// panePairs sets for a tree pane (TestRuntimeOwnedIsWhatEveryPaneIsToldByTheRuntime), which the
-// shared validator refuses in a spec's Env and as a secret's pointer. A controller pane is told
-// controllerOwned in place of the tree, the issue, the issue key it stamps and the workspace.
+// runtimeOwned are the variables every pane gets from the runtime itself, the whole of each
+// value: with the composed names (composed), whose value the operator begins and the runtime
+// finishes, it is exactly what panePairs sets for a tree pane
+// (TestRuntimeOwnedIsWhatEveryPaneIsToldByTheRuntime), which the shared validator refuses in a
+// spec's Env and as a secret's pointer. A controller pane is told controllerOwned in place of the
+// tree, the issue, the issue key it stamps and the workspace.
 var runtimeOwned = map[string]bool{
 	"LEGION_TREE": true, "LEGION_ISSUE": true, "LEGION_ISSUE_TRAILER": true, "LEGION_ROLE": true,
 	"LEGION_GENERATION": true, "LEGION_PROJECT": true, "LEGION_DAEMON_URL": true,
@@ -80,10 +82,24 @@ var runtimeOwned = map[string]bool{
 // (config.checkSlackChannels).
 var controllerOwned = map[string]bool{"LEGION_CONTROLLER": true, "LEGION_SLACK_CHANNELS": true}
 
-// ownedNames is every variable the runtime sets on some pane itself: a spec may set none of them.
+// composed are the pane variables neither side sets alone: the operator's own pane variables
+// (Options.PaneEnv, `runtime.tmux.pane_env`) may set one, the runtime writes this launch's share
+// into the value the operator wrote (panePairs), and a launch spec may not set one (ownedNames).
+// That is why checkPaneEnv reads runtimeOwned and controllerOwned alone and lets a composed name
+// through: it is the operator's to set, since composing is what the runtime does with it.
+//
+// A pane is told one pair of such a name and never two: a second pair of one name in a process's
+// environment leaves the value the child reads to the C library's lookup, which answers with the
+// first, so the composed value could go unread — and for the spend attributes the runtime's own
+// pairs are written last on purpose (runtime.SpendAttributesVariable).
+var composed = map[string]bool{runtime.SpendAttributesVariable: true}
+
+// ownedNames is every variable a launch spec may not set: the ones the runtime sets on some pane
+// itself and the composed ones, whose value is the operator's to begin and the runtime's to
+// finish, since the shared refusal reads one set (runtime.ValidateSpawnSpec).
 var ownedNames = func() map[string]bool {
 	owned := map[string]bool{}
-	for _, set := range []map[string]bool{runtimeOwned, controllerOwned} {
+	for _, set := range []map[string]bool{runtimeOwned, controllerOwned, composed} {
 		for name := range set {
 			owned[name] = true
 		}
@@ -247,11 +263,19 @@ type PaneInputs struct {
 // settings overlay at all — empty where none of the three names one), the
 // four XDG base directories under `<state_dir>/home`, PUBLIC_LEAK_CHECK where the daemon
 // resolved a shared public leak check on its own machine (LeakCheck) and nothing where it
-// resolved none, the operator's pane variables sorted, the
+// resolved none, the operator's pane variables sorted, less the composed one (composed), then
+// OTEL_RESOURCE_ATTRIBUTES itself, the operator's own spend attributes with this launch's issue
+// and role written after them (runtime.SpendResourceAttributes), so a pane's attributes name the
+// issue it serves, then the
 // spec's own variables sorted, then a `<NAME>_FILE` pointer per secret file. PATH is never among
 // them — tmux would replace it (LEGION-91) — and neither is any secret's value, the session
 // database's URL included. No other tool path is told: a pane's git and jj are whatever its PATH,
 // the daemon's, gives.
+//
+// A composed name is told once, which is why the operator's loop leaves it out: a second pair of
+// one name leaves the value the pane's process reads to the C library's lookup, which answers
+// with the first, and the composition's whole point is that the daemon's attributes are written
+// after the operator's, where the detector's last-wins assignment gives them the key.
 //
 // PUBLIC_LEAK_CHECK is no runtime-owned name (runtimeOwned), which is why it sits where it does:
 // an operator's pane variable and a spec's own Env are told after it and so outrank it, since an
@@ -310,8 +334,16 @@ func panePairs(spec runtime.SpawnSpec, in PaneInputs, files []runtime.SecretFile
 		add(leakguard.CheckVar, in.LeakCheck)
 	}
 	for _, name := range sortedKeys(in.OperatorEnv) {
-		add(name, in.OperatorEnv[name])
+		if !composed[name] {
+			add(name, in.OperatorEnv[name])
+		}
 	}
+	// The pair is added whatever the composition answers, where the composer's two other callers
+	// skip an empty one (sandbox.composeEntry, daemon.gateEnvironment): every pane carries a role
+	// (runtime.ValidateSpawnSpec refuses a spec without one, and no backend runs the empty role),
+	// so the composition always holds legion.role at least and is never empty. The difference is
+	// deliberate, and a reader need not prove it here.
+	add(runtime.SpendAttributesVariable, runtime.SpendResourceAttributes(in.OperatorEnv[runtime.SpendAttributesVariable], spec))
 	for _, name := range sortedKeys(spec.Env) {
 		if name != "PATH" {
 			add(name, spec.Env[name])
@@ -409,14 +441,12 @@ func (r *Runtime) Spawn(ctx context.Context, spec runtime.SpawnSpec) (runtime.Lo
 // not at all. Every other session is resumed where it is: at its recorded path,
 // or, by its name, in another working directory's folder of the recorded path's sessions directory
 // or of the pane's own (sessionFileOf), where a session carried over from a pod lands. One found
-// nowhere starts nothing. While take_over is set (takingOverSession), a session found nowhere
-// wraps runtime.ErrSessionFileMissing, which the claim's machine answers by forgetting the session
-// and spawning a fresh agent: most such sessions are the taken-over runtime's, and the operator
-// chose that cost. It holds for a resume over a foreign prev and for every other resume alike,
-// since neither the recorded path nor the previous incarnation tells the
-// other runtime's sessions from this host's own. With the key off, a session found nowhere is a
-// refusal, never a fresh agent: the claim resumes the agent it recorded or none
-// (assertResumeSessionFile, runtime.ts), and the refusal is charged as any launch failure is.
+// nowhere starts nothing and wraps runtime.ErrSessionFileMissing, which the claim's machine
+// answers by forgetting the session and spawning a fresh agent, charged nothing and reported. That
+// holds whether or not take_over is set: the folders searched are the same, and a session no
+// folder holds is gone whichever runtime last wrote it — under the key most such sessions are the
+// taken-over runtime's, which neither the recorded path nor the previous incarnation tells from
+// this host's own.
 func (r *Runtime) Resume(ctx context.Context, prev *runtime.Locator, spec runtime.SpawnSpec) (runtime.Locator, error) {
 	if spec.ResumeSessionFile == "" {
 		return runtime.Locator{}, fmt.Errorf("resume %s: no session file to resume from", spec.Claim)
@@ -462,10 +492,12 @@ func (r *Runtime) awaitGone(ctx context.Context, loc runtime.Locator) error {
 // launch is Spawn's and Resume's shared half: every check that needs no tmux, then, under the launch
 // lock, the refusal of a claim whose process still runs, the secret files, the claim's gh bundle
 // and the pane. The refusal comes first, so a refused launch rewrites none of the files the live
-// process reads. While the operator's takeover is on (takingOverSession), a session found nowhere
-// is runtime.ErrSessionFileMissing rather than a refusal, whatever the claim recorded: a resume
-// over the taken-over runtime's own incarnation is one such launch, and nothing tells its session
-// from this host's own (sessionfile.go).
+// process reads. A session found in no folder it searched is runtime.ErrSessionFileMissing,
+// whatever the claim recorded and whether or not the operator's takeover is on
+// (takingOverSession): the search is the same search either way, and a session nothing holds is
+// the same fact however the daemon is configured. The caller starts a fresh agent in its place,
+// charged nothing and reported (supervise's start), which is also what a taken-over runtime's
+// session gets, since nothing tells it from this host's own (sessionfile.go).
 func (r *Runtime) launch(ctx context.Context, spec runtime.SpawnSpec) (runtime.Locator, error) {
 	if err := validateSpawnSpec(spec, r.providerKeys, r.operatorEnv); err != nil {
 		return runtime.Locator{}, err
@@ -511,16 +543,9 @@ func (r *Runtime) launch(ctx context.Context, spec runtime.SpawnSpec) (runtime.L
 			}
 			return runtime.Locator{}, fmt.Errorf("Refusing to start %s fresh while %s: recorded %s session is not in the session table: %s",
 				spec.Issue, verb, harness, spec.ResumeSessionFile)
-		case found == "" && r.takingOverSession():
+		case found == "":
 			return runtime.Locator{}, fmt.Errorf("resume %s: %w: no %s session at %s, and no other folder of %s holds that session",
 				spec.Claim, runtime.ErrSessionFileMissing, harness, spec.ResumeSessionFile, searchedIn(searched))
-		case found == "":
-			verb := "respawning"
-			if claim.IsTreeArchitect(spec.Role, spec.Issue, spec.Tree) {
-				verb = "resurrecting"
-			}
-			return runtime.Locator{}, fmt.Errorf("Refusing to start %s fresh while %s: recorded %s session file is missing: %s, and no other folder of %s holds that session",
-				spec.Issue, verb, harness, spec.ResumeSessionFile, searchedIn(searched))
 		case found != spec.ResumeSessionFile:
 			r.log.Warn("tmux runtime: the recorded session is in another folder; resuming it there",
 				"claim", spec.Claim, "backend", backend, "recorded", spec.ResumeSessionFile, "session", found)

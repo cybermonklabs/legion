@@ -101,126 +101,126 @@ func TestARefusalAfterTheBoundStillTakesTheTaskBackUnread(t *testing.T) {
 	}
 }
 
-// The run, the assignment and the production check look a claim's worker is on, which is what a
+// The run, the phase entry and the production check look a claim's worker is on, which is what a
 // completion is attributed to and what says whether it is a phase completion or a report on the
 // check. The order matters in all three: a task whose turn is running answers over what the claim
 // was left serving, and a task the agent may have read answers only for a claim that has served
 // none — a worker holding an unread next task while still finishing the last one's work reports
 // the last one's, which is the sequence the fencing exists for. The three accessors read the same
 // three sources the same way, so one table holds them all; where they part is a task that carries
-// a run but no assignment — a resume, a production check's look — which moves the run on and
-// leaves the assignment the claim serves alone, so a resumed worker's in-flight completion is
-// never refused for an assignment it was never given, and a task of a phase, which is no look's
+// a run but no entry — a resume, a production check's look — which moves the run on and
+// leaves the entry the claim serves alone, so a resumed worker's in-flight completion is
+// never refused for an entry it was never given, and a task of a phase, which is no look's
 // and takes the look back: its worker is in the workflow again, where its completion is its
 // phase's.
 //
 // The look parts from the other two once more, in what "a claim that has served none" means for
 // it: the look of an unread task is taken only by a claim that has served nothing at all, since
 // a claim records no look until a look's task is given to it — a tester in the middle of its
-// testing run reads the zero look while its run and its assignment answer the testing task, and
+// testing run reads the zero look while its run and its entry answer the testing task, and
 // the fallback would otherwise hand that tester a look it has not begun to serve. The rows below
-// hold the run and the assignment to what they answer today, which this must not move.
+// hold the run and the entry to what they answer today, which this must not move.
 func TestTheRunAClaimServes(t *testing.T) {
 	at := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
 	opened := time.Date(2026, 9, 20, 8, 0, 0, 0, time.UTC)
 	look := CheckLook{Look: 2, OpenedAt: opened}
 	firstLook := CheckLook{Look: 1, OpenedAt: opened}
 	for _, tc := range []struct {
-		name       string
-		claim      Claim
-		serving    uint64
-		assignment string
-		look       CheckLook
+		name    string
+		claim   Claim
+		serving uint64
+		entry   int64
+		look    CheckLook
 	}{
 		{name: "no task, no run", claim: Claim{}},
-		{name: "a run served, no task", claim: Claim{ServingGeneration: 4, ServingAssignmentID: "a4"}, serving: 4, assignment: "a4"},
+		{name: "a run served, no task", claim: Claim{ServingGeneration: 4, ServedEntry: 4}, serving: 4, entry: 4},
 		{
 			name: "the task whose turn is running",
-			claim: Claim{ServingGeneration: 4, ServingAssignmentID: "a4", Pending: &Delivery{
-				Generation: 5, Assignment: "a5", DeliveredAt: at, ConfirmedAt: at}},
-			serving: 5, assignment: "a5",
+			claim: Claim{ServingGeneration: 4, ServedEntry: 4, Pending: &Delivery{
+				Generation: 5, Entry: 5, DeliveredAt: at, ConfirmedAt: at}},
+			serving: 5, entry: 5,
 		},
 		{
 			name:    "a first task the agent may have read",
-			claim:   Claim{Pending: &Delivery{Generation: 5, Assignment: "a5", DeliveredAt: at}},
-			serving: 5, assignment: "a5",
+			claim:   Claim{Pending: &Delivery{Generation: 5, Entry: 5, DeliveredAt: at}},
+			serving: 5, entry: 5,
 		},
 		{
 			name: "an unread task on a claim already serving a run",
-			claim: Claim{ServingGeneration: 4, ServingAssignmentID: "a4", Pending: &Delivery{
-				Generation: 5, Assignment: "a5", DeliveredAt: at}},
-			serving: 4, assignment: "a4",
+			claim: Claim{ServingGeneration: 4, ServedEntry: 4, Pending: &Delivery{
+				Generation: 5, Entry: 5, DeliveredAt: at}},
+			serving: 4, entry: 4,
 		},
 		{
-			// The reviewer's own claim state: a tester serving its testing run and assignment,
+			// The reviewer's own claim state: a tester serving its testing run and entry,
 			// holding look 1's task that it has read and no turn of its own has confirmed. The
 			// look it has not begun to serve is not the claim's, or this tester's testing verdict
 			// would close its issue's production check with nobody having looked at production.
 			name: "an unread look task on a claim that already serves a run",
-			claim: Claim{ServingGeneration: 4, ServingAssignmentID: "testing-1", Pending: &Delivery{
+			claim: Claim{ServingGeneration: 4, ServedEntry: 3, Pending: &Delivery{
 				Generation: 4, CheckLook: firstLook, DeliveredAt: at}},
-			serving: 4, assignment: "testing-1",
+			serving: 4, entry: 3,
 		},
 		{
 			name: "an unread look task on a claim that already serves a look",
-			claim: Claim{ServingGeneration: 5, ServingAssignmentID: "a4", ServingCheckLook: firstLook, Pending: &Delivery{
+			claim: Claim{ServingGeneration: 5, ServedEntry: 4, ServingCheckLook: firstLook, Pending: &Delivery{
 				Generation: 5, CheckLook: look, DeliveredAt: at}},
-			serving: 5, assignment: "a4", look: firstLook,
+			serving: 5, entry: 4, look: firstLook,
 		},
 		{
 			// A claim that has served nothing at all: the look's own task is the only work it can
-			// be doing, as the run and the assignment are.
+			// be doing, as the run and the entry are.
 			name:    "a first look task the agent may have read",
 			claim:   Claim{Pending: &Delivery{Generation: 5, CheckLook: look, DeliveredAt: at}},
 			serving: 5, look: look,
 		},
 		{
 			name:    "a task the agent refused, which it never read",
-			claim:   Claim{Pending: &Delivery{Generation: 5, Assignment: "a5"}},
+			claim:   Claim{Pending: &Delivery{Generation: 5, Entry: 5, Prompted: true}},
 			serving: 0,
 		},
 		{
-			name: "an operator's task, which belongs to no run and no assignment",
-			claim: Claim{ServingGeneration: 4, ServingAssignmentID: "a4", Pending: &Delivery{
+			name: "an operator's task, which belongs to no run and no entry",
+			claim: Claim{ServingGeneration: 4, ServedEntry: 4, Pending: &Delivery{
 				DeliveredAt: at, ConfirmedAt: at}},
-			serving: 4, assignment: "a4",
+			serving: 4, entry: 4,
 		},
 		{
-			name: "a resume's task, whose turn is running: a run of its own, the assignment it had",
-			claim: Claim{ServingGeneration: 4, ServingAssignmentID: "a4", Pending: &Delivery{
+			name: "a resume's task, whose turn is running: a run of its own, the entry it had",
+			claim: Claim{ServingGeneration: 4, ServedEntry: 4, Pending: &Delivery{
 				Generation: 5, DeliveredAt: at, ConfirmedAt: at}},
-			serving: 5, assignment: "a4",
+			serving: 5, entry: 4,
 		},
 		{
-			name: "a claim upgraded in place: a run served, no assignment either side",
+			name: "a claim upgraded in place: a run served, no entry either side",
 			claim: Claim{ServingGeneration: 4, Pending: &Delivery{
 				Generation: 4, DeliveredAt: at, ConfirmedAt: at}},
 			serving: 4,
 		},
 		{
-			name: "a look's task, whose turn is running: its own run and look, the assignment it had",
-			claim: Claim{ServingGeneration: 4, ServingAssignmentID: "a4", Pending: &Delivery{
+			name: "a look's task, whose turn is running: its own run and look, the entry it had",
+			claim: Claim{ServingGeneration: 4, ServedEntry: 4, Pending: &Delivery{
 				Generation: 5, CheckLook: look, DeliveredAt: at, ConfirmedAt: at}},
-			serving: 5, assignment: "a4", look: look,
+			serving: 5, entry: 4, look: look,
 		},
 		{
 			name:    "a look served, and the turn that follows its task's: still that look's",
-			claim:   Claim{ServingGeneration: 5, ServingAssignmentID: "a4", ServingCheckLook: look},
-			serving: 5, assignment: "a4", look: look,
+			claim:   Claim{ServingGeneration: 5, ServedEntry: 4, ServingCheckLook: look},
+			serving: 5, entry: 4, look: look,
 		},
 		{
 			name: "a phase task on a claim left serving a look: the look goes with the phase work",
-			claim: Claim{ServingGeneration: 5, ServingAssignmentID: "a4", ServingCheckLook: look, Pending: &Delivery{
-				Generation: 6, Assignment: "a6", Phase: phase.Testing, DeliveredAt: at, ConfirmedAt: at}},
-			serving: 6, assignment: "a6",
+			claim: Claim{ServingGeneration: 5, ServedEntry: 4, ServingCheckLook: look, Pending: &Delivery{
+				Generation: 6, Entry: 6, Phase: phase.Testing, DeliveredAt: at, ConfirmedAt: at}},
+			serving: 6, entry: 6,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := tc.claim.ServingRun(); got != tc.serving {
 				t.Fatalf("ServingRun() = %d, want %d", got, tc.serving)
 			}
-			if got := tc.claim.ServingAssignment(); got != tc.assignment {
-				t.Fatalf("ServingAssignment() = %q, want %q", got, tc.assignment)
+			if got := tc.claim.ServingEntry(); got != tc.entry {
+				t.Fatalf("ServingEntry() = %d, want %d", got, tc.entry)
 			}
 			if got := tc.claim.ServingCheck(); got != tc.look {
 				t.Fatalf("ServingCheck() = %+v, want %+v", got, tc.look)
@@ -428,7 +428,9 @@ func TestAnUnacknowledgedResendLeavesTheGivenUpPromptsRefusalToClearTheMark(t *t
 			}
 			h.reach(StateReady)
 			base := len(h.prompts())
-			h.must(RequestDeliver{Claim: testToken, Task: "the task", Generation: 7})
+			// A phase task, since one of these re-sends is its adoption of the working copy
+			// failing, and only a phase task adopts one (adopts).
+			h.must(RequestDeliver{Claim: testToken, Task: "the task", Phase: phase.Implementing, Generation: 7})
 			first := h.wantPrompts(base + 1)[base]
 			h.advance(2 * testRPC)
 

@@ -166,6 +166,12 @@ func readTmuxSessionStore(fields map[string]*yaml.Node, block *Tmux) error {
 // scalar, and every variable runtime.PaneVariableRefusal refuses, named with its reason and never
 // its value. What only the runtime knows — the names it sets on every pane, the git identity, the
 // provider keys — tmux.New refuses at boot.
+//
+// One variable is read for its content and not its name alone: runtime.SpendAttributesVariable,
+// the operator's own resource attributes, which the runtime appends the launch's issue and role
+// to. runtime.SpendAttributesRefusal holds the detector's measured rules, and what it refuses is
+// refused here, where a person reads the refusal — under `legion start --check-config` as at boot
+// — rather than at a launch nobody watches.
 func readPaneEnv(value *yaml.Node, key string) (map[string]string, error) {
 	if value.Kind != yaml.MappingNode {
 		return nil, fmt.Errorf("%s must be a mapping of variable name to value", key)
@@ -191,6 +197,11 @@ func readPaneEnv(value *yaml.Node, key string) (map[string]string, error) {
 		}
 		if why := runtime.PaneVariableRefusal(name, read); why != "" {
 			return nil, fmt.Errorf("%s names %s: %s", key, name, why)
+		}
+		if name == runtime.SpendAttributesVariable {
+			if why := runtime.SpendAttributesRefusal(read); why != "" {
+				return nil, fmt.Errorf("%s names %s with %s: %s", key, name, spendAttributesRule, why)
+			}
 		}
 		env[name] = read
 	}

@@ -145,6 +145,12 @@ var jjVersion = regexp.MustCompile(`^jj (\d+)\.(\d+)\.\d+`)
 
 // checkJJVersion runs jj --version and refuses a jj older than minimumJJ, or one whose version it
 // cannot read, naming the path, what it found and LEGION_JJ_PATH.
+//
+// It takes no lock: `jj --version` prints the binary's own release and opens no repository, so it
+// can leave no lock file behind for the next reader of one. R8 of dispatch://INFRA-3098 gives a
+// process group of its own and the SIGTERM-then-grace-then-SIGKILL stop to the two command runners
+// of internal/workspace, whose jj and git do take locks, and leaves a read that takes none as it
+// is: this child needs neither the group nor the grace.
 func checkJJVersion(jj string) error {
 	override := toolEnv("jj")
 	floor := fmt.Sprintf("%d.%d", minimumJJ[0], minimumJJ[1])

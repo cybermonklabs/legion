@@ -14,13 +14,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/nats-io/nats.go"
-
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -65,7 +63,7 @@ func architectClaimOn(t *testing.T, sup *supervisor, issue string, state supervi
 }
 
 // queuedNotices is every queued notice row, as "<kind> on <issue>" with its payload.
-func queuedNotices(t *testing.T, pool *pgxpool.Pool) []string {
+func queuedNotices(t *testing.T, pool *store.Pool) []string {
 	t.Helper()
 	rows, err := pool.Query(context.Background(), "select issue, payload::text from outbox where kind = 'notice' order by id")
 	if err != nil {
@@ -400,7 +398,7 @@ func confirmedAnswer(reason, holder string) error {
 }
 
 // noticeRowID is the id of the one outbox row queued so far.
-func noticeRowID(t *testing.T, pool *pgxpool.Pool) int64 {
+func noticeRowID(t *testing.T, pool *store.Pool) int64 {
 	t.Helper()
 	var id int64
 	if err := pool.QueryRow(context.Background(), "select id from outbox").Scan(&id); err != nil {
@@ -724,11 +722,7 @@ func TestARoleLaneExceptionOnNATSQueuesTheNoticeAgain(t *testing.T) {
 	putOutboxIssue(t, pool, records, record.Issue{Key: "LEGION-1", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-1", Title: "Root", Phase: phase.Implementing, Generation: 1, Status: "in_progress"})
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
 	runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, supervisor: sup, project: "legion", now: time.Now}
-	conn, err := nats.Connect(testnats.URL(t), nats.Timeout(time.Second))
-	if err != nil {
-		t.Fatalf("connect NATS: %v", err)
-	}
-	t.Cleanup(conn.Close)
+	conn := testnats.Connect(t, testnats.URL(t))
 	failed := make(chan error, 1)
 	sub, err := subscribeNoticeExceptions(conn, func(data []byte) {
 		if err := runner.rehold(context.Background(), data); err != nil {
@@ -944,7 +938,7 @@ func TestAReadyArchitectsNoticesAreReleasedOffTheReadyRoute(t *testing.T) {
 	architectClaimOn(t, sup, "LEGION-1", supervise.StateRegistered, "ses_arch")
 	enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-1", record.Notice{Kind: "pr-blocked", Role: claim.RoleArchitect, Resends: 1}, time.Now().Add(noticeReholdDelays[1])))
 	runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, supervisor: sup, project: "legion", now: time.Now}
-	w := &workflowRuntime{outbox: runner, log: quietLogger(), readied: map[claim.Token]bool{}, readyWake: make(chan struct{}, 1)}
+	w := &workflowRuntime{outbox: runner, log: quietLogger(), readied: newWakeSet[claim.Token]()}
 	due := func() bool {
 		t.Helper()
 		var due bool

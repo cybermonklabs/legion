@@ -1,6 +1,6 @@
 import type { AskTurn } from "../../api/types";
 import { askTurn } from "./ask-turn";
-import type { InboxListRow } from "./list-row";
+import { askWaitingOnPerson, type InboxListRow } from "./list-row";
 import { isSnoozed } from "./snooze";
 
 /** Where a row sits: whose turn it is, or the Later band the reader deferred it into. */
@@ -23,17 +23,21 @@ const SECTION_TITLES: Record<InboxSection, string> = {
   later: "Later",
 };
 
-/** The viewer's own rows: asks on issues assigned to their lowercase login, and every thread
- *  row, which the route answers for the reader alone. */
+/** The viewer's own rows: asks the server says wait on their lowercase login
+ *  (`askWaitingOnPerson`), and every thread row, which the route answers for the reader
+ *  alone. */
 export function isMine(row: InboxListRow, viewer: string): boolean {
-  return row.kind === "thread" || row.ask.issue?.assignee === viewer;
+  return row.kind === "thread" || askWaitingOnPerson(row.ask) === viewer;
 }
 
-/** Rows nobody holds: asks on unassigned issues, and every document ask (a document has no
- *  assignee). Also what decides whether a row offers "Assign to me". A thread row is the
- *  reader's own, so nobody is never its holder. */
+/** Rows nobody waits on: asks the server resolved no person for. Who a question reaches is three
+ *  steps (`coalesce(a.asked_of, i.assignee, p.default_assignee)`) and every project names a
+ *  default assignee, so a list this release's server answers holds no such row; a server
+ *  mid-deploy can still send one, and that is what this rule is here for. It is also what
+ *  decides whether a row offers "Assign to me". A thread row is the reader's own, so nobody is
+ *  never its holder. */
 export function isUnassigned(row: InboxListRow): boolean {
-  return row.kind === "ask" && (row.ask.issue?.assignee ?? null) === null;
+  return row.kind === "ask" && askWaitingOnPerson(row.ask) === null;
 }
 
 /** The two words the `?assignee=` vocabulary reserves beside a person's login: `unassigned`,
@@ -47,8 +51,9 @@ export const EVERYONE_FILTER_VALUE = "everyone";
 /**
  * Whether a row survives the assignee filter, the one place that decides what a filtered list
  * holds. An empty selection is the cleared filter and keeps everything; otherwise an ask is
- * kept when its issue's assignee is one of the selected people, or when nobody holds it
- * (`isUnassigned`, every document ask included) and `unassigned` is selected.
+ * kept when the person it waits on is one of the selected people, or when nobody waits on it
+ * (`isUnassigned`) and `unassigned` is selected. While every project names a default assignee
+ * nothing is unheld, so `unassigned` is a selection that keeps nothing.
  *
  * A thread row is the reader's own and nobody else's, so it survives a selection naming them
  * and no other: `unassigned` names nobody, so it drops the threads too.
@@ -60,9 +65,9 @@ export function inAssigneeFilter(
 ): boolean {
   if (selection.length === 0) return true;
   if (row.kind === "thread") return selection.includes(viewer);
-  const assignee = row.ask.issue?.assignee ?? null;
-  if (assignee === null) return selection.includes(UNASSIGNED_FILTER_VALUE);
-  return selection.includes(assignee);
+  const person = askWaitingOnPerson(row.ask);
+  if (person === null) return selection.includes(UNASSIGNED_FILTER_VALUE);
+  return selection.includes(person);
 }
 
 /** Whether the list is the reader's own: the one selection whose bands, empty state and

@@ -603,6 +603,10 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 		s.writeHandlerError(w, err)
 		return
 	}
+	// A comment's body and its suggestion are markdown a reader is shown, so both reach the store
+	// the way text written into a document reaches it (pmdoc.LineFeeds): the row, the event, the
+	// mention delivery and the tree the display read makes of the body all see one line ending.
+	input.Body = pmdoc.LineFeeds(input.Body)
 	if input.Suggestion != nil {
 		input.Suggestion.ReplaceWith = pmdoc.LineFeeds(input.Suggestion.ReplaceWith)
 	}
@@ -970,14 +974,15 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 	var advice *writeAdvice
 	if owner.IssueKey != nil && status != nil {
 		advice = s.writeAdvice(
-			r.Context(), tx, "POST /api/v1/issues/{key}/comments", *owner.IssueKey, actor, "", *status,
+			r.Context(), tx, "POST /api/v1/issues/{key}/comments", *owner.IssueKey, actor, "", *status, false,
 		)
 	}
 	if err := ledger.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	s.publish(events...)
+	s.publish(r.Context(), events...)
+	s.storeDisplayTrees(r.Context(), comment.ID, input.Body)
 	// On a context the client's going away does not cancel: a send this sender refuses gives its
 	// attempt's claim back, which must not be left undone because the caller hung up.
 	//
@@ -995,5 +1000,5 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 	// The answer carries each attempt as it committed, pending: the mention sender settles it
 	// after this response, and its comment.delivery receipt says how it ended.
 	comment.Deliveries = attempts
-	WriteJSON(w, http.StatusCreated, withAdvice(commentWriteResponse{Comment: comment, AskWaitingOn: waitingOn}, advice))
+	WriteJSON(w, http.StatusCreated, withAdvice(commentWriteResponse{shapedComment: newShapedComment(comment, wantsDisplayTrees(r)), AskWaitingOn: waitingOn}, advice))
 }

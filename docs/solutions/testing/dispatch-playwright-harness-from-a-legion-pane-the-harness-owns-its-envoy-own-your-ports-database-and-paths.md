@@ -52,6 +52,15 @@ lane would share. Every other mode stays one lane and one worker, and a one-lane
 `DATABASE_URL` set is the run section 2 below describes. `packages/dispatch/AGENTS.md`'s
 end-to-end section is the whole model.
 
+**Update (2026-11-10, dispatch://INFRA-1410): Playwright starts the stacks itself, and the
+wrapper is deleted.** `e2e/run.ts` and `e2e/preflight.ts` are gone; `e2e/global-setup.ts`, the
+config's `globalSetup`, starts one stack per worker through `e2e/harness-pool.ts`, checks each of
+them against its own fake Envoy, and `e2e/global-teardown.ts` stops them. A lane is called a
+stack, `DISPATCH_E2E_WORKERS` is gone, and a run asks for more workers with Playwright's own
+`--workers <n>`, whose default is 1; the command is
+`bunx playwright test --config e2e/playwright.config.ts` from `packages/dispatch`.
+`packages/dispatch/AGENTS.md`'s end-to-end section is current.
+
 The Dispatch dashboard's browser suite (`cd packages/dispatch && bun run e2e`) is the package's
 own integration harness: the Playwright config starts the fake Envoy (`e2e/fake-envoy.ts`) and the
 real Go server (`e2e/run-server.sh`, which builds `./cmd/dispatch` and execs the binary) itself, against a Postgres the

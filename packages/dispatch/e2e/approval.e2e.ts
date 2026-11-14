@@ -2,7 +2,6 @@ import { setTimeout as sleep } from "node:timers/promises";
 
 import type { WriteAdvice } from "@legion/contracts";
 import { DISPATCH_EVENT_BODY_MAX } from "@legion/contracts/dispatch-tools";
-import { expect, type Locator, type Page, test } from "@playwright/test";
 import type { Artifact } from "../web/src/api/types";
 
 import {
@@ -20,6 +19,7 @@ import {
   getArtifactVersion,
   getIssueEvents,
   listIssueAsks,
+  patchIssue,
   rejectSuggestion,
   requestApproval,
   reviewArtifact,
@@ -28,8 +28,8 @@ import {
 import { bodyOf } from "./bodies";
 import { documentEditor, needsYouCards, openSpecAndAwaitHeadingIds } from "./editor";
 import { askControls, hasReadingPane, inboxRow } from "./inbox-pane";
-import { resetDatabase } from "./seed";
 import { navigateInApp } from "./sends";
+import { expect, type Locator, type Page, test } from "./test";
 import { assertWhole } from "./unclipped";
 import { asUser } from "./users";
 
@@ -61,10 +61,6 @@ const session = {
   actor: { kind: "session" as const, id: "e2e-session", origin: { session_title: "architect" } },
   as: "agent" as const,
 };
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 // @pr: Create through answer to close: an approval requested, answered in the Inbox, made stale by an edit, and changes requested from the header.
 test("a spec's approval is a human review pinned to its version: requested by the agent, answered in the Inbox, stale after an edit, changes requested from the header @pr", async ({
@@ -365,14 +361,19 @@ test("an undo that restores the approved text around a decision block the agent 
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
-    // Settlement runs two seconds after the room's last update; a version it wrote would be
-    // judged by the same rule, so the approval is read once it has had the chance.
-    await page.waitForTimeout(3000);
-    expect((await getArtifact(issue.id, { login: "alice" })).approval).toMatchObject({
-      latest_version: 3,
-      state: "stale",
-      version: 1,
-    });
+    // The restored text is one character away from the approved version, so the approval stays
+    // stale at version 1 with version 3 the latest. The read is polled rather than slept on:
+    // nothing settles into this artifact - `editArtifact` wrote version 3 itself, and no page
+    // is in the room - which 16 reads 250 ms apart measured here, every one of them this same
+    // answer. A poll that cannot pass at once would say the opposite, so it is the right shape
+    // either way: a verdict that arrived late would still be read.
+    await expect
+      .poll(async () => (await getArtifact(issue.id, { login: "alice" })).approval)
+      .toMatchObject({
+        latest_version: 3,
+        state: "stale",
+        version: 1,
+      });
     await page.goto(`/issues/${issue.key}`);
     await expect(page.getByRole("button", { name: "Approved v1 · changed since" })).toBeVisible();
   } finally {
@@ -660,7 +661,7 @@ test("an answer started before a hand-back that rewords nothing is saved, and th
     await expect(handedBack).toBeVisible();
     await expect(handedBack).not.toContainText("Edited");
 
-    await shown.getByRole("button", { name: "Answer" }).click();
+    await shown.getByRole("button", { exact: true, name: "Answer" }).click();
     await expect(
       answering.getByText("Your answer was not saved, because the question changed.")
     ).toHaveCount(0);
@@ -892,10 +893,13 @@ test("an approval request for an unassigned issue's non-primary document remains
   browser,
 }, testInfo) => {
   await createProject({ key: "GATE", name: "Gate" });
-  const issue = await createIssue(
+  // A create always lands on a person, so the issue nobody holds is created and then cleared.
+  const created = await createIssue(
     { project: "GATE", spec: "Primary review target.", title: "Two approval targets" },
     session
   );
+  const issue = await patchIssue(created.key, { assignee: null }, session);
+  expect(issue.assignee).toBeNull();
   const supporting = await createIssueArtifact(
     issue.key,
     { content: "Supporting review target.", name: "supporting-design.md" },
@@ -911,15 +915,10 @@ test("an approval request for an unassigned issue's non-primary document remains
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
-    // Nobody holds the shared-token issue, so its request is nobody's own work: the reader's
-    // default list does not hold it. An unassigned issue's request reaches a person through the
-    // Unassigned filter, where it is as answerable as anywhere, or through the issue itself
-    // (the margin below).
+    // Nobody holds the shared-token issue, so its request reaches the default assignee of its
+    // project - alice, who made GATE - and her own list holds it, where it is as answerable as
+    // through the issue itself (the margin below).
     await page.goto("/");
-    await expect(page.getByTestId(`ask-${nonPrimary.ask.id}`)).toHaveCount(0);
-    await expect(page.getByText("Nothing needs you")).toBeVisible();
-
-    await page.goto("/?assignee=unassigned");
     await expect(inboxRow(page, nonPrimary.ask.id)).toBeVisible();
     // Actionable means the Inbox offers the review where this width draws it: the reading
     // column's head over the document under review from 1280 px (INFRA-575), and the
@@ -936,7 +935,7 @@ test("an approval request for an unassigned issue's non-primary document remains
     }
     const inboxShot = testInfo.outputPath("approval-non-primary-inbox-1280.png");
     await page.screenshot({ path: inboxShot, fullPage: true });
-    await testInfo.attach("non-primary approval under the Unassigned filter", {
+    await testInfo.attach("non-primary approval in the project default's Inbox", {
       contentType: "image/png",
       path: inboxShot,
     });
@@ -1077,11 +1076,12 @@ test("an open approval ask's document link reaches the issue's Conversation, and
     await expect(marginCard.getByRole("link", { name: /spec\.md, version/ })).toHaveCount(0);
 
     // A project-level document's approval request links its own document the same way. A
-    // document has no assignee, so the Unassigned filter is where the Inbox lists it. The link
-    // is the card's named version below 1280 px, and from there the short row's own owner
-    // link, the reading column having drawn the document itself in place of a card
-    // (INFRA-575); both carry the same address.
-    await page.goto("/?assignee=unassigned");
+    // document has no assignee, so its question reaches the default assignee of its project -
+    // alice, who made GATE - and her own list is where the Inbox lists it. The link is the
+    // card's named version below 1280 px, and from there the short row's own owner link, the
+    // reading column having drawn the document itself in place of a card (INFRA-575); both
+    // carry the same address.
+    await page.goto("/");
     const inboxLink = hasReadingPane(page)
       ? inboxRow(page, docApproval.ask.id).locator("[data-inbox-owner]")
       : page
