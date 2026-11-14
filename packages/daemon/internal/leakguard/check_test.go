@@ -129,7 +129,7 @@ func TestTheVisibilityReadIsTheOneTheSharedCheckMakes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "argv=api --hostname github.com repos/invented-org/invented-repo --jq .visibility\n" +
+	want := "argv=api --hostname github.com repos/invented-org/invented-repo --include --jq .visibility\n" +
 		"read=invented-org/invented-repo\nhost=github.com\n"
 	if string(read) != want {
 		t.Errorf("gh was called as\n%s\nwant\n%s", read, want)
