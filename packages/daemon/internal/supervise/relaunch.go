@@ -175,10 +175,18 @@ func relaunchTask(id string) bool { return strings.HasPrefix(id, relaunchTaskPre
 
 // Relaunch is whether d is the daemon's own delivery of a relaunch's record (queueRelaunch): no
 // work of the claim's — no phase, no run, no entry — only the sentence of what the last
-// let-go of its process ended. A reader that asks whether a claim still owes work it was given
-// reads such a delivery as none (workflow's owed and readyWorkerTask, api's freshSession), as a
-// death's charge does (chargeDeath).
+// let-go of its process ended. A reader that asks whether a claim holds work it was given asks
+// HoldsTask.
 func (d Delivery) Relaunch() bool { return relaunchTask(d.ID) }
+
+// HoldsTask is whether pending, the delivery a claim holds (Claim.Pending, or the pending task a
+// role run reads, record.RoleClaim.Pending), is a task of the claim's: a delivery, and not the
+// daemon's own delivery of a relaunch's record (Delivery.Relaunch), which is no work of the
+// claim's. It is the one statement of that rule, and every reader that asks whether a claim still
+// owes work it was given asks it: a death's charge (chargeDeath), the workflow's owed and
+// readyWorkerTask, and api's freshSession. It takes the pointer the claim holds, nil for none,
+// because those readers hold two types of claim and the delivery is the one field they share.
+func HoldsTask(pending *Delivery) bool { return pending != nil && !pending.Relaunch() }
 
 // queueRelaunch gives a claim that holds no delivery at its ready a delivery of the daemon's own
 // that carries the sentence of its untold record alone (RelaunchSentence), so the next prompted

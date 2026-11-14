@@ -1,6 +1,7 @@
 package supervise
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"reflect"
@@ -8,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 )
@@ -676,6 +678,105 @@ func TestARelaunchRecordsAReportOlderThanABusyAnswersTurnAsNoReport(t *testing.T
 			wantSays(t, message, row.says...)
 			wantSaysNot(t, message, row.saysNot...)
 		})
+	}
+}
+
+// A turn a restored ready or idle claim is put in on the agent's word that it is streaming starts,
+// for the claim, at that answer (Claim.LastTurnStart): the daemon never read the turn's
+// agent_start, which an earlier daemon's prompt started, so the answer is its first word of the
+// turn, and a report read before it says nothing of that turn, as a report read before a busy
+// answer says nothing of the turn the answer recorded
+// (TestARelaunchRecordsAReportOlderThanABusyAnswersTurnAsNoReport). The process ran a turn and
+// reported nothing running at its end, and was then sent a task; the daemon restarts with the task
+// pending and unconfirmed, so its first send asks the agent where it is (askFirst), and the agent
+// says it is streaming. Either the task still holds, and the answer confirms it (sendPending's
+// askFirst branch), or the issue has left its phase, and the drop puts the claim in working with
+// no task (answerAskFirstAfterDrop). The process dies in that turn. The record names the turn,
+// says the daemon has no report of it (EndedWork.Reported false), and the sentence says so. The
+// control is a report read after the answer: it is the turn's own, counted as a report, and the
+// sentence says that the turn's subagents and background jobs are gone, with no word that the
+// daemon has no report.
+func TestARelaunchRecordsAReportOlderThanATurnTheAgentSaysItIsInAsNoReport(t *testing.T) {
+	for _, through := range []struct {
+		name string
+		// drops is whether the send drops the task, its phase gone, rather than confirm it.
+		drops bool
+	}{
+		{name: "the answer confirms the task an earlier daemon sent"},
+		{name: "the answer follows the drop of that task", drops: true},
+	} {
+		for _, row := range []struct {
+			name string
+			// before is whether the report is read before the agent's answer.
+			before bool
+			// says and saysNot are what the sentence of the cut turn says, and does not say.
+			says, saysNot []string
+		}{
+			{name: "a report before the answer said nothing runs", before: true,
+				says: []string{saysNoReport, saysTurnGoneUnreported, saysEveryOtherGone}, saysNot: []string{saysTurnGone}},
+			{name: "a report after the answer said nothing runs",
+				says: []string{saysTurnGone}, saysNot: []string{saysNoReport, saysTurnGoneUnreported, saysEveryOtherGone}},
+		} {
+			t.Run(through.name+": "+row.name, func(t *testing.T) {
+				h := newBareHarness(t)
+				holds := true
+				h.deps.PhaseHolds = func(context.Context, string, phase.Phase, uint64) (bool, error) { return holds, nil }
+				if err := h.store.PutClaim(h.ctx, queuedClaim()); err != nil {
+					t.Fatal(err)
+				}
+				h.start(queuedClaim())
+				h.reach(StateIdle)
+				h.advance(time.Second)
+				if row.before {
+					h.reportActivity()
+					h.advance(time.Second)
+				}
+				h.must(RequestDeliver{Claim: h.token, Task: "the next task", Phase: phase.Implementing})
+				h.wantPrompts(2)
+
+				h.restart()
+				if _, _, askFirst := h.marks(); !askFirst {
+					t.Fatal("the restored claim has nothing to ask its agent; this test needs the question a restart leaves open")
+				}
+				holds = !through.drops
+				h.conn.SetStreaming(true)
+				h.advance(time.Second)
+				h.connect()
+
+				h.wantState(StateWorking)
+				h.wantPrompts(2)
+				answered := h.clock.Now()
+				for where, start := range map[string]time.Time{"the machine": h.claim().LastTurnStart, "the store": h.store.load(h.token).LastTurnStart} {
+					if !start.Equal(answered) {
+						t.Errorf("%s dates the turn the agent says it is in from %v, want the answer's %v", where, start, answered)
+					}
+				}
+				if p := h.claim().Pending; through.drops != (p == nil) || (p != nil && p.ConfirmedAt.IsZero()) {
+					t.Fatalf("after the answer the claim holds %+v, want the task dropped = %v, else confirmed", p, through.drops)
+				}
+				if !row.before {
+					h.advance(time.Second)
+					h.reportActivity()
+				}
+				died, at := h.generation(), h.clock.Now()
+
+				h.observe(runtime.Gone)
+
+				h.wantState(StateLaunching)
+				h.wantEnded(EndedWork{At: at, Cause: endDied(deathCause(runtime.Observation{Kind: runtime.Gone})),
+					Generation: died, Turn: true, TaskTurn: !through.drops, Reported: !row.before})
+				sentence := RelaunchSentence(h.claim().EndedWork)
+				if !through.drops {
+					p := h.pending()
+					if !p.Interrupted {
+						t.Fatalf("the task after the death is %+v, want it taken back from the turn", p)
+					}
+					sentence, _ = p.message(h.claim())
+				}
+				wantSays(t, sentence, row.says...)
+				wantSaysNot(t, sentence, row.saysNot...)
+			})
+		}
 	}
 }
 

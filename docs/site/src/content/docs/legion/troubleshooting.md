@@ -1226,8 +1226,10 @@ On such a daemon, an update round or a message wake can take the author of the c
   turn that confirmed the task no longer counted as the agent reading that prompt: the turn was
   another input's (an Envoy notice's, say), the prompt came to nothing (a refusal, a busy answer,
   or no turn), a provider error failed a model call of the turn, a compaction aborted the turn,
-  or the process ended in a turn that had started while the prompt's send was still in flight.
-  The record is untold again, and the next prompt carries the sentence. Nothing to do.
+  or the process ended in a turn that confirmed the task before the prompt's result came (while
+  its send was in flight or it waited on its result), since only that result says the turn was
+  the prompt's. The record is untold again, and the next prompt carries the sentence. Nothing to
+  do.
 - **`supervise: the claim abandons its session, so the record of what the old session's process
   ended is not told to the fresh agent; the abandoned session's sentence says that work is
   gone`** at Info is a fresh session: the claim's first task names the session it left behind,

@@ -1735,7 +1735,9 @@ type QueuedSupervise struct {
 // it was last given work of (given_entry), the moment its agent last stepped (step_at,
 // turn_started_at), what its own session last reported it was doing (activity_at,
 // activity_background, activity_next_reminder_at), and the task it holds, nil for none, with the
-// task's generation, phase and confirmation.
+// task's delivery id, generation, phase and confirmation. The id is what says the task is the
+// daemon's own delivery of a relaunch's record (supervise.Delivery.Relaunch), which a reader of a
+// run reads as no work of the claim's (supervise.HoldsTask: workflow's owed and readyWorkerTask).
 type RoleClaim struct {
 	State        supervise.ClaimState
 	Tree         string

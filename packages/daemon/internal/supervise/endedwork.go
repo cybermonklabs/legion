@@ -169,8 +169,9 @@ func endNeverReady(never string) string { return "its agent " + never + ", so th
 // prompt sent from here on tells this record when its turn begins (confirm).
 //
 // Before anything else it takes back a telling the let-go cannot vouch for, that of a confirmation
-// a turn took while the send of its prompt was in flight (untellInFlight, where that rule is), so
-// the record that telling had marked told is untold again and the record written here joins it.
+// a turn took while the send of its prompt was in flight or a prompt of the task still waited on
+// its result (untellInFlight, where that rule is), so the record that telling had marked told is
+// untold again and the record written here joins it.
 //
 // It writes nothing itself: the record is a field of the claim, and the let-go's own write — the
 // launch's, the suspension's, the failure's, or the death's charge — carries it, and the untelling
@@ -196,9 +197,11 @@ func (m *Machine) recordEnd(ctx context.Context, cause string) {
 	}
 	// A report read before the claim's last turn began has said nothing about that turn
 	// (pods.IdleClaim.Reported), so it is no report of it, though the background work it saw is
-	// kept above. LastTurnStart is the turn's agent_start as read (beginTurn), or, until that start
-	// is read, the busy answer that recorded the turn (recordBusyTurn); a daemon restarted under a
-	// working claim reads the one the daemon before it stored.
+	// kept above. LastTurnStart is the daemon's first word of the turn: its agent_start as read
+	// (beginTurn); the busy answer that recorded the turn, until that start is read
+	// (recordBusyTurn); or the agent's answer that it is streaming, which puts a restored ready or
+	// idle claim in working (sendPending's askFirst branch, answerAskFirstAfterDrop). A daemon
+	// restarted under a working claim reads the one the daemon before it stored.
 	ended.Reported = reported && !(ranTurn && report.At.Before(m.claim.LastTurnStart))
 	if !ended.Turn && !ended.TaskTurn && !ended.Background && (ended.Reported || !ranTurn) {
 		return

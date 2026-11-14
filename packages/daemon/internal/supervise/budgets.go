@@ -137,10 +137,10 @@ func (m *Machine) relaunchAfterFailure(ctx context.Context, cause FailureCause, 
 // because each death found nothing pending. A death with no turn open and nothing pending is a
 // parked agent the environment killed, which is not counted however often it happens.
 //
-// The daemon's own delivery of a relaunch's record (relaunchTask, queueRelaunch) is no task: it
-// is the sentence of what the last let-go ended, which a parked agent is given at every ready
-// that finds it holding nothing, so a parked agent killed again before it read it holds that and
-// nothing else, and its death is not counted either.
+// The daemon's own delivery of a relaunch's record is no task (HoldsTask): it is the sentence of
+// what the last let-go ended, which a parked agent is given at every ready that finds it holding
+// nothing, so a parked agent killed again before it read it holds that and nothing else, and its
+// death is not counted either.
 //
 // The death ends the turn it interrupted (Claim.LastTurnEnd), which no other path does: a turn
 // records its end only when the agent ends it, so a turn whose agent died would otherwise stay
@@ -152,7 +152,7 @@ func (m *Machine) chargeDeath() bool {
 		return false
 	}
 	open := m.turnOpen()
-	task := m.claim.Pending != nil && !relaunchTask(m.claim.Pending.ID)
+	task := HoldsTask(m.claim.Pending)
 	if !task && !open {
 		return false
 	}

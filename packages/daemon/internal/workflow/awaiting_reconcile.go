@@ -429,12 +429,12 @@ func waitSubject(asks []record.RootAsk, steps []record.DesignStep, gates map[rec
 // owed says whether the architect has not yet taken the work it was last given, and how: a start
 // still queued for it, no claim yet, a claim still starting, or a task it has not confirmed.
 //
-// The daemon's own delivery of a relaunch's record (supervise.Delivery.Relaunch) is no work it was
-// given: it carries no run, phase or entry and names no person's decision, only the sentence
-// of what the relaunch ended, which the architect reads whether or not the root waits — entering
-// the wait leaves the architect running. So it holds neither the wait nor the telling of a
-// person's act, which would otherwise wait behind that sentence for as long as the agent's own
-// turns kept it unread (dispatch://INFRA-3276 R3).
+// The daemon's own delivery of a relaunch's record is no work it was given (supervise.HoldsTask):
+// it names no person's decision, only the sentence of what the relaunch ended, which the
+// architect reads whether or not the root waits — entering the wait leaves the architect running.
+// So it holds neither the wait nor the telling of a person's act, which would otherwise wait
+// behind that sentence for as long as the agent's own turns kept it unread
+// (dispatch://INFRA-3276 R3).
 func owed(run record.RoleRun) (string, bool) {
 	for _, queued := range run.Queued {
 		if queued.Request.Op == "start" {
@@ -448,7 +448,7 @@ func owed(run record.RoleRun) (string, bool) {
 	case slices.Contains([]supervise.ClaimState{supervise.StateQueued, supervise.StateLaunchUncertain, supervise.StateLaunching,
 		supervise.StateShimConnected, supervise.StateRegistered}, held.State):
 		return fmt.Sprintf("is still starting (%s)", held.State), true
-	case held.Pending != nil && held.Pending.ConfirmedAt.IsZero() && !held.Pending.Relaunch():
+	case supervise.HoldsTask(held.Pending) && held.Pending.ConfirmedAt.IsZero():
 		return "has not taken its task yet", true
 	}
 	return "", false

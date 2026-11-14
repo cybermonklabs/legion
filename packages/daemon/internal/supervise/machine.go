@@ -242,9 +242,11 @@ type Claim struct {
 	Pending      *Delivery
 	// LastTurnStart and LastTurnEnd are when the agent last began a turn and when it last ended
 	// one, each zero until that event happens. A turn's start is when the daemon first learned of
-	// it: its agent_start (beginTurn), or the busy answer that said the agent is in a turn whose
+	// it: its agent_start (beginTurn); the busy answer that said the agent is in a turn whose
 	// start the daemon never read (recordBusyTurn), which that turn's own agent_start, read later,
-	// moves to its own moment. They are persisted, so a restart keeps them: they are what a reader
+	// moves to its own moment; or the agent's answer that it is streaming, which puts a ready or
+	// idle claim a restart restored in working (sendPending's askFirst branch,
+	// answerAskFirstAfterDrop). They are persisted, so a restart keeps them: they are what a reader
 	// has to tell a worker still making progress from one wedged in a turn or idle since
 	// yesterday, and a claim rebuilt without them would look as if it had never worked.
 	LastTurnStart time.Time

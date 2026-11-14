@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
 // claimReady gives a tree's root architect its first instruction. Nothing else starts a turn of it:
@@ -177,10 +178,8 @@ func queuedRowCovers(run record.RoleRun, root record.Issue, current phase.Phase)
 // alone: it has work, and a second task would be a second prompt for work under way. So is a role
 // a queued row already covers (queuedRowCovers).
 //
-// The daemon's own delivery of a relaunch's record (supervise.Delivery.Relaunch) is no task: it
-// carries no run, phase or entry, only the sentence of what the relaunch ended, so a claim that
-// holds that alone is read as holding nothing, as owed reads it (awaiting_reconcile.go) and as the
-// death's charge does (supervise's chargeDeath). The phase's task that this queues takes that
+// The daemon's own delivery of a relaunch's record is no task (supervise.HoldsTask), so a claim
+// that holds that alone is read as holding nothing. The phase's task that this queues takes that
 // delivery's place while no prompt of it waits on a result, or waits for its turn to end
 // (supervise's queue), and carries the sentence in front of itself while the record is untold.
 // A worker that came back holding only that delivery — its ready found it holding one from an
@@ -235,7 +234,7 @@ func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, fact intake.Cla
 		return err
 	}
 	// A claim holding only the daemon's own delivery of a relaunch's record holds no task (above).
-	if held := run.Claim; held == nil || (held.Pending != nil && !held.Pending.Relaunch()) {
+	if held := run.Claim; held == nil || supervise.HoldsTask(held.Pending) {
 		return nil
 	}
 	if queuedRowCovers(run, *root, issue.Phase) {
