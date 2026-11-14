@@ -501,8 +501,8 @@
       },
       "phaseEntry": 1,
       "givenEntry": 1,
-      "treeMovedAt": "2026-09-22T08:58:40Z",
-      "quietHours": 0.32222222222222224
+      "treeMovedAt": "2026-09-22T09:07:21Z",
+      "quietHours": 0.1775
     },
     "LEGION-219": {
       "key": "LEGION-219",
@@ -564,8 +564,8 @@
       },
       "phaseEntry": 2,
       "givenEntry": 2,
-      "treeMovedAt": "2026-09-20T14:05:33Z",
-      "quietHours": 43.2075
+      "treeMovedAt": "2026-09-20T16:42:58Z",
+      "quietHours": 40.583888888888886
     }
   },
   "pendingStatusWrites": [],

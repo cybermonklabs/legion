@@ -77,25 +77,26 @@ func (e *Engine) putPullRequest(ctx context.Context, tx pgx.Tx, pr record.PullRe
 // retargeted onto another branch, and the first read to fill the base of one opened before the
 // record kept one, each leave the record holding something of GitHub's it did not hold before.
 //
-// What it leaves out is every part of the row that is the daemon's own bookkeeping of a fact it
-// has already taken: the moves a push spends as it is reconciled (record.PullRequest.Moves,
+// What it leaves out is every part of the row that is the daemon's own bookkeeping of a fact it has
+// already taken: the moves a push spends as it is reconciled (record.PullRequest.Moves,
 // classify.ApplyPushDropping), GitHub's clock of its last change to the pull request
-// (HeadUpdatedAt), and the commit the latest push left the base at (BaseMoved), which is a fact
-// of the base branch and says only which base the recorded mergeability was read against — the
-// push that writes it is no news of the pull request (basePush), and the read that clears it
-// clears a note the daemon left itself. So is the moment of the daemon's last answering read
-// (StateReadAt): a read that only confirms what is recorded writes that field alone (review.go's
-// mergeability), and it says how old the daemon's knowledge of the head is, never that the pull
-// request moved. A redelivered webhook, and a webhook of a push or a
-// settlement one of the daemon's own passes rebuilt first, write those and nothing else; marked
-// as movements they would refresh the quiet time of a tree that has not moved since its work
-// ended, and that tree would never be found (record.QuietTrees). The daemon's own suites hold
-// that line: a late push webhook is asserted to change nothing of the issue record
-// (internal/daemon's lateWebhookPushDecidesNothing), and a settlement that decides nothing —
-// the listener's redelivery and its settlement of a commit that is not the head while a head
-// run is open, the one that closes that run among them — is asserted to move no issue
-// (internal/admit's TestTheRecordKeepsWhenAnIssueLastMoved, its case of the listener's
-// settlement that decides nothing).
+// (HeadUpdatedAt), and the commit the latest push left the base at (BaseMoved), which is a fact of
+// the base branch and says only which base the recorded mergeability was read against — the push
+// that writes it is no news of the pull request (basePush), and the read that clears it clears a
+// note the daemon left itself. A redelivered webhook, and a webhook of a push or a settlement one
+// of the daemon's own passes rebuilt first, write those and nothing else; marked as movements they
+// would refresh the quiet time of a tree that has not moved since its work ended, and that tree
+// would never be found (record.QuietTrees). The moment of the daemon's last answering read
+// (StateReadAt) is left out too, and no webhook writes it: a merge-state read that only confirms
+// what is recorded writes that field alone (review.go's mergeability), and it says how old the
+// daemon's knowledge of the head is, never that the pull request moved. The daemon's own suites
+// hold that line: a late push webhook is asserted to change nothing of the issue record
+// (internal/daemon's lateWebhookPushDecidesNothing), and a settlement that decides nothing — the
+// listener's redelivery and its settlement of a commit that is not the head while a head run is
+// open, the one that closes that run among them — is asserted to move no issue (internal/admit's
+// TestTheRecordKeepsWhenAnIssueLastMoved, its case of the listener's settlement that decides
+// nothing). The same test holds that a merge-state read that only confirms what is recorded moves
+// no issue either.
 //
 // A field added to record.PullRequest later is not news to this test until it is named here. The
 // direction that costs something is this one — an unnamed field that is news leaves a tree

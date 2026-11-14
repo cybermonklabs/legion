@@ -338,14 +338,15 @@ func TestTheRecordKeepsWhenAnIssueLastMoved(t *testing.T) {
 	})
 	assertMoved("a CI settlement the record takes", at(27))
 
-	// Three facts GitHub reports of the pull request itself, each written alone, so that the one
-	// field it changes is the whole of what the helper judges (workflow's pullRequestNews): the
-	// base branch the pull request targets and GitHub's merge state are news of the pull request,
-	// and the commit the record last saw its base branch moved to is not. Each write goes through
-	// GitHub's merge-state read (workflow's mergeability), which writes the record only where its
-	// answer differs or carries a read time the record does not hold, and writes it through the
-	// helper, so each case reaches the judgement and nothing else of it: the issue stands in
-	// testing, the head merges, and no round is read.
+	// Facts of the pull request, each written alone, so that the one field it changes is the whole
+	// of what the helper judges (workflow's pullRequestNews): the base branch the pull request
+	// targets and GitHub's merge state are news of the pull request, and the commit the record last
+	// saw its base branch moved to is not, nor is the moment of a read that only confirms what the
+	// record holds (record.PullRequest.StateReadAt). Each write goes through GitHub's merge-state
+	// read (workflow's mergeability), which writes the record only where its answer differs or
+	// carries a read time the record does not hold, and writes it through the helper, so each case
+	// reaches the judgement and nothing else of it: the issue stands in testing, the head merges,
+	// and no round is read.
 	//
 	// The first read only brings the record to a known answer: it fills the base and GitHub's two
 	// verdicts, which a read is news of.

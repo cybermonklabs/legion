@@ -219,12 +219,22 @@ func populatedState(t *testing.T) State {
 	// What the two reviewing issues' rounds wait on from GitHub (api.MergeWaitView). LEGION-218's
 	// head went up minutes ago and no read of the pull request has answered for it yet, so all
 	// the daemon knows of its age is the `updated_at` GitHub gave the pull request itself;
-	// LEGION-219's head has stood two days, its last answering read was a minute before this
-	// state, and that read has said `blocked` ever since the architect and the reviewer were
-	// told.
+	// LEGION-219's head has stood two days, and every read since the first after its approval has
+	// answered `blocked`, the last of them a minute before this state.
 	waitingHeadUpdatedAt := time.Date(2026, 9, 22, 8, 58, 40, 0, time.UTC)
 	stuckHeadUpdatedAt := time.Date(2026, 9, 20, 14, 5, 33, 0, time.UTC)
 	stuckStateReadAt := time.Date(2026, 9, 22, 9, 16, 12, 0, time.UTC)
+	// The movements of those two roots (Issue.MovedAt, which the quiet time reads below). Each
+	// reviewer completed its round after the head it approved went up, and a completion is a
+	// movement (workflow's handoff completion marks the issue). LEGION-218 has had nothing since.
+	// LEGION-219's first read after the approval took its merge state from unread to `blocked`,
+	// which is news of the pull request and a movement too (workflow's pullRequestNews); every
+	// read after it confirmed `blocked` and moved only the read stamp, and telling the architect
+	// and the reviewer of the stuck round writes a notice and the told marks, neither of which
+	// is a movement.
+	waitingApprovedAt := time.Date(2026, 9, 22, 9, 7, 21, 0, time.UTC)
+	stuckApprovedAt := time.Date(2026, 9, 20, 16, 42, 10, 0, time.UTC)
+	stuckFirstBlockedAt := time.Date(2026, 9, 20, 16, 42, 58, 0, time.UTC)
 	// What the daemon last saw two of the fixture's agents do (supervise.StepRecord): the
 	// architect's last call ended, so it is in none, and the implementer's `bash` call has a
 	// start and no end, which is the shape a stalled turn leaves behind. Neither carries the
@@ -749,14 +759,14 @@ func populatedState(t *testing.T) State {
 					MergeState:     "blocked",
 					ReviewDecision: "approved",
 				},
-				// The stuck round: the approval stands on a head GitHub has held on `blocked`
-				// since the read a minute before this state, the head itself has stood since the
-				// push two days before it, and two of the fence's runs are stamped with the head,
-				// so the wait is not a head GitHub has seen no run for. The told marks name the
-				// head and the state the architect and the reviewer were told of
-				// (workflow's tellStuckMergeState), which is what tells this round from
-				// LEGION-218's: both wait on GitHub's next answer about the same head, and only
-				// this one has been reported.
+				// The stuck round: the approval stands on a head GitHub has held on `blocked` since
+				// the first read after the approval, two days ago, and again at the read a minute
+				// before this state; the head itself has stood since the push before that approval,
+				// and two of the fence's runs are stamped with the head, so the wait is not a head
+				// GitHub has seen no run for. The told marks name the head and the state the
+				// architect and the reviewer were told of (workflow's tellStuckMergeState), which
+				// is what tells this round from LEGION-218's: both wait on GitHub's next answer
+				// about the same head, and only this one has been reported.
 				MergeWait: &MergeWaitView{
 					WaitsOn:       "0f5a7c2e9b48d1630a7f2c8e4b6d0915a3c7e284",
 					MergeState:    "blocked",
@@ -909,19 +919,19 @@ func populatedState(t *testing.T) State {
 	// still for half an hour while its own implementer's step stood 48 seconds before the
 	// reading, so the fixture showed a pair no daemon would serve, which is why the movement of
 	// that tree is the step record itself. The other trees hold no claim with a step, so each of
-	// them moves at a time of its own. The two reviewing roots move when GitHub last moved their
-	// pull requests: LEGION-218's head went up minutes before, and LEGION-219's two days before.
-	// LEGION-219's head was read a minute before this state, and that read only confirmed what
-	// the record held, which moves no tree (workflow's pullRequestNews), so its tree has been
-	// still for two days although its read stamp is a minute old.
+	// them moves at a time of its own. Each reviewing root moved last at the newest of its own
+	// movements named above: LEGION-218 at its approval, and LEGION-219 at its first `blocked`
+	// read. LEGION-219's head was read again a minute before this state, and that read only
+	// confirmed what the record held, which moves no tree (workflow's pullRequestNews), so its
+	// tree has been still for more than a day although its read stamp is a minute old.
 	quietReadAt := time.Date(2026, 9, 22, 9, 18, 0, 0, time.UTC)
 	quietMoved := map[string]time.Time{
 		"LEGION-208": implementerStep.At,
 		"LEGION-210": time.Date(2026, 9, 22, 6, 18, 0, 0, time.UTC),
 		"LEGION-211": time.Date(2026, 9, 21, 9, 18, 0, 0, time.UTC),
 		"LEGION-212": time.Date(2026, 9, 22, 9, 3, 0, 0, time.UTC),
-		"LEGION-218": waitingHeadUpdatedAt,
-		"LEGION-219": stuckHeadUpdatedAt,
+		"LEGION-218": waitingApprovedAt,
+		"LEGION-219": newest(stuckApprovedAt, stuckFirstBlockedAt),
 	}
 	for key, issue := range state.Issues {
 		movedAt, measured := quietMoved[issue.Tree]
@@ -933,6 +943,18 @@ func populatedState(t *testing.T) State {
 		state.Issues[key] = issue
 	}
 	return state
+}
+
+// newest is the latest of times, which is how the quiet time takes a tree's movement from the
+// several facts that can move it (record.QuietTrees).
+func newest(times ...time.Time) time.Time {
+	var latest time.Time
+	for _, at := range times {
+		if at.After(latest) {
+			latest = at
+		}
+	}
+	return latest
 }
 
 // The state golden is the body the route serves a caller at this daemon's own contract: the
