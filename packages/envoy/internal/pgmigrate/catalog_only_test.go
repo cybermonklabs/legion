@@ -217,7 +217,11 @@ var admittedRows = []admittedRow{
 	{"after alter index and alter table", []string{"alter index big_pad set (fillfactor = 90); alter table big alter column spare set statistics 100;", addColumn}, "alter table"},
 	{"after drops", []string{"drop trigger big_noop on big; drop function spare_fn(); drop index big_pad; drop view big_view; drop table big3;", addColumn}, "alter table"},
 	{"after a create function", []string{"create function later_fn() returns int language plpgsql as $$ begin return 1; end $$", addColumn}, "alter table"},
-	{"after a session set of another setting", []string{"set statement_timeout = '1min'", addColumn}, "alter table"},
+	// lock_timeout and statement_timeout are the two settings whose SET or RESET keeps the reads on
+	// (catalogReadsOff), in a session SET, a RESET and a name written in another case too.
+	{"after a session set of statement_timeout", []string{"set statement_timeout = '1min'", addColumn}, "alter table"},
+	{"after a reset of lock_timeout", []string{"reset lock_timeout", addColumn}, "alter table"},
+	{"after a set of a quoted Lock_Timeout", []string{`set "Lock_Timeout" = '1s'`, addColumn}, "alter table"},
 	// early.foo is empty, so it is below the one-byte limit and the census counts its rows. It
 	// counts them by the oid it found the table by (censusTable), so the name the migration writes
 	// with its schema is read as the table it names.
@@ -272,6 +276,9 @@ var refusedRows = []refusedRow{
 	// of a quoted name.
 	{name: "after set of a quoted Search_Path", migrations: []string{`set "Search_Path" = public; ` + addColumn}},
 	{name: "after reset of a quoted ROLE", migrations: []string{`reset "ROLE"; ` + addColumn}},
+	// A SET LOCAL of any setting but lock_timeout and statement_timeout turns off the reads of its
+	// own migration (catalogReadsOff).
+	{name: "after a set local of a setting off the list", migrations: []string{"set local client_min_messages = warning; " + addColumn}},
 	{name: "enum replaced by a domain", migrations: []string{"drop type mood; create domain mood as int check (value > 0)", "alter table big add column c mood"}},
 	{name: "check column", migrations: []string{"alter table big add column c int check (c > 0)"}},
 	{name: "unique column", migrations: []string{"alter table big add column c int unique"}},
@@ -329,6 +336,11 @@ var refusedRows = []refusedRow{
 	// The pooled connection keeps a session setting for the next migration it runs (D1).
 	{name: "after a session set search_path", migrations: []string{"set search_path = public", addColumn}},
 	{name: "after a session set of a quoted Search_Path", migrations: []string{`set "Search_Path" = public`, addColumn}},
+	// A session SET or a RESET of any setting but lock_timeout and statement_timeout, set time zone
+	// included, turns off the reads of every later migration (catalogReadsOff).
+	{name: "after a session set of a setting off the list", migrations: []string{"set standard_conforming_strings = off", addColumn}},
+	{name: "after a reset of a setting off the list", migrations: []string{"reset backslash_quote", addColumn}},
+	{name: "after set time zone", migrations: []string{"set time zone 'UTC'", addColumn}},
 	// The census cannot see what a migration it cannot parse changes (D2).
 	{name: "after a migration that does not parse", migrations: []string{"create tabel broken (id int)", addColumn}},
 
@@ -522,13 +534,15 @@ func sizesATableAboveTheLimit(entry MigrationCensus) bool {
 // argument that a function outside pg_catalog could take, a constraint the column's rows are
 // checked against, and every other subcommand, rename and statement kind the census does not
 // admit. So is an added column whose reading the census cannot trust: after the migration's own
-// SET of search_path, role or session_authorization, and after an earlier pending migration that
-// holds a statement off the keep-on list (keepsReadsOn lists what keeps the catalog reads on),
-// because the census reads the catalog as it stands before any pending migration applies. The
-// census runs with the limit at one byte, so each refused migration is refused on the size of a
-// table it touches; a form that touches no table the census sizes shares its migration with an
-// added bigint column of big, which is admitted alone, so the refusal shows that the form cost the
-// migration its exemption. A row with a searchPath runs its census under that search_path.
+// SET or RESET of a setting other than lock_timeout and statement_timeout, after an earlier
+// pending migration's session SET or RESET of such a setting, and after an earlier pending
+// migration that holds a statement off the keep-on list (keepsReadsOn lists what keeps the
+// catalog reads on), because the census reads the catalog as it stands before any pending
+// migration applies. The census runs with the limit at one byte, so each refused migration is
+// refused on the size of a table it touches; a form that touches no table the census sizes shares
+// its migration with an added bigint column of big, which is admitted alone, so the refusal shows
+// that the form cost the migration its exemption. A row with a searchPath runs its census under
+// that search_path.
 func TestCensusStillRefusesEveryFormThatReadsOrRewritesRows(t *testing.T) {
 	ctx := context.Background()
 	conn := catalogOnlyDatabase(t, ctx, 1)

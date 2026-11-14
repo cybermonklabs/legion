@@ -46,9 +46,10 @@ import (
 //     window grow with any table, and the other statements are still held to the kinds above.
 //     A migration that bounds its own lock wait sets lock_timeout
 //     (0066_asks_handed_back_reply_fkey, 20261101182522_search_term_queue_triggers), and that
-//     line must not be what costs it an exemption the rest of its statements earn. A set of
-//     search_path, role or session_authorization changes what the migration's names resolve to,
-//     so it takes the catalog reads away (catalogReadsOff);
+//     line must not be what costs it an exemption the rest of its statements earn. A set or a
+//     reset of any setting but lock_timeout and statement_timeout takes the catalog reads away
+//     (catalogReadsOff): such a setting can change what the migration's names resolve to, as
+//     search_path does, or how the server reads the text of a later migration;
 //   - alter table, of a table, with only the subcommands catalogOnlyAlterTable admits;
 //   - rename column, of a table (catalogOnlyRename): it rewrites the column's pg_attribute row,
 //     and no row of the table stores a column's name;
@@ -644,14 +645,18 @@ func (c *classifier) catalogOnlyIndex(node json.RawMessage) (string, error) {
 // resolves to, so the pass keeps the reads on only after a statement it knows to leave the names
 // as they are:
 //
-//   - a SET or a RESET of search_path, role or session_authorization, or a RESET ALL, turns them
-//     off: the migration's names then resolve through another path, or as another role, than the
-//     census's do (the default search_path starts with "$user"). Without LOCAL, or as RESET ALL,
-//     the setting outlives the migration: the runner applies each migration on a connection of its
-//     pool, which resets no session setting, so the next migration can take that connection with
-//     the setting on it, and every later migration loses the reads too. SET LOCAL ends with the
-//     migration's transaction, so it turns off the reads of its own migration alone. A SET or a
-//     RESET of any other setting keeps them on;
+//   - a SET or a RESET keeps them on only when it names lock_timeout or statement_timeout. A SET
+//     or a RESET of any other setting, a RESET ALL, and a SET node the pass cannot read turn them
+//     off. A setting can change what the names of a later statement resolve to, as search_path
+//     does (the default search_path starts with "$user"), or how the server reads the text of a
+//     later migration, as standard_conforming_strings off does wherever a runner does not set the
+//     text settings (textSettings). The census cannot list every setting that does one or the
+//     other, so it holds a list of the two settings it knows to do neither: each bounds how long
+//     a statement waits or runs. A SET LOCAL ends with the migration's transaction, so it turns
+//     off the reads of its own migration alone. A session SET, a RESET and a RESET ALL turn off
+//     the reads of their own migration and of every later one, because they outlive the
+//     migration: the runner applies each migration on a connection of its pool, which resets no
+//     session setting, so the next migration can take that connection with the setting on it;
 //   - every other statement keeps them on only where keepsReadsOn names it, and turns them off for
 //     its own migration and every later one where it does not. A pending migration could drop an
 //     enum and create a domain with a constraint under its name, and Postgres would then rewrite a
@@ -675,17 +680,19 @@ func (c *classifier) catalogReadsOff(statements []statement) (here, later bool, 
 			if json.Unmarshal(s.body, &set) != nil || set.Kind == "VAR_RESET_ALL" {
 				return true, true, nil
 			}
-			// The parser keeps the case of a quoted name (set "Search_Path" = x gives Search_Path,
-			// reset "ROLE" gives ROLE), and Postgres finds a setting by its name without regard to
-			// case, so the name is compared folded to lower case. strings.ToLower folds more letters
-			// than Postgres does, and a name it folds to one of these only refuses more.
-			if name := strings.ToLower(set.Name); name == "search_path" || name == "role" || name == "session_authorization" {
-				// The pooled connection keeps a session setting for the next migration it runs.
-				if !set.IsLocal {
-					return true, true, nil
-				}
-				here = true
+			// The parser keeps the case of a quoted name (set "Lock_Timeout" = x gives
+			// Lock_Timeout), and Postgres finds a setting by its name without regard to case, so the
+			// name is compared folded to lower case. strings.ToLower folds more letters than
+			// Postgres does, so a name it folds to one of these two can be a name Postgres finds no
+			// setting for, and Postgres refuses to set or reset such a name.
+			if name := strings.ToLower(set.Name); name == "lock_timeout" || name == "statement_timeout" {
+				continue
 			}
+			// The pooled connection keeps a session setting for the next migration it runs.
+			if !set.IsLocal {
+				return true, true, nil
+			}
+			here = true
 			continue
 		}
 		keeps, err := c.keepsReadsOn(s)
@@ -699,11 +706,12 @@ func (c *classifier) catalogReadsOff(statements []statement) (here, later bool, 
 	return here, false, nil
 }
 
-// keepsReadsOn says whether a statement other than a SET or a RESET (catalogReadsOff) is known to
-// leave every type, function and cast name, and the schemas a role's lookup searches, as they are,
-// so that the catalog reads stay on after it. It names the statements this repository's
-// migrations write that change none of these, and answers no for any other statement and for a
-// node it cannot read:
+// keepsReadsOn says whether a statement other than a SET or a RESET is known to leave every type,
+// function and cast name, and the schemas a role's lookup searches, as they are, so that the
+// catalog reads stay on after it. catalogReadsOff reads a SET or a RESET itself, and keeps the
+// reads on after one only when it names lock_timeout or statement_timeout. keepsReadsOn names the
+// statements this repository's migrations write that change none of these, and answers no for any
+// other statement and for a node it cannot read:
 //
 //   - INSERT, UPDATE, DELETE and SELECT, a WITH included, since a WITH is a field of each, when no
 //     relation the statement writes may be a system catalog (writesCatalog): a superuser's write
