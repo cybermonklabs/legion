@@ -104,22 +104,33 @@ func TestTableSizeExemptionReadsStatementsAsPostgresParsesThem(t *testing.T) {
 		"no text":                      {"", ""},
 		"a statement Postgres refuses": {"create trigger t after insert on things for each row", ""},
 	} {
-		if got, _, _ := tableSizeExemption(context.Background(), nil, tc.sql); got != tc.want {
-			t.Errorf("%s: tableSizeExemption = %q, want %q", name, got, tc.want)
+		if got, _ := tableSizeExemption(context.Background(), nil, tc.sql); got.exemption != tc.want {
+			t.Errorf("%s: tableSizeExemption = %q, want %q", name, got.exemption, tc.want)
 		}
 	}
 	// A migration the census cannot parse is not exempt, and it takes the catalog reads away from
-	// every pending migration after it (laterReadsOff), since the census cannot see what it
-	// changes: a VIRTUAL generated column, which PostgreSQL 18 reads and the census's Postgres 17
-	// grammar does not, and a statement Postgres refuses. A migration it parses whose statements
-	// are all on the keep-on list (keepsReadsOn) leaves them on.
-	for sql, want := range map[string]bool{
-		"alter table things add column c int generated always as (1) virtual;": true,
-		"create trigger t after insert on things for each row":                 true,
-		"alter table things add column note text;":                             false,
+	// every pending migration after it (laterReadsOff), and their exemptions (laterExemptionsOff),
+	// since the census cannot see what it changes: a VIRTUAL generated column, which PostgreSQL 18
+	// reads and the census's Postgres 17 grammar does not, and a statement Postgres refuses. A
+	// migration that creates or alters an event trigger takes both away too. Without a catalog the
+	// census reads every relation a statement names as a relation of pg_catalog, so an ALTER TABLE
+	// takes the reads away here, while a SELECT that names no relation and calls no set_config
+	// leaves them on, and one that calls set_config takes them away.
+	const eventTrigger = "creates or alters an event trigger"
+	for sql, want := range map[string]struct {
+		laterReadsOff      bool
+		laterExemptionsOff string
+	}{
+		"alter table things add column c int generated always as (1) virtual;": {true, "does not parse, so the census cannot see whether it " + eventTrigger},
+		"create trigger t after insert on things for each row":                 {true, "does not parse, so the census cannot see whether it " + eventTrigger},
+		"create event trigger et on ddl_command_start execute function f();":   {true, eventTrigger},
+		"select 1; alter event trigger et enable;":                             {true, eventTrigger},
+		"alter table things add column note text;":                             {true, ""},
+		"select set_config('search_path', 'public', false);":                   {true, ""},
+		"select 1;": {false, ""},
 	} {
-		if exemption, laterReadsOff, err := tableSizeExemption(context.Background(), nil, sql); err != nil || exemption != "" || laterReadsOff != want {
-			t.Errorf("%q: tableSizeExemption = %q, %v, %v; want \"\", %v, nil", sql, exemption, laterReadsOff, err, want)
+		if got, err := tableSizeExemption(context.Background(), nil, sql); err != nil || got.exemption != "" || got.laterReadsOff != want.laterReadsOff || got.laterExemptionsOff != want.laterExemptionsOff {
+			t.Errorf("%q: tableSizeExemption = %+v, %v; want laterReadsOff %v and laterExemptionsOff %q", sql, got, err, want.laterReadsOff, want.laterExemptionsOff)
 		}
 	}
 }

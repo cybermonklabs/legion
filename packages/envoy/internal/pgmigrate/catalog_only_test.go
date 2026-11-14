@@ -27,7 +27,7 @@ import (
 // nothing. The schema early holds the table foo, with a volatile assignment cast from text to its
 // row type, for the row that renames foo to mood under a search_path that lists early before
 // public; foo_of is plpgsql for the same reason, and names no type in its body, which still runs
-// after the rename.
+// after the rename. proc_view is a view over pg_proc, for the row that writes pg_proc through it.
 const catalogOnlyFixtureSQL = `
 create table schema_migrations (version bigint primary key);
 insert into schema_migrations (version) values (1);
@@ -66,6 +66,7 @@ create index big_pad on big (pad);
 create function big_noop() returns trigger language plpgsql as $$ begin return null; end $$;
 create trigger big_noop after insert on big for each row execute function big_noop();
 create view big_view as select id, kind from big;
+create view proc_view as select * from pg_proc;
 `
 
 // catalogOnlyFixture is catalogOnlyFixtureSQL with rows rows in each large table. The census
@@ -213,6 +214,10 @@ var admittedRows = []admittedRow{
 	// an attribute of big's row type and no type. The drops are with RESTRICT, the default.
 	{"after a rename column", []string{"alter table big rename column spare to spare2", addColumn}, "alter table"},
 	{"after insert, update, delete and select", []string{"insert into big2 (id, pad) values (0, 'x'); update big set spare = 1; delete from big2 where id = 0; with s as (select 1) select * from s;", addColumn}, "alter table"},
+	// A statement that names a relation keeps the reads on while the relation is no relation of
+	// pg_catalog and its rules read none (catalogRelation), as in the row above, whose statements
+	// name big and big2. big_view is a view, and its rule reads big alone.
+	{"after a select from a view over a table", []string{"select count(*) from big_view", addColumn}, "alter table"},
 	{"after create index, create view, create trigger and lock", []string{"create index big_kind2 on big (kind); create view v_1792 as select id from big; create trigger t_1792 after update on big for each row execute function big_noop(); lock table big in share mode;", addColumn}, "alter table"},
 	{"after alter index and alter table", []string{"alter index big_pad set (fillfactor = 90); alter table big alter column spare set statistics 100;", addColumn}, "alter table"},
 	{"after drops", []string{"drop trigger big_noop on big; drop function spare_fn(); drop index big_pad; drop view big_view; drop table big3;", addColumn}, "alter table"},
@@ -239,6 +244,9 @@ type refusedRow struct {
 	// searchPath, where it is not "", is the search_path of the census's connection for the row,
 	// and of the premise test's for its statement (underSearchPath).
 	searchPath string
+	// says, where it is not "", is a text that the refusal on size must hold besides
+	// aboveTheLimit.
+	says string
 }
 
 // refusedRows are every row of the Verification document's list "The rows of c-refuse", the
@@ -440,23 +448,59 @@ var refusedRows = []refusedRow{
 	{name: "after select into", migrations: []string{"select 1 into t_into_1792", addColumn}},
 	{name: "after drop column cascade", migrations: []string{"alter table big2 drop column pad cascade", addColumn}},
 	{name: "after a function in c", migrations: []string{"create function c_fn_1792() returns int language c as 'mylib', 'f'", addColumn}},
-	// INSERT, UPDATE, DELETE and SELECT keep the reads on only when nothing in the statement writes
-	// a system catalog (writesCatalog): a superuser's write to pg_proc or pg_cast can make a cast's
-	// function volatile or add a cast. An unqualified pg_ name resolves in pg_catalog first, and a
-	// DELETE in a WITH writes as the statement does. Each statement writes no row (where false).
+	// A statement on the keep-on list keeps the reads on only while it names no relation of
+	// pg_catalog, or one whose rules read one, and calls no set_config (keepsReadsOn): a write to
+	// pg_proc or pg_cast can make a cast's function volatile or add a cast. An unqualified pg_ name
+	// resolves in pg_catalog first, and a DELETE in a WITH names its table as the statement does.
+	// Each statement writes no row (where false).
 	{name: "after an update of pg_proc", migrations: []string{"update pg_proc set provolatile = 'v' where false", addColumn}},
 	{name: "after an insert into pg_catalog.pg_cast", migrations: []string{"insert into pg_catalog.pg_cast select * from pg_cast where false", addColumn}},
 	{name: "after a select whose with deletes from pg_cast", migrations: []string{"with w as (delete from pg_cast where false returning 1) select count(*) from w", addColumn}},
+
+	// The rows of review round 4. The census accounts for every statement that a pending
+	// migration's text shows, whoever may run it, and it only parses the first migration of each
+	// row: so et_fn_1792 and et_1792 need not exist.
+	//
+	// Rule 1 (catalogRelation): a statement that names a relation of pg_catalog turns the reads
+	// off, a read as well as a write, and so does one that names a view over such a relation: the
+	// fixture's proc_view over pg_proc, or a view of information_schema. The parse tree holds a
+	// RangeVar bare where its field holds a RangeVar alone, as the table of a CREATE INDEX and of a
+	// REFERENCES are, and the census reads it there too.
+	{name: "after a select from pg_catalog.pg_proc", migrations: []string{"select count(*) from pg_catalog.pg_proc", addColumn}},
+	{name: "after an update through a view over pg_proc", migrations: []string{"update proc_view set provolatile = 'v' where false", addColumn}},
+	{name: "after a select from an information_schema view", migrations: []string{"select count(*) from information_schema.columns", addColumn}},
+	{name: "after a create index on a pg_catalog relation", migrations: []string{"create index on pg_catalog.pg_class (oid)", addColumn}},
+	{name: "after a reference to a pg_catalog relation", migrations: []string{"alter table big2 add column r oid references pg_catalog.pg_class (oid)", addColumn}},
+	// Rule 2 (catalogOrCastFunction, catalogTypeName): a create or a replace of a function whose
+	// name pg_catalog holds, in any schema, and a CREATE TABLE whose name pg_catalog holds as the
+	// name of a type turn the reads off. The first row is the review's: on PostgreSQL 18.6, after
+	// the replace, Postgres rewrote the table for the second migration, which the census exempted.
+	{name: "after a replace of pg_catalog.now()", migrations: []string{"create or replace function pg_catalog.now() returns timestamptz language sql volatile as $$ select clock_timestamp() $$", "alter table big add column stamp timestamptz not null default now()"}},
+	{name: "after a create of a function whose name pg_catalog holds", migrations: []string{"create function public.now() returns timestamptz language sql stable as $$ select clock_timestamp() $$", addColumn}},
+	{name: "after a create table whose name is a pg_catalog type", migrations: []string{"create table public.int4 (id int)", addColumn}},
+	// Rule 3: a call of set_config anywhere in a statement on the keep-on list turns the reads off.
+	{name: "after a select that calls set_config", migrations: []string{"select set_config('search_path', 'public', false)", addColumn}},
+	{name: "after an insert whose value calls set_config", migrations: []string{"insert into big2 (id, pad) select 0, set_config('search_path', 'public', false) where false", addColumn}},
+	// Rule 4 (laterExemptionsOff): a pending CREATE EVENT TRIGGER or ALTER EVENT TRIGGER takes the
+	// exemption from every later pending migration, and so does a pending migration that does not
+	// parse, since the census cannot see whether it creates one. The census admits the second
+	// migration's DROP DEFAULT with no catalog read, and a marked concurrent index build without
+	// one, so only the first migration refuses them, and the refusal names it.
+	{name: "after a create event trigger", migrations: []string{"create event trigger et_pending_1792 on ddl_command_start execute function et_fn_1792()", "alter table big alter column flag drop default"}, says: "the earlier pending migration 0002_row.up.sql creates or alters an event trigger, which can run code of its own on them"},
+	{name: "after an alter event trigger", migrations: []string{"alter event trigger et_1792 enable", "alter table big alter column flag drop default"}, says: "the earlier pending migration 0002_row.up.sql creates or alters an event trigger, which can run code of its own on them"},
+	{name: "after a migration that does not parse, an admitted form without a catalog read is not exempt either", migrations: []string{"create tabel broken (id int)", "alter table big alter column flag drop default"}, says: "the earlier pending migration 0002_row.up.sql does not parse, so the census cannot see whether it creates or alters an event trigger"},
+	{name: "after a create event trigger, a concurrent index build", migrations: []string{"create event trigger et_pending_1792 on ddl_command_start execute function et_fn_1792()", "-- pgmigrate:non-transactional\ncreate index concurrently if not exists big_kind_concurrent on big (kind)"}, says: "the earlier pending migration 0002_row.up.sql creates or alters an event trigger, which can run code of its own on the concurrent index build"},
 }
 
 // censusOf runs one census, with the table limit at one byte, of sqls as pending migrations
-// numbered from 2, after the version 1 the fixture records, and answers each one's census.
+// numbered from 2, after the version 1 the fixture records, and answers each one's census. A
+// migration whose first line is the non-transactional marker is one, as Load reads it.
 func censusOf(t *testing.T, ctx context.Context, conn *pgx.Conn, sqls []string) []MigrationCensus {
 	t.Helper()
 	migrations := make([]Migration, len(sqls))
 	for i, sql := range sqls {
 		version := i + 2
-		migrations[i] = Migration{Version: version, Name: fmt.Sprintf("%04d_row.up.sql", version), SQL: sql}
+		migrations[i] = Migration{Version: version, Name: fmt.Sprintf("%04d_row.up.sql", version), SQL: sql, NonTransactional: nonTransactionalHeader(sql)}
 	}
 	report, err := Census(ctx, conn, migrations, "schema_migrations", CensusOptions{TableLimit: 1})
 	if err != nil {
@@ -496,10 +540,11 @@ func underSearchPath(t *testing.T, ctx context.Context, conn *pgx.Conn, searchPa
 // census sizes shares its migration with an added bigint column of big, which is admitted alone.
 // Each row asserts that the census still sized a table above the limit for the migration, so a
 // pass means the exemption kept the refusal away, not a table the census did not find. A row of
-// two migrations shows that a first migration of statements on the keep-on list (keepsReadsOn: a
-// CREATE TABLE, a SET LOCAL, a replace of a function no cast calls, a column rename and the rest)
-// leaves the catalog reads of the second one on. The census is read-only and its catalog state
-// lives inside one call, so the rows share one database and no row reaches the next.
+// two migrations shows that a first migration of statements that keep the catalog reads on
+// (keepsReadsOn: a CREATE TABLE, a replace of a function no cast calls, a column rename and the
+// rest; catalogReadsOff: a SET LOCAL, which ends with its own migration) leaves the catalog reads
+// of the second one on. The census is read-only and its catalog state lives inside one call, so
+// the rows share one database and no row reaches the next.
 func TestCensusAdmitsEveryCatalogOnlyForm(t *testing.T) {
 	ctx := context.Background()
 	conn := catalogOnlyDatabase(t, ctx, 1)
@@ -536,13 +581,16 @@ func sizesATableAboveTheLimit(entry MigrationCensus) bool {
 // admit. So is an added column whose reading the census cannot trust: after the migration's own
 // SET or RESET of a setting other than lock_timeout and statement_timeout, after an earlier
 // pending migration's session SET or RESET of such a setting, and after an earlier pending
-// migration that holds a statement off the keep-on list (keepsReadsOn lists what keeps the
-// catalog reads on), because the census reads the catalog as it stands before any pending
-// migration applies. The census runs with the limit at one byte, so each refused migration is
-// refused on the size of a table it touches; a form that touches no table the census sizes shares
-// its migration with an added bigint column of big, which is admitted alone, so the refusal shows
-// that the form cost the migration its exemption. A row with a searchPath runs its census under
-// that search_path.
+// migration that holds a statement off the keep-on list, or a statement on it that names a
+// relation of pg_catalog or calls set_config (keepsReadsOn lists what keeps the catalog reads
+// on), because the census reads the catalog as it stands before any pending migration applies.
+// After an earlier pending migration that creates or alters an event trigger, or that does not
+// parse, every form is held to the limit, one that needs no catalog read included, and the
+// refusal names that migration (row.says). The census runs with the limit at one byte, so each
+// refused migration is refused on the size of a table it touches; a form that touches no table
+// the census sizes shares its migration with an added bigint column of big, which is admitted
+// alone, so the refusal shows that the form cost the migration its exemption. A row with a
+// searchPath runs its census under that search_path.
 func TestCensusStillRefusesEveryFormThatReadsOrRewritesRows(t *testing.T) {
 	ctx := context.Background()
 	conn := catalogOnlyDatabase(t, ctx, 1)
@@ -554,8 +602,8 @@ func TestCensusStillRefusesEveryFormThatReadsOrRewritesRows(t *testing.T) {
 			if row.first {
 				entry = pending[0]
 			}
-			if entry.TableSizeExemption != "" || !refusalSays(entry, aboveTheLimit) {
-				t.Fatalf("%s: exemption %q, refusals %q; want no exemption and a refusal on size", entry.Migration.Name, entry.TableSizeExemption, entry.Refusals)
+			if entry.TableSizeExemption != "" || entry.ConcurrentIndex || !refusalSays(entry, aboveTheLimit, row.says) {
+				t.Fatalf("%s: exemption %q, concurrent index %v, refusals %q; want no exemption and a refusal on size that says %q", entry.Migration.Name, entry.TableSizeExemption, entry.ConcurrentIndex, entry.Refusals, row.says)
 			}
 		})
 	}
@@ -660,9 +708,11 @@ func runPremise(t *testing.T, ctx context.Context, conn *pgx.Conn, sql string) p
 		t.Fatalf("begin the classifier's transaction: %v", err)
 	}
 	defer func() { _ = classify.Rollback(ctx) }()
-	if run.exemption, _, err = tableSizeExemption(ctx, classify, sql); err != nil {
+	classified, err := tableSizeExemption(ctx, classify, sql)
+	if err != nil {
 		t.Fatalf("classify: %v", err)
 	}
+	run.exemption = classified.exemption
 	if err := classify.Rollback(ctx); err != nil {
 		t.Fatalf("roll the classifier's transaction back: %v", err)
 	}

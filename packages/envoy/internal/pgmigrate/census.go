@@ -24,9 +24,10 @@ import (
 // window does not grow with the table. Where a shape alone does not show that (an added column's
 // type and default, the table a created index is built on), the census asks the catalog it reads
 // (tableSizeExemption). A marked single concurrent index build scans rows without holding off
-// ordinary writes. Enabled DDL event triggers disable both exceptions because they run code of
-// their own. Sizes and lock holders are still reported, holders still refuse, and no table above
-// the limit is counted: an exact count that large during a deploy is load for nothing.
+// ordinary writes. Enabled DDL event triggers, and an event trigger that an earlier pending
+// migration creates or alters, disable both exceptions because they run code of their own. Sizes
+// and lock holders are still reported, holders still refuse, and no table above the limit is
+// counted: an exact count that large during a deploy is load for nothing.
 const CensusTableLimit int64 = 1 << 30
 
 // CensusLongTransaction is how long a transaction holding a lock on a table a pending migration
@@ -84,15 +85,18 @@ type MigrationCensus struct {
 	// TableSizeExemption names the statement kinds the migration is made of when every one of
 	// them changes only the catalog or the transaction's own settings, or takes a lock, and reads
 	// no existing row (tableSizeExemption, which reads the catalog where a form needs it), and no
-	// enabled event trigger runs on them (ddlEventTriggersQuery), so CensusTableLimit does not
-	// apply to it; empty otherwise.
+	// event trigger runs on them: none is enabled (ddlEventTriggersQuery), and no earlier pending
+	// migration creates or alters one or fails to parse. CensusTableLimit does not apply to such a
+	// migration. Empty otherwise.
 	TableSizeExemption string
 	// ConcurrentIndex is a validated, marked single non-unique CREATE INDEX CONCURRENTLY. Its table
 	// scans do not hold off ordinary writes, so the size limit does not apply; holder and
-	// census checks still do. Enabled DDL event triggers disable this exception too.
+	// census checks still do. The event triggers that disable TableSizeExemption disable this
+	// exception too.
 	ConcurrentIndex bool
 	// exemptionVoided says, for a refusal on size, why a migration whose statements alone would be
-	// exempt is not: the event triggers that run on them. Empty otherwise.
+	// exempt is not: the enabled event triggers that run on them, or the earlier pending migration
+	// that creates or alters an event trigger or does not parse. Empty otherwise.
 	exemptionVoided string
 	// Count is what the migration's census answered; nil when it declares none or the census
 	// failed.
@@ -160,11 +164,14 @@ func (r *Report) Refused() bool { return r.refusals() > 0 }
 //
 // The classifier (tableSizeExemption) reads the catalog in the census's transaction where a form
 // needs it: an added column's type and default, whether the table a created index is built on is
-// new, and, for a replaced function, whether a cast calls a function of its name. The census
-// reads every pending migration against the catalog as it stands before any of them applies, so
-// from the first pending migration that holds a statement the census does not know to leave names
-// as they are (catalogReadsOff), every later one is classified with no catalog, and its added
-// columns and created indexes are judged on size (catalogTrusted).
+// new, and, for a statement on the list that keeps the catalog reads on, the relations it names
+// and the function, the table or the view it creates (keepsReadsOn). The census reads every
+// pending migration against the catalog as it stands before any of them applies, so from the
+// first pending migration that holds a statement the census does not know to leave names as they
+// are (catalogReadsOff), every later one is classified with no catalog, and its added columns and
+// created indexes are judged on size (catalogTrusted). From the first pending migration that
+// creates or alters an event trigger, or that does not parse, no later one is exempt from the
+// limit (laterExemptionsOff).
 //
 // It returns an error only when the census itself could not be taken: a connection whose
 // search_path names no schema that exists among them, where current_schema() is null, so neither
@@ -191,13 +198,8 @@ func Census(ctx context.Context, conn *pgx.Conn, migrations []Migration, version
 		return nil, fmt.Errorf("census: begin read-only transaction: %w", err)
 	}
 	defer tx.Rollback(ctx)
-	// The text settings (textSettings), whatever the server, the database or the connection sets,
-	// make Postgres read the census's text as Load's check read it (censusTokens). With
-	// standard_conforming_strings off, a backslash in '…' escapes the quote after it, and a literal
-	// can run on over a call. With backslash_quote off, Postgres refuses a \' that Load read as an
-	// escaped quote. In another client_encoding, Postgres converts the bytes before it reads them,
-	// and in SJIS a backslash after a UTF-8 character can become part of a character and escape
-	// nothing.
+	// The text settings (textSettings says why each matters) make Postgres read the census's text
+	// as Load's check read it (censusTokens).
 	set, args := setConfig(true, withTextSettings(
 		setting{"statement_timeout", strconv.FormatInt(options.StatementTimeout.Milliseconds(), 10) + "ms"},
 		setting{"lock_timeout", lockTimeoutSetting},
@@ -248,6 +250,11 @@ func Census(ctx context.Context, conn *pgx.Conn, migrations []Migration, version
 	// laterReadsOff says it does, and from there on no migration reads the catalog. A recorded
 	// migration, which the loop skips, changes nothing.
 	catalogTrusted := true
+	// laterEventTrigger names the first pending migration that creates or alters an event trigger,
+	// or that does not parse, and says which (laterExemptionsOff); "" until one does. Such an event
+	// trigger can run code of its own on the statements of every later migration, as an enabled
+	// one does, so no later migration is exempt from the limit.
+	var laterEventTrigger string
 	for _, migration := range migrations {
 		if recorded[migration.Version] {
 			continue
@@ -257,26 +264,38 @@ func Census(ctx context.Context, conn *pgx.Conn, migrations []Migration, version
 		if catalogTrusted {
 			catalog = tx
 		}
-		kinds, laterReadsOff, err := tableSizeExemption(ctx, catalog, migration.SQL)
+		classified, err := tableSizeExemption(ctx, catalog, migration.SQL)
 		if err != nil {
 			return nil, fmt.Errorf("census: %s: classify: %w", migration.Name, err)
 		}
-		if laterReadsOff {
+		if classified.laterReadsOff {
 			catalogTrusted = false
 		}
-		if kinds != "" && ddlEventTriggers == "" {
+		// runsCode says what can run code of its own on the migration's statements, in words that
+		// end where the refusal names what the code runs on; "" where nothing can.
+		var runsCode string
+		switch {
+		case ddlEventTriggers != "":
+			runsCode = "the enabled event triggers " + ddlEventTriggers + " run code of their own on"
+		case laterEventTrigger != "":
+			runsCode = laterEventTrigger + ", which can run code of its own on"
+		}
+		if kinds := classified.exemption; kinds != "" && runsCode == "" {
 			entry.TableSizeExemption = kinds
 		} else if kinds != "" {
-			entry.exemptionVoided = fmt.Sprintf("its statements are only %s, which would exempt it from the limit, but the enabled event triggers %s run code of their own on them", kinds, ddlEventTriggers)
+			entry.exemptionVoided = fmt.Sprintf("its statements are only %s, which would exempt it from the limit, but %s them", kinds, runsCode)
 		}
 		if migration.NonTransactional {
 			if _, err := concurrentIndex(migration.SQL); err == nil {
-				if ddlEventTriggers == "" {
+				if runsCode == "" {
 					entry.ConcurrentIndex = true
 				} else {
-					entry.exemptionVoided = "enabled event triggers " + ddlEventTriggers + " run code of their own on the concurrent index build"
+					entry.exemptionVoided = runsCode + " the concurrent index build"
 				}
 			}
+		}
+		if laterEventTrigger == "" && classified.laterExemptionsOff != "" {
+			laterEventTrigger = "the earlier pending migration " + migration.Name + " " + classified.laterExemptionsOff
 		}
 		if len(report.Pending) == 0 && len(unrecorded) > 0 {
 			entry.refuse("%s records no version, yet the database holds %s: the runner would apply every migration from this one over it", versionTable, someTables(unrecorded))
@@ -503,8 +522,9 @@ func censusTable(ctx context.Context, tx pgx.Tx, touched TouchedTable, options C
 	table := TableCensus{Name: name, Through: touched.Through}
 	defer func() { entry.Tables = append(entry.Tables, table) }()
 	var oid uint32
+	var relation string
 	var pastFreezeAge bool
-	err := tx.QueryRow(ctx, tableQuery, name).Scan(&oid, &pastFreezeAge)
+	err := tx.QueryRow(ctx, tableQuery, name).Scan(&oid, &relation, &pastFreezeAge)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil
 	}
@@ -540,14 +560,7 @@ func censusTable(ctx context.Context, tx pgx.Tx, touched TouchedTable, options C
 			}
 			return nil
 		}
-		// The count names the table by the oid the census found it by. Postgres prints a regclass
-		// quoted, and with its schema where the search_path would not find it without one, so a
-		// table the migration names with its schema (other.things) is counted, where quoting the
-		// touched name as one identifier would name no table.
-		var relation string
-		if err = nested.QueryRow(ctx, "select $1::oid::regclass::text", oid).Scan(&relation); err == nil {
-			err = nested.QueryRow(ctx, "select count(*) from "+relation).Scan(&table.Rows)
-		}
+		err = nested.QueryRow(ctx, "select count(*) from "+relation).Scan(&table.Rows)
 	}
 	// The SQLSTATE and the holders the census already read, never Postgres's message: no text a
 	// row could reach is printed. The failed read aborted the savepoint, which is rolled back
@@ -570,12 +583,15 @@ func censusTable(ctx context.Context, tx pgx.Tx, touched TouchedTable, options C
 	return fmt.Errorf("census: read %s: %w", name, err)
 }
 
-// tableQuery finds a touched table by name: its oid, and whether it is past its freeze age, so
-// that autovacuum launches its vacuums of it to prevent wraparound and Postgres does not cancel
-// one for a lock another session waits for. The table's own reloptions can lower either age, never
-// raise it.
+// tableQuery finds a touched table by name: its oid; its name as the row count names it; and
+// whether it is past its freeze age, so that autovacuum launches its vacuums of it to prevent
+// wraparound and Postgres does not cancel one for a lock another session waits for. The table's
+// own reloptions can lower either age, never raise it. The count names the table by the oid the
+// census found it by. Postgres prints a regclass quoted, and with its schema where the search_path
+// would not find it without one, so a table the migration names with its schema (other.things) is
+// counted, where quoting the touched name as one identifier would name no table.
 const tableQuery = `
-	select c.oid,
+	select c.oid, c.oid::regclass::text,
 		age(c.relfrozenxid) >= least(current_setting('autovacuum_freeze_max_age')::bigint, coalesce(
 			(select option_value::bigint from pg_options_to_table(c.reloptions) where option_name = 'autovacuum_freeze_max_age'), 2147483647))
 		or mxid_age(c.relminmxid) >= least(current_setting('autovacuum_multixact_freeze_max_age')::bigint, coalesce(

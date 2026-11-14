@@ -232,12 +232,16 @@ func TestCensusReadsItsTextWithBackslashQuoteSafeEncodingAndClientEncodingUTF8(t
 // before (inMigrationLockTx gives the connection back with its settings as they are). After a
 // pending set standard_conforming_strings = off, a backslash escapes the quote after it in a later
 // migration's plain literal, so a text the census reads as one alter table with a constant default
-// the server reads as that alter table and an update of every row. The census must not exempt
-// from the size limit a migration the runner then applies as a statement it never read: either it
-// refuses 0003 on size, or the runner applies 0003 as the census read it and updates no row. The
-// control shows that the census exempts 0003 when no pending migration sets the strings off, so
-// a refusal of the pair is the setting's doing. The runner's pool holds one connection, so 0003
-// runs on the connection 0002 set.
+// the server reads as that alter table and an update of every row. Two rules keep the census from
+// exempting a migration that the runner then applies as a statement the census never read, and the
+// test holds both. The census refuses 0003 on size, because a session SET of any setting but
+// lock_timeout and statement_timeout turns off the catalog reads of every later migration, and
+// without them 0003's added column is judged on size. And the runner applies 0003 as the census
+// read it and updates no row, because it sets standard_conforming_strings on for each migration
+// (textSettings). Each half fails on its own when its rule is undone. The control shows that the
+// census exempts 0003 when no pending migration sets the strings off, so the refusal of the pair is
+// the setting's doing. The runner's pool holds one connection, so 0003 runs on the connection 0002
+// set.
 func TestCensusExemptsNoMigrationTheRunnerReadsAsOtherStatements(t *testing.T) {
 	ctx := context.Background()
 	store, url := migratedToOne(t)
@@ -271,8 +275,10 @@ func TestCensusExemptsNoMigrationTheRunnerReadsAsOtherStatements(t *testing.T) {
 		set[name] = file
 	}
 	entry := noteOf(set)
-	if len(entry.Refusals) > 0 {
-		return
+	if entry.TableSizeExemption != "" || !slices.ContainsFunc(entry.Refusals, func(refusal string) bool {
+		return strings.Contains(refusal, "things is ") && strings.Contains(refusal, "above the 1 bytes a table a migration touches may be")
+	}) {
+		t.Errorf("after 0002 set standard_conforming_strings off for the session, the census answered 0003 with exemption %q and refusals %v; want no exemption and a refusal on the size of things", entry.TableSizeExemption, entry.Refusals)
 	}
 	config, err := pgxpool.ParseConfig(url)
 	if err != nil {
@@ -293,7 +299,7 @@ func TestCensusExemptsNoMigrationTheRunnerReadsAsOtherStatements(t *testing.T) {
 		t.Fatal(err)
 	}
 	if updated != 0 {
-		t.Errorf("the census exempted 0003 as %q, and the runner then updated %d rows of things: it read 0003 with standard_conforming_strings off, as an update the census never read", entry.TableSizeExemption, updated)
+		t.Errorf("the runner updated %d rows of things: it read 0003 with standard_conforming_strings off, as an update the census never read", updated)
 	}
 }
 
