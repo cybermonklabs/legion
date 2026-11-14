@@ -1546,7 +1546,7 @@ package api
 // Read the base's own number and every open head again at the next forward merge rather than
 // from this line.)
 //
-// 115: INFRA-2009 -- the cache trimmer in an issue pod's launcher process, which is two shapes of
+// 121: INFRA-2009 -- the cache trimmer in an issue pod's launcher process, which is two shapes of
 // the launcher wire. The daemon's answer to a launcher's hello carries the settings the trimmer
 // runs by, as one optional member of `shimwire.LauncherHelloAck` (`volumeTrim`: the two marks,
 // the minimum age and the interval, from `runtime.kubernetes.volume_trim`), written by
@@ -1636,7 +1636,13 @@ package api
 // main's 104 and 105 that no open head declares. It is held under the same rule: move it only
 // when main's own number or another open head's reaches 108.
 // At the forward merge that followed review round 15, main had moved to 111, above 108, so the
-// number moved again: above main's 111 the open heads declare 112 (#2731), 113 (#3575) and 114
-// (#3730), so 115 is the lowest number above main's that no open head declares. It is held
-// under the same rule: move it only when main's own number or another open head's reaches 115.)
-const DaemonAPIVersion = 115
+// number moved again: above main's 111 the open heads then declared 112 (#2731), 113 (#3575)
+// and 114 (#3730), so 115 was the lowest number above main's that no open head declared.
+// At the forward merge of round 17 main was still at 111, but #3937 had moved to 115, and a hold
+// on this file asked every change to it for a number above #3659's 118. Read at
+// refs/pull/<n>/head for every open pull request, the open heads declare 112 (#2731), 113
+// (#3575), 114 (#3730), 115 (#3937), 116 (#3715), 117 (#3711), 118 (#3659), 119 (#3712) and 120
+// (#3793 and #3993), so 121 is the lowest number above both main's 111 and 118 that no open
+// head declares. It is held under the same rule: move it only when main's own number or another
+// open head's reaches 121.)
+const DaemonAPIVersion = 121

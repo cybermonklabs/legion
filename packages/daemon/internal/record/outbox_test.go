@@ -31,6 +31,8 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 		ReassertStatusWrite("in_progress", "done"),
 		HandOverStatusWrite("todo", "in_progress", "LEGION-200", 3),
 		MessagePost{Body: "Pull request checks are blocked."},
+		MessagePost{Body: "The push check found work: dispatch://LEGION-208/artifact/rescue-pod-9d3f0c7a",
+			Artifact: &MessageArtifact{Name: "rescue-pod-9d3f0c7a", Content: "```\nbranch legion/LEGION-208-rescue\n```\n"}},
 		Notice{Kind: "phase-finished", Role: claim.RoleTester, Phase: phase.Testing, Summary: "Tests passed", Verdict: "pass", Version: 4, Reason: ""},
 		ControllerNotice{Kind: "held", Role: claim.RolePlanner, Phase: phase.Planning, Reason: "escalated"},
 		Notice{Kind: "worker-died", Role: claim.RoleImplementer, Phase: phase.Implementing, Failure: &NoticeFailure{
@@ -68,6 +70,9 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 			PullRequest: "sjawhar/legion#42", Prompt: "Read the reviewer's thread before you write anything."},
 		HookPrompt{Hook: "slow-review", Role: claim.RoleReviewer, From: phase.Accepting, To: phase.Reviewing,
 			Count: 2, Counts: map[string]int{"accepting-reviewing": 2}, Prompt: "Say what the round missed."},
+		UpdateAsk{Role: claim.RoleTester, Round: "pod:9d3f0c7a", Pod: "9d3f0c7a", Text: "The daemon must replace the pod that runs this issue's roles."},
+		// The architect's process runs in the pod too, so its ask is a row like a worker's.
+		UpdateAsk{Role: claim.RoleArchitect, Round: "pod:9d3f0c7a", Pod: "9d3f0c7a", Text: "The daemon must replace the pod that runs this issue's roles."},
 	}
 	for _, payload := range payloads {
 		t.Run(string(payload.OutboxKind()), func(t *testing.T) {
@@ -209,7 +214,7 @@ func TestPersonHandoverPendingCountsOnlyMarkedStatusRows(t *testing.T) {
 func TestEveryOutboxKindIsInExactlyOneLane(t *testing.T) {
 	every := []OutboxKind{OutboxKindDispatchStatus, OutboxKindDispatchMessage, OutboxKindNotice, OutboxKindControllerNotice, OutboxKindSupervise,
 		OutboxKindGateSeed, OutboxKindLingerClose, OutboxKindIssueSuspend, OutboxKindWorkspaceRemove, OutboxKindIssueBranch,
-		OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound, OutboxKindRoleMessage, OutboxKindPhaseEnded, OutboxKindHookPrompt,
+		OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound, OutboxKindRoleMessage, OutboxKindPhaseEnded, OutboxKindHookPrompt, OutboxKindUpdateAsk,
 		OutboxKindIssueBundle, OutboxKindIssueRelease, OutboxKindGatedStepsPublish, OutboxKindClaimRelease, OutboxKindDesignGatesPublish}
 	lanes := map[OutboxKind][]OutboxLane{}
 	for _, lane := range []OutboxLane{LaneLifecycle, LaneBoard, LaneRoleMessage, LaneClaim} {
@@ -313,6 +318,10 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 		{name: "a hook prompt that counted nothing", payload: HookPrompt{Hook: "back-to-implementing", Role: claim.RoleImplementer, From: phase.Reviewing, To: phase.Implementing, Prompt: "Read the thread."}, reason: "its count is one or more"},
 		{name: "a hook prompt counting backward", payload: HookPrompt{Hook: "back-to-implementing", Role: claim.RoleImplementer, From: phase.Reviewing, To: phase.Implementing, Count: -1, Prompt: "Read the thread."}, reason: "its count is one or more"},
 		{name: "a hook prompt with no words", payload: HookPrompt{Hook: "back-to-implementing", Role: claim.RoleImplementer, From: phase.Reviewing, To: phase.Implementing, Count: 1}, reason: "carries the hook's own words"},
+		{name: "an update ask to no role", payload: UpdateAsk{Round: "pod:9d3f0c7a", Pod: "9d3f0c7a", Text: "Push your work."}, reason: `"" is no role`},
+		{name: "an update ask to the controller", payload: UpdateAsk{Role: claim.RoleController, Round: "pod:9d3f0c7a", Pod: "9d3f0c7a", Text: "Push your work."}, reason: `"controller" is no role`},
+		{name: "an update ask with no round", payload: UpdateAsk{Role: claim.RoleImplementer, Pod: "9d3f0c7a", Text: "Push your work."}, reason: "names the round it asks for"},
+		{name: "an update ask with no text", payload: UpdateAsk{Role: claim.RoleImplementer, Round: "pod:9d3f0c7a", Pod: "9d3f0c7a"}, reason: "carries the text the sweep built"},
 		{name: "a check look bound without a look", payload: CheckLook{}, reason: "check look bound requires the look it bounds"},
 		{name: "unsupported payload", payload: unsupportedOutboxPayload{}, reason: "unknown outbox payload"},
 	} {
@@ -322,6 +331,57 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 				t.Fatalf("NewOutboxRow error = %v, want %q", err, tc.reason)
 			}
 		})
+	}
+}
+
+// A message's artifact is refused before its row is queued wherever Dispatch would refuse the
+// upload on every run, or would file it under a slug other than its name, which is the slug the
+// message's link names: a name that is no slug, content that is empty or blank, and content past
+// Dispatch's bound on one document. The decode of a stored row holds it to the same rules.
+func TestAMessageArtifactIsRefusedUnlessDispatchWouldFileItUnderItsName(t *testing.T) {
+	now := time.Date(2026, 11, 13, 9, 0, 0, 0, time.UTC)
+	post := func(name, content string) MessagePost {
+		return MessagePost{Body: "dispatch://LEGION-208/artifact/" + name, Artifact: &MessageArtifact{Name: name, Content: content}}
+	}
+	for _, tc := range []struct {
+		name    string
+		payload MessagePost
+		reason  string
+	}{
+		{name: "no name", payload: post("", "the list"), reason: "which is no Dispatch slug"},
+		{name: "an uppercase letter", payload: post("rescue-Pod-9d3f0c7a", "the list"), reason: "which is no Dispatch slug"},
+		{name: "a colon", payload: post("rescue-pod:9d3f0c7a", "the list"), reason: "which is no Dispatch slug"},
+		{name: "an underscore", payload: post("rescue_pod", "the list"), reason: "which is no Dispatch slug"},
+		{name: "two dashes in a row", payload: post("rescue--pod", "the list"), reason: "which is no Dispatch slug"},
+		{name: "a dash at the start", payload: post("-rescue-pod", "the list"), reason: "which is no Dispatch slug"},
+		{name: "a dash at the end", payload: post("rescue-pod-", "the list"), reason: "which is no Dispatch slug"},
+		{name: "a letter outside ASCII", payload: post("rescue-pöd", "the list"), reason: "which is no Dispatch slug"},
+		{name: "empty content", payload: post("rescue-pod", ""), reason: "holds no content"},
+		{name: "blank content", payload: post("rescue-pod", " \n\t\n"), reason: "holds no content"},
+		{name: "content past one document", payload: post("rescue-pod", strings.Repeat("x", MaxMessageArtifactBytes+1)), reason: "more than the 1048576 of one Dispatch document"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := NewOutboxRow("LEGION-208", tc.payload, now); err == nil || !strings.Contains(err.Error(), tc.reason) {
+				t.Fatalf("NewOutboxRow error = %v, want %q", err, tc.reason)
+			}
+			encoded, err := json.Marshal(tc.payload)
+			if err != nil {
+				t.Fatal(err)
+			}
+			row := OutboxRow{ID: 7, Kind: OutboxKindDispatchMessage, Issue: "LEGION-208", Payload: encoded}
+			if _, err := DecodeOutboxPayload(row); err == nil || !strings.Contains(err.Error(), tc.reason) {
+				t.Fatalf("DecodeOutboxPayload error = %v, want %q", err, tc.reason)
+			}
+		})
+	}
+	for _, payload := range []MessagePost{
+		post("rescue-pod-9d3f0c7a-2b41-4a39-9f6b-6c1d0a7e5b22", "the list"),
+		post("r", strings.Repeat("x", MaxMessageArtifactBytes)),
+		{Body: "a message that links no document"},
+	} {
+		if _, err := NewOutboxRow("LEGION-208", payload, now); err != nil {
+			t.Errorf("NewOutboxRow of a message whose artifact Dispatch takes as named = %v, want it queued", err)
+		}
 	}
 }
 
@@ -353,6 +413,8 @@ func TestDecodeOutboxPayloadRefusesInvalidRows(t *testing.T) {
 		{name: "a hook prompt to an architect", row: OutboxRow{ID: 55, Kind: OutboxKindHookPrompt, Payload: json.RawMessage(`{"hook":"back-to-implementing","role":"architect","from":"reviewing","to":"implementing","count":1,"counts":{"reviewing-implementing":1},"prompt":"Read the thread."}`)}, reason: "never to an architect"},
 		{name: "a hook prompt on a move forward", row: OutboxRow{ID: 56, Kind: OutboxKindHookPrompt, Payload: json.RawMessage(`{"hook":"back-to-implementing","role":"reviewer","from":"implementing","to":"reviewing","count":1,"counts":{},"prompt":"Read the thread."}`)}, reason: "is no move back"},
 		{name: "a hook prompt with an unknown field", row: OutboxRow{ID: 57, Kind: OutboxKindHookPrompt, Payload: json.RawMessage(`{"hook":"back-to-implementing","role":"implementer","from":"reviewing","to":"implementing","count":1,"counts":{"reviewing-implementing":1},"prompt":"Read the thread.","cap":2}`)}, reason: "unknown field"},
+		{name: "an update ask with no round", row: OutboxRow{ID: 58, Kind: OutboxKindUpdateAsk, Payload: json.RawMessage(`{"role":"tester","pod":"9d3f0c7a","text":"Push your work."}`)}, reason: "names the round it asks for"},
+		{name: "an update ask with an unknown field", row: OutboxRow{ID: 59, Kind: OutboxKindUpdateAsk, Payload: json.RawMessage(`{"role":"tester","round":"pod:9d3f0c7a","pod":"9d3f0c7a","text":"Push your work.","reasons":"image a, now b"}`)}, reason: "unknown field"},
 		{name: "a claim release with a field", row: OutboxRow{ID: 54, Kind: OutboxKindClaimRelease, Payload: json.RawMessage(`{"issue":"LEGION-208"}`)}, reason: "unknown field"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

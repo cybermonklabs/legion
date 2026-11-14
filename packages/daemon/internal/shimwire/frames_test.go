@@ -138,6 +138,30 @@ func TestEveryExchangedFrameRoundTripsItsWireLine(t *testing.T) {
 			}},
 		},
 		{
+			// A daemon that names the issue's one rescue branch sends it beside the pod's own
+			// prefix, which an older shim reads alone.
+			"rescue-unpushed naming the issue's one rescue branch",
+			`{"type":"rescue-unpushed","id":"r6","branch":"legion/LEGION-484-rescue-9d3f0c7a","target":"legion/LEGION-484-rescue","workspaceTimeoutMs":120000,"timeoutMs":300000}`,
+			RescueUnpushed{ID: "r6", Branch: "legion/LEGION-484-rescue-9d3f0c7a", Target: "legion/LEGION-484-rescue", WorkspaceTimeoutMs: 120_000, TimeoutMs: 300_000},
+		},
+		{
+			// One branch this check moved forward, with the commits its push added, and one an
+			// earlier check pushed and this one did not, with the commit only it holds.
+			"rescue-unpushed-result carrying each branch's commits",
+			`{"type":"rescue-unpushed-result","id":"r6","ok":true,"workspaces":[` +
+				`{"dir":"/legion/workspaces/acme/widgets/legion-484","status":"rescued","branches":[{"name":"legion/LEGION-484-rescue","commit":"c0ffee","previous":"decade","pushed":true,"commits":[{"id":"c0ffee","subject":"rescue: LEGION-484"},{"id":"beef01","subject":"fix the widget"}]}]},` +
+				`{"dir":"/legion/workspaces/acme/widgets/legion-485","status":"rescued","branches":[{"name":"legion/LEGION-485-rescue","commit":"facade","commits":[{"id":"facade"}]}]}]}`,
+			RescueUnpushedResult{ID: "r6", OK: true, Workspaces: []RescueWorkspace{
+				{Dir: "/legion/workspaces/acme/widgets/legion-484", Status: "rescued", Branches: []RescueBranch{{
+					Name: "legion/LEGION-484-rescue", Commit: "c0ffee", Previous: "decade", Pushed: true,
+					Commits: []RescueCommit{{ID: "c0ffee", Subject: "rescue: LEGION-484"}, {ID: "beef01", Subject: "fix the widget"}},
+				}}},
+				{Dir: "/legion/workspaces/acme/widgets/legion-485", Status: "rescued", Branches: []RescueBranch{{
+					Name: "legion/LEGION-485-rescue", Commit: "facade", Commits: []RescueCommit{{ID: "facade"}},
+				}}},
+			}},
+		},
+		{
 			"rpc_chunk",
 			`{"type":"rpc_chunk","chunkId":"agent-end-1","index":0,"count":2,"byteLength":1048577,"data":"eA=="}`,
 			RPCChunk{ChunkID: "agent-end-1", Index: 0, Count: 2, ByteLength: 1_048_577, Data: "eA=="},
@@ -499,6 +523,11 @@ func TestTheFramesTheShippedCodeValidatesRefuseTheirMalformedForms(t *testing.T)
 	if err := rescue.Validate(); err != nil {
 		t.Fatalf("RescueUnpushed.Validate: %v", err)
 	}
+	targeted := rescue
+	targeted.Target = "legion/INFRA-1-rescue"
+	if err := targeted.Validate(); err != nil {
+		t.Fatalf("RescueUnpushed.Validate of a frame naming the issue's one rescue branch: %v", err)
+	}
 	for _, tc := range []struct {
 		name  string
 		frame RescueUnpushed
@@ -508,6 +537,8 @@ func TestTheFramesTheShippedCodeValidatesRefuseTheirMalformedForms(t *testing.T)
 		{"a branch a refspec misreads", RescueUnpushed{ID: "r5", Branch: "legion/x:refs/heads/main", WorkspaceTimeoutMs: 1, TimeoutMs: 2}},
 		{"no workspace bound", RescueUnpushed{ID: "r5", Branch: rescue.Branch, TimeoutMs: 2}},
 		{"a workspace bound above the whole", RescueUnpushed{ID: "r5", Branch: rescue.Branch, WorkspaceTimeoutMs: 3, TimeoutMs: 2}},
+		{"a target with a space", RescueUnpushed{ID: "r5", Branch: rescue.Branch, Target: "legion/INFRA-1 rescue", WorkspaceTimeoutMs: 1, TimeoutMs: 2}},
+		{"a target with ..", RescueUnpushed{ID: "r5", Branch: rescue.Branch, Target: "legion/../main", WorkspaceTimeoutMs: 1, TimeoutMs: 2}},
 	} {
 		if err := tc.frame.Validate(); !errors.Is(err, ErrMalformedFrame) {
 			t.Fatalf("%s: Validate = %v, want ErrMalformedFrame", tc.name, err)
@@ -529,6 +560,62 @@ func TestTheFramesTheShippedCodeValidatesRefuseTheirMalformedForms(t *testing.T)
 		if err := tc.frame.Validate(); !errors.Is(err, ErrMalformedFrame) {
 			t.Fatalf("%s: Validate = %v, want ErrMalformedFrame", tc.name, err)
 		}
+	}
+}
+
+// rescueUnpushedBeforeTarget is RescueUnpushed as a shim built before the issue's one rescue
+// branch decodes it: the frame's four fields at 9542c6fbbe, with no target among them.
+type rescueUnpushedBeforeTarget struct {
+	ID                 string `json:"id"`
+	Branch             string `json:"branch"`
+	WorkspaceTimeoutMs int    `json:"workspaceTimeoutMs"`
+	TimeoutMs          int    `json:"timeoutMs"`
+}
+
+// rescueBranchBeforeCommits is RescueBranch as a daemon built before the branch's commits decodes
+// it.
+type rescueBranchBeforeCommits struct {
+	Name   string `json:"name"`
+	Commit string `json:"commit"`
+}
+
+// A shim built before the issue's one rescue branch reads a rescue-unpushed as four fields and
+// drops the rest, and it reports every remote branch that starts with `<branch>-` as its own. So
+// the frame keeps the pod's own prefix in branch, and the one branch rides in target, which that
+// shim never sees: with the one branch's name in branch, it would report every earlier pod's
+// rescue branches as this pod's. The report's new fields cross the other way, to a daemon built
+// before them, which reads the name and the commit as it always has.
+func TestARescueUnpushedFrameReadByAnOlderShimKeepsThePerPodPrefix(t *testing.T) {
+	frame := RescueUnpushed{ID: "r6", Branch: "legion/LEGION-484-rescue-9d3f0c7a", Target: "legion/LEGION-484-rescue",
+		WorkspaceTimeoutMs: 120_000, TimeoutMs: 300_000}
+	line, err := json.Marshal(frame)
+	if err != nil {
+		t.Fatalf("Marshal(%#v): %v", frame, err)
+	}
+	if !strings.Contains(string(line), `"target":"legion/LEGION-484-rescue"`) {
+		t.Fatalf("the frame is %s, want it to carry the issue's one rescue branch in target", line)
+	}
+	var old rescueUnpushedBeforeTarget
+	if err := json.Unmarshal(line, &old); err != nil {
+		t.Fatalf("an older shim's decode of %s: %v", line, err)
+	}
+	want := rescueUnpushedBeforeTarget{ID: "r6", Branch: "legion/LEGION-484-rescue-9d3f0c7a", WorkspaceTimeoutMs: 120_000, TimeoutMs: 300_000}
+	if old != want {
+		t.Fatalf("an older shim read %s as %+v, want %+v: the pod's own prefix in branch, the target dropped", line, old, want)
+	}
+
+	branch := RescueBranch{Name: "legion/LEGION-484-rescue", Commit: "c0ffee", Previous: "decade", Pushed: true,
+		Commits: []RescueCommit{{ID: "c0ffee", Subject: "rescue: LEGION-484"}}}
+	line, err = json.Marshal(branch)
+	if err != nil {
+		t.Fatalf("Marshal(%#v): %v", branch, err)
+	}
+	var read rescueBranchBeforeCommits
+	if err := json.Unmarshal(line, &read); err != nil {
+		t.Fatalf("an older daemon's decode of %s: %v", line, err)
+	}
+	if read != (rescueBranchBeforeCommits{Name: branch.Name, Commit: branch.Commit}) {
+		t.Fatalf("an older daemon read %s as %+v, want the branch's name and commit", line, read)
 	}
 }
 

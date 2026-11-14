@@ -682,7 +682,8 @@ func (s *shim) finish(code int, err error) {
 
 // toDaemonChunked sends a frame that may be larger than one line: under the limit it is one line,
 // and over it the rpc_chunk sequence the daemon's reader reassembles (shimwire.SplitChunks). The
-// bundle result is the one frame of this shim's that can be: everything else fits a line.
+// bundle result and the push check's result, whose report names every commit of each branch with
+// no bound on their number, are this shim's frames that can be: everything else fits a line.
 func (s *shim) toDaemonChunked(frame shimwire.Frame) {
 	line, err := json.Marshal(frame)
 	if err != nil {

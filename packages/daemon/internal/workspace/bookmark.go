@@ -431,17 +431,18 @@ func ownCommitsRevset(workspaceName string) string {
 	return "::" + workspaceName + "@ ~ ::(working_copies() ~ " + workspaceName + "@) ~ ::(bookmarks() | remote_bookmarks() | tags())"
 }
 
-// removingSuffix marks a workspace directory Remove has renamed aside, about to delete: a sibling
+// RemovingSuffix marks a workspace directory Remove has renamed aside, about to delete: a sibling
 // name in the same parent directory, so the rename is one atomic same-filesystem operation
 // regardless of how large the directory is, unlike the `os.RemoveAll` that follows it, which a
-// kill can interrupt partway through a large tree.
-const removingSuffix = ".removing"
+// kill can interrupt partway through a large tree. The push check before a pod's replacement
+// (internal/rescue) leaves such a directory out: its removal already let its work go.
+const RemovingSuffix = ".removing"
 
 // removingPath is where Remove renames workspace.Dir to before deleting it.
-func removingPath(dir string) string { return dir + removingSuffix }
+func removingPath(dir string) string { return dir + RemovingSuffix }
 
 // Remove ports workspace.ts's removeIssueWorkspace, with one addition: the workspace directory is
-// renamed aside (removingSuffix) before the slower recursive delete that actually frees the
+// renamed aside (RemovingSuffix) before the slower recursive delete that actually frees the
 // space, so a kill partway through that delete leaves the renamed-aside name rather than a
 // half-deleted tree at the original one. The rename goes first so a crash leaves the
 // registered-but-missing state that Provision repairs with forget and add. jj's forget leaves the
