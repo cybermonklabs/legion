@@ -97,8 +97,8 @@ Bulk parent changes are ordinary independent keyed writes, at most eight in flig
 New epic waits for the create's answer before registering parent changes. Start next waits for each predecessor rank write and stops at a refusal, reporting which issues did not move up; a selection already at the head of the queue is reported, not rewritten.
 
 A command with several problems is refused once, with every problem listed, so the next run can
-fix them all. It exits 0 when it wrote or read, 1 when Dispatch or the flags refused it, and 2 on a
-usage error such as an unknown command.
+fix them all. It exits 0 when it wrote or read, and 1 when Dispatch or AskGate refused it. It
+exits 2 on a usage error, such as an unknown command or flags it refused before any request.
 
 Long text, such as a message body or a document, goes on stdin through a quoted here-document, so
 the shell expands nothing in it:
@@ -108,6 +108,9 @@ dispatch message --issue LEGION-1 --body-file - <<'EOF'
 Shipped in owner/repo#7.
 EOF
 ```
+
+Only one flag of a call may read stdin. The command refuses `--body -`, and its refusal names
+`--body-file -`.
 
 ## AskGate reviews each write
 
