@@ -299,7 +299,6 @@ func lastCompletion(t *testing.T, facts *factRecorder) intake.HandoffComplete {
 func handoffRecord(t *testing.T, h *harness, key string) (phase.Phase, *record.PhaseRow, *record.PullRequest) {
 	t.Helper()
 	var at phase.Phase
-	var implementer *record.PhaseRow
 	var pr *record.PullRequest
 	records := record.NewStore()
 	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
@@ -308,21 +307,30 @@ func handoffRecord(t *testing.T, h *harness, key string) (phase.Phase, *record.P
 			return err
 		}
 		at = issue.Phase
-		rows, err := records.Phases(context.Background(), tx, key)
-		if err != nil {
-			return err
-		}
-		for _, row := range rows {
-			if row.Role == claim.RoleImplementer {
-				implementer = &row
-			}
-		}
 		pr, err = records.PullRequest(context.Background(), tx, key)
 		return err
 	}); err != nil {
 		t.Fatalf("read the records of %s: %v", key, err)
 	}
-	return at, implementer, pr
+	return at, phaseRowOf(t, h, key, claim.RoleImplementer), pr
+}
+
+// phaseRowOf is role's phases row on key, nil while none is recorded.
+func phaseRowOf(t *testing.T, h *harness, key string, role claim.Role) *record.PhaseRow {
+	t.Helper()
+	var found *record.PhaseRow
+	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+		rows, err := record.NewStore().Phases(context.Background(), tx, key)
+		for _, row := range rows {
+			if row.Role == role {
+				found = &row
+			}
+		}
+		return err
+	}); err != nil {
+		t.Fatalf("read the phases of %s: %v", key, err)
+	}
+	return found
 }
 
 // The implementer's completion of an implementing round names the handoff record it wrote on the
@@ -661,14 +669,14 @@ func TestHandoffCompleteHoldsALateCompletionToTheRecordOfThePhaseItLeft(t *testi
 			recorder := h.complete(HandoffCompleteRequest{GrantID: reviewer.grant(t), Summary: "reviewed", HandoffID: named, HandoffVersion: 1})
 			if tc.code == "" {
 				completion(t, recorder)
-				if row := reviewerRow(t, h, "LEGION-208"); row == nil || row.HandoffRecord != named || row.HandoffVersion != 1 {
+				if row := phaseRowOf(t, h, "LEGION-208", claim.RoleReviewer); row == nil || row.HandoffRecord != named || row.HandoffVersion != 1 {
 					t.Fatalf("the reviewer's row after its late completion = %+v, want it naming %s version 1", row, named)
 				}
 			} else {
 				if message := refused(t, recorder, http.StatusConflict, tc.code); !strings.Contains(message, tc.says) {
 					t.Fatalf("refusal %q does not say %q", message, tc.says)
 				}
-				if row := reviewerRow(t, h, "LEGION-208"); row != nil && row.Completed() {
+				if row := phaseRowOf(t, h, "LEGION-208", claim.RoleReviewer); row != nil && row.Completed() {
 					t.Fatalf("the reviewer's row after the refusal = %+v, want nothing recorded", row)
 				}
 			}
@@ -690,28 +698,58 @@ func TestHandoffCompleteRecordsALateCompletionOfReviewingWhileTheIssueIsAcceptin
 	reviewer := newLiveClaim(t, h, "LEGION-208", claim.RoleReviewer)
 	own := reviewer.writeHandoff("review", 1)
 	completion(t, h.complete(HandoffCompleteRequest{GrantID: reviewer.grant(t), Summary: "approved", HandoffID: own, HandoffVersion: 1}))
-	if row := reviewerRow(t, h, "LEGION-208"); row == nil || row.HandoffRecord != own || row.HandoffVersion != 1 {
+	if row := phaseRowOf(t, h, "LEGION-208", claim.RoleReviewer); row == nil || row.HandoffRecord != own || row.HandoffVersion != 1 {
 		t.Fatalf("the reviewer's row after its late completion = %+v, want it naming %s version 1", row, own)
 	}
 	assertIssuePhase(t, h, phase.Accepting)
 }
 
-// reviewerRow is key's reviewer's phases row, nil while none is recorded.
-func reviewerRow(t *testing.T, h *harness, key string) *record.PhaseRow {
-	t.Helper()
-	var reviewer *record.PhaseRow
-	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
-		rows, err := record.NewStore().Phases(context.Background(), tx, key)
-		for _, row := range rows {
-			if row.Role == claim.RoleReviewer {
-				reviewer = &row
+// A completion of a phase its role has left that names no record — its commit alone, as the
+// `legion` tool sent one before it read the record of the phase the role left — is not asked for
+// a record: the engine decides it as every completion of a phase the role no longer works
+// (workflow's leftItsPhase). A tester whose completion of testing was taken, and moved the issue
+// to reviewing, and a tester of an issue held from testing are each answered
+// HANDOFF_NOT_CURRENT_PHASE, and the tester's row and the issue's phase stay as they stood.
+func TestHandoffCompleteAnswersALeftCompletionNamingNoRecordAsNoLongerTheRolesPhase(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// stand moves LEGION-208 from testing, its tester working, to where the late completion
+		// finds it, and answers that phase.
+		stand func(t *testing.T, h *harness, tester liveClaim) phase.Phase
+	}{
+		{
+			name: "its completion of testing taken, the issue in reviewing",
+			stand: func(t *testing.T, h *harness, tester liveClaim) phase.Phase {
+				completion(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass",
+					Commit: headSHA, HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}))
+				return phase.Reviewing
+			},
+		},
+		{
+			name: "the issue held from testing",
+			stand: func(t *testing.T, h *harness, _ liveClaim) phase.Phase {
+				holdFrom(t, h, "LEGION-208", phase.Testing)
+				return phase.Held
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newWorkflowHandoffHarness(t, newHandoffGitHub(t), io.Discard)
+			seedIssueAt(t, h, "LEGION-208", phase.Testing)
+			seedPullRequest(t, h, "LEGION-208", headSHA)
+			tester := newLiveClaim(t, h, "LEGION-208", claim.RoleTester)
+			at := tc.stand(t, h, tester)
+			assertIssuePhase(t, h, at)
+			before := phaseRowOf(t, h, "LEGION-208", claim.RoleTester)
+
+			refused(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass", Commit: headSHA}),
+				http.StatusConflict, "HANDOFF_NOT_CURRENT_PHASE")
+			if after := phaseRowOf(t, h, "LEGION-208", claim.RoleTester); !reflect.DeepEqual(after, before) {
+				t.Fatalf("the tester's row after the refusal = %+v, want it as it stood, %+v", after, before)
 			}
-		}
-		return err
-	}); err != nil {
-		t.Fatalf("read the phases of %s: %v", key, err)
+			assertIssuePhase(t, h, at)
+		})
 	}
-	return reviewer
 }
 
 func TestHandoffCompleteEnforcesRoleSpecificFieldsAndDeduplicatesTheRecord(t *testing.T) {

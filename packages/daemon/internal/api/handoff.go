@@ -229,26 +229,27 @@ func (s *server) handoffComplete(w http.ResponseWriter, r *http.Request) {
 		writeFailure(w, refusal.Status, refusal.Code, refusal.Message)
 		return
 	}
-	// The phase this completion is of is the issue's when the role works it, and otherwise the one
-	// the role left (phase.LeftBy), where the engine records a completion that arrives after the
-	// daemon moved the issue on (workflow's leftItsPhase). The record a phase with a handoff ends
-	// with is read back and held to the completion before anything is recorded; a phase that
-	// writes none takes no record, and a completion of such a phase that names one is refused. The
-	// architect leaves no phase, so its completion is held to the issue's phase as before.
-	of := issue.Phase
-	if phase.RoleFor(of) != grant.Role {
-		if left := phase.LeftBy(grant.Role, of); left != "" {
-			of = left
-		}
+	// The phase this completion is of is phase.Of's, and the issue's for the architect, which
+	// leaves none. The record a phase with a handoff ends with is read back and held to the
+	// completion before anything is recorded: always when the role works the issue's phase, and
+	// for a phase it left only when the completion names one. A completion of a left phase that
+	// names none is the engine's to decide (workflow's leftItsPhase), which answers
+	// HANDOFF_NOT_CURRENT_PHASE when the role's completion of that phase already stands or no role
+	// works the issue's phase. A phase that writes none takes no record, and a completion of such a
+	// phase that names one is refused.
+	of := phase.Of(grant.Role, issue.Phase)
+	if of == "" {
+		of = issue.Phase
 	}
 	word, writer, handoffPhase := phase.Handoff(of)
-	recordBacked := handoffPhase && writer == grant.Role
+	namesRecord := req.HandoffID != "" || req.HandoffVersion != 0
+	recordBacked := handoffPhase && writer == grant.Role && (of == issue.Phase || namesRecord)
 	switch {
 	case recordBacked:
 		if !s.handoffRecord(w, r, c.Session, issue, of, word, req) {
 			return
 		}
-	case !handoffPhase && (req.HandoffID != "" || req.HandoffVersion != 0):
+	case !handoffPhase && namesRecord:
 		writeFailure(w, http.StatusConflict, "HANDOFF_RECORD_MISMATCH", fmt.Sprintf(
 			"phase %s of %s ends with no handoff record, and this completion names one: complete without handoffId and handoffVersion; this completion changed nothing", of, issue.Key))
 		return

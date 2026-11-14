@@ -50,10 +50,11 @@
 //
 // What stands in lies outside the rule. The broker is a native nats-server the script starts and
 // names in LEGION_E2E_NATS_URL. GitHub is the harness's REST stand-in for the one pull request the
-// proof drives (liveGitHub, in live_issue_proof_test.go) with a pause of that pull request's read
-// added (convergeGitHub), which serves that pull request's state, head, base and mergeable — the
-// answer the driver arms to drive a conflict — and no branch rule of any kind. Dispatch is
-// the board the package's whole-daemon live proofs share (liveDispatch, in live_proof_test.go).
+// proof drives (liveGitHub, in live_issue_proof_test.go), which serves that pull request's state,
+// head, base and mergeable — the answer the driver arms to drive a conflict — and no branch rule
+// of any kind, with this proof's pause of its read of that pull request (pullRequestReadPause).
+// Dispatch is the board the package's whole-daemon live proofs share (liveDispatch, in
+// live_proof_test.go).
 // The two Apps' tokens are workflowTokenRecorder's placeholders. No agent runs: every claim is
 // launched by the package's fake runtime, which says it provisions each workspace in the
 // claim's own pod, as the Agent Sandbox runtime does, so the daemon clones nothing from GitHub.
@@ -123,8 +124,8 @@ const convergeOwedBound = 2 * time.Minute
 // roles the driver acts as over the worker stream.
 type phaseEntryConvergeLive struct {
 	liveIssueProof
-	// reads is the pause of the stand-in's read of the pull request (convergeGitHub.pause).
-	reads *convergeGitHub
+	// reads is the pause of the stand-in's read of the pull request (pullRequestReadPause.pause).
+	reads *pullRequestReadPause
 	// imp, test and rev are the implementer, the tester and the reviewer as their agents reach
 	// the daemon.
 	imp, test, rev *convergeClaimant
@@ -153,10 +154,10 @@ func newPhaseEntryConvergeLive(t *testing.T) *phaseEntryConvergeLive {
 	t.Helper()
 	r := &phaseEntryConvergeLive{liveIssueProof: newLiveIssueProof(t, "scripts/e2e/phase-entry-converge.sh",
 		convergeBase, "the issue whose phase entries converge")}
-	r.reads = r.newConvergeGitHub()
+	r.reads = r.newPullRequestReadPause()
 	r.seed()
 	r.cfg.WorkerWakesPerMinute, r.cfg.WorkerWakeBurst = convergeWakeRate, convergeWakeBurst
-	r.boot(r.github.url, func(o *overrides) {
+	r.boot(func(o *overrides) {
 		// The wall clock, in place of this package's still one (daemon.go's RealClock for a nil
 		// override): the launch the pacing holds runs when its timer fires, and a wake held on a
 		// clock whose timers never fire would never take its turn.
@@ -387,7 +388,7 @@ func (r *phaseEntryConvergeLive) phaseChangesWhileTheStartWaits() {
 		convergeWakeRate, convergeWakeBurst)
 	// The conflict is armed before this completion, and the read that completion queues is held
 	// at the stand-in while this check reads the state the completion left (armConflict,
-	// convergeGitHub.pause): the read is where an issue in testing learns its head conflicts,
+	// pullRequestReadPause.pause): the read is where an issue in testing learns its head conflicts,
 	// and held, it cannot land between the completion and the reads below it.
 	releaseRead := r.reads.pause()
 	defer releaseRead()
@@ -704,12 +705,12 @@ func (r *phaseEntryConvergeLive) armConflict() {
 	r.publishBasePush()
 }
 
-// convergeGitHub is the one thing this proof adds to the harness's GitHub stand-in (liveGitHub,
-// the proof's github): a pause of the read of the pull request itself. The stand-in serves no
-// branch rule, and what it does not serve it answers 404, which the daemon's own reads take as
-// GitHub being unreadable — the implementer's completion is applied unread on that answer
+// pullRequestReadPause is the one thing this proof adds to the harness's GitHub stand-in
+// (liveGitHub, the proof's github): a pause of the read of the pull request itself. The stand-in
+// serves no branch rule, and what it does not serve it answers 404, which the daemon's own reads
+// take as GitHub being unreadable — the implementer's completion is applied unread on that answer
 // (api/handoff.go's implementationPullRequest) — so no read of this proof reaches github.com.
-type convergeGitHub struct {
+type pullRequestReadPause struct {
 	// mu guards held apart from the stand-in's own lock, which a held read waits outside of.
 	mu sync.Mutex
 	// held holds every read of the pull request while a check means that read to land later
@@ -717,12 +718,12 @@ type convergeGitHub struct {
 	held chan struct{}
 }
 
-// newConvergeGitHub starts the stand-in for the proof's pull request at its first head
+// newPullRequestReadPause starts the stand-in for the proof's pull request at its first head
 // (serveGitHub), with the pause's waitForRelease run before each read of the pull request, and
 // returns the pause.
-func (r *phaseEntryConvergeLive) newConvergeGitHub() *convergeGitHub {
+func (r *phaseEntryConvergeLive) newPullRequestReadPause() *pullRequestReadPause {
 	r.t.Helper()
-	g := &convergeGitHub{}
+	g := &pullRequestReadPause{}
 	r.serveGitHub(&liveGitHub{sha: convergeFirstHead, hold: g.waitForRelease})
 	return g
 }
@@ -733,7 +734,7 @@ func (r *phaseEntryConvergeLive) newConvergeGitHub() *convergeGitHub {
 // head conflicts (armConflict), so the proof arms the answer, drives the completion, reads, and
 // then lets the read run. It holds nothing else GitHub answers, and the release may be called
 // twice — a check defers it and calls it where it means the read to land.
-func (g *convergeGitHub) pause() func() {
+func (g *pullRequestReadPause) pause() func() {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	held := make(chan struct{})
@@ -754,7 +755,7 @@ func (g *convergeGitHub) pause() func() {
 // waitForRelease holds a read of the pull request while pause holds one. The stand-in runs it
 // before each read of the pull request and outside its own lock (liveGitHub's hold), so it holds
 // nothing else.
-func (g *convergeGitHub) waitForRelease() {
+func (g *pullRequestReadPause) waitForRelease() {
 	g.mu.Lock()
 	held := g.held
 	g.mu.Unlock()

@@ -134,17 +134,17 @@ func (p *liveIssueProof) write(what string, body func(tx pgx.Tx) error) {
 }
 
 // boot starts the whole daemon on the seeded store through this package's whole-daemon harness
-// (startDaemonWithin), with GitHub at githubAPI and the two Apps' tokens workflowTokenRecorder's
-// placeholders. The runtime provisions each claim's workspace itself (fake.Runtime's InPod), so a
-// start reaches the fake's launch without the daemon cloning acme/widgets from github.com, which
-// the tmux answer would have it try. tune, when not nil, sets what one proof's boot needs beyond
-// that.
-func (p *liveIssueProof) boot(githubAPI string, tune func(*overrides)) {
+// (startDaemonWithin), with GitHub the stand-in serveGitHub started (the proof's github) and the
+// two Apps' tokens workflowTokenRecorder's placeholders. The runtime provisions each claim's
+// workspace itself (fake.Runtime's InPod), so a start reaches the fake's launch without the daemon
+// cloning acme/widgets from github.com, which the tmux answer would have it try. tune, when not
+// nil, sets what one proof's boot needs beyond that.
+func (p *liveIssueProof) boot(tune func(*overrides)) {
 	p.t.Helper()
 	p.rt.InPod = true
 	o := fakeRuntime(p.rt, p.built)
 	o.workflowTokens = &workflowTokenRecorder{}
-	o.githubAPI = githubAPI
+	o.githubAPI = p.github.url
 	if tune != nil {
 		tune(&o)
 	}

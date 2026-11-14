@@ -753,7 +753,10 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 	// A role can still be mid-turn in a phase the issue has left: the review event moves reviewing
 	// on, so a reviewer's own request for changes starts the implementer before the reviewer's
 	// handoff lands. Its completion is recorded on its own row and moves nothing (leftItsPhase).
-	current := phase.RoleFor(issue.Phase) == fact.Role
+	// reported is the phase this completion is of (phase.Of): the issue's own, or, for a role the
+	// issue has moved on without, the phase that role has left.
+	reported := phase.Of(fact.Role, issue.Phase)
+	current := reported == issue.Phase
 	if !current {
 		left, err := e.leftItsPhase(ctx, tx, *issue, fact.Role, fact.Claim)
 		if err != nil {
@@ -762,12 +765,6 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 		if !left {
 			return intake.Result{Refusal: intake.NotCurrentPhase(fact.Role, issue.Phase, issue.Key)}, nil
 		}
-	}
-	// reported is the phase this completion is of: the issue's own, or, for a role the issue has
-	// moved on without, the phase that role has left.
-	reported := issue.Phase
-	if !current {
-		reported = phase.LeftBy(fact.Role, issue.Phase)
 	}
 	// A worker still in its turn when its tree's root closed can yet complete; linger holds the
 	// member where it stood (record.TreeLingers), so the completion records nothing.

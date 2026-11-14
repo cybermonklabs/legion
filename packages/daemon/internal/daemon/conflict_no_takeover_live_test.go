@@ -138,7 +138,7 @@ func newConflictNoTakeoverLive(t *testing.T) *conflictNoTakeoverLive {
 	r.listener = newConflictListener(t, &r.liveProof)
 	r.reviewer = r.token(claim.RoleReviewer)
 	r.seed()
-	r.boot(r.github.url, nil)
+	r.boot(nil)
 	return r
 }
 

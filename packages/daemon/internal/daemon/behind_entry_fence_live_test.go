@@ -153,7 +153,7 @@ func newBehindEntryFenceLive(t *testing.T) *behindEntryFenceLive {
 		behindFenceBase, "the issue whose tester reports behind its entry")}
 	r.serveGitHub(&liveGitHub{sha: behindFenceFirstHead})
 	r.seed()
-	r.boot(r.github.url, nil)
+	r.boot(nil)
 	return r
 }
 

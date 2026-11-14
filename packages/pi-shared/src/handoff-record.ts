@@ -242,8 +242,8 @@ export async function findPushedBranchHead(input: {
  * The phase a completion by `role` is of while the issue stands at `at`: `at` when `role` works
  * it, and otherwise the phase `role` left, the one the daemon records a late completion on (one
  * that arrives after the issue moved on) and reads that completion's handoff record against. It
- * mirrors the daemon's `phase.LeftBy` behind its `phase.RoleFor` check, as the completion route
- * reads the two (`packages/daemon/internal/phase/phase.go`,
+ * mirrors the daemon's `phase.Of`, as the completion route reads it
+ * (`packages/daemon/internal/phase/phase.go`,
  * `packages/daemon/internal/api/handoff.go`): the planner, the tester, the reviewer and the
  * merger each work one phase, which is the answer wherever the issue stands; the implementer
  * works implementing and retro, and has left retro once the issue stands past it in the

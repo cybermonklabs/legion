@@ -180,9 +180,8 @@ func RoleFor(p Phase) claim.Role {
 // that role works: RoleFor read the other way round, the one phase each role works, and, for the
 // implementer, which works two, implementing while the issue stands before retro and retro once
 // it stands past it. A completion that arrives after the issue moved on without its role is of
-// this phase, which the workflow records it on (workflow's leftItsPhase) and whose handoff record
-// the completion route reads it against (api's handoffComplete). The architect works accepting
-// with its sign-off and completes nothing, so it leaves no phase here.
+// this phase (Of). The architect works accepting with its sign-off and completes nothing, so it
+// leaves no phase here.
 func LeftBy(role claim.Role, at Phase) Phase {
 	switch role {
 	case claim.RolePlanner:
@@ -200,4 +199,16 @@ func LeftBy(role claim.Role, at Phase) Phase {
 		return Implementing
 	}
 	return ""
+}
+
+// Of is the phase role's completion is of while the issue stands at at: at when role works it
+// (RoleFor), and otherwise the phase role has left (LeftBy). The workflow records a completion on
+// this phase (workflow's leftItsPhase) and the completion route reads its handoff record against
+// it (api's handoffComplete), so the two read one answer. It is "" for the architect anywhere but
+// accepting, since the architect leaves no phase.
+func Of(role claim.Role, at Phase) Phase {
+	if RoleFor(at) == role {
+		return at
+	}
+	return LeftBy(role, at)
 }
