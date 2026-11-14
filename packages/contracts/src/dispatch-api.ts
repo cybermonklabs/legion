@@ -14,7 +14,10 @@
  *     they are read from and the limits and header names `scripts/gen-go.ts` renders into Go;
  *   - the readings a bus payload takes of a generated row (`Ask`, `AskEdit`, `Message`), and the
  *     helpers and client-side composites no route answers (`Advised`, `IssueRead`,
- *     `ArtifactVersionContent`, `CreateArtifactInput`, …).
+ *     `ArtifactVersionContent`, `CreateArtifactInput`, …);
+ *   - what one map's values hold where the server keeps them unparsed, so the document can only
+ *     say they are bytes (`InboxDismissSeen`, `LegionSettingSource`), and the names a Legion page
+ *     reads off a generated shape (`LegionMetricsScope`, which is `LegionMetricsResponse["scope"]`).
  *
  * An event payload is read two ways, and one rule names the two schemas. The tolerant reading,
  * what a reader of the bus makes of a frame, carries the plain name - `CommentEventPayloadSchema`

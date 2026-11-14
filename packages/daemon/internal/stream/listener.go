@@ -27,6 +27,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -90,11 +91,14 @@ type Listener struct {
 	ln       net.Listener
 	resolve  HelloResolver
 	launcher LauncherResolver
-	timeout  time.Duration
-	log      *slog.Logger
-	events   *eventQueue
-	mu       sync.Mutex
-	conns    map[claim.Token]*Conn
+	// timeout is Options.RPCTimeout in nanoseconds, behind an atomic because the daemon swaps it
+	// while the listener serves (SetRPCTimeout) and every hello and every live connection reads
+	// it (RPCTimeout).
+	timeout atomic.Int64
+	log     *slog.Logger
+	events  *eventQueue
+	mu      sync.Mutex
+	conns   map[claim.Token]*Conn
 	// accepted is every connection not yet finished, the ones still in their hello included, so
 	// the end of the listener can close them all.
 	accepted map[net.Conn]struct{}
@@ -120,6 +124,19 @@ type Listener struct {
 	registrations uint64
 
 	wg sync.WaitGroup
+}
+
+// RPCTimeout is the bound every hello and every request on this listener's connections is held
+// to: worker_rpc_timeout_seconds as it now stands.
+func (l *Listener) RPCTimeout() time.Duration { return time.Duration(l.timeout.Load()) }
+
+// SetRPCTimeout replaces that bound without rebinding the socket or dropping a connection: the
+// daemon's answer to a `worker_rpc_timeout_seconds` change, which every connection it already
+// holds reads at its next request. A bound that is not positive is ignored, as Listen refuses one.
+func (l *Listener) SetRPCTimeout(d time.Duration) {
+	if d > 0 {
+		l.timeout.Store(int64(d))
+	}
 }
 
 // Listen binds addr — "unix:///<absolute path>" or "tcp://<host>:<port>" — and serves it until
@@ -151,7 +168,6 @@ func Listen(ctx context.Context, addr string, resolve HelloResolver, opts Option
 		addr:              network + "://" + ln.Addr().String(),
 		ln:                ln,
 		resolve:           resolve,
-		timeout:           opts.RPCTimeout,
 		log:               log,
 		events:            newEventQueue(),
 		conns:             map[claim.Token]*Conn{},
@@ -161,6 +177,7 @@ func Listen(ctx context.Context, addr string, resolve HelloResolver, opts Option
 		launcherWait:      launcherWait,
 		started:           time.Now(),
 	}
+	l.timeout.Store(int64(opts.RPCTimeout))
 	l.wg.Add(1)
 	go l.accept()
 	context.AfterFunc(ctx, l.shutdown)
@@ -364,7 +381,7 @@ func (l *Listener) hello(nc net.Conn, src *bufio.Reader) (*Conn, LauncherHandler
 	// The instant the hello's own read deadline falls, kept because a launcher hello that waits
 	// for an acceptor is bounded by it too: a parked hello never outlives the deadline the
 	// connection carrying it was given.
-	deadline := time.Now().Add(l.timeout)
+	deadline := time.Now().Add(l.RPCTimeout())
 	if err := nc.SetReadDeadline(deadline); err != nil {
 		return nil, nil, ""
 	}
@@ -515,7 +532,7 @@ func (l *Listener) register(nc net.Conn, token claim.Token, generation uint64, i
 	if err := nc.SetReadDeadline(time.Time{}); err != nil {
 		return nil, "connection closed before hello_ack"
 	}
-	conn := newConn(nc, token, l.timeout, l.log, l.events)
+	conn := newConn(nc, token, l.RPCTimeout, l.log, l.events)
 	l.registrations++
 	conn.seq = l.registrations
 	// The ack is written before the connection is registered, so it reaches the shim ahead of any

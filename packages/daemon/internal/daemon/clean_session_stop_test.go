@@ -9,11 +9,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 )
 
@@ -169,7 +172,7 @@ func TestCleanSessionStopDeletesARegistrationWrittenBeforeTheProbesMoment(t *tes
 		settled: make(chan struct{}),
 	}
 	server := listener.server(t)
-	stop := cleanSessionStop(context.Background(), server.URL, "envoy-token", quietLogger())
+	stop := cleanSessionStop(context.Background(), newPublisherHolder(server.URL, "envoy-token"), quietLogger())
 
 	stop("ses_dead")
 
@@ -376,7 +379,7 @@ func TestCleanSessionStopRunsOffTheMachinesDecision(t *testing.T) {
 		arrived: arrived,
 	}
 	server := listener.server(t)
-	stop := cleanSessionStop(context.Background(), server.URL, "envoy-token", quietLogger())
+	stop := cleanSessionStop(context.Background(), newPublisherHolder(server.URL, "envoy-token"), quietLogger())
 
 	returned := make(chan struct{})
 	go func() {
@@ -396,10 +399,45 @@ func TestCleanSessionStopRunsOffTheMachinesDecision(t *testing.T) {
 	}
 }
 
-// With no listener configured there is nothing to tell, and the machines are given no SessionGone
-// at all.
-func TestNoCleanSessionStopWithoutAListener(t *testing.T) {
-	if stop := cleanSessionStop(context.Background(), "", "", quietLogger()); stop != nil {
-		t.Fatal("a daemon with no Envoy listener was given a clean stop to call")
+// A stop reads which listener the configuration names at each call, through the daemon's Envoy
+// holder, and none named is nothing to tell: a stop built while the configuration named no
+// listener reaches the one a later change names, with the bearer that change named.
+func TestACleanSessionStopTellsTheListenerTheConfigurationNamesNow(t *testing.T) {
+	listener := &listenerRecorder{
+		held:    storedRegistration{clientInstanceID: "inst_dead", lastSeen: time.Now().Add(-time.Second)},
+		settled: make(chan struct{}),
+	}
+	server := listener.server(t)
+	envoy := newPublisherHolder("", "")
+	logged := &syncBuffer{}
+	stop := cleanSessionStop(context.Background(), envoy, slog.New(slog.NewTextHandler(logged, nil)))
+	stop("ses_unheard")
+
+	dir := t.TempDir()
+	tokenFile := filepath.Join(dir, "envoy-token")
+	if err := os.WriteFile(tokenFile, []byte("rotated-envoy-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := envoy.rebuild(&config.Config{EnvoyURL: server.URL, EnvoyTokenFile: tokenFile}); err != nil {
+		t.Fatalf("rebuild the Envoy holder: %v", err)
+	}
+	stop("ses_dead")
+
+	select {
+	case <-listener.settled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the clean stop never reached the listener the change named")
+	}
+	if listener.read.requests != 1 || listener.read.path != "/v1/registry/ses_dead" || listener.read.bearer != "Bearer rotated-envoy-token" {
+		t.Fatalf("the listener was read %d times, last %s with %q, want ses_dead's registration read once with the bearer the change named",
+			listener.read.requests, listener.read.path, listener.read.bearer)
+	}
+	if listener.delete.path != "/v1/sessions/ses_dead" || listener.delete.bearer != "Bearer rotated-envoy-token" {
+		t.Fatalf("the delete went to %s with %q, want ses_dead's with the bearer the change named", listener.delete.path, listener.delete.bearer)
+	}
+	// A stop sent while no listener was named would have failed at once and said so, long before
+	// the stop after the change was answered.
+	if strings.Contains(logged.String(), "ses_unheard") {
+		t.Fatalf("the stop made while no listener was named was sent somewhere: %s", logged.String())
 	}
 }

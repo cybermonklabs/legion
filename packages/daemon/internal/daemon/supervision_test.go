@@ -115,7 +115,7 @@ func TestRunRefusesAConfigurationItCannotSuperviseUnder(t *testing.T) {
 			testCase.change(&cfg, &o)
 			want := strings.NewReplacer("{state}", cfg.StateDir, "{seed}", cfg.NatsNkeySeedFile).Replace(testCase.want)
 
-			err := run(context.Background(), cfg, quietLogger(), o)
+			err := run(context.Background(), config.Settled(cfg), Build{}, quietLogger(), o)
 
 			if err == nil || !strings.Contains(err.Error(), want) {
 				t.Fatalf("run = %v, want a refusal naming %q", err, want)
@@ -984,9 +984,11 @@ func TestRunResolvesProviderKeysAtBootAndKeepsThemThroughThePrune(t *testing.T) 
 	}
 }
 
-// The shipped daemon writes the one Dispatch bearer panes share before any pane can launch, and
-// boot's claim-secret prune leaves it alone because it belongs to the daemon rather than a claim.
-func TestPrepareWritesTheDispatchTokenFileAndBootPruneKeepsIt(t *testing.T) {
+// The shipped daemon writes the one Dispatch bearer panes share before any pane can launch — at
+// the boot's build of the runtime, which every rebuild of it repeats (prepareTmux's runtimeFor,
+// writePaneDispatchToken) — and boot's claim-secret prune leaves it alone because it belongs to
+// the daemon rather than a claim.
+func TestTheRuntimeBuildWritesTheDispatchTokenFileAndBootPruneKeepsIt(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.DispatchURL = "http://127.0.0.1:18766"
 	cfg.DispatchTokenFile = filepath.Join(t.TempDir(), "dispatch-token")
@@ -994,8 +996,12 @@ func TestPrepareWritesTheDispatchTokenFileAndBootPruneKeepsIt(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := prepare(cfg, quietLogger(), fakeRuntime(fake.NewRuntime(), &built{})); err != nil {
+	p, err := prepare(cfg, quietLogger(), fakeRuntime(fake.NewRuntime(), &built{}))
+	if err != nil {
 		t.Fatalf("prepare: %v", err)
+	}
+	if _, err := p.runtimeFor(cfg); err != nil {
+		t.Fatalf("the boot's build of the runtime: %v", err)
 	}
 	want := filepath.Join(cfg.StateDir, "secrets", "dispatch-token")
 	if info, err := os.Stat(want); err != nil || info.Mode().Perm() != 0o600 {

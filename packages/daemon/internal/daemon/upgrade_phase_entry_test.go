@@ -649,8 +649,9 @@ func upgradeOwedStartGivesItsEntry(t *testing.T, st *store.Store, issue record.I
 	sup := newSupervisor(ctx, st, project, t.TempDir(), quietLogger())
 	sup.deps = supervise.Deps{
 		Runtime: fake.NewRuntime(), Conns: fake.NewConns(), Store: st, Specs: outboxSpecs{}, Clock: stillClock{}, Log: quietLogger(),
-		Limits:         supervise.Limits{LaunchFailures: 2, PromptFailures: 2, PromptRetires: 2},
-		Timeouts:       supervise.Timeouts{Boot: time.Second, RegistrationIntervals: 2, RPC: time.Second, Probe: time.Second, Stop: time.Second, LaunchBackoff: time.Millisecond},
+		Settings: supervise.FixedSettings(
+			supervise.Limits{LaunchFailures: 2, PromptFailures: 2, PromptRetires: 2},
+			supervise.Timeouts{Boot: time.Second, RegistrationIntervals: 2, RPC: time.Second, Probe: time.Second, Stop: time.Second, LaunchBackoff: time.Millisecond}),
 		PluginContract: 24,
 	}
 	t.Cleanup(sup.stop)
@@ -715,7 +716,7 @@ func upgradeCompletionAccepted(t *testing.T, st *store.Store, engine *workflow.E
 	}
 	handoffs := &fleetHandoffs{handoffs: map[string]dispatch.Handoff{}}
 	handler := api.NewServer("127.0.0.1", 0, api.Options{
-		Steps: config.DesignGateRootIssues.Steps(), Supervisor: sup, Project: project, DispatchProject: upgradeProject,
+		Settings: api.NewLiveSettings(api.HeldSettings{Steps: config.DesignGateRootIssues.Steps()}), Supervisor: sup, Project: project, DispatchProject: upgradeProject,
 		Pool: st.Pool(), Handlers: []intake.Handler{engine}, Record: record.NewStore(), Grants: grants,
 		Dispatch: handoffs, Log: quietLogger(),
 	}).Handler

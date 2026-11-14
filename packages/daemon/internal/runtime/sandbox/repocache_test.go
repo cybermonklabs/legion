@@ -1518,3 +1518,45 @@ func TestNoServiceIsTrustedWhileTheServiceWatchFails(t *testing.T) {
 		t.Errorf("cacheServiceRefusal once the watch is fed again = %q, %t; want the cache's own Service", refusal, made)
 	}
 }
+
+// runtime.kubernetes.repository_cache.refresh_minutes is a rebuild key of the runtime, and the
+// caches the runtime keeps are replaced when the runtime is built again (config.Classes), so a
+// change of it reaches the caches already running and not only the ones made after it. Each cache
+// pod fetches from GitHub at the period its command names (`--refresh`), which its template fixes
+// when the pod is made. A cache whose template names another period than the configuration's is
+// therefore brought back as one reserving other resources is, on the configuration's period.
+// Left as it is, every cache made before the change keeps fetching at the boot's period for as
+// long as its pod lives, while the settings route answers the change rebuilt.
+func TestEnsureRepositoryCacheReplacesACachePodFetchingAtAnotherRefresh(t *testing.T) {
+	name := CacheSandboxName(testProject, cacheRepo)
+	// The Sandbox as the runtime made it before the change, at the rig's own 10 minutes.
+	cache := cacheObject(t, cacheRepo, "uid-cache", modeRunning, "")
+	live := cachePod(cacheRepo, "uid-pod-old", "uid-cache", testImage, corev1.PodRunning)
+	g := newRig(t, []k8sruntime.Object{cache, live}, withOptions(func(o *Options) { o.RepositoryCache.Refresh = 25 * time.Minute }))
+	if refresh := commandFlag(g.sandbox(name).Spec.PodTemplate.Spec.Containers[0].Command, "--refresh"); refresh != "10m0s" {
+		t.Fatalf("the stored cache fetches every %q, want 10m0s: this proves nothing", refresh)
+	}
+	g.clearActions()
+	if err := g.r.EnsureRepositoryCache(g.ctx, cacheRepo); err != nil {
+		t.Fatalf("EnsureRepositoryCache: %v", err)
+	}
+	var refresh string
+	for _, w := range g.writes() {
+		if w.resource == "sandboxes" && w.verb == "patch" && modePatched(t, w.patch, modeRunning) {
+			if template := templatePatch(t, w.patch); template != nil {
+				refresh = commandFlag(template.Spec.Containers[0].Command, "--refresh")
+			}
+		}
+	}
+	if refresh != "25m0s" {
+		t.Errorf("after the refresh moved to 25m, the cache was set Running fetching every %q, want 25m0s (\"\" is no replacement at all): writes %v", refresh, g.writes())
+	}
+}
+
+// commandFlag is the value that follows flag in command, "" when command holds no such flag.
+func commandFlag(command []string, flag string) string {
+	if at := slices.Index(command, flag); at >= 0 && at+1 < len(command) {
+		return command[at+1]
+	}
+	return ""
+}

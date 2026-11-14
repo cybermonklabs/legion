@@ -105,7 +105,10 @@ func TestTheStateServedToAPodBeforeTheStallRecordContractLeavesTheNextCallersSta
 // that added the record, and a pod at this daemon's own contract, are both served it, and only a
 // pod still running a plugin below 57 is not. A constant above DaemonAPIVersion would be a key no
 // pod is ever served; one above the contract that added the record would keep it from pods whose
-// plugin parses it.
+// plugin parses it. INFRA-1100's waiting line took 58 above it, INFRA-956's end of fix-attempt
+// counting took 59, INFRA-2551's counts of the moves back took 62, and the forward merge that
+// brought INFRA-1077's setting provenance in took the number settingSourcesContract holds, so
+// the two are no longer equal, as retiredStrandedContract fell below DaemonAPIVersion before it.
 func TestTheStallRecordContractIsTheNumberTheBumpTakes(t *testing.T) {
 	const addedStallRecord = 57
 	if stallRecordContract != addedStallRecord {

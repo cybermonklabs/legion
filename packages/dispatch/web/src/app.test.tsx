@@ -967,9 +967,9 @@ test("desktop shell persists collapsed sidebars and gives the main region the fu
   }
 });
 
-/** The shell at `/`, signed in as alice, its event feed subscribed on the page's live socket;
+/** The shell at `path`, signed in as alice, its event feed subscribed on the page's live socket;
  *  returns the teardown. */
-async function renderSignedIn(whoAmI: () => Promise<AuthenticatedUser>) {
+async function renderSignedIn(whoAmI: () => Promise<AuthenticatedUser>, path = "/") {
   const originalMatchMedia = window.matchMedia;
   window.matchMedia = (() =>
     ({
@@ -991,7 +991,7 @@ async function renderSignedIn(whoAmI: () => Promise<AuthenticatedUser>) {
   ];
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const view = render(
-    <MemoryRouter initialEntries={["/"]}>
+    <MemoryRouter initialEntries={[path]}>
       <QueryClientProvider client={queryClient}>
         <AuthGate />
       </QueryClientProvider>
@@ -1074,6 +1074,48 @@ test("a live socket refused once the person is signed out takes the page to sign
     await screen.findByRole("link", { name: "Sign in with Google" });
   } finally {
     teardown();
+    sockets.restore();
+  }
+});
+
+// `/pipeline` is the Delivery page's Pipeline section since INFRA-1077, and the address a reader
+// bookmarked redirects there with everything it carried: the hash, so the reader lands on the
+// section, and the search, so they keep the window they asked for. The old page read only `?at=`
+// (`PipelinePage.tsx` before this change), so no bookmark of it carries `from`/`to`; what this
+// holds is the redirect's own rule.
+test("/pipeline lands the reader on the Pipeline section, with the window the address names", async () => {
+  // Dynamic on purpose: React.lazy loads the page module on its first render, and loading it
+  // here keeps that cold compile out of findBy's window, as the project-routes test above does.
+  // A static import would load it at this file's own load and so prove nothing about the
+  // lazy boundary.
+  await import("./features/delivery/DeliveryPage");
+  const sockets = installFakeLiveSockets();
+  // What the page brought into view: the hash's own section, which is how the reader lands on it.
+  const scrolledTo: string[] = [];
+  const originalScrollIntoView = HTMLElement.prototype.scrollIntoView;
+  HTMLElement.prototype.scrollIntoView = function scrollIntoView(this: HTMLElement) {
+    scrolledTo.push(this.id);
+  };
+  const teardown = await renderSignedIn(
+    async () => ({ event_head: "0", kind: "user", login: "alice" }),
+    "/pipeline?from=2026-06-01&to=2026-06-08"
+  );
+  try {
+    expect(
+      await screen.findByRole("heading", { level: 1, name: "Delivery timeline" })
+    ).toBeDefined();
+    expect(
+      screen.getByRole("heading", { level: 2, name: "Pipeline: CI and deploy" })
+    ).toBeDefined();
+    await waitFor(() => expect(scrolledTo).toEqual(["pipeline"]));
+    expect(screen.getByLabelText<HTMLSelectElement>("Window").value).toBe("custom");
+    expect(screen.getByLabelText<HTMLInputElement>("From").value).toBe("2026-06-01");
+    // The control names the last day the window includes, and a custom range ends at the
+    // midnight after it (`lib/window.ts`'s customRange), so `to=2026-06-08` reads as the 7th.
+    expect(screen.getByLabelText<HTMLInputElement>("To").value).toBe("2026-06-07");
+  } finally {
+    teardown();
+    HTMLElement.prototype.scrollIntoView = originalScrollIntoView;
     sockets.restore();
   }
 });

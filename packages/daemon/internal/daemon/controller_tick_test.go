@@ -54,7 +54,8 @@ func TestTheControllerTickQueuesOneWakeWhileASlotIsFree(t *testing.T) {
 	admission := admit.New(record.NewStore(), engine, 1, "CAPTURE", log)
 	w := &workflowRuntime{
 		pool: pool, records: tickRecords(), admission: admission, handlers: []intake.Handler{engine, admission},
-		dispatchProject: "CAPTURE", bootID: "test-boot", log: log, controllerWake: 10 * time.Millisecond,
+		dispatchProject: "CAPTURE", bootID: "test-boot", log: log,
+		keeper: newKeeperHolder(10 * time.Millisecond),
 	}
 	ticks := func() (rows int, issue string) {
 		t.Helper()
@@ -94,7 +95,7 @@ func TestTheControllerTickComesShortlyAfterTheRuntimeStarts(t *testing.T) {
 	w := &workflowRuntime{
 		pool: pool, records: tickRecords(), admission: admission, handlers: []intake.Handler{engine, admission},
 		dispatchProject: "CAPTURE", bootID: "test-boot", log: log,
-		controllerWake: time.Hour, controllerFirstWake: 10 * time.Millisecond,
+		keeper: newKeeperHolder(time.Hour), controllerFirstWake: 10 * time.Millisecond,
 	}
 	processed := func() bool {
 		var n int
@@ -109,6 +110,44 @@ func TestTheControllerTickComesShortlyAfterTheRuntimeStarts(t *testing.T) {
 	testwait.Eventually(t, "the first tick, an hour before the interval's", processed)
 	cancel()
 	<-done
+}
+
+// A change of `controller_wake_interval_seconds` reaches the tick that is already running: the
+// keeper's holder stores the new wake (keeperHolder.rebuild) and the tick resets its ticker to it,
+// so the next wake comes at the changed interval and not at the end of the one the daemon booted
+// on. Here the tick starts on an hour, the holder moves to 20ms after its first tick, and the
+// ticks after it come long before that hour.
+func TestAChangedWakeIntervalMovesTheRunningTick(t *testing.T) {
+	pool := isolatedOutboxPool(t)
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	engine := workflow.New(record.NewStore(), workflow.Config{Project: "CAPTURE", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, log)
+	admission := admit.New(record.NewStore(), engine, 1, "CAPTURE", log)
+	w := &workflowRuntime{
+		pool: pool, records: tickRecords(), admission: admission, handlers: []intake.Handler{engine, admission},
+		dispatchProject: "CAPTURE", bootID: "test-boot", log: log,
+		keeper: newKeeperHolder(time.Hour), controllerFirstWake: 10 * time.Millisecond,
+	}
+	processed := func() (n int) {
+		t.Helper()
+		if err := pool.QueryRow(context.Background(), `select count(*) from processed_events where event_id like 'controller-tick:CAPTURE:test-boot:%'`).Scan(&n); err != nil {
+			t.Fatalf("read the processed ticks: %v", err)
+		}
+		return n
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { w.tickController(ctx); close(done) }()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
+	testwait.Eventually(t, "the first tick, an hour before the interval's", func() bool { return processed() == 1 })
+
+	if err := w.keeper.rebuild(&config.Config{ControllerWakeInterval: 20 * time.Millisecond}); err != nil {
+		t.Fatalf("rebuild the keeper's holder on a 20ms wake: %v", err)
+	}
+
+	testwait.WithinPolling(t, 10*time.Second, testwait.Poll, "two ticks at the changed 20ms interval, an hour before the boot's", func() bool { return processed() >= 3 })
 }
 
 // The tick of a daemon that booted carries the silent list, because the boot registers the
@@ -182,7 +221,10 @@ func bootedTickWorkflow(t *testing.T, pool *store.Pool) *workflowRuntime {
 		WorkerBackground: 4 * time.Hour, Projects: map[string]config.Project{"CAPTURE": {}},
 	}
 	tokens := loginTokens{appauth.Implement: "legion-implementer[bot]", appauth.Review: "legion-reviewer[bot]"}
-	w, err := openWorkflow(ctx, cfg, st, "project-id", "dispatch-token", nil,
+	// The boot's own settings holder over that configuration, as run settles one: the engine and
+	// admission read every decision-class value from it (openWorkflow).
+	live := config.Settled(cfg)
+	w, err := openWorkflow(ctx, cfg, live, newRebuilder(log, live), st, "project-id", "dispatch-token", nil,
 		newRepositories(cfg.Project, cfg.RepositoryRenames), log, tokens, repositoriesGitHub(t), nil)
 	if err != nil {
 		t.Fatalf("open the workflow: %v", err)

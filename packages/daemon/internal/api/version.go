@@ -1585,4 +1585,88 @@ package api
 // main's 111: 112 (#2731), 113 (#3575), 114 (#3730), 115 (#3937), 116 (#3715), 117 (#3711), 118
 // (#3659), 119 (#3712), 120 (#3993), 121 (#3519) and 122 (#2230); 123 is the lowest number above
 // them all.)
-const DaemonAPIVersion = 123
+//
+// 130: INFRA-1077 -- two fields of `GET /legion/v1/state`, each required by the reader this
+// commit ships (`packages/contracts/src/legion-api.ts` mirrors both), so a plugin built from
+// here refuses a state an older daemon sends. The `daemon` block names the commit the daemon was
+// built from (`commit`, the release build's own revision, empty in a build that is not a
+// release), so a reader can tell which release runs. And a `settingSources` block beside
+// `settings` says where each setting came from — the file the daemon read or the settings route,
+// with who asked and when — keyed by the dotted `legion.yaml` path the daemon's class table
+// writes, every settable path included, the ones `settings` withholds among them, so a rotated
+// credential is visible without the credential. `settings` itself is untouched, and stays the
+// loose object it was. `GET /legion/v1/state` authenticates nobody, so a caller from a pod whose
+// claims record a contract below 130 is served the state without both (api's stateFor, its
+// seventeenth row of stateNarrowings, withoutSettingSources), as a caller below 111 is served
+// every issue without `treeMovedAt` and `quietHours`, one below 98 the admission block without
+// `admission.held`, one below 94 every issue without `phaseEntry` and
+// `givenEntry`, one below 87 every claim view without `leakCheckCause`, one below 85 every issue
+// without `why` and every member of the line with its `place` and its `length` alone, one below
+// 75 without the nine keys the decided claim and issue records added and without the `contract`
+// mark, one below 73 without the count of the claims the stale-plugin lane has left, one below
+// 62 the workers without their counts of the moves back, one below 58 the issues with no place
+// in the admission line, one below 57 the claim views with no `step`, one below 56 the report of
+// claims nothing will wake without its retired entries, one below 55 without the issues' gated
+// steps, one below 53 without the waiting wakes, one below 51 without the admission trees, one
+// below 49 without the memory group and one below 46 without the claim views' update rounds: the
+// seventeen compose, and every narrowing is written to the daemon's own log as it is applied. A
+// plugin built before sjawhar/legion#2788 reads with strict schemas and refuses a whole state for
+// one key it does not know, and one built after strips the two keys, so the narrowing is what
+// keeps them from a caller that did not ask for them.
+// (An earlier reading of this entry also gave each pull request `requiresChecks`, whether its
+// base branch requires a check, read from the daemon's record of that branch's required status
+// checks and workflows. main's 86 deleted that record — the daemon reads no required check and
+// keeps no CI verdict (dispatch://INFRA-714/spec R1) — so the forward merge that took this entry
+// to 87 took the field out with it rather than leave a value no record backs.)
+// (This branch took 47 while main's idle release and memory group were unmerged; main landed
+// them as 48 and 49, so this branch took 50; main then landed INFRA-980's admission cap at 51,
+// without these shapes, so this branch took 52; main then landed INFRA-1307's commit trailer at
+// 52, again without these shapes, so this branch took 53; main then landed INFRA-976's wake
+// pacing at 53, again without these shapes, so this branch took 54; main then landed INFRA-809's
+// production checks at 54, again without these shapes, so this branch took 55; main then landed
+// INFRA-1272's design-gate steps at 55, again without these shapes, so this branch took 56; main
+// then landed INFRA-1480's retired stranded state at 56, again without these shapes, so this
+// branch took 57; main then landed INFRA-1274's claim step record at 57, again without these
+// shapes, so this branch took 58; main then landed INFRA-1100's waiting line at 58, again
+// without these shapes, so this branch took 59; main then landed INFRA-956's end of fix-attempt
+// counting and its provider-error retry at 59, again without these shapes, so this branch took
+// 60; main then landed INFRA-2551's counts of the moves back at 62, again without these shapes,
+// so this branch took 65, the number above the 64 main held then; main then landed INFRA-1282's
+// declined ask at 68, again without these shapes, so this branch took 69; main then landed
+// INFRA-2712's stale-plugin lane at 73, again without these shapes, so this branch took 74 at
+// the forward merge efa39e15f9cd; main then landed INFRA-3083's decided claim and issue records
+// at 75, INFRA-2554's one answer for an issue that is not working now at 85 and INFRA-714's
+// event-driven workflow at 86, each without these shapes, so this branch took 87, the number
+// above the 86 main held at the forward merge that brought main in at c95e698a9a5f; main's
+// #3939 then landed INFRA-3219's leak check cause at 87, again without these shapes, and the
+// census of the open pull requests read at 2026-11-13T04:09Z, after the forward merge that
+// brought main in at 12ba4e6afa71, found main at 87 and 88 to 95 each held by an open head, so
+// this branch took 96, the lowest number above main's own and above every open head; main's
+// #3677 then landed INFRA-2800's phase entries at 94, again without these shapes, and the
+// forward merge that brought main in at bc52296a74c2 keeps 96, above main's 94; main's #3708
+// then landed INFRA-3107's held list at 98, again without these shapes, passing over 97, an open
+// head's number that main declares nowhere, so this branch left 96, and the census of the open
+// pull requests read at 2026-11-13T13:49Z, for the forward merge that brought main in at
+// 0fde2dcff6e4, found 99 to 105 each held by an open head, 105 by #3659, which holds that
+// number, so this branch took 106, the lowest number above main's 98 and above every open head;
+// main's #3830 then landed INFRA-3161's claim recoveries at 104, again without these shapes,
+// passing over 99 to 103, numbers main declares nowhere, and the census of the open pull
+// requests read at 2026-11-13T18:41Z, for the forward merge that brought main in at
+// b601d25b3fa1, found #3730 declaring 106 as well as this branch, so this branch left 106, and
+// found 105 held by #3659 and 107 to 111 each held by an open head, so this branch took 112, the
+// lowest number above main's 104 that no other open head declares; main's #3573 then landed
+// INFRA-2560's quiet time at 111, again without these shapes, and the census of the open pull
+// requests read at 2026-11-13T23:03Z, for the forward merge that brought main in at
+// 61685f973c9a, found no other open head declaring 112, so this branch kept 112, the lowest
+// number above main's 111 that no other open head declares; main's #3793 then landed
+// INFRA-3146's phase completion head at 123, again without these shapes, passing over 112 to
+// 122, numbers main declares nowhere, and the census of the open pull requests read at
+// 2026-11-14T14:40Z, for the forward merge that brought main in at 7df0a64ca5ef, found 124 to
+// 129 each held by an open head, so this branch left 112 and took 130, the lowest number above
+// main's 123 and above every open head. Read main's own number and every open pull request again
+// at the next merge rather than from this line, as
+// docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
+// says, and note that main's own 64 entry reads this pull request at 60, its 68 entry reads it
+// at 65, its 94 entry reads it at 96 and its 123 entry reads it at 112, each true when it was
+// written and each a renumber or more old.)
+const DaemonAPIVersion = 130

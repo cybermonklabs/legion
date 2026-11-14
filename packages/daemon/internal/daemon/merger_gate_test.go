@@ -36,8 +36,9 @@ func TestTheMergersStartWaitsWhileItsTreesDesignGateIsClosed(t *testing.T) {
 		trees: outboxTreeStore(t, pool, issue.Tree), tokens: outboxTokens{}, project: "legion", stateDir: t.TempDir(),
 		// The deployment gates the spec step alone, the list `gates.design: root-issues` names
 		// (config.DesignGate.Steps, INFRA-1272): a runner told no step gates nothing, so the
-		// start it holds here is held by the step this gate's row belongs to.
-		gatedSteps: config.DesignGateRootIssues.Steps(),
+		// start it holds here is held by the step this gate's row belongs to. The runner reads
+		// the gate through the settings holder (gatedSteps), as the daemon's own does.
+		live: config.Settled(config.Config{Gates: config.Gates{Design: config.DesignGateRootIssues.Steps()}}),
 		provision: func(context.Context, workspace.Request) (workspace.Workspace, error) {
 			return workspace.Workspace{Dir: t.TempDir(), Bookmark: "legion/LEGION-208"}, nil
 		},

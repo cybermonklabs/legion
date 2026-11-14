@@ -181,7 +181,7 @@ func newBootClaimRig(t *testing.T, fixtures []bootClaimFixture, answer func(int)
 			Claim: fixture.liveClaim, ClaimUnread: fixture.listedUnread && fixture.liveClaim == nil}
 	}
 	pool, w := catchUpRig(t, client, 1)
-	w.consumers = bootClaimConsumers(t, pool)
+	w.nats = heldConsumers(bootClaimConsumers(t, pool))
 	w.repositories = newRepositories("CAPTURE", ghrepo.Renames{})
 	records := record.NewStore()
 	for _, fixture := range fixtures {

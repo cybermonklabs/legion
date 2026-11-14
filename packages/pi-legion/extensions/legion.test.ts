@@ -1939,6 +1939,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
         daemon: {
           project: "OMP",
           schemaVersion: 1,
+          commit: "0f1d2c3b4a5968778695a4b3c2d1e0f1a2b3c4d5",
           boots: 1,
           firstBootAt: "2026-09-18T14:03:27Z",
           startedAt: "2026-09-22T09:15:02Z",
@@ -1968,6 +1969,9 @@ describe.skipIf(skip)("Legion OMP extension", () => {
           caches: [],
         },
         settings: { review_round_cap: 3, worker_boot_timeout_seconds: 120 },
+        settingSources: {
+          worker_boot_timeout_seconds: { source: "file", at: "2026-09-22T09:15:02Z" },
+        },
         consumers: [],
       };
       const booted = await bootPane({

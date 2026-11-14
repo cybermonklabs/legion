@@ -3,6 +3,7 @@ import type {
   DeliveryMeasuresResponse,
   DeliveryPipelineResponse,
   DeliveryTimelineWithMeasures,
+  LegionBoardResponse,
 } from "./dispatch-api.generated";
 import type { DispatchEvent } from "./dispatch-api-events";
 
@@ -17,11 +18,18 @@ export type DeliveryLiveWindow =
   | { readonly from: string; readonly to: string };
 
 /** One view a page shows. `query` is the query string the page would send to the matching GET route
- *  without `from`/`to` (search and every facet), so the live answer and the GET answer are one. */
+ *  without `from`/`to` (search and every facet), so the live answer and the GET answer are one. A
+ *  pipeline view names a window, or an `at`, which is the seven days ending on that day, or
+ *  neither, which is the seven days ending at the present; naming both is refused, as the GET
+ *  route refuses `at` beside `from`/`to`, and it names no query, since the Pipeline section
+ *  follows none of the timeline's facets. A legion view names the project whose board it shows and
+ *  nothing else: the board has no window, and `project` is all `GET /api/v1/legion/board` reads.
+ *  Its snapshot and deltas carry a `LegionBoardResponse`. */
 export type DeliveryLiveView =
   | { readonly kind: "timeline"; readonly window: DeliveryLiveWindow; readonly query: string }
   | { readonly kind: "measures"; readonly window: DeliveryLiveWindow; readonly query: string }
-  | { readonly kind: "pipeline"; readonly at?: string };
+  | { readonly kind: "pipeline"; readonly window?: DeliveryLiveWindow; readonly at?: string }
+  | { readonly kind: "legion"; readonly project: string };
 
 /** The timeline's lists sent item by item, by id. */
 export type DeliveryLiveList = "prs" | "runs" | "session_groups";
@@ -108,10 +116,13 @@ export interface LiveUnsubscribe {
 }
 export type LiveClientFrame = LiveSubscribe | LiveUnsubscribe;
 
+/** The body a delivery-hub snapshot or delta carries, by the view's kind: the matching GET
+ *  route's body, byte for byte. */
 export type DeliveryLiveBody =
   | DeliveryTimelineWithMeasures
   | DeliveryMeasuresResponse
-  | DeliveryPipelineResponse;
+  | DeliveryPipelineResponse
+  | LegionBoardResponse;
 
 export interface DeliveryLiveSnapshot {
   readonly type: "snapshot";

@@ -18,13 +18,82 @@ import (
 type bootReads struct {
 	project, operatorToken, dispatchToken string
 	secrets                               map[string]string
-	paneNatsUser                          string            // the pane seed's user's public key, "" with no pane seed
 	nats                                  natsConnection    // the user the daemon's own NATS connection authenticates as
 	instructions                          []byte            // nil when the configuration names none
 	memoryInstructions                    []byte            // nil when the project's memory block names no instructions file
 	hookPrompts                           map[string]string // the words of each hook whose prompt_file names a file, by hook name; nil while no hook names one
 	tmux                                  tmuxReads         // runtime: tmux
 	sandbox                               sandboxReads      // runtime: kubernetes
+}
+
+// The credential files the configuration names, each read through internal/config's own reader
+// and each a function of its own: boot reads them here, and a settings change that moves a
+// file's path — or a rotation of a file whose path did not change — reads them again through the
+// holder that holds what the file says (rebuilder.rereadCredentials). Nothing inlines these
+// reads, so there is one place each credential is read from.
+
+// readOperatorToken is the operator bearer (`operator_token_file`), which the API server's
+// operator routes compare against. The key is required: the routes that spawn and drive claims
+// authenticate against nothing else.
+func readOperatorToken(cfg config.Config) (string, error) {
+	if cfg.OperatorTokenFile == "" {
+		return "", errors.New("operator_token_file is required: the operator routes that spawn and drive claims authenticate against the bearer it names")
+	}
+	return config.ReadSecretPointer("operator_token_file", cfg.OperatorTokenFile)
+}
+
+// readDispatchToken is the Dispatch bearer (`dispatch_token_file`) every Dispatch call carries;
+// "" for a daemon with no Dispatch, which makes none.
+func readDispatchToken(cfg config.Config) (string, error) {
+	if cfg.DispatchURL == "" {
+		return "", nil
+	}
+	return config.ReadSecretPointer("dispatch_token_file", cfg.DispatchTokenFile)
+}
+
+// readEnvoyToken is the Envoy bearer (`envoy_token_file`) the notify publisher publishes under,
+// and the ENVOY_TOKEN every launch's spec carries; "" when the configuration names no file.
+func readEnvoyToken(cfg config.Config) (string, error) {
+	if cfg.EnvoyTokenFile == "" {
+		return "", nil
+	}
+	return config.ReadSecretPointer("envoy_token_file", cfg.EnvoyTokenFile)
+}
+
+// readInstructions is the operator's deployment instructions (`instructions`), nil when the
+// configuration names none.
+func readInstructions(cfg config.Config) ([]byte, error) {
+	if cfg.InstructionsPath == "" {
+		return nil, nil
+	}
+	return config.ReadDeploymentInstructions(cfg.InstructionsPath)
+}
+
+// readNATSConnection is the user the daemon's own NATS connection authenticates as: its own seed
+// (`nats_daemon_nkey_seed_file`) when it has one, else the pane seed every launch carries
+// (`nats_nkey_seed_file`), else no credential (chooseNATSConnection). Both seeds are read from
+// their files here, so a rotated seed reaches the connection its rebuild opens.
+func readNATSConnection(cfg config.Config, lookup func(string) (string, bool)) (natsConnection, error) {
+	paneSeed, err := natsauth.Seed(cfg.NatsNkeySeedFile, lookup)
+	if err != nil {
+		return natsConnection{}, err
+	}
+	paneUser := ""
+	if paneSeed != "" {
+		if paneUser, err = natsauth.PublicKey(paneSeed); err != nil {
+			return natsConnection{}, err
+		}
+	}
+	daemonSeed, err := natsauth.DaemonSeed(cfg.NatsDaemonNkeySeedFile, lookup)
+	if err != nil {
+		return natsConnection{}, err
+	}
+	connection, err := chooseNATSConnection(daemonSeed, paneSeed, paneUser)
+	if err != nil {
+		return natsConnection{}, err
+	}
+	connection.paneNatsUser = paneUser
+	return connection, nil
 }
 
 // readBoot is every refusal boot makes from the configuration, the daemon's environment (lookup,
@@ -45,10 +114,8 @@ func readBoot(cfg config.Config, lookup func(string) (string, bool), getenv func
 	if r.project, err = claim.ProjectToken(cfg.Project); err != nil {
 		return bootReads{}, err
 	}
-	if cfg.OperatorTokenFile == "" {
-		return bootReads{}, errors.New("operator_token_file is required: the operator routes that spawn and drive claims authenticate against the bearer it names")
-	}
-	if r.operatorToken, err = config.ReadSecretPointer("operator_token_file", cfg.OperatorTokenFile); err != nil {
+
+	if r.operatorToken, err = readOperatorToken(cfg); err != nil {
 		return bootReads{}, err
 	}
 	if err := checkOperatorConfig(cfg, lookup); err != nil {
@@ -57,23 +124,11 @@ func readBoot(cfg config.Config, lookup func(string) (string, bool), getenv func
 	if r.secrets, err = readLaunchSecrets(cfg, lookup); err != nil {
 		return bootReads{}, err
 	}
-	paneSeed := r.secrets[natsauth.SeedVariable]
-	if paneSeed != "" {
-		if r.paneNatsUser, err = natsauth.PublicKey(paneSeed); err != nil {
-			return bootReads{}, err
-		}
-	}
-	daemonSeed, err := natsauth.DaemonSeed(cfg.NatsDaemonNkeySeedFile, lookup)
-	if err != nil {
+	if r.nats, err = readNATSConnection(cfg, lookup); err != nil {
 		return bootReads{}, err
 	}
-	if r.nats, err = chooseNATSConnection(daemonSeed, paneSeed, r.paneNatsUser); err != nil {
+	if r.instructions, err = readInstructions(cfg); err != nil {
 		return bootReads{}, err
-	}
-	if cfg.InstructionsPath != "" {
-		if r.instructions, err = config.ReadDeploymentInstructions(cfg.InstructionsPath); err != nil {
-			return bootReads{}, err
-		}
 	}
 	// Every hook that reads its words from a file rather than writing them in the key, read as
 	// the deployment's instructions are and refused the same way. The engine is given words and
@@ -100,16 +155,14 @@ func readBoot(cfg config.Config, lookup func(string) (string, bool), getenv func
 			return bootReads{}, err
 		}
 	}
-	if cfg.DispatchURL != "" {
-		if r.dispatchToken, err = config.ReadSecretPointer("dispatch_token_file", cfg.DispatchTokenFile); err != nil {
-			return bootReads{}, err
-		}
+	if r.dispatchToken, err = readDispatchToken(cfg); err != nil {
+		return bootReads{}, err
 	}
 	switch cfg.Runtime.Name {
 	case "tmux":
 		r.tmux, err = readTmux(cfg, lookup, getenv, hostOMP)
 	case "kubernetes":
-		r.sandbox, err = readSandbox(cfg, r.project, r.dispatchToken, r.paneNatsUser, lookup, log)
+		r.sandbox, err = readSandbox(cfg, r.project, r.dispatchToken, r.nats.paneNatsUser, lookup, log)
 	default:
 		err = fmt.Errorf("runtime %q is neither tmux nor kubernetes", cfg.Runtime.Name)
 	}
@@ -117,6 +170,38 @@ func readBoot(cfg config.Config, lookup func(string) (string, bool), getenv func
 		return bootReads{}, err
 	}
 	return r, nil
+}
+
+// ownRuntime refuses a configuration a build of the runtime named name must not read: one
+// naming the other runtime, one carrying the other runtime's block, and, under kubernetes, one
+// whose own block is nil — every pod option is read out of that block (readSandbox's
+// `*cfg.Runtime.Kubernetes`), so a nil one there is a nil dereference inside config.Live.Apply,
+// under the settings holder's lock, in a daemon that is supervising pods. Nothing of the tmux
+// block is required: `runtime: tmux` with no block is what most deployments write, and a nil
+// one names no pane key (config.Tmux, tmuxOptions).
+//
+// No loaded configuration reaches it: the loader reads the block the selector names and no
+// other (config's readRuntime), and a reading that names the other runtime settles nothing at
+// all, so no settle ever hands a build a configuration of the runtime it is not
+// (config.Live.Apply). This is the defence behind that rule — a nil block must not be able to
+// kill the process even if some later path reaches it — and it is the one refusal both
+// runtimes' builds make: readSandbox, which boot and every Sandbox rebuild read their client
+// and Options through, and the tmux build prepareTmux leaves behind (p.runtimeFor).
+func ownRuntime(name string, cfg config.Config) error {
+	if cfg.Runtime.Name != name {
+		return fmt.Errorf("the %s runtime was given a configuration naming runtime %q: the daemon supervises the processes of the runtime it booted on, and builds nothing from another runtime's configuration", name, cfg.Runtime.Name)
+	}
+	switch name {
+	case "kubernetes":
+		if cfg.Runtime.Kubernetes == nil {
+			return errors.New("the kubernetes runtime was given a configuration with no runtime.kubernetes block: every pod option is read out of that block, and the daemon builds nothing without it")
+		}
+	case "tmux":
+		if cfg.Runtime.Kubernetes != nil {
+			return errors.New("the tmux runtime was given a configuration carrying a runtime.kubernetes block: a pane reads `runtime.tmux` and nothing of the other runtime's block, which no loaded configuration holds beside `runtime: tmux`")
+		}
+	}
+	return nil
 }
 
 // natsConnection is the NATS user the daemon's own connection authenticates as: its own seed
@@ -127,6 +212,9 @@ type natsConnection struct {
 	user     string         // seed's user's public key, "" with no seed
 	source   natsSeedSource // where seed came from
 	paneUser bool           // whether user is the pane seed's user, as when the daemon seed is the pane seed
+	// paneNatsUser is the pane seed's user's public key, "" with no pane seed, whatever seed the
+	// daemon's own connection uses: the image probe holds the providers Secret's seed to it.
+	paneNatsUser string
 }
 
 // natsSeedSource is where the daemon's own connection's seed came from, as its boot line names it.
@@ -228,5 +316,5 @@ func CheckStart(cfg config.Config, lookup func(string) (string, bool)) (paneNats
 	if r.nats.source == natsSeedDaemon {
 		daemonNatsUser = r.nats.user
 	}
-	return r.paneNatsUser, daemonNatsUser, nil
+	return r.nats.paneNatsUser, daemonNatsUser, nil
 }

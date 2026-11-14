@@ -1,0 +1,12 @@
+kind: Changed
+body: |-
+    The Legion view's card shows no CI verdict, and the Delivery page's Legion section measures no
+    CI wait. Since cybermonklabs/legion#2539 the Legion daemon's state carries neither a pull
+    request's CI verdict nor its base branch's required-check mark, so the sampler records
+    neither, a card of `GET /api/v1/legion/board` has no `checks_verdict`, and every bar of
+    `GET /api/v1/legion/metrics` carries `ci_wait` at 0, its hours going to waiting on children or
+    idle. The verdict and required-check rows a database already holds stay, and nothing reads
+    them.
+time: 2026-11-13T10:45:57.000000000Z
+custom:
+    Issue: pr2731

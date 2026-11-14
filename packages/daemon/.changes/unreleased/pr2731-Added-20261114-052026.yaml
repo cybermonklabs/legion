@@ -1,0 +1,5 @@
+kind: Added
+body: 'The daemon applies a change of legion.yaml, or one made through PUT /legion/v1/operator/settings, with no restart: each key''s class says whether it applies at the next decision, rebuilds what holds it, reaches the next launch, or waits for a restart, and the state names where each setting came from (settingSources) and the commit the daemon was built from.'
+time: 2026-11-14T05:20:26.358077588Z
+custom:
+    Issue: pr2731

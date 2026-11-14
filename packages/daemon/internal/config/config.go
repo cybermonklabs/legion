@@ -95,10 +95,11 @@ type Config struct {
 	OmpLaunchPrefix []string
 	// ProviderKeys are the provider credentials every pane's or pod's OMP receives in its
 	// environment, in file order: the variable OMP reads, and where its value is held. Under tmux the
-	// source is a secretsd key, or a file (`file:/abs/path`), which boot reads once, as the daemon
-	// (MaterializeProviderKeys), into a daemon-held 0600 file, so a pane never holds the secret store
-	// itself; under kubernetes it is a key of the providers Secret, which every pod mounts as the
-	// file the shim exports.
+	// source is a secretsd key, or a file (`file:/abs/path`), which the daemon reads as itself
+	// (MaterializeProviderKeys) at boot and again at each build of the tmux runtime whose keys have
+	// moved, into a daemon-held 0600 file, so a pane never holds the secret store itself; under
+	// kubernetes it is a key of the providers Secret, which every pod mounts as the file the shim
+	// exports.
 	ProviderKeys []ProviderKey
 	// InstructionsPath is the operator's deployment instructions, "" when none; boot copies it to
 	// `<state_dir>/deployment-instructions.md` (MaterializeDeploymentInstructions).
@@ -252,6 +253,10 @@ type Config struct {
 	// records keep the name each was written under. The zero value, which answers as
 	// strings.EqualFold does, while the file configures none.
 	RepositoryRenames ghrepo.Renames
+	// SettingsRoute is `settings_route`: the cluster OIDC issuer, audience and ServiceAccounts
+	// the settings route admits a projected ServiceAccount token from, beside the operator
+	// bearer. The zero value, which admits none, while the file configures none.
+	SettingsRoute SettingsRoute
 	// Hooks is `hooks`: the deployment's own prompts, each put in front of named roles every
 	// Every moves back of the moves it selects. DefaultHooks() while the file names no key, and
 	// empty where it writes `hooks: []`, which runs none. A `prompt_file` is resolved against
@@ -451,6 +456,7 @@ type fileConfig struct {
 	RoleConfigFiles          map[claim.Role][]string
 	WorkerStallBackstops     map[claim.Role]time.Duration
 	RepositoryRenames        []ghrepo.Rename
+	SettingsRoute            *SettingsRoute
 	// Hooks is `hooks`, a pointer so the settle tells a file that names no key, which runs
 	// DefaultHooks(), from one that writes the empty list, which runs no hook.
 	Hooks *[]Hook
@@ -472,20 +478,35 @@ func LoadForValidation(path string, env func(string) string) (Config, error) {
 }
 
 func load(path string, env func(string) string, resolveAppKeys bool) (Config, error) {
-	if env == nil {
-		env = os.Getenv
+	document, err := readDocument(path)
+	if err != nil {
+		return Config{}, err
 	}
+	return loadDocument(document, path, env, resolveAppKeys)
+}
 
+// readDocument reads one configuration file and parses it, reading no key and resolving nothing.
+func readDocument(path string) (*yaml.Node, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return Config{}, fmt.Errorf("read %s: %w", path, err)
+		return nil, fmt.Errorf("read %s: %w", path, err)
 	}
 	var document yaml.Node
 	if err := yaml.Unmarshal(data, &document); err != nil {
-		return Config{}, fmt.Errorf("parse %s: %w", path, err)
+		return nil, fmt.Errorf("parse %s: %w", path, err)
 	}
+	return &document, nil
+}
 
-	root, err := rootMapping(&document)
+// loadDocument is the rest of load with the file's document already in hand: the key read, the
+// resolution and the App private keys. path names the file a relative path key resolves against
+// and is never read here. Live re-resolves through it with its stored route overlay laid over the
+// document, so a route change meets exactly the refusals a file change meets.
+func loadDocument(document *yaml.Node, path string, env func(string) string, resolveAppKeys bool) (Config, error) {
+	if env == nil {
+		env = os.Getenv
+	}
+	root, err := rootMapping(document)
 	if err != nil {
 		return Config{}, err
 	}
@@ -604,6 +625,8 @@ func readKeys(root *yaml.Node) (fileConfig, error) {
 			file.PodUpdateRoundsPerMinute, err = readPositiveInteger(value, key, 0)
 		case "review_round_cap":
 			file.ReviewRoundCap, err = readPositiveInteger(value, key, 0)
+		case settingsRouteKey:
+			file.SettingsRoute, err = readSettingsRoute(value, key)
 		case "controller":
 			file.Controller, err = readString(value, key)
 		case "capabilities":
@@ -896,7 +919,7 @@ const spendAttributesRule = "a value the agent's OpenTelemetry detector would th
 // environment while the provider's variable is fixed. Secret is the key that holds it
 // (GEMINI_API_KEY_TESTS) — a secretsd key under tmux, a key of the providers Secret under
 // kubernetes — or File, set instead when the entry's value is `file:/abs/path`: the file the daemon
-// reads the value from at boot, under tmux alone. Exactly one of the two is set.
+// reads the value from (MaterializeProviderKeys), under tmux alone. Exactly one of the two is set.
 type ProviderKey struct {
 	Env    string
 	Secret string
@@ -1204,6 +1227,9 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 	}
 	if file.Capabilities != nil {
 		cfg.Capabilities = *file.Capabilities
+	}
+	if file.SettingsRoute != nil {
+		cfg.SettingsRoute = *file.SettingsRoute
 	}
 	cfg.WorkerBackends = file.WorkerBackends
 	cfg.RoleConfigFiles = file.RoleConfigFiles

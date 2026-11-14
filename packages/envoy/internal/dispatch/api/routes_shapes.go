@@ -16,6 +16,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/cireconcile"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/legion"
+	"github.com/sjawhar/envoy/internal/dispatch/legion/metrics"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -151,11 +153,38 @@ type issueResultsQuery struct {
 	At string `query:"at"`
 }
 
-// deliveryPipelineQuery is GET /api/v1/delivery/pipeline's query.
+// deliveryPipelineQuery is GET /api/v1/delivery/pipeline's query, which takes one of two forms
+// (parsePipelineWindow): `at` alone, or `from` and `to` as every other delivery route reads them.
+// Naming `at` beside either is 400 INVALID_QUERY.
 type deliveryPipelineQuery struct {
 	// At fixes the day the seven-day Pipeline window ends on, RFC3339; absent it is now.
 	// A malformed value is 400 INVALID_QUERY.
 	At string `query:"at"`
+	// From is the window's start, RFC3339; with To alone it is the window's own days.
+	From string `query:"from"`
+	// To is the window's end, RFC3339, exclusive; absent it is now.
+	To string `query:"to"`
+}
+
+// legionBoardQuery is GET /api/v1/legion/board's query.
+type legionBoardQuery struct {
+	// Project is the project whose daemon's board is drawn; absent, it is the first project that
+	// names a daemon, and a key no project holds is 400 INVALID_QUERY.
+	Project string `query:"project"`
+}
+
+// legionMetricsQuery is GET /api/v1/legion/metrics's query: the project, the window every
+// delivery route reads the same way, and which of the project's issues the answer counts.
+type legionMetricsQuery struct {
+	// Project is the project whose issues are counted; absent, it is the first project that
+	// names a daemon, and a key no project holds is 400 INVALID_QUERY.
+	Project string `query:"project"`
+	// From is the window's start, RFC3339; absent it is seven days before To.
+	From string `query:"from"`
+	// To is the window's end, RFC3339, exclusive; absent it is now.
+	To string `query:"to"`
+	// Scope is which of the project's Legion issues are counted; absent it is all.
+	Scope string `query:"scope" enum:"all,roots,children"`
 }
 
 // issueListQuery is GET /api/v1/issues's query: the filters and the offset page.
@@ -563,6 +592,25 @@ var routeShapes = map[string]routeShape{
 	"GET /api/v1/settings/new-issue": {Status: http.StatusOK, Response: newIssueSettings{}},
 	"POST /api/v1/settings/new-issue/_test": {
 		Status: http.StatusOK, Response: newIssueSettings{}, Request: newIssueSettingsInput{},
+	},
+	"GET /api/v1/settings/legion": {Status: http.StatusOK, Response: []legion.Settings{}},
+	"PUT /api/v1/settings/legion/{project}": {
+		Status: http.StatusOK, Response: legion.Settings{}, Request: putLegionSettingInput{},
+	},
+	"DELETE /api/v1/settings/legion/{project}": {Status: http.StatusNoContent},
+	"PUT /api/v1/legion/{project}/settings": {
+		Status: http.StatusOK, Request: legionSettingsRelayInput{},
+		// Dispatch relays the daemon's status and body unchanged (settings_legion.go), so the
+		// answer is the daemon's own shape and not one this server models.
+		Opaque: "the Legion daemon's own answer, relayed byte for byte with its status: the " +
+			"per-key verdicts of its operator settings route, which Dispatch does not model",
+		OpaqueContentType: "application/json",
+	},
+	"GET /api/v1/legion/metrics": {
+		Status: http.StatusOK, Response: metrics.Report{}, Params: legionMetricsQuery{},
+	},
+	"GET /api/v1/legion/board": {
+		Status: http.StatusOK, Response: legionBoardResponse{}, Params: legionBoardQuery{},
 	},
 	"GET /api/v1/delivery/timeline": {
 		Status: http.StatusOK, Response: deliveryTimelineWithMeasures{}, Params: deliveryWindowQuery{},

@@ -11,7 +11,6 @@ import (
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
@@ -43,8 +42,8 @@ func stateServer(t *testing.T, state State, claims []supervise.Claim) http.Handl
 // log takes them and adds its logger (narrowing_test.go's stateNarrowed).
 func stateOptions(state State, claims []supervise.Claim) Options {
 	return Options{
-		Steps: config.DesignGateRootIssues.Steps(),
-		State: fakeSource{state: state, claims: claims}, StateTransactions: &fakeStateTransactions{tx: &fakeTx{}},
+		Settings: unauthenticatedSettings(),
+		State:    fakeSource{state: state, claims: claims}, StateTransactions: &fakeStateTransactions{tx: &fakeTx{}},
 		CallerPod: func(addr netip.Addr) (string, bool) {
 			if addr == netip.MustParseAddr(statePodAddr) {
 				return statePodUID, true
@@ -173,6 +172,26 @@ func unmarked(t *testing.T, body []byte) string {
 		t.Fatalf("encode the state %s without its mark: %v", body, err)
 	}
 	return string(encoded)
+}
+
+// withoutSourceKeys is a state body with no `settingSources` and with a `daemon` block that
+// carries no `commit`, which is what a caller below settingSourcesContract is served of a state
+// (api's withoutSettingSources). It serves the table below as withoutQuietKeys does: a row's
+// baseline is the full state with exactly the keys that row's own contract holds back taken out
+// of it.
+func withoutSourceKeys(t *testing.T, body []byte) []byte {
+	t.Helper()
+	var served map[string]any
+	if err := json.Unmarshal(body, &served); err != nil {
+		t.Fatalf("decode state %s: %v", body, err)
+	}
+	delete(served, "settingSources")
+	delete(served["daemon"].(map[string]any), "commit")
+	encoded, err := json.Marshal(served)
+	if err != nil {
+		t.Fatalf("encode the state %s without its setting sources: %v", body, err)
+	}
+	return encoded
 }
 
 // withoutQuietKeys is a state body with no issue carrying `treeMovedAt` or `quietHours`, which
@@ -316,16 +335,18 @@ func withoutAnswerKeys(t *testing.T, body []byte) []byte {
 // route authenticates nobody, so it knows that plugin by the pod the request came from: a pod
 // whose claims record a contract below supervise.PodUpdateContract is served claim views with
 // only the keys contract 45 knows, and the rest of the body as it is — the trees, the wakes the
-// pacing holds, the count of claims the refresh lane has left, the gated steps, the claim
-// views' step record, the places in the admission line, the workers' counts of the moves back,
-// each issue's two entry numbers, the issues the record holds in the workflow and each issue's
-// tree quiet time among the keys it is served without, since such a pod is below every row of
-// stateNarrowings. The measure of a tree that has stopped is read in finer grain by
-// quiet_time_test.go. A pod at this contract, and a caller in no pod — the operator's
-// `legion state`, whose open-rounds line reads both fields, whose queue line reads those wakes
-// and whose tool-call line reads the step records — are served everything. The claims are the
-// state snapshot's own, so there is no readable state whose caller's contract is unknown: a
-// snapshot without them is no state, and the route refuses it.
+// pacing holds, the count of claims the stale-plugin lane has left, the gated steps, the
+// retired entries of the report of claims nothing will wake, the claim views' step record, the
+// places in the admission line, the workers' counts of the moves back, the claim views' leak
+// check cause, each issue's two entry numbers, the issues the record holds in the workflow,
+// each issue's tree quiet time and the two fields the setting sources came with among what it
+// is served without, since such a pod is below every row of stateNarrowings. The measure of a
+// tree that has stopped is read in finer grain by quiet_time_test.go. A pod at the newest
+// contract the route narrows by, and a caller in no pod — the operator's `legion state`, whose
+// open-rounds line reads both fields, whose queue line reads those wakes and whose tool-call
+// line reads the step records — are served everything. The claims are the state snapshot's
+// own, so there is no readable state whose caller's contract is unknown: a snapshot without
+// them is no state, and the route refuses it.
 func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 	full := stateFrom(t, populatedState(t), "192.0.2.1:41000", podClaims(supervise.PodUpdateContract-1))
 	fullWakes, fullCarried := wakesServed(t, full)
@@ -369,10 +390,15 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		// plugin is not.
 		held bool
 		// quiet is whether the caller is served each issue's measure of its tree's quiet time,
-		// `treeMovedAt` and `quietHours` (quietTimeContract, the contract 111 added, which is
-		// this daemon's own), so the only pod served the measure is one at it. The two leave
-		// together (withoutQuietTime), so one column answers for both.
+		// `treeMovedAt` and `quietHours` (quietTimeContract, the contract 111 added), so a pod at
+		// 111 or above is served the measure and a pod still running an older plugin is not. The
+		// two leave together (withoutQuietTime), so one column answers for both.
 		quiet bool
+		// sources is whether the caller is served the two fields settingSourcesContract added,
+		// `settingSources` and the `daemon` block's `commit`, so the only pod served them is one
+		// at that contract, this daemon's own. The two leave together (withoutSettingSources),
+		// so one column answers for both.
+		sources bool
 	}{
 		{name: "a pod whose plugin is a contract behind", remote: statePodAddr + ":41000", claims: podClaims(supervise.PodUpdateContract - 1)},
 		{name: "the same pod asking over IPv6", remote: "[::ffff:" + statePodAddr + "]:41000", claims: podClaims(supervise.PodUpdateContract - 1)},
@@ -380,27 +406,37 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		// is served is decided by its own recorded claim contract (podContract) and never by the
 		// declared constant, which is why these rows name the contracts rather than the
 		// declaration. Such a pod stands below whyAndLineFieldsContract, leakCheckCauseContract,
-		// phaseEntriesContract, heldContract and quietTimeContract, the five bands above it, so
-		// the issues it is served carry no answer, no entry number and no tree quiet time, its
-		// claim views no leak check's cause and its admission block no held list.
+		// phaseEntriesContract, heldContract, quietTimeContract and settingSourcesContract, the
+		// six bands above it, so the issues it is served carry no answer, no entry number and no
+		// tree quiet time, its claim views no leak check's cause, its admission block no held
+		// list, and the body neither `settingSources` nor the `daemon` block's `commit`.
 		{name: "a pod at recordFieldsContract", remote: statePodAddr + ":41000", claims: podClaims(recordFieldsContract), rounds: true, wakes: true, stall: true, refresh: true},
 		// The band at whyAndLineFieldsContract: the answers and the line's own fields are served
-		// too, and the leak check's cause, the entry numbers, the held list and the tree quiet
-		// time are held back.
+		// too, and the leak check's cause, the entry numbers, the held list, the tree quiet time
+		// and the two fields settingSourcesContract added are held back.
 		{name: "a pod at whyAndLineFieldsContract", remote: statePodAddr + ":41000", claims: podClaims(whyAndLineFieldsContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true},
 		// The newest contract that strips a key of the claim views, which is what a pod must
-		// record to be served every one of them: the entry numbers, the held list and the tree
-		// quiet time are the three bands left above it.
+		// record to be served every one of them: the entry numbers, the held list, the tree
+		// quiet time and the setting sources are the four bands left above it.
 		{name: "a pod at leakCheckCauseContract, the newest contract that strips a claim view's key", remote: statePodAddr + ":41000", claims: podClaims(leakCheckCauseContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true},
 		// The band from phaseEntriesContract to below heldContract: the entry numbers are
-		// served too, and the held list and the tree quiet time are the two bands left above it.
+		// served too, and the held list, the tree quiet time and the setting sources are the
+		// three bands left above it.
 		{name: "a pod at phaseEntriesContract", remote: statePodAddr + ":41000", claims: podClaims(phaseEntriesContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true},
 		// The band from heldContract to below quietTimeContract: the held list is served too,
-		// and the tree quiet time is the one band left above it.
+		// and the tree quiet time and the setting sources are the two bands left above it.
 		{name: "a pod at heldContract", remote: statePodAddr + ":41000", claims: podClaims(heldContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true},
-		{name: "a pod at this contract", remote: statePodAddr + ":41000", claims: podClaims(DaemonAPIVersion), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true},
-		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true},
-		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(supervise.PodUpdateContract - 1), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true},
+		// The band from quietTimeContract to below settingSourcesContract: the tree quiet time is
+		// served too, and the setting sources are the one band left above it.
+		{name: "a pod at quietTimeContract", remote: statePodAddr + ":41000", claims: podClaims(quietTimeContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true},
+		// The newest contract the route narrows by, which is what a pod must record to be served
+		// every key. What the caller is served is decided by its own recorded claim contract
+		// (podContract) and never by the declared constant, which is why this row names
+		// settingSourcesContract rather than the declaration.
+		{name: "a pod at the newest contract the route narrows by", remote: statePodAddr + ":41000", claims: podClaims(settingSourcesContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, sources: true},
+		{name: "a pod at this contract", remote: statePodAddr + ":41000", claims: podClaims(DaemonAPIVersion), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, sources: true},
+		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, sources: true},
+		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(supervise.PodUpdateContract - 1), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, sources: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			body := stateFrom(t, populatedState(t), tc.remote, tc.claims)
@@ -426,11 +462,13 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			// row's own contract holds back: a pod at recordFieldsContract is served every
 			// claim view key the decided record added and neither the issues' answers, nor the
 			// leak check's cause, nor the entry numbers, nor the held list, nor the tree quiet
-			// time, the five bands between it and this daemon's own; a pod at
-			// whyAndLineFieldsContract is served the answers and none of the other four; a pod at
-			// leakCheckCauseContract is served the cause and none of the three above it; a pod at
-			// phaseEntriesContract is served the entry numbers and neither the held list nor the
-			// measure; and a pod at heldContract is served the held list and no measure.
+			// time, nor the setting sources, the six bands between it and this daemon's own; a
+			// pod at whyAndLineFieldsContract is served the answers and none of the other five; a
+			// pod at leakCheckCauseContract is served the cause and none of the four above it; a
+			// pod at phaseEntriesContract is served the entry numbers and none of the held list,
+			// the measure and the setting sources; a pod at heldContract is served the held list
+			// and neither the measure nor the setting sources; and a pod at quietTimeContract is
+			// served the measure and no setting source.
 			if tc.rounds && tc.stall {
 				want := full
 				if !tc.answers {
@@ -447,6 +485,9 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 				}
 				if !tc.quiet {
 					want = withoutQuietKeys(t, want)
+				}
+				if !tc.sources {
+					want = withoutSourceKeys(t, want)
 				}
 				if unmarked(t, body) != unmarked(t, want) {
 					t.Fatalf("state = %s, want the state as this row's contract is served it, %s", body, want)
@@ -485,10 +526,18 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			// sentence contract 87 added (withoutLeakCheckCause), with each issue's `phaseEntry`
 			// and `givenEntry` gone, the two keys contract 94 added (withoutPhaseEntries), with
 			// `admission.held` gone, the list contract 98 added (withoutHeld, held_test.go holds
-			// that half), and with the two keys contract 111 added gone, each issue of a live
-			// tree's `treeMovedAt` and `quietHours` (withoutQuietTime). Every row that reaches
-			// here is below all of them, so those sixteen strips take their keys whatever the row
-			// is.
+			// that half), with the two keys contract 111 added gone, each issue of a live tree's
+			// `treeMovedAt` and `quietHours` (withoutQuietTime), and with the two fields
+			// settingSourcesContract added gone — `settingSources` and the `daemon` block's
+			// `commit` (withoutSettingSources; state_sources_contract_test.go holds that half).
+			// Every row that reaches here is below all seventeen narrowings, so what each of them
+			// takes goes whatever the row is.
+			if carriesSettingSources(t, body) || carriesCommit(t, body) {
+				t.Errorf("the state %s carries a field contract %d added, which a reader before it refuses", body, settingSourcesContract)
+			}
+			if calls, _ := stepsServed(t, body); len(calls) > 0 {
+				t.Errorf("the state %s names the calls %v, which a reader before contract %d refuses", body, calls, stallRecordContract)
+			}
 			var want, got map[string]any
 			if err := json.Unmarshal(full, &want); err != nil {
 				t.Fatal(err)
@@ -500,6 +549,8 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 				delete(want, ClaimsToRefreshField)
 			}
 			delete(want, "contract")
+			delete(want, "settingSources")
+			delete(want["daemon"].(map[string]any), "commit")
 			if !tc.rounds {
 				delete(want["admission"].(map[string]any), "trees")
 				want["strandedClaims"] = strandedWithoutRetired(t, want["strandedClaims"])

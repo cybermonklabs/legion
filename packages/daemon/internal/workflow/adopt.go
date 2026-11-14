@@ -32,6 +32,7 @@ import (
 // their own tree's root, so no member reaches it and nothing moves because a pass ran: only an
 // architect's release adopts a member. Callers check it before Adopt or AdoptMember.
 func (e *Engine) AdoptionRefusal(ctx context.Context, tx pgx.Tx, issue record.Issue, tree string) (*intake.Refusal, error) {
+	e = e.decision()
 	if issue.Tree == tree {
 		return nil, nil
 	}
@@ -108,6 +109,7 @@ func (e *Engine) closedTreesMember(ctx context.Context, tx pgx.Tx, member record
 // back, though it never took a slot. Only a labelled root that never left a tree and never ran
 // (one a person made a child of a live tree) is adopted.
 func (e *Engine) RanAsRoot(ctx context.Context, tx pgx.Tx, issue record.Issue) (string, error) {
+	e = e.decision()
 	project, err := claim.ProjectToken(issue.Project)
 	if err != nil {
 		return "", err
@@ -139,6 +141,7 @@ func (e *Engine) RanAsRoot(ctx context.Context, tx pgx.Tx, issue record.Issue) (
 // Every write of an observation's chain to a record goes through this, with the record as it will
 // be written: RanAsRoot reads its run's mark.
 func (e *Engine) Ancestry(ctx context.Context, tx pgx.Tx, issue record.Issue, chain []string) ([]string, error) {
+	e = e.decision()
 	if len(chain) == 0 {
 		return nil, nil
 	}
@@ -177,7 +180,7 @@ func (e *Engine) tellReparented(ctx context.Context, tx pgx.Tx, issue *record.Is
 	if err != nil || root == nil {
 		return err
 	}
-	live, err := record.TreeLive(ctx, e.store, tx, *root, e.cfg.Steps)
+	live, err := record.TreeLive(ctx, e.store, tx, *root, e.settings().Steps)
 	if err != nil || !live {
 		return err
 	}
@@ -212,6 +215,7 @@ func (e *Engine) tellReparented(ctx context.Context, tx pgx.Tx, issue *record.Is
 // done, which a todo runs again (ReenterChild). The tree's architect is told with a child-status
 // notice. Everything is written in the caller's transaction.
 func (e *Engine) Adopt(ctx context.Context, tx pgx.Tx, issue, root record.Issue, child intake.AdoptedChild) error {
+	e = e.decision()
 	members, err := e.store.TreeIssues(ctx, tx, issue.Key)
 	if err != nil {
 		return err
@@ -304,7 +308,7 @@ func (e *Engine) catchUpOnWhatTheTreeIsOwed(ctx context.Context, tx pgx.Tx, root
 	if len(decisions) == 0 && approval.Approved == 0 {
 		return nil
 	}
-	return CatchUpTheTreesOwed(ctx, tx, e.store, e.cfg.Steps, []string{root.Tree}, e.now())
+	return CatchUpTheTreesOwed(ctx, tx, e.store, e.settings().Steps, []string{root.Tree}, e.now())
 }
 
 // AdoptMember moves member, a member of a closed tree AdoptionRefusal found adoptable
@@ -326,6 +330,7 @@ func (e *Engine) catchUpOnWhatTheTreeIsOwed(ctx context.Context, tx pgx.Tx, root
 // notice (joinedTheTree), and with a catch-up where a person's decision on the member is kept
 // for it (catchUpOnWhatTheTreeIsOwed). Everything is written in the caller's transaction.
 func (e *Engine) AdoptMember(ctx context.Context, tx pgx.Tx, member record.Issue, root record.Issue, child intake.AdoptedChild) error {
+	e = e.decision()
 	if err := e.moveIntoTree(ctx, tx, member, root, child); err != nil {
 		return err
 	}

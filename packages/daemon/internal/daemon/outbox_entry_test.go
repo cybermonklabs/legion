@@ -645,7 +645,7 @@ func TestAClaimWorkingAnEarlierEntryIsSentItsRowsEntryOnceThatTaskIsRetired(t *t
 	grants := credential.New(nil)
 	handoffs := &fleetHandoffs{handoffs: map[string]dispatch.Handoff{}}
 	handler := api.NewServer("127.0.0.1", 0, api.Options{
-		Steps: config.DesignGateRootIssues.Steps(), Supervisor: rig.sup, Project: "legion", DispatchProject: "LEGION",
+		Settings: api.NewLiveSettings(api.HeldSettings{Steps: config.DesignGateRootIssues.Steps()}), Supervisor: rig.sup, Project: "legion", DispatchProject: "LEGION",
 		Pool: rig.pool, Handlers: []intake.Handler{engine}, Record: records, Grants: grants, Dispatch: handoffs,
 		Log: quietLogger(),
 	}).Handler

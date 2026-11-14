@@ -63,7 +63,7 @@ func terminalClaims(t *testing.T, project string, n int) []supervise.Claim {
 func TestTheBootsReplayOfAppliedTerminalFactsWaitsBehindNoLiveFact(t *testing.T) {
 	pool := isolatedOutboxPool(t)
 	handler := &outboxFactHandler{}
-	w := &workflowRuntime{pool: pool, handlers: []intake.Handler{handler}, log: quietLogger()}
+	w := &workflowRuntime{pool: pool, handlers: []intake.Handler{handler}, log: quietLogger(), limits: func() supervise.Limits { return replayLimits }}
 	claims := terminalClaims(t, "legion", 300)
 	if err := w.replayTerminal(context.Background(), claims, bootTimeout); err != nil {
 		t.Fatalf("the first replay: %v", err)
@@ -157,7 +157,7 @@ func TestAReplayOfHundredsOfUnappliedFactsBesideLiveFailuresOutlastsItsBudget(t 
 	const budget = 5 * time.Second
 	pool := isolatedOutboxPool(t)
 	handler := &slowFactHandler{delay: 20 * time.Millisecond, seen: map[intake.Fact]int{}}
-	w := &workflowRuntime{pool: pool, handlers: []intake.Handler{handler}, log: quietLogger(), failed: make(chan error, 1), limits: replayLimits}
+	w := &workflowRuntime{pool: pool, handlers: []intake.Handler{handler}, log: quietLogger(), failed: make(chan error, 1), limits: func() supervise.Limits { return replayLimits }}
 	replayed := terminalClaims(t, "legion", 300)
 	failing := make([]supervise.Claim, 100)
 	for i := range failing {

@@ -669,7 +669,7 @@ func TestTheStallBackstopTellsTheOwnerOfAnEndThatFailedTheClaim(t *testing.T) {
 	stalled := rig.claim(claim.RoleTester, "LEGION-224", backstopBound+time.Hour, true)
 	claims := rig.supervising(stalled)
 	refused := errors.New("the pod did not start")
-	for range rig.sup.deps.Limits.LaunchFailures {
+	for range rig.sup.deps.Settings.Limits().LaunchFailures {
 		rig.rt.ScriptResume(fake.SpawnResult{Err: refused})
 	}
 
@@ -689,7 +689,7 @@ func TestTheStallBackstopTellsTheOwnerOfAnEndThatFailedTheClaim(t *testing.T) {
 	for _, want := range []string{"still owed", "every try at the replacement was refused",
 		"the claim is failed and the daemon starts nothing for it",
 		"what it waits on is a retry, or the close of its tree, which retires it",
-		fmt.Sprintf("the %d launch failures the replacement charged are what it was charged", rig.sup.deps.Limits.LaunchFailures),
+		fmt.Sprintf("the %d launch failures the replacement charged are what it was charged", rig.sup.deps.Settings.Limits().LaunchFailures),
 		stallProcessStopped} {
 		if !strings.Contains(notices[0].Reason, want) {
 			t.Errorf("the notice says %q, which does not carry %q", notices[0].Reason, want)

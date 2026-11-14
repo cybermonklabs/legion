@@ -213,7 +213,7 @@ func startedTask(t *testing.T, h *harness, issue string, role claim.Role) string
 // a view built from a claim no failure wrote would pass whatever the daemon records.
 func TestTheFailureRecordOverTheRoutes(t *testing.T) {
 	h := newHarness(t)
-	limits := h.supervisor.deps.Limits
+	limits := h.supervisor.deps.Settings.Limits()
 	failed := failedWorker(t, h, failureHeldIssue, "ses_implementer_220")
 	retired := retiredAfterFailure(t, h, failureLingeringIssue, "ses_implementer_221")
 	state := failureRecordState(t, failed, retired, limits)

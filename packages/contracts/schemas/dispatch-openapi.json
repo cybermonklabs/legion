@@ -4150,11 +4150,25 @@
     },
     "/api/v1/delivery/pipeline": {
       "get": {
-        "description": "The Pipeline page: over the seven UTC days ending today (now, or ?at= for a fixed day), by the day each run started, the PR-checks workflow's run wall time and success, its five slowest jobs (50 timed results to rank) and the jobs that failed in the last 24 hours, the duration and result of the staging end-to-end, staging deploy and production deploy jobs the settings name in push runs on main, and merge-to-production and PR-open-to-merge per merge day against their targets; not filtered by the timeline's window or facets; 400 INVALID_QUERY for a malformed at, 404 DELIVERY_NOT_CONFIGURED without a delivery_settings row.",
+        "description": "The Pipeline page over the UTC days its window covers: ?at= (default now) is the seven days ending on its own, and ?from= and ?to= are the days that window covers, bounded by the same 84 days as the other delivery routes. By the day each run started: the PR-checks workflow's run wall time and success, its five slowest jobs (50 timed results to rank) and the jobs that failed in the 24 hours before the window's end, which for a whole-day window is its last day; the duration and result of the staging end-to-end, staging deploy and production deploy jobs the settings name in push runs on main; and merge-to-production and PR-open-to-merge per merge day against their targets. Not filtered by the timeline's facets; 400 INVALID_QUERY for a malformed at or window, for a window over the cap, and for an at beside from or to, 404 DELIVERY_NOT_CONFIGURED without a delivery_settings row.",
         "operationId": "getApiV1DeliveryPipeline",
         "parameters": [
           {
             "name": "at",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
             "in": "query",
             "schema": {
               "type": "string"
@@ -7219,6 +7233,178 @@
           }
         },
         "x-auth": "any"
+      }
+    },
+    "/api/v1/legion/board": {
+      "get": {
+        "description": "The Legion view on the Issues page for ?project= (the first project naming a daemon when none is given), from what the sampler recorded of that project's daemon: ten columns (queue, design, planning, implementing, testing, reviewing, accepting, merging, awaiting_person, held), each card naming its issue's key, title, priority, phase and when that phase began, the slot it holds, the roles in a turn now, the issues a blocker link holds it on, what it waits on from a person, its tree root and the children of its tree that have not started; and a header with the slots in use, the slot cap, the queue's length and the last read of the daemon with its failure. 404 LEGION_NOT_CONFIGURED when the project names no daemon.",
+        "operationId": "getApiV1LegionBoard",
+        "parameters": [
+          {
+            "name": "project",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LegionBoardResponse"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any"
+      }
+    },
+    "/api/v1/legion/metrics": {
+      "get": {
+        "description": "The Delivery page's Legion section for ?project= (the first project naming a daemon when none is given), [from, to) (default the last 7 days) and ?scope=all|roots|children: over the issues that closed in the window with Legion phase work, the work time to merge less parked and queued time, the phase hours of each of the seven worker bars split into waiting on a person, in a turn, CI wait, waiting on children and idle in that order (CI wait is not measured and is 0 on every bar, its hours going to waiting on children or idle), the review rounds, send-back share and post-review hours, and the issues Legion sessions filed per week by class against the issues finished per week; 400 INVALID_QUERY for a malformed window or scope, 404 NOT_FOUND for a project that does not exist.",
+        "operationId": "getApiV1LegionMetrics",
+        "parameters": [
+          {
+            "name": "project",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "scope",
+            "in": "query",
+            "schema": {
+              "enum": [
+                "all",
+                "roots",
+                "children"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LegionMetricsResponse"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any"
+      }
+    },
+    "/api/v1/legion/{project}/settings": {
+      "put": {
+        "description": "Relay an operator's legion.yaml change {changes: {\u003cdotted path\u003e: \u003cvalue\u003e}} to the project's Legion daemon, with the caller's login as the change's author, and answer the daemon's status and per-key result (applied at-once, rebuilt or next-launch, failed with the error of the holder the daemon took the value and could not carry it into, or refused with a reason) unchanged; 404 LEGION_NOT_CONFIGURED when the project names no daemon, 503 LEGION_DAEMON_UNAVAILABLE when it could not be reached.",
+        "operationId": "putApiV1LegionByProjectSettings",
+        "parameters": [
+          {
+            "name": "project",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LegionSettingsRelayInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "the Legion daemon's own answer, relayed byte for byte with its status: the per-key verdicts of its operator settings route, which Dispatch does not model",
+            "content": {
+              "application/json": {}
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-write-scope": "deployment"
       }
     },
     "/api/v1/limits": {
@@ -11024,6 +11210,145 @@
                 }
               }
             }
+          }
+        },
+        "x-auth": "any",
+        "x-write-scope": "deployment"
+      }
+    },
+    "/api/v1/settings/legion": {
+      "get": {
+        "description": "Every project's Legion setting, by project key: the daemon Dispatch reads that project's `GET /legion/v1/state` from once a minute, with the actor that first set it and when it was last written; [] when no project names one.",
+        "operationId": "getApiV1SettingsLegion",
+        "parameters": [
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/LegionSetting"
+                  },
+                  "type": "array"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any"
+      }
+    },
+    "/api/v1/settings/legion/{project}": {
+      "put": {
+        "description": "Name the Legion daemon a project's state is read from {state_url}: an absolute http(s) URL with a host and no path, else 400 LEGION_SETTING_INPUT. The setting belongs to the deployment, so a project-scoped credential is refused it.",
+        "operationId": "putApiV1SettingsLegionByProject",
+        "parameters": [
+          {
+            "name": "project",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PutLegionSettingInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LegionSetting"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-write-scope": "deployment"
+      },
+      "delete": {
+        "description": "Stop reading a project's Legion daemon; what was already read stays. 404 NOT_FOUND when the project names none.",
+        "operationId": "deleteApiV1SettingsLegionByProject",
+        "parameters": [
+          {
+            "name": "project",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "204": {
+            "description": "No Content"
           }
         },
         "x-auth": "any",
@@ -22115,6 +22440,726 @@
         ],
         "type": "object"
       },
+      "LegionBoardCard": {
+        "properties": {
+          "blocked_by": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "children": {
+            "type": "integer"
+          },
+          "key": {
+            "type": "string"
+          },
+          "phase": {
+            "type": "string"
+          },
+          "phase_since": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "priority": {
+            "type": [
+              "null",
+              "integer"
+            ]
+          },
+          "roles": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "slot": {
+            "type": [
+              "null",
+              "integer"
+            ]
+          },
+          "title": {
+            "type": "string"
+          },
+          "tree": {
+            "type": "string"
+          },
+          "waiting_on": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LegionBoardWait"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "key",
+          "title",
+          "priority",
+          "phase",
+          "phase_since",
+          "slot",
+          "roles",
+          "blocked_by",
+          "waiting_on",
+          "tree",
+          "children"
+        ],
+        "type": "object"
+      },
+      "LegionBoardColumn": {
+        "properties": {
+          "cards": {
+            "items": {
+              "$ref": "#/components/schemas/LegionBoardCard"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "id": {
+            "enum": [
+              "queue",
+              "design",
+              "planning",
+              "implementing",
+              "testing",
+              "reviewing",
+              "accepting",
+              "merging",
+              "awaiting_person",
+              "held"
+            ],
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "cards"
+        ],
+        "type": "object"
+      },
+      "LegionBoardHeader": {
+        "properties": {
+          "queue_length": {
+            "type": "integer"
+          },
+          "read_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "read_error": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "read_ok": {
+            "type": "boolean"
+          },
+          "slot_cap": {
+            "type": [
+              "null",
+              "integer"
+            ]
+          },
+          "slots_in_use": {
+            "type": "integer"
+          },
+          "trees": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "slots_in_use",
+          "slot_cap",
+          "trees",
+          "queue_length",
+          "read_at",
+          "read_ok",
+          "read_error"
+        ],
+        "type": "object"
+      },
+      "LegionBoardResponse": {
+        "properties": {
+          "columns": {
+            "items": {
+              "$ref": "#/components/schemas/LegionBoardColumn"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "computed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "header": {
+            "$ref": "#/components/schemas/LegionBoardHeader"
+          },
+          "project": {
+            "type": "string"
+          },
+          "setting_sources": {
+            "additionalProperties": {},
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "settings": {
+            "additionalProperties": {},
+            "type": [
+              "object",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "project",
+          "header",
+          "columns",
+          "settings",
+          "setting_sources",
+          "computed_at"
+        ],
+        "type": "object"
+      },
+      "LegionBoardWait": {
+        "properties": {
+          "answered_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "kind": {
+            "type": "string"
+          },
+          "since": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          }
+        },
+        "required": [
+          "kind",
+          "since",
+          "answered_at"
+        ],
+        "type": "object"
+      },
+      "LegionFiledIssue": {
+        "properties": {
+          "at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "class": {
+            "enum": [
+              "in_tree_at_design",
+              "in_tree_later",
+              "out_of_tree",
+              "by_the_controller"
+            ],
+            "type": "string"
+          },
+          "filer": {
+            "enum": [
+              "architect",
+              "planner",
+              "implementer",
+              "tester",
+              "reviewer",
+              "merger",
+              "controller"
+            ],
+            "type": "string"
+          },
+          "filer_issue": {
+            "type": "string"
+          },
+          "filer_phase": {
+            "enum": [
+              "",
+              "queued",
+              "design",
+              "planning",
+              "implementing",
+              "testing",
+              "reviewing",
+              "accepting",
+              "merging",
+              "awaiting_person",
+              "held",
+              "done"
+            ],
+            "type": "string"
+          },
+          "key": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "title",
+          "at",
+          "class",
+          "filer",
+          "filer_issue",
+          "filer_phase"
+        ],
+        "type": "object"
+      },
+      "LegionMetricsResponse": {
+        "properties": {
+          "computed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "finished": {
+            "type": "integer"
+          },
+          "from": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "phase_time": {
+            "$ref": "#/components/schemas/LegionPhaseTime"
+          },
+          "project": {
+            "type": "string"
+          },
+          "rework": {
+            "$ref": "#/components/schemas/LegionRework"
+          },
+          "scope": {
+            "enum": [
+              "all",
+              "roots",
+              "children"
+            ],
+            "type": "string"
+          },
+          "splitting": {
+            "$ref": "#/components/schemas/LegionSplitting"
+          },
+          "to": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "work_time": {
+            "$ref": "#/components/schemas/LegionWorkTime"
+          }
+        },
+        "required": [
+          "project",
+          "from",
+          "to",
+          "scope",
+          "computed_at",
+          "finished",
+          "work_time",
+          "phase_time",
+          "rework",
+          "splitting"
+        ],
+        "type": "object"
+      },
+      "LegionPhaseTime": {
+        "properties": {
+          "bars": {
+            "items": {
+              "$ref": "#/components/schemas/LegionRoleBar"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "idle_share": {
+            "format": "double",
+            "type": "number"
+          }
+        },
+        "required": [
+          "bars",
+          "idle_share"
+        ],
+        "type": "object"
+      },
+      "LegionRework": {
+        "properties": {
+          "hours_after_first_review": {
+            "format": "double",
+            "type": "number"
+          },
+          "issues": {
+            "items": {
+              "$ref": "#/components/schemas/LegionReworkIssue"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "median_hours_after_first_review": {
+            "format": "double",
+            "type": "number"
+          },
+          "median_review_rounds": {
+            "format": "double",
+            "type": "number"
+          },
+          "sent_back_share": {
+            "format": "double",
+            "type": "number"
+          }
+        },
+        "required": [
+          "median_review_rounds",
+          "sent_back_share",
+          "hours_after_first_review",
+          "median_hours_after_first_review",
+          "issues"
+        ],
+        "type": "object"
+      },
+      "LegionReworkIssue": {
+        "properties": {
+          "implementing_hours_after_first_review": {
+            "format": "double",
+            "type": "number"
+          },
+          "key": {
+            "type": "string"
+          },
+          "review_rounds": {
+            "type": "integer"
+          },
+          "sent_back": {
+            "type": "boolean"
+          },
+          "testing_hours_after_first_review": {
+            "format": "double",
+            "type": "number"
+          }
+        },
+        "required": [
+          "key",
+          "review_rounds",
+          "sent_back",
+          "implementing_hours_after_first_review",
+          "testing_hours_after_first_review"
+        ],
+        "type": "object"
+      },
+      "LegionRoleBar": {
+        "properties": {
+          "hours": {
+            "format": "double",
+            "type": "number"
+          },
+          "issues": {
+            "type": "integer"
+          },
+          "median_hours_per_issue": {
+            "format": "double",
+            "type": "number"
+          },
+          "role": {
+            "enum": [
+              "architect",
+              "planner",
+              "implementer",
+              "tester",
+              "reviewer",
+              "merger",
+              "no_role"
+            ],
+            "type": "string"
+          },
+          "segments": {
+            "$ref": "#/components/schemas/LegionSegments"
+          }
+        },
+        "required": [
+          "role",
+          "hours",
+          "issues",
+          "median_hours_per_issue",
+          "segments"
+        ],
+        "type": "object"
+      },
+      "LegionSegments": {
+        "properties": {
+          "ci_wait": {
+            "format": "double",
+            "type": "number"
+          },
+          "idle": {
+            "format": "double",
+            "type": "number"
+          },
+          "in_a_turn": {
+            "format": "double",
+            "type": "number"
+          },
+          "waiting_on_children": {
+            "format": "double",
+            "type": "number"
+          },
+          "waiting_on_person": {
+            "format": "double",
+            "type": "number"
+          }
+        },
+        "required": [
+          "waiting_on_person",
+          "in_a_turn",
+          "ci_wait",
+          "waiting_on_children",
+          "idle"
+        ],
+        "type": "object"
+      },
+      "LegionSetting": {
+        "properties": {
+          "created_by": {
+            "$ref": "#/components/schemas/Actor"
+          },
+          "project": {
+            "type": "string"
+          },
+          "state_url": {
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project",
+          "state_url",
+          "created_by",
+          "updated_at"
+        ],
+        "type": "object"
+      },
+      "LegionSettingsRelayInput": {
+        "properties": {
+          "actor": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Actor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "changes": {
+            "additionalProperties": {},
+            "type": [
+              "object",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "changes"
+        ],
+        "type": "object"
+      },
+      "LegionSplitting": {
+        "properties": {
+          "children_per_root": {
+            "format": "double",
+            "type": "number"
+          },
+          "filed": {
+            "items": {
+              "$ref": "#/components/schemas/LegionFiledIssue"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "finished_roots": {
+            "type": "integer"
+          },
+          "median_hours_roots_with_children": {
+            "format": "double",
+            "type": "number"
+          },
+          "median_hours_roots_without_children": {
+            "format": "double",
+            "type": "number"
+          },
+          "weeks": {
+            "items": {
+              "$ref": "#/components/schemas/LegionSplittingWeek"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "weeks",
+          "filed",
+          "finished_roots",
+          "children_per_root",
+          "median_hours_roots_with_children",
+          "median_hours_roots_without_children"
+        ],
+        "type": "object"
+      },
+      "LegionSplittingWeek": {
+        "properties": {
+          "filed": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "finished": {
+            "type": "integer"
+          },
+          "week": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "week",
+          "filed",
+          "finished"
+        ],
+        "type": "object"
+      },
+      "LegionWorkTime": {
+        "properties": {
+          "issues": {
+            "items": {
+              "$ref": "#/components/schemas/LegionWorkTimeIssue"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "median_hours": {
+            "format": "double",
+            "type": "number"
+          },
+          "p90_hours": {
+            "format": "double",
+            "type": "number"
+          }
+        },
+        "required": [
+          "median_hours",
+          "p90_hours",
+          "issues"
+        ],
+        "type": "object"
+      },
+      "LegionWorkTimeIssue": {
+        "properties": {
+          "closed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "hours": {
+            "format": "double",
+            "type": "number"
+          },
+          "key": {
+            "type": "string"
+          },
+          "merged_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "parked_hours": {
+            "format": "double",
+            "type": "number"
+          },
+          "priority": {
+            "type": [
+              "null",
+              "integer"
+            ]
+          },
+          "queued_hours": {
+            "format": "double",
+            "type": "number"
+          },
+          "root": {
+            "type": "boolean"
+          },
+          "started_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "title",
+          "priority",
+          "root",
+          "started_at",
+          "closed_at",
+          "merged_at",
+          "hours",
+          "parked_hours",
+          "queued_hours"
+        ],
+        "type": "object"
+      },
       "ListUsersResponse": {
         "properties": {
           "users": {
@@ -23707,6 +24752,27 @@
         },
         "required": [
           "branch"
+        ],
+        "type": "object"
+      },
+      "PutLegionSettingInput": {
+        "properties": {
+          "actor": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Actor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "state_url": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "state_url"
         ],
         "type": "object"
       },

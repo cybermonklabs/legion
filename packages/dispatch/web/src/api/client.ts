@@ -39,6 +39,9 @@ import type {
   DuplicateCandidate,
   IDCandidate,
   IssueAskThreadRow,
+  LegionSettingsChangeResponse,
+  LegionSettingsChangeResult,
+  LegionSettingVerdict,
   NewIssueSettings,
   TargetCandidate,
   UserIssueState,
@@ -82,6 +85,11 @@ interface ErrorPayload {
   code?: string;
   error?: string;
   state?: UserIssueState;
+  /** The daemon's own verdict per dotted path. A Legion settings change the daemon applied and
+   *  could not record answers 500 with this body and no `error`
+   *  (`LegionSettingsChangeResponse`, which Dispatch relays with the daemon's status unchanged),
+   *  so the one refusal that says the change took effect is told apart by it. */
+  settings?: Readonly<Record<string, LegionSettingVerdict>>;
   candidates?: readonly ErrorCandidate[];
 }
 
@@ -89,6 +97,11 @@ export class ApiError extends Error {
   readonly code: string | undefined;
   readonly status: number;
   readonly state: UserIssueState | undefined;
+  /** The per-path verdicts the body carried, for the one route that answers them with a failing
+   *  status (`ErrorPayload.settings`); undefined for every other refusal. `putLegionProjectSettings`
+   *  is its one reader, and it answers its caller rather than throwing, so no surface and no
+   *  retry policy reads a verdict out of an error. */
+  readonly settings: Readonly<Record<string, LegionSettingVerdict>> | undefined;
   /** What the refusal listed for the caller to choose between, read by the page that shows the
    *  choice; the shape of each entry follows `code` (`ErrorCandidate`). Undefined for a refusal
    *  that listed nothing, which is almost all of them. */
@@ -104,6 +117,7 @@ export class ApiError extends Error {
     this.code = payload.code;
     this.status = status;
     this.state = payload.state;
+    this.settings = payload.settings;
     this.candidates = payload.candidates;
     this.retryAfterMs = retryAfterMs;
   }
@@ -308,6 +322,15 @@ export function isDeliveryNotConfigured(error: unknown): boolean {
   );
 }
 
+// A project that names no Legion daemon answers this 404 on the board and on the settings relay:
+// definitive like the delivery one above, and the answer that shows no Legion view at all rather
+// than a failure a reader could retry.
+export function isLegionNotConfigured(error: unknown): boolean {
+  return (
+    error instanceof ApiError && error.status === 404 && error.code === "LEGION_NOT_CONFIGURED"
+  );
+}
+
 // A stored document outside the Proof schema is a repairable state, not a transient failure:
 // retrying the read cannot repair it, while opening its live editor could let the browser rewrite it.
 export function isDocumentSchemaError(error: unknown): boolean {
@@ -353,16 +376,17 @@ export function isAgentListRefilling(error: unknown): boolean {
 }
 
 // The retry policy every query in the app shares: an auth outcome (401), a missing architecture
-// source, an unconfigured credential broker or delivery timeline, a stored document outside
-// Proof's schema, or a stored history that cannot load is definitive and retrying it changes
-// nothing; any other failure (dropped connection, a read past its deadline, 5xx) is worth a couple
-// of automatic attempts before surfacing a Retry affordance to the user.
+// source, an unconfigured credential broker, delivery timeline or Legion daemon, a stored document
+// outside Proof's schema, or a stored history that cannot load is definitive and retrying it
+// changes nothing; any other failure (dropped connection, a read past its deadline, 5xx) is worth
+// a couple of automatic attempts before surfacing a Retry affordance to the user.
 export function isRetryableQueryError(error: unknown): boolean {
   return (
     !isUnauthorized(error) &&
     !isSourceNotFound(error) &&
     !isCredentialFeatureOff(error) &&
     !isDeliveryNotConfigured(error) &&
+    !isLegionNotConfigured(error) &&
     !isDocumentSchemaError(error) &&
     !isDocumentUnloadable(error)
   );
@@ -1620,6 +1644,81 @@ export class DispatchApiClient {
    *  the GitHub App can read `deploy_repo`, answering `409 DELIVERY_SETTINGS_ACCESS` when not. */
   putDeliverySettings(input: Body<"/api/v1/settings/delivery", "put">, bounds: WriteBounds) {
     return this.put("/api/v1/settings/delivery", {}, input, bounds);
+  }
+
+  /** Every project's Legion setting, by project key; `[]` when no project names a daemon. The
+   *  Issues page's view selector reads it to decide whether this project has a Legion view at
+   *  all, so having none is an ordinary answer rather than a failure. */
+  listLegionSettings() {
+    return this.read("/api/v1/settings/legion", {});
+  }
+
+  /** Names the daemon a project's state is read from, and answers the row as it was stored.
+   *  Deployment-scoped (`scopeDeployment`), so a credential naming one project is refused it; a
+   *  `state_url` that is not an absolute http(s) URL with a host and no path, carrying no user,
+   *  password, query or fragment, is `400 LEGION_SETTING_INPUT` with the server's own reason
+   *  (`legionStateURL` in packages/envoy/internal/dispatch/api/settings_legion.go), and an
+   *  unknown project is `404 NOT_FOUND`. */
+  putLegionSetting(project: string, stateUrl: string, bounds: WriteBounds) {
+    return this.put(
+      "/api/v1/settings/legion/{project}",
+      { project },
+      { state_url: stateUrl },
+      bounds
+    );
+  }
+
+  /** Stops reading a project's daemon: what was read stays, and nothing re-reads it. Scoped as
+   *  the PUT is; a project with no setting is `404 NOT_FOUND`. */
+  async deleteLegionSetting(project: string, bounds: WriteBounds): Promise<void> {
+    await this.remove("/api/v1/settings/legion/{project}", { project }, bounds);
+  }
+
+  /** Relays an operator's `legion.yaml` change to the project's daemon, by dotted path, and
+   *  answers what the daemon decided for each key, under `settings` as the daemon keys it:
+   *  applied at once, by a rebuild or at the next launch, or refused with its reason. Dispatch
+   *  passes the daemon's status and body back unchanged and names the caller as the change's
+   *  author, so the refusals this can raise are Dispatch's own: `404 LEGION_NOT_CONFIGURED` for
+   *  a project naming no daemon, `503 LEGION_DAEMON_UNAVAILABLE` for one that could not be
+   *  reached, and the deployment-scope refusal a credential naming one project gets.
+   *
+   *  Dispatch models none of that body, so the route carries no schema (`Opaque`) and the
+   *  document gives its `200` no shape; this one write names what it is answered with, as
+   *  `getBlockSchema` does for the other route whose bytes Dispatch does not model.
+   *
+   *  The one failing status that is no refusal is answered here rather than thrown: a change the
+   *  daemon applied and could not record answers 500 with the verdicts and no `error`
+   *  (`config.NotRecorded`, relayed unchanged). The change took effect, so asking again would
+   *  apply it again; this route is the only thing that knows that body, and it hands its caller
+   *  `recorded: false` so neither the shared retry policy nor the panel reads a verdict out of
+   *  an error. */
+  async putLegionProjectSettings(
+    project: string,
+    changes: Readonly<Record<string, unknown>>,
+    bounds: WriteBounds
+  ): Promise<LegionSettingsChangeResult> {
+    try {
+      const answer = (await this.put(
+        "/api/v1/legion/{project}/settings",
+        { project },
+        { changes },
+        bounds
+      )) as LegionSettingsChangeResponse;
+      return { recorded: true, settings: answer.settings };
+    } catch (error) {
+      if (error instanceof ApiError && error.settings !== undefined) {
+        return { recorded: false, settings: error.settings };
+      }
+      throw error;
+    }
+  }
+
+  /** The Delivery page's Legion section: the four metrics over the issues of `project` that
+   *  closed in `[from, to)` with Legion phase work, counted over all of them, its roots or its
+   *  children. A deployment where no project names a daemon answers an empty report rather than
+   *  a refusal, and an unknown project is `400 INVALID_QUERY`. */
+  getLegionMetrics(query: Query<"/api/v1/legion/metrics", "get">) {
+    return this.read("/api/v1/legion/metrics", {}, query);
   }
 
   /** Creates a Delivery session group: its sessions' pull requests take it as their Parent agent.

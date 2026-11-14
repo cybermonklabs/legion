@@ -172,7 +172,7 @@ func waitingLine(t *testing.T, pool *pgxpool.Pool, engine *Engine) []string {
 		if err != nil {
 			return err
 		}
-		facts, err := record.ReadLineFacts(t.Context(), tx, store, "LEGION", issues, engine.cfg.Steps)
+		facts, err := record.ReadLineFacts(t.Context(), tx, store, "LEGION", issues, engine.settings().Steps)
 		if err != nil {
 			return err
 		}

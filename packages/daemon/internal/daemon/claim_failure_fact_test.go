@@ -54,7 +54,7 @@ func TestTheHeldNoticeNamesTheFailure(t *testing.T) {
 	limits := supervise.Limits{LaunchFailures: 2, PromptFailures: 3, PromptRetires: 2}
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
 	sup.deps.PluginRelaunchable = true
-	sup.deps.Limits = limits
+	sup.deps.Settings = supervise.FixedSettings(limits, sup.deps.Settings.Timeouts())
 	facts := &claimFailures{}
 	w := &workflowRuntime{pool: pool, records: record.NewStore(), handlers: []intake.Handler{facts}, log: quietLogger()}
 	w.attach(&supervision{supervisor: sup, log: quietLogger()})

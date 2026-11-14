@@ -37,6 +37,7 @@ import (
 // the design gate first opens. That is the spec's own condition, and the boot's catch-up reads
 // the roots this pass can move (the daemon's catchesUp) by that same predicate.
 func (e *Engine) ReconcileAwaiting(ctx context.Context, tx pgx.Tx, project string, issues []record.Issue, held func(string) bool) ([]string, bool, error) {
+	e = e.decision()
 	changed, err := e.answerOpenGates(ctx, tx, project, issues, held)
 	if err != nil {
 		return nil, false, err
@@ -100,7 +101,7 @@ func (e *Engine) ReconcileAwaiting(ctx context.Context, tx pgx.Tx, project strin
 		}
 		_, holds := slotted[root.Key]
 		view := awaitView{Root: root, Slotted: holds, Unresumable: unresumable, Run: runs[tokens[i]], Asks: asks[root.Key],
-			Steps: e.cfg.Steps, Gates: gates}
+			Steps: e.settings().Steps, Gates: gates}
 		for _, member := range issues {
 			if member.Tree == root.Key && member.Key != root.Key {
 				view.Members = append(view.Members, member)
@@ -161,7 +162,7 @@ func (e *Engine) answerOpenGates(ctx context.Context, tx pgx.Tx, project string,
 		if err != nil {
 			return answered, err
 		}
-		if waitGateOpen(e.cfg.Steps, gates, root.Awaiting.Artifact) {
+		if waitGateOpen(e.settings().Steps, gates, root.Awaiting.Artifact) {
 			version := root.Awaiting.GateVersion
 			if gate := gateOfDocument(gates, root.Awaiting.Artifact); gate != nil {
 				version = gate.LatestVersion
@@ -551,11 +552,12 @@ func (e *Engine) tellInPlace(ctx context.Context, tx pgx.Tx, root record.Issue, 
 // and that rule run in the one admission pass (admit's ReconcileAwaiting and tellStalledTrees),
 // so the pass that resumes the root is itself a pass that could tell it stopped.
 func (e *Engine) ResumeAwaitedRoot(ctx context.Context, tx pgx.Tx, root record.Issue, waiting record.Awaiting) error {
+	e = e.decision()
 	gates, err := e.store.GatesOf(ctx, tx, root.Key)
 	if err != nil {
 		return err
 	}
-	step, gate := gateInQuestion(e.cfg.Steps, gates)
+	step, gate := gateInQuestion(e.settings().Steps, gates)
 	asks, err := e.store.RootAsks(ctx, tx, []string{root.Key})
 	if err != nil {
 		return err

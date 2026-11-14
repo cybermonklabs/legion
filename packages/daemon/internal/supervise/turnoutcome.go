@@ -47,7 +47,7 @@ const maxRefusalMessage = 500
 // the newest limit reports are everything RefusedRun can read; a report older than all of them
 // cannot shorten a run derived over them, and is dropped. That bound is why a claim whose agent
 // works for a week carries a handful of rows rather than a turn-by-turn history nothing reads.
-func (m *Machine) turnOutcomeWindow() int { return m.deps.Limits.LaunchFailures }
+func (m *Machine) turnOutcomeWindow() int { return m.deps.limits().LaunchFailures }
 
 // recordTurnOutcome puts a report in the claim's window, in (generation, sequence) order, and
 // trims the window to its bound (turnOutcomeWindow). A report whose key the window already holds
@@ -110,10 +110,10 @@ func (m *Machine) freshRun() { m.claim.TurnOutcomes = nil }
 func turnOutcome(m *Machine, ctx context.Context, ev Event) error {
 	r := ev.(RequestTurnOutcome)
 	m.recordTurnOutcome(TurnOutcome{Generation: r.Generation, Sequence: r.Sequence, Refused: r.Refused, Message: r.Message})
-	run := m.claim.RefusedRun()
+	run, limit := m.claim.RefusedRun(), m.deps.limits().LaunchFailures
 	m.log.Info("supervise: a turn ended", "generation", r.Generation, "sequence", r.Sequence,
-		"refused", r.Refused, "refusedRun", run, "limit", m.deps.Limits.LaunchFailures)
-	if run < m.deps.Limits.LaunchFailures {
+		"refused", r.Refused, "refusedRun", run, "limit", limit)
+	if run < limit {
 		return m.persist(ctx)
 	}
 	return m.fail(ctx, CauseProviderError, refusalCause(run, m.claim.LastRefusal()))

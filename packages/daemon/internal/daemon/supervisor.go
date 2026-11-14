@@ -363,7 +363,8 @@ func (s *supervisor) wait() {
 // helloResolver maps a shim's hello to the launch its boot token was minted for, once every stored
 // claim is supervised. A token of a claim this daemon does not supervise — another project's row
 // in a shared database — is unknown: its connection would have no machine to report to. The token
-// is resolved first, bounded by timeout: the worker-stream port is plaintext and
+// is resolved first, bounded by timeout, which is read at each read of the store so the bound is
+// `worker_rpc_timeout_seconds` as it stands at that hello: the worker-stream port is plaintext and
 // reachable from any pod, Hello2 requires only a non-empty string, and holding an unresolved
 // connection with no deadline would let any client pin a goroutine and a file descriptor for the
 // whole boot wait by sending a garbage token, with no cap on how many could. Only a token
@@ -383,11 +384,11 @@ func (s *supervisor) wait() {
 // A store that fails either read answers the hello with that error, never as an unknown token: the
 // failure says nothing about the token, and the listener closes the connection unrefused for the
 // shim to redial (stream.HelloResolver).
-func (s *supervisor) helloResolver(tokens *api.BootTokens, timeout time.Duration) stream.HelloResolver {
+func (s *supervisor) helloResolver(tokens *api.BootTokens, timeout func() time.Duration) stream.HelloResolver {
 	resolve := func(bootToken string) (api.BootToken, bool, error) {
 		// Every hello is resolved on its own connection's goroutine, beside every other, so each
 		// read takes a hold mark of its own (store.ForConcurrentWorker).
-		ctx, cancel := context.WithTimeout(store.ForConcurrentWorker(s.ctx), timeout)
+		ctx, cancel := context.WithTimeout(store.ForConcurrentWorker(s.ctx), timeout())
 		defer cancel()
 		return tokens.Resolve(ctx, bootToken)
 	}

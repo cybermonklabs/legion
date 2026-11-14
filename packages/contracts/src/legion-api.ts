@@ -710,9 +710,13 @@ const legionIssue = z.object({
   quietHours: z.number().nonnegative().optional(),
 });
 
-/** `api.DaemonInfo` — the running daemon: its project, its store's schema, and its boot history. */
+/** `api.DaemonInfo` — the running daemon: its project, the commit it was built from, its store's
+ * schema, and its boot history. */
 const daemonInfo = z.object({
   project: nonEmptyString,
+  /** The commit this daemon's binary was built from, so a reader can tell which release runs;
+   * empty in a build that is not a release, which stamps none. */
+  commit: z.string(),
   schemaVersion: z.number().int().nonnegative(),
   boots: z.number().int().nonnegative(),
   firstBootAt: timestamp,
@@ -879,6 +883,23 @@ const legionSettings = z.looseObject({
   worker_boot_timeout_seconds: z.number().int().positive(),
 });
 
+/** `api.SettingSource` — where one setting's value came from: the configuration file the daemon
+ * read, or the settings route, with whoever asked for it (`by`, absent for the file) and when the
+ * daemon took that value. */
+const legionSettingSource = z.object({
+  source: z.enum(["file", "route"]),
+  by: nonEmptyString.optional(),
+  at: timestamp,
+});
+
+/** `api.State.settingSources` — where each setting came from, by the dotted `legion.yaml` path
+ * the daemon's class table writes (contract 4). It is a block of its own beside `settings`, so a
+ * reader of `settings` keeps its shape, and it is keyed by every settable path, the ones
+ * `settings` withholds included: a credential, the source of one and the path of a file holding
+ * one each carry their provenance here with no value anywhere, which is how a rotation is visible
+ * without the credential. */
+const legionSettingSources = z.record(z.string(), legionSettingSource);
+
 /** `api.CacheView` — a repository cache as the Kubernetes runtime shows it: its repository and
  * Sandbox, its `state` (`failing` with the kubelet's `reason`, `refused` with its Service's),
  * whether its pod is Ready behind its own Service and its address then, from its last health read
@@ -988,11 +1009,66 @@ export const LegionStateResponse = z.object({
   capabilities: z.array(legionCapabilityState),
   repositories: legionRepositories,
   settings: legionSettings,
+  settingSources: legionSettingSources,
   consumers: z.array(legionConsumerLag),
 });
 
 export type LegionState = z.output<typeof LegionStateResponse>;
 export type LegionIssue = LegionState["issues"][string];
+
+/** `api.SettingResult` — one path's verdict from `PUT /legion/v1/operator/settings`. Exactly one
+ * of `applied`, `failed` and `refused` is set.
+ *
+ * `applied` is when the change takes effect: `at-once` for a value every decision reads,
+ * `rebuilt` for one a client or listener holds, which the daemon has already built again, and
+ * `next-launch` for one a pod's or a pane's launch reads. `holder` names what was built again,
+ * absent where nothing holds the value. `old` and `new` are the values as the daemon's log line
+ * shows them, `(withheld)` for a credential and `(unset)` for a path the configuration did not
+ * carry. `unchanged` says the daemon was already running on that value: the path is the route's
+ * from now on, and nothing moved.
+ *
+ * `failed` is a change the daemon took into its settings and could not carry into something that
+ * holds the value: the value is the daemon's from now on, and every reader that reads the path as
+ * it decides reads the new one, but a holder of it kept what it had. The text names that holder
+ * and what stopped it — a NATS that refused the new seed, intake consumers that would not reopen.
+ * `holder`, `old` and `new` read as they do for an applied change, since the change itself was
+ * applied. A reader shows it as a failure: the caller asked for something the daemon only half
+ * did, and `rebuilt` is what it would have said had the rebuild worked.
+ *
+ * `refused` is why the daemon will not change the path — a path fixed for the process, or one its
+ * class table does not hold. Nothing moved, there as here.
+ *
+ * A third refusal is of the whole call rather than of one path: where the configuration file
+ * under the daemon names a runtime other than the one it booted on, nothing of the call settles,
+ * and every path it named carries that one reason, with `runtime` answered for beside them
+ * though the caller named no such key. The reason names both runtimes and the two ways out —
+ * the file naming the booted runtime again, or a restart — since a reader sees the verdict of
+ * the key it asked about and nothing beside it. A path refused on its own account keeps its own
+ * reason, so an unknown setting is still an unknown setting there. */
+// It is not exported: the exported rosters are the request and answer bodies, and this is a node
+// of one of them (`LegionSettingsChangeResponse`), read through it. Only its type leaves here.
+const legionSettingResult = z.object({
+  applied: nonEmptyString.optional(),
+  failed: nonEmptyString.optional(),
+  refused: nonEmptyString.optional(),
+  holder: nonEmptyString.optional(),
+  old: nonEmptyString.optional(),
+  new: nonEmptyString.optional(),
+  unchanged: z.boolean().optional(),
+});
+
+export type LegionSettingVerdict = z.output<typeof legionSettingResult>;
+
+/** `api.SettingsChangeResponse`, the body of `PUT /legion/v1/operator/settings`: one result per
+ * dotted `legion.yaml` path the request named, keyed as the request keyed it, under `settings`.
+ * Dispatch relays this body unchanged (`PUT /api/v1/legion/{project}/settings`,
+ * packages/envoy/internal/dispatch/api/settings_legion.go), so a reader of either route reads
+ * this one shape: a verdict is `answer.settings[path]`, never `answer[path]`. */
+export const LegionSettingsChangeResponse = z.object({
+  settings: z.record(z.string(), legionSettingResult),
+});
+
+export type LegionSettingsChange = z.output<typeof LegionSettingsChangeResponse>;
 
 /** `claim.RegisterResponse`, the body of `POST /legion/v1/claims/register`: the claim the agent
  * holds, the secret its ready and exit authenticate with, and `promptAgents`, the sorted names of

@@ -1,3 +1,5 @@
+import type { LegionSettingsChange } from "@legion/contracts/legion-api";
+
 export type {
   Actor,
   ActorAct,
@@ -194,6 +196,25 @@ export type {
   ItemBlock,
   ItemBlocks,
   LauncherCredentialResp,
+  LegionBarRole,
+  LegionBoardCard,
+  LegionBoardColumn,
+  LegionBoardColumnID,
+  LegionBoardHeader,
+  LegionBoardResponse,
+  LegionBoardWait,
+  LegionFiledIssue,
+  LegionFilingClass,
+  LegionMetricsResponse,
+  LegionMetricsScope,
+  LegionReworkIssue,
+  LegionRoleBar,
+  LegionSegments,
+  LegionSetting,
+  LegionSettingSource,
+  LegionSettingSources,
+  LegionSplittingWeek,
+  LegionWorkTimeIssue,
   LiveAgentFrame,
   LiveClientFrame,
   LiveEnded,
@@ -276,3 +297,24 @@ import type { IssueCollaboratorAgent, IssueCollaboratorLegion } from "@legion/co
 export type IssueCollaboratorLegionAgent = IssueCollaboratorAgent & {
   readonly legion: IssueCollaboratorLegion;
 };
+
+/** What one key of a relayed settings change was decided, and the body that carries them: the
+ *  daemon's own shapes (`api.SettingResult` and `api.SettingsChangeResponse`), since Dispatch
+ *  relays the daemon's body unchanged (packages/envoy/internal/dispatch/api/settings_legion.go,
+ *  `putLegionProjectSettings`). A verdict is `answer.settings[path]`: the daemon keys its results
+ *  under `settings`, and the one shape lives in `@legion/contracts/legion-api` beside the state
+ *  route's, so Dispatch's web client, its fakes and the daemon's own route cannot drift apart. */
+export type {
+  LegionSettingsChange as LegionSettingsChangeResponse,
+  LegionSettingVerdict,
+} from "@legion/contracts/legion-api";
+
+/** What a relayed settings change ended as, for the one caller of it (`putLegionProjectSettings`):
+ *  the daemon's verdicts, and whether the daemon recorded the change in its own store.
+ *  `recorded` is false for the one answer that says the change took effect and will not outlive
+ *  the daemon's restart — the daemon applied it and could not write it down, which it answers
+ *  with a failing status and the verdicts (`config.NotRecorded`). */
+export interface LegionSettingsChangeResult {
+  readonly settings: LegionSettingsChange["settings"];
+  readonly recorded: boolean;
+}

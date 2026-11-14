@@ -72,7 +72,7 @@ func newFreshSessionRig(t *testing.T) *freshSessionRig {
 	sup.store = openOutboxStore(t, pool)
 	sup.deps.PhaseHolds = (&workflowRuntime{pool: pool, records: records}).phaseHolds
 	engine := workflow.New(records, workflow.Config{Project: "legion", Repositories: testRepositories}, quietLogger())
-	sup.OnDurableState((&workflowRuntime{pool: pool, records: records, handlers: []intake.Handler{engine}, log: quietLogger()}).terminal)
+	sup.OnDurableState((&workflowRuntime{pool: pool, records: records, handlers: []intake.Handler{engine}, log: quietLogger(), limits: sup.deps.Settings.Limits}).terminal)
 	rig := &freshSessionRig{t: t, pool: pool, records: records, issue: issue, sup: sup, rt: rt, engine: engine}
 	trees := outboxTreeStore(t, pool, issue.Key)
 	workspaceDir := t.TempDir()
@@ -86,7 +86,8 @@ func newFreshSessionRig(t *testing.T) *freshSessionRig {
 	// The operator's own routes, wired as the daemon wires them: what `legion claims` talks to.
 	rig.operatorAPI = api.NewServer("127.0.0.1", 8437, api.Options{
 		Supervisor: sup, BootTokens: api.NewBootTokens(trees), Project: "legion", DispatchProject: "LEGION",
-		OperatorToken: freshSessionOperatorToken, Controller: trees, Trees: trees, Releaser: rt, Pool: pool, Record: records,
+		Settings:   api.NewLiveSettings(api.HeldSettings{OperatorToken: freshSessionOperatorToken}),
+		Controller: trees, Trees: trees, Releaser: rt, Pool: pool, Record: records,
 		Handlers: []intake.Handler{engine}, RoleFor: workflow.RoleFor, Log: quietLogger(),
 	}).Handler
 	rig.implementer = mustClaimToken(t, issue.Key, claim.RoleImplementer)
@@ -153,7 +154,7 @@ func (r *freshSessionRig) operator(method, target string, body any) *httptest.Re
 // trailing run of refusals reaches the launch failure limit and the claim fails.
 func (r *freshSessionRig) refuseEveryTurn(message string) {
 	r.t.Helper()
-	for turn := 1; turn <= r.sup.deps.Limits.LaunchFailures; turn++ {
+	for turn := 1; turn <= r.sup.deps.Settings.Limits().LaunchFailures; turn++ {
 		generation := r.machine.Claim().Generation
 		r.must(supervise.StreamTurnStart{Claim: r.implementer})
 		r.must(supervise.RequestTurnOutcome{Claim: r.implementer, Generation: generation, Sequence: uint64(turn), Refused: true, Message: message})

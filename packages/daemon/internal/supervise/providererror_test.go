@@ -129,7 +129,7 @@ func TestAStatusThatClearsChargesNoPromptBudgetHoweverOftenItHappens(t *testing.
 			sent := 1
 			// More turns than the claim's prompt-failure limit, which is what used to retire and
 			// then fail it.
-			for turn := range h.deps.Limits.PromptFailures + 2 {
+			for turn := range h.deps.limits().PromptFailures + 2 {
 				h.errorTurn(StreamPromptResult{Error: "the provider answered an error", HTTPStatus: status})
 				h.climbs(sent, promptRetryDelay(turn+1))
 				sent++

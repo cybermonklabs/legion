@@ -16,12 +16,7 @@ import {
   getProjectArtifact,
   patchIssue,
 } from "./api";
-import {
-  PIPELINE_AT,
-  seedDeliveryFixture,
-  seedPipelineRows,
-  TIMELINE_FIXTURE_QUERY,
-} from "./delivery-seed";
+import { seedDeliveryFixture, seedPipelineRows, TIMELINE_FIXTURE_QUERY } from "./delivery-seed";
 import { blockId } from "./editor";
 import { sql } from "./psql";
 import type { ReviewSeed } from "./review-routes";
@@ -181,7 +176,6 @@ Each page is read once it is drawn.
     // The machine of the first seeded session, read from the registry this seed wrote rather
     // than named again here, so a rename in e2e/workspace.ts moves this page's URL with it.
     machine: firstMachine(),
-    pipelineAt: PIPELINE_AT,
     // The id the create answered, which is this title written as a slug: read back rather than
     // spelled again here, so the rule that derives it stays the server's.
     priority: priority.id,

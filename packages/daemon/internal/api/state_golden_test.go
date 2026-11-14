@@ -199,11 +199,28 @@ func minimalSettingsConfig(t *testing.T) config.Config {
 	return loadSettingsFile(t, minimalSettingsFile)
 }
 
+// goldenSettingSources is where each setting of the fixture's daemon came from, written by the
+// daemon's own provenance (SettingProvenance): every settable path is the file this boot read,
+// and the one path an operator changed through the settings route names the route, who asked and
+// when. The clock is pinned here, since a fixture must encode the same bytes at every run.
+func goldenSettingSources() map[string]SettingSource {
+	changed := time.Date(2026, 9, 22, 9, 40, 18, 0, time.UTC)
+	sources := NewSettingProvenance(time.Date(2026, 9, 22, 9, 15, 2, 0, time.UTC))
+	sources.now = func() time.Time { return changed }
+	sources.Observe(nil, []config.Change{{
+		Path: "admission_cap", Old: "2", New: "3",
+		Class: config.ClassDecision, Outcome: config.OutcomeAtOnce,
+		Source: config.SourceRoute, By: "ana@example.com",
+	}})
+	return sources.Sources()
+}
+
 // populatedState carries every optional the state shape has, so the fixture pins the full shape
 // rather than Stage 1's empty record.
 func populatedState(t *testing.T) State {
 	t.Helper()
 	approvedVersion, mergedApproval, lineApproval := 6, 4, 3
+	commit := "3f9c1a7e5b2d84c06f1a9e3b7d5c2a08e4f6b1d9"
 	waitedSince := time.Date(2026, 9, 22, 8, 5, 0, 0, time.UTC)
 	answeredAt := time.Date(2026, 9, 22, 9, 21, 0, 0, time.UTC)
 	// When LEGION-210's implementer failed, the moment its claim carries beside the cause.
@@ -241,11 +258,13 @@ func populatedState(t *testing.T) State {
 	state := State{
 		Daemon: DaemonInfo{
 			Project:       "legion",
+			Commit:        &commit,
 			SchemaVersion: 1,
 			Boots:         4,
 			FirstBootAt:   time.Date(2026, 9, 18, 14, 3, 27, 0, time.UTC),
 			StartedAt:     time.Date(2026, 9, 22, 9, 15, 2, 0, time.UTC),
 		},
+		SettingSources: goldenSettingSources(),
 		Admission: Admission{
 			Cap:    3,
 			Active: []string{"LEGION-208", "LEGION-210", "LEGION-212"},
@@ -848,14 +867,20 @@ func TestNoSessionFacingBodyCarriesSuspendedBy(t *testing.T) {
 }
 
 func TestStateStage3Golden(t *testing.T) {
+	// A build that is not a release stamps no commit, and a daemon whose settings nothing has
+	// changed reports the provenance of none: both are written all the same, as every caller at
+	// settingSourcesContract reads them (State.SettingSources, DaemonInfo.Commit).
+	unreleased := ""
 	golden(t, "state-stage3.json", State{
 		Daemon: DaemonInfo{
 			Project:       "LEGION",
+			Commit:        &unreleased,
 			SchemaVersion: 3,
 			Boots:         5,
 			FirstBootAt:   time.Date(2026, 9, 18, 14, 3, 27, 0, time.UTC),
 			StartedAt:     time.Date(2026, 9, 22, 17, 30, 0, 0, time.UTC),
 		},
+		SettingSources: map[string]SettingSource{},
 		Admission: Admission{
 			Cap: 2, Active: []string{"LEGION-208"}, Waiting: []string{"LEGION-209"},
 			Trees: []string{"LEGION-208"},
@@ -888,15 +913,18 @@ func TestStateStage3Golden(t *testing.T) {
 // phase enum, so it refuses the whole document, over a row that is a legitimate state.
 // internal/projection's own test holds the producer to these values.
 func TestStateOperatorClaimGolden(t *testing.T) {
+	unreleased := ""
 	golden(t, "state-operator-claim.json", State{
 		Daemon: DaemonInfo{
 			Project:       "AC91849371",
+			Commit:        &unreleased,
 			SchemaVersion: 3,
 			Boots:         1,
 			FirstBootAt:   time.Date(2026, 9, 25, 5, 50, 0, 0, time.UTC),
 			StartedAt:     time.Date(2026, 9, 25, 5, 50, 0, 0, time.UTC),
 		},
-		Admission: Admission{Cap: 2, Active: []string{}, Waiting: []string{}},
+		SettingSources: map[string]SettingSource{},
+		Admission:      Admission{Cap: 2, Active: []string{}, Waiting: []string{}},
 		Issues: map[string]Issue{
 			"AC91849371-900": {
 				Key:     "AC91849371-900",

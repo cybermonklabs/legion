@@ -1553,6 +1553,7 @@ function legionState(overrides: Record<string, unknown> = {}): LegionState {
     daemon: {
       project: "INFRA",
       schemaVersion: 71,
+      commit: "",
       boots: 9,
       firstBootAt: "2026-10-01T00:00:00Z",
       startedAt: "2026-10-30T01:02:03Z",
@@ -1566,6 +1567,7 @@ function legionState(overrides: Record<string, unknown> = {}): LegionState {
     repositories: { owners: ["acme"], mapped: [], refused: [], withoutWebhookApp: [], caches: [] },
     consumers: [],
     settings: { review_round_cap: 3, worker_boot_timeout_seconds: 900 },
+    settingSources: {},
     ...overrides,
   });
 }

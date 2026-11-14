@@ -193,6 +193,7 @@ const MOVED_ON = {
   daemon: {
     project: PROJECT.toUpperCase(),
     schemaVersion: 1,
+    commit: "",
     boots: 1,
     firstBootAt: "2026-10-30T14:03:27Z",
     startedAt: "2026-10-31T09:15:02Z",
@@ -221,6 +222,7 @@ const MOVED_ON = {
     caches: [],
   },
   settings: { review_round_cap: 3, worker_boot_timeout_seconds: 120 },
+  settingSources: {},
   consumers: [],
 } satisfies LegionState;
 

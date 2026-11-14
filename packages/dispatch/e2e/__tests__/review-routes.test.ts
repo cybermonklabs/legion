@@ -30,9 +30,12 @@ describe("the review layers' route list", () => {
     expect(unexplained.map((route) => route.name)).toEqual([]);
   });
 
+  // The floor was 36 until INFRA-1077 excluded the `pipeline` row: `/pipeline` became a
+  // redirect onto the Delivery page, so that row shot the same page with the same window as
+  // `delivery`, and two of these snapshots were a second copy of another row's.
   test("scans at least 15 pages and shoots about 40 snapshots", () => {
     expect(scanned).toBeGreaterThanOrEqual(15);
-    expect(snapshots).toBeGreaterThanOrEqual(36);
+    expect(snapshots).toBeGreaterThanOrEqual(34);
     expect(snapshots).toBeLessThanOrEqual(48);
   });
 

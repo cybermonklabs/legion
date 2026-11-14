@@ -103,7 +103,7 @@ const cutoverMergerTold = "The cutover from a Legion build with the phase `await
 // a backstop without them.
 func (e *Engine) cutoverMergerRepair(ctx context.Context, tx pgx.Tx, _ intake.CutoverMergerRepair) (intake.Result, error) {
 	owed := []string{}
-	if e.cfg.Pods != nil {
+	if e.settings().Pods != nil {
 		owners, err := e.suspendedPhaseOwners(ctx, tx)
 		if err != nil {
 			return intake.Result{}, err
@@ -146,7 +146,7 @@ func (e *Engine) cutoverStoppedMerger(ctx context.Context, tx pgx.Tx, owner susp
 	if err != nil || row.HandoffCommit == "" {
 		return false, err
 	}
-	armed, err := e.cfg.Pods.OpenPodBackstop(ctx, tx, issue.Key, claim.RoleMerger)
+	armed, err := e.settings().Pods.OpenPodBackstop(ctx, tx, issue.Key, claim.RoleMerger)
 	if err != nil || armed {
 		return false, err
 	}

@@ -30,8 +30,6 @@ export interface ReviewSeed {
   readonly priority: string;
   /** The `from=…&to=…` query string, without the leading "?". */
   readonly deliveryQuery: string;
-  /** The `?at=` value the Pipeline page pins its seven days to. */
-  readonly pipelineAt: string;
 }
 
 /** The seed the containerised visual review reads, which is `e2e/visual-seed.ts`'s output. A
@@ -405,12 +403,16 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     ready: (page) => [page.getByTestId("delivery-chart").locator("canvas").first()],
   },
   {
-    kind: "reviewed",
-    layers: bothLayers,
+    kind: "excluded",
     name: "pipeline",
-    path: (seed) => `/pipeline?at=${seed.pipelineAt}`,
     pattern: "/pipeline",
-    ready: (page) => [page.getByRole("heading", { level: 1, name: "Pipeline" })],
+    reason:
+      "INFRA-1077 folded the Pipeline page into the Delivery page as its Pipeline section, so " +
+      "/pipeline is a redirect (web/src/app.tsx's PipelineRedirect, to /delivery<search>" +
+      "#pipeline) and a row here would open the same page, with the same window, as the " +
+      "delivery entry above: the same two shots under another name. That the redirect carries " +
+      "both the hash and the reader's window is held by a unit test instead " +
+      "(web/src/app.test.tsx, '/pipeline lands the reader on the Pipeline section').",
   },
   {
     kind: "reviewed",

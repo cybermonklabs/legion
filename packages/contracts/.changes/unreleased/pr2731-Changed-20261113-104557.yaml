@@ -1,0 +1,8 @@
+kind: Changed
+body: |-
+    Dispatch's `LegionBoardCard` carries no `checks_verdict`: the Legion daemon's state has no CI
+    verdict since cybermonklabs/legion#2539, so the card has none to show. `LegionSegments` keeps
+    `ci_wait`, which is 0 on every bar, since metric 2's CI-wait segment is not measured.
+time: 2026-11-13T10:45:57.000000000Z
+custom:
+    Issue: pr2731

@@ -27,9 +27,15 @@ function stubUnrelatedQueries() {
     getSignIns: spyOn(api, "getSignIns").mockResolvedValue({ signins: [] }),
     listAgentTokens: spyOn(api, "listAgentTokens").mockResolvedValue([]),
     listArchitectureSources: spyOn(api, "listArchitectureSources").mockResolvedValue([]),
+    listLegionSettings: spyOn(api, "listLegionSettings").mockResolvedValue([]),
     listProjectDefaultAssignees: spyOn(api, "listProjectDefaultAssignees").mockResolvedValue([]),
     listProjects: spyOn(api, "listProjects").mockResolvedValue([]),
     listRepoProjects: spyOn(api, "listRepoProjects").mockResolvedValue([]),
+    whoAmI: spyOn(api, "whoAmI").mockResolvedValue({
+      event_head: "0",
+      kind: "user",
+      login: "alice",
+    }),
   };
 }
 

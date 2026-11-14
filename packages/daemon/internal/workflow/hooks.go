@@ -27,7 +27,7 @@ import (
 // from dividing by nothing rather than a rule of its own.
 func (e *Engine) fireWorkBackHooks(ctx context.Context, tx pgx.Tx, issue string, from, to phase.Phase, counts map[string]int, pr *record.PullRequest) error {
 	pair := phase.Pair(from, to)
-	for _, hook := range e.cfg.Hooks {
+	for _, hook := range e.settings().Hooks {
 		if hook.On != HookEventWorkBack || hook.Every <= 0 || !hookSelects(hook, pair) {
 			continue
 		}

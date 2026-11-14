@@ -692,7 +692,9 @@ func TestACompactionAskedOverALaunchWaitingItsTurnIsNotTaken(t *testing.T) {
 // compaction that ran it would idle the failed claim and prompt the process the death ended.
 func TestACompactionWhoseClaimItsDeathFailedGivesItBackNothing(t *testing.T) {
 	notices := 0
-	h := ladderStuck(t, &notices, func(d *Deps) { d.Limits.LaunchFailures = 1 })
+	h := ladderStuck(t, &notices, func(d *Deps) {
+		moveBudgets(d, func(limits *Limits, _ *Timeouts) { limits.LaunchFailures = 1 })
+	})
 	owed := h.pending().ID
 	release := h.conn.HoldCompact()
 	compacted := make(chan error, 1)

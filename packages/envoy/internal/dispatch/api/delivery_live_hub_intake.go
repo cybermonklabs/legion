@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
-	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/pglisten"
 )
@@ -68,6 +67,12 @@ func (h *deliveryHub) intake(g *hubGeneration) {
 				// open P0 issues afresh and recompute every view, which reads what the missed
 				// events changed (applyFeed).
 				open = false
+				// No event marks the phase-work set stale while no feed is open, so it is
+				// answered by a read of its own until the subscription that replaces this one
+				// has seeded and watched it (legion_phase_work.go). The watch is dropped only
+				// while it is this generation's: a stopping generation reaching here after the
+				// next one has seeded would otherwise drop a watch that is not its own.
+				h.server.legionPhaseWork.unwatch(g.ctx.Done())
 				h.note(deliveryHubNote{what: "feed closed"})
 				h.seedEvents(g)
 				continue
@@ -91,8 +96,12 @@ type hubEventFeed struct {
 // The subscribe waits for the relay's first cursor when it starts a generation, which an open
 // write anywhere on the instance can hold back, which is why it does not run on the intake's
 // goroutine: the hub's ready, its delivery changes and its views' answers do not wait for the
-// event horizon. The open P0 issues are read after the subscription stands, so they hold every
-// event at or below its head, none of which arrives on the feed.
+// event horizon. The open P0 issues and the issues that carry Legion phase work
+// (legion_phase_work.go) are read after the subscription stands, so they hold every event at or
+// below its head, none of which arrives on the feed; every event above it arrives there and is
+// read into both. The phase-work set takes g's own done channel as its watcher with that read,
+// so a board read answers from the set while this generation reads the feed, and makes the read
+// itself once the generation has stopped.
 //
 // A subscribe or a read that fails is tried again after the listener's redial backoff. The hand
 // over gives up when g ends, so a feed the intake will never take leaves no goroutine behind for
@@ -106,6 +115,11 @@ func (h *deliveryHub) seedEvents(g *hubGeneration) {
 			var p0 map[string]struct{}
 			if err == nil {
 				if p0, err = delivery.OpenP0Keys(g.readContext(), h.server.deps.Store.Pool); err != nil {
+					feed.cancel()
+				}
+			}
+			if err == nil {
+				if err = h.server.legionPhaseWork.reseed(g.readContext(), h.server.deps.Store.Pool, g.ctx.Done()); err != nil {
 					feed.cancel()
 				}
 			}
@@ -252,6 +266,14 @@ func (h *deliveryHub) receive(g *hubGeneration, event model.Event) {
 // position) names its own only once the read lands: an event about an issue or a session only
 // that read names marks nothing here. So an issue or session event also records on such a view
 // what it touched, for recompute to check against the answer its read gives (recheckHeardLocked).
+//
+// It also marks the set of issues that carry Legion phase work stale, which a Legion board's
+// tree walk reads (legion_phase_work.go): a handoff recorded, and the events of a session the
+// set says can move what its one read answers (its observe, which is where that rule lives).
+// The hub states no rule of its own here — a second reading of a title is how the board and the
+// metrics came to put one issue in two trees — and the next board read makes the read again.
+// The mark is taken under the set's own lock, taken here under the hub's, never the other way
+// round.
 func (h *deliveryHub) applyEventLocked(g *hubGeneration, event model.Event, now time.Time) {
 	var issueKey string
 	if event.IssueKey != nil {
@@ -284,17 +306,33 @@ func (h *deliveryHub) applyEventLocked(g *hubGeneration, event model.Event, now 
 		h.dirtyIssueLocked(g, issueKey, p0, now)
 	case "architecture.synced":
 		h.dirtyAllLocked(g, now)
+	case "handoff.recorded":
+		// A handoff is Legion phase work, which the board's tree walk reads
+		// (legion_phase_work.go). It moves no card of its own, so it marks no view.
+		h.server.legionPhaseWork.invalidate()
 	}
 	if event.Actor.Kind == "session" && event.Actor.ID != "" {
 		origin := event.Actor.Origin
-		if origin == nil || origin.SessionTitle == "" {
+		title := ""
+		if origin != nil {
+			title = origin.SessionTitle
+		}
+		// An event of a session can move which issues the phase-work read answers: the rule
+		// reads the session's newest title against every issue the session has written on, so
+		// an event carrying no title of its own still places that session's work on this issue
+		// (legion_phase_work.go, legion/phase_work.go). An empty title is the set's own case —
+		// observe reads it as the session's known one — so this call stands above the return
+		// below rather than after it. Which events mark the set is the set's own business: the
+		// ordinary session writing here is most of this feed, and a read of every project's
+		// whole event log is what a mark costs.
+		h.server.legionPhaseWork.observe(event.Actor.ID, title, issueKey)
+		if title == "" {
 			// The name delivery.ResolveSessionTitles reads is the newest title the session
 			// stamped, which a write carrying none does not take away. So such a write is no
 			// retitle: it marks no view, and nothing is recorded for the session, which
 			// recheckHeardLocked would replay as one.
 			return
 		}
-		title := origin.SessionTitle
 		for _, view := range g.views {
 			if view.showsSessionRetitled(event.Actor.ID, title) {
 				h.markDirtyLocked(g, view, now, deliveryCauseChange)
@@ -309,6 +347,9 @@ func (h *deliveryHub) applyEventLocked(g *hubGeneration, event model.Event, now 
 	}
 }
 
+// dirtyIssueLocked marks every view one issue's write can move (showsIssue), and records the
+// write on every view whose read is under way, for recompute to check against the answer that
+// read gives (recheckHeardLocked).
 func (h *deliveryHub) dirtyIssueLocked(g *hubGeneration, key string, p0 bool, now time.Time) {
 	for _, view := range g.views {
 		if view.showsIssue(key, p0) {
@@ -343,12 +384,13 @@ func (h *deliveryHub) recheckHeardLocked(g *hubGeneration, view *deliveryView, n
 }
 
 // showsIssue is whether a write to the issue key, a P0 before or after it when p0, can move the
-// view's answer: the view's issues or their ancestors hold it, or it is a timeline or measures
-// view and the issue is a P0.
+// view's answer: the view's population, or its ancestors, names the issue, or the view shows the
+// unowned P0 list and the issue is a P0. A Legion board names its own issues and shows no P0
+// list, so only the first rule reaches it.
 func (view *deliveryView) showsIssue(key string, p0 bool) bool {
 	_, named := view.issues[key]
 	_, ancestor := view.ancestors[key]
-	return named || ancestor || (p0 && view.spec.kind != deliveryLivePipeline)
+	return named || ancestor || (p0 && view.spec.classes().unownedP0)
 }
 
 // showsSessionRetitled is whether the view shows session under another title than title.
@@ -382,6 +424,11 @@ func (h *deliveryHub) markDirtyLocked(g *hubGeneration, view *deliveryView, now 
 // is taken as touching timeline and measures views. Pipeline lead times read only merged pull
 // requests (ListPullRequestsInWindow), so an unmerged pull request cannot move a Pipeline view.
 func (view *deliveryView) touchedBy(change delivery.Change, now time.Time) bool {
+	if !view.spec.classes().delivery {
+		// The view reads no delivery row at all: what moves a Legion board is a read of the
+		// daemon (legion.StateChannel) or a write of one of its issues (dirtyIssueLocked).
+		return false
+	}
 	var times []time.Time
 	for _, t := range []*time.Time{change.TOld, change.TNew} {
 		if t != nil {
@@ -418,17 +465,16 @@ func (view *deliveryView) touchedBy(change delivery.Change, now time.Time) bool 
 
 // window is the view's window as its last answer resolved it: a custom range as named, a preset
 // from its last start (or its length before now, before its first answer) to the present, and a
-// pipeline view from the first shown day of its pinned at or of its last answer's.
+// pipeline view from the first of the days its own window shows, which a rolling window ends at
+// its last answer's moment or, before that, the present.
 func (view *deliveryView) window(now time.Time) (from, to time.Time) {
 	switch {
 	case view.spec.kind == deliveryLivePipeline:
-		at := now
-		if view.spec.at != nil {
-			at = *view.spec.at
-		} else if !view.at.IsZero() {
-			at = view.at
+		end := now
+		if view.spec.pipelineRolls() && !view.at.IsZero() {
+			end = view.at
 		}
-		return measures.WindowStart(at), time.Time{}
+		return view.spec.pipelineWindowAt(end).start(), time.Time{}
 	case view.spec.preset > 0:
 		if view.from.IsZero() {
 			return now.Add(-view.spec.days()), now

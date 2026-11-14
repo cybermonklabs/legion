@@ -18,7 +18,7 @@ import (
 // before the tree works. A row of any other step is kept and holds nothing: its registration
 // opens it at once and no artifact event moves it (artifactIgnored).
 func (e *Engine) gatesStep(step record.DesignStep) bool {
-	return slices.Contains(e.cfg.Steps, step)
+	return slices.Contains(e.settings().Steps, step)
 }
 
 // gateOfDocument is the gate of gates registered on document, nil when none is: the row an event
@@ -175,7 +175,7 @@ func (e *Engine) gateRegistered(ctx context.Context, tx pgx.Tx, fact intake.Gate
 		return intake.Result{}, err
 	}
 	e.logOnCommit(ctx, "workflow: design gate registered", "issue", issue.Key, "artifact", fact.ArtifactID, "step", step,
-		"version", version, "open", classify.DesignGateOpen(gate), "changes_requested", changesRequested, "gated_steps", e.cfg.Steps)
+		"version", version, "open", classify.DesignGateOpen(gate), "changes_requested", changesRequested, "gated_steps", e.settings().Steps)
 	if err := e.enqueue(ctx, tx, fact.Issue, record.GateSeed{ArtifactID: fact.ArtifactID, Step: step, Version: version, Generation: issue.Generation}); err != nil {
 		return intake.Result{}, err
 	}
@@ -758,7 +758,7 @@ func (e *Engine) personHandoverQueues(ctx context.Context, tx pgx.Tx, fact intak
 	if stored == nil {
 		return true, nil
 	}
-	live, err := record.TreeLive(ctx, e.store, tx, *stored, e.cfg.Steps)
+	live, err := record.TreeLive(ctx, e.store, tx, *stored, e.settings().Steps)
 	if err != nil {
 		return false, err
 	}
@@ -1055,7 +1055,7 @@ func (e *Engine) putGateTold(ctx context.Context, tx pgx.Tx, gate record.DesignG
 // names no document, so nobody can be asked about it and nothing can be said of it: it is why the
 // message reads StandingGate rather than DesignGatesOpen, and the one difference between them.
 func (e *Engine) standingGateOpen(gates map[record.DesignStep]record.DesignGate) bool {
-	_, held := classify.StandingGate(e.cfg.Steps, gates)
+	_, held := classify.StandingGate(e.settings().Steps, gates)
 	return !held
 }
 

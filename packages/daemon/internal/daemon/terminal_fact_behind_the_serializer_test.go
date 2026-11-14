@@ -25,7 +25,7 @@ import (
 func TestALiveTerminalFactQueuedPastTheBootBudgetDoesNotStopTheWorkflow(t *testing.T) {
 	pool := isolatedOutboxPool(t)
 	handler := &outboxFactHandler{}
-	w := &workflowRuntime{pool: pool, handlers: []intake.Handler{handler}, log: quietLogger(), failed: make(chan error, 1), limits: replayLimits}
+	w := &workflowRuntime{pool: pool, handlers: []intake.Handler{handler}, log: quietLogger(), failed: make(chan error, 1), limits: func() supervise.Limits { return replayLimits }}
 	token, err := claim.NewToken("legion", "LEGION-1001", claim.RoleTester)
 	if err != nil {
 		t.Fatal(err)

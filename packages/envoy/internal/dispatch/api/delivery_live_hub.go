@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/pglisten"
 )
@@ -143,6 +144,9 @@ func (h *deliveryHub) Close(conn deliveryLiveConn) {
 // dropLocked drops conn's sub id, the view it leaves without a sub, and conn once it holds none. The
 // drop that leaves the hub no conn stops its generation: its listener closes its connection, its
 // intake cancels its relay subscription, and nothing reads either log until the next Subscribe.
+// Stopping it ends its context, which is the watch the issues that carry Legion phase work are
+// held by, so from here a board read makes that read itself rather than answering from a set no
+// feed can mark stale (legion_phase_work.go).
 func (h *deliveryHub) dropLocked(conn deliveryLiveConn, id string) {
 	g := h.generation
 	if g == nil {
@@ -174,7 +178,9 @@ func (g *hubGeneration) leaveLocked(sub *deliverySub) {
 
 // The channels the delivery hub listens on. delivery_changes carries no payload and is notified as
 // a delivery_changes row commits (migration 0100); delivery_freshness carries the settings row's
-// freshness columns as JSON (0100).
+// freshness columns as JSON (0100); legion.StateChannel carries a project key and is notified by
+// the sampler after each read of that project's Legion daemon, which is the only thing that moves
+// a Legion board besides Dispatch's own events.
 const (
 	deliveryChangesChannel   = "delivery_changes"
 	deliveryFreshnessChannel = "delivery_freshness"
@@ -342,15 +348,17 @@ type deliverySub struct {
 }
 
 // deliveryLiveSpec is a subscribed view, resolved: its kind, its window (a preset's length in days,
-// or a custom range), its query without from and to, a pipeline view's pinned at, and the
-// canonical key identical views share.
+// or a custom range), its query without from and to, a pipeline view's pinned at, a legion
+// view's project, and the canonical key identical views share.
 type deliveryLiveSpec struct {
 	kind     string
 	preset   int
 	from, to time.Time
 	query    url.Values
 	at       *time.Time
-	key      string
+	// project is the project a legion view's board shows; every other kind names none.
+	project string
+	key     string
 }
 
 // deliveryFreshnessHeard is the freshness row as the hub last heard it, and the population's
@@ -436,7 +444,7 @@ func (h *deliveryHub) startLocked() *hubGeneration {
 	listener := &pglisten.Listener{
 		Owner:       "dispatch",
 		Dial:        h.dial,
-		Channels:    []string{deliveryChangesChannel, deliveryFreshnessChannel},
+		Channels:    []string{deliveryChangesChannel, deliveryFreshnessChannel, legion.StateChannel},
 		ListenIdle:  h.listenIdle,
 		PingTimeout: h.pingTimeout,
 		Backoff:     h.backoff,
@@ -482,13 +490,30 @@ func (h *deliveryHub) note(n deliveryHubNote) {
 }
 
 // onNotify routes one notification to g, on the listener's goroutine: a change wakes the intake's
-// catch-up of the change log, and a freshness row is applied at once, reading nothing.
+// catch-up of the change log, a freshness row is applied at once, reading nothing, and a read of a
+// Legion daemon marks that project's board.
 func (h *deliveryHub) onNotify(g *hubGeneration, channel, payload string) {
 	switch channel {
 	case deliveryChangesChannel:
 		signal(g.wakeChanges)
 	case deliveryFreshnessChannel:
 		h.applyFreshness(g, payload)
+	case legion.StateChannel:
+		h.dirtyLegionBoard(g, payload)
+	}
+}
+
+// dirtyLegionBoard marks the board of the project a read of a Legion daemon just recorded. The
+// sampler announces every read, failed or not: the header carries the read itself, so a board
+// whose daemon stopped answering moves as surely as one whose issues did.
+func (h *deliveryHub) dirtyLegionBoard(g *hubGeneration, project string) {
+	now := h.clock.Now()
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, view := range g.views {
+		if view.spec.classes().project && view.spec.project == project {
+			h.markDirtyLocked(g, view, now, deliveryCauseChange)
+		}
 	}
 }
 

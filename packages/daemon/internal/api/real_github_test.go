@@ -42,7 +42,7 @@ func TestRealGitHubCredentialSurface(t *testing.T) {
 	h := newHarness(t)
 	tokens := appauth.New(apps, appauth.Options{})
 	h.handler = NewServer("127.0.0.1", 0, Options{
-		Steps:              config.DesignGateRootIssues.Steps(),
+		Settings:           unauthenticatedSettings(),
 		Supervisor:         h.supervisor,
 		BootTokens:         h.tokens,
 		Project:            testProject,

@@ -94,7 +94,10 @@ field from `legion.goDaemonApiVersion` when the plugin dropped its TypeScript-da
 (LEGION-223): a release before it declares the TypeScript daemon's 9 under this name and is
 refused naming that number. The split of the one plugin into this package and `@sjawhar/pi-envoy`
 (LEGION-247) moved no request, response or pane variable, so it bumped nothing of its own: the
-number is the one `DaemonAPIVersion` declares, last bumped by contract 111 (dispatch://INFRA-2560:
+number is the one `DaemonAPIVersion` declares, last bumped by contract 130's setting provenance
+(dispatch://INFRA-1077: `GET /legion/v1/state` carries `settingSources` and `daemon.commit`,
+which the reader that contract ships requires, so a caller from a pod below 130 is served the
+state without them), after contract 111 (dispatch://INFRA-2560:
 every issue of a live tree carries `treeMovedAt`, when that tree last moved, and `quietHours`,
 how long it has been still, which a caller below 111 is served without), after contract 104's
 claim recoveries (dispatch://INFRA-3161: `fresh_session` reaches a claim stored working that no
@@ -134,20 +137,24 @@ from a pod below 85 is served every issue without `why` and every member of the 
 a claim view of `GET /legion/v1/state` carries `servingGeneration`, `updateReasons`,
 `providerErrorRun`, `pendingTask`, `failure` and `pendingCause`, an issue carries `heldFrom`,
 `lingerUntil` and `ancestry`, and the body carries the `contract` mark beside the daemon's
-block, which a caller from a pod below 75 is served none of), after contract 73's count of the
-claims the stale-plugin lane still has to refresh (`claimsToRefresh` on
-`GET /legion/v1/state`, which a caller below 73 is
-served without), after the contracts between 64 and 73, which this history does not list,
-after contract 64's launch spend
+block, which a caller from a pod below 75 is served none of), after contract 73's stale-plugin
+lane (that state carries `claimsToRefresh`, how many claims the lane still has to relaunch onto
+this daemon's plugin, always a number and 0 outside a wave, which a caller from a pod below 73
+is served without; the lane asks its worker nothing and opens no round, so the `plugin-task`
+wake kind is gone and the relaunch the lane's gate admits waits under `plugin-refresh`), after
+contract 68's declined answer (`answeredBy` on an `awaiting_person` root's `waitingOn` takes a
+ninth value, `declined`), after contract 64's launch spend
 attributes (every pane's environment and every pod's worker container carry `legion.issue`, the
 issue the launch serves, and `legion.role`, the role it runs, in `OTEL_RESOURCE_ATTRIBUTES`,
 after the attributes the deployment's own `runtime.kubernetes.pod.env` or
 `runtime.tmux.pane_env` sets, so every launch's attributes name the issue it serves, and a
 spend row grouped by issue follows once the spend collector keeps those two keys, which
 dispatch://INFRA-1835 adds to its `theorem.*` keep-list; the project controller's launch serves
-no issue and carries the role alone), after contract 59's end of
-fix-attempt counting and its two recovery operations
-(the settings block of `GET /legion/v1/state` no longer
+no issue and carries the role alone), after contract 62's counts of the moves back (each worker of that
+state carries `backwardMoves`, the `<from>-<to>` pair to its count, absent for an issue that has
+had no move back, and a caller from a pod below 62 is served the workers without it), after
+contract 59's end of fix-attempt counting and its two
+recovery operations (the settings block of `GET /legion/v1/state` no longer
 carries `max_fix_attempts` and each pull request in it loses `fixAttempts`, which the strict
 reader every worker's `read_record` parses the state through requires, so the boot gate and
 `legion probe-image` hold plugin and daemon equal and neither order of the two ever runs; the

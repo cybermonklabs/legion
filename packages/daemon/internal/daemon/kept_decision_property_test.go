@@ -1077,11 +1077,15 @@ func (r *keptRun) restart() {
 	sup.deps = supervise.Deps{
 		Runtime: r.rt, Conns: fake.NewConns(), Store: r.claims, Specs: outboxSpecs{}, Clock: stillClock{}, Log: quietLogger(),
 		// The daemon's own readings of whether a root architect's task may be sent and of what that
-		// task says now (workflowRuntime.rootHears, rootTask), over this run's pool and store.
-		RootHears:      (&workflowRuntime{pool: r.pool, records: r.records}).rootHears,
-		RootTask:       (&workflowRuntime{pool: r.pool, records: r.records}).rootTask,
-		Limits:         supervise.Limits{LaunchFailures: 2, PromptFailures: 2, PromptRetires: 2},
-		Timeouts:       supervise.Timeouts{Boot: time.Second, RegistrationIntervals: 2, RPC: time.Second, Probe: time.Second, Stop: time.Second, LaunchBackoff: time.Millisecond},
+		// task says now (workflowRuntime.rootHears, rootTask), over this run's pool and store. Each
+		// reads the design gate through the settings holder as it decides, as the daemon's does
+		// (config.Live.Snapshot), so the run gives it one: the shipped policy, which is the gate
+		// this run's engine is built on.
+		RootHears: (&workflowRuntime{pool: r.pool, records: r.records, live: config.Settled(config.Config{})}).rootHears,
+		RootTask:  (&workflowRuntime{pool: r.pool, records: r.records, live: config.Settled(config.Config{})}).rootTask,
+		Settings: supervise.FixedSettings(
+			supervise.Limits{LaunchFailures: 2, PromptFailures: 2, PromptRetires: 2},
+			supervise.Timeouts{Boot: time.Second, RegistrationIntervals: 2, RPC: time.Second, Probe: time.Second, Stop: time.Second, LaunchBackoff: time.Millisecond}),
 		PluginContract: 24,
 		RefreshGate:    supervise.NewRefreshGate(0),
 	}
@@ -1095,7 +1099,7 @@ func (r *keptRun) restart() {
 	r.runner = &outbox{
 		log: quietLogger(), pool: r.pool, dispatchProject: "LEGION", records: r.records, notices: r.publisher,
 		supervisor: sup, trees: r.trees, tokens: outboxTokens{}, handlers: []intake.Handler{r.engine},
-		project: "legion", stateDir: r.stateDir, now: time.Now,
+		project: "legion", stateDir: r.stateDir, live: config.Settled(config.Config{}), now: time.Now,
 		provision: func(context.Context, workspace.Request) (workspace.Workspace, error) {
 			return workspace.Workspace{Dir: r.t.TempDir(), Bookmark: "legion/" + keptRoot}, nil
 		},
@@ -2362,7 +2366,7 @@ func (r *keptRun) claimFailed(tree *keptTree) {
 	held := machine.Claim()
 	if _, err := intake.ApplyFact(r.ctx, r.pool, terminalSource, terminalEventID(held, supervise.StateFailed),
 		intake.ClaimFailed{Issue: tree.key, Role: claim.RoleArchitect, Reason: held.Failure,
-			Cause: held.FailureCause, Budgets: held.Budgets, Limits: r.sup.deps.Limits}, r.engine); err != nil {
+			Cause: held.FailureCause, Budgets: held.Budgets, Limits: r.sup.deps.Settings.Limits()}, r.engine); err != nil {
 		r.fatalf("apply the failure of %s's architect at launch %d: %v", tree.key, held.Generation, err)
 	}
 	r.tracef("claim-failed tree=%s launch=%d refusals=%d notice-row=%d", tree.key, held.Generation, r.rt.refused(), r.lastRow())
@@ -2799,7 +2803,7 @@ func (r *keptRun) deathEnabled(tree *keptTree) bool {
 		return false
 	}
 	held := machine.Claim()
-	return held.Locator != nil && held.Budgets.Deaths+1 < r.sup.deps.Limits.LaunchFailures
+	return held.Locator != nil && held.Budgets.Deaths+1 < r.sup.deps.Settings.Limits().LaunchFailures
 }
 
 // deathInTheTasksTurn is the architect's process dying in the turn on its task, reported by the

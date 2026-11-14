@@ -141,7 +141,7 @@ func (s *server) controllerSecret(w http.ResponseWriter, r *http.Request) {
 	}
 	s.grants.RevokeControllers()
 	s.log.Info("api: minted a controller capability; the previous controller's registration and grants are revoked", "generation", generation)
-	writeJSON(w, http.StatusOK, ControllerSecretResponse{Secret: secret, DesignGateSteps: s.steps})
+	writeJSON(w, http.StatusOK, ControllerSecretResponse{Secret: secret, DesignGateSteps: s.steps()})
 }
 
 // controllerGitHubCredential is `legion controller start`'s refresh call: proving the current
@@ -203,7 +203,7 @@ func (s *server) controllerGitHubCredential(w http.ResponseWriter, r *http.Reque
 	// No left-out record (appauth.LeftOut): this bundle is built per request and reaches a
 	// `legion controller start` that rewrites its own gh directory every minute, so no pod's
 	// fixed projection is ever compared against it.
-	bundle, err := appauth.ControllerCredential(s.tokens, s.githubRepositories, s.renames, nil, s.log)(r.Context(), req.Default)
+	bundle, err := appauth.ControllerCredential(s.tokens, s.githubRepositories, s.renames(), nil, s.log)(r.Context(), req.Default)
 	switch {
 	case errors.Is(err, runtime.ErrNoGitHubOwner):
 		writeFailure(w, http.StatusInternalServerError, "GITHUB_OWNER_UNCONFIGURED", "no repository owner is configured for GitHub App tokens")
