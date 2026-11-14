@@ -3,6 +3,7 @@ import type { FilterFn, RowSelectionState } from "@tanstack/react-table";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { userStateQuery } from "../../api/queries";
 import { DataTable, type DataTableNames, useDataTable } from "../../components/DataTable";
+import { useFocusPlace } from "../../components/focus-place";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import type { PagerOptions } from "../../components/Pager";
 import { useTableLayout } from "../../components/table-layout";
@@ -176,6 +177,22 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
     const key = last !== null && leaves.includes(last) ? last : leaves[0];
     return key === undefined ? searchRef.current : model.focusRow(key, ROW_CHECKBOX);
   };
+  // The List's section, which stays in every branch while the table does not: a control of the
+  // table's head - a column filter, or the list it opened in a portal of its own - that goes
+  // with the table when a press in it sends the List back to its skeleton hands the focus to the
+  // control now at its place, which is a toolbar's, else to the search box. Nothing else here is
+  // counted: the selection bar, the rows and the dialogs each hand the focus on themselves.
+  const sectionRef = useRef<HTMLElement>(null);
+  const noteFocus = useFocusPlace(
+    (element) => {
+      const section = sectionRef.current;
+      if (section === null) return null;
+      // A portal's element is counted only where a control of the head was before it.
+      if (!section.contains(element)) return section;
+      return element.closest("thead") === null ? null : section;
+    },
+    () => searchRef.current
+  );
 
   // The keys the table lists under the filters and the search it is showing, in row order. A key
   // it no longer lists drops out of the selection - another filter, another project - so a row
@@ -265,57 +282,63 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
     [items, openFilter, filters, search]
   );
 
-  if (issues.isPending || userState.isPending) return <LoadingSkeleton label="Loading issues" />;
-  if ((issues.isError && issues.data === undefined) || userState.isError)
-    return (
-      <p className={dangerText} role="alert">
-        Could not load issues.{" "}
-        <button
-          type="button"
-          onClick={() => {
-            void issues.refetch();
-            void userState.refetch();
-            if (missingParents.length) void ancestry.refetch();
-          }}
-        >
-          Retry loading issues
-        </button>
-      </p>
-    );
-
+  const loading = issues.isPending || userState.isPending;
+  const failed = !loading && ((issues.isError && issues.data === undefined) || userState.isError);
+  const listed = !loading && !failed;
   const visibleColumns = table.getVisibleLeafColumns().length + 1;
+  // A column filter's panel hangs off its header and goes with the table: it is closed then, as
+  // a panel whose anchor has left the page closes (`AnchoredPanel`), so the table coming back
+  // does not open it again and take the focus from wherever it went meanwhile.
+  useEffect(() => {
+    if (!listed) setOpenFilter(undefined);
+  }, [listed]);
 
+  // The toolbar is drawn in every branch, at the one place in the tree, as the Board draws its
+  // `controls`: a filter press that sends the List off to read issues it has not loaded - Clear
+  // filters back to the open issues, which a List opened on the closed ones has never read -
+  // puts the skeleton in place of the table alone, and the control pressed, with the keyboard
+  // focus on it, stays where it was. Everything else here needs the listing and waits for it.
   return (
-    <section aria-label="Project issues" className="space-y-3 sm:pb-24">
+    <section
+      aria-label="Project issues"
+      className="space-y-3 sm:pb-24"
+      onFocus={noteFocus}
+      ref={sectionRef}
+    >
       <div className="space-y-3" ref={attachAbove}>
-        {listingError ? (
-          <p className={dangerText} role="alert">
-            Could not load {wantsDone ? "closed " : ""}issues.{" "}
-            <button
-              type="button"
-              aria-label={wantsDone ? "Retry loading closed issues" : "Retry loading issues"}
-              onClick={() => void listingError.refetch()}
-            >
-              Retry
-            </button>
-          </p>
+        {listed ? (
+          <>
+            {listingError ? (
+              <p className={dangerText} role="alert">
+                Could not load {wantsDone ? "closed " : ""}issues.{" "}
+                <button
+                  type="button"
+                  aria-label={wantsDone ? "Retry loading closed issues" : "Retry loading issues"}
+                  onClick={() => void listingError.refetch()}
+                >
+                  Retry
+                </button>
+              </p>
+            ) : null}
+            {unreadableAncestors > 0 ? (
+              <p className={dangerText} role="alert">
+                Could not load {unreadableAncestors}{" "}
+                {unreadableAncestors === 1 ? "ancestor" : "ancestors"}; affected rows show Unknown
+                epic.{" "}
+                <button type="button" onClick={() => void ancestry.refetch()}>
+                  Retry loading ancestors
+                </button>
+              </p>
+            ) : null}
+            {wantsDone && everyIssue.isPending ? (
+              <p aria-live="polite" className={textMutedOnCanvas}>
+                Loading closed issues…
+              </p>
+            ) : null}
+            {/* Issues by status: a click shows only that status, a second click every status. */}
+            <IssueTableStatus table={table} items={allItems} epics={epics} />
+          </>
         ) : null}
-        {unreadableAncestors > 0 ? (
-          <p className={dangerText} role="alert">
-            Could not load {unreadableAncestors}{" "}
-            {unreadableAncestors === 1 ? "ancestor" : "ancestors"}; affected rows show Unknown epic.{" "}
-            <button type="button" onClick={() => void ancestry.refetch()}>
-              Retry loading ancestors
-            </button>
-          </p>
-        ) : null}
-        {wantsDone && everyIssue.isPending ? (
-          <p aria-live="polite" className={textMutedOnCanvas}>
-            Loading closed issues…
-          </p>
-        ) : null}
-        {/* Issues by status: a click shows only that status, a second click every status. */}
-        <IssueTableStatus table={table} items={allItems} epics={epics} />
 
         <IssueTableToolbar
           searchRef={searchRef}
@@ -329,140 +352,164 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
           }
         />
 
-        <p
-          aria-live="polite"
-          role={notice ? (notice.kind === "error" ? "alert" : "status") : undefined}
-          className={`min-h-5 text-sm ${notice?.kind === "error" ? dangerText : textSecondaryOnCanvas}`}
-        >
-          {notice?.text}
-        </p>
-        {interrupted ? (
-          <section aria-label="Interrupted table action" className={textSecondaryOnCanvas}>
-            <p>{interruptedDescription}</p>
-            <button
-              type="button"
-              onClick={finish}
-              className={`min-h-11 rounded-lg border px-3 text-sm ${borderDefault} ${focusVisibleRing}`}
+        {listed ? (
+          <>
+            <p
+              aria-live="polite"
+              role={notice ? (notice.kind === "error" ? "alert" : "status") : undefined}
+              className={`min-h-5 text-sm ${notice?.kind === "error" ? dangerText : textSecondaryOnCanvas}`}
             >
-              Finish
-            </button>{" "}
-            <button
-              type="button"
-              onClick={dismiss}
-              className={`min-h-11 rounded-lg border px-3 text-sm ${borderDefault} ${focusVisibleRing}`}
-            >
-              Dismiss
-            </button>
-          </section>
-        ) : null}
-        {unansweredEpic ? (
-          <LandedWithoutAnswer what={`The epic “${unansweredEpic}”`}>
-            The selected issues have not been moved. Find the epic in the project before moving
-            them.{" "}
-            <button type="button" onClick={dismissUnansweredEpic}>
-              Dismiss
-            </button>
-          </LandedWithoutAnswer>
-        ) : null}
-        {duplicateEpic ? (
-          <div role="alert" className={textSecondaryOnCanvas}>
-            <p>{duplicateEpic.message}</p>
-            <button
-              type="button"
-              disabled={busy}
-              onClick={() => void newEpic(duplicateEpic.keys, duplicateEpic.title, true)}
-            >
-              Create anyway
-            </button>
-            <button type="button" onClick={() => setDuplicateEpic(undefined)}>
-              Cancel new epic
-            </button>
-          </div>
+              {notice?.text}
+            </p>
+            {interrupted ? (
+              <section aria-label="Interrupted table action" className={textSecondaryOnCanvas}>
+                <p>{interruptedDescription}</p>
+                <button
+                  type="button"
+                  onClick={finish}
+                  className={`min-h-11 rounded-lg border px-3 text-sm ${borderDefault} ${focusVisibleRing}`}
+                >
+                  Finish
+                </button>{" "}
+                <button
+                  type="button"
+                  onClick={dismiss}
+                  className={`min-h-11 rounded-lg border px-3 text-sm ${borderDefault} ${focusVisibleRing}`}
+                >
+                  Dismiss
+                </button>
+              </section>
+            ) : null}
+            {unansweredEpic ? (
+              <LandedWithoutAnswer what={`The epic “${unansweredEpic}”`}>
+                The selected issues have not been moved. Find the epic in the project before moving
+                them.{" "}
+                <button type="button" onClick={dismissUnansweredEpic}>
+                  Dismiss
+                </button>
+              </LandedWithoutAnswer>
+            ) : null}
+            {duplicateEpic ? (
+              <div role="alert" className={textSecondaryOnCanvas}>
+                <p>{duplicateEpic.message}</p>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void newEpic(duplicateEpic.keys, duplicateEpic.title, true)}
+                >
+                  Create anyway
+                </button>
+                <button type="button" onClick={() => setDuplicateEpic(undefined)}>
+                  Cancel new epic
+                </button>
+              </div>
+            ) : null}
+          </>
         ) : null}
       </div>
 
-      <DataTable
-        empty="No issues match these filters."
-        filterCounts={openFacets}
-        filterUnloaded={doneLoaded ? undefined : DONE_UNLOADED}
-        label="Project issues table"
-        model={model}
-        onOpenFilterChange={setOpenFilter}
-        openFilter={openFilter}
-        pager={ISSUE_TABLE_PAGER}
-        renderGroup={({ entry, index, measure }) => (
-          <GroupRow
-            columns={visibleColumns}
-            viewportWidth={boxWidth}
-            continued={entry.continued}
-            epics={epics}
-            grouping={grouping[0] ?? ""}
-            index={index}
-            measure={measure}
-            onMerge={mergeEpic}
-            shown={entry.shown}
-            onRename={renameEpic}
-            onStartAll={(key) =>
-              startNext(
-                allItems.filter((item) => item.epicKey === key).map((item) => item.issue.key)
-              )
-            }
-            row={entry.row}
+      {loading ? <LoadingSkeleton label="Loading issues" /> : null}
+      {failed ? (
+        <p className={dangerText} role="alert">
+          Could not load issues.{" "}
+          <button
+            type="button"
+            onClick={() => {
+              void issues.refetch();
+              void userState.refetch();
+              if (missingParents.length) void ancestry.refetch();
+            }}
+          >
+            Retry loading issues
+          </button>
+        </p>
+      ) : null}
+      {listed ? (
+        <>
+          <DataTable
+            empty="No issues match these filters."
+            filterCounts={openFacets}
+            filterUnloaded={doneLoaded ? undefined : DONE_UNLOADED}
+            label="Project issues table"
+            model={model}
+            onOpenFilterChange={setOpenFilter}
+            openFilter={openFilter}
+            pager={ISSUE_TABLE_PAGER}
+            renderGroup={({ entry, index, measure }) => (
+              <GroupRow
+                columns={visibleColumns}
+                viewportWidth={boxWidth}
+                continued={entry.continued}
+                epics={epics}
+                grouping={grouping[0] ?? ""}
+                index={index}
+                measure={measure}
+                onMerge={mergeEpic}
+                shown={entry.shown}
+                onRename={renameEpic}
+                onStartAll={(key) =>
+                  startNext(
+                    allItems.filter((item) => item.epicKey === key).map((item) => item.issue.key)
+                  )
+                }
+                row={entry.row}
+              />
+            )}
+            renderRow={({ row, index, measure }) => (
+              <IssueRow
+                busy={busy}
+                index={index}
+                measure={measure}
+                moved={moved}
+                onStartNext={(key) => startNext([key])}
+                row={row}
+              />
+            )}
+            scrollTestId="issues-table-scroll"
+            stackColumn="title"
+            trailingWidth={ACTION_WIDTH}
           />
-        )}
-        renderRow={({ row, index, measure }) => (
-          <IssueRow
-            busy={busy}
-            index={index}
-            measure={measure}
-            moved={moved}
-            onStartNext={(key) => startNext([key])}
-            row={row}
-          />
-        )}
-        scrollTestId="issues-table-scroll"
-        stackColumn="title"
-        trailingWidth={ACTION_WIDTH}
-      />
 
-      <IssueTableSelection
-        returnFocus={returnFocus}
-        table={table}
-        epics={epics}
-        busy={busy}
-        unansweredEpic={unansweredEpic}
-        startNext={startNext}
-        moveTo={moveTo}
-        newEpic={newEpic}
-      />
-      {confirming === undefined ? null : (
-        <ConfirmDialog
-          body={confirming.body}
-          confirmLabel={confirming.confirmLabel}
-          key={confirming.title}
-          onCancel={cancelConfirming}
-          onConfirm={confirmed}
-          title={confirming.title}
-        />
-      )}
-      {naming === undefined ? null : naming.kind === "new" ? (
-        <EpicNameDialog
-          key="new-epic"
-          onCancel={cancelNaming}
-          onSubmit={(name) => void newEpic(naming.keys, name)}
-          submitLabel="Create epic"
-          title="Name the new epic"
-        />
-      ) : (
-        <EpicNameDialog
-          initial={naming.title}
-          key={`rename-${naming.key}`}
-          onCancel={cancelNaming}
-          onSubmit={(name) => renameEpic(naming.key, name)}
-          submitLabel="Rename epic"
-          title="Rename the epic"
-        />
-      )}
+          <IssueTableSelection
+            returnFocus={returnFocus}
+            table={table}
+            epics={epics}
+            busy={busy}
+            unansweredEpic={unansweredEpic}
+            startNext={startNext}
+            moveTo={moveTo}
+            newEpic={newEpic}
+          />
+          {confirming === undefined ? null : (
+            <ConfirmDialog
+              body={confirming.body}
+              confirmLabel={confirming.confirmLabel}
+              key={confirming.title}
+              onCancel={cancelConfirming}
+              onConfirm={confirmed}
+              title={confirming.title}
+            />
+          )}
+          {naming === undefined ? null : naming.kind === "new" ? (
+            <EpicNameDialog
+              key="new-epic"
+              onCancel={cancelNaming}
+              onSubmit={(name) => void newEpic(naming.keys, name)}
+              submitLabel="Create epic"
+              title="Name the new epic"
+            />
+          ) : (
+            <EpicNameDialog
+              initial={naming.title}
+              key={`rename-${naming.key}`}
+              onCancel={cancelNaming}
+              onSubmit={(name) => renameEpic(naming.key, name)}
+              submitLabel="Rename epic"
+              title="Rename the epic"
+            />
+          )}
+        </>
+      ) : null}
     </section>
   );
 }

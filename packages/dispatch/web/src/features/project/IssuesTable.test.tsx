@@ -74,7 +74,14 @@ afterEach(() => {
   for (const restore of restores.splice(0)) restore();
   localStorage.clear();
 });
-function table(issues: IssueSummary[], search = "", full?: Promise<IssueSummary[]>) {
+/** Draws the List over `issues`. `full` answers the listing that holds the closed issues, and
+ *  `open` the one that holds the open ones alone, in place of `issues` itself. */
+function table(
+  issues: IssueSummary[],
+  search = "",
+  full?: Promise<IssueSummary[]>,
+  open?: Promise<IssueSummary[]>
+) {
   const parents = [
     ...new Set(
       issues.flatMap((row) =>
@@ -82,11 +89,11 @@ function table(issues: IssueSummary[], search = "", full?: Promise<IssueSummary[
       )
     ),
   ].map((key) => issue(key, { status: "triage" }));
-  const listing = spyOn(api, "listIssues").mockImplementation(async (options = {}) =>
-    !options.open && full
-      ? full
-      : [...issues, ...parents].filter((issue) => !options.open || issue.status !== "done")
-  );
+  const listing = spyOn(api, "listIssues").mockImplementation(async (options = {}) => {
+    if (!options.open && full) return full;
+    if (options.open && open) return open;
+    return [...issues, ...parents].filter((issue) => !options.open || issue.status !== "done");
+  });
   const state = spyOn(api, "getMyState").mockResolvedValue({});
   const agents = spyOn(api, "listAgents").mockResolvedValue([]);
   const viewer = spyOn(api, "whoAmI").mockResolvedValue({
@@ -275,9 +282,11 @@ test("an epic creation committed without an answer never sends parent writes to 
     "The selected issues have not been moved"
   );
   expect(send).not.toHaveBeenCalled();
-  expect(
-    screen.getByRole<HTMLButtonElement>("button", { name: "New epic from these" }).disabled
-  ).toBe(true);
+  // Held rather than disabled: the name dialog hands the focus back to it.
+  expect(screen.getByRole("button", { name: "New epic from these" })).toHaveAttribute(
+    "aria-disabled",
+    "true"
+  );
   expect(create.mock.calls.length).toBe(1);
   expect(screen.queryByRole("alert")).toBeNull();
 });
@@ -1650,6 +1659,61 @@ test("Clear filters restores the default view rather than loading every closed i
   );
   expect(screen.getByTestId("route-search").textContent).not.toContain("status=");
   expect(listing.mock.calls.every(([options]) => options?.open !== false)).toBe(true);
+});
+
+// The List draws its toolbar while it reads issues it has not loaded, as the Board draws its
+// controls: a press in the toolbar that starts that read leaves the toolbar, the control pressed
+// and the keyboard focus on it where they were, and the skeleton stands in for the table alone.
+test("a press in the toolbar that sends the List off to read its issues keeps the toolbar, and the focus on that control", async () => {
+  const user = userEvent.setup();
+  // Opened on the closed issues, whose listing answers. The open issues' listing is still out
+  // when Clear filters goes back to them.
+  const open = Promise.withResolvers<IssueSummary[]>();
+  table(
+    [issue("CORE-1"), issue("CORE-2", { status: "done" })],
+    "?status=done",
+    undefined,
+    open.promise
+  );
+  await screen.findByRole("row", { name: "CORE-2 Work CORE-2" });
+  const clear = screen.getByRole("button", { name: "Clear filters" });
+  await user.click(clear);
+  expect(await screen.findByRole("status", { name: "Loading issues" })).toBeDefined();
+  expect(screen.queryByRole("table", { name: "Project issues table" })).toBeNull();
+  expect(screen.getByRole("searchbox", { name: "Search issues" })).toBeDefined();
+  expect(screen.getByRole("button", { name: "Clear filters" })).toBe(clear);
+  // Not the page's body, from which a keyboard reader would start again at its first link.
+  expect(clear).toHaveFocus();
+  open.resolve([issue("CORE-1")]);
+  expect(await screen.findByRole("row", { name: "CORE-1 Work CORE-1" })).toBeDefined();
+  expect(clear).toHaveFocus();
+});
+
+// A column filter goes with the table it heads when its press sends the List off to read its
+// issues: the focus in its list, a panel of its own, goes to the control now at the filter's
+// place in the List, which is past the toolbar's last, so to the search box.
+test("a column filter press that sends the List off to read its issues leaves the focus on the toolbar", async () => {
+  const user = userEvent.setup();
+  // Opened on Done and Todo, whose listing answers. Unticking Done goes back to the open issues,
+  // whose listing is still out.
+  const open = Promise.withResolvers<IssueSummary[]>();
+  table(
+    [issue("CORE-1"), issue("CORE-2", { status: "done" })],
+    "?status=done&status=todo",
+    undefined,
+    open.promise
+  );
+  await screen.findByRole("row", { name: "CORE-2 Work CORE-2" });
+  await user.click(screen.getByRole("button", { name: /^Filter Status/ }));
+  expect(await screen.findByRole("combobox", { name: "Search Status" })).toHaveFocus();
+  await user.click(screen.getByRole("option", { name: /^Done/ }));
+  expect(await screen.findByRole("status", { name: "Loading issues" })).toBeDefined();
+  expect(screen.queryByRole("table", { name: "Project issues table" })).toBeNull();
+  // Not the page's body, from which a keyboard reader would start again at its first link.
+  expect(screen.getByRole("searchbox", { name: "Search issues" })).toHaveFocus();
+  open.resolve([issue("CORE-1")]);
+  expect(await screen.findByRole("row", { name: "CORE-1 Work CORE-1" })).toBeDefined();
+  expect(screen.getByRole("searchbox", { name: "Search issues" })).toHaveFocus();
 });
 
 // F3: the sentence a merge posted is kept with the record, so a target renamed or closed before

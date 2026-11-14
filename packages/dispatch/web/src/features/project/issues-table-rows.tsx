@@ -22,7 +22,10 @@ import { buildIssuePath } from "../refs/routes";
 import { issueStatuses, statusLabel } from "./board-model";
 import { columnFilterSpec, type Item } from "./issues-table-model";
 
-/** One issue's row: its cells, and the Start next the reader reaches by hovering it. */
+/** One issue's row: its cells, and the Start next the reader reaches by hovering it. That Start
+ *  next is held while a table action is out (`busy`) as the selection bar's `Action` is:
+ *  `aria-disabled` rather than `disabled`, its press doing nothing, so the press that starts
+ *  the action leaves the focus on it rather than on the page. */
 export function IssueRow({
   busy,
   index,
@@ -59,9 +62,11 @@ export function IssueRow({
         trailing={
           queue !== undefined && queue > 1 ? (
             <button
+              aria-disabled={busy || undefined}
               className={`rounded-md border px-2 py-0.5 text-xs whitespace-nowrap opacity-0 group-hover:opacity-100 focus:opacity-100 ${borderDefault} ${surfaceBg}`}
-              disabled={busy}
-              onClick={() => onStartNext(issue.key)}
+              onClick={() => {
+                if (!busy) onStartNext(issue.key);
+              }}
               type="button"
             >
               Start next
