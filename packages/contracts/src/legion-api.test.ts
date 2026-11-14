@@ -709,7 +709,7 @@ test("the state golden carries the rounds waiting on GitHub's merge state", () =
   expect(first.phase).toBe("reviewing");
   expect(stuck.phase).toBe("reviewing");
 
-  // Waiting for a first answer: no merge state, no read of one, and neither told mark.
+  // LEGION-218's fixture: no merge state, no read time, and neither told mark.
   expect(first.mergeWait).toEqual({
     waitsOn: "6c2f8a0d4b7e13952a8c0f6d3b5e9172c4a8d063",
     headUpdatedAt: "2026-09-22T08:58:40Z",

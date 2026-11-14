@@ -779,8 +779,7 @@ test("read_record hands on what a reviewing issue's round waits on from GitHub",
     toldHead: "0f5a7c2e9b48d1630a7f2c8e4b6d0915a3c7e284",
     toldState: "blocked",
   });
-  // A round still waiting for GitHub's first answer about the head carries no merge state, no
-  // read of one and neither told mark.
+  // LEGION-218's fixture holds no merge state, no read time and neither told mark.
   const first = (await executePhaseOp(ops, { op: "read_record", issue: "LEGION-218" })) as {
     record: Record<string, unknown>;
   };

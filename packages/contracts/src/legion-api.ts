@@ -339,7 +339,7 @@ const legionPhaseView = z.object({
 /** `record.MergeState` — GitHub's own merge state for a pull request's head, in GitHub's
  * lowercase spelling, the eight words GitHub answers in `mergeable_state`: the daemon records
  * what it read and spells none of its own. The unread state is no word at all, so every field
- * that carries one is absent rather than empty until a read answers. */
+ * that carries one is absent rather than empty while the record holds no state. */
 const legionMergeState = z.enum([
   "clean",
   "unstable",

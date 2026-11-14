@@ -1593,8 +1593,8 @@ package api
 // view for every round the daemon is reading for and for no other). Its fields are `waitsOn`, the
 // head the round waits on, which is the pull request's current head and the head the reviewer's
 // approval stands on; `mergeState`, the merge state the record holds for that head in GitHub's own
-// lowercase spelling (`blocked`, `behind`, `dirty`, `draft`, `unknown`), absent until a read has
-// answered for the head; `stateReadAt`, the moment of the daemon's last answering read of the pull
+// lowercase spelling (`blocked`, `behind`, `dirty`, `draft`, `unknown`), absent when the record
+// holds no state for the head; `stateReadAt`, the moment of the daemon's last answering read of the pull
 // request (record.PullRequest.StateReadAt, whose doc says when it is zero), absent when the record
 // holds none, since a reader must never take a read at the zero instant for a time;
 // `headUpdatedAt`, the newest
