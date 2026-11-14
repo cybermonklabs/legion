@@ -20,7 +20,9 @@ import { useAskSnooze } from "./useAskSnooze";
  * assignment that can drop a row out of the assignee filter, it tells the Inbox while its write
  * is live and the Inbox keeps the row rendered until it settles. The fold is the feedback for a
  * snooze that lands; a snooze the
- * server refuses rolls the row back with the reason still attached to it.
+ * server refuses rolls the row back with the reason still attached to it. Un-snooze is
+ * `aria-disabled` rather than `disabled` while its write is out, and a press on it does nothing:
+ * a button that disables itself under the reader's press drops the keyboard focus onto the page.
  *
  * `label` names the row for assistive tech; the Inbox passes the issue key or the document.
  */
@@ -81,10 +83,12 @@ export function SnoozeControl({
           )}
         </span>
         <button
+          aria-disabled={write.pending || undefined}
           aria-label={`Un-snooze ${label}`}
           className={secondaryButtonCompact}
-          disabled={write.pending}
-          onClick={() => write.submit(null)}
+          onClick={() => {
+            if (!write.pending) write.submit(null);
+          }}
           type="button"
         >
           {pendingLabel ?? "Un-snooze"}

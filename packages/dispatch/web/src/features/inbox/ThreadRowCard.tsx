@@ -34,7 +34,9 @@ import { ThreadTitle } from "./ThreadTitle";
  * **Open**, **Mark read**, and the **Dismiss** that takes the row out of the Inbox - **Move to
  * Inbox** in the Dismissed view - which the list it is drawn in provides (`DismissControl`). A
  * thread anchored in a document shows the text it is anchored to rather than the document: a card
- * is no place to open one.
+ * is no place to open one. Mark read is `aria-disabled` rather than `disabled` while its write is
+ * out, and a press on it does nothing: a button that disables itself under the reader's press
+ * drops the keyboard focus onto the page.
  */
 export function ThreadRowCard({ thread }: { thread: MyReplyRow }): ReactNode {
   const queryClient = useQueryClient();
@@ -85,9 +87,11 @@ export function ThreadRowCard({ thread }: { thread: MyReplyRow }): ReactNode {
           Open
         </Link>
         <button
+          aria-disabled={markRead.isPending || undefined}
           className={`min-h-11 font-medium ${linkText} ${linkHoverText}`}
-          disabled={markRead.isPending}
-          onClick={() => markRead.mutate()}
+          onClick={() => {
+            if (!markRead.isPending) markRead.mutate();
+          }}
           type="button"
         >
           {markRead.isPending ? "Marking read…" : "Mark read"}

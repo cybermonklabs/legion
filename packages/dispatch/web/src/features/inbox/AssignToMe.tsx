@@ -14,7 +14,10 @@ import { useIssueAssignee } from "../issue/useIssueAssignee";
  *  the row stops matching while the save is in flight, so the control tells the Inbox when its
  *  write is live (pending or failed) and the Inbox keeps the row listed until then: `Assigning…`,
  *  and on refusal the server's reason with Retry, are shown by this same instance rather than
- *  lost to a remount.
+ *  lost to a remount. While its write is out the button is `aria-disabled` rather than
+ *  `disabled`, and a press on it does nothing: a button that disables itself under the reader's
+ *  press drops the keyboard focus onto the page, and this one keeps it until the assignment
+ *  lands and takes the button away.
  *
  *  Its own module rather than `Inbox.tsx`'s, because the Inbox's reading pane draws it too
  *  (`ReadingPaneHead`): the Inbox mounts the pane, so a control the pane's head imports from the
@@ -44,10 +47,12 @@ export function AssignToMe({
   return (
     <>
       <button
+        aria-disabled={write.pending || undefined}
         aria-label={`Assign ${issueKey} to me`}
         className={`min-h-11 shrink-0 rounded-lg px-2 py-1 text-xs font-medium md:min-h-8 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`}
-        disabled={write.pending}
-        onClick={() => write.submit(viewer)}
+        onClick={() => {
+          if (!write.pending) write.submit(viewer);
+        }}
         type="button"
       >
         {write.pending ? "Assigning…" : "Assign to me"}

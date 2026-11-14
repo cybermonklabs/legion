@@ -350,7 +350,9 @@ export function useArtifactUpload(
 /** The upload control of a strip: its button, and, while a file is staged, that file's name, its
  *  summary and the two presses that store or discard it. `refusalShownBy` is the id of a line the
  *  host already shows the refusal on - the one line a closed issue's strip shows for every control
- *  in it; without it the row shows its own. */
+ *  in it; without it the row shows its own. While the upload is out the two presses are
+ *  `aria-disabled` rather than `disabled`, and a press on either does nothing: a button that
+ *  disables itself under the reader's press drops the keyboard focus onto the page. */
 export function ArtifactUploadRow({
   refusalShownBy,
   upload,
@@ -395,17 +397,21 @@ export function ArtifactUploadRow({
             value={upload.summary}
           />
           <button
+            aria-disabled={upload.isPending || undefined}
             className={`min-h-11 shrink-0 rounded-lg border px-3 py-2 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}`}
-            disabled={upload.isPending}
-            onClick={upload.confirm}
+            onClick={() => {
+              if (!upload.isPending) upload.confirm();
+            }}
             type="button"
           >
             Upload
           </button>
           <button
+            aria-disabled={upload.isPending || undefined}
             className={`min-h-11 shrink-0 text-sm font-medium ${linkText} ${linkHoverText}`}
-            disabled={upload.isPending}
-            onClick={upload.cancel}
+            onClick={() => {
+              if (!upload.isPending) upload.cancel();
+            }}
             type="button"
           >
             Cancel

@@ -2297,13 +2297,17 @@ export function Inbox({
           )}
         </ul>
         {/* The Dismissed view's own **Show more**: the next page of dismissals, read from the
-            cursor the last page named, rather than rows this page is holding back. */}
+            cursor the last page named, rather than rows this page is holding back. While that
+            page loads it is `aria-disabled` rather than `disabled`, and a press on it does
+            nothing, so the reader's press keeps the keyboard focus on it. */}
         {threads.showMore === undefined ? null : (
           <button
+            aria-disabled={threads.showingMore || undefined}
             className={`min-h-11 rounded-lg border px-3 py-1.5 text-sm font-medium ${borderDefault} ${linkText} ${linkHoverText}`}
             data-inbox-show-more="dismissed"
-            disabled={threads.showingMore}
-            onClick={threads.showMore}
+            onClick={() => {
+              if (!threads.showingMore) threads.showMore?.();
+            }}
             type="button"
           >
             {threads.showingMore ? "Loading…" : `Show ${INBOX_DISMISSED_PAGE} more`}
