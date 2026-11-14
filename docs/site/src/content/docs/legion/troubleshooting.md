@@ -1196,12 +1196,13 @@ On such a daemon, an update round or a message wake can take the author of the c
   the task is not sent again after it. Nothing to do.
 - **`supervise: the relaunch ended work the agent had running`** at Warn, with the `cause`,
   whether a `turn` and the task's turn (`taskTurn`) were cut off, the `background` work and its
-  `kinds` the process last reported, and whether it `reported` at all, is a relaunch, a
-  suspension or a failure that ended the process while work of its agent ran. A suspension that
-  lands over a process the daemon had already found gone, as a fresh session over a dead role
-  does, records the death in the runtime's words, not the suspension. The claim records it
-  (the `ended_work` column of its row), and the first prompt the next process is sent carries a
-  sentence naming it: in front of the task the claim holds, or, for a claim that holds none, alone
+  `kinds` the process last reported, and whether a report covers its last turn (`reported`), is
+  a relaunch, a suspension or a failure that ended the process while work of its agent ran. A
+  suspension that lands over a process the daemon had already found gone, as a fresh session
+  over a dead role does, records the death in the runtime's words, not the suspension. The claim
+  records it (the `ended_work` column of its row), and the first prompt the next process is sent
+  carries a sentence naming it: in front of the task the claim holds, or, for a claim that holds
+  none, alone
   in a delivery of the daemon's own (`supervise: the claim holds no task; a delivery of the
   daemon's own tells its agent what the relaunch ended`, whose id starts `relaunch:` and which a
   newer task replaces while no prompt of it is outstanding). That delivery is also given when the
@@ -1211,18 +1212,22 @@ On such a daemon, an update round or a message wake can take the author of the c
   in front of its start message. Every turn cut off is told that its subagents and background
   jobs are gone. A process whose newest activity report is older than the start of its last
   turn is told the background work that report named, and that the daemon has no report of what
-  that turn started; one that left no report is told that every subagent and background job it
-  started is gone. Nothing to do; the agent checks what that work did before it repeats it.
+  that turn started. A process in no turn that has no report of its last turn (it left no report,
+  or only one older than that turn) is told that the daemon has no report of the background work
+  of its last turn, and so that every subagent and background job it started is gone. Nothing to
+  do; the agent checks what that work did before it repeats it.
 - **`supervise: a turn took the prompt that told the agent what its relaunch ended`** and
   **`supervise: a turn took the prompt that told the agent of the session its claim abandoned`**
   at Info, each with the `delivery`, mark the claim's record told. A record is told when a turn
   confirms a prompt that carried its sentence, and never when Oh My Pi only acknowledges the
   prompt, since it can acknowledge and then answer busy. Nothing to do.
-- **`supervise: the turn that took the prompt telling the agent what became of its earlier work
-  was another's; the next prompt tells it again`** at Info, with the `delivery`, is that
-  confirmation taken back: the turn that confirmed the task was another input's (an Envoy
-  notice's, say), or its prompt came to nothing. The record is untold again, and the next
-  prompt carries the sentence. Nothing to do.
+- **`supervise: the confirmation of the prompt that told the agent what became of its earlier
+  work was taken back; the next prompt tells it again`** at Info, with the `delivery`, is the
+  turn that confirmed the task no longer counted as the agent reading that prompt: the turn was
+  another input's (an Envoy notice's, say), the prompt came to nothing (a refusal, a busy answer,
+  or no turn), a provider error failed a model call of the turn, a compaction aborted the turn,
+  or the process ended in a turn that had started while the prompt's send was still in flight.
+  The record is untold again, and the next prompt carries the sentence. Nothing to do.
 - **`supervise: the claim abandons its session, so the record of what the old session's process
   ended is not told to the fresh agent; the abandoned session's sentence says that work is
   gone`** at Info is a fresh session: the claim's first task names the session it left behind,

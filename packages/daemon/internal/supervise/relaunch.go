@@ -41,13 +41,13 @@ func RelaunchSentence(ended EndedWork) string { return relaunchSentence(ended, f
 //     the turn began can miss what it started in its last seconds; and last, for a record that
 //     holds no report of the turn and names no background work at all, that every other subagent
 //     and background job the process started is gone too;
-//   - with no turn cut off, each kind of background work the record names; for a record that
-//     holds no report of the process's last turn (EndedWork.Reported) and names background work,
-//     which only a report read before that turn began gives it, that work and then that the
-//     daemon has no report of what that turn started, so its subagents and background jobs are
-//     gone too; and for a record that holds no report and names no background work, that the
-//     daemon has no report of the process's background work, so every subagent and background job
-//     it started is gone: unknown is said, never read as nothing;
+//   - with no turn cut off, each kind of background work the record names; then, for a record
+//     that holds no report of the process's last turn (EndedWork.Reported), that the daemon has
+//     no report of the background work of that turn, so every subagent and background job the
+//     agent started in that process is gone. That is true of a process that left no report, of
+//     one whose only report is older than its last turn, whether that report named background
+//     work or nothing (recordEnd), and of a record joined from such a one (joined): what that
+//     turn started is unknown, and unknown is said, never read as nothing;
 //   - that no result of that work will come, and that the transcript does not say so, since the
 //     resumed session shows neither a lost tool call nor a lost subagent as missing
 //     (dispatch://INFRA-714 R6);
@@ -105,14 +105,14 @@ func relaunchSentence(ended EndedWork, task bool) string {
 		if stopped == "" {
 			said = append(said, "Every other subagent and background job that you started in that process is gone too.")
 		}
-	case !ended.Reported && stopped != "":
-		// A record with background work and no report of the process's last turn holds a report
-		// read before that turn began (recordEnd): it names what ran then, and says nothing of what
-		// that turn started.
-		said = append(said, stopped, "The daemon has no report of the background work of your last turn.",
-			"So the subagents and background jobs of that turn are gone too.")
 	case !ended.Reported:
-		said = append(said, "The daemon has no report of your background work in that process.",
+		// No report speaks of the process's last turn: it left none, its only report is older than
+		// that turn and names the work that ran then or nothing (recordEnd), or the record is
+		// joined from such a one. What that turn started is unknown.
+		if stopped != "" {
+			said = append(said, stopped)
+		}
+		said = append(said, "The daemon has no report of the background work of your last turn.",
 			"So every subagent and background job that you started in that process is gone.")
 	case stopped != "":
 		said = append(said, stopped)

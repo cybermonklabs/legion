@@ -2669,7 +2669,7 @@ type AbandonedSession struct {
 	// the first task it actually takes and in no later one, and ToldBy is the delivery whose
 	// confirmation told it. Both follow the one rule confirm states for the two records a prompt
 	// tells: told at the confirmation of a prompt that carried the sentence, and back to untold
-	// when that confirmation is taken back as another turn's (moveTelling). A prompt the agent
+	// when that confirmation is taken back (moveTelling, untellInFlight). A prompt the agent
 	// refused, or acknowledged and then answered busy, reached nobody, so the fresh session is
 	// still told of its predecessor in whatever prompt does reach it (dispatch://INFRA-714); a
 	// sentence told twice is the harmless way round, where losing it strands a worker reading an
@@ -3179,8 +3179,10 @@ func (m *Machine) putDelivery(ctx context.Context, d Delivery) error {
 // the claim write the machine may owe can be read off this write, and queue writes memory itself
 // once the store has answered — takeBackPending, whose delivery is the pending one under the id
 // it takes only once the store has taken it, beside a claim whose telling that take-back moved
-// (moveTelling), so its saved mark is takeBackPending's own; and putClaimAndPending, which passes
-// memory's own claim with memory's own pending delivery and is the call that settles both.
+// (moveTelling), so its saved mark is takeBackPending's own; interrupted, whose delivery is the
+// task taken back under the id it takes only once the store has taken it, beside a claim whose
+// telling a let-go took back (untellInFlight); and putClaimAndPending, which passes memory's own
+// claim with memory's own pending delivery and is the call that settles both.
 func (m *Machine) putClaimAndDelivery(ctx context.Context, c Claim, d Delivery) error {
 	return m.write(ctx, func(ctx context.Context) error { return m.deps.Store.PutClaimAndDelivery(ctx, c, d) })
 }

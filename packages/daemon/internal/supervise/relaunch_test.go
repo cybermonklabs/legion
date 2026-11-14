@@ -12,6 +12,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -241,7 +242,7 @@ func TestARelaunchSentenceGivesWayToTheAbandonedSession(t *testing.T) {
 
 	first := h.wantPrompts(1)[0]
 	sent := first.Message
-	if want := abandonedTask(h.claim()) + "implement the plan"; sent != want {
+	if want := abandonedTask(h.claim(), true) + "implement the plan"; sent != want {
 		t.Fatalf("the fresh session's first task was sent as %q, want %q", sent, want)
 	}
 	if strings.Contains(sent, "Your previous process ended") || strings.Contains(sent, "Your process ended") {
@@ -301,7 +302,7 @@ func TestARelaunchSentenceIsNotToldToAFreshSession(t *testing.T) {
 		if relaunchTask(first.DeliveryID) {
 			t.Fatalf("the fresh agent was sent %s, want its task", first.DeliveryID)
 		}
-		want := abandonedTask(h.claim()) + "implement the plan"
+		want := abandonedTask(h.claim(), true) + "implement the plan"
 		if first.Message != want {
 			t.Fatalf("the fresh agent's first prompt is %q, want %q: the abandoned session's sentence alone in front of the task", first.Message, want)
 		}
@@ -369,7 +370,8 @@ func TestARelaunchSentenceIsNotToldToAFreshSession(t *testing.T) {
 // its process dies in that turn: the death writes a record of the fresh process, the next prompt
 // carries the abandoned session's sentence and then that record's, and the turn that takes it
 // tells both. A claim holding nothing is sent the daemon's own delivery of the record
-// (queueRelaunch); one holding a task sends the task behind both sentences.
+// (queueRelaunch), which holds no task, so neither sentence tells the agent to continue one
+// (abandonedTask, relaunchSentence); one holding a task sends the task behind both sentences.
 func TestARelaunchSentenceOfTheFreshProcessFollowsTheAbandonedSentence(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -403,12 +405,15 @@ func TestARelaunchSentenceOfTheFreshProcessFollowsTheAbandonedSentence(t *testin
 				t.Fatalf("the claim records the abandoned session %+v, want it still to tell", h.claim().Abandoned)
 			}
 			next := h.wantPrompts(base + 1)[base]
-			want := abandonedTask(h.claim()) + RelaunchSentence(ended)
+			want := abandonedTask(h.claim(), false) + RelaunchSentence(ended)
 			if tc.task != "" {
-				want = abandonedTask(h.claim()) + relaunchSentence(ended, true) + "\n\n" + tc.task
+				want = abandonedTask(h.claim(), false) + relaunchSentence(ended, true) + "\n\n" + tc.task
 			}
 			if next.Message != want {
 				t.Fatalf("the next prompt is %q, want %q: the abandoned session's sentence, then the fresh process's record", next.Message, want)
+			}
+			if got := strings.Count(next.Message, "continue the task"); tc.task == "" && got != 0 || tc.task != "" && got != 1 {
+				t.Errorf("the next prompt says %q %d times, want once in front of a task and never alone", "continue the task", got)
 			}
 			if relaunchTask(next.DeliveryID) != (tc.task == "") {
 				t.Fatalf("the next prompt went as %s, want the daemon's own delivery only for a claim holding nothing", next.DeliveryID)
@@ -790,6 +795,126 @@ func TestARelaunchSentenceStaysToldWhenTheTurnThatReadItIsInterrupted(t *testing
 				t.Fatalf("the store holds the record %+v, want the untold record of launch %d", stored, ended)
 			}
 		})
+	}
+}
+
+// A let-go cannot vouch for a confirmation a turn took while the send of its prompt was still in
+// flight, so it takes back what that confirmation told (untellInFlight). A relaunched claim holds a
+// task behind the untold record of launch 1, which cut off a turn and a subagent with it
+// (heldAtRelaunch), and the ready sends it. A turn starts while that send is held in flight and is
+// taken for the task's (beginTurn, the INFRA-264 race), which confirms the task and tells the
+// record by its delivery; the turn may be an Envoy notice's, whose busy answer the let-go fences
+// out. The turn is then cut off before the send returns: the process dies in it (died, which
+// records the end before it takes the task back), or a held suspension's deadline stops it
+// (suspendAtTimeout, which takes the task back first and writes launch 1's record untold with it).
+// Either way launch 1's record goes back to untold, the let-go's own record joins it (recordEnd,
+// joined), and the task is sent again naming launch 1's subagent beside the cut turn. The controls
+// are the same turn starting once the send has returned acknowledged: the turn is the prompt's,
+// launch 1's record stays told, and the let-go's record replaces it as a record of launch 2 alone.
+func TestARelaunchSentenceIsToldAgainWhenATurnTakenWithItsSendInFlightIsCutOff(t *testing.T) {
+	const task = "implement the plan"
+	for _, end := range []struct {
+		name  string
+		cause string
+		// takesBackFirst is whether the end takes the task back before it records what it ended,
+		// so the take-back writes launch 1's record untold with the delivery (interrupted).
+		takesBackFirst bool
+		// cut ends the turn while the send may still be held, so it posts to the machine without
+		// waiting on the send's goroutine; resend brings the claim back to send the task again.
+		cut, resend func(t *testing.T, h *harness)
+	}{
+		{name: "the process dies in the turn", cause: endDied(deathCause(runtime.Observation{Kind: runtime.Gone})),
+			cut: func(t *testing.T, h *harness) {
+				gone := runtime.Observation{Locator: h.locator(), Kind: runtime.Gone, At: h.clock.Now()}
+				if err := h.m.Handle(h.ctx, RuntimeObservation{Observation: gone}); err != nil {
+					t.Fatal(err)
+				}
+			},
+			resend: func(t *testing.T, h *harness) { h.relaunched() }},
+		{name: "a held suspension's deadline stops the turn", cause: endSuspended(SuspendedByOperator), takesBackFirst: true,
+			cut: func(t *testing.T, h *harness) {
+				if err := h.m.Handle(h.ctx, RequestSuspend{Claim: h.token, By: SuspendedByOperator}); !errors.Is(err, ErrSuspendHeld) {
+					t.Fatalf("suspend mid-turn = %v, want ErrSuspendHeld", err)
+				}
+				h.clock.Advance(testStop)
+			},
+			resend: func(t *testing.T, h *harness) {
+				h.wantState(StateSuspended)
+				h.must(RequestResume{Claim: h.token})
+				h.relaunched()
+			}},
+	} {
+		for _, send := range []struct {
+			name     string
+			inFlight bool
+		}{
+			{name: "with the send in flight", inFlight: true},
+			{name: "once the send returned acknowledged"},
+		} {
+			t.Run(end.name+" "+send.name, func(t *testing.T) {
+				h, _ := heldAtRelaunch(t, task)
+				earlier := h.claim().EndedWork.Generation
+				var id string
+				release := func() {}
+				if send.inFlight {
+					gated := newGatedConn()
+					h.conns.Register(testToken, gated)
+					if err := h.m.Handle(h.ctx, RequestReady{Claim: testToken, Generation: h.generation(), Session: session}); err != nil {
+						t.Fatal(err)
+					}
+					id = waitFor(t, "the ready's send", gated.entered)
+					release = func() {
+						gated.release <- struct{}{}
+						h.m.Wait()
+					}
+				} else {
+					h.ready()
+					id = h.wantPrompts(1)[0].DeliveryID
+				}
+				if err := h.m.Handle(h.ctx, StreamTurnStart{Claim: testToken}); err != nil {
+					t.Fatal(err)
+				}
+				if p := h.pending(); p.ID != id || p.ConfirmedAt.IsZero() {
+					t.Fatalf("pending after the turn began = %+v, want %s confirmed by it", p, id)
+				}
+				h.wantToldBy(id, "once the turn confirmed the task")
+				cutOff, from := h.generation(), len(h.store.history())
+
+				end.cut(t, h)
+				release()
+
+				for where, got := range map[string]EndedWork{"the machine": h.claim().EndedWork, "the store": h.store.load(h.token).EndedWork} {
+					if got.Generation != cutOff || got.Cause != end.cause || !got.TaskTurn || got.Told || got.ToldBy != "" {
+						t.Fatalf("%s records the let-go's end as %+v, want an untold record of launch %d's task turn under %q", where, got, cutOff, end.cause)
+					}
+					if joined := slices.Contains(got.Kinds, "subagent"); joined != send.inFlight {
+						t.Fatalf("%s records the kinds %v; launch %d's subagent joined in = %v, want %v", where, got.Kinds, earlier, joined, send.inFlight)
+					}
+				}
+				untoldWrite := false
+				for i, put := range h.store.history()[from:] {
+					if e := put.EndedWork; e.Generation == earlier {
+						if send.inFlight == e.Told || (!send.inFlight && e.ToldBy != id) {
+							t.Errorf("claim write %d from the turn's start on holds launch %d's record as %+v, want it told=%v", i, earlier, e, !send.inFlight)
+						}
+						untoldWrite = untoldWrite || !e.Told
+					}
+				}
+				if want := send.inFlight && end.takesBackFirst; untoldWrite != want {
+					t.Errorf("a claim write holds launch %d's record untold = %v, want %v: the take-back that runs first writes it with the delivery", earlier, untoldWrite, want)
+				}
+
+				end.resend(t, h)
+				prompts := h.prompts()
+				again := prompts[len(prompts)-1]
+				if want := relaunchSentence(h.claim().EndedWork, true) + "\n\n" + task; again.Message != want {
+					t.Fatalf("the task was sent again as %q, want %q", again.Message, want)
+				}
+				if names := strings.Contains(again.Message, saysSubagentStopped); names != send.inFlight {
+					t.Fatalf("the task sent again names launch %d's subagent = %v, want %v: %q", earlier, names, send.inFlight, again.Message)
+				}
+			})
+		}
 	}
 }
 

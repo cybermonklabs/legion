@@ -1196,7 +1196,7 @@ func TestSilentPhaseWorkerWhoseDeadProcessReportLandedAfterItsRelaunchGetsItsTas
 	rig.displacedInto(worker, podUpdateReplacementPod)
 	// No report of the dead launch had landed when its pod went, so the replacement is told that
 	// the daemon has none (dispatch://INFRA-3276 R3), and reads it in a turn.
-	rig.takesRelaunchSentence(worker, "The daemon has no report of your background work in that process.")
+	rig.takesRelaunchSentence(worker, "The daemon has no report of the background work of your last turn.")
 	// The dead process's Stop-hook report, authenticated under its own launch, lands after the
 	// launch's clear.
 	if _, err := rig.st.PutClaimActivity(rig.ctx, token, old, claim.SessionActivity{

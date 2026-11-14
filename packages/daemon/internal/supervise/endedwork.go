@@ -64,11 +64,13 @@ type EndedWork struct {
 	// Told is whether the record has been told to a later process, and ToldBy the delivery whose
 	// confirmation told it. Both follow the one rule confirm states for the two records a prompt
 	// tells: told at the confirmation of a prompt that carried the sentence, never at its
-	// acknowledgement, and back to untold when that confirmation is taken back as another turn's
-	// (moveTelling). The one record told anywhere else is an old session's, which the abandonment of
-	// that session ends by no delivery (forgetSession), since the fresh session is told everything of
-	// the old one is gone. A record not yet told is replaced by a newer one only as the union of the
-	// two (joined), so what the earlier let-go ended is not lost before anyone reads it.
+	// acknowledgement, and back to untold when that confirmation is taken back (moveTelling),
+	// a let-go's take-back of one a turn took while its prompt's send was in flight among them
+	// (untellInFlight). The one record told anywhere else is an old session's, which the
+	// abandonment of that session ends by no delivery (forgetSession), since the fresh session is
+	// told everything of the old one is gone. A record not yet told is replaced by a newer one only
+	// as the union of the two (joined), so what the earlier let-go ended is not lost before anyone
+	// reads it.
 	Told   bool   `json:"told,omitempty"`
 	ToldBy string `json:"toldBy,omitempty"`
 }
@@ -171,10 +173,15 @@ func endNeverReady(never string) string { return "its agent " + never + ", so th
 // replaces carried none of this one: the mark of such a prompt goes (Machine.carried), and only a
 // prompt sent from here on tells this record when its turn begins (confirm).
 //
+// Before anything else it takes back a telling the let-go cannot vouch for, that of a confirmation
+// a turn took while the send of its prompt was in flight (untellInFlight, where that rule is), so
+// the record that telling had marked told is untold again and the record written here joins it.
+//
 // It writes nothing itself: the record is a field of the claim, and the let-go's own write — the
-// launch's, the suspension's, the failure's, or the death's charge — carries it. So it costs the
-// relaunch one read and waits for nothing else.
+// launch's, the suspension's, the failure's, or the death's charge — carries it, and the untelling
+// with it. So it costs the relaunch one read and waits for nothing else.
 func (m *Machine) recordEnd(ctx context.Context, cause string) {
+	m.untellInFlight()
 	if cause == noEnd || m.claim.Locator == nil {
 		return
 	}

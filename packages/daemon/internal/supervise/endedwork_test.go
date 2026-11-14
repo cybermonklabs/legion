@@ -545,43 +545,52 @@ func TestARelaunchRecordsAReportOlderThanTheCutTurnAsNoReport(t *testing.T) {
 }
 
 // A process that dies idle, after a turn no report covers, keeps what its older report saw: the
-// process reported a subagent, then ran a turn of a task to its end, and its turn-end report never
-// landed; it then died in no turn. The record says no turn was cut off and that the daemon has no
-// report of the process's last turn (EndedWork.Reported false), and keeps the subagent the older
-// report named (recordEnd). So the sentence its next process is told names the subagent and says
-// that the subagents and background jobs of that last turn are gone too (relaunchSentence), rather
-// than dropping the subagent for an unknown. The control is the same subagent reported after the
-// turn began: the record holds a report of the last turn, and the sentence names the subagent and
-// says nothing of a missing report.
+// process reported — a subagent, or nothing running — then ran a turn of a task to its end, and
+// its turn-end report never landed; it then died in no turn. The record says no turn was cut off
+// and that the daemon has no report of the process's last turn (EndedWork.Reported false), and
+// keeps whatever the older report named (recordEnd). So the sentence its next process is told
+// names the subagent where the report named one, rather than dropping it for an unknown, and
+// either way says that the daemon has no report of the background work of the last turn and that
+// every subagent and background job the agent started in that process is gone (relaunchSentence);
+// where the report named nothing, it names no kind. The control is the same subagent reported
+// after the turn began: the record holds a report of the last turn, and the sentence names the
+// subagent and says nothing of a missing report.
 func TestARelaunchRecordsTheWorkAnOlderReportSawOfAProcessThatDiesIdle(t *testing.T) {
-	const saysLastTurnGone = "So the subagents and background jobs of that turn are gone too."
+	const (
+		saysNoLastTurnReport = "The daemon has no report of the background work of your last turn."
+		saysEveryOneGone     = "So every subagent and background job that you started in that process is gone."
+	)
 	for _, row := range []struct {
 		name string
 		// before is whether the report is read before the last turn begins.
 		before   bool
+		kinds    []string
 		reported bool
 		// says and saysNot are what the relaunch's sentence says, and does not say.
 		says, saysNot []string
 	}{
-		{name: "a report before the last turn began named a subagent", before: true,
-			says:    []string{saysSubagentStopped, "The daemon has no report of the background work of your last turn.", saysLastTurnGone},
-			saysNot: []string{"no report of your background work in that process", "Your tool calls in flight"}},
-		{name: "a report after the last turn began named a subagent", reported: true,
+		{name: "a report before the last turn began named a subagent", before: true, kinds: []string{"subagent"},
+			says:    []string{saysSubagentStopped, saysNoLastTurnReport, saysEveryOneGone},
+			saysNot: []string{"Your tool calls in flight", saysTurnGoneUnreported}},
+		{name: "a report before the last turn began said nothing runs", before: true,
+			says:    []string{"You were not in a turn then.", saysNoLastTurnReport, saysEveryOneGone},
+			saysNot: []string{"stopped with that process", "Your tool calls in flight", saysTurnGoneUnreported}},
+		{name: "a report after the last turn began named a subagent", kinds: []string{"subagent"}, reported: true,
 			says:    []string{saysSubagentStopped, "You were not in a turn then."},
-			saysNot: []string{saysNoReport, saysLastTurnGone}},
+			saysNot: []string{saysNoReport, saysEveryOneGone}},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			h := newHarness(t)
 			h.reach(StateIdle)
 			if row.before {
-				h.reportActivity("subagent")
+				h.reportActivity(row.kinds...)
 				h.advance(time.Second)
 			}
 			h.must(RequestDeliver{Claim: h.token, Task: "the next task"})
 			h.must(StreamTurnStart{Claim: h.token})
 			if !row.before {
 				h.advance(time.Second)
-				h.reportActivity("subagent")
+				h.reportActivity(row.kinds...)
 			}
 			h.advance(time.Second)
 			h.must(StreamTurnEnd{Claim: h.token})
@@ -591,8 +600,8 @@ func TestARelaunchRecordsTheWorkAnOlderReportSawOfAProcessThatDiesIdle(t *testin
 			h.observe(runtime.Gone)
 
 			ended := h.claim().EndedWork
-			if ended.Generation != died || ended.Turn || !ended.Background || !slices.Equal(ended.Kinds, []string{"subagent"}) || ended.Reported != row.reported {
-				t.Fatalf("the record of the idle process's end is %+v, want generation %d, no turn, the subagent and Reported %v", ended, died, row.reported)
+			if ended.Generation != died || ended.Turn || ended.Background != (len(row.kinds) > 0) || !slices.Equal(ended.Kinds, row.kinds) || ended.Reported != row.reported {
+				t.Fatalf("the record of the idle process's end is %+v, want generation %d, no turn, the kinds %v and Reported %v", ended, died, row.kinds, row.reported)
 			}
 			sentence := RelaunchSentence(ended)
 			wantSays(t, sentence, row.says...)

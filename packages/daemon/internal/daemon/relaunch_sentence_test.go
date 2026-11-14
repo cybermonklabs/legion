@@ -370,7 +370,7 @@ func TestARelaunchSentenceGoesInFrontOfTheDaemonLaunchedControllersStartMessage(
 		t.Fatalf("the relaunched controller was sent the daemon's own delivery %s, want its start message", prompt.DeliveryID)
 	}
 	if !strings.HasPrefix(prompt.Message, "Your previous process ended because the process died") ||
-		!strings.Contains(prompt.Message, "The daemon has no report of your background work in that process.") ||
+		!strings.Contains(prompt.Message, "The daemon has no report of the background work of your last turn.") ||
 		!strings.HasSuffix(prompt.Message, "\n\n"+ControllerStartMessage) {
 		t.Fatalf("the relaunched controller was prompted %q, want its start message behind the relaunch's sentence", prompt.Message)
 	}

@@ -252,25 +252,29 @@ type sentences struct{ abandoned, ended bool }
 // error took back carries its own sentence last of all (ProviderErrorNote), so the agent reads
 // what the provider did and then the task; each of these says something the others do not.
 //
-// The daemon's own delivery of a relaunch's record (relaunchTask, queueRelaunch) has no task: its
-// text is the record's sentence alone (RelaunchSentence), composed from the record as it stands
-// when the prompt goes, so a let-go recorded after it was queued is told in it too. One whose
-// record no longer tells has nothing to say, and sendPending retires it rather than send it. The
-// abandoned session's sentence, the out-of-memory note and the provider's go in front of that text
-// as they go in front of a task; the record's sentence does not, because it is the text.
+// The daemon's own delivery of a relaunch's record (Delivery.Relaunch, queueRelaunch) has no task:
+// its text is the record's sentence alone (RelaunchSentence), composed from the record as it
+// stands when the prompt goes, so a let-go recorded after it was queued is told in it too. One
+// whose record no longer tells has nothing to say, and sendPending retires it rather than send it.
+// The abandoned session's sentence, the out-of-memory note and the provider's go in front of that
+// text as they go in front of a task, the abandoned session's without the task's instruction,
+// since there is no task to continue (abandonedTask); the record's sentence does not, because it
+// is the text.
 //
 // One case still sends a stale note: the previous release's upsert carries no out_of_memory
 // column, so if an image rollback takes a marked task back again for another end, the row keeps
 // the mark, and a roll-forward sends the note for that end.
 func (d Delivery) message(c Claim) (string, sentences) {
-	text, told := d.Task, sentences{}
-	relaunch := relaunchTask(d.ID)
+	text, carried := d.Task, sentences{}
+	relaunch := d.Relaunch()
 	if relaunch && c.EndedWork.Tells() {
-		text, told.ended = RelaunchSentence(c.EndedWork), true
+		text, carried.ended = RelaunchSentence(c.EndedWork), true
 	}
 	var prefix string
 	if c.Abandoned.Tells() {
-		prefix, told.abandoned = abandonedTask(c), true
+		// The task's instruction ends the last sentence before the task, so the abandoned
+		// session's carries it only where no record's sentence follows it.
+		prefix, carried.abandoned = abandonedTask(c, !relaunch && !c.EndedWork.Tells()), true
 	}
 	// oldTurn is whether a turn this task was taken back from is the abandoned session's, whose
 	// sentence stands in place of the notes of that turn: an abandoned session still tells, and
@@ -280,7 +284,7 @@ func (d Delivery) message(c Claim) (string, sentences) {
 	case relaunch:
 		// Its text is the record's sentence already.
 	case c.EndedWork.Tells():
-		prefix, told.ended = prefix+relaunchSentence(c.EndedWork, true)+"\n\n", true
+		prefix, carried.ended = prefix+relaunchSentence(c.EndedWork, true)+"\n\n", true
 	case d.Interrupted && !oldTurn:
 		prefix += interruptedTask(c.EndedWork.Cause)
 	}
@@ -290,7 +294,7 @@ func (d Delivery) message(c Claim) (string, sentences) {
 	if d.ProviderErrorNote != "" {
 		prefix += d.ProviderErrorNote + "\n\n"
 	}
-	return prefix + text, told
+	return prefix + text, carried
 }
 
 // HashBootToken is the one hash a boot token is stored and looked up by. A launch mints the token
@@ -1193,17 +1197,20 @@ func (m *Machine) adopt(ctx context.Context, role claim.Role, loc *runtime.Locat
 // A record is told at the confirmation of a prompt that carried its sentence to this process
 // (Delivery.message, Machine.carried), since the turn starting is the agent reading that prompt,
 // and it records the delivery whose confirmation told it (ToldBy). A confirmation later taken
-// back as another turn's takes that telling back with it, so the next prompt carries the sentence
-// again (moveTelling); one taken back from a turn that was the task's own and ran keeps it
+// back takes that telling back with it, so the next prompt carries the sentence again
+// (moveTelling); one taken back from a turn that was the task's own and ran keeps it
 // (interrupted). Neither is marked at the prompt's acknowledgement (acked): the pinned Oh My Pi
 // acknowledges a prompt at its admission and can then answer it busy, and a sentence marked told
 // there would never reach the agent, since the prompt sent after the busy answer would carry none.
 // A turn whose prompt carried no sentence — one sent before the record was written, or one an
 // earlier daemon sent, of which this machine knows nothing — tells nothing, and the next prompt
-// carries the sentence again: told twice, never not at all. Both records are the claim's fields,
-// so they go in the same write as the confirmation, and a restart reads both or neither. The one
-// record told anywhere else is the old session's record of a let-go, which the abandonment of
-// that session ends by no delivery (forgetSession, where that rule is written).
+// carries the sentence again: told twice, never not at all. So it goes where a let-go cuts off a
+// turn that confirmed the task while the send of its prompt was still in flight: that turn may
+// have been another input's, so the let-go takes the telling back (untellInFlight). Both records
+// are the claim's fields, so they go in the same write as the confirmation, and a restart reads
+// both or neither. The one record told anywhere else is the old session's record of a let-go,
+// which the abandonment of that session ends by no delivery (forgetSession, where that rule is
+// written).
 func (m *Machine) confirm(ctx context.Context) error {
 	p := m.claim.Pending
 	p.ConfirmedAt = m.deps.Clock.Now()
@@ -1307,7 +1314,7 @@ func interruptedTask(cause string) string {
 	return relaunchSentence(EndedWork{Cause: cause, Turn: true, TaskTurn: true}, true) + "\n\n"
 }
 
-// abandonedTask begins the first task given to the agent that replaced a session the claim
+// abandonedTask begins the first prompt given to the agent that replaced a session the claim
 // abandoned (forgetSession): one the provider refused out of its budget, one an operator retried
 // with --fresh-session, or one no session store holds any more. Nothing in a new session says
 // that an older one existed, so a worker reading an empty transcript takes its task for a fresh
@@ -1315,25 +1322,32 @@ func interruptedTask(cause string) string {
 // section). It names the session that was left behind and why in the words the claim recorded —
 // for a refused session the provider's own, the size it refused at among them — and then the two
 // things that outlive a session: the issue's branch, and the handoff records its phases wrote on
-// the Dispatch issue. The controller is told neither, since it works no checkout.
+// the Dispatch issue. The controller is told neither, since it works no checkout. In front of a
+// task (task true) it ends in the task's own instruction; in front of the daemon's own delivery of
+// a relaunch's record, which has no task (Delivery.Relaunch), it ends without one, as the record's
+// sentence alone does (relaunchSentence).
 //
 // The reason is the provider's own text read into an agent's prompt, so it is quoted as a Go
 // string (strconv.Quote), the way a check run's name is where the daemon reads one into a prompt
 // (workflow's namedConclusions): the quotes bound it, and a newline or a quote inside it is
 // escaped rather than ending the sentence that carries it, so no refusal text can read as an
 // instruction of the daemon's own.
-func abandonedTask(c Claim) string {
+func abandonedTask(c Claim, task bool) string {
 	read := "read the issue"
 	if c.Role != claim.RoleController {
 		read = fmt.Sprintf("read the issue, then your branch %s and the handoff records its phases wrote on "+
 			"the issue, which `dispatch handoff-read --issue %s --phase <word>` reads (%s)",
 			claim.IssueBranch(c.Issue), c.Issue, handoffWords())
 	}
-	return fmt.Sprintf("The session this claim ran before this one, %s, was abandoned where it stood: %s. "+
+	sentence := fmt.Sprintf("The session this claim ran before this one, %s, was abandoned where it stood: %s. "+
 		"This session is a new one: the turns, tool calls, subagents and background jobs of that session are "+
 		"gone, and only what it pushed and committed survives. Before you repeat any of that work, %s, and "+
-		"tell your architect what you found. Then continue the task.\n\n",
+		"tell your architect what you found.",
 		c.Abandoned.Session, strconv.Quote(c.Abandoned.Why), read)
+	if task {
+		sentence += " Then continue the task."
+	}
+	return sentence + "\n\n"
 }
 
 // handoffWords is every phase word an issue's handoff records are written under, in the
@@ -1394,10 +1408,14 @@ const outOfMemoryTask = "Your pod ran out of memory. Kubernetes ended the contai
 // process the claim records (Machine.cutTurnOf): the confirmation it clears is what the let-go
 // that follows would otherwise read that from, and that let-go records it (recordEnd).
 //
-// What the confirmation it clears told stays told (confirm): this is no confirmation taken back
-// as another turn's, which is what takes a telling back (moveTelling), but the end of a turn that
-// was the task's own and ran, so the agent read the prompt that carried the sentence. The record
-// of the let-go that cut the turn off is new words, and is told by a prompt of its own.
+// What the confirmation it clears told stays told (confirm) where the send of the prompt it
+// confirmed has returned: the end of a turn that was the task's own and ran takes no telling back
+// (moveTelling), since the agent read the prompt that carried the sentence. A confirmation a turn
+// took while that send was still in flight may be another input's, and goes back to untold before
+// the id moves (untellInFlight, where that rule is), in the same write as the delivery when a
+// telling moved. The untelling stands in memory whether or not that write lands, since untold is
+// the safe way round, and the claim's next write carries it. The record of the let-go that cut the
+// turn off is new words, and is told by a prompt of its own.
 func (m *Machine) interrupted(ctx context.Context, why string, outOfMemory bool) error {
 	p := m.claim.Pending
 	if p == nil || p.ConfirmedAt.IsZero() {
@@ -1406,7 +1424,13 @@ func (m *Machine) interrupted(ctx context.Context, why string, outOfMemory bool)
 	m.log.Warn("supervise: "+why+"; the task waits for the relaunch", "delivery", p.ID)
 	next := *p
 	next.ID, next.ConfirmedAt, next.Interrupted, next.OutOfMemory = rotateTaskID(p.ID), time.Time{}, true, outOfMemory
-	if err := m.putDelivery(ctx, next); err != nil {
+	var err error
+	if m.untellInFlight() {
+		err = m.putClaimAndDelivery(ctx, m.stored(), next)
+	} else {
+		err = m.putDelivery(ctx, next)
+	}
+	if err != nil {
 		return err
 	}
 	*p = next
@@ -1560,11 +1584,26 @@ func (m *Machine) takeBackPending(ctx context.Context, read bool) error {
 // moveTelling hands what the confirmation of delivery from told (confirm) to to, the id that
 // confirmation stands under from here on, and reports whether any record had a telling to hand:
 // each of the claim's two records whose ToldBy is from names to instead. to "" is the
-// confirmation taken back as another turn's, which tells nothing any more, so such a record goes
-// back to untold and the next prompt carries its sentence again. Its callers are the two places a
-// confirmation is taken back for that reason (refused, takeBackPending), read before the id
-// moves, and takeBackPending's move of a kept confirmation to the new id; each writes the claim
-// in the delivery's own write when this reports true.
+// confirmation taken back, which tells nothing any more, so such a record goes back to untold and
+// the next prompt carries its sentence again. Its callers:
+//
+//   - refused, a send that reached no turn with no other prompt of the task outstanding: the
+//     turn that confirmed the task was another input's. It writes the claim with the delivery
+//     (putClaimAndPending) when this reports true.
+//   - takeBackPending, a prompt that came to nothing: a late busy answer, refusal or result that
+//     ran no turn (lateRefused, refusedElsewhere, refusedUnprompted, waitedOutAnswer,
+//     promptResulted), a wait for a turn that ran out (noTurn; it and the answers that charge the
+//     prompt go through promptFailed), a provider error (providerErrored) and a compaction
+//     (compactStart). With no prompt of the task left outstanding it takes the telling back; with
+//     one outstanding it keeps the confirmation and moves the telling to the new id. Either way it
+//     writes the claim with the delivery (putClaimAndDelivery) when this reports true.
+//   - takeBackPending again, where that write failed in the kept case: it moves the telling back
+//     to the id the store still holds the confirmation under, and writes nothing, since the store
+//     never took the move.
+//   - untellInFlight, a let-go's take-back of a confirmation a turn took while the send of its
+//     prompt was in flight. Of its two callers, interrupted writes the claim with the delivery
+//     (putClaimAndDelivery) when this reports true, and recordEnd writes nothing, since the
+//     let-go's own write carries the claim.
 func (m *Machine) moveTelling(from, to string) bool {
 	moved := false
 	if a := &m.claim.Abandoned; a.Told && a.ToldBy == from {
@@ -1574,8 +1613,33 @@ func (m *Machine) moveTelling(from, to string) bool {
 		e.Told, e.ToldBy, moved = to != "", to, true
 	}
 	if moved && to == "" {
-		m.log.Info("supervise: the turn that took the prompt telling the agent what became of its earlier work was another's; the next prompt tells it again",
+		m.log.Info("supervise: the confirmation of the prompt that told the agent what became of its earlier work was taken back; the next prompt tells it again",
 			"delivery", from)
 	}
 	return moved
+}
+
+// untellInFlight is the rule for a confirmation a let-go cannot vouch for: the pending task stands
+// confirmed while the send of its prompt has not returned (Machine.send). A turn that starts with
+// that send in flight is taken for the task's (beginTurn, the INFRA-264 race), and it may be
+// another input's, an Envoy notice's, whose busy answer is still on its way. The let-go forgets
+// the send (letGo, forgetSend), so that answer is fenced out (fenceOutcome) and never takes the
+// confirmation back (refused). So the let-go takes back what the confirmation told (moveTelling):
+// the record goes back to untold, the record of this let-go joins it rather than replacing it
+// (recordEnd, joined), and the next prompt carries its sentence again. Where the turn was the
+// task's own, the agent is told twice, which is the accepted cost: told twice, never not at all.
+//
+// It reports whether a telling moved, and it is idempotent: once it has run, no record is told by
+// the pending id. recordEnd and interrupted both call it, and whichever of them a let-go runs first
+// untells. recordEnd calls it before anything else, in memory only, since the let-go's own write
+// carries the claim: a death and a displacement record the end before they take the task back
+// (died, displaced). interrupted calls it before the id moves and writes the claim with the
+// delivery when it reports true: the held suspension's deadline, a paced launch whose turn has come
+// and a suspension over a dead process take the task back before the let-go records the end.
+func (m *Machine) untellInFlight() bool {
+	p := m.claim.Pending
+	if m.send == nil || p == nil || p.ConfirmedAt.IsZero() {
+		return false
+	}
+	return m.moveTelling(p.ID, "")
 }

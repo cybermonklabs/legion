@@ -1021,13 +1021,13 @@ type ClaimReady struct {
 	Paced bool
 	// Relaunch is the sentence that tells the claim's new process what the last let-go of its
 	// process ended (supervise.RelaunchSentence), while the claim's record of it is untold
-	// (supervise.EndedWork.Tells) and no session it abandoned is still to be told
-	// (supervise.AbandonedSession.Tells), whose sentence takes precedence; "" otherwise. The first
-	// source alone sets it, from the claim its ready wrote (the daemon's applyTerminal): a root
-	// architect's catch-up opens with it (workflow's QueueCatchUp), because the first turn of a
-	// relaunched root architect can be that catch-up's rather than its prompt's. The catch-up's
-	// copy tells nothing: the record is told by the prompt the claim's machine sends, at that
-	// prompt's confirmation.
+	// (supervise.EndedWork.Tells); "" otherwise. A record that still tells is one of the claim's
+	// current session's processes, since abandoning a session ends the record of its process
+	// (supervise's forgetSession). The first source alone sets it, from the claim its ready wrote
+	// (the daemon's applyTerminal): a root architect's catch-up opens with it (workflow's
+	// QueueCatchUp), because the first turn of a relaunched root architect can be that catch-up's
+	// rather than its prompt's. The catch-up's copy tells nothing: the record is told by the
+	// prompt the claim's machine sends, at that prompt's confirmation.
 	Relaunch string
 }
 

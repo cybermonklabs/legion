@@ -6290,8 +6290,11 @@ note "killed $tree4's planner mid-turn (process $planner_killed in pod $ended_po
 # string of the planner's session, because neither alone says the kill was what it told.
 interrupted_needle="Your previous turn on this task was interrupted."
 death_needle="ended because the process died: "
+# One read of the session serves both needles, since each poll reads the whole session text.
 planner_resent() {
-  session_contains "$tree4" planner "$interrupted_needle" && session_contains "$tree4" planner "$death_needle"
+  local text
+  text=$(claim_session_text "$tree4" planner) || return 1
+  grep -Fq -- "$interrupted_needle" <<<"$text" && grep -Fq -- "$death_needle" <<<"$text"
 }
 on_tree "$tree4" until_true 600 "$tree4's planner to be sent its task again, told its turn was interrupted" planner_resent
 send_agent "$tree4" planner "Stage 4b proof planning operation: write the required plan handoff for the one-file smoke change, then call the legion tool's handoff_complete with a concise summary. Do not start another role."
