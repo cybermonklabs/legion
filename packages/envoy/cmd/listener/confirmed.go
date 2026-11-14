@@ -313,12 +313,12 @@ func (s *roleSend) timedOut() {
 // recorded capability_refused as sendHandler records it.
 //
 // The dedupe check reads the route's own record (listenerDeps.confirmed), not the delivery
-// ledger: the ledger records what this machine delivered - a forward this pod published - which
-// is not this route's own forward to the holder, so a role send under a key the ledger holds
-// would be answered 200 for a holder the route never forwarded it to. The route's record is this
-// pod's alone (README, "State the pods share"), so a send retried against another pod of the
-// machine forwards again, and the stream keeps one copy of that forward under its Nats-Msg-Id
-// (bus.ForwardMsgID).
+// ledger: the route's confirmation records its stored forward in the ledger too (confirm), but a
+// ledger record can also come from another pod, or from another lane's forward, refusal or
+// give-up, so it cannot show that this route forwarded the key to this holder. The route's
+// record is this pod's alone (README, "State the pods share"), so a send retried against another
+// pod of the machine forwards again, and the stream keeps one copy of that forward under its
+// Nats-Msg-Id (bus.ForwardMsgID).
 func (s *roleSend) settledBeforeForward(entry session.SessionEntry) bool {
 	verdict := beforeForward(s.item, s.holder, entry, s.d.confirmed.Seen)
 	switch verdict.kind {

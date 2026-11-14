@@ -435,12 +435,9 @@ func (r *relayRun) restartedBefore(heard uint64) bool {
 	return at != 0 && at < heard
 }
 
-// dropWake drops the wake waiting for the run, once a restart has started its pull: a
-// registration heard before then either wrote its row before that restart read the session's
-// stored topics under the session's lock, or made its own consumer calls under that lock after
-// the restart's, so the restart's pull already reflects it and a retry after a later failure has
-// nothing to start at once for. Without it, a registration from before a reconnect ended the next
-// failure's retry wait at once and the failure after that waited the doubled backoff in full.
+// dropWake drops a wake that is waiting for the run, if one is. Each caller states why the wake it
+// drops is owed nothing: the two pull restarts (sessionRelays.restart) and the start of a pause
+// (waitPause).
 func (r *relayRun) dropWake() {
 	select {
 	case <-r.resume:
@@ -449,7 +446,13 @@ func (r *relayRun) dropWake() {
 }
 
 // waitPause waits out a paused run's backoff, d, the session's next registration, or the end of the
-// run, and reports whether the run goes on.
+// run, and reports whether the run goes on. A wake sent before the pause does not end it: the pause
+// drops it as it begins (dropWake), so only a registration heard once the pause began cuts the
+// backoff short.
+//
+// No row pins that. A wake sent before a pause began must not cut that pause short, yet with
+// r.dropWake() taken out of waitPause alone all 162 relay rows still passed at 58755896, so the
+// next change to this function should pin it with a row.
 func (r *relayRun) waitPause(ctx context.Context, d time.Duration) bool {
 	r.dropWake()
 	timer := time.NewTimer(d)
@@ -905,6 +908,12 @@ func (m *sessionRelays) restart(ctx context.Context, run *relayRun) (bus.Session
 			run.restartedAt.Store(run.listedAt)
 			var pull *bus.SessionPull
 			if pull, err = m.delivery.consumers.Pull(callCtx, sessionID); err == nil {
+				// Once the pull has started, an earlier registration is already reflected: it
+				// wrote its row before this restart read the session's stored topics under the
+				// session's lock, or made its own consumer calls under that lock after the
+				// restart's. So its wake is dropped, and a retry after a later failure has nothing
+				// to start at once for: kept, it ended the next failure's retry wait at once, and
+				// the failure after that waited the doubled backoff in full.
 				run.dropWake()
 				return start, pull, relayRetry
 			}
@@ -944,6 +953,8 @@ func (m *sessionRelays) restart(ctx context.Context, run *relayRun) (bus.Session
 		run.restartedAt.Store(at)
 		var pull *bus.SessionPull
 		if pull, err = m.delivery.consumers.Pull(callCtx, sessionID); err == nil {
+			// Once the pull has started, an earlier registration is already reflected, as after
+			// the keep above, so its wake is dropped.
 			run.dropWake()
 			return start, pull, relayRetry
 		}

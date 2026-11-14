@@ -324,13 +324,27 @@ Every pod of a machine id reads and writes the same records, so a pod that takes
   the server's time of the write that took the lease when no pod of the machine was serving (no record, or one last written more than two TTLs before).
   A claim stored before `service_since` keeps its grace for one session TTL after it; every pod answers a claim alike, whenever it started.
 
-- **Registry writes** (session registrations, interests, role claims) are compare-and-set at the revision the pod read, merged again over the bucket's value on a conflict, then `503` with `Retry-After: 1` once a write's attempts are spent:
-  5 for a session registration (`writeAttempts`, `internal/session/registry.go`), 3 for an interest (`interestWriteAttempts`, `internal/store/interest_writes.go`), 3 for a role claim's release or hand-back (`roleClaimReleaseAttempts`, `internal/store/role_release.go`) and 1 for its renewal (`renewRoleClaim`'s `attempts: 1`, `internal/store/role_renewal.go`).
+- **Registry writes** are compare-and-set at the revision the pod read, all but a hard role claim, and what each answers once it loses that race differs:
+
+  - A session registration and an interest are merged again over the bucket's value on a conflict, and a role claim's release or hand-back weighs the claim again at the revision it now stands at.
+    Each answers `503` with `Retry-After: 1` once its attempts are spent:
+    5 for a session registration (`writeAttempts`, `internal/session/registry.go`), 3 for an interest (`interestWriteAttempts`, `internal/store/interest_writes.go`) and 3 for a release or hand-back (`roleClaimReleaseAttempts`, `internal/store/role_release.go`).
+
+  - A role claim's renewal (`renewRoleClaim`, `internal/store/role_renewal.go`) makes one attempt.
+    A renewal that a claim landed under is dropped and logged, the registration that sent it still answers `200`, and the next registration renews the claim that stands.
+
+  - A role claim itself is not retried by the store.
+    A hard claim is an unconditional `Put`, so the last write wins.
+    A soft claim, or one that carries `if_claim_revision`, that a claim landed under is refused with `409` (`ErrRoleHeld`, `ErrRoleClaimRevisionMismatch`, `internal/store/roles.go`);
+    `/v1/roles/set` decides a soft claim that named no revision once more first, on the claim that replaced the one it read.
+
   A pod whose cache has not seen a registration reads the bucket before `/v1/messages/send` or `/v1/roles/set` answers that the session is unknown.
 
 One record is each pod's own, deliberately:
 the **publish route's confirmation record** (`listenerDeps.confirmed`, `internal/dedupe`'s in-process cache), which holds each (dedupe key, session) the stream stored a forward of through `/v1/messages/send` or `/v1/messages/publish` on this pod.
-Only a forward the route itself made counts, and the delivery ledger above records what the machine delivered, which is not the route's own forward to the holder, so the two are not one record.
+Only a forward the route itself made counts.
+The route's confirmation records its stored forward in the delivery ledger above too (`listenerDeps.confirm`), but a ledger record can also come from another pod, or from another lane's forward, refusal or give-up,
+so the ledger cannot show that this route forwarded the key to this holder, and the route reads its own record instead.
 A send retried against another pod of the machine forwards again, and the stream keeps one copy of that forward under its `Nats-Msg-Id` (`bus.ForwardMsgID`).
 
 ## Two builds of the listener

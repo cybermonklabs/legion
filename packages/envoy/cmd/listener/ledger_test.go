@@ -192,6 +192,51 @@ func TestAnUnavailableLedgerRetriesTheDurableLane(t *testing.T) {
 	}
 }
 
+// A ledger that cannot be read on the role lane, which retries nothing, leaves the lane to forward
+// without it (ledgerAttempt): the role message reaches its holder, the stream stores it on the
+// holder's agent subject, and one WARN says the ledger was not read. A lane that dropped the
+// message instead would drop every role message for as long as the ledger is down.
+func TestAnUnavailableLedgerLetsTheRoleLaneForwardToTheHolder(t *testing.T) {
+	harness := newListenerDeliveryHarness(t)
+	const role, holder = "ledger-unavailable", "ses_ledger_unavailable_holder"
+	claimRoleFor(t, harness.registry, harness.sessions, holder, role, nil)
+	probe := exceptionProbe(t, harness.client)
+	cfg := harness.config
+	cfg.ledger = unavailableLedger{}
+	// The forwarder keeps the configuration it was built from, so the copy is wired again to
+	// report its forward through the unavailable ledger.
+	cfg = wireTestRoleForwarder(t, cfg)
+	item := listenerTestEnvelope(contracts.RoleTopicPrefix+role, "ledger-unavailable-"+id.New())
+	item.Payload = `{"type":"worker-queued"}`
+
+	coreNATSDeliveryHandler(cfg)(&natsgo.Msg{Subject: item.Topic, Data: marshalListenerEnvelope(t, item)})
+	cfg.roleForwards.settled(t)
+	subject := contracts.AgentSubject(holder)
+	stored, err := harness.client.JS().GetLastMsg(bus.Stream, subject)
+	if err != nil {
+		t.Fatalf("role message %s on %s was dropped while the ledger was down: nothing stored for its holder on %s: %v\n%s", item.EventID, item.Topic, subject, err, harness.logs.String())
+	}
+	var forwarded contracts.Envelope
+	if err := json.Unmarshal(stored.Data, &forwarded); err != nil {
+		t.Fatalf("decode the stored forward %s: %v", stored.Data, err)
+	}
+	if forwarded.EventID != item.EventID || forwarded.Topic != item.Topic || forwarded.DedupeKey != roleForwardDedupePrefix+item.DedupeKey {
+		t.Fatalf("the stream holds event %s topic %s dedupe key %s on %s, want role message %s on %s under %s",
+			forwarded.EventID, forwarded.Topic, forwarded.DedupeKey, subject, item.EventID, item.Topic, roleForwardDedupePrefix+item.DedupeKey)
+	}
+	if count := storedForwards(t, harness.client, subject); count != 1 {
+		t.Fatalf("the stream holds %d messages on %s, want the one forward", count, subject)
+	}
+	logs := harness.logs.String()
+	if got := strings.Count(logs, `"msg":"listener role forwarded"`); got != 1 {
+		t.Fatalf("logged %d role forwards, want 1:\n%s", got, logs)
+	}
+	if got := strings.Count(logs, `"msg":"`+ledgerUnavailableLine+`"`); got != 1 {
+		t.Fatalf("logged %d %q WARNs, want 1:\n%s", got, ledgerUnavailableLine, logs)
+	}
+	noException(t, probe)
+}
+
 // failingOnceLedger fails its first Attempt, as a call made while the ledger's connection was
 // reconnecting does, and answers from Ledger after that.
 type failingOnceLedger struct {

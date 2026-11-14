@@ -4255,7 +4255,8 @@ Each item below names an endpoint and its method, then its contract, and an item
   the route keeps its own record of each session it stored a dedupe key for (`listenerDeps.confirmed`, 10 minutes), which a later send of the key reads.
   Six deliveries ask the delivery ledger and no others do (`cmd/listener/README.md`, "State the pods share"):
   a role-lane forward, the kept lane's drain, a fan-out refusal, an unplaceable agent delivery's give-up, an agent-subject delivery whose route to the session failed, and this route's confirmation that the stream stored its forward.
-  The ledger records what the machine delivered, which is not this route's own forward to the holder, so the route reads its own `confirmed` record rather than the ledger.
+  A ledger record can also come from another pod, or from another lane's forward, refusal or give-up, so the ledger cannot show that this route forwarded the key to this holder:
+  the route reads its own `confirmed` record rather than the ledger.
 
 - A topic that does not begin with `notifications.` is refused `400 {"error":"topic must begin with notifications.","expected":["topic"]}` and nothing is published, which closes the raw-subject route a bearer could otherwise use to write the listener's own key-value buckets
   — the role-claim records among them — and reach `$JS.API.*`.
