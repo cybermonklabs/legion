@@ -118,7 +118,7 @@ func TestTheIdleViewReadsTheUnrestoredBundleAndTheRunningHoldStreak(t *testing.T
 		t.Fatalf("view = %+v, want no stored bundle and no running streak", view)
 	}
 
-	if err := st.PutWorkspaceBundle(ctx, rootIssue, 7,
+	if err := st.PutWorkspaceBundle(ctx, rootIssue, 7, copyBegun(t, st),
 		runtime.WorkspaceBundle{Bundle: []byte("PACK"), Head: "abc", PodUID: "pod-being-released"}); err != nil {
 		t.Fatalf("save a bundle for %s: %v", rootIssue, err)
 	}
@@ -155,7 +155,7 @@ func TestTheIdleViewHoldsNoPodForARunningWorkspaceCopy(t *testing.T) {
 
 	taken := runtime.WorkspaceBundle{Bundle: []byte("PACK the work the cadence copied"), Head: "abc",
 		PodUID: "pod-still-running"}
-	if err := st.PutRunningWorkspaceCopy(ctx, rootIssue, taken); err != nil {
+	if err := st.PutRunningWorkspaceCopy(ctx, rootIssue, copyBegun(t, st), taken); err != nil {
 		t.Fatalf("take the running copy of %s: %v", rootIssue, err)
 	}
 	if view := idleViewOf(t, st, rootIssue); view.BundleUnrestored {

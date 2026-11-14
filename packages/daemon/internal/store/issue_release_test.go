@@ -576,7 +576,7 @@ func TestACancelAfterTheSaveStoredItsBundleKeepsItAsTheResumedPodsRunningCopy(t 
 	// The copy the cadence took while the pod worked, before it went quiet.
 	taken := runtime.WorkspaceBundle{Bundle: []byte("PACK the work of the last turn"),
 		Head: "f2f134541b30dfa5160a5d1ce5e17b76c967c661", PodUID: "pod-being-released"}
-	if err := st.PutRunningWorkspaceCopy(ctx, rootIssue, taken); err != nil {
+	if err := st.PutRunningWorkspaceCopy(ctx, rootIssue, copyBegun(t, st), taken); err != nil {
 		t.Fatalf("take the running copy: %v", err)
 	}
 	markRelease(t, st, first, boundary, last, 0, claim.RoleArchitect)
@@ -588,10 +588,10 @@ func TestACancelAfterTheSaveStoredItsBundleKeepsItAsTheResumedPodsRunningCopy(t 
 	saved := runtime.WorkspaceBundle{Bundle: []byte("PACK the work of the cancelled release"),
 		Head: "0a8f0aee63b13682fefe975ba0cc51da6f2ba9e9", Tips: []string{"da4f9f492e9f8349389c243743e0a000cd1c676f"},
 		Bookmarks: map[string]string{"side": "da4f9f492e9f8349389c243743e0a000cd1c676f"}, PodUID: "pod-being-released"}
-	if err := st.PutWorkspaceBundle(ctx, rootIssue, release, saved); err != nil {
+	if err := st.PutWorkspaceBundle(ctx, rootIssue, release, copyBegun(t, st), saved); err != nil {
 		t.Fatalf("save the release's bundle: %v", err)
 	}
-	savedAt := heldCopyRow(t, st, releaseBundleCopies, rootIssue).at
+	savedAt := heldCopyRow(t, st, releaseBundleCopies, rootIssue).writtenAt
 
 	// A wake cancels the release, and the resume it queues cannot be built.
 	refused := errors.New("the resume could not be encoded")
@@ -615,9 +615,10 @@ func TestACancelAfterTheSaveStoredItsBundleKeepsItAsTheResumedPodsRunningCopy(t 
 		t.Fatalf("after the cancel the store holds the bundle %+v, whose row holds the issue's pod; want it gone with the mark", row)
 	}
 	kept := storedRunningCopy(t, st, rootIssue)
-	if !bytes.Equal(kept.bundle, saved.Bundle) || kept.sourcePod != saved.PodUID || kept.attemptPod != "" || !kept.at.After(savedAt) {
-		t.Fatalf("after the cancel the running copy is %q off pod %q written %s with an attempt by %q, want the bundle's work off %q, stamped after its save at %s, with no attempt",
-			kept.bundle, kept.sourcePod, kept.at, kept.attemptPod, saved.PodUID, savedAt)
+	if !bytes.Equal(kept.bundle, saved.Bundle) || kept.sourcePod != saved.PodUID || kept.attemptPod != "" ||
+		!kept.at.After(savedAt) || !kept.writtenAt.Equal(kept.at) {
+		t.Fatalf("after the cancel the running copy is %q off pod %q taken %s and written %s with an attempt by %q, want the bundle's work off %q, both its times the cancel's, after its save was written at %s, with no attempt",
+			kept.bundle, kept.sourcePod, kept.at, kept.writtenAt, kept.attemptPod, saved.PodUID, savedAt)
 	}
 
 	// The pod the roles resume in restarts its roles container: its own disk holds the work.
@@ -652,13 +653,13 @@ func TestACancelLeavesARunningCopyNewerThanItsReleasesBundleAsItIs(t *testing.T)
 	if err := st.Pool().QueryRow(ctx, `select id from issue_releases where issue = $1`, rootIssue).Scan(&release); err != nil {
 		t.Fatalf("read the id of the release of %s: %v", rootIssue, err)
 	}
-	if err := st.PutWorkspaceBundle(ctx, rootIssue, release, runtime.WorkspaceBundle{Bundle: []byte("PACK the work of the cancelled release"),
+	if err := st.PutWorkspaceBundle(ctx, rootIssue, release, copyBegun(t, st), runtime.WorkspaceBundle{Bundle: []byte("PACK the work of the cancelled release"),
 		Head: "f2f134541b30dfa5160a5d1ce5e17b76c967c661", PodUID: "pod-being-released"}); err != nil {
 		t.Fatalf("save the release's bundle: %v", err)
 	}
 	newer := runtime.WorkspaceBundle{Bundle: []byte("PACK the work of a pod that worked on"),
 		Head: "0a8f0aee63b13682fefe975ba0cc51da6f2ba9e9", PodUID: "pod-that-worked-on"}
-	if err := st.PutRunningWorkspaceCopy(ctx, rootIssue, newer); err != nil {
+	if err := st.PutRunningWorkspaceCopy(ctx, rootIssue, copyBegun(t, st), newer); err != nil {
 		t.Fatalf("take the newer running copy: %v", err)
 	}
 	before := storedRunningCopy(t, st, rootIssue)
@@ -670,8 +671,9 @@ func TestACancelLeavesARunningCopyNewerThanItsReleasesBundleAsItIs(t *testing.T)
 		t.Fatalf("after the cancel the store holds the bundle %+v, want it gone with the mark", row)
 	}
 	after := storedRunningCopy(t, st, rootIssue)
-	if after.restoreID != before.restoreID || after.sourcePod != newer.PodUID || !bytes.Equal(after.bundle, newer.Bundle) || !after.at.Equal(before.at) {
-		t.Fatalf("the newer running copy reads %d: %q off %q written %s, want %d: %q off %q written %s as it was",
+	if after.restoreID != before.restoreID || after.sourcePod != newer.PodUID || !bytes.Equal(after.bundle, newer.Bundle) ||
+		!after.at.Equal(before.at) || !after.writtenAt.Equal(before.writtenAt) {
+		t.Fatalf("the newer running copy reads %d: %q off %q taken %s, want %d: %q off %q taken %s as it was",
 			after.restoreID, after.bundle, after.sourcePod, after.at, before.restoreID, newer.Bundle, newer.PodUID, before.at)
 	}
 }
@@ -690,7 +692,7 @@ func TestACancelledReleaseKeepsTheRunningCopyItsFailedSaveLeft(t *testing.T) {
 	// The copy the turn's end took before the pod went quiet.
 	taken := runtime.WorkspaceBundle{Bundle: []byte("PACK the work of the last turn"),
 		Head: "f2f134541b30dfa5160a5d1ce5e17b76c967c661", PodUID: "pod-being-released"}
-	if err := st.PutRunningWorkspaceCopy(ctx, rootIssue, taken); err != nil {
+	if err := st.PutRunningWorkspaceCopy(ctx, rootIssue, copyBegun(t, st), taken); err != nil {
 		t.Fatalf("take the running copy: %v", err)
 	}
 	markRelease(t, st, first, boundary, last, 0, claim.RoleArchitect)

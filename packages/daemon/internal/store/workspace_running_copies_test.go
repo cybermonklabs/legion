@@ -22,11 +22,13 @@ const runningPodUID = "pod-still-running"
 
 // copyRow is what one of the two tables holds of an issue's copy, read off the row itself without
 // its bytes: the store serves no such read, since nothing in the daemon decides on these facts but
-// the restore's own transaction, and a test asks what that transaction left.
+// the restore's own transaction, and a test asks what that transaction left. at is when the copy's
+// take began and writtenAt when the store wrote it.
 type copyRow struct {
 	held       bool
 	size       int
 	at         time.Time
+	writtenAt  time.Time
 	attemptPod string
 	outcome    string
 }
@@ -36,8 +38,9 @@ func heldCopyRow(t *testing.T, s *Store, copies copyTable, issue string) copyRow
 	t.Helper()
 	row := copyRow{held: true}
 	err := s.Pool().QueryRow(context.Background(),
-		`select size_bytes, at, coalesce(attempt_pod_uid, ''), coalesce(attempt_outcome, '') from `+copies.table+` where issue = $1`, issue).
-		Scan(&row.size, &row.at, &row.attemptPod, &row.outcome)
+		`select size_bytes, at, written_at, coalesce(attempt_pod_uid, ''), coalesce(attempt_outcome, '')
+			from `+copies.table+` where issue = $1`, issue).
+		Scan(&row.size, &row.at, &row.writtenAt, &row.attemptPod, &row.outcome)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return copyRow{}
 	}
@@ -45,6 +48,18 @@ func heldCopyRow(t *testing.T, s *Store, copies copyTable, issue string) copyRow
 		t.Fatalf("read the %s of %s: %v", copies.kind, issue, err)
 	}
 	return row
+}
+
+// copyBegun is the store's clock as the take of a copy begins (BeginWorkspaceCopy), which a test
+// hands the write of that copy as the daemon does, read just before the write unless the test says
+// otherwise.
+func copyBegun(t *testing.T, s *Store) WorkspaceCopyBegun {
+	t.Helper()
+	begun, err := s.BeginWorkspaceCopy(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return begun
 }
 
 // storedCopy is the row behind an issue's running copy, read whole. The store answers its facts
@@ -56,6 +71,7 @@ type storedCopy struct {
 	size       int
 	restoreID  int64
 	at         time.Time
+	writtenAt  time.Time
 	sourcePod  string
 	attemptPod string
 }
@@ -65,9 +81,9 @@ func storedRunningCopy(t *testing.T, s *Store, issue string) storedCopy {
 	t.Helper()
 	var row storedCopy
 	if err := s.Pool().QueryRow(context.Background(),
-		`select bundle, size_bytes, restore_id, at, source_pod_uid, coalesce(attempt_pod_uid, '')
+		`select bundle, size_bytes, restore_id, at, written_at, source_pod_uid, coalesce(attempt_pod_uid, '')
 			from workspace_running_copies where issue = $1`, issue).
-		Scan(&row.bundle, &row.size, &row.restoreID, &row.at, &row.sourcePod, &row.attemptPod); err != nil {
+		Scan(&row.bundle, &row.size, &row.restoreID, &row.at, &row.writtenAt, &row.sourcePod, &row.attemptPod); err != nil {
 		t.Fatalf("read the stored running copy of %s: %v", issue, err)
 	}
 	return row
@@ -99,8 +115,10 @@ func storeClock(t *testing.T, s *Store) time.Time {
 // on, the heads it carries, the bookmarks that pointed into it, the pod its work came off and the
 // restore id the table gave it — one issue keeps one row however many copies its cadence takes,
 // and the confirmation of a restore keeps the copy its id names, and no other, as the restoring
-// pod's own. The copy's time is the store's clock when it wrote the row, never the time the shim
-// stamped on it by its node's clock, so the restore compares one clock alone.
+// pod's own. The copy's time is the store's clock when its take began, which the save is handed,
+// and its write time the store's clock when it wrote the row, never the time the shim stamped on
+// it by its node's clock, so the restore compares one clock alone. A save handed no take's begin
+// is refused.
 func TestTheRunningCopyOfAWorkspaceBundleRoundTripsAndLeavesOneRowPerIssue(t *testing.T) {
 	ctx := context.Background()
 	s := migratedStore(t)
@@ -121,14 +139,17 @@ func TestTheRunningCopyOfAWorkspaceBundleRoundTripsAndLeavesOneRowPerIssue(t *te
 		t.Fatalf("an issue whose cadence has taken nothing holds a copy: %+v", row)
 	}
 	before := storeClock(t, s)
-	if err := s.PutRunningWorkspaceCopy(ctx, "INFRA-1117", taken); err != nil {
+	// The take begins, the bundler reads the workspace, and the write lands after both.
+	begun := copyBegun(t, s)
+	if err := s.PutRunningWorkspaceCopy(ctx, "INFRA-1117", begun, taken); err != nil {
 		t.Fatal(err)
 	}
 	after := storeClock(t, s)
 	row := heldCopyRow(t, s, runningCopyCopies, "INFRA-1117")
-	if !row.held || row.size != taken.Size() || row.at.Before(before) || row.at.After(after) {
-		t.Fatalf("the copy reads %+v, want the %d bytes saved at the database's clock between %s and %s, not the shim's %s",
-			row, taken.Size(), before, after, shimClock)
+	if !row.held || row.size != taken.Size() || !row.at.Equal(begun.at) || row.at.Before(before) ||
+		!row.writtenAt.After(row.at) || row.writtenAt.After(after) {
+		t.Fatalf("the copy reads %+v, want the %d bytes taken at the database's clock as the take began, %s, and written by that clock before %s, not the shim's %s",
+			row, taken.Size(), begun.at, after, shimClock)
 	}
 	stored := storedRunningCopy(t, s, "INFRA-1117")
 	restore, err := s.TakeWorkspaceCopyForRestore(ctx, "INFRA-1117", "pod-1")
@@ -143,7 +164,7 @@ func TestTheRunningCopyOfAWorkspaceBundleRoundTripsAndLeavesOneRowPerIssue(t *te
 		t.Fatalf("the copy read back is %+v, want %+v", read, taken)
 	}
 	if !read.At.Equal(row.at) {
-		t.Fatalf("the copy reads back as written at %s, want the row's %s", read.At, row.at)
+		t.Fatalf("the copy reads back as taken at %s, want the row's %s", read.At, row.at)
 	}
 	if read.PodUID != runningPodUID {
 		t.Fatalf("the copy reads back as the work of pod %q, want the %q it was taken off", read.PodUID, runningPodUID)
@@ -161,7 +182,7 @@ func TestTheRunningCopyOfAWorkspaceBundleRoundTripsAndLeavesOneRowPerIssue(t *te
 	for i, work := range []string{"PACK the next five minutes", "PACK the five after that"} {
 		next := runtime.WorkspaceBundle{Bundle: []byte(work), Head: "0a8f0aee63b13682fefe975ba0cc51da6f2ba9e" + string(rune('0'+i)),
 			PodUID: runningPodUID}
-		if err := s.PutRunningWorkspaceCopy(ctx, "INFRA-1117", next); err != nil {
+		if err := s.PutRunningWorkspaceCopy(ctx, "INFRA-1117", copyBegun(t, s), next); err != nil {
 			t.Fatal(err)
 		}
 		ids = append(ids, storedRunningCopy(t, s, "INFRA-1117").restoreID)
@@ -188,7 +209,7 @@ func TestTheRunningCopyOfAWorkspaceBundleRoundTripsAndLeavesOneRowPerIssue(t *te
 	// is no more its business.
 	other := runtime.WorkspaceBundle{Bundle: []byte("PACK another issue's work"), Head: "f2f134541b30dfa5160a5d1ce5e17b76c967c661",
 		PodUID: "pod-of-another-issue"}
-	if err := s.PutRunningWorkspaceCopy(ctx, "INFRA-2760", other); err != nil {
+	if err := s.PutRunningWorkspaceCopy(ctx, "INFRA-2760", copyBegun(t, s), other); err != nil {
 		t.Fatal(err)
 	}
 	current := storedRunningCopy(t, s, "INFRA-1117")
@@ -205,15 +226,16 @@ func TestTheRunningCopyOfAWorkspaceBundleRoundTripsAndLeavesOneRowPerIssue(t *te
 		t.Fatalf("a report of one issue's copy rebound another issue's to pod %q", row.sourcePod)
 	}
 	// The report of the copy pod-2 was sent keeps it as pod-2's own: the same work, named off
-	// that pod, under an id of its own, stamped at the confirmation, with no attempt spent.
+	// that pod, under an id of its own, both its times stamped at the confirmation, with no
+	// attempt spent.
 	if err := s.KeepRestoredRunningWorkspaceCopy(ctx, "INFRA-1117", "pod-2", ids[1]); err != nil {
 		t.Fatal(err)
 	}
 	kept := storedRunningCopy(t, s, "INFRA-1117")
 	if !bytes.Equal(kept.bundle, current.bundle) || kept.sourcePod != "pod-2" || kept.attemptPod != "" ||
-		kept.restoreID == ids[1] || !kept.at.After(current.at) {
-		t.Fatalf("the confirmed copy reads %+v, want %q kept off pod-2 under a new id, stamped after %s, with no attempt",
-			kept, current.bundle, current.at)
+		kept.restoreID == ids[1] || !kept.at.After(current.writtenAt) || !kept.writtenAt.Equal(kept.at) {
+		t.Fatalf("the confirmed copy reads %+v, want %q kept off pod-2 under a new id, taken and written at one time after %s, with no attempt",
+			kept, current.bundle, current.writtenAt)
 	}
 	// A report the daemon read twice names an id the row no longer holds, and changes nothing.
 	if err := s.KeepRestoredRunningWorkspaceCopy(ctx, "INFRA-1117", "pod-2", ids[1]); err != nil {
@@ -249,22 +271,30 @@ func TestTheRunningCopyOfAWorkspaceBundleRoundTripsAndLeavesOneRowPerIssue(t *te
 		t.Fatalf("the table holds %d rows after both copies went, want none", rows)
 	}
 
-	if err := s.PutRunningWorkspaceCopy(ctx, "", taken); err == nil {
+	if err := s.PutRunningWorkspaceCopy(ctx, "", copyBegun(t, s), taken); err == nil {
 		t.Fatal("a copy saved under no issue was accepted")
 	}
 	// A copy that cannot say which pod the work is on is refused: the row could not then tell
 	// the pod still working from the pod that replaces it, and the take refuses by that uid.
 	noPod := taken
 	noPod.PodUID = ""
-	if err := s.PutRunningWorkspaceCopy(ctx, "INFRA-1117", noPod); err == nil {
+	if err := s.PutRunningWorkspaceCopy(ctx, "INFRA-1117", copyBegun(t, s), noPod); err == nil {
 		t.Fatal("a copy saved without the pod its work came off was accepted")
 	}
 	// A copy of no bytes restores nothing, and a row holding one would be answered to a pod in
 	// place of the release bundle it should have had.
 	empty := taken
 	empty.Bundle = nil
-	if err := s.PutRunningWorkspaceCopy(ctx, "INFRA-1117", empty); err == nil {
+	if err := s.PutRunningWorkspaceCopy(ctx, "INFRA-1117", copyBegun(t, s), empty); err == nil {
 		t.Fatal("a copy carrying no work was accepted")
+	}
+	// A copy handed no take's begin has no time the store read, and is refused rather than
+	// stamped at its write, where a copy read before a push could pass the push's rule.
+	if err := s.PutRunningWorkspaceCopy(ctx, "INFRA-1117", WorkspaceCopyBegun{}, taken); err == nil {
+		t.Fatal("a copy saved with no time its take began was accepted")
+	}
+	if rows := runningCopyRows(t, s); rows != 0 {
+		t.Fatalf("the refused copies left %d rows, want none", rows)
 	}
 }
 
@@ -278,7 +308,7 @@ func TestARestoreReportNamingAnotherIssuesRunningCopyChangesNothing(t *testing.T
 	s := migratedStore(t)
 	other := runtime.WorkspaceBundle{Bundle: []byte("PACK another issue's work"), Head: "f2f134541b30dfa5160a5d1ce5e17b76c967c661",
 		PodUID: "pod-of-another-issue"}
-	if err := s.PutRunningWorkspaceCopy(ctx, "INFRA-2760", other); err != nil {
+	if err := s.PutRunningWorkspaceCopy(ctx, "INFRA-2760", copyBegun(t, s), other); err != nil {
 		t.Fatal(err)
 	}
 	if restore, err := s.TakeWorkspaceCopyForRestore(ctx, "INFRA-2760", "pod-of-INFRA-2760"); err != nil ||
@@ -303,7 +333,8 @@ func TestARestoreReportNamingAnotherIssuesRunningCopyChangesNothing(t *testing.T
 // A confirmation keeps only a running copy whose one attempt was a send to the confirming pod. Any
 // other launcher of the issue reports work its pod does not hold — the pod the copy was refused
 // to, or one it was never sent to — and such a report keeps nothing: the row keeps its source, its
-// restore id, its time and its attempt, so it is never named off a pod whose disk lacks the work.
+// restore id, its two times and its attempt, so it is never named off a pod whose disk lacks the
+// work.
 func TestARestoreReportFromAPodNotSentTheRunningCopyKeepsNothing(t *testing.T) {
 	ctx := context.Background()
 	s := migratedStore(t)
@@ -311,11 +342,11 @@ func TestARestoreReportFromAPodNotSentTheRunningCopyKeepsNothing(t *testing.T) {
 	unchanged := func(why string, want storedCopy) {
 		t.Helper()
 		if row := storedRunningCopy(t, s, issue); row.restoreID != want.restoreID || row.sourcePod != want.sourcePod ||
-			row.attemptPod != want.attemptPod || !row.at.Equal(want.at) {
+			row.attemptPod != want.attemptPod || !row.at.Equal(want.at) || !row.writtenAt.Equal(want.writtenAt) {
 			t.Fatalf("after %s the running copy reads %+v, want it as it was: %+v", why, row, want)
 		}
 	}
-	if err := s.PutRunningWorkspaceCopy(ctx, issue, runtime.WorkspaceBundle{Bundle: []byte("PACK the first copy"),
+	if err := s.PutRunningWorkspaceCopy(ctx, issue, copyBegun(t, s), runtime.WorkspaceBundle{Bundle: []byte("PACK the first copy"),
 		Head: "f2f134541b30dfa5160a5d1ce5e17b76c967c661", PodUID: runningPodUID}); err != nil {
 		t.Fatal(err)
 	}
@@ -333,7 +364,7 @@ func TestARestoreReportFromAPodNotSentTheRunningCopyKeepsNothing(t *testing.T) {
 	unchanged("a report of the pod the copy was refused to", refused)
 
 	// The pod's next copy is taken after the push and sent to pod-two.
-	if err := s.PutRunningWorkspaceCopy(ctx, issue, runtime.WorkspaceBundle{Bundle: []byte("PACK the copy after the push"),
+	if err := s.PutRunningWorkspaceCopy(ctx, issue, copyBegun(t, s), runtime.WorkspaceBundle{Bundle: []byte("PACK the copy after the push"),
 		Head: "0a8f0aee63b13682fefe975ba0cc51da6f2ba9e9", PodUID: runningPodUID}); err != nil {
 		t.Fatal(err)
 	}
@@ -357,31 +388,31 @@ func TestARestoreReportFromAPodNotSentTheRunningCopyKeepsNothing(t *testing.T) {
 }
 
 // A running copy a pod restores is kept at its confirmation, so a push recorded between the copy's
-// write and the confirmation does not refuse it to the pod after the restoring one. In the order
-// it happens: the copy is written off pod-one, it is sent to pod-two, a push of the issue's branch
+// take and the confirmation does not refuse it to the pod after the restoring one. In the order
+// it happens: the copy is taken off pod-one, it is sent to pod-two, a push of the issue's branch
 // is recorded — GitHub's "Update branch" while pod-two restores, a person's push — and then
 // pod-two's launcher confirms the restore. From the confirmation the row stands for pod-two's
 // workspace, which holds the work; pod-two's agents come up Ready and take no copy of their own,
 // so pod-three, made by a second end of pod-two before any turn of it, is sent the work. Under the
-// copy's first write time the push would refuse it, and the work would go with pod-two.
+// copy's own time the push would refuse it, and the work would go with pod-two.
 func TestARunningCopyConfirmedAfterAPushIsSentToThePodAfterTheRestoringOne(t *testing.T) {
 	ctx := context.Background()
 	s := migratedStore(t)
 	const issue = "INFRA-1117"
 	taken := runtime.WorkspaceBundle{Bundle: []byte("PACK the copy pod-two restores"), Head: "c1",
 		Tips: []string{"c1"}, Bookmarks: map[string]string{"side": "c1"}, PodUID: "pod-one"}
-	if err := s.PutRunningWorkspaceCopy(ctx, issue, taken); err != nil {
+	if err := s.PutRunningWorkspaceCopy(ctx, issue, copyBegun(t, s), taken); err != nil {
 		t.Fatal(err)
 	}
-	written := heldCopyRow(t, s, runningCopyCopies, issue).at
+	copied := heldCopyRow(t, s, runningCopyCopies, issue).at
 	restore, err := s.TakeWorkspaceCopyForRestore(ctx, issue, "pod-two")
 	if err != nil || restore.Running.Take != runtime.WorkspaceBundleSend {
 		t.Fatalf("pod-two was answered %v (%v), want the copy sent", restore.Running.Take, err)
 	}
 	recordPush(t, s, issue, "c0", "c2")
 	pushed := newestPush(t, s, issue)
-	if !written.Before(pushed.At) {
-		t.Fatalf("the copy was written at %s and the push recorded at %s, want the push after the copy", written, pushed.At)
+	if !copied.Before(pushed.At) {
+		t.Fatalf("the copy was taken at %s and the push recorded at %s, want the push after the copy", copied, pushed.At)
 	}
 	if err := s.KeepRestoredWorkspaceCopy(ctx, issue, "pod-two", restore.Running.Bundle.Release); err != nil {
 		t.Fatal(err)
@@ -393,8 +424,9 @@ func TestARunningCopyConfirmedAfterAPushIsSentToThePodAfterTheRestoringOne(t *te
 		t.Fatalf("pod-three was answered %v of %q (%v), want the work pod-two restored sent whole and not refused by the push before the confirmation",
 			restore.Running.Take, sent.Bundle, err)
 	}
-	if kept := storedRunningCopy(t, s, issue); kept.sourcePod != "pod-two" || !kept.at.After(pushed.At) {
-		t.Fatalf("the kept copy reads off %q at %s, want it off pod-two at its confirmation, after the push at %s", kept.sourcePod, kept.at, pushed.At)
+	if kept := storedRunningCopy(t, s, issue); kept.sourcePod != "pod-two" || !kept.at.After(pushed.At) || !kept.writtenAt.Equal(kept.at) {
+		t.Fatalf("the kept copy reads off %q taken at %s and written at %s, want it off pod-two at its confirmation, after the push at %s",
+			kept.sourcePod, kept.at, kept.writtenAt, pushed.At)
 	}
 }
 
@@ -408,7 +440,7 @@ func TestARunningCopyLeavesTheIssueReleasableWhileItIsIdle(t *testing.T) {
 	st := migratedStore(t)
 	openRunningTree(t, st)
 
-	if err := st.PutRunningWorkspaceCopy(ctx, rootIssue, runtime.WorkspaceBundle{
+	if err := st.PutRunningWorkspaceCopy(ctx, rootIssue, copyBegun(t, st), runtime.WorkspaceBundle{
 		Bundle: []byte("PACK the work of a running pod"), Head: "f2f134541b30dfa5160a5d1ce5e17b76c967c661",
 		PodUID: runningPodUID}); err != nil {
 		t.Fatalf("save a running copy of %s: %v", rootIssue, err)
@@ -422,7 +454,7 @@ func TestARunningCopyLeavesTheIssueReleasableWhileItIsIdle(t *testing.T) {
 	// drops the running copy as it stores the bundle (PutWorkspaceBundle); the pod that replaces
 	// the released one is sent the bundle, and a pod that came back beside it works on and is
 	// copied.
-	if err := st.PutWorkspaceBundle(ctx, rootIssue, 7, runtime.WorkspaceBundle{
+	if err := st.PutWorkspaceBundle(ctx, rootIssue, 7, copyBegun(t, st), runtime.WorkspaceBundle{
 		Bundle: []byte("PACK the work of the release"), Head: "0a8f0aee63b13682fefe975ba0cc51da6f2ba9e9",
 		PodUID: releasedPodUID}); err != nil {
 		t.Fatalf("save a release bundle of %s: %v", rootIssue, err)
@@ -431,7 +463,7 @@ func TestARunningCopyLeavesTheIssueReleasableWhileItIsIdle(t *testing.T) {
 		restore.ReleaseBundle.Take != runtime.WorkspaceBundleSend {
 		t.Fatalf("the pod after the release was answered %v (%v), want the bundle sent", restore.ReleaseBundle.Take, err)
 	}
-	if err := st.PutRunningWorkspaceCopy(ctx, rootIssue, runtime.WorkspaceBundle{
+	if err := st.PutRunningWorkspaceCopy(ctx, rootIssue, copyBegun(t, st), runtime.WorkspaceBundle{
 		Bundle: []byte("PACK the work after the release"), Head: "f2f134541b30dfa5160a5d1ce5e17b76c967c661",
 		PodUID: runningPodUID}); err != nil {
 		t.Fatalf("save a running copy of %s: %v", rootIssue, err)
@@ -468,14 +500,14 @@ func TestARunningCopyOffThePodAReleaseBundleCameOffIsRefusedAndOneOffTheNextPodI
 	s := migratedStore(t)
 	saved := runtime.WorkspaceBundle{Bundle: []byte("PACK the work the release saved"), Head: "c1",
 		Tips: []string{"c1"}, PodUID: releasedPodUID}
-	if err := s.PutWorkspaceBundle(ctx, "INFRA-1117", 7, saved); err != nil {
+	if err := s.PutWorkspaceBundle(ctx, "INFRA-1117", 7, copyBegun(t, s), saved); err != nil {
 		t.Fatal(err)
 	}
 
 	// The copy a push in the release's window asks of the pod's roles, after the save.
 	window := runtime.WorkspaceBundle{Bundle: []byte("PACK the released pod's work after the save"), Head: "c1",
 		Tips: []string{"c1"}, PodUID: releasedPodUID}
-	if err := s.PutRunningWorkspaceCopy(ctx, "INFRA-1117", window); !errors.Is(err, ErrReleaseBundleSaved) {
+	if err := s.PutRunningWorkspaceCopy(ctx, "INFRA-1117", copyBegun(t, s), window); !errors.Is(err, ErrReleaseBundleSaved) {
 		t.Fatalf("a copy off the pod the release bundle came off was answered %v, want %v", err, ErrReleaseBundleSaved)
 	}
 	if row := heldCopyRow(t, s, runningCopyCopies, "INFRA-1117"); row.held {
@@ -506,12 +538,12 @@ func TestARunningCopyOffThePodAReleaseBundleCameOffIsRefusedAndOneOffTheNextPodI
 	// Its own copies are stored.
 	next := runtime.WorkspaceBundle{Bundle: []byte("PACK the next pod's work"), Head: "c4",
 		Tips: []string{"c4"}, PodUID: "pod-that-replaces-it"}
-	if err := s.PutRunningWorkspaceCopy(ctx, "INFRA-1117", next); err != nil {
+	if err := s.PutRunningWorkspaceCopy(ctx, "INFRA-1117", copyBegun(t, s), next); err != nil {
 		t.Fatalf("a copy off the pod that replaced the released one was answered %v, want it stored", err)
 	}
 	// A copy off the released pod that reaches the store only now is refused all the same, and
 	// leaves the next pod's copy where it is.
-	if err := s.PutRunningWorkspaceCopy(ctx, "INFRA-1117", window); !errors.Is(err, ErrReleaseBundleSaved) {
+	if err := s.PutRunningWorkspaceCopy(ctx, "INFRA-1117", copyBegun(t, s), window); !errors.Is(err, ErrReleaseBundleSaved) {
 		t.Fatalf("a late copy off the released pod was answered %v, want %v", err, ErrReleaseBundleSaved)
 	}
 	if row := storedRunningCopy(t, s, "INFRA-1117"); row.sourcePod != next.PodUID || !bytes.Equal(row.bundle, next.Bundle) {
@@ -519,12 +551,12 @@ func TestARunningCopyOffThePodAReleaseBundleCameOffIsRefusedAndOneOffTheNextPodI
 	}
 }
 
-// A copy whose content equals the stored row's moves the time alone, to the store's clock as the
-// save finds it unchanged. A turn that read the workspace and wrote nothing in it ends with the
-// work the copy before it already holds, and rewriting a multi-megabyte row every five minutes to
-// store those bytes again is waste. The bytes the second save carries differ from the stored ones
-// here — a git bundle is built afresh each time — so reading the first save's bytes back is what
-// says the row was not rewritten.
+// A copy whose content equals the stored row's moves its two times alone: `at` to the take's begin
+// and the write time to the store's clock as the save finds it unchanged. A turn that read the
+// workspace and wrote nothing in it ends with the work the copy before it already holds, and
+// rewriting a multi-megabyte row every five minutes to store those bytes again is waste. The bytes
+// the second save carries differ from the stored ones here — a git bundle is built afresh each
+// time — so reading the first save's bytes back is what says the row was not rewritten.
 func TestASaveOfTheSameRunningCopyMovesOnlyItsTimeAndRewritesNoBundleBytes(t *testing.T) {
 	ctx := context.Background()
 	s := migratedStore(t)
@@ -535,7 +567,7 @@ func TestASaveOfTheSameRunningCopyMovesOnlyItsTimeAndRewritesNoBundleBytes(t *te
 		Bookmarks: map[string]string{"legion/INFRA-1117": "dffe88ae2f793e13436cef3921adc988433fbd4e"},
 		PodUID:    runningPodUID,
 	}
-	if err := s.PutRunningWorkspaceCopy(ctx, "INFRA-1117", taken); err != nil {
+	if err := s.PutRunningWorkspaceCopy(ctx, "INFRA-1117", copyBegun(t, s), taken); err != nil {
 		t.Fatal(err)
 	}
 	stored := storedRunningCopy(t, s, "INFRA-1117")
@@ -546,7 +578,8 @@ func TestASaveOfTheSameRunningCopyMovesOnlyItsTimeAndRewritesNoBundleBytes(t *te
 	same := taken
 	same.Bundle = bytes.Repeat([]byte{0xa5}, len(taken.Bundle))
 	before := storeClock(t, s)
-	if err := s.PutRunningWorkspaceCopy(ctx, "INFRA-1117", same); err != nil {
+	begun := copyBegun(t, s)
+	if err := s.PutRunningWorkspaceCopy(ctx, "INFRA-1117", begun, same); err != nil {
 		t.Fatal(err)
 	}
 	unchanged := storedRunningCopy(t, s, "INFRA-1117")
@@ -557,8 +590,9 @@ func TestASaveOfTheSameRunningCopyMovesOnlyItsTimeAndRewritesNoBundleBytes(t *te
 		t.Fatalf("the row reads %d bytes under id %d off pod %q, want the stored %d, %d and %q untouched",
 			unchanged.size, unchanged.restoreID, unchanged.sourcePod, stored.size, stored.restoreID, stored.sourcePod)
 	}
-	if unchanged.at.Before(before) {
-		t.Fatalf("the copy reads as written at %s, want the store's clock of the save that found it unchanged, at %s or later", unchanged.at, before)
+	if !unchanged.at.Equal(begun.at) || unchanged.writtenAt.Before(before) || !unchanged.writtenAt.After(unchanged.at) {
+		t.Fatalf("the copy reads as taken at %s and written at %s, want the second save's take at %s and the store's clock of the save that found it unchanged, after it",
+			unchanged.at, unchanged.writtenAt, begun.at)
 	}
 
 	// Work the roles did since: the head moves, so the row is written whole and takes an id of
@@ -566,12 +600,12 @@ func TestASaveOfTheSameRunningCopyMovesOnlyItsTimeAndRewritesNoBundleBytes(t *te
 	moved := taken
 	moved.Head = "0a8f0aee63b13682fefe975ba0cc51da6f2ba9e9"
 	moved.Bundle = []byte("PACK the work of ten minutes later")
-	if err := s.PutRunningWorkspaceCopy(ctx, "INFRA-1117", moved); err != nil {
+	if err := s.PutRunningWorkspaceCopy(ctx, "INFRA-1117", copyBegun(t, s), moved); err != nil {
 		t.Fatal(err)
 	}
 	rewritten := storedRunningCopy(t, s, "INFRA-1117")
 	if !bytes.Equal(rewritten.bundle, moved.Bundle) || rewritten.size != moved.Size() || !rewritten.at.After(unchanged.at) {
-		t.Fatalf("the row holds %q of %d bytes written at %s, want the copy whose head moved, written after %s", rewritten.bundle, rewritten.size, rewritten.at, unchanged.at)
+		t.Fatalf("the row holds %q of %d bytes taken at %s, want the copy whose head moved, taken after %s", rewritten.bundle, rewritten.size, rewritten.at, unchanged.at)
 	}
 	if rewritten.restoreID == stored.restoreID {
 		t.Fatalf("a copy of other work kept the id %d of the copy it replaced", rewritten.restoreID)
@@ -583,7 +617,7 @@ func TestASaveOfTheSameRunningCopyMovesOnlyItsTimeAndRewritesNoBundleBytes(t *te
 	elsewhere := moved
 	elsewhere.PodUID = "pod-replacement"
 	elsewhere.Bundle = []byte("PACK the work of the replacement pod")
-	if err := s.PutRunningWorkspaceCopy(ctx, "INFRA-1117", elsewhere); err != nil {
+	if err := s.PutRunningWorkspaceCopy(ctx, "INFRA-1117", copyBegun(t, s), elsewhere); err != nil {
 		t.Fatal(err)
 	}
 	onTheNewPod := storedRunningCopy(t, s, "INFRA-1117")
@@ -609,7 +643,7 @@ func TestRunningCopyRestoreIdsSitAboveEveryIdAnIssueReleaseHolds(t *testing.T) {
 	if err := st.Pool().QueryRow(ctx, `select id from issue_releases where project = 'legion' and issue = $1`, rootIssue).Scan(&releaseID); err != nil {
 		t.Fatalf("read the id of the marked release: %v", err)
 	}
-	if err := st.PutRunningWorkspaceCopy(ctx, rootIssue, runtime.WorkspaceBundle{
+	if err := st.PutRunningWorkspaceCopy(ctx, rootIssue, copyBegun(t, st), runtime.WorkspaceBundle{
 		Bundle: []byte("PACK the work of a running pod"), Head: "f2f134541b30dfa5160a5d1ce5e17b76c967c661",
 		PodUID: runningPodUID}); err != nil {
 		t.Fatal(err)

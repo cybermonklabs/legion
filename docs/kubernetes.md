@@ -4990,7 +4990,7 @@ The 5 minutes run from the end of the copy before it and not from its start, and
 Neither the turn's end nor the cadence copies an issue between turns:
 the turn that ended took the copy that holds that work, and a workspace nobody writes would store the same bundle every period for as long as the pod stands.
 A push's copy can land between turns:
-a push from outside the pod, such as GitHub's "Update branch" or a person's push, and a webhook the daemon applies late arrive whatever the roles are doing, and the copy is taken then all the same, because the restore refuses a running copy written before the newest push the daemon recorded.
+a push from outside the pod, such as GitHub's "Update branch" or a person's push, and a webhook the daemon applies late arrive whatever the roles are doing, and the copy is taken then all the same, because the restore refuses a running copy taken before the newest push the daemon recorded.
 One copy of an issue is in flight at a time, since the six roles of an issue share one workspace and two bundlers in one workspace would collide.
 A turn that ends while a copy of its issue is in flight is owed one, and that copy is taken as soon as the one in flight ends:
 the copy in flight read the workspace before the turn's last work was written, and neither the turn's end nor the cadence copies an issue between turns, so dropping it would leave the idle pod's newest copy short of the work its last turn ended with.
@@ -5004,7 +5004,7 @@ The daemon stores it in its own database, in the `workspace_running_copies` tabl
 A workspace that holds nothing unpushed drops the issue's running copy instead, so no pod restores work that has since been pushed.
 A copy that is not taken or not stored holds nothing back:
 the daemon logs `running copy: no copy of the issue workspace was stored` with the reason by name
-— `claims_unread`, `no_live_role`, `bundler_failed`, `budget_spent`, `bundle_too_large`, `save_failed`, `drop_failed` or `release_bundle_unread` —
+— `claims_unread`, `no_live_role`, `clock_unread`, `bundler_failed`, `budget_spent`, `bundle_too_large`, `save_failed`, `drop_failed` or `release_bundle_unread` —
 the issue keeps the copy it had, and the next period tries again.
 
 Once an idle release has saved its bundle, that bundle is the pod's last copy.
@@ -5026,30 +5026,36 @@ So the daemon logs nothing for it: there was nothing at that count to log.
 An issue therefore holds up to two kinds of copy, and the two are rows in two tables.
 The release bundle is what an idle release saves, in `workspace_bundles` ([Idle release](#idle-release)).
 The running copy is what the cadence takes, in `workspace_running_copies`.
-A new pod of the issue is sent the newer of the two, by the time the database wrote each, and its launcher restores it before any role starts.
+A new pod of the issue is sent the newer of the two, by when the take of each began, and its launcher restores it before any role starts.
 The older is closed unsent:
 the daemon spends its one restore attempt and discards its body, because a copy left open could still be sent to a later pod whose workspace already holds the descendants of the work the newer copy put back.
 A tie goes to the release bundle, which was taken while the roles were idle.
 The bytes of a closed copy stay in the database for an operator.
 
 Every time the restore compares is the database's own clock, so no skew between a node, the Kubernetes API server and the database can turn its choice.
-A copy's time, the `at` of its row, is when the database wrote it: the shim's own reading of when it took the copy is not kept.
+A copy's time, the `at` of its row, is the database's clock when its take began, which the daemon reads before it asks the shim to read the workspace: the shim's own reading of when it took the copy is not kept.
+It is not the time the database wrote the copy, because the write lands seconds later, once the bundle is built and carried, and a copy read before a push and written just after the push was recorded would then carry a time after the push and be sent over the pushed commits.
+A copy whose take began before the push is older than the push however late it is written.
+A daemon that cannot read the database's clock as a take begins takes no copy, and logs the reason `clock_unread`.
+Each row also keeps `written_at`, the database's clock when the copy was written.
 A push's time is when the database recorded the push in the push's own transaction (the time rule below).
 A pod's time is when it first asked for a restore, which its launcher does at the pod's first role start, recorded by the database in the `workspace_restore_asks` table, one row per pod, keyed by the issue and the pod's uid.
 A later ask of the same pod leaves that row as it is, and each issue keeps the rows of its 16 newest pods.
 The pod's `creationTimestamp` is not read, so a pod the API server stamps created seconds before a copy is still sent that copy when it first asks after the copy was written.
-Every write of a copy's time and every pod's ask first take one lock per issue in the database and read the clock only once they hold it, so whichever of a copy's write and a pod's first ask comes first has committed before the other reads the clock.
-A copy written before a pod's first ask is then always read at that ask, and a copy written after it always carries the later time.
+Every write of a copy and every pod's ask first take one lock per issue in the database and read the clock only once they hold it, so whichever of a copy's write and a pod's first ask comes first has committed before the other reads the clock.
+A copy written before a pod's first ask is then always read at that ask, and a copy written after it always carries the later `written_at`.
 
 One comparison with another clock is left, on the pod's side: the launcher applies no copy to a workspace whose creation record, stamped by its own node's clock, is not after the copy's time, because that workspace is the one the copy came out of.
 It reads the node's clock because the workspace is made on the node, and its gap is not seconds: the workspace it refuses was made when the pod the copy came off started, that pod's whole life before the copy, and the workspace it accepts is made when a later pod starts, after the pod the copy came off has ended.
 A node clock a few seconds off the database's moves neither across.
 
 The copy offered to a pod is sent to it when the pod first asked at or after the copy was written.
-A copy written after the pod first asked is a late copy, such as the last copy of the pod before it, read before that pod ended and written once the new pod had already asked.
+This rule reads `written_at` and not `at`: the lock orders a copy's write against a pod's first ask, so the write says whether the copy was there to be read at that ask, whenever its take began.
+A copy written after the pod first asked is a late copy, such as the last copy of the pod before it, read before that pod ended and written once the new pod had already asked; its take often began before that ask.
 The new pod is sent nothing of a late copy, on that ask or any later one, and nothing is recorded on the copy: the pod has been working since its first ask, and the copy would `jj edit` its workspace back over that work.
-The work is not lost.
-The copy keeps its one attempt, and the next pod of the issue, whose first ask comes after the copy was written, is sent it, unless a newer copy of the issue has replaced the row by then, which is a copy the working pod took of its own workspace.
+The copy keeps its one attempt, and the next pod of the issue, whose first ask comes after the copy was written, is sent it.
+The late copy's work reaches that pod only while the working pod takes no copy of its own: the working pod's next copy replaces the late one, and a copy of the working pod that finds nothing unpushed drops it.
+That loss needs a copy's write stalled through a whole pod start, and is accepted.
 The daemon logs, at Info, a line that begins `launcher bundle: the saved workspace copy was written after this pod first asked for a restore` with the issue, the pod, the copy, `firstAsked` and `written`, both by the database's clock.
 A copy is written a moment after the shim reads the workspace, and a push the daemon records while a copy is being read marks that copy overtaken, so it is not stored and the copy the push asks for is taken behind it.
 
@@ -5057,19 +5063,19 @@ A restore the new pod's launcher confirms keeps the work it put back as that pod
 The confirmation counts only from the pod the copy was sent to: a report from any other launcher of the issue, such as one whose pod first asked before the copy was written, changes nothing, so a release bundle's row stays and with it the `bundle_unrestored` hold.
 A restored running copy stays in its row, names the new pod as the pod its work is on, and takes a new `restore_id` with no attempt spent.
 A restored release bundle leaves `workspace_bundles` and is written into `workspace_running_copies` in the same transaction, unless the issue's running copy is the newer of the two by the rule above, in which case that copy stays as it is.
-Either way the kept row's `at` is the moment of the confirmation by the database's clock, not the time the work was first written.
+Either way both of the kept row's times, `at` and `written_at`, are the moment of the confirmation by the database's clock, not the times of the copy it keeps.
 The new pod's disk is then the only place the work is, and a pod whose agents come up Ready and take no turn takes no copy of its own: neither a turn's end nor the cadence copies it, and only a push would.
 So a second end of that pod from outside before any turn of it, such as an eviction of a `Burstable` pod, still restores the work: the pod after it first asks after the confirmation and is sent the kept copy, whatever the API server's clock stamped it created at, and the pod that restored it is sent nothing of it, since its own workspace holds the work.
 The confirmation's time is what keeps a push recorded before it, such as GitHub's "Update branch" during a release, from refusing the kept copy under the time rule below; a push recorded after it takes a copy of its own off the new pod's live roles.
 Like any running copy, the kept copy is replaced by the pod's next copy, goes when an idle release of that pod saves its bundle, and goes when the workspace holds nothing unpushed.
 
 A cancelled idle release leaves the pod's work copied outside it.
-A release cancelled after its save stored the bundle, by a wake or a delivery, moves that bundle out of `workspace_bundles` and into `workspace_running_copies` in the cancel's own transaction, still naming the pod it came off and stamped with the database's clock at the cancel.
+A release cancelled after its save stored the bundle, by a wake or a delivery, moves that bundle out of `workspace_bundles` and into `workspace_running_copies` in the cancel's own transaction, still naming the pod it came off and with both its times stamped with the database's clock at the cancel.
 The save had deleted the issue's running copy, and the resumed agents come up Ready and take no copy until a woken turn ends, so without the move an eviction of the pod in that window would restore nothing.
 The pod the roles resume in is sent nothing of the moved copy, and the pod after it is sent the work.
 When the issue's running copy is the newer of the two by the rule above, that copy stays as it is and the bundle's row goes alone.
 A release whose save fails, because the bundler fails or the bundle is over 40 MiB, is cancelled before it replaced the running copy, and the pod goes on idle with that copy as the only copy of its work outside it.
-Neither kept copy moves anything back over a push: the pod the roles resume in is the pod the copy came off and is sent nothing of it, and every restore withholds the issue's branch and refuses a running copy written before the newest push the daemon recorded.
+Neither kept copy moves anything back over a push: the pod the roles resume in is the pod the copy came off and is sent nothing of it, and every restore withholds the issue's branch and refuses a running copy taken before the newest push the daemon recorded.
 
 No restore sets the issue's branch `legion/<KEY>` or its rescue branch `legion/<KEY>-rescue`, so no restore can move either branch.
 The daemon sends every copy without the copy's own values of those two bookmarks, so the launcher's `jj bookmark set --allow-backwards` of each bookmark it is sent leaves each of the two where the new pod's fetch from GitHub put it.
@@ -5079,7 +5085,7 @@ A copy holds a local bookmark of it where that bookmark is on a commit no remote
 Set back there, the bookmark would sit behind GitHub's tip: a `jj git push` of it moves the branch backwards and drops the later rescue, and the next rescue push leaves the bookmark conflicted, which jj then refuses to push.
 The daemon logs, at Info, one line that begins `launcher bundle: the saved workspace copy's own values of the issue's branch and its rescue branch are withheld` with the issue, the copy and, under `withheld`, each of the two bookmarks the copy held with the commit it held it on.
 
-The time rule is the second line, and it guards running copies only: a running copy is not sent when the database wrote it before the newest push of the issue's branch `legion/<KEY>` that the daemon has recorded.
+The time rule is the second line, and it guards running copies only: a running copy is not sent when its take began before the newest push of the issue's branch `legion/<KEY>` that the daemon has recorded.
 Such a copy would put the workspace back on work behind what GitHub holds, which the roles would then have to bring forward over the pushed commits.
 A running copy is taken while the roles work and push, so this is its common case: an update round replaces a pod just after its roles push.
 A refused running copy off another pod is still the newer of the issue's two copies, so a release bundle older than it is closed unsent rather than sent in its place.
@@ -5095,13 +5101,14 @@ A push to a commit the table does not hold moves both columns, and `pushed_at` o
 A push that deletes the branch moves neither column, and the all-zero sha GitHub sends as a new branch's `before` and a deleted branch's `after` names no commit and is never held.
 What the record cannot order is a late push whose two commits it has never seen, such as one more than a push behind the newest whose pushes between are late as well; it takes that push as the newest, which costs at most a refused restore and no commit on GitHub, since no restore sets the branch.
 For an issue the daemon has recorded no push for, the rule refuses nothing, since nothing newer than its copies is known to be on GitHub.
-The comparison is the copy's time against the push's, both by the database's clock: no node's or daemon's clock enters it.
+The comparison is the copy's time, when its take began, against the push's, both by the database's clock: no node's or daemon's clock enters it, and no write time does.
 The time rule alone misses two copies whose `legion/<KEY>` is behind GitHub's branch or beside it, and in both it is the withheld bookmark that keeps the pushed commits on GitHub:
 a copy taken after a push from outside the pod that the workspace never fetched, which is newer than that push by the clock, and a copy taken before a push the daemon has not recorded, whose webhook is late or was lost.
-A refused running copy has its one attempt spent and keeps its bytes for an operator, and the daemon logs, at Warn, a line that begins `launcher bundle: the saved workspace copy was written before the newest push of the issue's branch the daemon recorded` with the issue, the copy, the copy's time, the push's time and the head the push left.
+A refused running copy has its one attempt spent and keeps its bytes for an operator, and the daemon logs, at Warn, a line that begins `launcher bundle: the saved workspace copy was taken before the newest push of the issue's branch the daemon recorded` with the issue, the copy, the copy's time, the push's time and the head the push left.
 Each time a push moves the issue's `issue_pushes` row the daemon also takes a copy of that issue's workspace, through the same one copy in flight, so the issue's newest copy is normally one taken after its newest push and holds whatever came after it.
 A push that leaves the row where it was asks for no copy, so a webhook delivered twice neither bundles the workspace again nor discards a copy being built.
 A copy already being built when the push is recorded is not stored, because it read the workspace before the push although the database would write it after; the copy the push asked for follows it.
+The daemon marks such a copy only once the push's transaction has committed, so a copy whose write lands just after the push's record, before that mark, is stored all the same, and the time rule refuses it: its time is when its take began, before the push.
 The release's own save takes the same one place in flight and waits out a copy being built, so no two bundlers ever run in one workspace.
 A copy asked for while the save holds that place, by a push above all, is owed behind it and started as soon as the save gives the place back.
 Behind a save that stored no bundle it is taken; behind a save that stored one it is refused before any role is asked, as every copy off that pod is while the bundle stands, since that bundle is the pod's last copy.
@@ -5146,6 +5153,7 @@ No earlier daemon reads or writes that table, so while it runs the rows change n
 Each row is when a pod first asked for a restore, which stays true; a pod created while the earlier daemon runs has no row, and its first ask after the roll forward records one then.
 Deleting them would be the harm: every pod that lives through the rollback would be recorded again at its first ask after the roll forward, and a copy written between its true first ask and that one could then be sent to a pod that has been working since before the copy was written.
 A release bundle an earlier daemon saves while it runs is stamped with the time its shim read the workspace, by that node's clock, so after the roll forward it is the one row the restore reads by another clock, until the issue's next save replaces it.
+Its `written_at` is the database's clock all the same: the column's default stamps it as the earlier daemon writes the row, which names no such column, so the restore weighs that row against a pod's first ask by the one clock.
 An earlier daemon charges a death for every pod end again, as it did before this release, and records no reading.
 It also neither reads nor resets the claims' two runs of ends from outside the pod (`claims.pod_ends_not_ours` and `claims.start_ends_not_ours`), since no earlier daemon names either column:
 the turns it completes do not start the first run again and the readies its agents reach do not start the second, so a roll forward would read back runs the earlier daemon had ended and could charge an end for them.

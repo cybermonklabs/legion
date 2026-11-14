@@ -161,8 +161,8 @@ type outbox struct {
 
 // outboxTrees is the store's tree barrier (store.Store) as the outbox runs it: an issue close's
 // suspension, an idle release's own two decisions and the bundle it saves or drops, each with
-// the issue's running copy in its own transaction, a stop's wait for a stored claim's machine,
-// and a workflow tree close's cleanup.
+// the issue's running copy in its own transaction, the store's clock as that save's take begins,
+// a stop's wait for a stored claim's machine, and a workflow tree close's cleanup.
 type outboxTrees interface {
 	IssueSuspension(ctx context.Context, project string, closing store.IssueClose, outOfWorkflow func(status string) bool) (bool, error)
 	IssueRelease(ctx context.Context, project string, release store.IssueReleased, outOfWorkflow func(status string) bool) (store.ReleaseDecision, error)
@@ -171,7 +171,8 @@ type outboxTrees interface {
 	ReleaseSuspendedClaim(ctx context.Context, project, issue string, role claim.Role, row int64) error
 	CancelIssueRelease(ctx context.Context, project, issue string, resume store.ReleaseResumeRow, outOfWorkflow func(status string) bool) ([]claim.Role, bool, error)
 	ClearIssueRelease(ctx context.Context, project, issue string) error
-	PutWorkspaceBundle(ctx context.Context, issue string, release int64, bundle runtime.WorkspaceBundle) error
+	BeginWorkspaceCopy(ctx context.Context) (store.WorkspaceCopyBegun, error)
+	PutWorkspaceBundle(ctx context.Context, issue string, release int64, begun store.WorkspaceCopyBegun, bundle runtime.WorkspaceBundle) error
 	WorkspaceBundleSize(ctx context.Context, issue string) (int, bool, error)
 	DeleteWorkspaceBundle(ctx context.Context, issue string) error
 	StoredClaimMayRun(ctx context.Context, token claim.Token, row int64) (bool, error)
@@ -2279,6 +2280,11 @@ func (r *outbox) stopWithoutMachine(ctx context.Context, row record.OutboxRow, t
 // the pod's newest work, and behind one that stored its bundle it is refused as a copy off the pod
 // that bundle is the last copy of (takeRunningCopy).
 //
+// The bundle's time is the store's clock as the save's take begins, read once the save holds the
+// issue's place and before it asks the shim (store.Store.BeginWorkspaceCopy), as a running copy's
+// is (takeRunningCopy): the restore orders the issue's two copies by when each was read. A clock
+// the daemon cannot read fails the row before any shim is asked, and its lane runs it again.
+//
 // A save of a release that is over stores nothing: the bundle of the issue belongs to whichever
 // release the store's mark names, never to a row of one that was cancelled and is still on the
 // lane (store.IssueReleaseSave).
@@ -2308,6 +2314,10 @@ func (r *outbox) bundleIssueWorkspace(ctx context.Context, row record.OutboxRow,
 		return fmt.Errorf("release save of %s: waiting for the running copy in flight: %w", row.Issue, err)
 	}
 	defer giveBack()
+	begun, err := r.trees.BeginWorkspaceCopy(ctx)
+	if err != nil {
+		return fmt.Errorf("release save of %s: %w", row.Issue, err)
+	}
 	bundle, err := bundler.BundleWorkspace(ctx, row.Issue, payload.Role)
 	if err != nil {
 		return r.cancelRelease(ctx, row.Issue, payload.Tree, workflow.IdleHoldBundleSave, err.Error())
@@ -2325,7 +2335,7 @@ func (r *outbox) bundleIssueWorkspace(ctx context.Context, row record.OutboxRow,
 	// The bundle is stored under the release that took it, so the restore of the pod that
 	// replaces this one names the release whose work it put back (store.PutWorkspaceBundle), and
 	// the running copy this bundle supersedes goes with the save.
-	if err := r.trees.PutWorkspaceBundle(ctx, row.Issue, decision.Release, bundle); err != nil {
+	if err := r.trees.PutWorkspaceBundle(ctx, row.Issue, decision.Release, begun, bundle); err != nil {
 		return r.cancelRelease(ctx, row.Issue, payload.Tree, workflow.IdleHoldBundleSave, err.Error())
 	}
 	return nil

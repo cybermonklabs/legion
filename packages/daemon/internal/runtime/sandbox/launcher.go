@@ -439,17 +439,18 @@ func (d *launchers) serveLeakCheck(ctx context.Context, token claim.Token, podUI
 const bundleRestoreBound = 2 * time.Minute
 
 // leftForNextPodLine is the line a copy written after this pod first asked for a restore is logged
-// with (runtime.WorkspaceBundleLeftForNextPod), at Info, since nothing is lost: the copy keeps its
-// one attempt and the next pod of the issue is sent it. It names when this pod first asked and
-// when the copy was written, both by the store's clock, which is the whole of why this pod was
-// sent nothing.
+// with (runtime.WorkspaceBundleLeftForNextPod), at Info: the copy keeps its one attempt for the
+// next pod of the issue, which is sent it unless this pod's own next copy replaces it first. It
+// names when this pod first asked, when the copy's take began and when the store wrote it, all by
+// the store's clock; the write after the ask is the whole of why this pod was sent nothing.
 const leftForNextPodLine = "launcher bundle: the saved workspace copy was written after this pod first asked for a restore, so it is not sent to this pod, which has been working since that ask, and nothing is recorded on it: it keeps its one attempt for the next pod of the issue"
 
 // refusedPushedLine is the warning a running copy older than the issue's newest recorded push is
-// logged with (runtime.WorkspaceBundleRefusedPushed); a release bundle is never refused so. It is
-// the line an operator reads to know why a pod started on what was pushed although the daemon
-// held a copy, and what that copy would have done.
-const refusedPushedLine = "launcher bundle: the saved workspace copy was written before the newest push of the issue's branch the daemon recorded, so it is refused and no pod is sent it: restoring it would put the workspace back on work behind the pushed commits, which the roles would have to bring forward over them; its bytes stay in the daemon's database"
+// logged with (runtime.WorkspaceBundleRefusedPushed); a release bundle is never refused so. A
+// copy's time is when its take began, so the line says taken. It is the line an operator reads to
+// know why a pod started on what was pushed although the daemon held a copy, and what that copy
+// would have done.
+const refusedPushedLine = "launcher bundle: the saved workspace copy was taken before the newest push of the issue's branch the daemon recorded, so it is refused and no pod is sent it: restoring it would put the workspace back on work behind the pushed commits, which the roles would have to bring forward over them; its bytes stay in the daemon's database"
 
 // supersededLine is the line the older of the issue's two copies is closed unsent with
 // (runtime.WorkspaceBundleSuperseded). It names the newer copy, the one the decision offered
@@ -550,7 +551,7 @@ func (d *launchers) restoreWorkspace(ctx context.Context, token claim.Token, pod
 		switch taken.Take {
 		case runtime.WorkspaceBundleLeftForNextPod:
 			d.log.Info(leftForNextPodLine, "issue", issue, "launcher", token, "pod", podUID,
-				"copy", kind, "firstAsked", restore.FirstAsked, "written", b.At)
+				"copy", kind, "firstAsked", restore.FirstAsked, "taken", b.At, "written", taken.Written)
 		case runtime.WorkspaceBundleRefusedPushed:
 			d.log.Warn(refusedPushedLine, "issue", issue, "launcher", token, "pod", podUID,
 				"copy", kind, "taken", b.At, "bytes", taken.Size, "head", b.Head, "restore", b.Release,

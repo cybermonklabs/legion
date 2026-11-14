@@ -388,8 +388,9 @@ func (r *idleWakeRig) stopRole(issue idleRigIssue) {
 // pod standing now first asked before the save, so a role it starts after this is answered
 // nothing and spends nothing (store.TakeWorkspaceCopyForRestore).
 //
-// The store stamps the bundle with its own clock as it writes it, which is what makes the pod a
-// later start builds, whose first ask comes after the save, the pod the work is sent to.
+// The store stamps the bundle with its own clock as its take begins and as it writes it, which is
+// what makes the pod a later start builds, whose first ask comes after the save, the pod the work
+// is sent to.
 func (r *idleWakeRig) savedBundle(issue idleRigIssue) runtime.WorkspaceBundle {
 	r.t.Helper()
 	ctx := context.Background()
@@ -399,7 +400,11 @@ func (r *idleWakeRig) savedBundle(issue idleRigIssue) runtime.WorkspaceBundle {
 		r.t.Fatalf("open the store to save the bundle of %s: %v", issue.key, err)
 	}
 	defer st.Close()
-	if err := st.PutWorkspaceBundle(ctx, issue.key, idleRigEarlierRelease, saved); err != nil {
+	begun, err := st.BeginWorkspaceCopy(ctx)
+	if err != nil {
+		r.t.Fatalf("read the store's clock as the save of %s's bundle begins: %v", issue.key, err)
+	}
+	if err := st.PutWorkspaceBundle(ctx, issue.key, idleRigEarlierRelease, begun, saved); err != nil {
 		r.t.Fatalf("save the earlier release's bundle of %s: %v", issue.key, err)
 	}
 	return saved

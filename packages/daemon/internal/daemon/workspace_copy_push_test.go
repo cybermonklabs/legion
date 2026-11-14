@@ -101,7 +101,7 @@ func TestAPushTheDaemonRecordsBundlesACopyAfterItsCommitThroughTheSingleFlight(t
 		t.Fatalf("%d copies were built in the workspace at once, want one at a time", most)
 	}
 	if !stored.At.After(pushedAt) {
-		t.Fatalf("the stored copy was written at %s, want it after the push recorded at %s", stored.At, pushedAt)
+		t.Fatalf("the stored copy was taken at %s, want its take begun after the push recorded at %s", stored.At, pushedAt)
 	}
 	// The row is written before its line is logged, so the stored line is waited for, as the
 	// overtaken line is, before the lines are counted.
@@ -214,7 +214,7 @@ func TestAPushCopyOwedWhileAReleaseSaveHeldThePlaceIsTakenWhenTheSaveStoresNoBun
 		t.Fatalf("read the push record of %s: %v", rig.issue.Key, err)
 	}
 	if !stored.At.After(pushedAt) {
-		t.Fatalf("the stored copy was written at %s, want the push's copy, written after the push recorded at %s", stored.At, pushedAt)
+		t.Fatalf("the stored copy was taken at %s, want the push's copy, its take begun after the push recorded at %s", stored.At, pushedAt)
 	}
 	if asked := rig.bundler.reads(); len(asked) != 1 {
 		t.Fatalf("the cadence's bundler was asked %v, want the one copy the push owed", asked)
@@ -329,7 +329,11 @@ func TestAPushAppliedAgainOrLateNeverMovesTheNewestRecordedPushBack(t *testing.T
 	copied := func(name string) {
 		t.Helper()
 		held := runtime.WorkspaceBundle{Bundle: []byte("PACK the " + name), Head: name, Tips: []string{name}, PodUID: releasedPodUID}
-		if err := rig.st.PutRunningWorkspaceCopy(ctx, rig.issue.Key, held); err != nil {
+		begun, err := rig.st.BeginWorkspaceCopy(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := rig.st.PutRunningWorkspaceCopy(ctx, rig.issue.Key, begun, held); err != nil {
 			t.Fatalf("take the %s: %v", name, err)
 		}
 	}

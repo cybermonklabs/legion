@@ -318,12 +318,13 @@ type ReleaseResumeRow func(role claim.Role, generation uint64) (IdleReleaseRow, 
 // nothing to restore. It is moved into the running copy's table by the move a confirmed restore
 // makes (keepReleaseBundleAsRunningCopy), sourced to the pod it came off, which is the pod the
 // roles resume in: the take answers that pod nothing of it (the source rule,
-// runtime.DecideWorkspaceRestore), and offers it to the pod that replaces it. It is stamped with
-// the store's clock under the issue's copy lock, which the cancel takes before it reads the bundle
-// (lockWorkspaceCopies), as a confirmed restore's copy is (KeepRestoredWorkspaceBundle): from the
-// cancel on it stands for the resumed pod's workspace, so a push recorded during the release does
-// not refuse it to the pod that replaces that one, and that pod, which first asks once the resumed
-// one has ended, is sent it. From then on it is a running copy like any other: it holds no pod,
+// runtime.DecideWorkspaceRestore), and offers it to the pod that replaces it. Both its times, when
+// its take began and when it was written, are stamped with the store's clock under the issue's copy
+// lock, which the cancel takes before it reads the bundle (lockWorkspaceCopies), as a confirmed
+// restore's copy is (KeepRestoredWorkspaceBundle): from the cancel on it stands for the resumed
+// pod's workspace, so a push recorded during the release does not refuse it to the pod that
+// replaces that one, and that pod, which first asks once the resumed one has ended, after the move
+// was written, is sent it. From then on it is a running copy like any other: it holds no pod,
 // the pod's own next copy replaces it, a push recorded after the cancel refuses it
 // (runtime.WorkspaceBundleRefusedPushed) and takes a copy of its own off the resumed roles, and
 // every restore withholds the issue's branch (runtime.RestorableBookmarks), so no pod that
@@ -397,8 +398,7 @@ func (s *Store) CancelIssueRelease(ctx context.Context, project, issue string, r
 		// The release's bundle goes into the issue's running copy with the mark, in this
 		// transaction, still sourced to the pod it came off. A release whose save stored none has
 		// no row here. A move that fails fails the cancel, which its row's lane runs again. The
-		// issue's copy lock comes before the bundle's row is read, as in every write of a copy's
-		// time.
+		// issue's copy lock comes before the bundle's row is read, as in every write of a copy.
 		if err := lockWorkspaceCopies(ctx, tx, issue); err != nil {
 			return err
 		}

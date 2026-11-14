@@ -7,21 +7,31 @@ import (
 
 // The decision between an issue's two saved copies, read as a table over every rule it keeps: a
 // copy the issue does not hold, whose one attempt is spent or whose work came off the pod asking
-// is answered nothing; the newer of the copies the issue holds is offered and the older
-// superseded, a tie going to the release bundle, whether or not the newer can be sent this pod;
-// a running copy older than the newest recorded push is refused, offered or not, and a release
-// bundle never is; and the offered copy is sent to a pod whose first ask is at or after the copy's
-// time, and left for the next pod, with nothing recorded, by a pod that first asked before it.
+// is answered nothing; the newer of the copies the issue holds, by when each take began, is
+// offered and the older superseded, a tie going to the release bundle, whether or not the newer
+// can be sent this pod; a running copy whose take began before the newest recorded push is
+// refused, offered or not, however late it was written, and a release bundle never is; and the
+// offered copy is sent to a pod whose first ask is at or after the copy's write, and left for the
+// next pod, with nothing recorded, by a pod that first asked before it, whenever its take began.
 func TestDecideWorkspaceRestoreAnswersEachCopyByEveryRuleOfTheRestore(t *testing.T) {
 	at := time.Date(2026, 11, 12, 9, 30, 0, 0, time.UTC)
 	const released, cameBack, asking = "pod-the-work-came-off", "pod-that-came-back", "pod-asking"
-	held := func(at time.Time) WorkspaceCopyHeld { return WorkspaceCopyHeld{At: at, Source: released} }
-	spent := func(at time.Time) WorkspaceCopyHeld { return WorkspaceCopyHeld{At: at, Spent: true, Source: released} }
-	fromThisPod := func(at time.Time) WorkspaceCopyHeld { return WorkspaceCopyHeld{At: at, Source: asking} }
+	// Each of these copies was taken and written at the one time, unless a case names both.
+	held := func(at time.Time) WorkspaceCopyHeld { return WorkspaceCopyHeld{At: at, Written: at, Source: released} }
+	spent := func(at time.Time) WorkspaceCopyHeld {
+		return WorkspaceCopyHeld{At: at, Written: at, Spent: true, Source: released}
+	}
+	fromThisPod := func(at time.Time) WorkspaceCopyHeld { return WorkspaceCopyHeld{At: at, Written: at, Source: asking} }
 	// A running copy off a pod other than the one the release bundle came off: a pod that came
 	// back without restoring the bundle, which is the newer-copy rule's case.
-	elsewhere := func(at time.Time) WorkspaceCopyHeld { return WorkspaceCopyHeld{At: at, Source: cameBack} }
-	spentElsewhere := func(at time.Time) WorkspaceCopyHeld { return WorkspaceCopyHeld{At: at, Spent: true, Source: cameBack} }
+	elsewhere := func(at time.Time) WorkspaceCopyHeld { return WorkspaceCopyHeld{At: at, Written: at, Source: cameBack} }
+	spentElsewhere := func(at time.Time) WorkspaceCopyHeld {
+		return WorkspaceCopyHeld{At: at, Written: at, Spent: true, Source: cameBack}
+	}
+	// A copy whose take began at taken and whose write landed at written.
+	takenThenWritten := func(taken, written time.Time) WorkspaceCopyHeld {
+		return WorkspaceCopyHeld{At: taken, Written: written, Source: released}
+	}
 	pushed := WorkspacePush{At: at.Add(time.Minute), Head: "c2"}
 	// A pod that first asked long after every copy below, unless a case names its own first ask.
 	later := at.Add(time.Hour)
@@ -95,6 +105,18 @@ func TestDecideWorkspaceRestoreAnswersEachCopyByEveryRuleOfTheRestore(t *testing
 			wantBundle: WorkspaceBundleNone, wantRunning: WorkspaceBundleNone, wantOffered: WorkspaceCopyRunning},
 		{name: "the newer copy left for the next pod still supersedes the older", bundle: held(at), running: elsewhere(at.Add(time.Minute)), firstAsked: at.Add(30 * time.Second),
 			wantBundle: WorkspaceBundleSuperseded, wantRunning: WorkspaceBundleLeftForNextPod, wantOffered: WorkspaceCopyRunning},
+		{name: "a late copy whose take began before the pod first asked is left for the next pod", running: takenThenWritten(at.Add(-time.Second), at.Add(time.Second)), firstAsked: at,
+			wantBundle: WorkspaceBundleNone, wantRunning: WorkspaceBundleLeftForNextPod, wantOffered: WorkspaceCopyRunning},
+		{name: "a late release bundle whose save's take began before the pod first asked", bundle: takenThenWritten(at.Add(-time.Second), at.Add(time.Second)), firstAsked: at,
+			wantBundle: WorkspaceBundleLeftForNextPod, wantRunning: WorkspaceBundleNone, wantOffered: WorkspaceCopyReleaseBundle},
+		{name: "a copy written before the pod first asked is sent however long before its take began", running: takenThenWritten(at.Add(-time.Hour), at), firstAsked: at.Add(time.Microsecond),
+			wantBundle: WorkspaceBundleNone, wantRunning: WorkspaceBundleSend, wantOffered: WorkspaceCopyRunning},
+		{name: "a copy whose take began before the push and whose write landed after it is refused", running: takenThenWritten(pushed.At.Add(-time.Second), pushed.At.Add(time.Second)), push: pushed,
+			wantBundle: WorkspaceBundleNone, wantRunning: WorkspaceBundleRefusedPushed, wantOffered: WorkspaceCopyRunning},
+		{name: "a copy whose take began at the push's own instant is sent", running: takenThenWritten(pushed.At, pushed.At.Add(time.Second)), push: pushed,
+			wantBundle: WorkspaceBundleNone, wantRunning: WorkspaceBundleSend, wantOffered: WorkspaceCopyRunning},
+		{name: "the newer copy is the one whose take began later, whichever was written later", bundle: takenThenWritten(at, at.Add(10*time.Minute)), running: WorkspaceCopyHeld{At: at.Add(time.Minute), Written: at.Add(2 * time.Minute), Source: cameBack},
+			wantBundle: WorkspaceBundleSuperseded, wantRunning: WorkspaceBundleSend, wantOffered: WorkspaceCopyRunning},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			firstAsked := c.firstAsked

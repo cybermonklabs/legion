@@ -573,6 +573,47 @@ func TestEachFailedWorkspaceCopyIsLoggedByItsReasonAndLeavesTheIdleIssuesCopyAsI
 	}
 }
 
+// A copy's time is the store's clock as its take begins (store.Store.BeginWorkspaceCopy), read
+// before any shim is asked, so a copy whose take cannot read that clock is no copy: the daemon asks
+// no shim, logs the copy under its own reason, and the issue keeps the copy it had. A copy taken
+// with no such time would have only its write to stamp it, and a copy read before a push and
+// written after it would then pass the push's rule. The store here is one whose pool is closed;
+// the claims are the caller's, as the cadence hands them, so the clock is the first thing the copy
+// reads of it.
+func TestACopyWhoseTakeCannotReadTheStoresClockAsksNoShimAndKeepsTheIssuesCopy(t *testing.T) {
+	rig := newCopyRig(t)
+	ctx := context.Background()
+	rig.copyWorkspace(t)
+	before, held := rig.facts(t)
+	if !held {
+		t.Fatal("the issue holds no copy to leave alone")
+	}
+	claims, err := rig.st.Claims(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	closed, err := store.Open(ctx, rig.pool.Config().ConnString())
+	if err != nil {
+		t.Fatal(err)
+	}
+	closed.Close()
+	rig.w.copyStore = closed
+
+	rig.w.takeRunningCopy(ctx, rig.issue.Key, claims, slog.LevelWarn)
+
+	line := rig.awaitLine(t, runningCopyUnsavedLine)
+	if got := line["reason"]; got != runningCopyClockUnread {
+		t.Fatalf("the copy whose take could not read the store's clock is logged under reason %v, want %s", got, runningCopyClockUnread)
+	}
+	if asked := rig.bundler.reads(); len(asked) != 0 {
+		t.Fatalf("the bundler was asked %v, want no shim asked for a copy with no time", asked)
+	}
+	rig.w.copyStore = rig.st
+	if after, held := rig.facts(t); !held || after.Size != before.Size || !after.At.Equal(before.At) {
+		t.Fatalf("the issue holds %+v (held %v), want the copy it held before, %+v", after, held, before)
+	}
+}
+
 // A workspace with nothing unpushed bundles to nothing, and the store refuses an empty copy, so
 // the cadence drops the issue's running copy instead: a copy taken minutes ago holds work that
 // has since been pushed, and the next pod must never restore it over the branch it was pushed to.

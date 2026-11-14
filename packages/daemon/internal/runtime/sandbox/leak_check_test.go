@@ -63,9 +63,7 @@ func leakCheckStore(t *testing.T) (*store.Store, runtime.WorkspaceBundle) {
 	t.Helper()
 	st := migratedStore(t)
 	saved := savedWorkspaceBundle()
-	if err := st.PutWorkspaceBundle(context.Background(), testTree, saved.Release, saved); err != nil {
-		t.Fatalf("save the released workspace's bundle: %v", err)
-	}
+	saveReleaseBundle(t, st, saved)
 	return st, saved
 }
 

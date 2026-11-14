@@ -82,6 +82,9 @@ const (
 	// push of a released or finished issue meets it every time (copyWorkspaceAtPush), and so does
 	// an owed copy, whose role went after everything that owed it found one (takeRunningCopy).
 	runningCopyNoRole = "no_live_role"
+	// runningCopyClockUnread: the daemon could not read the store's clock as the copy's take
+	// began, which is the copy's time (store.Store.BeginWorkspaceCopy), so it asked no shim.
+	runningCopyClockUnread = "clock_unread"
 	// runningCopyBundlerFailed: the bundler answered an error.
 	runningCopyBundlerFailed = "bundler_failed"
 	// runningCopyBudgetSpent: the bundler was still building at runningCopyBudget and the daemon
@@ -120,8 +123,8 @@ const (
 // It is memory and not a table. A daemon that restarts has taken no copy in this process, so
 // every issue in a turn is due at its first pass, which is the right answer: the daemon cannot
 // know what the daemon before it copied, and a copy whose content equals the stored row's moves
-// that row's time alone (store.PutRunningWorkspaceCopy). An entry is a few words per issue the
-// daemon has copied since it started.
+// that row's two times alone (store.PutRunningWorkspaceCopy). An entry is a few words per issue
+// the daemon has copied since it started.
 //
 // The run's context is held here rather than handed down because the paths that start a copy are
 // callbacks — a claim's durable state (copyWorkspaceAtTurnEnd) and a push fact's commit
@@ -536,6 +539,14 @@ func (w *workflowRuntime) startOwedCopy(issue string) {
 // (copyWorkspaceAtPush): it may hold none of the pushed commits, and the push's own copy is owed
 // behind it.
 //
+// The copy's time is the store's clock as its take begins, read once the copy holds the issue's
+// place and before the shim is asked (store.Store.BeginWorkspaceCopy), and the store writes that
+// time and not its own clock at the write. A copy read before a push and written after the push's
+// record is then older than the push, and the restore refuses it (runtime.DecideWorkspaceRestore):
+// the overtaken mark above is set only once the push's transaction has committed, so a copy that
+// checks the mark just before it and writes just after the push's record is stored all the same.
+// A clock the daemon cannot read is a copy not taken, logged under its reason as every other.
+//
 // A copy off a pod an idle release has saved its bundle off is refused, before the issue's place
 // is taken and the shim is asked, and again by the store's write: once an idle release has saved
 // its bundle, that bundle is the pod's last copy. The release's rows run the save first, then a
@@ -610,6 +621,11 @@ func (w *workflowRuntime) takeRunningCopy(ctx context.Context, issue string, cla
 	// a workspace growing slow long before a copy is abandoned at its budget.
 	started := time.Now()
 	took := func() string { return time.Since(started).Round(time.Millisecond).String() }
+	begun, err := w.copyStore.BeginWorkspaceCopy(ctx)
+	if err != nil {
+		unsaved("role", role, "reason", runningCopyClockUnread, "error", err)
+		return
+	}
 	bundle, err := w.copyBundler.BundleWorkspace(ctx, issue, role)
 	if err != nil {
 		reason := runningCopyBundlerFailed
@@ -632,7 +648,7 @@ func (w *workflowRuntime) takeRunningCopy(ctx context.Context, issue string, cla
 	case w.copies.overtaken(issue):
 		w.log.Info(runningCopyOvertakenLine, "issue", issue, "role", role, "bytes", size, "taken", bundle.At, "took", took())
 	default:
-		err := w.copyStore.PutRunningWorkspaceCopy(ctx, issue, bundle)
+		err := w.copyStore.PutRunningWorkspaceCopy(ctx, issue, begun, bundle)
 		if errors.Is(err, store.ErrReleaseBundleSaved) {
 			w.log.Info(runningCopyUnsavedLine, "issue", issue, "role", role, "reason", runningCopyReleaseBundled,
 				"pod", bundle.PodUID, "bytes", size, "took", took())

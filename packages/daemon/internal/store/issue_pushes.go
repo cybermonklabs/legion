@@ -14,19 +14,19 @@ import (
 
 // RecordIssuePush records the push of issue's branch from before to after in the push fact's own
 // transaction tx (workflow's push handler), at the store's clock. It is the record the restore of a
-// new pod reads to refuse every running copy of the issue's workspace written before the issue's
+// new pod reads to refuse every running copy of the issue's workspace taken before the issue's
 // newest push (TakeWorkspaceCopyForRestore, runtime.DecideWorkspaceRestore), and the migration
 // that made its two tables says which record it is (20261113005308_issue_pushes).
 //
-// The push's time is the store's, as a copy's `at` is the store's when it wrote the copy
-// (PutRunningWorkspaceCopy) and a pod's first ask the store's when it recorded the ask
+// The push's time is the store's, as a copy's `at` is the store's when its take began
+// (BeginWorkspaceCopy) and a pod's first ask the store's when it recorded the ask
 // (TakeWorkspaceCopyForRestore), so the restore compares one clock alone. It is the time the
 // statement that reads the push's heads began (statement_timestamp), read once and written for
 // both heads and the row: the database's own clock, read after the fact's transaction has waited
 // its turn under the intake's one serializer (intake.ApplyFact). It is not tx's now(), which is
 // when that transaction began, before the wait, so it can be seconds before the push is recorded,
-// and a copy written in those seconds, read before the push, would carry the later time and pass
-// the rule this record exists for.
+// and a copy whose take began in those seconds, reading the workspace before the push, would
+// carry the later time and pass the rule this record exists for.
 //
 // One row per issue holds the newest push, and its time cannot say which push that is. Every push
 // is recorded at the store's own clock, so a redelivered webhook, the per-issue read's rebuild of a

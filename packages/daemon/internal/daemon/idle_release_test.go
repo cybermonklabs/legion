@@ -888,7 +888,11 @@ func TestAReleaseBundleOlderThanARecordedPushIsRestoredAndItsIssueIsReleasedWhen
 	ctx := context.Background()
 	bundle := runtime.WorkspaceBundle{Bundle: []byte("PACK the work the release saved"), Head: "c1",
 		Tips: []string{"c1"}, PodUID: releasedPodUID}
-	if err := rig.st.PutWorkspaceBundle(ctx, rig.issue.Key, 1, bundle); err != nil {
+	begun, err := rig.st.BeginWorkspaceCopy(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := rig.st.PutWorkspaceBundle(ctx, rig.issue.Key, 1, begun, bundle); err != nil {
 		t.Fatalf("save the release's bundle: %v", err)
 	}
 	rig.w.releaseIdlePod(ctx, rig.issue.Key)

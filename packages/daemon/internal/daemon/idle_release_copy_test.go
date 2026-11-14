@@ -20,12 +20,18 @@ func (r *idleRig) copied(t *testing.T) bool {
 }
 
 // copyWorkspace takes the copy the daemon takes while a pod runs, off the pod this rig's release
-// takes its own bundle from, and answers it.
+// takes its own bundle from, and answers it: the store's clock read as the take begins, then the
+// write, as the cadence makes them (takeRunningCopy).
 func (r *idleRig) copyWorkspace(t *testing.T) runtime.WorkspaceBundle {
 	t.Helper()
+	ctx := context.Background()
 	taken := runtime.WorkspaceBundle{Bundle: []byte("PACK the work the cadence copied"), Head: "abc",
 		Tips: []string{"abc"}, PodUID: releasedPodUID}
-	if err := r.st.PutRunningWorkspaceCopy(context.Background(), r.issue.Key, taken); err != nil {
+	begun, err := r.st.BeginWorkspaceCopy(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.st.PutRunningWorkspaceCopy(ctx, r.issue.Key, begun, taken); err != nil {
 		t.Fatalf("take the running copy of %s: %v", r.issue.Key, err)
 	}
 	return taken
@@ -105,12 +111,20 @@ func TestTheWorkOfAFinishedIssueLeavesNoReleaseBundleAndNoRunningCopy(t *testing
 	ctx := context.Background()
 	saved := runtime.WorkspaceBundle{Bundle: []byte("PACK the work the release saved"), Head: "abc",
 		PodUID: releasedPodUID}
-	if err := rig.st.PutWorkspaceBundle(ctx, rig.issue.Key, 1, saved); err != nil {
+	saveBegun, err := rig.st.BeginWorkspaceCopy(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := rig.st.PutWorkspaceBundle(ctx, rig.issue.Key, 1, saveBegun, saved); err != nil {
 		t.Fatalf("save the release's bundle: %v", err)
 	}
 	// The pod that replaced the released one works on, and the cadence copies it: no copy is
 	// stored off the pod the bundle came off once the bundle is saved (store.ErrReleaseBundleSaved).
-	if err := rig.st.PutRunningWorkspaceCopy(ctx, rig.issue.Key, runtime.WorkspaceBundle{
+	copyBegun, err := rig.st.BeginWorkspaceCopy(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := rig.st.PutRunningWorkspaceCopy(ctx, rig.issue.Key, copyBegun, runtime.WorkspaceBundle{
 		Bundle: []byte("PACK the work of the pod that replaced it"), Head: "abc", Tips: []string{"abc"},
 		PodUID: "pod-that-replaced-it"}); err != nil {
 		t.Fatalf("take the running copy of %s: %v", rig.issue.Key, err)
@@ -205,7 +219,11 @@ func TestALateRestoreReportKeepsOnlyTheSavedWorkItsIdNames(t *testing.T) {
 
 	saved := runtime.WorkspaceBundle{Bundle: []byte("PACK the work the release saved"), Head: "abc",
 		PodUID: "pod-being-released"}
-	if err := st.PutWorkspaceBundle(ctx, issue, release, saved); err != nil {
+	saveBegun, err := st.BeginWorkspaceCopy(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.PutWorkspaceBundle(ctx, issue, release, saveBegun, saved); err != nil {
 		t.Fatalf("save the release's bundle: %v", err)
 	}
 	// The bundle is sent to a pod whose launcher holds its report until some connection carries
@@ -216,7 +234,11 @@ func TestALateRestoreReportKeepsOnlyTheSavedWorkItsIdNames(t *testing.T) {
 	}
 	taken := runtime.WorkspaceBundle{Bundle: []byte("PACK the work the cadence copied"), Head: "abc",
 		PodUID: "pod-still-running"}
-	if err := st.PutRunningWorkspaceCopy(ctx, issue, taken); err != nil {
+	takeBegun, err := st.BeginWorkspaceCopy(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.PutRunningWorkspaceCopy(ctx, issue, takeBegun, taken); err != nil {
 		t.Fatalf("take the running copy: %v", err)
 	}
 	// The copy's own restore id, as the slices carry it to the launcher and the report brings it
@@ -253,7 +275,11 @@ func TestALateRestoreReportKeepsOnlyTheSavedWorkItsIdNames(t *testing.T) {
 	// it is.
 	newer := taken
 	newer.Bundle = []byte("PACK the work the cadence copied next")
-	if err := st.PutRunningWorkspaceCopy(ctx, issue, newer); err != nil {
+	nextBegun, err := st.BeginWorkspaceCopy(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.PutRunningWorkspaceCopy(ctx, issue, nextBegun, newer); err != nil {
 		t.Fatalf("take the running copy again: %v", err)
 	}
 	stored, _ := runningCopyOf(t, st, issue)
@@ -264,7 +290,7 @@ func TestALateRestoreReportKeepsOnlyTheSavedWorkItsIdNames(t *testing.T) {
 		t.Fatalf("after the report of the release the store holds the bundle = %t (%v), want it gone", held, err)
 	}
 	if facts, held := runningCopyOf(t, st, issue); !held || facts.Size != newer.Size() || !facts.At.Equal(stored.At) {
-		t.Fatalf("after the report of the release the store holds the running copy %+v, want the newer copy of %d bytes written %s kept",
+		t.Fatalf("after the report of the release the store holds the running copy %+v, want the newer copy of %d bytes taken %s kept",
 			facts, newer.Size(), stored.At)
 	}
 
