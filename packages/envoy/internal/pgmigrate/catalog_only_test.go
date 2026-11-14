@@ -414,11 +414,11 @@ var refusedRows = []refusedRow{
 	// defaults, that a pending migration creates in other would take the call.
 	{name: "default now() under a search_path that lists other before pg_catalog", migrations: []string{"alter table big add column c timestamptz default now()"}, searchPath: "other, pg_catalog, public"},
 
-	// The rows of review round 3. A rename of a relation renames its row type, which keeps every
-	// cast that targets it. Under a search_path that lists early before public, mood names the
-	// enum public.mood until the first migration renames early.foo to mood. After it, mood names
-	// early.mood, and Postgres rewrites big through the fixture's volatile cast from text to that
-	// row type, a cast the census never read: so the rename must turn the reads off.
+	// A rename of a relation renames its row type, which keeps every cast that targets it. Under a
+	// search_path that lists early before public, mood names the enum public.mood until the first
+	// migration renames early.foo to mood. After it, mood names early.mood, and Postgres rewrites
+	// big through the fixture's volatile cast from text to that row type, a cast the census never
+	// read: so the rename must turn the reads off.
 	{name: "after a rename of a table to an enum's name in an earlier schema", migrations: []string{"alter table early.foo rename to mood", "alter table big add column c mood default 'a'::text"}, searchPath: "early, public"},
 	// Every rename of a relation turns the reads off as the one above does, since each renames a
 	// row type. The census only parses the first statements of the last two rows, so mv_1792 and
@@ -457,9 +457,9 @@ var refusedRows = []refusedRow{
 	{name: "after an insert into pg_catalog.pg_cast", migrations: []string{"insert into pg_catalog.pg_cast select * from pg_cast where false", addColumn}},
 	{name: "after a select whose with deletes from pg_cast", migrations: []string{"with w as (delete from pg_cast where false returning 1) select count(*) from w", addColumn}},
 
-	// The rows of review round 4. The census accounts for every statement that a pending
-	// migration's text shows, whoever may run it, and it only parses the first migration of each
-	// row: so et_fn_1792 and et_1792 need not exist.
+	// The census accounts for every statement that a pending migration's text shows, whoever may
+	// run it, and it only parses the first migration of each row: so et_fn_1792 and et_1792 need
+	// not exist.
 	//
 	// Rule 1 (catalogRelation): a statement that names a relation of pg_catalog turns the reads
 	// off, a read as well as a write, and so does one that names a view over such a relation: the
