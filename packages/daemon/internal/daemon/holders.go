@@ -1,5 +1,5 @@
 // Package daemon: this file holds the concrete rebuildable holders the daemon registers with
-// the rebuilder — the Dispatch client (dispatchHolder), the Envoy publisher (publisherHolder),
+// the rebuilder — the Dispatch client (dispatchHolder), the Envoy listener (publisherHolder),
 // the GitHub App manager (appsHolder), the API server (apiHolder), the repository mapping
 // (mappingHolder), the design gate's steps (gatedStepsHolder), the worker stream listener
 // (workerStreamHolder), the launch specs (specsHolder) and the controller keeper
@@ -206,26 +206,42 @@ func (h *dispatchHolder) PutDesignGates(ctx context.Context, key string, gates [
 	return h.get().PutDesignGates(ctx, key, gates)
 }
 
-// publisherHolder is the Envoy notify publisher (config.HolderEnvoyPublisher), which the outbox
-// publishes every notice through. It is a notify.Publisher itself. A rebuild reads the Envoy
-// bearer again (readEnvoyToken) and swaps; the publisher it replaces is an HTTP client with
-// nothing to drain, and a publish in flight finishes on the one it started on.
+// publisherHolder is the Envoy listener as the daemon reaches it (config.HolderEnvoyPublisher):
+// the base URL and bearer the configuration names now, and the client over them. Every reader of
+// the listener reads through it at each call, never a client of its own built at boot: the outbox
+// publishes every notice, role message, hook prompt, merge-queue removal notice and update
+// round's ask through it (newOutbox), the settings announcer each change (serve), the clean stop
+// of a dead role's session reads and deletes the registration through it (cleanSessionStop), and
+// the controller's liveness probe asks it for the URL and the bearer at each probe
+// (watchController). So a change of `envoy_url` or `envoy_token_file` reaches every one of them
+// at its next call. It is built where supervision is (openSupervision), before the workflow
+// attaches the outbox to it.
+//
+// A rebuild reads the Envoy bearer again (readEnvoyToken) and swaps; the client it replaces is an
+// HTTP client with nothing to drain, and a call in flight finishes on the one it started on.
 type publisherHolder struct {
-	current atomic.Pointer[notify.Publisher]
+	current atomic.Pointer[envoyListener]
+}
+
+// envoyListener is the Envoy listener of one base URL and one bearer, and the client over both.
+type envoyListener struct {
+	url, token string
+	client     *notify.HTTPPublisher
 }
 
 var _ notify.Publisher = (*publisherHolder)(nil)
 
-// envoyPublisher is the Envoy notify publisher of one configuration and one bearer: boot's and
-// the holder's rebuild both build it here.
-func envoyPublisher(cfg config.Config, token string) notify.Publisher {
-	return notify.New(cfg.EnvoyURL, token)
+// newPublisherHolder is the holder of the listener at url, reached with token ("" sends none).
+func newPublisherHolder(url, token string) *publisherHolder {
+	h := &publisherHolder{}
+	h.store(url, token)
+	return h
 }
 
-func newPublisherHolder(publisher notify.Publisher) *publisherHolder {
-	h := &publisherHolder{}
-	h.current.Store(&publisher)
-	return h
+// store swaps in the listener at url, reached with token: boot's holder and every rebuild build
+// it here, so the two can never differ in what they build.
+func (h *publisherHolder) store(url, token string) {
+	h.current.Store(&envoyListener{url: url, token: token, client: notify.New(url, token)})
 }
 
 func (h *publisherHolder) holder() string { return config.HolderEnvoyPublisher }
@@ -241,13 +257,27 @@ func (h *publisherHolder) rebuild(cfg *config.Config) error {
 	if err != nil {
 		return err
 	}
-	publisher := envoyPublisher(*cfg, token)
-	h.current.Store(&publisher)
+	h.store(cfg.EnvoyURL, token)
 	return nil
 }
 
+// endpoint is the listener's base URL and its bearer as the daemon reaches it now, which the
+// controller's liveness probe asks at every probe (controller.ProberOptions.Envoy).
+func (h *publisherHolder) endpoint() (url, token string) {
+	listener := h.current.Load()
+	return listener.url, listener.token
+}
+
 func (h *publisherHolder) Publish(ctx context.Context, topic, message string, payload any, dedupeKey string) error {
-	return (*h.current.Load()).Publish(ctx, topic, message, payload, dedupeKey)
+	return h.current.Load().client.Publish(ctx, topic, message, payload, dedupeKey)
+}
+
+func (h *publisherHolder) ReadSessionRegistration(ctx context.Context, session string) (notify.SessionRegistration, error) {
+	return h.current.Load().client.ReadSessionRegistration(ctx, session)
+}
+
+func (h *publisherHolder) DeleteSession(ctx context.Context, session string, conditions notify.DeleteConditions) (notify.SessionDeleted, error) {
+	return h.current.Load().client.DeleteSession(ctx, session, conditions)
 }
 
 // appsHolder is the GitHub App credential manager (config.HolderGitHubApps): the source every

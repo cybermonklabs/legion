@@ -57,40 +57,7 @@ func TestAHeldNoticeReachesTheControllerTopicAndItsRetriesNeverResendTheArchitec
 	}
 	architectTopic, controllerTopic := notify.RoleTopicPrefix+string(architect), notify.ControllerTopic(token)
 	listener.refuseFirst(controllerTopic, 2)
-	raw, err := pgxpool.New(context.Background(), cfg.PostgresDSN)
-	if err != nil {
-		t.Fatalf("open the daemon's database: %v", err)
-	}
-	pool := store.NewPool(raw)
-	t.Cleanup(pool.Close)
-	// The issue's tree is admitted, as every tree the workflow runs is: its record, the slot its
-	// work holds and its open lifecycle are written in one transaction, as promotion writes them.
-	// The lifecycle is what says the tree runs now that a slot counts one issue at work, so a pass
-	// that saw the slot without it would take the tree out of the workflow and its architect would
-	// be told nothing. Slot indexes are unique across the shared database, so the tree takes the
-	// next free one.
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
-		records := record.NewStore()
-		if err := records.PutIssue(context.Background(), tx, record.Issue{
-			Key: issue, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: issue, Project: cfg.Project, Title: "held", Phase: phase.Planning, Generation: 1, Status: "in_progress", Rank: "U",
-		}); err != nil {
-			return err
-		}
-		taken, err := records.Slots(context.Background(), tx)
-		if err != nil {
-			return err
-		}
-		index := 0
-		for _, slot := range taken {
-			index = max(index, slot.Index+1)
-		}
-		if err := records.PutSlot(context.Background(), tx, record.Slot{Issue: issue, Index: index, AdmittedAt: time.Now()}); err != nil {
-			return err
-		}
-		return openTreeTx(context.Background(), tx, cfg.Project, issue)
-	}); err != nil {
-		t.Fatalf("record the running tree: %v", err)
-	}
+	pool := recordRunningTree(t, cfg.PostgresDSN, cfg.Project, issue)
 	hostWorkspace(t, cfg.StateDir, "acme/widgets", issue)
 	// The one launch the limit allows fails, and the operator is answered with it; the claim is
 	// failed, and the workflow holds the issue.
@@ -145,6 +112,46 @@ func TestAHeldNoticeReachesTheControllerTopicAndItsRetriesNeverResendTheArchitec
 		t.Fatalf("the controller's payload = %+v with failure %+v, want %+v with failure %+v beside its reason",
 			payload, payload.Failure, want, want.Failure)
 	}
+}
+
+// recordRunningTree records issue as a running tree of project in the daemon's database at dsn,
+// as every tree the workflow runs is: its record, the slot its work holds and its open lifecycle
+// are written in one transaction, as promotion writes them. The lifecycle is what says the tree
+// runs now that a slot counts one issue at work, so a pass that saw the slot without it would
+// take the tree out of the workflow and its architect would be told nothing. Slot indexes are
+// unique across the shared database, so the tree takes the next free one. It answers the pool it
+// wrote through, which closes when t ends.
+func recordRunningTree(t *testing.T, dsn, project, issue string) *store.Pool {
+	t.Helper()
+	raw, err := pgxpool.New(context.Background(), dsn)
+	if err != nil {
+		t.Fatalf("open the daemon's database: %v", err)
+	}
+	pool := store.NewPool(raw)
+	t.Cleanup(pool.Close)
+	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+		records := record.NewStore()
+		if err := records.PutIssue(context.Background(), tx, record.Issue{
+			Key: issue, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: issue, Project: project, Title: "held", Phase: phase.Planning, Generation: 1, Status: "in_progress", Rank: "U",
+		}); err != nil {
+			return err
+		}
+		taken, err := records.Slots(context.Background(), tx)
+		if err != nil {
+			return err
+		}
+		index := 0
+		for _, slot := range taken {
+			index = max(index, slot.Index+1)
+		}
+		if err := records.PutSlot(context.Background(), tx, record.Slot{Issue: issue, Index: index, AdmittedAt: time.Now()}); err != nil {
+			return err
+		}
+		return openTreeTx(context.Background(), tx, project, issue)
+	}); err != nil {
+		t.Fatalf("record the running tree: %v", err)
+	}
+	return pool
 }
 
 // noticeListener is the Envoy listener's publish route as the outbox uses it: it takes every

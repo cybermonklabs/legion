@@ -57,7 +57,8 @@ const (
 	HolderNATS = "nats"
 	// HolderDispatchClient is the Dispatch client every workflow call goes through.
 	HolderDispatchClient = "dispatch-client"
-	// HolderEnvoyPublisher is the Envoy notify publisher.
+	// HolderEnvoyPublisher is the Envoy listener's client, which every notice, the clean stop of
+	// a dead role's session and the controller's liveness probe go through.
 	HolderEnvoyPublisher = "envoy-publisher"
 	// HolderGitHubApps is the GitHub App credential manager.
 	HolderGitHubApps = "github-apps"
@@ -336,8 +337,15 @@ var Classes = []Row{
 	{Field: "Config.SlowCommandTimeout", Path: "slow_command_timeout_seconds", Class: ClassRebuild, Holder: HolderRuntime},
 	{Field: "Config.ControllerWakeInterval", Path: "controller_wake_interval_seconds", Class: ClassRebuild, Holder: HolderControllerKeeper},
 	{Field: "Config.ControllerLaunch", Path: "controller", Class: ClassRebuild, Holder: HolderControllerKeeper},
-	{Field: "Config.EnvoyURL", Path: "envoy_url", Class: ClassRebuild, Holder: HolderEnvoyPublisher, Secret: true},
-	{Field: "Config.EnvoyTokenFile", Path: "envoy_token_file", Class: ClassRebuild, Holder: HolderEnvoyPublisher, Secret: true},
+	// The Envoy listener's address and bearer: the daemon's Envoy holder is every reader the
+	// daemon has of the listener (the outbox, the settings announcer, the clean session stop and
+	// the controller's liveness probe), and each launch is handed them too, the address by the
+	// runtime (ENVOY_URL) and the bearer by the launch specs (ENVOY_TOKEN). So each row names
+	// what carries it into the next launch beside the holder.
+	{Field: "Config.EnvoyURL", Path: "envoy_url", Class: ClassRebuild, Holder: HolderEnvoyPublisher,
+		Also: []string{HolderRuntime}, Secret: true},
+	{Field: "Config.EnvoyTokenFile", Path: "envoy_token_file", Class: ClassRebuild, Holder: HolderEnvoyPublisher,
+		Also: []string{HolderLaunchSpecs}, Secret: true},
 	{Field: "Config.NatsURLs", Path: "nats_urls", Class: ClassRebuild, Holder: HolderNATS, Secret: true},
 	{Field: "Config.NatsNkeySeedFile", Path: "nats_nkey_seed_file", Class: ClassRebuild, Holder: HolderNATS, Secret: true},
 	{Field: "Config.NatsDaemonNkeySeedFile", Path: "nats_daemon_nkey_seed_file", Class: ClassRebuild, Holder: HolderNATS, Secret: true},

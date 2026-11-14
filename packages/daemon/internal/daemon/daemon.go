@@ -1300,6 +1300,10 @@ type supervision struct {
 	supervisor *supervisor
 	tokens     *api.BootTokens
 	claims     []supervise.Claim
+	// envoy is the Envoy listener every reader of it reads through at each call
+	// (publisherHolder): the machines' clean stop of a dead role's session, the outbox the
+	// workflow attaches here, the settings announcer and the controller's liveness probe.
+	envoy *publisherHolder
 	// refreshGate is the daemon's one stale-plugin refresh gate, the same object every machine of
 	// this supervision holds on its Deps (supervise.RefreshGate, built in run and handed to
 	// openSupervision beside the wake limiter). Supervision keeps the reference because the
@@ -1603,7 +1607,12 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		return nil, err
 	}
 	launchSpecs := newSpecsHolder(settled, buildSpecs)
-	p.rebuild.register(newWorkerStreamHolder(listener), rt, launchSpecs)
+	// The Envoy listener behind its holder, built here so that every reader of it holds the one
+	// holder: the machines' clean stop below, the outbox the workflow attaches to this supervision
+	// (workflowRuntime.attach), and the settings announcer and the controller's liveness probe
+	// serve starts. A change of `envoy_url` or `envoy_token_file` swaps the client inside it.
+	envoy := newPublisherHolder(cfg.EnvoyURL, p.secrets["ENVOY_TOKEN"])
+	p.rebuild.register(newWorkerStreamHolder(listener), rt, launchSpecs, envoy)
 	sup.deps = supervise.Deps{
 		Runtime:                 rt,
 		Conns:                   listener,
@@ -1620,7 +1629,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		SessionLost:             p.sessionLost,
 		SessionStoreFault:       p.sessionStoreFault,
 		ProviderErrorRunReached: p.providerErrorRunReached,
-		SessionGone:             cleanSessionStop(supervising, cfg.EnvoyURL, p.secrets["ENVOY_TOKEN"], log),
+		SessionGone:             cleanSessionStop(supervising, envoy, log),
 		Clock:                   p.clock,
 		Log:                     log,
 		// Every budget and every bound a machine's decision is held to is read as that decision
@@ -1643,7 +1652,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 	}
 	stopping, beginStop := context.WithCancel(context.Background())
 	supervisionOf := &supervision{
-		cfg: cfg, log: log, plan: p, stream: listener, runtime: rt, supervisor: sup, tokens: tokens, claims: claims,
+		cfg: cfg, log: log, plan: p, stream: listener, runtime: rt, supervisor: sup, envoy: envoy, tokens: tokens, claims: claims,
 		reports: reportsOfClaims(reports, claims), reportStore: st, refreshGate: refreshGate,
 		cancel: cancel, draining: draining, endDrain: endDrain, decided: api.NewRouteDecisions(),
 		stopping: stopping, beginStop: beginStop,
@@ -1658,9 +1667,10 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 // cleanSessionStop is what a machine calls once a probe has judged a claim's agent process gone
 // (supervise.Deps.SessionGone): it deletes that session's registration from the Envoy listener,
 // so the listener reads the session `gone` at once instead of holding its role claim and its
-// issue claims for the whole live window (dispatch://INFRA-392). It runs on the same client the
-// daemon's notices go through (notify.New), beside controller.NewProber, on the same base URL
-// and bearer.
+// issue claims for the whole live window (dispatch://INFRA-392). It asks the listener through
+// the Envoy holder every notice of the daemon's goes through (publisherHolder), at each stop, so
+// a stop after a change of `envoy_url` or `envoy_token_file` reaches the listener the change
+// names, with its bearer.
 //
 // The machine calls it inside its own decision, under its lock, so the call is made on a
 // goroutine of its own, on supervising — supervision's lifetime, not the decision's context,
@@ -1686,23 +1696,31 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 //
 // A listener that refuses the delete, keeps the registration, or cannot be reached costs the
 // session nothing beyond the wait it already had: the registration lapses on its own at the
-// gone horizon. With no listener configured nothing is told.
-func cleanSessionStop(supervising context.Context, envoyURL, token string, log *slog.Logger) func(string) {
-	if envoyURL == "" {
-		return nil
-	}
-	stop := sessionStop{sessions: notify.New(envoyURL, token), log: log}
+// gone horizon. While the configuration names no listener, nothing is told.
+func cleanSessionStop(supervising context.Context, envoy *publisherHolder, log *slog.Logger) func(string) {
+	stop := sessionStop{sessions: envoy, log: log}
 	return func(session string) {
+		if listener, _ := envoy.endpoint(); listener == "" {
+			return
+		}
 		goneAt := time.Now()
 		go stop.send(supervising, session, goneAt)
 	}
 }
 
-// sessionStop is one role's clean stop in flight: the listener client it goes to, and the log
-// that says what became of it.
+// sessionStop is one role's clean stop in flight: the listener it goes to, and the log that says
+// what became of it.
 type sessionStop struct {
-	sessions *notify.HTTPPublisher
+	sessions envoySessions
 	log      *slog.Logger
+}
+
+// envoySessions is what a clean stop asks the Envoy listener: the registration it holds for a
+// session, and the delete of it. The daemon's Envoy holder is one (publisherHolder), and so is
+// the client of one listener (notify.HTTPPublisher).
+type envoySessions interface {
+	ReadSessionRegistration(ctx context.Context, session string) (notify.SessionRegistration, error)
+	DeleteSession(ctx context.Context, session string, conditions notify.DeleteConditions) (notify.SessionDeleted, error)
 }
 
 // send is the goroutine cleanSessionStop starts, with goneAt the moment the probe judged the
@@ -2604,11 +2622,10 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 	// controller (settingsAnnouncer), and the file under the daemon is watched for the other arm
 	// (settings.Watcher). Both are registered here, after the boot's own restore: what the boot
 	// laid back over the file is what the daemon booted on, not a change to announce.
-	publisher := newPublisherHolder(envoyPublisher(cfg, p.secrets["ENVOY_TOKEN"]))
-	p.rebuild.register(publisher)
 	// The controller's topic is the project token's, as every other notice of its is
-	// (notify.ControllerTopic), never the Dispatch project key.
-	announcer := newSettingsAnnouncer(p.project, publisher, s.log)
+	// (notify.ControllerTopic), never the Dispatch project key. The announcer publishes through
+	// the supervision's Envoy holder (openSupervision), the one the outbox publishes through.
+	announcer := newSettingsAnnouncer(p.project, s.envoy, s.log)
 	p.live.OnChange(announcer.observe)
 	group.Go(func() error {
 		announcer.run(serving)
@@ -2698,7 +2715,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 	// loop has one beginning (keeperHolder.begin).
 	keeping.begin()
 	group.Go(func() error {
-		watchController(store.ForConcurrentWorker(serving), st, cfg, p, s.log)
+		watchController(store.ForConcurrentWorker(serving), st, cfg, p, s.envoy, s.log)
 		return nil
 	})
 	return group.Wait()

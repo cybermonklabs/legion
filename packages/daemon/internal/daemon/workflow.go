@@ -26,7 +26,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/natsauth"
-	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -1232,18 +1231,20 @@ func (w *workflowRuntime) applySweepFacts(ctx context.Context, facts []sweptFact
 	return first
 }
 
-// attach gives the workflow what only supervision has: the outbox, built on its supervisor and
-// its runtime, and the deployment's budget limits, which a failed claim's fact carries to the
-// workflow engine (applyTerminal). The pace a paced catch-up's wake line names is the
-// supervisor's own (supervise.WakePace, the rate and the burst the machines are held to), which
-// the outbox reads through that supervisor where it writes the line (wakeRan); the limiter both
-// lanes reserve from was built before either of them (run). The outbox's merge-queue read reads
-// GitHub through this runtime's own read of a pull request and waits this runtime's wait between
-// failed reads (readPullRequest, mergeStateWait), both set before the records' wake can reach the
-// outbox (outboxWake).
+// attach gives the workflow what only supervision has: the outbox, built on its supervisor, its
+// runtime and its Envoy holder (supervision.envoy), which every notice, role message, hook
+// prompt, merge-queue removal notice and update round's ask is published through, so a change of
+// `envoy_url` or `envoy_token_file` reaches the next one; and the deployment's budget limits,
+// which a failed claim's fact carries to the workflow engine (applyTerminal). The pace a paced
+// catch-up's wake line names is the supervisor's own (supervise.WakePace, the rate and the burst
+// the machines are held to), which the outbox reads through that supervisor where it writes the
+// line (wakeRan); the limiter both lanes reserve from was built before either of them (run). The
+// outbox's merge-queue read reads GitHub through this runtime's own read of a pull request and
+// waits this runtime's wait between failed reads (readPullRequest, mergeStateWait), both set
+// before the records' wake can reach the outbox (outboxWake).
 func (w *workflowRuntime) attach(supervision *supervision) {
 	w.log.Info("legion workflow boot stage", "stage", "outbox")
-	w.outbox = newOutbox(w.pool, w.records, w.dispatch, notify.New(supervision.cfg.EnvoyURL, supervision.plan.secrets["ENVOY_TOKEN"]), supervision.supervisor,
+	w.outbox = newOutbox(w.pool, w.records, w.dispatch, supervision.envoy, supervision.supervisor,
 		supervision.supervisor.store, w.tokens, w.handlers, w.live,
 		w.projectID, w.dispatchProject, w.stateDir, w.githubAPI,
 		w.repositories, supervision.plan.tools, w.log)

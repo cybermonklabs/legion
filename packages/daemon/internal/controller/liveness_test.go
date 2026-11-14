@@ -53,8 +53,36 @@ func lapsed(state string) string {
 
 func newTestProber(url, token string, log *bytes.Buffer) *Prober {
 	return NewProber(ProberOptions{
-		EnvoyURL: url, EnvoyToken: token, Project: "demo", Log: slog.New(slog.NewTextHandler(log, nil)),
+		Envoy: func() (string, string) { return url, token }, Project: "demo", Log: slog.New(slog.NewTextHandler(log, nil)),
 	})
+}
+
+// The probe asks for the listener at every probe and keeps nothing of the one it asked before: a
+// probe after the daemon moved to another listener, with another bearer, asks that one with that
+// bearer, and the one it asked before is asked nothing more.
+func TestEveryProbeAsksTheListenerTheDaemonReachesNow(t *testing.T) {
+	var log bytes.Buffer
+	booted := &listener{status: http.StatusOK, body: holder("ses_ctl", probeNow)}
+	moved := &listener{status: http.StatusOK, body: holder("ses_ctl", probeNow)}
+	reaches := []string{booted.serve(t), "boot-bearer"}
+	prober := NewProber(ProberOptions{
+		Envoy: func() (string, string) { return reaches[0], reaches[1] }, Project: "demo", Log: slog.New(slog.NewTextHandler(&log, nil)),
+	})
+	if got := prober.Probe(context.Background(), "ses_ctl"); got != Live || booted.bearer != "Bearer boot-bearer" {
+		t.Fatalf("the first probe = %s with %q, want live on the listener the daemon booted on; log %s", got, booted.bearer, log.String())
+	}
+	booted.path = ""
+
+	reaches = []string{moved.serve(t), "moved-bearer"}
+	if got := prober.Probe(context.Background(), "ses_ctl"); got != Live {
+		t.Fatalf("the probe after the move = %s, want live; log %s", got, log.String())
+	}
+	if moved.path != "/v1/roles/legion-demo-controller" || moved.bearer != "Bearer moved-bearer" {
+		t.Fatalf("the probe after the move asked %q with %q, want the controller token with the new bearer", moved.path, moved.bearer)
+	}
+	if booted.path != "" {
+		t.Fatalf("the probe after the move asked the listener the daemon booted on (%s)", booted.path)
+	}
 }
 
 // Live while the listener names the registered session as the controller role's holder, which it
