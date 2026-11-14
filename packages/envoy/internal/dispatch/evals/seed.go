@@ -32,16 +32,17 @@ import (
 // where the release changed what the catalogue states of it, its own fields (the name, the
 // question, the decision, the failure modes, the number rule, the unit, the direction, the kind,
 // the source) or its series, or where its section is gone. The change is read against the version
-// the seed last wrote, which holds every field the catalogue owns as that seed's build stated it:
-// so every version the seed writes takes all of them from the catalogue, and a person's change of
-// one stands until the seed next writes a version of that eval. Every field the catalogue does
-// not own is carried forward from the newest version: the target, its inclusiveness and its
-// judges, the owner role and the person, the issue, the links, the state and what replaced it,
-// and the doc block. A series is read and written the same way, each on its own, its links
-// carried forward. A method block that exists is never written: a person's edit of it stands. An
-// eval whose doc block the document no longer holds (no version yet, the block deleted, or the
-// document gone) gets a section at the end of the document, and a version naming that section's
-// block.
+// the seed last wrote, which holds every field the catalogue owns as that seed's build stated it,
+// so every version the seed writes takes all of them from the catalogue. A person cannot set one
+// of them on a computed eval (the register write refuses it, computationField). Every field a
+// person sets is carried forward from the newest version, so no such write is accepted and then
+// lost at the next boot (R5): the target, its inclusiveness and its judges, the owner role and
+// the person, the issue, the links, the state and what replaced it, and the doc block. A series
+// is read and written the same way, each on its own, its min_n and its links carried forward:
+// the catalogue states a series' min_n for its first version alone, as it states the target. A
+// method block that exists is never written: a person's edit of it stands. An eval whose doc
+// block the document no longer holds (no version yet, the block deleted, or the document gone)
+// gets a section at the end of the document, and a version naming that section's block.
 
 // SeedLease is the lease the boot pass seeds every project under (SeedEveryProject), so two
 // processes that boot together write each project's catalogue once.
@@ -448,8 +449,9 @@ func takeCatalogueFields(next *Definition, catalogue Definition) {
 // seriesToWrite is the versions of the series of eval id a seed writes: version 1 of each series
 // of the catalogue the eval does not hold, and the next version of each one the seed never wrote
 // or whose fields the catalogue states otherwise than the version the seed last wrote of it
-// (seeded), with every field of the catalogue's and its links carried forward. A series the
-// release did not change is left as it is, whatever a person set on it since.
+// (seeded), with every field of the catalogue's, and the min_n and the links the series holds
+// carried forward. A series the release did not change is left as it is, whatever a person set
+// on it since.
 func seriesToWrite(id string, catalogue []Series, current, seeded map[string]Series) []Series {
 	var writes []Series
 	for _, want := range catalogue {
@@ -460,7 +462,7 @@ func seriesToWrite(id string, catalogue []Series, current, seeded map[string]Ser
 		next := want
 		next.EvalID, next.Version, next.Links = id, existing.Version+1, []Link{}
 		if has {
-			next.Links = existing.Links
+			next.MinN, next.Links = existing.MinN, existing.Links
 		}
 		writes = append(writes, next)
 	}
@@ -468,10 +470,13 @@ func seriesToWrite(id string, catalogue []Series, current, seeded map[string]Ser
 }
 
 // seriesChanged reports whether the catalogue states a series otherwise than last, the version
-// the seed last wrote of it: every field but the version's own and its links.
+// the seed last wrote of it: every field the catalogue owns, which is every field but the
+// version's own, its min_n and its links. The min_n a series holds is carried forward
+// (seriesToWrite), so the version the seed last wrote may hold a person's, which no catalogue
+// change is read against.
 func seriesChanged(catalogue, last Series) bool {
 	return catalogue.Unit != last.Unit || catalogue.Role != last.Role || catalogue.IsPrimary != last.IsPrimary ||
-		!sameMinN(catalogue.MinN, last.MinN) || catalogue.Listed != last.Listed || catalogue.Agg != last.Agg
+		catalogue.Listed != last.Listed || catalogue.Agg != last.Agg
 }
 
 // readDefinitions answers the definitions statement reads, by eval id.

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"math"
 	"net/http"
+	"net/url"
 	"os"
 	"reflect"
 	"strconv"
@@ -232,6 +233,39 @@ func TestGetDeliveryMeasuresRejectsMalformedWindow(t *testing.T) {
 		response := dispatchRequest(t, handler, http.MethodGet, target, nil, "alice")
 		if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), `"code":"INVALID_QUERY"`) {
 			t.Errorf("GET %s: status = %d, body = %s, want 400 INVALID_QUERY", target, response.Code, response.Body.String())
+		}
+	}
+}
+
+// TestADeliveryWindowOutsideTheYearsAReadAnswersIsRefused: the delivery routes read their window
+// with the parser the eval reads share (parseOptionalRFC3339), so a from, a to or the Pipeline's
+// at whose UTC year is after 9999 or before 1 is refused 400 INVALID_QUERY, as any other malformed
+// window is, rather than answered with an empty 200 (R18). A window ending in the year 9999's last
+// hour is answered.
+func TestADeliveryWindowOutsideTheYearsAReadAnswersIsRefused(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	seedMeasuresSettings(t, database)
+	routes := []string{"/api/v1/delivery/timeline", "/api/v1/delivery/measures", "/api/v1/delivery/pipeline"}
+	var refused []string
+	for _, route := range routes {
+		for _, window := range []url.Values{
+			{"from": {"9999-12-30T00:00:00Z"}, "to": {"9999-12-31T23:00:00-14:00"}},
+			{"from": {"0000-01-01T00:00:00+01:00"}, "to": {"0000-01-03T00:00:00Z"}},
+		} {
+			refused = append(refused, route+"?"+window.Encode())
+		}
+	}
+	refused = append(refused, "/api/v1/delivery/pipeline?"+url.Values{"at": {"9999-12-31T23:00:00-14:00"}}.Encode())
+	for _, target := range refused {
+		response := dispatchRequest(t, handler, http.MethodGet, target, nil, "alice")
+		if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), `"code":"INVALID_QUERY"`) {
+			t.Errorf("GET %s: status = %d, body = %.200s, want 400 INVALID_QUERY", target, response.Code, response.Body.String())
+		}
+	}
+	for _, route := range routes {
+		target := route + "?" + url.Values{"from": {"9999-12-30T00:00:00Z"}, "to": {"9999-12-31T23:00:00Z"}}.Encode()
+		if response := dispatchRequest(t, handler, http.MethodGet, target, nil, "alice"); response.Code != http.StatusOK || response.Body.Len() == 0 {
+			t.Errorf("GET %s: status = %d, body = %.200s, want 200 with its answer", target, response.Code, response.Body.String())
 		}
 	}
 }

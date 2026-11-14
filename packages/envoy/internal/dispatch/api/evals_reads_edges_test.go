@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -328,5 +329,160 @@ func TestTheCrossProjectListPagesAcrossTheProjectsInTheirNamedOrder(t *testing.T
 				t.Errorf("kind %q, offset %d: the page answers %v of %d, want %v of %d", kind, offset, got, page.Total, wanted, whole.Total)
 			}
 		}
+	}
+}
+
+// TestAnEvalWindowWhoseDaysEndPastTheYear9999IsRefused: an eval read answers the whole UTC days
+// its window covers, ending at the midnight after its last day, so a to in the last day of 9999,
+// though it is a moment of that year, ends the days at 10000-01-01, which no answer can write.
+// Each of the four reads refuses it 400 INVALID_QUERY, in the window and in the compare range
+// (R18); a to at that day's midnight, whose days end there, is answered.
+func TestAnEvalWindowWhoseDaysEndPastTheYear9999IsRefused(t *testing.T) {
+	handler, _ := newTestHandlerWithStore(t)
+	createTestProject(t, handler, "EVL")
+	registerReviewTime(t, handler)
+	reads := []string{"/api/v1/projects/EVL/evals?", "/api/v1/evals?", "/api/v1/projects/EVL/evals/review-time?", "/api/v1/projects/EVL/evals/review-time/items?"}
+	for _, window := range []url.Values{
+		{"from": {"9999-12-30T00:00:00Z"}, "to": {"9999-12-31T23:00:00Z"}},
+		{"from": {"2026-11-01T00:00:00Z"}, "to": {"2026-11-02T00:00:00Z"}, "compare_from": {"9999-12-30T00:00:00Z"}, "compare_to": {"9999-12-31T00:00:01Z"}},
+	} {
+		for _, read := range reads {
+			target := read + window.Encode()
+			response := evalRequest(t, handler, http.MethodGet, target, nil, "")
+			var refusal evalRefusal
+			if response.Code != http.StatusBadRequest || json.Unmarshal(response.Body.Bytes(), &refusal) != nil || refusal.Code != "INVALID_QUERY" {
+				t.Errorf("GET %s: status %d, body %.200s; want 400 INVALID_QUERY", target, response.Code, response.Body.String())
+			}
+		}
+	}
+	answered := url.Values{"from": {"9999-12-24T00:00:00Z"}, "to": {"9999-12-31T00:00:00Z"}}.Encode()
+	for _, read := range reads {
+		checkAnswered(t, "GET "+read+answered, evalRequest(t, handler, http.MethodGet, read+answered, nil, ""))
+	}
+}
+
+// TestAWindowWhoseSumPassesWhatAFloatHoldsAnswersItNull: readings of 1e308 on two days of a sum
+// series are each accepted, since each day's row holds a finite sum, but a window over both days
+// sums past the largest float, which no answer can write. Every read of that window - the
+// project's list, the cross-project read with the project named and with none, the eval's own
+// read, its items, and the evals live view's snapshot - answers the envelope, the window's sum
+// null and its count 2, each day's sum stated in the per-day array. The change from a compare
+// range holding a reading of -1e308 to a window of one 1e308 day is past the largest float too,
+// and is null where both ranges' sums are stated.
+func TestAWindowWhoseSumPassesWhatAFloatHoldsAnswersItNull(t *testing.T) {
+	rig := newHubRig(t, nil)
+	handler := rig.handler
+	createTestProject(t, handler, "EVL")
+	registered := evalRequest(t, handler, http.MethodPost, "/api/v1/projects/EVL/evals",
+		map[string]any{"slug": "huge", "series": []any{map[string]any{"series": "value", "agg": "sum"}}}, "huge-register")
+	if registered.Code != http.StatusCreated {
+		t.Fatalf("register huge: status %d, body %s", registered.Code, registered.Body.String())
+	}
+	// Every day the test writes or reads ends at least two days before today's midnight, so a
+	// midnight that passes while it runs moves none of them.
+	today := measures.Midnight(time.Now().UTC())
+	day := func(offset int) time.Time { return today.AddDate(0, 0, offset) }
+	for index, reading := range []struct {
+		day   int
+		value float64
+	}{{-5, -1e308}, {-4, 1e308}, {-3, 1e308}} {
+		written := evalRequest(t, handler, http.MethodPost, "/api/v1/projects/EVL/evals/huge/readings", map[string]any{"readings": []any{
+			map[string]any{"series": "value", "row_kind": "run", "row_key": fmt.Sprint(index), "value": reading.value,
+				"measured_at": day(reading.day).Add(9 * time.Hour).Format(time.RFC3339)},
+		}}, fmt.Sprintf("huge-%d", index))
+		if written.Code != http.StatusCreated {
+			t.Fatalf("log %g on %s: status %d, body %s", reading.value, day(reading.day).Format(time.DateOnly), written.Code, written.Body.String())
+		}
+	}
+	// value is huge's series as an answer states it, failing where the answer holds none.
+	value := func(what string, body []byte) evalSeriesValues {
+		t.Helper()
+		var page struct {
+			Items []evalItem `json:"items"`
+		}
+		if err := json.Unmarshal(body, &page); err != nil {
+			t.Fatalf("%s: decode %.200s: %v", what, body, err)
+		}
+		for _, item := range page.Items {
+			if item.Definition.EvalID != "EVL/huge" {
+				continue
+			}
+			for _, series := range item.Series {
+				if series.Series.Series == "value" {
+					return series
+				}
+			}
+		}
+		t.Fatalf("%s answers no series value of EVL/huge: %.300s", what, body)
+		return evalSeriesValues{}
+	}
+	stated := func(stats evals.Statistics, name string) string {
+		if stats[name] == nil {
+			return "null"
+		}
+		return fmt.Sprint(*stats[name])
+	}
+	both := url.Values{"from": {day(-4).Format(time.RFC3339)}, "to": {day(-2).Format(time.RFC3339)}}.Encode()
+	for _, path := range []string{
+		"/api/v1/projects/EVL/evals?" + both,
+		"/api/v1/evals?project=EVL&" + both,
+		"/api/v1/evals?" + both,
+		"/api/v1/projects/EVL/evals/huge?" + both,
+		"/api/v1/projects/EVL/evals/huge/items?" + both,
+	} {
+		response := evalRequest(t, handler, http.MethodGet, path, nil, "")
+		checkAnswered(t, "GET "+path, response)
+		if response.Code != http.StatusOK || strings.Contains(path, "/items") {
+			continue
+		}
+		series := value("GET "+path, response.Body.Bytes())
+		if series.Window["sum"] != nil || stated(series.Window, "n") != "2" || len(series.Days) != 2 || stated(series.Days[0].Statistics, "sum") != "1e+308" {
+			t.Errorf("GET %s: the window's sum is %s over n %s with %d days, want null over 2 with each day's 1e+308", path,
+				stated(series.Window, "sum"), stated(series.Window, "n"), len(series.Days))
+		}
+	}
+
+	compared := url.Values{"from": {day(-3).Format(time.RFC3339)}, "to": {day(-2).Format(time.RFC3339)},
+		"compare_from": {day(-5).Format(time.RFC3339)}, "compare_to": {day(-4).Format(time.RFC3339)}}.Encode()
+	response := evalRequest(t, handler, http.MethodGet, "/api/v1/projects/EVL/evals?"+compared, nil, "")
+	checkAnswered(t, "GET the compared list", response)
+	if response.Code == http.StatusOK {
+		series := value("the compared list", response.Body.Bytes())
+		if stated(series.Window, "sum") != "1e+308" || stated(series.Compare, "sum") != "-1e+308" || series.Change["sum"] != nil {
+			t.Errorf("the compared list states the sums %s and %s and the change %s, want 1e+308, -1e+308 and null",
+				stated(series.Window, "sum"), stated(series.Compare, "sum"), stated(series.Change, "sum"))
+		}
+	}
+
+	conn := newFakeLiveConn()
+	rig.hub.Subscribe(conn, subscribeFrame("huge", evalsLiveView("EVL", evalsDays(day(-4), day(-2)), "")))
+	snapshot := conn.snapshot(t, 5*time.Second, "huge")
+	requireTheListRead(t, handler, "EVL", snapshot.Body, "")
+	if series := value("the evals view's snapshot", snapshot.Body); series.Window["sum"] != nil {
+		t.Errorf("the evals view's snapshot states the window's sum %s, want null", stated(series.Window, "sum"))
+	}
+}
+
+// TestAnAnswerThatCannotBeEncodedIsAnInternalRefusal: WriteJSON encodes a body whole before it
+// writes its status, so a body no JSON can hold (a +Inf, a time of the year 10000) answers 500
+// INTERNAL with its {code, error} body, never the status it was given with an empty body; a body
+// that encodes is written as json.Encoder writes it, its newline included.
+func TestAnAnswerThatCannotBeEncodedIsAnInternalRefusal(t *testing.T) {
+	for name, body := range map[string]any{
+		"an infinite figure": map[string]any{"sum": math.Inf(1)},
+		"a far time":         map[string]any{"at": time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC)},
+	} {
+		response := httptest.NewRecorder()
+		WriteJSON(response, http.StatusCreated, body)
+		var refusal evalRefusal
+		if response.Code != http.StatusInternalServerError || json.Unmarshal(response.Body.Bytes(), &refusal) != nil || refusal.Code != codeInternal {
+			t.Errorf("%s: status %d, body %q; want 500 %s", name, response.Code, response.Body.String(), codeInternal)
+		}
+	}
+	response := httptest.NewRecorder()
+	WriteJSON(response, http.StatusCreated, map[string]any{"sum": 1.5, "html": "<b>"})
+	if want := "{\"html\":\"\\u003cb\\u003e\",\"sum\":1.5}\n"; response.Code != http.StatusCreated || response.Body.String() != want ||
+		response.Header().Get("Content-Type") != "application/json" {
+		t.Errorf("an encodable body answers %d %q (%s), want 201 %q as application/json", response.Code, response.Body.String(), response.Header().Get("Content-Type"), want)
 	}
 }

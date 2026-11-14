@@ -254,31 +254,40 @@ func (r rig) currentOf(t *testing.T, slug string) (Definition, map[string]Series
 	return Definition{}, nil
 }
 
-// TestAReleaseThatChangesAnEvalCarriesForwardWhatOthersSet: alice sets deploy frequency's target,
-// person, links, unit and method, and min_n and a link on its series, and changes merge to
-// production's unit and its series' min_n. A release that changes deploy frequency's name and its
-// series' unit writes one version of each: they hold every field the catalogue owns as the
-// release states it, and carry forward alice's target, person, links and method block, and the
-// series' link. Merge to production, which the release did not change, gets no version, so
-// alice's unit and min_n stand; alice's method text stands; and a second seed writes nothing.
+// showMinN is a series' min_n as a failure states it: "none" where it holds none.
+func showMinN(minN *int) string {
+	if minN == nil {
+		return "none"
+	}
+	return fmt.Sprint(*minN)
+}
+
+// TestAReleaseThatChangesAnEvalCarriesForwardWhatOthersSet: alice sets the fields a person sets on
+// a computed eval (R5): deploy frequency's target, person, links and method and its series'
+// min_n, and merge to production's series' min_n. A release that changes deploy frequency's name
+// and its series' unit writes one version of each: they hold every field the catalogue owns as
+// the release states it, and carry forward alice's target, person, links, method block and min_n.
+// The same release changes the min_n of merge to production's series, which the catalogue states
+// for a series' first version alone, as it states the target: merge to production gets no
+// version, and alice's min_n stands. Alice's method text stands, and a second seed writes nothing.
 func TestAReleaseThatChangesAnEvalCarriesForwardWhatOthersSet(t *testing.T) {
 	r := newRig(t)
 	ctx := t.Context()
 	if _, err := r.registry.Ensure(ctx, r.project); err != nil {
 		t.Fatalf("seed %s: %v", r.project, err)
 	}
-	target, minN := 15.0, 3
+	target, minN, releasedMinN := 15.0, 3, 7
 	link := []Link{{Rel: "describedby", Href: "https://dashboards.example/deploys", Label: "Deploys dashboard"}}
 	person, err := r.registry.Register(ctx, Registration{
 		Project: r.project, Slug: SlugDeployFrequency, Caller: alice, Target: Set(&target), Person: Set("alice"),
-		Links: Set(link), Unit: Set("deploys a day"), DocText: Set("Alice's method: count the deploys."),
-		Series: []SeriesChange{{Series: measures.SeriesDeploys, MinN: Set(&minN), Links: Set(link)}},
+		Links: Set(link), DocText: Set("Alice's method: count the deploys."),
+		Series: []SeriesChange{{Series: measures.SeriesDeploys, MinN: Set(&minN)}},
 	})
 	if err != nil {
 		t.Fatalf("alice's register write of %s: %v", SlugDeployFrequency, err)
 	}
 	if _, err := r.registry.Register(ctx, Registration{
-		Project: r.project, Slug: SlugMergeToProduction, Caller: alice, Unit: Set("mins"),
+		Project: r.project, Slug: SlugMergeToProduction, Caller: alice,
 		Series: []SeriesChange{{Series: measures.SeriesMinutes, MinN: Set(&minN)}},
 	}); err != nil {
 		t.Fatalf("alice's register write of %s: %v", SlugMergeToProduction, err)
@@ -286,9 +295,16 @@ func TestAReleaseThatChangesAnEvalCarriesForwardWhatOthersSet(t *testing.T) {
 
 	withCatalogue(t, func(entries []catalogueEntry) {
 		for i := range entries {
-			if entries[i].definition.Slug == SlugDeployFrequency {
+			switch entries[i].definition.Slug {
+			case SlugDeployFrequency:
 				entries[i].definition.Name = "Deploys a day"
 				entries[i].series[0].Unit = "deploy runs"
+			case SlugMergeToProduction:
+				for j := range entries[i].series {
+					if entries[i].series[j].Series == measures.SeriesMinutes {
+						entries[i].series[j].MinN = &releasedMinN
+					}
+				}
 			}
 		}
 	})
@@ -308,12 +324,14 @@ func TestAReleaseThatChangesAnEvalCarriesForwardWhatOthersSet(t *testing.T) {
 		newest.Person != "alice" || !sameLinks(newest.Links, person.Definition.Links) || newest.DocBlock != person.Definition.DocBlock {
 		t.Errorf("the release's version is %+v, want the catalogue's name and unit with alice's target, person, links and method block", newest)
 	}
-	if deploys.Version != 3 || deploys.Unit != "deploy runs" || deploys.MinN != nil || len(deploys.Links) != 1 {
-		t.Errorf("the release's series is %+v, want version 3 holding the catalogue's fields and alice's link", deploys)
+	if deploys.Version != 3 || deploys.Unit != "deploy runs" || deploys.MinN == nil || *deploys.MinN != minN {
+		t.Errorf("the release's series is version %d with unit %q and min_n %s, want version 3 holding the catalogue's unit and alice's min_n %d",
+			deploys.Version, deploys.Unit, showMinN(deploys.MinN), minN)
 	}
 	untouched, untouchedSeries := r.currentOf(t, SlugMergeToProduction)
-	if minutes := untouchedSeries[measures.SeriesMinutes]; untouched.Version != 2 || untouched.Unit != "mins" || minutes.MinN == nil || *minutes.MinN != minN {
-		t.Errorf("%s, which the release did not change, is version %d with unit %q and min_n %v, want alice's version 2 as she left it", SlugMergeToProduction, untouched.Version, untouched.Unit, minutes.MinN)
+	if minutes := untouchedSeries[measures.SeriesMinutes]; untouched.Version != 1 || minutes.Version != 2 || minutes.MinN == nil || *minutes.MinN != minN {
+		t.Errorf("%s, whose series' min_n alone the release changed, is version %d with its series at version %d and min_n %s, want version 1 and alice's series version 2 with min_n %d",
+			SlugMergeToProduction, untouched.Version, minutes.Version, showMinN(minutes.MinN), minN)
 	}
 	text, _ := r.document(t)
 	if !strings.Contains(text, "Alice's method: count the deploys.") || headings(text, SlugDeployFrequency) != 1 {

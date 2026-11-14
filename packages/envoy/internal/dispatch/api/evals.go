@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"math"
 	"net/http"
 	"net/url"
 	"reflect"
@@ -378,15 +379,20 @@ func evalDaysOf(from, to time.Time) evals.Range {
 }
 
 // parseEvalRanges reads an eval read's window and compare range: from and to as every delivery
-// route reads them (parseDeliveryWindow: RFC3339, the last 7 days by default, at most 84 days),
-// and compare_from and compare_to, both or neither, read the same way and held to the same bound,
-// though the two ranges need not be of one length.
+// route reads them (parseDeliveryWindow: RFC3339 in the UTC years 1 to 9999, the last 7 days by
+// default, at most 84 days), and compare_from and compare_to, both or neither, read the same way
+// and held to the same bound, though the two ranges need not be of one length. A range whose days
+// end past the year 9999 is refused too (R18): its answer states the midnight after its last day,
+// so a to on 9999-12-31 would end it at 10000-01-01, which no JSON answer can write.
 func parseEvalRanges(query url.Values) (evalRanges, error) {
 	from, to, err := parseDeliveryWindow(query)
 	if err != nil {
 		return evalRanges{}, err
 	}
 	ranges := evalRanges{window: evalDaysOf(from, to), from: from.UTC(), to: to.UTC()}
+	if err := evalDaysAnswerable("to", ranges.window); err != nil {
+		return evalRanges{}, err
+	}
 	if query.Has("compare_from") != query.Has("compare_to") {
 		return evalRanges{}, errors.New("compare_from and compare_to come together: name both, or neither")
 	}
@@ -408,8 +414,21 @@ func parseEvalRanges(query url.Values) (evalRanges, error) {
 		return evalRanges{}, errors.New("compare_from..compare_to must not span more than 84 days")
 	}
 	ranges.compare = new(evalDaysOf(compareFrom, compareTo))
+	if err := evalDaysAnswerable("compare_to", *ranges.compare); err != nil {
+		return evalRanges{}, err
+	}
 	ranges.compareFrom, ranges.compareTo = compareFrom.UTC(), compareTo.UTC()
 	return ranges, nil
+}
+
+// evalDaysAnswerable refuses days whose end, the midnight after their last day, is past the year
+// 9999, naming the key, to or compare_to, that ends them there.
+func evalDaysAnswerable(key string, days evals.Range) error {
+	if days.To.Year() > 9999 {
+		return fmt.Errorf("%s ends its days at %s, past the year 9999, which no answer can write: the last day a window may cover is 9999-12-30",
+			key, days.To.Format(time.RFC3339))
+	}
+	return nil
 }
 
 // evalReadQuery is what every eval read reads of its query: the window and the compare range, the
@@ -761,13 +780,16 @@ func noData(stats evals.Statistics) evals.Statistics {
 	return cleared
 }
 
-// evalChange is each statistic of window less compare's, null where either has no value.
+// evalChange is each statistic of window less compare's, null where either has no value, or where
+// the difference of two finite figures is past what a float holds, which no answer can write.
 func evalChange(window, compare evals.Statistics) evals.Statistics {
 	change := make(evals.Statistics, len(window))
 	for name, value := range window {
 		change[name] = nil
 		if against := compare[name]; value != nil && against != nil {
-			change[name] = new(*value - *against)
+			if difference := *value - *against; !math.IsInf(difference, 0) {
+				change[name] = &difference
+			}
 		}
 	}
 	return change

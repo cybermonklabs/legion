@@ -292,6 +292,44 @@ func (f Field[T]) applyTo(current *T) {
 	}
 }
 
+// MeasuredAtFloor is the earliest measured_at a reading may hold (R18). The refresher writes a
+// logged eval's days as explicit zero rows from its first reading on (fillLoggedZeros), so one
+// reading measured at 0001-01-01 made one pass write 739,934 zero rows, 240 MB, in about 70 s.
+// The floor leaves margin before any reading this deployment's producers are known to hold; a
+// producer that needs earlier history asks for the floor to move, and it moves here alone.
+var MeasuredAtFloor = time.Date(2025, time.January, 1, 0, 0, 0, 0, time.UTC)
+
+// MeasuredAtLead is how far past the server's own time a reading's measured_at may lie (R18): a
+// producer's clock may run ahead of the server's, and by no more than this.
+const MeasuredAtLead = 24 * time.Hour
+
+// maxKeyBytes is the most bytes a key of the registry may hold: an eval's slug, a series' name,
+// and a reading's row_kind, row_key and attributes.repo, each of which a write that takes it
+// refuses past this (CodeKeyTooLong). Each is a column of a B-tree index, and Postgres refuses an
+// index entry over 2,704 bytes (a third of an 8 kB page, less its headers) with an error that
+// would answer 500. The widest entries the writes make are eval_days' primary key (project_key,
+// eval_id, writer, series, repo, day) and eval_readings_row (eval_id, row_kind, row_key,
+// measured_at). In the worst case, a key that does not compress, an entry is an 8-byte header,
+// each text column's bytes with a 4-byte length and up to 3 bytes of alignment, each fixed-size
+// column with its alignment, and up to 7 bytes rounding the whole to 8. A project key is at most
+// 10 bytes (projects' check), so eval_id is at most 10 + 1 + 512 = 523, and writer at most 11
+// ("computation"):
+//
+//	eval_days:         8 + (10+7) + (523+7) + (11+7) + (512+7) + (512+7) + (4+3) + 7 = 1,625 bytes
+//	eval_readings_row: 8 + (523+7) + (512+7) + (512+7) + (8+7) + 7                  = 1,598 bytes
+//
+// Both are about 60 percent of the limit. The keys of eval_versions (eval_id, version) and
+// eval_series (eval_id, series, version) are smaller still.
+const maxKeyBytes = 512
+
+// keyTooLong is the reason a key named field is refused for, "" where it fits (maxKeyBytes).
+func keyTooLong(field, key string) string {
+	if len(key) <= maxKeyBytes {
+		return ""
+	}
+	return fmt.Sprintf("%s holds %d bytes, and a key of the registry holds at most %d", field, len(key), maxKeyBytes)
+}
+
 // The stable codes of the registry's refusals. Each is answered with the reason in plain words,
 // and a readings write names every refused row by its index in the batch (RowError).
 const (
@@ -327,9 +365,13 @@ const (
 	// CodeAlreadyReplaced: replaces names a reading a correction already replaced, or one an
 	// earlier row of the same batch replaces.
 	CodeAlreadyReplaced = "READING_ALREADY_REPLACED"
-	// CodeLinkHrefNotAbsolute: a link's href is missing or is not an absolute URL with a scheme
-	// and a host.
+	// CodeLinkHrefNotAbsolute: a link's href is missing, or is not an absolute URL: it has no
+	// scheme or no host.
 	CodeLinkHrefNotAbsolute = "LINK_HREF_NOT_ABSOLUTE"
+	// CodeLinkHrefNotHTTP: a link's href is an absolute URL whose scheme is neither http nor
+	// https (javascript:, data:, mailto: and urn: among them): a page draws the link for a person
+	// to click (R9).
+	CodeLinkHrefNotHTTP = "LINK_HREF_NOT_HTTP"
 	// CodeLinkRelMissing: a link carries no relation.
 	CodeLinkRelMissing = "LINK_REL_MISSING"
 	// CodeReadingSeriesInvalid: a row names no series, or one with whitespace, a control
@@ -339,14 +381,26 @@ const (
 	// value that row stores (its sum, numerator or denominator) larger than a float holds, which
 	// no read could answer.
 	CodeReadingDayOverflow = "READING_DAY_OVERFLOW"
+	// CodeMeasuredAtOutOfRange: a row's measured_at is before MeasuredAtFloor or more than
+	// MeasuredAtLead after the server's time (R18).
+	CodeMeasuredAtOutOfRange = "MEASURED_AT_OUT_OF_RANGE"
+	// CodeKeyTooLong: a slug, a series' name, or a row's row_kind, row_key or attributes.repo
+	// holds more than maxKeyBytes bytes, more than an index entry of the registry holds.
+	CodeKeyTooLong = "EVAL_KEY_TOO_LONG"
+	// CodeFieldComputed: a register write of a computed eval names a field of its computation,
+	// which its code defines (R5): its name, question, number rule, decision, failure modes, unit,
+	// direction, kind or source, a series it does not hold, or any field of a series but min_n.
+	CodeFieldComputed = "EVAL_FIELD_COMPUTED"
 )
 
 // Error is a write the registry refused before it wrote anything: a stable code, the reason in
-// plain words, and for a readings write every refused row. A readings write's code is the code
-// of its first refused row; Rows names each.
+// plain words, the field of a register write the refusal is about where it is one field, and for
+// a readings write every refused row. A readings write's code is the code of its first refused
+// row; Rows names each.
 type Error struct {
 	Code    string     `json:"code"`
 	Message string     `json:"error"`
+	Field   string     `json:"field,omitempty"`
 	Rows    []RowError `json:"rows,omitempty"`
 }
 
@@ -365,4 +419,10 @@ type RowError struct {
 
 func refusal(code, format string, args ...any) *Error {
 	return &Error{Code: code, Message: fmt.Sprintf(format, args...)}
+}
+
+// fieldRefusal is a refusal of a register write about one of its fields, which field names as
+// the body spells it (`series[0].agg`).
+func fieldRefusal(code, field, format string, args ...any) *Error {
+	return &Error{Code: code, Field: field, Message: fmt.Sprintf(format, args...)}
 }

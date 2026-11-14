@@ -1,0 +1,12 @@
+kind: Fixed
+body: |-
+  Every input of the eval routes is now a stable-coded refusal or a real answer, never a 500 or an
+  empty 2xx. The readings write refuses a row measured before 2025-01-01T00:00:00Z or more than
+  24 hours after the server's time (`400 MEASURED_AT_OUT_OF_RANGE`); a slug, series, `row_kind`,
+  `row_key` or `attributes.repo` over 512 bytes, which Postgres could not index
+  (`400 EVAL_KEY_TOO_LONG`, also on the register write's slug and series); and a link whose `href`
+  is not an `http` or `https` URL (`400 LINK_HREF_NOT_HTTP`, on both writes). Each names its row
+  and field. A read whose window or compare range falls outside the UTC years 1 to 9999 is
+  `400 INVALID_QUERY`, on the eval reads and the delivery routes alike (the Pipeline route
+  panicked on one). A statistic a window's fold takes past what a float holds answers `null`, and
+  any answer that cannot be encoded is `500 INTERNAL` rather than an empty 200.

@@ -107,16 +107,15 @@ func writeReadings(ctx context.Context, database *store.Store, spec Spec, histor
 		}
 	}
 	rng := newRand(spec.Seed, "readings")
-	total := spec.scaled(readings, len(loggedEvals)*readingDays)
-	batches := len(loggedEvals) * readingDays
-	start := spec.Now.Add(-readingDays * 24 * time.Hour)
-	start = time.Date(start.Year(), start.Month(), start.Day(), 0, 0, 0, 0, time.UTC)
+	days, start := readingSpan(spec.Now)
+	total := spec.scaled(readings, len(loggedEvals)*days)
+	batches := len(loggedEvals) * days
 	// The runs the history holds at this scale and rate, whose ids a deploy or job reading names.
 	deploys, checks := spec.dailyRuns()
 	runs := int64(runDays * (deploys + checks))
 	previous := make([][]evals.Reading, len(loggedEvals))
 	written := 0
-	for day := range readingDays {
+	for day := range days {
 		from := start.AddDate(0, 0, day)
 		for e, eval := range loggedEvals {
 			batch := day*len(loggedEvals) + e
@@ -154,8 +153,41 @@ func writeReadings(ctx context.Context, database *store.Store, spec Spec, histor
 			written += len(stored.Readings)
 		}
 		if (day+1)%73 == 0 {
-			logf("readings: %d of %d days, %d readings", day+1, readingDays, written)
+			logf("readings: %d of %d days, %d readings", day+1, days, written)
 		}
+	}
+	return nil
+}
+
+// readingSpan is how many UTC days the readings are spread over, and the first of them: the
+// readingDays days that end at the midnight of now's day, or the days from evals.MeasuredAtFloor
+// to that midnight where those would begin before it, since the readings write refuses a reading
+// measured before the floor (R18). A load whose now is readingDays days or more past the floor
+// spreads them over all readingDays. Either way the last day ends at now's midnight, so every
+// reading is measured before now (drawReading measures each inside its own day).
+func readingSpan(now time.Time) (int, time.Time) {
+	start := now.Add(-readingDays * 24 * time.Hour)
+	start = time.Date(start.Year(), start.Month(), start.Day(), 0, 0, 0, 0, time.UTC)
+	if start.Before(evals.MeasuredAtFloor) {
+		return readingDays - int(evals.MeasuredAtFloor.Sub(start)/(24*time.Hour)), evals.MeasuredAtFloor
+	}
+	return readingDays, start
+}
+
+// checkReadingSpan refuses a now whose readings the server would refuse (R18): one more than
+// evals.MeasuredAtLead past the database's clock, which the readings write reads its time from,
+// or one whose span (readingSpan) holds no whole day after evals.MeasuredAtFloor.
+func checkReadingSpan(ctx context.Context, pool *store.Pool, now time.Time) error {
+	var clock time.Time
+	if err := pool.QueryRow(ctx, `select now()`).Scan(&clock); err != nil {
+		return fmt.Errorf("read the database's clock: %w", err)
+	}
+	if ceiling := clock.UTC().Add(evals.MeasuredAtLead); now.After(ceiling) {
+		return fmt.Errorf("the history ends at %s, past %s, the latest time the server measures a reading at", now.Format(time.RFC3339), ceiling.Format(time.RFC3339))
+	}
+	if days, _ := readingSpan(now); days < 1 {
+		return fmt.Errorf("the history ends at %s, and its readings hold no whole day after %s, the earliest a reading may be measured at",
+			now.Format(time.RFC3339), evals.MeasuredAtFloor.Format(time.RFC3339))
 	}
 	return nil
 }

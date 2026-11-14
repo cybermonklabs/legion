@@ -1,6 +1,7 @@
 package evals
 
 import (
+	"math"
 	"slices"
 	"strings"
 	"time"
@@ -68,26 +69,37 @@ func init() {
 // FoldStatistics is the statistics of each of series over parts, the day parts of one range of
 // days of definition's eval (those of other evals are passed over): by the fold definition's
 // source names for a computed eval, by each series' agg for a logged one. A computed eval whose
-// source names no fold of this package (one a register write named) answers no figure.
+// source names no fold of this package (one a register write named) answers no figure. A figure
+// the fold leaves outside what a float holds has no value: each day row holds finite parts (the
+// readings write refuses a row that would not, CodeReadingDayOverflow), but the parts of a range
+// of days can still sum past the largest float, and no read could answer that figure.
 func FoldStatistics(definition Definition, series []Series, parts []measures.DayPart, days Range) map[string]Statistics {
-	names := make([]string, len(series))
-	for index, one := range series {
-		names[index] = one.Series
-	}
-	if definition.Computed() {
-		fold, held := computedFolds[definition.Source]
-		if !held {
-			folded := make(map[string]Statistics, len(names))
-			for _, name := range names {
-				folded[name] = Statistics{}
-			}
-			return folded
+	var folded map[string]Statistics
+	fold, held := computedFolds[definition.Source]
+	switch {
+	case definition.Computed() && held:
+		names := make([]string, len(series))
+		for index, one := range series {
+			names[index] = one.Series
 		}
-		return fold(parts, days, names)
+		folded = fold(parts, days, names)
+	case definition.Computed():
+		folded = make(map[string]Statistics, len(series))
+		for _, one := range series {
+			folded[one.Series] = Statistics{}
+		}
+	default:
+		folded = make(map[string]Statistics, len(series))
+		for _, one := range series {
+			folded[one.Series] = aggStatistics(one.Agg, parts, one.Series)
+		}
 	}
-	folded := make(map[string]Statistics, len(series))
-	for _, one := range series {
-		folded[one.Series] = aggStatistics(one.Agg, parts, one.Series)
+	for _, stats := range folded {
+		for name, value := range stats {
+			if value != nil && (math.IsInf(*value, 0) || math.IsNaN(*value)) {
+				stats[name] = nil
+			}
+		}
 	}
 	return folded
 }

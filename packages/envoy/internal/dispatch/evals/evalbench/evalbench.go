@@ -14,8 +14,14 @@
 //     rework, and over the last 200 days 20 deploy runs a day of 8 jobs and 60 pull-request runs
 //     a day of 40 jobs, ten times as many runs under TenTimes (delivery.go);
 //   - nine smaller projects, each the Legion history evalfixture writes (legiontest's);
-//   - 2,800,000 readings over 730 days of INFRA's 20 logged evals, in measured_at order, through
-//     the registry's own register write and readings write (readings.go).
+//   - 2,800,000 readings of INFRA's 20 logged evals, in measured_at order, through the registry's
+//     own register write and readings write (readings.go), over the whole UTC days from the later
+//     of evals.MeasuredAtFloor (2025-01-01) and the day 730 days before Now's, to the end of the
+//     day before Now's: 730 days once Now is 2027-01-01 or later, fewer before, the same total.
+//     Every reading is measured before Now, so a server whose clock has reached Now (the bench's
+//     default Now is today's UTC midnight) takes each one; the readings write refuses a
+//     measured_at more than a day past its clock or before the floor (R18), and Load refuses a
+//     Now that would make it refuse one.
 //
 // Base writes only the tables the base head 02a7b3c6 has, for k8's negative control: the same
 // issues, events, observations and delivery history and the same smaller projects, and no reading
@@ -136,6 +142,11 @@ func Load(ctx context.Context, database *store.Store, spec Spec, logf func(forma
 	}
 	spec.Now = spec.Now.UTC()
 	pool := database.Pool
+	if !spec.Base {
+		if err := checkReadingSpan(ctx, pool, spec.Now); err != nil {
+			return nil, err
+		}
+	}
 	if err := checkSchema(ctx, pool, spec.Base); err != nil {
 		return nil, err
 	}

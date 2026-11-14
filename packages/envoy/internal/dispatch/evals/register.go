@@ -92,7 +92,8 @@ type Registered struct {
 // Register writes the next version of one eval's definition, and of the series it names, in one
 // transaction, copying forward every field the write does not set (Registration). Two writes of
 // one eval at once both land, in turn, as the next two versions: each takes the eval's lock
-// (lockEval) before it reads the version it writes after.
+// (lockEval) before it reads the version it writes after. A write of a computed eval that names a
+// field of its computation is refused, and stores nothing (computationField, R5).
 func (s *Store) Register(ctx context.Context, change Registration) (Registered, error) {
 	if err := validateRegistration(change); err != nil {
 		return Registered{}, err
@@ -106,6 +107,18 @@ func (s *Store) Register(ctx context.Context, change Registration) (Registered, 
 		current, found, err := newestDefinition(ctx, w.Tx, evalID)
 		if err != nil {
 			return err
+		}
+		series, err := currentSeries(ctx, w.Tx, evalID)
+		if err != nil {
+			return err
+		}
+		if found && current.Computed() {
+			if field := computationField(change, series); field != "" {
+				return fieldRefusal(CodeFieldComputed, field,
+					"%s is a field of the computation of %s, which its code defines (source %s): a register write of a computed eval sets "+
+						"its target, target_inclusive and target_judges, a series' min_n, owner_role, person, issue_key, links, state, replaced_by, doc_text and doc_block",
+					field, evalID, current.Source)
+			}
 		}
 		next := current
 		if !found {
@@ -141,10 +154,6 @@ func (s *Store) Register(ctx context.Context, change Registration) (Registered, 
 				return err
 			}
 			answer.Definition, answer.Wrote = stored, true
-		}
-		series, err := currentSeries(ctx, w.Tx, evalID)
-		if err != nil {
-			return err
 		}
 		for _, seriesChange := range change.Series {
 			existing, has := series[seriesChange.Series]
@@ -335,17 +344,21 @@ var (
 	aggs       = []string{AggSum, AggRatio, AggQuantile, AggMax, AggLast, AggWeightedMean}
 )
 
-// validateRegistration refuses a register write whose fields the tables would refuse, or whose
-// links are not links, before any transaction opens.
+// validateRegistration refuses a register write whose fields the tables would refuse, whose keys
+// an index entry cannot hold (maxKeyBytes), or whose links are not links, before any transaction
+// opens, naming the field it refuses as the body spells it.
 func validateRegistration(change Registration) error {
 	if !slugPattern.MatchString(change.Slug) {
-		return refusal(CodeSlugInvalid, "slug %q is not lower-case letters, digits and hyphens starting with a letter or a digit", change.Slug)
+		return fieldRefusal(CodeSlugInvalid, "slug", "slug %q is not lower-case letters, digits and hyphens starting with a letter or a digit", change.Slug)
+	}
+	if reason := keyTooLong("slug", change.Slug); reason != "" {
+		return fieldRefusal(CodeKeyTooLong, "slug", "%s", reason)
 	}
 	if change.DocText.Set && change.DocBlock.Set {
 		return refusal(CodeFieldInvalid, "a register write sets doc_text, whose block it then names in doc_block, or doc_block alone, not both")
 	}
 	if change.DocText.Set && strings.TrimSpace(change.DocText.Value) == "" {
-		return refusal(CodeDocTextEmpty, "doc_text holds no text, and a method block holds at least one paragraph")
+		return fieldRefusal(CodeDocTextEmpty, "doc_text", "doc_text holds no text, and a method block holds at least one paragraph")
 	}
 	for _, field := range []struct {
 		name  string
@@ -357,17 +370,17 @@ func validateRegistration(change Registration) error {
 		{"direction", change.Direction, directions},
 	} {
 		if field.value.Set && !slices.Contains(field.set, field.value.Value) {
-			return refusal(CodeFieldInvalid, "%s %q is not one of %s", field.name, field.value.Value, strings.Join(field.set, ", "))
+			return fieldRefusal(CodeFieldInvalid, field.name, "%s %q is not one of %s", field.name, field.value.Value, strings.Join(field.set, ", "))
 		}
 	}
 	if change.Source.Set && !validSource(change.Source.Value) {
-		return refusal(CodeFieldInvalid, "source %q is neither %s nor %s<function>", change.Source.Value, SourceLogged, SourceComputedPrefix)
+		return fieldRefusal(CodeFieldInvalid, "source", "source %q is neither %s nor %s<function>", change.Source.Value, SourceLogged, SourceComputedPrefix)
 	}
 	if change.TargetJudges.Set {
-		for _, judge := range change.TargetJudges.Value {
+		for index, judge := range change.TargetJudges.Value {
 			series, stat, found := strings.Cut(judge, ".")
 			if !found || validSeriesName(series) != nil || stat == "" {
-				return refusal(CodeFieldInvalid, "target judge %q is not <series>.<stat>", judge)
+				return fieldRefusal(CodeFieldInvalid, fmt.Sprintf("target_judges[%d]", index), "target judge %q is not <series>.<stat>", judge)
 			}
 		}
 	}
@@ -376,26 +389,71 @@ func validateRegistration(change Registration) error {
 			return err
 		}
 	}
-	for _, series := range change.Series {
+	for index, series := range change.Series {
+		at := fmt.Sprintf("series[%d]", index)
 		if err := validSeriesName(series.Series); err != nil {
-			return refusal(CodeSeriesInvalid, "series %q: %v", series.Series, err)
+			return fieldRefusal(CodeSeriesInvalid, at+".series", "series %q: %v", series.Series, err)
+		}
+		if reason := keyTooLong(at+".series", series.Series); reason != "" {
+			return fieldRefusal(CodeKeyTooLong, at+".series", "%s", reason)
 		}
 		if series.Role.Set && !slices.Contains(roles, series.Role.Value) {
-			return refusal(CodeFieldInvalid, "series %s: role %q is not one of %s", series.Series, series.Role.Value, strings.Join(roles, ", "))
+			return fieldRefusal(CodeFieldInvalid, at+".role", "series %s: role %q is not one of %s", series.Series, series.Role.Value, strings.Join(roles, ", "))
 		}
 		if series.Agg.Set && !slices.Contains(aggs, series.Agg.Value) {
-			return refusal(CodeFieldInvalid, "series %s: agg %q is not one of %s", series.Series, series.Agg.Value, strings.Join(aggs, ", "))
+			return fieldRefusal(CodeFieldInvalid, at+".agg", "series %s: agg %q is not one of %s", series.Series, series.Agg.Value, strings.Join(aggs, ", "))
 		}
 		if series.MinN.Set && series.MinN.Value != nil && *series.MinN.Value < 0 {
-			return refusal(CodeFieldInvalid, "series %s: min_n %d is below 0", series.Series, *series.MinN.Value)
+			return fieldRefusal(CodeFieldInvalid, at+".min_n", "series %s: min_n %d is below 0", series.Series, *series.MinN.Value)
 		}
 		if series.Links.Set {
-			if err := validateLinks(series.Links.Value, "series "+series.Series+" links"); err != nil {
+			if err := validateLinks(series.Links.Value, at+".links"); err != nil {
 				return err
 			}
 		}
 	}
 	return nil
+}
+
+// computationField is the first field change names that the computation of a computed eval
+// defines, as the body spells it, or "" where it names none (R5). On a computed eval a person sets
+// how the number is judged and who answers for it: the target, target_inclusive and
+// target_judges; a series' min_n; owner_role, person, issue_key, links, state and replaced_by;
+// and the method, through doc_text or doc_block. The catalogue states the rest from the code, and
+// the seed writes it again whenever a release changes it: the name, question, number rule,
+// decision, failure modes, unit, direction, kind and source, every field of a series but min_n,
+// and the series themselves, which the day builders write. series is the eval's series by name.
+func computationField(change Registration, series map[string]Series) string {
+	for _, field := range []struct {
+		name string
+		set  bool
+	}{
+		{"name", change.Name.Set}, {"question", change.Question.Set}, {"number_rule", change.NumberRule.Set},
+		{"decision", change.Decision.Set}, {"failure_modes", change.FailureModes.Set}, {"unit", change.Unit.Set},
+		{"direction", change.Direction.Set}, {"kind", change.Kind.Set}, {"source", change.Source.Set},
+	} {
+		if field.set {
+			return field.name
+		}
+	}
+	for index, one := range change.Series {
+		at := fmt.Sprintf("series[%d]", index)
+		if _, held := series[one.Series]; !held {
+			return at + ".series"
+		}
+		for _, field := range []struct {
+			name string
+			set  bool
+		}{
+			{"unit", one.Unit.Set}, {"role", one.Role.Set}, {"is_primary", one.IsPrimary.Set},
+			{"listed", one.Listed.Set}, {"agg", one.Agg.Set}, {"links", one.Links.Set},
+		} {
+			if field.set {
+				return at + "." + field.name
+			}
+		}
+	}
+	return ""
 }
 
 // validSource reports whether source is one eval_versions' check allows: logged, or computed:
@@ -423,25 +481,43 @@ func validSeriesName(name string) error {
 }
 
 // validateLinks refuses the first link of links that carries no relation or whose href is not an
-// absolute URL with a scheme and a host. where names the list in the refusal.
+// absolute http or https URL (linkProblem). where is the list as the body spells it (`links`,
+// `series[0].links`), which names the refused field.
 func validateLinks(links []Link, where string) error {
 	for index, link := range links {
 		if code, reason := linkProblem(link.Rel, link.Href); code != "" {
-			return refusal(code, "%s[%d]: %s", where, index, reason)
+			at := fmt.Sprintf("%s[%d]", where, index)
+			return fieldRefusal(code, at+"."+linkField(code), "%s: %s", at, reason)
 		}
 	}
 	return nil
 }
 
 // linkProblem is the code and reason that refuse a link with relation rel and address href, or
-// "" for a link the registry stores. The address is only parsed: nothing reads its far side.
+// "" for a link the registry stores: one with a relation and an absolute URL whose scheme is http
+// or https (R9), since a page draws the link for a person to click. The address is only parsed:
+// nothing reads its far side.
 func linkProblem(rel, href string) (string, string) {
 	if strings.TrimSpace(rel) == "" {
 		return CodeLinkRelMissing, "a link carries its relation in rel"
 	}
+	// url.Parse writes the scheme in lower case, so HTTPS: is https.
 	parsed, err := url.Parse(href)
-	if href == "" || err != nil || parsed.Scheme == "" || parsed.Host == "" {
+	switch {
+	case href == "" || err != nil || parsed.Scheme == "":
+		return CodeLinkHrefNotAbsolute, fmt.Sprintf("href %q is not an absolute URL with a scheme and a host", href)
+	case parsed.Scheme != "http" && parsed.Scheme != "https":
+		return CodeLinkHrefNotHTTP, fmt.Sprintf("href %q is a %s: URL, and a link's href is an http or https URL", href, parsed.Scheme)
+	case parsed.Host == "":
 		return CodeLinkHrefNotAbsolute, fmt.Sprintf("href %q is not an absolute URL with a scheme and a host", href)
 	}
 	return "", ""
+}
+
+// linkField is the field of a link that the refusal code names: its rel, or its href.
+func linkField(code string) string {
+	if code == CodeLinkRelMissing {
+		return "rel"
+	}
+	return "href"
 }

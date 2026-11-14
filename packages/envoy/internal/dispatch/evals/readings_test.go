@@ -117,6 +117,101 @@ func TestEachBadRowIsRefusedByItsIndexAndCode(t *testing.T) {
 	}
 }
 
+// TestAReadingMeasuredOutsideItsRangeIsRefusedNamingItsRow: a reading's measured_at lies from
+// 2025-01-01T00:00:00Z (MeasuredAtFloor) to 24 hours after the server's time (R18). A row measured
+// at 0001-01-01, as the reading was that made one refresher pass write 739,934 zero rows, or a
+// second before the floor, or an hour past the ceiling, or in the year 10000, is refused
+// MEASURED_AT_OUT_OF_RANGE naming its row, and its batch stores nothing. A row at the floor itself
+// and one an hour inside the ceiling are stored.
+func TestAReadingMeasuredOutsideItsRangeIsRefusedNamingItsRow(t *testing.T) {
+	r := newRig(t)
+	now := time.Now().UTC()
+	measuredAt := func(measured any) json.RawMessage {
+		return row(t, map[string]any{"series": "score", "row_kind": "run", "value": 1, "measured_at": measured})
+	}
+	for _, measured := range []any{"0001-01-01T00:00:00Z", "2024-12-31T23:59:59Z", now.Add(MeasuredAtLead + time.Hour), "9999-12-31T23:59:59-14:00"} {
+		before := r.count(t, `select count(*) from eval_readings`)
+		_, err := r.registry.WriteReadings(t.Context(), Batch{Project: r.project, Slug: "accuracy", Caller: alice, BuiltBy: testBuild,
+			Rows: []json.RawMessage{good(t), measuredAt(measured)}})
+		var refused *Error
+		if !errors.As(err, &refused) || refused.Code != CodeMeasuredAtOutOfRange || len(refused.Rows) != 1 ||
+			refused.Rows[0].Index != 1 || refused.Rows[0].Field != "measured_at" {
+			t.Errorf("a reading measured at %v was answered %v (%+v), want %s naming row 1's measured_at", measured, err, refused, CodeMeasuredAtOutOfRange)
+			continue
+		}
+		if after := r.count(t, `select count(*) from eval_readings`); after != before {
+			t.Errorf("the refused batch measured at %v moved eval_readings from %d rows to %d", measured, before, after)
+		}
+		t.Logf("refused %v: %s", measured, refused.Rows[0].Message)
+	}
+	written := r.write(t, "accuracy", alice, measuredAt(MeasuredAtFloor), measuredAt(now.Add(MeasuredAtLead-time.Hour)))
+	if len(written.Readings) != 2 {
+		t.Errorf("the readings at the floor and inside the ceiling stored %d readings, want both", len(written.Readings))
+	}
+}
+
+// TestAKeyAtItsBoundIsStoredAndOnePastItRefused: a key holds at most maxKeyBytes bytes, which keeps
+// every index entry of the registry inside the 2,704 bytes a B-tree entry holds. A reading whose
+// eval's slug, series, row_kind, row_key and attributes.repo each hold maxKeyBytes bytes that do
+// not compress is stored with its day row, the widest entries the registry makes. One byte more
+// in one of the reading's keys is refused EVAL_KEY_TOO_LONG naming its row and field, and in a
+// slug or a register write's series naming the field; none of them stores anything.
+func TestAKeyAtItsBoundIsStoredAndOnePastItRefused(t *testing.T) {
+	r := newRig(t)
+	// Hex of a multiplicative hash, which repeats nothing a compressor could use.
+	var digits strings.Builder
+	for index := 0; digits.Len() <= maxKeyBytes; index++ {
+		fmt.Fprintf(&digits, "%08x", uint32(index)*2654435761)
+	}
+	key, long := digits.String()[:maxKeyBytes], digits.String()[:maxKeyBytes+1]
+	reading := func(series, rowKind, rowKey, repo string) json.RawMessage {
+		return row(t, map[string]any{"series": series, "row_kind": rowKind, "row_key": rowKey, "value": 1, "measured_at": at(3, 9, 0),
+			"attributes": map[string]any{"repo": repo}})
+	}
+	written := r.write(t, key, alice, reading(key, key, key, key))
+	if days := r.count(t, `select count(*) from eval_days where eval_id = $1 and series = $2 and repo = $2`, EvalID(r.project, key), key); len(written.Readings) != 1 || days != 1 {
+		t.Fatalf("the reading whose keys are each %d bytes stored %d readings and %d day rows, want one of each", maxKeyBytes, len(written.Readings), days)
+	}
+	readings, versions := r.count(t, `select count(*) from eval_readings`), r.count(t, `select count(*) from eval_versions`)
+	for _, test := range []struct {
+		field string
+		row   json.RawMessage
+	}{
+		{"series", reading(long, key, key, key)},
+		{"row_kind", reading(key, long, key, key)},
+		{"row_key", reading(key, key, long, key)},
+		{"attributes.repo", reading(key, key, key, long)},
+	} {
+		_, err := r.registry.WriteReadings(t.Context(), Batch{Project: r.project, Slug: key, Caller: alice, BuiltBy: testBuild, Rows: []json.RawMessage{good(t), test.row}})
+		var refused *Error
+		if !errors.As(err, &refused) || refused.Code != CodeKeyTooLong || len(refused.Rows) != 1 || refused.Rows[0].Index != 1 || refused.Rows[0].Field != test.field {
+			t.Errorf("a reading whose %s holds %d bytes was answered %v (%+v), want %s naming row 1's %s", test.field, len(long), err, refused, CodeKeyTooLong, test.field)
+		}
+	}
+	_, err := r.registry.WriteReadings(t.Context(), Batch{Project: r.project, Slug: long, Caller: alice, BuiltBy: testBuild, Rows: []json.RawMessage{good(t)}})
+	var refused *Error
+	if !errors.As(err, &refused) || refused.Code != CodeKeyTooLong || refused.Field != "slug" {
+		t.Errorf("a readings write under a slug of %d bytes was answered %v (%+v), want %s naming the slug", len(long), err, refused, CodeKeyTooLong)
+	}
+	for _, write := range []struct {
+		field  string
+		change Registration
+	}{
+		{"slug", Registration{Slug: long}},
+		{"series[0].series", Registration{Slug: key, Series: []SeriesChange{{Series: long}}}},
+	} {
+		change := write.change
+		change.Project, change.Caller = r.project, alice
+		_, err := r.registry.Register(t.Context(), change)
+		if !errors.As(err, &refused) || refused.Code != CodeKeyTooLong || refused.Field != write.field {
+			t.Errorf("a register write whose %s holds %d bytes was answered %v (%+v), want %s naming it", write.field, len(long), err, refused, CodeKeyTooLong)
+		}
+	}
+	if afterReadings, afterVersions := r.count(t, `select count(*) from eval_readings`), r.count(t, `select count(*) from eval_versions`); afterReadings != readings || afterVersions != versions {
+		t.Errorf("the refused writes moved the readings from %d to %d and the versions from %d to %d", readings, afterReadings, versions, afterVersions)
+	}
+}
+
 // TestABatchWithABadLastRowStoresNothing: a batch of three readings whose last row carries the
 // recorder is refused whole: eval_readings holds as many rows after it as before, and the slug
 // it named, which no eval held, is not registered either.
@@ -437,26 +532,35 @@ func TestAReadingUnderAComputedSlugIsStoredAndFoldedIntoNoDayRow(t *testing.T) {
 }
 
 // TestACorrectionOfAReadingNeverFoldedTakesNothingFromItsDayRow: a reading logged while its eval
-// was computed is stored and folded into no day row; once a register write makes the eval logged,
+// was computed is stored and folded into no day row; once a later version makes the eval logged,
 // a reading of the same value is folded into that day's row, and a correction of the first,
 // unfolded reading adds its own value and takes nothing away, so the day holds the second
 // reading's value and the correction's.
 func TestACorrectionOfAReadingNeverFoldedTakesNothingFromItsDayRow(t *testing.T) {
 	r := newRig(t)
-	register := func(source string) {
-		t.Helper()
-		if _, err := r.registry.Register(t.Context(), Registration{
-			Project: r.project, Slug: "review-load", Caller: alice, Kind: Set(KindExperiment), Source: Set(source),
-			Series: []SeriesChange{{Series: "minutes", Agg: Set(AggQuantile)}},
-		}); err != nil {
-			t.Fatalf("register review-load as %s: %v", source, err)
-		}
-	}
-	register("computed:evals.ComputedForTheTest")
-	unfolded := r.write(t, "review-load", alice, row(t, map[string]any{"series": "minutes", "row_kind": "run", "row_key": "a", "value": 7, "measured_at": at(5, 9, 0)})).Readings[0]
-	register(SourceLogged)
-	r.write(t, "review-load", alice, row(t, map[string]any{"series": "minutes", "row_kind": "run", "row_key": "b", "value": 7, "measured_at": at(5, 10, 0)}))
 	evalID := EvalID(r.project, "review-load")
+	if _, err := r.registry.Register(t.Context(), Registration{
+		Project: r.project, Slug: "review-load", Caller: alice, Kind: Set(KindExperiment), Source: Set("computed:evals.ComputedForTheTest"),
+		Series: []SeriesChange{{Series: "minutes", Agg: Set(AggQuantile)}},
+	}); err != nil {
+		t.Fatalf("register review-load as computed: %v", err)
+	}
+	unfolded := r.write(t, "review-load", alice, row(t, map[string]any{"series": "minutes", "row_kind": "run", "row_key": "a", "value": 7, "measured_at": at(5, 9, 0)})).Readings[0]
+	// A register write no longer turns a computed eval logged (R5: its source is its computation's,
+	// computationField), so the logged version a register write stored before that rule is written
+	// here as it stored one: the newest version with source logged.
+	if _, err := r.database.Pool.Exec(t.Context(), `
+		insert into eval_versions (eval_id, version, project_key, slug, name, question, number_rule, decision, doc_block,
+			failure_modes, unit, direction, target, target_inclusive, target_judges, owner_role, person, issue_key, kind,
+			source, state, replaced_by, links, written_via, written_by)
+		select eval_id, version + 1, project_key, slug, name, question, number_rule, decision, doc_block,
+			failure_modes, unit, direction, target, target_inclusive, target_judges, owner_role, person, issue_key, kind,
+			$2, state, replaced_by, links, written_via, written_by
+		from evals_current where eval_id = $1
+	`, evalID, SourceLogged); err != nil {
+		t.Fatalf("make review-load logged: %v", err)
+	}
+	r.write(t, "review-load", alice, row(t, map[string]any{"series": "minutes", "row_kind": "run", "row_key": "b", "value": 7, "measured_at": at(5, 10, 0)}))
 	before := r.day(t, evalID, "minutes", "", at(5, 0, 0))
 	r.write(t, "review-load", alice, row(t, map[string]any{
 		"series": "minutes", "row_kind": "run", "row_key": "a", "value": 2, "measured_at": at(5, 9, 0), "replaces": unfolded.ID,

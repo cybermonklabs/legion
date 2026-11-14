@@ -1,12 +1,15 @@
 package evals
 
 import (
+	"encoding/json"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
@@ -223,6 +226,152 @@ func TestARegisterWriteThatChangesASeriesAloneWritesAVersion(t *testing.T) {
 				write.what, registered.Wrote, logged, registered.Definition.Version, write.wrote, write.changes)
 		}
 		t.Logf("%s: wrote %t, the series at version %d, %d eval_versions changes", write.what, registered.Wrote, registered.Series[0].Version, logged)
+	}
+}
+
+// TestARegisterWriteOfAComputedEvalNamingItsComputationIsRefused: a computed eval's definition is
+// its code (R5). A register write of deploy frequency that names a field of its computation, each
+// in a write of its own beside a target, is refused EVAL_FIELD_COMPUTED naming that field as the
+// body spells it, and stores nothing: no version and no series version. One write of every field
+// a person sets on it is stored: its target, inclusiveness and judges, its series' min_n, the
+// owner role, person, issue, links and state, and its method. A logged eval takes every field.
+func TestARegisterWriteOfAComputedEvalNamingItsComputationIsRefused(t *testing.T) {
+	r := newRig(t)
+	ctx := t.Context()
+	if _, err := r.registry.Ensure(ctx, r.project); err != nil {
+		t.Fatalf("seed %s: %v", r.project, err)
+	}
+	evalID := EvalID(r.project, SlugDeployFrequency)
+	target, minN := 9.0, 4
+	deploys := measures.SeriesDeploys
+	link := []Link{{Rel: "via", Href: "https://ci.example/deploys"}}
+	stored := func() (int, int) {
+		return r.count(t, `select count(*) from eval_versions where eval_id = $1`, evalID),
+			r.count(t, `select count(*) from eval_series where eval_id = $1`, evalID)
+	}
+	for _, test := range []struct {
+		field  string
+		change Registration
+	}{
+		{"name", Registration{Name: Set("Deploys")}},
+		{"question", Registration{Question: Set("How many deploys a day?")}},
+		{"number_rule", Registration{NumberRule: Set("Count the deploys.")}},
+		{"decision", Registration{Decision: Set("Whether to deploy more often.")}},
+		{"failure_modes", Registration{FailureModes: Set([]FailureMode{{Mode: "A mode.", Guard: "A guard."}})}},
+		{"unit", Registration{Unit: Set("deploys a day")}},
+		{"direction", Registration{Direction: Set(DirectionLowerBetter)}},
+		{"kind", Registration{Kind: Set(KindExperiment)}},
+		{"source", Registration{Source: Set(SourceLogged)}},
+		{"series[0].unit", Registration{Series: []SeriesChange{{Series: deploys, Unit: Set("runs")}}}},
+		{"series[0].role", Registration{Series: []SeriesChange{{Series: deploys, Role: Set(RoleControl)}}}},
+		{"series[0].is_primary", Registration{Series: []SeriesChange{{Series: deploys, IsPrimary: Set(false)}}}},
+		{"series[0].listed", Registration{Series: []SeriesChange{{Series: deploys, Listed: Set(false)}}}},
+		{"series[0].agg", Registration{Series: []SeriesChange{{Series: deploys, Agg: Set(AggMax)}}}},
+		{"series[0].links", Registration{Series: []SeriesChange{{Series: deploys, Links: Set(link)}}}},
+		{"series[1].series", Registration{Series: []SeriesChange{{Series: deploys, MinN: Set(&minN)}, {Series: "invented", MinN: Set(&minN)}}}},
+	} {
+		t.Run(test.field, func(t *testing.T) {
+			change := test.change
+			change.Project, change.Slug, change.Caller, change.Target = r.project, SlugDeployFrequency, alice, Set(&target)
+			versions, series := stored()
+			_, err := r.registry.Register(ctx, change)
+			var refused *Error
+			if !errors.As(err, &refused) || refused.Code != CodeFieldComputed || refused.Field != test.field {
+				t.Fatalf("the write naming %s was answered %v (%+v), want %s naming %s", test.field, err, refused, CodeFieldComputed, test.field)
+			}
+			if afterVersions, afterSeries := stored(); afterVersions != versions || afterSeries != series {
+				t.Errorf("the refused write moved %s from %d versions and %d series versions to %d and %d", evalID, versions, series, afterVersions, afterSeries)
+			}
+			t.Logf("refused %s: %s", refused.Field, refused.Message)
+		})
+	}
+
+	person, err := r.registry.Register(ctx, Registration{
+		Project: r.project, Slug: SlugDeployFrequency, Caller: alice,
+		Target: Set(&target), TargetInclusive: Set(true), TargetJudges: Set([]string{deploys + ".per_day"}),
+		OwnerRole: Set("implementer"), Person: Set("alice"), IssueKey: Set("EVAL-1"), Links: Set(link),
+		State: Set(StateActive), DocText: Set("Alice's method: count the deploys."),
+		Series: []SeriesChange{{Series: deploys, MinN: Set(&minN)}},
+	})
+	if err != nil {
+		t.Fatalf("a write of the fields a person sets on %s: %v", evalID, err)
+	}
+	held := map[string]Series{}
+	for _, one := range person.Series {
+		held[one.Series] = one
+	}
+	if definition := person.Definition; !person.Wrote || definition.Target == nil || *definition.Target != target || !definition.TargetInclusive ||
+		definition.Person != "alice" || definition.IssueKey != "EVAL-1" || len(definition.Links) != 1 || held[deploys].MinN == nil || *held[deploys].MinN != minN {
+		t.Errorf("the write of a person's fields left %+v with %s at min_n %s, want alice's target, owner, issue, link and min_n", definition, deploys, showMinN(held[deploys].MinN))
+	}
+
+	if _, err := r.registry.Register(ctx, Registration{
+		Project: r.project, Slug: "review-load", Caller: alice, Name: Set("Review load"), Question: Set("How many reviews wait?"),
+		NumberRule: Set("Count the open reviews."), Decision: Set("Whether to add a reviewer."), Unit: Set("reviews"),
+		Direction: Set(DirectionLowerBetter), Kind: Set(KindExperiment), Source: Set(SourceLogged),
+		Series: []SeriesChange{{Series: "reviews", Unit: Set("reviews"), Agg: Set(AggMax), Listed: Set(true), Links: Set(link)}},
+	}); err != nil {
+		t.Errorf("a logged eval's register write of every field: %v", err)
+	}
+}
+
+// TestALinkWhoseHrefIsNoHTTPURLIsRefused: a link's href is an absolute http or https URL (R9),
+// since a page draws the link for a person to click. Any other scheme, javascript:, data:,
+// mailto:, urn:, and javascript: and ftp: with a host, is refused LINK_HREF_NOT_HTTP, and an href
+// with no scheme or no host LINK_HREF_NOT_ABSOLUTE, on every link a write takes: a reading's,
+// naming its row and its link, and an eval's and a series', naming the field. A refused write
+// stores nothing; an https URL written in capitals is one, and is stored.
+func TestALinkWhoseHrefIsNoHTTPURLIsRefused(t *testing.T) {
+	r := newRig(t)
+	ctx := t.Context()
+	stored := func() (int, int) {
+		return r.count(t, `select count(*) from eval_readings`), r.count(t, `select count(*) from eval_versions`)
+	}
+	for index, test := range []struct{ href, code string }{
+		{"javascript:alert(1)", CodeLinkHrefNotHTTP},
+		{"javascript://ci.example/%0Aalert(1)", CodeLinkHrefNotHTTP},
+		{"data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==", CodeLinkHrefNotHTTP},
+		{"mailto:alice@example.com", CodeLinkHrefNotHTTP},
+		{"urn:isbn:0451450523", CodeLinkHrefNotHTTP},
+		{"ftp://files.example/report.csv", CodeLinkHrefNotHTTP},
+		{"/runs/1", CodeLinkHrefNotAbsolute},
+		{"//ci.example/runs/1", CodeLinkHrefNotAbsolute},
+		{"https:///runs/1", CodeLinkHrefNotAbsolute},
+	} {
+		readings, versions := stored()
+		_, err := r.registry.WriteReadings(ctx, Batch{Project: r.project, Slug: "accuracy", Caller: alice, BuiltBy: testBuild, Rows: []json.RawMessage{
+			good(t), row(t, map[string]any{"series": "score", "row_kind": "run", "value": 1, "measured_at": at(3, 10, 0),
+				"links": []any{map[string]any{"rel": "via", "href": test.href}}}),
+		}})
+		var refused *Error
+		if !errors.As(err, &refused) || refused.Code != test.code || len(refused.Rows) != 1 ||
+			refused.Rows[0] != (RowError{Index: 1, Code: test.code, Field: "links[0].href", Message: refused.Rows[0].Message}) {
+			t.Errorf("%d: a reading linking %q was answered %v (%+v), want %s naming row 1's links[0].href", index, test.href, err, refused, test.code)
+		}
+		links := []Link{{Rel: "via", Href: test.href}}
+		for _, write := range []struct {
+			field  string
+			change Registration
+		}{
+			{"links[0].href", Registration{Links: Set(links)}},
+			{"series[0].links[0].href", Registration{Series: []SeriesChange{{Series: "score", Links: Set(links)}}}},
+		} {
+			change := write.change
+			change.Project, change.Slug, change.Caller = r.project, "accuracy", alice
+			_, err := r.registry.Register(ctx, change)
+			if !errors.As(err, &refused) || refused.Code != test.code || refused.Field != write.field {
+				t.Errorf("%d: a register write linking %q in %s was answered %v (%+v), want %s naming %s", index, test.href, write.field, err, refused, test.code, write.field)
+			}
+		}
+		if afterReadings, afterVersions := stored(); afterReadings != readings || afterVersions != versions {
+			t.Errorf("%d: the refused writes linking %q moved the readings from %d to %d and the versions from %d to %d",
+				index, test.href, readings, afterReadings, versions, afterVersions)
+		}
+	}
+	written := r.write(t, "accuracy", alice, row(t, map[string]any{"series": "score", "row_kind": "run", "value": 1, "measured_at": at(3, 10, 0),
+		"links": []any{map[string]any{"rel": "via", "href": "HTTPS://CI.EXAMPLE/runs/1"}}}))
+	if links := written.Readings[0].Links; len(links) != 1 || links[0].Href != "HTTPS://CI.EXAMPLE/runs/1" {
+		t.Errorf("a reading linking an https URL in capitals stored the links %+v, want it as written", links)
 	}
 }
 

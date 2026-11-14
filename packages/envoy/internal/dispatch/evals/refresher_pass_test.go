@@ -200,15 +200,19 @@ func TestTheShippedMembersReadKeepsItsPartialIndexUnderAGenericPlan(t *testing.T
 func TestTheLoggedZeroFillWritesEveryMissingDayAndNoOther(t *testing.T) {
 	r := newRig(t)
 	ctx := t.Context()
+	// The days are October 2026's, every one in the past, so the readings write takes the reading
+	// of a day after the fill's today as it takes the others (R18 refuses a measured_at more than
+	// a day past the server's time), and the fill runs as of the 20th.
+	on := func(day, hour int) time.Time { return time.Date(2026, time.October, day, hour, 0, 0, 0, time.UTC) }
 	reading := func(series, key string, measured time.Time) json.RawMessage {
 		return row(t, map[string]any{"series": series, "row_kind": "run", "row_key": key, "value": 1, "measured_at": measured})
 	}
-	r.write(t, "build-minutes", alice, reading("minutes", "a", at(3, 9, 0)), reading("minutes", "b", at(8, 9, 0)),
-		reading("minutes", "c", at(12, 9, 0)), reading("minutes", "d", at(25, 9, 0)), reading("cache", "e", at(15, 9, 0)))
-	r.write(t, "test-minutes", alice, reading("minutes", "f", at(10, 9, 0)))
+	r.write(t, "build-minutes", alice, reading("minutes", "a", on(3, 9)), reading("minutes", "b", on(8, 9)),
+		reading("minutes", "c", on(12, 9)), reading("minutes", "d", on(25, 9)), reading("cache", "e", on(15, 9)))
+	r.write(t, "test-minutes", alice, reading("minutes", "f", on(10, 9)))
 	built, other := EvalID(r.project, "build-minutes"), EvalID(r.project, "test-minutes")
 	// The newest row of minutes is unlisted, which each zero row of minutes takes.
-	if _, err := r.database.Pool.Exec(ctx, `update eval_days set listed = false where eval_id = $1 and series = 'minutes' and day = $2`, built, at(25, 0, 0)); err != nil {
+	if _, err := r.database.Pool.Exec(ctx, `update eval_days set listed = false where eval_id = $1 and series = 'minutes' and day = $2`, built, on(25, 0)); err != nil {
 		t.Fatalf("unlist the newest row: %v", err)
 	}
 	zeroDays := func(evalID, series string) ([]int, []bool) {
@@ -240,7 +244,7 @@ func TestTheLoggedZeroFillWritesEveryMissingDayAndNoOther(t *testing.T) {
 		return days
 	}
 
-	refresh := r.registry.newRefresh(testBuild, at(20, 12, 0), walkBatch)
+	refresh := r.registry.newRefresh(testBuild, on(20, 12), walkBatch)
 	filled, err := refresh.fillLoggedZeros(ctx, r.project, []string{built})
 	if err != nil {
 		t.Fatalf("fill build-minutes: %v", err)

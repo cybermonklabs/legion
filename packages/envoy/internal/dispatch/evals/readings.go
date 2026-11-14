@@ -45,7 +45,8 @@ type Written struct {
 
 // WriteReadings stores one batch of readings of one eval in one transaction, or nothing. Every row
 // is validated before any is written, and a refusal (*Error) names every bad row by its index
-// (RowError).
+// (RowError). A row's measured_at lies from MeasuredAtFloor to MeasuredAtLead after the
+// transaction's now(), the clock every other time the write stores is read from (R18).
 //
 // A slug no eval holds registers its eval as version 1 (written_via reading, kind experiment,
 // source logged, no target, state active, the caller as owner), with its section in the
@@ -67,6 +68,9 @@ func (s *Store) WriteReadings(ctx context.Context, batch Batch) (Written, error)
 	if !slugPattern.MatchString(batch.Slug) {
 		return Written{}, refusal(CodeSlugInvalid, "slug %q is not lower-case letters, digits and hyphens starting with a letter or a digit", batch.Slug)
 	}
+	if reason := keyTooLong("slug", batch.Slug); reason != "" {
+		return Written{}, fieldRefusal(CodeKeyTooLong, "slug", "%s", reason)
+	}
 	if batch.BuiltBy == "" {
 		return Written{}, errors.New("evals: a readings write needs the running build, which its day rows record")
 	}
@@ -74,9 +78,9 @@ func (s *Store) WriteReadings(ctx context.Context, batch Batch) (Written, error)
 		return Written{}, refusal(CodeReadingsEmpty, "a readings write carries at least one reading")
 	}
 	evalID := EvalID(batch.Project, batch.Slug)
-	rows, rowErrors := parseRows(evalID, batch.Rows)
 	var written Written
 	err := s.inWrite(ctx, batch.Project, func(ctx context.Context, w *writeTx) error {
+		rows, rowErrors := parseRows(evalID, batch.Rows, w.now)
 		replaced, replaceErrors, err := lockReplaced(ctx, w.Tx, evalID, rows)
 		if err != nil {
 			return err
@@ -390,20 +394,21 @@ type readingBody struct {
 }
 
 // parseRows decodes and checks every row of a batch, with no database read, and answers the
-// readings it decoded (each with a new id) beside every refusal it found. A row whose JSON cannot
-// be decoded answers its refusal and no reading worth storing.
-func parseRows(evalID string, raw []json.RawMessage) ([]Reading, []RowError) {
+// readings it decoded (each with a new id) beside every refusal it found. now is the write's
+// time, which bounds each row's measured_at. A row whose JSON cannot be decoded answers its
+// refusal and no reading worth storing.
+func parseRows(evalID string, raw []json.RawMessage, now time.Time) ([]Reading, []RowError) {
 	rows := make([]Reading, len(raw))
 	var refused []RowError
 	for index, row := range raw {
-		reading, problems := parseRow(evalID, index, row)
+		reading, problems := parseRow(evalID, index, row, now)
 		rows[index] = reading
 		refused = append(refused, problems...)
 	}
 	return rows, refused
 }
 
-func parseRow(evalID string, index int, raw json.RawMessage) (Reading, []RowError) {
+func parseRow(evalID string, index int, raw json.RawMessage, now time.Time) (Reading, []RowError) {
 	var refused []RowError
 	refuse := func(code, field, format string, args ...any) {
 		refused = append(refused, RowError{Index: index, Code: code, Field: field, Message: fmt.Sprintf(format, args...)})
@@ -446,12 +451,21 @@ func parseRow(evalID string, index int, raw json.RawMessage) (Reading, []RowErro
 	if body.RowKind == "" {
 		refuse(CodeReadingInvalid, "row_kind", "a reading names its row kind in row_kind")
 	}
+	for _, key := range []struct{ field, value string }{{"series", body.Series}, {"row_kind", body.RowKind}, {"row_key", body.RowKey}} {
+		if reason := keyTooLong(key.field, key.value); reason != "" {
+			refuse(CodeKeyTooLong, key.field, "%s", reason)
+		}
+	}
 	if body.MeasuredAt == nil {
 		refuse(CodeReadingInvalid, "measured_at", "a reading says when it was measured in measured_at")
 	} else {
 		// Postgres keeps microseconds, so the reading is held at the time it is stored with, and
 		// a day row's last_at compares equal to the reading it came from.
 		reading.MeasuredAt = body.MeasuredAt.UTC().Truncate(time.Microsecond)
+		if ceiling := now.Add(MeasuredAtLead); reading.MeasuredAt.Before(MeasuredAtFloor) || reading.MeasuredAt.After(ceiling) {
+			refuse(CodeMeasuredAtOutOfRange, "measured_at", "measured_at %s is outside the range a reading may hold, %s to %s, %g hours after the server's time",
+				body.MeasuredAt.Format(time.RFC3339Nano), MeasuredAtFloor.Format(time.RFC3339), ceiling.Format(time.RFC3339), MeasuredAtLead.Hours())
+		}
 	}
 	if body.Value == nil && strings.TrimSpace(body.ValueAbsentReason) == "" {
 		refuse(CodeValueOrReason, "value", "a reading has a value, or says in value_absent_reason why it has none")
@@ -462,6 +476,8 @@ func parseRow(evalID string, index int, raw json.RawMessage) (Reading, []RowErro
 	if repo, has := reading.Attributes["repo"]; has {
 		if name, ok := repo.(string); !ok || name == "" {
 			refuse(CodeReadingInvalid, "attributes.repo", "attributes.repo names a repository, and %v is no repository's name", repo)
+		} else if reason := keyTooLong("attributes.repo", name); reason != "" {
+			refuse(CodeKeyTooLong, "attributes.repo", "%s", reason)
 		}
 	}
 	for linkIndex, rawLink := range body.Links {
@@ -489,11 +505,7 @@ func parseRow(evalID string, index int, raw json.RawMessage) (Reading, []RowErro
 			continue
 		}
 		if code, reason := linkProblem(link.Rel, link.Href); code != "" {
-			subfield := ".href"
-			if code == CodeLinkRelMissing {
-				subfield = ".rel"
-			}
-			refuse(code, field+subfield, "%s", reason)
+			refuse(code, field+"."+linkField(code), "%s", reason)
 		}
 		reading.Links = append(reading.Links, Link{Rel: link.Rel, Href: link.Href, Label: link.Label})
 	}

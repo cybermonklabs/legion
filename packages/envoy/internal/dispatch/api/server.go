@@ -1456,11 +1456,21 @@ func decodeJSONWithin(r *http.Request, value any, limit int64, tooLarge *apiErro
 	return nil
 }
 
-// WriteJSON writes body as the JSON response with the given status.
+// WriteJSON writes body as the JSON response with the given status. The body is encoded whole
+// before the status is written, as json.Encoder.Encode builds it, with the newline Encode ends it
+// with, so a body that cannot be encoded (a +Inf, a time past year 9999) answers the server's 500
+// INTERNAL, and is logged, rather than the status with an empty body: an empty 2xx is a success
+// that carries nothing, and a keyed write would answer its retry the same nothing.
 func WriteJSON(w http.ResponseWriter, status int, body any) {
+	var encoded bytes.Buffer
+	if err := json.NewEncoder(&encoded).Encode(body); err != nil {
+		slog.Error("dispatch: a JSON answer cannot be encoded", "status", status, "error", err)
+		writeError(w, codeInternal, http.StatusInternalServerError, "internal server error")
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	if err := json.NewEncoder(w).Encode(body); err != nil {
+	if _, err := w.Write(encoded.Bytes()); err != nil {
 		slog.Warn("dispatch: write json failed", "error", err)
 	}
 }
