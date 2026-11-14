@@ -221,10 +221,11 @@ func (r *RetryLater) Unwrap() error { return r.Err }
 
 // Consumers are this project's three durable JetStream consumers, created before intake runs so a
 // daemon whose stream is missing refuses to boot instead of booting with no intake. repos is the
-// set GitHub intake hears and decodes, which SetRepositories replaces under mu. pool is the
-// Postgres every fact is applied on and every consumer's position is kept in (consumer_positions).
-// progress is, per durable consumer, what JetStream does not keep: when this daemon opened it and
-// when it last handled a message (Lag).
+// set GitHub intake hears and decodes, which SetRepositories replaces under mu, and handingOver
+// whether a handover to the consumers replacing these is under way (HandingOver), which every
+// decode reads beside it. pool is the Postgres every fact is applied on and every consumer's
+// position is kept in (consumer_positions). progress is, per durable consumer, what JetStream
+// does not keep: when this daemon opened it and when it last handled a message (Lag).
 type Consumers struct {
 	spec     ConsumerSpec
 	pool     Pool
@@ -241,8 +242,9 @@ type Consumers struct {
 
 	progress struct{ dispatch, github, wake *consumerProgress }
 
-	mu    sync.Mutex
-	repos []ghrepo.Repository
+	mu          sync.Mutex
+	repos       []ghrepo.Repository
+	handingOver bool
 }
 
 // OpenConsumers creates or updates this project's Dispatch, GitHub and listener-wake durable
@@ -311,7 +313,8 @@ func githubConsumerConfig(spec ConsumerSpec, repositories []ghrepo.Repository) j
 // then, once JetStream has taken them, the set the decoder accepts an event's repository from. Both
 // change under one lock every decode reads the set under, so no event is decoded against the one
 // while the consumer filters on the other: an event of a repository added here is decoded from the
-// moment the consumer delivers it, and one of a repository taken out is acknowledged untouched. An
+// moment the consumer delivers it, and one of a repository taken out is acknowledged untouched, or
+// handed back to the durable while a handover of these consumers is under way (HandingOver). An
 // update JetStream refuses changes neither, so the caller can retry it. No repository is a daemon
 // that serves none yet (githubHearsNoRepository); a zero one is refused.
 func (c *Consumers) SetRepositories(ctx context.Context, repositories []ghrepo.Repository) error {
@@ -340,6 +343,28 @@ func (c *Consumers) Repositories() []ghrepo.Repository {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.repos
+}
+
+// HandingOver says whether a handover of these consumers to the ones replacing them is under way
+// (internal/daemon's natsHandover). While it is, a GitHub message whose repository these
+// consumers do not hear (decodedMessage.Unheard) is handed back to its durable, nak'd after
+// NakDelay, rather than acknowledged untouched: on one server the consumers replacing these
+// share their durables, and the set those hear may be wider, so the durable delivers the message
+// again, to them once the intake running these has ended. The mark is this process's memory
+// alone and asks nothing of the connection, so setting it cannot fail, whatever state that
+// connection is in. A handover that fails sets it back, and these consumers serve on as before.
+func (c *Consumers) HandingOver(underWay bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.handingOver = underWay
+}
+
+// hearing is what one decode reads, under the one lock SetRepositories and HandingOver write
+// under: the set GitHub intake hears and whether a handover is under way.
+func (c *Consumers) hearing() ([]ghrepo.Repository, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.repos, c.handingOver
 }
 
 // openConsumer updates the durable consumer config names, keeping the start position it was created
@@ -622,7 +647,8 @@ func (c *Consumers) consumeConsumer(ctx context.Context, consumer jetstream.Cons
 	lag := &lagWatch{consumer: consumer.CachedInfo().Name, logger: c.spec.Logger, now: time.Now}
 	consuming, err := consumer.Consume(func(message jetstream.Msg) {
 		lag.observe(message)
-		if consumeMessage(ctx, message, c.spec, c.Repositories(), c.pool, handlers) {
+		repositories, handingOver := c.hearing()
+		if consumeMessage(ctx, message, c.spec, repositories, handingOver, c.pool, handlers) {
 			progress.handle(c.spec.Now())
 		}
 	}, jetstream.PullMaxMessages(consumerFetchBatch))
@@ -709,7 +735,10 @@ func (l *lagWatch) observe(message jetstream.Msg) {
 // long as it hangs (the delivery mechanism: ConsumerSpec.HandlerLimit's comment). The handler is
 // cut at that limit instead, its message naked and delivered again rather than held for the
 // length of the hang.
-func consumeMessage(ctx context.Context, message jetstream.Msg, spec ConsumerSpec, repositories []ghrepo.Repository, pool Pool, handlers []Handler) bool {
+//
+// handingOver is whether a handover of these consumers is under way (Consumers.HandingOver),
+// which hands a GitHub message of a repository they do not hear back to its durable.
+func consumeMessage(ctx context.Context, message jetstream.Msg, spec ConsumerSpec, repositories []ghrepo.Repository, handingOver bool, pool Pool, handlers []Handler) bool {
 	decoded, err := decodeMessage(message.Subject(), spec.Project, repositories, message.Data())
 	if err != nil {
 		logMessage(spec.Logger, slog.LevelError, "poison JetStream message", message, "error", err)
@@ -729,7 +758,20 @@ func consumeMessage(ctx context.Context, message jetstream.Msg, spec ConsumerSpe
 	// anything else — the Dispatch durable takes every project's issue events, and decodeMessage
 	// answers with no fact for another project's key and for every event type the workflow does
 	// not read.
+	//
+	// The one exception is a GitHub event of a repository these consumers do not hear while their
+	// handover is under way: it is the consumers replacing these to decide, since the set they
+	// hear may be wider, so it is nak'd after NakDelay and its durable delivers it again. It is not
+	// handled, and waits again.
 	if decoded.Fact == nil {
+		if decoded.Unheard && handingOver {
+			logMessage(spec.Logger, slog.LevelInfo, "a GitHub event of a repository the replaced intake does not hear is handed back to its durable for the intake replacing it", message,
+				"event_id", decoded.EventID, "retry_in", spec.NakDelay)
+			if err := message.NakWithDelay(spec.NakDelay); err != nil {
+				logMessage(spec.Logger, slog.LevelError, "nak a GitHub event the replaced intake does not hear", message, "event_id", decoded.EventID, "error", err)
+			}
+			return false
+		}
 		return ackMessage(spec.Logger, message)
 	}
 

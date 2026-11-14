@@ -27,6 +27,10 @@ type decodedMessage struct {
 	// Unread names each optional field the decoder could not read and took as absent. The consumer
 	// logs it; the message is not poison.
 	Unread []string
+	// Unheard is a GitHub event whose payload names a repository the set it was decoded against
+	// does not hear, which is a nil Fact: what the consumers a handover is replacing hand back to
+	// their durable rather than acknowledge (Consumers.HandingOver).
+	Unheard bool
 }
 
 type envoyEnvelope struct {
@@ -56,6 +60,7 @@ func decodeMessage(subject, project string, repositories []ghrepo.Repository, da
 
 	var fact Fact
 	var unread []string
+	var unheard bool
 	var err error
 	switch {
 	case subject == legionWakeSubject:
@@ -77,14 +82,14 @@ func decodeMessage(subject, project string, repositories []ghrepo.Repository, da
 		if envelope.Source != "github" {
 			return decodedMessage{}, fmt.Errorf("GitHub subject has envelope source %q", envelope.Source)
 		}
-		fact, unread, err = decodeGitHubFact(subject, repositories, envelope.Payload)
+		fact, unread, unheard, err = decodeGitHubFact(subject, repositories, envelope.Payload)
 	default:
 		return decodedMessage{}, fmt.Errorf("unsupported durable subject %q", subject)
 	}
 	if err != nil {
 		return decodedMessage{}, err
 	}
-	return decodedMessage{Source: envelope.Source, EventID: envelope.factID(), Fact: fact, Unread: unread}, nil
+	return decodedMessage{Source: envelope.Source, EventID: envelope.factID(), Fact: fact, Unread: unread, Unheard: unheard}, nil
 }
 
 func (e envoyEnvelope) valid() error {
@@ -613,10 +618,12 @@ func isJSONObject(raw json.RawMessage) bool {
 	return json.Unmarshal(raw, &item) == nil && item != nil
 }
 
-func decodeGitHubFact(subject string, repositories []ghrepo.Repository, payload string) (Fact, []string, error) {
+// decodeGitHubFact decodes a GitHub event of a repository in repositories. unheard is whether its
+// payload names a repository none of them is, which is no fact (decodedMessage.Unheard).
+func decodeGitHubFact(subject string, repositories []ghrepo.Repository, payload string) (fact Fact, unread []string, unheard bool, err error) {
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(payload), &raw); err != nil || raw == nil {
-		return nil, nil, nil
+		return nil, nil, false, nil
 	}
 	// The payload names the event's repository; the subject's segments cannot, since a name may hold
 	// a dot. Only the event of a repository GitHub intake hears (ConsumerSpec.Repositories, as
@@ -627,20 +634,18 @@ func decodeGitHubFact(subject string, repositories []ghrepo.Repository, payload 
 	repo, _ := rawString(raw, "repo")
 	at := slices.IndexFunc(repositories, func(heard ghrepo.Repository) bool { return strings.EqualFold(heard.String(), repo) })
 	if at < 0 {
-		return nil, nil, nil
+		return nil, nil, repo != "", nil
 	}
 	repository := repositories[at]
 	kind, ok := rawString(raw, "kind")
 	if !ok {
-		return nil, nil, nil
+		return nil, nil, false, nil
 	}
-	var fact Fact
-	var err error
 	switch kind {
 	case "pr":
 		fact, err = decodePullRequest(repository, raw)
 	case "review":
-		return decodeReview(repository, raw)
+		fact, unread, err = decodeReview(repository, raw)
 	case "push":
 		fact, err = decodePush(repository, raw)
 	case "checks":
@@ -648,7 +653,7 @@ func decodeGitHubFact(subject string, repositories []ghrepo.Repository, payload 
 	}
 	// Comments, and every other kind, route to the current role but do not change the durable
 	// workflow record.
-	return fact, nil, err
+	return fact, unread, false, err
 }
 
 // decodePullRequest decodes a pull request's lifecycle event on an issue's branch

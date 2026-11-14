@@ -1770,9 +1770,9 @@ func newHeldRecovery(t *testing.T, backoff, bound time.Duration, reader ...posit
 	liveRoot(t, h.w, h.client, heldTree)
 	h.client.show(issue(heldParent, "acme/widgets", "todo", false, heldTree, 1), issue(heldChild, "zeta/tools", "todo", false, heldParent, 1))
 	h.w.awaitRecovery("zeta/tools", heldTree, heldChild, heldParent)
-	var poll positionReader = h.w.nats.intake()
+	poll := func() positionReader { return h.w.nats.intake() }
 	if len(reader) != 0 {
-		poll = reader[0]
+		poll = func() positionReader { return reader[0] }
 	}
 	run, cancel := context.WithCancel(context.Background())
 	polled := make(chan struct{})

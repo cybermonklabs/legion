@@ -39,7 +39,9 @@ type natsHolder struct {
 	// swaps them in (workflowRuntime.natsHandover): it works out what those consumers are to hear
 	// under the mapping's own renames — the equivalence this rebuild is building from, which the
 	// mapping holder, rebuilt before this one, already answers (workflowRuntime.natsHearing) — on
-	// a transaction that has ended before it hands the set to them, and then calls swap, this
+	// a transaction that has ended before it hands the set to them, marks the consumers they
+	// replace as handing over, so that until their intake ends those hand back what they do not
+	// hear rather than acknowledge it (intake's Consumers.HandingOver), and then calls swap, this
 	// holder's own swap of its connection, its consumers and its generation. It runs under the
 	// mapping lock this rebuild holds (holdMapping) and takes no lock of the fact path; rebuild
 	// says why the one is held, and natsHandover why the other is not. A handover that returns

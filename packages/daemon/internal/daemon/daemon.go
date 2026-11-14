@@ -2417,7 +2417,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		claimReady, prepare, unread, await = workflow.claimReady, workflow.prepareObserved, workflow.repositoryUnread, workflow.awaitRecovery
 		handoffCompleted = workflow.handoffCompleted
 		githubAPI = workflow.githubAPI
-		consumerLag = workflow.nats.intake().Lag
+		consumerLag = consumerLagOf(workflow)
 	}
 	// Under `controller: daemon` the keeper launches and keeps the project's controller, and takes
 	// its ready. The liveness sweep runs beside it under either mode, never behind it. Both the
@@ -3030,4 +3030,12 @@ func callerPodOf(rt runtime.Runtime) func(netip.Addr) (string, bool) {
 		}
 		return sandboxed.PodAt(addr)
 	}
+}
+
+// consumerLagOf is the lag of workflow's durable consumers (api's Options.ConsumerLag), read from
+// the consumers its NATS holder holds at each call (natsHolder.intake): serve builds it once, at
+// boot, and a rebuild swaps the consumers and closes the connection the boot's were on, so a
+// read bound to the boot's would report every consumer unavailable from then on.
+func consumerLagOf(workflow *workflowRuntime) func(context.Context) []intake.ConsumerLag {
+	return func(ctx context.Context) []intake.ConsumerLag { return workflow.nats.intake().Lag(ctx) }
 }

@@ -13,15 +13,18 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
+	"github.com/sjawhar/legion/daemon/internal/admit"
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/intake"
+	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
+	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 // A changed NATS seed rebuilds the NATS client: the holder opens a connection for the
@@ -585,6 +588,219 @@ func TestAMappingReadBetweenTheRenameRebuildsNarrowsNoGitHubFilter(t *testing.T)
 	if filters := githubFiltersOf(t, stream, project); !slices.Contains(filters, "notifications.github.acme-archive.widgets.>") {
 		t.Fatalf("the GitHub durable consumer filters on %v, want the subject of the name the repository moved to among them", filters)
 	}
+}
+
+// Every reader of the NATS connection and its consumers reads them from the holder at each use,
+// so after a rebuild it reads what the rebuild swapped in (rebuilder.go: a reader holds the
+// holder, never the thing inside it). Three of those readers are started once, at boot, long
+// before any rebuild: the hold poll (pollHoldRelease) and the reconnect watchdog
+// (reconnectWatchdog), which workflowRuntime.run starts, and the consumer lag the state route
+// reads (consumerLagOf), which serve hands the API. Each once took what the holder held when it
+// started and kept it, so after one rebuild the poll read every position from consumers on the
+// closed connection and never released a hold placed after it, the watchdog warned for ever
+// about the closed connection and never watched the new one, and the state reported every
+// consumer unavailable.
+//
+// So the three are started as the daemon starts them, before the rebuild, and driven only after
+// it. Each part reports on its own, so a failure names every reader that kept what it started
+// with.
+func TestTheReadersOfTheNatsHolderReadWhatARebuildSwappedIn(t *testing.T) {
+	url := testnats.URL(t)
+	notificationsStreamOn(t, url)
+	logs := &syncBuffer{}
+	w := grantWorkflow(t, logs)
+	cfg := daemonGrantConfig(url)
+	if err := connectAsBootDoes(t, w, cfg, newRebuilder(w.log, config.Settled(cfg)), func(string) (string, bool) { return "", false }); err != nil {
+		t.Fatalf("connect the workflow's NATS: %v", err)
+	}
+	t.Cleanup(w.stop)
+	engine := workflow.New(record.NewStore(), workflow.Config{Project: cfg.Project, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, w.log)
+	admission := admit.New(record.NewStore(), engine, 1, cfg.Project, w.log)
+	w.admission, w.handlers, w.dispatchProject = admission, []intake.Handler{engine, admission}, cfg.Project
+	const warnEvery = 50 * time.Millisecond
+	w.holdPollInterval, w.reconnectPollInterval, w.reconnectWarnEvery = 20*time.Millisecond, 5*time.Millisecond, warnEvery
+
+	// The readers, started as the daemon starts them: the state's lag as serve builds it, and the
+	// two loops as run starts them, all before anything rebuilds.
+	lag := consumerLagOf(w)
+	ctx, cancel := context.WithCancel(context.Background())
+	var readers sync.WaitGroup
+	readers.Go(func() { w.pollHoldRelease(ctx) })
+	readers.Go(func() { w.reconnectWatchdog(ctx) })
+	t.Cleanup(func() { cancel(); readers.Wait() })
+
+	before := w.nats.connection()
+	if err := w.nats.rebuild(&cfg); err != nil {
+		t.Fatalf("rebuild the NATS holder: %v", err)
+	}
+	if w.nats.connection() == before || !before.IsClosed() {
+		t.Fatal("the rebuild did not swap in a new connection and close the one it replaced, so this proves nothing")
+	}
+	rebuilt := time.Now()
+
+	// A hold placed after the rebuild is released, on the position the poll reads from the
+	// Dispatch durable the rebuild swapped in: nothing is published, so that consumer is idle
+	// and only its idle reading can reach a target this far past the empty stream.
+	if err := pgx.BeginFunc(t.Context(), w.pool, func(tx pgx.Tx) error {
+		return record.NewStore().PutIssue(t.Context(), tx, record.Issue{
+			Key: "LEGION-EDGE", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Project: cfg.Project, Title: "edge", Tree: "LEGION-EDGE", Phase: phase.Admitted,
+			Generation: 1, Status: "todo", Rank: "A", HandedOver: true, LastDispatchSeq: 1,
+		})
+	}); err != nil {
+		t.Fatalf("seed the root the hold is placed on: %v", err)
+	}
+	reconcileAdmission(t, w.pool, admission, []dispatch.IssueSummary{
+		{Key: "LEGION-EDGE", ResolvedRepo: "sjawhar/legion", Title: "edge", Status: "todo", Rank: "A", HandedOver: true, LastSeq: 2},
+	}, 1000, intake.DispatchConsumerPosition{AckFloorStream: 0, Idle: false})
+	if !admission.Held() {
+		t.Fatal("the reconcile placed no hold, so this proves nothing")
+	}
+	if !testwait.Holds(10*time.Second, testwait.Poll, func() bool { return !admission.Held() }) {
+		t.Error("a hold placed after the rebuild was never released: the poll reads the Dispatch consumer's position from the consumers the rebuild closed")
+	}
+
+	// The lag answers from the consumers the rebuild swapped in.
+	for _, consumer := range lag(t.Context()) {
+		if consumer.Unavailable != "" {
+			t.Errorf("the state's lag of %s after the rebuild is unavailable (%s): it reads the consumers the rebuild closed", consumer.Name, consumer.Unavailable)
+		}
+	}
+
+	// The watchdog watches the connection the rebuild swapped in: no warning while that one is
+	// up, though twenty warnings' worth of time has passed since the old one closed, and one once
+	// it goes down.
+	warned := func() bool { return strings.Contains(logs.String(), "NATS has not reconnected") }
+	if testwait.Holds(time.Until(rebuilt.Add(20*warnEvery)), testwait.Poll, warned) {
+		t.Error("the watchdog warned while the connection the rebuild swapped in was up: it watches the one the rebuild closed")
+		return
+	}
+	w.nats.connection().Close()
+	if !testwait.Holds(10*time.Second, testwait.Poll, warned) {
+		t.Error("the watchdog never warned once the connection the rebuild swapped in went down: it does not watch that connection")
+	}
+}
+
+// A message a NATS rebuild's handover is delivered while it runs is applied, never acknowledged
+// unapplied. On one server the replaced consumers and the ones the rebuild opened share their
+// durables, so from the new consumers' SetRepositories, which widens the GitHub durable's filter
+// to what the daemon is to hear, until the replaced intake ends, that intake is the one pulling
+// the subjects the widening added — here a `repository_renames` partner — while the set it
+// decodes against is its own older one, which does not hear them. Acknowledged there, the
+// partner's event reaches no handler, and nothing redelivers it.
+//
+// The partner's pull request is published between the new consumers' SetRepositories and the
+// swap, and the replaced intake, the only one running, is let be delivered it and settle it
+// before the swap: acknowledged, which the durable's ack floor shows, or handed back, which its
+// next delivery shows. What is asserted is that the fact reaches the handler.
+//
+// Before that, the control: a handover that fails leaves the consumers it was replacing serving
+// as they did, acknowledging an event of a repository they do not hear rather than handing it
+// back for consumers that were never swapped in, which would hand it back for ever.
+func TestAMessageDeliveredDuringTheHandoverIsAppliedNotAcknowledgedUnapplied(t *testing.T) {
+	url := testnats.URL(t)
+	js, stream := notificationsStreamOn(t, url)
+	w := grantWorkflow(t, &syncBuffer{})
+	cfg := daemonGrantConfig(url)
+	rebuild := newRebuilder(w.log, config.Settled(cfg))
+	if err := connectAsBootDoes(t, w, cfg, rebuild, func(string) (string, bool) { return "", false }); err != nil {
+		t.Fatalf("connect the workflow's NATS: %v", err)
+	}
+	t.Cleanup(w.stop)
+	heard := &heardPullRequests{}
+	w.handlers = []intake.Handler{heard}
+
+	// The daemon's own intake loop, which runs the consumers of each generation the holder
+	// hands it (runIntake).
+	ctx, cancel := context.WithCancel(context.Background())
+	intaking := make(chan error, 1)
+	go func() { intaking <- w.runIntake(ctx) }()
+	t.Cleanup(func() {
+		cancel()
+		if err := <-intaking; err != nil {
+			t.Errorf("the intake loop stopped: %v", err)
+		}
+	})
+	github := "legion-go-" + cfg.Project + "-github"
+	durable := func(ctx context.Context) (*jetstream.ConsumerInfo, bool) {
+		consumer, err := stream.Consumer(ctx, github)
+		if err != nil {
+			return nil, false
+		}
+		info, err := consumer.Info(ctx)
+		return info, err == nil
+	}
+	testwait.Eventually(t, "the boot's intake pulling from the GitHub durable", func() bool {
+		info, ok := durable(t.Context())
+		return ok && info.NumWaiting > 0
+	})
+
+	// A rebuild whose own connection is closed before its handover, so the handover's
+	// SetRepositories fails.
+	open := w.nats.open
+	w.nats.open = func(ctx context.Context, c config.Config) (*nats.Conn, *intake.Consumers, error) {
+		conn, consumers, err := open(ctx, c)
+		if err == nil {
+			conn.Close()
+		}
+		return conn, consumers, err
+	}
+	if err := w.nats.rebuild(&cfg); err == nil {
+		t.Fatal("a rebuild whose connection closed before its handover succeeded, so this proves nothing")
+	}
+	w.nats.open = open
+	publishDaemonGrantEnvelope(t, js, "notifications.github.sjawhar.legion.pr.7", "github", "unheard-after-a-failed-handover",
+		`{"action":"opened","author":"author","base_ref":"main","body":"Dispatch: CAPTURE-1","head_ref":"legion/CAPTURE-1",`+
+			`"head_sha":"head-captured","kind":"pr","number":"7","repo":"someone/else","title":"Captured GitHub event",`+
+			`"updated_at":"2026-09-23T00:00:00Z","url":"https://github.com/someone/else/pull/7"}`)
+	unheard, err := stream.Info(t.Context())
+	if err != nil {
+		t.Fatalf("read the stream's last sequence: %v", err)
+	}
+	testwait.Eventually(t, "the consumers a failed handover left serving acknowledging an event of a repository they do not hear", func() bool {
+		info, ok := durable(t.Context())
+		return ok && info.AckFloor.Stream >= unheard.State.LastSeq
+	})
+
+	handover := w.nats.handover
+	w.nats.handover = func(ctx context.Context, consumers *intake.Consumers, swap func()) error {
+		return handover(ctx, consumers, func() {
+			defer swap()
+			before, ok := durable(ctx)
+			if !ok {
+				t.Error("read the GitHub durable before publishing the partner's event")
+				return
+			}
+			publishDaemonGrantEnvelope(t, js, "notifications.github.cybermonklabs.legion.pr.42", "github", "handover-partner-pr-opened",
+				`{"action":"opened","author":"author","base_ref":"main","body":"Dispatch: CAPTURE-1","head_ref":"legion/CAPTURE-1",`+
+					`"head_sha":"head-captured","kind":"pr","number":"42","repo":"cybermonklabs/legion","title":"Captured GitHub event",`+
+					`"updated_at":"2026-09-23T00:00:00Z","url":"https://github.com/cybermonklabs/legion/pull/42"}`)
+			published, err := stream.Info(ctx)
+			if err != nil {
+				t.Errorf("read the stream's last sequence: %v", err)
+				return
+			}
+			seq := published.State.LastSeq
+			if !testwait.Holds(10*time.Second, testwait.Poll, func() bool {
+				info, ok := durable(ctx)
+				return ok && info.Delivered.Stream >= seq && (info.AckFloor.Stream >= seq || info.Delivered.Consumer >= before.Delivered.Consumer+2)
+			}) {
+				t.Error("the replaced intake was never delivered the partner's event and settled it before the swap, so this proves nothing")
+			}
+		})
+	}
+
+	// The operator configures the transfer while the daemon runs.
+	before := w.nats.connection()
+	changed := cfg
+	changed.RepositoryRenames = ghrepo.MustRenames(ghrepo.MustRename("sjawhar/legion", "cybermonklabs/legion"))
+	rebuild.observe(&changed, []config.Change{changeOfPath(t, "repository_renames")})
+	if w.nats.connection() == before {
+		t.Fatal("the change did not rebuild the NATS holder, so this proves nothing")
+	}
+
+	testwait.Eventually(t, "the daemon applying the partner's pull request its rebuild's handover was delivered", func() bool {
+		return slices.Contains(heard.repositories(), "cybermonklabs/legion")
+	})
 }
 
 // readingNATSHolder is the daemon's own NATS holder with a read of the repository mapping made

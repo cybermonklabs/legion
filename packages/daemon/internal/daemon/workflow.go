@@ -56,12 +56,17 @@ type workflowRuntime struct {
 	// server URLs or of either nkey seed opens a new connection, moves the consumers onto it and
 	// closes the old one (natsHolder). nil until connect opens the first one.
 	//
-	// Every reader takes the connection from the holder under the holder's own lock
-	// (natsHolder.connection, natsHolder.close), which is why no goroutine reads a bare field:
-	// the serving goroutine's workflowRuntime.stop, reconnectWatchdog and the intake loop read
-	// it while run can close it at the stop's budget (closeNATS), and internal/daemon runs under
-	// the race detector in CI (.github/workflows/ci.yaml, the step "Test the concurrent packages
-	// under the race detector").
+	// Every reader takes the connection and the consumers from the holder under the holder's own
+	// lock (natsHolder.connection, natsHolder.intake, natsHolder.close), which is why no goroutine
+	// reads a bare field: the serving goroutine's workflowRuntime.stop, reconnectWatchdog and the
+	// intake loop read it while run can close it at the stop's budget (closeNATS), and
+	// internal/daemon runs under the race detector in CI (.github/workflows/ci.yaml, the step
+	// "Test the concurrent packages under the race detector"). And every reader takes them at each
+	// use, keeping neither past one call, since a rebuild swaps both and closes the connection it
+	// replaced: the loops boot starts read the holder at every tick (pollHoldRelease,
+	// reconnectWatchdog), the state's lag at every read (consumerLagOf), and the intake loop at
+	// every generation, which the rebuild ends before it closes that generation's connection
+	// (runIntake, natsHolder.begin).
 	nats *natsHolder
 	// keeper is the controller keeper and the controller tick's wake behind their holder; nil in
 	// a runtime a test built by hand, which runs no keeper.
@@ -723,10 +728,11 @@ func (w *workflowRuntime) connect(ctx context.Context, cfg config.Config, rebuil
 }
 
 // natsHandover is the handover of a NATS rebuild (natsHolder.rebuild): it works out what the
-// consumers that rebuild opened are to hear (natsHearing), on a transaction of its own that only
-// reads, lets that transaction end, hands the set to them, and calls swap, the holder's own swap
-// of its connection, its consumers and its generation. A handover that returns an error never
-// reached swap, so the holder serves what it served before.
+// consumers that rebuild opened are to hear (natsHearing, on a read-only transaction of its own
+// that has ended before anything below runs), marks the consumers they replace as handing over,
+// hands the set to the new ones, and calls swap, the holder's own swap of its connection, its
+// consumers and its generation. A handover that returns an error never reached swap, so the
+// holder serves what it served before.
 //
 // The set is handed over outside any transaction of the pool. SetRepositories is a stream call,
 // and a GitHub durable that has gone missing has it create the durable again at the position the
@@ -750,21 +756,38 @@ func (w *workflowRuntime) connect(ctx context.Context, cfg config.Config, rebuil
 // delivered. Held across the stream call, the lock would stop every fact of the project for as
 // long as JetStream took to answer.
 //
-// One window is left that no hold of the fact lock would close. On one server the old and new
-// consumers share their durables, so from SetRepositories until the replaced intake ends, that
-// intake is delivered the subjects the handed set added — a `repository_renames` partner — and
-// decodes each against its own older set, which does not hear it: the message is acknowledged
-// unapplied, outside any transaction (intake's consumeMessage), and nothing redelivers it.
+// Every message the replaced intake is delivered while the handover runs is applied or delivered
+// again, never acknowledged unapplied. On one server the replaced consumers and the ones this
+// rebuild opened share their durables, so from SetRepositories until the replaced intake ends,
+// that intake is delivered the subjects the handed set added — a `repository_renames` partner —
+// while it decodes against its own older set, which does not hear them. So the replaced consumers
+// are marked as handing over before the set is handed (intake's Consumers.HandingOver), and from
+// then on they hand back every GitHub message whose repository they do not hear, nak'd after
+// their NakDelay, and its durable delivers it again: to the replaced intake while that runs,
+// which hands it back again, and once it has ended to the consumers swapped in, which decode it
+// against the set handed here. The mark is memory of this process and asks nothing of the
+// replaced connection, so it holds whatever that connection is: to this server or, after a
+// `nats_urls` change, to another, where no durable is shared and the mark changes nothing the new
+// consumers are delivered; up, or dead in the outage a rebuild may be answering, where a nak that
+// is never sent leaves the message to its AckWait and it is delivered again all the same. A
+// handover that fails takes the mark off again, and the replaced consumers serve on as before.
+//
+// Widening the replaced consumers' own set first (their SetRepositories) would not keep that
+// rule. It is a stream call on the connection being replaced, which a dead one answers only at
+// this rebuild's bound, and a widening that failed there must not fail the rebuild, yet would
+// leave the window open. And the replaced consumers read whether a review's or a checks
+// settlement's pull request is recorded under the renames they were opened with (intake's
+// recordedPullRequest), which lack the pair a `repository_renames` change adds, so a partner's
+// review of a pull request recorded under the other name would still be acknowledged unapplied.
 func (w *workflowRuntime) natsHandover(ctx context.Context, consumers *intake.Consumers, swap func()) error {
-	var heard []ghrepo.Repository
-	if err := pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error {
-		var err error
-		heard, err = w.natsHearing(ctx, tx)
-		return err
-	}); err != nil {
+	heard, err := w.natsHearing(ctx)
+	if err != nil {
 		return fmt.Errorf("work out the repositories the rebuilt consumers are to hear: %w", err)
 	}
+	replaced := w.nats.intake()
+	replaced.HandingOver(true)
 	if err := consumers.SetRepositories(ctx, heard); err != nil {
+		replaced.HandingOver(false)
 		return fmt.Errorf("hand the rebuilt consumers the repositories this daemon hears: %w", err)
 	}
 	swap()
@@ -1551,7 +1574,8 @@ const (
 
 // positionReader is pollHoldRelease's only dependency on the Dispatch consumer: reading its
 // current position. A test substitutes one that fails on demand to prove the poll logs and
-// retries rather than silently ending the hold.
+// retries rather than silently ending the hold. The poll asks for the reader at every tick and
+// keeps none (pollHoldReleaseWith), because a NATS rebuild swaps the consumers under it.
 type positionReader interface {
 	DispatchPosition(ctx context.Context) (intake.DispatchConsumerPosition, error)
 }
@@ -1576,11 +1600,18 @@ type positionReader interface {
 // hold is not the only one), and its release can read the same (ack floor, idle) as an earlier
 // hold's, which would otherwise be applied as that earlier release's duplicate, or skipped as
 // the reading last applied, and the hold never released.
+//
+// The Dispatch consumer is read from the NATS holder at every tick (natsHolder.intake), never
+// once for the poll's life: the poll starts at boot, and a rebuild swaps the consumers and
+// closes the connection the boot's were on, so a reader kept from the start would fail every
+// read with `connection closed` and never release a hold placed after the rebuild.
 func (w *workflowRuntime) pollHoldRelease(ctx context.Context) {
-	w.pollHoldReleaseWith(ctx, w.nats.intake())
+	w.pollHoldReleaseWith(ctx, func() positionReader { return w.nats.intake() })
 }
 
-func (w *workflowRuntime) pollHoldReleaseWith(ctx context.Context, reader positionReader) {
+// pollHoldReleaseWith is pollHoldRelease reading each position from the reader current answers
+// at that tick.
+func (w *workflowRuntime) pollHoldReleaseWith(ctx context.Context, current func() positionReader) {
 	interval := w.holdPollInterval
 	if interval <= 0 {
 		interval = defaultHoldPollInterval
@@ -1629,7 +1660,7 @@ func (w *workflowRuntime) pollHoldReleaseWith(ctx context.Context, reader positi
 		if heldSince.IsZero() {
 			heldSince = time.Now()
 		}
-		position, err := reader.DispatchPosition(ctx)
+		position, err := current().DispatchPosition(ctx)
 		if err != nil {
 			w.log.Error("read Dispatch consumer position for a held release", "error", err)
 			continue
@@ -1672,27 +1703,44 @@ const defaultReconnectPollInterval = 10 * time.Second
 const defaultReconnectWarnEvery = 3 * time.Minute
 
 // connStatus is reconnectWatchdog's only dependency on *nats.Conn: a test substitutes a fake that
-// reports disconnected, with a LastError, on demand.
+// reports disconnected, with a LastError, on demand. The watchdog asks for the connection at
+// every tick and keeps none (reconnectWatchdogWith), because a NATS rebuild swaps it.
 type connStatus interface {
 	IsConnected() bool
 	LastError() error
 }
 
-// reconnectWatchdog logs a warn once the downtime since conn last connected reaches
-// reconnectWarnEvery, and every reconnectWarnEvery after that while conn stays disconnected —
-// never on the first poll that merely finds it down, which would log a downtime near zero and
-// make this almost as noisy as nats.go's own reconnect wait. Each warn names the downtime so far
-// and conn's own LastError, usually empty during a plain refused dial (nats.go clears its own
-// last-seen error on every failed attempt) and naming the failure's own cause while a handshake
-// keeps failing (nats.go leaves that one in place across attempts), so an operator reading the
-// log sees that NATS has been down, for how long, and why when nats.go has anything to say,
-// instead of just the one disconnect line a reconnect that keeps failing never reaches a
-// reconnected or a closed line to follow.
+// reconnectWatchdog logs a warn once the downtime since the NATS connection last connected
+// reaches reconnectWarnEvery, and every reconnectWarnEvery after that while it stays
+// disconnected — never on the first poll that merely finds it down, which would log a downtime
+// near zero and make this almost as noisy as nats.go's own reconnect wait. Each warn names the
+// downtime so far and the connection's own LastError, usually empty during a plain refused dial
+// (nats.go clears its own last-seen error on every failed attempt) and naming the failure's own
+// cause while a handshake keeps failing (nats.go leaves that one in place across attempts), so
+// an operator reading the log sees that NATS has been down, for how long, and why when nats.go
+// has anything to say, instead of just the one disconnect line a reconnect that keeps failing
+// never reaches a reconnected or a closed line to follow.
+//
+// The connection is read from the NATS holder at every tick (natsHolder.connection), never once
+// for the watchdog's life: the watchdog starts at boot, and a rebuild swaps the connection and
+// closes the one it replaced, which a watchdog that kept it would warn about for ever while
+// never watching the one the daemon reads on. The stop clears the holder's connection
+// (natsHolder.close), and a tick that finds none watches nothing.
 func (w *workflowRuntime) reconnectWatchdog(ctx context.Context) {
-	w.reconnectWatchdogWith(ctx, w.nats.connection())
+	w.reconnectWatchdogWith(ctx, func() connStatus {
+		// A nil *nats.Conn would be a connStatus whose IsConnected panics.
+		if conn := w.nats.connection(); conn != nil {
+			return conn
+		}
+		return nil
+	})
 }
 
-func (w *workflowRuntime) reconnectWatchdogWith(ctx context.Context, conn connStatus) {
+// reconnectWatchdogWith is reconnectWatchdog watching the connection current answers at each
+// tick. A downtime is one connection's: a tick that reads a connection other than the last one
+// starts its clocks again, so a connection a rebuild swapped in is never warned about with the
+// downtime of the one it replaced.
+func (w *workflowRuntime) reconnectWatchdogWith(ctx context.Context, current func() connStatus) {
 	interval := w.reconnectPollInterval
 	if interval <= 0 {
 		interval = defaultReconnectPollInterval
@@ -1703,12 +1751,20 @@ func (w *workflowRuntime) reconnectWatchdogWith(ctx context.Context, conn connSt
 	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+	var watched connStatus
 	var disconnectedSince, warnedAt time.Time
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+		}
+		conn := current()
+		if conn == nil {
+			continue
+		}
+		if conn != watched {
+			watched, disconnectedSince, warnedAt = conn, time.Time{}, time.Time{}
 		}
 		if conn.IsConnected() {
 			disconnectedSince, warnedAt = time.Time{}, time.Time{}

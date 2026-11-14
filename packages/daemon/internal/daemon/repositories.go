@@ -1531,11 +1531,12 @@ func (w *workflowRuntime) heardAtBoot(ctx context.Context) ([]ghrepo.Repository,
 
 // natsHearing is what GitHub intake is to hear once a rebuild of the NATS holder has swapped its
 // consumers in (natsHolder.rebuild): everything the consumers hear now, everything the mapping
-// serves and the project's records name, and every partner renames pairs those with. It is read
-// on the handover's own transaction, which takes no fact lock and has ended before the set is
-// handed over (workflowRuntime.natsHandover), as a mapping read's superset is read on its own
-// (refreshMapping): a record an admission commits after the read is on a repository the mapping
-// serves, which the set carries, since the rebuild holds the mapping still until the swap.
+// serves and the project's records name, and every partner renames pairs those with. It reads the
+// records on a read-only transaction of its own, which takes no fact lock and has ended before
+// the handover hands the set over (workflowRuntime.natsHandover), as a mapping read's superset
+// is read on its own (refreshMapping): a record an admission commits after the read is on a
+// repository the mapping serves, which the set carries, since the rebuild holds the mapping still
+// until the swap.
 //
 // The renames are the mapping's own (repositories.Renames), the copy every other read of what
 // intake hears takes (heardAtBoot, refreshMapping), and they are the equivalence the holder is
@@ -1547,8 +1548,14 @@ func (w *workflowRuntime) heardAtBoot(ctx context.Context) ([]ghrepo.Repository,
 // ever widens the GitHub durable's filter: narrowing it is the mapping read's alone, which
 // serves the mapping that narrowed it in the same hold, and a filter narrowed by anything else
 // steps the consumer past messages nothing redelivers.
-func (w *workflowRuntime) natsHearing(ctx context.Context, tx pgx.Tx) ([]ghrepo.Repository, error) {
-	return w.heardRepositories(ctx, tx, slices.Concat(w.nats.intake().Repositories(), w.repositories.Accepted()), w.repositories.Renames())
+func (w *workflowRuntime) natsHearing(ctx context.Context) ([]ghrepo.Repository, error) {
+	var heard []ghrepo.Repository
+	err := pgx.BeginTxFunc(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+		var err error
+		heard, err = w.heardRepositories(ctx, tx, slices.Concat(w.nats.intake().Repositories(), w.repositories.Accepted()), w.repositories.Renames())
+		return err
+	})
+	return heard, err
 }
 
 // heardRepositories is what GitHub intake hears: every repository of served, every repository a

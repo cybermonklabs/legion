@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -53,7 +54,7 @@ func TestReconnectWatchdogWarnsWhileDisconnectedNotWhileConnected(t *testing.T) 
 	w := &workflowRuntime{log: log, reconnectPollInterval: 5 * time.Millisecond, reconnectWarnEvery: 20 * time.Millisecond}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
-	go func() { w.reconnectWatchdogWith(ctx, conn); close(done) }()
+	go func() { w.reconnectWatchdogWith(ctx, func() connStatus { return conn }); close(done) }()
 
 	time.Sleep(40 * time.Millisecond)
 	if strings.Contains(logBuf.String(), "NATS has not reconnected") {
@@ -90,7 +91,7 @@ func TestReconnectWatchdogResetsAfterReconnecting(t *testing.T) {
 	w := &workflowRuntime{log: log, reconnectPollInterval: 5 * time.Millisecond, reconnectWarnEvery: warnEvery}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
-	go func() { w.reconnectWatchdogWith(ctx, conn); close(done) }()
+	go func() { w.reconnectWatchdogWith(ctx, func() connStatus { return conn }); close(done) }()
 
 	testwait.Eventually(t, "the watchdog warns about the first outage", func() bool {
 		return strings.Contains(logBuf.String(), "first outage")
@@ -130,6 +131,55 @@ func TestReconnectWatchdogResetsAfterReconnecting(t *testing.T) {
 	<-done
 }
 
+// A downtime is the watched connection's own. The watchdog reads the NATS holder's connection at
+// every tick (reconnectWatchdog), and a rebuild made during an outage can swap in a connection
+// that is down at the first tick that reads it. Counted on from the downtime of the connection it
+// replaced, that connection's first warn would come early and name a downtime it never had; the
+// watchdog starts its clocks again at the first tick that reads a connection other than the last.
+func TestReconnectWatchdogCountsADowntimeFromTheConnectionItNowReads(t *testing.T) {
+	logBuf := &syncBuffer{}
+	log := slog.New(slog.NewTextHandler(logBuf, nil))
+	var current atomic.Pointer[fakeConnStatus]
+	current.Store(&fakeConnStatus{connected: false, err: errors.New("replaced outage")})
+	warnEvery := 1200 * time.Millisecond
+	w := &workflowRuntime{log: log, reconnectPollInterval: 5 * time.Millisecond, reconnectWarnEvery: warnEvery}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { w.reconnectWatchdogWith(ctx, func() connStatus { return current.Load() }); close(done) }()
+
+	// The replaced connection is down for two warns and half a third, so a clock carried over
+	// would be well past twice warnEvery at the swapped-in connection's first warn.
+	testwait.Eventually(t, "the watchdog warns twice about the replaced connection", func() bool {
+		return strings.Count(logBuf.String(), "replaced outage") >= 2
+	})
+	time.Sleep(warnEvery / 2)
+	current.Store(&fakeConnStatus{connected: false, err: errors.New("swapped-in outage")})
+	testwait.Eventually(t, "the watchdog warns about the swapped-in connection", func() bool {
+		return strings.Contains(logBuf.String(), "swapped-in outage")
+	})
+	cancel()
+	<-done
+
+	var first string
+	for line := range strings.Lines(logBuf.String()) {
+		if strings.Contains(line, "swapped-in outage") {
+			first = line
+			break
+		}
+	}
+	match := reconnectDowntimeRe.FindStringSubmatch(first)
+	if match == nil {
+		t.Fatalf("warn log = %q, want a parseable downtime=", first)
+	}
+	downtime, err := time.ParseDuration(match[1])
+	if err != nil {
+		t.Fatalf("parse downtime %q: %v", match[1], err)
+	}
+	if downtime >= 2*warnEvery {
+		t.Fatalf("the swapped-in connection's first warn names a downtime of %v, want close to warnEvery (%v): it was counted from the outage of the connection it replaced", downtime, warnEvery)
+	}
+}
+
 var reconnectDowntimeRe = regexp.MustCompile(`downtime=(\S+)`)
 
 // A watchdog that warned on the very first poll after a disconnect — downtime=0s, rounded down
@@ -145,7 +195,7 @@ func TestReconnectWatchdogWarnsOnlyOnceDowntimeReachesWarnEvery(t *testing.T) {
 	w := &workflowRuntime{log: log, reconnectPollInterval: 50 * time.Millisecond, reconnectWarnEvery: warnEvery}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
-	go func() { w.reconnectWatchdogWith(ctx, conn); close(done) }()
+	go func() { w.reconnectWatchdogWith(ctx, func() connStatus { return conn }); close(done) }()
 
 	conn.set(false, errors.New("handshake failure"))
 	time.Sleep(warnEvery / 2)
