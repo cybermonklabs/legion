@@ -2387,26 +2387,28 @@ It refuses:
     The census counts a view over a `pg_catalog` relation, such as a view over `pg_proc` or a view of `information_schema`, and a table with a rule that reads one, as a relation of `pg_catalog`, through views over views to any depth.
     A write to `pg_proc` or `pg_cast`, by a superuser or through such a view, can make a cast's function volatile or add a cast, and an update of `pg_settings` changes a setting.
     The census reads the catalog as it was before the write, and it does not tell a read of such a relation from a write.
+    A statement that names such a relation also takes the exemption from every later migration (below).
     A call of `set_config` changes a setting as a `set` does, `search_path` included.
 
-    Every other statement stops the reads, for its own migration and for every later one.
+    Every other statement stops the reads, for its own migration and for every later one, and it also takes the exemption from every later migration (below).
     A `do` block, a `call`, an `alter function`, an `alter role … set` and an `alter database … set` stop them.
     So do `create table … as`, `select … into`, `create materialized view`, a drop with `cascade` and a function in another language.
-    So do `create event trigger` and `alter event trigger`, which also take the exemption from every later migration (below).
+    So do `create event trigger` and `alter event trigger`.
     So does every statement that creates, alters, renames or drops a type, a domain, a cast, a schema, an extension or a role.
     A rename of a table, a view, a materialized view or a foreign table stops the reads for every later migration, because the relation's row type keeps the casts that target it under its new name.
     After such a rename, a later migration's type name can resolve to that row type in an earlier schema of the `search_path`, through a cast that the census did not read.
     `create table`, `create view`, `drop table` and `drop view` do not stop the reads, because they are on the list.
     The census lists the statements that keep the reads on, and not the statements that stop them.
     A statement that a list of the second kind misses admits a column that Postgres rewrites the table for.
-    A statement that this list misses only costs the later migrations their catalog reads, which is a refusal.
+    A statement that this list misses only costs the later migrations their catalog reads and their exemption, which is a refusal.
 
   - every migration after a pending migration that does not parse in the census's Postgres 17 grammar, since the census cannot see what such a migration changes.
     A migration can parse on the PostgreSQL 18 server and not in the census (a `virtual` generated column).
     Such a migration is not exempt itself either, and no later migration is exempt (below).
 
   The census reads every statement that a pending migration's text shows, whoever may run it, a superuser included.
-  It does not read the code that a function body or a trigger body runs, a `do` block's body included: such code can, for example, create an event trigger that the census does not see.
+  It does not read the code that a function body or a trigger body runs when a statement that keeps the catalog reads on calls it.
+  Such code can, for example, create or enable an event trigger that the census does not see.
 
   A marked single non-unique `CREATE INDEX CONCURRENTLY IF NOT EXISTS` has a separate size exception: its scans do not hold off ordinary writes, not because the build is catalog-only.
   The census still reports its table size, skips counting rows above the limit, and checks its holders and census as usual.
@@ -2414,8 +2416,24 @@ It refuses:
   A `rename column` fires its event triggers under the tag `ALTER TABLE`, and `lock table`, `set` and `reset` fire no event trigger.
   A trigger whose tags name none of those commands counts for nothing.
   The census reads those event triggers once for the whole database, so an enabled one that counts takes the exemption from every migration, a migration holding no drop included, which is the side that refuses rather than the side that applies.
-  A pending `create event trigger` or `alter event trigger` takes both exceptions from every later pending migration, whatever the trigger's tags, and the size refusal names its migration.
-  So does a pending migration that does not parse, since the census cannot see whether it creates an event trigger.
+  A pending migration takes both exceptions from every later pending migration, and the size refusal names that migration and says why, when it holds a statement that can create or enable an event trigger that the census does not see, or when it does not parse:
+
+  - `create event trigger` and `alter event trigger`, whatever the trigger's tags.
+
+  - a statement that names a relation of `pg_catalog`, or a relation whose rules read one, as the list of statements that keep the catalog reads on counts them (above), whether the statement is on that list or not.
+    An `update pg_catalog.pg_event_trigger set evtenabled = 'O'` enables a disabled event trigger, as `alter event trigger … enable` does.
+    For a name without a schema, the census reads every relation of that name in the schemas that the `search_path` searches, `pg_catalog` and the temporary schema included, because a pending `drop table` or `drop view` can uncover another relation of the same name in a later schema.
+    Where the census reads no catalog for the statement, it counts only a name in `pg_catalog` and a name without a schema that starts with `pg_`, so there it does not see a view over a `pg_catalog` relation.
+    A statement on the list that stops the reads only because it creates a function, a table or a view whose name `pg_catalog` holds, or because it calls `set_config`, takes no exception away.
+    A function that such a statement creates or replaces runs only when a statement calls it.
+
+  - every statement of a kind that is not on the list of statements that keep the catalog reads on, such as a `do` block, a `call`, a `create extension`, an `alter extension` or a `create table … as`.
+    A `do` block and a `call` run code that the census does not read.
+    The script of an extension can create an event trigger, as the scripts of pg_graphql and Citus do.
+    A `set` or a `reset` of any setting takes no exception away: a setting creates and enables no event trigger, and the census counts every event trigger that is not disabled.
+
+  - a migration that does not parse, since the census cannot see whether it creates an event trigger.
+
   The report still prints the table's size beside the limit and says why the migration is exempt, and its lock holders refuse it as they refuse any other.
   A trigger named only in a comment, a string literal or a function body exempts nothing, and one statement of any other kind beside it ends the exemption;
 
