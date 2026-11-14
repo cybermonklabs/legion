@@ -417,14 +417,15 @@ func headerWayBack(t *testing.T, version int) string {
 // stalledNoticesVersion is the version of the marks' table
 // (20261113181500_architect_stalled_notices.up.sql), and claimHandshakeVersion the version of the
 // claim's handshake columns (20261114020537_claim_entry_handshake.up.sql), whose way back is this
-// migration's. olderReleaseVersion is the newest migration of the release before the phase entry,
-// 20261112180548_claim_leak_check_cause, which is the version the store reports once both ways
-// back have run.
+// migration's. leftStandingVersion is the highest migration neither way back deletes,
+// 20261113110610_drop_claim_update_answer_marks (cybermonklabs/legion#3982, which main carries
+// above the phase entry and below this change's three), which is the version the store reports
+// once both ways back have run.
 const (
 	phaseEntryVersion     = 20261111225552
 	stalledNoticesVersion = 20261113181500
 	claimHandshakeVersion = 20261114020537
-	olderReleaseVersion   = 20261112180548
+	leftStandingVersion   = 20261113110610
 )
 
 // A rollback and the roll-forward after it leave every root architect settled, as the first
@@ -527,9 +528,9 @@ func TestTheArchitectUpgradeRunsAgainAfterTheWayBackAndARollForward(t *testing.T
 					Scan(&handshakeColumn); err != nil {
 					t.Fatalf("look for the claim's handshake columns after the way back: %v", err)
 				}
-				if version != olderReleaseVersion || marksTable || handshakeColumn {
+				if version != leftStandingVersion || marksTable || handshakeColumn {
 					t.Fatalf("after the two ways back the store reports version %d, the marks' table stands: %v, and a handshake column "+
-						"stands: %v; want %d and neither, the older release's store", version, marksTable, handshakeColumn, olderReleaseVersion)
+						"stands: %v; want %d and neither: the highest row neither block deletes", version, marksTable, handshakeColumn, leftStandingVersion)
 				}
 			}
 

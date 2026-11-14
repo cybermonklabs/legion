@@ -2279,7 +2279,7 @@ Store migration 20261114020537_claim_entry_handshake adds the four `claims.hands
 The state of such a root carries its two numbers and neither time, since the upgrade queues no task and records no handshake.
 
 To roll a release at contract 117 back to contract 87, stop the daemon and run two blocks in this order: the block below, then the phase entry's block after it.
-A rollback below contract 111 also takes that release's own steps, which "Rolling back the release that frees the slot past review" above gives.
+A rollback below contract 111 also takes the steps of the releases it crosses, which "Rolling back the release that frees the slot past review" and "Rolling back the release whose update round ends at its bound" above give.
 To roll it back to contract 111 instead, the release just before it, run the block below alone: that release keeps the six columns, and its sweep passes over every architect, since it chooses a role through `workflow.OpenPhaseRole`, which names none for an architect.
 The block below is the way back of those three migrations, and the header of each carries it:
 
@@ -2330,6 +2330,7 @@ This block's first run printed `BEGIN`, four `ALTER TABLE`s, `DELETE 1`, `DELETE
 Its rerun printed `BEGIN`, `NOTICE:  column "handshake_entry" of relation "claims" does not exist, skipping` and the same `NOTICE` for each of the other three columns, each followed by `ALTER TABLE`, then `DELETE 0`, `DELETE 0`, `DELETE 0`, `NOTICE:  table "architect_stalled_notices" does not exist, skipping`, `DROP TABLE`, `DELETE 0` and `COMMIT`.
 The phase entry's block then printed `BEGIN`, three `ALTER TABLE`s, `UPDATE 0`, six `ALTER TABLE`s, `DELETE 1` and `COMMIT`, and all three runs exited 0.
 After them the store reported 20261112180548 with 135 versions recorded, neither `architect_stalled_notices` nor the wake stood, the claims table held no `handshake_` column, and the architect's `phases` row stood without its entry columns and its claim without `given_entry` and `served_entry`.
+That run was on the tree before the forward merge that brought in cybermonklabs/legion#3982; on a store this release migrates, the highest row the two blocks leave is that pull request's 20261113110610_drop_claim_update_answer_marks, which neither block touches, so the store reports 20261113110610 after them (`internal/admit`'s `TestTheArchitectUpgradeRunsAgainAfterTheWayBackAndARollForward`).
 Running `Migrate` again applied four migrations, 20261111225552, 20261113181500, 20261113182000 and 20261114020537, and the store reported 20261114020537 with 139 versions recorded, the architect's row and claim at entry 1 again, its two marks again at the root's generation, and its claim with no handshake.
 
 To roll a release at contract 94 back to contract 87, stop the daemon and run the eleven statements below.

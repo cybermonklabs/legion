@@ -69,8 +69,10 @@
 -- DROP TABLE, DELETE 1 and COMMIT. A rerun prints BEGIN, a NOTICE for each of the four columns
 -- that it does not exist with the same four ALTER TABLEs, DELETE 0, DELETE 0, DELETE 0, a NOTICE
 -- that the table does not exist, DROP TABLE, DELETE 0 and COMMIT, and changes nothing. The phase
--- entry's block after it leaves the store at the schema of the release before that migration and
--- at that release's own version, 20261112180548, the highest row the two blocks leave standing.
+-- entry's block after it drops the phase entry's columns, and the store then reports the highest
+-- row the two blocks leave standing: 20261113110610_drop_claim_update_answer_marks, a migration of
+-- main's that neither block touches. A rollback below contract 111 takes the steps of each release
+-- it crosses as well (docs/kubernetes.md).
 --
 -- The four drops and the first delete are 20261114020537_claim_entry_handshake's way back, and
 -- its header says why they go together and why they come first: that migration is the newest of
