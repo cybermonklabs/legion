@@ -361,8 +361,12 @@ func (r *Registry) RecordRenewalFailures(sessionID string, cause error) {
 // RenewalFailedWithin answers the failure this registry recorded of a renewal of role's claim for
 // sessionID, when it was recorded less than window ago on the registry's clock, and false when no
 // failure was or the last one is older. A renewal of that claim for that session that wrote clears
-// it, so a true answer is a claim this listener should have renewed and has not renewed since. A
-// window of zero answers false, as ClaimRenewedWithin keeps nothing at a zero window.
+// it, so a true answer is a claim this listener should have renewed and has not renewed since. The
+// record is kept by role and session, not by process: a failure one process of the session
+// recorded while the claim names another process - a restarted process whose registration failed
+// while the claim still names the process that stopped - is cleared by no renewal, since none of
+// that claim can land, and answers until window has passed since the last failure. A window of
+// zero answers false, as ClaimRenewedWithin keeps nothing at a zero window.
 func (r *Registry) RenewalFailedWithin(role, sessionID string, window time.Duration) (RenewalFailure, bool) {
 	failure, ok := r.renewalFailures.get(renewalFailureKey{role: role, sessionID: sessionID})
 	if !ok || r.now().Sub(failure.At) >= window {

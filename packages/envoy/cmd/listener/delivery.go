@@ -448,6 +448,22 @@ func listenerDeliveryHandler(cfg listenerDeliveryHandlerConfig) func(deliveryMes
 	}
 }
 
+// roleLaneClaims is the claim side of the role lane's resolution (roles.ClaimStore): the claim
+// reads of claims, each bounded by roleHolderReadTimeout on its own. The lane resolves under no
+// deadline of its own (resolveCoreRoleHolder), so a bound on the claim read alone leaves the
+// holder's session read the whole of its own bound (roleHolderSessions.Holder), where one bound
+// around the resolution would leave the session read only what the claim read had not spent: a
+// claim read answering late would fail a session read that would have answered in time, which
+// the lane reports delivery_failed with the message neither forwarded nor kept.
+type roleLaneClaims struct{ claims roles.ClaimStore }
+
+// RoleClaim reads role's claim within ctx and roleHolderReadTimeout, whichever ends first.
+func (c roleLaneClaims) RoleClaim(ctx context.Context, role string) (store.RoleClaim, error) {
+	readCtx, cancel := context.WithTimeout(ctx, roleHolderReadTimeout)
+	defer cancel()
+	return c.claims.RoleClaim(readCtx, role)
+}
+
 // resolveCoreRoleHolder resolves the current live holder for a role-lane delivery
 // (roles.ResolveHolder, which reads the role's claim record from the role bucket), applying the
 // terminal outcome itself and reporting ok=false when there is nobody to deliver to. A resolution
@@ -459,20 +475,25 @@ func listenerDeliveryHandler(cfg listenerDeliveryHandlerConfig) func(deliveryMes
 // A claim read that did not answer forwards nothing and keeps the message too, under
 // roleClaimUnread: a read that failed is no evidence that the role has no holder, nor that it has
 // whichever holder a copy of the bucket names, and the lane is a core subscription with no
-// redelivery, so a kept copy is how the message waits for a read that answers. The handover the
-// keep starts forwards it to the holder the claim record names once a read answers, and the
-// kept-role sweep does when that handover could not (sweepKeptRoleLanes).
+// redelivery, so a kept copy is how the message waits for a read that answers. The copy goes only
+// to a live holder: the handover the keep starts resolves the holder again once a read answers
+// and forwards the copy where that holder is live, and the kept-role sweep starts a handover when
+// that one could not (sweepKeptRoleLanes). A holder the resolution finds lapsed ends a handover
+// with no outcome (handOverKeptRole), the sweep's as well, so the copy then waits on the lane,
+// with no delivery exception published for it, until a handover - a claim's, a keep's or the
+// sweep's - finds a live holder: the holder answering again, or a successor that claimed the
+// role. The walk that handover makes forwards the copy while it is inside the one-hour keep window
+// (roleKeepWindow) and drops it with a WARN once it is older.
 //
 // Every other case leaves its branch as it was before the kept lane: an unclaimed role whose keep
 // failed is no_holder; a holder that is not answering, a holder whose session read failed and a
 // failed claim read whose keep failed are delivery_failed, each under a log line that names which
 // it was. A holder that is not answering keeps its claim through all of them: the lane takes
-// nothing from it. Role delivery answers no caller, so it resolves under a context of its own
-// bounded by roleHolderReadTimeout, which the claim read and the holder's session read share.
+// nothing from it. Role delivery answers no caller, so it resolves under context.Background(),
+// and each of its two reads is bounded on its own by roleHolderReadTimeout: the claim read by
+// roleLaneClaims and the holder's session read by roleHolderSessions.Holder.
 func resolveCoreRoleHolder(cfg listenerDeliveryHandlerConfig, item contracts.Envelope, role string) (string, session.SessionEntry, bool) {
-	ctx, cancel := context.WithTimeout(context.Background(), roleHolderReadTimeout)
-	defer cancel()
-	resolved, err := roles.ResolveHolder(ctx, cfg.registry, roleHolderSessions{cfg.sessions}, role)
+	resolved, err := roles.ResolveHolder(context.Background(), roleLaneClaims{cfg.registry}, roleHolderSessions{cfg.sessions}, role)
 	sessionID := resolved.Holder
 	// Every error the resolution returns is a *roles.ReadError naming the read that failed.
 	// One that is not would still be a read that failed, so it is logged as the claim read with
@@ -485,7 +506,7 @@ func resolveCoreRoleHolder(cfg listenerDeliveryHandlerConfig, item contracts.Env
 		if resolved.State == roles.Live {
 			return sessionID, resolved.Entry, true
 		}
-		if roleKeepable(resolved) && keepRoleLaneMessage(cfg, role, sessionID, item, string(resolved.State)) {
+		if roleKeepable(resolved) && keepRoleLaneMessage(cfg, role, item, roleKeptUnclaimed) {
 			return "", session.SessionEntry{}, false
 		}
 		if resolved.State == roles.Unclaimed {
@@ -510,7 +531,7 @@ func resolveCoreRoleHolder(cfg listenerDeliveryHandlerConfig, item contracts.Env
 	}
 	switch failure.Step {
 	case roles.ClaimRead:
-		if keepRoleLaneMessage(cfg, role, "", item, roleClaimUnread) {
+		if keepRoleLaneMessage(cfg, role, item, roleClaimUnread) {
 			cfg.logger.Warn("listener role holder lookup failed, so the message was kept until a claim read answers",
 				slog.String("role", role),
 				slog.String("event_id", item.EventID),

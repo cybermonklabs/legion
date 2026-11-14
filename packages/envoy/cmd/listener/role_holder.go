@@ -201,10 +201,10 @@ func bucketSessionEntry(ctx context.Context, sessions *session.SessionRegistry, 
 
 // roleSupersession is what a soft claim may do to the role holder it found (POST /v1/roles/set,
 // the issue's R6): take the role from that holder, leave it where it is, or neither, because a
-// read did not answer. One of two functions answers it - roleSupersessionVerdict for a holder
-// that is another session, roleOwnSessionVerdict for the role held under the claimant's own
-// session id - so the route states the rule that decides a holder nowhere and words only the
-// answers.
+// read did not answer or the grant guard cannot vouch for the holder's renewals. One of two
+// functions answers it - roleSupersessionVerdict for a holder that is another session,
+// roleOwnSessionVerdict for the role held under the claimant's own session id - so the route
+// states the rule that decides a holder nowhere and words only the answers.
 type roleSupersession uint8
 
 const (
@@ -234,12 +234,19 @@ const (
 	// claimant's own session id does not show an operator.
 	roleHeldByAnotherProcess
 	// roleHolderUnread: nothing is taken from anyone, because what the verdict would rest on
-	// cannot be vouched for now - a read that did not answer (the holder's session record), or,
-	// for the role held under the claimant's own session id, a state in which this listener
-	// cannot tell a holder that stopped renewing its claim from a renewal of it that did not land
+	// cannot be read now - a read that did not answer (the holder's session record), or, for the
+	// role held under the claimant's own session id, a role claim view that cannot be served
 	// (roleOwnSessionVerdict). It comes with the error the route answers (writeBusUnavailable),
-	// already worded for the read or the state that refused.
+	// already worded for the read or the view that refused.
 	roleHolderUnread
+	// roleGrantGuarded: nothing is taken from the role held under the claimant's own session id,
+	// because the grant guard cannot tell a holder that stopped renewing its claim from a
+	// renewal of it that did not land, though every read it made answered: the role claim copy's
+	// last whole read is past the repair bound or none has completed, or this listener's own
+	// renewal of that claim failed inside the live window (roleOwnSessionVerdict). It comes with
+	// the error that names the arm, which the route answers under grantGuardPrefix
+	// (writeGrantGuardRefusal) rather than as a bus that did not answer.
+	roleGrantGuarded
 	// roleUnclaimed: no claim stands for the role, so there is no holder to supersede and
 	// nothing to log. Only the route's own read of the claim answers it (roleSetHandler),
 	// never the two verdict functions, which are asked about a holder.
@@ -273,9 +280,12 @@ const (
 // What moves a renewal is a registration (POST /v1/interests/subscribe), which renews each claim
 // of the roles named by the interest row its own write returned and by the role claim copy, each
 // as that claim's own record says (store.Registry.RenewRoleClaims). So, once the claim's renewal
-// is older than the window, three states of this listener refuse the claim, each answering
-// roleHolderUnread with an error that names it, nothing claimed and nothing written, and the
-// claimant retries. None of the three makes a bucket call.
+// is older than the window, three states of this listener refuse the claim, each with an error
+// that names it, nothing claimed and nothing written, and the claimant retries. None of the three
+// makes a bucket call. The first answers roleHolderUnread, which the route answers as the
+// bus-unavailable 503, as every route answers a role claim view that cannot be served; the other
+// two are the grant guard's own and answer roleGrantGuarded, which the route answers with the same
+// 503 and Retry-After: 1 under grantGuardPrefix, since the bus answered every read they rest on.
 //
 //   - The role claim view cannot be served (store.Registry.RoleViewErr): there is no watcher, its
 //     watcher ended terminally, or its copy is refilling - the state a listener restart leaves for
@@ -291,13 +301,20 @@ const (
 //   - This listener's own renewal of role's claim for the holder failed inside liveWindow
 //     (store.Registry.RenewalFailedWithin): a claim read or write that did not answer or failed,
 //     or a registration whose store work failed before its renewal could run
-//     (store.Registry.RecordRenewalFailures, from subscribeHandler). A renewal of that claim for
-//     that holder that wrote clears the record, so this arm refuses only until the holder's next
-//     registration lands. The record is this listener's own and is lost at a restart, and a
-//     claim may reach another listener, so the repair's bound and not this record is what bounds
-//     the harm. The record's error is quoted and not wrapped: a renewal that failed on a key the
-//     bus refuses would otherwise be answered as the caller's bad request (writeNATSError), when
-//     what this answer says is that the claim may be retried.
+//     (store.Registry.RecordRenewalFailures, from subscribeHandler). The record is kept by role
+//     and holder session, not by process, and a renewal of that claim for that holder that wrote
+//     clears it, so a failure of the process the claim names refuses until that process's next
+//     registration renews the claim. A failure another process of the same session recorded is
+//     under the same key, though: a restarted process whose registration or claim read failed
+//     while the claim still names the process before it, which has stopped. No renewal of that
+//     claim can land - its own process no longer registers, and no other process's renewal
+//     writes it - so nothing clears that record, and this arm refuses until one live window after
+//     the last failure. The record is this listener's own and is lost at a restart, and a claim
+//     may reach another listener, so the repair's bound and not this record is what bounds the
+//     harm. The record's error is quoted and not wrapped: it is an earlier renewal's failure, not
+//     this request's, so nothing that tells failures apart by their chain may take it for one of
+//     this request's reads - a key the bus refused that renewal, say, which writeNATSError
+//     answers as the caller's bad request.
 func roleOwnSessionVerdict(registry *store.Registry, role string, claim store.RoleClaim, claimantInstanceID string, liveWindow time.Duration) (roleSupersession, error) {
 	if claim.HeldByProcess(claimantInstanceID) {
 		return roleTakenFromHolder, nil
@@ -309,10 +326,10 @@ func roleOwnSessionVerdict(registry *store.Registry, role string, claim store.Ro
 		return roleHolderUnread, fmt.Errorf("read role claim view: %w", viewErr)
 	}
 	if repairErr := registry.RoleClaimRepair().Err(); repairErr != nil {
-		return roleHolderUnread, fmt.Errorf("role claim repair: %w", repairErr)
+		return roleGrantGuarded, fmt.Errorf("role claim repair: %w", repairErr)
 	}
 	if failure, failed := registry.RenewalFailedWithin(role, claim.HolderSessionID, liveWindow); failed {
-		return roleHolderUnread, fmt.Errorf("role %s's renewal for %s failed on this listener at %s, inside the %s live window: %v",
+		return roleGrantGuarded, fmt.Errorf("role %s's renewal for %s failed on this listener at %s, inside the %s live window: %v",
 			role, claim.HolderSessionID, failure.At.UTC().Format(time.RFC3339), liveWindow, failure.Err)
 	}
 	return roleTakenFromHolder, nil
@@ -396,6 +413,9 @@ func sessionIsLive(state session.State) bool { return state == session.Live }
 
 // roleHolderReadTimeout bounds each of the role paths' session-bucket reads, well inside the
 // listener's 10 s HTTP write timeout (main.go) and the 10 s JetStream MaxWait the read would
-// otherwise wait out. A resolution's read (roleHolderSessions.Holder) is bounded by its caller's
-// context as well, and so ends at the earlier of the two.
+// otherwise wait out, and each claim read the role lane and the kept lane make outside any
+// request (roleLaneClaims, readRoleClaimHolder). A resolution's read (roleHolderSessions.Holder,
+// roleLaneClaims) is bounded by its caller's context as well, and so ends at the earlier of the
+// two; the role lane's resolution holds no deadline of its own, so each of its two reads has the
+// whole of this bound.
 const roleHolderReadTimeout = 2 * time.Second

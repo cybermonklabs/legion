@@ -219,18 +219,23 @@ func requireGuardState(t *testing.T, registry *store.Registry, role, holder stri
 	}
 }
 
-// requireGuardRefusal fails the test unless recorder is the bus-unavailable 503 with Retry-After: 1
-// the guard answers, with an error that names arm.
+// requireGuardRefusal fails the test unless recorder is the grant guard's refusal: the 503 with
+// Retry-After: 1 whose error opens with grantGuardPrefix and goes straight on to name arm. It is
+// not the bus-unavailable answer, since every read the guard rests on answered.
 func requireGuardRefusal(t *testing.T, recorder *httptest.ResponseRecorder, arm string) {
 	t.Helper()
 	var answer apiError
 	if err := json.Unmarshal(recorder.Body.Bytes(), &answer); err != nil {
 		t.Fatalf("decode the answer %s: %v", recorder.Body.String(), err)
 	}
+	if strings.Contains(answer.Error, busUnansweredPrefix) {
+		t.Fatalf("the claim's refusal reads %q: it says the bus did not answer, but every read the guard rests on answered", answer.Error)
+	}
+	want := grantGuardPrefix + ": " + arm
 	if recorder.Code != http.StatusServiceUnavailable || recorder.Header().Get("Retry-After") != "1" ||
-		!strings.HasPrefix(answer.Error, busUnansweredPrefix) || !strings.Contains(answer.Error, arm) {
-		t.Fatalf("the claim answered %d, Retry-After %q, %q; want the 503 with Retry-After: 1 opening %q and naming %q",
-			recorder.Code, recorder.Header().Get("Retry-After"), answer.Error, busUnansweredPrefix, arm)
+		!strings.HasPrefix(answer.Error, want) {
+		t.Fatalf("the claim answered %d, Retry-After %q, %q; want the 503 with Retry-After: 1 opening %q",
+			recorder.Code, recorder.Header().Get("Retry-After"), answer.Error, want)
 	}
 }
 
@@ -272,8 +277,10 @@ func unreadRegistry(t *testing.T, client *bus.Client, clock *listenerClock) *sto
 // cannot vouch that the holder stopped renewing it. Each case asks once, from secondProcess, and
 // the claim record reads cleanly in every case, so the route's own read of it never refuses:
 //
-//  1. the holder's renewal's claim read failed and was recorded: refused, naming the failure;
-//  2. the copy's last whole read is older than the repair bound: refused, naming the repair;
+//  1. the holder's renewal's claim read failed and was recorded: refused under the guard's own
+//     answer, naming the failure;
+//  2. the copy's last whole read is older than the repair bound: refused under the guard's own
+//     answer, naming the repair;
 //  3. a listener that has completed no whole read at all: refused, with the view's refusal, which
 //     a just-started listener's copy gives before anything else;
 //  4. case one's failure, then a registration whose renewal lands before the grant is asked: the

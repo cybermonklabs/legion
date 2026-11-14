@@ -130,7 +130,8 @@ func listenerCaches(registry *store.Registry, sessions *session.SessionRegistry,
 // its next cycle.
 //
 // A reaper answers no caller, so it holds no request context and reads under context.Background()
-// with roleHolderReadTimeout as its bound, the same bound role delivery's resolution waits.
+// with roleHolderReadTimeout as its bound, the same bound each read of role delivery's resolution
+// waits.
 func sessionMayBeLive(sessions *session.SessionRegistry, sessionID string) (bool, error) {
 	_, _, err := liveSessionEntry(context.Background(), sessions, sessionID, roleHolderReadTimeout, notGone)
 	if errors.Is(err, nats.ErrKeyNotFound) {

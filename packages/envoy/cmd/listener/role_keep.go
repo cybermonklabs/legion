@@ -110,11 +110,23 @@ const roleKeepHolderWindow = 5 * time.Second
 // kept answer reads as (sendKept.deliveryStatus), so route and lane say the same word for it.
 const roleKeptDeliveryStatus = "kept"
 
-// roleClaimUnread is the reason the role lane keeps a message under when its resolution's claim
-// read did not answer (resolveCoreRoleHolder). It is a reason of the lane's keep alone and no
-// roles.State: a read that failed resolved nothing, so it is never one of the listener's answers -
-// the lookup's 404 reason or a publish's recorded outcome - and only the kept line names it.
-const roleClaimUnread = "claim_unread"
+// roleKeepReason is why the role lane kept a message (keepRoleLaneMessage), as the lane's kept line
+// names it: one of the two constants below. It is a type of its own rather than a roles.State,
+// because one of the two is no state of a resolution, and rather than a plain string, which takes
+// any string a caller has to hand: a value of another string type, a roles.State among them,
+// needs a conversion to become one.
+type roleKeepReason string
+
+const (
+	// roleKeptUnclaimed is a resolution that found no claim for the role: the one state the lane
+	// keeps a copy for (roleKeepable), named as the resolution names it.
+	roleKeptUnclaimed = roleKeepReason(roles.Unclaimed)
+	// roleClaimUnread is a resolution whose claim read did not answer (resolveCoreRoleHolder). It is
+	// a reason of the lane's keep alone and no roles.State: a read that failed resolved nothing, so
+	// it is never one of the listener's answers - the lookup's 404 reason or a publish's recorded
+	// outcome - and only the kept line names it.
+	roleClaimUnread roleKeepReason = "claim_unread"
+)
 
 // roleKeepFailedLine is logged by both give-up paths - the publish route's and the role lane's -
 // when the copy could not be kept, beside the answer each gives when nothing was kept.
@@ -312,25 +324,24 @@ func keepForNextHolder(cfg listenerDeliveryHandlerConfig, role string, item cont
 
 // keepRoleLaneMessage keeps the role lane's copy of a message it found no live holder for, or
 // whose holder it could not read, and reports whether it was kept. reason is why, as the lane's
-// kept line names it: the resolution's state for a role nobody claims (string(roles.Unclaimed)),
-// and roleClaimUnread for a claim read that did not answer. It is a string rather than a
-// roles.State because the second is no state of a resolution. Kept, it writes the lane's line and
+// kept line names it: roleKeptUnclaimed for a role nobody claims, and roleClaimUnread for a claim
+// read that did not answer. Neither names a holder - an unclaimed role has none, and a read that
+// failed found none - so the kept line's session_id is empty. Kept, it writes the lane's line and
 // counts the delivery under roleKeptDeliveryStatus and publishes no delivery exception: the
-// message is not lost, and the handover the keep starts hands it to the holder the role's claim
-// record names (keepForNextHolder). A keep that kept nothing is reported false, and the caller's
-// own give-up - its exception, its metric and its line - stands exactly as it was.
-func keepRoleLaneMessage(cfg listenerDeliveryHandlerConfig, role, holder string, item contracts.Envelope, reason string) bool {
+// message is not lost, and the handover the keep starts forwards it once a resolution finds the
+// role's holder live (keepForNextHolder). A keep that kept nothing is reported false, and the
+// caller's own give-up - its exception, its metric and its line - stands exactly as it was.
+func keepRoleLaneMessage(cfg listenerDeliveryHandlerConfig, role string, item contracts.Envelope, reason roleKeepReason) bool {
 	if !keepForNextHolder(cfg, role, item) {
 		return false
 	}
 	applyDeliveryOutcome(cfg, item, deliveryOutcome{
-		sessionID:    holder,
 		metricStatus: roleKeptDeliveryStatus,
 		log: func(logger *logging.Logger) {
 			logger.DeliveryLog(slog.LevelInfo, "listener kept role message for the role's next holder",
-				holder, item.Topic, item.EventID, roleKeptDeliveryStatus,
+				"", item.Topic, item.EventID, roleKeptDeliveryStatus,
 				slog.String("role", role),
-				slog.String("reason", reason))
+				slog.String("reason", string(reason)))
 		},
 	})
 	return true

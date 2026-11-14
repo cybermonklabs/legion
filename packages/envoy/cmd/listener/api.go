@@ -348,6 +348,19 @@ const publishDeniedPrefix = "envoy: the message bus denied the publish under thi
 // room.
 const streamFullPrefix = "envoy: the message bus refused the message because its stream is full"
 
+// grantGuardPrefix opens the body of the answer POST /v1/roles/set gives a soft claim the grant
+// guard refused (roleGrantGuarded): a role held under the claimant's own session id whose renewal
+// is older than the live window, while the role claim copy's last whole read is past its repair
+// bound or none has completed, or while this listener's own renewal of that claim failed inside
+// the window (roleOwnSessionVerdict). The error after it names which of the two refused. One
+// string, so it matches in a test and in a deployed log filter. It is deliberately not
+// busUnansweredPrefix: every read the guard rests on answered, so "the message bus did not
+// answer" would send an operator looking for an outage instead of at the repair's age or at the
+// renewal that failed. Like a full stream it is worth retrying: the guard stops refusing once a
+// whole read completes inside the bound and the record of the failure is cleared or older than
+// the live window.
+const grantGuardPrefix = "envoy: the role grant guard refused the claim because this listener cannot vouch that its holder stopped renewing it"
+
 // writeBusUnavailable answers a send, a publish, a role lookup or a session or interest read the
 // bus did not serve, in the one place that writes that 503, so the body's prefix and the hint never
 // drift apart. Retry-After is set only where retrying can help: every member of bus.ErrRefused -
@@ -389,6 +402,16 @@ func writeBusUnavailable(w http.ResponseWriter, err error) int {
 		w.Header().Set("Retry-After", "1")
 	}
 	return writeNATSError(w, err, http.StatusServiceUnavailable, fmt.Sprintf("%s: %s", busUnansweredPrefix, err))
+}
+
+// writeGrantGuardRefusal answers a soft claim the grant guard refused (roleGrantGuarded): a 503
+// with Retry-After: 1 under grantGuardPrefix, followed by err, which names the arm that refused.
+// The status and the header are the bus-unavailable 503's, because the same claim may be granted
+// once the guard can vouch again and packages/envoy-client/src/transport.ts retries every status
+// at or past 500; the body is its own, because the bus answered.
+func writeGrantGuardRefusal(w http.ResponseWriter, err error) {
+	w.Header().Set("Retry-After", "1")
+	writeJSONError(w, http.StatusServiceUnavailable, fmt.Sprintf("%s: %s", grantGuardPrefix, err))
 }
 
 // storeAnswered reports whether err, from the store work of a /v1 route that writes, done within
@@ -1690,17 +1713,20 @@ func adminInterestsHandler(registry *store.Registry, sessions *session.SessionRe
 // nothing. A renewal older than the window is read as the holder having stopped only while this
 // listener can vouch for that: nothing but a registration renews a claim, and the claim record
 // reads the same whether its holder stopped registering or this listener failed to renew it. So
-// the claim is refused, with the bus-unavailable 503 and Retry-After: 1 naming the state
-// (writeBusUnavailable) and nothing claimed, while the role claim view cannot be served
-// (store.Registry.RoleViewErr), while the copy's last whole read of the role bucket is past its
-// repair bound or none has completed (store.RoleClaimRepairReport.Err), and while this
-// listener's own renewal of that role's claim for its holder failed inside the live window
-// (store.Registry.RenewalFailedWithin, which a renewal of that claim that writes clears). Without
-// them a listener whose renewals stopped landing would hand a live holder's role to the second
-// process once the window passed. A claim from the process the standing claim names rests on no
-// renewal and is granted through all three, since it is that holder re-claiming its own role
-// after a listener restart. A hard claim reads no holder and lands last-claim-wins as it always
-// has.
+// the claim is refused, with a 503 and Retry-After: 1 naming the state and nothing claimed: the
+// bus-unavailable 503 (writeBusUnavailable) while the role claim view cannot be served
+// (store.Registry.RoleViewErr), and the grant guard's own answer under grantGuardPrefix
+// (writeGrantGuardRefusal), since the bus answered, while the copy's last whole read of the role
+// bucket is past its repair bound or none has completed (store.RoleClaimRepairReport.Err) and
+// while this listener's own renewal of that role's claim for its holder failed inside the live
+// window (store.Registry.RenewalFailedWithin). A renewal of that claim that writes clears that
+// record; a failure no such renewal can clear - one another process of the same session recorded
+// while the claim names a process that stopped - refuses until one live window after the last
+// failure (roleOwnSessionVerdict). Without them a listener whose renewals stopped landing would
+// hand a live holder's role to the second process once the window passed. A claim from the
+// process the standing claim names rests on no renewal and is granted through all three, since it
+// is that holder re-claiming its own role after a listener restart. A hard claim reads no holder
+// and lands last-claim-wins as it always has.
 //
 // A claim that landed also hands the role's kept lane to its new holder: whatever the listener
 // kept while the role had none is forwarded to the claimant (runKeptRoleDrain, which reads the
@@ -1862,11 +1888,13 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 		// asks: it reads no holder and claims last-claim-wins.
 		//
 		// The error is non-nil for the claim read that did not answer, which carries no
-		// verdict, and with roleHolderUnread, which is a read of the holder's session record
-		// that did not answer or, for a role held under the claimant's own session id, a state
-		// in which this listener cannot vouch that the holder stopped renewing its claim (the
-		// role claim view, its repair or this listener's own renewal of that claim); the two
-		// are answered differently and the verdict is what tells them apart.
+		// verdict; with roleHolderUnread, which is a read of the holder's session record that
+		// did not answer or, for a role held under the claimant's own session id, a role claim
+		// view that cannot be served; and with roleGrantGuarded, which is the grant guard
+		// refusing a role held under the claimant's own session id while every read it rests
+		// on answered (the repair past its bound, or this listener's own renewal of that claim
+		// that failed). The three are answered differently and the verdict is what tells them
+		// apart.
 		//
 		// The registry sees only interest rows; a holder that is another session is the session
 		// bucket's call (roleSupersessionVerdict, through liveSessionEntry and
@@ -1950,9 +1978,15 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 				supersedable, claim, verdict, decideErr = decideSoftClaim()
 				switch {
 				case verdict == roleHolderUnread:
-					// A read that did not answer, or a renewal this listener cannot vouch
-					// for, takes nothing from a holder.
+					// A read that did not answer, or a role claim view that cannot be
+					// served, takes nothing from a holder.
 					writeBusUnavailable(w, decideErr)
+					return
+				case verdict == roleGrantGuarded:
+					// The bus answered, and this listener still cannot vouch that the
+					// holder stopped renewing its claim: nothing is taken, under the
+					// guard's own answer rather than the bus-unavailable one.
+					writeGrantGuardRefusal(w, decideErr)
 					return
 				case decideErr != nil:
 					writeStoreError(ctx, w, decideErr, http.StatusServiceUnavailable)
@@ -2573,7 +2607,11 @@ func (d *listenerDeps) registerPass(
 // read or write, or the session entry's write - since such a registration renews nothing
 // (store.Registry.RecordRenewalFailures). That record is what keeps POST /v1/roles/set from
 // reading a claim this listener failed to renew as one its holder abandoned
-// (roleOwnSessionVerdict), and the next renewal of that claim that writes clears it.
+// (roleOwnSessionVerdict). It is kept by role and session, not by process: the next renewal of
+// that claim that writes clears it, but a failure this session's other process recorded - a
+// restarted process whose registration or claim read failed while the claim still names the
+// process before it, which has stopped - is cleared by no renewal, since none of that claim can
+// land, and refuses until one live window after the last failure.
 func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -2743,7 +2781,9 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 		// A role whose claim read or write did not answer or failed is the renewal's failure:
 		// it is in the error logged below, and the renewal records it against that role and
 		// this session, where POST /v1/roles/set reads it (store.Registry.RenewalFailedWithin,
-		// roleOwnSessionVerdict) until a renewal of that claim writes and clears it. A lost
+		// roleOwnSessionVerdict). A renewal of that claim that writes clears it; while the claim
+		// names a process of this session other than this one, which has stopped, none can, and
+		// the record refuses until one live window after the last failure. A lost
 		// compare-and-swap, a claim another session or process holds, a handed-back claim and a
 		// role with no claim record are none: the record said what stands.
 		renewal, err := d.registry.RenewRoleClaims(ctx, body.SessionID, strings.TrimSpace(body.ClientInstanceID), registered.row)

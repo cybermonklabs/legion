@@ -540,7 +540,7 @@ func TestTheActHoldsOnAFailedRead(t *testing.T) {
 				noException(t, probe)
 				logs := rig.harness.logs.String()
 				kept := logRecordsNamed(logs, "listener kept role message for the role's next holder", role)
-				if len(kept) != 1 || kept[0]["reason"] != roleClaimUnread {
+				if len(kept) != 1 || kept[0]["reason"] != string(roleClaimUnread) {
 					t.Fatalf("the kept lines for role %s are %v, want one naming the reason %s:\n%s", role, kept, roleClaimUnread, logs)
 				}
 				if failedKeeps := logRecordsNamed(logs, "listener role holder lookup failed", role); len(failedKeeps) != 0 {

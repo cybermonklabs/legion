@@ -19,12 +19,15 @@ import (
 // 80 messages queued, and the 400-message silent-holder test never blocks it at all. The handler
 // also waits on each message's read of the role's claim record from the role bucket, which it
 // makes before it hands the forward over (cmd/listener/delivery.go resolveCoreRoleHolder), for up
-// to 2 seconds when the bucket does not answer (roleHolderReadTimeout, which that read shares with
-// the holder's session read). That is one read per message, so while the bucket does not answer
-// the handler takes at most about one message every 2 seconds. Reaching RoleLanePendingMsgs would
-// take seven hours of arrivals at 40 a second with the handler blocked, or held on that read,
-// throughout; RoleLanePendingBytes, 1 GiB, is the same bound in memory for messages larger than a
-// kilobyte. Client.SlowConsumers counts any slow-consumer error the connection reports.
+// to 2 seconds when the bucket does not answer (roleHolderReadTimeout, a bound of that read's
+// own). That is one read per message, so while the bucket does not answer the handler takes at
+// most about one message every 2 seconds. A holder whose session record the listener's cache does
+// not hold live adds a read of the session bucket, under a bound of its own of the same 2
+// seconds, so one message holds the handler for up to about 4 seconds: a claim read that answers
+// just inside its bound, then a session read that runs to its own. Reaching RoleLanePendingMsgs
+// would take seven hours of arrivals at 40 a second with the handler blocked, or held on those
+// reads, throughout; RoleLanePendingBytes, 1 GiB, is the same bound in memory for messages larger
+// than a kilobyte. Client.SlowConsumers counts any slow-consumer error the connection reports.
 const (
 	RoleLanePendingMsgs  = 1_000_000
 	RoleLanePendingBytes = 1 << 30
