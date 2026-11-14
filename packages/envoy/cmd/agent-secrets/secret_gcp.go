@@ -596,7 +596,7 @@ func (b *gcpBackend) create(ctx context.Context, slug string, tags map[string]st
 }
 
 func (b *gcpBackend) set(ctx context.Context, slug, value string) error {
-	if _, err := b.requireLentOwner(ctx, slug, nil); err != nil {
+	if err := b.refuseLentExistingWrite(slug); err != nil {
 		return err
 	}
 	return b.addVersion(ctx, b.id(slug), value)
@@ -610,20 +610,28 @@ func (b *gcpBackend) addVersion(ctx context.Context, parent, value string) error
 	if err != nil || !b.lentToken {
 		return err
 	}
-	secret, err := b.client.GetSecret(ctx, &secretmanagerpb.GetSecretRequest{Name: parent})
-	if err != nil {
-		return fmt.Errorf("read the secret owner after adding version %s: %w", version.GetName(), err)
-	}
-	if strings.EqualFold(secret.GetAnnotations()[policy.TagOwner], b.lentTokenOwner) {
+	secret, readErr := b.client.GetSecret(ctx, &secretmanagerpb.GetSecretRequest{Name: parent})
+	switch {
+	case readErr != nil:
+		return b.undoLentVersion(ctx, version.GetName(), "could not re-read the secret owner")
+	case strings.EqualFold(secret.GetAnnotations()[policy.TagOwner], b.lentTokenOwner):
 		return nil
+	default:
+		return b.undoLentVersion(ctx, version.GetName(), "the secret owner changed")
 	}
-	if _, err := b.client.DestroySecretVersion(ctx, &secretmanagerpb.DestroySecretVersionRequest{Name: version.GetName()}); err != nil {
-		return fmt.Errorf("the secret owner changed after adding version %s; the write could not be undone and the version was left behind: %w", version.GetName(), err)
+}
+
+func (b *gcpBackend) undoLentVersion(ctx context.Context, version, reason string) error {
+	if _, err := b.client.DestroySecretVersion(ctx, &secretmanagerpb.DestroySecretVersionRequest{Name: version}); err != nil {
+		return fmt.Errorf("%s after adding version %s; the version was left behind: %w", reason, version, err)
 	}
-	return fmt.Errorf("the secret owner changed after adding version %s; the write was undone", version.GetName())
+	return fmt.Errorf("%s after adding version %s; the write was undone", reason, version)
 }
 
 func (b *gcpBackend) currentTags(ctx context.Context, slug string) (heldTags, error) {
+	if err := b.refuseLentExistingWrite(slug); err != nil {
+		return heldTags{}, err
+	}
 	secret, err := b.client.GetSecret(ctx, &secretmanagerpb.GetSecretRequest{Name: b.id(slug)})
 	if err != nil {
 		return heldTags{}, err
@@ -631,26 +639,11 @@ func (b *gcpBackend) currentTags(ctx context.Context, slug string) (heldTags, er
 	return heldTags{tags: secret.GetAnnotations(), etag: secret.GetEtag()}, nil
 }
 
-// requireLentOwner refuses a mutating operation under a lent token unless requireWriteSignIn
-// verified its person and that person owns the supplied or freshly read owner annotation.
-func (b *gcpBackend) requireLentOwner(ctx context.Context, slug string, held *heldTags) (heldTags, error) {
+func (b *gcpBackend) refuseLentExistingWrite(slug string) error {
 	if !b.lentToken {
-		return heldTags{}, nil
+		return nil
 	}
-	if b.lentTokenOwner == "" {
-		return heldTags{}, errors.New("a lent Google access token cannot write until its person is verified: nothing was written")
-	}
-	if held == nil {
-		current, err := b.currentTags(ctx, slug)
-		if err != nil {
-			return heldTags{}, fmt.Errorf("read the secret's owner before writing: %w", err)
-		}
-		held = &current
-	}
-	if owner := held.tags[policy.TagOwner]; !strings.EqualFold(owner, b.lentTokenOwner) {
-		return heldTags{}, fmt.Errorf("a secret is written only under its owner's Google sign-in: %s owns this secret, but the lent token is %s's, so nothing was written", owner, b.lentTokenOwner)
-	}
-	return *held, nil
+	return fmt.Errorf("a lent Google access token may only create a new secret it owns, so it cannot write the existing secret %s", b.id(slug))
 }
 
 // setTags writes tags into the annotations held holds, and removeTags deletes keys from them, each
@@ -660,14 +653,14 @@ func (b *gcpBackend) requireLentOwner(ctx context.Context, slug string, held *he
 // since held was read refuses it with FAILED_PRECONDITION (errTagsChanged), naming the change,
 // rather than being merged into annotations no one checked.
 func (b *gcpBackend) setTags(ctx context.Context, slug string, held heldTags, tags map[string]string) error {
-	if _, err := b.requireLentOwner(ctx, slug, &held); err != nil {
+	if err := b.refuseLentExistingWrite(slug); err != nil {
 		return err
 	}
 	return b.updateAnnotations(ctx, slug, held, func(annotations map[string]string) { maps.Copy(annotations, tags) })
 }
 
 func (b *gcpBackend) removeTags(ctx context.Context, slug string, held heldTags, keys []string) error {
-	if _, err := b.requireLentOwner(ctx, slug, &held); err != nil {
+	if err := b.refuseLentExistingWrite(slug); err != nil {
 		return err
 	}
 	return b.updateAnnotations(ctx, slug, held, func(annotations map[string]string) {
@@ -699,16 +692,14 @@ func (b *gcpBackend) updateAnnotations(ctx context.Context, slug string, held he
 }
 
 func (b *gcpBackend) delete(ctx context.Context, slug string) (*time.Time, error) {
-	held, err := b.requireLentOwner(ctx, slug, nil)
-	if err != nil {
+	if err := b.refuseLentExistingWrite(slug); err != nil {
 		return nil, err
 	}
 	expire := time.Now().UTC().Add(time.Duration(recoveryWindowDays) * 24 * time.Hour)
-	_, err = b.client.UpdateSecret(ctx, &secretmanagerpb.UpdateSecretRequest{
+	_, err := b.client.UpdateSecret(ctx, &secretmanagerpb.UpdateSecretRequest{
 		Secret: &secretmanagerpb.Secret{
 			Name:       b.id(slug),
 			Expiration: &secretmanagerpb.Secret_ExpireTime{ExpireTime: timestamppb.New(expire)},
-			Etag:       held.etag,
 		},
 		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"expire_time"}},
 	})
@@ -721,12 +712,11 @@ func (b *gcpBackend) delete(ctx context.Context, slug string) (*time.Time, error
 // restore clears expire_time: the field mask names it with no value in the body, which Secret
 // Manager reads as unsetting it.
 func (b *gcpBackend) restore(ctx context.Context, slug string) error {
-	held, err := b.requireLentOwner(ctx, slug, nil)
-	if err != nil {
+	if err := b.refuseLentExistingWrite(slug); err != nil {
 		return err
 	}
-	_, err = b.client.UpdateSecret(ctx, &secretmanagerpb.UpdateSecretRequest{
-		Secret:     &secretmanagerpb.Secret{Name: b.id(slug), Etag: held.etag},
+	_, err := b.client.UpdateSecret(ctx, &secretmanagerpb.UpdateSecretRequest{
+		Secret:     &secretmanagerpb.Secret{Name: b.id(slug)},
 		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"expire_time"}},
 	})
 	return err
