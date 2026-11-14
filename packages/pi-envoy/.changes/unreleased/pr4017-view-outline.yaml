@@ -1,0 +1,8 @@
+kind: Changed
+body: |-
+  The `dispatch-writing-specs` outline says that a view holds no requirement block and that its
+  `Delivers:` line names the ancestor's requirements its checks serve. The `dispatch-first` table
+  no longer sends a Legion architect to `skill://legion-architect`, because the architect's own
+  prompt already does.
+custom:
+    Issue: pr4017

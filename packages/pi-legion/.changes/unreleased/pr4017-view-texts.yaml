@@ -1,0 +1,11 @@
+kind: Added
+body: |-
+  The architect's skill tells an architect how to write a root under an approved ancestor as a
+  view on that ancestor and how to register it on the ancestor's approval
+  (`references/design-gate.md`, "A root that is a view on an approved ancestor"). It also tells
+  how a requirement that the ancestor does not state goes into the ancestor's spec for one
+  approval, and how an acceptance reads the checks across the issues under the ancestor. The
+  controller's and the worker's filing references link an issue of an approved class, or of a
+  running tree's work, to its root.
+custom:
+    Issue: pr4017
