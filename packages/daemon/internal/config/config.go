@@ -95,10 +95,11 @@ type Config struct {
 	OmpLaunchPrefix []string
 	// ProviderKeys are the provider credentials every pane's or pod's OMP receives in its
 	// environment, in file order: the variable OMP reads, and where its value is held. Under tmux the
-	// source is a secretsd key, or a file (`file:/abs/path`), which boot reads once, as the daemon
-	// (MaterializeProviderKeys), into a daemon-held 0600 file, so a pane never holds the secret store
-	// itself; under kubernetes it is a key of the providers Secret, which every pod mounts as the
-	// file the shim exports.
+	// source is a secretsd key, or a file (`file:/abs/path`), which the daemon reads as itself
+	// (MaterializeProviderKeys) at boot and again at each build of the tmux runtime whose keys have
+	// moved, into a daemon-held 0600 file, so a pane never holds the secret store itself; under
+	// kubernetes it is a key of the providers Secret, which every pod mounts as the file the shim
+	// exports.
 	ProviderKeys []ProviderKey
 	// InstructionsPath is the operator's deployment instructions, "" when none; boot copies it to
 	// `<state_dir>/deployment-instructions.md` (MaterializeDeploymentInstructions).
@@ -918,7 +919,7 @@ const spendAttributesRule = "a value the agent's OpenTelemetry detector would th
 // environment while the provider's variable is fixed. Secret is the key that holds it
 // (GEMINI_API_KEY_TESTS) — a secretsd key under tmux, a key of the providers Secret under
 // kubernetes — or File, set instead when the entry's value is `file:/abs/path`: the file the daemon
-// reads the value from at boot, under tmux alone. Exactly one of the two is set.
+// reads the value from (MaterializeProviderKeys), under tmux alone. Exactly one of the two is set.
 type ProviderKey struct {
 	Env    string
 	Secret string

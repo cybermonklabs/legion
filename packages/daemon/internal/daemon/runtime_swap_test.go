@@ -141,7 +141,7 @@ current-context: legion-daemon
 func tmuxRuntimeFor(t *testing.T, cfg config.Config) func(config.Config) (runtimeFactory, error) {
 	t.Helper()
 	var p plan
-	if err := prepareTmux(cfg, quietLogger(), overrides{}, "", tmuxReads{}, &p); err != nil {
+	if err := prepareTmux(cfg, quietLogger(), overrides{}, tmuxReads{}, &p); err != nil {
 		t.Fatalf("prepare the tmux runtime build: %v", err)
 	}
 	return p.runtimeFor

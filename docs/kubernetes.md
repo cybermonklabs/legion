@@ -3373,7 +3373,8 @@ of these eleven names its agent carries no `LEGION_WORKSPACE`, because it is tol
 [Daemon-launched controller](#daemon-launched-controller) has the rest of it.
 
 The token behind `DISPATCH_TOKEN_FILE` is the daemon's own, not the role's.
-The daemon reads it once at boot from `dispatch_token_file` (`readBoot`, `packages/daemon/internal/daemon/bootreads.go`) and puts it in every launch's secrets as `DISPATCH_TOKEN` (`secrets[dispatchTokenKey]`, `packages/daemon/internal/runtime/sandbox/manifest.go`, the key from `names.go`), and the role's launcher writes it into the generation's `g<generation>` directory beside the generation's other launch credentials.
+Every build of the runtime, the boot's and each rebuild, reads it from `dispatch_token_file` (`readDispatchToken`, `packages/daemon/internal/daemon/bootreads.go`, called from `prepareSandbox`'s build in `kubernetes.go`) and puts it in every launch's secrets as `DISPATCH_TOKEN` (`secrets[dispatchTokenKey]`, `packages/daemon/internal/runtime/sandbox/manifest.go`, the key from `names.go`), and the role's launcher writes it into the generation's `g<generation>` directory beside the generation's other launch credentials.
+A change of `dispatch_token_file` rebuilds the runtime, and so does a rotation of the file it names in place (docs/deployment.md, "What a change of each `legion.yaml` key needs"), so the next launch carries the new bearer.
 The daemon-launched controller takes the same path, because `prepare` adds that secret to every launch it builds, whichever kind of pod the role names.
 So every role of every issue of the project, and that controller, present the same bytes.
 

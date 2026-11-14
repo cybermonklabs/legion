@@ -66,7 +66,8 @@ type servedRuntime struct {
 var _ runtime.Runtime = (*runtimeHolder)(nil)
 
 // runtimeHolding is the runtime behind its holder as the daemon holds it: the runtime itself,
-// and the holder the settings observer registers and rebuilds.
+// and the holder the settings observer registers and rebuilds, which reports the credential
+// files its builds read (runtimeHolder.credentials).
 //
 // newRuntimeHolder answers one of two shapes, because a Go type either implements an interface
 // or it does not, and three readers of `deps.Runtime` ask it for one the core runtime.Runtime
@@ -80,7 +81,7 @@ var _ runtime.Runtime = (*runtimeHolder)(nil)
 // took before the holder existed.
 type runtimeHolding interface {
 	runtime.Runtime
-	rebuilt
+	credentialHolder
 }
 
 // heldRuntime is the runtime a holder holds now, whichever shape the holder has (sandboxOf).
@@ -125,6 +126,23 @@ func answersIssueResources(rt runtime.Runtime) bool {
 }
 
 func (h *runtimeHolder) holder() string { return config.HolderRuntime }
+
+// credentials are the files a build of the runtime reads again (prepareTmux's and
+// prepareSandbox's runtimeFor): the Dispatch bearer every launch carries (`dispatch_token_file`,
+// readDispatchToken — the file every pane reads under tmux, each claim's Secret under
+// kubernetes), under tmux each provider key's file (`provider_keys`' `file:/abs/path` entries,
+// providerKeyFiles; the loader refuses the form under kubernetes) and, under kubernetes, the
+// daemon's cluster credential (`runtime.kubernetes.kubeconfig`, kubeClient). So a file rotated in
+// place, which changes no setting, rebuilds the runtime at the file watcher's next reread
+// (rebuilder.rereadCredentials): the next launch carries the rotated bearer or key, and the
+// runtime's informers and requests run on a client built from the rotated kubeconfig.
+func (h *runtimeHolder) credentials(cfg *config.Config) string {
+	files := append([]string{cfg.DispatchTokenFile}, providerKeyFilesOf(cfg.ProviderKeys)...)
+	if k := cfg.Runtime.Kubernetes; k != nil {
+		files = append(files, k.Kubeconfig)
+	}
+	return credentialDigest(files...)
+}
 
 // rebuild builds the runtime again from the configuration that has just settled, moves
 // supervision's feed onto it, swaps it in, and only then ends the one it replaced: everything

@@ -194,16 +194,26 @@ func prepareSandbox(cfg config.Config, log *slog.Logger, o overrides, reads boot
 		return err
 	}
 	// The boot's own runtime and every rebuild of it are built here (config.HolderRuntime): the
-	// cluster client and every pod option are read from the configuration the build is given,
-	// through the same boot read, so a changed kubeconfig is read again and the boot and a
-	// rebuild can never build different things. GitHub's REST root the shared public leak check
+	// cluster client, the Dispatch bearer every claim's Secret carries and every pod option are
+	// read from the configuration the build is given, through the same boot read, so a changed
+	// kubeconfig or `dispatch_token_file`, or either file rotated in place
+	// (runtimeHolder.credentials), is read again and the boot and a rebuild can never build
+	// different things. The pane seed's NATS user is the boot's, since the boot's image probe is
+	// its one reader (sandbox.Options.NATSUser). GitHub's REST root the shared public leak check
 	// is read under is no setting but the boot's own (overrides.githubAPI), so every build is
 	// handed the one boot holds.
 	lookup := environLookup(o.environment())
 	p.runtimeFor = func(c config.Config) (runtimeFactory, error) {
-		next, err := readSandbox(c, p.project, reads.dispatchToken, reads.nats.paneNatsUser, lookup, log)
+		dispatchToken, err := readDispatchToken(c)
 		if err != nil {
 			return nil, err
+		}
+		next, err := readSandbox(c, p.project, dispatchToken, reads.nats.paneNatsUser, lookup, log)
+		if err != nil {
+			return nil, err
+		}
+		if o.buildSandbox != nil {
+			return o.buildSandbox(next), nil
 		}
 		return sandboxRuntime(next.client, next.opts, p.repositories.Accepted, p.repositories.serving, c.RepositoryRenames, o.githubAPI), nil
 	}

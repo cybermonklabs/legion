@@ -24,7 +24,9 @@ func ProviderEnvDir(stateDir string) string {
 
 // MaterializeProviderKeys resolves each provider key and writes its value to a file in
 // ProviderEnvDir named for the variable OMP reads, returning that directory — or "" when there are
-// none, having removed any a previous boot left. Boot calls it once, before any pane can launch.
+// none, having removed any a previous write left. Boot calls it before any pane can launch, and a
+// build of the tmux runtime again whenever the keys or their files have moved since
+// (internal/daemon's providerKeyFiles).
 // A pane never reaches the secret store: under tmux, identity reaches panes as daemon-held files
 // (LEGION-208 spec, Identity), because the store's age identity would decrypt every agent-tier
 // secret on the box.

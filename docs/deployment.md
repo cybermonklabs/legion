@@ -199,14 +199,12 @@ trusted`. Put a real tmux binary first on the daemon's `PATH`
 
 ## What a pane's Dispatch credential is
 
-A pane's Dispatch bearer is the daemon's own. The daemon reads `dispatch_token_file` once at boot
-(`readBoot`, `packages/daemon/internal/daemon/bootreads.go`) and writes the value to
-`<state_dir>/secrets/dispatch-token`, a 0600 file in a 0700 directory, with
-`WriteDispatchTokenFile` (`packages/daemon/internal/runtime/secretfiles.go`, called from
-`prepareTmux` in `packages/daemon/internal/daemon/daemon.go`). It then tells every pane
-`DISPATCH_TOKEN_FILE` naming that file (`panePairs`,
-`packages/daemon/internal/runtime/tmux/spawn.go`). The value never enters tmux's argv or a pane's
-environment. So a pane holds the daemon's own credential, not one of its own.
+A pane's Dispatch bearer is the daemon's own.
+Every build of the tmux runtime, the boot's and each rebuild, reads `dispatch_token_file` (`readDispatchToken`, `packages/daemon/internal/daemon/bootreads.go`) and writes the value to `<state_dir>/secrets/dispatch-token`, a 0600 file in a 0700 directory, which it replaces whole, with `WriteDispatchTokenFile` (`packages/daemon/internal/runtime/secretfiles.go`, called from `writePaneDispatchToken` in `packages/daemon/internal/daemon/daemon.go`).
+A change of `dispatch_token_file` rebuilds the runtime, and so does a rotation of the file it names in place, so the next pane reads the new bearer.
+The runtime tells every pane `DISPATCH_TOKEN_FILE` naming that file (`panePairs`, `packages/daemon/internal/runtime/tmux/spawn.go`).
+The value never enters tmux's argv or a pane's environment.
+So a pane holds the daemon's own credential, not one of its own.
 
 The Envoy listener bearer reaches a pane the same way. It is a launch secret, `ENVOY_TOKEN`
 (`launchSecrets`, `packages/daemon/internal/daemon/launchsecrets.go`), and the tmux runtime writes
@@ -468,11 +466,11 @@ provider_keys:
   tmux](#moving-a-project-onto-tmux)). `kubernetes` is the only accepted value. Without the key, a
   claim whose recorded process is a pod is refused, naming the claim and the key, and the boot does
   not start: two daemons must never drive one store's claims at once.
-- **`provider_keys`** values of the form `file:/abs/path` are read once at boot, as the daemon,
-  into the same daemon-held 0600 files a secretsd key lands in. The file is read by the rules every
-  other secret file the daemon reads follows: one that cannot be read, is not a regular file, holds
-  nothing, or is readable by its group or others refuses the boot, naming the variable and the
-  file. Kubernetes refuses the form: a file on the daemon's disk reaches no pod.
+- **`provider_keys`** values of the form `file:/abs/path` are read as the daemon, at boot and again at each build of the runtime whose keys or key files have moved, into the same daemon-held 0600 files a secretsd key lands in.
+  So a change of `provider_keys`, and a key file rotated in place, reach the next pane;
+  a secretsd key whose value changes inside secretsd alone reaches the panes at the next change of `provider_keys` or the next boot.
+  The file is read by the rules every other secret file the daemon reads follows: one that cannot be read, is not a regular file, holds nothing, or is readable by its group or others refuses the boot, or the rebuild of a running daemon, naming the variable and the file.
+  Kubernetes refuses the form: a file on the daemon's disk reaches no pod.
 - **`controller: daemon`** works under tmux too: the daemon launches the controller in a pane of
   its own window, `controller`, working in `<state_dir>/controller`, told `LEGION_CONTROLLER=1` and
   an empty `LEGION_SLACK_CHANNELS`, and supervises it like a root architect. It needs
@@ -650,6 +648,8 @@ What a change of one key needs is its class, which the table below gives for eve
   No socket is rebound and no worker connection drops.
   The call waits while the daemon lets go of what it replaced, under the lock every settings change takes, so a second call waits behind it:
   a NATS connection is given two minutes for the messages its intake still holds, and the runtime being replaced is given its own launch bound and those two minutes beyond it, so a `runtime.*` change made while a pod is being launched waits for that launch's turn rather than ending it.
+  Where more than one thing holds the value, each of them is built again, though the table and the route name only the one holder: a change of `envoy_url`, `nats_urls`, `dispatch_url` or `dispatch_token_file` also builds the runtime again, which hands each launch the address or the Dispatch bearer, a change of `envoy_token_file` the launch specs, which hand each launch the bearer, and a change of `nats_nkey_seed_file` both, since the launch specs hand each launch the seed and the runtime decides whether a pod reads it from the providers Secret.
+  A credential file rotated in place changes no setting, so the watcher's wake reads the files again and builds again each holder whose files moved: `api-server` reads `operator_token_file`, `dispatch-client` `dispatch_token_file`, `envoy-publisher` `envoy_token_file`, `nats` `nats_nkey_seed_file` and `nats_daemon_nkey_seed_file`, `launch-specs` `envoy_token_file`, `nats_nkey_seed_file` and `instructions`, and `runtime` `dispatch_token_file`, under `runtime: tmux` every `provider_keys` file (`file:/abs/path`), and under `runtime: kubernetes` `runtime.kubernetes.kubeconfig`.
 
 - **`launch`** — a pod's or a pane's own launch reads the value, so it reaches a role at that role's next launch; the route answers `next-launch` and names the holder the launch reads the value from.
   Under `runtime: kubernetes` each issue pod records the launch settings its own launch read, in its `legion.dev/launch-settings` annotation, so a pod launched on the old value is brought onto the new one by an update round, once every worker in it has pushed and answered.

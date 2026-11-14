@@ -353,11 +353,24 @@ var Classes = []Row{
 		Also: []string{HolderRuntime}, Secret: true},
 	{Field: "Config.EnvoyTokenFile", Path: "envoy_token_file", Class: ClassRebuild, Holder: HolderEnvoyPublisher,
 		Also: []string{HolderLaunchSpecs}, Secret: true},
-	{Field: "Config.NatsURLs", Path: "nats_urls", Class: ClassRebuild, Holder: HolderNATS, Secret: true},
-	{Field: "Config.NatsNkeySeedFile", Path: "nats_nkey_seed_file", Class: ClassRebuild, Holder: HolderNATS, Secret: true},
+	// NATS's addresses and seeds, and Dispatch's address and bearer, are each held by the
+	// daemon's own client of the service and handed to every launch too: the runtime tells each
+	// launch ENVOY_NATS_URL and DISPATCH_URL (tmux's pane variables, the Sandbox runtime's pod
+	// environment) and carries the Dispatch bearer (the pane token file under tmux, each claim's
+	// Secret under kubernetes), each read when the runtime is built, and the launch specs carry
+	// the pane seed (NATS_NKEY_SEED). Whether there is a pane seed at all is the Sandbox
+	// runtime's too: it decides whether every pod reads the seed from the providers Secret
+	// (internal/daemon's launchSecretNames and providersSecrets). So each row names what carries
+	// it into the next launch beside the holder, as the Envoy rows above do.
+	{Field: "Config.NatsURLs", Path: "nats_urls", Class: ClassRebuild, Holder: HolderNATS,
+		Also: []string{HolderRuntime}, Secret: true},
+	{Field: "Config.NatsNkeySeedFile", Path: "nats_nkey_seed_file", Class: ClassRebuild, Holder: HolderNATS,
+		Also: []string{HolderLaunchSpecs, HolderRuntime}, Secret: true},
 	{Field: "Config.NatsDaemonNkeySeedFile", Path: "nats_daemon_nkey_seed_file", Class: ClassRebuild, Holder: HolderNATS, Secret: true},
-	{Field: "Config.DispatchURL", Path: "dispatch_url", Class: ClassRebuild, Holder: HolderDispatchClient, Secret: true},
-	{Field: "Config.DispatchTokenFile", Path: "dispatch_token_file", Class: ClassRebuild, Holder: HolderDispatchClient, Secret: true},
+	{Field: "Config.DispatchURL", Path: "dispatch_url", Class: ClassRebuild, Holder: HolderDispatchClient,
+		Also: []string{HolderRuntime}, Secret: true},
+	{Field: "Config.DispatchTokenFile", Path: "dispatch_token_file", Class: ClassRebuild, Holder: HolderDispatchClient,
+		Also: []string{HolderRuntime}, Secret: true},
 	// The bearer the operator routes compare against: the API server holds its hash.
 	{Field: "Config.OperatorTokenFile", Path: "operator_token_file", Class: ClassRebuild, Holder: HolderAPIServer, Secret: true},
 	// The settings route's own admission rule: the API server holds the verifier it checks a
@@ -450,8 +463,10 @@ var Classes = []Row{
 	{Field: "Config.InstructionsPath", Path: "instructions", Class: ClassLaunch, Holder: HolderLaunchSpecs},
 	// The provider credentials themselves. One `provider_keys` entry is `<NAME>: <source>`: its
 	// name and its source land in three fields of one entry, so the three share the entry's path.
-	// Boot reads each source once, as the daemon, into a file of its own the runtime hands the
-	// launch, so a change reaches a role at its next launch.
+	// Under tmux the runtime's build reads each source, as the daemon, into a file of its own the
+	// pane's launch reads (internal/daemon's providerKeyFiles), at boot and again whenever the
+	// entries or their files have moved; under kubernetes the runtime hands each pod the key of
+	// the providers Secret. So a change reaches a role at its next launch.
 	{Field: "Config.ProviderKeys", Path: "provider_keys", Class: ClassLaunch, Holder: HolderRuntime, Secret: true},
 	{Field: "ProviderKey.Env", Path: "provider_keys.<NAME>", Class: ClassLaunch, Holder: HolderRuntime, Secret: true},
 	{Field: "ProviderKey.Secret", Path: "provider_keys.<NAME>", Class: ClassLaunch, Holder: HolderRuntime, Secret: true},

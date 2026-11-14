@@ -180,6 +180,14 @@ type overrides struct {
 	// probe stands in for the worker image probe when runtime is replaced under kubernetes: nil is
 	// none. With the Agent Sandbox runtime, the probe is always the real one.
 	probe func(ctx context.Context, rt runtime.Runtime) (bootprobe.ImageReport, error)
+	// buildSandbox stands in for the construction of the Agent Sandbox runtime under kubernetes
+	// (sandboxRuntime): it is handed what each build of the runtime read from the configuration
+	// it was given — the cluster client and the Options (prepareSandbox's runtimeFor,
+	// readSandbox) — and answers the factory that build runs. nil, in production, builds the
+	// real runtime. It is how a test reads what a rebuild read, the Dispatch bearer every pod's
+	// Secret carries and the addresses every pod is told among it, which no runtime built over
+	// a cluster answers a caller.
+	buildSandbox func(sandboxReads) runtimeFactory
 	// workflowTokens replaces the GitHub App token manager in a workflow integration test. The
 	// production daemon always mints through appauth.New.
 	workflowTokens appauth.Tokens
@@ -960,7 +968,7 @@ func prepare(cfg config.Config, log *slog.Logger, o overrides) (plan, error) {
 	if cfg.Runtime.Name == "kubernetes" {
 		err = prepareSandbox(cfg, log, o, reads, &p)
 	} else {
-		err = prepareTmux(cfg, log, o, reads.dispatchToken, reads.tmux, &p)
+		err = prepareTmux(cfg, log, o, reads.tmux, &p)
 	}
 	if err != nil {
 		return plan{}, err
@@ -969,19 +977,16 @@ func prepare(cfg config.Config, log *slog.Logger, o overrides) (plan, error) {
 }
 
 // prepareTmux is what panes on this host need beyond readBoot's: the plugin gate on the OMP
-// invocation readBoot resolved, the Dispatch bearer written where every pane reads it, and the
-// provider keys resolved from secretsd into the files every pane's shim reads. The worker stream is
-// a unix socket under the state directory (decision 2 — no configuration key). The runtime gets a
-// Launcher for each backend readBoot resolved (tmuxReads.launches); the gate and the model-fallback
-// read are Oh My Pi's, since the architect runs on it alone (runtime.Backends).
-func prepareTmux(cfg config.Config, log *slog.Logger, o overrides, dispatchToken string, reads tmuxReads, p *plan) error {
+// invocation readBoot resolved, the provider keys resolved from secretsd or their files into the
+// directory every pane's shim reads (providerKeyFiles), and the runtime's build, which writes the
+// Dispatch bearer where every pane reads it (writePaneDispatchToken) and the provider keys again
+// when they have moved. The worker stream is a unix socket under the state directory (decision 2
+// — no configuration key). The runtime gets a Launcher for each backend readBoot resolved
+// (tmuxReads.launches); the gate and the model-fallback read are Oh My Pi's, since the architect
+// runs on it alone (runtime.Backends).
+func prepareTmux(cfg config.Config, log *slog.Logger, o overrides, reads tmuxReads, p *plan) error {
 	invocation := reads.launches[runtime.BackendOmp].invocation
 	p.gate = o.gate
-	if o.runtime != nil {
-		// A test handed the daemon its runtime: every build, the boot's and every rebuild's,
-		// answers that one, since nothing of it comes from the configuration.
-		p.runtimeFor = func(config.Config) (runtimeFactory, error) { return o.runtime, nil }
-	}
 	p.stream = "unix://" + filepath.Join(cfg.StateDir, streamSocket)
 	launchers := map[runtime.Backend]tmux.Launcher{}
 	for _, backend := range cfg.Backends() {
@@ -990,24 +995,20 @@ func prepareTmux(cfg config.Config, log *slog.Logger, o overrides, dispatchToken
 			continue
 		}
 		launchers[backend] = read.launcher
-		if p.runtimeFor == nil {
+		if o.runtime == nil {
 			read.log(log)
 		}
 	}
-	dispatchTokenFile := ""
-	if dispatchToken != "" {
-		var err error
-		if dispatchTokenFile, err = runtime.WriteDispatchTokenFile(cfg.StateDir, dispatchToken); err != nil {
-			return fmt.Errorf("write the pane Dispatch token file: %w", err)
-		}
-	}
 	// Last of the refusals: resolving a human-tier key may cost a YubiKey tap, which a
-	// configuration refused a line earlier should never have asked for.
-	providerEnvDir, err := config.MaterializeProviderKeys(cfg.ProviderKeys, cfg.StateDir, o.environment(), log)
+	// configuration refused a line earlier should never have asked for. The gate reads the keys
+	// before the runtime is built, so the boot writes them here, and the boot's build finds them
+	// written.
+	keys := &providerKeyFiles{stateDir: cfg.StateDir, environ: o.environment(), log: log}
+	providerEnvDir, err := keys.write(cfg.ProviderKeys)
 	if err != nil {
 		return err
 	}
-	if p.runtimeFor == nil {
+	if o.runtime == nil {
 		env, err := gateEnvironment(os.Environ(), cfg.StateDir, providerEnvDir, cfg.Runtime.Tmux)
 		if err != nil {
 			return err
@@ -1040,19 +1041,112 @@ func prepareTmux(cfg config.Config, log *slog.Logger, o overrides, dispatchToken
 			}
 			return state
 		}
-		// Everything but the configuration — the launchers, the provider key directory, the
-		// Dispatch token file, the gh boot resolved — is this boot's; the rest is read again from
-		// the configuration each build is given, the boot's own included. A configuration that
-		// is not this runtime's is refused rather than built from (ownRuntime), as the Sandbox
-		// build refuses one (readSandbox).
-		p.runtimeFor = func(c config.Config) (runtimeFactory, error) {
-			if err := ownRuntime("tmux", c); err != nil {
-				return nil, err
-			}
-			return tmuxRuntime(c, p.project, launchers, providerEnvDir, dispatchTokenFile, p.tools["gh"], p.repositories.Accepted, log), nil
+	}
+	// Everything but the configuration — the launchers and the gh boot resolved — is this
+	// boot's; the rest is read again from the configuration each build is given, the boot's own
+	// included. The Dispatch bearer and the provider keys are among the rest: each build reads
+	// the bearer from the file the configuration names and writes it again where every pane
+	// reads it, and writes the provider keys again where they have moved (providerKeyFiles), so a
+	// change of `dispatch_token_file` or `provider_keys`, or a rotation of a file either names in
+	// place, reaches the next pane (config.Classes' rows, runtimeHolder.credentials). A
+	// configuration that is not this runtime's is refused rather than built from (ownRuntime), as
+	// the Sandbox build refuses one (readSandbox). A test that handed the daemon its runtime has
+	// every build answer that one, since nothing of it comes from the configuration, once the
+	// panes' files are written.
+	p.runtimeFor = func(c config.Config) (runtimeFactory, error) {
+		if err := ownRuntime("tmux", c); err != nil {
+			return nil, err
 		}
+		dispatchTokenFile, err := writePaneDispatchToken(c)
+		if err != nil {
+			return nil, err
+		}
+		keyDir, err := keys.write(c.ProviderKeys)
+		if err != nil {
+			return nil, err
+		}
+		if o.runtime != nil {
+			return o.runtime, nil
+		}
+		return tmuxRuntime(c, p.project, launchers, keyDir, dispatchTokenFile, p.tools["gh"], p.repositories.Accepted, log), nil
 	}
 	return nil
+}
+
+// writePaneDispatchToken writes the Dispatch bearer c names, read from its file now
+// (readDispatchToken), where every pane reads it (runtime.WriteDispatchTokenFile), and answers
+// that path, every pane's DISPATCH_TOKEN_FILE; "" for a daemon with no Dispatch, which writes
+// none. The file is replaced whole, so a pane reading it while a rebuild writes it reads the old
+// bearer or the new, never part of one (runtime.WriteSecretFiles). It is written before the
+// runtime is built, so a build that then fails leaves the panes of the runtime the daemon keeps
+// reading the bearer the configuration names now, the one the Dispatch client is built on.
+func writePaneDispatchToken(c config.Config) (string, error) {
+	token, err := readDispatchToken(c)
+	if err != nil || token == "" {
+		return "", err
+	}
+	file, err := runtime.WriteDispatchTokenFile(c.StateDir, token)
+	if err != nil {
+		return "", fmt.Errorf("write the pane Dispatch token file: %w", err)
+	}
+	return file, nil
+}
+
+// providerKeyFiles is the directory of provider keys every pane's shim reads
+// (`--provider-env-dir`), as the tmux runtime's builds keep it (config.MaterializeProviderKeys):
+// written at boot, before the plugin gate reads it, and again by each build whose keys have
+// moved since it was last written — a change of `provider_keys`, or a key's file rotated in
+// place (runtimeHolder.credentials) — so the next pane reads the keys the configuration names
+// now. MaterializeProviderKeys resolves every key before it writes any, and replaces each file
+// whole, so a pane launched during a rewrite reads each key old or new, never part of one.
+//
+// A build whose keys have not moved writes nothing. Resolving a secretsd key of the human tier
+// may cost a person a YubiKey tap, and the runtime is built again for every change of a row it
+// holds — its boot build right after the gate's write among them — so a write at every build
+// would ask for a tap over a change that moved no key. A secretsd key's value is no file of this
+// host's, so a change of it inside secretsd alone reaches the panes at the next change of
+// `provider_keys` or the next boot, as it did before the runtime wrote the keys again.
+//
+// Builds never overlap — the boot's runs before any settings change can, and every rebuild runs
+// under the settings holder's lock — so it takes no lock of its own.
+type providerKeyFiles struct {
+	stateDir string
+	environ  []string
+	log      *slog.Logger
+	// written says the directory has been written; keys and files are what it was written from
+	// (the entries, and their files' digest read before the write, so a file rotated during it is
+	// written again at the next build), and dir what MaterializeProviderKeys answered.
+	written bool
+	keys    []config.ProviderKey
+	files   string
+	dir     string
+}
+
+// write writes keys into the directory unless they and their files are what it last wrote, and
+// answers the directory, "" with no keys.
+func (f *providerKeyFiles) write(keys []config.ProviderKey) (string, error) {
+	files := credentialDigest(providerKeyFilesOf(keys)...)
+	if f.written && slices.Equal(keys, f.keys) && files == f.files {
+		return f.dir, nil
+	}
+	dir, err := config.MaterializeProviderKeys(keys, f.stateDir, f.environ, f.log)
+	if err != nil {
+		return "", err
+	}
+	f.written, f.keys, f.files, f.dir = true, slices.Clone(keys), files, dir
+	return dir, nil
+}
+
+// providerKeyFilesOf are the files keys name (`file:/abs/path`), in order; a secretsd key names
+// none.
+func providerKeyFilesOf(keys []config.ProviderKey) []string {
+	var files []string
+	for _, key := range keys {
+		if key.File != "" {
+			files = append(files, key.File)
+		}
+	}
+	return files
 }
 
 // checkPaneRoleOverlays is the boot gate's read of the overlays each role names beyond the
