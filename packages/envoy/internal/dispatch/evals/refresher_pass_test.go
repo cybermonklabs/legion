@@ -268,3 +268,32 @@ func TestTheLoggedZeroFillWritesEveryMissingDayAndNoOther(t *testing.T) {
 	}
 	t.Logf("minutes' zero days %v, cache's %v; %d rows written", minutes, cache, filled)
 }
+
+// TestAPassOverDeliveryInputWithNoProjectSucceeds: the delivery walk begins at the UTC midnight of
+// its first input day whatever else the store holds. A store with delivery settings and a deploy
+// run that started at 08:00, and no project yet (a fresh deployment, or the browser suite's store
+// between a reset and its next seed), is walked from that run's day, and the pass ends with no
+// error. The tester saw such a pass refused in the browser suite's run of the Legion rows: "read
+// the pull requests of 2026-09-27: apply rows read from 2026-09-27T08:00:00Z hold no run of a
+// window from 2026-09-27T00:00:00Z".
+func TestAPassOverDeliveryInputWithNoProjectSucceeds(t *testing.T) {
+	r := newRefresherRig(t)
+	ctx := t.Context()
+	r.exec(t, "remove the rig's one project", `delete from projects`)
+	apply := "Apply"
+	if _, err := delivery.PutSettings(ctx, r.database.Pool, delivery.DeliverySettings{
+		DeployRepo: "acme/deploy", DeployWorkflowPath: ".github/workflows/deploy.yml",
+		ProductionJobNames: []string{"production / apply"}, ProductionApplyStepName: &apply,
+		PRChecksWorkflowPath: ".github/workflows/pr-checks.yml",
+	}, alice); err != nil {
+		t.Fatalf("store the delivery settings: %v", err)
+	}
+	started := refresherToday.AddDate(0, 0, -2).Add(8 * time.Hour)
+	r.exec(t, "store a deploy run that started at 08:00", `
+		insert into delivery_runs (repo, run_id, kind, head_sha, head_commit_at, started_at, created_at, completed_at,
+			conclusion, url, head_branch, event, jobs_complete)
+		values ('acme/deploy', 1, $1, 'abc123', $2::timestamptz, $2::timestamptz, $2::timestamptz,
+			$2::timestamptz + interval '10 minutes', 'success', 'https://github.com/acme/deploy/actions/runs/1', 'main', 'push', true)
+	`, string(delivery.DeliveryRunKindDeploy), started)
+	r.pass(t)
+}
