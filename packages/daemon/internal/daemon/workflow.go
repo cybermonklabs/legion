@@ -315,13 +315,13 @@ func appLoginsAtBoot(ctx context.Context, apps appauth.Logins, log *slog.Logger)
 // token passed asks GitHub only for the review token. A mint asks for what each App's
 // installation is granted of the role's set and says on stderr what it left out (appauth's
 // exchangeGranted), so a permission an account has not approved no longer stops the boot: what
-// does is a repository the installation cannot reach, an installation granted none of the set
-// at all, or GitHub's own trouble lasting past the retries.
+// does is an installation granted none of the role's set, an answer the mint refuses, an App not
+// installed on the owner, or GitHub's own trouble lasting past the retries.
 func mintAtBoot(ctx context.Context, tokens appauth.Tokens, repo ghrepo.Repository, log *slog.Logger) error {
 	return bootprobe.Run(ctx, "GitHub App tokens mint", appMintRetry, log, appAttempt(func(ctx context.Context) error {
 		for _, role := range appauth.Roles {
 			if _, err := tokens.Token(ctx, role, repo); err != nil {
-				return fmt.Errorf("mint %s GitHub App token at boot: %w", role, err)
+				return fmt.Errorf("mint %s GitHub App token at boot for %s: %w", role, repo, err)
 			}
 		}
 		return nil
@@ -397,13 +397,16 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	if err != nil {
 		return nil, err
 	}
-	// A token names the repository it acts on, so the boot proves each App's key on every
-	// repository the mapping serves rather than once per owner: an installation that does not
-	// reach one of them, or that is granted none of the permissions a role's write token asks
-	// for, stops the boot naming the repository and the set, where it would otherwise leave a
-	// role with no gh files at its launch. An installation granted some of the set mints with
-	// what it is granted, and the mint says the rest on stderr (appauth's exchangeGranted), so
-	// one permission awaiting an account's approval costs the role no gh files at all.
+	// A lease is keyed by the repository it is minted for, so the boot mints each App's write
+	// lease for every repository the mapping serves rather than once per owner. No mint names its
+	// repository to GitHub (INFRA-2543), so each App's mints for one owner's repositories all send
+	// that owner's installation the same request, and what stops the boot is about the owner: an
+	// App not installed on it, or an installation granted none of the permissions a role's write
+	// token asks for, stops the boot naming the repository it was minting for (mintAtBoot), where
+	// it would otherwise leave a role with no gh files at its launch. An installation granted some
+	// of the set mints with what it is granted, and the mint says the rest on stderr (appauth's
+	// exchangeGranted), so one permission awaiting an account's approval costs the role no gh
+	// files at all.
 	for _, repo := range w.repositories.Accepted() {
 		if err := mintAtBoot(ctx, tokens, repo, log); err != nil {
 			return nil, err

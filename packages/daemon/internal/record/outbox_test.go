@@ -70,6 +70,9 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 			PullRequest: "sjawhar/legion#42", Prompt: "Read the reviewer's thread before you write anything."},
 		HookPrompt{Hook: "slow-review", Role: claim.RoleReviewer, From: phase.Accepting, To: phase.Reviewing,
 			Count: 2, Counts: map[string]int{"accepting-reviewing": 2}, Prompt: "Say what the round missed."},
+		UpdateAsk{Role: claim.RoleTester, Round: "pod:9d3f0c7a", Pod: "9d3f0c7a", Text: "The daemon must replace the pod that runs this issue's roles."},
+		// The architect's process runs in the pod too, so its ask is a row like a worker's.
+		UpdateAsk{Role: claim.RoleArchitect, Round: "pod:9d3f0c7a", Pod: "9d3f0c7a", Text: "The daemon must replace the pod that runs this issue's roles."},
 		MergeQueueRead{Number: 42, Head: "c0de"},
 		MergeQueueRemoval{Number: 42, Head: "c0de"},
 		MergeQueueRemoval{Number: 42, Head: "c0de", Unread: true},
@@ -214,7 +217,7 @@ func TestPersonHandoverPendingCountsOnlyMarkedStatusRows(t *testing.T) {
 func TestEveryOutboxKindIsInExactlyOneLane(t *testing.T) {
 	every := []OutboxKind{OutboxKindDispatchStatus, OutboxKindDispatchMessage, OutboxKindNotice, OutboxKindControllerNotice, OutboxKindSupervise,
 		OutboxKindGateSeed, OutboxKindLingerClose, OutboxKindIssueSuspend, OutboxKindWorkspaceRemove, OutboxKindIssueBranch,
-		OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound, OutboxKindRoleMessage, OutboxKindPhaseEnded, OutboxKindHookPrompt,
+		OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound, OutboxKindRoleMessage, OutboxKindPhaseEnded, OutboxKindHookPrompt, OutboxKindUpdateAsk,
 		OutboxKindIssueBundle, OutboxKindIssueRelease, OutboxKindGatedStepsPublish, OutboxKindClaimRelease, OutboxKindDesignGatesPublish,
 		OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval}
 	lanes := map[OutboxKind][]OutboxLane{}
@@ -319,6 +322,10 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 		{name: "a hook prompt that counted nothing", payload: HookPrompt{Hook: "back-to-implementing", Role: claim.RoleImplementer, From: phase.Reviewing, To: phase.Implementing, Prompt: "Read the thread."}, reason: "its count is one or more"},
 		{name: "a hook prompt counting backward", payload: HookPrompt{Hook: "back-to-implementing", Role: claim.RoleImplementer, From: phase.Reviewing, To: phase.Implementing, Count: -1, Prompt: "Read the thread."}, reason: "its count is one or more"},
 		{name: "a hook prompt with no words", payload: HookPrompt{Hook: "back-to-implementing", Role: claim.RoleImplementer, From: phase.Reviewing, To: phase.Implementing, Count: 1}, reason: "carries the hook's own words"},
+		{name: "an update ask to no role", payload: UpdateAsk{Round: "pod:9d3f0c7a", Pod: "9d3f0c7a", Text: "Push your work."}, reason: `"" is no role`},
+		{name: "an update ask to the controller", payload: UpdateAsk{Role: claim.RoleController, Round: "pod:9d3f0c7a", Pod: "9d3f0c7a", Text: "Push your work."}, reason: `"controller" is no role`},
+		{name: "an update ask with no round", payload: UpdateAsk{Role: claim.RoleImplementer, Pod: "9d3f0c7a", Text: "Push your work."}, reason: "names the round it asks for"},
+		{name: "an update ask with no text", payload: UpdateAsk{Role: claim.RoleImplementer, Round: "pod:9d3f0c7a", Pod: "9d3f0c7a"}, reason: "carries the text the sweep built"},
 		{name: "a merge-queue read of no pull request", payload: MergeQueueRead{Head: "c0de"}, reason: "a merge-queue read names the pull request it reads and the head"},
 		{name: "a merge-queue read of a negative pull request", payload: MergeQueueRead{Number: -42, Head: "c0de"}, reason: "a merge-queue read names the pull request it reads and the head"},
 		{name: "a merge-queue read with no head", payload: MergeQueueRead{Number: 42}, reason: "a merge-queue read names the pull request it reads and the head"},
@@ -415,6 +422,8 @@ func TestDecodeOutboxPayloadRefusesInvalidRows(t *testing.T) {
 		{name: "a hook prompt to an architect", row: OutboxRow{ID: 55, Kind: OutboxKindHookPrompt, Payload: json.RawMessage(`{"hook":"back-to-implementing","role":"architect","from":"reviewing","to":"implementing","count":1,"counts":{"reviewing-implementing":1},"prompt":"Read the thread."}`)}, reason: "never to an architect"},
 		{name: "a hook prompt on a move forward", row: OutboxRow{ID: 56, Kind: OutboxKindHookPrompt, Payload: json.RawMessage(`{"hook":"back-to-implementing","role":"reviewer","from":"implementing","to":"reviewing","count":1,"counts":{},"prompt":"Read the thread."}`)}, reason: "is no move back"},
 		{name: "a hook prompt with an unknown field", row: OutboxRow{ID: 57, Kind: OutboxKindHookPrompt, Payload: json.RawMessage(`{"hook":"back-to-implementing","role":"implementer","from":"reviewing","to":"implementing","count":1,"counts":{"reviewing-implementing":1},"prompt":"Read the thread.","cap":2}`)}, reason: "unknown field"},
+		{name: "an update ask with no round", row: OutboxRow{ID: 58, Kind: OutboxKindUpdateAsk, Payload: json.RawMessage(`{"role":"tester","pod":"9d3f0c7a","text":"Push your work."}`)}, reason: "names the round it asks for"},
+		{name: "an update ask with an unknown field", row: OutboxRow{ID: 59, Kind: OutboxKindUpdateAsk, Payload: json.RawMessage(`{"role":"tester","round":"pod:9d3f0c7a","pod":"9d3f0c7a","text":"Push your work.","reasons":"image a, now b"}`)}, reason: "unknown field"},
 		{name: "a merge-queue read with no head", row: OutboxRow{ID: 58, Kind: OutboxKindMergeQueueRead, Payload: json.RawMessage(`{"number":42}`)}, reason: "a merge-queue read names the pull request it reads and the head"},
 		{name: "a merge-queue read of no pull request", row: OutboxRow{ID: 59, Kind: OutboxKindMergeQueueRead, Payload: json.RawMessage(`{"number":0,"head":"c0de"}`)}, reason: "a merge-queue read names the pull request it reads and the head"},
 		{name: "a merge-queue removal of no pull request", row: OutboxRow{ID: 60, Kind: OutboxKindMergeQueueRemoval, Payload: json.RawMessage(`{"head":"c0de"}`)}, reason: "a merge-queue removal names the pull request that left the queue and the head"},
