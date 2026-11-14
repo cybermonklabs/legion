@@ -29,11 +29,12 @@ import { asUser } from "./users";
  * names. A bare address and a link whose text is its own address — the form a document stores an
  * autolink in — both read as the target's title in the live editor, in a past version of the
  * same document, in a rendered comment, in that comment's reply where the Inbox draws it, and
- * in an inert one-line preview; a link whose text its author wrote keeps those words; and an
+ * in a one-line preview; a link whose text its author wrote keeps those words; and an
  * address whose target does not exist reads as the address, since there is no title to read it
  * as.
  *
- * The inert one-line preview is read on the Answers page. The Replies page carried it until
+ * The one-line preview is read on the Answers page, whose row is a record and so draws live
+ * links. The Replies page carried it until
  * INFRA-450 deleted that page, and the Inbox that took its rows draws a thread whole with live
  * links rather than a preview of it, so the preview a reader still meets is an answered ask's
  * question (`answeredQuestionPreview`).
@@ -95,7 +96,7 @@ function forms(kind: TargetKind, target: Target): readonly string[] {
  * version; then an anchored comment writing the bare and self-addressed forms and the missing
  * addresses; then, per form and per missing address, a thread whose reply is that text alone -
  * which the Inbox lists as a Reply row - and an ask whose question is that same text, answered
- * by the reader so the Answers page draws its inert preview.
+ * by the reader so the Answers page draws its one-line preview.
  */
 async function seedTitles(): Promise<Seeded> {
   const world = await seedReferenceWorld();
@@ -213,7 +214,7 @@ function missingAnswered(page: Page, seeded: Seeded): Promise<unknown> {
 }
 
 for (const kind of KINDS) {
-  test(`a bare address and a link whose text is its own address to the ${kind.toLowerCase()} read as its title in the live editor, a past version, a comment, its reply on the Inbox and an inert one-line preview`, async ({
+  test(`a bare address and a link whose text is its own address to the ${kind.toLowerCase()} read as its title in the live editor, a past version, a comment, its reply on the Inbox and a one-line preview`, async ({
     browser,
   }, testInfo) => {
     const seeded = await seedTitles();
@@ -261,15 +262,16 @@ for (const kind of KINDS) {
         );
       }
 
-      // The inert one-line preview, which the Answers page carries now that the Replies page
-      // is gone: each form reads as the title, with no link inside it.
+      // The one-line preview the Answers page carries now that the Replies page is gone. The
+      // row is a record a reader reads (`DISPATCH_READING_SURFACES`'s `answers-subject`), so
+      // its references are live links, where a preview inside a control - the collapsed card
+      // above - draws them as spans.
       await page.goto("/answers");
       for (const text of [target.address, `[${target.address}](${target.address})`]) {
         const preview = answeredQuestionPreview(page, seeded.written.get(text)?.ask ?? "");
-        await expect(preview.locator(`[data-dispatch-ref="${target.address}"]`)).toHaveText(
-          target.title
-        );
-        await expect(preview.locator("a")).toHaveCount(0);
+        const link = preview.locator(`a[data-dispatch-ref="${target.address}"]`);
+        await expect(link).toHaveText(target.title);
+        await expect(link).toHaveAttribute("href", /^\//u);
       }
     } finally {
       await context.close();
@@ -311,14 +313,42 @@ test("a link its author worded keeps its words in the document, and an address w
     await answered;
     await expectWordsAndAddresses(documentEditor(page), seeded);
 
-    // The comment's one-line preview, on its collapsed card, and the comment itself.
+    // The comment's one-line preview, on its collapsed card, and the comment itself: each missing
+    // address is its words with no link (R8), beside a present target in the same comment that
+    // still reads as its title and, in the comment itself, links.
+    const present = world.targets.Issue;
     const collapsed = await collapsedMarginThread(page, testInfo.project.name, seeded.comment);
+    await expect(collapsed.locator(`[data-dispatch-ref="${present.address}"]`)).toHaveText([
+      present.title,
+      present.title,
+    ]);
     for (const { address } of seeded.missing) {
-      await expect(collapsed.locator(`[data-dispatch-ref="${address}"]`)).toHaveText(address);
+      await expectWordsWithNoLink(collapsed, address);
     }
     const card = await openMarginThread(page, testInfo.project.name, seeded.comment);
+    await expect(card.locator(`a[data-dispatch-ref="${present.address}"]`)).toHaveText([
+      present.title,
+      present.title,
+    ]);
     for (const { address } of seeded.missing) {
-      await expect(card.locator(`a[data-dispatch-ref="${address}"]`)).toHaveText(address);
+      await expectWordsWithNoLink(card, address);
+    }
+
+    // A reply that is nothing but the address, where a reader meets it on the Inbox: the same
+    // words with no link, while a reply naming a present target links.
+    await openInboxReplies(page);
+    const presentReply = seeded.written.get(present.address);
+    await expect(
+      inboxReplyTurn(page, presentReply?.thread ?? "", presentReply?.reply ?? "").locator(
+        `a[data-dispatch-ref="${present.address}"]`
+      )
+    ).toHaveText(present.title);
+    for (const { address } of seeded.missing) {
+      const where = seeded.written.get(address);
+      await expectWordsWithNoLink(
+        inboxReplyTurn(page, where?.thread ?? "", where?.reply ?? ""),
+        address
+      );
     }
 
     const pastAnswered = missingAnswered(page, seeded);
@@ -326,17 +356,31 @@ test("a link its author worded keeps its words in the document, and an address w
     await pastAnswered;
     await expectWordsAndAddresses(page.getByTestId("version-view"), seeded);
 
-    // The inert one-line preview shows each missing address as written, with no link in it.
-    // The Answers page carries it now that the Replies page is gone.
+    // The same preview for an address whose target is missing: it reads as written, since
+    // there is no title to read it as.
     const answersAnswered = missingAnswered(page, seeded);
     await page.goto("/answers");
     await answersAnswered;
     for (const { address } of seeded.missing) {
       const preview = answeredQuestionPreview(page, seeded.written.get(address)?.ask ?? "");
-      await expect(preview.locator(`[data-dispatch-ref="${address}"]`)).toHaveText(address);
-      await expect(preview.locator("a")).toHaveCount(0);
+      await expectWordsWithNoLink(preview, address);
     }
   } finally {
     await context.close();
   }
 });
+
+/** Checks that `scope` shows `address` as its writer's words with no link: drawn as a reference
+ *  whose target does not exist (`data-dispatch-missing`), carrying no `href`, and no reference a
+ *  hover card or a reader takes for one. It asks of the reference itself rather than of every link
+ *  whose name is the address, since a host that is itself a link - an Inbox row's line, which
+ *  opens its thread - is named by the very words the reply wrote. */
+async function expectWordsWithNoLink(scope: Locator, address: string): Promise<void> {
+  const words = scope.locator(`[data-dispatch-missing="${address}"]`);
+  await expect(words.first()).toHaveText(address);
+  for (const each of await words.all()) {
+    await expect(each).toHaveText(address);
+    await expect(each).not.toHaveAttribute("href");
+  }
+  await expect(scope.locator(`[data-dispatch-ref="${address}"]`)).toHaveCount(0);
+}

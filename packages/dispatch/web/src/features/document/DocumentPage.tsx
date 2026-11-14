@@ -67,6 +67,8 @@ export function DocumentPage(): ReactNode {
   const query = new URLSearchParams(location.search);
   const highlightTerm = firstHighlightTerm(query.get("q") ?? "");
   const project = documentRoute?.project;
+  // The title bar holds no markup, so a document's name goes in as the characters it is; the
+  // reading list's `document-page-title` (`DISPATCH_READING_SURFACES`) says why.
   useDocumentTitle(
     artifact.data === undefined || project === undefined
       ? "Document · Dispatch"

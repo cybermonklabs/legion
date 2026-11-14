@@ -8,7 +8,7 @@ import { requestFor, type SentRequest } from "./send-request";
 const refused: SentRequest = {
   anchor: undefined,
   ask: { multiple: false, options: [], urgency: "med" },
-  draft: { body: "Status please", mentions: [], replacement: "" },
+  draft: { body: "Status please", replacement: "" },
   edit: undefined,
   kind: "comment",
   owner: { kind: "session", sessionId: "planner-session" },
@@ -35,15 +35,13 @@ test("an unedited Retry after Stop trying or an interrupted reload is the refuse
   }
 });
 
-// After Stop trying, an edit that leaves the message on the wire what it was - here a mention the
-// session message never carries - is still that one write, under its key; an edit of the words
-// is another message, under a key of its own.
+// After Stop trying, an edit that leaves the message on the wire what it was - here a
+// suggestion's replacement, which a session message never carries - is still that one write,
+// under its key; an edit of the words is another message, under a key of its own.
 test("an edited Retry after Stop trying keeps the key only while the wire message is the same", () => {
   const stopped = new SendStoppedError();
   const sameWire = requestFor(refused, stopped, {
-    ...shown({
-      mentions: [{ end: 8, start: 0, target: "session:planner-session", text: "Planner" }],
-    }),
+    ...shown({ replacement: "The replacement it would suggest" }),
     pickedDelivery: "aside",
   });
   expect(sameWire.sendKey).toBe("send-1");

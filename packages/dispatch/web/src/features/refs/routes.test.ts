@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 
 import { artifactVersionPath } from "../../api/client";
-import type { DispatchReferenceRoute } from "./routes";
+import type { DispatchReferenceRoute, PagedReferenceRoute } from "./routes";
 import {
   buildDispatchReference,
   buildInboxPath,
@@ -22,6 +22,7 @@ import {
   parseNodeReference,
   parseProjectPath,
   pictureReference,
+  referenceHref,
   referenceRouteFromHref,
   routeHasMargin,
   routeIsInbox,
@@ -33,6 +34,16 @@ import { referenceTargetKind } from "./target-id";
 function browserPath(path: string): string {
   const url = new URL(path, "https://dispatch.test/");
   return `${url.pathname}${url.search}`;
+}
+
+/** `route` as a reference that opens a page of this dashboard, which every reference read back
+ *  below is: the builder takes no person (`PagedReferenceRoute`), so the kind is ruled out once
+ *  here rather than at each path a test checks. */
+function paged(route: DispatchReferenceRoute): PagedReferenceRoute {
+  if (route.kind === "person") {
+    throw new Error(`${buildDispatchReference(route)} opens no page`);
+  }
+  return route;
 }
 
 test("artifact references normalize to the plural browser route", () => {
@@ -175,25 +186,29 @@ test("a pinned block reference round-trips with its pin, and opens the version i
   expect(referenceTargetKind(pinned)).toBe("block");
   expect(shortForm(pinned)).toBe("CORE-1 notes-md block v2");
   // A version's stored text holds no block ids, so a pinned block opens the version itself.
-  expect(buildReferencePath(pinned)).toBe("/issues/CORE-1/artifacts/notes-md?v=2");
+  expect(buildReferencePath(paged(pinned))).toBe("/issues/CORE-1/artifacts/notes-md?v=2");
 
   const document = parseDispatchReference("dispatch://CORE/artifact/handbook-md#b-p1@v7");
   if (document === undefined) throw new Error("the pinned project reference did not parse");
   expect(buildDispatchReference(document)).toBe("dispatch://CORE/artifact/handbook-md#b-p1@v7");
-  expect(buildReferencePath(document)).toBe("/projects/CORE/documents/handbook-md?version=7");
+  expect(buildReferencePath(paged(document))).toBe(
+    "/projects/CORE/documents/handbook-md?version=7"
+  );
 
   // A spec keeps its versions under its own slug: with it, the version; without it, the live spec
   // at the block.
   const spec = parseDispatchReference("dispatch://CORE-1/spec#b-p1@v3");
   if (spec === undefined) throw new Error("the pinned spec reference did not parse");
   expect(buildDispatchReference(spec)).toBe("dispatch://CORE-1/spec#b-p1@v3");
-  expect(buildReferencePath(spec, "core-1-md")).toBe("/issues/CORE-1/artifacts/core-1-md?v=3");
-  expect(buildReferencePath(spec)).toBe("/issues/CORE-1/spec#b-p1");
+  expect(buildReferencePath(paged(spec), "core-1-md")).toBe(
+    "/issues/CORE-1/artifacts/core-1-md?v=3"
+  );
+  expect(buildReferencePath(paged(spec))).toBe("/issues/CORE-1/spec#b-p1");
 
   // Unpinned, a block opens the live document at the block.
   const live = parseDispatchReference("dispatch://CORE-1/spec#b-p1");
   if (live === undefined) throw new Error("the block reference did not parse");
-  expect(buildReferencePath(live, "core-1-md")).toBe("/issues/CORE-1/spec#b-p1");
+  expect(buildReferencePath(paged(live), "core-1-md")).toBe("/issues/CORE-1/spec#b-p1");
   expect(referenceTargetKind(live)).toBe("block");
 });
 
@@ -204,14 +219,14 @@ test("a pin past what a number holds exactly is written back digit for digit, as
   if (pinned === undefined) throw new Error("the largest pin did not parse");
   expect(buildDispatchReference(pinned)).toBe(reference);
   expect(shortForm(pinned)).toBe("CORE-1 spec block v9223372036854775807");
-  expect(buildReferencePath(pinned, "core-1-md")).toBe(
+  expect(buildReferencePath(paged(pinned), "core-1-md")).toBe(
     "/issues/CORE-1/artifacts/core-1-md?v=9223372036854775807"
   );
   const document = parseDispatchReference(
     "dispatch://CORE/artifact/handbook-md#b-p1@v9223372036854775807"
   );
   if (document === undefined) throw new Error("the largest project pin did not parse");
-  expect(buildReferencePath(document)).toBe(
+  expect(buildReferencePath(paged(document))).toBe(
     "/projects/CORE/documents/handbook-md?version=9223372036854775807"
   );
   // One more names nothing, nor does a pin a number would print as `1e+21`.
@@ -318,7 +333,7 @@ test("a block of a comment or a message is named under its item, as the server r
   expect(pinned).toEqual({ ...commentBlock, block: { id: "b2", pin: "1" } });
   if (pinned === undefined) throw new Error("the pinned comment block did not parse");
   expect(buildDispatchReference(pinned)).toBe(`${commentReference}@v1`);
-  expect(buildReferencePath(pinned)).toBe(`/issues/CORE-1/comments/${comment}#b-b2`);
+  expect(buildReferencePath(paged(pinned))).toBe(`/issues/CORE-1/comments/${comment}#b-b2`);
   expect(shortForm(pinned)).toBe("CORE-1 comment block v1");
 
   const messageBlock: DispatchReferenceRoute = {
@@ -371,7 +386,7 @@ test("a block of a comment or a message is named under its item, as the server r
   const projectPinned = parseDispatchReference(`${projectReference}@v3`);
   if (projectPinned === undefined)
     throw new Error("the pinned project comment block did not parse");
-  expect(buildReferencePath(projectPinned)).toBe(
+  expect(buildReferencePath(paged(projectPinned))).toBe(
     `/projects/CORE/documents/handbook-md?comment=${comment}`
   );
   expect(shortForm(projectBlock)).toBe("CORE/handbook-md comment block");
@@ -428,7 +443,7 @@ test("a part of an ask is named under the ask, as the server reads it", () => {
   expect(pinned).toEqual({ ...askBlock, block: { id: "b3", pin: "2" } });
   if (pinned === undefined) throw new Error("the pinned ask part did not parse");
   expect(buildDispatchReference(pinned)).toBe(`${askReference}@v2`);
-  expect(buildReferencePath(pinned)).toBe(`/issues/CORE-1/asks/${ask}#b-b3`);
+  expect(buildReferencePath(paged(pinned))).toBe(`/issues/CORE-1/asks/${ask}#b-b3`);
   expect(shortForm(pinned)).toBe("CORE-1 ask block v2");
 
   const projectBlock: DispatchReferenceRoute = {
@@ -612,16 +627,12 @@ test("agent references keep the dispatch://KEY/log grammar for the conversation"
     key: "CORE-1",
     kind: "conversation",
   });
-  expect(buildDispatchReference({ key: "CORE-1", kind: "conversation" })).toBe(
-    "dispatch://CORE-1/log"
-  );
 });
 
 test("the activity tab owns its path, its reference and its short form", () => {
   const route = { key: "CORE-1", kind: "activity" as const };
 
   expect(parseDispatchReference("dispatch://CORE-1/activity")).toEqual(route);
-  expect(buildDispatchReference(route)).toBe("dispatch://CORE-1/activity");
   expect(shortForm(route)).toBe("CORE-1 activity");
   expect(parseIssuePath("/issues/CORE-1/activity")).toEqual(route);
   expect(buildIssuePath(route)).toBe(browserPath("issues/CORE-1/activity"));
@@ -634,7 +645,6 @@ test("the collaborators tab owns its path, its reference and its short form", ()
   const route = { key: "CORE-1", kind: "collaborators" as const };
 
   expect(parseDispatchReference("dispatch://CORE-1/collaborators")).toEqual(route);
-  expect(buildDispatchReference(route)).toBe("dispatch://CORE-1/collaborators");
   expect(shortForm(route)).toBe("CORE-1 collaborators");
   expect(parseIssuePath("/issues/CORE-1/collaborators")).toEqual(route);
   expect(buildIssuePath(route)).toBe(browserPath("issues/CORE-1/collaborators"));
@@ -650,7 +660,6 @@ test("the verification tab owns its path, its reference and its short form", () 
   const route = { key: "CORE-1", kind: "verification" as const };
 
   expect(parseDispatchReference("dispatch://CORE-1/verification")).toEqual(route);
-  expect(buildDispatchReference(route)).toBe("dispatch://CORE-1/verification");
   expect(shortForm(route)).toBe("CORE-1 verification");
   expect(parseIssuePath("/issues/CORE-1/verification")).toEqual(route);
   expect(buildIssuePath(route)).toBe(browserPath("issues/CORE-1/verification"));
@@ -666,13 +675,31 @@ test("the plan tab owns its path, its reference and its short form", () => {
   const route = { key: "CORE-1", kind: "plan" as const };
 
   expect(parseDispatchReference("dispatch://CORE-1/plan")).toEqual(route);
-  expect(buildDispatchReference(route)).toBe("dispatch://CORE-1/plan");
   expect(shortForm(route)).toBe("CORE-1 plan");
   expect(parseIssuePath("/issues/CORE-1/plan")).toEqual(route);
   expect(buildIssuePath(route)).toBe(browserPath("issues/CORE-1/plan"));
   expect(
     referenceRouteFromHref("https://dispatch.test/issues/CORE-1/plan", "https://dispatch.test")
   ).toEqual(route);
+});
+
+// The seven forms a tab was once written as - `dispatch://CORE-1/verification` and its six
+// siblings - are no reference the server reads: only `spec`, `artifact/<slug>`, `ask/<id>`,
+// `comment/<id>` and `message/<id>` follow an issue key in the grammar both readers read. A tab
+// is written as the issue it is a view of, which is what it resolves to anyway.
+test.each([
+  "verification",
+  "plan",
+  "activity",
+  "children",
+  "artifacts",
+  "collaborators",
+] as const)("the %s tab is written as its issue", (kind) => {
+  expect(buildDispatchReference({ key: "CORE-1", kind })).toBe("dispatch://CORE-1");
+});
+
+test("the conversation, read as `log` and `conversation` alike, is written as its issue", () => {
+  expect(buildDispatchReference({ key: "CORE-1", kind: "conversation" })).toBe("dispatch://CORE-1");
 });
 
 // The Decisions tab is a view of the issue's decisions.md: its page is the tab's own route, and
@@ -796,7 +823,7 @@ test("an agent conversation's artifact round-trips through its reference, its pa
   const written = parseDispatchReference("dispatch://agent/ses%2F1/artifact/shot-png");
   expect(written).toEqual({ kind: "agent-artifact", session: "ses%2F1", slug: "shot-png" });
   if (written === undefined) throw new Error("the written id did not parse");
-  expect(buildReferencePath(written)).toBe("/agents/ses%252F1/artifacts/shot-png");
+  expect(buildReferencePath(paged(written))).toBe("/agents/ses%252F1/artifacts/shot-png");
   expect(parseAgentArtifactPath("/agents/ses%252F1/artifacts/shot-png")).toEqual({
     kind: "agent-artifact",
     session: "ses%2F1",
@@ -814,7 +841,6 @@ test("an agent artifact names a session that holds no slash, query, fragment or 
     "dispatch://agent//artifact/shot-png",
     "dispatch://agent/ses-1/artifact/Shot-png",
     "dispatch://agent/ses-1/artifact/shot-png@v0",
-    "dispatch://agent/ses-1",
   ]) {
     expect(parseDispatchReference(reference)).toBeUndefined();
   }
@@ -822,6 +848,68 @@ test("an agent artifact names a session that holds no slash, query, fragment or 
     expect(parseAgentArtifactPath(path)).toBeUndefined();
   }
   expect(parseAgentArtifactPath("/agents/ses-1/artifacts/shot-png", "?v=0")).toBeUndefined();
+});
+
+test("an agent, a role and a person are the three parties a reference names", () => {
+  const agent = { kind: "agent-session" as const, session: "ses-1" };
+  expect(parseDispatchReference("dispatch://agent/ses-1")).toEqual(agent);
+  expect(buildDispatchReference(agent)).toBe("dispatch://agent/ses-1");
+  expect(buildReferencePath(agent)).toBe("/agents/ses-1/live");
+  expect(referenceTargetKind(agent)).toBe("session");
+  expect(shortForm({ ...agent, session: "0123456789abcdef" })).toBe("agent/session:01234567…");
+
+  const role = { kind: "role" as const, role: "reviewer" };
+  expect(parseDispatchReference("dispatch://role/reviewer")).toEqual(role);
+  expect(buildDispatchReference(role)).toBe("dispatch://role/reviewer");
+  expect(buildReferencePath(role)).toBe("/agents?role=reviewer");
+  expect(referenceTargetKind(role)).toBe("role");
+  expect(shortForm(role)).toBe("role/reviewer");
+
+  // No page shows a person, so there is no href for one: a caller draws the words rather than
+  // a link to nowhere, and the path builder takes no person at all.
+  const person = { kind: "person" as const, login: "alice@example.com" };
+  expect(parseDispatchReference("dispatch://person/alice@example.com")).toEqual(person);
+  expect(buildDispatchReference(person)).toBe("dispatch://person/alice@example.com");
+  expect(referenceHref(person)).toBeUndefined();
+  expect(referenceTargetKind(person)).toBe("person");
+  expect(shortForm(person)).toBe("person/alice@example.com");
+});
+
+// A party is named as it is stored: a session id as written, a role token in the charset a
+// `role:` delivery route takes, and a login as the lowercased email the people table holds.
+test("a party written any other way names nobody", () => {
+  for (const reference of [
+    "dispatch://agent",
+    "dispatch://agent/",
+    "dispatch://role",
+    "dispatch://role/",
+    "dispatch://role/Reviewer",
+    "dispatch://role/sre_oncall",
+    "dispatch://person",
+    "dispatch://person/alice",
+    "dispatch://person/Alice@example.com",
+    "dispatch://person/alice@example",
+  ]) {
+    expect(parseNodeReference(reference)).toBeUndefined();
+  }
+});
+
+test("a component of a project's architecture opens the pane that shows it", () => {
+  const component = { id: "dispatch-server", kind: "component" as const, project: "CORE" };
+  expect(parseDispatchReference("dispatch://CORE/component/dispatch-server")).toEqual(component);
+  expect(buildDispatchReference(component)).toBe("dispatch://CORE/component/dispatch-server");
+  expect(buildReferencePath(component)).toBe(
+    "/projects/CORE/architecture?component=dispatch-server"
+  );
+  expect(referenceTargetKind(component)).toBe("component");
+  expect(shortForm(component)).toBe("CORE/component/dispatch-server");
+  for (const reference of [
+    "dispatch://CORE/component/",
+    "dispatch://CORE/component/-web",
+    "dispatch://CORE/component/Dispatch_Server",
+  ]) {
+    expect(parseNodeReference(reference)).toBeUndefined();
+  }
 });
 
 test("an artifact of an agent's conversation is referenced under its session", () => {
@@ -906,7 +994,7 @@ test("a picture and an explicit link naming a long-named document are that docum
   expect(parseDispatchReference(target)).toBeUndefined();
   const link = nodeRouteFromHref(target, "https://dispatch.test");
   expect(link).toEqual({ key: "CORE-1", kind: "artifact", slug });
-  expect(link === undefined ? undefined : buildReferencePath(link)).toBe(
+  expect(link === undefined ? undefined : buildReferencePath(paged(link))).toBe(
     `/issues/CORE-1/artifacts/${slug}`
   );
 });

@@ -162,6 +162,9 @@ export function useAskAnswerForm({
   // pressed it are the decline's too, and are written once beside the hold itself.
   const mutation = useOutstandingAnswerWrite({
     askId: ask.id,
+    // The question goes in as the characters its author wrote: a write's label is one line the
+    // Writes indicator reads as text, and the reading list's `write-label`
+    // (`DISPATCH_READING_SURFACES`) says why.
     label: () => `Answer to “${ask.question}”`,
     write: (input: AnswerAskInput, bounds) => answer(ask.id, input, bounds),
     // A change to an answer the server has already recorded leaves the Inbox alone: the ask has
@@ -223,6 +226,7 @@ export function useAskAnswerForm({
   });
   const clarification = useKeyedWrite({
     inline: true,
+    // The same line of the Writes indicator: `write-label` again (see above).
     label: () => `Question back on “${ask.question}”`,
     write: (text: string, bounds) => {
       if (ask.issue_key === null) {

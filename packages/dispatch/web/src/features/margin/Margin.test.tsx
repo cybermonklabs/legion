@@ -225,6 +225,60 @@ test("clicking a document mark opens its thread in the margin and stays on the d
   }
 });
 
+// A document renamed to a slug-shaped name keeps its first slug, and its page opens at its current
+// name too (`artifactAtAddress`): the margin there shows that document's comments, as the page
+// shows the document, and none of another document's.
+test("the margin of a document opened at its current name, not its slug, lists that document's comments", async () => {
+  const notes = {
+    ...specArtifact,
+    id: "artifact-notes",
+    name: "launch-notes",
+    primary: false,
+    ref_key: "CORE-1/notes-md",
+    slug: "notes-md",
+  };
+  const notesComment: Comment = {
+    ...comment,
+    anchor: comment.anchor === null ? null : { ...comment.anchor, artifact_id: notes.id },
+    body: "A note on the notes.",
+    id: "comment-notes",
+  };
+  const queryClient = new QueryClient({
+    defaultOptions: {
+      mutations: { retry: false },
+      queries: { retry: false, staleTime: Number.POSITIVE_INFINITY },
+    },
+  });
+  queryClient.setQueryData(["issue", issue.key], {
+    ...issue,
+    artifacts: [...(issue.artifacts ?? []), notes],
+  });
+  queryClient.setQueryData(["inbox"], []);
+  queryClient.setQueryData(["asks", issue.key], []);
+  queryClient.setQueryData(["user-state"], {});
+  queryClient.setQueryData(["comments", issue.key], [comment, notesComment]);
+  const restoreMatchMedia = stubMatchMedia(false);
+  const view = render(
+    <MemoryRouter
+      initialEntries={[buildIssuePath({ key: issue.key, kind: "artifact", slug: "launch-notes" })]}
+    >
+      <QueryClientProvider client={queryClient}>
+        <MarginProvider>
+          <Margin />
+        </MarginProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+
+  try {
+    await screen.findByTestId(`margin-comment-${notesComment.id}`);
+    expect(screen.queryByTestId(`margin-comment-${comment.id}`)).toBeNull();
+  } finally {
+    view.unmount();
+    restoreMatchMedia();
+  }
+});
+
 test("focusItemForMark opens the matching thread in the compact sheet", async () => {
   const user = userEvent.setup();
   const queryClient = new QueryClient({

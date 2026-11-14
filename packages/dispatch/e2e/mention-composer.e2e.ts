@@ -21,8 +21,9 @@ import {
   retryCommentDelivery,
 } from "./api";
 import { barAction, documentEditor, selectEditorText } from "./editor";
+import { pickReference } from "./ref-picker";
 import { holdPosts, refusePosts, WRITE_REFUSED_TEXT } from "./sends";
-import { expect, type Locator, type Page, test } from "./test";
+import { expect, type Page, test } from "./test";
 import { asUser } from "./users";
 
 const planner: FakeSession = {
@@ -36,14 +37,6 @@ const planner: FakeSession = {
   session_id: "planner",
   title: "Planner",
 };
-
-async function selectMention(page: Page, field: Locator, text: string, option: string) {
-  await field.fill(text);
-  await page
-    .getByRole("listbox", { name: "Mention suggestions" })
-    .getByRole("option", { name: option })
-    .click();
-}
 
 async function issueCommentPayload(page: Page, issueKey: string): Promise<Record<string, unknown>> {
   const response = page.waitForResponse(
@@ -112,11 +105,10 @@ test("E1 and E2: explicit role mentions deliver once while /btw without a mentio
     const page = await alice.newPage();
     await page.goto(`/issues/${issue.key}/conversation`);
     const field = page.getByRole("form", { name: "Comment composer" }).getByLabel("Comment");
-    await selectMention(page, field, "/btw @", "role-x");
+    await pickReference(field, "/btw @", "role-x");
     expect(await issueCommentPayload(page, issue.key)).toEqual({
-      body: "@role-x",
+      body: "[role-x](dispatch://role/role-x)",
       delivery: "btw",
-      mentions: [{ target: "role:role-x" }],
     });
     await expect.poll(() => getSentMessages()).toMatchObject([{ target_session: "planner" }]);
 
@@ -145,7 +137,7 @@ test("E2b: a project-document comment preserves the canonical mention and strips
     await selectEditorText(page, "Mention this");
     await barAction(page, "Comment");
     const composer = page.getByRole("form", { name: "Comment composer" });
-    await selectMention(page, composer.getByLabel("Comment"), "/aside @", "Planner");
+    await pickReference(composer.getByLabel("Comment"), "/aside @", "Planner");
     const response = page.waitForResponse(
       (candidate) =>
         candidate.request().method() === "POST" &&
@@ -154,18 +146,15 @@ test("E2b: a project-document comment preserves the canonical mention and strips
     );
     await composer.getByRole("button", { name: "Send" }).click();
     expect((await response).request().postDataJSON()).toMatchObject({
-      body: "@Planner",
+      body: "[Planner](dispatch://agent/planner)",
       delivery: "aside",
-      mentions: [{ target: "session:planner" }],
     });
   } finally {
     await alice.close();
   }
 });
 
-test("a conversation send holds Reply and refuses Ctrl+K from the same task", async ({
-  browser,
-}) => {
+test("a conversation send holds Reply from the same task", async ({ browser }) => {
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "Held conversation" });
   await createComment(issue.key, { body: "Earlier comment" });
@@ -181,19 +170,13 @@ test("a conversation send holds Reply and refuses Ctrl+K from the same task", as
     await field.fill("Status please");
     await form.evaluate((node) => {
       const sendButton = node.querySelector<HTMLButtonElement>('button[type="submit"]');
-      const field = node.querySelector<HTMLTextAreaElement>('textarea[aria-label="Comment"]');
-      if (sendButton === null || field === null) throw new Error("expected conversation controls");
+      if (sendButton === null) throw new Error("expected conversation controls");
       sendButton.click();
-      field.dispatchEvent(
-        new KeyboardEvent("keydown", { bubbles: true, cancelable: true, ctrlKey: true, key: "k" })
-      );
     });
 
     await expect(reply).toBeDisabled();
-    await expect(page.getByRole("dialog", { name: "Reference picker" })).toHaveCount(0);
     send.release();
     await expect(field).toHaveValue("");
-    await expect(page.getByRole("dialog", { name: "Reference picker" })).toHaveCount(0);
   } finally {
     await alice.close();
   }
@@ -521,7 +504,7 @@ test("E7b and Retry: removing a prefilled mention creates a plain reply, and ret
       .filter({ hasText: "Parent" });
     await card.getByRole("button", { name: "Reply" }).click();
     const composer = page.getByRole("form", { name: "Comment composer" });
-    await expect(composer.getByLabel("Comment")).toHaveValue("@Planner");
+    await expect(composer.getByLabel("Comment")).toHaveValue("[Planner](dispatch://agent/planner)");
     await composer.getByLabel("Comment").fill("Plain reply");
     expect(await issueCommentPayload(page, issue.key)).toEqual({
       body: "Plain reply",
@@ -597,14 +580,13 @@ test("a mention reaches a session the listener's list has dropped while its reco
     const page = await alice.newPage();
     await page.goto(`/issues/${issue.key}/conversation`);
     const field = page.getByRole("form", { name: "Comment composer" }).getByLabel("Comment");
-    await selectMention(page, field, "/btw @", "Planner");
+    await pickReference(field, "/btw @", "Planner");
     // The composer offered the mention off the listener's list, and the list drops the session
     // between that read and the send, with the session's own record untouched.
     await setSessionLive("planner", false);
     expect(await issueCommentPayload(page, issue.key)).toEqual({
-      body: "@Planner",
+      body: "[Planner](dispatch://agent/planner)",
       delivery: "btw",
-      mentions: [{ target: "session:planner" }],
     });
     await expect.poll(() => getSentMessages()).toMatchObject([{ target_session: "planner" }]);
     const deliveries = page.getByRole("list", { name: "Mention deliveries" });
@@ -629,12 +611,11 @@ test("a mention of a session the listener holds no record of is still refused as
     const page = await alice.newPage();
     await page.goto(`/issues/${issue.key}/conversation`);
     const field = page.getByRole("form", { name: "Comment composer" }).getByLabel("Comment");
-    await selectMention(page, field, "/btw @", "Planner");
+    await pickReference(field, "/btw @", "Planner");
     await setSessionRecord("planner", "absent");
     expect(await issueCommentPayload(page, issue.key)).toEqual({
-      body: "@Planner",
+      body: "[Planner](dispatch://agent/planner)",
       delivery: "btw",
-      mentions: [{ target: "session:planner" }],
     });
     await expect(page.getByRole("list", { name: "Mention deliveries" })).toContainText(
       "no live session planner"
@@ -662,14 +643,13 @@ test("a mention of a session the listener could not read is refused with the lis
     const page = await alice.newPage();
     await page.goto(`/issues/${issue.key}/conversation`);
     const field = page.getByRole("form", { name: "Comment composer" }).getByLabel("Comment");
-    await selectMention(page, field, "/btw @", "Planner");
+    await pickReference(field, "/btw @", "Planner");
     // The session is there as far as anyone knows; it is the read that fails, which the
     // listener answers 503 with the bus's reason.
     await setSessionRecord("planner", "unreadable");
     expect(await issueCommentPayload(page, issue.key)).toEqual({
-      body: "@Planner",
+      body: "[Planner](dispatch://agent/planner)",
       delivery: "btw",
-      mentions: [{ target: "session:planner" }],
     });
     const deliveries = page.getByRole("list", { name: "Mention deliveries" });
     await expect(deliveries).toContainText("failed");

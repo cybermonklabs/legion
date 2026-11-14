@@ -14,7 +14,7 @@ import { blockFragment, isBlockItemKind } from "./block-reference";
 import { referenceTriggerProps } from "./RefPreview";
 import { referencesQuery } from "./reference-target";
 import type { DispatchReferenceRoute } from "./routes";
-import { buildReferencePath, parseNodeReference } from "./routes";
+import { parseNodeReference, referenceHref } from "./routes";
 import { Timestamp } from "./Timestamp";
 
 const NODE_LABELS: Record<GraphEdge["node"]["kind"], string> = {
@@ -79,14 +79,16 @@ interface SourcePath {
 
 /** Where `reference`, a node's own reference as the graph returned it, opens - whatever the length
  *  of its name - with `block` (the block of a document that holds the mention) as its `#b-`
- *  fragment when the reference names no block of its own. */
+ *  fragment when the reference names no block of its own. Undefined where it opens nothing: a
+ *  reference that does not parse, and a party the graph records no node for (R5). */
 function referencePath(reference: string | undefined, block?: string): SourcePath | undefined {
   const route = reference === undefined ? undefined : parseNodeReference(reference);
-  if (route === undefined) {
+  const href = route === undefined ? undefined : referenceHref(route);
+  if (route === undefined || href === undefined) {
     return undefined;
   }
   return {
-    href: `${buildReferencePath(route)}${
+    href: `${href}${
       ("block" in route && route.block !== undefined) || block === undefined
         ? ""
         : blockFragment(block)

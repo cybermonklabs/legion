@@ -1,4 +1,4 @@
-import { DELIVERY_CAPABILITIES } from "@legion/contracts";
+import { DELIVERY_CAPABILITIES, dispatchWritingBox } from "@legion/contracts";
 import { SEARCH_QUERY_MAX } from "@legion/contracts/dispatch-tools";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -60,6 +60,7 @@ import {
 } from "../../theme/classes";
 import { broadcastDelivery, capabilityLabel, MODE_LABELS } from "../conversation/delivery";
 import { useHeldSends } from "../conversation/held-sends";
+import { MentionField } from "../conversation/MentionField";
 import { ReplyTurn, ThreadReplies } from "../conversation/ReplyTurn";
 import { capabilitiesForTarget, TargetedMessageCard } from "../conversation/TargetedMessageCard";
 import { useAgents } from "../conversation/useAgents";
@@ -75,6 +76,7 @@ import {
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { buildInboxPath, buildIssuePath, buildMachinePath } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
+import { textSourceOf } from "../refs/text-references";
 import { closestMatching, focusOnDocument } from "../shell/roving";
 import { MD_VIEWPORT_QUERY, useMediaQuery } from "../shell/useDialog";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
@@ -88,6 +90,7 @@ import {
   searchWords,
   sessionIssueKeys,
   useAgentMachines,
+  useAgentRoles,
   useAgentSearch,
 } from "./agent-search";
 import { type NeedsYouBySession, tallyBySession } from "./ask-tally";
@@ -223,7 +226,11 @@ function AgentExchangeReply({
       author={reply.author}
       body={
         <div className={textPrimaryOnCanvas}>
-          <MarkdownBody markdown={reply.body} tree={reply.body_tree} />
+          <MarkdownBody
+            markdown={reply.body}
+            source={textSourceOf("message", reply.id)}
+            tree={reply.body_tree}
+          />
         </div>
       }
       delivery={
@@ -250,6 +257,7 @@ function AgentExchangeReply({
               author: parent.author,
               block: reply.reply_block,
               excerpt: parent.body,
+              source: textSourceOf("message", parent.id),
               ...(parent.issue_key === null
                 ? {}
                 : {
@@ -300,7 +308,11 @@ function AgentTargetedMessage({
             <Timestamp at={read.message.created_at} />
           </p>
           <div className={textPrimaryOnCanvas}>
-            <MarkdownBody markdown={read.message.body} tree={read.message.body_tree} />
+            <MarkdownBody
+              markdown={read.message.body}
+              source={textSourceOf("message", read.message.id)}
+              tree={read.message.body_tree}
+            />
           </div>
         </>
       }
@@ -897,14 +909,6 @@ function GroupHeading({
 /** Which filter panel is open; one at a time, since each is a popover over the page. */
 type OpenFilter = "group" | "machine" | "role" | null;
 
-/** The role control's options, with anything picked that is no longer among them: a role whose
- *  last session left is still a row, so the reader sees what they are filtering by and can
- *  untick it. The machine control needs no such pass, because `filterOptions` already seeds its
- *  host set with every picked machine. */
-function withPicked(options: readonly string[], picked: readonly string[]): string[] {
-  return [...options, ...picked.filter((value) => !options.includes(value))];
-}
-
 function AgentFilterBar({
   agents,
   filters,
@@ -916,9 +920,10 @@ function AgentFilterBar({
   onFilters: (filters: AgentFilters) => void;
   searchInputRef: RefObject<HTMLInputElement | null>;
 }): ReactNode {
-  // The options carry every machine the filter names even when no live session reports it, so
-  // the control shows the filter in force and its row can be unticked (`filterOptions`).
-  const { machines, roles } = filterOptions(agents, filters.machines);
+  // The options carry every machine and every role the filter names even when no live session
+  // reports them, so the control shows the filter in force and its row can be unticked
+  // (`filterOptions`).
+  const { machines, roles } = filterOptions(agents, filters.machines, filters.roles);
   // One panel open at a time: each is a portalled popover, and two of them over one row would
   // cover each other.
   const [open, setOpen] = useState<OpenFilter>(null);
@@ -967,7 +972,7 @@ function AgentFilterBar({
           onChange={(next) => onFilters({ ...filters, roles: next })}
           onOpenChange={(next) => setOpen(next ? "role" : null)}
           open={open === "role"}
-          options={withPicked(roles, filters.roles)}
+          options={roles}
           searchLabel="Search roles"
           selected={filters.roles}
           triggerAriaLabel="Filter by role"
@@ -1125,6 +1130,10 @@ function BroadcastComposer({
   // the message held at two rows. `min-h-16` is important because styles.css's unlayered
   // below-1280 touch floor (`min-height: 44px`) would otherwise override it and shrink the
   // message box on its first character. Elsewhere none of these classes apply.
+  // The line under the box saying what a pick does (`DISPATCH_WRITING_BOXES`) is the box's
+  // description there rather than a line of its own: this panel is held to 40% of a phone
+  // empty and 45% filled (`e2e/agents.e2e.ts`), and a hint of its own costs a line of that
+  // budget, which the recipients and the message are owed. Every wider screen shows it.
   return (
     <section
       aria-label="Broadcast"
@@ -1181,13 +1190,19 @@ function BroadcastComposer({
           ))}
         </select>
       </div>
-      <textarea
-        aria-label="Broadcast message"
-        className={`mt-2 block w-full rounded-lg border px-3 py-2 text-sm narrow-or-short:order-1 narrow-or-short:col-span-full narrow-or-short:mt-0 narrow-or-short:max-h-32 short:col-span-2 narrow-or-short:min-h-16! narrow-or-short:field-sizing-content short:max-h-16 ${inputClasses(true)}`}
-        onChange={(event) => onBody(event.target.value)}
+      {/* The box is one grid cell of the short-screen layout, so the label the field wraps it
+          in carries that placement and the box itself only its own size. */}
+      <MentionField
+        body={body}
+        className="text-sm narrow-or-short:mt-0 narrow-or-short:max-h-32 narrow-or-short:min-h-16! narrow-or-short:field-sizing-content short:max-h-16"
+        hintClassName={`text-xs narrow-or-short:sr-only ${textMutedOnSurface}`}
+        label="Broadcast message"
+        labelClassName="mt-2 block w-full narrow-or-short:order-1 narrow-or-short:col-span-full narrow-or-short:mt-0 short:col-span-2"
+        labelHidden
+        onChange={(change) => onBody(change.body)}
         placeholder="One message, sent to each selected agent"
         rows={3}
-        value={body}
+        writing={dispatchWritingBox("broadcast", "broadcast")}
       />
       {sendState.notice !== null ? (
         <p className={composerLine} id={noticeId}>
@@ -1436,23 +1451,29 @@ export function AgentsPage(): ReactNode {
   // Every issue key an OPEN ask by each session names (`sessionIssueKeys`), for the search box's
   // "issue key" field.
   const issueKeysBySession = useMemo(() => sessionIssueKeys(inbox.data ?? []), [inbox.data]);
-  // The free-text query and the machines are the page's own `?q=` and `?machine=`, both owned
-  // by `agent-search.ts`; the group and role selections stay plain component state, as the
-  // machine and role did before this box. A link in from the machines page of
-  // dispatch://INFRA-883 names one machine in `?machine=`, which is this filter with that one
-  // host ticked.
+  // The free-text query, the machines and the roles are the page's own `?q=`, `?machine=` and
+  // `?role=`, all owned by `agent-search.ts`; the group selection stays plain component state.
+  // A link in from the machines page of dispatch://INFRA-883 names one machine in `?machine=`,
+  // which is this filter with that one host ticked, and `/agents?role=<token>` is the page a
+  // `dispatch://role/<token>` reference opens (INFRA-1702), which is that filter with one role
+  // ticked.
   const [search, setSearch] = useAgentSearch();
   const [machines, setMachines] = useAgentMachines();
-  const [fieldFilters, setFieldFilters] = useState<Omit<AgentFilters, "machines" | "search">>({
-    groups: [],
-    roles: [],
-  });
-  const filters: AgentFilters = { ...fieldFilters, machines, search };
+  const [roles, setRoles] = useAgentRoles();
+  const [groups, setGroups] = useState<readonly AgentGroup[]>([]);
+  const filters: AgentFilters = { groups, machines, roles, search };
   const setFilters = (next: AgentFilters) => {
-    setFieldFilters({ groups: next.groups, roles: next.roles });
+    setGroups(next.groups);
+    if (next.roles !== roles) setRoles(next.roles);
     if (next.machines !== machines) setMachines(next.machines);
     if (next.search !== search) setSearch(next.search);
   };
+  // The picked roles no live session carries, which the empty state names rather than letting
+  // the reader read this list as every role there is (INFRA-1702): a role is here only while a
+  // session holds it.
+  const unheldRoles = roles.filter(
+    (role) => !agents.some((agent) => (agent.roles ?? []).includes(role))
+  );
   const searchInputRef = useRef<HTMLInputElement>(null);
   // Selection is what the human ticked, not what the filters currently show: narrowing the
   // list after ticking a row must not quietly drop that row from the send. Every selected
@@ -1731,7 +1752,15 @@ export function AgentsPage(): ReactNode {
           {matching.length === 0 && current ? (
             <EmptyState
               label="Agents filtered empty state"
-              message="No agent matches these filters."
+              // A role nothing live holds is not a role Dispatch can show as stopped: the
+              // registry lists sessions, and a role is here only while a session carries it.
+              // The words say so, rather than letting the reader read the list as every role
+              // there is.
+              message={
+                unheldRoles.length > 0 && unheldRoles.length === roles.length
+                  ? `No live session holds ${unheldRoles.join(", ")}. Outside an issue, this list holds only the roles a live session carries; Dispatch keeps no list of every role.`
+                  : "No agent matches these filters."
+              }
             />
           ) : null}
           <WindowedList items={items} kept={kept} keptAside={keptAside} renderItem={renderItem} />

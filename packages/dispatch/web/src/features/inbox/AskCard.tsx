@@ -1,3 +1,4 @@
+import { dispatchWritingBox } from "@legion/contracts";
 import { useQuery } from "@tanstack/react-query";
 import {
   type ReactNode,
@@ -37,7 +38,6 @@ import {
   card,
   cardHoverBorder,
   inlineWarningText,
-  inputClasses,
   linkHoverText,
   linkText,
   primaryButtonBg,
@@ -50,6 +50,7 @@ import {
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { appendToDraft, DraftUploadStatus, useDraftUpload } from "../artifacts/ArtifactUpload";
+import { MentionField, type MentionFieldHandle } from "../conversation/MentionField";
 import { badgeSelectBadge, badgeSelectOverlay, badgeSelectWrapper } from "../issue/badge-select";
 import { AgentName, useAgentText } from "../refs/AgentName";
 import { CopyRefButton } from "../refs/CopyRefButton";
@@ -423,14 +424,14 @@ export function AskCard({
     setQuestionChoice(false);
   });
   const uploading = upload.pending > 0;
-  const answerFieldRef = useRef<HTMLTextAreaElement>(null);
+  const answerFieldRef = useRef<MentionFieldHandle | null>(null);
   // Picking Request changes moves the person straight to the field the server insists
   // on. Keyed on the field actually being mounted, not just on the option: the compact variant
   // unmounts the field when its disclosure closes, and reopening it must refocus.
   const reasonFieldShown = reasonRequired && (!isCompact || ownWordsOpen);
   useEffect(() => {
     if (reasonFieldShown) {
-      answerFieldRef.current?.focus();
+      answerFieldRef.current?.textarea()?.focus();
     }
   }, [reasonFieldShown]);
   // Opening the disclosure is a move into the field it reveals, whoever opened it: the reader's
@@ -445,7 +446,7 @@ export function AskCard({
     if (!focusNoteOnOpen.current) return;
     focusNoteOnOpen.current = false;
     if (ownWordsOpen) {
-      answerFieldRef.current?.focus();
+      answerFieldRef.current?.textarea()?.focus();
     }
   }, [ownWordsOpen]);
   // A control that disables itself under the reader's focus - Ask back while sending and once
@@ -563,36 +564,29 @@ export function AskCard({
 
   const answerField = (
     <>
-      <label className="block" htmlFor={answerFieldId}>
-        <span
-          className={
-            reasonRequired ? `mb-1 block text-sm font-medium ${textSecondaryOnSurface}` : "sr-only"
-          }
-        >
-          {reasonRequired ? "Reason (required)" : isApproval ? "Reason" : "Your answer"}
-        </span>
-        <textarea
-          className={`block w-full rounded-lg px-3 py-2 font-normal outline-none ${inputClasses(true)}`}
-          data-ask-answer=""
-          disabled={isSubmitting}
-          id={answerFieldId}
-          onChange={(event) => {
-            setAnswerText(event.target.value);
-            setQuestionChoice(false);
-          }}
-          onDrop={
-            uploadOwner === undefined ? undefined : (event) => upload.drop(event, uploadOwner)
-          }
-          onKeyDown={(event) => submitOnModifiedEnter(event, { disabled: uploading })}
-          onPaste={
-            uploadOwner === undefined ? undefined : (event) => upload.paste(event, uploadOwner)
-          }
-          placeholder={answerPlaceholder}
-          ref={answerFieldRef}
-          rows={2}
-          value={answerText}
-        />
-      </label>
+      <MentionField
+        askAnswer={true}
+        body={answerText}
+        className="font-normal"
+        disabled={isSubmitting}
+        fieldRef={answerFieldRef}
+        issueKey={displayedAsk.issue_key ?? undefined}
+        label={reasonRequired ? "Reason (required)" : isApproval ? "Reason" : "Your answer"}
+        labelHidden={!reasonRequired}
+        onChange={(change) => {
+          setAnswerText(change.body);
+          setQuestionChoice(false);
+        }}
+        onDrop={uploadOwner === undefined ? undefined : (event) => upload.drop(event, uploadOwner)}
+        onKeyDown={(event) => submitOnModifiedEnter(event, { disabled: uploading })}
+        onPaste={
+          uploadOwner === undefined ? undefined : (event) => upload.paste(event, uploadOwner)
+        }
+        placeholder={answerPlaceholder}
+        project={documentProject}
+        rows={2}
+        writing={dispatchWritingBox("ask-answer", "ask-answer")}
+      />
       <DraftUploadStatus upload={upload} />
     </>
   );
@@ -890,6 +884,7 @@ export function AskCard({
                     setOwnWordsOpen(requiresReason(option.label) || trimmedAnswer !== "");
                 }}
                 option={option}
+                source={source}
               />
             ))}
             {isApproval ? null : (
@@ -903,6 +898,7 @@ export function AskCard({
                   if (isCompact && !otherSelected) setOwnWordsOpen(true);
                 }}
                 option={{ label: "Other" }}
+                source={source}
               />
             )}
           </fieldset>

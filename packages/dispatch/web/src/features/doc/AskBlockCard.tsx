@@ -19,7 +19,7 @@ import { URGENCY_LABELS } from "../inbox/ask-urgency";
 import { AgentName } from "../refs/AgentName";
 import { blockFragment } from "../refs/block-reference";
 import { CopyRefButton } from "../refs/CopyRefButton";
-import { buildReferencePath, itemRoute, parseNodeReference, shortForm } from "../refs/routes";
+import { itemRoute, parseNodeReference, referenceHref, shortForm } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { type AskBlockFacts, type AskBlockHost, askBlockFacts } from "./typed-block-drawing";
 
@@ -240,20 +240,23 @@ function CopiedFromLink({
   state: string;
 }): ReactNode {
   const route = parseNodeReference(copied.document);
+  const href = route === undefined ? undefined : referenceHref(route);
+  // A reference naming no page of this dashboard - a person (R5) among them - is no link: the
+  // words it would have shown stand on their own.
+  const words =
+    route === undefined
+      ? "another document"
+      : route.kind === "spec"
+        ? "the spec"
+        : shortForm(route);
   const there = COPY_STATE_LABELS[state] ?? "closed there";
   return (
     <span className="inline-flex items-center gap-x-2" data-dispatch-ask-copied-from={copied.ask}>
       <span aria-hidden="true">·</span>
       <span>
         Copied from{" "}
-        {route === undefined ? (
-          "another document"
-        ) : (
-          <Link to={`${buildReferencePath(route)}${blockFragment(blockId)}`}>
-            {route.kind === "spec" ? "the spec" : shortForm(route)}
-          </Link>
-        )}
-        , {there}
+        {href === undefined ? words : <Link to={`${href}${blockFragment(blockId)}`}>{words}</Link>},{" "}
+        {there}
       </span>
     </span>
   );
@@ -268,6 +271,9 @@ function AttributeRecord({ facts }: { facts: AskBlockFacts }): ReactNode {
       : "";
   return (
     <div className="mt-3 space-y-2" data-dispatch-ask-record="">
+      {/* No `source`: these are the block's own attributes, read from the document's text with
+          no ask row behind them, so there is no ask for a `#id` in an option to resolve
+          against. */}
       <AskOptionList options={facts.options} rowClassName={surfaceBg} selected={facts.selected} />
       {otherText === "" ? null : (
         <p className={`text-sm font-medium ${textPrimaryOnSurface}`}>Other</p>

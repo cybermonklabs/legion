@@ -348,9 +348,9 @@ type searchRouteQuery struct {
 	Offset int `query:"offset"`
 }
 
-// searchResultsRouteQuery is GET /api/v1/search/results's query, all nine members: the four
-// searchRouteQuery names and the five a build released before them does not serve, which is why
-// that path exists. The nine are written out rather than embedded because the emitter reads a
+// searchResultsRouteQuery is GET /api/v1/search/results's query, all ten members: the four
+// searchRouteQuery names and the six a build released before them does not serve, which is why
+// that path exists. The ten are written out rather than embedded because the emitter reads a
 // query struct's own fields and refuses one carrying no query tag (openapi.go, queryParameters).
 type searchResultsRouteQuery struct {
 	// Q is the text searched for, at least 2 characters and at most contracts.SearchQueryMax.
@@ -376,6 +376,10 @@ type searchResultsRouteQuery struct {
 	Limit int `query:"limit"`
 	// Offset is where the page starts.
 	Offset int `query:"offset"`
+	// Kind ranks, counts and pages the kinds it names and no others, repeated once per kind;
+	// with none named every kind the index holds is searched. A kind outside the five is
+	// 400 INVALID_QUERY (searchIndexedKinds, parseSearchKinds).
+	Kind []string `query:"kind" enum:"issue,document,comment,ask,message"`
 }
 
 // relatedChecksQuery is GET /api/v1/related-checks's query.
@@ -397,6 +401,13 @@ type sessionAnswersQuery struct {
 	Since string `query:"since"`
 	// MaxChars bounds how much of each item's text the answer carries.
 	MaxChars int `query:"max_chars"`
+}
+
+// knownSessionsQuery is GET /api/v1/agents/known's query.
+type knownSessionsQuery struct {
+	// ID is one session id asked about, repeated: 1 to contracts.KnownSessionsMax of them, each a
+	// session id (text.IsSessionID) of at most knownSessionIDMax bytes, the longest text names.
+	ID []string `query:"id"`
 }
 
 // issueAsksQuery is GET /api/v1/issues/{key}/asks's query.
@@ -730,6 +741,9 @@ var routeShapes = map[string]routeShape{
 	"GET /api/v1/going/capability": {Status: http.StatusOK, Response: goingCapability{}},
 	"GET /api/v1/going/catalogue":  {Status: http.StatusOK, Response: goingCatalogueBody{}},
 	"GET /api/v1/agents":           {Status: http.StatusOK, Response: []agentResponse{}},
+	"GET /api/v1/agents/known": {
+		Status: http.StatusOK, Response: knownSessions{}, Params: knownSessionsQuery{},
+	},
 	"GET /api/v1/agents/{session_id}/answers": {
 		Status: http.StatusOK, Response: model.SessionAnswersResponse{}, Params: sessionAnswersQuery{},
 	},

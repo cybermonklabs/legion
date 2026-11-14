@@ -1,0 +1,5 @@
+kind: Added
+body: '`dispatch search --kind <kind>`, repeated once per kind, searches those kinds alone; with none named every kind the index holds is searched.'
+time: 2026-11-09T13:10:21.448194858Z
+custom:
+    Issue: pr3125

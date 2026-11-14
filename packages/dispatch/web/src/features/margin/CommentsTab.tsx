@@ -14,8 +14,6 @@ import type { ComposerAnchor, ComposerKind, ComposerOwner } from "../conversatio
 import { MentionComposer } from "../conversation/MentionComposer";
 import type { SaveCommentEdit } from "../conversation/send-request";
 import { AskCard } from "../inbox/AskCard";
-import { textSourceOf } from "../refs/text-references";
-import { Unfurl } from "../refs/Unfurl";
 import { DecisionList } from "./DecisionCard";
 import { marginComposeSendKey, useMargin } from "./margin-context";
 import { ThreadList } from "./ThreadList";
@@ -124,6 +122,7 @@ export function MarginComposerSlot({
         anchor={composer.anchor}
         anchorRefusal={anchorRefusal}
         autoFocus={onScreen}
+        box="margin-composer"
         closed={isClosed}
         frame="pt-3"
         kind={composer.kind}
@@ -167,7 +166,6 @@ export function MarginAskCard({
         owner={owner.kind === "document" ? owner : undefined}
         variant="compact"
       />
-      <Unfurl body={ask.question} source={textSourceOf("ask", ask.id)} />
     </div>
   );
 }

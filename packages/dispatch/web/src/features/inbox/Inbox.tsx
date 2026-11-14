@@ -38,6 +38,8 @@ import { issuePriority } from "../issue/issue-priority";
 import { PriorityControl } from "../issue/PriorityControl";
 import { AgentName, useAgentText } from "../refs/AgentName";
 import { COPY_REF_SELECTOR, CopyRefButton } from "../refs/CopyRefButton";
+import { MarkdownPreview } from "../refs/MarkdownPreview";
+import { PlainText } from "../refs/plain-text";
 import {
   buildInboxPath,
   INBOX_FILTER_FIELDS,
@@ -46,6 +48,7 @@ import {
   parseInboxSearch,
 } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
+import { textSourceOf } from "../refs/text-references";
 import { type KeymapScope, useKeymap, useKeymapScope } from "../shell/keymap";
 import { closestMatching, focusedMatching, roveFocus } from "../shell/roving";
 import { READING_PANE_QUERY, useMediaQuery } from "../shell/useDialog";
@@ -81,7 +84,6 @@ import { useMotionHold } from "./motion-hold";
 import { PaneDivider, usePaneWidth } from "./PaneDivider";
 import { type PlacedRow, usePaneSelection } from "./pane-selection";
 import { useFoldedGroups } from "./preferences";
-import { questionLine } from "./question-line";
 import { ReadingPane } from "./ReadingPane";
 import { RowKindIcon, RowPriorityTag, RowUrgencyMark } from "./RowMarks";
 import { SnoozeControl } from "./SnoozeControl";
@@ -186,6 +188,29 @@ function MarkCheckbox({
       onChange={() => onMark(id)}
       type="checkbox"
     />
+  );
+}
+
+/** A thread row's own checkbox, named after the thread it marks. The name is an `aria-label`,
+ *  which can hold no markup: it is the one plain-text projection of the subject, the same
+ *  reader the row's own line is drawn by, never a second stripper. */
+function ThreadMarkCheckbox({
+  marked,
+  onMark,
+  row,
+  thread,
+}: {
+  marked: boolean;
+  onMark: (id: string) => void;
+  row: InboxListRow;
+  thread: MyReplyRow;
+}): ReactNode {
+  return (
+    <PlainText markdown={thread.subject} tree={thread.subject_tree}>
+      {(subject) => (
+        <MarkCheckbox id={rowId(row)} marked={marked} name={subject ?? ""} onMark={onMark} />
+      )}
+    </PlainText>
   );
 }
 
@@ -355,7 +380,15 @@ function AskShortRow({
       row={row}
       section={section}
       selected={selected}
-      title={<span className="min-w-0 grow truncate text-sm">{questionLine(ask.question)}</span>}
+      title={
+        <MarkdownPreview
+          className="min-w-0 grow text-sm"
+          lines={1}
+          markdown={ask.question}
+          source={textSourceOf("ask", ask.id)}
+          tree={ask.question_tree}
+        />
+      }
     />
   );
 }
@@ -378,14 +411,7 @@ function ThreadShortRow({
   return (
     <ShortRowFrame
       age={<Timestamp at={rowLastActivityAt(row)} />}
-      check={
-        <MarkCheckbox
-          id={rowId(row)}
-          marked={marked}
-          name={questionLine(thread.subject)}
-          onMark={onMark}
-        />
-      }
+      check={<ThreadMarkCheckbox marked={marked} onMark={onMark} row={row} thread={thread} />}
       group={groupKey}
       onRelease={onRelease}
       onSelect={onSelect}
@@ -518,12 +544,7 @@ function ThreadCardRow({
     >
       {/* The mark sits where a question card's does, on a line of its own above the card. */}
       <div className="mb-1.5 flex items-center gap-2">
-        <MarkCheckbox
-          id={rowId(row)}
-          marked={marked}
-          name={questionLine(thread.subject)}
-          onMark={onMark}
-        />
+        <ThreadMarkCheckbox marked={marked} onMark={onMark} row={row} thread={thread} />
       </div>
       <ThreadRowCard thread={thread} />
     </InboxRowShell>

@@ -175,6 +175,8 @@ export function ComponentDetails({
         <p className={`mt-1 text-sm ${textMutedOnSurface}`}>No description in the model.</p>
       ) : (
         <div className={`mt-1 text-sm ${textSecondaryOnSurface}`}>
+          {/* No `source`: why a component's prose is no record is the reading list's
+              `component-prose` (`DISPATCH_READING_SURFACES`). */}
           <MarkdownBody markdown={component.prose} tree={component.prose_tree} />
         </div>
       )}

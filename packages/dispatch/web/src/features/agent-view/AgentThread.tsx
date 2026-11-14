@@ -11,7 +11,7 @@ import {
   unstable_useTriggerPopoverScopeContext,
   useAuiState,
 } from "@assistant-ui/react";
-import type { AgentStreamCommand } from "@legion/contracts";
+import { type AgentStreamCommand, dispatchWritingBox } from "@legion/contracts";
 import { type ReactNode, type RefObject, useEffect, useId, useMemo, useRef, useState } from "react";
 
 import { ChevronIcon } from "../../components/DisclosureToggle";
@@ -44,6 +44,7 @@ import { MarkdownBody } from "../refs/MarkdownBody";
 import { ErrorBoundary } from "../shell/ErrorBoundary";
 import { readDispatchMarks, turnKey } from "./dispatch-marks";
 import type { LivePlace } from "./live-views";
+import { ReferenceTriggers } from "./ReferenceTriggers";
 import { useLiveFollow } from "./use-live-follow";
 import { useFrameCoalesced } from "./useFrameCoalesced";
 
@@ -54,6 +55,10 @@ import { useFrameCoalesced } from "./useFrameCoalesced";
  */
 
 const preClasses = `mt-2 max-h-64 overflow-auto rounded-md p-2 text-xs whitespace-pre-wrap ${surfaceMutedBg} ${textMutedOnSurfaceMuted}`;
+
+/** This box's row of the writing list: one box, one write - a message to this session - so the
+ *  line under the box is read once (`DISPATCH_WRITING_BOXES`). */
+const WRITING = dispatchWritingBox("agent-live-composer", "agent-message");
 
 /** A tool call and, once it lands, its result. Folded by default: tool traffic is the bulk of a
  *  session's output and a viewer is usually reading the prose around it. */
@@ -107,6 +112,8 @@ const ToolCall: ToolCallMessagePartComponent = ({ toolName, argsText, result, is
  *  animation frame (`useFrameCoalesced`) rather than once per delta: the publisher sends at most
  *  ten snapshots a second, and a frame is the most anyone can see anyway. A module constant, as
  *  `Reasoning` is: a component minted per render would remount every part. */
+// No `source` here or on the reasoning below: why a session's own turn is no record is the
+// reading list's `agent-turn-text` and `agent-turn-reasoning` (`DISPATCH_READING_SURFACES`).
 const MarkdownText: TextMessagePartComponent = ({ text }) => (
   <MarkdownBody markdown={useFrameCoalesced(text)} softBreaks="line" />
 );
@@ -543,9 +550,14 @@ export function AgentThread({
           {commands === undefined || commands.length === 0 ? null : (
             <SlashCommands commands={commands} />
           )}
+          {/* The three reference doors, beside the `/` above: one input, four triggers. */}
+          <ReferenceTriggers />
           <div className="flex items-end gap-2">
             <ComposerPrimitive.Input
               className={`min-h-11 flex-1 rounded-lg px-3 py-2 text-sm ${inputClasses(false)}`}
+              // The one handle a browser row reaches this box by, since its accessible name is
+              // the placeholder, which says what the session is doing (`DISPATCH_WRITING_BOXES`).
+              data-agent-message=""
               placeholder={placeholder}
               rows={1}
               submitMode="enter"
@@ -575,6 +587,11 @@ export function AgentThread({
             id={hintId}
           >
             {held ? placeholder : shownRefusal}
+          </p>
+          {/* What a pick does here, in the writing list's own words, so the line under the box
+              and the list that drives the browser rows cannot drift apart. */}
+          <p className={`text-xs ${textMutedOnCanvas}`} data-testid="agent-message-hint">
+            {WRITING.hint}
           </p>
         </ComposerPrimitive.Root>
       </ComposerPrimitive.Unstable_TriggerPopoverRoot>

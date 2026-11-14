@@ -114,6 +114,9 @@ export interface PinnedConversationCard {
   /** The `dismissed` id it is pinned under, which Unpin removes: `<kind>:<id>`. */
   readonly id: string;
   readonly kind: ConversationPinKind;
+  /** The record's own id, without the kind the pin marker spells before it: what names the
+   *  record this card's text is (`textSourceOf`). */
+  readonly recordId: string;
 }
 
 const NO_PINS: string[] = [];
@@ -407,6 +410,7 @@ export function useMarginItems(
           tree: "question" in row ? row.question_tree : row.body_tree,
           id: conversationItemId(kind, id),
           kind,
+          recordId: id,
         },
       ];
     });

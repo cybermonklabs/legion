@@ -53,6 +53,13 @@ const (
 	webSnippetStop  = "\uE001"
 )
 
+// webMarkedCore1 is CORE-1 as ts_headline marks it for the query CORE-1, word by word:
+// `select ts_headline('english', 'Tracked as dispatch://CORE-1 since Monday.',
+// websearch_to_tsquery('english', 'CORE-1'))` answers `Tracked as dispatch://<b>CORE</b><b>-1</b>
+// since Monday.`, and the bare key `<b>CORE</b><b>-1</b>` (measured 2026-11-13, INFRA-1702). A
+// fixture marking the address whole is a shape the search never sends.
+const webMarkedCore1 = webSnippetStart + "CORE" + webSnippetStop + webSnippetStart + "-1" + webSnippetStop
+
 // webFixtureCase is one stored text the web app's unit tests draw: its markdown, so a view can
 // be handed the source its tree was read from, and the tree in each mode.
 type webFixtureCase struct {
@@ -105,13 +112,30 @@ func webFixtureTexts(t *testing.T) []webFixtureText {
 			"a-marked-link",
 			"Read [the " + webSnippetStart + "design" + webSnippetStop + "](https://example.com/d) first.\n",
 		},
+		// A search for CORE-1 as Postgres answers it: ts_headline marks the address's own words
+		// one by one rather than the address whole (webMarkedCore1), so the reference stands in
+		// three text nodes of the snippet's tree.
 		{
 			"a-marked-reference",
-			"Tracked as " + webSnippetStart + "dispatch://CORE-1" + webSnippetStop + " since Monday.\n",
+			"Tracked as dispatch://" + webMarkedCore1 + " since Monday.\n",
+		},
+		{
+			"a-marked-key",
+			"Tracked as " + webMarkedCore1 + " since Monday.\n",
 		},
 		{
 			"a-marked-link-to-a-reference",
 			"See [the " + webSnippetStart + "design" + webSnippetStop + "](dispatch://CORE-1).\n",
+		},
+		// A search for CORE over the link a document stores for the autolink
+		// `<dispatch://CORE-1>`: ts_headline marks the key in the link's words and in its address
+		// alike, `[dispatch://<b>CORE</b>-1](dispatch://<b>CORE</b>-1)` once SearchSnippet has
+		// widened the cut back to the whole link (measured 2026-11-14, INFRA-1702), and the
+		// snippet's tree keeps the mark on the words and the address as it was stored.
+		{
+			"a-marked-autolink-to-a-reference",
+			"See [dispatch://" + webSnippetStart + "CORE" + webSnippetStop + "-1](dispatch://" +
+				webSnippetStart + "CORE" + webSnippetStop + "-1) since Monday.\n",
 		},
 		{
 			"marks-inside-formatting",
@@ -126,8 +150,7 @@ func webFixtureTexts(t *testing.T) []webFixtureText {
 		{
 			"a-marked-word-and-reference",
 			"Report the " + webSnippetStart + "port" + webSnippetStop +
-				" to support before we export " + webSnippetStart + "dispatch://CORE-1" +
-				webSnippetStop + "\n",
+				" to support before we export dispatch://" + webMarkedCore1 + "\n",
 		},
 		{
 			"a-headline-with-references",
@@ -265,11 +288,15 @@ func webDisplayJSON(t *testing.T, markdown string, mode DisplayMode) json.RawMes
 	return encoded
 }
 
-// webSnippetJSON is DisplaySnippetJSON's reading of a search hit's snippet: the balancing, the
-// read and the highlight are all the server's own.
+// webSnippetJSON is the server's reading of a search hit's snippet when ts_headline answered the
+// whole text, which is what each fixture text stands for: the snippet read out of its source
+// (SearchSnippet, the source being the text without the sentinels), then the read and the
+// highlight (DisplaySnippetJSON), all the server's own.
 func webSnippetJSON(t *testing.T, markdown string) json.RawMessage {
 	t.Helper()
-	tree := DisplaySnippetJSON(markdown, webSnippetStart, webSnippetStop)
+	source := strings.NewReplacer(webSnippetStart, "", webSnippetStop, "").Replace(markdown)
+	snippet := SearchSnippet(markdown, source, webSnippetStart, webSnippetStop)
+	tree := DisplaySnippetJSON(snippet, webSnippetStart, webSnippetStop)
 	if tree == nil {
 		t.Fatalf("the snippet of %q read into no tree", markdown)
 	}

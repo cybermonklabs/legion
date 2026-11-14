@@ -14,6 +14,7 @@ import fixtures from "./__fixtures__/display-trees.json";
 import { MarkdownBody } from "./MarkdownBody";
 import { MarkdownPreview } from "./MarkdownPreview";
 import { loadedEngine, useMarkdownHeadline, warmMarkdownRenderer } from "./markdown-engine";
+import { ReferenceHostIs } from "./reference-host";
 import { Unfurl } from "./Unfurl";
 
 /** CORE-1's summary read, which a reference to it shows. */
@@ -168,12 +169,16 @@ test("a preview inside a link holds no link of its own, and a click on its refer
       <Routes>
         <Route
           element={
-            <Link to="/host">
-              <MarkdownPreview
-                lines={2}
-                markdown="see [the docs](https://example.com/docs) and dispatch://CORE-1"
-              />
-            </Link>
+            // R6's second shape, which the host declares once for everything under it: the
+            // link is the one control, so nothing inside it is a link of its own.
+            <ReferenceHostIs host="control">
+              <Link to="/host">
+                <MarkdownPreview
+                  lines={2}
+                  markdown="see [the docs](https://example.com/docs) and dispatch://CORE-1"
+                />
+              </Link>
+            </ReferenceHostIs>
           }
           path="/"
         />
@@ -230,7 +235,9 @@ test("search hits mark the runs the server matched, and a reference it matched i
     await waitFor(() => expect(element).toHaveTextContent("Design decision"));
     const marks = Array.from(element.querySelectorAll("mark"), (mark) => mark.textContent);
     expect(marks).toEqual(["port", "CORE-1 Design decision"]);
-    const marked = element.querySelector("mark [data-dispatch-ref]");
+    const marked = element
+      .querySelector("[data-dispatch-ref] mark")
+      ?.closest("[data-dispatch-ref]");
     expect(marked?.getAttribute("data-dispatch-ref")).toBe("dispatch://CORE-1");
     expect(element.textContent).not.toContain("dispatch://");
   } finally {

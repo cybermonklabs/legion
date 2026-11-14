@@ -54,7 +54,6 @@ import { MarkdownBody } from "../refs/MarkdownBody";
 import { buildIssuePath, documentItemPath, sessionOfAddress } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
-import { Unfurl } from "../refs/Unfurl";
 import { PHONE_VIEWPORT_QUERY, useDialog, useMediaQuery } from "../shell/useDialog";
 import { type DwellRef, useDwell } from "../shell/useDwell";
 import { ViewportAnchor } from "../shell/ViewportAnchor";
@@ -228,14 +227,11 @@ function ConversationReply({
       at={reply.created_at}
       author={reply.author}
       body={
-        <>
-          <MarkdownBody
-            markdown={reply.body}
-            source={textSourceOf("message", reply.id)}
-            tree={reply.body_tree}
-          />
-          <Unfurl body={reply.body} source={textSourceOf("message", reply.id)} />
-        </>
+        <MarkdownBody
+          markdown={reply.body}
+          source={textSourceOf("message", reply.id)}
+          tree={reply.body_tree}
+        />
       }
       current={reply.id === currentReplyId}
       markRef={markRef}
@@ -261,6 +257,7 @@ function ConversationReply({
         block: reply.reply_block,
         excerpt: parent?.body ?? "",
         excerptTree: parent?.body_tree,
+        source: textSourceOf("message", parent?.id),
         to:
           reply.in_reply_to === null
             ? undefined
@@ -370,7 +367,6 @@ function MessageTurn({
             source={textSourceOf("message", item.root.id)}
             tree={item.root.body_tree}
           />
-          <Unfurl body={item.root.body} source={textSourceOf("message", item.root.id)} />
         </div>
         <TurnActions>
           <CopyRefButton route={{ id: item.root.id, key: issueKey, kind: "message" }} />
@@ -868,7 +864,6 @@ function TargetedMessageTurn({
             source={textSourceOf("message", item.root.id)}
             tree={item.root.body_tree}
           />
-          <Unfurl body={item.root.body} source={textSourceOf("message", item.root.id)} />
         </>
       }
       canAside={capabilities?.includes("aside") !== false}
@@ -1225,6 +1220,7 @@ export function ConversationTab({
           that sticks. */}
       <div className="contents" hidden={phoneThread !== undefined}>
         <MentionComposer
+          box="conversation-composer"
           closed={isClosed}
           docked
           mutationKey={sendKey}
@@ -1480,6 +1476,7 @@ export function ConversationTab({
           {phone.replyTo === null ? null : (
             <div hidden={!phoneReplyTargetsThread}>
               <MentionComposer
+                box="phone-thread-composer"
                 closed={isClosed}
                 frame={`fixed inset-x-0 bottom-0 z-20 border-t px-4 pt-4 pb-2 ${card} ${borderDefault}`}
                 mutationKey={phone.composerKey}

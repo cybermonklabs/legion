@@ -2,7 +2,9 @@ import type { Node as ProseMirrorNode } from "prosemirror-model";
 import { type ReactNode, useCallback, useRef } from "react";
 
 import type { DisplayTree } from "../../api/types";
-import { markdownClassName, useMarkdownHeadline } from "./markdown-engine";
+import { markdownClassName } from "./markdown-engine";
+import { usePlainHeadline } from "./plain-text";
+import { SEARCH_HIGHLIGHT_SELECTOR, SearchHighlightClassName } from "./search-highlight";
 import type { TextSource } from "./text-references";
 import {
   type DecorateMarkdown,
@@ -37,17 +39,15 @@ function unmarkedText(node: ProseMirrorNode): string | undefined {
   return text;
 }
 
-/** Every run the server marked as matching a search, as the engine's serializer draws one
- *  (`markdown-serializer.ts`, `displaySchemaOf`). The server reads the snippet and marks the words
- *  it matched, so nothing on this page looks for them in the rendered text. */
-const HIGHLIGHT_SELECTOR = "mark[data-search-highlight]";
-
 /**
  * Every textblock's inline content, marks intact, on one line: a heading's words, then the
  * paragraph's bold and code and links, then each list item, space-separated. (Not
  * `MarkdownBody`'s inline flattening, whose later blocks are plain text: a preview whose first
  * block is a heading would lose the formatting of everything after it.) A code block's text goes
- * inside a `<code>`, so it reads as code and `linkifyDispatchRefs` leaves it alone.
+ * inside a `<code>`, so it reads as code and `linkifyDispatchRefs` leaves it alone. A search
+ * mark stays where the server put it, inside a link's words as anywhere else: a link whose words
+ * `RefLink` draws keeps the server's marks on them, and a title it draws in their place is marked
+ * whole (`collectReferenceAnchors` reads the marks off the link before it clears it).
  *
  * Blocks holding nothing but unmarked words go in as one text node, however many they are: a
  * preview is one run of text, and a body of thousands of plain blocks - the 8,000 items of a
@@ -100,50 +100,7 @@ const paintOneLine: PaintMarkdown = (element, parsed, serializer) => {
   for (const br of element.querySelectorAll("br")) {
     br.replaceWith(document.createTextNode(" "));
   }
-  // A hit the server marked inside a link's own words marks the whole link instead: a
-  // reference's words are replaced by its title a moment later (`collectReferenceAnchors`
-  // empties the anchor), so a mark left inside would go with them. A bare `dispatch://`
-  // reference the server marked is inside its mark already, since the link is made from text
-  // the mark holds (`linkifyDispatchRefs`).
-  for (const link of element.querySelectorAll("a")) {
-    if (link.querySelector(HIGHLIGHT_SELECTOR) === null) {
-      continue;
-    }
-    for (const inner of link.querySelectorAll(HIGHLIGHT_SELECTOR)) {
-      inner.replaceWith(...inner.childNodes);
-    }
-    const whole = document.createElement("mark");
-    whole.setAttribute("data-search-highlight", "");
-    link.replaceWith(whole);
-    whole.appendChild(link);
-  }
 };
-
-/**
- * Every link in the preview as inert, link-styled text. Each surface a preview sits in is
- * already one control - a link (a reply quote, an unfurl card, a hover card, a Broadcasts row),
- * a search option or a margin card's toggle - so a link inside it is a link in a link: a click
- * on it would follow the inner link and the outer control at once, and it would be a second tab
- * stop inside a tooltip. The words, their formatting and a reference's `data-dispatch-ref` (its
- * hover card) stay; the host is the one thing a click or a key press follows. Answers each
- * replaced link's span, so a reference's portal can follow its words into it.
- */
-function inertLinks(root: HTMLElement): Map<HTMLElement, HTMLElement> {
-  const replaced = new Map<HTMLElement, HTMLElement>();
-  for (const link of root.querySelectorAll("a")) {
-    const span = document.createElement("span");
-    for (const { name, value } of link.attributes) {
-      if (name !== "href" && name !== "rel" && name !== "target") {
-        span.setAttribute(name, value);
-      }
-    }
-    span.setAttribute("data-markdown-link", "");
-    span.append(...link.childNodes);
-    link.replaceWith(span);
-    replaced.set(link, span);
-  }
-  return replaced;
-}
 
 /**
  * A line or two of Markdown someone wrote, formatted and then cut to fit: a search hit's
@@ -159,19 +116,20 @@ function inertLinks(root: HTMLElement): Map<HTMLElement, HTMLElement> {
  * thumbnail beside its caption (`DispatchPicture`'s `inline`), as `MarkdownBody`'s `inline`
  * variant shows it.
  *
- * Every surface a preview sits in is one control already, so its links and references read as
- * links but are not ones (`inertLinks`): the host is what a click follows. A host whose own
- * control is a toggle rather than a navigation (the margin's collapsed card, which opens the
- * thread) passes `links="live"` and keeps them real: there a click on a reference is the one
- * way out of the card to its target, as it was before the preview, and its handler skips a
- * click under an `a`.
+ * Whether a reference in it is a live link is its host's property, never a prop here: a preview
+ * drawn inside a link or a button reads as links that are none (`useRenderedMarkdown`'s
+ * `inertLinks`), since the host is the one thing a click follows, and a preview a reader reads
+ * as a record keeps them real. A host says which it is once, for everything under it
+ * (`ReferenceHostIs`).
  *
  * `lines` is the clamp (`1` is `truncate`-like but keeps the inline markup; `2` and `3` wrap
  * then clamp). `className` styles the element, whose `display` is the clamp's own, so a parent
  * that needs a flex item passes `min-w-0` there as it would for any block.
  * `highlightClassName` styles each run the server marked as matching a search, which rides in
- * the snippet's own tree (`HIGHLIGHT_SELECTOR`); a reference whose words hold one is marked
- * whole, since those words are replaced by its title. Until the engine has answered (one
+ * the snippet's own tree (`SEARCH_HIGHLIGHT_SELECTOR`). Every mark stays on the words where the
+ * server put it, wherever those words are drawn, a reference's included; only a title a
+ * reference draws in place of words a mark fell in is marked, whole (`RefLink`), since no
+ * character of it is one the server matched. Until the engine has answered (one
  * pre-paint commit once it is loaded on the page) the element is empty; a text with no tree
  * that is too long for the page's own thread holds its own source, clamped, marked
  * `data-markdown-pending`, until the parse worker answers (`markdown-engine.ts`); and when the
@@ -187,7 +145,6 @@ export function MarkdownPreview({
   highlightClassName = "",
   lead,
   lines,
-  links = "inert",
   markdown,
   source,
   tree,
@@ -201,9 +158,6 @@ export function MarkdownPreview({
    *  `Replying to Planner — `. Clamped with the text as one line. */
   lead?: string;
   lines: 1 | 2 | 3;
-  /** `inert` (the default) renders every link as link-styled text; `live` keeps them links, for
-   *  a host whose own control is a toggle. */
-  links?: "inert" | "live";
   markdown: string;
   /** The record this text is - the ask, comment, message or document version whose text it is
    *  (`TextSource`); none for text of no record, which links no `#id`. */
@@ -214,26 +168,19 @@ export function MarkdownPreview({
 }): ReactNode {
   const root = useRef<HTMLSpanElement>(null);
   const decorate = useCallback<DecorateMarkdown>(
-    (element, anchors) => {
-      const replaced = links === "inert" ? inertLinks(element) : undefined;
+    (element) => {
+      // The marks the paint drew; a mark a reference draws is React's, and it reads the class
+      // from the context around the portals.
       if (highlightClassName !== "") {
-        for (const mark of element.querySelectorAll<HTMLElement>(HIGHLIGHT_SELECTOR)) {
+        for (const mark of element.querySelectorAll<HTMLElement>(SEARCH_HIGHLIGHT_SELECTOR)) {
           mark.className = highlightClassName;
         }
       }
-      const decorated = anchors.map((reference) => {
-        const host = replaced === undefined ? reference.anchor : replaced.get(reference.anchor);
-        if (host === undefined) {
-          throw new Error("A reference anchor is not a link of the preview it was found in.");
-        }
-        return { ...reference, anchor: host };
-      });
       if (lead !== undefined && lead !== "") {
         element.prepend(document.createTextNode(lead));
       }
-      return decorated;
     },
-    [highlightClassName, lead, links]
+    [highlightClassName, lead]
   );
   const references = useTextReferences(markdown, source);
   const { isFallback, isPending, portals } = useRenderedMarkdown(
@@ -243,11 +190,12 @@ export function MarkdownPreview({
     paintOneLine,
     { pictures: "inline", decorate, references }
   );
-  // A text with no tree is one Dispatch does not store, and its own source is all its hover
-  // text can come from (`useMarkdownHeadline`).
-  const title = useMarkdownHeadline(
+  // The whole text for a pointer reader is the one plain-text projection, where a reference
+  // reads as its target's own name rather than as its short form (`PlainText`). A text with no
+  // tree is one Dispatch does not store, and its own source is all that projection can read
+  // (`useMarkdownHeadline`).
+  const { reads, text: title } = usePlainHeadline(
     fullTitle ? tree : undefined,
-    Number.POSITIVE_INFINITY,
     fullTitle && tree === undefined ? markdown : undefined
   );
 
@@ -260,7 +208,10 @@ export function MarkdownPreview({
       ref={root}
       title={title?.text}
     >
-      {portals}
+      {reads}
+      <SearchHighlightClassName.Provider value={highlightClassName}>
+        {portals}
+      </SearchHighlightClassName.Provider>
     </span>
   );
 }

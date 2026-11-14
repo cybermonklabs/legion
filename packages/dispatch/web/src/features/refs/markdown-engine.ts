@@ -517,56 +517,79 @@ export function renderWithEngine(
 export const markdownClassName =
   "dispatch-markdown prose prose-sm prose-slate break-words dark:prose-invert";
 
-/** Text outside code with every `dispatch://` reference written as its short form
- *  (`dispatch://CORE-1/ask/a1` reads `CORE-1 ask`), as a rendered body's link reads until its
- *  title resolves; a reference in code stays as its author wrote it, as it does in a body. */
-function shortenReferences(text: string): string {
-  let shortened = "";
+/** The name a text's `dispatch://` addresses resolve to, each under the address as its author
+ *  wrote it; an address the map does not hold has not resolved, and reads as its short form. */
+export type ReferenceNames = ReadonlyMap<string, string>;
+
+/** No address resolved yet, shared so a projection that needs none keeps one identity across
+ *  renders and the layout effect it is a dependency of never re-runs for a fresh empty map. */
+export const NO_REFERENCE_NAMES: ReferenceNames = new Map();
+
+/** What one text of a document projects to: its words, and every `dispatch://` address it wrote
+ *  outside code, each as its author wrote it. */
+interface ProjectedText {
+  readonly words: string;
+  readonly addresses: readonly string[];
+}
+
+/** Text outside code with every `dispatch://` reference written as the name `names` resolved for
+ *  it, and as its short form (`dispatch://CORE-1/ask/a1` reads `CORE-1 ask`) until it does - as a
+ *  rendered body's link reads before its title resolves. A reference in code stays as its author
+ *  wrote it, as it does in a body, and is no address to resolve. */
+function nameReferences(text: string, names: ReferenceNames, addresses: string[]): string {
+  let named = "";
   let cursor = 0;
   for (const { start, value } of referenceSpans(text, "dispatch://")) {
     const route = parseDispatchReference(value);
     if (route !== undefined) {
-      shortened += `${text.slice(cursor, start)}${shortForm(route)}`;
+      addresses.push(value);
+      named += `${text.slice(cursor, start)}${names.get(value) ?? shortForm(route)}`;
       cursor = start + value.length;
     }
   }
-  return shortened + text.slice(cursor);
+  return named + text.slice(cursor);
 }
 
-/** The words a parsed document renders, on one line: text as it reads (references shortened),
- *  raw inline HTML as the literal characters a body shows for it, and every block boundary,
- *  hard break or other leaf a space. */
-function plainWords(doc: ProseMirrorNode): string {
+/** The words a parsed document renders, on one line: text as it reads (references named), raw
+ *  inline HTML as the literal characters a body shows for it, and every block boundary, hard
+ *  break or other leaf a space. */
+function plainWords(doc: ProseMirrorNode, names: ReferenceNames): ProjectedText {
   const parts: string[] = [];
+  const addresses: string[] = [];
   doc.descendants((node, _position, parent) => {
     if (node.isText) {
       const code =
         parent?.type.spec.code === true || node.marks.some((mark) => mark.type.spec.code === true);
-      parts.push(code ? (node.text ?? "") : shortenReferences(node.text ?? ""));
+      parts.push(code ? (node.text ?? "") : nameReferences(node.text ?? "", names, addresses));
     } else if (node.isBlock || node.isLeaf) {
       parts.push(node.type.name === "html" ? String(node.attrs.value ?? "") : " ");
     }
     return true;
   });
-  return parts.join("");
+  return { addresses, words: parts.join("") };
 }
 
-/** A headline and whether it had to be cut to fit. */
+/** A headline, whether it had to be cut to fit, and the `dispatch://` addresses it drew. */
 export interface MarkdownHeadline {
   readonly text: string;
   readonly cut: boolean;
+  /** Every address the projection wrote, as its author wrote it, in the order it wrote them: a
+   *  caller that resolves their names (`usePlainHeadline`) hands them back as `names`, and one
+   *  that does not ignores them. */
+  readonly addresses: readonly string[];
 }
 
 /**
  * A stored text projected to one line of plain words and cut to `max` characters, for a place
- * that can hold only a string: a reference link's text, a card's title, a hover tooltip. The
- * words are `tree`'s, drawn from the reading Go made of that text, so nothing on this page
- * parses markdown for a stored text. Formatting goes (a link's own styling is the formatting
- * there) and no syntax stays: `**Blocking:** the deploy` reads `Blocking: the deploy`, a code
- * span keeps its words, a `dispatch://` reference reads as its short form, and the cut happens
- * on the projected text, so it never splits a mark (nor a character outside the Basic
- * Multilingual Plane). Blocks and hard breaks become single spaces. `cut` says whether the
- * text was cut, which an ellipsis the author typed cannot fake.
+ * that can hold only a string: a reference link's text, a card's title, a hover tooltip, an
+ * `aria-label`. The words are `tree`'s, drawn from the reading Go made of that text, so nothing
+ * on this page parses markdown for a stored text. Formatting goes (a link's own styling is the
+ * formatting there) and no syntax stays: `**Blocking:** the deploy` reads `Blocking: the
+ * deploy`, a code span keeps its words, a `dispatch://` reference reads as the name `names`
+ * resolved for it and as its short form until it does, and the cut happens on the projected
+ * text, so it never splits a mark (nor a character outside the Basic Multilingual Plane).
+ * Blocks and hard breaks become single spaces. `cut` says whether the text was cut, which an
+ * ellipsis the author typed cannot fake.
  *
  * `markdown` is for a text that carries no tree to take the words from. That is the three texts
  * Dispatch does not store — a refused broadcast send's row names its own text on hover
@@ -574,6 +597,19 @@ export interface MarkdownHeadline {
  * that did not ask for one, or a server that has not rolled, which a deploy serving two builds
  * puts in front of one dashboard (`reference-target.ts`). It is read only where `tree` is
  * absent, and it is parsed, as everything about such a text is.
+ *
+ * `names` is what a caller has resolved for the addresses the last projection answered; a caller
+ * that leaves it out reads every reference as its short form, which is what a title drawn over
+ * one record's text does (`useReferenceTarget`), since a name inside a name resolves nothing.
+ *
+ * `firstLine` projects the text's first line alone: the first block that holds any words (a
+ * paragraph, a heading, a list's first item), cut at its first line break (`firstLineOf`), for a
+ * place that shows the opening line of a text and no more of it. A text read from `markdown` is
+ * parsed with its soft breaks kept as line breaks for this reading, so a paragraph's first line
+ * is the line its author wrote; a tree's soft break is whatever Go's reading made of it, a space,
+ * so only a hard break ends that line. Only a closed row of the priorities table asks for it
+ * today (`priorities-columns.tsx`); every other caller reads the whole text, which is the
+ * default. `cut` still says only whether the projected words were cut to `max`.
  *
  * `undefined` where neither is given, until the engine has answered (one pre-paint commit once
  * it is loaded on the page, and for a parsed body until the worker's answer lands), and for a
@@ -583,7 +619,9 @@ export interface MarkdownHeadline {
 export function useMarkdownHeadline(
   tree: DisplayTree | undefined,
   max: number,
-  markdown?: string
+  markdown?: string,
+  names: ReferenceNames = NO_REFERENCE_NAMES,
+  firstLine = false
 ): MarkdownHeadline | undefined {
   const [headline, setHeadline] = useState<MarkdownHeadline>();
   useLayoutEffect(() => {
@@ -592,9 +630,13 @@ export function useMarkdownHeadline(
         setHeadline(undefined);
         return;
       }
-      const characters = Array.from(plainWords(document).replace(/\s+/g, " ").trim());
+      // The line is cut from the parsed document, never from the markdown, so the projection
+      // reads it as it reads a whole text.
+      const projected = plainWords(firstLine ? firstLineOf(document) : document, names);
+      const characters = Array.from(projected.words.replace(/\s+/g, " ").trim());
       const cut = characters.length > max;
       setHeadline({
+        addresses: projected.addresses,
         cut,
         text: cut ? `${characters.slice(0, max).join("")}…` : characters.join(""),
       });
@@ -606,11 +648,47 @@ export function useMarkdownHeadline(
       setHeadline(undefined);
       return;
     }
-    return renderWithEngine(markdown, undefined, "space", ({ parsed, pending }) => {
-      // A long body's headline waits for the worker rather than reading as its own source,
-      // and the headline left in place would be the one a frame before it produced.
-      fit(pending ? undefined : parsed);
-    });
-  }, [markdown, max, tree]);
+    return renderWithEngine(
+      markdown,
+      undefined,
+      firstLine ? "line" : "space",
+      ({ parsed, pending }) => {
+        // A long body's headline waits for the worker rather than reading as its own source,
+        // and the headline left in place would be the one a frame before it produced.
+        fit(pending ? undefined : parsed);
+      }
+    );
+  }, [firstLine, markdown, max, names, tree]);
   return headline;
+}
+
+/** `document` up to the end of its first line: the first textblock that holds any words, cut at
+ *  its first hard break, or at its first newline where it is code, whose text keeps its lines. */
+function firstLineOf(document: ProseMirrorNode): ProseMirrorNode {
+  let end: number | undefined;
+  document.descendants((node, position) => {
+    if (end !== undefined) {
+      return false;
+    }
+    if (!node.isTextblock) {
+      return true;
+    }
+    if (node.textContent.trim() === "") {
+      return false;
+    }
+    const contentStart = position + 1;
+    end = contentStart + node.content.size;
+    node.forEach((child, offset) => {
+      if (end !== contentStart + node.content.size) {
+        return;
+      }
+      if (child.type.name === "hardbreak") {
+        end = contentStart + offset;
+      } else if (child.isText && (child.text ?? "").includes("\n")) {
+        end = contentStart + offset + (child.text ?? "").indexOf("\n");
+      }
+    });
+    return false;
+  });
+  return document.cut(0, end ?? 0);
 }

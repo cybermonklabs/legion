@@ -10,6 +10,7 @@ import {
   textMutedOnCanvas,
   textSecondaryOnCanvas,
 } from "../../theme/classes";
+import { PlainText } from "../refs/plain-text";
 import { Timestamp } from "../refs/Timestamp";
 import { InPlaceField } from "./InPlaceField";
 import { PriorityDescription } from "./PriorityDescription";
@@ -105,8 +106,18 @@ function TitleCell({ actions, item }: { actions: PriorityRowActions; item: Prior
             onSave={(next) => actions.onDescribe(item, next)}
             rows={6}
           />
-        ) : item.summary === "" ? null : (
-          <p className={`truncate text-sm ${textSecondaryOnCanvas}`}>{item.summary}</p>
+        ) : (
+          // A closed row shows the description's first line and no more of it, in plain words
+          // (`PlainText`'s `firstLine`), read once the engine has answered. It is markdown, so
+          // its markers are not read out, and a reference in it reads as its target's name, as
+          // every other one-line projection of stored text reads it.
+          <PlainText firstLine markdown={description}>
+            {(summary) =>
+              summary === undefined || summary === "" ? null : (
+                <p className={`truncate text-sm ${textSecondaryOnCanvas}`}>{summary}</p>
+              )
+            }
+          </PlainText>
         )}
       </div>
     </div>

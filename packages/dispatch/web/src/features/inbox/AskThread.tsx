@@ -1,6 +1,7 @@
+import { dispatchWritingBox } from "@legion/contracts";
 import type { UseQueryResult } from "@tanstack/react-query";
 import { useQueryClient } from "@tanstack/react-query";
-import { type FormEvent, type ReactNode, useId, useState } from "react";
+import { type FormEvent, type ReactNode, useState } from "react";
 
 import { type ArtifactOwner, api, type WriteBounds } from "../../api/client";
 import type { Ask, AskRead, Comment, CommentWithTrees, CreateCommentInput } from "../../api/types";
@@ -11,7 +12,6 @@ import {
   borderDefault,
   borderStrong,
   enabledCardHoverBorder,
-  inputClasses,
   surfaceMutedBg,
   textMutedOnSurfaceMuted,
   textPrimaryOnSurfaceMuted,
@@ -19,11 +19,11 @@ import {
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { appendToDraft, DraftUploadStatus, useDraftUpload } from "../artifacts/ArtifactUpload";
+import { MentionField } from "../conversation/MentionField";
 import { AgentName } from "../refs/AgentName";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
-import { Unfurl } from "../refs/Unfurl";
 import type { DwellRef } from "../shell/useDwell";
 import { EarlierReplies } from "../threads/EarlierReplies";
 import { threadLayout } from "../threads/thread-layout";
@@ -63,7 +63,6 @@ function AskReply({
           tree={comment.body_tree}
         />
       </div>
-      <Unfurl body={comment.body} source={textSourceOf("comment", comment.id)} />
       <p className={`mt-1 text-xs ${textMutedOnSurfaceMuted}`}>
         <AgentName actor={comment.author} inline /> · <Timestamp at={comment.created_at} />
       </p>
@@ -94,9 +93,6 @@ export function AskReplyComposer({
   uploadOwner?: ArtifactOwner;
 }): ReactNode {
   const queryClient = useQueryClient();
-  // Each composer owns its field id so transient duplicate mounts during a responsive
-  // transition cannot share an ask-id-derived id.
-  const fieldId = `${useId()}-reply`;
   const [body, setBody] = useReplyDraft(ask.id);
   // Keyed by the ask, so the send outlives the composer that started it and any composer for the
   // ask sees it in flight.
@@ -116,6 +112,8 @@ export function AskReplyComposer({
       return reply(ask.issue_key, { ask_id: ask.id, body: text }, bounds);
     },
     inline: true,
+    // The question goes in as the characters its author wrote: the reading list's `write-label`
+    // (`DISPATCH_READING_SURFACES`) says why.
     label: () => `Reply on “${ask.question}”`,
     mutationKey,
     onSuccess: (_comment, text) => {
@@ -136,23 +134,20 @@ export function AskReplyComposer({
 
   return (
     <form className="flex flex-col gap-2" onSubmit={submitReply}>
-      <label className={`block text-sm font-medium ${textSecondaryOnCanvas}`} htmlFor={fieldId}>
-        Reply
-        <textarea
-          className={`mt-1 block w-full rounded-lg px-3 py-2 font-normal outline-none ${inputClasses(true)}`}
-          disabled={sending}
-          id={fieldId}
-          onChange={(event) => setBody(event.target.value)}
-          onDrop={
-            uploadOwner === undefined ? undefined : (event) => upload.drop(event, uploadOwner)
-          }
-          onKeyDown={(event) => submitOnModifiedEnter(event, { disabled: uploading })}
-          onPaste={
-            uploadOwner === undefined ? undefined : (event) => upload.paste(event, uploadOwner)
-          }
-          value={body}
-        />
-      </label>
+      <MentionField
+        body={body}
+        disabled={sending}
+        issueKey={ask.issue_key ?? undefined}
+        label="Reply"
+        labelClassName={`block text-sm font-medium ${textSecondaryOnCanvas}`}
+        onChange={(change) => setBody(change.body)}
+        onDrop={uploadOwner === undefined ? undefined : (event) => upload.drop(event, uploadOwner)}
+        onKeyDown={(event) => submitOnModifiedEnter(event, { disabled: uploading })}
+        onPaste={
+          uploadOwner === undefined ? undefined : (event) => upload.paste(event, uploadOwner)
+        }
+        writing={dispatchWritingBox("ask-thread-reply", "comment")}
+      />
       <DraftUploadStatus upload={upload} />
       <button
         className={`self-start rounded-lg border px-3 py-1.5 text-sm font-medium ${borderStrong} ${textSecondaryOnSurface} ${enabledCardHoverBorder} disabled:cursor-not-allowed disabled:opacity-50`}

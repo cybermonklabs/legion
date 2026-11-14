@@ -17,6 +17,7 @@ import {
 import { actionBar, barAction, documentEditor, needsYouCards, selectEditorText } from "./editor";
 import { askCard, inboxList } from "./inbox-pane";
 import { expectConsecutiveLinksClear } from "./layout";
+import { refPicker } from "./ref-picker";
 import { insertExternalLink } from "./seed";
 import { navigateInApp, refusePosts, WRITE_REFUSED_TEXT } from "./sends";
 import { expect, type Locator, type Page, test } from "./test";
@@ -155,16 +156,6 @@ test("the phone shell traps focus, dismisses on Escape at the right nesting leve
       await assertTabTrapped(page, '[data-testid="margin-sheet"]');
       await commentBody.focus();
     }
-
-    // D12: Ctrl+K opens a real dialog; Escape dismisses only the picker, restores focus to
-    // the composer, and leaves the composer's own draft (and, on phone, the sheet) open.
-    await commentBody.press("Control+k");
-    const picker = page.getByRole("dialog", { name: "Reference picker" });
-    await expect(picker).toBeVisible();
-    await page.keyboard.press("Escape");
-    await expect(picker).toHaveCount(0);
-    await expect(commentComposer).toBeVisible();
-    await expect(commentBody).toBeFocused();
 
     // D11: Escape on a non-empty draft shows an inline "Discard draft?" affordance (not a
     // blocking confirm()); Escape again closes it. Only the composer closes — the phone
@@ -372,9 +363,9 @@ test("inline @ autocomplete has touch-sized controls and no overflow on iPhone @
     await page.goto(`/issues/${issue.key}/conversation`);
     const composer = page.getByRole("form", { name: "Comment composer" });
     await composer.getByLabel("Comment").fill("@");
-    const picker = composer.getByRole("listbox", { name: "Mention suggestions" });
+    const picker = refPicker(composer);
     await expect(picker).toBeVisible();
-    const option = picker.getByRole("option", { exact: true, name: "planner" });
+    const option = picker.getByRole("option", { name: /^planner\b/ });
     await expect(option).toBeVisible();
     for (const control of await composer.locator("button:visible, textarea:visible").all()) {
       const box = await control.boundingBox();
@@ -877,11 +868,13 @@ test("a long name ends in an ellipsis wherever a link or control truncates it @p
     await navigateInApp(page, `/issues/${issue.key}/conversation`);
     const composer = page.getByRole("form", { name: "Comment composer" });
     await composer.getByLabel("Comment").fill("@");
-    const roleOption = composer
-      .getByRole("listbox", { name: "Mention suggestions" })
-      .getByRole("option", { exact: true, name: "legion-implementer" });
+    const roleOption = refPicker(composer).getByRole("option", {
+      name: /^legion-implementer\b/,
+    });
     await expectEllipsis(roleOption);
-    await expectStacked(roleOption);
+    // The row's own text column: its kind's icon sits beside it rather than above its words
+    // (`RefPickerList`), so what stacks is the column the words and the detail share.
+    await expectStacked(roleOption.locator("> span"));
     const detail = roleOption.getByText(new RegExp(`^${longTitle} · /w/legion · `));
     await expect.soft(detail).toHaveAttribute("title", (await detail.textContent()) ?? "");
 

@@ -294,6 +294,9 @@ export function AgentMessageComposer({
                     {committedLabel}
                   </option>
                 ) : null}
+                {/* An `<option>` can hold no markup, so the issue's key and title stay the
+                    characters they are; the reading list's `agent-message-issue-option`
+                    (`DISPATCH_READING_SURFACES`) says why. */}
                 {issues.data.map((issue) => (
                   <option key={issue.key} value={issue.key}>
                     {issue.key} · {issue.title}
@@ -308,6 +311,7 @@ export function AgentMessageComposer({
         <PendingSendTurn held={held} key={held.id} sends={sends} />
       ))}
       <MentionComposer
+        box="agents-row-composer"
         // The channel decides which mention the message needs - an issue comment reaches this
         // agent by mentioning it, a direct message does not. The composer takes a changed seed
         // into its live draft in place, so one instance holds the draft across every pick.

@@ -21,7 +21,6 @@ import {
   parseBlockReference,
   withBlock,
 } from "./block-reference";
-import { referenceSpans } from "./reference-spans";
 import { pageInBound, routeInBound } from "./target-id";
 
 export type IssueRoute =
@@ -66,7 +65,30 @@ export type AgentArtifactRoute = {
   slug: string;
   version?: number;
 };
-export type DispatchReferenceRoute = IssueRoute | ProjectDocumentRoute | AgentArtifactRoute;
+/** A component of a project's architecture, `dispatch://<PROJECT>/component/<id>`, shown on the
+ *  project's Architecture tab. */
+export type ComponentRoute = { kind: "component"; project: string; id: string };
+/**
+ * A party a reference names: the agent whose session id it carries, the role a token names, or
+ * the person a login names. A party is a reader rather than a record, so the reference graph
+ * stores no node and no edge for one (Go's `refs.TargetOf`), and a person has no page at all
+ * (`buildReferencePath`).
+ */
+export type PartyRoute =
+  | { kind: "agent-session"; session: string }
+  | { kind: "role"; role: string }
+  | { kind: "person"; login: string };
+export type DispatchReferenceRoute =
+  | IssueRoute
+  | ProjectDocumentRoute
+  | AgentArtifactRoute
+  | ComponentRoute
+  | PartyRoute;
+/** A reference that opens a page of this dashboard: every kind but a person, whom nothing
+ *  shows (R5). It is what `buildReferencePath` takes, so a sink holding a reference a person
+ *  typed has to answer for that kind itself - drawing its words where a link would be - rather
+ *  than writing a path that names no page. */
+export type PagedReferenceRoute = Exclude<DispatchReferenceRoute, { kind: "person" }>;
 /**
  * The five fields the Inbox filters, sorts and groups by. Assignee is one of them, but it keeps
  * a vocabulary of its own in the address - repeated `?assignee=`, with `everyone` and
@@ -177,7 +199,9 @@ type PlainIssueRoute = Extract<IssueRoute, { kind: PlainIssueTab }>;
 
 /** Whether the route is one of those tabs, narrowing it for the builders below and leaving the
  *  rest of the union to the arms that follow. */
-function isPlainIssueRoute(route: DispatchRoute | AgentArtifactRoute): route is PlainIssueRoute {
+function isPlainIssueRoute(
+  route: DispatchRoute | DispatchReferenceRoute
+): route is PlainIssueRoute {
   return PLAIN_ISSUE_TABS.some((tab) => tab === route.kind);
 }
 
@@ -203,6 +227,19 @@ const agentArtifactReferencePattern = new RegExp(
   "u"
 );
 const agentArtifactPathPattern = /^\/agents\/([^/]+)\/artifacts\/([^/]+)$/;
+/** A component's reference after `dispatch://<PROJECT>/`: the component id, the lowercase slug
+ *  the server reads (`text.ComponentIDPattern`). */
+const componentReferencePattern = /^component\/([a-z0-9](?:[a-z0-9-]*[a-z0-9])?)$/;
+/** A role's token, the charset a `role:<token>` delivery route is written in (the server's
+ *  `model.ParseRoute`). */
+const roleTokenOnlyPattern = /^[a-z0-9-]+$/;
+/** A session id a `session:<id>` delivery route is written with, the server's `model.ParseRoute`
+ *  again. It is narrower than the ids a reference may name (`SESSION_ID_PATTERN`, which takes
+ *  `.` and `:` among the rest), so a body can write an agent address no route reaches. */
+const sessionRouteIDPattern = /^[A-Za-z0-9_-]+$/;
+/** A person's login: their email lowercased, the stored form of a login (the server's
+ *  `model.CanonicalLogin`). A login written any other way names nobody Dispatch holds. */
+const personLoginOnlyPattern = /^[a-z0-9._%+'-]+@[a-z0-9-]+(\.[a-z0-9-]+)+$/;
 /** One machine's page: `/machines/<machine>`, the machine name as one percent-encoded segment. */
 const machinePathPattern = /^\/machines\/([^/]+)$/;
 
@@ -212,7 +249,9 @@ export const AGENT_ARTIFACT_PATH = "/agents/:sessionId/artifacts/:slug";
 /** Agents reference the conversation as `dispatch://KEY/log`; the browser path is `/conversation`. */
 const legacyLogReferencePattern = /^log$/;
 
-export function isProjectRoute(route: DispatchRoute | AgentArtifactRoute): route is ProjectRoute {
+export function isProjectRoute(
+  route: DispatchRoute | DispatchReferenceRoute
+): route is ProjectRoute {
   return (
     route.kind === "project" ||
     route.kind === "architecture" ||
@@ -399,12 +438,31 @@ export function parseNodeReference(value: string): DispatchReferenceRoute | unde
   }
   if (key === "agent") {
     const artifact = target?.match(agentArtifactReferencePattern);
-    return artifact === null || artifact === undefined
-      ? undefined
-      : agentArtifactRoute(artifact[1] ?? "", artifact[2] ?? "", artifact[3]);
+    if (artifact !== null && artifact !== undefined) {
+      return agentArtifactRoute(artifact[1] ?? "", artifact[2] ?? "", artifact[3]);
+    }
+    // The session on its own is the agent itself; everything under it is what that agent's
+    // conversation owns, which is a document and nothing else.
+    return target !== undefined && isSessionId(target)
+      ? { kind: "agent-session", session: target }
+      : undefined;
+  }
+  if (key === "role") {
+    return target !== undefined && roleTokenOnlyPattern.test(target)
+      ? { kind: "role", role: target }
+      : undefined;
+  }
+  if (key === "person") {
+    return target !== undefined && personLoginOnlyPattern.test(target)
+      ? { kind: "person", login: target }
+      : undefined;
   }
   if (!projectKeyOnlyPattern.test(key) || target === undefined) {
     return undefined;
+  }
+  const component = target.match(componentReferencePattern);
+  if (component !== null) {
+    return { id: component[1] ?? "", kind: "component", project: key };
   }
   const document = target.match(projectArtifactReferencePattern);
   const itemID = document?.[4] === undefined ? undefined : decodedSegment(document[4]);
@@ -526,6 +584,16 @@ export function buildMachinePath(host: string): string {
 /** The `?machine=` the Agents page filters on, named once here so the page reading it
  *  (`useAgentMachine`) and the links building it cannot drift apart. */
 export const AGENTS_MACHINE_PARAM = "machine";
+
+/** The `?role=` the Agents page narrows to, the page a `dispatch://role/<token>` reference
+ *  opens (`buildReferencePath`), named here beside the filter it stands with. */
+export const AGENTS_ROLE_PARAM = "role";
+
+/** The `?component=` the Architecture pane holds its selected component in, the page a
+ *  `dispatch://<PROJECT>/component/<id>` reference opens (`buildReferencePath`), named once
+ *  here so the pane reading it (`features/architecture/ArchitecturePage.tsx`) and the link
+ *  building it cannot drift apart. */
+export const ARCHITECTURE_COMPONENT_PARAM = "component";
 
 /** The Agents page narrowed to one machine, `/agents?machine=<host>`: the link a machine's own
  *  page sends a reader to its sessions by. */
@@ -650,43 +718,23 @@ function pageRoutes(
   return { block: id === undefined ? undefined : withBlock(route, id), page: route };
 }
 
-/** A reference a text cites: the `dispatch://` form and the dashboard path it opens. */
-export interface ComposerReference {
-  href?: string;
-  reference: string;
-}
-
-/**
- * The references body cites, in order of first appearance: every `dispatch://` reference and
- * dashboard URL of `appOrigin` that names an issue, a document or an item. The composer's
- * reference pills and the unfurl cards read text through it.
- */
-export function composerReferences(
-  body: string,
-  appOrigin = window.location.origin
-): ComposerReference[] {
-  const references: ComposerReference[] = [];
-  const seen = new Set<string>();
-  for (const { value } of referenceSpans(body)) {
-    const route = referenceRouteFromHref(value, appOrigin);
-    if (route === undefined) {
-      continue;
-    }
-    const reference = buildDispatchReference(route);
-    if (seen.has(reference)) {
-      continue;
-    }
-    seen.add(reference);
-    references.push({ href: buildReferencePath(route), reference });
-  }
-  return references;
-}
-
 export function buildDispatchReference(route: DispatchReferenceRoute): string {
-  if (route.kind === "agent-artifact") {
-    return `dispatch://agent/${route.session}/artifact/${encodeURIComponent(route.slug)}${
-      route.version === undefined ? "" : `@v${route.version}`
-    }`;
+  switch (route.kind) {
+    case "agent-artifact":
+      return `dispatch://agent/${route.session}/artifact/${encodeURIComponent(route.slug)}${
+        route.version === undefined ? "" : `@v${route.version}`
+      }`;
+    // A party is written as it is read, its name needing no encoding: a session id carries none
+    // of the characters a reference ends at, a role token is `[a-z0-9-]` and a login is a
+    // lowercased email.
+    case "agent-session":
+      return `dispatch://agent/${route.session}`;
+    case "role":
+      return `dispatch://role/${route.role}`;
+    case "person":
+      return `dispatch://person/${route.login}`;
+    case "component":
+      return `dispatch://${route.project}/component/${route.id}`;
   }
   const target = "block" in route ? route.block : undefined;
   const block =
@@ -705,13 +753,12 @@ export function buildDispatchReference(route: DispatchReferenceRoute): string {
   if (route.kind === "spec") {
     return `${issue}/spec${block}`;
   }
-  if (isPlainIssueRoute(route)) {
-    return `${issue}/${route.kind}`;
-  }
-  // The conversation keeps the `log` spelling every reference written before the Activity tab
-  // existed used; activity, newer, is spelled as its own path is.
-  if (route.kind === "conversation") {
-    return `${issue}/log`;
+  // An issue's tabs are the issue: the grammar lets only `spec`, `artifact/…`, `ask/…`,
+  // `comment/…` and `message/…` follow an issue key, so the seven forms this once wrote -
+  // verification, plan, activity, children, artifacts, collaborators and the conversation's
+  // `log` - were references the server refused to read.
+  if (isPlainIssueRoute(route) || route.kind === "conversation") {
+    return issue;
   }
   if (route.kind === "decisions") {
     return `${issue}/artifact/${DECISIONS_DOCUMENT_SLUG}`;
@@ -739,6 +786,40 @@ export function sessionOfAddress(address: string): string | undefined {
   return address.startsWith("session:") ? address.slice("session:".length) : undefined;
 }
 
+/** The party a delivery address names, written out kind by kind: `session:<id>` an agent's
+ *  session and `role:<token>` a role, as the server's `model.ParseRoute` reads them
+ *  (`internal/dispatch/model/model.go`), the grammar it holds every mention target to
+ *  (`api.checkMentionRoute`). Undefined for an address of any other form, which no route
+ *  reaches. A body can name a party outside this grammar - an agent reference takes the wider
+ *  `SESSION_ID_PATTERN` - and such a party is reached by nothing, so the composer says so
+ *  rather than listing it as one who is told (`party-references.ts`). A kind added to this
+ *  grammar is named here or it is no party, rather than falling to whichever arm is last. */
+export function partyOfAddress(address: string): PartyRoute | undefined {
+  const session = sessionOfAddress(address);
+  if (session !== undefined) {
+    return sessionRouteIDPattern.test(session) ? { kind: "agent-session", session } : undefined;
+  }
+  if (address.startsWith("role:")) {
+    const role = address.slice("role:".length);
+    return roleTokenOnlyPattern.test(role) ? { kind: "role", role } : undefined;
+  }
+  return undefined;
+}
+
+/** The delivery address a party is reached at, or undefined for one no address reaches: a
+ *  person, who reads the record and is never a delivering party (R5), and an agent whose
+ *  session id is outside the grammar above. */
+export function deliveryAddressOf(route: PartyRoute): string | undefined {
+  switch (route.kind) {
+    case "agent-session":
+      return sessionRouteIDPattern.test(route.session) ? `session:${route.session}` : undefined;
+    case "role":
+      return roleTokenOnlyPattern.test(route.role) ? `role:${route.role}` : undefined;
+    case "person":
+      return undefined;
+  }
+}
+
 /** The route a document is referenced and linked by: an issue's primary document is its `spec`,
  *  any other issue artifact is `artifact/<slug>`, a project document sits under its project, and
  *  an artifact of an agent's conversation under that agent's session. `version` pins a historical
@@ -747,7 +828,7 @@ export function sessionOfAddress(address: string): string | undefined {
 export function documentRoute(
   artifact: Pick<Artifact, "issue_key" | "kind" | "primary" | "project" | "session_id" | "slug">,
   version?: number
-): DispatchReferenceRoute {
+): PagedReferenceRoute {
   if (isAgentArtifact(artifact)) {
     return version === undefined
       ? { kind: "agent-artifact", session: artifact.session_id, slug: artifact.slug }
@@ -835,7 +916,7 @@ export function itemRoute(
   kind: "ask" | "comment",
   item: { id: string; issue_key: string | null },
   document: { project: string; slug: string } | undefined
-): DispatchReferenceRoute | undefined {
+): PagedReferenceRoute | undefined {
   if (item.issue_key !== null) {
     return { id: item.id, key: item.issue_key, kind };
   }
@@ -869,8 +950,17 @@ export function documentItemPath(
  * (`useMarkdownHeadline`) writes in its place. Mirrors `buildDispatchReference`'s shape without
  * the `dispatch://` scheme, so it reads like a second, shorter reference. */
 export function shortForm(route: DispatchReferenceRoute): string {
-  if (route.kind === "agent-artifact") {
-    return `agent/${shortSessionId(route.session)}/${route.slug}`;
+  switch (route.kind) {
+    case "agent-artifact":
+      return `agent/${shortSessionId(route.session)}/${route.slug}`;
+    case "agent-session":
+      return `agent/${shortSessionId(route.session)}`;
+    case "role":
+      return `role/${route.role}`;
+    case "person":
+      return `person/${route.login}`;
+    case "component":
+      return `${route.project}/component/${route.id}`;
   }
   const target = "block" in route ? route.block : undefined;
   const block =
@@ -902,6 +992,71 @@ export function shortForm(route: DispatchReferenceRoute): string {
   }
 }
 
+/**
+ * The `href` a reference's path becomes inside this dashboard, or `undefined` for a path that
+ * is no link of this dashboard's. It is the one thing written into an `href` built from a
+ * reference a person typed (`RefLink`'s two writers, `features/doc/picture-view`).
+ *
+ * A path qualifies on three conditions, because any one alone lets a link off the site: it
+ * begins with exactly one slash, so `//evil.example/x`, `javascript:` and `data:` are out; it
+ * still names the site it is resolved against once the URL parser has read it, so
+ * `/\evil.example/x`, which a leading-slash check passes and every browser sends to
+ * evil.example, is out too; and what the parser read still begins with exactly one slash,
+ * since reading the dot segments out of `/.//evil.example/x`, `/a/..//evil.example` or
+ * `/%2e//evil.example` puts back the two the first condition refused.
+ *
+ * What it answers is built from the parsed URL's own parts rather than handed back as it came,
+ * so the string written into the attribute carries no scheme and no host whatever the path
+ * held: there is no spelling of the input that becomes one.
+ *
+ * The answer does not depend on which site serves the dashboard: a path that stays on one
+ * origin stays on every origin, and an absolute URL, this dashboard's own included, is already
+ * out by the leading slash. So the parser is given a base of its own rather than
+ * `window.location.origin`, which is `null` at an opaque origin and no base at all.
+ *
+ * Every path `buildReferencePath` writes qualifies today, each segment encoded or matched
+ * against a key pattern. It is the gate all the same, at each sink rather than at the builder,
+ * so no later arm of that switch, and no other route a reference resolves to, can reach an
+ * `href` without passing here.
+ */
+export function appHref(path: string): string | undefined {
+  if (!path.startsWith("/") || path.startsWith("//")) {
+    return undefined;
+  }
+  let url: URL;
+  try {
+    url = new URL(path, SAME_SITE_PROBE_ORIGIN);
+  } catch {
+    return undefined;
+  }
+  if (url.origin !== SAME_SITE_PROBE_ORIGIN) {
+    return undefined;
+  }
+  const href = `${url.pathname}${url.search}${url.hash}`;
+  // Reading the dot segments out puts back the `//` the check above refused: `/.//evil.com/x`
+  // parses to the path `//evil.com/x`, which a browser resolving this attribute sends to
+  // evil.com. The answer is held to the same two slashes the input was.
+  return href.startsWith("//") ? undefined : href;
+}
+
+/** The base `appHref` reads a path against: a syntactically valid origin that is no real site,
+ *  so a path that escapes it escapes any origin and nothing is ever fetched from it. */
+const SAME_SITE_PROBE_ORIGIN = "https://same-site.invalid";
+
+/** The `href` a reference opens inside this dashboard, or `undefined` for one that opens no
+ *  page of it: the path the reference builds (`buildReferencePath`), through the gate above.
+ *  The composition every sink of a typed reference makes - `RefLink`'s two writers,
+ *  `features/doc/picture-view` and the two hooks of `reference-target.ts` - named once here,
+ *  beside the gate it is made of. `specSlug` is `buildReferencePath`'s, the slug a pinned block
+ *  of an issue's spec opens its version under, which only the issue's summary names. */
+export function referenceHref(
+  route: DispatchReferenceRoute,
+  specSlug?: string
+): string | undefined {
+  // A person has no page, so there is no path to gate: the sink draws the words instead.
+  return route.kind === "person" ? undefined : appHref(buildReferencePath(route, specSlug));
+}
+
 /** The SPA path a reference navigates to, whichever side of the issue/project split it is on. A
  *  block opens its document, issue comment or message at the block (`#b-`); a pinned block of a
  *  document opens the version of its document it pins, since a version's stored text holds no
@@ -910,12 +1065,24 @@ export function shortForm(route: DispatchReferenceRoute): string {
  *  their own. A block of a project document's comment opens the comment (`?comment=<id>`) with no
  *  fragment: that page's `#b-` names a block of the document. An issue's spec keeps its versions
  *  under its own slug, which a spec route does not carry: `specSlug` names it once the issue's
- *  summary is read (`useReferencePath`), and until then a pinned block of the spec opens the live
- *  spec at the block. */
-export function buildReferencePath(route: DispatchReferenceRoute, specSlug?: string): string {
-  if (route.kind === "agent-artifact") {
-    const artifact = `/agents/${encodeURIComponent(route.session)}/artifacts/${encodeURIComponent(route.slug)}`;
-    return route.version === undefined ? artifact : `${artifact}?v=${route.version}`;
+ *  summary is read (`useReferenceHref`), and until then a pinned block of the spec opens the live
+ *  spec at the block. A person is no caller of this: nothing shows one, so a person's reference
+ *  opens no page, and leaving that kind out (`PagedReferenceRoute`) is what makes each sink
+ *  that can hold one say for itself what it draws instead (R5). */
+export function buildReferencePath(route: PagedReferenceRoute, specSlug?: string): string {
+  switch (route.kind) {
+    case "agent-artifact": {
+      const artifact = `/agents/${encodeURIComponent(route.session)}/artifacts/${encodeURIComponent(route.slug)}`;
+      return route.version === undefined ? artifact : `${artifact}?v=${route.version}`;
+    }
+    case "agent-session":
+      return `/agents/${encodeURIComponent(route.session)}/live`;
+    case "role":
+      return `/agents?${new URLSearchParams({ [AGENTS_ROLE_PARAM]: route.role })}`;
+    case "component": {
+      const architecture = buildProjectPath({ kind: "architecture", project: route.project });
+      return `${architecture}?${ARCHITECTURE_COMPONENT_PARAM}=${encodeURIComponent(route.id)}`;
+    }
   }
   const path = isProjectRoute(route) ? buildProjectPath(route) : buildIssuePath(route);
   const target = "block" in route ? route.block : undefined;
@@ -941,7 +1108,11 @@ export function buildReferencePath(route: DispatchReferenceRoute, specSlug?: str
 }
 
 export function buildIssuePath(route: IssueRoute): string {
-  const issue = `/issues/${route.key}`;
+  // Encoded although an issue key is `[A-Z][A-Z0-9]{1,9}-<digits>` and so already a path
+  // segment: a key that reached this builder out of a reference a person typed has been read
+  // by a pattern, never trusted, and encoding says so where the path is built rather than at
+  // each of the places one is written into an `href`.
+  const issue = `/issues/${encodeURIComponent(route.key)}`;
   if (route.kind === "issue") {
     return issue;
   }
@@ -967,7 +1138,10 @@ export function buildIssuePath(route: IssueRoute): string {
 }
 
 export function buildProjectPath(route: ProjectRoute): string {
-  const project = `/projects/${route.project}`;
+  // Encoded for the reason `buildIssuePath` gives: a project key is `[A-Z][A-Z0-9]{1,9}`, so
+  // this is identity for every key the server makes, and the path carries no caller's
+  // characters whatever reached it.
+  const project = `/projects/${encodeURIComponent(route.project)}`;
   if (route.kind === "project") {
     return project;
   }

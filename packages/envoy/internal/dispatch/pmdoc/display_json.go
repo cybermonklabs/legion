@@ -4,6 +4,8 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"log/slog"
+	"maps"
+	"slices"
 	"strings"
 	"sync/atomic"
 
@@ -155,22 +157,26 @@ func DisplayTreeBuilds() uint64 { return displayTreeBuilds.Load() }
 // markTypes, which is the schema of what Dispatch keeps.
 const DisplayHighlightMark = "searchHighlight"
 
-// DisplaySnippetJSON is the display tree of a search hit's snippet: the headline balanced as the
-// cut left it (SearchSnippetMarkdown), read for display, with DisplayHighlightMark over every
-// range the sentinels start and stop named. The sentinels ride through the read rather than being
-// taken out before it, because they are private-use characters, which the parser reads as
-// ordinary word characters and leaves in the text nodes they fall in: a tree walk then has their
-// exact places, where an offset into the markdown would have had to survive both the balancing
-// and the parse.
+// DisplaySnippetJSON is the display tree of a search hit's snippet: markdown, the snippet already
+// read out of its source and balanced where it is a cut (SearchSnippet), read for display as it
+// stands, with DisplayHighlightMark over every range the sentinels start and stop named. It does
+// not balance the markdown again: SearchSnippet decided where the snippet is a cut and where it is
+// code, which no balancing of the snippet alone can see. The sentinels ride through the read
+// rather than being taken out before it, because they are private-use characters, which the
+// parser reads as ordinary word characters and leaves in the text nodes they fall in: a tree walk
+// then has their exact places, where an offset into the markdown would have had to survive both
+// the snippet's reading and the parse. The same reading leaves the ones the query matched in an
+// address or a caption in the attribute they fall in, and the walk takes those out
+// (highlightSnippet).
 //
 // The snippet is read fresh rather than from the cache: every query cuts its own headline, so a
 // cached snippet would be a tree nothing asks for again, taking the room of a body many readers
 // do share.
-func DisplaySnippetJSON(headline, start, stop string) json.RawMessage {
-	if headline == "" {
+func DisplaySnippetJSON(markdown, start, stop string) json.RawMessage {
+	if markdown == "" {
 		return nil
 	}
-	tree := ReadForDisplay(SearchSnippetMarkdown(headline), DisplayLatest)
+	tree := ReadForDisplay(markdown, DisplayLatest)
 	highlightSnippet(tree, start, stop, false)
 	encoded, err := json.Marshal(tree.toDisplayJSON())
 	if err != nil {
@@ -183,13 +189,26 @@ func DisplaySnippetJSON(headline, start, stop string) json.RawMessage {
 // highlightSnippet rewrites node's text children into the runs the sentinels cut them into, the
 // runs between a start and a stop carrying DisplayHighlightMark, and answers whether the walk is
 // inside a highlight when it leaves. The state carries across nodes in document order, since a
-// headline may start a highlight in one text node and stop it in the next; a sentinel the parse
-// put somewhere no text node holds - a link's destination the query matched - leaves the state
-// where it was, which shows the reader one highlight too many or too few and never a refusal.
+// headline may start a highlight in one text node and stop it in the next.
+//
+// Only text carries a highlight, so the walk takes the sentinels out of every attribute of every
+// node it passes and of every mark on it (withoutSentinels), and those leave the state where it
+// was. ts_headline marks the words of an address as it marks any other words: a document stores
+// the autolink `<dispatch://CORE-1>` as `[dispatch://CORE-1](dispatch://CORE-1)` (text's
+// referenceEnd), and a search for CORE answers `<b>CORE</b>-1](dispatch://<b>CORE</b>-1)`, which
+// SearchSnippet widens back to the whole link (measured on PostgreSQL 18 with headlineOptions,
+// INFRA-1702). Left in the href, the sentinels make an address the browser cannot read as a
+// reference, so it takes the link away and shows the raw address; left in an image's src, the
+// picture names no file. An attribute holds no run a mark can sit on, so a sentinel there has
+// nothing to mark: a caption drawn from an image's alt is drawn plain. ts_headline marks one word
+// at a time, so a start and its stop fall in the same attribute, and toggling the state on them
+// would only have marked the words after the link, or left the ones the query matched plain.
 func highlightSnippet(node *Node, start, stop string, inside bool) bool {
 	if node == nil {
 		return inside
 	}
+	node.Attrs, _ = withoutSentinels(node.Attrs, start, stop)
+	node.Marks = marksWithoutSentinels(node.Marks, start, stop)
 	if node.Type == "text" {
 		return inside
 	}
@@ -203,10 +222,83 @@ func highlightSnippet(node *Node, start, stop string, inside bool) bool {
 			rewritten = append(rewritten, child)
 			continue
 		}
+		child.Attrs, _ = withoutSentinels(child.Attrs, start, stop)
+		child.Marks = marksWithoutSentinels(child.Marks, start, stop)
 		rewritten, inside = appendHighlightRuns(rewritten, child, start, stop, inside)
 	}
 	node.Children = rewritten
 	return inside
+}
+
+// withoutSentinels is attrs with start and stop taken out of every string value and every string
+// of a list value, which are the shapes of every attribute the schema carries that text can
+// reach: a link's href and title, an image's src, alt and title, a code block's language, an
+// inline HTML node's value, a footnote's label, and a typed block's string and list attributes.
+// It answers whether it took anything out. The answer is a map of its own where it did and attrs
+// itself where it did not, since one link's attributes are shared by every text node the link
+// spans, so attrs is never written to.
+func withoutSentinels(attrs Attrs, start, stop string) (Attrs, bool) {
+	var cleaned Attrs
+	for name, value := range attrs {
+		var stripped any
+		switch typed := value.(type) {
+		case string:
+			if !holdsSentinel(typed, start, stop) {
+				continue
+			}
+			stripped = stripSentinels(typed, start, stop)
+		case []string:
+			if !slices.ContainsFunc(typed, func(item string) bool { return holdsSentinel(item, start, stop) }) {
+				continue
+			}
+			list := make([]string, len(typed))
+			for index, item := range typed {
+				list[index] = stripSentinels(item, start, stop)
+			}
+			stripped = list
+		default:
+			continue
+		}
+		if cleaned == nil {
+			cleaned = maps.Clone(attrs)
+		}
+		cleaned[name] = stripped
+	}
+	if cleaned == nil {
+		return attrs, false
+	}
+	return cleaned, true
+}
+
+// marksWithoutSentinels is marks with withoutSentinels applied to each mark's attributes, in a
+// slice of its own where any mark changed and marks itself where none did: the runs a text node
+// is cut into share the node's marks, so the slice is never written to.
+func marksWithoutSentinels(marks []Mark, start, stop string) []Mark {
+	var cleaned []Mark
+	for index, mark := range marks {
+		attrs, changed := withoutSentinels(mark.Attrs, start, stop)
+		if !changed {
+			continue
+		}
+		if cleaned == nil {
+			cleaned = slices.Clone(marks)
+		}
+		cleaned[index].Attrs = attrs
+	}
+	if cleaned == nil {
+		return marks
+	}
+	return cleaned
+}
+
+// holdsSentinel answers whether value holds start or stop.
+func holdsSentinel(value, start, stop string) bool {
+	return strings.Contains(value, start) || strings.Contains(value, stop)
+}
+
+// stripSentinels is value with every start and every stop taken out.
+func stripSentinels(value, start, stop string) string {
+	return strings.ReplaceAll(strings.ReplaceAll(value, start, ""), stop, "")
 }
 
 // appendHighlightRuns appends the runs text is cut into at its sentinels, each carrying the text

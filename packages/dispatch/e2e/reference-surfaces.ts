@@ -2,6 +2,7 @@ import { DISPATCH_TEXT_REFERENCES } from "@legion/contracts";
 import { expect, type Locator, type Page } from "@playwright/test";
 
 import type { Issue } from "../web/src/api/types";
+import { type FakeSession, setLiveSessions } from "./agents";
 import {
   createAsk,
   createComment,
@@ -10,10 +11,14 @@ import {
   createMessage,
   createProject,
   listIssueAsks,
+  putArchitectureSource,
+  syncArchitectureSource,
 } from "./api";
 import { blockId, openedThreadCard, setSheet } from "./editor";
+import { seedFakeGithub } from "./fake-github-helpers";
 import { READING_PANE_WIDTH } from "./inbox-pane";
 import { replyRowId } from "./inbox-threads";
+import { sessionIds } from "./session-ids";
 
 /**
  * The one world every reference spec is walked across, and the surfaces it is read on.
@@ -110,6 +115,46 @@ export interface ShortenableItem {
   readonly reference: string;
 }
 
+/** The architecture CORE imports: one component, which is the only way a component exists -
+ *  the fake GitHub serves the model and the source sync reads it in (`e2e/architecture.e2e.ts`). */
+export const COMPONENT_REPO = "legion/reference-arch";
+export const COMPONENT_ID = "web";
+export const COMPONENT_TITLE = "Web";
+export const COMPONENT_REFERENCE = `dispatch://CORE/component/${COMPONENT_ID}`;
+export const COMPONENT_MODEL = { "web.md": `---\ntitle: ${COMPONENT_TITLE}\n---\nThe **SPA**.\n` };
+
+/** The live session a reference names and the role it holds. The id is a UUID because the
+ *  agent routes take no other (`agentStreamSessionID`), so a session named anything else would
+ *  list on the Agents page with no live view to open. */
+export const SESSION_ID = sessionIds.tester;
+export const SESSION_TITLE = "Reference tester";
+export const SESSION_REFERENCE = `dispatch://agent/${SESSION_ID}`;
+export const ROLE_TOKEN = "reference-reviewer";
+export const ROLE_REFERENCE = `dispatch://role/${ROLE_TOKEN}`;
+
+/** The session the world's live list holds. */
+const referenceSession: FakeSession = {
+  capabilities: ["aside", "btw", "steer"],
+  dir: "/srv/reference",
+  machine_id: "box-reference",
+  roles: [ROLE_TOKEN],
+  session_id: SESSION_ID,
+  title: SESSION_TITLE,
+};
+
+/** The person a reference names. A stored login is an email (`model.CanonicalLogin`, and
+ *  `text/refs.go`'s `personLoginPattern`), and the two logins the reset re-creates - `alice`
+ *  and `bob` - are not, so a reference naming one of them names nobody Dispatch holds. This
+ *  person posts on the host, which is what puts them among its people and so among the
+ *  picker's rows. */
+export const PERSON_LOGIN = "dana@example.test";
+export const PERSON_REFERENCE = `dispatch://person/${PERSON_LOGIN}`;
+
+/** A person reference the world answers for nobody: a login nobody has signed in as, which
+ *  every surface reads as the words it is written with, with no link (R8). */
+export const UNKNOWN_PERSON_LOGIN = "nobody@example.test";
+export const UNKNOWN_PERSON_REFERENCE = `dispatch://person/${UNKNOWN_PERSON_LOGIN}`;
+
 export interface ReferenceWorld {
   /** CORE-1, the host: its spec holds the anchor, filler that puts the questions below the
    *  fold, and one question block per `QUESTION_IDS`. The texts these specs write live on it. */
@@ -138,6 +183,10 @@ const FILLER_PARAGRAPHS = 40;
  * target with a document, an ask, a comment and a message, the cross-project issue, and the
  * host's own ask, comment, message and spec block whose ids a short reference names.
  *
+ * Beside the records it seeds the parties a reference names: CORE's one architecture component,
+ * the live session and the role it holds, and the person whose login is a stored login's own
+ * shape, each of them a kind the picker offers and a page a reference opens.
+ *
  * The keys are deterministic — an issue's key is its project's next number — and the seeding
  * refuses any other, so a change in how keys are minted fails here rather than inside a row.
  */
@@ -145,6 +194,16 @@ export async function seedReferenceWorld(): Promise<ReferenceWorld> {
   await createProject({ key: "CORE", name: "Core" });
   await createProject({ key: "XCORE", name: "Cross core" });
   await createProject({ key: "ACME", name: "Acme" });
+  // CORE's architecture, the one component a reference names: the fake GitHub serves the model
+  // and the source sync reads it in, which is how every component of a project is made.
+  await seedFakeGithub({
+    [COMPONENT_REPO]: { contents: "read", files: COMPONENT_MODEL, installation_id: 101 },
+  });
+  await putArchitectureSource("CORE", { branch: "main", repo: COMPONENT_REPO });
+  const source = await syncArchitectureSource("CORE", COMPONENT_REPO);
+  expect(source.last_error).toBeNull();
+  // The live session and the role it holds: a row of the picker, and a page a reference opens.
+  await setLiveSessions([referenceSession]);
   const filler = Array.from(
     { length: FILLER_PARAGRAPHS },
     (_, index) => `Filler paragraph ${index + 1} keeps the questions below the fold.`
@@ -208,6 +267,10 @@ export async function seedReferenceWorld(): Promise<ReferenceWorld> {
     referenceAgent
   );
   const hostBlock = await blockId(host.primary_artifact_id, ANCHOR);
+  // The person: their own post on the host, which is what puts them among its people. Writing
+  // it signs them in, which is the only way Dispatch holds a person at all. Nothing reads the
+  // comment itself; writing it is the whole point.
+  await createComment(host.key, { body: "The cache is the slow part." }, { login: PERSON_LOGIN });
 
   const questions = await settledQuestions(host.key, "spec", QUESTION_IDS);
   for (const id of ["q2", "q3"]) {
@@ -259,15 +322,22 @@ export async function seedReferenceWorld(): Promise<ReferenceWorld> {
 /** What a rendered body links: its reference anchors and the placeholder a Dispatch picture
  *  links its artifact's page from. */
 export const RENDERED_REFERENCE = "a[data-dispatch-ref], a[data-dispatch-picture]";
-/** What an inert one-line preview shows for the same: a link-styled span carrying the same
- *  attributes, with no link inside it. */
-export const INERT_REFERENCE = "[data-dispatch-ref], [data-dispatch-picture]";
+/** Every reference a body draws, whether its host makes it a link or a link-styled span with
+ *  no link inside it (a preview inside a control): the same attributes either way. */
+export const DRAWN_REFERENCE = "[data-dispatch-ref], [data-dispatch-picture]";
+/** Every reference a body's reader found in its text: each one it draws (`DRAWN_REFERENCE`),
+ *  and each whose target Dispatch answered does not exist, which it draws as its writer's words
+ *  with no link (`data-dispatch-missing`, holding the reference). Which of the two a reference
+ *  is depends on what the world holds; that it was found depends on the text alone, which is
+ *  what the shared table names. */
+export const FOUND_REFERENCE = `${DRAWN_REFERENCE}, [data-dispatch-missing]`;
 /** The rendered body of a turn or a card, which is never one of the one-line previews beside
  *  it (a reference card's two lines of its target, a reply's quote of its parent). */
 export const RENDERED_BODY = ".dispatch-markdown:not([data-markdown-preview])";
 
 /** The reference each element in scope matching `selector` names, in the order they are drawn:
- *  a Dispatch picture's `data-dispatch-picture`, any other's `data-dispatch-ref`. */
+ *  a Dispatch picture's `data-dispatch-picture`, a missing target's `data-dispatch-missing`,
+ *  any other's `data-dispatch-ref`. */
 export function referenceTargetsIn(scope: Locator, selector: string): Promise<string[]> {
   return scope
     .locator(selector)
@@ -275,6 +345,7 @@ export function referenceTargetsIn(scope: Locator, selector: string): Promise<st
       elements.map(
         (element) =>
           element.getAttribute("data-dispatch-picture") ??
+          element.getAttribute("data-dispatch-missing") ??
           element.getAttribute("data-dispatch-ref") ??
           ""
       )
@@ -335,15 +406,15 @@ export async function closeMarginThread(page: Page, project: string): Promise<vo
 }
 
 /**
- * The inert one-line preview a reader still meets: an answered ask's question on the Answers
- * page (`web/src/features/answers/AnswersPage.tsx`, a `MarkdownPreview` with no `links` prop,
- * which is what makes it inert).
+ * The one-line preview a reader still meets: an answered ask's question on the Answers page
+ * (`web/src/features/answers/AnswersPage.tsx`, a `MarkdownPreview`). Its host is a record a
+ * reader reads (`DISPATCH_READING_SURFACES`'s `answers-subject`), so its references are live
+ * links (`ReferenceHostIs`).
  *
  * The Replies page's own row carried this before INFRA-450, and that page is gone: `/replies`
  * lands on the Inbox, and the Inbox draws a thread row's thread whole with `MarkdownBody` and
  * live links (`features/inbox/ThreadBody.tsx`), so no one-line preview of a reply is left to
- * read. A preview is one control's text, so a reference in it reads as link-styled text with no
- * link inside it.
+ * read.
  */
 export function answeredQuestionPreview(page: Page, askId: string): Locator {
   return page.locator(`[data-answer-row="${askId}"]`).locator("[data-markdown-preview]").first();

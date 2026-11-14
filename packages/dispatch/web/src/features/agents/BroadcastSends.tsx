@@ -189,6 +189,8 @@ export function BroadcastSends({
                   <SentBroadcast created={row.created} />
                 )}
               </span>
+              {/* No `source`: why a broadcast send is no record is the reading list's
+                  `broadcast-send-row` (`DISPATCH_READING_SURFACES`). */}
               <MarkdownPreview
                 className={`min-w-0 flex-1 ${textMutedOnSurface}`}
                 lines={1}

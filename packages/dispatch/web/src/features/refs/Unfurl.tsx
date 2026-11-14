@@ -12,10 +12,16 @@ import {
 } from "../../theme/classes";
 
 import { MarkdownPreview } from "./MarkdownPreview";
+import { ReferenceHostIs } from "./reference-host";
 import { referenceSpans, trimReference } from "./reference-spans";
-import { useReferencePath, useReferenceTarget } from "./reference-target";
-import { buildDispatchReference, type DispatchReferenceRoute } from "./routes";
-import { readTextReferences, type TextReference, type TextSource } from "./text-references";
+import { useReferenceHref, useReferenceTarget } from "./reference-target";
+import { buildDispatchReference, type DispatchReferenceRoute, referenceHref } from "./routes";
+import {
+  readTextReferences,
+  type TextReading,
+  type TextReference,
+  type TextSource,
+} from "./text-references";
 import { useTextReferences } from "./useTextReferences";
 
 interface UnfurlProps {
@@ -32,15 +38,39 @@ interface GitHubIssue {
 
 /** The card's body: two rendered lines of what the target says, formatted, then cut. A GitHub
  *  body is a text Dispatch does not store, so it carries no tree and is parsed here. */
-function Body({ markdown, tree }: { markdown: string; tree?: DisplayTree }): ReactNode {
+function Body({
+  markdown,
+  source,
+  tree,
+}: {
+  markdown: string;
+  source?: TextSource;
+  tree?: DisplayTree;
+}): ReactNode {
   return (
     <MarkdownPreview
       className={`mt-1 ${textSecondaryOnSurface}`}
       lines={2}
       markdown={markdown}
+      source={source}
       tree={tree}
     />
   );
+}
+
+/** The record a Dispatch card's body is: the target's own text, named by the reference that
+ *  resolved it. An ask, a comment and an issue message each write their id in the reference,
+ *  whether it names an issue's or a project document's. A document's own text is named by its
+ *  artifact id, which no reference writes - a reference writes a slug - so that card's body
+ *  draws as no record's and a `#id` in it names nothing. */
+function cardRecord(route: DispatchReferenceRoute): TextSource | undefined {
+  if (route.kind === "ask" || route.kind === "comment" || route.kind === "message") {
+    return { id: route.id, kind: route.kind };
+  }
+  if (route.kind === "document" && route.item !== undefined) {
+    return { id: route.item.id, kind: route.item.kind };
+  }
+  return undefined;
 }
 
 /** A card for one Dispatch reference: the route it resolved to, its `dispatch://` form (the
@@ -65,19 +95,27 @@ interface ReferenceCards {
 
 function DispatchUnfurl({ card }: { card: DispatchCard }): ReactNode {
   const { title, description, descriptionTree } = useReferenceTarget(card.route, { text: true });
-  const path = useReferencePath(card.route);
+  const href = useReferenceHref(card.route);
 
+  // The card is the one link: everything drawn inside it reads as a link and is none.
   return (
-    <a
-      className={`block rounded-lg border px-3 py-2 text-sm ${surfaceMutedBg} ${borderDefault} ${cardHoverBorder}`}
-      href={path}
-    >
-      <span className={`block font-medium ${linkText}`}>{title ?? card.text}</span>
-      {description === undefined ? null : <Body markdown={description} tree={descriptionTree} />}
-    </a>
+    <ReferenceHostIs host="control">
+      <a
+        className={`block rounded-lg border px-3 py-2 text-sm ${surfaceMutedBg} ${borderDefault} ${cardHoverBorder}`}
+        href={href}
+      >
+        <span className={`block font-medium ${linkText}`}>{title ?? card.text}</span>
+        {description === undefined ? null : (
+          <Body markdown={description} source={cardRecord(card.route)} tree={descriptionTree} />
+        )}
+      </a>
+    </ReferenceHostIs>
   );
 }
 
+/** The one reader this change does not fold: a GitHub issue or pull-request URL, matched here
+ *  and read from GitHub's own API. Why it is drawn this way is the reading list's
+ *  `github-reference-card` (`DISPATCH_READING_SURFACES`). */
 function githubReference(value: string): string | undefined {
   try {
     const url = new URL(value);
@@ -97,19 +135,23 @@ function GitHubUnfurl({ href, path }: { href: string; path: string }): ReactNode
     queryFn: async () => (await api.githubRest(path)).json() as Promise<GitHubIssue>,
   });
   return (
-    <a
-      className={`block rounded-lg border px-3 py-2 text-sm ${surfaceMutedBg} ${borderDefault} ${cardHoverBorder}`}
-      href={href}
-      rel="noreferrer"
-      target="_blank"
-    >
-      <span className={`block font-medium ${linkText}`}>{issue.data?.title ?? href}</span>
-      {issue.data?.body === undefined ||
-      issue.data.body === null ||
-      issue.data.body.trim() === "" ? null : (
-        <Body markdown={issue.data.body} />
-      )}
-    </a>
+    <ReferenceHostIs host="control">
+      <a
+        className={`block rounded-lg border px-3 py-2 text-sm ${surfaceMutedBg} ${borderDefault} ${cardHoverBorder}`}
+        href={href}
+        rel="noreferrer"
+        target="_blank"
+      >
+        <span className={`block font-medium ${linkText}`}>{issue.data?.title ?? href}</span>
+        {issue.data?.body === undefined ||
+        issue.data.body === null ||
+        issue.data.body.trim() === "" ? null : (
+          // No `source`: a GitHub issue's body is no record of Dispatch's reference graph
+          // (`DISPATCH_READING_SURFACES`, `github-reference-card`).
+          <Body markdown={issue.data.body} />
+        )}
+      </a>
+    </ReferenceHostIs>
   );
 }
 
@@ -207,11 +249,13 @@ function referencesOnly(body: string, words: readonly ReferenceWord[]): boolean 
 
 /**
  * The cards `body` shows, or `undefined` for a body that shows none: it is nothing but
- * references (`referencesOnly`) and every one of them names something, which is `references`,
- * the reading made once the queries answered. A key whose issue does not exist, a `#id` no
- * question of the body's document declares, and an id prefix nothing resolved are each a word
- * that names nothing, and one of them is the whole body showing no card - until it resolves,
- * and for good where it never does.
+ * references (`referencesOnly`) and every one of them names a page of this dashboard, which is
+ * `references`, the reading made once the queries answered. A key whose issue does not exist, a
+ * `#id` no question of the body's document declares, and an id prefix nothing resolved are each
+ * a word that names nothing, and one of them is the whole body showing no card - until it
+ * resolves, and for good where it never does. So are the two a card could only lie about: a
+ * reference a code context holds, which is the author's own text and no link anywhere
+ * (`TextReference.inCode`), and one with no page to open - a person, whom nothing shows (R5).
  */
 function referenceCards(
   body: string,
@@ -233,7 +277,13 @@ function referenceCards(
       continue;
     }
     const found = word.reference;
-    if (found === undefined || found.unresolved || found.route === undefined) {
+    if (found === undefined || found.unresolved || found.route === undefined || found.inCode) {
+      return undefined;
+    }
+    // The gate every href of a typed reference goes through, asked here so the body shows no
+    // card it could not link: the card's own href is the same reading, with the issue summary
+    // a pinned block of a spec waits on (`useReferenceHref`).
+    if (referenceHref(found.route) === undefined) {
       return undefined;
     }
     const reference = buildDispatchReference(found.route);
@@ -246,12 +296,13 @@ function referenceCards(
 }
 
 /**
- * The cards under a body that is nothing but references: one card per distinct reference, in
- * the margin, the Inbox thread and the Conversation alike. The predicate is one
- * (`referenceCards`), over the one reader of what a text cites (`text-references.ts`), so every
- * form a reference is written in counts the same - a `dispatch://` reference, a dashboard
- * address, an issue key on its own, and a `#` and the id of a question block of `source`'s
- * document - and a GitHub issue or pull-request URL, which Dispatch does not read, counts too.
+ * The cards under a body that is nothing but references, for a caller that has already read
+ * that body: one card per distinct reference, in the margin, the Inbox thread and the
+ * Conversation alike. The predicate is one (`referenceCards`), over the one reader of what a
+ * text cites (`text-references.ts`), so every form a reference is written in counts the same -
+ * a `dispatch://` reference, a dashboard address, an issue key on its own, and a `#` and the
+ * id of a question block of the body's source - and a GitHub issue or pull-request URL, which
+ * Dispatch does not read, counts too.
  *
  * A reference may end its sentence: a word is still one reference when everything it holds
  * beyond it is what the reference grammar itself trims (`trimmedTail`), so `dispatch://CORE-1.`
@@ -260,21 +311,26 @@ function referenceCards(
  * there would say the same thing twice. A word that names nothing shows none either, so a body
  * of one bare key whose issue does not exist stays the text it is.
  *
- * Only a body already shaped like one asks the server anything: the shape is read first, from
- * the text alone, and the queries behind the keys, the `#id`s and the id prefixes
- * (`useTextReferences`) are started only for a body that passed it. Almost every body is prose
- * and starts none.
+ * Both readings are the caller's (`useTextReferences`): `written`, the text alone, which the
+ * shape is read from, and `reading`, the same text with everything the queries answered, which
+ * the cards are. The renderer that mounts this has made both for the body it painted, so a
+ * body costs one reading however many readers of it there are.
  */
-export function Unfurl({ body, source }: UnfurlProps): ReactNode {
-  const origin = window.location.origin;
+export function UnfurlRead({
+  body,
+  reading,
+  written,
+}: {
+  body: string;
+  /** The body's references with every fact its queries answered: what the cards are. */
+  reading: TextReading;
+  /** The body's references as the text alone reads: what its shape is read from. */
+  written: TextReading;
+}): ReactNode {
   const shaped = useMemo(
-    () =>
-      referencesOnly(body, referenceWords(body, readTextReferences(body, { origin }).references)),
-    [body, origin]
+    () => referencesOnly(body, referenceWords(body, written.references)),
+    [body, written]
   );
-  // The hook's own reading of the same body, made with everything its queries answered: the
-  // cards are read from it rather than from a second pass over the text.
-  const { reading } = useTextReferences(shaped ? body : "", source);
   const cards = useMemo(
     () => (shaped ? referenceCards(body, reading.references) : undefined),
     [body, reading, shaped]
@@ -293,4 +349,24 @@ export function Unfurl({ body, source }: UnfurlProps): ReactNode {
       ))}
     </section>
   );
+}
+
+/**
+ * `UnfurlRead` for a caller that has read nothing: it makes both readings itself.
+ *
+ * Only a body already shaped like a card list asks the server anything: the shape is read
+ * first, from the text alone, and the queries behind the keys, the `#id`s and the id prefixes
+ * (`useTextReferences`) are started only for a body that passed it. Almost every body is prose
+ * and starts none. The rendered body mounts `UnfurlRead` with its own readings instead
+ * (`MarkdownBody`), having started those queries for the links in the text itself.
+ */
+export function Unfurl({ body, source }: UnfurlProps): ReactNode {
+  const origin = window.location.origin;
+  const written = useMemo(() => readTextReferences(body, { origin }), [body, origin]);
+  const shaped = useMemo(
+    () => referencesOnly(body, referenceWords(body, written.references)),
+    [body, written]
+  );
+  const { reading } = useTextReferences(shaped ? body : "", source);
+  return <UnfurlRead body={body} reading={reading} written={written} />;
 }

@@ -389,8 +389,11 @@ test("a row counts the work in flight, waiting, parked and closed in the last 7 
 test("the first line of a description shows on a closed row and the whole of it when it opens", async () => {
   const user = userEvent.setup();
   page(FIFTEEN, [issue("CORE-1", ["legion-first"]), issue("CORE-2")]);
-  await screen.findByRole("row", { name: "P1 Legion works reliably first" });
-  expect(screen.getByText("The first line.")).toBeDefined();
+  const row = await screen.findByRole("row", { name: "P1 Legion works reliably first" });
+  // Closed, the row reads the description's first line in plain words (`PlainText`'s
+  // `firstLine`), which the engine answers once it has loaded, and none of the line after it.
+  expect(await within(row).findByText("The first line.")).toBeDefined();
+  expect(within(row).queryByText(/The rest of it/)).toBeNull();
   await user.click(screen.getByRole("button", { name: "Open P1 Legion works reliably first" }));
   // Open, the row reads the whole description rendered, and a click on its text opens its source.
   const rendered = await screen.findByRole("group", { name: "Description of P1" });

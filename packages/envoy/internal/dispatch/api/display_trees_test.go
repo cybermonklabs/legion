@@ -117,9 +117,9 @@ func sameShape(t *testing.T, tree json.RawMessage) json.RawMessage {
 // pmdoc.ReadForDisplay makes of exactly that text, and the document the route table emits
 // declares that tree where the answer carries it. The routes covered here are the issue's
 // comment list and one comment's thread, the issue's ask list and one ask, the issue's message
-// list, the issue's event log, a document's text, the caller's own answers, a project's
-// architecture and one node's references; the search snippet, whose tree is cut and marked
-// rather than read whole, has its own test below.
+// list, the issue's event log, a document's text, the caller's own answers, the caller's own
+// replies (each row's subject line), a project's architecture and one node's references; the
+// search snippet, whose tree is cut and marked rather than read whole, has its own test below.
 func TestEveryReadCarriesItsDisplayTreesOnlyUnderTheHeader(t *testing.T) {
 	handler := newTestHandler(t)
 	const (
@@ -159,6 +159,15 @@ func TestEveryReadCarriesItsDisplayTreesOnlyUnderTheHeader(t *testing.T) {
 	if answered.Code != http.StatusOK {
 		t.Fatalf("answer ask: status=%d body=%s", answered.Code, answered.Body.String())
 	}
+	// A thread of alice's that somebody else wrote in, so the replies read below has a row of its
+	// own. Its subject is the first line of the comment above, which the Inbox draws through the
+	// one renderer every body is drawn with (web/src/features/inbox/ThreadTitle.tsx). The reply
+	// says what the comment above says, because the event-log row below holds every
+	// comment.created event to one expected reading: a second body there would be a second
+	// expectation, and this row needs a reply rather than a different text.
+	sessionComment(t, handler, "/api/v1/issues/"+issue.Key+"/comments", map[string]any{
+		"body": commentBody, "reply_to": commentID,
+	})
 
 	// Each row is read twice: the live answer carries the tree, and the OpenAPI document's own
 	// 200 schema for the route declares it there. The second reading is what holds a route row
@@ -188,6 +197,8 @@ func TestEveryReadCarriesItsDisplayTreesOnlyUnderTheHeader(t *testing.T) {
 		{"one ask's answer", "/api/v1/asks/{id}", "/api/v1/asks/" + askID, "ask.answer.text", "ask.answer.text_tree"},
 		{"the caller's answer history", "/api/v1/me/answers",
 			"/api/v1/me/answers", "rows.0.question", "rows.0.question_tree"},
+		{"a thread row's subject", "/api/v1/me/replies",
+			"/api/v1/me/replies", "rows.0.subject", "rows.0.subject_tree"},
 		{"a document's text", "/api/v1/artifacts/{id}/text",
 			"/api/v1/artifacts/" + issue.PrimaryArtifactID + "/text", "markdown", "markdown_tree"},
 		{"a project's architecture", "/api/v1/projects/{key}/architecture", "", "", "components.0.prose_tree"},

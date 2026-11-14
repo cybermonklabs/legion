@@ -101,7 +101,9 @@ func TestExtractTerminatesArtifactSlugsAtMarkdownPunctuation(t *testing.T) {
 // agree on what a text cites. The table is generated from `DISPATCH_TEXT_REFERENCES` in
 // `@legion/contracts`, which `packages/contracts/src/dispatch-text-references.test.ts` holds this
 // file to; the composer walks the same rows. A row's block reference is written canonically, so
-// its fragment is the parsed block id as EncodeBlockID writes it and the parsed pin.
+// its fragment is the parsed block id as EncodeBlockID writes it and the parsed pin. The
+// references its `inCode` column names, and no others, are read as written in a code context
+// (inCodeRefs), which is the fact the delivering parties of a comment are dropped by.
 func TestExtractMatchesTheSharedTextTable(t *testing.T) {
 	raw, err := os.ReadFile("testdata/dispatch-text-references.json")
 	if err != nil {
@@ -111,6 +113,7 @@ func TestExtractMatchesTheSharedTextTable(t *testing.T) {
 		Body    string   `json:"body"`
 		Origin  string   `json:"origin"`
 		Refs    []string `json:"refs"`
+		InCode  []string `json:"inCode"`
 		Grammar bool     `json:"grammar"`
 	}
 	if err := json.Unmarshal(raw, &rows); err != nil {
@@ -141,14 +144,18 @@ func TestExtractMatchesTheSharedTextTable(t *testing.T) {
 				}
 				want = append(want, parsed[0])
 			}
+			located := ExtractAt(row.Body, server)
 			got := []Ref{}
-			for _, ref := range Extract(row.Body, server) {
+			for _, ref := range Refs(located) {
 				if ref.Kind != "url" && !slices.Contains(got, ref) {
 					got = append(got, ref)
 				}
 			}
 			if !reflect.DeepEqual(got, want) {
 				t.Errorf("Extract() cites %#v; want %#v", got, want)
+			}
+			if code, wantCode := inCodeRefs(located), tableRefs(t, row.InCode, server); !reflect.DeepEqual(code, wantCode) {
+				t.Errorf("Extract() reads %#v in code; want %#v", code, wantCode)
 			}
 		})
 	}
@@ -168,7 +175,8 @@ func blockFragment(ref Ref) string {
 // row lists, read with a resolver built from the row's `issues`, `questions` and `items` - the
 // issue keys that exist, the question map of the row's document, and the items and blocks a short
 // id can name. A row that writes no bare key, no `#id` and no short id cites what Extract cites,
-// so the two readers agree on every row.
+// so the two readers agree on every row. A key and a `#id` carry the code fact as an address
+// does, so the `inCode` column holds for this reader too.
 func TestMentionsMatchesTheSharedTextTable(t *testing.T) {
 	raw, err := os.ReadFile("testdata/dispatch-text-references.json")
 	if err != nil {
@@ -178,6 +186,7 @@ func TestMentionsMatchesTheSharedTextTable(t *testing.T) {
 		Body      string            `json:"body"`
 		Origin    string            `json:"origin"`
 		Refs      []string          `json:"refs"`
+		InCode    []string          `json:"inCode"`
 		Grammar   bool              `json:"grammar"`
 		Issues    []string          `json:"issues"`
 		Questions map[string]string `json:"questions"`
@@ -231,8 +240,48 @@ func TestMentionsMatchesTheSharedTextTable(t *testing.T) {
 			if !reflect.DeepEqual(got, want) {
 				t.Errorf("Mentions() cites %#v; want %#v", got, want)
 			}
+			if code, wantCode := inCodeRefs(located), tableRefs(t, row.InCode, server); !reflect.DeepEqual(code, wantCode) {
+				t.Errorf("Mentions() reads %#v in code; want %#v", code, wantCode)
+			}
 		})
 	}
+}
+
+// tableRefs is each reference a row of the shared table writes, parsed as Extract reads that
+// address on its own.
+func tableRefs(t *testing.T, written []string, server string) []Ref {
+	t.Helper()
+	refs := []Ref{}
+	for _, ref := range written {
+		parsed := Extract(ref, server)
+		if len(parsed) != 1 || parsed[0].Kind == "url" {
+			t.Fatalf("%s is not a reference: %#v", ref, parsed)
+		}
+		refs = append(refs, parsed[0])
+	}
+	return refs
+}
+
+// inCodeRefs is the distinct references of located that a code context holds, in the order they
+// are first read. A reference written both inside code and outside it is not one of them: the
+// party set keeps a party named anywhere outside code (api.commentPartiesOf), so the row's
+// column names only what nothing outside code names.
+func inCodeRefs(located []Located) []Ref {
+	refs := []Ref{}
+	outside := []Ref{}
+	for _, item := range located {
+		if item.Kind == "url" {
+			continue
+		}
+		if !item.InCode {
+			outside = append(outside, item.Ref)
+			continue
+		}
+		if !slices.Contains(refs, item.Ref) {
+			refs = append(refs, item.Ref)
+		}
+	}
+	return slices.DeleteFunc(refs, func(ref Ref) bool { return slices.Contains(outside, ref) })
 }
 
 // Every writer of a `#b-` fragment writes the block id one way, the way the contracts' table
@@ -658,7 +707,8 @@ func TestExtractParsesComponentReferences(t *testing.T) {
 // An artifact an agent's conversation owns is addressed under the session id, as written, with an
 // optional version, inside a picture's syntax as anywhere else; its dashboard page names the same
 // artifact, and writing the reference back from what was parsed reads the same artifact again. An
-// id holding a `/`, `?`, `#` or whitespace, or an empty one, names nothing.
+// id holding a `/`, `?`, `#` or whitespace, or an empty one, names nothing. (The session on its
+// own is the agent, a party, which the shared text table holds both readers to.)
 func TestExtractParsesAgentArtifactReferences(t *testing.T) {
 	const server = "https://dispatch.example"
 	want := Ref{Kind: "artifact", Session: "01a1058e-f14f", ID: "shot-png"}
@@ -687,7 +737,8 @@ func TestExtractParsesAgentArtifactReferences(t *testing.T) {
 		"dispatch://agent/abc/artifact/Shot-png",
 		"dispatch://agent/abc/artifact/shot-png@v0",
 		"dispatch://agent/abc/artifact/shot-png/comment/c1",
-		"dispatch://agent/abc",
+		"dispatch://agent",
+		"dispatch://agent/",
 		server + "/agents/a%2Fb/artifacts/shot-png",
 		server + "/agents/a%20b/artifacts/shot-png",
 		server + "/agents/abc/artifacts/shot-png?v=0",
@@ -697,6 +748,33 @@ func TestExtractParsesAgentArtifactReferences(t *testing.T) {
 			if ref.Kind != "url" {
 				t.Errorf("Extract(%q) cites %#v; want nothing", body, ref)
 			}
+		}
+	}
+}
+
+// A party names a reader of the record rather than a record: the three kinds a reference names
+// one by answer IsParty and no other kind does. It is what keeps the graph from keying a node
+// for a party (refs.TargetOf) and what a comment reads its delivering parties by
+// (api.commentPartiesOf), so a fourth party kind is one edit here.
+func TestIsPartyNamesTheThreePartyKinds(t *testing.T) {
+	const server = "https://dispatch.example"
+	for reference, party := range map[string]bool{
+		"dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551":                   true,
+		"dispatch://role/reviewer":                                                true,
+		"dispatch://person/alice@example.com":                                     true,
+		"dispatch://CORE-1":                                                       false,
+		"dispatch://CORE-1/spec":                                                  false,
+		"dispatch://CORE/component/web":                                           false,
+		"dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551/artifact/shot-png": false,
+		"https://example.com/handbook":                                            false,
+	} {
+		found := Extract(reference, server)
+		if len(found) != 1 {
+			t.Fatalf("%s is %d references, want one", reference, len(found))
+		}
+		if found[0].IsParty() != party {
+			t.Errorf("%s is kind %q and IsParty is %v, want %v",
+				reference, found[0].Kind, found[0].IsParty(), party)
 		}
 	}
 }

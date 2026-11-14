@@ -133,6 +133,7 @@ test("a pinned card's agent byline links to its live conversation", () => {
               body: "Pinned question",
               id: "ask:ask-1",
               kind: "ask",
+              recordId: "ask-1",
             },
           ]}
           events={[{ ...messageEvent, actor: agent }]}

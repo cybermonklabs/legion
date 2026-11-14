@@ -1,0 +1,363 @@
+import type { SearchResultKind } from "../../api/types";
+
+/**
+ * The reference picker's rows, their order and the text a pick inserts: one module, so the three
+ * hosts that draw it - the shared text field, the document body and the agent live conversation -
+ * cannot drift into three pickers. It owns no textarea and no ProseMirror: a host reads the text
+ * before its caret, draws the rows this module groups, passes each key to it, and applies the
+ * insertion it hands back.
+ *
+ * `useRefPicker.ts` reads the server for the rows; `RefPickerList.tsx` draws them.
+ */
+
+/** Every kind the picker reaches, which is every kind a reference can name except an artifact of
+ *  an agent's conversation, which no box writes about. A block is its holder's kind in its own
+ *  right: its rows come from another read (the holder's `part_of` backlinks) and sit under a
+ *  heading of their own. */
+export const REF_PICKER_KINDS = [
+  "issue",
+  "document",
+  "document-block",
+  "ask",
+  "ask-part",
+  "comment",
+  "comment-block",
+  "message",
+  "message-block",
+  "component",
+  "agent",
+  "role",
+  "person",
+] as const;
+
+export type RefPickerKind = (typeof REF_PICKER_KINDS)[number];
+
+/** The parties: the kinds whose pick inserts a worded link rather than a bare address (R4). */
+const REF_PICKER_PARTY_KINDS = ["person", "agent", "role"] as const;
+
+export type RefPickerPartyKind = (typeof REF_PICKER_PARTY_KINDS)[number];
+
+function isPartyKind(kind: RefPickerKind): kind is RefPickerPartyKind {
+  return REF_PICKER_PARTY_KINDS.some((party) => party === kind);
+}
+
+/** The five kinds `GET /api/v1/search` ranks, which are the kinds the picker cannot list until
+ *  the reader has typed: the route refuses a query under two characters. */
+export const REF_PICKER_SEARCHED_KINDS: readonly SearchResultKind[] = [
+  "issue",
+  "document",
+  "ask",
+  "comment",
+  "message",
+];
+
+/** The shortest query the search route takes; below it the picker lists only the kinds whose
+ *  sources need no query at all (the parties and the components). */
+export const REF_PICKER_QUERY_MIN = 2;
+
+/** How many hits one keystroke's search asks for. The picker is a list to pick from, not a
+ *  search results page: a reader who cannot see their target in eight rows types another letter.
+ */
+export const REF_PICKER_SEARCH_LIMIT = 8;
+
+/** The heading each kind's rows sit under. */
+export const REF_PICKER_HEADINGS: Record<RefPickerKind, string> = {
+  agent: "Agents",
+  ask: "Asks",
+  "ask-part": "Ask parts",
+  comment: "Comments",
+  "comment-block": "Comment blocks",
+  component: "Components",
+  document: "Documents",
+  "document-block": "Document blocks",
+  issue: "Issues",
+  message: "Messages",
+  "message-block": "Message blocks",
+  person: "People",
+  role: "Roles",
+};
+
+/** What one row of each kind is, which is the label its icon carries for a reader who cannot
+ *  see it (`RefKindIcon`). */
+export const REF_PICKER_KIND_NAMES: Record<RefPickerKind, string> = {
+  agent: "Agent",
+  ask: "Ask",
+  "ask-part": "Ask part",
+  comment: "Comment",
+  "comment-block": "Comment block",
+  component: "Component",
+  document: "Document",
+  "document-block": "Document block",
+  issue: "Issue",
+  message: "Message",
+  "message-block": "Message block",
+  person: "Person",
+  role: "Role",
+};
+
+/** Which door the reader opened the picker by. The three differ only in the order their kinds
+ *  are ranked in (`kindOrder`): every door reaches every kind. */
+export type RefPickerDoor = "all" | "parties" | "issues";
+
+/** The characters that open each door, longest first so `[[` is read before the `[` of nothing.
+ *  A door opens only at a word boundary (`readTrigger`). */
+export const REF_PICKER_TRIGGERS: readonly {
+  readonly chars: string;
+  readonly door: RefPickerDoor;
+}[] = [
+  { chars: "[[", door: "all" },
+  { chars: "@", door: "parties" },
+  { chars: "#", door: "issues" },
+];
+
+/**
+ * The order the `[[` door ranks the kinds in, and the tail of the other two doors' order. It
+ * leads with the documents because `[[` is the wiki link a writer reaches for to name a page,
+ * and because the other two doors are defined by what they lift above this order: `@` the
+ * parties, `#` the issues. A block kind follows the kind that holds it, so an opened node's
+ * parts are read next to it.
+ */
+const BASE_KIND_ORDER: readonly RefPickerKind[] = [
+  "document",
+  "document-block",
+  "issue",
+  "ask",
+  "ask-part",
+  "comment",
+  "comment-block",
+  "message",
+  "message-block",
+  "component",
+  "agent",
+  "role",
+  "person",
+];
+
+/** The kinds in the order this door ranks them: the kinds it lifts, then the rest in the base
+ *  order. */
+export function kindOrder(door: RefPickerDoor): readonly RefPickerKind[] {
+  const lifted: readonly RefPickerKind[] =
+    door === "parties" ? REF_PICKER_PARTY_KINDS : door === "issues" ? ["issue"] : [];
+  return [...lifted, ...BASE_KIND_ORDER.filter((kind) => !lifted.some((one) => one === kind))];
+}
+
+/** One row of the picker. `id` is unique within one open: it is the row's React key and the
+ *  value a host puts in `aria-activedescendant`. */
+export interface RefPickerRow {
+  readonly id: string;
+  readonly kind: RefPickerKind;
+  /** The row's own words - an issue's title, a party's name, a block's first words - which the
+   *  browser-side filter matches and the list draws. */
+  readonly label: string;
+  /** The line under the label: where the row is, or what it is. Empty for a row with nothing to
+   *  add. */
+  readonly detail: string;
+  /** The `dispatch://` address the row names. */
+  readonly reference: string;
+  /** The address whose `part_of` backlinks are this row's blocks, for a node that holds any; a
+   *  host opens them with `openParts`. */
+  readonly parts?: string;
+}
+
+/** One kind's rows, under that kind's heading. */
+export interface RefPickerGroup {
+  readonly kind: RefPickerKind;
+  readonly heading: string;
+  readonly rows: readonly RefPickerRow[];
+}
+
+/** The rows grouped by kind, the groups in this door's order; a kind with no row has no group. */
+export function groupRows(rows: readonly RefPickerRow[], door: RefPickerDoor): RefPickerGroup[] {
+  return kindOrder(door).flatMap((kind) => {
+    const ofKind = rows.filter((row) => row.kind === kind);
+    return ofKind.length === 0 ? [] : [{ heading: REF_PICKER_HEADINGS[kind], kind, rows: ofKind }];
+  });
+}
+
+/** Every row in the order the reader moves through them, which is the order they are drawn in. */
+export function orderedRows(groups: readonly RefPickerGroup[]): RefPickerRow[] {
+  return groups.flatMap((group) => [...group.rows]);
+}
+
+/** Whether a row the browser filters - a party, a component, a block, all of them listed whole -
+ *  matches what the reader has typed. The search hits are not filtered again here: the server
+ *  ranked them for this query by meaning, and a second match on the letters alone would drop the
+ *  hits meaning search found. */
+export function matchesQuery(row: RefPickerRow, query: string): boolean {
+  if (query === "") return true;
+  const needle = query.toLocaleLowerCase();
+  return (
+    row.label.toLocaleLowerCase().includes(needle) ||
+    row.detail.toLocaleLowerCase().includes(needle) ||
+    row.reference.toLocaleLowerCase().includes(needle)
+  );
+}
+
+/** The door a trigger opened, the characters that opened it, where its first character sits in
+ *  the text the host read, and what the reader has typed after it. */
+export interface RefPickerTrigger {
+  readonly door: RefPickerDoor;
+  /** The door's own characters, as the reader typed them: `@`, `#` or `[[`. A host whose
+   *  document can move under an open list refuses a pick whose stretch no longer starts with
+   *  them (`@legion/proof-editor`'s `insertReference`). */
+  readonly chars: string;
+  readonly start: number;
+  /** Never holds a space: a space typed before a row is taken closes the picker. */
+  readonly query: string;
+}
+
+/** A trigger opens only at a word boundary - the start of the text, or after a space, a line
+ *  break or an opening bracket or quote - so `issue#5` opens nothing, and a `#` that starts a
+ *  line is still the Markdown heading it becomes as soon as the reader types the space. */
+function atWordBoundary(before: string, start: number): boolean {
+  if (start === 0) return true;
+  return /[\s([{"']/u.test(before.charAt(start - 1));
+}
+
+/**
+ * The door open at the caret, read from the text before it: the last trigger the reader typed
+ * that still stands - at a word boundary, with no space typed since. Undefined when none does,
+ * which is how the picker closes on a space and how it never opens mid-word.
+ */
+export function readTrigger(before: string): RefPickerTrigger | undefined {
+  let found: RefPickerTrigger | undefined;
+  for (const { chars, door } of REF_PICKER_TRIGGERS) {
+    const start = before.lastIndexOf(chars);
+    if (start < 0 || (found !== undefined && start < found.start)) continue;
+    if (!atWordBoundary(before, start)) continue;
+    const query = before.slice(start + chars.length);
+    if (!/\s/u.test(query)) found = { chars, door, query, start };
+  }
+  return found;
+}
+
+/** What a pick writes into the draft, and the stretch of it the write replaces: the trigger
+ *  character the reader typed through the caret. The text after the caret is untouched, which is
+ *  what keeps a pick in the middle of a sentence from eating the rest of it. */
+export interface RefPickerInsertion {
+  readonly text: string;
+  readonly start: number;
+  readonly end: number;
+  /** The characters the picker opened on, which `[start, end)` begins with: a host whose
+   *  document other writers share hands them on, so a stretch that has moved under the open
+   *  list is refused rather than written over (`RefPickerTrigger.chars`). */
+  readonly trigger: string;
+  /** A party's pick, for a host that writes marks rather than Markdown: the words the mention
+   *  shows and the address it names (R4). `text` is that same mention written as Markdown,
+   *  which is what a `<textarea>` host writes; a ProseMirror host writes these two instead, a
+   *  link mark over the words, since plain text holding that Markdown is stored escaped. */
+  readonly link?: { readonly href: string; readonly words: string };
+}
+
+/** A link's words cannot hold a bare bracket; a session title can. */
+function linkWords(label: string): string {
+  return label.replace(/[[\]]/gu, (bracket) => `\\${bracket}`);
+}
+
+/** The mention of a party: a link whose words are its name and whose address names it (R4), so
+ *  the stored text reads as the person, session or role it mentions and still names it after an
+ *  edit of the words. The one writer of that shape, read by the picker's pick below and by the
+ *  seed a channel owes its own party (`party-references.ts`). */
+export function partyLink(words: string, reference: string): string {
+  return `[${linkWords(words)}](${reference})`;
+}
+
+/** The text a pick inserts: a party as its worded link; every other kind as the bare address,
+ *  which the renderer draws by its target's own title (R8). */
+export function insertionText(row: RefPickerRow): string {
+  return isPartyKind(row.kind) ? partyLink(row.label, row.reference) : row.reference;
+}
+
+/** The insertion a pick of `row` makes in a draft whose caret is at `caret`. */
+export function insertionFor(
+  row: RefPickerRow,
+  trigger: RefPickerTrigger,
+  caret: number
+): RefPickerInsertion {
+  const insertion = {
+    end: caret,
+    start: trigger.start,
+    text: insertionText(row),
+    trigger: trigger.chars,
+  };
+  return isPartyKind(row.kind)
+    ? { ...insertion, link: { href: row.reference, words: row.label } }
+    : insertion;
+}
+
+/** `insertion` applied to a plain string, with the caret that follows it: what a `<textarea>`
+ *  host writes back. A ProseMirror or assistant-ui host maps the same offsets into its own
+ *  document instead. */
+export function applyInsertion(
+  text: string,
+  insertion: RefPickerInsertion
+): { readonly text: string; readonly caret: number } {
+  return {
+    caret: insertion.start + insertion.text.length,
+    text: text.slice(0, insertion.start) + insertion.text + text.slice(insertion.end),
+  };
+}
+
+/** What the picker did with a key the host handed it. Anything but `ignored` is the picker's:
+ *  the host stops the key, and on `took` applies the insertion. */
+export type RefPickerKeyResult =
+  | { readonly action: "ignored" }
+  | { readonly action: "moved" }
+  | { readonly action: "closed" }
+  | { readonly action: "opened-parts" }
+  | { readonly action: "took"; readonly insertion: RefPickerInsertion };
+
+/** What the list is, while it is not a list of rows. A host draws the words below. */
+export type RefPickerState = "rows" | "loading" | "empty" | "unreachable";
+
+/** The words of each state the list has no rows for, in the composer's own shapes
+ *  (`MentionComposer.tsx`: "Loading live agents…", "No live agents match.", "Could not load live
+ *  agents — Envoy listener unreachable."). An agent list that is refilling is a list not ready
+ *  yet, so it reads as loading rather than as a failure. */
+export const REF_PICKER_WORDS: Record<Exclude<RefPickerState, "rows">, string> = {
+  empty: "No reference matches.",
+  loading: "Loading references…",
+  unreachable: "Could not load references — Dispatch unreachable.",
+};
+
+/** What the live registry read behind the agent and role rows is, while it is not a list the
+ *  picker can draw from. Every view that reads that list says which of these holds where it
+ *  would otherwise look like an absence - the Agents page, the live view, an ask's recipients -
+ *  and the picker, where the agents and the roles would be, is one of them. `listed` is a read
+ *  that answered: the rows are the list. */
+export type RefPickerParties = "listed" | "loading" | "refilling" | "unreachable";
+
+/** The words of the two party states the shared refilling notice does not own, in the shapes
+ *  the composer's own suggestion list used before the picker replaced it. */
+export const REF_PICKER_PARTY_WORDS: Record<"loading" | "unreachable", string> = {
+  loading: "Loading live agents…",
+  unreachable: "Could not load live agents — Envoy listener unreachable.",
+};
+
+/** What the instruction below calls one searched kind's rows. */
+const SEARCHED_KIND_WORDS: Record<SearchResultKind, string> = {
+  ask: "asks",
+  comment: "comments",
+  document: "documents",
+  issue: "issues",
+  message: "messages",
+};
+
+/**
+ * The one row the picker shows for the kinds it cannot list yet: the search route refuses a
+ * query under two characters, so until the reader has typed two the list holds the parties and
+ * the components, and this says what the next two letters will add. It names the kinds this box
+ * offers and no others, since a box that offers no messages would otherwise promise some.
+ */
+export function refPickerInstruction(kinds: readonly RefPickerKind[]): string {
+  const words = REF_PICKER_SEARCHED_KINDS.filter((kind) =>
+    kinds.some((offered) => offered === kind)
+  ).map((kind) => SEARCHED_KIND_WORDS[kind]);
+  if (words.length === 0) return "";
+  const last = words[words.length - 1];
+  const named = words.length === 1 ? last : `${words.slice(0, -1).join(", ")} and ${last}`;
+  return `Type two characters to search ${named}.`;
+}
+
+/** The instruction of a box that offers every kind. */
+export const REF_PICKER_INSTRUCTION = refPickerInstruction(REF_PICKER_KINDS);

@@ -353,6 +353,7 @@ describe("every committed recording answers the display tree of every stored tex
       "MessageWithTrees.body",
       "MyAnswerReply.body",
       "MyAnswerRow.question",
+      "MyReplyRow.subject",
       "ReplyBlockWithTrees.text",
       "SearchResult.snippet",
     ]);

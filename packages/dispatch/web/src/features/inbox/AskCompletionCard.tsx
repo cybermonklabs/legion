@@ -60,7 +60,11 @@ export function AskEditHistory({ ask, edits }: { ask: Ask; edits: AskEditWithTre
                     tree={edit.previous.question_tree}
                   />
                 </div>
-                <AskOptionList options={edit.previous.options ?? []} selected={[]} />
+                <AskOptionList
+                  options={edit.previous.options ?? []}
+                  selected={[]}
+                  source={textSourceOf("ask", ask.id)}
+                />
                 <p className="mt-1">
                   Reworded by <AgentName actor={edit.edited_by} inline /> ·{" "}
                   <Timestamp at={edit.at} />
@@ -74,8 +78,16 @@ export function AskEditHistory({ ask, edits }: { ask: Ask; edits: AskEditWithTre
   );
 }
 
-/** Earlier answers to an ask whose answer was changed, oldest first. */
-export function AskAnswerHistory({ answers }: { answers: AskAnswerWithTrees[] }): ReactNode {
+/** Earlier answers to an ask whose answer was changed, oldest first. Every text here is the
+ *  ask's own (`refs.ScopeOf`), answer and question alike, so each is drawn as a record of that
+ *  ask. */
+export function AskAnswerHistory({
+  answers,
+  askId,
+}: {
+  answers: AskAnswerWithTrees[];
+  askId: string;
+}): ReactNode {
   const earlier = answers.slice(0, -1);
   const latest = answers.at(-1);
   if (earlier.length === 0 || latest === undefined) return null;
@@ -97,7 +109,11 @@ export function AskAnswerHistory({ answers }: { answers: AskAnswerWithTrees[] })
               <div key={previous.at}>
                 {selected.length === 0 ? null : <p>{selected.join(", ")}</p>}
                 {previous.text === null || previous.text === "" ? null : (
-                  <MarkdownBody markdown={previous.text} tree={previous.text_tree} />
+                  <MarkdownBody
+                    markdown={previous.text}
+                    source={textSourceOf("ask", askId)}
+                    tree={previous.text_tree}
+                  />
                 )}
                 <p className="mt-1">
                   {actorActText(previous.user, previous.act)} · <Timestamp at={previous.at} />
@@ -196,7 +212,11 @@ function AnsweredAsk({
         </p>
       ) : null}
       <AskEditHistory ask={ask} edits={edits} />
-      <AskOptionList options={ask.options ?? []} selected={answer?.selected ?? []} />
+      <AskOptionList
+        options={ask.options ?? []}
+        selected={answer?.selected ?? []}
+        source={textSourceOf("ask", ask.id)}
+      />
       {otherText !== null && otherText !== "" ? (
         <div className="mt-2">
           <p className={`text-sm font-medium ${textPrimaryOnSuccessCallout}`}>Other</p>
@@ -228,7 +248,7 @@ function AnsweredAsk({
           <Timestamp at={answer.at} />
         </p>
       )}
-      <AskAnswerHistory answers={answers} />
+      <AskAnswerHistory answers={answers} askId={ask.id} />
       {onChangeAnswer === undefined ? null : (
         <button
           className={`mt-2 min-h-11 text-sm font-semibold underline ${textPrimaryOnSuccessCallout}`}
@@ -284,7 +304,11 @@ function ResolvedAsk({
           <AskApprovalLink ask={ask} />
         </p>
       ) : null}
-      <AskOptionList options={ask.options ?? []} selected={[]} />
+      <AskOptionList
+        options={ask.options ?? []}
+        selected={[]}
+        source={textSourceOf("ask", ask.id)}
+      />
       <AskEditHistory ask={ask} edits={edits} />
       <p className={`mt-2 text-xs ${textMutedOnSurface}`}>
         Asked <Timestamp at={ask.created_at} /> · <AskResolutionLine resolution={resolution} />

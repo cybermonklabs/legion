@@ -38,6 +38,16 @@ const ComponentIDPattern = `^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`
 
 var componentIDPattern = regexp.MustCompile(ComponentIDPattern)
 
+// roleTokenPattern is a role as a reference names one, `dispatch://role/<token>`: the charset a
+// `role:<token>` delivery route is written in (model.ParseRoute).
+var roleTokenPattern = regexp.MustCompile(`^[a-z0-9-]+$`)
+
+// personLoginPattern is a person as a reference names one, `dispatch://person/<login>`: their
+// email lowercased, the stored form of a login (model.CanonicalLogin) and the form a person's
+// owner tag is written in (policy.ValidPersonOwner). A login written any other way - with an
+// upper-case letter, or without a domain - is no login Dispatch holds, so it names nobody.
+var personLoginPattern = regexp.MustCompile(`^[a-z0-9._%+'-]+@[a-z0-9-]+(\.[a-z0-9-]+)+$`)
+
 func hasControl(value string) bool {
 	return strings.ContainsFunc(value, unicode.IsControl)
 }
@@ -60,8 +70,11 @@ func IsSessionID(value string) bool {
 }
 
 // Ref is a parsed Dispatch target. ID is the issue key for issue references,
-// an artifact slug for artifacts, the item identifier for asks and comments, and
-// the component id for components. Project is set instead of IssueKey for
+// an artifact slug for artifacts, the item identifier for asks and comments,
+// the component id for components, and the party's own name - a session id, a role token or a
+// login - for the three parties (Kind "session", "role" and "person"), which name a reader
+// rather than a record and are the kinds the graph stores nothing for (refs.TargetOf).
+// Project is set instead of IssueKey for
 // unlinked project-document references and for components, and Session instead of
 // both for an artifact an agent's conversation owns (`agent/<session id>/artifact/<slug>`).
 // Document is the slug of the project document an ask or a comment is written on
@@ -84,11 +97,17 @@ type Ref struct {
 	Pin      int
 }
 
-// Located is a parsed reference and the byte offset of its first character in the body it
-// was extracted from.
+// Located is a parsed reference, the byte offset of its first character in the body it
+// was extracted from, and whether that body writes it in a code context.
 type Located struct {
 	Ref
 	Offset int
+	// InCode says the reference sits in a code context - a fenced code block, an indented code
+	// block or a code span, the three codeRanges reads - where it names nobody: a party
+	// reference there is delivered to no one and joins no party set
+	// (api.commentPartiesOf), while the reference itself is read and indexed as every other
+	// one is.
+	InCode bool
 }
 
 // Extract parses Dispatch links from body. Links outside serverURL stay URL
@@ -121,7 +140,10 @@ func ExtractAt(body, serverURL string) []Located {
 // only which references text indexes, so a node whatever the length of its name, and a block
 // whatever the length of its id, is read by its own reference (a block no index keys is simply
 // no node). value names a reference when it starts with one and holds no other, as Extract would
-// find it in text; an external URL or a dashboard URL that names no page is none.
+// find it in text; an external URL or a dashboard URL that names no page is none. It answers a
+// Ref and never the code fact: a request parameter is no markdown, and the one reference it
+// names starts at its first byte, which every code context would have taken for a fence, an
+// indent or a backtick.
 func ParseRef(value, serverURL string) (Ref, bool) {
 	located := extractAt(value, serverURL, false)
 	if len(located) != 1 || located[0].Offset != 0 || located[0].Kind == "url" {
@@ -133,14 +155,18 @@ func ParseRef(value, serverURL string) (Ref, bool) {
 // extractAt is ExtractAt, holding what each reference names to the bounds the index keys when
 // bounded (Extract's reading of text, inBound) and not when not (ParseRef's of a request).
 func extractAt(body, serverURL string, bounded bool) []Located {
-	return extractSpans(body, serverURL, referencePattern.FindAllStringIndex(body, -1), bounded)
+	located, _ := extractSpans(body, serverURL, referencePattern.FindAllStringIndex(body, -1), bounded)
+	return located
 }
 
 // extractSpans is extractAt over spans, body's reference spans (referencePattern) already found,
 // so a reader that walks the gaps between them as well - Mentions, reading what a text writes
-// bare - scans body for them once.
-func extractSpans(body, serverURL string, spans [][]int, bounded bool) []Located {
+// bare - scans body for them once. It reads body's code contexts once here too (codeRanges),
+// marking each reference that sits in one, and hands them back for that same reader to mark what
+// it finds in the gaps: no consumer reads them a second time.
+func extractSpans(body, serverURL string, spans [][]int, bounded bool) ([]Located, []codeRange) {
 	refs := []Located{}
+	code := codeRanges(body)
 	var base *url.URL
 	baseParsed := false
 	for _, span := range spans {
@@ -148,9 +174,11 @@ func extractSpans(body, serverURL string, spans [][]int, bounded bool) []Located
 		if raw == "" {
 			continue
 		}
+		located := Located{Offset: span[0], InCode: inCode(code, span[0])}
 		if strings.HasPrefix(raw, "dispatch://") {
 			if ref, ok := parseDispatch(strings.TrimPrefix(raw, "dispatch://")); ok && (!bounded || inBound(ref)) {
-				refs = append(refs, Located{Ref: ref, Offset: span[0]})
+				located.Ref = ref
+				refs = append(refs, located)
 			}
 			continue
 		}
@@ -163,13 +191,15 @@ func extractSpans(body, serverURL string, spans [][]int, bounded bool) []Located
 				ref, ok = pageInBound(ref)
 			}
 			if ok {
-				refs = append(refs, Located{Ref: ref, Offset: span[0]})
+				located.Ref = ref
+				refs = append(refs, located)
 				continue
 			}
 		}
-		refs = append(refs, Located{Ref: Ref{Kind: "url", ID: raw}, Offset: span[0]})
+		located.Ref = Ref{Kind: "url", ID: raw}
+		refs = append(refs, located)
 	}
-	return refs
+	return refs, code
 }
 
 // pageInBound is what a dashboard page cites in text: what the page names while it is in bound
@@ -213,8 +243,9 @@ func trimReference(raw string) string {
 
 // parseDispatch reads a `dispatch://` reference, without its scheme, by the grammar the dashboard's
 // `parseDispatchReference` reads: a slug as written, an `@v` version, an agent's session id as
-// written, an item id decoded as `itemSegment` decodes it, and a `#b-` block of a document, an
-// ask, a comment or a message as parseBlock reads it. A reference holding a control character
+// written, an item id decoded as `itemSegment` decodes it, a `#b-` block of a document, an
+// ask, a comment or a message as parseBlock reads it, and the three parties, `agent/<session
+// id>`, `role/<token>` and `person/<login>`. A reference holding a control character
 // names nothing.
 func parseDispatch(value string) (Ref, bool) {
 	if hasControl(value) {
@@ -246,7 +277,28 @@ func parseDispatch(value string) (Ref, bool) {
 		return Ref{}, false
 	}
 	if key == "agent" {
-		return parseAgentArtifact(tail)
+		session, rest, owns := strings.Cut(tail, "/")
+		if !IsSessionID(session) {
+			return Ref{}, false
+		}
+		// The session alone is the agent itself; anything under it is what its conversation
+		// owns, which is a document and nothing else.
+		if !owns {
+			return Ref{Kind: "session", ID: session}, true
+		}
+		return parseAgentArtifact(session, rest)
+	}
+	if key == "role" {
+		if !roleTokenPattern.MatchString(tail) {
+			return Ref{}, false
+		}
+		return Ref{Kind: "role", ID: tail}, true
+	}
+	if key == "person" {
+		if !personLoginPattern.MatchString(tail) {
+			return Ref{}, false
+		}
+		return Ref{Kind: "person", ID: tail}, true
 	}
 	if !projectKeyPattern.MatchString(key) || !found {
 		return Ref{}, false
@@ -278,12 +330,21 @@ func parseDispatch(value string) (Ref, bool) {
 	return Ref{}, false
 }
 
-// parseAgentArtifact reads what follows `agent/` in a reference: `<session id>/artifact/<slug>`
-// with an optional `@v` version, the one thing an agent's conversation owns.
-func parseAgentArtifact(tail string) (Ref, bool) {
-	session, rest, _ := strings.Cut(tail, "/")
+// IsParty reports whether the reference names a party rather than a record: an agent's session,
+// a role or a person, the three kinds parseDispatch reads out of `agent/<session id>`,
+// `role/<token>` and `person/<login>`. A party is a reader, so the graph keys no node for one
+// (refs.TargetOf) and a comment's delivering parties are read out of these alone
+// (api.commentPartiesOf). Its twin on the web is isPartyRoute in `party-references.ts`.
+func (r Ref) IsParty() bool {
+	return r.Kind == "session" || r.Kind == "role" || r.Kind == "person"
+}
+
+// parseAgentArtifact reads what an agent's session owns, `artifact/<slug>` with an optional
+// `@v` version, the one thing an agent's conversation owns. The session is its caller's, which
+// read it out of the reference and held it to IsSessionID.
+func parseAgentArtifact(session, rest string) (Ref, bool) {
 	artifact, ok := strings.CutPrefix(rest, "artifact/")
-	if !ok || !IsSessionID(session) {
+	if !ok {
 		return Ref{}, false
 	}
 	slug, ok := parseArtifactSlug(artifact)
@@ -339,7 +400,9 @@ const MaxTargetBytes = 2048
 // id>` (`comment/<uuid>#b2`, a lowercase kind no issue key, project or `agent/` can be); a
 // component's `<project>/<id>` node address; and an ask's, a comment's or a message's id. A
 // document's version and a block's pin are not part of it: a pinned and an unpinned reference to
-// one block are one target.
+// one block are one target. A party's id is its own name, and the graph stores no edge under it
+// (refs.TargetOf): it is read only to hold a party reference to the same bound as any other
+// (targetFits).
 func TargetID(ref Ref) string {
 	switch ref.Kind {
 	case "artifact":

@@ -22,6 +22,7 @@ import { type BlockItemKind, itemOfBlock } from "./block-reference";
 import { MarkdownPreview } from "./MarkdownPreview";
 import { REF_PREVIEW_CARD_ID, refPreviewCardContains } from "./ref-preview-card";
 import { REF_PREVIEW_CLOSE_DELAY_MS, REF_PREVIEW_OPEN_DELAY_MS } from "./ref-preview-timing";
+import { ReferenceHostIs } from "./reference-host";
 import {
   artifactTextQuery,
   blockText,
@@ -29,7 +30,7 @@ import {
   prefetchReference,
   useBlockDocument,
   useReferenceData,
-  useReferencePath,
+  useReferenceHref,
 } from "./reference-target";
 import {
   buildDispatchReference,
@@ -413,15 +414,19 @@ function IssuePreview({ route }: { route: DispatchReferenceRoute }): ReactNode {
  *  The card is a tooltip inside one link to the reference (never interactive), so an agent in it
  *  is named and marked by `AgentName` without a link of its own. */
 function documentOwner(route: DispatchReferenceRoute): ReactNode {
-  return route.kind === "agent-artifact" ? (
-    <>
-      agent <AgentName kind="static" sessionId={route.session} storedTitle={undefined} />
-    </>
-  ) : isProjectRoute(route) ? (
-    route.project
-  ) : (
-    route.key
-  );
+  if (route.kind === "agent-artifact") {
+    return (
+      <>
+        agent <AgentName kind="static" sessionId={route.session} storedTitle={undefined} />
+      </>
+    );
+  }
+  if (isProjectRoute(route)) {
+    return route.project;
+  }
+  // Every document belongs to an issue, a project or an agent; a route that is none of those -
+  // a party, a component - is no document and reaches no card of one.
+  return "key" in route ? route.key : null;
 }
 
 function DocumentPreview({ route }: { route: DispatchReferenceRoute }): ReactNode {
@@ -598,7 +603,7 @@ const ANCHOR_GAP_PX = 6;
 
 function PreviewCard({ target }: { target: PreviewTarget }): ReactNode {
   const element = useRef<HTMLDivElement>(null);
-  const path = useReferencePath(target.route);
+  const href = useReferenceHref(target.route);
   // Re-measured on every render: the card grows when its data arrives, and its size decides
   // whether it fits below the anchor. Fixed positioning against the anchor's viewport rect is
   // the boring choice that works in Chromium and iPhone Safari alike — the native Popover API
@@ -632,9 +637,19 @@ function PreviewCard({ target }: { target: PreviewTarget }): ReactNode {
       ref={element}
       role="tooltip"
     >
-      <Link className="block" tabIndex={-1} to={path}>
-        <PreviewContent route={target.route} />
-      </Link>
+      {/* The card is one link to the target it previews, so nothing drawn inside it is a link
+          of its own: that would be a second tab stop inside a tooltip, and a click that
+          followed two links at once. A target with no page of this dashboard - a person, whom
+          nothing shows (R5) - is previewed with no link at all. */}
+      <ReferenceHostIs host="control">
+        {href === undefined ? (
+          <PreviewContent route={target.route} />
+        ) : (
+          <Link className="block" tabIndex={-1} to={href}>
+            <PreviewContent route={target.route} />
+          </Link>
+        )}
+      </ReferenceHostIs>
     </div>
   );
 }

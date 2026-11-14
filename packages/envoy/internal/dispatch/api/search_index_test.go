@@ -307,7 +307,8 @@ func meaningStatementAsSearchPicksIt(t *testing.T, database *store.Store, projec
 		t.Fatalf("begin a transaction to read the fill's progress in: %v", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	return meaningStatementFor(project, embeddingProjectKeysFilled(ctx, tx), false)
+	// The statements of a search naming no kind, which is what this helper's callers run.
+	return meaningStatementFor(searchKinds(0).statements(), project, embeddingProjectKeysFilled(ctx, tx), false)
 }
 
 // TestSearchMeaningCommentArmTakesItsWindowsBeforeItsJoins holds INFRA-988's measurement as a

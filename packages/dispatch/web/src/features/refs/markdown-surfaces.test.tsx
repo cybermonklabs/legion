@@ -198,9 +198,10 @@ function expectFormatted(element: HTMLElement): void {
   ]);
 }
 
-/** A one-line preview whose host is a toggle, not a navigation (the margin's collapsed card):
- *  the words and formatting of `expectFormatted`, with its links kept real, so a click on a
- *  reference is the way out of the card to its target. */
+/** A one-line preview whose host is a toggle, not a navigation (the collapsed thread card the
+ *  margin and the Conversation tab both draw): the words and formatting of `expectFormatted`,
+ *  with its links kept real, so a click on a reference is the way out of the card to its
+ *  target. */
 function expectFormattedWithLiveLinks(element: HTMLElement): void {
   expectNoSyntax(element);
   expect(element.textContent ?? "").toMatch(RENDERED);
@@ -919,6 +920,9 @@ describe("a Dispatch picture on every surface", () => {
       const card = await within(view.container).findByTestId(`margin-comment-${comment.id}`);
       const body = card.querySelector<HTMLElement>("[data-markdown-preview]");
       if (body === null) throw new Error("the collapsed preview is not a MarkdownPreview");
+      // The collapsed card is a record a reader reads - the Conversation tab's whole default
+      // view of a turn - so its picture links to its own page, as it did before a host decided
+      // a surface's links.
       await expectThumbnail(body, "live");
       expectOneLine(body);
     } finally {

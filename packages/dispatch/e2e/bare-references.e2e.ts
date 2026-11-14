@@ -16,15 +16,14 @@ import { connectedDot, documentEditor, openSpec } from "./editor";
 import {
   ANCHOR,
   answeredQuestionPreview,
+  FOUND_REFERENCE,
   HOST_KEY,
-  INERT_REFERENCE,
   OTHER_KEY,
   openMarginThread,
   QUESTION_IDS,
   questionBlock,
   questionText,
   RENDERED_BODY,
-  RENDERED_REFERENCE,
   type ReferenceWorld,
   referenceAgent,
   referenceTargetsIn,
@@ -39,7 +38,7 @@ import { asUser } from "./users";
  * The browser's half of the shared text table (`@legion/contracts`'s DISPATCH_TEXT_REFERENCES,
  * which the Go reader and the dashboard's reader are both held to): every row written into a
  * real Dispatch, read on the three surfaces a person reads text on — the rendered markdown of a
- * Conversation turn, the inert one-line preview of an Answers row, and the live document editor —
+ * Conversation turn, the one-line preview of an Answers row, and the live document editor —
  * each linking exactly the references its row names and nothing else, inside code included,
  * against a server that resolves them for real.
  *
@@ -81,6 +80,10 @@ const DECISION_BLOCK_ROW = ":::ask{#q2}\nWhich region first?\n:::";
  *  document, and proved on the rendered and preview surfaces; their exclusion is no gap in the
  *  grammar. */
 const EDITOR_EXCLUDED: Readonly<Record<string, string>> = {
+  "```\ndispatch://CORE-1":
+    "an unclosed fence, which in a document opens a block that swallows every row written after it",
+  "```a`b\ndispatch://CORE-1\n```":
+    "a backtick in a fence's info string: the two readers of a reference follow CommonMark, which takes this for no fence at all, and the document editor's own parser does not - it opens a block here and swallows every row after it. So a party written on that line is delivered while a reader of the document sees code, which is the milder of the two directions and is left as it stands (dispatch://INFRA-1702/comment/07631016-18aa-4267-bc05-2a6a821c20cd): aligning the readers would make them wrong against the server's renderer and every other reader of the stored text, and aligning the editor means changing vendored parsing for every document",
   ':::callout{#d1 affects="dispatch://CORE-1/spec#b-a dispatch://CORE-1/spec#b-b"}':
     "an unclosed directive, which in a document opens a block that swallows the text after it",
   [DECISION_BLOCK_ROW]:
@@ -183,11 +186,14 @@ function casesFor(
     ...Object.values(world.items).map((item) => item.reference),
     ...QUESTION_IDS.map((id) => askReference(world, questions, id)),
   ]);
-  const document = new RegExp(`^dispatch://(${issues.join("|")})/(spec|artifact/)`);
-  // A document's title is the name its own reference carries, so the editor draws one whether
-  // or not that document exists; a block's title is the block's own text, so it draws only for
-  // a block this world holds.
-  const made = (link: string) => named.has(link) || (document.test(link) && !link.includes("#b-"));
+  // A spec is titled by its issue, and a document by its own name, which only a document the
+  // world holds has: this world makes one, the target's `notes.md`, and any other document's
+  // reference is its writer's words with no title (R8). A block's title is the block's own
+  // text, so it draws only for a block this world holds.
+  const document = new RegExp(
+    `^dispatch://(?:(?:${issues.join("|")})/spec|${world.target.key}/artifact/notes-md(?:@v\\d+)?)$`
+  );
+  const made = (link: string) => named.has(link) || document.test(link);
   return DISPATCH_TEXT_REFERENCES.map((row, index) => {
     const ids = new Map(
       Object.entries(row.items ?? {}).map(([id, reference]) => [
@@ -387,9 +393,16 @@ test("a margin thread's replies link each reference the shared table links and n
     await expect(replies).toHaveCount(cases.length);
     const body = (item: Case) => replies.nth(cases.indexOf(item)).locator(RENDERED_BODY).first();
     for (const item of cases) {
+      // The reader finds exactly the row's links; each whose target this world holds is a link,
+      // and each it does not hold is its writer's words (R8), which `reference-naming.e2e.ts`
+      // holds on its own rows.
       await expect
-        .poll(() => referenceTargetsIn(body(item), RENDERED_REFERENCE), { message: rowName(item) })
+        .poll(() => referenceTargetsIn(body(item), FOUND_REFERENCE), { message: rowName(item) })
         .toEqual([...item.links]);
+      await expect(
+        body(item).locator("[data-dispatch-ref]:not(a[href])"),
+        rowName(item)
+      ).toHaveCount(0);
       await expectMadeTitles(body(item), (link) => `a[data-dispatch-ref="${link}"]`, titles, item);
     }
 
@@ -416,14 +429,14 @@ test("a margin thread's replies link each reference the shared table links and n
   }
 });
 
-test("the one-line preview shows each reference the shared table links as its target's title, with no link inside it", async ({
+test("the one-line preview shows each reference the shared table links as its target's title", async ({
   browser,
 }) => {
   test.setTimeout(60_000 + DISPATCH_TEXT_REFERENCES.length * 1_500);
   const world = await seedReferenceWorld();
   // The Replies page carried this one-line preview until INFRA-450 deleted that page, and the
   // Inbox that took its rows draws a thread whole with live links rather than a preview of it.
-  // The inert one-line preview a reader still meets is an answered ask's question on the
+  // The one-line preview a reader still meets is an answered ask's question on the
   // Answers page, so each row of the table is written as one question there. A preview is one
   // line of a list, so the table's longer and multi-line bodies are read on the rendered and
   // editor surfaces alone.
@@ -479,12 +492,15 @@ test("the one-line preview shows each reference the shared table links as its ta
     for (const [item, ask] of asks) {
       const preview = answeredQuestionPreview(page, ask);
       await expect
-        .poll(() => referenceTargetsIn(preview, INERT_REFERENCE), { message: rowName(item) })
+        .poll(() => referenceTargetsIn(preview, FOUND_REFERENCE), { message: rowName(item) })
         .toEqual([...item.links]);
       await expectMadeTitles(preview, (link) => `[data-dispatch-ref="${link}"]`, titles, item);
-      // A preview is one control's text: what a reference reads as is link-styled text, never
-      // a link.
-      await expect(preview.locator("a"), rowName(item)).toHaveCount(0);
+      // The Answers row is a record a reader reads (`DISPATCH_READING_SURFACES`'s
+      // `answers-subject`), so each reference it draws is a link into its target; a preview
+      // inside a control draws the same text with no link in it.
+      await expect(preview.locator("[data-dispatch-ref]:not(a[href])"), rowName(item)).toHaveCount(
+        0
+      );
     }
   } finally {
     await context.close();

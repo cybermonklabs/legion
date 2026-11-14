@@ -10,6 +10,7 @@ import type { DisplayTree, IssueReferenceSummary } from "../../api/types";
 import fixtures from "./__fixtures__/display-trees.json";
 import { MarkdownPreview } from "./MarkdownPreview";
 import { installFakeParseWorker, restoreParseWorker } from "./parse-worker-fixture";
+import { type ReferenceHost, ReferenceHostIs } from "./reference-host";
 
 /**
  * `MarkdownPreview` on its own: the inputs a real surface hands it that the one-fixture surface
@@ -45,15 +46,19 @@ const issue: IssueReferenceSummary = {
   title: "Design decision",
 };
 
-type PreviewProps = ComponentProps<typeof MarkdownPreview>;
+/** A preview's own props, with the shape of the host it is drawn in: whether a reference in it
+ *  is a live link is the host's property, never a prop of the preview (`ReferenceHostIs`). */
+type PreviewProps = ComponentProps<typeof MarkdownPreview> & { host?: ReferenceHost };
 
 /** Renders one preview under a query client (a reference inside resolves its title through
  *  one), and hands back its root and a rerender with new props. */
 function renderPreview(props: PreviewProps) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const wrap = (next: PreviewProps): ReactNode => (
+  const wrap = ({ host = "record", ...next }: PreviewProps): ReactNode => (
     <QueryClientProvider client={client}>
-      <MarkdownPreview {...next} />
+      <ReferenceHostIs host={host}>
+        <MarkdownPreview {...next} />
+      </ReferenceHostIs>
     </QueryClientProvider>
   );
   const view = render(wrap(props));
@@ -98,8 +103,9 @@ test("a hit inside bold or code text is marked inside the formatting, with no sy
 
 test("a hit inside a dispatch:// reference keeps its highlight on the reference's resolved title", async () => {
   const getIssueSummary = spyOn(api, "getIssueSummary").mockResolvedValue(issue);
-  // q=CORE-1: `Tracked as <mark>dispatch://CORE-1</mark> since Monday` - the match is inside
-  // the reference the preview replaces with the issue's title.
+  // q=CORE-1, as Postgres answers it: `Tracked as dispatch://<b>CORE</b><b>-1</b> since
+  // Monday` - ts_headline marks the address's words one by one, so the reference stands in three
+  // text nodes. The preview reads it whole, names the issue, and marks the name whole.
   const bare = stored("a-marked-reference");
   const { preview, rerender, view } = renderPreview({
     highlightClassName: "hit",
@@ -112,16 +118,25 @@ test("a hit inside a dispatch:// reference keeps its highlight on the reference'
     const reference = preview().querySelector<HTMLElement>("[data-dispatch-ref]");
     if (reference === null) throw new Error("the reference did not render as one");
     expect(reference.textContent).toBe("CORE-1 Design decision");
-    expect(reference.closest("mark") !== null || reference.querySelector("mark") !== null).toBe(
-      true
-    );
-    for (const mark of preview().querySelectorAll("mark")) {
-      expect(mark.textContent?.trim()).not.toBe("");
-    }
-    expect(preview().textContent).not.toContain("dispatch://");
+    expect(marks(preview())).toEqual(["CORE-1 Design decision"]);
+    expect(reference.querySelector("mark")?.textContent).toBe("CORE-1 Design decision");
+    expect(preview().textContent).toBe("Tracked as CORE-1 Design decision since Monday.");
 
-    // q=design on a hand-written link to the same target: the hit is in the words its author
-    // gave the link, which the resolved title replaces.
+    // The same search over a bare key: `Tracked as <b>CORE</b><b>-1</b> since Monday`.
+    const key = stored("a-marked-key");
+    rerender({
+      highlightClassName: "hit",
+      lines: 2,
+      markdown: snippetSource(key.markdown),
+      tree: key.snippet,
+    });
+    await waitFor(() => expect(marks(preview())).toEqual(["CORE-1 Design decision"]));
+    expect(preview().querySelector("[data-dispatch-ref] mark")?.textContent).toBe(
+      "CORE-1 Design decision"
+    );
+
+    // q=design on a hand-written link to the same target: a link whose words its author wrote
+    // keeps those words (R8), so the hit is marked where the reader reads it.
     const linkHit = stored("a-marked-link-to-a-reference");
     rerender({
       highlightClassName: "hit",
@@ -130,13 +145,45 @@ test("a hit inside a dispatch:// reference keeps its highlight on the reference'
       tree: linkHit.snippet,
     });
     await waitFor(() =>
-      expect(preview().querySelector("[data-dispatch-ref]")?.textContent).toBe(
-        "CORE-1 Design decision"
-      )
+      expect(preview().querySelector("[data-dispatch-ref]")?.textContent).toBe("the design")
     );
     const linked = preview().querySelector<HTMLElement>("[data-dispatch-ref]");
-    expect(linked?.closest("mark") !== null || linked?.querySelector("mark") !== null).toBe(true);
+    expect(linked?.querySelector("mark")?.textContent).toBe("design");
+    expect(marks(preview())).toEqual(["design"]);
     expect(preview().textContent).not.toContain("](");
+  } finally {
+    view.unmount();
+    getIssueSummary.mockRestore();
+  }
+});
+
+test("a hit on a stored autolink's key reads as the reference it links to, its title marked whole", async () => {
+  const getIssueSummary = spyOn(api, "getIssueSummary").mockResolvedValue(issue);
+  // q=CORE over the link a document stores for the autolink `<dispatch://CORE-1>`, as Postgres
+  // answers it once the cut is widened back to the whole link: `See
+  // [dispatch://<b>CORE</b>-1](dispatch://<b>CORE</b>-1) since Monday.` - ts_headline marks the
+  // key in the address as well as in the words. The server keeps the mark on the words alone, so
+  // the link still points at CORE-1: a link whose words are its own address reads as the issue's
+  // name, and a title drawn in place of marked words is marked whole.
+  const hit = stored("a-marked-autolink-to-a-reference");
+  const { preview, view } = renderPreview({
+    highlightClassName: "hit",
+    lines: 2,
+    markdown: snippetSource(hit.markdown),
+    tree: hit.snippet,
+  });
+  try {
+    await waitFor(() => expect(preview()).toHaveTextContent("Design decision"));
+    const reference = preview().querySelector<HTMLElement>("[data-dispatch-ref]");
+    if (reference === null) throw new Error("the autolink did not render as a reference");
+    expect(reference.textContent).toBe("CORE-1 Design decision");
+    expect(reference.querySelector("mark")?.textContent).toBe("CORE-1 Design decision");
+    expect(marks(preview())).toEqual(["CORE-1 Design decision"]);
+    expect(preview().textContent).toBe("See CORE-1 Design decision since Monday.");
+    expect(preview().textContent).not.toContain("dispatch://");
+    await waitFor(() =>
+      expect(reference.closest("a")?.getAttribute("href")).toBe("/issues/CORE-1")
+    );
   } finally {
     view.unmount();
     getIssueSummary.mockRestore();
@@ -180,14 +227,14 @@ test("a lead with no body shows the lead alone", async () => {
   }
 });
 
-test("a Dispatch picture shows as its thumbnail beside its caption, a link only where links stay live", async () => {
+test("a Dispatch picture shows as its thumbnail beside its caption, a link only where its host links", async () => {
   // The dashboard is served from an origin, where a picture's same-origin bytes route resolves;
   // at happy-dom's `about:blank` every picture would fail at once (`MarkdownBody.test.tsx`).
   const testWindow = window as unknown as HappyDOMWindow;
   const pageBefore = window.location.href;
   testWindow.happyDOM.setURL("https://dispatch.test/issues/CORE-1/conversation");
   const markdown = "The broken layout: ![shot.png](dispatch://CORE-1/artifact/shot-png@v1)";
-  const { preview, rerender, view } = renderPreview({ lines: 2, markdown });
+  const { preview, rerender, view } = renderPreview({ host: "control", lines: 2, markdown });
   try {
     await waitFor(() => expect(preview().querySelector("img")).not.toBeNull());
     const thumbnail = preview().querySelector("img");
@@ -198,12 +245,13 @@ test("a Dispatch picture shows as its thumbnail beside its caption, a link only 
       expect.arrayContaining(["h-10", "w-10", "object-cover"])
     );
     expect(words(preview())).toBe("The broken layout: shot.png");
-    // Inert by default: the host is the one link, so the picture sits in link-styled text.
+    // Shape 2 decided it: the host is a link or a button, so the picture sits in link-styled
+    // text and the host is what a click follows.
     expect(preview().querySelector("a")).toBeNull();
     expect(thumbnail?.closest("[data-dispatch-picture]")?.tagName).toBe("SPAN");
 
-    // A host whose own control is a toggle keeps the picture's link to its page.
-    rerender({ lines: 2, links: "live", markdown });
+    // Shape 1: a record a reader reads, where the picture's link to its page works.
+    rerender({ host: "record", lines: 2, markdown });
     await waitFor(() => expect(preview().querySelector("a img")).not.toBeNull());
     expect(preview().querySelector("a")?.getAttribute("href")).toBe(
       "/issues/CORE-1/artifacts/shot-png?v=1"

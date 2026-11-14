@@ -14,6 +14,7 @@ import { ApiError, api, artifactVersionPath } from "../../api/client";
 import { primarySpec } from "../../api/issue-cache";
 import { issueQuery } from "../../api/queries";
 import type {
+  ArchitectureComponentRead,
   Artifact,
   ArtifactText,
   ArtifactVersionContent,
@@ -26,15 +27,17 @@ import type {
   MessageRead,
   ReferenceQuestions,
 } from "../../api/types";
+import { agentsQuery, registeredAgent, registeredTitle } from "./agent-registry";
 import { itemOfBlock } from "./block-reference";
+import { knownSessionQuery } from "./known-sessions";
 import { useMarkdownHeadline } from "./markdown-engine";
 import {
   buildDispatchReference,
-  buildReferencePath,
   type DispatchReferenceRoute,
   type IssueRoute,
   type ReferencedArtifact,
   referencedArtifact,
+  referenceHref,
 } from "./routes";
 import { referenceTargetKind } from "./target-id";
 import { prefixReference, routeWithWholeIds, type TextSource } from "./text-references";
@@ -75,7 +78,19 @@ export interface ReferenceTarget {
   /** The bytes route of the picture a reference to an image artifact names - the version it pins,
    *  else the latest - for a thumbnail beside the title; undefined for anything else. */
   readonly picture: string | undefined;
+  /** Whether Dispatch answered that the target does not exist (`ReferenceData.missing`): such a
+   *  reference reads as the words its writer wrote, with no link (R8). */
+  readonly missing: boolean;
+  /** Whether Dispatch answered that a target with no title of its own exists: a session it holds
+   *  a record of that the registry does not name. A comment links such a reference in the words
+   *  its writer wrote, and the document editor draws it the same way (`document-references.tsx`),
+   *  so the two surfaces give one answer. False for every other target, whose title says it. */
+  readonly known: boolean;
 }
+
+/** What a target shows of itself, which each kind reads its own way; `missing` and `known` are
+ *  answered once for every kind (`useReferenceTarget`). */
+type ShownTarget = Omit<ReferenceTarget, "missing" | "known">;
 
 /** How much of a target's own text becomes a reference link's title: an ask's question, a
  *  comment's body. Long enough to recognise, short enough for a link inside a sentence. */
@@ -141,6 +156,16 @@ export const commentQuery = (id: string | undefined) =>
   queryOptions({
     queryKey: ["comment", id],
     queryFn: () => api.getComment(id ?? ""),
+  });
+
+/** A project's architecture, which is where a component's own title is: the one read behind a
+ *  component reference, keyed as the picker's own read of the same tree is
+ *  (`features/refs/useRefPicker.ts`), so a box that has listed a project's components and a
+ *  body that names one of them share the answer. */
+export const architectureQuery = (project: string | undefined) =>
+  queryOptions({
+    queryKey: ["architecture", project],
+    queryFn: () => api.getArchitecture(project ?? ""),
   });
 
 /** `GET /api/v1/references?to=<reference>`: the node a reference names and the edges pointing at
@@ -228,6 +253,26 @@ export function summarySpec(
   return (summary?.documents ?? []).find((document) => document.primary);
 }
 
+/** The artifact among `artifacts` that an address names - the `<name>` of an `artifact/<name>`
+ *  reference or of an issue's `/artifacts/<name>` page - found as the server's read route finds it
+ *  (`resolveDocumentReference`): the artifact whose slug it is, else the document whose name it
+ *  is. A document renamed to a slug-shaped name keeps the slug its first name gave it, so an
+ *  address written with its current name opens it and is drawn as it. An owner's names and slugs
+ *  never name two artifacts (`renameArtifact`), and only a document, never a file or an image, is
+ *  found by its name. One rule for every list that answers it - an issue summary's documents, an
+ *  issue's artifacts - so a link drawn from a reference and the page it opens find the same
+ *  artifact. Undefined until the list is read, and once it is read without it. */
+export function artifactAtAddress<T extends Pick<Artifact, "kind" | "name" | "slug">>(
+  artifacts: readonly T[] | null | undefined,
+  address: string
+): T | undefined {
+  const listed = artifacts ?? [];
+  return (
+    listed.find((candidate) => candidate.slug === address) ??
+    listed.find((candidate) => candidate.kind === "doc" && candidate.name === address)
+  );
+}
+
 /** The block a route names, as the reference its graph read is keyed by; undefined for a route
  *  that names no block. */
 function blockReferenceOf(route: DispatchReferenceRoute | undefined): string | undefined {
@@ -253,6 +298,25 @@ export interface ReferenceData {
   readonly comment: CommentRead | undefined;
   readonly message: MessageRead | undefined;
   readonly block: GraphReferences | undefined;
+  /** The component a component reference names, once its project's architecture is read: the
+   *  one record behind that kind, and what gives the reference the component's own title. */
+  readonly component: ArchitectureComponentRead | undefined;
+  /** A session reference's title: the registry's, trimmed, for a session it lists with a
+   *  non-blank one (`registeredTitle`), else the one Dispatch answered for a session it holds a
+   *  record of (`known-sessions.ts`); undefined otherwise. */
+  readonly sessionTitle: string | undefined;
+  /** Whether Dispatch holds a record of the session a session reference names. */
+  readonly sessionKnown: boolean;
+  /** Whether Dispatch answered that the target does not exist: the read of the record behind the
+   *  reference answered 404 (a project with no architecture among them), or the read that lists
+   *  it came back without it - an issue's artifacts with neither the slug nor, for a document, the
+   *  name an artifact reference writes (`artifactAtAddress`), a project's architecture without the
+   *  component, Dispatch's record of sessions without the session (one the registry lists, and
+   *  one that ended, are both known). False while loading and for any other failure, so a
+   *  reference that names a real target never loses its link to a slow or dropped read. The
+   *  document editor reads the same answer (`document-references.tsx`, through
+   *  `useReferenceTarget`), so a comment and the editor cannot disagree. */
+  readonly missing: boolean;
 }
 
 export interface ReferenceReadOptions {
@@ -329,14 +393,21 @@ export function prefetchReference(queryClient: QueryClient, route: DispatchRefer
     case "artifact": {
       const query = issueSummaryQuery(route.key);
       void queryClient.prefetchQuery(query).then(() => {
-        const documents = queryClient.getQueryData(query.queryKey)?.documents;
         warmText(
-          documents?.find((candidate) => candidate.slug === route.slug),
+          artifactAtAddress(queryClient.getQueryData(query.queryKey)?.documents, route.slug),
           route.version
         );
       });
       return;
     }
+    case "agent-session":
+    case "role":
+    case "person":
+      // A party is a reader, not a record: there is no read behind one to warm.
+      return;
+    case "component":
+      void queryClient.prefetchQuery(architectureQuery(route.project));
+      return;
     default: {
       const query = issueQuery(route.key);
       void queryClient
@@ -396,6 +467,11 @@ export function useWholeRouteRead(route: DispatchReferenceRoute | undefined): Wh
   };
 }
 
+/** Whether a read failed because Dispatch answered that its record does not exist. */
+function answeredNotFound(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 404;
+}
+
 export function useReferenceData(
   given: DispatchReferenceRoute | undefined,
   options: ReferenceReadOptions
@@ -406,12 +482,7 @@ export function useReferenceData(
   // no issue, document, ask, comment or message read behind it.
   const record = route !== undefined && itemOfBlock(route) !== undefined ? undefined : route;
   const issueRoute =
-    route === undefined ||
-    route.kind === "agent-artifact" ||
-    route.kind === "document" ||
-    blockReference !== undefined
-      ? undefined
-      : route;
+    route === undefined || !("key" in route) || blockReference !== undefined ? undefined : route;
   // An ask, comment or message under an issue shows only its own record.
   const summaryKey =
     issueRoute === undefined ||
@@ -469,15 +540,45 @@ export function useReferenceData(
       ? projectDocument.data
       : agentArtifact !== undefined
         ? sessionArtifact.data
-        : (issue.data?.documents ?? []).find(
-            (candidate) => route?.kind === "artifact" && candidate.slug === route.slug
-          );
+        : route?.kind === "artifact"
+          ? artifactAtAddress(issue.data?.documents, route.slug)
+          : undefined;
   const text = useQuery({
     ...artifactTextQuery(artifact?.id, version),
     enabled: options.text && artifact?.kind === "doc",
   });
   const ask = useQuery({ ...askQuery(askId), enabled: askId !== undefined });
   const comment = useQuery({ ...commentQuery(commentId), enabled: commentId !== undefined });
+  const componentRoute = route?.kind === "component" ? route : undefined;
+  const architecture = useQuery({
+    ...architectureQuery(componentRoute?.project),
+    enabled: componentRoute !== undefined,
+  });
+  const component = (architecture.data?.components ?? []).find(
+    (candidate) => candidate.id === componentRoute?.id
+  );
+  // A session is a target while Dispatch holds any record of it: listed in the registry, which
+  // the page already reads, or, for one the registry does not list, answered by the one batched
+  // read of the page's unlisted sessions. An ended session keeps its conversation, so it stays a
+  // link; an id no agent ever held does not (R8).
+  const sessionRoute = route?.kind === "agent-session" ? route : undefined;
+  const registry = useQuery({
+    ...agentsQuery(),
+    enabled: sessionRoute !== undefined,
+    refetchOnMount: false,
+  });
+  const listed =
+    sessionRoute === undefined ? undefined : registeredAgent(registry.data, sessionRoute.session);
+  // The registry answered and does not list the session: only then is Dispatch's record of it
+  // read, and only then can that record's answer make the reference missing.
+  const unlisted =
+    sessionRoute !== undefined && registry.data !== undefined && listed === undefined;
+  const recorded = useQuery({
+    ...knownSessionQuery(sessionRoute?.session),
+    enabled: unlisted,
+  });
+  const listedTitle =
+    sessionRoute === undefined ? undefined : registeredTitle(registry.data, sessionRoute.session);
   return {
     issue: issue.data,
     artifact,
@@ -487,6 +588,25 @@ export function useReferenceData(
     ask: ask.data,
     comment: comment.data,
     message: messageQueryResult.data,
+    component,
+    sessionTitle: listedTitle ?? recorded.data?.title,
+    sessionKnown: listed !== undefined || recorded.data?.known === true,
+    missing:
+      (unlisted && recorded.data?.known === false) ||
+      [
+        issue,
+        messageQueryResult,
+        projectDocument,
+        sessionArtifact,
+        block,
+        ask,
+        comment,
+        architecture,
+      ].some((read) => answeredNotFound(read.error)) ||
+      (componentRoute !== undefined &&
+        architecture.data !== undefined &&
+        component === undefined) ||
+      (route?.kind === "artifact" && issue.data !== undefined && artifact === undefined),
     // TanStack keeps a query's last data through a failed refetch, so a link or card open when an
     // edit deletes its block would go on showing text its document or item no longer holds. The
     // read answers 404 `NOT_FOUND` for that block, and the link and card then read as a freshly
@@ -527,7 +647,7 @@ export function useBlockDocument(
     case "spec":
       return summarySpec(issue.data);
     case "artifact":
-      return (issue.data?.documents ?? []).find((candidate) => candidate.slug === named.slug);
+      return artifactAtAddress(issue.data?.documents, named.slug);
     default:
       return undefined;
   }
@@ -561,15 +681,29 @@ export function blockTextTree(node: GraphReferences["node"]): DisplayTree | unde
  * to its status. An ask or comment never borrows its issue's status or its document's text, while
  * it loads or after. A block of a document resolves to the headline of its own text, as an ask or
  * comment does: the text the pinned version held for a pinned reference, its current text
- * otherwise. A reference to an image artifact, of an issue, a project or an agent's conversation,
- * also answers its picture: the bytes route of the version it pins, else of the latest.
+ * otherwise. A component resolves to its own title from its project's architecture, the one
+ * record behind that kind. A reference to an image artifact, of an issue, a project or an
+ * agent's conversation, also answers its picture: the bytes route of the version it pins, else
+ * of the latest.
  */
 export function useReferenceTarget(
   route: DispatchReferenceRoute | undefined,
   options: ReferenceReadOptions
 ): ReferenceTarget {
-  const { artifact, ask, block, comment, issue, markdown, markdownTree, message } =
-    useReferenceData(route, options);
+  const {
+    artifact,
+    ask,
+    block,
+    comment,
+    component,
+    issue,
+    markdown,
+    markdownTree,
+    message,
+    missing,
+    sessionKnown,
+    sessionTitle,
+  } = useReferenceData(route, options);
   const kind = route === undefined ? undefined : referenceTargetKind(route);
   let authored: string | undefined;
   let authoredTree: DisplayTree | undefined;
@@ -599,31 +733,58 @@ export function useReferenceTarget(
   // nowhere (`e2e/parse-count.e2e.ts`).
   const headline = useMarkdownHeadline(authoredTree, TITLE_HEADLINE_MAX, authored);
 
+  let shown: ShownTarget;
   if (kind === "message") {
     // A message reads as the head of what it says, the way a comment does; its own body is the
     // description, which the cards under a message reference render formatted.
-    return {
+    shown = {
       title: headline?.text,
       description: message?.message.body,
       descriptionTree: message?.message.body_tree,
       picture: undefined,
     };
-  }
-  if (kind === "ask" || kind === "comment" || kind === "block") {
-    return {
+  } else if (kind === "session") {
+    // A session reads as its title, and links while Dispatch holds a record of it.
+    shown = {
+      title: sessionTitle,
+      description: undefined,
+      descriptionTree: undefined,
+      picture: undefined,
+    };
+  } else if (kind === "component") {
+    // A component is named by its architecture row, and says what it is in its own prose, which
+    // the architecture read answers with Go's reading of it (`prose_tree`), as the component's
+    // own page draws it (`ComponentDetails`).
+    shown = {
+      title: component?.title,
+      description: component?.prose,
+      descriptionTree: component?.prose_tree,
+      picture: undefined,
+    };
+  } else if (kind === "ask" || kind === "comment" || kind === "block") {
+    shown = {
       title: headline?.text,
       description: headline?.cut === true ? authored : undefined,
       descriptionTree: headline?.cut === true ? authoredTree : undefined,
       picture: undefined,
     };
+  } else {
+    const text = markdown !== undefined && markdown.trim() !== "" ? markdown : undefined;
+    const named = route === undefined ? undefined : referencedArtifact(route);
+    // A reference that names a document is titled by that document alone: one its issue does not
+    // hold has no title, never its issue's, which would name a node the reference does not name.
+    shown = {
+      title: named === undefined ? issue?.title : artifact?.name,
+      description: text ?? (artifact === undefined ? issue?.status : undefined),
+      descriptionTree: text === undefined ? undefined : markdownTree,
+      picture: named === undefined ? undefined : picturePath(named, artifact),
+    };
   }
-  const text = markdown !== undefined && markdown.trim() !== "" ? markdown : undefined;
-  const named = route === undefined ? undefined : referencedArtifact(route);
+  // Only a session can exist with no title of its own: every other target's title says it does.
   return {
-    title: artifact?.name ?? issue?.title,
-    description: text ?? (artifact === undefined ? issue?.status : undefined),
-    descriptionTree: text === undefined ? undefined : markdownTree,
-    picture: named === undefined ? undefined : picturePath(named, artifact),
+    ...shown,
+    missing,
+    known: kind === "session" && sessionKnown && sessionTitle === undefined,
   };
 }
 
@@ -692,7 +853,7 @@ export function watchPicturePath(
     return observePicturePath(
       queryClient,
       issueSummaryQuery(route.key),
-      (summary) => (summary.documents ?? []).find((candidate) => candidate.slug === route.slug),
+      (summary) => artifactAtAddress(summary.documents, route.slug),
       named,
       onPicture
     );
@@ -709,28 +870,28 @@ export function needsSpecSlug(
   return route.kind === "spec" && route.block?.pin !== undefined;
 }
 
-/** The SPA path a reference opens (`buildReferencePath`). A block of an issue's spec pinned to a
- *  version opens that version under the spec's own slug, so its path reads the issue's summary
- *  (the query an issue reference's title and the block's card already share); until it is read
- *  it is the live spec at the block. No other reference's path reads anything. */
-export function useReferencePath(route: DispatchReferenceRoute): string;
-export function useReferencePath(route: DispatchReferenceRoute | undefined): string | undefined;
-export function useReferencePath(route: DispatchReferenceRoute | undefined): string | undefined {
+/** The `href` a reference opens inside this dashboard (`referenceHref`), or undefined for one
+ *  that opens no page of it - a person, whom nothing shows (R5), and any path the gate refuses.
+ *  A block of an issue's spec pinned to a version opens that version under the spec's own slug,
+ *  so its path reads the issue's summary (the query an issue reference's title and the block's
+ *  card already share); until it is read it is the live spec at the block. No other reference's
+ *  path reads anything. */
+export function useReferenceHref(route: DispatchReferenceRoute | undefined): string | undefined {
   const specKey = route !== undefined && needsSpecSlug(route) ? route.key : undefined;
   const issue = useQuery({ ...issueSummaryQuery(specKey), enabled: specKey !== undefined });
-  return route === undefined ? undefined : buildReferencePath(route, summarySpec(issue.data)?.slug);
+  return route === undefined ? undefined : referenceHref(route, summarySpec(issue.data)?.slug);
 }
 
-/** `useReferencePath`'s answer for a click outside a render: it waits for the issue summary a
+/** `useReferenceHref`'s answer for a click outside a render: it waits for the issue summary a
  *  pinned block of a spec needs, and opens the live spec at the block when the summary cannot be
- *  read, as the hook's path does before it is. */
-export async function fetchReferencePath(
+ *  read, as the hook's href does before it is. */
+export async function fetchReferenceHref(
   queryClient: QueryClient,
   route: DispatchReferenceRoute
-): Promise<string> {
+): Promise<string | undefined> {
   if (!needsSpecSlug(route)) {
-    return buildReferencePath(route);
+    return referenceHref(route);
   }
   const issue = await queryClient.fetchQuery(issueSummaryQuery(route.key)).catch(() => undefined);
-  return buildReferencePath(route, summarySpec(issue)?.slug);
+  return referenceHref(route, summarySpec(issue)?.slug);
 }

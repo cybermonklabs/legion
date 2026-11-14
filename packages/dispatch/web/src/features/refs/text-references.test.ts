@@ -16,6 +16,26 @@ function cited(body: string, facts: Parameters<typeof readTextReferences>[1]): s
   return [...seen];
 }
 
+/** The references a reading reads in a code context, in order of first appearance and each
+ *  once, as a row's `inCode` lists them. A reference the text also writes outside code is none
+ *  of them: that occurrence names its party, so the column names only what nothing outside code
+ *  names (the server's `inCodeRefs`). */
+function citedInCode(body: string, facts: Parameters<typeof readTextReferences>[1]): string[] {
+  const inCode: string[] = [];
+  const outside = new Set<string>();
+  for (const found of readTextReferences(body, facts).references) {
+    if (found.reference === undefined) {
+      continue;
+    }
+    if (!found.inCode) {
+      outside.add(found.reference);
+    } else if (!inCode.includes(found.reference)) {
+      inCode.push(found.reference);
+    }
+  }
+  return inCode.filter((reference) => !outside.has(reference));
+}
+
 // The reader's half of the shared text table: every row, the ones a bare key, a `#id` or an id
 // prefix writes included, read against what the row says exists. The Go reader `text.Mentions`
 // walks the same rows, so neither where a reference ends nor what it names can change on one
@@ -31,6 +51,34 @@ test.each(
       questions: row.questions,
     })
   ).toEqual([...row.refs]);
+});
+
+// The `inCode` column of the same table, row for row: which of a row's references a fenced
+// block, an indented block or a code span holds. The Go reader is held to the very same column
+// (`TestExtractMatchesTheSharedTextTable`), so where a code context begins and ends cannot
+// change on one side alone - and that is what decides, on both, who a write is delivered to.
+test.each(
+  DISPATCH_TEXT_REFERENCES.map((row) => [row.body, row.origin ?? origin, row] as const)
+)("%s reads, against %s, its row's references in code", (body, server, row) => {
+  expect(
+    citedInCode(body, {
+      issues: row.issues,
+      items: row.items,
+      origin: server,
+      questions: row.questions,
+    })
+  ).toEqual([...(row.inCode ?? [])]);
+});
+
+// A body that writes the same reference inside code and outside it marks each occurrence on its
+// own, which is what keeps the party that body names a delivering one (`draftParties`).
+test("each occurrence of a reference is marked where it stands", () => {
+  const { references } = readTextReferences(
+    "Run `dispatch://role/reviewer` and ask dispatch://role/reviewer about it.",
+    { origin }
+  );
+
+  expect(references.map((found) => found.inCode)).toEqual([true, false]);
 });
 
 // What a caller that has asked the server nothing would have to ask: the distinct keys, whether
@@ -77,4 +125,38 @@ test.each([
   ["2a7f1c901f4e4a2b9c3d5e6f70819a2b", false],
 ] as const)("%s is an id prefix: %p", (value, expected) => {
   expect(isIdPrefix(value)).toBe(expected);
+});
+
+/** A wall-clock budget, not one of the machine-sensitive waits this package's defaults cover
+ *  (`web/src/__tests__/setup.ts`): the regression the rows that read it guard, catastrophic
+ *  backtracking, costs minutes rather than milliseconds, so a budget far above what any loaded
+ *  pod spends on a single pass fails a rewrite that backtracks and nothing else. */
+const BACKTRACKING_BUDGET_MS = 2_000;
+
+// A body near the server's 1 MiB request cap that trails a reference with a run of closing
+// parentheses, alone or between the emphasis delimiters the trim also drops, still cites that
+// reference, and a long run of closers followed by anything else is read in one pass too. The
+// bound is generous for a loaded machine: a trim that rescans the run for every start, as an
+// end-anchored regular expression does, takes over ten seconds on the 64 KiB body alone.
+test.each([
+  ["parentheses", `dispatch://CORE-1${")".repeat(1 << 20)}`, ["dispatch://CORE-1"]],
+  [
+    "parentheses and underscores",
+    `dispatch://CORE-1${")_".repeat(1 << 19)}`,
+    ["dispatch://CORE-1"],
+  ],
+  [
+    "parentheses and asterisks after a dashboard URL",
+    `${origin}/issues/CORE-1${")*".repeat(1 << 19)}`,
+    ["dispatch://CORE-1"],
+  ],
+  ["parentheses then a letter", `dispatch://CORE-1${")".repeat(1 << 16)}x`, []],
+] as const)("a reference trailed by %s is read in one pass", (_name, body, refs) => {
+  const start = performance.now();
+  const found = cited(body, { origin });
+  // These four rows read 0.08 s, 0.06 s, 0.04 s and 0.00 s idle on a 2-core pod, and 0.14 s,
+  // 0.13 s, 0.10 s and 0.00 s loaded; the budget is 12 times the slowest loaded reading, so no
+  // loaded pod can fail it by being slow.
+  expect(performance.now() - start).toBeLessThan(BACKTRACKING_BUDGET_MS);
+  expect(found).toEqual([...refs]);
 });

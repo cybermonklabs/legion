@@ -61,7 +61,7 @@ function AskEventBody({
         source={source}
         tree={payloadTree(event, "payload.question")}
       />
-      <AskOptionList options={optionsWithTrees} selected={answer?.selected ?? []} />
+      <AskOptionList options={optionsWithTrees} selected={answer?.selected ?? []} source={source} />
       <p className={`mt-2 text-xs ${textMutedOnSurface}`}>
         Opened <Timestamp at={created_at} />
       </p>

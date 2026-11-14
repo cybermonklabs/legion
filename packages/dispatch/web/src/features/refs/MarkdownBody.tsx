@@ -3,8 +3,10 @@ import { type ReactNode, useRef } from "react";
 
 import type { DisplayTree } from "../../api/types";
 import { type MarkdownEngine, markdownClassName, type SoftBreaks } from "./markdown-engine";
+import { hostDrawsMarkup, hostLinksReferences, useReferenceHost } from "./reference-host";
 import { drawTaskCheckboxes } from "./task-checkboxes";
 import type { TextSource } from "./text-references";
+import { UnfurlRead } from "./Unfurl";
 import {
   ATTACH_BATCH,
   type PaintMarkdown,
@@ -241,6 +243,43 @@ function* paintBlockInSlices(
   }
 }
 
+/** What every body draws from: the text, the reading of it the server sent, and what the
+ *  surface drawing it says about it. One shape for the public body and for the painted one it
+ *  hands its props to (`PaintedBody`). */
+interface MarkdownBodyProps {
+  /** The text this body holds: parsed and drawn where it has no `tree`, and written into the
+   *  element as its literal characters where neither the tree nor the markdown could be drawn -
+   *  no engine, a tree the schema refuses, a parse the parser refuses (`useRenderedMarkdown`).
+   *  So it is this element's own text and no more of its field than that: a caller drawing one
+   *  block of a longer text passes that block's text here, or the fallback writes the whole
+   *  field once for every block of it. */
+  markdown: string;
+  onRendered?: () => void;
+  /** The text whose references this body links, where that is not the text it draws: the whole
+   *  field a caller is drawing one block of. The references belong to the field - a link's
+   *  target and the backticks that end a key are in its markdown, and a block of it holds
+   *  neither - while what this element draws is the block alone, so the two are different texts
+   *  and each is read for its own thing. Defaults to `markdown`, which is every caller drawing
+   *  a whole field. */
+  referenceText?: string;
+  /** What a single newline inside a paragraph becomes: `"space"` for a document (hard-wrapped
+   *  Markdown is one paragraph), `"line"` for text whose author meant its lines as lines, such
+   *  as a model's streamed turn (`SoftBreaks`). Read only for a text with no `tree`: a stored
+   *  text was read by the server under the document's own policy. */
+  softBreaks?: SoftBreaks;
+  /** The record this text is - the ask, comment, message or document version whose text it is
+   *  (`TextSource`); none for text of no record, which links no `#id`. */
+  source?: TextSource;
+  /** The reading Go made of this stored text, which the body draws rather than parsing the
+   *  markdown again. Absent for the three texts Dispatch does not store - a live agent turn, a
+   *  GitHub body in a link preview, and a write the server has not stored yet - and for a stored
+   *  text whose answer came from a pod of the build before this one during a rolling deploy,
+   *  which is why `reference-target.ts` and `markdown-engine.ts` still reach the browser parser
+   *  for a stored text: that fallback is the two-builds case, not a defect. */
+  tree?: DisplayTree;
+  variant?: "block" | "inline";
+}
+
 /**
  * Renders Markdown text through Proof's own parser and schema, so every question, answer,
  * comment, reply, and message formats identically to the document editor. `block` (the
@@ -281,8 +320,22 @@ function* paintBlockInSlices(
  * against; text that is no record's passes nothing and gets no `#id` links, which is right.
  * The text those references are read from is `markdown`, unless the caller names another in
  * `referenceText`.
+ *
+ * A body that is nothing but references draws a card for each of them under itself
+ * (`Unfurl`): one renderer draws the record and everything that hangs off it, so no surface
+ * pairs a body with a card of its own. Whether a reference in the body is a live link, and
+ * whether those cards are drawn at all, is the host's property (`ReferenceHostIs`): inside a
+ * link or a button nothing is a link of its own, and an element that can hold no markup - or a
+ * diff, whose point is the characters it swaps - holds this text as the characters it is.
  */
-export function MarkdownBody({
+export function MarkdownBody(props: MarkdownBodyProps): ReactNode {
+  const host = useReferenceHost();
+  return hostDrawsMarkup(host) ? <PaintedBody {...props} /> : props.markdown;
+}
+
+/** The body as a host that draws markup draws it: painted, with its references linked where the
+ *  host links them, and the cards under a body that is nothing but references. */
+function PaintedBody({
   markdown,
   onRendered,
   referenceText = markdown,
@@ -290,39 +343,8 @@ export function MarkdownBody({
   source,
   tree,
   variant = "block",
-}: {
-  /** The text this body holds: parsed and drawn where it has no `tree`, and written into the
-   *  element as its literal characters where neither the tree nor the markdown could be drawn -
-   *  no engine, a tree the schema refuses, a parse the parser refuses (`useRenderedMarkdown`).
-   *  So it is this element's own text and no more of its field than that: a caller drawing one
-   *  block of a longer text passes that block's text here, or the fallback writes the whole
-   *  field once for every block of it. */
-  markdown: string;
-  onRendered?: () => void;
-  /** The text whose references this body links, where that is not the text it draws: the whole
-   *  field a caller is drawing one block of. The references belong to the field - a link's
-   *  target and the backticks that end a key are in its markdown, and a block of it holds
-   *  neither - while what this element draws is the block alone, so the two are different texts
-   *  and each is read for its own thing. Defaults to `markdown`, which is every caller drawing
-   *  a whole field. */
-  referenceText?: string;
-  /** What a single newline inside a paragraph becomes: `"space"` for a document (hard-wrapped
-   *  Markdown is one paragraph), `"line"` for text whose author meant its lines as lines, such
-   *  as a model's streamed turn (`SoftBreaks`). Read only for a text with no `tree`: a stored
-   *  text was read by the server under the document's own policy. */
-  softBreaks?: SoftBreaks;
-  /** The record this text is - the ask, comment, message or document version whose text it is
-   *  (`TextSource`); none for text of no record, which links no `#id`. */
-  source?: TextSource;
-  /** The reading Go made of this stored text, which the body draws rather than parsing the
-   *  markdown again. Absent for the three texts Dispatch does not store - a live agent turn, a
-   *  GitHub body in a link preview, and a write the server has not stored yet - and for a stored
-   *  text whose answer came from a pod of the build before this one during a rolling deploy,
-   *  which is why `reference-target.ts` and `markdown-engine.ts` still reach the browser parser
-   *  for a stored text: that fallback is the two-builds case, not a defect. */
-  tree?: DisplayTree;
-  variant?: "block" | "inline";
-}): ReactNode {
+}: MarkdownBodyProps): ReactNode {
+  const host = useReferenceHost();
   // One ref per tag, since a `<div>` and a `<span>` type their refs differently.
   const blockRoot = useRef<HTMLDivElement>(null);
   const inlineRoot = useRef<HTMLSpanElement>(null);
@@ -342,23 +364,42 @@ export function MarkdownBody({
     }
   );
 
-  return inline ? (
-    <span
-      className={markdownClassName}
-      data-markdown-fallback={isFallback || undefined}
-      data-markdown-pending={isPending || undefined}
-      ref={inlineRoot}
-    >
-      {portals}
-    </span>
-  ) : (
-    <div
-      className={`${markdownClassName} max-w-none`}
-      data-markdown-fallback={isFallback || undefined}
-      data-markdown-pending={isPending || undefined}
-      ref={blockRoot}
-    >
-      {portals}
-    </div>
+  if (inline) {
+    return (
+      <span
+        className={markdownClassName}
+        data-markdown-fallback={isFallback || undefined}
+        data-markdown-pending={isPending || undefined}
+        ref={inlineRoot}
+      >
+        {portals}
+      </span>
+    );
+  }
+  return (
+    <>
+      <div
+        className={`${markdownClassName} max-w-none`}
+        data-markdown-fallback={isFallback || undefined}
+        data-markdown-pending={isPending || undefined}
+        ref={blockRoot}
+      >
+        {portals}
+      </div>
+      {/* A card is a link, so a body inside a link or a button draws none: there is nothing for
+          the card to be. One line of a card has no room for one either, which is why the
+          `inline` variant above ends there. The cards are read from the readings this body was
+          linked by, so the text is read once however many readers of it the page holds - and
+          those readings are of `referenceText`, so a caller drawing one block of a longer field
+          draws no cards: the references are the field's, and the body that holds it whole is
+          where its cards belong. */}
+      {hostLinksReferences(host) && referenceText === markdown ? (
+        <UnfurlRead
+          body={referenceText}
+          reading={references.reading}
+          written={references.written}
+        />
+      ) : null}
+    </>
   );
 }

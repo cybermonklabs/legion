@@ -12,7 +12,7 @@ import { ApiError, api } from "../../api/client";
 import type { ComposerAnchor, ComposerKind } from "../conversation/composer-model";
 import { MentionComposer } from "../conversation/MentionComposer";
 import type { RecordMarkPlacement } from "../doc/editor";
-import { buildIssuePath, composerReferences } from "../refs/routes";
+import { buildIssuePath } from "../refs/routes";
 import { Margin } from "./Margin";
 import {
   BRIDGE_BIND_WAIT_MS,
@@ -44,6 +44,7 @@ function Composer({
   return (
     <MentionComposer
       {...props}
+      box={props.edit === undefined ? "margin-composer" : "margin-comment-edit"}
       onSent={onSaved ?? (() => {})}
       owner={
         owner.kind === "issue"
@@ -119,28 +120,6 @@ test("Composer uploads dropped files and inserts their references", async () => 
   }
 });
 
-test("Composer ignores a pasted project page URL because only documents are references", () => {
-  const origin = "https://dispatch.test";
-
-  expect(composerReferences(`${origin}/projects/CORE`, origin)).toEqual([]);
-});
-
-test("Composer preserves a project document reference with its document page href", () => {
-  const origin = "https://dispatch.test";
-
-  expect(composerReferences(`${origin}/projects/CORE/documents/design-notes`, origin)).toEqual([
-    {
-      href: "/projects/CORE/documents/design-notes",
-      reference: "dispatch://CORE/artifact/design-notes",
-    },
-  ]);
-  expect(composerReferences("dispatch://CORE/artifact/design-notes", origin)).toEqual([
-    {
-      href: "/projects/CORE/documents/design-notes",
-      reference: "dispatch://CORE/artifact/design-notes",
-    },
-  ]);
-});
 test("Composer posts a document ask and comment to the artifact routes", async () => {
   const user = userEvent.setup();
   const createArtifactAsk = spyOn(api, "createArtifactAsk").mockResolvedValue(undefined as never);
@@ -929,124 +908,6 @@ test("Escape on a suggestion with only a replacement shows the discard prompt in
     expect(closed).toBe(false);
   } finally {
     view.unmount();
-  }
-});
-
-test("Escape from the composer while its reference picker opens closes only the picker", async () => {
-  const user = userEvent.setup();
-  const getIssue = spyOn(api, "getIssue").mockResolvedValue({
-    artifacts: [],
-    closed_at: null,
-    created_at: "2026-09-09T00:00:00Z",
-    created_by: { id: "alice", kind: "user" },
-    external_links: [],
-    key: "CORE-1",
-    labels: [],
-    last_seq: 1,
-    number: 1,
-    parent: null,
-    primary_artifact_id: "artifact-1",
-    project: "CORE",
-    route: null,
-    status: "open",
-    title: "Review the spec",
-    updated_at: "2026-09-09T00:00:00Z",
-  });
-  const listIssues = spyOn(api, "listIssues").mockResolvedValue([]);
-  const queryClient = new QueryClient({
-    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
-  });
-  let closed = false;
-  const view = render(
-    <QueryClientProvider client={queryClient}>
-      <Composer
-        anchor={{ artifact: "document-1", mark_id: "mark-1", quote: "selected" }}
-        owner={{ key: "CORE-1", kind: "issue" }}
-        kind="comment"
-        onClose={() => {
-          closed = true;
-        }}
-      />
-    </QueryClientProvider>
-  );
-
-  try {
-    const comment = screen.getByLabelText("Comment");
-    await user.click(comment);
-    await user.keyboard("{Control>}k{/Control}");
-    await screen.findByRole("dialog", { name: "Reference picker" });
-
-    // The picker took the focus; a click to take it back would close the picker as an outside
-    // press, which is the very thing this key has to do on its own.
-    comment.focus();
-    await user.keyboard("{Escape}");
-
-    expect(screen.queryByRole("dialog", { name: "Reference picker" })).not.toBeInTheDocument();
-    expect(screen.getByRole("form", { name: "Comment composer" })).not.toBeNull();
-    expect(closed).toBe(false);
-  } finally {
-    view.unmount();
-    getIssue.mockRestore();
-    listIssues.mockRestore();
-  }
-});
-test("Enter in the reference picker's filter inserts the top match instead of submitting a ready-to-save draft", async () => {
-  const user = userEvent.setup();
-  const createComment = spyOn(api, "createComment").mockResolvedValue(undefined as never);
-  const getIssue = spyOn(api, "getIssue").mockResolvedValue({
-    artifacts: [],
-    closed_at: null,
-    created_at: "2026-09-09T00:00:00Z",
-    created_by: { id: "alice", kind: "user" },
-    external_links: [],
-    key: "CORE-1",
-    labels: [],
-    last_seq: 1,
-    number: 1,
-    parent: null,
-    primary_artifact_id: "artifact-1",
-    project: "CORE",
-    route: null,
-    status: "open",
-    title: "Review the spec",
-    updated_at: "2026-09-09T00:00:00Z",
-  });
-  const listIssues = spyOn(api, "listIssues").mockResolvedValue([
-    {
-      key: "CORE-2",
-      open_asks: 0,
-      parent: null,
-      status: "todo",
-      title: "Related work",
-      updated_at: "2026-09-09T00:00:00Z",
-    },
-  ]);
-  const view = renderComposer("comment");
-
-  try {
-    await user.click(screen.getByLabelText("Comment"));
-    await user.paste("why?");
-    await user.keyboard("{Control>}k{/Control}");
-    const filterInput = await screen.findByLabelText("Filter issues");
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: "CORE-2: Related work" })).toBeDefined()
-    );
-
-    filterInput.focus();
-    await user.keyboard("{Enter}");
-
-    await waitFor(() =>
-      expect((screen.getByLabelText("Comment") as HTMLTextAreaElement).value).toBe(
-        "why? dispatch://CORE-2"
-      )
-    );
-    expect(screen.queryByLabelText("Filter issues")).not.toBeInTheDocument();
-    expect(createComment).not.toHaveBeenCalled();
-  } finally {
-    view.unmount();
-    createComment.mockRestore();
-    getIssue.mockRestore();
-    listIssues.mockRestore();
   }
 });
 

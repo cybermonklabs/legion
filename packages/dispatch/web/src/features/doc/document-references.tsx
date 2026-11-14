@@ -10,12 +10,8 @@ import {
 } from "react";
 import { useNavigate } from "react-router-dom";
 
-import { fetchReferencePath, needsSpecSlug, useReferenceTarget } from "../refs/reference-target";
-import {
-  buildReferencePath,
-  type DispatchReferenceRoute,
-  parseNodeReference,
-} from "../refs/routes";
+import { fetchReferenceHref, needsSpecSlug, useReferenceTarget } from "../refs/reference-target";
+import { type DispatchReferenceRoute, parseNodeReference, referenceHref } from "../refs/routes";
 import { readTextReferences, type TextSource } from "../refs/text-references";
 import { useTextReferences } from "../refs/useTextReferences";
 import type { EditorHandle } from "./editor";
@@ -61,8 +57,14 @@ function ReferenceTitle({
   reference: string;
   route: DispatchReferenceRoute;
 }): null {
-  const { title } = useReferenceTarget(route, { text: false });
-  const shown = route.kind === "issue" && title !== undefined ? `${route.key} ${title}` : title;
+  const { known, title } = useReferenceTarget(route, { text: false });
+  // A target Dispatch answered exists with no title of its own - a session it holds a record of
+  // that the registry does not name - is drawn as a link in the words of its reference, as a
+  // comment draws it; every other target is drawn once its title answers, and never without one.
+  const shown =
+    route.kind === "issue" && title !== undefined
+      ? `${route.key} ${title}`
+      : (title ?? (known ? reference : undefined));
   useEffect(() => {
     onTitle(reference, shown);
   }, [onTitle, reference, shown]);
@@ -226,19 +228,28 @@ export function useReferenceClick(): (event: ReactMouseEvent<HTMLElement>) => vo
       const anchor = (event.target as HTMLElement).closest<HTMLAnchorElement>("a");
       // The link's target is a node its author named, and opening it is a read, so it is read
       // as a node's reference, whatever the length of its name.
-      const href = anchor === null ? null : dispatchHrefOf(anchor);
-      const route = href === null ? undefined : parseNodeReference(href);
+      const target = anchor === null ? null : dispatchHrefOf(anchor);
+      const route = target === null ? undefined : parseNodeReference(target);
       if (route === undefined) {
         return;
       }
       event.preventDefault();
       // A block of a spec pinned to a version opens that version under the spec's slug, which
-      // only the issue names; every other reference's path is known at once.
+      // only the issue names; every other reference's href is known at once. A reference that
+      // opens no page of this dashboard - a person, whom nothing shows (R5) - goes nowhere:
+      // the click is taken all the same and stops here, rather than navigating to the empty
+      // path, which React Router reads as this page without the version and the block the
+      // reader is on.
       if (needsSpecSlug(route)) {
-        void fetchReferencePath(queryClient, route).then((path) => navigate(path));
+        void fetchReferenceHref(queryClient, route).then((href) => {
+          if (href !== undefined) navigate(href);
+        });
         return;
       }
-      navigate(buildReferencePath(route));
+      const href = referenceHref(route);
+      if (href !== undefined) {
+        navigate(href);
+      }
     },
     [navigate, queryClient]
   );

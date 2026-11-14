@@ -173,6 +173,14 @@
 #      how ./internal/record/ stayed in the fill after the lane dropped it. It fails naming the
 #      package, the job and both lists, and a ci-caches.yaml with no race build at all fails
 #      too, since the lane would then be filled by nobody.
+#  17. a spec file the `references` lane of .github/workflows/dispatch-browser.yaml runs - an entry
+#      of the `lane_files="..."` its shard job's browser step sets in the script's `references)`
+#      arm, read as a path from that step's working directory - that ci.yaml's
+#      dispatch_references filter does not match, naming the entry and the path: that filter
+#      starts the job calling the lane, so a spec file it misses is a change to the lane's own rows
+#      that starts no run of them. A dispatch-browser.yaml with no such arm, with two, or with
+#      one that lists no file, and a changes job without that filter, fail too, rather than
+#      holding the filter to nothing.
 #
 # A claimed go command is reduced only in its simple form, never parsed further: one line of
 # `go test|vet|build`, then relative package paths and only -v, -race, -count=N, -timeout D,
@@ -222,9 +230,17 @@
 # repository may import. The first-party sets matched a run over a full module cache file for
 # file when this check was written.
 #
-# EXCLUDED leaves worker_image to check-image-trigger-paths.sh, which proves it covers every file
-# its image build reads. envoy_smoke is a gate whose image inputs are that check's: this one holds
-# it to the job's go commands and other step reads. The RULES and the static reads are kept by
+# EXCLUDED leaves worker_image and browser_image to check-image-trigger-paths.sh, which proves
+# each covers every file its image build reads. It holds dispatch_references to no job's reads
+# (rule 17 holds it to the references lane's spec files alone): that filter gates ci.yaml's
+# dispatch-references job, a pull-request preview of the reference rows that ci-ok does not need
+# (CI_OK_EXEMPT), and it names less than the job reads on purpose, since the dispatch_browser
+# gate's job runs those rows on the merge queue's full lane and that filter is held to every
+# read. EXCLUDED also skips the go-command claims of a job its filters
+# alone gate, so the binaries job that call reaches is read under the dispatch_browser gate's
+# dispatch-browser job, which calls the same file. envoy_smoke is a gate whose image inputs are
+# that check's: this one holds it to the job's go commands and other step reads. The RULES and
+# the static reads are kept by
 # hand: this check proves the filters cover them, not that they are complete, so a change that
 # makes a test read a new file through `..` or start a new go command adds it to ci_job_reads.py.
 #

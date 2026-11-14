@@ -10,7 +10,7 @@ import {
   textPrimaryOnCanvas,
   textSecondaryOnCanvas,
 } from "../../theme/classes";
-import { buildReferencePath, parseDispatchReference, shortForm } from "../refs/routes";
+import { parseDispatchReference, referenceHref, shortForm } from "../refs/routes";
 import type { ItemRoute } from "./useItemLanding";
 
 /** What each kind of match is called, in the words the rest of the page uses for the same
@@ -81,6 +81,9 @@ export function ItemMatchList({
 
 function ItemMatch({ candidate }: { candidate: IDCandidate }): ReactNode {
   const reference = candidate.ref === "" ? undefined : parseDispatchReference(candidate.ref);
+  // An item of an issue always has a page; a reference that names none - a person (R5) - is
+  // listed without a link rather than with one that opens nothing.
+  const href = reference === undefined ? undefined : referenceHref(reference);
   const owner = ownerOf(candidate);
   // The first line tells two matches apart; where the server gave none, the whole id does, so
   // the link always has words of its own.
@@ -97,10 +100,10 @@ function ItemMatch({ candidate }: { candidate: IDCandidate }): ReactNode {
           <span className="min-w-0 [overflow-wrap:anywhere]">{owner}</span>
         )}
       </div>
-      {reference === undefined ? null : (
+      {href === undefined ? null : (
         <Link
           className={`block min-w-0 [overflow-wrap:anywhere] ${linkText} ${linkHoverText}`}
-          to={buildReferencePath(reference)}
+          to={href}
         >
           {words === "" ? candidate.id : words}
         </Link>
