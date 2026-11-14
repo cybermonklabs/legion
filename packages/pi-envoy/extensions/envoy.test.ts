@@ -171,12 +171,21 @@ const recordingFetch: typeof globalThis.fetch = async (input, init) => {
 };
 /** The fetch a row installed, for a row that answers some requests itself and hands on the rest. */
 const rowFetch = (): typeof globalThis.fetch => installedFetch;
+/** `fetch` as `globalThis` held it before this file, restored when the file ends (below). */
+const fetchBefore = Object.getOwnPropertyDescriptor(globalThis, "fetch");
 Object.defineProperty(globalThis, "fetch", {
   configurable: true,
   get: () => recordingFetch,
   set: (next: typeof globalThis.fetch) => {
     if (next !== recordingFetch) installedFetch = next;
   },
+});
+// Bun runs every test file of one `bun test` in one process, so the accessor above outlives this
+// file unless it is taken down: a later file's `spyOn(globalThis, "fetch")` then refuses an
+// accessor property, and every row of it fails before it runs (packages/pi-legion's seed.test.ts,
+// twenty-two rows, in `bun test packages/pi-shared packages/pi-legion packages/pi-envoy`).
+afterAll(() => {
+  if (fetchBefore) Object.defineProperty(globalThis, "fetch", fetchBefore);
 });
 
 /**
