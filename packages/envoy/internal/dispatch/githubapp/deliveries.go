@@ -316,13 +316,10 @@ func containsFold(body, phrase []byte) bool {
 }
 
 // rateLimitWait is how long GitHub asks for before the next request under a limit it answered
-// with, read now: serverwait.Read's wait, Retry-After's, else the time until x-ratelimit-reset when
-// the answer says no requests remain, else the one minute GitHub asks for when it gives neither.
-// Read keeps the one rule every reader of a server's wait in this module keeps: a wait past
-// serverwait.MaxWait, one hour, is an hour, so a value too large for a Duration is never read as
-// no wait at all, and a negative wait or a reset already past is no wait. An hour is GitHub's own
-// longest wait, and Client.request records the wait in github_rate_limits under the call's scope,
-// so a limit met by an App-JWT call holds every App-JWT call of every Dispatch process for it.
+// with, read now through serverwait.Read, else the one minute GitHub asks for when the answer
+// names no wait. Client.request records it in github_rate_limits under the call's scope, so a wait
+// of an hour stops every Dispatch process's calls under that scope for that hour: every App-JWT
+// call, for a limit an App-JWT call met.
 func rateLimitWait(header http.Header) time.Duration {
 	if wait, named := serverwait.Read(header, time.Now()); named {
 		return wait

@@ -84,8 +84,8 @@ func checkRefusalWrites(root string) error {
 }
 
 // writes is one package read for checkRefusalWrites: its functions, every call in it, every value
-// each function's local variables are assigned and every reference to a name of net/http the
-// rule refuses, each with the function it is in.
+// each function's local variables are assigned and every reference netName judges (a name of
+// netWrites, or a raw write taken as a value), each with the function it is in.
 type writes struct {
 	src   *source
 	decls map[writerKey]*ast.FuncDecl
@@ -137,8 +137,8 @@ type local struct {
 // write is one raw write the rule reads: its callee as written, and where it is.
 type write struct{ what, at string }
 
-// netRef is one reference the rule refuses outside a registered writer, and where it is: a name
-// of netWrites, or a raw write taken as a value rather than called.
+// netRef is one reference netName judges, and where it is: a name of netWrites, or a raw write
+// taken as a value rather than called.
 type netRef struct {
 	sel *ast.SelectorExpr
 	// pointer is whether a pointer type holds the name (*http.ServeMux), which builds no value of

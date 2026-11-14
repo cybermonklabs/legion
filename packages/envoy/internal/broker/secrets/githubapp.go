@@ -225,9 +225,10 @@ const missingActionsMessage = "broker: a GitHub App installation does not hold a
 // revokeInstallationToken asks GitHub to revoke token, as the token itself
 // (DELETE /installation/token), for a token Mint minted and will not release, retried as the
 // mint's other calls are and from the same wait budget. It runs to its own bound even once ctx
-// ends, since GitHub honours an unreleased token for an hour otherwise. A 401 or a 404 GitHub
-// answers an attempt after the first means GitHub no longer accepts the token, which is what the
-// revoke wanted, and answers nil.
+// ends, since GitHub honours an unreleased token for an hour otherwise. A 401 or a 404 to an
+// attempt after the first answers nil, since an earlier attempt may have revoked the token and
+// lost its answer; one to the first attempt stays a refusal, since nothing in this revoke can
+// have revoked a token minted moments before.
 func (m GitHubApp) revokeInstallationToken(ctx context.Context, mint *mintRetry, token string) error {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), revokeTimeout)
 	defer cancel()
@@ -238,13 +239,13 @@ func (m GitHubApp) revokeInstallationToken(ctx context.Context, mint *mintRetry,
 	}
 	_, err = mintCall(mint, m.HTTP, request, what, "GitHub", http.StatusNoContent, mintResponseLimit)
 	// GitHub answers a request made as a token it has revoked 401, and one made as a token it no
-	// longer knows 404. At an attempt after the first, either says GitHub no longer accepts the
-	// token, which is what the revoke wanted, whatever the earlier attempts met: one may have
-	// revoked it and lost its answer, past mintAttemptTimeout or on a connection that dropped, or
-	// they may have been rate limits, which revoked nothing. Either way Mint must not log
-	// revokedWiderMessage for a token GitHub no longer accepts. At the first attempt no earlier
-	// attempt of this revoke has reached GitHub, so either status stays the refusal it is; and a
-	// rate limit is no verdict on the token at any attempt.
+	// longer knows 404. Nothing in this revoke can have revoked a token minted moments before, so
+	// either status at the first attempt is GitHub refusing the request, and stays the refusal
+	// Mint logs revokedWiderMessage for. At a later attempt either may follow an earlier attempt
+	// that revoked the token and lost its answer, past mintAttemptTimeout or on a connection that
+	// dropped, so it reads as the revoke done. mintCall's error is its last attempt's alone, so an
+	// earlier attempt that was a rate limit, which revoked nothing, cannot be told apart from that
+	// and reads the same. A rate limit itself is no verdict on the token at any attempt.
 	var status *mintStatusError
 	if MintAttempts(err) > 1 && errors.As(err, &status) && !status.rateLimited &&
 		(status.code == http.StatusUnauthorized || status.code == http.StatusNotFound) {

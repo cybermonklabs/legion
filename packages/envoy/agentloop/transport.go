@@ -110,12 +110,10 @@ func (t *modelTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 }
 
 // retryable is whether a model call's outcome is retried, and after how long: a transport error,
-// 429 or a 5xx, after the wait the response names or a second. The wait is read by the one rule
-// every reader of a server's wait in this module keeps (serverwait.Read): Retry-After, in seconds
-// or as an HTTP date, else X-RateLimit-Reset's epoch seconds when X-RateLimit-Remaining is 0; a
-// wait past serverwait.MaxWait, one hour, is an hour, which no run's bound leaves time for, so the
-// call is not made again (waitable); a negative wait is none; and any other is itself. The
-// providers this package speaks to name their own limits under other headers (OpenAI's
+// 429 or a 5xx, after the wait the response names, read through serverwait.Read, or a second when
+// it names none. A wait of an hour is one a run bounded under an hour, such as the judge's 20 s
+// modelBound, has no time for, so the call is not made again (waitable). The providers this
+// package speaks to name their own limits under other headers (OpenAI's
 // x-ratelimit-reset-requests and -tokens, Anthropic's anthropic-ratelimit-*), which Read does not
 // read, so for them the wait is Retry-After's or the second.
 func retryable(resp *http.Response, err error) (time.Duration, bool) {

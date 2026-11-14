@@ -941,13 +941,10 @@ func (b *Broker) redeem(ctx context.Context, cred *machineCredential) (next *Mac
 	return next, "", nil
 }
 
-// retryAfter is the wait a token endpoint answer names, or zero when err carries none. It reads
-// the answer by the one rule every reader of a server's wait in this module keeps
-// (serverwait.Read): Retry-After, in whole seconds or as an HTTP date, else X-RateLimit-Reset when
-// X-RateLimit-Remaining is 0, which the broker never sends, since its 429s carry Retry-After
-// alone. A wait past serverwait.MaxWait, one hour, is an hour, so retrySchedule.next waits its
-// cap, maxRetryAfter, and never the shorter retry a wrapped negative count would have left it; and
-// a negative wait is none, so next waits its retry.
+// retryAfter is the wait a token endpoint answer names, read through serverwait.Read, or zero when
+// err carries none or the answer names none, which retrySchedule.next raises to its retry. The
+// broker's 429s name it in Retry-After alone. A wait of an hour is past next's cap, so next waits
+// maxRetryAfter, a minute.
 func retryAfter(err error) time.Duration {
 	var re *oauth2.RetrieveError
 	if !errors.As(err, &re) || re.Response == nil {

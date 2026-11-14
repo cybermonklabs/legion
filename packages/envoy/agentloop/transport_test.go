@@ -13,11 +13,12 @@ import (
 // endpoint names by the one rule every reader of a server's wait in this module keeps
 // (internal/serverwait). A Retry-After of 9999999999 seconds and an X-RateLimit-Reset of
 // math.MaxInt64 with no requests left are past what a Duration holds and read as one hour, which
-// no run's bound leaves time for, so the call is not made again: converted as it came, the count
-// read as a negative wait, which a run's bound always had time for, and the call was made again
-// at once. A negative Retry-After reads as no wait, an ordinary value of each header as itself,
-// and an answer naming none waits defaultRetryWait. The test counts the rows it drove and fails
-// under the number the table must hold.
+// a run bounded under an hour, such as the judge's 20 s modelBound, has no time for, so the call
+// is not made again (this test's run has two minutes): converted as it came, the count read as a
+// negative wait, which any run had time for, and the call was made again at once. A negative
+// Retry-After reads as no wait, an ordinary value of each header as itself, and an answer naming
+// none waits defaultRetryWait. The test counts the rows it drove and fails under the number the
+// table must hold.
 func TestRetryableBoundsTheWaitTheEndpointNames(t *testing.T) {
 	const rowsToDrive = 6
 	now := time.Now()

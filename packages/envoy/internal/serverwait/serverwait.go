@@ -2,9 +2,9 @@
 // GitHub's X-RateLimit-Reset, by the one rule every reader of such a wait in this module keeps: a
 // wait past MaxWait, one hour, reads as MaxWait, never as zero or a negative wait; a negative wait
 // reads as no wait; and any other wait reads as itself. Converted as it came, a count of seconds
-// past what a time.Duration holds wraps time.Duration(seconds)*time.Second, and an epoch that
-// large wraps time.Unix into the distant past, so a reader would read a server's longest wait as
-// no wait at all and ask again at once.
+// past what a time.Duration holds wraps time.Duration(seconds)*time.Second to an arbitrary value,
+// often negative, and an epoch near math.MaxInt64 overflows time.Unix into the distant past and
+// reads as no wait, so a reader could ask again at once.
 //
 // Its readers are Dispatch's GitHub client (internal/dispatch/githubapp, rateLimitWait), the
 // broker's mint (internal/broker/secrets, serverWait), the model loop's one retry (agentloop,
