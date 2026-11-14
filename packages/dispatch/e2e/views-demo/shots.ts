@@ -174,7 +174,13 @@ const afterShots: Shot[] = [
   {
     name: "project-settings-legion-panel-1440",
     viewport: DESKTOP,
-    take: (page) => open(page, `/projects/${project}/settings`, page.getByText(/Legion/).first()),
+    // The panel draws once the board answers; a settings row is what it waits for.
+    take: (page) =>
+      open(
+        page,
+        `/projects/${project}/settings`,
+        page.locator("[data-legion-settings] tbody tr").first()
+      ),
   },
   { name: "view-open-390", viewport: PHONE, take: (page) => open(page, view("open")) },
   { name: "view-in-flight-390", viewport: PHONE, take: (page) => open(page, view("in-flight")) },
