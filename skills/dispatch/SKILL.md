@@ -42,6 +42,7 @@ The question and the recommendation (`skill://dispatch-writing-specs`).
 - Record each wait in that comment. A wait on a same-project issue also goes in a `blocked_by` link, and one on a person in a `dispatch ask`.
 - `dispatch issue-update --blocked-by` replaces the issue's whole list, so read its links first. Dispatch refuses a link to another project's issue (`BLOCKED_BY_OUTSIDE_PROJECT`).
 - Never reorder the board: one agent keeps each project's order (`issue-update --before`/`--after`). If the top looks wrong, tell `notifications.role.legion-<project>-controller`.
+- Name an issue's priority: `--advance <id>`; `dispatch priorities` lists what advances no priority.
 
 ## Issue status is yours to move
 
