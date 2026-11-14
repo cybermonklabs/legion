@@ -24,10 +24,11 @@ export interface SelectionBarProps {
   /** A refusal, or anything else the reader must read before pressing again: its own line inside
    *  the bar, so it never squeezes the actions off the end of theirs. */
   readonly notice?: ReactNode;
-  /** What takes the keyboard focus when the bar goes while it holds it, asked once the commit
-   *  that took the bar away is in the page: the element the page names — a row's checkbox, else
-   *  its search box — never the body. Null moves nothing here: a table row the window has not
-   *  drawn yet takes the focus as it lands (`DataTableModel.focusRow`). */
+  /** What takes the keyboard focus when the bar goes while it holds it, or when the control in it
+   *  that holds the focus goes from a bar that stays, asked once the commit that took it away is
+   *  in the page: the element the page names — a row's checkbox, else its search box — never the
+   *  body. Null moves nothing here: a table row the window has not drawn yet takes the focus as
+   *  it lands (`DataTableModel.focusRow`). */
   readonly returnFocus?: () => HTMLElement | null;
   /** The bar's own words in place of the count, for what a count cannot say: the Inbox's
    *  `Every row selected`, which covers rows a fold or a page is holding back, and its
@@ -52,20 +53,23 @@ export interface SelectionBarProps {
  * A bar that goes while it holds the keyboard focus - **Clear selection** pressed, Escape from a
  * control inside it, a press that took every marked row away - hands the focus to what the page's
  * `returnFocus` names, rather than drop it onto the page, where a keyboard reader would start
- * again from the page's first link. The page only names the target; the hand-off itself is the
- * bar's. A bar that goes while the focus is elsewhere moves nothing, and neither does one whose
- * going left the focus somewhere other than the body, since the reader put it there.
+ * again from the page's first link. So does a bar that stays while the control holding the focus
+ * goes from it: **Select all**, which the bar stops offering once it has run. The page only names
+ * the target; the hand-off itself is the bar's. A bar that goes while the focus is elsewhere moves
+ * nothing, and neither does one whose going left the focus somewhere other than the body, since
+ * the reader put it there, nor the later going of a control the reader had moved the focus off.
  */
 export function SelectionBar({ returnFocus, ...bar }: SelectionBarProps): ReactNode {
-  // Set by the drawn bar as it goes, while its element still holds the focus, and read after the
-  // commit that took it away.
+  // Set by the drawn bar when the focus it held drops with what held it - the bar's element, as
+  // it goes, or the focused control inside a bar that stays - and read after the commit that took
+  // it away.
   const wentHolding = useRef(false);
-  // After every commit, so after the one that removed the bar's element and dropped the focus
-  // with it. No dependency list: the `returnFocus` called is this commit's own, so a page that
-  // hands a new function on every render starts nothing by it. Passive rather than layout: the
-  // Inbox's `ViewportAnchor` keeps its rows in place from its `componentDidUpdate`, which runs
-  // in the layout phase after this bar's own layout effects and would scroll the list back over
-  // the target that focusing brought into view.
+  // After every commit, so after the one that removed the bar's element, or the control, and
+  // dropped the focus with it. No dependency list: the `returnFocus` called is this commit's own,
+  // so a page that hands a new function on every render starts nothing by it. Passive rather than
+  // layout: the Inbox's `ViewportAnchor` keeps its rows in place from its `componentDidUpdate`,
+  // which runs in the layout phase after this bar's own layout effects and would scroll the list
+  // back over the target that focusing brought into view.
   useEffect(() => {
     if (!wentHolding.current) return;
     wentHolding.current = false;
@@ -85,11 +89,14 @@ function DrawnBar({
   state,
   wentHolding,
 }: Omit<SelectionBarProps, "returnFocus"> & {
-  /** Set when the bar goes with the focus inside it. */
+  /** Set when the bar, or the control inside it that held the focus, goes with the focus. */
   readonly wentHolding: RefObject<boolean>;
 }): ReactNode {
   const ownRef = useRef<HTMLElement>(null);
   const ref = barRef ?? ownRef;
+  // What inside the bar took the focus last, the bar's own element included, until the reader
+  // moves the focus off it: a focus event bubbles up to the bar from every control in it.
+  const focused = useRef<Element | null>(null);
   // The cleanup runs before React takes the element out of the page, the one moment the focus
   // can still be read inside it: the removal itself drops it onto the body.
   useLayoutEffect(() => {
@@ -98,11 +105,28 @@ function DrawnBar({
       if (node?.contains(document.activeElement) === true) wentHolding.current = true;
     };
   }, [ref, wentHolding]);
+  // After every render that leaves the bar drawn. A press can take the focused control out of a
+  // bar that stays - **Select all** - and the removal drops the focus onto the body with no
+  // unmount for the cleanup above to read it in, so it is read here: the control gone from the
+  // page and the focus on the body. Read from the page rather than from a blur: the blur Chrome
+  // fires for an element taken out of the page arrives while the element still reads as in the
+  // page, so it cannot tell that going from the reader moving off. A control still in the page
+  // that no longer holds the focus is one the reader moved off, so it is forgotten and its going
+  // later moves nothing.
+  useLayoutEffect(() => {
+    const held = focused.current;
+    if (held === null || held === document.activeElement) return;
+    focused.current = null;
+    if (!held.isConnected && focusOnDocument()) wentHolding.current = true;
+  });
   return (
     <div
       aria-label={label}
       className={`fixed inset-x-2 top-14 z-30 mx-auto flex w-fit max-w-[calc(100vw-1rem)] flex-col gap-2 rounded-2xl border px-4 py-2 text-sm shadow-xl outline-none focus-visible:ring-2 sm:top-auto sm:bottom-4 ${card} ${textPrimaryOnCanvas} ${focusVisibleRing}`}
       data-control={CONTROL.selectionBar}
+      onFocus={(event) => {
+        focused.current = event.target;
+      }}
       // The element is always this one, so a caller holding a ref to the bar as an `HTMLElement`
       // - all a keymap needs to focus it - is handed exactly what it asked for.
       ref={ref as Ref<HTMLDivElement>}

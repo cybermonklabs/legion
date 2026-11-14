@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { createRef, type ReactNode } from "react";
+import { createRef, type ReactNode, useState } from "react";
 
 import { SelectionBar } from "./SelectionBar";
 
@@ -107,13 +107,16 @@ test("the bar hands its own element back and takes focus, for a page whose keyma
 });
 
 /** Three rows, a control of the page's own outside them, and the bar over them with one action:
- *  the page a hand-off is read on. The bar is drawn while `count` is above zero. */
+ *  the page a hand-off is read on. The bar is drawn while `count` is above zero, and offers
+ *  **Select all** while `selectAll` is given, as a page's bar does until that press has run. */
 function MarkedList({
   count,
   returnFocus,
+  selectAll,
 }: {
   count: number;
   returnFocus: () => HTMLElement | null;
+  selectAll?: () => void;
 }): ReactNode {
   return (
     <>
@@ -122,6 +125,11 @@ function MarkedList({
         <input aria-label={`Select ${key}`} key={key} type="checkbox" />
       ))}
       <SelectionBar count={count} label="Selected rows" returnFocus={returnFocus}>
+        {selectAll === undefined ? null : (
+          <button onClick={selectAll} type="button">
+            Select all
+          </button>
+        )}
         <button type="button">Clear selection</button>
       </SelectionBar>
     </>
@@ -201,6 +209,80 @@ test("a new returnFocus on every render while the bar stays moves nothing, and t
     view.rerender(<MarkedList count={0} returnFocus={naming("CORE-2")} />);
     expect(rowBox("CORE-2")).toHaveFocus();
     expect(asked).toEqual(["CORE-2"]);
+  } finally {
+    view.unmount();
+  }
+});
+
+test("a control that takes itself out of a bar that stays hands the focus to what returnFocus names", async () => {
+  const user = userEvent.setup();
+  // Whether the bar was still in the page when it was asked where the focus goes.
+  const asked: string[] = [];
+  const returnFocus = () => {
+    asked.push(screen.queryByRole("toolbar") === null ? "after the bar went" : "with the bar up");
+    return rowBox("CORE-2");
+  };
+  /** One row marked, and **Select all**, whose press marks all three and takes the button out. */
+  function SelectingPage(): ReactNode {
+    const [all, setAll] = useState(false);
+    return (
+      <MarkedList
+        count={all ? 3 : 1}
+        returnFocus={returnFocus}
+        selectAll={all ? undefined : () => setAll(true)}
+      />
+    );
+  }
+  const view = render(<SelectingPage />);
+  try {
+    act(() => screen.getByRole("button", { name: "Select all" }).focus());
+    await user.keyboard("{Enter}");
+    expect(screen.queryByRole("button", { name: "Select all" })).not.toBeInTheDocument();
+    expect(screen.getByRole("toolbar", { name: "Selected rows" }).textContent).toContain(
+      "3 selected"
+    );
+    // Not the page's body, where taking the pressed button out of the page left it.
+    expect(rowBox("CORE-2")).toHaveFocus();
+    expect(asked).toEqual(["with the bar up"]);
+  } finally {
+    view.unmount();
+  }
+});
+
+test("a control the reader moved the focus off moves nothing when it later goes from a bar that stays", () => {
+  let asked = 0;
+  const returnFocus = () => {
+    asked += 1;
+    return rowBox("CORE-2");
+  };
+  const selectAll = () => undefined;
+  const selectAllButton = () => screen.getByRole("button", { name: "Select all" });
+  const view = render(<MarkedList count={1} returnFocus={returnFocus} selectAll={selectAll} />);
+  try {
+    // On a control of the page's own when Select all goes: the focus stays with it.
+    const filter = screen.getByRole("button", { name: "Filter" });
+    act(() => selectAllButton().focus());
+    act(() => filter.focus());
+    view.rerender(<MarkedList count={3} returnFocus={returnFocus} />);
+    expect(filter).toHaveFocus();
+    // On the body when Select all goes, where the reader left it after moving off Select all: a
+    // render of the bar in between saw the button still in the page and no longer focused.
+    view.rerender(<MarkedList count={1} returnFocus={returnFocus} selectAll={selectAll} />);
+    act(() => selectAllButton().focus());
+    act(() => filter.focus());
+    view.rerender(<MarkedList count={2} returnFocus={returnFocus} selectAll={selectAll} />);
+    act(() => filter.blur());
+    view.rerender(<MarkedList count={3} returnFocus={returnFocus} />);
+    expect(screen.getByRole("toolbar", { name: "Selected rows" })).toBeInTheDocument();
+    expect(document.activeElement).toBe(document.body);
+    expect(asked).toBe(0);
+    // The same going with the focus still on Select all does hand it on: what kept it still
+    // above is that the reader had moved the focus off.
+    view.rerender(<MarkedList count={1} returnFocus={returnFocus} selectAll={selectAll} />);
+    act(() => selectAllButton().focus());
+    view.rerender(<MarkedList count={3} returnFocus={returnFocus} />);
+    expect(rowBox("CORE-2")).toHaveFocus();
+    expect(asked).toBe(1);
   } finally {
     view.unmount();
   }

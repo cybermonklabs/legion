@@ -1938,12 +1938,18 @@ export function Inbox({
       count={bulkBarShown ? selectedCount : 0}
       label="Selected rows"
       notice={snoozeRefusal}
-      // The bar gone with the focus: the checkbox of the row the reader marked last, else the
-      // first row's, else the search box.
+      // The bar gone with the focus, or the control in it that held the focus: the checkbox of
+      // the row the reader marked last, else of the first row in list order, else the search
+      // box. A row a Dismiss or a Move to Inbox press is taking off this view is passed over: it
+      // is still drawn until the write's optimistic apply lands, and a focus handed to it would
+      // drop with it. `dismissedHere` names every such row - each id the dismiss write's
+      // `pending` holds, and the ids of a press made under the narrowing, which `pending` leaves
+      // out. A Move to Inbox that empties the Dismissed view leaves no other row, so the focus
+      // goes to the search box.
       returnFocus={() =>
-        originRow(lastMarked())?.querySelector<HTMLElement>(MARK_SELECTOR) ??
-        rows()[0]?.querySelector<HTMLElement>(MARK_SELECTOR) ??
-        searchRef.current
+        [originRow(lastMarked()), ...rows()]
+          .find((row) => row !== null && !dismissedHere(row.dataset.inboxRow ?? ""))
+          ?.querySelector<HTMLElement>(MARK_SELECTOR) ?? searchRef.current
       }
       state={barState}
     >
