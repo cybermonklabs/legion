@@ -5,17 +5,21 @@ import (
 	"crypto/ecdsa"
 	"crypto/sha256"
 	"errors"
+	"log/slog"
 	"slices"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/broker/enroll"
 	"github.com/sjawhar/envoy/internal/broker/machine"
 	"github.com/sjawhar/envoy/internal/broker/oauthstore"
+	"github.com/sjawhar/envoy/internal/broker/store"
 	"github.com/sjawhar/envoy/internal/broker/store/storetest"
+	"github.com/sjawhar/envoy/internal/logtest"
 )
 
 type wakeCall struct {
@@ -166,6 +170,83 @@ func TestSweeperTickDeletesExpiredBrowserSessions(t *testing.T) {
 	if login, err := m.Store.BrowserSession(ctx, live, time.Now()); err != nil || login != "ada@example.com" {
 		t.Fatalf("the live session after the tick = %q, %v; want ada@example.com", login, err)
 	}
+}
+
+// sweepsOfATick is how many sweeps one Tick runs, each with a failure line of its own: the count
+// TestSweeperLogsEachSweepsFailureOnceUntilItSucceedsAgain drives and fails under, held apart from
+// the table in sweeper.go, so a sweep dropped from that table fails the test rather than
+// shrinking it.
+const sweepsOfATick = 7
+
+// sweepLines renders the sweeps' own lines among records, each sweep's failure line and
+// SweepRecoveredMessage, as "LEVEL message sweep=<name>", leaving out a failure's error, whose
+// text is the pool's.
+func sweepLines(records []slog.Record) []string {
+	ours := map[string]bool{SweepRecoveredMessage: true}
+	for _, sw := range sweeps {
+		ours[sw.failed] = true
+	}
+	var lines []string
+	for _, r := range records {
+		if !ours[r.Message] {
+			continue
+		}
+		line := r.Level.String() + " " + r.Message
+		r.Attrs(func(a slog.Attr) bool {
+			if a.Key == "sweep" {
+				line += " sweep=" + a.Value.String()
+			}
+			return true
+		})
+		lines = append(lines, line)
+	}
+	return lines
+}
+
+// TestSweeperLogsEachSweepsFailureOnceUntilItSucceedsAgain holds Tick to a change of state, not a
+// beat: over a store that fails every sweep, the first Tick writes each sweep's failure line once
+// and a second Tick writes none of them again; once the store answers, the next Tick writes
+// SweepRecoveredMessage once for each sweep, and the Tick after it writes nothing. The store that
+// fails is a pool on the fixture's own database, closed before it runs a statement, so each sweep
+// fails at its first statement as against a database that stopped answering; the store that
+// answers is the fixture's own, set on the same Sweeper, which is what holds each sweep's state.
+func TestSweeperLogsEachSweepsFailureOnceUntilItSucceedsAgain(t *testing.T) {
+	m, _, _, _ := newFixture(t)
+	ctx := context.Background()
+	closed, err := pgxpool.NewWithConfig(ctx, m.Store.Pool.Config())
+	if err != nil {
+		t.Fatalf("open the pool the failing store closes: %v", err)
+	}
+	closed.Close()
+	down := &store.Store{Pool: closed}
+	sweeper := &Sweeper{Enrollments: &enroll.Service{Store: down}, Machine: &Machine{Store: down}, MachineLogins: &machine.Service{Store: down}, OAuth: oauthstore.New(closed), Interval: time.Hour}
+
+	var failed, recovered []string
+	for _, sw := range sweeps {
+		failed = append(failed, "WARN "+sw.failed+" sweep="+sw.name)
+		recovered = append(recovered, "INFO "+SweepRecoveredMessage+" sweep="+sw.name)
+	}
+	capture := &logtest.Recorder{}
+	logtest.SetDefault(t, capture)
+	tick := func(name string, want []string) int {
+		t.Helper()
+		before := len(capture.Records())
+		sweeper.Tick(ctx)
+		got := sweepLines(capture.Records()[before:])
+		if !slices.Equal(got, want) {
+			t.Fatalf("%s logged %q, want %q", name, got, want)
+		}
+		return len(got)
+	}
+
+	if driven := tick("the first tick over a store that fails", failed); driven < sweepsOfATick {
+		t.Fatalf("the first tick over a store that fails drove the failure lines of %d sweeps, want all %d", driven, sweepsOfATick)
+	}
+	tick("a second tick over the store that fails", nil)
+	sweeper.Enrollments, sweeper.Machine = &enroll.Service{Store: m.Store}, m
+	sweeper.MachineLogins, sweeper.OAuth = &machine.Service{Store: m.Store}, oauthstore.New(m.Store.Pool)
+	tick("the first tick once the store answers", recovered)
+	tick("a second tick over the store that answers", nil)
 }
 
 // TestSweeperEndsLapsedEnrollments pins that one Tick ends an enrollment whose lease has lapsed,

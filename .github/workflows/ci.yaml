@@ -416,6 +416,7 @@ jobs:
               # tree: lean/ holds the model, which airlock-lean alone reads.
               - 'packages/envoy/internal/broker/airlock/*'
               - 'packages/envoy/internal/broker/airlock/testdata/**'
+              - 'packages/envoy/internal/broker/answer/*'
               - 'packages/envoy/internal/broker/api/*'
               # The approval page's own files, its embedded templates and stylesheet included.
               - 'packages/envoy/internal/broker/approval/**'
@@ -455,10 +456,13 @@ jobs:
               - 'packages/envoy/internal/googleidentity/*'
               - 'packages/envoy/internal/id/*'
               - 'packages/envoy/internal/logtest/*'
+              # internal/broker/policy, answer and secrets count on counters of this package.
+              - 'packages/envoy/internal/metrics/*'
               - 'packages/envoy/internal/oidc/**'
               - 'packages/envoy/internal/pgmigrate/*'
               - 'packages/envoy/internal/ratelimit/*'
               - 'packages/envoy/internal/redact/*'
+              - 'packages/envoy/internal/serverwait/*'
               - 'packages/envoy/internal/testnats/*'
               # storetest's DatabaseURL makes a test's own database with internal/testpg.
               - 'packages/envoy/internal/testpg/*'
@@ -556,6 +560,7 @@ jobs:
               - 'packages/envoy/internal/redirects/*'
               - 'packages/envoy/internal/roles/*'
               - 'packages/envoy/internal/routing/*'
+              - 'packages/envoy/internal/serverwait/*'
               - 'packages/envoy/internal/session/*'
               - 'packages/envoy/internal/store/*'
               - 'packages/envoy/listenfd/*'
@@ -724,6 +729,7 @@ jobs:
               - 'packages/envoy/internal/redirects/*'
               - 'packages/envoy/internal/roles/*'
               - 'packages/envoy/internal/routing/*'
+              - 'packages/envoy/internal/serverwait/*'
               - 'packages/envoy/internal/session/*'
               - 'packages/envoy/internal/store/*'
               - 'packages/envoy/internal/testsocks5/*'
@@ -921,8 +927,8 @@ jobs:
               # envoy's ./cmd/{dispatch,broker,agent-secrets,agent-secrets-helper,broker-refgen};
               # the screenshots' harness starts the Dispatch server (packages/dispatch/e2e/harness-start.ts,
               # which docs/site/media/harness.ts:21,97 imports).
-              # broker-refgen also parses broker/api, broker/approval, broker/config, broker/helper,
-              # cmd/broker and cmd/agent-secrets at run time (generators/broker-reference.sh:13-14).
+              # broker-refgen also parses broker/api, broker/approval, broker/airlockproxy, broker/config,
+              # broker/helper, cmd/broker and cmd/agent-secrets at run time (generators/broker-reference.sh:14-15).
               - *legion_command
               - *dispatch_server
               # agentloop: the model loop cmd/broker's judge runs a model and its tools through.
@@ -933,6 +939,7 @@ jobs:
               - 'packages/envoy/cmd/broker-refgen/*'
               - 'packages/envoy/internal/broker/airlock/*'
               - 'packages/envoy/internal/broker/airlockproxy/*'
+              - 'packages/envoy/internal/broker/answer/*'
               - 'packages/envoy/internal/broker/api/*'
               # The approval page's own files, its embedded templates and stylesheet included.
               - 'packages/envoy/internal/broker/approval/**'
@@ -1327,6 +1334,7 @@ jobs:
               - 'packages/envoy/cmd/dev-oidc-issuer/*'
               - 'packages/envoy/internal/broker/airlock/*'
               - 'packages/envoy/internal/broker/airlockproxy/*'
+              - 'packages/envoy/internal/broker/answer/*'
               - 'packages/envoy/internal/broker/api/*'
               # The approval page's own files, its embedded templates and stylesheet included.
               - 'packages/envoy/internal/broker/approval/**'
@@ -1701,6 +1709,7 @@ jobs:
               - 'packages/envoy/internal/pgmigrate/*'
               - 'packages/envoy/internal/ratelimit/*'
               - 'packages/envoy/internal/redact/*'
+              - 'packages/envoy/internal/serverwait/*'
               - 'packages/envoy/internal/testnats/*'
               - 'packages/envoy/internal/testpg/*'
               - 'packages/envoy/internal/testwait/*'
@@ -1718,11 +1727,14 @@ jobs:
               - 'packages/envoy/agentloop/*'
               - 'packages/envoy/cmd/broker/*'
               - 'packages/envoy/cmd/agent-secrets/*'
-              # cmd/broker/main_test.go:220 (sslrootcert).
+              # cmd/broker/main_test.go:348 (sslrootcert).
               - 'packages/envoy/docker/rds-global-bundle.pem'
               - 'packages/envoy/internal/broker/airlock/*'
+              # cmd/broker/minters_test.go mints through the GitHub stand-in.
+              - 'packages/envoy/internal/broker/airlock/airlocktest/*'
               - 'packages/envoy/internal/broker/airlock/testdata/**'
               - 'packages/envoy/internal/broker/airlockproxy/*'
+              - 'packages/envoy/internal/broker/answer/*'
               - 'packages/envoy/internal/broker/api/*'
               # The approval page's own files, its embedded templates and stylesheet included.
               - 'packages/envoy/internal/broker/approval/**'
@@ -1756,12 +1768,15 @@ jobs:
               - 'packages/envoy/internal/dispatch/githubapp/githubapptest/*'
               - 'packages/envoy/internal/githubappjwt/*'
               - 'packages/envoy/internal/googleidentity/*'
+              - 'packages/envoy/internal/logging/*'
               - 'packages/envoy/internal/logtest/*'
+              - 'packages/envoy/internal/metrics/*'
               - 'packages/envoy/internal/oidc/**'
               - 'packages/envoy/internal/pglisten/*'
               - 'packages/envoy/internal/pgmigrate/*'
               - 'packages/envoy/internal/ratelimit/*'
               - 'packages/envoy/internal/redact/*'
+              - 'packages/envoy/internal/serverwait/*'
               # storetest's DatabaseURL makes a test's own database with internal/testpg.
               - 'packages/envoy/internal/testpg/*'
               - 'packages/envoy/internal/testwait/*'

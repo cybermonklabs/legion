@@ -3,19 +3,20 @@
 // The broker's boot and its stop are two orders, and each step of each one is where it is
 // because the step before it has to have happened first. boot.go holds both as functions whose
 // collaborators are fields (brokerBoot, brokerStop), so every row here drives the real sequence
-// against collaborators of its own and reads back the order the sequence ran them in. The three
-// stop rows need nothing real at all; the two boot rows each bind 127.0.0.1:0, since the bind is
-// one of the steps they order, and the first of them needs a real Postgres besides, because the
-// race it pins is one Postgres itself decides. Each row's comment names the one edit to boot.go
-// that turns that row red, which is how these five are measured.
+// against collaborators of its own and reads back the order the sequence ran them in. The five
+// stop rows need nothing real at all. The seven boot rows bind 127.0.0.1:0 for each port they
+// take, since the binds are among the steps they order, and the one that refuses a boot given no
+// metrics port takes none. The first boot row needs a real Postgres besides, because the race it
+// pins is one Postgres itself decides. Each row's comment names the one edit to boot.go that turns
+// that row red, which is how each of the twelve is measured.
 //
 // No row waits on the clock to decide an order: the sequences call each collaborator on one
 // goroutine, so a step recorded as it runs is the order itself, and the one row that does read a
 // duration to decide anything (the drain) reads it one way only - a timer never fires early,
 // however loaded the machine is. The two durations beside it are hang guards, read only where a
-// wait on an event would otherwise hang: the bound the bind row hands boot for a wait that is
-// already over when it begins (bootListenWait), and the one the catch-up row hands it for a wait
-// that is real but reachable by nothing a Postgres that answers at all does (listenHangGuard).
+// wait on an event would otherwise hang: the bound the other boot rows hand boot for a wait that
+// is already over when it begins (bootListenWait), and the one the catch-up row hands it for a
+// wait that is real but reachable by nothing a Postgres that answers at all does (listenHangGuard).
 package main
 
 import (
@@ -42,9 +43,12 @@ const (
 	theCatchUpReturned         = "the catch-up policy load returned"
 	theBind                    = "the bind"
 	theAirlockBind             = "the airlock proxy port's bind"
+	theMetricsBind             = "the metrics port's bind"
 	theShutdownBegan           = "the shutdown began"
 	theShutdownReturned        = "the shutdown returned"
 	theAirlockShutdownReturned = "the airlock proxy's shutdown returned"
+	theMetricsShutdownBegan    = "the metrics port's shutdown began"
+	theMetricsShutdownReturned = "the metrics port's shutdown returned"
 	theServingEnded            = "the serving context ended"
 	theStoreClosed             = "the store closed"
 )
@@ -87,14 +91,14 @@ func (s *steps) String() string { return strings.Join(s.order(), " -> ") }
 // they log is pinned elsewhere, and a row here reads the order rather than the lines.
 func orderingLog() *slog.Logger { return slog.New(slog.DiscardHandler) }
 
-// bootListenWait is what the bind row hands boot for the bound on its wait for the first LISTEN.
-// That row lets the bound decide nothing, because it has the LISTEN in hand before the wait
-// begins: its StartListener answers onConnected in the call itself, so what this names there is a
-// hang guard on a wait that is already over. The catch-up row's wait is a real one, against a
-// real dial and a real LISTEN on a real Postgres, and it hands boot listenHangGuard instead: it
-// was these thirty seconds until dispatch://INFRA-1248, and a merge-queue runner whose listener
-// was redialing on pglisten's backoff reached them, which failed that row for its own setup
-// rather than for the catch-up it is about.
+// bootListenWait is what the boot rows other than the catch-up row hand boot for the bound on its
+// wait for the first LISTEN. Those rows let the bound decide nothing, because each has the LISTEN
+// in hand before the wait begins: its StartListener answers onConnected in the call itself, so
+// what this names there is a hang guard on a wait that is already over. The catch-up row's wait
+// is a real one, against a real dial and a real LISTEN on a real Postgres, and it hands boot
+// listenHangGuard instead: it was these thirty seconds until dispatch://INFRA-1248, and a
+// merge-queue runner whose listener was redialing on pglisten's backoff reached them, which
+// failed that row for its own setup rather than for the catch-up it is about.
 const bootListenWait = 30 * time.Second
 
 // listenHangGuard is what the catch-up row hands boot for that same bound. There the wait is the
@@ -203,7 +207,8 @@ func TestBootLoadsThePolicyAgainAfterTheFirstListen(t *testing.T) {
 					}).Run(ctx)
 				}()
 			},
-			Listen: func() (net.Listener, error) { return net.Listen("tcp", "127.0.0.1:0") },
+			Listen:        func() (net.Listener, error) { return net.Listen("tcp", "127.0.0.1:0") },
+			ListenMetrics: listenTCP("127.0.0.1:0"),
 			// A hang guard rather than a deadline this row spends: an ordinary slow dial stays
 			// well inside it and leaves boot's wait to do the ordering, and only a Postgres that
 			// never answers reaches it.
@@ -238,6 +243,7 @@ func TestBootLoadsThePolicyAgainAfterTheFirstListen(t *testing.T) {
 		<-listenerStopped
 	})
 	defer started.Listener.Close()
+	defer started.MetricsListener.Close()
 
 	// The order boot ran in, read now that boot has returned. This channel is closed inside that
 	// LISTEN's own OnConnected, ahead of the token boot's wait takes, so a boot that waited for
@@ -281,7 +287,8 @@ func TestBootBindsOnlyAfterTheCatchUp(t *testing.T) {
 			ran.record(theBind)
 			return net.Listen("tcp", "127.0.0.1:0")
 		},
-		ListenWait: bootListenWait,
+		ListenMetrics: listenTCP("127.0.0.1:0"),
+		ListenWait:    bootListenWait,
 		Catchup: func(context.Context, *policy.Current) error {
 			ran.record(theCatchUpReturned)
 			return nil
@@ -296,6 +303,7 @@ func TestBootBindsOnlyAfterTheCatchUp(t *testing.T) {
 	}
 	t.Cleanup(started.EndServing)
 	defer started.Listener.Close()
+	defer started.MetricsListener.Close()
 
 	if !ran.is(theFirstLoad, theCatchUpReturned, theBind) {
 		t.Fatalf("the boot ran %s; want %s. A pod that binds before its catch-up load has returned is a pod the load balancer sends callers to while it still serves the tags it read before the catch-up, which is the whole window the catch-up exists to close",
@@ -430,7 +438,8 @@ func TestBootBindsTheAirlockPortAfterTheAPIAndInsideTheBoot(t *testing.T) {
 			ran.record(theAirlockBind)
 			return net.Listen("tcp", "127.0.0.1:0")
 		},
-		ListenWait: bootListenWait,
+		ListenMetrics: listenTCP("127.0.0.1:0"),
+		ListenWait:    bootListenWait,
 		Catchup: func(context.Context, *policy.Current) error {
 			ran.record(theCatchUpReturned)
 			return nil
@@ -449,6 +458,7 @@ func TestBootBindsTheAirlockPortAfterTheAPIAndInsideTheBoot(t *testing.T) {
 		t.Fatal("the boot answered no airlock listener, so there is no proxy port for main to serve")
 	}
 	defer started.AirlockListener.Close()
+	defer started.MetricsListener.Close()
 
 	want := []string{theFirstLoad, theCatchUpReturned, theBind, theAirlockBind}
 	if !ran.is(want...) {
@@ -474,6 +484,7 @@ func TestBootRefusesWhenTheAirlockPortCannotBeBound(t *testing.T) {
 			return listener, err
 		},
 		ListenAirlock: func() (net.Listener, error) { return nil, refusal },
+		ListenMetrics: listenTCP("127.0.0.1:0"),
 		ListenWait:    bootListenWait,
 		Catchup:       func(context.Context, *policy.Current) error { return nil },
 		Log:           orderingLog(),
@@ -524,6 +535,180 @@ func TestStopDrainsTheAirlockBesideTheAPI(t *testing.T) {
 	})
 	if !ran.has(theAirlockShutdownReturned) {
 		t.Fatalf("the stop ran %s; it never drained the airlock's proxy port, so every tunnel it held is cut by the kubelet rather than closed", &ran)
+	}
+	order := ran.order()
+	if len(order) == 0 || order[len(order)-1] != theServingEnded {
+		t.Fatalf("the stop ran %s; want both shutdowns before %s", &ran, theServingEnded)
+	}
+}
+
+// TestBootBindsTheMetricsPortAfterTheOtherTwoAndInsideTheBoot pins where the third socket is
+// taken: inside the boot, so a pod that cannot take its metrics port fails its boot rather than
+// serving callers nobody can watch it serve, and after the API's and the airlock's, since
+// nothing a caller is answered depends on it.
+//
+// The named revert: bind the metrics port in main, after boot has returned.
+func TestBootBindsTheMetricsPortAfterTheOtherTwoAndInsideTheBoot(t *testing.T) {
+	var ran steps
+	bind := func(step string) func() (net.Listener, error) {
+		return func() (net.Listener, error) {
+			ran.record(step)
+			return net.Listen("tcp", "127.0.0.1:0")
+		}
+	}
+	started, err := boot(t.Context(), brokerBoot{
+		LoadPolicy: func(context.Context) (*policy.Current, error) {
+			ran.record(theFirstLoad)
+			return nil, nil
+		},
+		StartListener: func(_ context.Context, _ *policy.Current, onConnected func()) { onConnected() },
+		Listen:        bind(theBind),
+		ListenAirlock: bind(theAirlockBind),
+		ListenMetrics: bind(theMetricsBind),
+		ListenWait:    bootListenWait,
+		Catchup: func(context.Context, *policy.Current) error {
+			ran.record(theCatchUpReturned)
+			return nil
+		},
+		Log: orderingLog(),
+	})
+	if err != nil {
+		t.Fatalf("boot: %v", err)
+	}
+	if started.Serving == nil {
+		t.Fatal("boot answered no serving context: it returned early, and nothing below is about the order of a finished boot")
+	}
+	t.Cleanup(started.EndServing)
+	defer started.Listener.Close()
+	defer started.AirlockListener.Close()
+	if started.MetricsListener == nil {
+		t.Fatal("the boot answered no metrics listener, so there is no metrics port for main to serve")
+	}
+	defer started.MetricsListener.Close()
+
+	want := []string{theFirstLoad, theCatchUpReturned, theBind, theAirlockBind, theMetricsBind}
+	if !ran.is(want...) {
+		t.Fatalf("the boot ran %s; want %s", &ran, strings.Join(want, " -> "))
+	}
+}
+
+// TestBootRefusesWhenTheMetricsPortCannotBeBound is the other half of that: a metrics port the
+// pod cannot take is a boot that fails, and both sockets bound before it go with it, the API's
+// and the airlock's, since a refused boot must leave no address held for the process started in
+// its place.
+//
+// The named revert: leave the airlock's socket open when the metrics bind fails.
+func TestBootRefusesWhenTheMetricsPortCannotBeBound(t *testing.T) {
+	var bound []net.Listener
+	bind := func() (net.Listener, error) {
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		if err == nil {
+			bound = append(bound, listener)
+		}
+		return listener, err
+	}
+	refusal := errors.New("the metrics port is already held")
+	started, err := boot(t.Context(), brokerBoot{
+		LoadPolicy:    func(context.Context) (*policy.Current, error) { return nil, nil },
+		StartListener: func(_ context.Context, _ *policy.Current, onConnected func()) { onConnected() },
+		Listen:        bind,
+		ListenAirlock: bind,
+		ListenMetrics: func() (net.Listener, error) { return nil, refusal },
+		ListenWait:    bootListenWait,
+		Catchup:       func(context.Context, *policy.Current) error { return nil },
+		Log:           orderingLog(),
+	})
+	if !errors.Is(err, refusal) {
+		t.Fatalf("boot with an unbindable metrics port = %v; want the bind's own refusal", err)
+	}
+	if started.Serving != nil || started.Listener != nil || started.AirlockListener != nil || started.MetricsListener != nil {
+		t.Fatalf("the refused boot answered %+v; want nothing to serve and nothing to stop", started)
+	}
+	if len(bound) != 2 {
+		t.Fatalf("the boot bound %d sockets before the metrics port; want the API's and the airlock's, or this row says nothing about what it left behind", len(bound))
+	}
+	for i, port := range []string{"the API's", "the airlock's"} {
+		if err := bound[i].Close(); err == nil {
+			t.Errorf("the refused boot left %s socket open: the pod that replaces this one finds the address held", port)
+		}
+	}
+}
+
+// TestBootRefusesWithNoMetricsPort: main serves the metrics port on every deployment and reads
+// the listener the boot answers with no check, so a boot given no bind for that port refuses
+// before it runs anything - no policy load, no reread listener, no socket - rather than answering
+// a listener main meets as nil once it is already serving.
+//
+// The named revert: drop the check of ListenMetrics at the top of boot.
+func TestBootRefusesWithNoMetricsPort(t *testing.T) {
+	var ran steps
+	started, err := boot(t.Context(), brokerBoot{
+		LoadPolicy: func(context.Context) (*policy.Current, error) {
+			ran.record(theFirstLoad)
+			return nil, nil
+		},
+		StartListener: func(_ context.Context, _ *policy.Current, onConnected func()) { onConnected() },
+		Listen: func() (net.Listener, error) {
+			ran.record(theBind)
+			return net.Listen("tcp", "127.0.0.1:0")
+		},
+		ListenWait: bootListenWait,
+		Catchup: func(context.Context, *policy.Current) error {
+			ran.record(theCatchUpReturned)
+			return nil
+		},
+		Log: orderingLog(),
+	})
+	if err == nil {
+		t.Fatal("a boot given no metrics port to bind answered no error; want it refused, since main serves that port's listener on every deployment")
+	}
+	if started.Serving != nil || started.Listener != nil || started.AirlockListener != nil || started.MetricsListener != nil {
+		t.Fatalf("the refused boot answered %+v; want nothing to serve and nothing to stop", started)
+	}
+	if order := ran.order(); len(order) != 0 {
+		t.Fatalf("the refused boot ran %s; want it refused before its first load", &ran)
+	}
+}
+
+// TestStopDrainsTheMetricsPortBesideTheAPI pins the metrics port's drain: it closes out of the
+// one shutdown budget beside the API rather than after it, and before the work that outlived the
+// drain stops. The API's fake shutdown here returns only once the metrics port's has begun, so a
+// stop that drained the metrics port after the API's is caught by the hang guard rather than
+// read as an order.
+//
+// The named revert: drop ShutdownMetrics from stop, or call it after Shutdown has returned.
+func TestStopDrainsTheMetricsPortBesideTheAPI(t *testing.T) {
+	var ran steps
+	metricsBegan := make(chan struct{})
+	stop(t.Context(), brokerStop{
+		Drain:    stopDrain,
+		DrainNow: make(chan struct{}),
+		Draining: func(bool) {},
+		Shutdown: func(context.Context) error {
+			ran.record(theShutdownBegan)
+			select {
+			case <-metricsBegan:
+			case <-time.After(bootListenWait):
+				t.Errorf("the API's shutdown waited %s and the metrics port's never began beside it: a stop that drains the ports one after another hands the second whatever the first left of the budget", bootListenWait)
+			}
+			ran.record(theShutdownReturned)
+			return nil
+		},
+		ShutdownMetrics: func(context.Context) error {
+			ran.record(theMetricsShutdownBegan)
+			close(metricsBegan)
+			if ran.has(theServingEnded) {
+				t.Error("the stop ended the serving context before the metrics port had drained")
+			}
+			ran.record(theMetricsShutdownReturned)
+			return nil
+		},
+		EndServing: func() { ran.record(theServingEnded) },
+		CloseStore: func() {},
+		Log:        orderingLog(),
+	})
+	if !ran.has(theMetricsShutdownReturned) {
+		t.Fatalf("the stop ran %s; it never drained the metrics port", &ran)
 	}
 	order := ran.order()
 	if len(order) == 0 || order[len(order)-1] != theServingEnded {

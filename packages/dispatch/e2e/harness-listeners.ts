@@ -166,10 +166,10 @@ function signInIssuerListeners(): HarnessListener[] {
 // server, which keeps relaying the fake broker.
 // Each half reports on stderr, and each report is the line that follows its own bind: the issuer
 // writes `dev-oidc-issuer: issuer listening url=http://127.0.0.1:<port>`, as it does for
-// run-signin-issuer.sh, and cmd/broker writes `broker listening addr=127.0.0.1:<port>` through
-// slog's own default logger, which the Go `log` package prints as
-// `<date> <time> INFO broker listening addr=127.0.0.1:<port>` — no `msg=` key, unlike the
-// Dispatch server's, which installs a handler of its own.
+// run-signin-issuer.sh, and cmd/broker writes its log as one JSON object per line
+// (packages/envoy/internal/logging's NewCloudHandler), so its report is
+// `{"time":…,"severity":"INFO","message":"broker listening","addr":"127.0.0.1:<port>"}`, the
+// message followed by its one field.
 function realBrokerListeners(): HarnessListener[] {
   if (!usesRealBroker) return [];
   return [
@@ -189,7 +189,7 @@ function realBrokerListeners(): HarnessListener[] {
       id: "real-broker",
       key: "realBroker",
       name: "the real secrets broker",
-      report: /\bINFO broker listening addr=127\.0\.0\.1:(\d+)(?:\s|$)/,
+      report: /"message":"broker listening","addr":"127\.0\.0\.1:(\d+)"/,
     },
   ];
 }

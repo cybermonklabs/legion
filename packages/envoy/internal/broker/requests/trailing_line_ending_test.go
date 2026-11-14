@@ -139,7 +139,11 @@ func TestTheBrokerTrimsAStoredValuesTrailingLineEnding(t *testing.T) {
 	}
 
 	t.Run("a-minted-kinds-input", func(t *testing.T) {
-		const secret, stored, input, token = "MINTED_INPUT_KEY", "app-key\n", "app-key", "minted-token\n"
+		// The input is a value the github-app decoder reads, which the policy serves; the stored
+		// value is that with a line ending, which the rule removes before the minter sees it.
+		const secret, token = "MINTED_INPUT_KEY", "minted-token\n"
+		input := policytest.KindValue(policy.KindGitHubApp)
+		stored := input + "\n"
 		given := ""
 		m.Minters = map[string]Minter{
 			policy.KindGitHubApp: func(_ context.Context, request secrets.MintRequest) (secrets.Minted, error) {

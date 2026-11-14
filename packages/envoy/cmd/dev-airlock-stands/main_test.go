@@ -279,10 +279,12 @@ func askTheModel(t *testing.T, url string) string {
 }
 
 // TestTheGitHubStandsAnswerIsSetWhileItRuns is the command's own half of the GitHub stand's
-// three answers: the route the report names sets what the stand answers each token request from
-// then on, which is how one check drives the ordinary mint, the refusal and the widened token
-// against one running stack, and a mode outside the three is refused rather than quietly leaving
-// the last answer in place. What each answer holds is the stand-in package's own rows.
+// four answers: the route the report names sets what the stand answers each token request from
+// then on, which is how one check drives the ordinary mint, the refusal, the widened token and
+// the one outage a retry rides out against one running stack, and a mode outside the four is
+// refused rather than quietly leaving the last answer in place. The outage is the next token
+// request's alone: the request after it is answered as ordinary with no call to the route. What
+// each answer holds is the stand-in package's own rows.
 func TestTheGitHubStandsAnswerIsSetWhileItRuns(t *testing.T) {
 	out := startStands(t, "--dir", t.TempDir())
 	if out.GitHubAnswerURL != out.RecordsURL+"/answers/github" {
@@ -295,6 +297,8 @@ func TestTheGitHubStandsAnswerIsSetWhileItRuns(t *testing.T) {
 		{name: "the answer it starts on", want: http.StatusCreated},
 		{name: "the refusal", mode: `{"mode":"refuse"}`, want: http.StatusUnprocessableEntity},
 		{name: "the token wider than asked", mode: `{"mode":"widen"}`, want: http.StatusCreated},
+		{name: "the one outage", mode: `{"mode":"fail-once"}`, want: http.StatusServiceUnavailable},
+		{name: "the answer after the outage", want: http.StatusCreated},
 		{name: "the ordinary answer again", mode: `{"mode":"ordinary"}`, want: http.StatusCreated},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -317,8 +321,8 @@ func TestTheGitHubStandsAnswerIsSetWhileItRuns(t *testing.T) {
 		})
 	}
 	if status, body := setTheAnswer(t, out.GitHubAnswerURL, `{"mode":"sometimes"}`); status != http.StatusBadRequest ||
-		!strings.Contains(body, "ordinary") || !strings.Contains(body, "refuse") || !strings.Contains(body, "widen") {
-		t.Errorf("a mode outside the three was answered %d %s; want 400 naming the three", status, body)
+		!strings.Contains(body, "ordinary") || !strings.Contains(body, "refuse") || !strings.Contains(body, "widen") || !strings.Contains(body, "fail-once") {
+		t.Errorf("a mode outside the four was answered %d %s; want 400 naming the four", status, body)
 	}
 }
 

@@ -5,9 +5,11 @@ import (
 	"time"
 )
 
-// MintRequest is one release's input to a minter: the secret's stored value, its name and
-// whether the policy snapshot checked for this release holds it as human tier. The Azure
-// minter requires that name to match its configured secret and HumanTier to be true.
+// MintRequest is one release's input to a minter: the secret's stored value, its name, its kind
+// and whether the policy snapshot checked for this release holds it as human tier. The Azure
+// minter requires that name to match its configured secret and HumanTier to be true. Kind is the
+// secret's kind tag, which the HTTP minters count their attempts under
+// (broker_mint_attempts_total).
 // GitHubOwners is a github-app secret's github-owners tag as lowercase logins; every other
 // kind leaves it nil. GitHubNarrowing is the narrowing a release asked for, nil for the
 // owner-wide tokens; only the github-app minter reads it. GoogleScopes is a
@@ -17,6 +19,7 @@ import (
 // alone, which is what it asked for before the tag existed.
 type MintRequest struct {
 	Name            string
+	Kind            string
 	HumanTier       bool
 	Value           string
 	GitHubOwners    []string

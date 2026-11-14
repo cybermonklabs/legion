@@ -407,37 +407,54 @@ func TestTheGitHubStandRefusesEveryTokenWhenItIsAskedTo(t *testing.T) {
 	}
 }
 
-// TestTheGitHubStandsAnswerIsSetWhileItRuns: the three answers one after another against one
+// TestTheGitHubStandsAnswerIsSetWhileItRuns: the four answers one after another against one
 // running stand, which is what a check of the narrowing drives on one stack - the ordinary mint,
 // the 422 that releases nothing, the token wider than asked that the minter revokes, and the
-// ordinary mint again as that check's negative control. A stand built with no option starts on
-// the ordinary answer.
+// ordinary mint again as that check's negative control - and the one outage, which a minter
+// that makes one attempt fails at as the upstream's and a minter with a Retry mints through at
+// its second attempt, after which the stand answers as ordinary again with no call to Answers.
+// A stand built with no option starts on the ordinary answer.
 func TestTheGitHubStandsAnswerIsSetWhileItRuns(t *testing.T) {
 	service := newService(t, ServiceOptions{Plain: true})
 	stand := NewGitHubStand(GitHubOptions{Installations: map[string]int64{"acme-org": 7}})
 	service.AnswerWith(stand.Answer)
-	app := secrets.GitHubApp{Base: service.URL()}
 	value := gitHubAppValue(t)
 	narrowing := &secrets.GitHubNarrowing{Owner: "acme-org", Repositories: []string{"proofs"}}
-	mint := func() (secrets.Minted, error) {
+	// retry waits no real time: the row is about what the stand answers, not the backoff.
+	retry := &secrets.Retry{Sleep: func(context.Context, time.Duration) error { return nil }}
+	mint := func(retried bool) (secrets.Minted, error) {
+		app := secrets.GitHubApp{Base: service.URL()}
+		if retried {
+			app.Retry = retry
+		}
 		return app.Mint(t.Context(), secrets.MintRequest{Value: value, GitHubOwners: []string{"acme-org"}, GitHubNarrowing: narrowing})
 	}
 
 	for _, tc := range []struct {
-		name   string
-		answer GitHubTokenAnswer
-		class  string
+		name    string
+		answer  GitHubTokenAnswer
+		retried bool
+		class   string
+		// tokenCalls is how many token requests the row makes, when it is not one.
+		tokenCalls int
 	}{
 		{name: "the answer it starts on"},
 		{name: "the refusal", answer: GitHubTokensRefused, class: "narrowing"},
 		{name: "the token wider than asked", answer: GitHubTokensWider, class: "upstream"},
 		{name: "the ordinary answer again", answer: GitHubTokensOrdinary},
+		{name: "the outage, to a minter that makes one attempt", answer: GitHubTokensFailOnce, class: "upstream"},
+		{name: "the answer after the outage"},
+		{name: "the outage, to a minter that retries", answer: GitHubTokensFailOnce, retried: true, tokenCalls: 2},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if tc.answer != "" {
 				stand.Answers(tc.answer)
 			}
-			minted, err := mint()
+			before := len(service.Requests())
+			minted, err := mint(tc.retried)
+			if want, asked := max(tc.tokenCalls, 1), tokenRequests(service.Requests()[before:]); asked != want {
+				t.Errorf("the mint against the %s made %d token requests; want %d", tc.name, asked, want)
+			}
 			if tc.class == "" {
 				if err != nil {
 					t.Fatalf("mint against the %s: %v", tc.name, err)
@@ -453,6 +470,18 @@ func TestTheGitHubStandsAnswerIsSetWhileItRuns(t *testing.T) {
 			}
 		})
 	}
+}
+
+// tokenRequests is how many of seen are access_tokens requests, the call the stand's outage
+// answers.
+func tokenRequests(seen []Request) int {
+	count := 0
+	for _, request := range seen {
+		if request.Method == http.MethodPost && strings.HasSuffix(request.Path, "/access_tokens") {
+			count++
+		}
+	}
+	return count
 }
 
 // TestTheGitHubStandAnswersARepositoryOnlyToATokenThatReachesIt: a check spends a narrowed token

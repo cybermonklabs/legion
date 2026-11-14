@@ -33,6 +33,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/broker/airlock"
 	"github.com/sjawhar/envoy/internal/broker/airlock/airlocktest"
+	"github.com/sjawhar/envoy/internal/broker/answer"
 	"github.com/sjawhar/envoy/internal/broker/requests"
 	"github.com/sjawhar/envoy/internal/logtest"
 )
@@ -263,9 +264,15 @@ type logCapture struct {
 	logtest.Recorder
 }
 
-// calls is every line one call to a bound host logged. Records answers a slice of its own, so a
-// row reads the lines written so far while the proxy goes on writing.
+// calls is every line one call to a bound host logged that the airlock carried or failed. Records
+// answers a slice of its own, so a row reads the lines written so far while the proxy goes on
+// writing.
 func (c *logCapture) calls() []logLine { return c.lines(callMessage) }
+
+// refusals is every refusal record the proxy wrote (refuse), read the same way: a refused call to
+// a bound host writes one in place of its call line, and a refusal of the outer server writes
+// one too. refuse writes it before the answer, so a row that has its answer reads it at once.
+func (c *logCapture) refusals() []logLine { return c.lines(answer.RefusalMessage) }
 
 // joins is every line the close of a joined connection logged, read the same way.
 func (c *logCapture) joins() []logLine { return c.lines(joinMessage) }

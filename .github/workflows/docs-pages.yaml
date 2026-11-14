@@ -199,6 +199,7 @@ on:
       - 'packages/envoy/internal/redirects/*'
       - 'packages/envoy/internal/roles/*'
       - 'packages/envoy/internal/routing/*'
+      - 'packages/envoy/internal/serverwait/*'
       - 'packages/envoy/internal/session/*'
       - 'packages/envoy/internal/store/*'
       - 'packages/envoy/listenfd/*'
@@ -211,6 +212,7 @@ on:
       - 'packages/envoy/cmd/broker-refgen/*'
       - 'packages/envoy/internal/broker/airlock/*'
       - 'packages/envoy/internal/broker/airlockproxy/*'
+      - 'packages/envoy/internal/broker/answer/*'
       - 'packages/envoy/internal/broker/api/*'
       # The approval page's own files, its embedded templates and stylesheet included.
       - 'packages/envoy/internal/broker/approval/**'

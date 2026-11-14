@@ -334,14 +334,16 @@ func TestGitHubAppMintNamesTheNarrowingWhenGitHubRefusesIt(t *testing.T) {
 // TestGitHubAppMintKeepsARateLimited422Upstream: a 422 GitHub answers because the App is rate
 // limited (X-RateLimit-Remaining: 0, or a secondary-rate-limit message) is no verdict on the
 // narrowing, so it stays the upstream class an operator watches, not the caller's narrowing, and
-// its error names neither the repositories as a likely cause nor GitHub's own text.
+// its error names neither the repositories as a likely cause nor GitHub's own text. Neither names
+// a wait, which counts as a minute, so the Retry ends the mint at its one token request.
 func TestGitHubAppMintKeepsARateLimited422Upstream(t *testing.T) {
 	key, err := testAppKey()
 	if err != nil {
 		t.Fatal(err)
 	}
 	github := newNarrowingGitHub(t)
-	app := secrets.GitHubApp{Base: github.server.URL, HTTP: github.server.Client()}
+	retry, clock, _ := testRetry(atTheTop)
+	app := secrets.GitHubApp{Base: github.server.URL, HTTP: github.server.Client(), Retry: retry}
 	value := githubAppValue(t, "123456", key)
 	narrowing := &secrets.GitHubNarrowing{Owner: "ada", Repositories: []string{"proofs"}, ReadOnly: true}
 
@@ -358,11 +360,18 @@ func TestGitHubAppMintKeepsARateLimited422Upstream(t *testing.T) {
 			github.setAnswer(func(string, []byte) (int, any) {
 				return http.StatusUnprocessableEntity, map[string]string{"message": tc.message}
 			})
+			github.take()
 			_, err := app.Mint(t.Context(), secrets.MintRequest{Value: value, GitHubOwners: []string{"acme-org", "ada"}, GitHubNarrowing: narrowing})
 			if secrets.MintErrorClass(err) != "upstream" || !strings.Contains(err.Error(), "rate limit") || strings.Contains(err.Error(), "proofs") || strings.Contains(err.Error(), "few minutes") {
 				t.Fatalf("Mint = %v (class %s), want class upstream naming the rate limit, not the narrowing or GitHub's text", err, secrets.MintErrorClass(err))
 			}
+			if _, tokens := github.take(); len(tokens) != 1 || secrets.MintAttempts(err) != 1 {
+				t.Fatalf("Mint made %d token requests (%d attempts); want one, since a rate limit naming no wait ends the mint", len(tokens), secrets.MintAttempts(err))
+			}
 		})
+	}
+	if waits := clock.slept(); len(waits) != 0 {
+		t.Fatalf("the mints waited %v; want no wait", waits)
 	}
 }
 
@@ -505,7 +514,8 @@ func TestGitHubAppMintDropsActionsWhereTheInstallationDoesNotHoldThem(t *testing
 }
 
 // TestGitHubAppMintStillRefusesWhenGitHubDoesNotRevoke: a revoke GitHub does not confirm (here a
-// 500) is logged at WARN, never naming the token, and the wider token is still refused.
+// 500, which the Retry asks three times, all of them the token itself) is logged at WARN, never
+// naming the token, and the wider token is still refused.
 func TestGitHubAppMintStillRefusesWhenGitHubDoesNotRevoke(t *testing.T) {
 	var logged bytes.Buffer
 	logtest.SetDefault(t, slog.NewTextHandler(&logged, nil))
@@ -520,17 +530,64 @@ func TestGitHubAppMintStillRefusesWhenGitHubDoesNotRevoke(t *testing.T) {
 		answer.(map[string]any)["permissions"] = map[string]string{"contents": "write", "metadata": "read"}
 		return status, answer
 	})
-	app := secrets.GitHubApp{Base: github.server.URL, HTTP: github.server.Client()}
+	retry, _, _ := testRetry(atTheTop)
+	app := secrets.GitHubApp{Base: github.server.URL, HTTP: github.server.Client(), Retry: retry}
 
 	release, err := app.Mint(t.Context(), secrets.MintRequest{Value: githubAppValue(t, "123456", key), GitHubOwners: []string{"acme-org", "ada"}, GitHubNarrowing: &secrets.GitHubNarrowing{Owner: "ada", ReadOnly: true}})
 	if release.Value != "" || secrets.MintErrorClass(err) != "upstream" {
 		t.Fatalf("Mint = %q, %v (class %s), want nothing released and class upstream", release.Value, err, secrets.MintErrorClass(err))
 	}
-	if revoked := github.takeRevoked(); len(revoked) != 1 {
-		t.Fatalf("revokes at GitHub = %q, want one", revoked)
+	if revoked := github.takeRevoked(); !reflect.DeepEqual(revoked, []string{"Bearer token-2", "Bearer token-2", "Bearer token-2"}) {
+		t.Fatalf("revokes at GitHub = %q, want three, each as the refused token", revoked)
 	}
 	if line := logged.String(); !strings.Contains(line, "level=WARN") || !strings.Contains(line, "did not revoke") || strings.Contains(line, "token-2") {
 		t.Fatalf("log = %q, want a WARN line that GitHub did not revoke the token, without the token", line)
+	}
+}
+
+// TestGitHubAppMintReadsARetriedRevokesRefusalAsRevoked: GitHub revokes the token at the first
+// DELETE /installation/token and that answer is lost (the connection drops before the 204), so the
+// Retry makes the DELETE again, as the token GitHub has just revoked, and GitHub answers it 401, or
+// 404 for a token it no longer knows. That is the revoke done: the wider token is still refused,
+// and Mint logs no line saying GitHub did not revoke it. A 401 or a 404 to the first DELETE keeps
+// its meaning, a revoke GitHub did not confirm, and is logged as one.
+func TestGitHubAppMintReadsARetriedRevokesRefusalAsRevoked(t *testing.T) {
+	wider := reply{status: http.StatusCreated, body: `{"token":"token-7","expires_at":"2026-11-14T13:00:00Z","permissions":{"contents":"write","metadata":"read"}}`}
+	revokedAndLost := reply{lost: true}
+	badCredentials := reply{status: http.StatusUnauthorized, body: `{"message":"Bad credentials"}`}
+	notFound := reply{status: http.StatusNotFound, body: `{"message":"Not Found"}`}
+	for _, tc := range []struct {
+		name    string
+		revokes []reply
+		warned  bool
+	}{
+		{"the first answer lost, then GitHub's 401", []reply{revokedAndLost, badCredentials}, false},
+		{"the first answer lost, then a 404", []reply{revokedAndLost, notFound}, false},
+		{"a 401 to the first DELETE", []reply{badCredentials}, true},
+		{"a 404 to the first DELETE", []reply{notFound}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var logged bytes.Buffer
+			logtest.SetDefault(t, slog.NewTextHandler(&logged, nil))
+			retry, _, _ := testRetry(atTheBottom)
+			up := newScripted(t, append([]reply{installed, wider}, tc.revokes...)...)
+			release, err := mintGitHub(t.Context(), t, up, retry, &secrets.GitHubNarrowing{Owner: "acme", ReadOnly: true})
+			if release.Value != "" || secrets.MintErrorClass(err) != "upstream" || !strings.Contains(err.Error(), "more than read access") {
+				t.Fatalf("Mint = %q, %v (class %s); want nothing released and class upstream naming the read access", release.Value, err, secrets.MintErrorClass(err))
+			}
+			var deletes int
+			for _, request := range up.requests() {
+				if request.method == http.MethodDelete && request.path == "/installation/token" {
+					deletes++
+				}
+			}
+			if deletes != len(tc.revokes) {
+				t.Fatalf("Mint sent %d revokes; want %d", deletes, len(tc.revokes))
+			}
+			if warned := strings.Contains(logged.String(), "did not revoke"); warned != tc.warned {
+				t.Fatalf("log = %q; a line saying GitHub did not revoke the token: %t, want %t", logged.String(), warned, tc.warned)
+			}
+		})
 	}
 }
 

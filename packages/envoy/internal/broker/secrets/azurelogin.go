@@ -27,11 +27,6 @@ type AzureLogin struct {
 	Now        func() time.Time
 }
 
-type azureLoginSecret struct {
-	TenantID string `json:"tenant_id"`
-	ClientID string `json:"client_id"`
-}
-
 type azureLoginRelease struct {
 	TenantID       string    `json:"tenant_id"`
 	ClientID       string    `json:"client_id"`
@@ -48,10 +43,11 @@ func (m AzureLogin) Mint(_ context.Context, req MintRequest) (Minted, error) {
 	if m.SecretName == "" || req.Name != m.SecretName || !req.HumanTier {
 		return Minted{}, fmt.Errorf("%w: Azure login requires the configured human-tier secret", ErrMintRefused)
 	}
-	var identity azureLoginSecret
-	if json.Unmarshal([]byte(req.Value), &identity) != nil || strings.TrimSpace(identity.TenantID) == "" || strings.TrimSpace(identity.ClientID) == "" {
-		return Minted{}, fmt.Errorf("%w: Azure login secret must name tenant_id and client_id", ErrMintStoredValue)
+	parsed, err := ParseValue(kindAzureLogin, req.Value)
+	if err != nil {
+		return Minted{}, err
 	}
+	identity := parsed.AzureLogin
 	data, err := os.ReadFile(cmp.Or(m.TokenFile, DefaultAzureTokenFile))
 	if err != nil {
 		return Minted{}, fmt.Errorf("%w: read Azure projected token file", ErrMintUpstream)

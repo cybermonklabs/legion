@@ -99,7 +99,7 @@ func checkGitHubOwnersFor(kind, owners string, named bool) error {
 	case err == nil:
 		return nil
 	case errors.Is(err, policy.ErrGitHubOwnersMissing):
-		return usageErr{fmt.Errorf("a %s secret needs --github-owners naming at least one GitHub account, or the broker refuses it as %s", kind, policy.ReasonGitHubOwnersMissing)}
+		return usageErr{fmt.Errorf("%s secret needs --github-owners naming at least one GitHub account, or the broker refuses it as %s", withArticle(kind), policy.ReasonGitHubOwnersMissing)}
 	default:
 		return usageErr{fmt.Errorf("the secret's github-owners tag %q is malformed (%w), and the broker refuses it as %s: name the accounts with --github-owners", owners, err, policy.ReasonGitHubOwnersMalformed)}
 	}
@@ -277,7 +277,7 @@ func tagRefusal(reason string, set policy.TagSet, tags map[string]string) error 
 	case policy.ReasonScopesKind:
 		holder := "a stored secret"
 		if set.Kind != "" {
-			holder = fmt.Sprintf("a %s secret", set.Kind)
+			holder = withArticle(set.Kind) + " secret"
 		}
 		return usageErr{fmt.Errorf("--scopes narrows the token a %s secret mints, and no other kind's minter reads it, so %s holds none: remove the scopes tag with --scopes none, in a retag of its own, or write --kind %s, or the broker refuses it as %s", policy.KindGoogleServiceAccount, holder, policy.KindGoogleServiceAccount, policy.ReasonScopesKind)}
 	case policy.ReasonAdminTier:
@@ -305,10 +305,10 @@ func tagRefusal(reason string, set policy.TagSet, tags map[string]string) error 
 		// not for the person it leaves out.
 		switch policy.RequesterRule(set) {
 		case policy.RequesterFaultOwnerNotPerson:
-			return usageErr{fmt.Errorf("a %s secret mints a token acting as that account, so it is served to the one person who owns it, and %q is no person: own it with --owner me, or the broker refuses it as %s", set.Kind, set.Owner, policy.ReasonRequestersNotOwner)}
+			return usageErr{fmt.Errorf("%s secret mints a token acting as that account, so it is served to the one person who owns it, and %q is no person: own it with --owner me, or the broker refuses it as %s", withArticle(set.Kind), set.Owner, policy.ReasonRequestersNotOwner)}
 		case policy.RequesterFaultServiceBelowHumanTier:
 			_, services := policy.SplitRequesters(set.Requesters)
-			return usageErr{fmt.Errorf("a %s secret lists a registered service, here %q, only at %s tier, where a person approves each pod that asks: write --tier %s, or leave the service out of --requesters, or the broker refuses it as %s", set.Kind, services[0], policy.TierHuman, policy.TierHuman, policy.ReasonRequestersNotOwner)}
+			return usageErr{fmt.Errorf("%s secret lists a registered service, here %q, only at %s tier, where a person approves each pod that asks: write --tier %s, or leave the service out of --requesters, or the broker refuses it as %s", withArticle(set.Kind), services[0], policy.TierHuman, policy.TierHuman, policy.ReasonRequestersNotOwner)}
 		case policy.RequesterFaultNotTheOwnerOnce:
 			// One message for every way a list fails to name the owner exactly once — no list
 			// at all, a list of services alone, a list naming another person — because one
@@ -321,7 +321,7 @@ func tagRefusal(reason string, set policy.TagSet, tags map[string]string) error 
 			if set.Requesters != "" {
 				held = fmt.Sprintf(", not %q", set.Requesters)
 			}
-			return usageErr{fmt.Errorf("a %s secret is served to the one person who owns it, beside the registered services a %s-tier one may list, so its requesters name %s once%s: write --requesters %q, or the broker refuses it as %s", set.Kind, policy.TierHuman, set.Owner, held, wanted, policy.ReasonRequestersNotOwner)}
+			return usageErr{fmt.Errorf("%s secret is served to the one person who owns it, beside the registered services a %s-tier one may list, so its requesters name %s once%s: write --requesters %q, or the broker refuses it as %s", withArticle(set.Kind), policy.TierHuman, set.Owner, held, wanted, policy.ReasonRequestersNotOwner)}
 		}
 	}
 	// Two things reach here: a reason no case above names, and a policy.RequesterFault no case of

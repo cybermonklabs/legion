@@ -102,25 +102,25 @@ func (p *Page) ServeCallback(w http.ResponseWriter, r *http.Request, _ Session) 
 	pending, ok := readPending(r)
 	clearCookie(w, signInCookie)
 	if !ok {
-		writeMessage(w, http.StatusBadRequest, say("No sign-in in progress",
+		writeMessage(w, http.StatusBadRequest, codeSignInNotStarted, say("No sign-in in progress",
 			"This browser has no sign-in to the secrets broker in progress, or it took more than ten minutes. Open the request again to sign in."))
 		return
 	}
 	query := r.URL.Query()
 	if subtle.ConstantTimeCompare([]byte(query.Get("state")), []byte(pending.State)) != 1 {
 		slog.Warn("approval sign-in refused: the state is not the sign-in's")
-		writeMessage(w, http.StatusBadRequest, say("Sign-in refused",
+		writeMessage(w, http.StatusBadRequest, codeSignInStateInvalid, say("Sign-in refused",
 			"This sign-in is not the one this browser started, so it was refused. Open the request again to sign in."))
 		return
 	}
 	if !validNext(pending.Next) {
 		slog.Warn("approval sign-in refused: it returns somewhere other than a request's page")
-		writeMessage(w, http.StatusBadRequest, say("Sign-in refused", "A sign-in returns only to a request's page."))
+		writeMessage(w, http.StatusBadRequest, codeSignInNextInvalid, say("Sign-in refused", "A sign-in returns only to a request's page."))
 		return
 	}
 	if providerError := query.Get("error"); providerError != "" {
 		slog.Warn("approval sign-in refused by the provider", "error", providerError)
-		writeMessage(w, http.StatusForbidden, say("Not signed in",
+		writeMessage(w, http.StatusForbidden, codeSignInProviderRefused, say("Not signed in",
 			"The sign-in provider did not sign you in. Open the request again to try once more."))
 		return
 	}
@@ -137,7 +137,7 @@ func (p *Page) ServeCallback(w http.ResponseWriter, r *http.Request, _ Session) 
 			return
 		}
 		slog.Warn("approval sign-in refused: the code exchange or the ID token failed", "error", err)
-		writeMessage(w, http.StatusForbidden, say("Sign-in refused",
+		writeMessage(w, http.StatusForbidden, codeSignInUnverified, say("Sign-in refused",
 			"The sign-in provider's answer did not verify, so you are not signed in. Open the request again to sign in."))
 		return
 	}
@@ -145,7 +145,7 @@ func (p *Page) ServeCallback(w http.ResponseWriter, r *http.Request, _ Session) 
 	if err != nil {
 		slog.Warn("approval sign-in refused", "login", login, "error", err)
 		p.recordFailedSignIn(r.Context(), err)
-		writeMessage(w, http.StatusForbidden, say("Sign-in refused", workspaceRefusal(err, p.cfg.SignIn.Domain)))
+		writeMessage(w, http.StatusForbidden, codeSignInAccountRefused, say("Sign-in refused", workspaceRefusal(err, p.cfg.SignIn.Domain)))
 		return
 	}
 	secret := randomBytes()
@@ -188,7 +188,7 @@ func (p *Page) ServeLogout(w http.ResponseWriter, r *http.Request, sess Session)
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxFormBytes)
 	if err := r.ParseForm(); err != nil {
-		writeMessage(w, http.StatusBadRequest, say("Not signed out", "The form could not be read."))
+		writeMessage(w, http.StatusBadRequest, codeFormUnreadable, say("Not signed out", "The form could not be read."))
 		return
 	}
 	if secret, ok := sessionSecret(r); ok {
@@ -205,5 +205,5 @@ func (p *Page) ServeLogout(w http.ResponseWriter, r *http.Request, sess Session)
 	if next := r.PostForm.Get("next"); validNext(next) {
 		m.Link = &link{Href: next, Text: "Back to the request"}
 	}
-	writeMessage(w, http.StatusOK, m)
+	writeMessage(w, http.StatusOK, "", m)
 }

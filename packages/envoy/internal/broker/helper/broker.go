@@ -15,7 +15,6 @@ import (
 	"net/http"
 	"os"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -28,6 +27,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/brokerclient"
 	"github.com/sjawhar/envoy/internal/redact"
+	"github.com/sjawhar/envoy/internal/serverwait"
 )
 
 // noCredentialMsg is the exact instruction returned whenever the helper has no machine
@@ -941,18 +941,17 @@ func (b *Broker) redeem(ctx context.Context, cred *machineCredential) (next *Mac
 	return next, "", nil
 }
 
-// retryAfter is the wait a token endpoint answer named in its Retry-After header (whole seconds),
-// or zero when err carries none.
+// retryAfter is the wait a token endpoint answer names, read through serverwait.Read, or zero when
+// err carries none or the answer names none, which retrySchedule.next raises to its retry. The
+// broker's 429s name it in Retry-After alone. A wait of an hour is past next's cap, so next waits
+// maxRetryAfter, a minute.
 func retryAfter(err error) time.Duration {
 	var re *oauth2.RetrieveError
 	if !errors.As(err, &re) || re.Response == nil {
 		return 0
 	}
-	seconds, perr := strconv.Atoi(strings.TrimSpace(re.Response.Header.Get("Retry-After")))
-	if perr != nil || seconds <= 0 {
-		return 0
-	}
-	return time.Duration(seconds) * time.Second
+	wait, _ := serverwait.Read(re.Response.Header, time.Now())
+	return wait
 }
 
 // removeRefusedFile deletes the machine file of a login the broker refused to refresh.

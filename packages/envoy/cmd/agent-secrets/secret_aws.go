@@ -26,11 +26,12 @@ import (
 )
 
 // secretsAPI is the Secrets Manager calls the secret forms make: ListSecrets and DescribeSecret to
-// read, and writes for values, tags and deletion. *secretsmanager.Client and secrets.Local satisfy
-// it.
+// read, GetSecretValue for the value retag decodes (readValue), and writes for values, tags and
+// deletion. *secretsmanager.Client and secrets.Local satisfy it.
 type secretsAPI interface {
 	secretsmanager.ListSecretsAPIClient
 	DescribeSecret(ctx context.Context, in *secretsmanager.DescribeSecretInput, o ...func(*secretsmanager.Options)) (*secretsmanager.DescribeSecretOutput, error)
+	GetSecretValue(ctx context.Context, in *secretsmanager.GetSecretValueInput, o ...func(*secretsmanager.Options)) (*secretsmanager.GetSecretValueOutput, error)
 	CreateSecret(ctx context.Context, in *secretsmanager.CreateSecretInput, o ...func(*secretsmanager.Options)) (*secretsmanager.CreateSecretOutput, error)
 	PutSecretValue(ctx context.Context, in *secretsmanager.PutSecretValueInput, o ...func(*secretsmanager.Options)) (*secretsmanager.PutSecretValueOutput, error)
 	TagResource(ctx context.Context, in *secretsmanager.TagResourceInput, o ...func(*secretsmanager.Options)) (*secretsmanager.TagResourceOutput, error)
@@ -215,6 +216,25 @@ func (b *awsBackend) currentTags(ctx context.Context, slug string) (heldTags, er
 		return heldTags{}, err
 	}
 	return heldTags{tags: secrets.TagMap(held.Tags)}, nil
+}
+
+// readValue reads the secret's AWSCURRENT value with GetSecretValue, and refuses one that is not a
+// non-empty string, as the broker's own read does (secrets.AWS.Read).
+func (b *awsBackend) readValue(ctx context.Context, slug string) (string, error) {
+	out, err := b.sm.GetSecretValue(ctx, &secretsmanager.GetSecretValueInput{SecretId: aws.String(b.id(slug))})
+	if err != nil {
+		return "", err
+	}
+	if out.SecretString == nil || *out.SecretString == "" {
+		return "", errors.New("its value is not a non-empty string")
+	}
+	return *out.SecretString, nil
+}
+
+// valueReadPermission is what GetSecretValue needs of a person's sign-in: the call itself, and
+// the key the value is encrypted under, since Secrets Manager decrypts it as the caller.
+func (b *awsBackend) valueReadPermission() string {
+	return "secretsmanager:GetSecretValue on the secret and kms:Decrypt on its key"
 }
 
 // setTags writes tags in one TagResource, which keeps every tag it does not name. TagResource takes

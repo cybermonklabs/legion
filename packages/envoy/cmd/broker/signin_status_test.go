@@ -4,18 +4,23 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/broker/approval"
 	"github.com/sjawhar/envoy/internal/broker/brokertest"
 	"github.com/sjawhar/envoy/internal/broker/store"
 	"github.com/sjawhar/envoy/internal/broker/store/storetest"
+	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -69,6 +74,14 @@ func awaitClientCheck(t *testing.T, base string) (signInStatus, string) {
 	return status, body
 }
 
+// unreachableIssuer is an address nothing listens on: the server is closed before anything dials
+// it.
+func unreachableIssuer() string {
+	gone := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	gone.Close()
+	return gone.URL
+}
+
 // TestClientCheckWritesWhatTheProviderAnsweredAboutTheClient drives one pass of the check
 // directly, rather than waiting an hour for the loop's second pass, against a provider that
 // serves the broker's client, one that refuses its secret, and one that cannot be reached at
@@ -79,15 +92,11 @@ func TestClientCheckWritesWhatTheProviderAnsweredAboutTheClient(t *testing.T) {
 	issuer := oidctest.New(t)
 	signIn := brokertest.SignIn(issuer, issuer.PublishKey(t, "signin-key"))
 
-	// An address nothing listens on: the server is closed before anything dials it.
-	gone := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
-	goneURL := gone.URL
-	gone.Close()
-
 	rejected, unreachable := signIn, signIn
 	rejected.ClientSecret = "not-the-client-secret"
-	unreachable.Issuer = goneURL
+	unreachable.Issuer = unreachableIssuer()
 
+	var logged clientCheckLog
 	for _, c := range []struct {
 		name   string
 		signIn approval.SignIn
@@ -100,7 +109,7 @@ func TestClientCheckWritesWhatTheProviderAnsweredAboutTheClient(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			before := time.Now().Add(-time.Second)
-			checkSignInClient(ctx, c.signIn, st)
+			checkSignInClient(ctx, c.signIn, st, &logged)
 			status, err := st.SignInStatus(ctx)
 			if err != nil {
 				t.Fatalf("SignInStatus: %v", err)
@@ -114,6 +123,108 @@ func TestClientCheckWritesWhatTheProviderAnsweredAboutTheClient(t *testing.T) {
 				t.Fatalf("the client check wrote a sign-in's or a decision's fact too: %+v", status)
 			}
 		})
+	}
+}
+
+// clientCheckLines renders the client check's own lines among records as "LEVEL message", with
+// state= and was= where the line carries them, leaving out the issuer and the error, whose text
+// is the provider's or the pool's.
+func clientCheckLines(records []slog.Record) []string {
+	var lines []string
+	for _, r := range records {
+		switch r.Message {
+		case clientCheckFailedMessage, clientCheckReadyMessage, clientCheckUnwrittenMessage, clientCheckWrittenMessage:
+		default:
+			continue
+		}
+		line := r.Level.String() + " " + r.Message
+		r.Attrs(func(a slog.Attr) bool {
+			if a.Key == "state" || a.Key == "was" {
+				line += " " + a.Key + "=" + a.Value.String()
+			}
+			return true
+		})
+		lines = append(lines, line)
+	}
+	return lines
+}
+
+// clientCheckPass is one pass of the check in a test of what the passes log: the provider and the
+// store it takes, and the client check's lines it must write.
+type clientCheckPass struct {
+	name   string
+	signIn approval.SignIn
+	st     *store.Store
+	want   []string
+}
+
+// passClientChecks takes each pass in order on one clientCheckLog, as runClientChecks does, and
+// fails at the first pass whose client check lines are not the ones it wants.
+func passClientChecks(t *testing.T, passes []clientCheckPass) {
+	t.Helper()
+	capture := &logtest.Recorder{}
+	logtest.SetDefault(t, capture)
+	var logged clientCheckLog
+	for _, pass := range passes {
+		before := len(capture.Records())
+		checkSignInClient(context.Background(), pass.signIn, pass.st, &logged)
+		if got := clientCheckLines(capture.Records()[before:]); !slices.Equal(got, pass.want) {
+			t.Fatalf("%s logged %q, want %q", pass.name, got, pass.want)
+		}
+	}
+}
+
+// TestClientCheckLogsAChangeOfStateNotEachPass holds the check to a change of state, not a beat:
+// a pass that finds a state other than ready writes clientCheckFailedMessage once, a pass that
+// finds the same state again writes nothing, a pass that finds another state that is not ready
+// writes it once more, and the pass that finds the client ready again writes
+// clientCheckReadyMessage once, naming the state it leaves, after which ready writes nothing.
+func TestClientCheckLogsAChangeOfStateNotEachPass(t *testing.T) {
+	st := storetest.Open(t)
+	issuer := oidctest.New(t)
+	signIn := brokertest.SignIn(issuer, issuer.PublishKey(t, "signin-key"))
+	rejected, unreachable := signIn, signIn
+	rejected.ClientSecret = "not-the-client-secret"
+	unreachable.Issuer = unreachableIssuer()
+
+	failed := "WARN " + clientCheckFailedMessage + " state="
+	passClientChecks(t, []clientCheckPass{
+		{"a first pass that finds the client ready", signIn, st, nil},
+		{"the provider refusing the client", rejected, st, []string{failed + string(oidc.ClientCheckRejected)}},
+		{"the provider refusing it again", rejected, st, nil},
+		{"a provider nothing answers for", unreachable, st, []string{failed + string(oidc.ClientCheckIssuerUnreachable)}},
+		{"that provider answering nothing again", unreachable, st, nil},
+		{"the provider serving the client again", signIn, st, []string{"INFO " + clientCheckReadyMessage + " was=" + string(oidc.ClientCheckIssuerUnreachable)}},
+		{"the provider serving it still", signIn, st, nil},
+	})
+}
+
+// TestClientCheckLogsAFailedWriteOnceUntilItWritesAgain holds the check's write to the same rule:
+// a pass whose write fails writes clientCheckUnwrittenMessage once, a second pass whose write
+// fails writes nothing, and the first pass that writes again writes clientCheckWrittenMessage
+// once, after which a write writes nothing. Every pass finds the client ready, so no line of the
+// check's own state is written beside them. The store that fails is a pool on the test's own
+// database, closed before it runs a statement, as a database that stopped answering fails.
+func TestClientCheckLogsAFailedWriteOnceUntilItWritesAgain(t *testing.T) {
+	st := storetest.Open(t)
+	issuer := oidctest.New(t)
+	signIn := brokertest.SignIn(issuer, issuer.PublishKey(t, "signin-key"))
+	closed, err := pgxpool.NewWithConfig(context.Background(), st.Pool.Config())
+	if err != nil {
+		t.Fatalf("open the pool the failing store closes: %v", err)
+	}
+	closed.Close()
+	down := &store.Store{Pool: closed}
+
+	ready := string(oidc.ClientCheckReady)
+	passClientChecks(t, []clientCheckPass{
+		{"a pass whose write fails", signIn, down, []string{"WARN " + clientCheckUnwrittenMessage + " state=" + ready}},
+		{"a second pass whose write fails", signIn, down, nil},
+		{"the first pass that writes again", signIn, st, []string{"INFO " + clientCheckWrittenMessage + " state=" + ready}},
+		{"a second pass that writes", signIn, st, nil},
+	})
+	if status, err := st.SignInStatus(context.Background()); err != nil || status.ClientCheckState == nil || *status.ClientCheckState != ready {
+		t.Fatalf("after the passes that wrote, the row holds %v (%v), want %q", status.ClientCheckState, err, ready)
 	}
 }
 

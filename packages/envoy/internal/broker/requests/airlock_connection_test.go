@@ -27,7 +27,7 @@ func twoNameGrant(t *testing.T, reason string) (m *Machine, enrollmentID, grantI
 	m, enrollmentID, key, _ := newPlaceholderFixture(t, twoNameRules())
 	retag(t, m,
 		policytest.Secret("AWS_KEY", fixtureOperator, policy.TierAgent, `{"access_key_id":"AKIAONE","secret_access_key":"real-secret"}`),
-		policytest.KindSecret("LOGIN_KEY", fixtureOperator, policy.TierAgent, policy.KindGoogleLogin, `{"type":"authorized_user"}`),
+		policytest.KindSecret("LOGIN_KEY", fixtureOperator, policy.TierAgent, policy.KindGoogleLogin, policytest.KindValue(policy.KindGoogleLogin)),
 	)
 	m.Minters = map[string]Minter{policy.KindGoogleLogin: func(context.Context, secrets.MintRequest) (secrets.Minted, error) {
 		return secrets.Minted{Value: "real-access-token"}, nil

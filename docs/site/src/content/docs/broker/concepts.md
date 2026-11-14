@@ -427,9 +427,10 @@ of the namespace, or the one after, since Secrets Manager's listing can lag a ch
 minutes. On Google Secret Manager it usually takes effect at the next read of the namespace too,
 but Google bounds its listing's lag only at a few hours, so a change made any other way than
 `agent-secrets secret` (`gcloud`, the console) should be
-followed by a reread. A read that fails (Secrets Manager or KMS out of reach) is logged, and the policy from the
-last good read stays in force. The broker leaves out a secret it cannot serve, and logs it by name
-on every read
+followed by a reread. A read that fails (Secrets Manager or KMS out of reach) is logged when the
+failures start and again when a read succeeds, and the policy from the last good read stays in
+force. The broker leaves out a secret it cannot serve, logs it by name once, when it starts to
+refuse it, and counts it in a metric for as long as it refuses it
 ([Operating the broker](/legion/broker/operate/#health-and-logs)): a missing or malformed `owner`
 or `tier` tag (an email with a capital letter is malformed), an unknown `kind`, a `github-app`
 secret whose `github-owners` names no account or holds a comma, a `requesters` list the broker
@@ -441,8 +442,11 @@ whose `requesters` are not its one person owner, or that lists a service where i
 (`requesters-not-owner`), a `scopes` list the broker cannot read (`scopes-malformed`), a `scopes`
 tag on any other kind (`scopes-kind`), a malformed
 `max-grant`, a name that is not in the form above, a secret encrypted with any key but the
-agent-secrets key, the AWS-managed key included, or a secret with no current value (created without
-one, so none of its versions carries the `AWSCURRENT` label). A request for a secret left out is
+agent-secrets key, the AWS-managed key included, a secret with no current value (created without
+one, so none of its versions carries the `AWSCURRENT` label), or a kind secret whose stored value
+its kind's minter could not mint from (`value-malformed`), which the broker finds by reading the
+value once for each new version, kind or shape of the secret
+([the value read](/legion/broker/operate/#the-value-read)). A request for a secret left out is
 refused `UNKNOWN_SECRET` before anyone is asked to approve it, and a live grant of it releases
 nothing until the broker serves the secret again.
 
@@ -515,19 +519,29 @@ The broker evaluates every name
   `requesters` tag names, beside the registered services a human-tier one may list, and for
   grants of an hour at most. The broker reads the stored value for each release,
   as it reads any secret, and mints from
-  it. It never returns the stored App key or refresh token. A token lasts about an hour, so a client
+  it. It never returns the stored App key or refresh token. It also reads each kind secret's value
+  once for each new version, kind or shape, and checks it as the minter reads it, so a value the
+  minter could not mint from leaves the secret out (`value-malformed`) before anyone asks for it.
+  `agent-secrets secret` checks a value the same way before it writes one. A token lasts about an
+  hour, so a client
   keeps the release until its `expires_at` rather than asking again for each use. A deleted kind
-  secret stops releasing as any deleted secret does. A release GitHub or Google refuses, such as a
-  Google login that needs a new sign-in, is refused `MINT_FAILED` with the upstream's HTTP status
-  code, Google's `invalid_rapt` or `rapt_required` subtype (any other is named `unknown`), or the
-  class of a failed call, never the upstream's own text, and the broker logs it for its operator.
+  secret stops releasing as any deleted secret does. A call to GitHub or Google that answers a
+  5xx or a rate limit, or gets no answer, is attempted up to three times within the release
+  ([the mint retry](/legion/broker/operate/#the-mint-retry)). A release GitHub or Google refuses,
+  such as a Google login that needs a new sign-in, is refused `MINT_FAILED` with the upstream's
+  HTTP status code, Google's `invalid_rapt` or `rapt_required` subtype (any other is named
+  `unknown`), or the class of a failed call, never the upstream's own text, and the broker logs it
+  for its operator.
   A grant ends for good when a release finds its secret's kind changed
   (removed, or changed to another kind) or its lifetime over the current `max-grant`: that
   release answers `GRANT_NOT_LIVE` and writes a `grant.revoked` audit row by
   `broker:release-recheck`, and the session asks again. A release of a stored secret checks the
   policy again once it has read the store, so a retag to a kind reread during that read releases
   nothing and ends the grant the same way: retag a stored secret to a kind, and wait for the broker
-  to serve it, before storing its App key or login. A change reverted before any release finds
+  to read the new tags, before storing its App key or login. That retag checks the value the
+  secret holds, so a sign-in that may read it is refused while it is no value of that kind
+  ([manage a secret](/legion/broker/guides/manage-a-secret/#change-its-owner-tier-kind-requesters-or-max-grant)).
+  A change reverted before any release finds
   it leaves the grant as it was: it was approved for that secret, kind and source, and its next
   release mints a token of that same kind from that same frozen source, never the stored value. To
   end a grant, revoke it. A kind secret the broker stops serving, such as one whose
@@ -707,9 +721,14 @@ tunnelled unread, to a public address alone. A bound host is read with a certifi
 proxy's own authority, and the request must name that same host in its TLS name and in its `Host`
 header; then the entry's hosts, headers, methods and paths decide whether the swap happens. A
 refusal is an HTTP error from the proxy naming the rule that refused it, such as `host not bound`
-or `not allowed by rule`, and the broker logs one line for each call to a bound host: the
-enrollment, the grant, the secret, the host, the method, the path, the answer's status and that
-reason, never a value. A path that holds a `.` or `..` segment is refused outright
+or `not allowed by rule`, and ending with its answer id. The broker logs one line for each call to
+a bound host, never with a value. A call it carried, or could not carry, writes
+`airlock proxy: a call to a bound host` with the enrollment, the grant, the secret, the host, the
+method, the path and the answer's status. A call it refused writes its refusal record,
+`broker: answer refused`, with the grant and enrollment as its caller, the secret, the host, the
+method, the path, the reason and the answer id
+([Refusals and the answer id](/legion/broker/operate/#refusals-and-the-answer-id)). A path that
+holds a `.` or `..` segment is refused outright
 (`path has a dot segment`), whatever the entry's paths allow, because a reader that resolves
 such a path first — which is what RFC 3986 says it means — reads it as a path the prefix does
 not bound. On an entry that lists methods and paths, a request carrying

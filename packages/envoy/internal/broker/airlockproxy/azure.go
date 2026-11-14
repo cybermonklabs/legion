@@ -181,19 +181,19 @@ func (s *Server) dropAccess(name string) {
 func (s *Server) exchangeToken(w http.ResponseWriter, info connInfo, r *http.Request, chosen pair, federated string) {
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxTokenRequest))
 	if err != nil {
-		s.refuse(w, info, r, chosen, http.StatusBadRequest, "reading this token request's form: "+err.Error())
+		s.refuse(w, r, info.callFor(chosen), http.StatusBadRequest, codeTokenRequest, "reading this token request's form: "+err.Error())
 		return
 	}
 	form, err := url.ParseQuery(string(body))
 	if err != nil {
-		s.refuse(w, info, r, chosen, http.StatusBadRequest, "this token request's body is no application/x-www-form-urlencoded form")
+		s.refuse(w, r, info.callFor(chosen), http.StatusBadRequest, codeTokenRequest, "this token request's body is no application/x-www-form-urlencoded form")
 		return
 	}
 	placeholder := info.grant.Names[chosen.name].Slots[requests.SlotAzureFederated]
 	if placeholder == "" || form.Get("client_assertion") != placeholder {
 		// Refused rather than forwarded: an assertion that is not this grant's placeholder is
 		// a credential the command holds of its own, and the airlock carries no such thing.
-		s.refuse(w, info, r, chosen, http.StatusForbidden, "refusing a token request whose client_assertion is not this grant's placeholder")
+		s.refuse(w, r, info.callFor(chosen), http.StatusForbidden, codeTokenAssertion, "refusing a token request whose client_assertion is not this grant's placeholder")
 		return
 	}
 	x := azureExchange{
@@ -206,18 +206,18 @@ func (s *Server) exchangeToken(w http.ResponseWriter, info connInfo, r *http.Req
 	form.Set("client_assertion", federated)
 	status, answer, err := s.exchangeAt(r.Context(), x.Endpoint, form)
 	if err != nil {
-		s.refuse(w, info, r, chosen, http.StatusBadGateway, "the exchange of this grant's federated token could not be made at "+x.Endpoint+": "+err.Error())
+		s.refuse(w, r, info.callFor(chosen), http.StatusBadGateway, codeExchangeFailed, "the exchange of this grant's federated token could not be made at "+x.Endpoint+": "+err.Error())
 		return
 	}
 	if status != http.StatusOK {
 		// The endpoint's own status, with the broker's own words: the endpoint's answer to a
 		// refused exchange names the tenant and the application, and none of it is read out.
-		s.refuse(w, info, r, chosen, status, "the token endpoint refused the exchange of this grant's federated token")
+		s.refuse(w, r, info.callFor(chosen), status, codeExchangeRefused, "the token endpoint refused the exchange of this grant's federated token")
 		return
 	}
 	fields, err := azureAnswerOf(answer)
 	if err != nil {
-		s.refuse(w, info, r, chosen, http.StatusBadGateway, "the token endpoint's answer to this exchange "+err.Error())
+		s.refuse(w, r, info.callFor(chosen), http.StatusBadGateway, codeExchangeFailed, "the token endpoint's answer to this exchange "+err.Error())
 		return
 	}
 	token, expires := accessTokenOf(fields, s.now())
@@ -228,20 +228,20 @@ func (s *Server) exchangeToken(w http.ResponseWriter, info connInfo, r *http.Req
 	// database's user, its name and its address.
 	minted, err := s.grants.AirlockAccessPlaceholder(r.Context(), info.grant.GrantID, chosen.name, slot)
 	if err != nil {
-		status, why := s.grantRefusal("azure access placeholder", err)
-		s.refuse(w, info, r, chosen, status, why)
+		status, code, why := s.grantRefusal("azure access placeholder", err)
+		s.refuse(w, r, info.callFor(chosen), status, code, why)
 		return
 	}
 	s.accessFor(accessKey{grant: info.grant.GrantID, name: chosen.name, slot: slot}).keep(token, expires)
 	document, err := answerWithPlaceholder(fields, minted)
 	if err != nil {
-		s.refuse(w, info, r, chosen, http.StatusBadGateway, "answering this exchange: "+err.Error())
+		s.refuse(w, r, info.callFor(chosen), http.StatusBadGateway, codeExchangeFailed, "answering this exchange: "+err.Error())
 		return
 	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(document)
-	s.log.Info(callMessage, s.callFields(info, r, chosen, http.StatusOK, "")...)
+	s.log.Info(callMessage, s.callFields(answerOf(w).ID(), info.callFor(chosen), r, http.StatusOK, "")...)
 }
 
 // azureAccess is the real access token behind an azure-access slot: the one this pod holds for

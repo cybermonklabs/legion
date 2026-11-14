@@ -21,7 +21,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"regexp"
 	"testing"
 	"time"
 
@@ -31,23 +30,21 @@ import (
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 )
 
-// airlockProxyLine is the line main logs once the proxy port is bound, and the pattern that
-// reads the address out of it. The address the release names is BROKER_AIRLOCK_PROXY_URL, which
-// a deployment sets to the Service a command reaches; a test binds port 0 and so reads the
-// address the process actually took.
+// airlockProxyLine is the line main logs once the proxy port is bound, whose addr field is the
+// address it took. The address the release names is BROKER_AIRLOCK_PROXY_URL, which a deployment
+// sets to the Service a command reaches; a test binds port 0 and so reads the address the
+// process actually took.
 const airlockProxyLine = "airlock proxy listening"
-
-var airlockAddrPattern = regexp.MustCompile(`airlock proxy listening addr=(\S+)`)
 
 // airlockProxyAddr is the address the broker bound its proxy port to.
 func airlockProxyAddr(t *testing.T, broker *brokerProcess) string {
 	t.Helper()
-	log := broker.Await(t, airlockProxyLine)
-	match := airlockAddrPattern.FindStringSubmatch(log)
-	if match == nil {
-		t.Fatalf("the broker's %q line names no address:\n%s", airlockProxyLine, log)
+	record := broker.AwaitRecord(t, airlockProxyLine, nil)
+	addr, _ := record["addr"].(string)
+	if addr == "" {
+		t.Fatalf("the broker's %q line names no address: %v", airlockProxyLine, record)
 	}
-	return match[1]
+	return addr
 }
 
 // airlockOf is the airlock half of a grant's release: the password every connection to the proxy

@@ -330,6 +330,26 @@ func TestARateLimitRefusalNamesItsRetryAfter(t *testing.T) {
 	}
 }
 
+// TestWriteRefusalNamesItsCodeBesideItsOAuthMembers: a refusal is the OAuth error a client's
+// library parses, invalid_request with the broker's code opening its description, and carries
+// that code again as the member code every other refusal of the broker has, which is where the
+// answer's record reads it; it carries nothing else.
+func TestWriteRefusalNamesItsCodeBesideItsOAuthMembers(t *testing.T) {
+	w := httptest.NewRecorder()
+	oauth.WriteRefusal(w, &oauth.Refusal{Status: http.StatusBadRequest, Code: "REQUEST_INVALID", Message: "the request object does not verify"})
+	var body map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("the refusal is no JSON object: %v: %s", err, w.Body)
+	}
+	want := map[string]any{"error": "invalid_request", "error_description": "REQUEST_INVALID: the request object does not verify", "code": "REQUEST_INVALID"}
+	if w.Code != http.StatusBadRequest || fmt.Sprint(body) != fmt.Sprint(want) {
+		t.Fatalf("refusal = %d %v, want 400 %v", w.Code, body, want)
+	}
+	if got := w.Header().Get("Content-Type"); got != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json", got)
+	}
+}
+
 func TestTheTokenEndpointWaitsUntilTheCodeIsApproved(t *testing.T) {
 	f := newFixture(t)
 	key := newKey(t)

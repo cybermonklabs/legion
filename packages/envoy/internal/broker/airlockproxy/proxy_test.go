@@ -36,6 +36,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/broker/airlock"
+	"github.com/sjawhar/envoy/internal/broker/answer"
 	"github.com/sjawhar/envoy/internal/broker/requests"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
 )
@@ -276,8 +277,8 @@ func TestABoundNameOnAnotherPortIsTunnelled(t *testing.T) {
 }
 
 // TestTheLogLineOfARefusedDotSegmentRequestNamesTheReason: every call to a bound host logs one
-// line, allowed or refused, and the reason on a refused one is the decision's own words. An
-// operator reading the line has to see that it was the dot segment that refused the call,
+// line, and a refused one's line is its refusal record, whose reason is the decision's own words.
+// An operator reading the line has to see that it was the dot segment that refused the call,
 // since the path as written is inside the entry's prefix.
 func TestTheLogLineOfARefusedDotSegmentRequestNamesTheReason(t *testing.T) {
 	r := newRig(t, Options{})
@@ -286,16 +287,19 @@ func TestTheLogLineOfARefusedDotSegmentRequestNamesTheReason(t *testing.T) {
 	if answer.StatusCode != http.StatusForbidden || !strings.Contains(body, "path has a dot segment") {
 		t.Fatalf("the call answered %d %q; want 403 naming the dot segment", answer.StatusCode, strings.TrimSpace(body))
 	}
-	calls := r.logs.callsAtLeast(t, 1)
-	if len(calls) != 1 {
-		t.Fatalf("the proxy logged %d call lines; want exactly one", len(calls))
+	refusals := r.logs.refusals()
+	if len(refusals) != 1 {
+		t.Fatalf("the proxy wrote %d refusal records; want exactly one", len(refusals))
 	}
-	line := calls[0]
+	if calls := r.logs.calls(); len(calls) != 0 {
+		t.Fatalf("the refused call also logged %d call lines; want its refusal record alone: %v", len(calls), calls)
+	}
+	line := refusals[0]
 	if reason, _ := line.fields["reason"].(string); reason != "path has a dot segment" {
 		t.Errorf("the refused call logged the reason %q; want the decision's own words", reason)
 	}
-	if line.fields["allowed"] != false || line.fields["status"] != int64(403) {
-		t.Errorf("the refused call logged %v; want allowed false and status 403", line.fields)
+	if line.level != slog.LevelWarn || line.fields["status"] != int64(403) || line.fields["code"] != codeNotAllowed {
+		t.Errorf("the refused call logged %v at %v; want status 403 and code %s at WARN", line.fields, line.level, codeNotAllowed)
 	}
 	if path, _ := line.fields["path"].(string); path != "/v1/../admin/things" {
 		t.Errorf("the refused call logged the path %q; want the path the command wrote", path)
@@ -538,51 +542,67 @@ func TestTheValuesOfOneGrantAreReadOnceOnThisPod(t *testing.T) {
 
 // TestEachCallToABoundHostLogsOneLine: an operator reading the broker's log must be able to say
 // which session carried which secret where, and on what issue's authority - and must never read
-// a placeholder or a value there.
+// a placeholder or a value there. A carried call logs its call line, and a refused one its
+// refusal record in that line's place, so each call logs exactly one.
 func TestEachCallToABoundHostLogsOneLine(t *testing.T) {
 	r := newRig(t, Options{})
 	client := r.client(workerPlaceholder)
-	r.get(client, "https://"+boundHost+"/v1/things?token=secret-query", "Authorization", "Bearer "+workerPlaceholder)
-	r.do(client, http.MethodDelete, "https://"+boundHost+"/v1/things", "", "Authorization", "Bearer "+workerPlaceholder)
+	carried, _ := r.get(client, "https://"+boundHost+"/v1/things?token=secret-query", "Authorization", "Bearer "+workerPlaceholder)
+	refusedAnswer, _ := r.do(client, http.MethodDelete, "https://"+boundHost+"/v1/things", "", "Authorization", "Bearer "+workerPlaceholder)
 
-	calls := r.logs.callsAtLeast(t, 2)
-	if len(calls) != 2 {
-		t.Fatalf("the proxy logged %d lines for two calls to a bound host; want one each", len(calls))
+	calls := r.logs.callsAtLeast(t, 1)
+	refusals := r.logs.refusals()
+	if len(calls) != 1 || len(refusals) != 1 {
+		t.Fatalf("the proxy logged %d call lines and %d refusal records for one carried and one refused call; want one each", len(calls), len(refusals))
 	}
-	allowed, refused := calls[0], calls[1]
-	for _, line := range calls {
-		if line.level != slog.LevelInfo {
-			t.Errorf("the call line is at %v; want info", line.level)
-		}
-		for field, want := range map[string]any{
-			"enrollment": testEnrollID, "grant": testGrantID, "secret": workerName,
-			"issue": testIssue, "host": boundHost, "path": "/v1/things",
-		} {
-			if got := line.fields[field]; got != want {
-				t.Errorf("the call line's %s = %v; want %v", field, got, want)
-			}
-		}
-		if fmt.Sprint(line.fields) != "" && strings.Contains(fmt.Sprint(line.fields), workerValue) {
-			t.Errorf("the call line names the value: %v", line.fields)
+	allowed, refused := calls[0], refusals[0]
+	for _, line := range []logLine{allowed, refused} {
+		if strings.Contains(fmt.Sprint(line.fields), workerValue) {
+			t.Errorf("the line names the value: %v", line.fields)
 		}
 		if strings.Contains(fmt.Sprint(line.fields), workerPlaceholder) {
-			t.Errorf("the call line names the placeholder: %v", line.fields)
+			t.Errorf("the line names the placeholder: %v", line.fields)
 		}
 		if strings.Contains(fmt.Sprint(line.fields["path"]), "token=") {
-			t.Errorf("the call line's path carries the query: %v", line.fields["path"])
+			t.Errorf("the line's path carries the query: %v", line.fields["path"])
+		}
+		if got := line.fields["host"]; got != boundHost {
+			t.Errorf("the line's host = %v; want %s", got, boundHost)
+		}
+		if got := line.fields["path"]; got != "/v1/things" {
+			t.Errorf("the line's path = %v; want /v1/things", got)
+		}
+		if got := line.fields["issue"]; got != testIssue {
+			t.Errorf("the line's issue = %v; want %s", got, testIssue)
 		}
 	}
-	if allowed.fields["method"] != http.MethodGet || allowed.fields["allowed"] != true || allowed.fields["status"] != int64(200) {
-		t.Errorf("the allowed call logged %v; want method GET, allowed true and status 200", allowed.fields)
+	if allowed.level != slog.LevelInfo {
+		t.Errorf("the call line is at %v; want info", allowed.level)
+	}
+	for field, want := range map[string]any{
+		"enrollment": testEnrollID, "grant": testGrantID, "secret": workerName, "method": http.MethodGet,
+		"allowed": true, "status": int64(200), "answer_id": carried.Header.Get(answer.Header),
+	} {
+		if got := allowed.fields[field]; got != want {
+			t.Errorf("the allowed call's %s = %v; want %v", field, got, want)
+		}
 	}
 	if _, named := allowed.fields["reason"]; named {
 		t.Errorf("the allowed call logged a reason: %v", allowed.fields)
 	}
-	if refused.fields["method"] != http.MethodDelete || refused.fields["allowed"] != false || refused.fields["status"] != int64(403) {
-		t.Errorf("the refused call logged %v; want method DELETE, allowed false and status 403", refused.fields)
+	if refused.level != slog.LevelWarn {
+		t.Errorf("the refusal record is at %v; want warn", refused.level)
 	}
-	if reason, _ := refused.fields["reason"].(string); reason != "not allowed by rule" {
-		t.Errorf("the refused call logged the reason %q; want the decision's own words", reason)
+	for field, want := range map[string]any{
+		"caller": testGrantID + "@" + testEnrollID, "caller_class": answer.CallerAirlock, "method": http.MethodDelete,
+		"status": int64(403), "code": codeNotAllowed, "reason": "not allowed by rule", "answer_id": refusedAnswer.Header.Get(answer.Header),
+	} {
+		if got := refused.fields[field]; got != want {
+			t.Errorf("the refused call's %s = %v; want %v", field, got, want)
+		}
+	}
+	if got := fmt.Sprint(refused.fields["secrets"]); got != "["+workerName+"]" {
+		t.Errorf("the refused call's secrets = %s; want [%s]", got, workerName)
 	}
 }
 

@@ -22,8 +22,8 @@
 # databases for the same reason.
 #
 # Every port is chosen by the kernel and read back from the process that holds it: the issuer's
-# "issuer listening url=", the broker's "broker listening addr=", natsd's "Listening for client
-# connections on", the listener's JSON "envoy-listener listening" addr, and Dispatch's
+# "issuer listening url=", the broker's JSON "broker listening" addr, natsd's "Listening for
+# client connections on", the listener's JSON "envoy-listener listening" addr, and Dispatch's
 # "dispatch: listening" addr. So a URL this script prints can only ever name this run's own
 # process, never one left over from another. Two of the five are the exceptions to "bind, then
 # report", and both serve on a socket scripts/e2e/lib/held-port.py opened on a port the kernel
@@ -420,7 +420,7 @@ until_true() {
 }
 
 issuer_url_in() { grep -o 'issuer listening url=[^ ]*' "$1" | head -n1 | cut -d= -f2-; }
-broker_addr_in() { grep -o 'broker listening addr=[^ ]*' "$1" | head -n1 | cut -d= -f2-; }
+broker_addr_in() { jq -Rnr '[inputs | fromjson? | select(.message == "broker listening") | .addr][0] // empty' "$1"; }
 nats_port_in() {
   grep -q 'Server is ready' "$1" || return 1
   sed -n 's/.*Listening for client connections on 127\.0\.0\.1:\([0-9][0-9]*\)$/\1/p' "$1" | head -n1
@@ -475,8 +475,10 @@ echo "dev-stack: dev-oidc-issuer $ISSUER_URL" >&2
 # signs in — and one the fleet's service owns, which this stack's machine reads and no person's
 # session does. BROKER_LISTEN_ADDR and BROKER_PUBLIC_URL are port 0: cmd/broker reads a public URL
 # whose port is 0 as "derive it from whatever address I bind", and the real one is read from its
-# own listening line below. BROKER_DRAIN_SECONDS=0 turns off the five-second drain that exists to
-# outlast a Kubernetes EndpointSlice propagation nothing here has. BROKER_ACCESS_TOKEN_SECONDS is
+# own listening line below. BROKER_METRICS_LISTEN_ADDR is port 0 too, so two stacks on one machine
+# never contend for the metrics port's fixed default. BROKER_DRAIN_SECONDS=0 turns off the
+# five-second drain that exists to outlast a Kubernetes EndpointSlice propagation nothing here
+# has. BROKER_ACCESS_TOKEN_SECONDS is
 # the caller's when it names one, else the broker's own default: a walk that must see a client
 # renew an access token sets it to a few seconds rather than waiting out the quarter hour (the
 # broker's floor is 1, and at 1 an answer's expires_in truncates to 0, which every client
@@ -500,6 +502,7 @@ env -i PATH="$PATH" \
   BROKER_ACCESS_TOKEN_SECONDS="${BROKER_ACCESS_TOKEN_SECONDS:-900}" \
   BROKER_LISTEN_ADDR="127.0.0.1:0" \
   BROKER_PUBLIC_URL="http://127.0.0.1:0" \
+  BROKER_METRICS_LISTEN_ADDR="127.0.0.1:0" \
   BROKER_MACHINE_LOGIN_URL="$DISPATCH_URL/credentials/machine" \
   BROKER_SECRETS_PREFIX="$SECRETS_PREFIX" \
   BROKER_SECRETS_KMS_KEY_ARN="$SECRETS_KMS_KEY_ARN" \

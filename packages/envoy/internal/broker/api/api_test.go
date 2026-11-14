@@ -26,6 +26,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/sjawhar/envoy/internal/broker/answer"
 	"github.com/sjawhar/envoy/internal/broker/api"
 	"github.com/sjawhar/envoy/internal/broker/brokertest"
 	"github.com/sjawhar/envoy/internal/broker/enroll"
@@ -40,6 +41,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/secrets"
 	"github.com/sjawhar/envoy/internal/broker/store"
 	"github.com/sjawhar/envoy/internal/broker/store/storetest"
+	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 	"github.com/sjawhar/envoy/internal/ratelimit"
@@ -77,6 +79,8 @@ type testServer struct {
 	// otherDaemonAccount each logging in as legion-daemon; a test removes an entry to take an
 	// account off it.
 	ServiceLogins map[string]string
+	// registry is the server's own metrics, the answer recorder's broker_answers_total among them.
+	registry *metrics.Registry
 }
 
 // podAudience is the audience the test server's pod verifier checks and podToken mints for.
@@ -115,7 +119,11 @@ func newTestServerWith(t *testing.T, adjust func(*api.Deps)) *testServer {
 	cur := policytest.Current(t, local)
 
 	mux := http.NewServeMux()
-	srv := httptest.NewServer(mux)
+	// Behind the answer recorder (answer.Middleware), which cmd/broker wraps the mux in, inside
+	// withRequestDeadline, counting on a registry of the server's own, so every answer a test reads
+	// is the one a deployment sends.
+	registry := metrics.New()
+	srv := httptest.NewServer(answer.Middleware(mux, answer.NewAnswers(registry)))
 	t.Cleanup(srv.Close)
 
 	issuer := oidctest.New(t)
@@ -162,7 +170,7 @@ func newTestServerWith(t *testing.T, adjust func(*api.Deps)) *testServer {
 	adjust(&deps)
 	api.Register(mux, deps)
 
-	ts := &testServer{URL: srv.URL, Store: st, Secrets: local, podIssuer: issuer, podKey: podKey, machine: reqMachine, ServiceLogins: serviceLogins}
+	ts := &testServer{URL: srv.URL, Store: st, Secrets: local, podIssuer: issuer, podKey: podKey, machine: reqMachine, ServiceLogins: serviceLogins, registry: registry}
 	ts.uiToken = ts.accountToken(t, dispatchAccount, "", time.Hour)
 	return ts
 }
@@ -963,7 +971,7 @@ func TestCreateRequestWithUnknownSecretNameIs400UnknownSecret(t *testing.T) {
 
 func TestCreateRequestWithMaxGrantNeedsLifetime(t *testing.T) {
 	ts := newTestServer(t)
-	limited := policytest.KindSecret("LIMITED_KEY", testApprover, policy.TierAgent, policy.KindGoogleLogin, "value")
+	limited := policytest.KindSecret("LIMITED_KEY", testApprover, policy.TierAgent, policy.KindGoogleLogin, policytest.KindValue(policy.KindGoogleLogin))
 	limited.Tags[policy.TagMaxGrant] = "1h"
 	ts.Secrets.Put(limited)
 	if status, body := ts.req(t, http.MethodPost, "/v1/secrets/LIMITED_KEY/reread", nil, nil); status != http.StatusOK {
@@ -985,7 +993,8 @@ func TestCreateRequestWithMaxGrantNeedsLifetime(t *testing.T) {
 // TestAFailedMintIs502MintFailed: a kind secret whose minter fails, such as a Google login that
 // needs a new sign-in, answers the session 502 MINT_FAILED with the minter's words, so it can tell
 // its person what to fix, rather than an opaque 500; and the broker logs it at ERROR for its
-// operator, naming the secret and the error's class, never the stored value.
+// operator, naming the secret and the error's class, never the stored value: the refresh token
+// it holds, a canary no JSON or log quoting changes, is in neither.
 func TestAFailedMintIs502MintFailed(t *testing.T) {
 	logged := policytest.CaptureLog(t)
 	ts := newTestServerWith(t, func(d *api.Deps) {
@@ -995,7 +1004,9 @@ func TestAFailedMintIs502MintFailed(t *testing.T) {
 			},
 		}
 	})
-	ts.Secrets.Put(policytest.KindSecret("LAPSED_LOGIN", testApprover, policy.TierAgent, policy.KindGoogleLogin, "stored-login"))
+	const canary = "refresh-not-a-secret-canary-4e1d"
+	stored := `{"type":"authorized_user","client_id":"client","client_secret":"secret","refresh_token":"` + canary + `"}`
+	ts.Secrets.Put(policytest.KindSecret("LAPSED_LOGIN", testApprover, policy.TierAgent, policy.KindGoogleLogin, stored))
 	if status, body := ts.req(t, http.MethodPost, "/v1/secrets/LAPSED_LOGIN/reread", nil, nil); status != http.StatusOK {
 		t.Fatalf("reread LAPSED_LOGIN = %d %s", status, body)
 	}
@@ -1008,8 +1019,8 @@ func TestAFailedMintIs502MintFailed(t *testing.T) {
 	}
 	status, body := ts.session(t, sessionKey, enrollmentID, http.MethodPost, "/v1/grants/"+*created.GrantID+"/values", nil)
 	reply := decode[wireError](t, body)
-	if status != http.StatusBadGateway || reply.Code != "MINT_FAILED" || !strings.Contains(reply.Error, "invalid_rapt") || strings.Contains(reply.Error, "stored-login") {
-		t.Fatalf("POST values = %d %+v, want 502 MINT_FAILED naming invalid_rapt and not the stored value", status, reply)
+	if status != http.StatusBadGateway || reply.Code != "MINT_FAILED" || !strings.Contains(reply.Error, "invalid_rapt") || strings.Contains(reply.Error, canary) {
+		t.Fatalf("POST values = %d %+v, want 502 MINT_FAILED naming invalid_rapt and not the stored refresh token", status, reply)
 	}
 	line := ""
 	for l := range strings.Lines(logged.String()) {
@@ -1022,8 +1033,8 @@ func TestAFailedMintIs502MintFailed(t *testing.T) {
 			t.Fatalf("mint failure log line %q does not hold %q (log: %q)", line, want, logged.String())
 		}
 	}
-	if strings.Contains(logged.String(), "stored-login") {
-		t.Fatalf("the broker's log holds the stored value: %q", logged.String())
+	if strings.Contains(logged.String(), canary) {
+		t.Fatalf("the broker's log holds the stored refresh token: %q", logged.String())
 	}
 }
 
