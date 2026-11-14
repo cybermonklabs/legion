@@ -4750,7 +4750,7 @@ The wakes are these:
 
 - a phase start, task, backward move, notice, phase-ended message, merge-queue removal message, production-check look or slot resume the daemon has for a role of the pod, a notice for a released sub-architect included, which stays that notice's owner;
 
-- a CI settlement the daemon records for the head of the issue's pull request, while a phase worker of the pod has its phase open (the Envoy listener's settlement fact, or the daemon's own two-minute read).
+- a CI settlement the daemon records for the head of the issue's pull request, while a phase worker of the pod has its phase open (the Envoy listener's settlement fact: the daemon reads no check run of its own, and its own read of a pull request runs as the workflow runtime starts and once an agent's handoff has been recorded, on no timer).
   One head can settle more than once as its checks finish, and each settlement wakes a released pod at most once;
 
 - a message published to the role topic of a role of the pod, which the Envoy listener holds and reports to the daemon, one sent with `keep: false` included: that message is not kept, and it still wakes the role, so the sender's next try reaches a session that is running;
