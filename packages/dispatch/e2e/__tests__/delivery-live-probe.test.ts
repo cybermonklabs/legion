@@ -748,9 +748,9 @@ test(
       ).toBeGreaterThanOrEqual(openWithinMs / 2);
       expect(
         held,
-        `the probe held its connection for ${heldUnderMs} ms or longer, three times the largest ` +
-          `hold a correct ${openWithinMs} ms timer showed under load, against the ${openWithinMs} ms ` +
-          "that --open-within gave it"
+        `the probe held its connection for ${heldUnderMs} ms or longer, more than three times the ` +
+          `largest hold, 1 031.7 ms, that a correct ${openWithinMs} ms timer showed under load, ` +
+          `against the ${openWithinMs} ms that --open-within gave it`
       ).toBeLessThan(heldUnderMs);
     } finally {
       silent.stop(true);
@@ -831,8 +831,8 @@ test(
     const took = performance.now() - stopped;
     expect(
       code,
-      `the probe had not exited ${exitUnderMs} ms after SIGINT, three times the largest time a ` +
-        "correct probe takes to fail a read that --read-within 1 gave 1 s of silence"
+      `the probe had not exited ${exitUnderMs} ms after SIGINT, more than three times the largest ` +
+        "time, 1 049.1 ms, a correct probe took to fail a read that --read-within 1 gave 1 s of silence"
     ).not.toBe(pastDeadline);
     expect(
       took,

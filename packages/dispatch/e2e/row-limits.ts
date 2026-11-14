@@ -1128,8 +1128,7 @@ function shortOfBound(limit: WallClockLimit, total: number | undefined): string 
   return (
     `${total} ms, and waits for ${limit.waitsFor.join(" and ")}, under the \`${limit.bound}\` ` +
     `bound of ${bounds[limit.bound]} ms: the ${limit.kind} needs \`rowLimit("${limit.bound}")\`, ` +
-    `${needed} ms, at the least, or its own clock fires before the bound of that child or poll ` +
-    `and the failure names neither. Name in \`rowLimit(...)\` every bounded child and every poll ` +
+    `${needed} ms, at the least. Name in \`rowLimit(...)\` every bounded child and every poll ` +
     `the ${limit.kind} waits for, so the limit is read from their bounds.`
   );
 }
@@ -1139,17 +1138,13 @@ function shortOfBound(limit: WallClockLimit, total: number | undefined): string 
  *  the file states one, and the largest of them is read where it states more than one; one whose
  *  total the scan cannot read covers the row as stated. Where the file states its limit only
  *  otherwise - `setDefaultTimeout(90_000)` - the refusal names that limit as what stops the row,
- *  and the lane's `--timeout` where the file states none. Where that limit is a number written as
- *  digits, it is compared with the row's bound and with `rowLimit` of it, as `shortOfBound`
- *  compares a total. At the bound or below, the refusal says the row needs `rowLimit` at the
- *  least, and that the file's clock fires no later than the bound and names neither. Above the
- *  bound and below `rowLimit`, it says the bound fires first and names the child, but the number
- *  leaves the row less than the time it gets after the bound for its own work. At `rowLimit` or
- *  above, it says the number does not move with the bound. A name or an expression is not read,
- *  and the refusal says only that the clock can fire first. The row's bound is the largest one
- *  the scan reads among what it waits for, not their sum: WHAT A ROWLIMIT COVERS. So a row that
- *  awaits two `short` children one after the other under `setDefaultTimeout(90_000)` is told
- *  that the number does not move, although 90 s can fire before the second child's bound. */
+ *  and the lane's `--timeout` where the file states none; a written `0` is named as setting no
+ *  clock at all, since Bun 1.4.4 then lets the row run past the lane's `--timeout`. Where the
+ *  scan reads the bound the row waits for, the refusal names it and `rowLimit` of it, which the
+ *  row must state instead. It says nothing of which clock fires first: the scan reads the
+ *  largest bound among what the row waits for, not their sum (WHAT A ROWLIMIT COVERS), and
+ *  nothing of how long the row spends before it starts a child, so no order it stated would hold
+ *  for every row. */
 function unstatedRefusal(
   limit: WallClockLimit,
   limits: readonly WallClockLimit[]
@@ -1167,38 +1162,26 @@ function unstatedRefusal(
     );
     const where = otherwise.map((other) => `${other.title} on line ${other.line}`).join(" or ");
     const written = otherwise.map((other) => other.stated?.text ?? "");
-    const clock =
-      otherwise.length === 0
-        ? "the lane's `--timeout` stops it"
-        : `the file's own ${where} stops it at ${written.join(" or ")}`;
-    // A number written as digits is read, so the refusal says which clock fires first; a name or
-    // an expression is not, and the refusal says only that the file's clock can fire first.
-    const numbers = written
-      .filter((text) => /^\d[\d_]*$/.test(text))
-      .map((text) => Number(text.replaceAll("_", "")));
-    let order =
-      "that clock can fire before the bound of the child or the poll it waits for, and name neither";
-    if (otherwise.length > 0 && limit.bound !== undefined && numbers.length === written.length) {
-      const bound = bounds[limit.bound];
-      const needed = rowLimit(limit.bound);
-      const least = Math.min(...numbers);
-      const short =
-        `that number is below \`rowLimit("${limit.bound}")\`, ${needed} ms, which a ` +
-        `${limit.kind} under the \`${limit.bound}\` bound of ${bound} ms needs at the least`;
-      if (least <= bound) {
-        order = `${short}, so that clock fires no later than the bound of the child or the poll it waits for, and names neither`;
-      } else if (least < needed) {
-        order =
-          `${short}: the bound of the child or the poll it waits for fires first and names it, ` +
-          `but that number leaves the ${limit.kind} less than the ${needed - bound} ms it gets ` +
-          "after that bound for its own work, so its clock can fire before the failure is read";
-      } else {
-        order =
-          "that number is not read from the bounds, so it does not move when the " +
-          `\`${limit.bound}\` bound of ${bound} ms moves`;
-      }
+    // Bun 1.4.4 reads `setDefaultTimeout(0)` as no clock at all, the lane's `--timeout` included.
+    const zero =
+      written.length > 0 && written.every((text) => /^0+$/.test(text.replaceAll("_", "")));
+    let clock = `the file's own ${where} stops it at ${written.join(" or ")}`;
+    if (otherwise.length === 0) {
+      clock = "the lane's `--timeout` stops it";
+    } else if (zero) {
+      clock =
+        `the file's own ${where} writes 0, which sets no clock at all, not even the lane's ` +
+        "`--timeout`";
     }
-    return `${at} waits for ${waits} and states no limit, so ${clock}, and ${order}: ${waitingRemedy(limit)}`;
+    const reads =
+      limit.bound === undefined
+        ? ""
+        : `; it waits under the \`${limit.bound}\` bound of ${bounds[limit.bound]} ms, and ` +
+          `\`rowLimit("${limit.bound}")\` is ${rowLimit(limit.bound)} ms`;
+    return (
+      `${at} waits for ${waits} and states no limit, so ${clock}${reads}: ` +
+      waitingRemedy(limit)
+    );
   }
   let widest = fileLimits[0];
   for (const fileLimit of fileLimits) {

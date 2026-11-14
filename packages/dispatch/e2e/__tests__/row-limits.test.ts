@@ -425,10 +425,10 @@ test("a row that polls with whether or eventually states a rowLimit of the short
 // Bun applies a file's own `setDefaultTimeout` to every row and hook of the file, so a `rowLimit`
 // there is the limit of each waiting row that states none, and a number there is not. The file
 // is planted in a scratch directory because the fixture's own `setDefaultTimeout` is a number.
-// The refusal of a row under no `rowLimit` says which clock stops it: a number below `rowLimit`
-// of the row's bound falls short of what the row needs, a number at it or above does not move
-// with the bound, a name or an expression is not read, and a file that states nothing leaves the
-// row to the lane's `--timeout`.
+// The refusal of a row under no `rowLimit` names the clock that stops it and what the scan read -
+// the bound the row waits for and `rowLimit` of it - and claims no order of clocks, whatever the
+// file writes: a number below the bound, above it, at `rowLimit` of it, an expression, a `0`,
+// which sets no clock, or nothing, which leaves the row to the lane's `--timeout`.
 test("a file's own rowLimit states the limit of each waiting row that states none", () => {
   const root = mkdtempSync(join(tmpdir(), "row-limits-file-wide-"));
   try {
@@ -451,50 +451,32 @@ test("a file's own rowLimit states the limit of each waiting row that states non
       "state `rowLimit(...)` naming the bounded children and the polls the row waits for - as " +
       "its own limit, or as the file's `setDefaultTimeout` - so the limit is read from their " +
       "bounds, fires after theirs and moves when they move.";
+    const reads =
+      '; it waits under the `short` bound of 60000 ms, and `rowLimit("short")` is 90000 ms: ';
     const stoppedBy = (fileLimit: string) =>
       `${file}:4 the row "waits" waits for \`runBounded\` and states no limit, so the file's own ` +
-      `setDefaultTimeout on line 3 stops it at ${fileLimit}, and `;
+      `setDefaultTimeout on line 3 stops it at ${fileLimit}${reads}${remedy}`;
 
-    const atBound = refusedUnder("60_000");
-    expect(atBound.map((refusal) => refusal.limit.line)).toEqual([3, 4]);
-    expect(atBound[1].why).toBe(
-      `${stoppedBy("60_000")}that number is below \`rowLimit("short")\`, 90000 ms, which a row ` +
-        "under the `short` bound of 60000 ms needs at the least, so that clock fires no later " +
-        `than the bound of the child or the poll it waits for, and names neither: ${remedy}`
-    );
+    const fileLimits = ["30_000", "60_000", "61_000", "70_000", "89_999", "90_000", "60 * 1_000"];
+    for (const fileLimit of fileLimits) {
+      const refused = refusedUnder(fileLimit);
+      expect(refused.map((refusal) => refusal.limit.line)).toEqual([3, 4]);
+      expect(refused[1].why).toBe(stoppedBy(fileLimit));
+    }
 
-    // Above the bound the child's own bound fires first and names the child, so the refusal
-    // says that, and that the number still cuts the time the row gets after it.
-    const aboveBound = refusedUnder("70_000");
-    expect(aboveBound.map((refusal) => refusal.limit.line)).toEqual([3, 4]);
-    expect(aboveBound[1].why).toBe(
-      `${stoppedBy("70_000")}that number is below \`rowLimit("short")\`, 90000 ms, which a row ` +
-        "under the `short` bound of 60000 ms needs at the least: the bound of the child or the " +
-        "poll it waits for fires first and names it, but that number leaves the row less than " +
-        "the 30000 ms it gets after that bound for its own work, so its clock can fire before " +
-        `the failure is read: ${remedy}`
-    );
-
-    const atNeed = refusedUnder("90_000");
-    expect(atNeed.map((refusal) => refusal.limit.line)).toEqual([3, 4]);
-    expect(atNeed[1].why).toBe(
-      `${stoppedBy("90_000")}that number is not read from the bounds, so it does not move when ` +
-        `the \`short\` bound of 60000 ms moves: ${remedy}`
-    );
-
-    const expression = refusedUnder("60 * 1_000");
-    expect(expression.map((refusal) => refusal.limit.line)).toEqual([3, 4]);
-    expect(expression[1].why).toBe(
-      `${stoppedBy("60 * 1_000")}that clock can fire before the bound of the child or the poll ` +
-        `it waits for, and name neither: ${remedy}`
+    const zero = refusedUnder("0");
+    expect(zero.map((refusal) => refusal.limit.line)).toEqual([3, 4]);
+    expect(zero[1].why).toBe(
+      `${file}:4 the row "waits" waits for \`runBounded\` and states no limit, so the file's own ` +
+        "setDefaultTimeout on line 3 writes 0, which sets no clock at all, not even the lane's " +
+        `\`--timeout\`${reads}${remedy}`
     );
 
     const none = refusedUnder(undefined);
     expect(none.map((refusal) => refusal.limit.line)).toEqual([3]);
     expect(none[0].why).toBe(
       `${file}:3 the row "waits" waits for \`runBounded\` and states no limit, so the lane's ` +
-        "`--timeout` stops it, and that clock can fire before the bound of the child or the poll " +
-        `it waits for, and name neither: ${remedy}`
+        `\`--timeout\` stops it${reads}${remedy}`
     );
   } finally {
     rmSync(root, { force: true, recursive: true });
