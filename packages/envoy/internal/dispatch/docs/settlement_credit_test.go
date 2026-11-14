@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"runtime"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -42,8 +43,13 @@ func TestAnAskWrittenJustBeforeItsIssueClosedKeepsItsAuthorAfterAReopen(t *testi
 	waitForAskAuthor(t, service, artifactID, actor)
 }
 
-// The author persisted for a document that closes before its settlement also survives a process
-// restart between the close and the reopen, where the old service's room state is unavailable.
+// The author recorded for an ask block written just before its issue closes also survives a
+// process restart between the close and the reopen, where the old service's room state is
+// unavailable. The restarted service's resumption settles the document on the closed issue, unless
+// the old service's shutdown drain already did: either way the block gets no ask, the version
+// shows it resolved, and doc_ask_block_authors keeps its author (reconcileAskBlocks). The reopen
+// marks the document owed (MarkUnindexedAskDocumentsOwed), and the resumption after it opens the
+// block's ask, credited to that recorded author.
 func TestAnAskWrittenJustBeforeItsIssueClosedKeepsItsAuthorAfterRestartAndReopen(t *testing.T) {
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour // the issue closes before the edit's own settlement runs
@@ -62,6 +68,24 @@ func TestAnAskWrittenJustBeforeItsIssueClosedKeepsItsAuthorAfterRestartAndReopen
 			t.Errorf("shutdown restarted document service: %v", err)
 		}
 	})
+	if err := restarted.resumeOwedSettlements(ctx, 0); err != nil {
+		t.Fatalf("resume the closed issue's owed settlement: %v", err)
+	}
+	waitFor(t, roomWait(t), "the closed issue's document to settle on the restarted service", func() bool {
+		owed, err := settlementPending(ctx, restarted.store.Pool, artifactID)
+		return err == nil && !owed
+	})
+	if asks := asksOn(t, restarted, artifactID); asks != 0 {
+		t.Fatalf("the closed issue's settlement left %d asks on the document, want none while the issue is closed", asks)
+	}
+	const resolved = `#closing-ask urgency="med" multiple="false" state="resolved"`
+	if _, markdown, _ := latestDocumentVersion(t, restarted.store, artifactID); !strings.Contains(markdown, resolved) {
+		t.Fatalf("the closed issue's settlement left the latest version reading:\n%s\nwant the block saved resolved: %s", markdown, resolved)
+	}
+	if recorded := recordedAskAuthors(t, restarted.store, artifactID); recorded["closing-ask"] != actor {
+		t.Fatalf("doc_ask_block_authors after the closed issue's settlement = %+v, want closing-ask recorded as %+v", recorded, actor)
+	}
+
 	reopenTestIssue(t, restarted)
 	if err := restarted.resumeOwedSettlements(ctx, 0); err != nil {
 		t.Fatalf("resume the reopened document's settlement: %v", err)
@@ -1273,25 +1297,51 @@ func writeAskBeforeClose(t *testing.T, service *Service, artifactID string, acto
 	service.ScheduleSettlement(artifactID)
 }
 
+// closeTestIssue closes DOC-1 in the database and hands this service the notification that commit
+// sends, and waits until every room resident before the close has closed. It waits for those rooms
+// alone, by instance, not for the service to hold none: a room's last browser leaving runs the
+// settlement the document owes at once (settleLastPeer), on the closed issue as on an open one,
+// and its warm-up can load the document into a new room, which stays resident until it idles out
+// (roomIdleTimeout).
 func closeTestIssue(t *testing.T, service *Service) {
 	t.Helper()
 	ctx := context.Background()
+	resident := map[string]*crdt.Doc{}
+	for _, room := range service.srv.Rooms() {
+		resident[room] = service.srv.GetDoc(room)
+	}
 	if _, err := service.store.Pool.Exec(ctx, `update issues set closed_at = now() where key = 'DOC-1'`); err != nil {
 		t.Fatalf("close the issue: %v", err)
 	}
 	service.issueOpenChanged(ctx, "DOC-1")
-	waitFor(t, 30*time.Second, "the closed issue's room to close", func() bool {
-		return len(service.srv.Rooms()) == 0
+	waitFor(t, 30*time.Second, "the closed issue's rooms to close", func() bool {
+		for room, live := range resident {
+			if live != nil && service.srv.GetDoc(room) == live {
+				return false
+			}
+		}
+		return true
 	})
 }
 
+// reopenTestIssue reopens DOC-1 as the API's reopen does (api.restoreIssueAsksTx): in one
+// transaction joined with Service.Join (joinedWrite), which holds the issue's row once it clears
+// closed_at, it marks owing a settlement each document of the issue that holds an ask block no
+// settlement has indexed, or the block of an ask a settlement retracted
+// (MarkUnindexedAskDocumentsOwed). Once that commits, the reopen is recorded on this service's
+// rooms, as room sync records it on the reopen's notification.
 func reopenTestIssue(t *testing.T, service *Service) {
 	t.Helper()
-	ctx := context.Background()
-	if _, err := service.store.Pool.Exec(ctx, `update issues set closed_at = null where key = 'DOC-1'`); err != nil {
-		t.Fatalf("reopen the issue: %v", err)
+	if err := joinedWrite(service, func(ctx context.Context) error {
+		tx, _ := txFromContext(ctx)
+		if _, err := tx.Exec(ctx, `update issues set closed_at = null where key = 'DOC-1'`); err != nil {
+			return fmt.Errorf("clear the issue's closed_at: %w", err)
+		}
+		return service.MarkUnindexedAskDocumentsOwed(ctx, "DOC-1")
+	}); err != nil {
+		t.Fatalf("reopen the issue and mark owed its documents that hold an ask block no settlement has indexed, or the block of an ask a settlement retracted: %v", err)
 	}
-	service.issueOpenChanged(ctx, "DOC-1")
+	service.issueOpenChanged(context.Background(), "DOC-1")
 }
 
 func waitForAskAuthor(t *testing.T, service *Service, artifactID string, want model.Actor) {

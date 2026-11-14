@@ -60,7 +60,13 @@ func OpenApprovalAskForDocuments(ctx context.Context, tx pgx.Tx, artifactIDs []s
 // back before a human sees it in Waiting on you again. Only the first move since the request was
 // opened or handed back wakes anyone, even when a thread reply already left it waiting on its
 // agent; a later one, while a document's requested_version is already below the version it named,
-// is quiet (RewriteApprovalAsk).
+// is quiet (model.AskEditEventPayload.Quiet, the rule RewriteApprovalAsk also applies). When the
+// document waits on the human (its requested_version is the version the request names) and the new
+// version stores byte for byte the text of that version (sameStoredText), its requested_version
+// moves with its version and the move is quiet: the text the person was asked about did not change,
+// so the request keeps its turn as if it had not moved and wakes nobody. The caller has written
+// the new version's row in tx before it calls this, as writeVersionTx and the upload route (api
+// storeArtifact) do.
 func MoveApprovalAsk(ctx context.Context, tx pgx.Tx, broker *events.Broker, artifactID string, version model.Version, mover model.Actor, serverURL string) ([]model.Event, error) {
 	ask, err := OpenApprovalAsk(ctx, tx, artifactID)
 	if err != nil {
@@ -77,27 +83,62 @@ func MoveApprovalAsk(ctx context.Context, tx pgx.Tx, broker *events.Broker, arti
 	if err != nil {
 		return nil, err
 	}
+	keepsTurn := false
+	if moved.RequestedVersion == moved.Version {
+		if keepsTurn, err = sameStoredText(ctx, tx, artifactID, moved.Version, version.Number); err != nil {
+			return nil, err
+		}
+	}
 	documents := slices.Clone(ask.Approval.Documents)
 	for index := range documents {
 		if documents[index].ArtifactID == artifactID {
 			documents[index].Version = version.Number
+			if keepsTurn {
+				documents[index].RequestedVersion = version.Number
+			}
 		}
 	}
-	event, err := RewriteApprovalAsk(ctx, tx, broker, ask, mover, documents, summary, serverURL)
+	quiet := keepsTurn || ApprovalAwaitsHandBack(ask.Approval.Documents)
+	event, err := rewriteApprovalAsk(ctx, tx, broker, ask, mover, documents, summary, serverURL, quiet)
 	if err != nil {
 		return nil, err
 	}
 	return []model.Event{event}, nil
 }
 
+// sameStoredText reports whether versions named and written of artifactID store byte for byte
+// the same markdown, reading both rows in tx in one statement. A version that stores no markdown,
+// a file's, holds no text and compares false. octet_length reads a stored text's size without
+// decompressing it, so two texts of different sizes are compared without reading either, as
+// restoresApprovedText reads only a stored text of the size it compares.
+func sameStoredText(ctx context.Context, tx pgx.Tx, artifactID string, named, written int) (bool, error) {
+	var same bool
+	if err := tx.QueryRow(ctx, `
+		select exists (
+			select 1
+			from artifact_versions asked
+			join artifact_versions written on written.artifact_id = asked.artifact_id and written.number = $3
+			where asked.artifact_id = $1 and asked.number = $2
+				and octet_length(written.markdown) = octet_length(asked.markdown)
+				and written.markdown = asked.markdown
+		)
+	`, artifactID, named, written).Scan(&same); err != nil {
+		return false, fmt.Errorf("compare document versions %d and %d: %w", named, written, err)
+	}
+	return same, nil
+}
+
 // RewriteApprovalAsk rewords one open approval row to name documents with summary, indexes its
-// new question, stamps edited_at, and records its ask.edited event. A document version move, a
+// new question, stamps edited_at, and records its ask.edited event, through the rewording a
+// document version move (MoveApprovalAsk) also takes (rewriteApprovalAsk). A version move, a
 // request with a new summary and a request that changes which documents it covers all reword;
-// none hands the request back, so each document's requested_version stays as it was. A move of a
-// request that an earlier version already moved since it was opened or handed back, a document's
-// requested_version below the version it named, is recorded quiet
-// (model.AskEditEventPayload.Quiet): it changes only that version, so like a human's unnamed version
-// it wakes nobody.
+// none hands the request back, so each document's requested_version stays as it was. The one
+// exception is a version move that stores byte for byte the text of the version the person was
+// asked about, which moves that document's requested_version with its version, quietly
+// (MoveApprovalAsk). A move of a request that an earlier version already moved since it was opened
+// or handed back, a document's requested_version below the version it named, is recorded quiet
+// (model.AskEditEventPayload.Quiet): it changes only that version, so like a human's unnamed
+// version it wakes nobody.
 func RewriteApprovalAsk(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -107,8 +148,23 @@ func RewriteApprovalAsk(
 	documents []model.AskApprovalDocument,
 	summary, serverURL string,
 ) (model.Event, error) {
-	previous := model.NewAskEditPrevious(*ask)
 	quiet := approvalMoves(ask.Approval.Documents, documents) && ApprovalAwaitsHandBack(ask.Approval.Documents)
+	return rewriteApprovalAsk(ctx, tx, broker, ask, actor, documents, summary, serverURL, quiet)
+}
+
+// rewriteApprovalAsk is the rewording RewriteApprovalAsk and MoveApprovalAsk share. Each caller
+// decides quiet, which marks its ask.edited (model.AskEditEventPayload.Quiet), by its own rule.
+func rewriteApprovalAsk(
+	ctx context.Context,
+	tx pgx.Tx,
+	broker *events.Broker,
+	ask *model.Ask,
+	actor model.Actor,
+	documents []model.AskApprovalDocument,
+	summary, serverURL string,
+	quiet bool,
+) (model.Event, error) {
+	previous := model.NewAskEditPrevious(*ask)
 	ask.Question = ApprovalQuestion(documents, summary)
 	ask.Approval.Documents = documents
 	approval, err := EncodeApproval(ask.Approval)

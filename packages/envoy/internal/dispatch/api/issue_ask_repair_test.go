@@ -175,6 +175,46 @@ func eventCount(t *testing.T, database *store.Store, issue string) int {
 	return count
 }
 
+// latestIssueSeq is the seq of issue's newest event, 0 for none.
+func latestIssueSeq(t *testing.T, database *store.Store, issue string) int {
+	t.Helper()
+	var seq int
+	if err := database.Pool.QueryRow(context.Background(), `select coalesce(max(seq), 0) from events where issue_key = $1`, issue).Scan(&seq); err != nil {
+		t.Fatalf("read the newest event of %s: %v", issue, err)
+	}
+	return seq
+}
+
+// requireQuietVersionEvents fails t unless the events of issue whose seq is above seq are exactly
+// want artifact.version events, none of which notifies anyone (events.Broker.Notify): the
+// versions settlements wrote of documents nobody named a version of (events.Quiet), and nothing
+// else.
+func requireQuietVersionEvents(t *testing.T, database *store.Store, issue string, seq, want int) {
+	t.Helper()
+	type appendedEvent struct {
+		Type   string
+		Notify bool
+	}
+	rows, err := database.Pool.Query(context.Background(), `
+		select type, notify from events where issue_key = $1 and seq > $2 order by seq
+	`, issue, seq)
+	if err != nil {
+		t.Fatalf("read the events of %s after %d: %v", issue, seq, err)
+	}
+	appended, err := pgx.CollectRows(rows, pgx.RowToStructByPos[appendedEvent])
+	if err != nil {
+		t.Fatalf("read the events of %s after %d: %v", issue, seq, err)
+	}
+	if len(appended) != want {
+		t.Fatalf("%s appended %+v after seq %d, want %d artifact.version events", issue, appended, seq, want)
+	}
+	for _, event := range appended {
+		if event.Type != "artifact.version" || event.Notify {
+			t.Fatalf("%s appended %+v after seq %d, want only artifact.version events that notify nobody", issue, appended, seq)
+		}
+	}
+}
+
 func repairNow(t *testing.T, f repairFixture) IssueAskRepair {
 	t.Helper()
 	repair, err := RepairIssueAsks(context.Background(), f.deps, nil)
@@ -247,6 +287,10 @@ func TestRepairWithdrawsTheOpenAsksOfAnIssueClosedWithoutWithdrawing(t *testing.
 	}
 	requireLiveText(t, f.handler, issue.PrimaryArtifactID, `#close-decision urgency="med" multiple="false" state="resolved"`)
 
+	// The repair's write of the blocks left the document owing a settlement, which runs on the
+	// closed issue; it is done before the second repair's snapshot, which counts that repair's
+	// writes alone.
+	awaitSettled(t, f.database, issue.PrimaryArtifactID)
 	rows := askRowTexts(t, f.database, asks...)
 	events := eventCount(t, f.database, issue.Key)
 	live, _ := documentTexts(t, f.handler, issue.PrimaryArtifactID)
@@ -328,6 +372,10 @@ func TestRepairSkipsAClosedIssueWithNoClosingEvent(t *testing.T) {
 	f := newRepairFixture(t)
 	issue := createInteractionIssue(t, f.handler, "TEST", "Closed with no event", "Context\n")
 	ask := createSessionAsk(t, f.handler, issue.Key, "Which region?")
+	// The creation's settlement is done before the close: one still running at the close would
+	// commit on the closed issue, as a closed issue's document settles too, and its version's
+	// event would land in the count below.
+	awaitSettled(t, f.database, issue.PrimaryArtifactID)
 	closeWithoutWithdrawing(t, f, issue.Key, nil, time.Now().Add(-time.Hour))
 	rows := askRowTexts(t, f.database, ask)
 	events := eventCount(t, f.database, issue.Key)
@@ -394,6 +442,9 @@ func TestRepairRestoresTheWithdrawnAsksOfAnIssueReopenedWithoutRestoring(t *test
 	}
 	requireLiveText(t, f.handler, issue.PrimaryArtifactID, `#close-decision urgency="med" multiple="false" state="open"`)
 
+	// The restoration's write of the blocks left the document owing a settlement; it is done
+	// before the second repair's snapshot, which counts that repair's events alone.
+	awaitSettled(t, f.database, issue.PrimaryArtifactID)
 	events := eventCount(t, f.database, issue.Key)
 	if again := repairNow(t, f); again.Changed() {
 		t.Fatalf("second repair = %+v, want nothing changed", again)
@@ -405,9 +456,13 @@ func TestRepairRestoresTheWithdrawnAsksOfAnIssueReopenedWithoutRestoring(t *test
 
 // A browser on another process's room - one that never hears of the close, as a process of an
 // older build does not, or has not yet when its room stores the write - writes an ask block into a
-// closed issue's document, leaving a settlement owed that no settlement runs
-// while the issue is closed. The repair gives that issue the close's final sweep, so the block
-// reads resolved; a closed issue whose document owes no settlement is not touched.
+// closed issue's document, leaving it owing a settlement that the other process, whose settle
+// delay is an hour, does not run here. The repair gives that issue the close's final sweep, so the
+// block reads resolved, and the sweep's write arms this process's settlement of the document,
+// which runs on the closed issue as on an open one and saves what the sweep wrote: the block still
+// has no ask, the latest version shows it resolved, and the one event the issue gains is that
+// version's artifact.version, which notifies nobody. A closed issue whose document owes no
+// settlement is not touched.
 func TestRepairSweepsAClosedIssuesDocumentWrittenByAnotherProcess(t *testing.T) {
 	f := newRepairFixture(t)
 	swept := createInteractionIssue(t, f.handler, "TEST", "Written after its close", "Context\n")
@@ -438,7 +493,7 @@ func TestRepairSweepsAClosedIssuesDocumentWrittenByAnotherProcess(t *testing.T) 
 	requireLiveText(t, f.handler, swept.PrimaryArtifactID, `#other-room urgency="low" multiple="false"`)
 	untouchedText, _ := documentTexts(t, f.handler, untouched.PrimaryArtifactID)
 	untouchedVersions := versionHashes(t, f.database, untouched.PrimaryArtifactID)
-	sweptEvents := eventCount(t, f.database, swept.Key)
+	sweptSeq := latestIssueSeq(t, f.database, swept.Key)
 	untouchedEvents := eventCount(t, f.database, untouched.Key)
 
 	repair := repairNow(t, f)
@@ -446,12 +501,14 @@ func TestRepairSweepsAClosedIssuesDocumentWrittenByAnotherProcess(t *testing.T) 
 		t.Fatalf("repair = %+v, want one block swept", repair)
 	}
 	requireLiveText(t, f.handler, swept.PrimaryArtifactID, `#other-room urgency="low" multiple="false" state="resolved"`)
+	awaitSettled(t, f.database, swept.PrimaryArtifactID)
 	if id := findBlockAsk(t, f.handler, swept.Key, swept.PrimaryArtifactID, "other-room"); id != "" {
 		t.Fatalf("the other room's block is ask %s on a closed issue", id)
 	}
-	if got := eventCount(t, f.database, swept.Key); got != sweptEvents {
-		t.Fatalf("the sweep appended %d events", got-sweptEvents)
+	if _, version := documentTexts(t, f.handler, swept.PrimaryArtifactID); !strings.Contains(version, `#other-room urgency="low" multiple="false" state="resolved"`) {
+		t.Fatalf("the settlement after the sweep left the latest version reading:\n%s\nwant the block saved resolved", version)
 	}
+	requireQuietVersionEvents(t, f.database, swept.Key, sweptSeq, 1)
 	if got, _ := documentTexts(t, f.handler, untouched.PrimaryArtifactID); got != untouchedText {
 		t.Fatalf("the repair changed the untouched document:\n%s\nwant\n%s", got, untouchedText)
 	}
@@ -676,9 +733,13 @@ func TestARepairPassThatFailsOneIssueStillMovesTheWindowAndRetriesIt(t *testing.
 // block indexed, and the boot repairs the asks (RepairIssueAsks, bounded as the boot bounds it)
 // before the block-index loop starts (RunBlockIndexReconciliation), as cmd/dispatch's main runs
 // them. An issue an older release closed without withdrawing still holds an open decision block,
-// which the repair withdraws, writing its state into the live document and no version, and no
-// settlement runs on the closed issue. The loop still indexes that document at its latest version,
-// leaves nothing owed, and every block of it resolves by its dispatch://KEY/spec#b- reference.
+// which the repair withdraws, writing its state into the live document and no version. That write
+// leaves the document owing a settlement, which runs on the closed issue as on an open one: it
+// writes the version after the latest, showing the block resolved, and changes no ask. The loop
+// leaves the document to that settlement while its live text is ahead of its version, as it
+// leaves an open issue's, so the document ends indexed at the new version with nothing owed, the
+// ask is still withdrawn with its one ask.resolved, and every block of the document resolves by
+// its dispatch://KEY/spec#b- reference.
 func TestTheBlockIndexAfterTheBootRepairIndexesAClosedIssuesDocument(t *testing.T) {
 	f := newRepairFixture(t)
 	issue := createInteractionIssue(t, f.handler, "TEST", "Closed by an older release", closeDecision)
@@ -745,9 +806,18 @@ func TestTheBlockIndexAfterTheBootRepairIndexesAClosedIssuesDocument(t *testing.
 			t.Fatalf("the block-index loop left the closed issue's document indexed at %v with %d documents owed; live text:\n%s", indexed, owed, live)
 		}
 	}
-	requireIndexedAt(t, f.database, issue.PrimaryArtifactID, latest)
-	if got := latestVersion(t, f.database, issue.PrimaryArtifactID).Number; got != latest {
-		t.Fatalf("the document's latest version moved from %d to %d on its closed issue", latest, got)
+	awaitSettled(t, f.database, issue.PrimaryArtifactID)
+	settled := latest + 1
+	if got := latestVersion(t, f.database, issue.PrimaryArtifactID).Number; got != settled {
+		t.Fatalf("the document's latest version is %d, want %d, the one the settlement after the repair writes", got, settled)
+	}
+	requireIndexedAt(t, f.database, issue.PrimaryArtifactID, settled)
+	if _, version := documentTexts(t, f.handler, issue.PrimaryArtifactID); !strings.Contains(version, `#close-decision urgency="med" multiple="false" state="resolved"`) {
+		t.Fatalf("version %d reads:\n%s\nwant the withdrawn decision's block resolved", settled, version)
+	}
+	requireWithdrawn(t, f.handler, issue.Key, ask, closer)
+	if count := askEventCount(t, f.database, ask, "ask.resolved"); count != 1 {
+		t.Fatalf("ask %s has %d ask.resolved events after the settlement, want the repair's one", ask, count)
 	}
 
 	_, blocks, err := f.documents.TextWithBlocks(ctx, issue.PrimaryArtifactID)

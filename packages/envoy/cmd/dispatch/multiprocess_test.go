@@ -5376,25 +5376,66 @@ func requireAskWithdrawn(t *testing.T, p *dispatchProcess, issueKey, askID, when
 	}
 }
 
-// closingAskSpec is the spec of the issue below: a paragraph to type into and an open decision.
+// newestVersionNumber is the number of the document's newest version as the process's API reads
+// it (GET /api/v1/artifacts/{id}), or 0 while the document has none. The read is of the database
+// alone: it loads no room, so it arms no settlement.
+func (p *dispatchProcess) newestVersionNumber(t *testing.T, artifactID string) int {
+	t.Helper()
+	answer := p.call(t, http.MethodGet, "/api/v1/artifacts/"+artifactID, "", http.StatusOK)
+	var artifact struct {
+		Versions []struct {
+			Number int `json:"number"`
+		} `json:"versions"`
+	}
+	if err := json.Unmarshal(answer, &artifact); err != nil {
+		t.Fatalf("decode the document: %v: %s", err, answer)
+	}
+	newest := 0
+	for _, version := range artifact.Versions {
+		newest = max(newest, version.Number)
+	}
+	return newest
+}
+
+// readVersionMarkdown is the text of the document's version number as the process's API reads it
+// (GET /api/v1/artifacts/{id}/versions/{n}).
+func (p *dispatchProcess) readVersionMarkdown(t *testing.T, artifactID string, number int) string {
+	t.Helper()
+	answer := p.call(t, http.MethodGet, "/api/v1/artifacts/"+artifactID+"/versions/"+strconv.Itoa(number), "", http.StatusOK)
+	var version struct {
+		Markdown string `json:"markdown"`
+	}
+	if err := json.Unmarshal(answer, &version); err != nil {
+		t.Fatalf("decode version %d of the document: %v: %s", number, err, answer)
+	}
+	return version.Markdown
+}
+
+// closingAskSpec is the spec of the issues below: a paragraph to type into and an open decision.
 const closingAskSpec = "Context\n\n:::ask{#ship-it urgency=\"med\" multiple=\"false\"}\nShip it?\n\n- Yes: Now.\n- No: Later.\n:::\n"
 
-// The issue's close withdraws its open ask and freezes every process's room of its spec, and
-// neither undoes the other; its reopen brings both back.
-//
-// Bob's tab on B holds the spec, whose decision block is an open ask, and his keystroke there is
-// stored, which arms B's settlement of it. The issue closes through A. B's room closes and bob
-// reconnects read-only; the ask reads withdrawn and the block resolved, and both still do once
-// the settlement B had armed was due, with no version written on the closed issue. The reopen goes
-// through B: the ask reads open again, bob's read-only tab is closed and reconnects writable, his
-// keystroke is stored, and the settlement the reopened document owes leaves the ask open.
-func TestClosingAnIssueOnOneProcessWithdrawsItsAskAndFreezesTheOtherProcessesRoomUntilItsReopen(t *testing.T) {
-	const settleDelay = 2 * time.Second
-	pair := newPair(t)
-	pair.startSettling(t, nil, settleDelay, settleDelay)
-	project := uniqueProjectKey(t, "WDRN")
-	pair.a.createProject(t, project, "Asks of a closed issue across processes")
-	issueKey, artifactID := pair.a.createIssueIn(t, project, "Closed with an open ask", closingAskSpec)
+// closingAskResolved is the decision block of closingAskSpec as the close of its issue writes it.
+const closingAskResolved = `#ship-it urgency="med" multiple="false" state="resolved"`
+
+// closedSettlementWithin is how long a closed issue's owed document is given to settle on the
+// running servers. Nothing need open it: the resumption arms a pending row once it is a minute
+// old, a pass runs once a docs.SettlementResumeInterval (one minute) on whichever process holds
+// that period's lease, and the settlement the pass arms runs a settle delay later. Four minutes
+// holds the three, with room for a loaded run.
+const closedSettlementWithin = 4 * time.Minute
+
+// closingAskIssue is an issue whose spec is closingAskSpec, as the rows below have it before the
+// issue closes: A's settlement made the ask of its decision block and left nothing owed, and
+// bob's writable tab on B holds the spec with his keystroke " late" stored.
+type closingAskIssue struct {
+	key, artifactID, askID string
+	bob                    *docstest.Peer
+}
+
+// openClosingAskIssue creates a closingAskIssue titled title in project through A.
+func openClosingAskIssue(t *testing.T, pair *dispatchPair, project, title string) closingAskIssue {
+	t.Helper()
+	issueKey, artifactID := pair.a.createIssueIn(t, project, title, closingAskSpec)
 	var askID string
 	for deadline := time.Now().Add(10 * time.Second); askID == ""; time.Sleep(50 * time.Millisecond) {
 		if ask, found := pair.a.askOfBlock(t, issueKey, "ship-it"); found {
@@ -5412,7 +5453,6 @@ func TestClosingAnIssueOnOneProcessWithdrawsItsAskAndFreezesTheOtherProcessesRoo
 	if scope := authenticateEditor(t, bob); scope != "read-write" {
 		t.Fatalf("bob's tab on B on an open issue was granted %q, want read-write", scope)
 	}
-	typed := time.Now()
 	if err := typeAtEnd(bob, " late"); err != nil {
 		t.Fatalf("bob's keystroke before the close: %v", err)
 	}
@@ -5421,17 +5461,71 @@ func TestClosingAnIssueOnOneProcessWithdrawsItsAskAndFreezesTheOtherProcessesRoo
 		t.Fatalf("bob's tab on B was disconnected before the close (close code %d), so the close cannot be shown closing it; %s",
 			bob.CloseCode(), pair.roomCloses(t, artifactID))
 	}
+	return closingAskIssue{key: issueKey, artifactID: artifactID, askID: askID, bob: bob}
+}
+
+// waitForNoSettlementOwedWithin waits up to within for the document's pending-settlement row to
+// be gone, and fails the test naming the resumptions of each process when it stands.
+func (p *dispatchPair) waitForNoSettlementOwedWithin(t *testing.T, artifactID string, within time.Duration, what string) {
+	t.Helper()
+	deadline := time.Now().Add(within)
+	for settlementOwed(t, p.database, artifactID) {
+		if time.Now().After(deadline) {
+			t.Fatalf("%s still owes a settlement %v later; the resumptions armed it at %v on A and at %v on B:\n%s",
+				what, within, p.a.roomCounters(t, artifactID).SettlementResumptions, p.b.roomCounters(t, artifactID).SettlementResumptions, p.buffers())
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+}
+
+// decodeAuthors is the people a version credits, decoded from the authors latestVersion reads.
+func decodeAuthors(t *testing.T, version int, authors string) []model.Actor {
+	t.Helper()
+	var credited []model.Actor
+	if err := json.Unmarshal([]byte(authors), &credited); err != nil {
+		t.Fatalf("decode the authors of version %d: %v: %s", version, err, authors)
+	}
+	return credited
+}
+
+// The issue's close withdraws its open ask and freezes every process's room of its spec, and
+// neither undoes the other; its reopen brings both back.
+//
+// Bob's tab on B holds the spec, whose decision block is an open ask, and his keystroke there is
+// stored, which arms B's settlement of it. The issue closes through A, which settles the issue's
+// documents before it closes the issue (settleIssueBeforeClose, in the api package), so the
+// keystroke is saved before the close, by that settlement or by B's own, in a version that
+// credits bob. B's room closes and bob reconnects read-only; the ask reads withdrawn and the
+// block resolved. The close's write of the block resolved leaves the spec owing a settlement, and
+// the spec settles while the issue is closed, as an open issue's document does: the version it
+// writes is past the one the close left and holds bob's keystroke and the block resolved. That
+// version credits no one, because its one change is the close's write, and an ask-state write
+// credits no one (WriteIssueAskStates, docs/ask_lifecycle.go). The ask still reads withdrawn on
+// both processes. The reopen goes through B: the ask reads open again, bob's read-only tab is
+// closed and reconnects writable, his keystroke is stored, and the settlement the reopened
+// document owes leaves the ask open.
+func TestClosingAnIssueOnOneProcessWithdrawsItsAskAndFreezesTheOtherProcessesRoomUntilItsReopen(t *testing.T) {
+	const settleDelay = 2 * time.Second
+	pair := newPair(t)
+	pair.startSettling(t, nil, settleDelay, settleDelay)
+	project := uniqueProjectKey(t, "WDRN")
+	pair.a.createProject(t, project, "Asks of a closed issue across processes")
+	issue := openClosingAskIssue(t, pair, project, "Closed with an open ask")
+	issueKey, artifactID, askID, bob := issue.key, issue.artifactID, issue.askID, issue.bob
 
 	pair.a.patchIssueStatus(t, issueKey, "done")
-	// Whatever settled before the close has committed; nothing may write a version from here.
-	versionBefore, _, _ := latestVersion(t, pair.database, artifactID)
+	versionBefore, markdownBefore, authorsBefore := latestVersion(t, pair.database, artifactID)
+	if !strings.Contains(markdownBefore, "Context late") ||
+		!slices.ContainsFunc(decodeAuthors(t, versionBefore, authorsBefore), model.Actor{Kind: "user", ID: "bob"}.SameAs) {
+		t.Fatalf("version %d, the one the close left, does not hold bob's keystroke credited to him: it credits %s and reads:\n%s",
+			versionBefore, authorsBefore, markdownBefore)
+	}
 	requireEndsWithin(t, bob, liveWithin, "closing the issue through A left bob's tab on B connected", pair.b)
 	bob = reconnectWithScope(t, pair.b, "bob", artifactID, "readonly", "bob's tab on B, reconnected after the close")
 	requireAskWithdrawn(t, pair.b, issueKey, askID, "after the close")
-	const resolvedBlock = `#ship-it urgency="med" multiple="false" state="resolved"`
 	requireClosedText := func(what, text string) {
 		t.Helper()
-		if !strings.Contains(text, "Context late") || !strings.Contains(text, resolvedBlock) {
+		if !strings.Contains(text, "Context late") || !strings.Contains(text, closingAskResolved) {
 			t.Fatalf("%s of the closed issue does not hold bob's keystroke and the decision block resolved:\n%s", what, text)
 		}
 	}
@@ -5440,15 +5534,18 @@ func TestClosingAnIssueOnOneProcessWithdrawsItsAskAndFreezesTheOtherProcessesRoo
 		t.Fatalf("read B's room after the close: %v", err)
 	}
 	requireClosedText("B's room", room)
-	// B armed its settlement of bob's keystroke a settle delay after its append, and the close
-	// stopped it; were it running, it would settle by then. The ask, the stored document and the
-	// versions are read once it was due, so nothing B's room did after the close is missed.
-	time.Sleep(time.Until(typed.Add(settleDelay + time.Second)))
-	requireAskWithdrawn(t, pair.a, issueKey, askID, "once B's settlement of bob's keystroke was due")
-	requireClosedText("the stored document", pair.a.documentText(t, artifactID))
-	if version, _, _ := latestVersion(t, pair.database, artifactID); version != versionBefore {
-		t.Fatalf("the document's latest version moved from %d to %d while its issue was closed: a settlement ran on the closed issue", versionBefore, version)
+	pair.waitForNoSettlementOwedWithin(t, artifactID, closedSettlementWithin, "the closed issue's spec")
+	version, markdown, authors := latestVersion(t, pair.database, artifactID)
+	if version <= versionBefore {
+		t.Fatalf("the closed issue's spec owes no settlement, yet its latest version is %d, the one the close left", version)
 	}
+	requireClosedText(fmt.Sprintf("version %d", version), markdown)
+	if credited := decodeAuthors(t, version, authors); len(credited) != 0 {
+		t.Fatalf("version %d, which the closed issue's settlement wrote of the close's write alone, credits %s, want no one", version, authors)
+	}
+	requireAskWithdrawn(t, pair.a, issueKey, askID, "once the closed issue's spec settled")
+	requireAskWithdrawn(t, pair.b, issueKey, askID, "once the closed issue's spec settled")
+	requireClosedText("the stored document", pair.a.documentText(t, artifactID))
 
 	pair.b.patchIssueStatus(t, issueKey, "todo")
 	if ask := pair.a.readAsk(t, askID); ask.State != "open" || ask.Resolution != nil {
@@ -5467,6 +5564,52 @@ func TestClosingAnIssueOnOneProcessWithdrawsItsAskAndFreezesTheOtherProcessesRoo
 	if ask := pair.b.readAsk(t, askID); ask.State != "open" {
 		t.Fatalf("the reopened document's settlement left the ask %s, want open", ask.State)
 	}
+}
+
+// A closed issue's document settles on the running servers as an open issue's does, with nobody
+// opening it again.
+//
+// Bob's keystroke in his tab on B is stored, and the issue closes through A. The close settles the
+// spec first, so the keystroke is in the version the close leaves; the close's withdrawal of the
+// decision's ask then writes the block resolved, which leaves the spec owing a settlement, and the
+// close closes B's room. Nothing opens the spec after that, so a resumption pass arms the
+// settlement, on whichever process holds that period's lease. Within closedSettlementWithin the
+// pending row in the database is gone. The settlement that deletes it writes its version in the
+// same transaction, so the newest version, read once through A's own API, is past the one the
+// close left and holds bob's keystroke and the block resolved, and the ask still reads withdrawn
+// on both processes.
+func TestTheRunningServersSettleAClosedIssuesDocument(t *testing.T) {
+	const settleDelay = 2 * time.Second
+	pair := newPair(t)
+	pair.startSettling(t, nil, settleDelay, settleDelay)
+	project := uniqueProjectKey(t, "STLD")
+	pair.a.createProject(t, project, "Closed issues' documents settle")
+	issue := openClosingAskIssue(t, pair, project, "Settled while closed")
+
+	closed := time.Now()
+	pair.a.patchIssueStatus(t, issue.key, "done")
+	before := pair.a.newestVersionNumber(t, issue.artifactID)
+	if before == 0 {
+		t.Fatalf("A reads no version of the spec after the close, so no version after it can be told from one before it")
+	}
+	if !settlementOwed(t, pair.database, issue.artifactID) {
+		t.Fatalf("the close left the spec owing no settlement, so no settlement on the closed issue has anything to write")
+	}
+	requireAskWithdrawn(t, pair.a, issue.key, issue.askID, "after the close")
+
+	pair.waitForNoSettlementOwedWithin(t, issue.artifactID, closedSettlementWithin, "the closed issue's spec")
+	newest := pair.a.newestVersionNumber(t, issue.artifactID)
+	if newest <= before {
+		t.Fatalf("the closed issue's spec owes no settlement, yet A reads version %d as its newest, the close having left %d", newest, before)
+	}
+	if markdown := pair.a.readVersionMarkdown(t, issue.artifactID, newest); !strings.Contains(markdown, "Context late") || !strings.Contains(markdown, closingAskResolved) {
+		t.Fatalf("version %d of the closed issue's spec, as A reads it, does not hold bob's keystroke and the decision block resolved:\n%s",
+			newest, markdown)
+	}
+	requireAskWithdrawn(t, pair.a, issue.key, issue.askID, "once the closed issue's spec settled")
+	requireAskWithdrawn(t, pair.b, issue.key, issue.askID, "once the closed issue's spec settled")
+	t.Logf("the spec settled %v after the close; the resumptions armed it at %v on A and at %v on B", time.Since(closed),
+		pair.a.roomCounters(t, issue.artifactID).SettlementResumptions, pair.b.roomCounters(t, issue.artifactID).SettlementResumptions)
 }
 
 // Spec item 3: an ask block keeps the author who wrote it, whichever process settles it.

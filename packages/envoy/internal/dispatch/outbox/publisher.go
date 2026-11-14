@@ -1188,12 +1188,14 @@ func payloadPreviousClaimSession(payload any) string {
 // human added), on the session's own topic, in the order they followed it. Unlike the route and
 // author routes this ignores Notify: an agent's reply on an ask must still reach the other
 // followers, who otherwise learn of it only by subscribing to the whole issue. A quiet ask.edited
-// (a version move of an approval request that an earlier version already moved since it was
-// opened or last handed back, model.AskEditEventPayload.Quiet) reaches no follower. The event's own
-// actor is skipped, and a follower whose own mention of a new comment delivers it is left to that
-// mention (destinations.addSession, the mention rule); a follower whose mention failed gets this
-// copy instead. Only the reply's creation is left to the mention; its edit, resolution and
-// reopening reach every follower. A topic the route already reaches is not added twice.
+// (model.AskEditEventPayload.Quiet: a version move of an approval request that an earlier version
+// already moved since it was opened or last handed back, or a move that keeps the request waiting
+// on the human because the new version holds byte for byte the text of the version it names,
+// docs.MoveApprovalAsk) reaches no follower. The event's own actor is skipped, and a follower whose
+// own mention of a new comment delivers it is left to that mention (destinations.addSession, the
+// mention rule); a follower whose mention failed gets this copy instead. Only the reply's creation
+// is left to the mention; its edit, resolution and reopening reach every follower. A topic the
+// route already reaches is not added twice.
 func addFollowerRoutes(event model.Event, look lookup, d *destinations) error {
 	var askID string
 	switch event.Type {

@@ -41,14 +41,15 @@ func indexedBlocks(ctx context.Context, tx pgx.Tx, artifactID string) ([]indexed
 	return indexed, nil
 }
 
-// heldVersionBlocks is the text a document is indexed or windowed from, and the blocks of it,
-// when the document's live text has moved past the version the index holds: the version's own
-// stored rendering, with only the blocks the index's rows or the live document also hold
-// (closedVersionBlocks), read in the caller's transaction, which holds the document's owner
-// row. live and liveBlocks are the document as the server serves it (TextWithBlocks).
+// heldVersionBlocks is the text a document is windowed from, and the blocks of it, when the
+// document's live text has moved past its latest version, whatever its issue's status
+// (windowDocument): the version's own stored rendering, with only the blocks the index's rows or
+// the live document also hold (closedVersionBlocks), read in the caller's transaction, which
+// holds the document's owner row. live and liveBlocks are the document as the server serves it
+// (TextWithBlocks).
 //
-// A version this build cannot read back is no reason to leave the document owed for ever: the
-// failure is logged under warning, with artifactID, attrs and the error, and the stored
+// A version this build cannot read back is no reason to leave the document without windows for
+// ever: the failure is logged under warning, with artifactID and the error, and the stored
 // markdown is used with no block at all, so what is written covers text the version holds and
 // no block it does not.
 func heldVersionBlocks(
@@ -57,7 +58,6 @@ func heldVersionBlocks(
 	artifactID, stored, live string,
 	liveBlocks []model.ArtifactBlock,
 	warning string,
-	attrs ...any,
 ) (string, []model.ArtifactBlock, error) {
 	indexRows, err := indexedBlocks(ctx, tx, artifactID)
 	if err != nil {
@@ -65,11 +65,7 @@ func heldVersionBlocks(
 	}
 	held, heldBlocks, err := closedVersionBlocks(stored, live, liveBlocks, indexRows)
 	if err != nil {
-		logged := make([]any, 0, len(attrs)+4)
-		logged = append(logged, "artifact", artifactID)
-		logged = append(logged, attrs...)
-		logged = append(logged, "error", err)
-		slog.Warn(warning, logged...)
+		slog.Warn(warning, "artifact", artifactID, "error", err)
 		return stored, nil, nil
 	}
 	return held, heldBlocks, nil
@@ -79,7 +75,7 @@ func heldVersionBlocks(
 // block of it that a row of the document's index (indexed, by id) or a block of the live document
 // - live, with liveBlocks (TextWithBlocks) - accounts for, under that row's or live block's id. A
 // block of the version that neither accounts for, and a live block that matches no block of it,
-// are left out, so each block indexed at the version is text that version holds.
+// are left out, so each block written from this rendering is text that version holds.
 //
 // The passes run in order, each matching only blocks the passes before it left unmatched: typed
 // blocks by id (matchTypedBlocks); the rows, first aligned with the live blocks that have one
@@ -92,8 +88,8 @@ func heldVersionBlocks(
 //
 // A row whose text the version does not hold - indexed at an older version whose text of that
 // block this version changed - and whose block's live text the version does not hold either
-// matches no block, and is still recorded deleted at this version, although this version holds
-// the block.
+// matches no block, so nothing written from this rendering covers that block, although this
+// version holds it.
 func closedVersionBlocks(stored, live string, liveBlocks []model.ArtifactBlock, indexed []indexedBlock) (string, []model.ArtifactBlock, error) {
 	tree, err := pmdoc.ParseRendering(stored)
 	if err != nil {
@@ -174,9 +170,10 @@ func newVersionMatch(markdown string, offsets []pmdoc.BlockOffset, liveBlocks []
 
 // take gives the version's block at index the id, and reports whether it did. It is the one place
 // a block of the version takes an id, so that each block takes at most one id and each id names at
-// most one block: it refuses a block that has one and an id a block has taken. refs.IndexBlocks
-// keeps only the first holder of a repeated id and records every other block it held deleted, so a
-// second taker would record a block deleted at a version that holds it.
+// most one block: it refuses a block that has one and an id a block has taken. The index holds one
+// row per id, and refs.WriteDocumentWindows, like refs.IndexBlocks, keeps only the first holder of
+// a repeated id, so a second taker's text would be left out of what is written from this
+// rendering although the version holds it.
 func (m *versionMatch) take(index int, id string) bool {
 	if m.ids[index] != "" || m.used[id] {
 		return false
@@ -189,7 +186,7 @@ func (m *versionMatch) take(index int, id string) bool {
 // type, and returns the version's text of each typed block it matched, by id. The version's
 // markdown names the id of a typed block alone; its parse mints the others, which no reader knows,
 // so those ids are never indexed. A typed block's live text may differ from the version's in what
-// the close wrote into it.
+// a write since that version put into it, as the ask states an issue's close or reopen writes.
 func (m *versionMatch) matchTypedBlocks() map[string]string {
 	typedTexts := map[string]string{}
 	for index, offset := range m.offsets {
@@ -205,7 +202,8 @@ func (m *versionMatch) matchTypedBlocks() map[string]string {
 
 // readLive lists the untyped live blocks that are the first holders of their ids, each keyed by
 // its type and its text in live with each typed block inside it read as the version's text of that
-// block (typedTexts), so a block holding an ask whose state the close wrote still matches.
+// block (typedTexts), so a block holding an ask whose state was written since the version still
+// matches.
 func (m *versionMatch) readLive(live string, typedTexts map[string]string) {
 	for index, block := range m.liveBlocks {
 		if pmdoc.IsTypedBlock(block.Type) || m.firstHolder[block.ID] != index {
@@ -219,9 +217,9 @@ func (m *versionMatch) readLive(live string, typedTexts map[string]string) {
 // alignRows is the first step by which every row of the index that holds the text of a block of
 // the version claims that block before any live text is compared. A row was indexed from a
 // version's text of its block under that block's id, so where the version holds the row's type
-// and text (the sha256 of markdown[From:To], refs.BlockTextSum), the block keeps its row, its
-// changed version and its text under its own id rather than being recorded deleted at a version
-// that holds it, and a live block an edit typed with the same text takes none of it.
+// and text (the sha256 of markdown[From:To], refs.BlockTextSum), the block takes the id of its
+// row, which holds its changed version and its text, and a live block an edit typed with the
+// same text takes none of it.
 //
 // The version's untyped blocks are aligned in document order with the live untyped blocks that
 // have a row, keyed by that row's type and text sha256 against each version block's, by difflib's
@@ -296,7 +294,7 @@ func (m *versionMatch) claimRows(indexed []indexedBlock) {
 // edit moved across a first-step match, and a block it gave the row of an id no live block holds
 // has no place in the live document to cross. The alignment matches every untyped block of a
 // document none of whose blocks the index holds yet, and a block whose row holds an older
-// version's text that this version changed. A version is compared and indexed as it renders
+// version's text that this version changed. A version is compared and written as it renders
 // today, as the live text is.
 //
 // A text either side still holds more than once takes no part: with no row to name its copies, a
@@ -354,10 +352,9 @@ func (m *versionMatch) leftovers() (versionLeft, liveLeft map[string][]int) {
 // blocks still unmatched that hold it, in order - the first with the first, and so on - where both
 // sides hold equally many, and never gives an id a block has taken. A text held more than once
 // says which copy is which only so: otherwise a copy an edit typed would take an original's id and
-// history, so no copy is matched until a settlement versions them (an original left unmatched is
-// dated to the version the reopen's settlement writes). A text held once on each side names its
-// block: one an edit moved across others, in a document with no row to name it, matches no block
-// within its gap.
+// history, so no copy is matched until a settlement versions them (an original left unmatched
+// waits for that version too). A text held once on each side names its block: one an edit moved
+// across others, in a document with no row to name it, matches no block within its gap.
 func (m *versionMatch) pairLeftovers() {
 	versionLeft, liveLeft := m.leftovers()
 	for key, left := range versionLeft {

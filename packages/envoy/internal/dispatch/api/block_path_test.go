@@ -245,10 +245,10 @@ func TestAnAnchoredReadDecidesCancellationByItsOwnRequest(t *testing.T) {
 // same error, since both reads place one block and writeHandlerError serves the route's error. A
 // failed room is DOC_SERVICE_UNAVAILABLE on both, whatever failed it: both take that code before
 // any branch that reads a cause, so the cause another operation failed the room with - settlement's
-// schema refusal, its warm-up refused on a closed issue, or an error that would name an invalid
-// operation or a missing block on its own - never becomes this request's answer, and the room
-// serves the document again once it is evicted. A live tree outside the schema is DOC_SCHEMA on
-// both, and any other failure INTERNAL.
+// schema refusal, an error that wraps a closed issue's refusal, or an error that would name an
+// invalid operation or a missing block on its own - never becomes this request's answer, and the
+// room serves the document again once it is evicted. A live tree outside the schema is DOC_SCHEMA
+// on both, and any other failure INTERNAL.
 func TestAnAnchoredReadNamesADocumentErrorAsTheBlockRouteDoes(t *testing.T) {
 	writer, database, _ := newTestServer(t, testServerOptions{})
 	issue := createInteractionIssue(t, writer, "TEST", "One code", "Intro.\n\nThe quoted line.\n")
@@ -277,7 +277,7 @@ func TestAnAnchoredReadNamesADocumentErrorAsTheBlockRouteDoes(t *testing.T) {
 		code   string
 	}{
 		{"a room settlement's schema refusal failed", failedRoom(outsideSchema), http.StatusServiceUnavailable, codeDocServiceUnavailable},
-		{"a room whose settlement warm-up a closed issue refused failed", failedRoom(fmt.Errorf("document settlement failed 3 times: warm document for settlement: ygo/websocket: inject refused: %w", docs.ErrIssueClosed)), http.StatusServiceUnavailable, codeDocServiceUnavailable},
+		{"a room failed by an error that wraps a closed issue's refusal", failedRoom(fmt.Errorf("ygo/websocket: inject refused: %w", docs.ErrIssueClosed)), http.StatusServiceUnavailable, codeDocServiceUnavailable},
 		{"a room failed by an invalid operation's error", failedRoom(&docs.ErrInvalidOp{Field: "markdown", Reason: "a fragment the document cannot hold"}), http.StatusServiceUnavailable, codeDocServiceUnavailable},
 		{"a room failed by a missing block's error", failedRoom(fmt.Errorf("place block: %w", pmdoc.ErrTargetNotFound)), http.StatusServiceUnavailable, codeDocServiceUnavailable},
 		{"a live tree outside the schema", outsideSchema, http.StatusInternalServerError, codeDocSchema},
