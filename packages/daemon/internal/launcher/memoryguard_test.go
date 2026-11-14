@@ -554,6 +554,54 @@ func TestMemoryGuardSparesTheLaunchersAndTheAgentsOwnProcessesByTheirPlaceInTheT
 	}
 }
 
+// Oh My Pi's helpers start helpers of their own. In an INFRA issue pod on 2026-11-14 the agent's
+// `__omp_worker_daemon_broker` was the parent of `__omp_worker_lsp_mux`, the same executable,
+// and that helper was the parent of gopls; the head's classifier, run over that pod's real /proc,
+// spared the broker and not the multiplexer. INFRA-3531's rule, which W1 takes, protects every Oh
+// My Pi helper, the Oh My Pi executable started with an `__omp_worker_` selector other than its
+// eval kernel, known by its place in the tree: a helper that a helper of the agent started is as
+// much Oh My Pi's own as one the agent started. What a helper runs that is not Oh My Pi (gopls),
+// the eval kernel wherever it runs, and a copy of a helper's name under the agent's command stay
+// endable.
+func TestMemoryGuardSparesAnOhMyPiHelperThatAnotherHelperStarted(t *testing.T) {
+	exe := launcherExe(t)
+	launcher := os.Getpid()
+	const omp = "/opt/omp/bin/omp"
+	const roleInit, shim, agent, broker, mux, gopls, eval, command, fakeMux = 710, 711, 712, 713, 714, 715, 716, 717, 718
+	pod := newGuardPod(t)
+	pod.addLauncher(exe, 0)
+	pod.add(
+		guardProcess{pid: roleInit, ppid: launcher, exe: exe, args: []string{"legion", "launcher", "role-init", "--role", "tester"}, ns: testerNamespace},
+		guardProcess{pid: shim, ppid: roleInit, exe: exe, args: []string{"legion", "worker-shim", "--connect", "tcp://daemon"}, ns: testerNamespace},
+		guardProcess{pid: agent, ppid: shim, exe: omp, args: []string{omp, "--extension", "/opt/legion/pi-envoy"}, ns: testerNamespace, anon: 2 * guardGiB},
+		guardProcess{pid: broker, ppid: agent, exe: omp, args: []string{omp, "__omp_worker_daemon_broker"}, ns: testerNamespace},
+		guardProcess{pid: mux, ppid: broker, exe: omp, args: []string{omp, "__omp_worker_lsp_mux"}, ns: testerNamespace},
+		guardProcess{pid: gopls, ppid: mux, exe: "/usr/local/bin/gopls", args: []string{"/usr/local/bin/gopls", "serve"}, ns: testerNamespace},
+		guardProcess{pid: eval, ppid: broker, exe: omp, args: []string{omp, ompEvalKernel}, ns: testerNamespace},
+		guardProcess{pid: command, ppid: agent, exe: "/usr/bin/bash", args: []string{"bash", "-c", "make"}, ns: testerNamespace},
+		guardProcess{pid: fakeMux, ppid: command, exe: omp, args: []string{omp, "__omp_worker_lsp_mux"}, ns: testerNamespace},
+	)
+	classifier := newPodClassifier(t.TempDir(), []*manager{{role: "tester", child: &child{pid: roleInit}}}, &pidGuard{})
+	classes := classifier.classify(scanTable(t, pod))
+	for _, tc := range []struct {
+		pid       int
+		protected bool
+		what      string
+	}{
+		{agent, true, "Oh My Pi, the shim's child"},
+		{broker, true, "the broker helper the agent started"},
+		{mux, true, "the LSP multiplexer helper the broker started"},
+		{gopls, false, "the language server the multiplexer runs"},
+		{eval, false, "an eval kernel a helper started"},
+		{command, false, "a command the agent started"},
+		{fakeMux, false, "a helper's name under the agent's command"},
+	} {
+		if got := classes[tc.pid].Protected; got != tc.protected {
+			t.Errorf("%s (pid %d): protected = %v, want %v", tc.what, tc.pid, got, tc.protected)
+		}
+	}
+}
+
 // Each process is the role's whose role-init is its ancestor, then the role's whose role-init
 // shares its PID namespace, and no role's otherwise: a process in a PID namespace of its own under
 // a role-init is that role's by its ancestor, and one reparented out of the role-init's subtree is
