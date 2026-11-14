@@ -168,14 +168,31 @@ type Config struct {
 	// the bound is up. Nothing waits on a deploy: a look is due at the moment the checking agent
 	// named for itself, at the retry of a look nobody reported, or at this bound.
 	ProductionCheckBound time.Duration
-	// PodUpdateRetask is how long an open update round waits after it sent a worker the task
-	// before it asks that worker again (`pod_update_retask_hours`, an hour by default), and
-	// PodUpdateNotice how long after the round opened the controller is told the round is stalled
-	// (`pod_update_notice_hours`, four hours by default). Both are decimal numbers of hours, as
-	// `production_check_hours` is, so a live proof and the production check can drive each bound
-	// inside one run rather than wait out a day of real time.
-	PodUpdateRetask time.Duration
-	PodUpdateNotice time.Duration
+	// PodUpdateGrace is how long a pod's update round waits for its roles after it opens
+	// (`pod_update_grace_minutes`, thirty minutes by default): an answer from every role ends the
+	// round before it, and no answer holds the round past it. It is a decimal number of minutes,
+	// as `worker_silence_minutes` is, so a live proof can drive the bound inside one run.
+	PodUpdateGrace time.Duration
+	// StalledTreeNotice bounds the stalled-tree notice (`stalled_tree_notice_hours`, six hours by
+	// default, a decimal number of hours as `production_check_hours` is): when a tree this daemon
+	// runs has been quiet for longer than this, nothing of that tree is at work, and either at
+	// least one quiet issue of it waits by no rule of the daemon's own or the project's line can
+	// no longer move, the daemon tells the project's controller once for that tree. The line can
+	// still move while some issue of the project holds a slot and waits by no such rule, or some
+	// claim of the project is at work (admit's lineCanMove, dispatch://INFRA-2560 R5). The quiet
+	// time and the work are what `record.QuietTrees` measures — the tree's own now
+	// less the newest movement of its root, of the issues under it the workflow still runs and of
+	// those issues' claims' steps — and it is the one measure both the admission pass and the
+	// state read, so a notice and a reported quiet time can never disagree. The pass that sends
+	// the notice is the admission pass (admit's tellStalledTrees), which reads this key on every
+	// pass it makes and tells the controller once for each stall: the root it names carries the
+	// movement it was told for, and the tree is told again only once it moves past that mark.
+	//
+	// No value turns the notice off: readHours refuses zero here as it does for every key in
+	// hours, and a deployment told about more trees than it wants to read raises the number, to
+	// 596 hours at most. Six is the default because a tree between two turns is quiet for minutes
+	// rather than hours, so a tree still quiet after six has stopped rather than paused.
+	StalledTreeNotice time.Duration
 	// WorkerSilence is how long a phase worker's last recorded step may be in the past before the
 	// daemon reads that worker as one nothing will prompt and sends it its phase's task again
 	// (`worker_silence_minutes`, thirty minutes by default): workflow.SilentPhaseWorker takes it as
@@ -269,11 +286,11 @@ const (
 	// accepts too.
 	maxTimerSeconds = 2_147_483
 	// maxTimerMinutes is that same bound for a key written in minutes
-	// (runtime.kubernetes.idle_release, worker_silence_minutes), computed from it so the two
-	// cannot drift. A key in minutes needs a bound of its own for a second reason: the daemon
-	// turns it into a time.Duration (IdleReleaseConfig.Idle, Backstop), and an unbounded number
-	// of minutes multiplied by time.Minute wraps negative, which is an idle period every pod has
-	// already passed.
+	// (runtime.kubernetes.idle_release, worker_silence_minutes, pod_update_grace_minutes),
+	// computed from it so the two cannot drift. A key in minutes needs a bound of its own for a
+	// second reason: the daemon turns it into a time.Duration (IdleReleaseConfig.Idle, Backstop),
+	// and an unbounded number of minutes multiplied by time.Minute wraps negative, which is an
+	// idle period every pod has already passed.
 	maxTimerMinutes = maxTimerSeconds / 60
 
 	// defaultWorkerSilence is `worker_silence_minutes`'s default (Config.WorkerSilence): half an
@@ -299,6 +316,12 @@ const (
 	// It has no floor of its own: its floor is the silence bound the deployment sets
 	// (checkWorkerBackground).
 	defaultWorkerBackground = 4 * time.Hour
+
+	// defaultPodUpdateGrace is `pod_update_grace_minutes`'s default (Config.PodUpdateGrace):
+	// four of the seven roles held on the morning this bound was set answered within about ten
+	// minutes of the ask, so thirty minutes is three times that answer and still inside one tick
+	// of a roll (dispatch://INFRA-2981 R2).
+	defaultPodUpdateGrace = 30 * time.Minute
 )
 
 // durationKeys are the positive-second keys and their defaults (config.ts's DEFAULT_* constants,
@@ -350,7 +373,9 @@ var tossedKeys = map[string]string{
 // own text (Config.Warnings, readKeys), which boot logs and `legion start --check-config`
 // prints, so the operator reads what the refusal would have said and the daemon runs.
 var warnedKeys = map[string]string{
-	"max_fix_attempts": "nothing counts fix attempts any more, no CI verdict sends work back on its own (what a settlement names is told to the roles that work the issue), and the architect decides when to stop; remove max_fix_attempts from legion.yaml, where review_round_cap is the one cap left that blocks a pull request (dispatch://INFRA-956 R4)",
+	"max_fix_attempts":        "nothing counts fix attempts any more, no CI verdict sends work back on its own (what a settlement names is told to the roles that work the issue), and the architect decides when to stop; remove max_fix_attempts from legion.yaml, where review_round_cap is the one cap left that blocks a pull request (dispatch://INFRA-956 R4)",
+	"pod_update_retask_hours": "no update round asks a worker again, since the round publishes its ask once to each role's topic rather than queueing it as a task, and the round ends at its bound whatever the roles answer; remove pod_update_retask_hours from legion.yaml, where pod_update_grace_minutes is the round's one bound (dispatch://INFRA-2981 R7)",
+	"pod_update_notice_hours": "the controller is told of an update round that outlives its bound once that bound has passed, on no clock of its own; remove pod_update_notice_hours from legion.yaml, where pod_update_grace_minutes, measured from the round's opening, is that bound (dispatch://INFRA-2981 R6)",
 }
 
 // migrationKeys are the keys refused with a migration message, mapped to that message verbatim.
@@ -404,8 +429,8 @@ type fileConfig struct {
 	GitHubApps             *GitHubApps
 	Linger                 *time.Duration
 	ProductionCheckBound   *time.Duration
-	PodUpdateRetask        *time.Duration
-	PodUpdateNotice        *time.Duration
+	PodUpdateGrace         *time.Duration
+	StalledTreeNotice      *time.Duration
 	// WorkerSilence is `worker_silence_minutes` and WorkerBackground `worker_background_hours`,
 	// pointers as every other duration key here is: a file that leaves a key out is
 	// distinguishable from one that sets it, so resolve leaves the default standing for the
@@ -563,10 +588,10 @@ func readKeys(root *yaml.Node) (fileConfig, error) {
 			file.Linger, err = readHours(value, key)
 		case "production_check_hours":
 			file.ProductionCheckBound, err = readHours(value, key)
-		case "pod_update_retask_hours":
-			file.PodUpdateRetask, err = readHours(value, key)
-		case "pod_update_notice_hours":
-			file.PodUpdateNotice, err = readHours(value, key)
+		case "pod_update_grace_minutes":
+			file.PodUpdateGrace, err = readMinutes(value, key)
+		case "stalled_tree_notice_hours":
+			file.StalledTreeNotice, err = readHours(value, key)
 		case "worker_silence_minutes":
 			file.WorkerSilence, err = readMinutes(value, key)
 		case "worker_background_hours":
@@ -957,31 +982,33 @@ func readInt(value *yaml.Node, key string) (*int, error) {
 }
 
 // readHours is a key in hours (`linger_hours`, `production_check_hours`,
-// `pod_update_retask_hours`, `pod_update_notice_hours`): a positive number of hours, a decimal
-// among them (0.3 is 18 minutes), bounded as the shipped key is, by the timer bound in whole
-// hours (config.ts MAX_TIMER_HOURS). A value too small to be a nanosecond is refused, never read
-// as zero: the engine arms the deadline it is given, so a zero would close a finished tree at
-// once and take its workspace with it, bound a check before its first look, or ask an update
-// round's worker again at every tick.
+// `worker_background_hours`, `stalled_tree_notice_hours`): a positive number of hours, a
+// decimal among them (0.3 is 18 minutes), bounded as the shipped key is, by the timer bound in
+// whole hours (config.ts MAX_TIMER_HOURS). A value too small to be a nanosecond is refused, never
+// read as zero: the engine arms the deadline it is given, so a zero would close a finished tree
+// at once and take its workspace with it, bound a check before its first look, or tell a
+// project's controller about every tree of it that is between two turns.
 func readHours(value *yaml.Node, key string) (*time.Duration, error) {
 	return readUnit(value, key, time.Hour, maxTimerSeconds/3600)
 }
 
-// readMinutes is readHours' twin for a key written in minutes (`worker_silence_minutes`): a
-// positive number of minutes, a decimal among them, bounded by the timer bound in whole minutes
-// (maxTimerMinutes), and nil for a key the file writes with no value at all.
+// readMinutes is readHours' twin for a key written in minutes (`worker_silence_minutes`,
+// `pod_update_grace_minutes`): a positive number of minutes, a decimal among them, bounded by the
+// timer bound in whole minutes (maxTimerMinutes), and nil for a key the file writes with no value
+// at all.
 //
-// Why this key is in minutes where readHours' four are in hours: its bound is tens of minutes.
-// In hours an operator writes half an hour as 0.5, and a key whose values are written as
-// fractions is a key whose floor gets read as a number of hours: the 16-minute floor would be
-// 0.2666… there, which neither the file nor a refusal naming it could state plainly, and 0.5
-// meant as half an hour is half a minute to a reader of this key. The unit an operator will
-// write the bound in is therefore the unit the key takes.
+// Why these keys are in minutes where readHours' keys are in hours: their bounds are tens of
+// minutes. In hours an operator writes half an hour as 0.5, and a key whose values are written as
+// fractions is a key whose floor gets read as a number of hours: worker_silence_minutes' 16-minute
+// floor would be 0.2666… there, which neither the file nor a refusal naming it could state
+// plainly, and 0.5 meant as half an hour is half a minute to a reader of such a key. The unit an
+// operator will write the bound in is therefore the unit the key takes.
 //
 // A value too small to hold a nanosecond is refused exactly as a non-positive one is, never read
 // as zero: a bound of zero or less is the repair switched off (workflow.SilentPhaseWorker names
 // no worker silent under one), so a value that rounded to zero would leave that deployment with
-// no silence repair at all while its file read as though it had set one.
+// no silence repair at all while its file read as though it had set one. An update round with a
+// bound of zero would replace its pod at the tick that opens it, before any role read the ask.
 func readMinutes(value *yaml.Node, key string) (*time.Duration, error) {
 	return readUnit(value, key, time.Minute, maxTimerMinutes)
 }
@@ -1086,8 +1113,8 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 		Gates:                Gates{Design: DesignGateRootIssues.Steps()},
 		Linger:               72 * time.Hour,
 		ProductionCheckBound: 336 * time.Hour,
-		PodUpdateRetask:      time.Hour,
-		PodUpdateNotice:      4 * time.Hour,
+		PodUpdateGrace:       defaultPodUpdateGrace,
+		StalledTreeNotice:    6 * time.Hour,
 		WorkerSilence:        defaultWorkerSilence,
 		WorkerBackground:     defaultWorkerBackground,
 		ReviewRoundCap:       3,

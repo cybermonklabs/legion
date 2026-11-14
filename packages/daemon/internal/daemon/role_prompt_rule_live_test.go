@@ -1,20 +1,27 @@
 //go:build e2e
 
-// The live proof that a role process is launched with the pod memory rule in the system prompt it
-// carries: the paragraph every phase worker is given
+// The live proof that a role process is launched with the rules its own system prompt carries:
+// the pod memory rule, in the paragraph every phase worker is given
 // (packages/daemon/internal/prompts/roles/mechanics/headless.md, "What you run in the pod") and
 // the paragraph every architect is given
-// (packages/daemon/internal/prompts/go/architect-common.md). scripts/e2e/role-prompt-rule.sh
-// builds this driver with `-tags e2e` and owns the nats-server and the PostgreSQL it runs against.
+// (packages/daemon/internal/prompts/go/architect-common.md); and the planner's own rule that its
+// completion reports work already done, in the paragraph that names the `head` its handoff
+// carries, what the daemon does with it, and the order that records the handoff before the
+// completion is reported
+// (packages/daemon/internal/prompts/roles/planner.md, "Plan handoff").
+// scripts/e2e/role-prompt-rule.sh builds this driver with `-tags e2e` and owns the nats-server
+// and the PostgreSQL it runs against.
 //
-// What this proof reads, and why it reads it there. Two unit tests already hold that the rule is
-// in each composed prompt and in one part per tree
+// What this proof reads, and why it reads it there. Unit tests already hold the pod memory rule
+// in each composed prompt and in the one part per tree it comes from
 // (packages/daemon/internal/prompts/prompts_test.go and
-// packages/daemon/internal/prompts/roles_test.go). Neither of them starts anything, so neither
-// says that a role process was ever launched with that text. This driver reads the text from the
-// one place that says it: the Oh My Pi process's own command line, /proc/<pid>/cmdline. The pid
-// the claim's locator carries is the `legion worker-shim`'s (parseLocalIncarnation, over the
-// incarnation localruntime_live_test.go's launch mints), and the shim starts Oh My Pi as a child
+// packages/daemon/internal/prompts/roles_test.go), and the planner's rule in the planner's own
+// part alone (roles_test.go's TestEveryFileBackedRoleHandoffNamesTheHeadItWasDoneAgainst).
+// Neither file starts anything, so neither says that a role process was ever launched with that
+// text. This driver reads the text from the one place that says it: the Oh My Pi process's own
+// command line, /proc/<pid>/cmdline. The pid the claim's locator carries is the
+// `legion worker-shim`'s (parseLocalIncarnation, over the incarnation localruntime_live_test.go's
+// launch mints), and the shim starts Oh My Pi as a child
 // rather than exec'ing into it (internal/shim/shim.go's exec.Command), so the proof walks /proc
 // for the child of that shim whose argv[0] is LEGION_OMP_PATH and reads that child. Reading the
 // shim's own argv would pass a shim that dropped or rewrote the prompt, which is not what this
@@ -125,6 +132,26 @@ var podRuleForRootArchitect = []string{
 	"every other heavy run goes where your deployment's instructions say and instructions that name no such route are a gap to report, and you put these facts in the context of each subagent you start",
 }
 
+// completionAfterWorkForPlanner is the rule the planner's own part carries about its completion
+// (packages/daemon/internal/prompts/roles/planner.md, "Plan handoff"): the completion reports
+// work already done, at a named head. Three needles hold it. The first two are the pair the unit
+// test pins (packages/daemon/internal/prompts/roles_test.go's
+// TestEveryFileBackedRoleHandoffNamesTheHeadItWasDoneAgainst): the `head` field as the handoff
+// body names it, with the one thing its value is, and the clause that carries that head to the
+// daemon, which names the planner's own phase word. The third is the paragraph's order sentence,
+// copied from planner.md byte for byte: the record written with `dispatch handoff-write` under
+// the planner's own phase word `plan`, then the completion, which is what makes the completion a
+// report of work already recorded rather than of work still to come. The three are short and sit
+// inside the paragraph, so a rewording of the prose around them stands, and the field's removal
+// or an order sentence that no longer puts the record before the completion is what fails them.
+// A planner's composed prompt carries no other role's part (prompts_test.go's composition table),
+// so the first needle is this role's own field and no other's.
+var completionAfterWorkForPlanner = []string{
+	"`head` (the 40-character lower-case commit",
+	"to the daemon, which takes a completion of an earlier `plan` entry only at the head the record holds",
+	"record it with `dispatch handoff-write --issue <issue> --phase plan --body-file \"$TMPDIR/<issue>-plan.json\"`, then report completion",
+}
+
 // rolePromptRuleLive is one run of the proof: the booted daemon, the one tree it seeds, and the
 // two claims whose own command lines it reads.
 type rolePromptRuleLive struct {
@@ -158,15 +185,20 @@ type launchedPrompt struct {
 	prompt string
 }
 
-// TestEveryRoleIsLaunchedWithThePodMemoryRuleLive boots the daemon over two real panes, reads the
-// command line each of those two processes was launched with, and holds the pod memory rule in
-// each: the phase worker's eight sentences and the root architect's six.
-func TestEveryRoleIsLaunchedWithThePodMemoryRuleLive(t *testing.T) {
+// TestEveryRoleIsLaunchedWithTheRulesItsOwnPromptCarriesLive boots the daemon over two real
+// panes, reads the command line each of those two processes was launched with, and holds in each
+// the rules that role's own prompt carries: the pod memory rule, the phase worker's eight
+// sentences and the root architect's six, and, in the planner's, the three needles of the rule
+// that its completion reports work already done at a named head: the `head` field, the clause
+// that carries it to the daemon, and the order sentence that records the `plan` handoff before
+// the completion is reported.
+func TestEveryRoleIsLaunchedWithTheRulesItsOwnPromptCarriesLive(t *testing.T) {
 	fixtureenv.Live(t)
 	r := newRolePromptRuleLive(t)
 	r.step("step1-both-roles-of-the-tree-run-a-pane-whose-own-argv-carries-a-system-prompt", r.bothPanesAreReady)
 	r.step("step2-the-phase-worker-was-launched-with-the-pod-memory-rule", r.phaseWorkerCarriesTheRule)
 	r.step("step3-the-root-architect-was-launched-with-the-pod-memory-rule", r.rootArchitectCarriesTheRule)
+	r.step("step4-the-planner-was-launched-with-the-completion-after-work-rule", r.plannerCarriesTheCompletionRule)
 }
 
 // newRolePromptRuleLive readies everything a pane needs before the daemon boots: the `legion`
@@ -328,43 +360,52 @@ func (r *rolePromptRuleLive) bothPanesAreReady() {
 // phaseWorkerCarriesTheRule holds the eight sentences of the pod memory rule in the planner's own
 // command line.
 func (r *rolePromptRuleLive) phaseWorkerCarriesTheRule() {
-	r.carriesTheRule("phase worker", r.token(claim.RolePlanner), podRuleForPhaseWorker)
+	r.carriesTheRule("phase worker", "pod memory rule", r.token(claim.RolePlanner), podRuleForPhaseWorker)
 }
 
 // rootArchitectCarriesTheRule holds the six sentences of the architect's own wording of the rule
 // in the root architect's own command line.
 func (r *rolePromptRuleLive) rootArchitectCarriesTheRule() {
-	r.carriesTheRule("root architect", r.token(claim.RoleArchitect), podRuleForRootArchitect)
+	r.carriesTheRule("root architect", "pod memory rule", r.token(claim.RoleArchitect), podRuleForRootArchitect)
 }
 
-// carriesTheRule holds every sentence of the role's own wording of the pod memory rule in the
-// prompt that role's process was launched with, and prints where each one was found. A sentence it
-// cannot find ends the proof naming the role, its pid and the sentence, since that line is the
-// whole evidence of a negative control's run.
+// plannerCarriesTheCompletionRule holds the three parts of the rule the planner's own part carries
+// about its completion — the `head` the handoff body names, the clause that carries that head to
+// the daemon, and the sentence that records the `plan` handoff with `dispatch handoff-write` and
+// then reports completion — in the planner's own command line. The root architect is held to no
+// part of it: an architect writes no handoff record, and its prompt carries no such paragraph.
+func (r *rolePromptRuleLive) plannerCarriesTheCompletionRule() {
+	r.carriesTheRule("planner", "completion-after-work rule", r.token(claim.RolePlanner), completionAfterWorkForPlanner)
+}
+
+// carriesTheRule holds every part of the role's own wording of the named rule in the prompt that
+// role's process was launched with, and prints where each one was found. A part it cannot find
+// ends the proof naming the role, its pid and that part's own text, since that line is the whole
+// evidence of a negative control's run.
 //
 // The match is of the argv's own bytes, where the composed-prompt unit test folds whitespace
 // first (prompts_test.go's foldWhitespace). That is the stronger claim and the one this proof is
-// for: the sentence stands in the command line word for word. The cost is that a reflow of either
-// paragraph across a line break would fail here while the unit test stayed green, and the reader
-// of that failure is told the sentence it could not find.
-func (r *rolePromptRuleLive) carriesTheRule(what string, token claim.Token, sentences []string) {
+// for: the text stands in the command line word for word. The cost is that a reflow of one of
+// those paragraphs across a line break would fail here while the unit test stayed green, and the
+// reader of that failure is told the text it could not find.
+func (r *rolePromptRuleLive) carriesTheRule(what, rule string, token claim.Token, parts []string) {
 	t := r.t
 	t.Helper()
 	read, ok := r.launched[token]
 	if !ok {
 		t.Fatalf("step 1 read no command line for the %s (%s)", what, token)
 	}
-	for i, sentence := range sentences {
-		at := strings.Index(read.prompt, sentence)
+	for i, part := range parts {
+		at := strings.Index(read.prompt, part)
 		if at < 0 {
-			t.Fatalf("the %s %s ran Oh My Pi as pid %d, launched with a prompt of %d bytes that does not carry sentence %d of %d of the pod memory rule: %q",
-				what, token, read.pid, len(read.prompt), i+1, len(sentences), sentence)
+			t.Fatalf("the %s %s ran Oh My Pi as pid %d, launched with a prompt of %d bytes that does not carry part %d of %d of the %s: %q",
+				what, token, read.pid, len(read.prompt), i+1, len(parts), rule, part)
 		}
-		r.note("sentence %d of %d is at byte %d of the %s %s's own Oh My Pi argv: %q",
-			i+1, len(sentences), at, what, token, sentence)
+		r.note("part %d of %d of the %s is at byte %d of the %s %s's own Oh My Pi argv: %q",
+			i+1, len(parts), rule, at, what, token, part)
 	}
-	r.note("all %d sentences of the pod memory rule are in the command line Oh My Pi pid %d was launched with",
-		len(sentences), read.pid)
+	r.note("all %d parts of the %s are in the command line Oh My Pi pid %d was launched with",
+		len(parts), rule, read.pid)
 }
 
 // ---- what a step reads --------------------------------------------------------------------------

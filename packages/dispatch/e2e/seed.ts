@@ -53,6 +53,13 @@ const tables = [
   "issues",
   "projects",
   "people",
+  // The cross-project priority and its tuple log (INFRA-2947, migration
+  // 20261112024320_priority_nodes). No foreign key reaches either table, so the closure below
+  // does not find them and they are named here: a priority a row wrote would otherwise stand
+  // in the next row's rail count, and its id would already be taken, since a priority is ended
+  // by its state and its node row stays.
+  "priority_tuples",
+  "priority_nodes",
   "user_sessions",
 ];
 

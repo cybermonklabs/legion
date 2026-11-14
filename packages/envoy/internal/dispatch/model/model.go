@@ -267,6 +267,140 @@ const (
 
 var GatedStepsKnown = []string{GatedStepDecisions, GatedStepCriteria, GatedStepSpec}
 
+// Priority is one thing the whole deployment is working towards: a node that belongs to no
+// project, which work in any project advances (internal/dispatch/prioritystore). Rank is the
+// fractional order key the priorities are drawn in, written as the issue board's rank is, and
+// State is `live` or `gone` — a delete writes `gone` and removes no row, so a reader of a
+// priority somebody deleted is told that rather than told nothing. MadeAt and MadeBy stay as
+// the first write left them however often the priority is written again.
+type Priority struct {
+	ID          string    `json:"id"`
+	Title       string    `json:"title"`
+	Description string    `json:"description"`
+	Owner       string    `json:"owner"`
+	Rank        string    `json:"rank"`
+	State       string    `json:"state"`
+	MadeAt      time.Time `json:"made_at"`
+	MadeBy      Actor     `json:"made_by"`
+}
+
+// PriorityAct is one act of a priority's own history, as GET /api/v1/priorities/{id}/history
+// answers it: one tuple of the log the priority is the projection of
+// (internal/dispatch/prioritystore). Field is what was stated — `title`, `description`, `owner`,
+// `rank`, `state` and `visibility` are the attributes, `advances` the one relation — and the act
+// carries Value or Issue by which of the two it is: an attribute write carries the value it
+// wrote in Value and no Issue, and an `advances` act carries the issue at the other end in Issue
+// and no Value.
+//
+// Asserted is false on an act that ended what an earlier one stated, which is how a retracted
+// `advances` reads; an attribute write asserts, because the log holds no retraction of one.
+// Actor is who stated it and At is when, so the margin names every act's writer and moment.
+type PriorityAct struct {
+	Field    string    `json:"field"`
+	Value    string    `json:"value"`
+	Issue    string    `json:"issue"`
+	Asserted bool      `json:"asserted"`
+	Actor    Actor     `json:"actor"`
+	At       time.Time `json:"at"`
+}
+
+// Priorities is the body GET /api/v1/priorities answers: every live priority, in rank order,
+// each with the work under it, and the two fault lists. It is an object rather than a bare array
+// because the counts of the work under each priority and the two fault lists — work in flight
+// under no priority, and priority work parked in `backlog` or `icebox` — are answered by this
+// same route, under keys of their own, and a bare array would have no room for them.
+//
+// Empty carries the sentence the page draws when the store holds no live priority at all: the
+// answer is then 200 with an empty list rather than an error, since a deployment that has
+// written no priority yet is not a failed read. It is absent as soon as one priority is live,
+// however the two faults read.
+//
+// `?summary=true` answers the two fault counts alone: Priorities is then empty, and each fault
+// carries its Count with no list beside it, which is what the navigation rail reads.
+type Priorities struct {
+	Priorities          []PriorityRow       `json:"priorities"`
+	WorkUnderNoPriority WorkUnderNoPriority `json:"work_under_no_priority"`
+	PriorityWorkParked  PriorityWorkParked  `json:"priority_work_parked"`
+	Empty               string              `json:"empty,omitempty"`
+}
+
+// PriorityRow is one priority as the priorities page draws it: the priority itself and the work
+// that advances it, which is counted over the issues of the projects the request named, or over
+// every project when it named none.
+type PriorityRow struct {
+	Priority
+	Work PriorityWork `json:"work"`
+}
+
+// PriorityWork is the work that advances one priority, by the issue's own relation or by one an
+// issue above it states. ByStatus counts the open issues in each lifecycle status, every status
+// of IssueStatuses present and 0 where none stands there, so a reader adds the columns it draws
+// — in flight is `in_progress`, `testing`, `needs_review` and `retro`, waiting is `todo` and
+// `triage`, parked is `backlog` and `icebox` — and no grouping is fixed by the server.
+//
+// Claimed is how many of those open issues a session holds now, OpenAsks the open asks on them,
+// and ClosedLast7Days the issues that advance the priority and closed within the last seven days,
+// which is work finished rather than work standing.
+//
+// NewestEventAt is the newest event on any issue that advances the priority, `max(created_at)`
+// over their events: a comment moves it although it writes no issue row, which `issues.updated_at`
+// would not. It is null for a priority no issue advances.
+type PriorityWork struct {
+	ByStatus        map[string]int `json:"by_status"`
+	Claimed         int            `json:"claimed"`
+	OpenAsks        int            `json:"open_asks"`
+	ClosedLast7Days int            `json:"closed_last_7_days"`
+	NewestEventAt   *time.Time     `json:"newest_event_at"`
+}
+
+// WorkUnderNoPriority is the first fault: an open issue in `in_progress`, `testing`,
+// `needs_review` or `retro` that advances no live priority, by its own relation or by one above
+// it. Count is every such issue; ByProject counts them by project, holding only the projects with
+// one; Issues carries the newest 50 by the time each issue last changed. A priority whose state is
+// `gone` is no priority, so the work under it is counted here.
+type WorkUnderNoPriority struct {
+	Count     int             `json:"count"`
+	ByProject map[string]int  `json:"by_project"`
+	Issues    []PriorityIssue `json:"issues"`
+}
+
+// PriorityWorkParked is the second fault: an issue that advances a live priority and stands in
+// `backlog` or `icebox`. Count is every such issue; ByPriority counts them by priority id, an
+// issue advancing two priorities counted under each, so the counts may add to more than Count;
+// Issues carries the 50 moved there most recently.
+type PriorityWorkParked struct {
+	Count      int             `json:"count"`
+	ByPriority map[string]int  `json:"by_priority"`
+	Issues     []PriorityIssue `json:"issues"`
+}
+
+// PriorityIssue is one row of either fault list: the issue, its project, its status, who holds it
+// and when it last changed, which is how long it has stood as it is.
+//
+// Advances are the live priorities the issue advances, its own relations and the inherited ones,
+// as the entries every issue read and listing row answers (IssueAdvance): one per priority, in
+// id order, each saying whether the issue states it or inherits it from an issue above it. It is
+// empty on a row of the first fault, which is the list of the work that advances none.
+//
+// MovedAt and MovedBy are the second fault's two cells: when the issue was moved into `backlog`
+// or `icebox` and who moved it, read from the newest `issue.updated` event whose `changed` names
+// `status` and whose status is one of those two. Both are null on a row of the first fault, and
+// on an issue whose events do not reach back to the move — that issue stays in the list, since
+// the fault is the work standing there and not the record of how it arrived. No reason is
+// answered: a status change records none (dispatch://INFRA-2934).
+type PriorityIssue struct {
+	Key       string         `json:"key"`
+	Title     string         `json:"title"`
+	Project   string         `json:"project"`
+	Status    string         `json:"status"`
+	Assignee  *string        `json:"assignee"`
+	Claim     *IssueClaim    `json:"claim"`
+	ChangedAt time.Time      `json:"changed_at"`
+	Advances  []IssueAdvance `json:"advances"`
+	MovedAt   *time.Time     `json:"moved_at"`
+	MovedBy   *Actor         `json:"moved_by"`
+}
+
 // RepoProject assigns an external repository to a native Dispatch project. Default marks the one
 // mapping of the project an issue with no repository of its own, and none on its parent chain,
 // resolves to; at most one mapping of a project is its default. RenamedTo is the full
@@ -377,23 +511,40 @@ type IssueProgress struct {
 	Children *ProgressCount `json:"children"`
 }
 
+// IssueAdvance is one `advances` relation of an issue as a read answers it: the priority the
+// work advances, and whether the issue states the relation itself or inherits it from an issue
+// above it. Every read answers entries rather than bare ids, because the two cannot be told
+// apart by an id alone and only an own relation is a write's to retract. A write carries the
+// other shape, a bare list of priority ids, which states the issue's own relations and nothing
+// else (internal/dispatch/api/issue_advances.go).
+type IssueAdvance struct {
+	ID        string `json:"id"`
+	Inherited bool   `json:"inherited"`
+}
+
 // Issue is the complete native issue record.
 type Issue struct {
-	Key           string          `json:"key"`
-	Project       string          `json:"project"`
-	Number        int             `json:"number"`
-	Title         string          `json:"title"`
-	Status        string          `json:"status"`
-	Priority      *int            `json:"priority"`
-	Rank          string          `json:"rank"`
-	Labels        []string        `json:"labels"`
-	Parent        *string         `json:"parent"`
-	BlockedBy     []string        `json:"blocked_by"`
-	Assignee      *string         `json:"assignee"`
-	Claim         *IssueClaim     `json:"claim"`
-	Components    IssueComponents `json:"components"`
-	ExternalLinks []ExternalLink  `json:"external_links"`
-	Route         *string         `json:"route"`
+	Key       string   `json:"key"`
+	Project   string   `json:"project"`
+	Number    int      `json:"number"`
+	Title     string   `json:"title"`
+	Status    string   `json:"status"`
+	Priority  *int     `json:"priority"`
+	Rank      string   `json:"rank"`
+	Labels    []string `json:"labels"`
+	Parent    *string  `json:"parent"`
+	BlockedBy []string `json:"blocked_by"`
+	// Advances is the priorities this issue advances, its own relations and the ones it
+	// inherits, and AdvancesRevision the seq of the newest tuple the store holds for its own
+	// `advances` relations, 0 when it holds none. A whole-set write carries the revision the
+	// read it is answering returned.
+	Advances         []IssueAdvance  `json:"advances"`
+	AdvancesRevision int64           `json:"advances_revision"`
+	Assignee         *string         `json:"assignee"`
+	Claim            *IssueClaim     `json:"claim"`
+	Components       IssueComponents `json:"components"`
+	ExternalLinks    []ExternalLink  `json:"external_links"`
+	Route            *string         `json:"route"`
 	// Repo is the issue's own repository, owner/name, a mapping of its project; nil when it inherits.
 	Repo *string `json:"repo"`
 	// ResolvedRepo is the repository the issue targets, resolved on read: its own Repo, else its
@@ -480,14 +631,25 @@ type IssueClaimLiveness struct {
 
 // IssueSummary is the lightweight issue listing representation.
 type IssueSummary struct {
-	Key        string          `json:"key"`
-	Title      string          `json:"title"`
-	Status     string          `json:"status"`
-	Priority   *int            `json:"priority"`
-	Rank       string          `json:"rank"`
-	Labels     []string        `json:"labels"`
-	Parent     *string         `json:"parent"`
-	BlockedBy  []string        `json:"blocked_by"`
+	Key       string   `json:"key"`
+	Title     string   `json:"title"`
+	Status    string   `json:"status"`
+	Priority  *int     `json:"priority"`
+	Rank      string   `json:"rank"`
+	Labels    []string `json:"labels"`
+	Parent    *string  `json:"parent"`
+	BlockedBy []string `json:"blocked_by"`
+	// Advances and AdvancesRevision are Issue's: every listing row answers the same entries and
+	// the same revision the issue's own read answers.
+	Advances         []IssueAdvance `json:"advances"`
+	AdvancesRevision int64          `json:"advances_revision"`
+	// MovedAt and MovedBy are PriorityIssue's two cells of the move into `backlog` or `icebox`,
+	// by the same reading, and the listing answers them only under `?moved=true`: a listing
+	// without the key carries neither on any row and pays for no read of them. With it, a row
+	// standing in neither status, or whose events do not reach back to the move, carries neither
+	// as well, since a field the marshaller leaves out when empty is never null.
+	MovedAt    *time.Time      `json:"moved_at,omitempty"`
+	MovedBy    *Actor          `json:"moved_by,omitempty"`
 	Assignee   *string         `json:"assignee"`
 	Claim      *IssueClaim     `json:"claim"`
 	Components IssueComponents `json:"components"`
@@ -1192,7 +1354,11 @@ type CheckResultRetraction struct {
 
 // CheckBlock is one `check` block of a Verification document as a result read shows it: where it
 // lives, its attributes, the version its words last changed in and their digest, and every
-// result recorded against it from any issue, newest first.
+// result recorded against it from any issue, newest first. CICheck is the block's `ci_check` as
+// stored, spaces included. A blank value is served as stored, not as "", so CICheck is "" only
+// where the block stores no `ci_check` or an empty one. CI is what Dispatch read of the run that
+// `ci_check` names, set only for a check CI proves, and CI.Run is that run's name. Such a check's
+// one result is the one derived from that run.
 type CheckBlock struct {
 	BlockID         string        `json:"block_id"`
 	Ref             string        `json:"ref"`
@@ -1203,6 +1369,8 @@ type CheckBlock struct {
 	Surface         string        `json:"surface"`
 	Run             string        `json:"run"`
 	NegativeControl string        `json:"negative_control"`
+	CICheck         string        `json:"ci_check,omitempty"`
+	CI              *CheckCI      `json:"ci,omitempty"`
 	Version         int           `json:"version"`
 	SHA256          string        `json:"sha256"`
 	Results         []CheckResult `json:"results"`
@@ -1212,6 +1380,28 @@ type CheckBlock struct {
 	ComparedWith    []CheckBasis    `json:"compared_with"`
 	ComparedNothing string          `json:"compared_nothing,omitempty" enum:"no_pull_request_or_branch,repository_unreadable,read_failed"`
 	PassStands      CheckPassStands `json:"pass_stands"`
+}
+
+// CIStatePass, CIStateFail, CIStateNoResult and CIStateUnread are what the read of a check CI
+// proves answered (CheckCI.State): the named run passed, it failed, nothing the read found proves
+// the check either way, or GitHub could not be read. Only a pass and a fail carry a result.
+const (
+	CIStatePass     = "pass"
+	CIStateFail     = "fail"
+	CIStateNoResult = "no_result"
+	CIStateUnread   = "unread"
+)
+
+// CheckCI is what Dispatch read of the GitHub check run a check CI proves names, at the newest
+// pull request head of the check's issue: the run's name, the state of the check, the case that
+// decided it (a conclusion GitHub wrote, or one of the cases of no conclusion), one sentence
+// naming that case, and the line the pull-request body carries for the check.
+type CheckCI struct {
+	Run    string `json:"run"`
+	State  string `json:"state" enum:"pass,fail,no_result,unread"`
+	Case   string `json:"case"`
+	Detail string `json:"detail"`
+	Line   string `json:"line"`
 }
 
 // IssueCoverage is what each requirement of an issue's spec lacks: the requirements the spec
@@ -1743,12 +1933,16 @@ type BlockRepairedEventPayload struct {
 	DisturbedBy Actor  `json:"disturbed_by"`
 }
 
-// BlockInvalidEventPayload records an ask block that browser editing left malformed.
+// BlockInvalidEventPayload records a block that browser editing left breaking a rule: an ask block
+// settlement cannot read, which it marks `invalid`, or, with BlockType "check", a check block whose
+// ci_check breaks one of the four rules, which it deletes. Reason is the ask's reason or the rule.
+// BlockType is absent for an ask.
 type BlockInvalidEventPayload struct {
 	BlockID     string `json:"block_id"`
 	Version     int    `json:"version"`
 	Reason      string `json:"reason"`
 	DisturbedBy Actor  `json:"disturbed_by"`
+	BlockType   string `json:"block_type,omitempty"`
 }
 
 // AskOption is an answer choice. ID is the id of the block this option is stored as - the part
@@ -2668,6 +2862,27 @@ type UserAgentStateEventPayload struct {
 	SessionID string `json:"session_id"`
 }
 
+// PriorityEventPayload is `priority.updated`: one write of one priority committed, through
+// POST /api/v1/priorities or PATCH or DELETE /api/v1/priorities/{id} (api/priorities.go). It
+// names the priority and which of the three writes it was, and carries nothing else: a reader
+// refetches its priorities reads on every write, and on a delete also the work under that
+// priority, the work under none and every issue read or listing whose rows advance it
+// (packages/dispatch/web/src/api/event-refresh.ts). It names no owner, since a priority belongs
+// to no project, so the outbox publishes it nowhere and it never notifies (events.Quiet).
+type PriorityEventPayload struct {
+	ID string `json:"id"`
+	// Change is PriorityCreated, PriorityChanged or PriorityDeleted.
+	Change string `json:"change"`
+}
+
+// The Change of a PriorityEventPayload: a create, a PATCH of its attributes or its place in the
+// order, and a delete, which writes the state gone.
+const (
+	PriorityCreated = "created"
+	PriorityChanged = "updated"
+	PriorityDeleted = "deleted"
+)
+
 // UserThreadStateEventPayload is `user_thread_state.updated`: one viewer's read of the Inbox's
 // threads moved. It names the viewer so their other open tabs and devices drop the row, and the
 // thread when one thread was marked (PUT /api/v1/me/threads/{id}/read); a mark-all
@@ -3033,6 +3248,18 @@ var IssueStatuses = []string{
 	"retro",
 	"done",
 }
+
+// IssueStatusesInFlight is the four statuses work is running in, and IssueStatusesParked the two
+// an issue stands parked in. They are groupings of IssueStatuses, named here because the reading
+// of the priorities is written against both of them in two places — the route's two fault lists
+// (api/priority_queries.go) and the seeded corpus's own report of those faults
+// (cmd/dispatch-seed) — and one list each is better than a copy per reader. The counts a
+// priority answers are per status and never per grouping, so nothing but a fault is fixed by
+// them (model.PriorityWork).
+var (
+	IssueStatusesInFlight = []string{"in_progress", "testing", "needs_review", "retro"}
+	IssueStatusesParked   = []string{"icebox", "backlog"}
+)
 
 // IssueStatusesOutOfWorkflow is every status of that lifecycle a Legion deployment runs nothing
 // in: an issue holding one is parked, closed, or not yet decided on, and the deployment's

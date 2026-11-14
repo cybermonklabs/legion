@@ -12,7 +12,7 @@ Read this on a `triage` wake, at every start, and when a person hands you an iss
    `child_of` parent. A `child_of` under `Referenced by:` is a child of this issue, not its parent.
 3. Leave a child whose `issues.<KEY>.tree` is a root in `admission.trees`, or that has an ancestor
    that is, because that tree's architect owns it. `admission.trees` is the live trees: a slot is
-   one issue the daemon has started, held until it is done or leaves the workflow, so a tree is live whether or not its root holds one.
+   one issue the daemon has started, held until its work is past its review, until it is done, or until Dispatch takes it out of the workflow, so a tree is live whether or not its root holds one.
 4. Every other row with no `issues.<KEY>` entry in `read_state` is a root to you, a child whose
    tree is not in `admission.trees` included. Read who set its label
    ("Triage a root", step 2). A root a person labelled is queued by the daemon and needs nothing
@@ -97,6 +97,9 @@ Then: in `todo` the label admits it. The label you set is a session's label, so 
 nothing for it: in `triage` its `triage` wake brings the root back to you at step 3. Admit it in
 the same turn, from step 3 above, because the person's request is its handover. In any other
 status, `set_status` it to `todo` only when the person asked Legion to start it now.
+
+Filing or admitting an issue, name each priority it advances (`--advance <id>` of `dispatch issue` and `issue-update`, repeatable).
+`dispatch priorities` lists the ids, and names each issue in flight that advances no priority.
 
 Taking the label off a waiting root drops it from the waiting line; taking it off an admitted tree
 does not stop it. A child needs no label: it runs under its tree's architect once its root is

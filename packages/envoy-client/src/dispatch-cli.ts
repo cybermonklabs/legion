@@ -16,6 +16,7 @@ import {
   type ParsedCommand,
   parseCommand,
 } from "./dispatch-command";
+import { defined } from "./dispatch-commands/context";
 import type { ActiveDispatchConfig } from "./dispatch-config";
 import type { DispatchHost } from "./dispatch-cwd";
 import { checkDispatchCall, dispatchServerUrls, executeDispatchTool } from "./dispatch-execute";
@@ -252,7 +253,12 @@ export async function runDispatchCli(
           [`dispatch: ${parsed.problems.join("\n")}`, "Run dispatch --help."].join("\n"),
           USAGE
         )
-      : refuse(new ToolInputError(parsed.tool, parsed.problems).message, USAGE, parsed.tool);
+      : refuse(
+          new ToolInputError(parsed.tool, parsed.problems, defined("aboutAFlag", parsed.aboutAFlag))
+            .message,
+          USAGE,
+          parsed.tool
+        );
   }
 
   const hostName =

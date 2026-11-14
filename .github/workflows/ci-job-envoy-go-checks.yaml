@@ -42,6 +42,32 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # The composite action other repositories call, run over this repository's own
+      # .dispatch/architecture (its default path), so every part of it is exercised here before
+      # another repository relies on it: its setup-go, its removal of setup-go's `go` problem
+      # matcher, its path resolved against the workspace, its cache restore, and its count output,
+      # which the next step reads. In a pull request and a merge group it restores its cache and
+      # saves nothing (ci.yaml's header, "Caches"). It runs right after the checkout, before this
+      # job's own setup-go, which adds setup-go's `go` problem matcher back for every later step
+      # of the job: the placement "before the Go setup of the job" of the action's README.md, "The
+      # Go toolchain". The checkout removes the problem matcher it adds before it ends, so no
+      # matcher of an earlier step reads the check's lines (README.md, "What the runner reads from
+      # the check's lines"). A refused note set fails the job before its other checks run.
+      - id: architecture-notes
+        name: Check this repository's architecture notes with the composite action
+        uses: ./.github/actions/architecture-check
+      # A caller reads the count through env, never inside run:, and so does this step. It runs
+      # only when the action succeeded, which without allow-empty means a valid set of one note or
+      # more, so a count that is missing or not a positive whole number is the action's fault.
+      - name: Read the note count the action hands to the job
+        env:
+          COUNT: ${{ steps.architecture-notes.outputs.count }}
+        run: |
+          if ! [[ $COUNT =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::the architecture-check action's count output is '$COUNT', not a positive whole number"
+            exit 1
+          fi
+          echo "The architecture-check action judged $COUNT notes."
       - uses: ./.github/actions/setup-bun
       - run: bun install --frozen-lockfile
       - id: setup-go
@@ -64,6 +90,12 @@ jobs:
             echo "$unformatted"
             exit 1
           fi
+        working-directory: packages/envoy
+      # These two packages need no database, so they run here on every push. This is their one
+      # run: envoy-go's unit step leaves both out, its `grep -Ev` and this step's package list
+      # built from ARCHITECTURE_CHECK_PACKAGES in .github/scripts/ci_job_reads.py.
+      - name: Test the architecture-note rules and their command
+        run: go test -count=1 ./internal/dispatch/architecture/notes/ ./cmd/architecture-check/
         working-directory: packages/envoy
       - name: Check Go contracts are generated from the shared schema
         run: bun run check:go

@@ -492,8 +492,8 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
       // The wait a `ready_for_update` answer created is the daemon's to end, so nothing is armed
       // in it: the round replaces the pod, and the task it held behind the round reaches the
       // worker in the process that comes back on the new pod, while a reminder steered in
-      // meanwhile is the turn the daemon reads as the answer retracted (`awaiting-update` in
-      // `./phase-stall`).
+      // meanwhile starts a turn of work the replacement throws away, and before the round's bound
+      // a running turn holds that replacement back (`awaiting-update` in `./phase-stall`).
       if (stall.state === "awaiting-update") {
         continued = false;
         return undefined;

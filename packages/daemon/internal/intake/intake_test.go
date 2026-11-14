@@ -508,6 +508,59 @@ func TestASynchronizeFromAListenerWithoutBeforeNamesNoMove(t *testing.T) {
 	}
 }
 
+// GitHub sends the pull_request action `dequeued` when a pull request leaves the merge queue, and
+// the listener publishes it with the keys it writes for every pull_request action (Envoy's
+// normalizer, packages/envoy/internal/contracts/normalize.go): GitHub's reason for the removal is
+// not one of them. On an issue's branch the event is the pull request and the head it left the
+// queue at. One with no head names no head, so it is no fact, as a synchronize with none is no fact.
+// One on a branch that is no issue's is no fact either, as every pull request event there is
+// (decodePullRequest), so it is acknowledged without a transaction.
+func TestDecodeADequeuedPullRequest(t *testing.T) {
+	const subject = "notifications.github.sjawhar.legion.pr.42"
+	envelope := func(branch, head string) []byte {
+		t.Helper()
+		payload, err := json.Marshal(map[string]string{
+			"kind": "pr", "action": "dequeued", "repo": "sjawhar/legion", "number": "42", "title": "Captured GitHub event",
+			"author": "author", "url": "https://github.com/sjawhar/legion/pull/42", "head_sha": head, "before": "",
+			"sender": "github-merge-queue[bot]", "head_ref": branch, "head_repo": "sjawhar/legion", "base_ref": "main",
+			"merged": "false", "merge_commit_sha": "", "merged_by": "", "updated_at": "2026-09-23T00:00:00Z",
+			"body": "Dispatch: LEGION-208",
+		})
+		if err != nil {
+			t.Fatalf("marshal the dequeued payload: %v", err)
+		}
+		data, err := json.Marshal(map[string]any{
+			"event_id": "dequeued-event", "source": "github", "source_event_id": "dequeued-delivery", "topic": subject,
+			"dedupe_key": "github.dequeued-delivery", "issued_at": int64(1_790_124_795_391),
+			"payload_summary": "pr dequeued: sjawhar/legion#42 Captured GitHub event", "payload": string(payload),
+			"trace_id": "dequeued-trace",
+		})
+		if err != nil {
+			t.Fatalf("marshal the dequeued envelope: %v", err)
+		}
+		return data
+	}
+	for _, tc := range []struct {
+		name, branch, head string
+		want               Fact
+	}{
+		{name: "on an issue's branch, with its head", branch: "legion/LEGION-208", head: "head-captured",
+			want: PullRequestDequeued{Repo: "sjawhar/legion", Number: 42, HeadSHA: "head-captured"}},
+		{name: "on an issue's branch, with no head", branch: "legion/LEGION-208"},
+		{name: "on a branch that is no issue's", branch: "feature/faster-builds", head: "head-captured"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := decodeMessage(subject, "CAPTURE", capturedRepositories, envelope(tc.branch, tc.head))
+			if err != nil {
+				t.Fatalf("decode the dequeued event: %v", err)
+			}
+			if !reflect.DeepEqual(got.Fact, tc.want) {
+				t.Fatalf("fact = %#v, want %#v", got.Fact, tc.want)
+			}
+		})
+	}
+}
+
 // Dispatch sends an issue's blocked_by keys on every issue event, already ordered: the decoder
 // carries that order onto the fact, and an event retained from a Dispatch that sent no such field
 // decodes as an issue waiting on nothing does.

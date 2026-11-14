@@ -49,10 +49,12 @@
 // numbers on the wire, which is R6 on a booted daemon.
 //
 // What stands in lies outside the rule. The broker is a native nats-server the script starts and
-// names in LEGION_E2E_NATS_URL. GitHub is convergeGitHub, a REST stand-in for the one pull
-// request the proof drives, which serves that pull request's state, head, base and mergeable —
-// the answer the driver arms to drive a conflict — and no branch rule of any kind. Dispatch is
-// the board the package's whole-daemon live proofs share (liveDispatch, in live_proof_test.go).
+// names in LEGION_E2E_NATS_URL. GitHub is the harness's REST stand-in for the one pull request the
+// proof drives (liveGitHub, in live_issue_proof_test.go), which serves that pull request's state,
+// head, base and mergeable — the answer the driver arms to drive a conflict — and no branch rule
+// of any kind, with this proof's pause of its read of that pull request (pullRequestReadPause).
+// Dispatch is the board the package's whole-daemon live proofs share (liveDispatch, in
+// live_proof_test.go).
 // The two Apps' tokens are workflowTokenRecorder's placeholders. No agent runs: every claim is
 // launched by the package's fake runtime, which says it provisions each workspace in the
 // claim's own pod, as the Agent Sandbox runtime does, so the daemon clones nothing from GitHub.
@@ -64,7 +66,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -72,20 +73,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
-	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/phase"
-	"github.com/sjawhar/legion/daemon/internal/record"
-	"github.com/sjawhar/legion/daemon/internal/runtime"
-	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
-	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
 // convergeBase is the pull request's base branch, the repository's default: a head that
@@ -126,24 +120,15 @@ const convergeEntrySweep = 2 * time.Second
 const convergeOwedBound = 2 * time.Minute
 
 // phaseEntryConvergeLive is one run of the proof: the booted daemon, the one issue it drives, the
-// GitHub stand-in its facts are read against, and the two roles the driver acts as over the worker
-// stream.
+// GitHub stand-in its facts are read against with the pause this proof adds to it, and the two
+// roles the driver acts as over the worker stream.
 type phaseEntryConvergeLive struct {
-	liveProof
-	rt     *fake.Runtime
-	built  *built
-	github *convergeGitHub
-	// key is the issue, its own tree, and number its pull request's — the run's own, since the
-	// store a pod re-runs the proof against holds every earlier run's pull requests and a fact
-	// names a pull request by its repository and number.
-	key    string
-	number int
+	liveIssueProof
+	// reads is the pause of the stand-in's read of the pull request (pullRequestReadPause.pause).
+	reads *pullRequestReadPause
 	// imp, test and rev are the implementer, the tester and the reviewer as their agents reach
 	// the daemon.
 	imp, test, rev *convergeClaimant
-	// seq numbers the base pushes armConflict publishes, so each is its own envelope with its
-	// own before and after commits rather than a second report of the one before it.
-	seq int64
 }
 
 // TestAPhaseEntryConvergesOnARunningDaemonLive drives the proof's four checks against one booted
@@ -167,124 +152,29 @@ func TestAPhaseEntryConvergesOnARunningDaemonLive(t *testing.T) {
 // session without an operator's spawn, and it is the wake that spends the burst.
 func newPhaseEntryConvergeLive(t *testing.T) *phaseEntryConvergeLive {
 	t.Helper()
-	proof := newLiveProof(t, "scripts/e2e/phase-entry-converge.sh")
-	number, err := strconv.ParseInt(randomSuffix(t)[:6], 16, 64)
-	if err != nil {
-		t.Fatal(err)
-	}
-	r := &phaseEntryConvergeLive{
-		liveProof: proof, rt: fake.NewRuntime(), built: &built{},
-		key: proof.cfg.Project + "-1", number: int(number) + 1,
-	}
-	r.github = newConvergeGitHub(t, r.key, r.number)
+	r := &phaseEntryConvergeLive{liveIssueProof: newLiveIssueProof(t, "scripts/e2e/phase-entry-converge.sh",
+		convergeBase, "the issue whose phase entries converge")}
+	r.reads = r.newPullRequestReadPause()
 	r.seed()
-	// The runtime provisions each claim's workspace itself (fake.Runtime's InPod), so a start
-	// reaches the fake's launch without the daemon cloning acme/widgets from github.com, which the
-	// tmux answer would have it try.
-	r.rt.InPod = true
-	o := fakeRuntime(r.rt, r.built)
-	o.workflowTokens = &workflowTokenRecorder{}
-	o.githubAPI = r.github.url
-	// The wall clock, in place of this package's still one (daemon.go's RealClock for a nil
-	// override): the launch the pacing holds runs when its timer fires, and a wake held on a
-	// clock whose timers never fire would never take its turn.
-	o.clock = nil
-	o.entrySweep = convergeEntrySweep
 	r.cfg.WorkerWakesPerMinute, r.cfg.WorkerWakeBurst = convergeWakeRate, convergeWakeBurst
-	r.d = startDaemonWithin(t, r.cfg, o, r.log(), 60*time.Second)
+	r.boot(func(o *overrides) {
+		// The wall clock, in place of this package's still one (daemon.go's RealClock for a nil
+		// override): the launch the pacing holds runs when its timer fires, and a wake held on a
+		// clock whose timers never fire would never take its turn.
+		o.clock = nil
+		o.entrySweep = convergeEntrySweep
+	})
 	return r
 }
 
-// seed records the issue as the daemon would hold it at the moment its implementer began work: a
-// root handed to Legion, implementing, holding its tree's admission slot, its lifecycle open under
-// the workflow, on an open pull request at its first head, and its implementer's claim
-// mid-launch, serving run 1. No phases row is written: every entry this proof reads is raised
-// live, by the transitions the completions and the conflicting heads make.
+// seed records the issue as seedImplementing does, on an open pull request at its first head. No
+// phases row is written: every entry this proof reads is raised live, by the transitions the
+// completions and the conflicting heads make.
 func (r *phaseEntryConvergeLive) seed() {
-	t := r.t
-	t.Helper()
-	ctx := context.Background()
-	r.board.show(r.key, "in_progress")
-	r.write("the issue, its pull request and its slot", func(tx pgx.Tx) error {
-		if err := r.records.PutIssue(ctx, tx, record.Issue{
-			Key: r.key, Repo: liveRepo, DefaultBranch: convergeBase, GitHubRepo: liveRepo, Tree: r.key, Project: r.cfg.Project,
-			Title: "the issue whose phase entries converge", Phase: phase.Implementing, Generation: 1, Status: "in_progress",
-			DispatchStatus: "in_progress", Rank: "U", LastDispatchSeq: 1, HandedOver: true,
-		}); err != nil {
-			return err
-		}
-		if err := r.records.PutPullRequest(ctx, tx, record.PullRequest{
-			State: record.PullRequestOpen, Issue: r.key, Repo: liveRepo, Number: r.number, Branch: "legion/" + r.key,
-			HeadSHA: convergeFirstHead, Base: convergeBase, Failing: []string{},
-		}); err != nil {
-			return err
-		}
-		return r.admit(ctx, tx, r.key)
-	})
-	if _, err := r.st.OpenTreeLifecycle(ctx, r.project, r.key, treelifecycle.AuthorityWorkflow); err != nil {
-		t.Fatalf("open the lifecycle of %s: %v", r.key, err)
-	}
-	implementer := r.token(claim.RoleImplementer)
-	if _, err := r.st.AdmitClaim(ctx, supervise.Claim{
-		Token: implementer, Project: r.project, Tree: r.key, Issue: r.key, Role: claim.RoleImplementer,
-		Generation: 1, State: supervise.StateLaunching, BootTokenHash: supervise.HashBootToken("interrupted-" + randomSuffix(t)),
-		ServingGeneration: 1,
-	}); err != nil {
-		t.Fatalf("record the implementer's unfinished launch: %v", err)
-	}
-	// Every role the proof launches needs its prompt on disk, as the daemon's own launch writes it.
-	for _, role := range []claim.Role{claim.RoleImplementer, claim.RoleTester, claim.RoleReviewer} {
-		writePrompt(t, r.cfg, r.token(role))
-	}
+	r.t.Helper()
+	r.seedImplementing(convergeFirstHead)
 	r.note("seeded: %s implementing on pull request #%d at %s, base %s, its implementer mid-launch serving run 1",
 		r.key, r.number, convergeFirstHead, convergeBase)
-}
-
-// write runs body in one transaction against the daemon's own database, failing the test with what
-// it was seeding on an error.
-func (r *phaseEntryConvergeLive) write(what string, body func(tx pgx.Tx) error) {
-	r.t.Helper()
-	if err := r.st.Tx(context.Background(), body); err != nil {
-		r.t.Fatalf("seed %s: %v", what, err)
-	}
-}
-
-// token is the claim token of role on the proof's issue, as the daemon spells it.
-func (r *phaseEntryConvergeLive) token(role claim.Role) claim.Token {
-	r.t.Helper()
-	token, err := claim.NewToken(r.project, r.key, role)
-	if err != nil {
-		r.t.Fatal(err)
-	}
-	return token
-}
-
-// awaitLaunch waits for the running daemon to launch token's claim and returns that launch.
-func (r *phaseEntryConvergeLive) awaitLaunch(token claim.Token) runtime.SpawnSpec {
-	r.t.Helper()
-	testwait.Eventually(r.t, "the launch of "+string(token), func() bool { return r.launched(token) })
-	return lastLaunch(r.t, r.rt, token)
-}
-
-// launched is whether the fake runtime has been asked to start a process for token.
-func (r *phaseEntryConvergeLive) launched(token claim.Token) bool {
-	for _, call := range r.rt.Calls() {
-		if (call.Method == "Spawn" || call.Method == "Resume") && call.Spec.Claim == token {
-			return true
-		}
-	}
-	return false
-}
-
-// waitFor polls the state until want is true of the issue, and returns what it last saw.
-func (r *phaseEntryConvergeLive) waitFor(what string, want func(api.Issue) bool) api.Issue {
-	r.t.Helper()
-	var last api.Issue
-	testwait.Eventually(r.t, what, func() bool {
-		last = r.issue(r.key)
-		return want(last)
-	})
-	return last
 }
 
 // waitingLaunch is the wake the daemon's pacing holds for token, as the state publishes it
@@ -345,18 +235,12 @@ func (r *phaseEntryConvergeLive) entries() (phaseEntry, givenEntry int64) {
 	return issue.PhaseEntry, issue.GivenEntry
 }
 
-// convergeClaimant is one role's claim as its agent reaches it: the shim that dialled the worker
-// stream with the boot token of the launch the fake runtime recorded, the registration that
-// exchanged it for the session's capability secret, and a reader that answers what the daemon asks
-// of the shim and hands each prompt to the step, starting its turn as the agent would.
+// convergeClaimant is one role's claim as its agent reaches it: the registered session
+// (liveSession), and a reader that answers what the daemon asks of the shim and hands each prompt
+// to the step, starting its turn as the agent would.
 type convergeClaimant struct {
-	r       *phaseEntryConvergeLive
-	token   claim.Token
-	role    claim.Role
-	session string
-	secret  string
-	sh      *shim
-	mu      sync.Mutex
+	*liveSession
+	mu sync.Mutex
 	// turn is whether a turn is running, which the daemon's state probe reads back, and prompt
 	// the id of the prompt that started it, which the result at its end names.
 	turn    bool
@@ -364,37 +248,14 @@ type convergeClaimant struct {
 	prompts chan shimwire.Prompt
 }
 
-// claimant brings the launched claim of role to ready, as its pane's shim and its agent do: it
-// waits for the launch, dials the worker stream with the launch's boot token, registers the
+// servedClaimant brings the launched claim of role to ready, as its pane's shim and its agent do:
+// it waits for the launch, dials the worker stream with the launch's boot token, registers the
 // session, serves the connection and reports the claim ready.
-func (r *phaseEntryConvergeLive) claimant(role claim.Role, session string) *convergeClaimant {
-	t := r.t
-	t.Helper()
-	token := r.token(role)
-	launch := r.awaitLaunch(token)
-	r.built.mu.Lock()
-	address := r.built.address
-	r.built.mu.Unlock()
-	c := &convergeClaimant{r: r, token: token, role: role, session: session,
-		sh: dialShim(t, address, launch.BootToken), prompts: make(chan shimwire.Prompt, 8)}
-	status, body := r.d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
-		BootToken: launch.BootToken, SessionID: session, OmpSessionFile: "/sessions/" + session + ".jsonl",
-		AgentID: session, PluginContract: api.DaemonAPIVersion,
-	}, false)
-	if status != http.StatusOK {
-		t.Fatalf("register %s = %d %s, want 200", token, status, body)
-	}
-	var registered claim.RegisterResponse
-	if err := json.Unmarshal(body, &registered); err != nil {
-		t.Fatalf("decode the registration of %s: %v", token, err)
-	}
-	c.secret = registered.Secret
+func (r *phaseEntryConvergeLive) servedClaimant(role claim.Role, session string) *convergeClaimant {
+	r.t.Helper()
+	c := &convergeClaimant{liveSession: r.register(role, session), prompts: make(chan shimwire.Prompt, 8)}
 	go c.serve()
-	if status, body := r.d.request(http.MethodPost, "/legion/v1/claims/ready", claim.ReadyRequest{
-		ClaimToken: token, SessionID: session, Secret: registered.Secret, Generation: launch.Generation,
-	}, false); status != http.StatusNoContent {
-		t.Fatalf("ready %s = %d %s, want 204", token, status, body)
-	}
+	c.ready()
 	return c
 }
 
@@ -441,7 +302,7 @@ func (c *convergeClaimant) send(frame shimwire.Frame) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if err := c.sh.writer.WriteFrame(frame); err != nil {
-		c.r.t.Errorf("send %s for %s: %v", frame.FrameType(), c.token, err)
+		c.p.t.Errorf("send %s for %s: %v", frame.FrameType(), c.token, err)
 	}
 }
 
@@ -449,14 +310,14 @@ func (c *convergeClaimant) send(frame shimwire.Frame) {
 // the seeded implementer is in when the proof reaches it. It returns once the daemon has recorded
 // the claim working.
 func (c *convergeClaimant) startOwnTurn() {
-	t := c.r.t
+	t := c.p.t
 	t.Helper()
 	c.mu.Lock()
 	c.turn, c.prompt = true, ""
 	c.mu.Unlock()
 	c.send(shimwire.AgentStart{})
 	testwait.Eventually(t, fmt.Sprintf("the %s's turn running", c.role), func() bool {
-		return c.r.d.claim(c.token).State == string(supervise.StateWorking)
+		return c.p.d.claim(c.token).State == string(supervise.StateWorking)
 	})
 }
 
@@ -464,7 +325,7 @@ func (c *convergeClaimant) startOwnTurn() {
 // which is what names the prompt the turn belonged to (shimwire.PromptResult) and retires the
 // task. It returns once the daemon has recorded the claim out of its turn.
 func (c *convergeClaimant) endTurn() {
-	t := c.r.t
+	t := c.p.t
 	t.Helper()
 	c.mu.Lock()
 	prompt := c.prompt
@@ -475,13 +336,13 @@ func (c *convergeClaimant) endTurn() {
 		c.send(shimwire.PromptResult{ID: prompt, AgentInvoked: true})
 	}
 	testwait.Eventually(t, fmt.Sprintf("the %s out of its turn", c.role), func() bool {
-		return c.r.d.claim(c.token).State == string(supervise.StateIdle)
+		return c.p.d.claim(c.token).State == string(supervise.StateIdle)
 	})
 }
 
 // awaitPrompt waits for the next task the daemon sends this claim, within bound, and returns it.
 func (c *convergeClaimant) awaitPrompt(what string, bound time.Duration) shimwire.Prompt {
-	t := c.r.t
+	t := c.p.t
 	t.Helper()
 	select {
 	case prompt := <-c.prompts:
@@ -508,52 +369,6 @@ func (c *convergeClaimant) drainPrompts() []shimwire.Prompt {
 	}
 }
 
-// grant is a capability grant minted for this session now, as its `legion` tool mints one per
-// operation.
-func (c *convergeClaimant) grant() string {
-	t := c.r.t
-	t.Helper()
-	status, body := c.r.d.request(http.MethodPost, "/legion/v1/grants",
-		api.GrantRequest{SessionID: c.session, Secret: c.secret, Tree: c.r.key, Issue: c.r.key}, false)
-	if status != http.StatusOK {
-		t.Fatalf("the grant of %s = %d %s, want 200", c.token, status, body)
-	}
-	var granted api.GrantResponse
-	if err := json.Unmarshal(body, &granted); err != nil {
-		t.Fatalf("decode the grant of %s: %v", c.token, err)
-	}
-	return granted.GrantID
-}
-
-// handoff seeds on the run's Dispatch board version 1 of this claim's record of phase word,
-// written by this claim's own registered session, as `dispatch handoff-write` leaves it, and
-// answers its id. A completion of a file-backed phase names a record, and the daemon reads it
-// back from Dispatch and refuses one another session wrote (api/handoff.go's handoffRecord), so
-// every completion below writes its own first, as a worker does.
-func (c *convergeClaimant) handoff(word string) string {
-	return c.r.board.handoff(c.r.key, word, c.session)
-}
-
-// complete reports this role's completion of the phase it works, from the turn it is in, naming a
-// handoff record of that phase this claim wrote, and returns the status and the refusal the daemon
-// answered. Every record the board seeds is version 1 of its own id, so each completion names a
-// record of its own and no two are the same one.
-func (c *convergeClaimant) complete(summary, commit, verdict, handoffID string) (int, api.Failure) {
-	t := c.r.t
-	t.Helper()
-	status, body := c.r.d.request(http.MethodPost, "/legion/v1/handoff/complete",
-		api.HandoffCompleteRequest{GrantID: c.grant(), Summary: summary, Commit: commit, Verdict: verdict,
-			HandoffID: handoffID, HandoffVersion: 1}, false)
-	if status == http.StatusOK {
-		return status, api.Failure{}
-	}
-	var failure api.Failure
-	if err := json.Unmarshal(body, &failure); err != nil {
-		t.Fatalf("decode the %s's refused completion %s: %v", c.role, body, err)
-	}
-	return status, failure
-}
-
 // Check 1 of run one. The seeded implementer completes implementing, which hands testing to the
 // tester: the transition raises the tester's phases row to entry 1 and writes that entry's own
 // task in its own transaction (workflow.Engine.enter), and the start it writes creates the
@@ -568,14 +383,14 @@ func (c *convergeClaimant) complete(summary, commit, verdict, handoffID string) 
 func (r *phaseEntryConvergeLive) phaseChangesWhileTheStartWaits() {
 	t := r.t
 	tester := r.token(claim.RoleTester)
-	r.imp = r.claimant(claim.RoleImplementer, "ses_implementer")
+	r.imp = r.servedClaimant(claim.RoleImplementer, "ses_implementer")
 	r.note("the implementer is registered and ready on the launch this boot made for the claim the fixture left mid-launch; that launch spent the burst of %d wake(s) a minute in bursts of %d",
 		convergeWakeRate, convergeWakeBurst)
 	// The conflict is armed before this completion, and the read that completion queues is held
 	// at the stand-in while this check reads the state the completion left (armConflict,
-	// convergeGitHub.pause): the read is where an issue in testing learns its head conflicts,
+	// pullRequestReadPause.pause): the read is where an issue in testing learns its head conflicts,
 	// and held, it cannot land between the completion and the reads below it.
-	releaseRead := r.github.pause()
+	releaseRead := r.reads.pause()
 	defer releaseRead()
 	r.armConflict()
 	r.imp.startOwnTurn()
@@ -630,12 +445,7 @@ func (r *phaseEntryConvergeLive) phaseChangesWhileTheStartWaits() {
 	// which raises the tester's row to entry 2 and writes that entry's own task. GitHub answers
 	// the new head mergeable, as it does once the base is merged forward into it.
 	r.github.conflicts(false)
-	r.github.head(convergeSecondHead)
-	r.publishPush(convergeFirstHead, convergeSecondHead)
-	r.publishSynchronize(convergeSecondHead)
-	r.waitFor("the pull request at the pushed head", func(got api.Issue) bool {
-		return got.PullRequest != nil && got.PullRequest.Head == convergeSecondHead
-	})
+	r.push(convergeFirstHead, convergeSecondHead, "fix the red")
 	if status, failure := r.imp.complete("merged the base forward", convergeSecondHead, "", r.imp.handoff("implement")); status != http.StatusOK {
 		t.Fatalf("the implementer's second completion = %d %s %s, want 200", status, failure.Code, failure.Error)
 	}
@@ -676,7 +486,7 @@ func (r *phaseEntryConvergeLive) theLaunchRunsAndTheEntryIsWorked() {
 	}
 	r.awaitLaunch(tester)
 	r.note("the pace let the tester's launch run: the fake runtime started its process")
-	r.test = r.claimant(claim.RoleTester, "ses_tester")
+	r.test = r.servedClaimant(claim.RoleTester, "ses_tester")
 	first := r.test.awaitPrompt("the tester's first task", convergeOwedBound)
 	if first.DeliveryID != stale.ID {
 		t.Fatalf("the tester was sent delivery %s, want %s, the task of entry 1 its claim held while the phase changed", first.DeliveryID, stale.ID)
@@ -756,7 +566,7 @@ func (r *phaseEntryConvergeLive) aDeletedStartRowLosesNoWork() {
 
 	// The reviewer, on the start the move to reviewing wrote. Its completion is what asks the
 	// daemon to read the pull request, and that read is what carries the conflicting head.
-	r.rev = r.claimant(claim.RoleReviewer, "ses_reviewer")
+	r.rev = r.servedClaimant(claim.RoleReviewer, "ses_reviewer")
 	r.rev.awaitPrompt("the reviewer's task", convergeOwedBound)
 	r.note("the reviewer came up on the start the move to reviewing wrote, before the lock below")
 
@@ -892,106 +702,39 @@ func (r *phaseEntryConvergeLive) stateCarriesBothNumbers() {
 func (r *phaseEntryConvergeLive) armConflict() {
 	r.t.Helper()
 	r.github.conflicts(true)
-	r.seq++
-	payload, err := json.Marshal(map[string]string{
-		"kind": "push", "repo": liveRepo, "ref": "refs/heads/" + convergeBase,
-		"before": fmt.Sprintf("base-%d", r.seq-1), "after": fmt.Sprintf("base-%d", r.seq),
-		"changed_paths": "src/widget.go", "changed_paths_truncated": "false", "forced": "false",
-		"pusher": "someone-else", "commit_count": "1", "head_subject": "another pull request merged",
-	})
-	if err != nil {
-		r.t.Fatalf("encode the base push payload: %v", err)
-	}
-	subject := fmt.Sprintf("notifications.github.%s.push.branch.%s", r.subjectRepo(), convergeBase)
-	r.publish(subject, "github", fmt.Sprintf("base-push-%d-%d", r.number, r.seq), string(payload))
+	r.publishBasePush()
 }
 
-// publishPush publishes the implementer's push of to onto from on the issue's branch, changing
-// code, as Envoy relays a GitHub push (intake's decodePush reads it).
-func (r *phaseEntryConvergeLive) publishPush(from, to string) {
-	r.t.Helper()
-	payload, err := json.Marshal(map[string]string{
-		"kind": "push", "repo": liveRepo, "ref": "refs/heads/legion/" + r.key, "before": from, "after": to,
-		"pusher": "legion-implement[bot]", "commit_count": "1", "head_subject": "fix the red",
-	})
-	if err != nil {
-		r.t.Fatalf("encode the push payload: %v", err)
-	}
-	subject := fmt.Sprintf("notifications.github.%s.push.branch.legion/%s", r.subjectRepo(), r.key)
-	r.publish(subject, "github", fmt.Sprintf("push-%d-%s", r.number, to), string(payload))
-}
-
-// publishSynchronize publishes GitHub's synchronize of the pull request to head, as Envoy relays a
-// GitHub pull-request event (intake's decodePullRequest reads it).
-func (r *phaseEntryConvergeLive) publishSynchronize(head string) {
-	r.t.Helper()
-	payload, err := json.Marshal(map[string]string{
-		"action": "synchronize", "kind": "pr", "repo": liveRepo, "number": strconv.Itoa(r.number),
-		"head_sha": head, "base_ref": convergeBase, "head_ref": "legion/" + r.key,
-		"title":      "the issue whose phase entries converge",
-		"url":        "https://github.com/" + liveRepo + "/pull/" + strconv.Itoa(r.number),
-		"updated_at": time.Now().UTC().Format(time.RFC3339),
-	})
-	if err != nil {
-		r.t.Fatalf("encode the synchronize payload: %v", err)
-	}
-	subject := fmt.Sprintf("notifications.github.%s.pr.%d", r.subjectRepo(), r.number)
-	r.publish(subject, "github", fmt.Sprintf("pr-%d-synchronize-%s", r.number, head), string(payload))
-}
-
-// convergeGitHub is GitHub's REST API for acme/widgets as this proof's daemon reads it: the one
-// pull request at the head the driver last pushed, with its base and `mergeable: true`
-// (readPullRequest, whose `mergeable` is what the daemon's merge-state read judges), and its
-// reviews as none (readReviews). It also answers
-// what a launch and a disarm read: any repository, with default branch main, and a GraphQL root
-// that knows no pull request. Anything else is answered 404, which the daemon's own reads take as
-// GitHub being unreadable — the implementer's completion is applied unread on that answer
+// pullRequestReadPause is the one thing this proof adds to the harness's GitHub stand-in
+// (liveGitHub, the proof's github): a pause of the read of the pull request itself. The stand-in
+// serves no branch rule, and what it does not serve it answers 404, which the daemon's own reads
+// take as GitHub being unreadable — the implementer's completion is applied unread on that answer
 // (api/handoff.go's implementationPullRequest) — so no read of this proof reaches github.com.
-type convergeGitHub struct {
-	t      *testing.T
-	url    string
-	key    string
-	number int
-	mu     sync.Mutex
-	// sha is the pull request's head on GitHub, which a push moves.
-	sha string
-	// conflicting is what GitHub's lazily computed `mergeable` answers: false once the base has
-	// moved past the head, which is the one answer of a pull request that moves an issue.
-	conflicting bool
+type pullRequestReadPause struct {
+	// mu guards held apart from the stand-in's own lock, which a held read waits outside of.
+	mu sync.Mutex
 	// held holds every read of the pull request while a check means that read to land later
 	// (pause); nil holds none.
 	held chan struct{}
 }
 
-func newConvergeGitHub(t *testing.T, key string, number int) *convergeGitHub {
-	t.Helper()
-	g := &convergeGitHub{t: t, key: key, number: number, sha: convergeFirstHead}
-	g.url = githubtest.Server(t, githubtest.Spec{Handle: g.ServeHTTP})
+// newPullRequestReadPause starts the stand-in for the proof's pull request at its first head
+// (serveGitHub), with the pause's waitForRelease run before each read of the pull request, and
+// returns the pause.
+func (r *phaseEntryConvergeLive) newPullRequestReadPause() *pullRequestReadPause {
+	r.t.Helper()
+	g := &pullRequestReadPause{}
+	r.serveGitHub(&liveGitHub{sha: convergeFirstHead, hold: g.waitForRelease})
 	return g
 }
 
-// head moves the pull request to sha, as a push does on GitHub.
-func (g *convergeGitHub) head(sha string) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	g.sha = sha
-}
-
-// conflicts makes GitHub answer `mergeable: false` for the head, as it does once the base has
-// moved past it, and answer it mergeable again once the implementer has merged the base forward.
-func (g *convergeGitHub) conflicts(yes bool) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	g.conflicting = yes
-}
-
-// pause holds every read of the pull request itself at this stand-in until the function it
+// pause holds every read of the pull request itself at the stand-in until the function it
 // answers with is called, which is how a check reads the state a completion left before the read
 // that completion queued lands: the read is the one place an issue short of reviewing learns its
 // head conflicts (armConflict), so the proof arms the answer, drives the completion, reads, and
 // then lets the read run. It holds nothing else GitHub answers, and the release may be called
 // twice — a check defers it and calls it where it means the read to land.
-func (g *convergeGitHub) pause() func() {
+func (g *pullRequestReadPause) pause() func() {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	held := make(chan struct{})
@@ -1009,68 +752,14 @@ func (g *convergeGitHub) pause() func() {
 	}
 }
 
-// waitForRelease holds a read of the pull request while pause holds one, and holds nothing else.
-// It runs before the lock below, since a handler waiting under that lock would stop every other
-// answer this stand-in gives.
-func (g *convergeGitHub) waitForRelease(path string) {
-	if !strings.HasSuffix(path, fmt.Sprintf("/pulls/%d", g.number)) {
-		return
-	}
+// waitForRelease holds a read of the pull request while pause holds one. The stand-in runs it
+// before each read of the pull request and outside its own lock (liveGitHub's hold), so it holds
+// nothing else.
+func (g *pullRequestReadPause) waitForRelease() {
 	g.mu.Lock()
 	held := g.held
 	g.mu.Unlock()
 	if held != nil {
 		<-held
-	}
-}
-
-func (g *convergeGitHub) ServeHTTP(w http.ResponseWriter, req *http.Request) {
-	g.waitForRelease(req.URL.Path)
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	if req.Method == http.MethodPost && req.URL.Path == "/graphql" {
-		_, _ = io.WriteString(w, `{"data":{"repository":{"pullRequest":null}}}`)
-		return
-	}
-	if req.Method == http.MethodGet && g.answer(w, req.URL.Path) {
-		return
-	}
-	w.WriteHeader(http.StatusNotFound)
-	_, _ = io.WriteString(w, `{"message":"Not Found"}`)
-}
-
-// answer writes the stand-in's answer to a GET of path, and says whether it had one.
-func (g *convergeGitHub) answer(w http.ResponseWriter, path string) bool {
-	rest, ours := strings.CutPrefix(path, "/repos/"+liveRepo)
-	if !ours {
-		// Any other repository is answered as the launch reads it: a name and its default branch.
-		other, isRepository := strings.CutPrefix(path, "/repos/")
-		if parts := strings.Split(other, "/"); isRepository && len(parts) == 2 {
-			g.write(w, map[string]any{"full_name": other, "default_branch": convergeBase})
-			return true
-		}
-		return false
-	}
-	switch {
-	case rest == "":
-		g.write(w, map[string]any{"full_name": liveRepo, "default_branch": convergeBase})
-	case rest == fmt.Sprintf("/pulls/%d/reviews", g.number):
-		g.write(w, []any{})
-	case rest == fmt.Sprintf("/pulls/%d", g.number):
-		g.write(w, map[string]any{
-			"number": g.number, "state": "open", "mergeable": !g.conflicting,
-			"base": map[string]string{"ref": convergeBase},
-			"head": map[string]string{"ref": "legion/" + g.key, "sha": g.sha},
-		})
-	default:
-		return false
-	}
-	return true
-}
-
-// write encodes value as the answer.
-func (g *convergeGitHub) write(w http.ResponseWriter, value any) {
-	if err := json.NewEncoder(w).Encode(value); err != nil {
-		g.t.Errorf("write the GitHub stand-in's answer: %v", err)
 	}
 }

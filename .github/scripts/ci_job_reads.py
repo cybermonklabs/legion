@@ -1137,14 +1137,27 @@ def race_step(job):
     return step_run(job.job, job.step, text, ENVOY, pkgs, race=True)
 
 
-# The unit step runs the module less three things: the lane's packages, which the three race jobs
-# run under the detector, internal/integration, which envoy-go's integration step runs, and the
-# text checks, which the text-check job runs. Its `grep -Ev` is `/integration`, then the text
-# checks, then, in the lane's own order, each package in the form go list's import paths need - a
-# tree matching the package and everything under it, any other the package alone.
+# The architecture-note rules and the command that runs them, which envoy-go-checks tests in a
+# step of their own: they need no database, so they run there on every push, and that step is
+# their one run. Both that step's package list and the unit step's exclusion of them are built
+# from this list, so go-test-step-expansion.py finds no pair the two steps both run and neither
+# step can come to name a package the other does not leave out.
+ARCHITECTURE_CHECK_PACKAGES = ["internal/dispatch/architecture/notes", "cmd/architecture-check"]
+ARCHITECTURE_CHECK_STEP = "Test the architecture-note rules and their command"
+ARCHITECTURE_CHECK_PKGS = [f"./{p}/" for p in ARCHITECTURE_CHECK_PACKAGES]
+ARCHITECTURE_CHECK_TEXT = "go test -count=1 " + " ".join(ARCHITECTURE_CHECK_PKGS)
+
+# The unit step runs the module less four things: the lane's packages, which the three race jobs
+# run under the detector, internal/integration, which envoy-go's integration step runs, the text
+# checks, which the text-check job runs, and the architecture-note packages, which envoy-go-checks
+# runs. Its `grep -Ev` is `/integration`, then the text checks, then the architecture-note
+# packages, each the package alone, then, in the lane's own order, each package in the form go
+# list's import paths need - a tree matching the package and everything under it, any other the
+# package alone.
 UNIT_TEST_STEP = "Unit test envoy Go package"
 UNIT_TEST_PATTERN = "|".join(
     ["/integration", f"/{TEXT_CHECK_PACKAGE}$"]
+    + [f"/{p}$" for p in ARCHITECTURE_CHECK_PACKAGES]
     + [f"/{p.name}($|/)" if p.tree else f"/{p.name}$" for job in ENVOY_RACE_LANE for p in job.packages])
 
 
@@ -1553,8 +1566,8 @@ SESSIONS_STEP = "Test the session message-wait script"
 # harness or its subject selects the job and exactly that step's gate is true in it.
 #
 # Every harness under .github/scripts sources test-lib.sh for its `check`, `is` and `summary`,
-# so each of those gates reads it and a change to it runs them all; scripts/sessions-import-pods.test.sh,
-# which is not one of them, carries its own helpers.
+# so each of those gates reads it and a change to it runs them all; scripts/sessions-import-pods.test.sh
+# and scripts/priorities-seed-check.test.sh, which are not among them, carry their own helpers.
 SCRIPTS = ".github/scripts"
 TEST_LIB = f"{SCRIPTS}/test-lib.sh"
 
@@ -1763,18 +1776,22 @@ SCRIPT_TEST_GATES = [
     harness("disk_watch_test", "Test the machine watch", f"{SCRIPTS}/disk_watch.test.sh", [
         (f"{SCRIPTS}/disk_watch.py", "the module under test"),
     ]),
-    # The one harness of the job that is not under .github/scripts and sources no test-lib.sh.
+    # The two harnesses of the job that are not under .github/scripts and source no test-lib.sh.
     harness("sessions_import_pods_test", "Test the session import pods script (a stand-in kubectl)",
             "scripts/sessions-import-pods.test.sh", [
         ("scripts/sessions-import-pods.sh", "the script under test (scripts/sessions-import-pods.test.sh:113 runs it)"),
     ], lib=False),
+    harness("priorities_seed_check_test", "Test the priorities seed check (a stand-in Dispatch)",
+            "scripts/priorities-seed-check.test.sh", [
+        ("scripts/priorities-seed-check.sh", "the script under test (scripts/priorities-seed-check.test.sh:14 names it)"),
+    ], lib=False),
     harness("check_ci_filters_test", "Test the CI filter check", f"{SCRIPTS}/check-ci-filters.test.sh", [
-        (f"{SCRIPTS}/check-ci-filters.sh", "the script under test, symlinked into every fixture (check-ci-filters.test.sh:74)"),
+        (f"{SCRIPTS}/check-ci-filters.sh", "the script under test, symlinked into every fixture (check-ci-filters.test.sh:75-76)"),
         (f"{SCRIPTS}/ci_filter_coverage.py", "the engine the fixtures link in beside it"),
         (f"{SCRIPTS}/ci_workflow_rules.py", "the rules the fixtures link in beside it"),
         (f"{SCRIPTS}/workflow_paths.py", "the path model the fixtures link in beside it"),
-        (f"{SCRIPTS}/ci_job_reads.py", "check-ci-filters.test.sh:1962 imports this table to derive the plain step's -run lists"),
-        ("AGENTS.md", "check-ci-filters.test.sh:2315 holds the guide's slow-suite list to the jobs the full-ci label gates"),
+        (f"{SCRIPTS}/ci_job_reads.py", "check-ci-filters.test.sh:2172 imports this table to derive the plain step's -run lists"),
+        ("AGENTS.md", "check-ci-filters.test.sh:2579 holds the guide's slow-suite list to the jobs the full-ci label gates"),
     ]),
     harness("check_ts_filters_test", "Test the TypeScript filter check", f"{SCRIPTS}/check-ts-filters.test.sh", [
         (f"{SCRIPTS}/check-ts-filters.sh", "the script under test, symlinked into every fixture (check-ts-filters.test.sh:43)"),
@@ -1943,9 +1960,12 @@ GATES = [
         ("scripts/third-party-notices.ts", "scripts/third-party-notices.test.ts:5,122"),
         ("scripts/semantic-line-breaks.test.ts", at("test", "Test the semantic line-break checker")),
         ("scripts/semantic-line-breaks.ts", "scripts/semantic-line-breaks.test.ts:6 spawns it"),
+        ("scripts/priorities-seed.test.ts", at("test", "Test the priorities seed")),
+        ("scripts/priorities-seed.ts", "scripts/priorities-seed.test.ts:3 imports it"),
         ("scripts/e2e/**", f"{at('test', 'bun test scripts/e2e/lib')} (lib/script-functions.test.ts:105-108 scans scripts/e2e/*.sh and lib/*); "
                            f"{at('test', 'Test the e2e proof selector')}: the selector reads scripts/e2e/*.sh"),
-        (CONTRACTS_SRC, "scripts/e2e/lib/envoy-bridge.ts:9-10, session-settings-services.ts:6; scripts/dispatch/ask-census.ts:9 (tsc -p scripts/dispatch)"),
+        (CONTRACTS_SRC, "scripts/e2e/lib/envoy-bridge.ts:9-10, session-settings-services.ts:6; scripts/dispatch/ask-census.ts:9 (tsc -p scripts/dispatch); "
+                        "scripts/priorities-seed.ts:29"),
         (TEST_FIXTURES_SRC, f"{at('test', 'bun test scripts/e2e/lib')} and the other bun test steps import @legion/test-fixtures"),
         # The envoy-client sources, and broker-client's with them, are the shared read below:
         # scripts/e2e/lib/nats-stream.ts:16-18, operator-dispatch.ts:16-21, envoy-bridge.ts:11
@@ -1977,7 +1997,8 @@ GATES = [
         ("packages/*/.changie.yaml", f"{at('test', FOLD_CHECK_STEP)}: fold-check renders each listed package's fragments with that package's own changie configuration"),
         ("packages/*/.changes/unreleased/**", f"{at('test', FOLD_CHECK_STEP)}: fold-check renders every fragment a listed package holds"),
     ) + envoy_client_dep("scripts/e2e/lib/nats-stream.ts:16-18, operator-dispatch.ts:16-21, envoy-bridge.ts:11; "
-                         "scripts/dispatch/ask-census.ts:10-15 (tsc -p scripts/dispatch)")
+                         "scripts/dispatch/ask-census.ts:10-15 (tsc -p scripts/dispatch); scripts/priorities-seed.ts:30-38 "
+                         "and priorities-seed.test.ts:2")
       + setup_go("test", f"{DAEMON}/go.mod")
       + biome(at("test", "Lint the Dispatch census script")) + bun_job("test")),
 
@@ -2114,6 +2135,8 @@ GATES = [
         ("scripts/pi-plugin-prepack.sh", "packages/pi-shared/test/skills-guard.ts:17,34 runs scripts/pi-plugin-prepack.sh --stage-skills"),
         (f"{DAEMON}/internal/prompts/**", "packages/pi-shared/test/skills-partition.test.ts:70-76 reads every .md under packages/daemon/internal/prompts"),
         (".github/workflows/release.yaml", "packages/pi-shared/test/skills-partition.test.ts:95"),
+        (f"{DAEMON}/internal/workspace/stale-git-lock-note.txt",
+         "packages/pi-shared/src/git-lock.test.ts:63 reads it and holds git-lock.ts's copy to it"),
     ) + envoy_client_dep("packages/pi-shared/tsconfig.json paths @legion/envoy-client/errors; src imports "
                          "@legion/envoy-client/* (exports.bun -> src)")
       + bun_job("pi-shared")),
@@ -2326,14 +2349,15 @@ GATES = [
             for under in RACE_IMPOSSIBLE_PACKAGES
         ]),
         # The module but the race lane's packages, internal/integration, which the integration
-        # step tests, and the text checks, which the text-check job runs. The Run names the
-        # packages the step's own `grep -Ev` keeps (packages_kept over UNIT_TEST_PATTERN), so it
-        # is read from the pattern the step runs rather than claimed beside it. A Run saying
-        # more would credit this job with tests other jobs run: the race lane's are
-        # envoy-go-race's, envoy-go-race-api's and envoy-go-race-docs', the text checks are the
-        # text-check job's, and the closure of ./... would put their test files and the files
-        # only those tests read on this job's filter, so a change to one of them would start a
-        # job that does not run the test it touches.
+        # step tests, the text checks, which the text-check job runs, and the architecture-note
+        # packages, which envoy-go-checks runs. The Run names the packages the step's own
+        # `grep -Ev` keeps (packages_kept over UNIT_TEST_PATTERN), so it is read from the pattern
+        # the step runs rather than claimed beside it. A Run saying more would credit this job
+        # with tests other jobs run: the race lane's are envoy-go-race's, envoy-go-race-api's and
+        # envoy-go-race-docs', the text checks are the text-check job's, the architecture-note
+        # packages are envoy-go-checks', and the closure of ./... would put their test files and
+        # the files only those tests read on this job's filter, so a change to one of them would
+        # start a job that does not run the test it touches.
         # Its -skip takes WEB_FIXTURE_TESTS out of this step: without `--check`
         # TestWebDisplayFixture writes the committed web display fixture rather than checking it,
         # so a second run here asks nothing and can only pass, and
@@ -2361,10 +2385,15 @@ GATES = [
 
     # envoy-go's fast half: its format and generated-code checks, the seven shell-script tests
     # and the build and pack of the envoy commands (ci.yaml's comment on envoy-go-checks says why
-    # they are split out). Its gofmt step reads the whole module, so no closure stands for it.
+    # they are split out), with the tests of the architecture-note rules and their command and the
+    # note check over this repository's notes through the composite action. Its gofmt step reads
+    # the whole module, so no closure stands for it.
     gate("envoy_go_checks", "envoy-go-checks", runs=[
         step_run("envoy-go-checks", "Build envoy services", "go build ./cmd/dispatch ./cmd/listener", ENVOY,
                  ["./cmd/dispatch", "./cmd/listener"], mode="build"),
+        # The architecture-note rules and their command: the closure of the two packages, tests,
+        # testdata and all, built from the list the unit step's `grep -Ev` leaves them out by.
+        step_run("envoy-go-checks", ARCHITECTURE_CHECK_STEP, ARCHITECTURE_CHECK_TEXT, ENVOY, ARCHITECTURE_CHECK_PKGS),
     ], exact=[
         # `go run` is not one of the three forms the reducer reads, so the step is pinned whole
         # and this Run stands for the command it compiles.
@@ -2414,6 +2443,18 @@ GATES = [
         (f"{ENVOY}/loadtest/common.sh", "packages/envoy/loadtest/common.test.sh sources it; run-step.sh and run-series.sh source it"),
         (NOTICES, f"{at('envoy-go-checks', 'Pack envoy binaries')} runs it"),
         (GO_TARGETS, f"{at('envoy-go-checks', 'Pack envoy binaries')}: jq -r '.envoy[]'"),
+        # The action builds cmd/architecture-check with GOWORK=off, so it reads packages/envoy's
+        # go.mod and go.sum and the command's packages, all under the packages/envoy/** read; what
+        # is outside packages/envoy is the action itself and the notes it judges.
+        (".github/actions/architecture-check/action.yml",
+         f"{at('envoy-go-checks', './.github/actions/architecture-check')} runs the action it defines"),
+        (".github/actions/architecture-check/check.sh",
+         f"{at('envoy-go-checks', './.github/actions/architecture-check')}: "
+         ".github/actions/architecture-check/action.yml:95 and :121 run it"),
+        (".dispatch/architecture/**",
+         f"{at('envoy-go-checks', './.github/actions/architecture-check')} judges the action's default path "
+         "(.github/actions/architecture-check/action.yml:16), which check.sh:82 resolves against GITHUB_WORKSPACE "
+         "and the command it runs at check.sh:92 reads"),
     ) + setup_go("envoy-go-checks", f"{ENVOY}/go.mod") + bun_job("envoy-go-checks")),
 
 

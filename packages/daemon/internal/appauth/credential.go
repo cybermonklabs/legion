@@ -23,17 +23,18 @@ var ErrOwnerOutsideProject = errors.New("is not an owner of the project's reposi
 // GitHubCredential is the one function every role's gh files come from (runtime.GitHubCredential)
 // over tokens: a bundle whose directories (GitHubDirs, built from the same description) each hold
 // one lease of the role's App, rendered as gh's hosts.yml and config.yml and named for the App and
-// its expiry so a log can say whose token it wrote. Every lease names the repositories it reaches
-// and no others, so a directory's token is never wider than the directory's own name says:
+// its expiry so a log can say whose token it wrote. Every lease reaches its owner's whole
+// installation at its own permissions, so a directory's name says which lease a command is served,
+// not which repositories the token reaches:
 //
 //   - the directory named for the issue's recorded owner and the directory named for the owner
 //     whose installation serves that repository hold the one write lease for it (Tokens.Token),
 //     and each other repository the mapping serves under the owner that lease is minted for has
 //     a directory of its own, `<owner>/<repo>`, holding a read-only lease (Tokens.ReadToken)
-//     naming that repository alone;
+//     cached under that repository alone;
 //   - each other repository the issue's recorded owner serves beside the one the role writes to
 //     has such a directory under that owner's own name too (bundleDirs' recorded clause). A
-//     write lease names one repository, so where a configured pair resolves the recorded
+//     write lease is minted on one installation, so where a configured pair resolves the recorded
 //     owner's directory writes its issue's repository — the one the owner the pair moved it to
 //     serves — and reaches none of the recorded owner's others, which the project serves and
 //     the role may read; without a directory of their own those repositories are named by no
@@ -602,10 +603,11 @@ var (
 )
 
 // refusedNarrowing and refusedName are why a repository is left out of a bundle, as its line says
-// it: GitHub refusing a lease that names it, or gh keeping the owner's own file of that name
-// where the repository's directory would be.
+// it: GitHub refusing the read lease the repository's directory is cached under, or gh keeping the
+// owner's own file of that name where the repository's directory would be. No token request
+// names a repository, so a refused lease is the installation's grant, not its reach.
 const (
-	refusedNarrowing = "the App's installation does not reach it: GitHub refused a token naming it"
+	refusedNarrowing = "GitHub refused the App's read lease on its owner: the installation is not granted what the lease asks for"
 	refusedName      = "gh keeps the owner's own file of that name where the repository's directory would be"
 )
 
@@ -613,8 +615,7 @@ const (
 // once per App role, owner and repository for the life of the process (saidLeftOut): the role's
 // other repositories are served, and what its bundle does not hold is said once rather than at
 // every launch and every refresh. It carries no token, a bundle's shortfall being about the ask.
-// A caller that holds no logger of its own (sandbox.Options.Log is one) says it on slog.Default,
-// as the daemon's own fallback line does (implementTokens.warnOwnToken).
+// A caller that holds no logger of its own (sandbox.Options.Log is one) says it on slog.Default.
 func sayLeftOut(log *slog.Logger, role AppRole, owner, repo, because string) {
 	key := leftOutRepository{role: role, owner: strings.ToLower(strings.TrimSpace(owner)), repo: strings.ToLower(strings.TrimSpace(repo))}
 	saidLeftOutMu.Lock()

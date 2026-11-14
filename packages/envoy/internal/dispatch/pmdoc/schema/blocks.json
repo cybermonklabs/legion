@@ -1,5 +1,5 @@
 {
-  "version": 3,
+  "version": 4,
   "types": [
     {
       "name": "callout",
@@ -111,6 +111,9 @@
           "default": "before_merge"
         },
         "negative_control": {
+          "kind": "string"
+        },
+        "ci_check": {
           "kind": "string"
         }
       }

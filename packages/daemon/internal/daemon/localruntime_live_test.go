@@ -33,13 +33,18 @@
 //     is the same pane a runtime with no GitHubCredential function opens.
 //   - ProvisionsWorkspaces answers true, as the Sandbox runtime does, so the daemon clones no
 //     repository on its host; this runtime makes the claim's working directory itself.
-//   - PodDrift, ReplacePod, RescueUnpushed and CleanupTree hold nothing per place or per tree, so
-//     each answers as a process-only runtime answers: no drift, nothing to replace, nothing to
-//     rescue, nothing to delete.
+//   - PodDrift, ReplacePod and CleanupTree hold nothing per place or per tree, so each answers
+//     as a process-only runtime answers: no drift, nothing to replace, nothing to delete.
 //
 // Every child is started in a process group of its own (Setpgid) and every stop signals that
 // group, so Oh My Pi and the shim go together and a failed or finished run leaves no child
 // behind: the test's cleanup kills every group the runtime ever started, whatever the proof did.
+//
+// Two things here are a step's rather than a runtime's, and both are of that process group: a
+// step kills one out from under the daemon (killProcessGroup), and a step holds the runtime's
+// own reports of one claim back while it does (hold), so the death reaches the daemon through
+// nothing but the read it makes at the request. claim_compaction_live_test.go's step 8 is what
+// they are for.
 package daemon
 
 import (
@@ -96,6 +101,10 @@ type localRuntime struct {
 	daemonURL string
 	envoyURL  string
 	natsURLs  []string
+	// dispatchURL and dispatchTokenFile are the Dispatch every pane is told as DISPATCH_URL and
+	// DISPATCH_TOKEN_FILE, as the tmux runtime tells a pane its daemon's configured Dispatch
+	// (tmux.Options.DispatchURL): both or neither, and with neither a pane's Dispatch is off.
+	dispatchURL, dispatchTokenFile string
 	// overlays answers the Oh My Pi overlay files one claim's pane is told, in PI_CONFIG_FILES
 	// order. A pane's overlays are the operator's (runtime.tmux.pi_config_files) and its role's
 	// (role_config_files) in production; this proof routes each claim to a stand-in of its own, and
@@ -113,6 +122,10 @@ type localRuntime struct {
 	seq     int
 	obs     chan runtime.Observation
 	stopped bool
+	// held is the claims a step has taken the hold over, by token (hold). It stands beside the
+	// panes rather than on one, because what it holds back is everything this runtime would say
+	// about the claim, and a pane that has been killed under it says the most.
+	held map[claim.Token]*localHold
 }
 
 // newLocalRuntime builds the runtime and registers the cleanup that kills every process group it
@@ -132,9 +145,90 @@ func newLocalRuntime(t *testing.T, stateDir, legion, omp, home, profile string) 
 		t: t, stateDir: stateDir, legion: legion, omp: omp, home: home, profile: profile,
 		overlays: func(claim.Token) []string { return nil },
 		paneLogs: logs, panes: map[claim.Token]*localPane{}, obs: make(chan runtime.Observation, 256),
+		held: map[claim.Token]*localHold{},
 	}
 	t.Cleanup(r.killEverything)
 	return r
+}
+
+// localHoldDetail is what this runtime answers a read of a claim a step holds: a detail of its
+// own, so the daemon's own line about that read names the hold rather than a process the test is
+// standing in the way of.
+const localHoldDetail = "a step of this proof holds the claim: the runtime is saying nothing about its process"
+
+// localHold is one step's hold over one claim, which hold takes and release ends. While it
+// stands this runtime tells the daemon nothing about that claim and answers every read of its
+// process uncertain, which is the window a lifecycle refusal or a daemon restart leaves: a
+// process died and no report of that death ever reached the daemon
+// (claim_compaction_live_test.go's step 8, supervise.Claim.ProcessGone).
+//
+// swept counts the sweep's own reports the hold has dropped, which is how a step tells a pass
+// has just run: a held claim's observation is this runtime's uncertain answer, where the pane's
+// Wait goroutine reports the death itself, so the uncertain ones are the sweep's and nothing
+// else's (observation, report, Observe).
+type localHold struct {
+	rt    *localRuntime
+	token claim.Token
+	swept int
+}
+
+// hold takes the hold over token. One claim is held once at a time: a second hold over the same
+// claim would be two steps standing in each other's way, which no proof means to do.
+func (r *localRuntime) hold(token claim.Token) *localHold {
+	r.t.Helper()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, taken := r.held[token]; taken {
+		r.t.Fatalf("this runtime is held over %s already", token)
+	}
+	h := &localHold{rt: r, token: token}
+	r.held[token] = h
+	return h
+}
+
+// release puts the claim back to the truthful answers: a read of a killed process group answers
+// gone from here on, and the sweep reports it. It is run twice over by a step that releases its
+// hold and defers the release as well, so a second one does nothing.
+func (h *localHold) release() {
+	h.rt.mu.Lock()
+	defer h.rt.mu.Unlock()
+	if held, ok := h.rt.held[h.token]; ok && held == h {
+		delete(h.rt.held, h.token)
+	}
+}
+
+// sweeps is how many of the observation sweep's own passes over the claim this hold has dropped.
+func (h *localHold) sweeps() int {
+	h.rt.mu.Lock()
+	defer h.rt.mu.Unlock()
+	return h.swept
+}
+
+// holding is the hold over token, and nil when no step holds it.
+func (r *localRuntime) holding(token claim.Token) *localHold {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.held[token]
+}
+
+// killProcessGroup SIGKILLs the whole process group of the pane loc names and waits for the
+// child to end, which is a pane's process dying out from under the daemon: the shim, Oh My Pi
+// and whatever Oh My Pi started go together, as they go under this runtime's own stop. It
+// answers the pid it killed, and fails the step when loc names no process this runtime records
+// as the claim's current one.
+func (r *localRuntime) killProcessGroup(loc runtime.Locator) int {
+	r.t.Helper()
+	pane, ok := r.pane(loc)
+	if !ok {
+		r.t.Fatalf("this runtime records no process at %s for %s", loc.Incarnation, loc.Claim)
+	}
+	if err := syscall.Kill(-pane.pid, syscall.SIGKILL); err != nil {
+		r.t.Fatalf("kill the process group of %s (pid %d): %v", loc.Claim, pane.pid, err)
+	}
+	if !waitGone(pane, localStopGrace) {
+		r.t.Fatalf("the worker of %s (pid %d) did not end after SIGKILL; its log is %s", loc.Claim, pane.pid, pane.log)
+	}
+	return pane.pid
 }
 
 // killEverything SIGKILLs every process group this runtime started that is still alive. It runs
@@ -223,7 +317,7 @@ func (r *localRuntime) launch(ctx context.Context, spec runtime.SpawnSpec) (runt
 	seq := r.seq
 	r.mu.Unlock()
 
-	workDir := filepath.Join(r.stateDir, "workspaces", spec.Issue)
+	workDir := r.workDir(spec.Issue)
 	if err := os.MkdirAll(workDir, 0o700); err != nil {
 		return runtime.Locator{}, fmt.Errorf("spawn %s: make its working directory: %w", spec.Claim, err)
 	}
@@ -241,6 +335,7 @@ func (r *localRuntime) launch(ctx context.Context, spec runtime.SpawnSpec) (runt
 	}
 	variables, err := tmux.PaneVariables(spec, tmux.PaneInputs{
 		StateDir: r.stateDir, Workspace: workDir, DaemonURL: r.daemonURL, EnvoyURL: r.envoyURL,
+		DispatchURL: r.dispatchURL, DispatchTokenFile: r.dispatchTokenFile,
 		NATSURLs: r.natsURLs, RoleConfigFiles: r.overlays(spec.Claim),
 	}, []runtime.SecretFile{bootToken})
 	if err != nil {
@@ -300,6 +395,12 @@ func (r *localRuntime) launch(ctx context.Context, spec runtime.SpawnSpec) (runt
 			Detail: "the worker's process group ended; its log is " + logPath})
 	}()
 	return pane.locator, nil
+}
+
+// workDir is the working directory of every pane of issue, which launch makes: the roles of one
+// issue share it, as they share the issue's jj workspace in a pod.
+func (r *localRuntime) workDir(issue string) string {
+	return filepath.Join(r.stateDir, "workspaces", issue)
 }
 
 // paneEnvironment is the child's whole environment: the variables a pane is told, the PATH a pane
@@ -445,9 +546,18 @@ func (r *localRuntime) Probe(_ context.Context, loc runtime.Locator) (runtime.Ob
 }
 
 // observation is what this runtime can say about loc now: the process it recorded running, gone,
-// or some other process on that pid.
+// or some other process on that pid — and, for a claim a step holds, nothing at all.
+//
+// The hold is read first, before the pane and before /proc, because what it holds back is every
+// answer this runtime has about the claim. Uncertain is the one verdict that is no statement
+// about a process: the machine records nothing of it and asks again at the probe interval
+// (supervise's judge, ProcessUnanswered), which is exactly a daemon that has heard nothing of
+// the death the step is about to kill the pane into (hold).
 func (r *localRuntime) observation(loc runtime.Locator) runtime.Observation {
 	now := time.Now()
+	if r.holding(loc.Claim) != nil {
+		return runtime.Observation{Locator: loc, Kind: runtime.Uncertain, At: now, Detail: localHoldDetail}
+	}
 	pane, ok := r.pane(loc)
 	if !ok {
 		return runtime.Observation{Locator: loc, Kind: runtime.Gone, At: now,
@@ -507,7 +617,22 @@ func (r *localRuntime) Observe(ctx context.Context) (<-chan runtime.Observation,
 // report puts one observation on the channel, dropping it when nothing is reading: an observation
 // the supervisor missed is re-reported by the next sweep, and a blocked send would stall a Wait
 // goroutine for the whole run.
+//
+// An observation of a claim a step holds is dropped too, and counted when it is the sweep's own
+// (localHold.swept): while the hold stands neither the sweep nor a pane's Wait goroutine tells
+// the daemon anything, so a process that dies under it dies unreported. The hold is read and
+// the count raised in one section of the lock, so a release that lands between the two never
+// leaves the count on a hold the runtime no longer holds.
 func (r *localRuntime) report(o runtime.Observation) {
+	r.mu.Lock()
+	held := r.held[o.Locator.Claim]
+	if held != nil && o.Kind == runtime.Uncertain {
+		held.swept++
+	}
+	r.mu.Unlock()
+	if held != nil {
+		return
+	}
 	select {
 	case r.obs <- o:
 	default:
@@ -562,11 +687,6 @@ func (r *localRuntime) PodDrift(context.Context, runtime.Known) ([]string, error
 // ReplacePod has no place to replace.
 func (r *localRuntime) ReplacePod(context.Context, runtime.Known, func(context.Context) error) error {
 	return nil
-}
-
-// RescueUnpushed has no disk that goes with a place, so it has nothing to check.
-func (r *localRuntime) RescueUnpushed(context.Context, runtime.Known, runtime.RescueRequest) ([]runtime.WorkspaceRescue, error) {
-	return nil, nil
 }
 
 // CleanupTree holds nothing per tree.

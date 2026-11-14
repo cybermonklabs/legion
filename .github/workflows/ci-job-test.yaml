@@ -224,6 +224,12 @@ on:
           scripts/sessions-import-pods.test.sh and what it tests.
         type: string
         required: true
+      priorities_seed_check_test:
+        description: >-
+          ci.yaml's needs.changes.outputs.priorities_seed_check_test:
+          scripts/priorities-seed-check.test.sh and what it tests.
+        type: string
+        required: true
       check_ci_filters_test:
         description: "ci.yaml's needs.changes.outputs.check_ci_filters_test: check-ci-filters.test.sh and what it tests."
         type: string
@@ -313,6 +319,11 @@ jobs:
 
       - name: Test the semantic line-break checker
         run: bun test scripts/semantic-line-breaks.test.ts
+
+      # The seed that writes the first priorities from the table kept by hand, driven against a
+      # fake Dispatch of the test's own: it reaches no network and no deployment.
+      - name: Test the priorities seed
+        run: bun test scripts/priorities-seed.test.ts
 
       # The guides' own layout, in this job because it installs Bun's dependencies, which the
       # test's Markdown parser needs (scripts/semantic-line-breaks.guides.test.ts:5-7). The
@@ -480,6 +491,10 @@ jobs:
       - name: Test the session import pods script (a stand-in kubectl)
         if: inputs.changes-result != 'success' || inputs.sessions_import_pods_test == 'true'
         run: bash scripts/sessions-import-pods.test.sh
+
+      - name: Test the priorities seed check (a stand-in Dispatch)
+        if: inputs.changes-result != 'success' || inputs.priorities_seed_check_test == 'true'
+        run: bash scripts/priorities-seed-check.test.sh
 
       - name: Lint the Dispatch census script
         run: bunx biome check --error-on-warnings scripts/dispatch

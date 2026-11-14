@@ -39,10 +39,14 @@ func TestWaitingLinePartAndKeyOnEveryEntry(t *testing.T) {
 		AnsweredAt: &answeredAt, AnsweredBy: AnsweredByReply}
 	issues := []Issue{
 		// A live tree whose gate is open: its root's own first phase is still to come, one
-		// released child waits for its first, and a third member owes its merger a start.
+		// released child waits for its first, and a third member owes its tester a start. That
+		// member stands at testing and not at a phase past its review: such a phase needs none
+		// of the cap's slots and so stands in no line at all (PhaseKeepsSlot, NeedsSlot), and
+		// the kind this entry is here for — an issue whose work came back — is a kind of the
+		// line and would leave the fixture with it.
 		linePartIssue("LEGION-10", "LEGION-10", "in_progress", phase.Admitted, "M"),
 		linePartIssue("LEGION-11", "LEGION-10", "todo", phase.Admitted, "N"),
-		linePartIssue("LEGION-12", "LEGION-10", "retro", phase.Merging, "O"),
+		linePartIssue("LEGION-12", "LEGION-10", "in_progress", phase.Testing, "O"),
 		// A root that never ran, ranked above that tree's root.
 		linePartIssue("LEGION-20", "LEGION-20", "todo", phase.Admitted, "A"),
 		answered,

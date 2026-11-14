@@ -23,19 +23,21 @@ func startKeptRoleSweep(ctx context.Context, cfg listenerDeliveryHandlerConfig, 
 // sweepKeptRoleLanes hands over every role the stream holds a kept copy on and a session claims.
 // It reads every kept role subject the stream holds a copy on in one call
 // (bus.Client.KeptRoleLanes), so a deployment where no role has a kept copy pays one round trip a
-// pass and no per-role work at all; a role that has one costs the read of its claim, and a
-// handover of its own when that claim names a session.
+// pass and no per-role work at all; a role that has one costs the read of its claim record, and a
+// handover of its own when that record names a session.
 //
-// A lane whose role no session claims is passed over rather than handed over, with nothing logged
-// for it: nothing moves such a lane's cursor - the handover it would start resolves no live
-// holder and walks nothing - so the role stays on the stream's list of kept lanes for as long as
-// it holds those copies, the stream's 72 h and not roleKeepWindow's hour, and a line and a
-// handover for it would cost a goroutine and a resolution every pass. The claim is read from the
-// registry's watched copy of the role bucket (store.Registry.CachedRoleHolder): a role a session
-// claims is in that view and costs no round trip, and an unclaimed one is not - the view drops a
-// role as its claim is released - so it costs the one read of the role bucket that miss makes.
-// The claim says only that a session holds the role: whether that session is live is the
-// handover's own resolution to make.
+// The claim is read from the role bucket itself (readRoleClaimHolder), within the pass's ctx and
+// roleHolderReadTimeout, and never from the registry's watched copy of it: a copy that kept a
+// claim the bucket dropped would start a handover for a role nobody holds, and one that lost a
+// claim the bucket holds would leave that holder's copies on the lane, which is the case this
+// backstop is for. A lane whose role no record claims is passed over rather than handed over, with
+// nothing logged for it: nothing moves such a lane's cursor - the handover it would start resolves
+// no live holder and walks nothing - so the role stays on the stream's list of kept lanes for as
+// long as it holds those copies, the stream's 72 h and not roleKeepWindow's hour, and a line and a
+// handover for it would cost a goroutine and a resolution every pass. A read that did not answer
+// passes the lane over too, under a debug line, since it shows no holder to hand the lane to; the
+// next pass reads it again. The record says only that a session holds the role: whether that
+// session is live is the handover's own resolution to make.
 //
 // The lane itself is left to the handover to read, which is the read its first pass opens with
 // (readKeptLaneHead): a lane its cursor is finished with ends that pass there, with no holder
@@ -59,7 +61,7 @@ func sweepKeptRoleLanes(ctx context.Context, cfg listenerDeliveryHandlerConfig) 
 		if ctx.Err() != nil {
 			return
 		}
-		holder, err := cfg.registry.CachedRoleHolder(role)
+		holder, err := readRoleClaimHolder(ctx, cfg, role)
 		if err != nil {
 			cfg.logger.LogEvent(slog.LevelDebug, "listener kept role sweep could not read a role's claim",
 				slog.String("role", role),

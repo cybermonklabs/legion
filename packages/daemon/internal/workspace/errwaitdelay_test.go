@@ -99,10 +99,10 @@ func TestRunDoesNotReportACommandItsCallerStoppedAsTimedOut(t *testing.T) {
 	}
 }
 
-// A RunCommand command that exits on its own did not time out, however long commandWaitDelay then
-// holds the run open for a child still holding its output pipes: its exit is its answer. In the
-// first case the budget is 100 ms short of commandWaitDelay, so the run always returns past it,
-// while the command still has 900 ms to exit under load; a run that read a timeout from the
+// A RunCommand command that exits on its own did not time out, however long procgroup.WaitDelay
+// then holds the run open for a child still holding its output pipes: its exit is its answer. In
+// the first case the budget is 100 ms short of procgroup.WaitDelay, so the run always returns past
+// it, while the command still has 900 ms to exit under load; a run that read a timeout from the
 // deadline having passed would report jj's own exit 3 as a timeout. In the second the command
 // exits 0 well inside its budget; a run that took exec.ErrWaitDelay for a failure would report
 // that success as an error. (Ported with RunCommand's own semantics from the shim's
@@ -113,7 +113,7 @@ func TestRunCommandReportsTheCommandsOwnExitWhenAChildHoldsItsPipesPastIt(t *tes
 		budget  time.Duration
 		wantErr string
 	}{
-		"an exit 3, the pipes held past the budget": {3, commandWaitDelay - 100*time.Millisecond, "Command failed (exit 3)"},
+		"an exit 3, the pipes held past the budget": {3, procgroup.WaitDelay - 100*time.Millisecond, "Command failed (exit 3)"},
 		"an exit 0 inside the budget":               {0, time.Minute, ""},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -125,11 +125,11 @@ func TestRunCommandReportsTheCommandsOwnExitWhenAChildHoldsItsPipesPastIt(t *tes
 			script := `echo answered; echo refused >&2; sleep 30 & echo $! >"$1"; exit ` + strconv.Itoa(testCase.exit)
 
 			started := time.Now()
-			out, err := RunCommand(ctx, testCase.budget, started, []string{"PATH=" + os.Getenv("PATH")}, dir, nil, []string{"sh", "-c", script, "sh", pidFile})
+			out, err := RunCommand(ctx, nil, testCase.budget, started, []string{"PATH=" + os.Getenv("PATH")}, dir, nil, []string{"sh", "-c", script, "sh", pidFile})
 			elapsed := time.Since(started)
 
-			if elapsed < commandWaitDelay {
-				t.Fatalf("the run returned after %s, inside commandWaitDelay: nothing held the pipe, so this run proves nothing", elapsed)
+			if elapsed < procgroup.WaitDelay {
+				t.Fatalf("the run returned after %s, inside procgroup.WaitDelay: nothing held the pipe, so this run proves nothing", elapsed)
 			}
 			if testCase.wantErr == "" {
 				if err != nil || out != "answered" {
@@ -152,7 +152,7 @@ func TestRunCommandReportsABudgetSpentBeforeItStartedAsATimeout(t *testing.T) {
 	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
 	defer cancel()
 
-	_, err := RunCommand(ctx, time.Second, time.Now(), []string{"PATH=" + os.Getenv("PATH")}, t.TempDir(), nil, []string{"sh", "-c", "exit 0"})
+	_, err := RunCommand(ctx, nil, time.Second, time.Now(), []string{"PATH=" + os.Getenv("PATH")}, t.TempDir(), nil, []string{"sh", "-c", "exit 0"})
 
 	if err == nil || !strings.HasPrefix(err.Error(), "Command timed out after 1 s") {
 		t.Errorf("RunCommand under a spent budget = %v, want \"Command timed out after 1 s …\"", err)
@@ -170,7 +170,7 @@ func TestRunCommandDoesNotReportACommandItsCallerStoppedAsATimeout(t *testing.T)
 	defer cancel()
 	go cancelOnceExists(ctx, cancel, marker)
 
-	_, err := RunCommand(ctx, time.Minute, time.Now(), []string{"PATH=" + os.Getenv("PATH")}, dir, nil, []string{"sh", "-c", `: >"$1"; exec sleep 30`, "sh", marker})
+	_, err := RunCommand(ctx, nil, time.Minute, time.Now(), []string{"PATH=" + os.Getenv("PATH")}, dir, nil, []string{"sh", "-c", `: >"$1"; exec sleep 30`, "sh", marker})
 
 	if err == nil || strings.Contains(err.Error(), "timed out") || !strings.Contains(err.Error(), "Command failed (exit -1)") {
 		t.Errorf("RunCommand = %v, want \"Command failed (exit -1)\": the caller's context ended the command inside its minute", err)

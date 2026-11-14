@@ -13,12 +13,15 @@ import { useKeymapScope } from "../shell/keymap";
 import { SendStoppedError } from "../writes/keyed-write";
 import { writesOf } from "../writes/write-store";
 import { IssuesTable } from "./IssuesTable";
+import type { IssueListing } from "./issues-table-data";
 import { ISSUE_TABLE_COLUMNS } from "./issues-table-model";
 import { readLayout } from "./issues-table-storage";
 
 function issue(key: string, overrides: Partial<IssueSummary> = {}): IssueSummary {
   return {
     key,
+    advances: [],
+    advances_revision: 0,
     title: `Work ${key}`,
     status: "todo",
     priority: null,
@@ -74,7 +77,16 @@ afterEach(() => {
   for (const restore of restores.splice(0)) restore();
   localStorage.clear();
 });
-function table(issues: IssueSummary[], search = "", full?: Promise<IssueSummary[]>) {
+function table(
+  issues: IssueSummary[],
+  search = "",
+  full?: Promise<IssueSummary[]>,
+  props: {
+    listing?: IssueListing;
+    priorityTitles?: ReadonlyMap<string, string>;
+    stateKey?: string;
+  } = {}
+) {
   const parents = [
     ...new Set(
       issues.flatMap((row) =>
@@ -82,10 +94,17 @@ function table(issues: IssueSummary[], search = "", full?: Promise<IssueSummary[
       )
     ),
   ].map((key) => issue(key, { status: "triage" }));
+  // The listing route as the server answers it: `open` leaves the closed rows out, and
+  // `advances` keeps the issues that carry that relation, whichever project they are in.
   const listing = spyOn(api, "listIssues").mockImplementation(async (options = {}) =>
     !options.open && full
       ? full
-      : [...issues, ...parents].filter((issue) => !options.open || issue.status !== "done")
+      : [...issues, ...parents].filter(
+          (issue) =>
+            (!options.open || issue.status !== "done") &&
+            (options.advances === undefined ||
+              (issue.advances ?? []).some((relation) => options.advances?.includes(relation.id)))
+        )
   );
   const state = spyOn(api, "getMyState").mockResolvedValue({});
   const agents = spyOn(api, "listAgents").mockResolvedValue([]);
@@ -112,7 +131,7 @@ function table(issues: IssueSummary[], search = "", full?: Promise<IssueSummary[
       <QueryClientProvider client={client}>
         <KeymapProvider>
           <Route />
-          <IssuesTable project="CORE" />
+          <IssuesTable listing={{ project: "CORE" }} {...props} />
         </KeymapProvider>
       </QueryClientProvider>
     </MemoryRouter>
@@ -1263,14 +1282,15 @@ test("resizing a column on a phone leaves the saved key and title widths alone",
 
 // A reader's saved layout is read and written back as it always was: under the same key, in the
 // same JSON, with a column the table does not have, a pinned column's visibility and a width out
-// of bounds dropped, and every other field of the record left where it was.
+// of bounds dropped, and every other field of the record left where it was. A project's table has
+// none of the listing columns, so it writes none of them.
 test("the List writes a reader's saved layout back under the same key in the same JSON", async () => {
   localStorage.setItem(
     "dispatch.project-table.CORE",
     JSON.stringify({
-      sizing: { title: 360, name: 200, key: 10, status: 3000 },
-      order: ["status", "name", "key", "status"],
-      visibility: { labels: false, name: false, key: false, updated: true },
+      sizing: { title: 360, name: 200, key: 10, status: 3000, project: 140 },
+      order: ["status", "name", "key", "status", "moved"],
+      visibility: { labels: false, name: false, key: false, updated: true, advances: true },
       kept: 1,
     })
   );
@@ -1281,7 +1301,7 @@ test("the List writes a reader's saved layout back under the same key in the sam
   );
 });
 
-test("the List stores a reader's first layout with Updated hidden", async () => {
+test("the List stores a reader's first layout with Updated hidden and no listing column", async () => {
   table([issue("CORE-1")]);
   await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
   expect(localStorage.getItem("dispatch.project-table.CORE")).toBe(
@@ -1828,4 +1848,201 @@ test("a collapsed group keeps its heading and reopens", async () => {
   expect(collapsed.textContent).not.toContain("0 of");
   await user.click(collapsed);
   expect(await screen.findByRole("row", { name: "CORE-2 Bravo" })).toBeDefined();
+});
+
+/** The issue keys the table is listing, in the order the rows stand in. */
+function listedKeys(): string[] {
+  return screen
+    .getAllByRole("row")
+    .filter((row) => row.hasAttribute("data-issue-row"))
+    .map((row) => row.getAttribute("data-issue-row") ?? "");
+}
+
+test("a scoped table lists the issues the server answers for the priority, over every project", async () => {
+  const { listing } = table(
+    [
+      issue("CORE-1"),
+      issue("CORE-2", { advances: [{ id: "PRI-7", inherited: false }] }),
+      issue("OPS-3", { advances: [{ id: "PRI-7", inherited: true }] }),
+    ],
+    "",
+    undefined,
+    // What both callers pass: the priority's own listing, no project and the priorities' titles,
+    // under the prefix the page keeps this table's view in (`priorities/PriorityPage.tsx`).
+    {
+      listing: { advances: "PRI-7" },
+      priorityTitles: new Map([["PRI-7", "Ship it"]]),
+      stateKey: "w",
+    }
+  );
+  await screen.findByRole("row", { name: "CORE-2 Work CORE-2" });
+  expect(listedKeys().sort()).toEqual(["CORE-2", "OPS-3"]);
+  expect(screen.queryByRole("row", { name: "CORE-1 Work CORE-1" })).toBeNull();
+  // The narrowing is the server's, and it names no project: a priority belongs to none.
+  expect(listing).toHaveBeenCalledWith({ advances: ["PRI-7"], open: true });
+  expect(listing.mock.calls.every(([options]) => options?.project === undefined)).toBe(true);
+  // The table is named for what it lists rather than for a project it does not stand on.
+  expect(screen.getByRole("table", { name: "Priority issues table" })).toBeDefined();
+  expect(screen.queryByRole("table", { name: "Project issues table" })).toBeNull();
+  // One stored layout for every scoped table, under no key that names a priority: the work
+  // advancing a priority is one table, drawn in two places. It has Project and Advances, both
+  // hidden until the reader shows them, and no Moved there or Reason, since its listing asks for
+  // no move.
+  expect(localStorage.getItem("dispatch.project-table.priority-work")).toBe(
+    '{"sizing":{},"order":[],"visibility":{"updated":false,"project":false,"advances":false}}'
+  );
+  expect(localStorage.getItem("dispatch.project-table.priority:PRI-7")).toBeNull();
+});
+
+test("a scoped table offers no epic action, because an epic belongs to a project", async () => {
+  const user = userEvent.setup();
+  table(
+    [
+      issue("CORE-2", { advances: [{ id: "PRI-7", inherited: false }] }),
+      issue("OPS-3", { advances: [{ id: "PRI-7", inherited: false }] }),
+    ],
+    "",
+    undefined,
+    { listing: { advances: "PRI-7" }, stateKey: "w" }
+  );
+  await user.click(await screen.findByRole("checkbox", { name: "Select CORE-2" }));
+  await user.click(screen.getByRole("checkbox", { name: "Select OPS-3" }));
+  // The selection is of two projects, so no epic could hold it and none is offered; what each
+  // issue can be written one at a time still is.
+  expect(screen.queryByRole("button", { name: "New epic from these" })).toBeNull();
+  expect(screen.getByRole("button", { name: "Start next" })).toBeDefined();
+  expect(screen.getByRole("button", { name: "Take out of epic" })).toBeDefined();
+});
+
+test("a stateKey puts the table's own view under its prefix, and none keeps the bare keys", async () => {
+  const user = userEvent.setup();
+  const { view } = table([issue("CORE-1", { title: "Sextant" })], "", undefined, {
+    stateKey: "advances",
+  });
+  await user.type(await screen.findByRole("searchbox", { name: "Search issues" }), "sextant");
+  await waitFor(() =>
+    expect(screen.getByTestId("route-search").textContent).toContain("advances.q=sextant")
+  );
+  expect(screen.getByTestId("route-search").textContent).not.toContain("&q=");
+  view.unmount();
+  // The project page passes no stateKey, so the address it publishes is the bare one.
+  table([issue("CORE-2", { title: "Astrolabe" })]);
+  await user.type(await screen.findByRole("searchbox", { name: "Search issues" }), "astrolabe");
+  await waitFor(() =>
+    expect(screen.getByTestId("route-search").textContent).toContain("q=astrolabe")
+  );
+  expect(screen.getByTestId("route-search").textContent).not.toContain("advances.");
+});
+
+test("the narrowing chip shows the picked issues alone, and its remove gives the table back", async () => {
+  const user = userEvent.setup();
+  table(
+    [issue("CORE-1"), issue("CORE-2"), issue("CORE-3")],
+    "?only=CORE-1,CORE-3&onlyLabel=Finished+last+week&nofilter=1"
+  );
+  await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
+  expect(listedKeys().sort()).toEqual(["CORE-1", "CORE-3"]);
+  const chip = screen.getByRole("button", { name: "Stop showing only Finished last week" });
+  expect(chip.textContent).toContain("Finished last week");
+  expect(chip.textContent).toContain("2 of 2 issues");
+  await user.click(chip);
+  await waitFor(() => expect(listedKeys().sort()).toEqual(["CORE-1", "CORE-2", "CORE-3"]));
+  expect(screen.getByTestId("route-search").textContent).not.toContain("only=");
+  expect(screen.queryByRole("button", { name: /^Stop showing only/ })).toBeNull();
+});
+
+// The listing columns exist only where they mean something: a project's own table would name its
+// own project on every row, it is given no priority's title, and its listing carries no move, so
+// it neither shows nor offers any of the four.
+test("a project's table offers none of the listing columns", async () => {
+  const user = userEvent.setup();
+  table([issue("CORE-1")]);
+  const list = await screen.findByRole("table", { name: "Project issues table" });
+  await within(list).findByRole("row", { name: "CORE-1 Work CORE-1" });
+  const headers = within(list)
+    .getAllByRole("columnheader")
+    .map((header) => header.textContent ?? "");
+  for (const name of ["Project", "Advances", "Moved there", "Reason"])
+    expect(headers.some((text) => text.startsWith(name))).toBe(false);
+  // Nor does it show Updated, which the fault lists open with shown: a project's table opens
+  // with it hidden, as it always has.
+  expect(headers.some((text) => text.startsWith("Updated"))).toBe(false);
+  await user.click(screen.getByRole("button", { name: "Columns" }));
+  expect(screen.getByRole("checkbox", { name: "Updated" })).not.toBeChecked();
+  for (const name of ["Project", "Advances", "Moved there", "Reason"])
+    expect(screen.queryByRole("checkbox", { name })).toBeNull();
+});
+
+// The work under one priority is every project's, so its table offers the Project column; given
+// the priorities' titles it offers Advances, which names each by its title; and its listing asks
+// for no move, so it never offers Moved there, nor Reason, which says why a move was made. Both
+// open hidden, for the reader to show.
+test("a priority's work table offers Project and, given the titles, Advances, and never Moved there or Reason", async () => {
+  const user = userEvent.setup();
+  table([issue("CORE-1", { advances: [{ id: "ship-it", inherited: false }] })], "", undefined, {
+    listing: { advances: "ship-it" },
+    priorityTitles: new Map([["ship-it", "Ship it everywhere"]]),
+    stateKey: "w",
+  });
+  const list = await screen.findByRole("table", { name: "Priority issues table" });
+  await within(list).findByRole("row", { name: "CORE-1 Work CORE-1" });
+  const headers = () =>
+    within(list)
+      .getAllByRole("columnheader")
+      .map((header) => header.textContent ?? "");
+  await user.click(screen.getByRole("button", { name: "Columns" }));
+  for (const name of ["Project", "Advances"])
+    expect(screen.getByRole("checkbox", { name })).not.toBeChecked();
+  for (const name of ["Moved there", "Reason"])
+    expect(screen.queryByRole("checkbox", { name })).toBeNull();
+  await user.click(screen.getByRole("checkbox", { name: "Project" }));
+  await user.click(screen.getByRole("checkbox", { name: "Advances" }));
+  await waitFor(() => expect(headers()).toContain("Advances"));
+  for (const name of ["Moved there", "Reason"])
+    expect(headers().some((text) => text.startsWith(name))).toBe(false);
+  // A listing column names a row's value and does not sort, filter or group by it: the
+  // address keeps only the registry's columns (`issues-table-model.ts`).
+  expect(within(list).queryByRole("button", { name: "Filter Project" })).toBeNull();
+  const row = within(list).getByRole("row", { name: "CORE-1 Work CORE-1" });
+  const cells = within(row).getAllByRole("cell");
+  expect(cells[headers().indexOf("Project")]?.textContent).toBe("CORE");
+  expect(
+    within(cells[headers().indexOf("Advances")] as HTMLElement)
+      .getByRole("link", { name: "Ship it everywhere" })
+      .getAttribute("href")
+  ).toBe("/priorities/ship-it");
+});
+
+// Without the titles a priority's work table has no Advances column: it could name each
+// priority only by its id, which is no name to a reader.
+test("a priority's work table given no titles offers no Advances column", async () => {
+  const user = userEvent.setup();
+  table([issue("CORE-1", { advances: [{ id: "ship-it", inherited: false }] })], "", undefined, {
+    listing: { advances: "ship-it" },
+    stateKey: "w",
+  });
+  const list = await screen.findByRole("table", { name: "Priority issues table" });
+  await within(list).findByRole("row", { name: "CORE-1 Work CORE-1" });
+  await user.click(screen.getByRole("button", { name: "Columns" }));
+  expect(screen.getByRole("checkbox", { name: "Project" })).toBeDefined();
+  for (const name of ["Advances", "Moved there", "Reason"])
+    expect(screen.queryByRole("checkbox", { name })).toBeNull();
+});
+
+// A fault list names the statuses it holds, and the server answers every row of it in one read:
+// even a Status filter that picks Done reads no closed issue beside it.
+test("a listing that names its statuses is read with them alone, never with every closed issue", async () => {
+  const { listing } = table([issue("CORE-1")], "?k.status=done", undefined, {
+    listing: { advances: "any", statuses: ["backlog", "icebox"], moved: true },
+    stateKey: "k",
+  });
+  await screen.findByRole("table", { name: "Priority issues table" });
+  expect(listing).toHaveBeenCalledWith({
+    advances: ["any"],
+    status: ["backlog", "icebox"],
+    moved: true,
+    open: true,
+  });
+  expect(listing.mock.calls.every(([options]) => options?.status !== undefined)).toBe(true);
+  expect(screen.queryByText("Loading closed issues…")).toBeNull();
 });

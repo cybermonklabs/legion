@@ -157,14 +157,17 @@ in the daemon's configuration, four by default; an issue that finds no free slot
 a labelled `todo` root takes its place in that line in the project board's order.
 
 An issue takes a slot when the daemon starts it — a root at its admission, which starts its
-architect, a child at the start of its first phase — and it keeps that slot
-until it is done or leaves the workflow.
-So it holds its slot through every wait as well: in `accepting`, on a blocker, on its own children,
-on a person, and in merging while a closed design gate holds its merge request. An issue holding a
-slot starts its next phase whatever the cap says, and an issue holding none, a child its architect
-has just released among them, waits in line while the project stands at the cap. A slot stops
-nothing either way: every worker of a waiting issue stays live in the issue's pod and answers
-questions until the issue closes.
+architect, a child at the start of its first phase. An issue holds one of the cap's slots from the
+moment the daemon starts it until its work is past its review — `accepting`, `retro` and
+`merging` hold none — or until it is done or Dispatch takes it out of the workflow.
+So it holds its slot through every wait up to its review as well: on a blocker, on its own
+children, on a person, and on the review itself. Past the review the issue writes no more of the
+change, so its acceptance, its retro and its merge run on no slot at all. An issue holding a slot
+starts its next phase whatever the cap says, and so does an issue past its review, which holds
+none. An issue that holds none and is owed a start, a child its architect has just released among
+them, waits in line while the project stands at the cap. A slot stops nothing either way: every
+worker of a waiting issue stays live in the issue's pod and answers questions until the issue
+closes.
 
 The line has two parts, and `legion state` prints them in the order the daemon promotes them:
 the issues whose work came back, oldest first by the moment it came back, and then the issues
@@ -345,12 +348,29 @@ Legion uses GitHub's own review mechanisms rather than labels:
   stops writing there and leaves whatever it has uncommitted. Only the implementer's phase entry
   is raised, so a completion the tester, the reviewer or the merger sends for the phase it lost
   still names the entry that phase gave it and is refused `HANDOFF_NOT_CURRENT_PHASE`;
-  `HANDOFF_STALE_ENTRY` comes once the issue has handed that role the phase again. From retro
-  the implementer keeps its turn, is told the same way, and is handed the implementing task after
-  it; a retro completion that reaches the daemon after the move reports the entry retro handed it
-  while its phases row is on the implementing one, so it is refused `HANDOFF_STALE_ENTRY`;
-  the implementer merges the base forward in the implementing task's own turn and completes that
-  work with a handoff of its own, never retro's commit.
+  `HANDOFF_STALE_ENTRY` comes once the issue has handed that role the phase again, and only
+  while the issue stands in that phase. A completion of another entry than the role's phases row
+  names, from a role whose phase the issue is no longer in, is answered
+  `HANDOFF_NOT_CURRENT_PHASE` as well, before anything is recorded: the task of that entry was
+  queued for the phase the issue has left, so the daemon drops it unsent and owes the claim none.
+  One completion behind its entry goes on all the same: a verdict on the head the record holds,
+  of a phase that ends with the role's own handoff record. The phase was entered again at that
+  head, so the work the new entry's task asks for is the work that completion reports; taking it
+  moves the issue on, so the same completion sent again, or one naming a newer record, is
+  answered `HANDOFF_NOT_CURRENT_PHASE`. A completion at another commit is refused, as the
+  tester's verdict on the head before the merge forward is; so is one that names no commit, and
+  so is any while the record holds no pull request for the issue. A completion is refused
+  whatever head it names when the entry the phase stands on was raised by a move back, which asks
+  for that phase's work to be done again. From retro the implementer keeps its turn, is told the
+  same way, and is handed the implementing task after it; a retro
+  completion that reaches the daemon after the move reports the entry retro handed it while its
+  phases row is on the implementing one. The issue is in `implementing` by then, so that
+  completion goes as the implementer's completion of implementing, naming the newest
+  `implement` record and the head that record names, which can be the head the record holds;
+  what refuses it `HANDOFF_STALE_ENTRY` is the move, since retro back to `implementing` is a
+  move back and raised the entry the phase stands on. The implementer merges the base forward in
+  the implementing task's own turn and completes that work with a handoff of its own, never
+  retro's commit.
 - **An implementer that completes with no pull request** is refused (`HANDOFF_NO_PULL_REQUEST`)
   until one is open on its branch, and the daemon's read of that issue tells its architect
   `pull-request-missing`, once per handoff commit, so an issue never waits in `implementing`

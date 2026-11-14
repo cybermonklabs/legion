@@ -221,6 +221,10 @@ func (e *Engine) apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake
 		return e.merged(ctx, tx, fact)
 	case intake.PullRequestClosed:
 		return e.closed(ctx, tx, fact)
+	case intake.PullRequestDequeued:
+		return e.dequeued(ctx, tx, fact)
+	case intake.MergeQueueReadDone:
+		return e.mergeQueueReadDone(ctx, tx, fact)
 	case intake.PullRequestMissing:
 		return e.pullRequestMissing(ctx, tx, fact)
 	case intake.ClaimReady:
@@ -245,6 +249,8 @@ func (e *Engine) apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake
 		return e.lingerExpired(ctx, tx, fact)
 	case intake.DaemonBooted:
 		return e.booted(ctx, tx, fact)
+	case intake.CutoverMergerRepair:
+		return e.cutoverMergerRepair(ctx, tx, fact)
 	case intake.CheckReport:
 		return e.checkReported(ctx, tx, fact)
 	case intake.CheckLookEnded:
@@ -298,7 +304,85 @@ func (e *Engine) dispatchIssue(ctx context.Context, tx pgx.Tx, fact intake.Dispa
 	// Admission, which runs after this handler, records every newer observation of a recorded
 	// issue (its title, rank, parent, and status) and owns a todo's re-admission. The engine reacts
 	// only to a newer status, and records the observation itself when it keeps its own status over it.
-	if fact.Seq != 0 && fact.Seq <= issue.LastDispatchSeq || fact.Status == issue.Status {
+	//
+	// This is the sequence fence, which the engine and admission both keep: an event the record
+	// has already applied — a redelivery, or one older than the newest the record took — teaches
+	// the record nothing, so nothing below here runs for it. The engine's own reaction waits
+	// behind a second fence, the status one, and that fence stands below the mark: an event the
+	// record has not applied is news of the issue whether or not it moves its status.
+	if fact.Seq != 0 && fact.Seq <= issue.LastDispatchSeq {
+		return intake.Result{}, nil
+	}
+	// The daemon has seen the issue move (record.Issue.MovedAt). This is the first of the eleven
+	// points that write that mark, and the rule every one of them follows is written here.
+	//
+	// The mark is written where the record changes, never from a list of fact kinds. A list would
+	// silently miss a kind a later change adds — the mark would stop being written for it, with
+	// nothing failing to say so — and three of the six movements are no fact of their own anyway:
+	// a phase change, a start and a recorded handoff are consequences several different facts
+	// reach. So each site sits at the write it is about. Nine are in this package: this one, the
+	// Dispatch event of the issue; the pull request's row (Engine.putPullRequest); the phase
+	// write (Engine.transition and Engine.retryPhase); the hold a failed claim writes
+	// (Engine.claimFailed); the handoff's phase row and the completion that records it
+	// (Engine.handoff); the wait on a person a root enters (enterAwaiting); the resume of a root
+	// a person answered, which starts its architect again (ResumeAwaitedRoot, for the promotion
+	// that answers the wait and for the root told in place alike); and the start (StartOrOwe).
+	//
+	// The other two are the admission pass's own writes of a phase and of a start, which no
+	// fact of the issue carries and which this package therefore never sees: the re-admission
+	// that opens a new generation of a tree (admit's readmit), and the promotion of a root the
+	// line has been holding, which opens its tree and queues its architect's start (admit's
+	// promoteHolds). Unmarked, a root the pass had just started would carry the stamp of the
+	// moment a person labelled it, and the next pass would read a tree the daemon opened a
+	// second ago as a tree that had stopped (admit's tellStalledTrees).
+	//
+	// Here the mark goes past the sequence fence above and before the status fence below, because
+	// a movement is every Dispatch event of the issue that is new to the record, and not only one
+	// that moves its status (dispatch://INFRA-2560, R3: a Dispatch event of the issue). An event
+	// the record has already applied stopped at that sequence fence and moves nothing; every event
+	// past it changes the record, whatever this handler then does with it. Where its status is new
+	// to the record the handler's own write is that change: an observation kept over the daemon's
+	// own status (keepStatus), a status the daemon sets back after a session wrote it
+	// (sessionStatusWrite), a leave, a child's re-entry. Where it is not — the steady state of a
+	// running issue, the record and the event carrying one status between them — the change is the
+	// observation admission writes below this handler (admit's recordObservation, or a
+	// re-admission): a rename, a re-rank, a re-parent or a label change, each of them news of the
+	// issue, and the event's own sequence with it. Marking below the status fence instead would
+	// leave every edit of a running issue unmarked, which is the whole steady state of a tree at
+	// work, and the tree would read as quieter than it is.
+	//
+	// What it leaves out, by fact.DaemonActor, is the daemon talking to itself: the status the
+	// daemon writes to Dispatch comes back as an event its own session authored
+	// (intake.OwnStatusWrite, and the decode's daemonActor), both for the write a route makes and
+	// for the re-assertion sessionStatusWrite queues when somebody else wrote a status. Counting
+	// those would make a stopped tree move for ever: nothing outside the daemon happened, and the
+	// daemon's own re-assertion would keep refreshing the mark of an issue nobody is working.
+	//
+	// Four other paths are deliberately left unmarked. The boot's read of the Dispatch listing
+	// records an observation of its own (admit.Admission.Reconcile and applySummary), which is
+	// the daemon catching up with what it already knew rather than news of the issue; it is the
+	// observation that is left unmarked, so a re-admission the same listing brings is marked
+	// all the same, at the write site in admit's readmit, since the generation it opens is news
+	// of the issue whatever read brought it. The status repair (statusRepairTick) queues the
+	// status of the phase the issue already stands in, so it writes no movement of its own. A
+	// claim's activity report or state change writes the claims table and never the issue: a
+	// session that is up is no proof that the issue it holds has moved, which is the whole of
+	// what this mark is for. And the daemon's own sends of work the record already owes a phase
+	// worker are starts that mark nothing (startOrOwe's reassertion): every send of an owed
+	// entry — admission's sweep on every pass and each minute, its slot repair, readyWorkerTask,
+	// the boot's resume by rule, the cutover's one-time repair (cutoverMergerRepair) and the
+	// silence repair (sendOwedEntry) — and the phase's resume task the boot's resume, the
+	// cutover's repair and the silence repair send a claim level with its entry. The
+	// movement is the fact that raised the entry, which the transition's phase write and its
+	// start mark below (Engine.transition, StartOrOwe), and not each delivery of it.
+	if !fact.DaemonActor {
+		if err := e.store.MarkIssueMoved(ctx, tx, issue.Key, e.now()); err != nil {
+			return intake.Result{}, err
+		}
+	}
+	// The engine reacts to a newer status alone: an event carrying the status the record holds is
+	// an edit, which it leaves to the observation admission records (admit's recordObservation).
+	if fact.Status == issue.Status {
 		return intake.Result{}, nil
 	}
 	// An event carries the whole issue, so it writes a status only when its status differs from the
@@ -630,46 +714,22 @@ func (e *Engine) enterChild(ctx context.Context, tx pgx.Tx, root record.Issue, f
 	return e.notice(ctx, tx, child.Key, ChildUnderAcceptedParentNotice(child.Key, ancestor))
 }
 
-// leftPhase is the phase role has left when the issue no longer stands in a phase that role works,
-// RoleFor read the other way round: the one phase each role works, and, for the implementer, which
-// works two, implementing while the issue stands before retro and retro once it stands past it.
-// The architect works accepting with its sign-off and completes nothing, so it leaves no phase
-// here.
-func leftPhase(role claim.Role, at phase.Phase) phase.Phase {
-	switch role {
-	case claim.RolePlanner:
-		return phase.Planning
-	case claim.RoleTester:
-		return phase.Testing
-	case claim.RoleReviewer:
-		return phase.Reviewing
-	case claim.RoleMerger:
-		return phase.Merging
-	case claim.RoleImplementer:
-		if phase.MovesBack(at, phase.Retro) {
-			return phase.Retro
-		}
-		return phase.Implementing
-	}
-	return ""
-}
-
 // leftItsPhase says whether role's completion of a phase its issue has already left is recorded
 // rather than refused: the daemon started role on this issue, which is what gives it the claim the
-// completion names (record.Store.RoleRun), and role reported no completion of the phase it was in.
-// That is this completion arriving after the daemon moved the issue on without it - the review
-// event taking reviewing on, or a conflicting head taking a later phase back - and its handoff is
-// the findings the next phase reads, which a refusal would lose. Three completions are not: one
-// from a role whose handoff already stands, which is reporting a phase it finished a second time;
-// one from a role the daemon never started on this issue, which has held no phase of it to report;
-// and any while the issue stands where no role works - parked, closed or held - which is past
-// recording work at all.
+// completion names (record.Store.RoleRun), and role reported no completion of the phase it was in
+// (record.PhaseRow.Completed). That is this completion arriving after the daemon moved the issue
+// on without it - the review event taking reviewing on, or a conflicting head taking a later phase
+// back - and its handoff is the findings the next phase reads, which a refusal would lose. Three
+// completions are not: one from a role whose handoff already stands, which is reporting a phase it
+// finished a second time; one from a role the daemon never started on this issue, which has held
+// no phase of it to report; and any while the issue stands where no role works - parked, closed or
+// held - which is past recording work at all.
 func (e *Engine) leftItsPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, token claim.Token) (bool, error) {
-	if token == "" || RoleFor(issue.Phase) == "" || leftPhase(role, issue.Phase) == "" {
+	if token == "" || RoleFor(issue.Phase) == "" || phase.LeftBy(role, issue.Phase) == "" {
 		return false, nil
 	}
 	row, err := e.phaseRow(ctx, tx, issue.Key, role)
-	if err != nil || row.HandoffCommit != "" {
+	if err != nil || row.Completed() {
 		return false, err
 	}
 	run, err := e.store.RoleRun(ctx, tx, token, issue.Key, role, issue.Generation)
@@ -700,21 +760,18 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 	// A role can still be mid-turn in a phase the issue has left: the review event moves reviewing
 	// on, so a reviewer's own request for changes starts the implementer before the reviewer's
 	// handoff lands. Its completion is recorded on its own row and moves nothing (leftItsPhase).
-	current := phase.RoleFor(issue.Phase) == fact.Role
+	// reported is the phase this completion is of (phase.Of): the issue's own, or, for a role the
+	// issue has moved on without, the phase that role has left.
+	reported := phase.Of(fact.Role, issue.Phase)
+	current := reported == issue.Phase
 	if !current {
 		left, err := e.leftItsPhase(ctx, tx, *issue, fact.Role, fact.Claim)
 		if err != nil {
 			return intake.Result{}, err
 		}
 		if !left {
-			return refused("HANDOFF_NOT_CURRENT_PHASE", fmt.Sprintf("the %s does not run phase %s of %s; this completion changed nothing", fact.Role, issue.Phase, issue.Key)), nil
+			return intake.Result{Refusal: intake.NotCurrentPhase(fact.Role, issue.Phase, issue.Key)}, nil
 		}
-	}
-	// reported is the phase this completion is of: the issue's own, or, for a role the issue has
-	// moved on without, the phase that role has left.
-	reported := issue.Phase
-	if !current {
-		reported = leftPhase(fact.Role, issue.Phase)
 	}
 	// A worker still in its turn when its tree's root closed can yet complete; linger holds the
 	// member where it stood (record.TreeLingers), so the completion records nothing.
@@ -755,6 +812,16 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 	row.Claim, row.HandoffCommit, row.Verdict, row.Summary, row.CompletedAt = fact.Claim, fact.Commit, fact.Verdict, fact.Summary, e.now()
 	row.HandoffRecord, row.HandoffVersion = fact.HandoffRecord, fact.HandoffVersion
 	if err := e.store.PutPhase(ctx, tx, row); err != nil {
+		return intake.Result{}, err
+	}
+	// Two of the six movements are this one write (the rule in dispatchIssue): the handoff the
+	// role recorded, and the completion that reports it. Every refusal above returned before it,
+	// so a completion that changed nothing marks nothing, and the completions that move the issue
+	// no further than this row — a tester reporting neither verdict, an implementer whose pull
+	// request has not been recorded yet, a role reporting a phase the issue has already left —
+	// are movements all the same, which is why the mark is here and not only in the transitions
+	// below.
+	if err := e.store.MarkIssueMoved(ctx, tx, issue.Key, e.now()); err != nil {
 		return intake.Result{}, err
 	}
 	if !current {
@@ -870,6 +937,15 @@ func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFa
 	from := issue.Phase
 	issue.Phase, issue.Hold = phase.Held, &record.Hold{From: from}
 	if err := e.store.PutIssue(ctx, tx, *issue); err != nil {
+		return intake.Result{}, err
+	}
+	// A claim that failed takes its issue into held, which is a phase change and so a movement
+	// (the rule in dispatchIssue). The early return above is what keeps it honest: an issue
+	// already held writes nothing here, so a second report of the same dead claim moves the
+	// tree nowhere. It matters for the measure rather than for the record: a tree stops at the
+	// moment its worker dies, and marking the movement here is what makes the quiet time run
+	// from that moment instead of from whatever last touched the issue before it.
+	if err := e.store.MarkIssueMoved(ctx, tx, issue.Key, e.now()); err != nil {
 		return intake.Result{}, err
 	}
 	if err := e.noticeWithController(ctx, tx, issue.Key, record.Notice{Kind: "held", Role: fact.Role, Phase: from,
@@ -1050,6 +1126,11 @@ func (e *Engine) retryPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	if err := e.store.PutIssue(ctx, tx, issue); err != nil {
 		return "", err
 	}
+	// The retry puts the issue back in the phase its worker failed in, which is a phase write
+	// like any other, so it is a movement (the rule in dispatchIssue).
+	if err := e.store.MarkIssueMoved(ctx, tx, issue.Key, e.now()); err != nil {
+		return "", err
+	}
 	// The daemon's own line for the release (R11), written whether or not a worker is started
 	// below: the hold is gone either way, and the reason is the one the restarted role's task
 	// carries.
@@ -1213,7 +1294,15 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	// where it stands. The pull request goes with both because each reads it: a move made while
 	// the record holds this head as conflicting with its base is a conflict round, which
 	// review_round_cap does not count and no pair counts either (recordRound, recordPass).
-	if phase.MovesBack(issue.Phase, row.To) {
+	//
+	// The same reading goes onto the entry the start below raises, in this transaction, because
+	// it is the one thing the entry fence cannot read from anywhere else: a phase re-entered by a
+	// move back asks for its work to be done again, and the completion of the entry before it
+	// does not answer for that however its commit reads (record.PhaseRow.EntryMovedBack,
+	// api/handoff.go). It is read here and not below because issue.Phase is moved onto row.To a
+	// few lines down, which would leave the start comparing a phase with itself.
+	movedBack := phase.MovesBack(issue.Phase, row.To)
+	if movedBack {
 		if err := e.recordPass(ctx, tx, issue.Key, issue.Phase, row.To, pr); err != nil {
 			return err
 		}
@@ -1247,6 +1336,11 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	if err := e.store.PutIssue(ctx, tx, issue); err != nil {
 		return err
 	}
+	// The issue has moved: this is the write that takes it into another phase, the plainest
+	// movement there is (the rule, and what is left unmarked, in dispatchIssue).
+	if err := e.store.MarkIssueMoved(ctx, tx, issue.Key, e.now()); err != nil {
+		return err
+	}
 	e.logOnCommit(ctx, "workflow: phase changed", "issue", issue.Key, "tree", issue.Tree, "from", from, "to", row.To, "trigger", trigger, "status", issue.Status)
 	if err := e.clearHandoff(ctx, tx, issue.Key, phase.RoleFor(row.To)); err != nil {
 		return err
@@ -1273,7 +1367,7 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	// architect got at the merge could not say it, since the issue was elsewhere then.
 	mergedAlready := row.To == phase.Merging && pr != nil && pr.State == record.PullRequestMerged
 	if !mergedAlready {
-		if err := e.start(ctx, tx, issue, starting, task(issue, handoff, pr, reason), false); err != nil {
+		if err := e.start(ctx, tx, issue, starting, task(issue, handoff, pr, reason), movedBack); err != nil {
 			return err
 		}
 	}

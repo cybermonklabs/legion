@@ -3825,7 +3825,6 @@ func TestInterestSubscribeStoresTheControllerLaneOfTheRoleTheSessionHolds(t *tes
 		lane = "notifications.legion.ACME.controller"
 	)
 	claimRoles(t, rig.deps.registry, interestSession, role)
-	awaitRoles(t, rig.deps.registry, interestSession, role)
 
 	answer := subscribeInterest(t, rig.mux, []string{lane, interestIssueTopic})
 
@@ -3863,7 +3862,6 @@ func TestInterestSubscribeLeavesAControllerEveryPrivateSubjectButItsOwnLane(t *t
 		lane = "notifications.legion.ACME.controller"
 	)
 	claimRoles(t, rig.deps.registry, interestSession, role)
-	awaitRoles(t, rig.deps.registry, interestSession, role)
 	refused := []string{
 		"notifications.legion.OTHER.controller",
 		"notifications.legion.>",

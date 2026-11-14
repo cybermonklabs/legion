@@ -7,7 +7,8 @@ import { harnessPorts } from "./harness-ports";
 // commit/tree/blob reads a sync walks, the commits read whose 422 says a repository
 // holds no such commit, empty delivery listings, and a seeded pull request with its
 // head's check runs and workflow runs. Tests seed per-repository state through
-// /__fixture/repos; the server reaches this via DISPATCH_GITHUB_API_BASE.
+// /__fixture/repos and read how many times the server asked for each commit's check runs
+// through /__fixture/requests; the server reaches this via DISPATCH_GITHUB_API_BASE.
 
 const ARCHITECTURE_DIR = ".dispatch/architecture";
 
@@ -29,15 +30,26 @@ interface FakePull {
   readonly updated_at?: string;
 }
 
-/** One check run of a commit, in the check suite `check_suite_id` names. */
+/** One check run of a commit, in the check suite `check_suite_id` names. GitHub always answers
+ *  `completed_at`, `html_url` and `output`, so the fake does too: a run that leaves
+ *  `completed_at` unset answers null, as a run not yet completed does, one that leaves
+ *  `html_url` unset answers the run's page on github.com, and one that leaves `output` unset
+ *  answers a null title and summary, as a GitHub Actions job does. */
 interface FakeCheckRun {
   readonly app_id?: number;
   readonly check_suite_id: number;
+  readonly completed_at?: string | null;
   readonly conclusion: string | null;
+  readonly html_url?: string;
   readonly id: number;
   readonly name: string;
+  readonly output?: { readonly title: string | null; readonly summary: string | null };
   readonly status: string;
 }
+
+/** What the check-runs read of one commit does in place of answering at once: answers `status`
+ *  with GitHub's error body, or waits `hold_ms` milliseconds and then answers as it would have. */
+type FakeCheckRunFault = { readonly status: number } | { readonly hold_ms: number };
 
 /** One workflow run of a commit: its workflow's name, its triggering event and its check suite. */
 interface FakeWorkflowRun {
@@ -70,8 +82,12 @@ interface FakeRepo {
   readonly branches?: readonly string[];
   /** Pull requests keyed by number; a number not here answers a server error, as before. */
   readonly pulls?: Record<string, FakePull>;
-  /** Check runs keyed by commit sha, in any order. */
+  /** Check runs keyed by commit sha, in any order. The read pages them as GitHub does
+   *  (`pageOf`), so a commit of 101 runs answers 100 on page 1 and one on page 2. */
   readonly check_runs?: Record<string, readonly FakeCheckRun[]>;
+  /** What the check-runs read of a commit does instead of answering at once, keyed by commit
+   *  sha; a commit not here answers at once. */
+  readonly check_run_faults?: Record<string, FakeCheckRunFault>;
   /** Workflow runs keyed by head sha. */
   readonly workflow_runs?: Record<string, readonly FakeWorkflowRun[]>;
   /** The repository's default branch; "main" when unset. */
@@ -123,17 +139,37 @@ function permissionsOf(repo: FakeRepo): Record<string, string | undefined> {
 // installed).
 let repos = new Map<string, FakeRepo>();
 
+// "owner/repo" → commit sha → how many check-runs reads (one a page) the fake has answered for
+// that commit since the last seed, faulted ones included. GET /__fixture/requests answers it as
+// `{check_runs: {"owner/repo": {"<sha>": <count>}}}`, and every PUT /__fixture/repos empties it.
+let checkRunReads = new Map<string, Map<string, number>>();
+
+function countCheckRunRead(repo: string, sha: string): void {
+  const commits = checkRunReads.get(repo) ?? new Map<string, number>();
+  commits.set(sha, (commits.get(sha) ?? 0) + 1);
+  checkRunReads.set(repo, commits);
+}
+
 // FAKE_GITHUB_PORT, or with it unset port 0, so the OS chooses; the line at the end reports the
 // port bound, which e2e/harness-start.ts reads.
 const server = Bun.serve({
   hostname: "127.0.0.1",
   port: harnessPorts().fakeGithub.port,
-  async fetch(request) {
+  async fetch(request, server) {
     const url = new URL(request.url);
     if (request.method === "PUT" && url.pathname === "/__fixture/repos") {
       const seeded = (await request.json()) as Record<string, FakeRepo>;
       repos = new Map(Object.entries(seeded));
+      checkRunReads = new Map();
       return Response.json({ ok: true });
+    }
+
+    if (request.method === "GET" && url.pathname === "/__fixture/requests") {
+      return Response.json({
+        check_runs: Object.fromEntries(
+          [...checkRunReads].map(([repo, commits]) => [repo, Object.fromEntries(commits)])
+        ),
+      });
     }
 
     const installation = url.pathname.match(/^\/repos\/([^/]+)\/([^/]+)\/installation$/);
@@ -247,17 +283,35 @@ const server = Bun.serve({
       /^\/repos\/([^/]+)\/([^/]+)\/commits\/([^/]+)\/check-runs$/
     );
     if (request.method === "GET" && checkRuns !== null) {
-      const repo = repos.get(`${checkRuns[1]}/${checkRuns[2]}`);
+      const fullName = `${checkRuns[1]}/${checkRuns[2]}`;
+      const sha = checkRuns[3] ?? "";
+      const repo = repos.get(fullName);
       if (repo === undefined) {
         return Response.json({ message: "Not Found" }, { status: 404 });
       }
-      const runs = repo.check_runs?.[checkRuns[3] ?? ""] ?? [];
+      countCheckRunRead(fullName, sha);
+      const fault = repo.check_run_faults?.[sha];
+      if (fault !== undefined && "status" in fault) {
+        return Response.json({ message: "Server Error" }, { status: fault.status });
+      }
+      if (fault !== undefined) {
+        // Bun.serve closes a connection idle for 10 s, as long as Dispatch's own read deadline:
+        // a held request lifts that bound, so Dispatch's deadline is what ends the wait.
+        server.timeout(request, 0);
+        await Bun.sleep(fault.hold_ms);
+      }
+      const runs = repo.check_runs?.[sha] ?? [];
       return Response.json({
-        check_runs: pageOf(runs, url).map(({ app_id, check_suite_id, ...run }) => ({
-          ...run,
-          app: { id: app_id ?? 15368, slug: "github-actions" },
-          check_suite: { id: check_suite_id },
-        })),
+        check_runs: pageOf(runs, url).map(
+          ({ app_id, check_suite_id, completed_at, html_url, output, ...run }) => ({
+            ...run,
+            app: { id: app_id ?? 15368, slug: "github-actions" },
+            check_suite: { id: check_suite_id },
+            completed_at: completed_at ?? null,
+            html_url: html_url ?? `https://github.com/${fullName}/runs/${run.id}`,
+            output: output ?? { summary: null, title: null },
+          })
+        ),
         total_count: runs.length,
       });
     }

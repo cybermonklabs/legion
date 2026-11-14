@@ -3,8 +3,9 @@
 # that gate's filter, the files outside the repository and under node_modules dropped and a
 # relative path resolved against the repository root, with a program that cannot be listed, a
 # pair naming a filter the changes job does not define, a pair naming a path the repository does
-# not hold, and a `!` pattern of a covered filter read under the step's quantifier - refused when
-# it excludes a file of the program, passed over when it excludes files outside it.
+# not hold, a `!` pattern of a covered filter read under the step's quantifier - refused when
+# it excludes a file of the program, passed over when it excludes files outside it - and a
+# refusal of the engine's, written to the log as the workflow command the engine writes for it.
 #
 # Each case builds a miniature repository under a temporary directory - a ci.yaml whose changes
 # job defines two filters through an anchor, a package and a library it compiles, and a
@@ -188,6 +189,28 @@ run_check "$root"
 check "exits 0" "$(is "$status" 0)"
 check "holds every file of the program to the filter still" \
   "$(contains "$out" '^pkg/app: 3 files, 0 uncovered (filter app)$')"
+
+# This check reads the changes job's filters through the engine of check-ci-filters.sh, which
+# appends its own refusals to this check's problems as Annotation values. Each must reach the log
+# as the workflow command the engine writes for it, never as the value's Python repr.
+echo "case: a refusal of the engine's, a filter two paths-filter steps declare differently"
+root=$(fixture engine-refusal)
+cat >> "$root/.github/workflows/ci.yaml" <<'YAML'
+      - uses: dorny/paths-filter@v4
+        id: filter2
+        with:
+          predicate-quantifier: some-with-excludes
+          filters: |
+            other:
+              - 'other/**'
+              - 'pkg/lib/**'
+YAML
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "writes the engine's refusal as a workflow command naming the filter and both steps" \
+  "$(contains "$out" '^::error file=.github/workflows/ci.yaml::filter other is declared in paths-filter steps filter and filter2 of the changes job, and the two do not say the same thing')"
+check "writes no Python repr of an annotation" "$(is "$(contains "$out" 'Annotation(')" false)"
+check "counts it in the summary" "$(contains "$out" '^::error::1 problem(s) across 1 tsc program(s) and 0 listed block(s)$')"
 
 # listed <root>: the fixture turned into one with a listed block. The filter consumer gates a job
 # with no program of its own that loads what app's program compiles of pkg/lib, so LISTED takes

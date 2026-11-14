@@ -26,6 +26,11 @@ var _ supervise.Store = (*Store)(nil)
 // (INFRA-80). The column stays unread rather than dropped — migrations here are forward-only, and
 // the previous release's daemon still reads its own claims table, so dropping it would make
 // rolling the image back need a database restore.
+// The two marks of how a claim answered its update round are an exception, dropped by
+// migration 20261113110610 once no rule read them: an operator who rolls the image back runs the
+// statements in docs/kubernetes.md under "Rolling back the release whose update round ends at its
+// bound" first, which add them again and let a roll forward run the migration again, and needs no
+// restore.
 //
 // The four activity columns are read here beside the eight step columns and under the same rule
 // (putClaim's own comment): PutClaimActivity and PutClaimStep own them, and a machine's write
@@ -43,7 +48,7 @@ const claimSelect = `select c.token, c.project, c.tree, c.issue, c.role, c.gener
 	c.last_turn_start, c.last_turn_end,
 	c.last_death_cause, c.last_start_failure, c.last_ready, c.turn_outcomes, c.abandoned_session,
 	c.update_round, c.update_reasons, c.update_opened_at, c.update_tasked_at, c.update_signalled_at,
-	c.update_head, c.update_told_at, c.update_answered_by_turn_end, c.update_reasked_for_push_check,
+	c.update_head, c.update_told_at,
 	c.update_left_round, c.provider_error_run, c.death_charged,
 	c.step_at, c.turn_started_at, c.step_tool, c.step_call_id, c.step_args_bytes,
 	c.step_args_hash, c.step_started_at, c.step_ended_at,
@@ -286,12 +291,12 @@ func putClaim(ctx context.Context, db execer, c supervise.Claim) error {
 		last_turn_start, last_turn_end,
 		last_death_cause, last_start_failure, last_ready, turn_outcomes, abandoned_session,
 		update_round, update_reasons, update_opened_at, update_tasked_at, update_signalled_at,
-		update_head, update_told_at, update_answered_by_turn_end, update_reasked_for_push_check,
+		update_head, update_told_at,
 		update_left_round, provider_error_run, serving_check_look, serving_check_opened_at, death_charged,
 		failure_cause, failed_at, pending_cause, leak_check_cause,
 		retired_at_write_mark)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26,
-		$27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54,
+		$27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52,
 		case when $11 = 'retired' then nextval('outbox_write_mark_seq') else 0 end)
 		on conflict (token) do update set project = excluded.project, tree = excluded.tree,
 		issue = excluded.issue, role = excluded.role, generation = excluded.generation, tree_epoch = excluded.tree_epoch,
@@ -324,8 +329,6 @@ func putClaim(ctx context.Context, db execer, c supervise.Claim) error {
 		update_opened_at = excluded.update_opened_at, update_tasked_at = excluded.update_tasked_at,
 		update_signalled_at = excluded.update_signalled_at, update_head = excluded.update_head,
 		update_told_at = excluded.update_told_at,
-		update_answered_by_turn_end = excluded.update_answered_by_turn_end,
-		update_reasked_for_push_check = excluded.update_reasked_for_push_check,
 		update_left_round = excluded.update_left_round,
 		provider_error_run = excluded.provider_error_run,
 		serving_check_look = excluded.serving_check_look,
@@ -366,7 +369,7 @@ func putClaim(ctx context.Context, db execer, c supervise.Claim) error {
 		instant(c.LastTurnStart), instant(c.LastTurnEnd),
 		c.LastDeathCause, c.LastStartFailure, instant(c.LastReady), outcomes, abandoned,
 		c.UpdateRound, c.UpdateReasons, c.UpdateOpenedAt, c.UpdateTaskedAt, c.UpdateSignalledAt,
-		c.UpdateHead, c.UpdateToldAt, c.UpdateAnsweredByTurnEnd, c.UpdateReaskedForPushCheck,
+		c.UpdateHead, c.UpdateToldAt,
 		c.UpdateLeftRound, c.ProviderErrorRun, c.ServingCheckLook.Look, instant(c.ServingCheckLook.OpenedAt), c.DeathCharged,
 		string(c.FailureCause), instant(c.FailedAt), string(c.PendingCause), c.LeakCheckCause,
 	)
@@ -697,7 +700,7 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		&turnStart, &turnEnd,
 		&c.LastDeathCause, &c.LastStartFailure, &lastReady, &outcomes, &abandoned,
 		&c.UpdateRound, &c.UpdateReasons, &updateOpened, &updateTasked, &updateSignalled,
-		&c.UpdateHead, &updateTold, &c.UpdateAnsweredByTurnEnd, &c.UpdateReaskedForPushCheck,
+		&c.UpdateHead, &updateTold,
 		&c.UpdateLeftRound, &c.ProviderErrorRun, &c.DeathCharged,
 		&stepAt, &turnStarted, &c.Step.Tool, &c.Step.CallID, &c.Step.ArgsBytes,
 		&c.Step.ArgsHash, &stepStarted, &stepEnded,

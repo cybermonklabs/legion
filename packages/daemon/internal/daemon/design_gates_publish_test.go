@@ -44,6 +44,7 @@ type gatePublished struct {
 // is what the next PUTs answer, oldest first, so a test drives an outage, a refusal and a success
 // in the order its rows meet them; a PUT past the list is taken.
 type gatePublishDispatch struct {
+	noArtifacts
 	puts    []gatePublished
 	answers []error
 }

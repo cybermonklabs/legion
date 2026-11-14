@@ -33,8 +33,9 @@ const (
 // because the record knows no document of that step to hand to a person. The same root with that
 // step registered and still closed enters awaiting_person and its notice does reach the
 // controller, which is what tells the two apart; it keeps its row through either, since an issue
-// the daemon has started keeps one until it is done, leaves the workflow or waits only for its
-// merge (record.KeepsSlot). It starts once the step is registered and approved.
+// holds one of the cap's slots from the moment the daemon starts it until its work is past its
+// review (record.KeepsSlot), and the root stands in admitted or awaiting_person throughout.
+// It starts once the step is registered and approved.
 func TestUnregisteredStepHoldsTheWorkAndRaisesNoWait(t *testing.T) {
 	steps := []record.DesignStep{record.DesignStepDecisions, record.DesignStepSpec}
 	t.Run("the step nobody registered", func(t *testing.T) {

@@ -11,6 +11,7 @@ import { matchPath } from "react-router-dom";
 
 import type { ArtifactOwner } from "../../api/client";
 import type { Artifact } from "../../api/types";
+import { issueProject } from "../../lib/issue-key";
 import { INBOX_ROW_TYPES } from "../inbox/list-row";
 import { EVERYONE_FILTER_VALUE } from "../inbox/sections";
 import {
@@ -540,10 +541,13 @@ export function parseMachinePath(pathname: string): string | undefined {
 }
 
 /** The project a route is about: a project path's own key, or an issue path's key without its
- *  number (an issue key is `<PROJECT>-<n>`, `issueKeyPattern` above); `undefined` elsewhere. */
+ *  number (`issueProject`, the one key-to-project rule); `undefined` elsewhere. */
 export function routeProjectOf(pathname: string): string | undefined {
   const issueKey = parseIssuePath(pathname)?.key;
-  return parseProjectPath(pathname)?.project ?? issueKey?.slice(0, issueKey.lastIndexOf("-"));
+  return (
+    parseProjectPath(pathname)?.project ??
+    (issueKey === undefined ? undefined : issueProject(issueKey))
+  );
 }
 
 /** The reference a `dispatch://` URL or a same-origin dashboard path names as text cites it, as

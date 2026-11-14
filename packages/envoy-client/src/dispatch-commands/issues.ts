@@ -3,6 +3,7 @@ import type {
   BasisLearnedAt,
   CheckBasis,
   CheckBlock,
+  CheckCI,
   CheckPassStands,
   CheckResult,
   ClaimedIssue,
@@ -127,6 +128,19 @@ function refuseUnsavedRepository(
   );
 }
 
+/** The revision a whole-set write of `advances` carries: the one the caller named, which answers
+ *  a 409 ADVANCES_REVISION, else the one the read answered. A Dispatch server from before
+ *  priorities answers no revision and refuses a write naming `advances`, so whichever revision
+ *  was named the call says so and sends nothing, the closing reason included. */
+function advancesRevisionToSend(issue: IssueDetails, named: number | undefined): number {
+  if (issue.advances_revision === undefined) {
+    throw new Error(
+      `Dispatch read ${issue.key} without its advances: this Dispatch server predates priorities, so nothing was sent; upgrade the server`
+    );
+  }
+  return named ?? issue.advances_revision;
+}
+
 /** `dispatch issue`: open an issue, or report the one an external reference already holds. */
 export async function issueCommand(context: CommandContext): Promise<DispatchToolResult> {
   const { args, client, actor, input, linkBase } = context;
@@ -142,12 +156,14 @@ export async function issueCommand(context: CommandContext): Promise<DispatchToo
   const repo = optionalString(args, "repo");
   const labels = args.labels;
   const blockedBy = args.blocked_by;
+  const advances = optionalStringArray(args, "advances");
   try {
     const created = await client.issue({
       project,
       title,
       ...(parent === undefined ? {} : { parent }),
       ...(Array.isArray(blockedBy) ? { blocked_by: blockedBy as string[] } : {}),
+      ...(advances === undefined ? {} : { advances }),
       ...(external === undefined ? {} : { external }),
       ...(force === undefined ? {} : { force }),
       ...(spec === undefined ? {} : { spec }),
@@ -243,6 +259,8 @@ export async function issueUpdateCommand(context: CommandContext): Promise<Dispa
   const assignee = optionalNullableString(args, "assignee");
   const labels = Array.isArray(args.labels) ? (args.labels as string[]) : undefined;
   const blockedBy = Array.isArray(args.blocked_by) ? (args.blocked_by as string[]) : undefined;
+  const advances = optionalStringArray(args, "advances");
+  const advancesRevision = optionalNumber(args, "advances_revision");
   const requestedLinks = Array.isArray(args.external_links)
     ? [...new Set(args.external_links as string[])]
     : undefined;
@@ -252,6 +270,14 @@ export async function issueUpdateCommand(context: CommandContext): Promise<Dispa
   } catch (error) {
     throw refusalWithCode(error);
   }
+  // The command replaces the issue's own set, so the write carries a revision: with none the
+  // server takes one act alone and refuses a write that moves two relations
+  // (409 ADVANCES_REVISION). The caller's own revision answers that refusal against the
+  // revision it named; with none, the read above is the read this write answers.
+  const advancesWrite =
+    advances === undefined
+      ? undefined
+      : { advances, advances_revision: advancesRevisionToSend(before, advancesRevision) };
   // The schema admits reason only beside status done. The reason is posted first, so the
   // close carries its note and an issue that cannot take the note stays open. Dispatch takes
   // messages on a closed issue (though not asks or artifacts) and answers a second close with
@@ -321,6 +347,7 @@ export async function issueUpdateCommand(context: CommandContext): Promise<Dispa
       ...(route === undefined ? {} : { route }),
       ...(parent === undefined ? {} : { parent: parent === "" ? null : parent }),
       ...(blockedBy === undefined ? {} : { blocked_by: blockedBy }),
+      ...advancesWrite,
       ...(components === undefined ? {} : { components }),
       ...(repo === undefined ? {} : { repo: repo === "" ? null : repo }),
       ...(sentLinks === undefined ? {} : { external_links: sentLinks }),
@@ -356,6 +383,11 @@ export async function issueUpdateCommand(context: CommandContext): Promise<Dispa
   refuseUnsavedRepository("updated", after, repo);
   const links = after.external_links ?? [];
   const linkCount = `(${links.length} ${links.length === 1 ? "link" : "links"})`;
+  // What the issue states itself after the write: the answer carries the inherited ones beside
+  // them, and this write replaced only its own.
+  const stated = (after.advances ?? [])
+    .filter((advance) => !advance.inherited)
+    .map((advance) => advance.id);
   const changes = [
     ...(closingNote === undefined
       ? []
@@ -405,6 +437,9 @@ export async function issueUpdateCommand(context: CommandContext): Promise<Dispa
             ? "blocked_by cleared"
             : `blocked by ${(after.blocked_by ?? []).join(", ")}`,
         ]),
+    ...(advances === undefined
+      ? []
+      : [stated.length === 0 ? "advances cleared" : `advances ${stated.join(", ")}`]),
     ...(components === undefined ? [] : [componentsChange(components, after.components)]),
     ...(repo === undefined
       ? []
@@ -703,17 +738,20 @@ function passStandsText(pass: CheckPassStands | undefined): string {
   return "A pass stands: not known";
 }
 
-/** The reading one role recorded. `brief` cuts a reading whose result stands at none of the
- *  compared commits, and leaves every other reading whole: the reading is the record, and a
- *  reader who asked for the gate alone still reads the whole of what stands. */
-function readingLines(result: CheckResult, brief: boolean): string[] {
+/** The reading one role recorded, under the line of its result at `indent`. `brief` cuts a reading
+ *  whose result stands at none of the compared commits, and leaves every other reading whole: the
+ *  reading is the record, and a reader who asked for the gate alone still reads the whole of what
+ *  stands. */
+function readingLines(result: CheckResult, brief: boolean, indent = "    "): string[] {
   const observed = result.observed;
-  if (observed === "") return ["    The role recorded no reading."];
+  if (observed === "") return [`${indent}The role recorded no reading.`];
   const cut = brief && result.commit_stands?.answer !== "at_basis";
   if (cut && observed.length > BRIEF_READING_CHARACTERS) {
-    return [`    Reading: ${observed.slice(0, BRIEF_READING_CHARACTERS)}… (result ${result.id})`];
+    return [
+      `${indent}Reading: ${observed.slice(0, BRIEF_READING_CHARACTERS)}… (result ${result.id})`,
+    ];
   }
-  return [`    Reading: ${observed}`];
+  return [`${indent}Reading: ${observed}`];
 }
 
 /** One result, in the order the API served it: the verdict, the role, the whole commit, R4's two
@@ -731,9 +769,38 @@ function resultLines(check: CheckBlock, result: CheckResult, brief: boolean): st
   return [...lines, ...readingLines(result, brief)];
 }
 
+/** A check CI proves, which Dispatch marks with `ci`: no role records its result, so the check and
+ *  its one result read as one line. A derived result names its verdict, its commit, the producer
+ *  `ci`, the run and the conclusion that decided it, and where that commit stands, as a recorded
+ *  result's line says it; a check the run did not decide says why, in the sentence Dispatch wrote.
+ *  The check's words end the line. Whether a pass stands follows, from the same `pass_stands` and
+ *  in the same words as a recorded check's head line, so the gate reads both kinds alike. The
+ *  pull-request body line Dispatch wrote for the check follows, which the implementer copies, and
+ *  then the run's reading: its conclusion, output and URL. */
+function ciCheckLines(check: CheckBlock, ci: CheckCI, brief: boolean): string[] {
+  const passStandsLine = `  ${passStandsText(check.pass_stands)}.`;
+  const pullRequestLine = `  Pull request line: ${ci.line}`;
+  const derived = check.results?.[0];
+  if (derived === undefined) {
+    return [
+      `- ${check.block_id} (${check.when}): no result: ${ci.detail} ${check.text}`,
+      passStandsLine,
+      pullRequestLine,
+    ];
+  }
+  const stands = commitStandsText(derived.commit_stands);
+  return [
+    `- ${check.block_id} (${check.when}): ${derived.verdict} at ${derived.commit_sha} by ${derived.role} (CI run ${ci.run}, ${ci.case}), ${stands.charAt(0).toLowerCase()}${stands.slice(1)}. ${check.text}`,
+    passStandsLine,
+    pullRequestLine,
+    ...readingLines(derived, brief, "  "),
+  ];
+}
+
 /** One check: a head line naming what it compared with and whether a pass of it stands, the
  *  check's own words once, then every result recorded against it. */
 function checkLines(check: CheckBlock, brief: boolean): string[] {
+  if (check.ci !== undefined) return ciCheckLines(check, check.ci, brief);
   const bases = check.compared_with ?? [];
   const reason = check.compared_nothing;
   const compared =
@@ -754,10 +821,11 @@ function checkLines(check: CheckBlock, brief: boolean): string[] {
 
 /** What `dispatch results` prints: each check of the issue's Verification document, what Dispatch
  *  compared its results with, whether a pass of it stands, its own words once, and every result
- *  recorded against it in the order the API serves them. A check with no result says so, and an
- *  issue with no Verification document says that instead of printing an empty list: Dispatch
- *  answers `verification_artifact_id` "" for such an issue, never null, so that is what is
- *  compared. */
+ *  recorded against it in the order the API serves them. A check CI proves prints its derived
+ *  result, or why it has none, as one line, then whether a pass of it stands (`ciCheckLines`). A
+ *  check with no result says so, and an issue with no Verification document says that instead of
+ *  printing an empty list: Dispatch answers `verification_artifact_id` "" for such an issue, never
+ *  null, so that is what is compared. */
 function formatCheckResults(results: IssueCheckResults, brief = false): string {
   if (results.verification_artifact_id === "") {
     return `${results.issue} has no Verification document, so it has no checks. Write one (verification.md) with a check block per thing that must be proved.`;

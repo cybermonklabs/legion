@@ -686,11 +686,11 @@ func resolveStage3(file fileConfig, configDir string, cfg *Config) error {
 	if file.ProductionCheckBound != nil {
 		cfg.ProductionCheckBound = *file.ProductionCheckBound
 	}
-	if file.PodUpdateRetask != nil {
-		cfg.PodUpdateRetask = *file.PodUpdateRetask
+	if file.PodUpdateGrace != nil {
+		cfg.PodUpdateGrace = *file.PodUpdateGrace
 	}
-	if file.PodUpdateNotice != nil {
-		cfg.PodUpdateNotice = *file.PodUpdateNotice
+	if file.StalledTreeNotice != nil {
+		cfg.StalledTreeNotice = *file.StalledTreeNotice
 	}
 	if file.WorkerSilence != nil {
 		cfg.WorkerSilence = *file.WorkerSilence

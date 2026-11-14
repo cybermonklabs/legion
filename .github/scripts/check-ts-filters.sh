@@ -134,7 +134,7 @@ TABLE = ".github/scripts/ci_ts_programs.py"
 MODE = os.environ["TS_FILTERS_MODE"]
 MARKS = engine.TS_LISTED
 
-problems: list[str] = []
+problems: list[engine.Annotation] = []
 
 
 def listed(project: str) -> list | None:
@@ -145,8 +145,8 @@ def listed(project: str) -> list | None:
     result = subprocess.run(command, cwd=engine.REPO, capture_output=True, text=True)
     if result.returncode != 0:
         output = " / ".join((result.stdout + result.stderr).split()) or "no output"
-        problems.append(f"::error file={project}::`{' '.join(command)}` failed (exit {result.returncode}), so the "
-                        f"files its program holds are unknown: {output[:500]}")
+        problems.append(engine.error(project, f"`{' '.join(command)}` failed (exit {result.returncode}), so the "
+                                              f"files its program holds are unknown: {output[:500]}"))
         return None
     files = set()
     for line in result.stdout.splitlines():
@@ -199,11 +199,11 @@ wanted: dict = {}
 for name, tree, source, why in LISTED:
     projects = [project for pair, project, _ in PROGRAMS if pair == source]
     if name in wanted:
-        problems.append(f"::error file={TABLE}::LISTED names filter {name} twice; a filter has one listed block")
+        problems.append(engine.error(TABLE, f"LISTED names filter {name} twice; a filter has one listed block"))
         continue
     if not projects:
-        problems.append(f"::error file={TABLE}::LISTED takes filter {name}'s files under {tree} from filter {source}, "
-                        f"which PROGRAMS pairs with no tsc program, so the block is computed from nothing")
+        problems.append(engine.error(TABLE, f"LISTED takes filter {name}'s files under {tree} from filter {source}, "
+                                            f"which PROGRAMS pairs with no tsc program, so the block is computed from nothing"))
         wanted[name] = None
         continue
     compiled = [programs.get(project) for project in projects]
@@ -214,8 +214,8 @@ for name, tree, source, why in LISTED:
 
 if MODE == "write":
     if any(files is None for files in wanted.values()) or problems:
-        problems.append(f"::error file={engine.WORKFLOW}::wrote no listed block: the files a block holds are "
-                        f"computed from programs this run could not list or read")
+        problems.append(engine.error(engine.WORKFLOW, "wrote no listed block: the files a block holds are "
+                                                      "computed from programs this run could not list or read"))
     else:
         sources = {name: (tree, source) for name, tree, source, _ in LISTED}
         engine.rewrite(engine.WORKFLOW, lines, engine.filter_blocks(lines, problems, MARKS), wanted,
@@ -228,12 +228,12 @@ if MODE == "write":
 for name, project, why in PROGRAMS:
     patterns = filters.get(name)
     if patterns is None:
-        problems.append(f"::error file={TABLE}::{name} is no filter of the changes job, so the program "
-                        f"{project} ({why}) is held to nothing")
+        problems.append(engine.error(TABLE, f"{name} is no filter of the changes job, so the program "
+                                            f"{project} ({why}) is held to nothing"))
         continue
     if not (engine.REPO / project).exists():
-        problems.append(f"::error file={TABLE}::{project} ({why}) is no path of this repository, so filter {name} "
-                        f"is held to no program")
+        problems.append(engine.error(TABLE, f"{project} ({why}) is no path of this repository, so filter {name} "
+                                            f"is held to no program"))
         continue
     files = programs.get(project)
     if files is None:
@@ -242,23 +242,23 @@ for name, project, why in PROGRAMS:
     uncovered = [path for path in files if not covers(path)]
     print(f"{project}: {len(files)} files, {len(uncovered)} uncovered (filter {name})")
     for path in uncovered[:engine.SHOWN]:
-        problems.append(f"::error file={path}::filter {name} does not select {path}, which the tsc program of "
-                        f"{project} compiles ({why}): the filter must select it, or the change that breaks that "
-                        f"program starts no job")
+        problems.append(engine.error(path, f"filter {name} does not select {path}, which the tsc program of "
+                                           f"{project} compiles ({why}): the filter must select it, or the change that breaks that "
+                                           f"program starts no job"))
     if len(uncovered) > engine.SHOWN:
-        problems.append(f"::error file={engine.WORKFLOW}::filter {name} misses "
-                        f"{len(uncovered) - engine.SHOWN} more file(s) of {project}")
+        problems.append(engine.error(engine.WORKFLOW, f"filter {name} misses "
+                                                      f"{len(uncovered) - engine.SHOWN} more file(s) of {project}"))
 
 blocks = engine.filter_blocks(lines, problems, MARKS)
 for name in sorted(blocks):
     if blocks[name].begin >= 0 and name not in wanted:
-        problems.append(f"::error file={engine.WORKFLOW}::{name} has a listed block, and LISTED of {TABLE} names no "
-                        f"such filter, so nothing says what belongs in it; delete the block")
+        problems.append(engine.error(engine.WORKFLOW, f"{name} has a listed block, and LISTED of {TABLE} names no "
+                                                      f"such filter, so nothing says what belongs in it; delete the block"))
 for name, tree, source, why in LISTED:
     files = wanted.get(name)
     if name not in filters:
-        problems.append(f"::error file={TABLE}::LISTED names {name}, which is no filter of the changes job, so no "
-                        f"block holds its files under {tree}")
+        problems.append(engine.error(TABLE, f"LISTED names {name}, which is no filter of the changes job, so no "
+                                            f"block holds its files under {tree}"))
         continue
     if files is None:
         continue
@@ -266,16 +266,16 @@ for name, tree, source, why in LISTED:
     committed = block.patterns
     where = f"filter {name}'s listed block" if block.begin >= 0 else f"filter {name}, which has no listed block,"
     for path in sorted(set(files) - set(committed)):
-        problems.append(f"::error file={engine.WORKFLOW}::{where} lacks '{path}', which the tsc programs of filter "
-                        f"{source} compile ({why}): the block is generated from those programs, so run "
-                        f"`{MARKS.write}`")
+        problems.append(engine.error(engine.WORKFLOW, f"{where} lacks '{path}', which the tsc programs of filter "
+                                                      f"{source} compile ({why}): the block is generated from those programs, so run "
+                                                      f"`{MARKS.write}`"))
     for path in sorted(set(committed) - set(files)):
-        problems.append(f"::error file={engine.WORKFLOW}::{where} has '{path}', which no tsc program of filter "
-                        f"{source} compiles, so it selects the job for a change no step of it sees: the block is "
-                        f"generated from those programs, so run `{MARKS.write}`")
+        problems.append(engine.error(engine.WORKFLOW, f"{where} has '{path}', which no tsc program of filter "
+                                                      f"{source} compiles, so it selects the job for a change no step of it sees: the block is "
+                                                      f"generated from those programs, so run `{MARKS.write}`"))
     if set(committed) == set(files) and committed != files:
-        problems.append(f"::error file={engine.WORKFLOW}::{where} holds its files out of sorted order or twice, and "
-                        f"the same programs must write the same text on every run; run `{MARKS.write}`")
+        problems.append(engine.error(engine.WORKFLOW, f"{where} holds its files out of sorted order or twice, and "
+                                                      f"the same programs must write the same text on every run; run `{MARKS.write}`"))
     under = wp.walk(Path(tree)) if (engine.REPO / tree).is_dir() else []
     for pattern in dict.fromkeys(filters[name]):
         if pattern.startswith("!") or pattern in set(committed):
@@ -283,23 +283,26 @@ for name, tree, source, why in LISTED:
         regex = wp.glob_regex(pattern)
         hit = next((path for path in under if regex.fullmatch(path)), None)
         if hit:
-            problems.append(f"::error file={engine.WORKFLOW}::filter {name} has '{pattern}' outside its listed block, "
-                            f"and it matches {hit} under {tree}: which files of {tree} the filter selects is the "
-                            f"block's to say, from the tsc programs of filter {source}, so drop the pattern and run "
-                            f"`{MARKS.write}`")
+            problems.append(engine.error(engine.WORKFLOW, f"filter {name} has '{pattern}' outside its listed block, "
+                                                          f"and it matches {hit} under {tree}: which files of {tree} the filter selects is the "
+                                                          f"block's to say, from the tsc programs of filter {source}, so drop the pattern and run "
+                                                          f"`{MARKS.write}`"))
     if source != name:
         covers = wp.PathsFilter(filters[name], quantifiers[name]).covers
         for path in [path for path in files if not covers(path)][:engine.SHOWN]:
-            problems.append(f"::error file={path}::filter {name} does not select {path}, which the tsc programs of "
-                            f"filter {source} compile ({why}): the filter must select it, or a change to it starts "
-                            f"no job")
+            problems.append(engine.error(path, f"filter {name} does not select {path}, which the tsc programs of "
+                                               f"filter {source} compile ({why}): the filter must select it, or a change to it starts "
+                                               f"no job"))
     print(f"filter {name}: {len(files)} listed file(s) under {tree}, from filter {source}'s programs")
 
+# Every problem, this check's own and the engine's (changes_filters and filter_blocks append
+# theirs to the same list), is an engine Annotation, written as the engine writes one: a
+# workflow command whose file and message are escaped, so no repository text can end it early.
 for problem in problems:
-    print(problem, file=sys.stderr)
+    print(engine.annotation_line(problem), file=sys.stderr)
 if problems:
-    print(f"::error::{len(problems)} problem(s) across {len(PROGRAMS)} tsc program(s) and {len(LISTED)} listed "
-          f"block(s)", file=sys.stderr)
+    print(engine.annotation_line(engine.error(None, f"{len(problems)} problem(s) across {len(PROGRAMS)} tsc program(s) "
+                                                    f"and {len(LISTED)} listed block(s)")), file=sys.stderr)
     raise SystemExit(1)
 print(f"every changes filter selects every file its job's typecheck compiles "
       f"({len(PROGRAMS)} programs, {len({name for name, _, _ in PROGRAMS})} filters), and every listed block holds "
