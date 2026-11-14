@@ -40,8 +40,8 @@ func TestSpawnSpecCarriesTheRoleAppIdentity(t *testing.T) {
 	bot := runtime.GitIdentity{Name: "legion-implementer[bot]", Email: "7+legion-implementer[bot]@users.noreply.github.com"}
 	var asked []string
 	s := specs{stateDir: stateDir, project: "s1", repositories: noRepositoriesView,
-		repository: func(context.Context, string) (ghrepo.Repository, string, error) {
-			return ghrepo.MustParse("zeta/tools"), "main", nil
+		repository: func(context.Context, string) (launchRepository, error) {
+			return launchRepository{Repo: ghrepo.MustParse("zeta/tools"), DefaultBranch: "main"}, nil
 		},
 		identity: func(_ context.Context, role claim.Role, repository ghrepo.Repository) (runtime.GitIdentity, error) {
 			if role != claim.RoleImplementer {

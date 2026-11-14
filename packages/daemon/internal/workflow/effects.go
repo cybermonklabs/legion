@@ -503,7 +503,7 @@ func (e *Engine) restart(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 // A row carrying no task is sent the phase's resume task instead (ResumePhaseTask), which says to
 // carry the work on rather than beginning it. Two rows are in that state: one the upgrade to the
 // entry left with no task, since the release before it recorded none, and one a re-admission
-// reset (record.Store.ClearGeneration).
+// reset (Engine.ClearGeneration).
 //
 // It is exported for admission, which repairs a slot whose worker has no task with it
 // (resumeSlottedWorkers) and sweeps the claims left behind their role's entry: every other way
@@ -548,7 +548,7 @@ func (e *Engine) sendOwedEntry(ctx context.Context, tx pgx.Tx, issue record.Issu
 //
 // It raises the entry, where the promotion's other role starts raise none: the promotion is
 // handing that role its work again, and the re-admission cleared the task its entry named with
-// the rest of the generation (record.Store.ClearTreeGeneration), so the entry the record now
+// the rest of the generation (Engine.ClearTreeGeneration), so the entry the record now
 // holds names work nothing would send. The start is marked a resume task, so the outbox still
 // hands no second prompt to a claim that holds its phase's task
 // (record.SuperviseRequest.ResumeTask).

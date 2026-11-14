@@ -216,7 +216,9 @@ type Options struct {
 	AwaitRecovery func(repo, tree, child, parent string)
 	// RoleFor is the role that works a phase (phase.RoleFor). The operator's retry of a failed
 	// phase worker applies its issue's held phase only when that phase's role is the claim's
-	// (retryClaim); nil retries no held phase, leaving every one to its architect.
+	// (retryClaim); nil retries no held phase, leaving every one to its architect. The claim route
+	// `POST /legion/v1/claims/owed` reads it for whether a claim's role works its issue's phase,
+	// and nil answers that route 500.
 	RoleFor func(phase.Phase) claim.Role
 	// Record is the issue record the routes read and write (record.NewStore()). Nil is defaulted
 	// to one: the Postgres implementation is stateless, so a server given none still draws an
@@ -468,6 +470,7 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 	mux.HandleFunc("POST /legion/v1/claims/exit", s.exit)
 	mux.HandleFunc("POST /legion/v1/claims/turn-outcome", s.turnOutcome)
 	mux.HandleFunc("POST /legion/v1/claims/activity", s.activity)
+	mux.HandleFunc("POST /legion/v1/claims/owed", s.claimOwed)
 	mux.HandleFunc("POST /legion/v1/claims/release-records", s.releaseRecords)
 	mux.HandleFunc("POST /legion/v1/grants", s.grant)
 	mux.HandleFunc("POST /legion/v1/controller/secret", s.controllerSecret)
@@ -791,19 +794,22 @@ func statementBound(bound time.Duration) int64 {
 // entry the issue's current phase stands on and the entry its role was given, is served it
 // without `phaseEntry` and `givenEntry` (withoutPhaseEntries); a caller below heldContract, the
 // contract that named the issues the daemon's record holds in the workflow and queues nowhere,
-// is served it without `admission.held` (withoutHeld); and a caller below quietTimeContract, the
+// is served it without `admission.held` (withoutHeld); a caller below quietTimeContract, the
 // contract that added each issue's measure of its tree's quiet time, is served it without
-// `treeMovedAt` and `quietHours` (withoutQuietTime).
-// The sixteen compose: each is applied when the state carries something of its own, so a
+// `treeMovedAt` and `quietHours` (withoutQuietTime); and a caller below
+// repositoryCorrectionContract, the contract that added what a correction of an issue's
+// repository left on its record, is served the issues without those four keys
+// (withoutRepositoryCorrection).
+// The seventeen compose: each is applied when the state carries something of its own, so a
 // caller below all of them — a pod below supervise.PodUpdateContract — is served a body
-// carrying none of the thirty keys, the line's own fields being fields of a view such a
+// carrying none of the thirty-four keys, the line's own fields being fields of a view such a
 // caller is served none of at all, each of them absent rather than empty, since a strict reader
 // before the contract that added a key refuses it whether or not it names anything, and with no
-// retired entry under `strandedClaims`. Every later reader takes all thirty keys as
+// retired entry under `strandedClaims`. Every later reader takes all thirty-four keys as
 // optional and all three states — `packages/contracts/src/legion-api.ts` marks
 // `admission.trees`, `admission.held`, `wakesWaiting`, `claimsToRefresh`, the issues'
-// `gatedSteps`, `waitingLine`, `why`, `phaseEntry`, `givenEntry`, `treeMovedAt` and
-// `quietHours`, the workers' counts of the moves back, the claim views' `step` and
+// `gatedSteps`, `waitingLine`, `why`, `phaseEntry`, `givenEntry`, `treeMovedAt`, `quietHours`
+// and four repository keys, the workers' counts of the moves back, the claim views' `step` and
 // `leakCheckCause`, each of the nine the decided record added and `contract` itself optional
 // for exactly these bodies. Any other caller — a pod at this contract, the operator's `legion
 // state`, a tmux pane — is served the state as this contract writes it.
@@ -871,7 +877,7 @@ func (s *server) stateFor(r *http.Request, state State, claims []supervise.Claim
 // (TestANarrowedBodySaysSo).
 const narrowedTheState = "api: narrowed the state to the caller's plugin contract"
 
-// stateNarrowing is one of the sixteen narrowings stateFor applies: the contract that added the
+// stateNarrowing is one of the seventeen narrowings stateFor applies: the contract that added the
 // keys to this route, whether a state carries anything of it, the body served without it, and
 // what the log line names as dropped. Each arm carries its own `dropped` rather than the
 // contract number alone, because a reader of the log who is told only a number has to find out
@@ -883,7 +889,7 @@ type stateNarrowing struct {
 	dropped  string
 }
 
-// stateNarrowings are the sixteen, lowest contract first, which is the order stateFor applies
+// stateNarrowings are the seventeen, lowest contract first, which is the order stateFor applies
 // them in: a caller below all of them is served a body with every one of these keys gone. The
 // order is the history of the route and nothing a strip depends on, so a row added at the end
 // needs no reading of the rows before it. One pair does touch one key, and it is the reason
@@ -892,8 +898,8 @@ type stateNarrowing struct {
 // added from inside that same field. They still do not depend on their order, because a caller
 // below both is served no `waitingLine` at all whichever runs first — the later one then finds
 // the key gone and does nothing — and a caller below only the higher one keeps the field with
-// its `place` and its `length`, which is what the lower row's own contract describes. A
-// seventeenth row that takes something out of a field an earlier row drops whole is sound on
+// its `place` and its `length`, which is what the lower row's own contract describes. An
+// eighteenth row that takes something out of a field an earlier row drops whole is sound on
 // those same terms; one that puts a key back, or reads what an earlier row left, is not, and
 // this table is the wrong shape for it. The order is kept beyond that so a reader of this
 // table and a reader of version.go walk the contracts the same way.
@@ -917,6 +923,8 @@ var stateNarrowings = []stateNarrowing{
 	{phaseEntriesContract, carriesPhaseEntries, withoutPhaseEntries, "the issues' phaseEntry and givenEntry"},
 	{heldContract, carriesHeld, withoutHeld, "admission.held"},
 	{quietTimeContract, carriesQuietTime, withoutQuietTime, "the issues' treeMovedAt and quietHours"},
+	{repositoryCorrectionContract, carriesRepositoryCorrection, withoutRepositoryCorrection,
+		"the issues' repoBefore, repoCorrectedAt, repoChangePending and repoChangeReason"},
 }
 
 // memoryContract is the daemon contract that added the issues' memory group to the state
@@ -988,11 +996,11 @@ const backwardMovesContract = 62
 // one built after strips the key instead, so the strip is what keeps the count from a caller
 // that did not ask for it rather than what keeps such a caller reading at all. It was the
 // highest of the bands when it was taken, this daemon's own contract then; recordFieldsContract,
-// whyAndLineFieldsContract, leakCheckCauseContract, phaseEntriesContract, heldContract and
-// quietTimeContract stand above it now, so a caller in a pod at 73 or 74 is served the count and
-// neither the decided record's keys, nor each issue's answer with the line's own fields, nor a
-// claim view's `leakCheckCause`, nor the two entry numbers, nor `admission.held`, nor the tree's
-// quiet time.
+// whyAndLineFieldsContract, leakCheckCauseContract, phaseEntriesContract, heldContract,
+// quietTimeContract and repositoryCorrectionContract stand above it now, so a caller in a pod at
+// 73 or 74 is served the count and neither the decided record's keys, nor each issue's answer
+// with the line's own fields, nor a claim view's `leakCheckCause`, nor the two entry numbers, nor
+// `admission.held`, nor the tree's quiet time, nor the four repository keys.
 const claimsToRefreshContract = 73
 
 // recordFieldsContract is the daemon contract that decided every field of the claim record and
@@ -1009,6 +1017,50 @@ const claimsToRefreshContract = 73
 // (carriesRecordFields, withoutRecordFields) rather than one for each, which would copy the
 // issue map once for each in one request.
 const recordFieldsContract = 75
+
+// repositoryCorrectionContract is the daemon contract that added what a correction of an issue's
+// repository left on its record: `repoBefore` and `repoCorrectedAt`, the repository the issue
+// left and the moment the daemon applied the correction, and `repoChangePending` and
+// `repoChangeReason`, a repository Dispatch has named that the daemon has not applied and why.
+// A plugin before it is served the issues without the four: one built before sjawhar/legion#2788
+// reads the state with a strict schema and would refuse the whole body for a key it does not
+// name, and one built after strips the key instead, so the strip is what keeps the four from a
+// caller that did not ask for them rather than what keeps such a caller reading at all. The
+// number is the one DaemonAPIVersion takes for these four keys, and version.go's entry for it
+// records how that number was chosen. It is the highest of the seventeen bands, this daemon's
+// own contract, so the only caller served the four keys is one at it.
+const repositoryCorrectionContract = 119
+
+// carriesRepositoryCorrection is whether any issue of state carries the keys
+// repositoryCorrectionContract added. Like the gated steps they are written only where there is
+// one — an issue whose repository nothing changed carries none — so this is asked of the state
+// rather than answered true. Each pair of keys is written from one value of the record, a
+// correction (record.Issue.RepoCorrection) or a change still to be made
+// (record.Issue.RepoChange), so one key of each says whether its pair is there.
+func carriesRepositoryCorrection(state State) bool {
+	for _, issue := range state.Issues {
+		if issue.RepoCorrectedAt != nil || issue.RepoChangePending != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// withoutRepositoryCorrection is state with no issue carrying `repoBefore`, `repoCorrectedAt`,
+// `repoChangePending` or `repoChangeReason`, the four fields repositoryCorrectionContract added
+// to the state; nothing else of that contract is on the route. `repo` is left as it is: it names
+// the repository the issue works, which every contract since 31 carries. The issue map is
+// copied, as every sibling strip copies it, so the state the source answered is left as it was.
+func withoutRepositoryCorrection(state State) State {
+	issues := make(map[string]Issue, len(state.Issues))
+	for key, issue := range state.Issues {
+		issue.RepoBefore, issue.RepoCorrectedAt = "", nil
+		issue.RepoChangePending, issue.RepoChangeReason = "", ""
+		issues[key] = issue
+	}
+	state.Issues = issues
+	return state
+}
 
 // whyAndLineFieldsContract is the daemon contract that added the one rendered answer every issue
 // that is not working now carries, `why` (WhyView), and the waiting line's own fields beside it:
@@ -1042,8 +1094,9 @@ const leakCheckCauseContract = 87
 // built before sjawhar/legion#2788 reads it with a strict schema and would refuse the whole body
 // for a key it does not name, and one built after strips the keys instead, so the strip is what
 // keeps the numbers from a caller that did not ask for them rather than what keeps such a caller
-// reading at all. It is the band below heldContract's band, so a caller in a pod at 94 through
-// 97 is served the two keys and not `admission.held`.
+// reading at all. It is the band below heldContract's, so a caller in a pod at 94 through 97 is
+// served the two keys and neither `admission.held`, nor the tree's quiet time, nor the four
+// repository keys.
 const phaseEntriesContract = 94
 
 // quietTimeContract is the daemon contract that added each issue's measure of its tree's quiet
@@ -1054,8 +1107,9 @@ const phaseEntriesContract = 94
 // strips them instead, so the strip is what keeps the pair from a caller that did not ask for
 // it rather than what keeps such a caller reading at all. The two are one gate because they are
 // one measure: a caller served the movement without the quiet time beside it, or the other way
-// about, would hold half of what one read of the tree said. It is the highest of the sixteen
-// bands, this daemon's own contract, so the only caller served the measure is one at it.
+// about, would hold half of what one read of the tree said. It is the band below
+// repositoryCorrectionContract's, so a caller in a pod at 111 through 118 is served the measure
+// and not the four repository keys.
 const quietTimeContract = 111
 
 // carriesUpdateRounds is whether any claim view of state carries `updateRound` or `updateHead`.
@@ -1088,8 +1142,8 @@ func carriesMemory(state State) bool {
 // issue's `tree`. It carries `admission.trees` whatever the daemon holds, since the admission
 // block writes that key on every body, empty rather than null (Admission.MarshalJSON), and the
 // strict reader before the contract refuses the empty key as surely as one naming a tree. So this
-// is true of every state the route writes; it is asked beside the other fifteen all the same,
-// because stateFor puts the same question to the sixteen and because a later contract that
+// is true of every state the route writes; it is asked beside the other sixteen all the same,
+// because stateFor puts the same question to the seventeen and because a later contract that
 // stops writing `trees` on every body answers it here.
 func carriesTrees(State) bool { return true }
 
@@ -1098,8 +1152,8 @@ func carriesTrees(State) bool { return true }
 // carries that key whatever the daemon holds, since the admission block writes it on every body,
 // empty rather than null (Admission.MarshalJSON), and the strict reader before the contract
 // refuses the empty key as surely as one naming an issue. So this is true of every state the
-// route writes; it is asked beside the other fifteen all the same, because stateFor puts the
-// same question to the sixteen and because a later contract that stops writing `held` on every
+// route writes; it is asked beside the other sixteen all the same, because stateFor puts the
+// same question to the seventeen and because a later contract that stops writing `held` on every
 // body answers it here.
 func carriesHeld(State) bool { return true }
 
@@ -1107,8 +1161,8 @@ func carriesHeld(State) bool { return true }
 // the wakes the pacing holds. It carries that key whatever the daemon holds, since the state
 // writes it on every body, empty rather than null (State.MarshalJSON), and the strict reader
 // before the contract refuses the empty key as surely as one naming a wake. So this is true of
-// every state the route writes; it is asked beside the other fifteen all the same, because
-// stateFor puts the same question to the sixteen and because a later contract that stops
+// every state the route writes; it is asked beside the other sixteen all the same, because
+// stateFor puts the same question to the seventeen and because a later contract that stops
 // writing `wakesWaiting` on every body answers it here.
 func carriesWakesWaiting(State) bool { return true }
 
@@ -1117,8 +1171,8 @@ func carriesWakesWaiting(State) bool { return true }
 // whatever the daemon holds, since the state writes the number on every body, 0 rather than
 // absent (State.MarshalJSON), and the strict reader before the contract refuses the key when it
 // is 0 as surely as when it names a number. So this is true of every state the route writes, as
-// carriesWakesWaiting is; it is asked beside the other fifteen all the same, because stateFor
-// puts the same question to the sixteen and because a later contract that stops writing
+// carriesWakesWaiting is; it is asked beside the other sixteen all the same, because stateFor
+// puts the same question to the seventeen and because a later contract that stops writing
 // `claimsToRefresh` on every body answers it here.
 func carriesClaimsToRefresh(State) bool { return true }
 
@@ -1146,8 +1200,8 @@ func carriesStallRecord(state State) bool {
 // `heldFrom`, `lingerUntil` or `ancestry`. It carries the mark whatever the daemon holds, since
 // stateFor writes it on every body before it narrows one (ContractView), and the strict reader
 // before the contract refuses that key as surely as the nine. So this is true of every state the
-// route puts the question to; it is asked beside the other fifteen all the same, because
-// stateFor puts the same question to the sixteen and because a later contract that stops
+// route puts the question to; it is asked beside the other sixteen all the same, because
+// stateFor puts the same question to the seventeen and because a later contract that stops
 // writing the mark on every body answers it here, as carriesTrees answers for
 // `admission.trees`. The question the mark pre-empts is issueCarriesRecordFields, which that
 // contract would ask of every issue here and which the strip below reads one issue at a time.

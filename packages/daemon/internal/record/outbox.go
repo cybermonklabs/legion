@@ -360,6 +360,13 @@ type Notice struct {
 	// `dispatch://<KEY>/ask/<id>` for an answer or a resolution, `dispatch://<KEY>/comment/<id>`
 	// for a reply.
 	Ref string `json:"ref,omitempty"`
+	// Review is where Dispatch recorded the review a design-approved or design-changes-requested
+	// notice reports: its event's sequence and Dispatch's time of it, each zero when the event or
+	// the read gave none. The outbox keeps it with the decision when nobody in the tree hears the
+	// notice (the daemon's parkDecision, ParkedDecision.At and Seq), so the kept decision is later
+	// judged against the gate's approval by Dispatch's order, never by the daemon's clock. Every
+	// other kind carries none.
+	Review EventMark `json:"review,omitzero"`
 	// Decision is what a parked-decision notice relays, and Root the root of the tree it was made
 	// on. Every other kind carries neither.
 	Decision DecisionKind `json:"decision,omitempty"`
@@ -512,27 +519,40 @@ type SilentIssue struct {
 
 // CatchUp is what a tree's root architect is told of its tree when its claim is ready at a launch
 // (a catch-up notice), which is the architect's first instruction: admission launches it with no
-// task, or only with the decisions kept for it. It is the tree as the daemon records it then: the
-// root's generation, the launch of the architect's claim it was written for, whether a hand-over
-// created the root at this generation with its child's phase and pull request (HandedOver) and
-// whether its old root's gate came with them (Carried), the design gate step by step (Gates),
-// and every issue of the tree. A handed-over root's workers already run their phases, so its
-// architect decomposes nothing anew; one that carried no gate registers its own spec. Decided names
-// what a person decided on the tree while nobody in it could hear it and the start did not name (a
-// decision made while the architect's claim had ended, before this relaunch), in the words of
-// workflow.Engine.ParkedDecisionTask; empty when there is none. Kept is what Decided named, which
-// a published catch-up forgets (Store.ForgetKeptDecisions): a catch-up a newer one supersedes
-// hands it over to a fresh catch-up instead (workflow.HandOverKept), and one that finishes
-// undelivered any other way leaves it all for the architect's next ready to name again.
+// task, or only with the decisions kept for it. The root's generation and the launch of the
+// architect's claim it was written for are the ones the row was queued at, and the rest is read
+// from the record when the notice is delivered: the tree (CatchUpTree), composed again in the
+// delivery's own read (workflow.TreeCatchUp), and Decided. Decided names what a person decided on
+// the tree while nobody in it could hear it and the start did not name (a decision made while the
+// architect's claim had ended, before this relaunch), in the words of workflow.KeptDecisionsTask;
+// empty when there is none. Kept is what the row claimed for that telling when it was queued, and
+// it stays the row's: a published catch-up forgets it (Store.ForgetKeptDecisions), a catch-up a
+// newer one supersedes hands it over to a fresh catch-up instead (workflow.HandOverKept), and one
+// that finishes undelivered any other way leaves it all for the architect's next ready to name
+// again. Decided is written again at the delivery from Kept, each decision asked again of the
+// gates as the delivery reads them (workflow.DecisionStands), so it names no decision the person's
+// approval followed while the row waited.
 type CatchUp struct {
-	Generation uint64         `json:"generation"`
-	Launch     uint64         `json:"launch"`
+	Generation uint64 `json:"generation"`
+	Launch     uint64 `json:"launch"`
+	CatchUpTree
+	Decided string         `json:"decided,omitempty"`
+	Kept    *KeptDecisions `json:"kept,omitempty"`
+}
+
+// CatchUpTree is the record half of a catch-up: the tree as workflow.TreeCatchUp reads it, which
+// the delivery replaces whole with its own read, so no part of it reaches the architect as the
+// row was queued. It is embedded in CatchUp, so its fields are the payload's own keys: whether a
+// hand-over created the root at this generation with its child's phase and pull request
+// (HandedOver) and whether its old root's gate came with them (Carried), the design gate step by
+// step (Gates), and every issue of the tree. A handed-over root's workers already run their
+// phases, so its architect decomposes nothing anew; one that carried no gate registers its own
+// spec.
+type CatchUpTree struct {
 	HandedOver bool           `json:"handed_over,omitempty"`
 	Carried    bool           `json:"carried,omitempty"`
 	Gates      []CatchUpGate  `json:"gates"`
 	Issues     []CatchUpIssue `json:"issues"`
-	Decided    string         `json:"decided,omitempty"`
-	Kept       *KeptDecisions `json:"kept,omitempty"`
 }
 
 // CatchUpGate is one design-gate step as a catch-up states it: the step, whether a person must
@@ -699,6 +719,17 @@ type SuperviseRequest struct {
 	// (Store.ForgetKeptDecisions), and a start that reached no claim hands them over to a fresh
 	// catch-up (workflow.HandOverKept). Every other request carries none.
 	Kept *KeptDecisions `json:"kept,omitempty"`
+	// Awaiting is the wait an architect start answers when it is the resume task of a root a
+	// person answered (workflow.Engine.ResumeAwaitedRoot), and nil for every other start, which
+	// carries its text in Task as it always has. Such a start carries no Task: the text is rendered
+	// at send (workflow.ResumeTask, through the daemon's rootTask), because the gate may move
+	// between the moment the row is written and the moment the task is sent, and the delivery
+	// carries the wait on to every send of it (supervise.Delivery.Resume), since the issue's record
+	// clears its wait when the root resumes. The field is decoded strictly, as every field is
+	// (DecodeOutboxPayload), so a daemon of an earlier release refuses a row this one wrote and
+	// retries it on its backoff until this release runs again; a row an earlier release wrote has
+	// no Awaiting and carries its Task, which this release delivers as it was written.
+	Awaiting *Awaiting `json:"awaiting,omitempty"`
 	// Generation is the issue generation the request serves. A request of an earlier generation
 	// finishes without acting: it must never suspend, stop, or start the next generation's worker.
 	Generation uint64 `json:"generation"`
@@ -1346,6 +1377,9 @@ func validateOutboxPayload(payload OutboxPayload) error {
 		if _, spec := SpecDecision(value.Kind); !spec && (value.Actor != "" || value.Ref != "") {
 			return fmt.Errorf("a %s notice carries an actor or a ref; only a spec decision's does", value.Kind)
 		}
+		if (value.Review.Seq != 0 || !value.Review.At.IsZero()) && value.Kind != "design-approved" && value.Kind != "design-changes-requested" {
+			return fmt.Errorf("a %s notice carries a review's mark; only a design-approved or design-changes-requested notice does", value.Kind)
+		}
 		if value.Decision != "" || value.Root != "" {
 			return fmt.Errorf("a %s notice carries a decision or a root; only a parked-decision controller notice does", value.Kind)
 		}
@@ -1416,6 +1450,9 @@ func validateOutboxPayload(payload OutboxPayload) error {
 		}
 		if value.CheckLook != 0 && (value.CheckLook < 0 || value.Op != "start" || !worksCheck(value.Role) || value.Phase != "") {
 			return fmt.Errorf("a supervise check look names a start of the implementer or the tester with no phase, and only a start carries one")
+		}
+		if value.Awaiting != nil && (value.Op != "start" || value.Role != claim.RoleArchitect || value.Task != "" || value.Phase != "" || value.Kept != nil) {
+			return fmt.Errorf("a supervise start that carries an answered wait is an architect's start with no task, no phase and no kept decisions")
 		}
 		if value.Kept != nil {
 			if value.Op != "start" || value.Task == "" {

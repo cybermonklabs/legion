@@ -393,7 +393,7 @@ func (r *idleWakeRig) savedBundle(issue idleRigIssue) runtime.WorkspaceBundle {
 		r.t.Fatalf("open the store to save the bundle of %s: %v", issue.key, err)
 	}
 	defer st.Close()
-	if err := st.PutWorkspaceBundle(ctx, issue.key, idleRigEarlierRelease, saved); err != nil {
+	if err := st.PutWorkspaceBundle(ctx, issue.key, idleRigEarlierRelease, liveRepo, saved); err != nil {
 		r.t.Fatalf("save the earlier release's bundle of %s: %v", issue.key, err)
 	}
 	return saved

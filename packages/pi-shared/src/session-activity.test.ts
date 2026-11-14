@@ -1,5 +1,4 @@
 import { expect, test } from "bun:test";
-import type { LegionState } from "@legion/contracts/legion-api";
 import { createPhaseReminder } from "./phase-reminder";
 import {
   ASYNC_JOB_KIND,
@@ -74,7 +73,8 @@ test("two readings of the same work are the same report, whenever they were read
   ).toBeFalse();
 });
 
-/** The reminder over an open phase, with no daemon record and no timer of its own fired. */
+/** The reminder made afresh, over a daemon that answers the claim owes work and holds no record,
+ * with no timer of its own fired. */
 function reminderRig() {
   const timers: { readonly delayMs: number }[] = [];
   const reminder = createPhaseReminder({
@@ -84,13 +84,12 @@ function reminderRig() {
     },
     saveEntry: () => {},
     claim: () => implementer,
-    readState: async () => ({ issues: {} }) as unknown as LegionState,
+    readOwed: async () => ({ owes: true, work: "the implementing phase of LEGION-208" }),
     publisher: () => undefined,
     project: "legion",
     limits: DEFAULT_STALL_LIMITS,
     log: { debug: () => {}, warn: () => {} },
   });
-  reminder.apply({ kind: "assignment" });
   return { reminder, timers };
 }
 
@@ -129,8 +128,9 @@ test("a WAITING reply moves the reported wake out by the waiting limit", async (
     "the wait buys the difference between the two limits"
   ).toBeGreaterThanOrEqual(DEFAULT_STALL_LIMITS.waitingMs - DEFAULT_STALL_LIMITS.reminderMs);
 
-  // A closed phase reports no wake at all, whatever timer is still armed on the host.
-  reminder.apply({ kind: "phase-closed" });
+  // A turn that starts makes every armed timer stale, so the report says no wake at all, whatever
+  // timer is still armed on the host.
+  reminder.turnStarted();
   expect(reminder.phaseWake()).toEqual({ nextReminderAt: null });
 });
 

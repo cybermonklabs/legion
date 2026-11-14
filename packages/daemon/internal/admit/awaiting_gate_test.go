@@ -2,6 +2,7 @@ package admit
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/blockers"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -91,31 +93,37 @@ func giveArchitectTask(t *testing.T, pool *pgxpool.Pool, root, task string, conf
 }
 
 // runQueuedArchitectStarts stands in for the outbox running root's queued architect starts: each
-// is taken off the queue, and its task (the last start's) is delivered to the claim unconfirmed.
-// It reports whether a start was queued.
+// is taken off the queue, and its task (the last start's) is delivered to the claim unconfirmed,
+// a resume's written from the record as it stands at that delivery (startText), as its send
+// writes it. It reports whether a start was queued.
 func runQueuedArchitectStarts(t *testing.T, pool *pgxpool.Pool, root string) bool {
 	t.Helper()
-	task, started := "", false
+	var last *record.SuperviseRequest
 	inTx(t, pool, func(tx pgx.Tx) {
 		rows, err := tx.Query(context.Background(), `delete from outbox where kind = 'supervise' and issue = $1
-			and payload->>'role' = 'architect' and payload->>'op' = 'start' returning coalesce(payload->>'task', '')`, root)
+			and payload->>'role' = 'architect' and payload->>'op' = 'start' returning payload`, root)
 		if err != nil {
 			t.Fatalf("run the architect's starts: %v", err)
 		}
 		for rows.Next() {
-			started = true
-			if err := rows.Scan(&task); err != nil {
+			var payload []byte
+			if err := rows.Scan(&payload); err != nil {
 				t.Fatalf("run the architect's starts: %v", err)
 			}
+			var request record.SuperviseRequest
+			if err := json.Unmarshal(payload, &request); err != nil {
+				t.Fatalf("decode the architect's start: %v", err)
+			}
+			last = &request
 		}
 		if err := rows.Err(); err != nil {
 			t.Fatalf("run the architect's starts: %v", err)
 		}
 	})
-	if started {
-		giveArchitectTask(t, pool, root, task, false)
+	if last != nil {
+		giveArchitectTask(t, pool, root, startText(t, pool, root, config.DesignGateRootIssues, *last), false)
 	}
-	return started
+	return last != nil
 }
 
 // takeArchitectTask stands in for root's architect taking the work it was last given: its queued
@@ -150,7 +158,7 @@ func lastArchitectTask(t *testing.T, pool *pgxpool.Pool, root string) string {
 	task := ""
 	for _, effect := range effects(t, pool) {
 		if start, ok := effect.payload.(record.SuperviseRequest); ok && effect.issue == root && start.Op == "start" && start.Role == claim.RoleArchitect {
-			task = start.Task
+			task = startText(t, pool, root, config.DesignGateRootIssues, start)
 		}
 	}
 	return task
@@ -341,13 +349,7 @@ func resumedTask(t *testing.T, pool *pgxpool.Pool, admission *Admission) string 
 	apply(t, pool, admission, "run-finished", intake.DispatchIssue{
 		Key: "LEGION-RUN", ResolvedRepo: "acme/widgets", Seq: 1, Type: "issue.closed", Status: "done", Title: "LEGION-RUN", Rank: "A", HandedOver: true,
 	}, admission.engine)
-	task := ""
-	for _, effect := range effects(t, pool) {
-		if start, ok := effect.payload.(record.SuperviseRequest); ok && effect.issue == "LEGION-100" && start.Op == "start" && start.Role == "architect" {
-			task = start.Task
-		}
-	}
-	return task
+	return lastArchitectTask(t, pool, "LEGION-100")
 }
 
 // assertNoAwaitingEffects fails when key's architect was suspended or the controller was told the
@@ -463,7 +465,8 @@ func TestAnApprovedGateResumesItsRootAndStartsItsFirstPhaseOnItsOwnRow(t *testin
 		case record.StatusWrite:
 			statusWrites++
 		case record.SuperviseRequest:
-			if payload.Op == "start" && payload.Role == "architect" && strings.Contains(payload.Task, "primary document version 3") {
+			if payload.Op == "start" && payload.Role == claim.RoleArchitect &&
+				strings.Contains(startText(t, pool, root.Key, config.DesignGateRootIssues, payload), "primary document version 3") {
 				architectStarts++
 			}
 		}
@@ -556,12 +559,7 @@ func TestAResumedRootThatRegistersANewClosedVersionKeepsItsRow(t *testing.T) {
 		t.Fatalf("root after changes requested = %#v, want it resumed at admitted", resumed)
 	}
 	assertSlots(t, pool, []record.Slot{{Issue: "LEGION-100", Index: 0, AdmittedAt: fixedNow}})
-	var told string
-	for _, effect := range effects(t, pool) {
-		if start, ok := effect.payload.(record.SuperviseRequest); ok && effect.issue == "LEGION-100" && start.Op == "start" && start.Role == "architect" {
-			told = start.Task
-		}
-	}
+	told := lastArchitectTask(t, pool, "LEGION-100")
 	if !strings.Contains(told, "requested changes") || !strings.Contains(told, "register_gate") {
 		t.Fatalf("resumed architect's task = %q, want it told of the changes and to register the revised version", told)
 	}
@@ -1510,7 +1508,7 @@ func TestAnApprovalThatOpensTheGateAnswersAWaitWhateverItsTime(t *testing.T) {
 		}
 		starts := 0
 		for _, effect := range effects(t, pool) {
-			if start, ok := effect.payload.(record.SuperviseRequest); ok && effect.issue == "LEGION-100" && start.Op == "start" && start.Role == "architect" {
+			if start, ok := effect.payload.(record.SuperviseRequest); ok && effect.issue == "LEGION-100" && start.Op == "start" && start.Role == claim.RoleArchitect {
 				starts++
 			}
 		}
@@ -1638,12 +1636,7 @@ func TestTheResumeTaskOfAGateWaitNamesAReply(t *testing.T) {
 	apply(t, pool, admission, "run-finished", intake.DispatchIssue{
 		Key: "LEGION-RUN", ResolvedRepo: "acme/widgets", Seq: 1, Type: "issue.closed", Status: "done", Title: "LEGION-RUN", Rank: "A", HandedOver: true,
 	}, admission.engine)
-	var task string
-	for _, effect := range effects(t, pool) {
-		if start, ok := effect.payload.(record.SuperviseRequest); ok && effect.issue == "LEGION-100" && start.Op == "start" && start.Role == "architect" {
-			task = start.Task
-		}
-	}
+	task := lastArchitectTask(t, pool, "LEGION-100")
 	if !strings.Contains(task, "replied") || !strings.Contains(task, "thread") {
 		t.Fatalf("resumed architect's task = %q, want it to name a person's reply and the thread", task)
 	}

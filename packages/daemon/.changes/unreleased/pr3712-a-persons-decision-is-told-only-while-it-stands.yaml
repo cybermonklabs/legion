@@ -1,0 +1,8 @@
+kind: Fixed
+body: |-
+  A changes request a person's later approval answered is no longer told to an architect. One
+  function decides whether a recorded decision still stands, and every task and notice about one
+  asks it: the kept-decision relay, a catch-up at the moment it is delivered, and the resume task,
+  which is now written when it is sent. A kept decision carries Dispatch's own mark of the review, so
+  it is ordered against the approval by Dispatch and not by two clocks, and the only way to clear a
+  generation forgets a superseded decision first.

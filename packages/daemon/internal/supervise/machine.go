@@ -1087,6 +1087,15 @@ type Machine struct {
 	// restart has no prompt of its own outstanding and asks the agent where it is instead
 	// (askFirst).
 	awaitingResult string
+	// answeredBusy is the id of the pending delivery whose acknowledged prompt the agent said,
+	// while the wait for its turn was armed, it could not take because it is in a turn of its
+	// own: a refusal the stream minted OutcomeAgentBusy for, which left the wait running
+	// (refusedElsewhere — the shim's replay of what Oh My Pi answered an earlier send of this same
+	// task). The wait's running out reads it (noTurn): the agent said it was in a turn, so the
+	// wait ended on that turn rather than on an agent that took the prompt and never turned. A
+	// delivery taken back clears it (takeBackPending), so it names no task after its wait. It is
+	// memory only, as the wait is.
+	answeredBusy string
 	// askFirst is a restored claim whose agent an earlier daemon was talking to: a pending
 	// delivery it may already have sent, or a turn it saw start and may not have seen end. The
 	// machine asks the agent (get_state) before it acts on either.
@@ -2166,16 +2175,16 @@ func (m *Machine) launchNow(ctx context.Context, charged, exempt bool) error {
 			return m.startWaitsForStore(starting, err, charged, exempt)
 		}
 		err = errors.Join(err, m.stopPrevious(starting))
-		m.claim.Budgets.LaunchFailures++
+		spent := m.chargeLaunch(runtime.OutcomeLaunchFailed)
 		m.log.Warn("supervise: launch failed", "generation", m.claim.Generation, "error", err,
 			"launchFailures", m.claim.Budgets.LaunchFailures, "limit", m.deps.Limits.LaunchFailures)
-		if m.claim.Budgets.LaunchFailures >= m.deps.Limits.LaunchFailures {
+		if spent {
 			// The refusal is this claim's own cause only where nothing else is already being
 			// relaunched after: a claim that died and whose relaunch the runtime then refused
 			// reads died (Claim.PendingCause).
 			cause := m.claim.PendingCause
 			if cause == "" {
-				cause = CauseLaunchRefused
+				cause = failureCause(runtime.OutcomeLaunchFailed)
 			}
 			return errors.Join(err, m.fail(ctx, cause, fmt.Sprintf("launch failures ran out: %v", err)))
 		}
@@ -2487,11 +2496,11 @@ func (m *Machine) died(ctx context.Context, observation runtime.Observation) err
 		return m.endHeld(ctx)
 	}
 	if m.claim.DeathCharged {
-		return m.relaunchAfterFailure(ctx, CauseDied)
+		return m.relaunchAfterFailure(ctx, runtime.OutcomeProcessDied)
 	}
 	m.claim.DeathCharged = true
-	if m.chargeDeath() {
-		return m.fail(ctx, CauseDied, "deaths with work outstanding ran out")
+	if m.chargeDeath(runtime.OutcomeProcessDied) {
+		return m.fail(ctx, failureCause(runtime.OutcomeProcessDied), "deaths with work outstanding ran out")
 	}
 	// The decision and the count it charged are written here, before the relaunch, because
 	// every window that leaves this claim to be reported again writes nothing of it: the
@@ -2502,7 +2511,7 @@ func (m *Machine) died(ctx context.Context, observation runtime.Observation) err
 	// a death that left the claim standing for want of a write would be a worse answer to an
 	// outage than a charge written late — and a launch that does run clears the charge with
 	// the process it replaces anyway (letGo).
-	return errors.Join(m.persist(ctx), m.relaunchAfterFailure(ctx, CauseDied))
+	return errors.Join(m.persist(ctx), m.relaunchAfterFailure(ctx, runtime.OutcomeProcessDied))
 }
 
 // deathCause is what the claim records of a death: the runtime's own account of it, behind the

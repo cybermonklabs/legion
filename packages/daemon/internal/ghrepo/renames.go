@@ -110,6 +110,16 @@ func (r Renames) Same(a, b string) bool {
 	return found && strings.EqualFold(partner.String(), b)
 }
 
+// Left is whether an issue whose record names now has left the repository from: both names are
+// there and they are not one repository (Same). An empty name is one nothing recorded, and an
+// unknown is never a statement that the issue has left anything, so either name empty answers
+// false. It is the one rule every reader of a repository the issue may have left decides by: a
+// pod built from from (the daemon's repositoryDrift) and a bundle saved as work of from
+// (store.Store.TakeWorkspaceBundleForRestore).
+func (r Renames) Left(from, now string) bool {
+	return from != "" && now != "" && !r.Same(from, now)
+}
+
 // Partner is the other name of name's pair, and whether a pair names it. It answers from either
 // side: the repository as it was answers the one it moved to, and the other way round.
 func (r Renames) Partner(name string) (Repository, bool) {

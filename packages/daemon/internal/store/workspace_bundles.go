@@ -26,7 +26,18 @@ import (
 // is, so a role relaunched in it must be answered nothing and must leave the attempt for the pod
 // that replaces it. A save with no such pod is refused rather than stored, since the row could
 // not then tell the released pod from its replacement.
-func (s *Store) PutWorkspaceBundle(ctx context.Context, issue string, release int64, b runtime.WorkspaceBundle) error {
+//
+// repo is the repository the saved work is of: the repository the released pod itself was built
+// from, which is the repository its workspace is a clone of and so the one this work is in the
+// history of, and the take refuses a bundle whose repository the issue has left by it
+// (runtime.WorkspaceBundleRefusedRepository). It is an argument and not a column this statement
+// reads, because the caller is what can read the pod (the daemon's
+// outbox.bundleIssueWorkspace, over issuePodRepository): the record's own repository is not the
+// same answer while a correction is waiting for the pod it moved to be replaced, and the pod's
+// is the one the work is in. An empty repo is an issue the workflow does not record, since the
+// caller falls back to the record's repository where the runtime answers none; it is stored as
+// it is given and refuses nothing, which is what a row saved before this column reads as.
+func (s *Store) PutWorkspaceBundle(ctx context.Context, issue string, release int64, repo string, b runtime.WorkspaceBundle) error {
 	if issue == "" {
 		return errors.New("a workspace bundle needs its issue")
 	}
@@ -40,13 +51,13 @@ func (s *Store) PutWorkspaceBundle(ctx context.Context, issue string, release in
 	if err != nil {
 		return fmt.Errorf("save the workspace bundle of %s: %w", issue, err)
 	}
-	_, err = s.pool.Exec(ctx, `insert into workspace_bundles (issue, release_id, source_pod_uid, bundle, size_bytes, at, head, tips, bookmarks)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+	_, err = s.pool.Exec(ctx, `insert into workspace_bundles (issue, release_id, source_pod_uid, bundle, size_bytes, at, head, tips, bookmarks, repo)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		on conflict (issue) do update set release_id = excluded.release_id, source_pod_uid = excluded.source_pod_uid,
 			bundle = excluded.bundle, size_bytes = excluded.size_bytes, at = excluded.at, head = excluded.head,
-			tips = excluded.tips, bookmarks = excluded.bookmarks,
+			tips = excluded.tips, bookmarks = excluded.bookmarks, repo = excluded.repo,
 			attempt_pod_uid = null, attempt_at = null, attempt_outcome = null`,
-		issue, release, b.PodUID, b.Bundle, b.Size(), b.At, b.Head, tips, bookmarks)
+		issue, release, b.PodUID, b.Bundle, b.Size(), b.At, b.Head, tips, bookmarks, repo)
 	if err != nil {
 		return fmt.Errorf("save the workspace bundle of %s: %w", issue, err)
 	}
@@ -84,6 +95,35 @@ func (s *Store) PutWorkspaceBundle(ctx context.Context, issue string, release in
 // and the pod that comes after it holds that work's descendants, so a bundle kept open would be
 // applied over work pushed after the save. The bytes stay for a person to recover.
 //
+// Before either of those the row's own repository is read, since a pod's age decides nothing
+// about work of a repository the issue is no longer on. The row names the repository its work
+// is of (PutWorkspaceBundle) and the issues table names the one the issue is on now, which a
+// correction of Dispatch's fact moves (record.Store.CorrectIssueRepository). Whether the issue
+// has left the row's repository is left's to say, and the statement records the answer it is
+// given: left is the one rule the daemon reads every such pair by (ghrepo.Renames.Left, through
+// the daemon's repositories.left), which compares names without regard to case, as GitHub
+// does, reads a configured rename's two names as one repository, and reads an empty name as
+// unknown. The pairs are the daemon's configuration and the database holds none of them, so the
+// decision is made here in Go and not in the statement. Where left answers that the issue has
+// left the repository, the bundle is refused (runtime.WorkspaceBundleRefusedRepository) and
+// nothing is sent. The pod's workspace is a clone of the issue's repository now and holds none
+// of the saved commits' bases, so the bundle could not be applied there at all, and the daemon
+// writes on the issue where the work is instead (internal/daemon's bundleRepositoryMessage). A
+// row whose repo is empty — one saved before the column — and an issue the record does not hold
+// are each read as an empty name, so neither refuses anything: nothing recorded the one, and an
+// unread record is never a statement that the issue has left anything.
+//
+// A refusal for the repository moves the row out of workspace_bundles and into
+// workspace_bundles_refused, in the transaction that records it. workspace_bundles holds one
+// row per issue, and the issue's next release replaces that row with its own save, or deletes it
+// when it saves nothing (the daemon's outbox.bundleIssueWorkspace); the end of the issue's work
+// deletes it as well (dropReleasedWork). The issue is told that the daemon keeps this work, so
+// the work cannot stay where any of those reaches it. The table it goes to has a row per
+// refusal, which nothing in the daemon reads, changes or deletes again: an operator reads it by
+// issue and release_id, which is what the message names, and deletes the row once the work is
+// carried out. The row also stops holding the issue's pod by that move, since the idle rule
+// reads workspace_bundles alone (workspaceBundleUnrestored).
+//
 // The comparison rests on two instants from two clocks: podCreated is the pod's creationTimestamp
 // as the Kubernetes API server stamped it, and the row's `at` is when the shim took the bundle,
 // by the clock of the node the released pod ran on (runtime.WorkspaceBundle.At). It cannot tell
@@ -95,10 +135,10 @@ func (s *Store) PutWorkspaceBundle(ctx context.Context, issue string, release in
 // over work done since, is the harm — and the refusal is recorded so that it costs that restore
 // once rather than moving the issue's bookmarks back in the pod after it.
 //
-// The row stays. A bundle nothing restored holds the issue's pod (workflow.IdleHoldBundleUnrestored)
-// and keeps the work in the database until the issue's own work is over (outbox's
-// dropReleasedWork), which is what the launcher's notice tells the roles.
-func (s *Store) TakeWorkspaceBundleForRestore(ctx context.Context, issue, podUID string, podCreated time.Time) (runtime.WorkspaceBundle, runtime.WorkspaceBundleTake, error) {
+// The row stays for every other refusal. A bundle nothing restored holds the issue's pod
+// (workflow.IdleHoldBundleUnrestored) and keeps the work in the database until the issue's own
+// work is over (outbox's dropReleasedWork), which is what the launcher's notice tells the roles.
+func (s *Store) TakeWorkspaceBundleForRestore(ctx context.Context, issue, podUID string, podCreated time.Time, left func(saved, recorded string) bool) (runtime.WorkspaceBundle, runtime.WorkspaceBundleTake, error) {
 	if podUID == "" {
 		return runtime.WorkspaceBundle{}, runtime.WorkspaceBundleNone, fmt.Errorf("the restore attempt of the workspace bundle of %s needs the pod it is sent to", issue)
 	}
@@ -108,15 +148,43 @@ func (s *Store) TakeWorkspaceBundleForRestore(ctx context.Context, issue, podUID
 	var b runtime.WorkspaceBundle
 	var outcome string
 	var tips, bookmarks []byte
-	// The body is read back only when it is being sent: a refusal records the attempt and
-	// answers the row's facts alone, and a bundle runs to tens of megabytes.
-	err := s.pool.QueryRow(ctx, `update workspace_bundles
-		set attempt_pod_uid = $2, attempt_at = now(),
-			attempt_outcome = case when date_trunc('second', at) <= $3 then 'sent' else 'refused_older' end
-		where issue = $1 and attempt_pod_uid is null and source_pod_uid <> $2
-		returning attempt_outcome, case when attempt_outcome = 'sent' then bundle end,
-			at, head, tips, bookmarks, release_id, source_pod_uid`,
-		issue, podUID, podCreated).Scan(&outcome, &b.Bundle, &b.At, &b.Head, &tips, &bookmarks, &b.Release, &b.PodUID)
+	err := s.Tx(ctx, func(tx pgx.Tx) error {
+		// The lock is taken here, before left is asked, so the row the update below records the
+		// answer on is the row whose repository was read, and a second pod asking at once waits
+		// and then finds the attempt taken.
+		var saved, recorded string
+		if err := tx.QueryRow(ctx, `select b.repo, coalesce(i.repo, '')
+			from workspace_bundles b left join issues i on i.key = b.issue
+			where b.issue = $1 and b.attempt_pod_uid is null and b.source_pod_uid <> $2
+			for update of b`,
+			issue, podUID).Scan(&saved, &recorded); err != nil {
+			return err
+		}
+		refuseRepository := left(saved, recorded)
+		// The body is read back only when it is being sent: a refusal records the attempt and
+		// answers the row's facts alone, and a bundle runs to tens of megabytes.
+		if err := tx.QueryRow(ctx, `update workspace_bundles
+			set attempt_pod_uid = $2, attempt_at = now(),
+				attempt_outcome = case
+					when $4 then 'refused_repository'
+					when date_trunc('second', at) <= $3 then 'sent'
+					else 'refused_older' end
+			where issue = $1
+			returning attempt_outcome, case when attempt_outcome = 'sent' then bundle end,
+				at, head, tips, bookmarks, release_id, source_pod_uid, repo`,
+			issue, podUID, podCreated, refuseRepository).Scan(&outcome, &b.Bundle, &b.At, &b.Head, &tips, &bookmarks, &b.Release, &b.PodUID, &b.Repo); err != nil {
+			return err
+		}
+		if !refuseRepository {
+			return nil
+		}
+		// The select above holds the row's lock, so the row this deletes is the one it refused.
+		_, err := tx.Exec(ctx, `with refused as (delete from workspace_bundles where issue = $1
+				returning issue, release_id, source_pod_uid, repo, bundle, size_bytes, at, head, tips, bookmarks, attempt_pod_uid, attempt_at)
+			insert into workspace_bundles_refused (issue, release_id, source_pod_uid, repo, bundle, size_bytes, at, head, tips, bookmarks, refused_pod_uid, refused_at)
+			select * from refused`, issue)
+		return err
+	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return runtime.WorkspaceBundle{}, runtime.WorkspaceBundleNone, nil
 	}
@@ -129,12 +197,16 @@ func (s *Store) TakeWorkspaceBundleForRestore(ctx context.Context, issue, podUID
 	if err := json.Unmarshal(bookmarks, &b.Bookmarks); err != nil {
 		return runtime.WorkspaceBundle{}, runtime.WorkspaceBundleNone, fmt.Errorf("read the workspace bundle of %s: its bookmarks: %w", issue, err)
 	}
-	// The outcome the statement wrote is the answer: `sent` for the body above, `refused_older`
-	// for the pod it refused, whose attempt is spent all the same.
-	if outcome != "sent" {
+	// The outcome the statement wrote is the answer: `sent` for the body above, and one of the
+	// two refusals for the pod it refused, whose attempt is spent all the same.
+	switch outcome {
+	case "refused_repository":
+		return b, runtime.WorkspaceBundleRefusedRepository, nil
+	case "sent":
+		return b, runtime.WorkspaceBundleSend, nil
+	default:
 		return b, runtime.WorkspaceBundleRefusedOlder, nil
 	}
-	return b, runtime.WorkspaceBundleSend, nil
 }
 
 // WorkspaceBundleSize is the size in bytes of the bundle issue's last release saved, and false
@@ -189,6 +261,11 @@ func (s *Store) DeleteRestoredWorkspaceBundle(ctx context.Context, issue string,
 // save (attempt_outcome, TakeWorkspaceBundleForRestore); each holds the issue's pod until the
 // issue's work is over, and the row's own columns say which it was. The work is in the database
 // alone, and a release of that pod would take the disk the roles have worked on since.
+//
+// A bundle refused for its repository is not read here, because it is not in this table: the
+// refusal moved it to workspace_bundles_refused (TakeWorkspaceBundleForRestore), where no
+// release of the issue can overwrite or delete it. So it holds no pod. A hold for it would have no
+// end, since no restore is ever recorded for a refused bundle, and the work does not need one.
 func workspaceBundleUnrestored(ctx context.Context, tx pgx.Tx, issue string) (bool, error) {
 	var unrestored bool
 	if err := tx.QueryRow(ctx, `select exists (select 1 from workspace_bundles where issue = $1)`, issue).Scan(&unrestored); err != nil {

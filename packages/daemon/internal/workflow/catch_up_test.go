@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -162,6 +163,80 @@ func TestARelaunchedArchitectsCatchUpNamesTheDecisionsKeptForIt(t *testing.T) {
 	claimReady(t, pool, engine, "LEGION-1", claim.RoleArchitect, 3)
 	if got := lastCatchUp(t, pool); got.Decided != "" || got.Kept != nil {
 		t.Fatalf("the launch after a delivered catch-up is told %q (kept %#v), want nothing", got.Decided, got.Kept)
+	}
+}
+
+// INFRA-3136 R2 at the moment a catch-up is composed: a decision kept for a running tree is named
+// only while it is still the person's word (classify.ReviewSuperseded), asked of the gate as it
+// stands. Nothing clears this tree's gate, so the catch-up itself is what asks. A changes request
+// the person's approval came after is dropped, and its row deleted. A changes request made after
+// that approval is named. Dispatch's order decides: the sequences when both marks carry one, even
+// where the two times say the other thing, and a kept approval that is the gate's own approval
+// stands.
+func TestACatchUpNamesAKeptDecisionOnlyWhileNoLaterApprovalSupersededIt(t *testing.T) {
+	approvedAt := time.Date(2026, 10, 24, 9, 0, 0, 0, time.UTC)
+	approved := record.EventMark{Seq: 10, At: approvedAt}
+	for _, tc := range []struct {
+		name     string
+		decision record.DecisionKind
+		mark     record.EventMark
+		named    bool
+	}{
+		{"a changes request the approval came after", record.DecisionDesignChangesRequested,
+			record.EventMark{Seq: 8, At: approvedAt.Add(-time.Hour)}, false},
+		{"a changes request made after the approval", record.DecisionDesignChangesRequested,
+			record.EventMark{Seq: 12, At: approvedAt.Add(time.Hour)}, true},
+		{"a changes request Dispatch's sequence puts before the approval its time is after", record.DecisionDesignChangesRequested,
+			record.EventMark{Seq: 8, At: approvedAt.Add(time.Hour)}, false},
+		{"the kept approval the gate holds", record.DecisionDesignApproved, approved, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			pool := migratedPool(t)
+			seedAdmittedTree(t, pool, 1)
+			engine := testEngine(config.DesignGateRootIssues, nil)
+			records := record.NewStore()
+			version := 3
+			if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+				if err := records.PutGate(ctx, tx, record.DesignGate{Issue: "LEGION-1", Step: record.DesignStepSpec, ArtifactID: "artifact-1",
+					LatestVersion: version, ApprovedVersion: &version, ApprovedMark: approved, EverOpened: true}); err != nil {
+					return err
+				}
+				return records.AddParkedDecision(ctx, tx, record.ParkedDecision{Issue: "LEGION-1", Ref: "dispatch://LEGION-1/spec",
+					Decision: tc.decision, Actor: "user:alice", At: tc.mark.At, Seq: tc.mark.Seq})
+			}); err != nil {
+				t.Fatalf("keep the person's decision beside the gate's approval: %v", err)
+			}
+			claimReady(t, pool, engine, "LEGION-1", claim.RoleArchitect, 1)
+			got := lastCatchUp(t, pool)
+			var kept []record.ParkedDecision
+			if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+				var err error
+				kept, err = records.ParkedDecisions(ctx, tx, "LEGION-1")
+				return err
+			}); err != nil {
+				t.Fatalf("read what is kept: %v", err)
+			}
+			if !tc.named {
+				if got.Decided != "" || got.Kept != nil {
+					t.Fatalf("the catch-up names %q (kept %#v): the person's approval at %#v came after the decision at %#v", got.Decided, got.Kept, approved, tc.mark)
+				}
+				if len(kept) != 0 {
+					t.Fatalf("kept %#v after the catch-up dropped it: a decision a later approval superseded is deleted, not asked again", kept)
+				}
+				return
+			}
+			want := fmt.Sprintf("While nobody in LEGION-1's tree could hear it, a person decided on the tree: dispatch://LEGION-1/spec (%s by user:alice). Read each before you continue.", tc.decision)
+			if got.Decided != want {
+				t.Fatalf("the catch-up names %q, want %q", got.Decided, want)
+			}
+			if got.Kept == nil || len(got.Kept.Decisions) != 1 || got.Kept.Decisions[0].Seq != tc.mark.Seq {
+				t.Fatalf("the catch-up's kept record %#v, want the decision with Dispatch's sequence %d", got.Kept, tc.mark.Seq)
+			}
+			if len(kept) != 1 || kept[0].Seq != tc.mark.Seq || !kept[0].At.Equal(tc.mark.At) {
+				t.Fatalf("kept %#v, want the decision at Dispatch's mark %#v, claimed by the catch-up", kept, tc.mark)
+			}
+		})
 	}
 }
 
@@ -377,5 +452,46 @@ func TestAPacedReadysCatchUpIsDueAtTheMomentTheWakePacingGivesIt(t *testing.T) {
 					due.UTC(), reservedAt, reserved, tc.due, tc.marked, tc.reserve)
 			}
 		})
+	}
+}
+
+// TreeCatchUp is the record half of the catch-up QueueCatchUp queues, with the notice's reason,
+// and a pure read of the record: the outbox composes it again where it delivers the row, inside
+// its read-only read of the tree (the daemon's readNoticeTree), so the architect reads the tree
+// as the record holds it then. Read at once after the queueing, in a read-only transaction, it is
+// the queued tree and reason exactly; the launch and the kept decisions are the queueing's alone.
+func TestTreeCatchUpIsTheQueuedCatchUpsTreeReadWithoutAWrite(t *testing.T) {
+	ctx := context.Background()
+	pool := migratedPool(t)
+	root := seedAdmittedTree(t, pool, 1)
+	parent := root.Key
+	seedIssue(t, pool, record.Issue{Key: "LEGION-3", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-1", Project: "LEGION", Title: "Waiting", Parent: &parent,
+		Phase: phase.Accepting, Generation: 1, Status: "in_progress", Rank: "W"})
+	claimReady(t, pool, testEngine(config.DesignGateRootIssues, nil), root.Key, claim.RoleArchitect, 1)
+	var queued record.Notice
+	for _, payload := range noticeRows(t, pool) {
+		if notice, ok := payload.(record.Notice); ok && notice.Kind == "catch-up" {
+			queued = notice
+		}
+	}
+	if queued.CatchUp == nil {
+		t.Fatal("the ready queued no catch-up")
+	}
+
+	var state record.CatchUpTree
+	var reason string
+	if err := pgx.BeginTxFunc(ctx, pool, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+		var err error
+		state, reason, err = TreeCatchUp(ctx, tx, record.NewStore(), config.DesignGateRootIssues.Steps(), root)
+		return err
+	}); err != nil {
+		t.Fatalf("compose the tree in a read-only transaction: %v", err)
+	}
+	want := queued.CatchUp.CatchUpTree
+	if !reflect.DeepEqual(state, want) || reason != queued.Reason {
+		t.Fatalf("TreeCatchUp = %+v, %q; want the queued catch-up's tree %+v, %q", state, reason, want, queued.Reason)
+	}
+	if !strings.Contains(reason, "waiting for your acceptance, which no worker gives: LEGION-3") {
+		t.Fatalf("the reason %q does not name LEGION-3, which waits in accepting", reason)
 	}
 }

@@ -45,6 +45,15 @@ type WorkspaceBundle struct {
 	// start, its workspace is the one the work came from, and it must leave the attempt for the
 	// pod that replaces it. The read fills it back in from the row.
 	PodUID string
+	// Repo is the repository (owner/name) the saved work is of: the repository the released pod
+	// was built from, and the issue's record's repository only where the runtime answers none (a
+	// tmux pane, or a claim with no process). The store fills it on the read. The save takes it
+	// as an argument of its own (store.Store.PutWorkspaceBundle) for the reason Release is one:
+	// the bundle is the shim's, built in a pod that knows nothing of the daemon's record. It is
+	// empty for a row saved before the column, whose repository nothing recorded. The store
+	// refuses a bundle whose repository the issue has left
+	// (WorkspaceBundleRefusedRepository).
+	Repo string
 }
 
 // Size is the bundle's length in bytes, which the release records and the 40 MiB bound reads.
@@ -72,4 +81,14 @@ const (
 	// bookmarks back behind it. The work stays in the database for a person to recover and holds
 	// the issue's pod (workflow.IdleHoldBundleUnrestored).
 	WorkspaceBundleRefusedOlder
+	// WorkspaceBundleRefusedRepository: the bundle is of a repository the issue has left, as
+	// Dispatch corrected it and the record followed (record.Store.CorrectIssueRepository), and
+	// nothing is sent to this pod or to any pod after it. The pod's workspace is a clone of the
+	// issue's repository now, which holds none of the saved commits' bases, so the bundle cannot
+	// be applied there. The refusal is the bundle's one attempt, and the store moves the bundle to
+	// workspace_bundles_refused as it records it, where the issue's later releases neither
+	// overwrite nor delete it. The daemon writes on the issue where it is, since nothing puts it
+	// back (internal/daemon's bundleRepositoryMessage); it holds no pod, because a hold for work no
+	// pod restores would never end (workflow.IdleHoldBundleUnrestored).
+	WorkspaceBundleRefusedRepository
 )

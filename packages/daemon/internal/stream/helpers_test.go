@@ -29,10 +29,11 @@ const (
 )
 
 // logRecorder is a slog handler that keeps every line the listener logs, message and
-// attributes, so a test can assert the exact text an operator would read.
+// attributes, so a test can assert the exact text an operator would read, and the level of each.
 type logRecorder struct {
-	mu    sync.Mutex
-	lines []string
+	mu     sync.Mutex
+	lines  []string
+	levels []slog.Level
 }
 
 func (r *logRecorder) Enabled(context.Context, slog.Level) bool { return true }
@@ -46,6 +47,7 @@ func (r *logRecorder) Handle(_ context.Context, record slog.Record) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.lines = append(r.lines, line)
+	r.levels = append(r.levels, record.Level)
 	return nil
 }
 
@@ -58,6 +60,13 @@ func (r *logRecorder) Lines() []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return slices.Clone(r.lines)
+}
+
+// Levels is the level of each line Lines holds, in the same order.
+func (r *logRecorder) Levels() []slog.Level {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.Clone(r.levels)
 }
 
 // resolver counts its calls, so a test can assert a rejected hello resolved its token at most

@@ -161,7 +161,12 @@ func (e *Engine) gateRegistered(ctx context.Context, tx pgx.Tx, fact intake.Gate
 	}
 	tell := false
 	if changesRequested && !unplaceable(*issue, fact.ChangesRequestedMark) {
-		tell = !classify.DesignGateChangesTold(gate, gate.LatestVersion, fact.ChangesReason, fact.ChangesRequestedMark)
+		// The gates as the record held them before this registration are asked whether an
+		// approval of this document followed the review (DecisionStands): one did, and the
+		// person's word is that approval, so the request is recorded and told to nobody.
+		tell = !classify.DesignGateChangesTold(gate, gate.LatestVersion, fact.ChangesReason, fact.ChangesRequestedMark) &&
+			DecisionStands(gates, e.cfg.Steps, Decision{Kind: record.DecisionDesignChangesRequested, Issue: fact.Issue, Ref: stepRef(fact.Issue, step),
+				Artifact: fact.ArtifactID, Version: fact.ChangesRequestedVersion, Mark: fact.ChangesRequestedMark})
 		gate = classify.RecordChangesTold(gate, gate.LatestVersion, fact.ChangesReason, fact.ChangesRequestedMark)
 	}
 	if err := e.putGateTold(ctx, tx, gate, gate.LatestVersion); err != nil {
@@ -210,7 +215,8 @@ func (e *Engine) gateRegistered(ctx context.Context, tx pgx.Tx, fact intake.Gate
 	case issue.AwaitingPerson():
 		e.logOnCommit(ctx, "workflow: a root waiting on a person is told its open gate by its resume", "issue", issue.Key, "version", gate.LatestVersion)
 	case !sameDocument || !classify.DesignGateOpen(*stored) || stored.LatestVersion != gate.LatestVersion:
-		if err := e.notice(ctx, tx, fact.Issue, record.Notice{Kind: "design-approved", Version: gate.LatestVersion, Actor: reviewer, Ref: stepRef(fact.Issue, step)}); err != nil {
+		if err := e.notice(ctx, tx, fact.Issue, record.Notice{Kind: "design-approved", Version: gate.LatestVersion, Actor: reviewer, Ref: stepRef(fact.Issue, step),
+			Review: gate.ApprovedMark}); err != nil {
 			return intake.Result{}, err
 		}
 	default:
@@ -241,10 +247,25 @@ func (e *Engine) gateRegistered(ctx context.Context, tx pgx.Tx, fact intake.Gate
 // resume from telling it again. reviewer is the person who asked the changes, named on the notice:
 // the decision a parked tree's undelivered notice carries goes to the controller (the outbox's
 // parkDecision), which needs to know who made it.
+//
+// Before anything is marked or sent, the gates as the record holds them now are asked whether an
+// approval of the document followed the review (DecisionStands), whichever path carried the review
+// here: one did, and the review is not the person's word any more, so it is neither told nor
+// marked; the processed mark stays the second guard, against telling one review twice.
 func (e *Engine) tellChanges(ctx context.Context, tx pgx.Tx, key string, step record.DesignStep, artifact string, version int, reason, reviewer string, mark record.EventMark, notify bool) error {
 	issue, err := e.store.Issue(ctx, tx, key)
 	if err != nil || issue == nil {
 		return err
+	}
+	gates, err := e.store.GatesOf(ctx, tx, key)
+	if err != nil {
+		return err
+	}
+	if !DecisionStands(gates, e.cfg.Steps, Decision{Kind: record.DecisionDesignChangesRequested, Issue: key, Ref: stepRef(key, step),
+		Artifact: artifact, Version: version, Mark: mark}) {
+		e.logOnCommit(ctx, "workflow: a changes request an approval followed is not told", "issue", key, "version", version,
+			"approved", *gates[step].ApprovedVersion)
+		return nil
 	}
 	place := "none"
 	switch {
@@ -263,7 +284,8 @@ func (e *Engine) tellChanges(ctx context.Context, tx pgx.Tx, key string, step re
 	if !notify {
 		return nil
 	}
-	if err := e.notice(ctx, tx, key, record.Notice{Kind: "design-changes-requested", Version: version, Reason: reason, Actor: reviewer, Ref: stepRef(key, step)}); err != nil {
+	if err := e.notice(ctx, tx, key, record.Notice{Kind: "design-changes-requested", Version: version, Reason: reason, Actor: reviewer, Ref: stepRef(key, step),
+		Review: mark}); err != nil {
 		return err
 	}
 	if issue.Phase != phase.Admitted || !claim.IsTreeRoot(issue.Key, issue.Tree) {
@@ -361,12 +383,13 @@ func (e *Engine) answerAwaitedGate(ctx context.Context, tx pgx.Tx, key string, f
 			"version", fact.Version, "review_seq", fact.Mark.Seq, "since_seq", waiting.Since.Seq)
 		return false, nil
 	}
+	reviewed := 0
 	if fact.Kind == intake.DispatchArtifactChangesRequested {
-		by, detail = record.AnsweredByChanges, changesDetail(fact.Version, fact.Reason)
+		by, detail, reviewed = record.AnsweredByChanges, changesDetail(fact.Version, fact.Reason), fact.Version
 	}
 	e.logOnCommit(ctx, "workflow: a person's review or a newer spec version answered a root's wait", "issue", issue.Key,
 		"version", fact.Version, "event", fact.Kind, "ask", waiting.Ask, "waited_version", waiting.GateVersion)
-	return true, e.answerWait(ctx, tx, *issue, by, detail)
+	return true, e.answerWait(ctx, tx, *issue, by, detail, reviewed)
 }
 
 // answerRegisteredGate answers a root waiting on a person with what the registration's read of
@@ -410,7 +433,7 @@ func (e *Engine) answerRegisteredGate(ctx context.Context, tx pgx.Tx, fact intak
 		waited = gate.LatestVersion
 	}
 	var by record.Answer
-	version, detail := 0, ""
+	version, detail, reviewed := 0, "", 0
 	switch {
 	case onGate && fact.DispatchVersion > waited && fact.RequestWaitsOnAgent:
 		by, version = record.AnsweredByVersion, fact.DispatchVersion
@@ -422,6 +445,7 @@ func (e *Engine) answerRegisteredGate(ctx context.Context, tx pgx.Tx, fact intak
 		return false, nil
 	case changesRequested && fact.ChangesRequestedVersion >= waited:
 		by, version, detail = record.AnsweredByChanges, fact.ChangesRequestedVersion, changesDetail(fact.ChangesRequestedVersion, fact.ChangesReason)
+		reviewed = version
 	default:
 		if fact.RequestWaitsOnAgent {
 			e.logOnCommit(ctx, "workflow: a registration shows the request waiting on the agent, which answers no wait", "issue", issue.Key, "version", gate.LatestVersion)
@@ -441,11 +465,12 @@ func (e *Engine) answerRegisteredGate(ctx context.Context, tx pgx.Tx, fact intak
 		detail = fmt.Sprintf("version %d", version)
 	}
 	e.logOnCommit(ctx, "workflow: a registration answered a root's wait", "issue", issue.Key, "version", version, "event", by, "ask", waiting.Ask)
-	return true, e.answerWait(ctx, tx, *issue, by, detail)
+	return true, e.answerWait(ctx, tx, *issue, by, detail, reviewed)
 }
 
 // changesDetail is how a changes request is named to the architect it resumes: its version and the
-// reason the person gave.
+// reason the person gave. It is display text only: the version is recorded beside it
+// (record.Awaiting.AnsweredVersion), and nothing reads it back out of the text.
 func changesDetail(version int, reason string) string {
 	return fmt.Sprintf("version %d: %q", version, reason)
 }
@@ -800,7 +825,9 @@ func copyTakes(gate record.DesignGate, fact intake.DispatchArtifact) bool {
 // otherwise close it; and an approval or changes request of an older version, which would
 // otherwise clear the told record or close a gate open at the newer one. A stale changes request
 // is still the person's words: it is told, with its own version and reason, unless an approval came
-// after it (classify.ApprovalFollows), which the person gave in its place.
+// after it (DecisionStands, asked of the gate as the event found it, since the review applied
+// clears the approval that would answer it), which the person gave in its place. Every changes
+// notice asks that same function, here, at a registration and where it is sent (tellChanges).
 //
 // Every design-changes-requested notice goes through tellChanges, which sends it once per review
 // whatever carries it (the live event, a registration's read, the gate seed's read) and in whatever
@@ -840,7 +867,7 @@ func (e *Engine) applyArtifact(ctx context.Context, tx pgx.Tx, gate record.Desig
 		if fact.Kind != intake.DispatchArtifactChangesRequested {
 			return nil
 		}
-		if !ungated && stale && classify.ApprovalFollows(gate, fact.Version, fact.Mark) {
+		if stale && !DecisionStands(map[record.DesignStep]record.DesignGate{gate.Step: gate}, e.cfg.Steps, artifactReview(key, gate.Step, fact)) {
 			return nil
 		}
 		if !ungated {
@@ -871,7 +898,8 @@ func (e *Engine) applyArtifact(ctx context.Context, tx pgx.Tx, gate record.Desig
 		return err
 	}
 	tell := fact.Kind == intake.DispatchArtifactChangesRequested && placeable &&
-		!classify.DesignGateChangesTold(gate, fact.Version, fact.Reason, fact.Mark)
+		!classify.DesignGateChangesTold(gate, fact.Version, fact.Reason, fact.Mark) &&
+		DecisionStands(map[record.DesignStep]record.DesignGate{gate.Step: gate}, e.cfg.Steps, artifactReview(key, gate.Step, fact))
 	if fact.Kind == intake.DispatchArtifactChangesRequested && placeable {
 		updated = classify.RecordChangesTold(updated, fact.Version, fact.Reason, fact.Mark)
 	}
@@ -914,7 +942,7 @@ func (e *Engine) applyArtifact(ctx context.Context, tx pgx.Tx, gate record.Desig
 		// Who approved is named on the notice, since nobody in a parked tree hears it and the
 		// decision then goes to the controller instead (the outbox's parkDecision).
 		reviewer := fact.Actor.Name()
-		opened := &record.Notice{Kind: "design-approved", Version: fact.Version, Actor: reviewer, Ref: stepRef(key, gate.Step)}
+		opened := &record.Notice{Kind: "design-approved", Version: fact.Version, Actor: reviewer, Ref: stepRef(key, gate.Step), Review: fact.Mark}
 		switch {
 		case carried:
 			opened = &record.Notice{Kind: "carried-gate-opened", Version: fact.Version, Actor: reviewer, Ref: stepRef(fact.Key, gate.Step), Reason: fmt.Sprintf(
@@ -932,6 +960,13 @@ func (e *Engine) applyArtifact(ctx context.Context, tx pgx.Tx, gate record.Desig
 		// same fact, each at the slot that phase needs (record.Waiting's LineFirstPhase).
 	}
 	return nil
+}
+
+// artifactReview is the changes request fact carries, on the document of step on key, as
+// DecisionStands asks it.
+func artifactReview(key string, step record.DesignStep, fact intake.DispatchArtifact) Decision {
+	return Decision{Kind: record.DecisionDesignChangesRequested, Issue: key, Ref: stepRef(key, step), Artifact: fact.ArtifactID,
+		Version: fact.Version, Mark: fact.Mark}
 }
 
 // tellGateMoved tells every worker holding a phase in the tree of key, and the tree's root

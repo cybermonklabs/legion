@@ -39,12 +39,16 @@ func capNotices(t *testing.T, pool *pgxpool.Pool, kind record.NoticeKind) int {
 }
 
 // clearsGeneration empties the issue's generation-scoped facts as a re-admission of its tree
-// does (record.Store.ClearGeneration): its rounds, its counts by move and the cap value its row
-// last told go with them.
+// does (Engine.ClearGeneration): its rounds, its counts by move and the cap value its row last
+// told go with them.
 func clearsGeneration(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	seedRecord(t, pool, func(tx pgx.Tx) error {
-		return record.NewStore().ClearGeneration(t.Context(), tx, "LEGION-208", time.Now().UTC())
+		issue, err := record.NewStore().Issue(t.Context(), tx, "LEGION-208")
+		if err != nil {
+			return err
+		}
+		return workBackEngine(3).ClearGeneration(t.Context(), tx, *issue, time.Now().UTC())
 	})
 }
 

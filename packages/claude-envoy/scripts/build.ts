@@ -141,8 +141,8 @@ const LEGION_HOOKS: readonly {
       // woken by it rather than a stalled one, and earns no reminder.
       backgroundTasks: "${background_tasks}",
     },
-    // The `Stop` answer waits on the reminder's record check, which bounds its own daemon read at
-    // 5 s (RECORD_READ_BOUND_MS, packages/pi-shared/src/phase-reminder.ts); the others answer from
+    // The `Stop` answer waits on the reminder's owed check, which bounds its own daemon read at
+    // 3 s (OWED_READ_BOUND_MS, packages/pi-shared/src/phase-reminder.ts); the others answer from
     // memory and the state file alone.
     timeout: 30,
   },

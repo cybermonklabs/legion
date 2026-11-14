@@ -674,6 +674,12 @@ func (r *localRuntime) LaunchBound() time.Duration { return 0 }
 // PodDrift answers nothing: a child process group shares no place fixed at its creation.
 func (r *localRuntime) PodDrift(context.Context, runtime.Known) ([]string, error) { return nil, nil }
 
+// PodRepository answers "": a child process group was built from no repository, and the
+// workspace it works is the daemon's own host directory.
+func (r *localRuntime) PodRepository(context.Context, runtime.Known) (string, error) {
+	return "", nil
+}
+
 // ReplacePod has no place to replace.
 func (r *localRuntime) ReplacePod(context.Context, runtime.Known, func(context.Context) error) error {
 	return nil

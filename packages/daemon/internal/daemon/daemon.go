@@ -359,6 +359,20 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		workflow.controllerFirstWake, workflow.idleTick, workflow.entrySweep = o.controllerFirstWake, o.idleTick, o.entrySweep
 		plan.identity = workflow.identity
 		plan.repository = workflow.issueRepository
+		plan.launchRepository = workflow.issueLaunchRepository
+		// The repository the record holds for an issue, which the update-round sweep reads a pod
+		// built from the repository the issue has left by (supervision.repositoryDrift) and the
+		// idle rule's repository hold reads through it (supervision.podRepositoryDrifted). It is
+		// on the plan, as every other answer the workflow lends supervision is, so a supervision
+		// built from this plan holds it however it was built: a relaunched one of a test's rig
+		// copies the plan and would otherwise read no drift at all.
+		plan.recordedRepository = recordedRepositoryOf(workflow.recordedIssue)
+		// Everything that writes on a Dispatch issue outside the workflow itself reads this one
+		// field: the runtime's refusal of a saved bundle of a repository the issue has left
+		// (tellBundleRepositoryRefused, over plan.writeBodyOnIssue), which is built before the
+		// workflow attaches to supervision, and supervision's own writes, which read it through
+		// the plan it holds (plan.writeOnIssue).
+		plan.enqueue = workflow.enqueueOutbox
 		plan.ensureWorkspace = workflow.ensureWorkspace
 		// The memory group is read from the daemon's own store (treeMemoryGroup), not from here:
 		// the operator's spawn draws one with no workflow configured, and the launch that follows
@@ -666,8 +680,28 @@ type plan struct {
 	identity func(ctx context.Context, role claim.Role, repository ghrepo.Repository) (runtime.GitIdentity, error)
 	// repository is the repository an issue works and its default branch
 	// (workflowRuntime.issueRepository: its record's, or the project's default for an issue the
-	// workflow does not record); nil without a workflow.
+	// workflow does not record); nil without a workflow. It is the narrow half of the read
+	// below, for the two consumers that want the repository and its branch alone: the runtime
+	// factory, whose tmux runtime reads a pane's repository through it (claimRepository), and a
+	// claim's adopted identity (adoptIdentity).
 	repository func(ctx context.Context, issue string) (ghrepo.Repository, string, error)
+	// launchRepository is what one read of an issue's record tells a launch of its claims
+	// (workflowRuntime.issueLaunchRepository): the repository it works, its default branch and
+	// what a correction of its repository left on the record, which every launch from then on is
+	// told beside the repository it works now (specs.repository); nil without a workflow, which
+	// records no repository and corrects none.
+	launchRepository func(ctx context.Context, issue string) (launchRepository, error)
+	// recordedRepository is the repository the daemon's record holds for an issue now, and ""
+	// for an issue no record holds (recordedRepositoryOf, over workflowRuntime.recordedIssue);
+	// nil without a workflow, which records no issue's repository and so has nothing a pod could
+	// disagree with. It is the whole of the record the update-round sweep needs to read a pod
+	// built from the repository the issue has left (supervision.repositoryDrift, groupDrift) and
+	// the idle rule's repository hold reads it through that same comparison
+	// (supervision.podRepositoryDrifted). A function for the reason enqueue is one: threading
+	// the workflow's record store into supervision to read one column would tie every claim
+	// decision to the workflow. A nil field adds no reason, as an issue the record does not hold
+	// adds none.
+	recordedRepository func(ctx context.Context, issue string) (string, error)
 	// ensureWorkspace provisions an issue's workspace on the daemon's host when a launch finds it
 	// missing or not checked out (workflowRuntime.ensureWorkspace); nil without a workflow.
 	ensureWorkspace func(ctx context.Context, issue string, repo ghrepo.Repository, defaultBranch string) error
@@ -774,6 +808,15 @@ type plan struct {
 	// checkLaunch is overrides.checkLaunch; nil wraps the store with nothing, so every launch
 	// reaches the real store's own CheckLaunch.
 	checkLaunch func(context.Context, supervise.Claim) error
+	// enqueue writes outbox rows of an issue, the workflow's own enqueue
+	// (workflowRuntime.enqueueOutbox); nil in a deployment with no workflow, which has no outbox
+	// to write to and no Dispatch issue to write on. run fills it beside repository, before the
+	// runtime is built and before the workflow attaches, because it is the one enqueue outside
+	// the workflow: the runtime's refusal of a saved bundle of a repository the issue has left
+	// reads it (tellBundleRepositoryRefused, over plan.writeBodyOnIssue), and so does every write
+	// supervision makes on an issue, through the plan it holds (tellUpdateStalled, the stall
+	// backstop's owner notice).
+	enqueue func(ctx context.Context, issue string, payloads ...record.OutboxPayload) error
 }
 
 // runtimeFactory builds the runtime over the worker stream (C3): ctx is supervision's lifetime,
@@ -783,10 +826,35 @@ type plan struct {
 // Dispatch's mapping names now (plan.repositories, which the workflow fills; none without a
 // workflow): the set every role's gh bundle is built over, and the set a configured rename is
 // resolved against, one repository at a time (appauth.GitHubCredential), which the Sandbox
-// runtime's repository caches follow too. openSupervision hands it the
+// runtime's repository caches follow too, and write the one message a runtime may leave on a
+// Dispatch issue (plan.writeBodyOnIssue; it refuses the write in a deployment with no workflow).
+// openSupervision hands it the
 // plan the workflow completed, so no factory reads a field the workflow sets after prepare.
 type runtimeFactory func(ctx context.Context, listener *stream.Listener, address string, tokens appauth.Tokens,
-	repository func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, mapped func() []ghrepo.Repository) (runtime.Runtime, error)
+	repository func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, mapped func() []ghrepo.Repository,
+	writeOnIssue func(ctx context.Context, issue, body string) error) (runtime.Runtime, error)
+
+// writeOnIssue posts one message on the issue, with the document it links when it links one,
+// through the outbox's Dispatch message row that the plan's enqueue writes, and refuses the write
+// where there is no enqueue: a deployment with no workflow has no outbox to write to and no
+// Dispatch issue to write on. Both writers read this one plan: the runtime factory, which is
+// handed a writer of a message's body over this method (writeBodyOnIssue) because the runtime is
+// built before the workflow attaches to supervision and its refusal of a saved bundle of a
+// repository the issue has left must reach a person where the work is
+// (tellBundleRepositoryRefused), and supervision, through the plan it holds (podupdate's
+// rescueMessage, whose post links the document of every rescued commit, and podWentMessage).
+func (p plan) writeOnIssue(ctx context.Context, issue string, post record.MessagePost) error {
+	if p.enqueue == nil {
+		return fmt.Errorf("write on %s: this deployment has no workflow to write through", issue)
+	}
+	return p.enqueue(ctx, issue, post)
+}
+
+// writeBodyOnIssue is writeOnIssue of a message that is a body alone, which is the one message a
+// runtime may leave on a Dispatch issue (runtimeFactory).
+func (p plan) writeBodyOnIssue(ctx context.Context, issue, body string) error {
+	return p.writeOnIssue(ctx, issue, record.MessagePost{Body: body})
+}
 
 // prepare is every refusal that needs nothing but the configuration and the machine (readBoot's,
 // then what writes or runs something: the state directory, the instructions copy, and what the
@@ -1037,7 +1105,8 @@ func treeMemoryGroup(st *store.Store) func(ctx context.Context, tree string) (bo
 // it.
 func tmuxRuntime(cfg config.Config, project string, launchers map[runtime.Backend]tmux.Launcher, providerEnvDir, dispatchTokenFile, gh string, repos func() []ghrepo.Repository, log *slog.Logger) runtimeFactory {
 	return func(ctx context.Context, listener *stream.Listener, streamAddress string, tokens appauth.Tokens,
-		repository func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, _ func() []ghrepo.Repository) (runtime.Runtime, error) {
+		repository func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, _ func() []ghrepo.Repository,
+		_ func(ctx context.Context, issue, body string) error) (runtime.Runtime, error) {
 		opts := tmuxOptions(cfg, project, launchers, providerEnvDir, dispatchTokenFile, log)
 		opts.StreamAddress, opts.Conns = streamAddress, listener
 		if tokens != nil {
@@ -1226,16 +1295,6 @@ type supervision struct {
 	// reportStore persists each report as it arrives (store.Store), so a restart renders the
 	// sessions it re-adopts without waiting for them to report again.
 	reportStore capabilityReportStore
-	// enqueue writes outbox rows of an issue, all of them in one transaction, the workflow's own
-	// enqueue (workflowRuntime.enqueueOutbox); nil in a deployment with no workflow, which has no
-	// outbox to write to and no Dispatch issue to write on. It is the whole of the record the
-	// update-round sweep needs (reconcilePodUpdates): the controller notice it publishes and the
-	// message it writes on the issue are both outbox rows, and threading the workflow engine into
-	// supervision to post two rows would tie every claim decision to the workflow. Those two go in
-	// one call, since a stall told the controller but not the issue would be told again at every
-	// tick (tellUpdateStalled). The workflow sets it where it attaches, before supervision
-	// restores or launches any claim, as it sets the supervisor's terminal callback there.
-	enqueue func(ctx context.Context, issue string, payloads ...record.OutboxPayload) error
 	// applySweepFacts applies the facts a sweep of supervision read, through the workflow's own
 	// handlers (workflowRuntime.applySweepFacts); nil in a deployment with no workflow, which
 	// records no issue a fact could be about. It is the whole of what the silence sweep needs of
@@ -1244,7 +1303,7 @@ type supervision struct {
 	// transaction (workflow.(*Engine).workerSilent). The facts of one sweep go in one call so the
 	// ids it minted can be read against what this daemon has applied in one query rather than one
 	// transaction each. The workflow sets it where it attaches, before supervision restores or
-	// launches any claim, as it sets enqueue above.
+	// launches any claim, as it sets the supervisor's durable-state callback there.
 	applySweepFacts func(ctx context.Context, facts []sweptFact) error
 	// backstopMu guards backstopOwed: the owner notices of turns the stall backstop ended that
 	// the store has refused, by claim, waiting for the next sweep to write them
@@ -1407,7 +1466,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		endDrain()
 		return nil, err
 	}
-	rt, err := p.newRuntime(supervising, listener, dial, apps, p.repository, st, p.repositories.Accepted)
+	rt, err := p.newRuntime(supervising, listener, dial, apps, p.repository, st, p.repositories.Accepted, p.writeBodyOnIssue)
 	if err != nil {
 		cancel()
 		endDrain()
@@ -1419,7 +1478,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		Store:   pruning(gateLaunch(tokens.Recording(st), p.checkLaunch), runtime.SecretsDir(cfg.StateDir), log),
 		Specs: specs{
 			stateDir: cfg.StateDir, project: p.project, instructions: p.instructions, secrets: p.secrets, prompts: p.prompts,
-			identity: p.identity, repository: p.repository,
+			identity: p.identity, repository: p.launchRepository,
 			repositories: func() api.RepositoriesView { return p.repositories.view(nil) },
 			designSteps:  cfg.Gates.Steps(), slackChannels: cfg.Projects[cfg.Project].SlackChannels,
 			runtimeName: cfg.Runtime.Name, plugins: p.plugins,
@@ -1477,7 +1536,8 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 	}
 	// The machines' report of a stalled turn they ended goes to supervision, which is built
 	// after their deps: the one callback whose receiver is supervision itself, set here before
-	// any machine exists, as the workflow sets enqueue where it attaches.
+	// any machine exists, as every answer the workflow lends supervision is on the plan built
+	// before it.
 	sup.deps.StallBackstopped = supervisionOf.stallBackstopped
 	return supervisionOf, nil
 }

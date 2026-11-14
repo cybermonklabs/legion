@@ -87,9 +87,10 @@ type outbox struct {
 	dispatchProject string
 	stateDir        string
 	// gatedSteps are the design-gate steps the project gates (gates.design), which a catch-up
-	// this runner writes states and whose kept approval pair a start task names
-	// (workflow.QueueCatchUp). A test that builds the runner by hand leaves it nil, which
-	// newOutbox reads as the shipped list, the one step spec.
+	// this runner writes or delivers states (workflow.QueueCatchUp, workflow.TreeCatchUp) and whose
+	// kept approval pair a start task names. A test that builds the runner by hand and leaves it
+	// nil holds the list of a deployment that gates no step: the single step spec, which no person
+	// approves (record.RequiredSteps).
 	gatedSteps []record.DesignStep
 	log        *slog.Logger
 	// backstop is how long after a release its one open phase's worker is woken whatever else
@@ -155,7 +156,7 @@ type outboxTrees interface {
 	ReleaseSuspendedClaim(ctx context.Context, project, issue string, role claim.Role, row int64) error
 	CancelIssueRelease(ctx context.Context, project, issue string, resume store.ReleaseResumeRow, outOfWorkflow func(status string) bool) ([]claim.Role, bool, error)
 	ClearIssueRelease(ctx context.Context, project, issue string) error
-	PutWorkspaceBundle(ctx context.Context, issue string, release int64, bundle runtime.WorkspaceBundle) error
+	PutWorkspaceBundle(ctx context.Context, issue string, release int64, repo string, bundle runtime.WorkspaceBundle) error
 	WorkspaceBundleSize(ctx context.Context, issue string) (int, bool, error)
 	DeleteWorkspaceBundle(ctx context.Context, issue string) error
 	StoredClaimMayRun(ctx context.Context, token claim.Token, row int64) (bool, error)
@@ -962,14 +963,14 @@ func (handOverRule) firstAttempt(ctx context.Context, r *outbox, row record.Outb
 		return false, err
 	}
 	if issue.Status == payload.Status && issue.HandedOver {
-		return false, r.consumeHandover(ctx, row, payload)
+		return false, r.consumeHandover(ctx, row, payload, issue.ResolvedRepo)
 	}
 	// Every hand-over write is conditional on the sequence just read (dispatch HandOver), the
 	// label added when the child lacks it, so a person's move since that read stands.
 	if err := r.dispatch.HandOver(ctx, issue, payload.Status); err != nil {
 		return false, fmt.Errorf("hand Dispatch issue %s to Legion as %s: %w", row.Issue, payload.Status, err)
 	}
-	return false, r.consumeHandover(ctx, row, payload)
+	return false, r.consumeHandover(ctx, row, payload, issue.ResolvedRepo)
 }
 
 // stillWanted is unreachable and says so: a hand-over's write is made by its own first attempt,
@@ -1127,9 +1128,17 @@ func (r *outbox) publishDesignGates(ctx context.Context, payload record.DesignGa
 // publication lets the boot read record the event's sequence, and the live event then stops at the
 // sequence fence. The fact is idempotent (admit's consumeHandover reads the fence it deletes), so
 // the event, or this row's retry after a failure here, changes nothing more.
-func (r *outbox) consumeHandover(ctx context.Context, row record.OutboxRow, payload record.StatusWrite) error {
+//
+// resolved is the repository Dispatch resolved the issue to at the read the status executor made
+// of it before any of this, which the fact carries so the re-admission lands on the repository
+// Dispatch resolves the issue to now (admit's consumeHandover): no event and no PATCH of this
+// door says the repository changed, so without it the new generation would run on the repository
+// the record holds until the issue's next event or the next boot listing. A read that answered no
+// repository carries none, and corrects nothing.
+func (r *outbox) consumeHandover(ctx context.Context, row record.OutboxRow, payload record.StatusWrite, resolved string) error {
 	_, err := intake.ApplyFact(ctx, r.pool, "outbox", fmt.Sprintf("handover:%s:%d", row.Issue, row.ID),
-		intake.Handover{Issue: row.Issue, Tree: payload.HandOverTree, Generation: payload.HandOverLinger}, r.handlers...)
+		intake.Handover{Issue: row.Issue, Tree: payload.HandOverTree, Generation: payload.HandOverLinger, ResolvedRepo: resolved},
+		r.handlers...)
 	return err
 }
 
@@ -1329,6 +1338,22 @@ func (r *outbox) wakeRan(row record.OutboxRow, notice record.Notice) {
 
 // deliverNotice is the notice executor's own work: routing the notice, publishing it, and settling
 // what a catch-up that will never publish named. Its endings are notice's to read.
+//
+// A catch-up is published as its tree stands at this delivery, not as it stood when the row was
+// queued: the delivery's one read of the tree composes it again (readNoticeTree,
+// workflow.TreeCatchUp), and its record half (record.CatchUpTree) is replaced whole with what that
+// read states, as the notice's Reason is, so a gate registered or an issue added while the row
+// waited reaches the architect with the catch-up (dispatch://INFRA-2819). Decided is written again
+// in that read from the decisions the row claimed, each asked of the gates as they stand then
+// (workflow.DecisionStands), so a decision the person's approval followed while the row waited is
+// not named. The order is the fence's: whether a newer catch-up supersedes this one
+// (catchUpSuperseded) is read on the payload as the row holds it, before anything is replaced,
+// because the fence compares the row's Generation and Launch with the root and the claim as they
+// are now, and a payload composed from the root now would compare the root with itself and never
+// be superseded. So Generation and Launch stay the row's. So does Kept: the row's own queueing
+// claimed those decisions for this row (workflow.EnqueueNaming), and the settling that follows the
+// publish (settleTold, supersededKept) is keyed to what the row claimed, not to what a read at
+// delivery would name.
 func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payload record.Notice) error {
 	if r.notices == nil {
 		return errors.New("notice executor has no Envoy publisher")
@@ -1336,7 +1361,7 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 	if r.supervisor == nil {
 		return errors.New("notice executor has no claim supervisor")
 	}
-	issue, tree, err := r.readNoticeTree(ctx, row)
+	issue, tree, recomposed, err := r.readNoticeTree(ctx, row, payload)
 	if errors.Is(err, errNoticeRowGone) {
 		r.log.Info("outbox notice finished without publishing: its row was deleted under its lease", "row", row.ID, "kind", payload.Kind, "issue", row.Issue)
 		return nil
@@ -1366,6 +1391,9 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 				"generation", payload.CatchUp.Generation, "launch", payload.CatchUp.Launch)
 			return nil
 		}
+		delivered := *payload.CatchUp
+		delivered.CatchUpTree, delivered.Decided = recomposed.tree, recomposed.decided
+		payload.CatchUp, payload.Reason = &delivered, recomposed.reason
 	}
 	architect, err := owningArchitect(tree.project, tree.issues, issue, payload.Kind, r.holdsItsRole)
 	if err != nil {
@@ -1824,7 +1852,7 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 					return fmt.Errorf("record entry %d as given to claim %s: %w", payload.Entry, token, err)
 				}
 			}
-		} else if payload.Task != "" {
+		} else if payload.Task != "" || payload.Awaiting != nil {
 			// The row's phase, already held to the issue's above, travels with the delivery: it is
 			// what says the task is still the work to do once the delivery has outlived its id. The
 			// row's entry travels with it too, the number the start's own transaction raised on the
@@ -1845,14 +1873,21 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 			// of what its tree is owed travels with it as well (supervise.Delivery.Kept): the
 			// claim's write of the delivery takes those rows from this start row and holds them
 			// under that claim and delivery id, and the write recording the turn's confirmation
-			// tells them (the claim store's putDelivery, 20261101163106_parked_decisions).
+			// tells them (the claim store's putDelivery, 20261101163106_parked_decisions). A resume
+			// task of an answered root carries no text and the wait it answers instead
+			// (supervise.Delivery.Resume): its text is written at each send, from the record as it
+			// stands then (the daemon's rootTask).
 			kept, err := keptJSON(payload.Kept)
+			if err != nil {
+				return err
+			}
+			resume, err := resumeJSON(payload.Awaiting)
 			if err != nil {
 				return err
 			}
 			if err := machine.Handle(ctx, supervise.RequestDeliver{Claim: token, Task: payload.Task, Phase: payload.Phase, Generation: payload.Generation,
 				Entry: payload.Entry, ResendEntry: payload.ResendEntry, CheckLook: supervise.CheckLook{Look: payload.CheckLook, OpenedAt: payload.CheckOpenedAt},
-				ID: fmt.Sprintf("%s%d", outboxDeliveryPrefix, row.ID), Row: row.ID, Kept: kept}); err != nil {
+				ID: fmt.Sprintf("%s%d", outboxDeliveryPrefix, row.ID), Row: row.ID, Kept: kept, Resume: resume}); err != nil {
 				return fmt.Errorf("deliver to claim %s: %w", token, err)
 			}
 			gave = true
@@ -2189,8 +2224,42 @@ func (r *outbox) bundleIssueWorkspace(ctx context.Context, row record.OutboxRow,
 		return nil
 	}
 	// The bundle is stored under the release that took it, so the restore of the pod that
-	// replaces this one names the release whose work it put back (store.PutWorkspaceBundle).
-	if err := r.trees.PutWorkspaceBundle(ctx, row.Issue, decision.Release, bundle); err != nil {
+	// replaces this one names the release whose work it put back (store.PutWorkspaceBundle), and
+	// under the repository the released pod itself was built from, which is the repository its
+	// workspace is a clone of and so the repository this work is in the history of
+	// (issuePodRepository): a restore into a pod of another repository is refused by it
+	// (store.TakeWorkspaceBundleForRestore).
+	//
+	// It is the pod's repository and never the record's, because the two differ for exactly as
+	// long as this save matters. A correction in Dispatch moves the record to the new repository
+	// while the released pod is still a clone of the old one (record.Store.CorrectIssueRepository,
+	// supervision.repositoryDrift), and a bundle of the old repository's commits labelled with
+	// the new one is answered `sent` into a clone that holds none of them. The idle rule holds
+	// such a pod rather than releasing it (workflow.IdleHoldRepository), so a release reaches
+	// this line only where the correction landed after the rule read the pod; this label is what
+	// makes that race harmless, and the hold is what makes it rare.
+	//
+	// The record is the fallback and only where the runtime answers nothing: the tmux runtime,
+	// whose panes are in no pod, and a claim with no process. Neither can have left the
+	// repository the record holds, since neither has a pod built from one. An issue the workflow
+	// does not record saves under the empty repository, which the take reads as a bundle that
+	// refuses no pod: the save stores the work whatever the two reads answer, and only a read
+	// that failed for a reason of its own cancels the release.
+	repo, err := issuePodRepository(ctx, r.supervisor, row.Issue)
+	if err != nil {
+		return r.cancelRelease(ctx, row.Issue, payload.Tree, workflow.IdleHoldBundleSave,
+			fmt.Sprintf("read the repository the pod of %s was built from: %v", row.Issue, err))
+	}
+	if repo == "" {
+		issue, err := r.recordedIssue(ctx, row.Issue)
+		if err != nil {
+			return r.cancelRelease(ctx, row.Issue, payload.Tree, workflow.IdleHoldBundleSave, err.Error())
+		}
+		if issue != nil {
+			repo = issue.Repo
+		}
+	}
+	if err := r.trees.PutWorkspaceBundle(ctx, row.Issue, decision.Release, repo, bundle); err != nil {
 		return r.cancelRelease(ctx, row.Issue, payload.Tree, workflow.IdleHoldBundleSave, err.Error())
 	}
 	return nil

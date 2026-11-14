@@ -22,7 +22,7 @@ func TestTheAddressingTellsAFreshAgentThatItsSessionWasLost(t *testing.T) {
 	}
 	c := supervise.Claim{Token: token, Project: "legion", Tree: "LEGION-208", Issue: "LEGION-209", Role: claim.RoleTester}
 
-	kept, err := AddressingFragment("legion", c, ghrepo.Repository{}, "", api.RepositoriesView{})
+	kept, err := AddressingFragment("legion", c, ghrepo.Repository{}, "", api.RepositoriesView{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -31,7 +31,7 @@ func TestTheAddressingTellsAFreshAgentThatItsSessionWasLost(t *testing.T) {
 	}
 
 	c.SessionLost = true
-	lost, err := AddressingFragment("legion", c, ghrepo.Repository{}, "", api.RepositoriesView{})
+	lost, err := AddressingFragment("legion", c, ghrepo.Repository{}, "", api.RepositoriesView{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

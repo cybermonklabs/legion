@@ -171,15 +171,15 @@ func (s *supervision) reconcileIssuePodUpdate(ctx context.Context, issue string,
 		s.podWentWithoutItsRound(ctx, issue, group, open, pod)
 		return nil
 	}
-	reasons, reading := s.groupDrift(ctx, issue, group)
-	if reading == podGone {
+	drift := s.groupDrift(ctx, issue, group)
+	if drift.reading == podGone {
 		s.endRoundOverAGonePod(ctx, issue, group, open, pod)
 		return nil
 	}
-	if reading != podRead {
+	if drift.reading != podRead {
 		return nil
 	}
-	if len(reasons) == 0 && open != supervise.PodRound(pod) {
+	if len(drift.reasons) == 0 && open != supervise.PodRound(pod) {
 		// The round's own pod is gone: the claims record another one in its place, and that pod
 		// has drifted from nothing. A round that still had a worker to lose work with the pod
 		// was taken by the branch above, so this one lost nothing and ends here, over the pod
@@ -191,8 +191,8 @@ func (s *supervision) reconcileIssuePodUpdate(ctx context.Context, issue string,
 		}
 		return nil
 	}
-	joined := strings.Join(reasons, ", ")
-	if len(reasons) == 0 {
+	joined := strings.Join(drift.reasons, ", ")
+	if len(drift.reasons) == 0 {
 		// The drift this round was opened for has gone away — an operator rolled the release
 		// back — and the round replaces the pod all the same. The round has already asked every
 		// worker in that pod to push its work and to start no new work, each has answered or is
@@ -215,7 +215,8 @@ func (s *supervision) reconcileIssuePodUpdate(ctx context.Context, issue string,
 	var live []supervise.Claim
 	if open != "" {
 		live = s.liveGroup(group)
-		if replace, decided := s.completePodUpdate(ctx, issue, group, live, open, pod, joined, now); decided {
+		candidate := podReplacement{issue: issue, round: open, pod: pod, reasons: joined, now: now}
+		if replace, decided := s.completePodUpdate(ctx, candidate, group, live); decided {
 			return replace
 		}
 	}
@@ -246,8 +247,11 @@ func (s *supervision) reconcileIssuePodUpdate(ctx context.Context, issue string,
 // completePodUpdate decides a round that is over: every claim the round asks (askedClaims) has
 // answered, and no claim of the group runs a turn. Waiting for no claim to be
 // working is what keeps the promise that no worker is stopped mid-turn — a worker answers from
-// inside a turn, and that turn ends a moment later. It reports whether it decided the round,
-// and with it the pod replacement that decision leaves the sweep to make.
+// inside a turn, and that turn ends a moment later. candidate is the replacement this round
+// would make, which is the whole of what the round is: its issue, the round, the pod it was
+// opened over, the reasons it names and the sweep's own now (podReplacement). It reports whether
+// it decided the round, and with it the pod replacement that decision leaves the sweep to make,
+// which is candidate itself.
 //
 // The replacement is handed back rather than made here because it waits its pod out, and the
 // sweep makes every one of this tick's replacements after its whole walk over the issues
@@ -280,7 +284,8 @@ func (s *supervision) reconcileIssuePodUpdate(ctx context.Context, issue string,
 // answers, so it is told to the operator's side the same way (tellUpdateStalled) and names what
 // the round is waiting on. One round is told once. The waits of the replacement itself are told
 // there the same way, where it is made.
-func (s *supervision) completePodUpdate(ctx context.Context, issue string, snapshot, live []supervise.Claim, round, pod, reasons string, now time.Time) (*podReplacement, bool) {
+func (s *supervision) completePodUpdate(ctx context.Context, candidate podReplacement, snapshot, live []supervise.Claim) (*podReplacement, bool) {
+	issue, round, pod := candidate.issue, candidate.round, candidate.pod
 	reading := readReplacement(live, round)
 	switch reading.wait {
 	case waitsForAnswer:
@@ -294,7 +299,7 @@ func (s *supervision) completePodUpdate(ctx context.Context, issue string, snaps
 	case waitsForTurn:
 		s.log.Info("supervise: every worker of this update round has answered; the replacement waits for the turns still running",
 			"issue", issue, "round", round, "working", reading.working)
-		s.tellLateRound(ctx, issue, live, round, pod, reasons, now,
+		s.tellLateRound(ctx, issue, live, round, pod, candidate.reasons, candidate.now,
 			fmt.Sprintf("every worker of the update round has answered, and the turns of %s have not ended",
 				strings.Join(reading.working, ", ")))
 		return nil, true
@@ -303,7 +308,7 @@ func (s *supervision) completePodUpdate(ctx context.Context, issue string, snaps
 			"issue", issue, "round", round, "pod", pod)
 		return nil, true
 	case replacementReady:
-		return &podReplacement{issue: issue, round: round, pod: pod, reasons: reasons, now: now}, true
+		return &candidate, true
 	default:
 		s.log.Error("supervise: this update round's replacement was held back by a reading this sweep cannot name; nothing is replaced and the round stays open for the next sweep",
 			"issue", issue, "round", round, "pod", pod, "reading", int(reading.wait))
@@ -392,8 +397,13 @@ func readReplacement(live []supervise.Claim, round string) replacementReading {
 // podReplacement is the one step the sweep's walk over the issues leaves for after the walk: the
 // pod of a round that is over is to be replaced (completePodUpdate). It carries what the step
 // cannot read again — the issue, the round, the pod the round was opened over, the reasons the
-// round records and the sweep's own now, which the notice of a stalled replacement is dated from
-// — and nothing of the claims, which the step reads afresh.
+// round records and the sweep's own now, which the notice of a stalled replacement is dated
+// from — and nothing of the claims, which the step reads afresh.
+//
+// It is also what the walk hands the decision that may make it (completePodUpdate, which takes
+// it as the round's candidate and hands it back where every reading passed): the round under
+// decision and the replacement it would make name the same five things, and one value is what
+// keeps the two from naming them differently.
 type podReplacement struct {
 	issue   string
 	round   string
@@ -514,7 +524,7 @@ func (s *supervision) replacePodForRound(ctx context.Context, replace podReplace
 		"issue", issue, "round", round, "pod", pod, "failedNotWaitedFor", namesOf(failed),
 		"rescued", checked.rescued(), "unchecked", checked.unchecked)
 	if post := rescueMessage(issue, round, checked); post.Body != "" {
-		if err := s.writeOnIssue(ctx, issue, post); err != nil && ctx.Err() == nil {
+		if err := s.plan.writeOnIssue(ctx, issue, post); err != nil && ctx.Err() == nil {
 			s.log.Error("supervise: write on the issue what the push check before its pod's replacement found",
 				"issue", issue, "round", round, "rescued", checked.rescued(), "unchecked", checked.unchecked, "error", err)
 		}
@@ -919,7 +929,7 @@ func (s *supervision) podWentWithoutItsRound(ctx context.Context, issue string, 
 	reasons := roundReasons(group, round)
 	s.log.Warn("supervise: the pod of an open update round is gone; the roles that had not answered lost what they had not pushed",
 		"issue", issue, "round", round, "pod", pod, "lost", namesOf(lost))
-	if err := s.writeOnIssue(ctx, issue, record.MessagePost{Body: podWentMessage(round, reasons, lost)}); err != nil {
+	if err := s.plan.writeOnIssue(ctx, issue, record.MessagePost{Body: podWentMessage(round, reasons, lost)}); err != nil {
 		s.log.Error("supervise: write on the issue that its pod went without its update round",
 			"issue", issue, "round", round, "error", err)
 	}
@@ -1060,7 +1070,7 @@ func (s *supervision) tellUpdateStalled(ctx context.Context, stall updateStall) 
 	if roundTold(stall.group, stall.round) {
 		return
 	}
-	if s.enqueue == nil {
+	if s.plan.enqueue == nil {
 		s.log.Warn("supervise: an update round is stalled, and this deployment has no workflow to tell the operator's side through",
 			"issue", stall.issue, "round", stall.round, "reason", stall.reason)
 		return
@@ -1070,7 +1080,7 @@ func (s *supervision) tellUpdateStalled(ctx context.Context, stall updateStall) 
 		Reason: stall.reason,
 		Update: &record.UpdateStalled{Round: stall.round, Pod: stall.pod, Reasons: stall.reasons, Waiting: stall.waiting},
 	}}
-	if err := s.enqueue(ctx, stall.issue, rows...); err != nil {
+	if err := s.plan.enqueue(ctx, stall.issue, rows...); err != nil {
 		if ctx.Err() == nil {
 			s.log.Error("supervise: tell the operator's side that an update round is stalled; telling again at the next sweep",
 				"issue", stall.issue, "round", stall.round, "error", err)
@@ -1098,15 +1108,6 @@ func (s *supervision) markUpdateTold(ctx context.Context, group []supervise.Clai
 			s.log.Error("supervise: record that this claim's update round was told", "claim", c.Token, "round", round, "error", err)
 		}
 	}
-}
-
-// writeOnIssue posts one message on the issue, with the document it links when it links one,
-// through the outbox's Dispatch message row.
-func (s *supervision) writeOnIssue(ctx context.Context, issue string, post record.MessagePost) error {
-	if s.enqueue == nil {
-		return fmt.Errorf("write on %s: this deployment has no workflow to write through", issue)
-	}
-	return s.enqueue(ctx, issue, post)
 }
 
 // endPodUpdates ends the round on every claim of the group that is in one. A round ends only
@@ -1147,9 +1148,25 @@ const (
 	podGone
 )
 
+// podDrift is what one sweep read of the pod the group's claims record (groupDrift): why that
+// pod has drifted and the reading that says what the reasons are worth. The two are one value
+// because neither decides anything alone — no reason is a pod that drifted from nothing only
+// under podRead — and a caller that took them as two results could hold the reasons of one
+// round beside the reading of another.
+type podDrift struct {
+	// reasons is why the pod has drifted, in the claims' own order and without repeats, empty
+	// for a pod that has drifted from nothing.
+	reasons []string
+	// reading is what could be read of the pod at all (podReading).
+	reading podReading
+}
+
 // groupDrift is why the group's pod has drifted: the union of the runtime's PodDrift over every
-// claim of the group that records a process, in the claims' own order and without repeats, with
-// the reading that says what those reasons are worth (podReading).
+// claim of the group that records a process, in the claims' own order and without repeats, and
+// then the repository the pod was built from read against the repository the issue's record
+// holds now (repositoryDrift), with the reading that says what the reasons are worth
+// (podReading). The rescue branches a replacement pushes are told by the repository of the
+// workspace that pushed each (rescueMessage, pushCheck.branches), which is that same pod's.
 //
 // It reads podUnread when the runtime could not be asked at all: an error is never a statement
 // that something drifted, and a round must neither open nor end on one.
@@ -1160,7 +1177,15 @@ const (
 // that has drifted from nothing, it would carry the round on over a pod that took its workers'
 // unpushed work with it. Read as nothing at all, it would leave that round open over a pod that is
 // not there. The caller is what logs it, because the caller is what decides it.
-func (s *supervision) groupDrift(ctx context.Context, issue string, group []supervise.Claim) ([]string, podReading) {
+//
+// The repository is asked once for the group, through the one helper every reader of the pod's
+// repository asks it by (podRepository), because it is the pod's and not the claim's: every role
+// of the issue runs in that one pod and works the one workspace its fetch cloned, so one
+// correction opens one round rather than one per claim, and the idle rule's repository hold
+// reads the pod through the same claim (podRepositoryDrifted). A runtime that answers nothing —
+// one whose processes share no such place, a pod that clones no repository — and a group no
+// claim of which records a process end the question there.
+func (s *supervision) groupDrift(ctx context.Context, issue string, group []supervise.Claim) podDrift {
 	var reasons []string
 	for _, c := range group {
 		if c.Locator == nil {
@@ -1168,13 +1193,13 @@ func (s *supervision) groupDrift(ctx context.Context, issue string, group []supe
 		}
 		drift, err := s.runtime.PodDrift(ctx, runtime.Known{Claim: c.Token, Locator: c.Locator})
 		if errors.Is(err, runtime.ErrPodGone) {
-			return nil, podGone
+			return podDrift{reading: podGone}
 		}
 		if err != nil {
 			if ctx.Err() == nil {
 				s.log.Error("supervise: read whether this issue's pod has drifted", "issue", issue, "claim", c.Token, "error", err)
 			}
-			return nil, podUnread
+			return podDrift{reading: podUnread}
 		}
 		for _, reason := range drift {
 			if !slices.Contains(reasons, reason) {
@@ -1182,7 +1207,64 @@ func (s *supervision) groupDrift(ctx context.Context, issue string, group []supe
 			}
 		}
 	}
-	return reasons, podRead
+	repository, err := podRepository(ctx, s.runtime, slices.Values(group))
+	if err != nil {
+		if ctx.Err() == nil {
+			s.log.Error("supervise: read the repository this issue's pod was built from", "issue", issue, "error", err)
+		}
+		return podDrift{reasons: reasons, reading: podRead}
+	}
+	if reason := s.repositoryDrift(ctx, issue, repository); reason != "" && !slices.Contains(reasons, reason) {
+		reasons = append(reasons, reason)
+	}
+	return podDrift{reasons: reasons, reading: podRead}
+}
+
+// repositoryDrift is the one reason the runtime cannot state itself: the pod was built from one
+// repository, and the issue's record names another now, because Dispatch moved the issue and the
+// daemon's record followed it (record.Store.CorrectIssueRepository). The pod clones its
+// repository into the issue's workspace once, at its creation, and holds the gh directories and
+// the token of that repository's owner for its whole life, so the issue works the repository it
+// has left until the pod is replaced.
+//
+// The two names are read by the one rule the daemon decides whether an issue has left a
+// repository by (repositories.left), which a saved bundle's restore reads as well
+// (store.Store.TakeWorkspaceBundleForRestore): without regard to case, as GitHub compares names,
+// and a configured rename's two names as one repository, so re-pointing an issue at the name a
+// transfer moved its repository to replaces no pod.
+//
+// Nothing is a reason but two names that are both there and differ. A pod that answers nothing,
+// a deployment with no workflow (plan.recordedRepository nil), an issue the record does not hold
+// and a record that cannot be read each add none: an unknown is never a statement that something
+// drifted, which is the rule this sweep already reads an error by.
+func (s *supervision) repositoryDrift(ctx context.Context, issue, pod string) string {
+	if pod == "" || s.plan.recordedRepository == nil {
+		return ""
+	}
+	recorded, err := s.plan.recordedRepository(ctx, issue)
+	if err != nil {
+		if ctx.Err() == nil {
+			s.log.Error("supervise: read the repository this issue's record holds", "issue", issue, "pod", pod, "error", err)
+		}
+		return ""
+	}
+	if !s.plan.repositories.left(pod, recorded) {
+		return ""
+	}
+	return "repository " + pod + ", now " + recorded
+}
+
+// recordedRepositoryOf is the reader the plan takes (plan.recordedRepository), built
+// on the workflow's own single-issue read: the repository the record names, and "" for an issue
+// the record does not hold, which is every issue of a project the workflow has not admitted.
+func recordedRepositoryOf(read func(ctx context.Context, key string) (*record.Issue, error)) func(context.Context, string) (string, error) {
+	return func(ctx context.Context, issue string) (string, error) {
+		recorded, err := read(ctx, issue)
+		if err != nil || recorded == nil {
+			return "", err
+		}
+		return recorded.Repo, nil
+	}
 }
 
 // groupPod is the pod every claim of the group that records one runs in, and whether they record

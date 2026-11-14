@@ -413,6 +413,21 @@ func (r *Runtime) LaunchBound() time.Duration { return 0 }
 // opened over a pane.
 func (r *Runtime) PodDrift(context.Context, runtime.Known) ([]string, error) { return nil, nil }
 
+// PodRepository is "": a pane shares no place with the other processes of its issue — there is
+// no pod here, and nothing a repository was cloned into once and for all — so this runtime
+// states nothing about what any process of it was built from.
+//
+// So a correction of an issue's repository replaces nothing under this runtime and opens no
+// update round: the daemon reads no drift it could open one over, and ReplacePod below would do
+// nothing if it did. What a correction reaches a pane through is its next launch, which
+// provisions a workspace of the new repository under the daemon's state directory, that
+// directory being the repository's own (workspace.Location), and tells the worker both
+// repositories (daemon's AddressingFragment). AGENTS.md says that, beside the pod replacement a
+// Kubernetes deployment gets, as do the running and troubleshooting guides under
+// docs/site/src/content/docs/legion; docs/kubernetes.md says the replacement is its own
+// runtime's.
+func (r *Runtime) PodRepository(context.Context, runtime.Known) (string, error) { return "", nil }
+
 // ReplacePod does nothing and returns nil: this runtime has no pod to replace, and a pane is
 // ended by the claim's own Suspend and Release. due is never asked, because nothing here waits
 // and nothing here is ended: there is no write for a caller's re-read to come one statement

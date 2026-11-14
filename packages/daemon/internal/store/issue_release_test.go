@@ -575,7 +575,7 @@ func TestACancelDeletesTheBundleItsReleaseSavedInTheSameTransaction(t *testing.T
 	}
 	saved := runtime.WorkspaceBundle{Bundle: []byte("PACK the work of the cancelled release"),
 		Head: "f2f134541b30dfa5160a5d1ce5e17b76c967c661", At: time.Now().UTC(), PodUID: "pod-being-released"}
-	if err := st.PutWorkspaceBundle(ctx, rootIssue, release, saved); err != nil {
+	if err := st.PutWorkspaceBundle(ctx, rootIssue, release, "", saved); err != nil {
 		t.Fatalf("save the release's bundle: %v", err)
 	}
 

@@ -264,7 +264,7 @@ func (e *Engine) moveIntoTree(ctx context.Context, tx pgx.Tx, member, root recor
 	if err := e.store.DeleteHandover(ctx, tx, member.Key); err != nil {
 		return err
 	}
-	if err := e.store.ClearGeneration(ctx, tx, member.Key, e.now()); err != nil {
+	if err := e.ClearGeneration(ctx, tx, member, e.now()); err != nil {
 		return err
 	}
 	if member.Status == "todo" {

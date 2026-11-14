@@ -30,6 +30,8 @@ import {
   LegionIssueStatusRequest,
   LegionOperatorClaimResponse,
   LegionOperatorClaimsResponse,
+  LegionOwedRequest,
+  LegionOwedResponse,
   LegionPhaseBackwardRequest,
   LegionPhaseRetryRequest,
   LegionReadyForUpdateRequest,
@@ -71,6 +73,9 @@ const schemas: Record<string, z.ZodType> = {
   // What a pod reads of its deployment's idle release: every release, resume and hold of the
   // window it named (`api.ReleaseRecordsResponse`).
   "release-records.json": LegionReleaseRecordsResponse,
+  // What a session reads at the end of its turn of what its claim owes now (`api.OwedResponse`):
+  // the reminder renders the `work` phrase and names no work of its own.
+  "owed.json": LegionOwedResponse,
   "register-controller.json": LegionControllerRegisterResponse,
   "controller-secret.json": LegionControllerSecretResponse,
   "controller-github-credential.json": LegionControllerCredentialResponse,
@@ -640,6 +645,72 @@ test("the state golden carries each issue's tree memory draw", () => {
   expect(parses()).toBeFalse();
   drawn.memoryDrawMode = "off";
   drawn.memoryDrawnAt = "the morning";
+  expect(parses()).toBeFalse();
+});
+
+// The state golden carries LEGION-210, whose repository Dispatch corrected, with the repository
+// it left and the instant the daemon applied the correction, and LEGION-212, for which Dispatch
+// has named a repository the daemon has not applied, with that repository and why it waits. An
+// issue neither has reached carries none of the four, so each is optional, and a daemon before
+// this contract sends none of them, whose state must still parse.
+//
+// LEGION-210's pull request is open on the repository it left, which the issue's `repo` and the
+// pull request's own name together: that is how a reader of one record reads that the issue has
+// open work on a repository it no longer works.
+test("the state golden carries an issue's repository correction and the change still to be applied", () => {
+  const state = fixture("state.json") as {
+    issues: Record<string, Record<string, unknown>>;
+  };
+  const corrected = state.issues["LEGION-210"];
+  const waiting = state.issues["LEGION-212"];
+  if (corrected === undefined || waiting === undefined) {
+    throw new Error("state fixture lacks LEGION-210 or LEGION-212");
+  }
+  expect({
+    repo: corrected.repo,
+    repoBefore: corrected.repoBefore,
+    repoCorrectedAt: corrected.repoCorrectedAt,
+  }).toEqual({
+    repo: "zeta/tools",
+    repoBefore: "acme/widgets",
+    repoCorrectedAt: "2026-09-22T07:40:00Z",
+  });
+  expect({
+    repo: (corrected.pullRequest as Record<string, unknown>).repo,
+    number: (corrected.pullRequest as Record<string, unknown>).number,
+    state: (corrected.pullRequest as Record<string, unknown>).state,
+  }).toEqual({ repo: "acme/widgets", number: 1251, state: "open" });
+  expect({
+    repo: waiting.repo,
+    repoChangePending: waiting.repoChangePending,
+    repoChangeReason: waiting.repoChangeReason,
+  }).toEqual({
+    repo: "acme/widgets",
+    repoChangePending: "acme/gadgets",
+    repoChangeReason: "acme/gadgets is not mapped to project LEGION in Dispatch",
+  });
+
+  const parses = () => LegionStateResponse.safeParse(state).success;
+  expect(parses()).toBeTrue();
+
+  // A state from a daemon before this contract, and an issue nothing changed.
+  for (const key of ["repoBefore", "repoCorrectedAt"]) {
+    delete corrected[key];
+  }
+  for (const key of ["repoChangePending", "repoChangeReason"]) {
+    delete waiting[key];
+  }
+  expect(parses()).toBeTrue();
+
+  // A repository that is no name, and a correction time that is no time.
+  corrected.repoBefore = "";
+  expect(parses()).toBeFalse();
+  corrected.repoBefore = "acme/widgets";
+  corrected.repoCorrectedAt = "the morning";
+  expect(parses()).toBeFalse();
+  corrected.repoCorrectedAt = "2026-09-22T07:40:00Z";
+  waiting.repoChangePending = "acme/gadgets";
+  waiting.repoChangeReason = "";
   expect(parses()).toBeFalse();
 });
 
@@ -1241,6 +1312,15 @@ test("every request the plugin sends parses and names its required fields", () =
     ["activity", LegionActivityRequest, activityRequest],
     ["activity report", LegionSessionActivity, activity],
     [
+      "owed",
+      LegionOwedRequest,
+      {
+        claimToken: "legion-legion-legion-208-tester",
+        sessionId: "ses_tester_208",
+        secret: "U3VwZXJ2aXNlZEJ5TGVnaW9u",
+      },
+    ],
+    [
       "release records",
       LegionReleaseRecordsRequest,
       {
@@ -1736,6 +1816,25 @@ test("the release records are read with the claim credential in the body", () =>
   expect(
     LegionReleaseRecordsRequest.safeParse({ ...request, sessionId: "ses" }).success
   ).toBeFalse();
+});
+
+// What a session reads of what its claim owes: a phrase when something is owed, and nothing when
+// nothing is. The two agree or the body is refused, so a reader never renders a phrase for work the
+// daemon did not say is owed, nor an empty phrase for work it did.
+test("what a claim owes names its work exactly when it owes some", () => {
+  const owed = { owes: true, work: "the testing phase of LEGION-208" };
+  expect(LegionOwedResponse.safeParse(owed).error?.issues ?? []).toEqual([]);
+  expect(
+    LegionOwedResponse.safeParse({ owes: true, work: "the production check of LEGION-208" }).success
+  ).toBeTrue();
+  expect(LegionOwedResponse.safeParse({ owes: false, work: "" }).success).toBeTrue();
+
+  expect(LegionOwedResponse.safeParse({ owes: true, work: "" }).success).toBeFalse();
+  expect(
+    LegionOwedResponse.safeParse({ owes: false, work: "the testing phase of LEGION-208" }).success
+  ).toBeFalse();
+  expect(LegionOwedResponse.safeParse({ owes: false }).success).toBeFalse();
+  expect(LegionOwedResponse.safeParse({ work: "" }).success).toBeFalse();
 });
 
 // `legionStrandedClaim` exactly as contract 45 holds it (`legion-v19.0.0`, this branch's base on

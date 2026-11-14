@@ -1,0 +1,8 @@
+kind: Changed
+body: |-
+  An issue's repository in Legion's record follows the repository Dispatch resolves it to, in the
+  pass that reads the change: a live event, the boot listing, a hand-over, or a change of the
+  project's repository mapping. The daemon replaces the issue's pod, each worker's next task names
+  both repositories, and a saved bundle of the old repository is kept in `workspace_bundles_refused`
+  and never restored into the new clone. A repository Legion serves no installation of waits on the
+  record, with its reason, and the issue is told what a person can do.

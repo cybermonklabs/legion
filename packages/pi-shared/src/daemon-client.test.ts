@@ -167,6 +167,43 @@ test("activity posts the claim wire's report and accepts only the empty 204", as
   await expect(talkative.activity(report)).rejects.toBeInstanceOf(LegionDaemonContractError);
 });
 
+test("owed posts the claim's question and reads the daemon's answer through its contract", async () => {
+  const owed = daemonFixture("owed.json");
+  const { fetch, requests } = daemon(() => Response.json(owed));
+  const client = createLegionDaemonClient("http://daemon.test", fetch);
+  const question = {
+    claimToken: "legion-legion-legion-208-tester",
+    sessionId: "ses_tester_208",
+    secret: "U3VwZXJ2aXNlZEJ5TGVnaW9u",
+  };
+
+  await expect(client.owed(question)).resolves.toEqual({
+    owes: true,
+    work: "the testing phase of LEGION-208",
+  });
+  expect(requests).toEqual([
+    { method: "POST", url: "http://daemon.test/legion/v1/claims/owed", body: question },
+  ]);
+
+  // An answer that owes work and names none, or names work and owes none, is not one the reminder
+  // can render: it is refused, and the reminder reads it as no answer.
+  for (const body of [
+    { owes: true, work: "" },
+    { owes: false, work: "the testing phase of LEGION-208" },
+    without(owed, "work"),
+  ]) {
+    const refused = createLegionDaemonClient(
+      "http://daemon.test",
+      daemon(() => Response.json(body)).fetch
+    );
+    await expect(refused.owed(question)).rejects.toBeInstanceOf(LegionDaemonContractError);
+  }
+
+  // The request is the claim wire's own: a blank field is refused before it leaves the pane.
+  await expect(client.owed({ ...question, secret: "" })).rejects.toThrow();
+  expect(requests).toHaveLength(1);
+});
+
 test("the release records are read by a POST carrying the claim's token and secret, and a list the daemon left out is refused", async () => {
   const records = {
     releases: [
@@ -306,26 +343,6 @@ test("a state from a daemon a release ahead parses without its unknown top-level
       { op: "read_record", issue: "LEGION-208" }
     )
   ).resolves.toEqual({ record });
-});
-
-test("a state read hands fetch its caller's signal, and an abort ends a read the daemon never answers", async () => {
-  const handed: (AbortSignal | null | undefined)[] = [];
-  const hung = (async (_input, init) => {
-    handed.push(init?.signal);
-    const { promise, reject } = Promise.withResolvers<Response>();
-    init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
-    return promise;
-  }) as typeof fetch;
-  const controller = new AbortController();
-  const late = new Error("the reader stopped waiting");
-
-  const read = createLegionDaemonClient("http://daemon.test", hung).state({
-    signal: controller.signal,
-  });
-  controller.abort(late);
-
-  await expect(read).rejects.toBe(late);
-  expect(handed).toEqual([controller.signal]);
 });
 
 test("posts every Stage 3 workflow request through its matching route", async () => {

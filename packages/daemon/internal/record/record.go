@@ -115,23 +115,35 @@ type Issue struct {
 	// Repo is the GitHub repository (owner/name) the issue targets, and DefaultBranch that
 	// repository's default branch: Dispatch's resolved repository and GitHub's default branch when
 	// the daemon first recorded the issue (a root's admission, a child's recording under its tree, an
-	// orphan's admission). Neither changes after that: a carried child, a re-admission and a
-	// hand-over keep them, and a later edit of the issue's repository in Dispatch is not applied.
-	// Every repository-dependent action reads them. Repo is spelled as the issue's workspace and
-	// shared clone are, which can be a clone's spelling that differs from GitHub's in case.
+	// orphan's admission), and Dispatch's own correction of it from then on
+	// (Store.CorrectIssueRepository, the only writer that changes them). No ordinary record of the
+	// issue moves them: a carried child, a re-admission, a hand-over and an observation prepared
+	// before a correction all keep what the record holds (Store.PutIssue names none of the three in
+	// its update). Every repository-dependent action reads them. Repo is spelled as the issue's
+	// workspace and shared clone are, which can be a clone's spelling that differs from GitHub's in
+	// case.
 	Repo          string
 	DefaultBranch string
-	// GitHubRepo is GitHub's own spelling of Repo, taken with it and never changed: what Envoy's
-	// event subjects carry, which NATS matches case-sensitively, so GitHub intake hears the issue's
-	// repository by it, read from the record at boot. Under a configured repository rename
-	// (`repository_renames`) whose two names are Repo and the name GitHub holds the repository
-	// under, it is the pair's spelling of Repo's own side instead, which GitHub publishes nothing
-	// under after the transfer: the record's two repository columns must name one repository, and
-	// a record keeps the name it was recorded under for its whole life. Intake still hears the
-	// issue, because the daemon subscribes to both names of a pair (heardRepositories), and every
-	// GitHub call the daemon makes for the record addresses the repository GitHub serves it under
-	// now (ghrepo.Renames.Serving) rather than this field.
+	// GitHubRepo is GitHub's own spelling of Repo, taken with it and moved only by a correction of
+	// the pair: what Envoy's event subjects carry, which NATS matches case-sensitively, so GitHub
+	// intake hears the issue's repository by it, read from the record at boot. Under a configured
+	// repository rename (`repository_renames`) whose two names are Repo and the name GitHub holds
+	// the repository under, it is the pair's spelling of Repo's own side instead, which GitHub
+	// publishes nothing under after the transfer: the record's two repository columns must name one
+	// repository. Intake still hears the issue, because the daemon subscribes to both names of a
+	// pair (heardRepositories), and every GitHub call the daemon makes for the record addresses the
+	// repository GitHub serves it under now (ghrepo.Renames.Serving) rather than this field.
 	GitHubRepo string
+	// RepoCorrection is the newest correction of the issue's repository, nil for a record no
+	// correction has reached, which is every record written before the correction existed. Only
+	// Store.CorrectIssueRepository writes it: what a worker's next task names beside the new
+	// repository, and what says that work saved before that moment is of another repository.
+	RepoCorrection *RepositoryCorrection
+	// RepoChange is a repository Dispatch has named that the daemon has not applied to the record
+	// yet, and why it has not, nil when nothing waits. Store.NoteIssueRepositoryChange writes it,
+	// and the correction that applies the change clears it (Store.CorrectIssueRepository), so what
+	// is here is always a change still to be made.
+	RepoChange *RepositoryChange
 	// Ancestry is the keys of a root's Dispatch parent chain, from its parent upward to the top,
 	// stopping only at a repeated key or back at the root, as the newest Dispatch observation
 	// applied to the record was prepared with (intake's DispatchIssue.Ancestry), or as the
@@ -184,7 +196,8 @@ type Issue struct {
 	// draw: a tree first opened before the setting existed, or a root the draw never reached, which
 	// has no group and runs without memory. The draw is made once, when the tree's lifecycle row is
 	// first created, and only Store.DrawMemory and Store.CarryMemory write the three: PutIssue keeps
-	// the stored values, so a re-admission, a new generation and ClearTreeGeneration keep the draw.
+	// the stored values, so a re-admission, a new generation and its clear (workflow's
+	// ClearTreeGeneration) keep the draw.
 	MemoryGroup    string
 	MemoryDrawMode string
 	MemoryDrawnAt  *time.Time
@@ -221,6 +234,25 @@ func (i Issue) Repository() (ghrepo.Repository, error) {
 	return ghrepo.Parse("the repository of "+i.Key, i.Repo)
 }
 
+// RepositoryCorrection is what a correction of an issue's repository left on its record: the
+// repository the record held before it (Before) and the moment the daemon applied it (At). The
+// two are one value because neither says anything alone, so a record holds a correction or nil.
+// A correction of a record that held no repository yet — one the repository backfill had not
+// filled — moved the issue off no repository, and it reads as none: nothing was ever worked or
+// saved under a repository the issue left.
+type RepositoryCorrection struct {
+	Before string
+	At     time.Time
+}
+
+// RepositoryChange is a repository Dispatch has named for an issue that the daemon has not
+// applied to the record (Pending), and why it has not (Reason). The two are one value because a
+// change waits with its reason or not at all.
+type RepositoryChange struct {
+	Pending string
+	Reason  string
+}
+
 // HandedOff is an issue whose implementer recorded its handoff, with the commit the handoff
 // recorded (PhaseRow.HandoffCommit).
 type HandedOff struct {
@@ -255,19 +287,28 @@ const HoldEscalated HoldReason = "escalated"
 // (Ask, the ask's id), or the closed design gate at a spec version (GateVersion) on the document
 // it registered (Artifact); when a person answered it (AnsweredAt, nil until then), with what
 // (AnsweredBy) and that act's own detail (AnsweredDetail: the ask acted on, who closed it, or the
-// version and reason of the review); and where on Dispatch the wait began (Since): the newest
+// version and reason of the review); for a changes request, the version it reviewed
+// (AnsweredVersion), written beside the detail by the same answer, so a reader that asks whether
+// the person's approval followed that review reads a number and never parses the detail, which is
+// display text; and where on Dispatch the wait began (Since): the newest
 // hand-back the architect made since it was last given work (Issue.DeclaredSeq). It is a snapshot
 // of the wait's subject; what else is still with the person is the root's asks (RootAsk). A
 // person's act Dispatch recorded at or before Since never answers the wait. An answered root waits
 // for a slot ahead of every root that never ran (Waiting).
+//
+// AnsweredVersion is 0 for every other answer, and for a changes request a daemon of an earlier
+// release answered after this release's migration gave every older answer its version
+// (20261112215432_delivery_resume): such a review is asked as a kept decision is, at the version
+// the gate holds approved (workflow.DecisionStands).
 type Awaiting struct {
-	Ask            string
-	GateVersion    int
-	Artifact       string
-	AnsweredAt     *time.Time
-	AnsweredBy     Answer
-	AnsweredDetail string
-	Since          EventMark
+	Ask             string
+	GateVersion     int
+	Artifact        string
+	AnsweredAt      *time.Time
+	AnsweredBy      Answer
+	AnsweredDetail  string
+	AnsweredVersion int `json:",omitempty"`
+	Since           EventMark
 }
 
 // Answer is the act that answered a root's wait, which the task resuming its architect names.
@@ -318,7 +359,10 @@ const (
 // (Store.ForgetKeptDecisions) or by the confirmation of the delivery that holds it (HeldBy). A
 // claiming row that reached no architect hands it over instead (workflow.HandOverKept): it goes
 // back to KEPT, and a fresh catch-up names it at once while its tree has an architect to tell, so
-// a release never leaves it kept with nobody to name it again.
+// a release never leaves it kept with nobody to name it again. A design decision that a later
+// approval superseded is deleted unnamed, by the task that asks it or by the clear of a
+// generation, before it deletes the approval's gate (workflow.ForgetSuperseded,
+// workflow.Engine.ClearGeneration): nothing of it is left to tell.
 type ParkedDecision struct {
 	// Issue is where in Dispatch the decision was made: the issue of the ask, comment or spec it
 	// was made on. It is the row's key with Ref, and what says whose debt the row is: the
@@ -329,7 +373,15 @@ type ParkedDecision struct {
 	Ref      string
 	Decision DecisionKind
 	Actor    string
-	At       time.Time
+	// At and Seq place the decision: for a spec decision, where Dispatch recorded the person's
+	// review (the notice's Review: Dispatch's time of it and its event's sequence, Seq 0 when
+	// Dispatch gave none), so it is judged against the gate's approval mark by Dispatch's own order
+	// (workflow.DecisionStands); the daemon's clock at keep time only where the notice carried
+	// no time of the review. For an answer, resolution or reply on an ask, the daemon's clock at
+	// keep time and no sequence: those are never judged against a gate. At is also the row's
+	// identity with Ref (DecisionMark).
+	At  time.Time
+	Seq int64
 	// ClaimedBy is the outbox row claiming it, 0 when no row does; HeldBy is the claim and the
 	// delivery id of the queued start task holding it, the zero value when none does.
 	ClaimedBy int64
@@ -487,8 +539,8 @@ type PhaseRow struct {
 	// pr-blocked notice for, 0 for a row that has posted none. It is what makes that telling go
 	// once for each value of the cap rather than on every round after the first that reaches it:
 	// the round that tells writes the cap it read here, and a later round compares the two.
-	// A new generation clears it (ClearGeneration), so a tree sent back to the start tells again
-	// from its own first crossing.
+	// A new generation clears it (workflow's ClearGeneration), so a tree sent back to the start
+	// tells again from its own first crossing.
 	CapTold int
 	Verdict string
 	// Summary is what the role reported with its completion, which the architect is told when the
@@ -508,9 +560,9 @@ type PhaseRow struct {
 	// CompletedAt is when the workflow applied the role's completion of its current phase, zero until
 	// then. The reviewer's orders the reviews its round receives against the completion (workflow's
 	// reviewersAnswer and answerSkew), and is read only for a completed round (Completed). It can
-	// be stale: a daemon older than migration 0026 writes a completion without it, and
-	// ClearGeneration resets the row without it. Behind a completion an old daemon wrote, a stale time
-	// at worst makes a review read as the reviewer's answer: one extra review-stuck notice.
+	// be stale: a daemon older than migration 0026 writes a completion without it, and workflow's
+	// ClearGeneration resets the row without it. Behind a completion an old daemon wrote, a stale
+	// time at worst makes a review read as the reviewer's answer: one extra review-stuck notice.
 	CompletedAt time.Time
 	// Entry is the number of the phase entry this role's row is on: a transition's start of the
 	// phase the issue has moved into, and the promotion's start of a mid-phase worker a
@@ -522,16 +574,17 @@ type PhaseRow struct {
 	// the role no work it was not already on leaves it where it stands — the send of this entry's
 	// own work to a claim behind it, the held phase's retry, and every start of no entry
 	// (SuperviseRequest.Entry, which lists them) — and unlike HandoffCommit it is never reset:
-	// ClearGeneration leaves the entry and clears the task below. Zero on a row no entry has been
-	// raised on: a role the issue's phases have not reached, and every row of a daemon upgraded
-	// in place that the upgrade found with no work handed out, which the completion route reads
-	// as nothing to compare.
+	// workflow's ClearGeneration leaves the entry and clears the task below. Zero on a row no
+	// entry has been raised on: a role the issue's phases have not reached, and every row of a
+	// daemon upgraded in place that the upgrade found with no work handed out, which the
+	// completion route reads as nothing to compare.
 	Entry int64
 	// EntryTask is the work of that entry, the task text the role is told, written beside the
 	// number in the same transaction. It is what makes the work a durable fact of the record
 	// rather than of the one outbox row that carried it: a claim behind the entry is sent this
 	// task again, however that row ended. Empty on a row no entry has been raised on, and on one
-	// ClearGeneration reset, whose re-admitted tree's promotion writes the task again.
+	// a new generation reset (workflow's ClearGeneration), whose re-admitted tree's promotion
+	// writes the task again.
 	EntryTask string
 	// EntryRaisedAt is when the entry was raised, read from the transition's own clock. It is
 	// what tells how long a role has been owed the work its entry names, for a reader weighing a
@@ -541,7 +594,7 @@ type PhaseRow struct {
 
 // Completed says whether the role completed its current phase: its completion reported a commit
 // or named a handoff record, both of which clearing the handoff at the next phase's start
-// (workflow's clearHandoff) and a new generation (ClearGeneration) empty.
+// (workflow's clearHandoff) and a new generation (workflow's ClearGeneration) empty.
 func (p PhaseRow) Completed() bool {
 	return p.HandoffCommit != "" || p.HandoffRecord != ""
 }
@@ -1068,9 +1121,9 @@ type DesignGate struct {
 	// reads exactly like one that never opened. Under the children-first rule a root stays at
 	// admitted while its children run, which is the state the later rule must tell from a root
 	// still waiting for its first approval. It lives on the gate row rather than on the issue
-	// because ClearTreeGeneration deletes the gate when a root is re-admitted, and a re-admitted
-	// root's architect writes its spec again: the mark belongs to the generation whose approval it
-	// records.
+	// because a re-admission's clear deletes the gate (workflow's ClearTreeGeneration), and a
+	// re-admitted root's architect writes its spec again: the mark belongs to the generation whose
+	// approval it records.
 	EverOpened bool
 }
 
@@ -1301,8 +1354,10 @@ type Store interface {
 	// slot, are left out of the read rather than of the caller's loop.
 	SlottedIssues(ctx context.Context, tx pgx.Tx, project string) ([]Issue, error)
 	// PutIssue writes issue, refusing one without its repository, default branch or GitHub's
-	// spelling of the repository, one whose GitHub spelling names another repository, and one that
-	// would give a recorded issue another of any of them.
+	// spelling of the repository, and one whose GitHub spelling names another repository. It never
+	// moves those three on a recorded issue, whatever the copy it is given holds: an observation
+	// prepared before a correction writes no old repository back, and CorrectIssueRepository is
+	// what changes them.
 	PutIssue(ctx context.Context, tx pgx.Tx, issue Issue) error
 	// MarkIssueMoved records at as when the daemon last saw key move (Issue.MovedAt), the one
 	// writer of that column: the write sites hand it the fact's own moment, and PutIssue names the
@@ -1335,6 +1390,24 @@ type Store interface {
 	// FillIssueRepository does.
 	UnnamedIssues(ctx context.Context, tx pgx.Tx, project string) ([]Issue, error)
 	NameIssueRepository(ctx context.Context, tx pgx.Tx, key, repo, githubRepo string) error
+	// CorrectIssueRepository moves a recorded issue onto repo, defaultBranch and githubRepo,
+	// keeping the repository the record held and at as Issue.RepoCorrection, and clearing
+	// whatever change NoteIssueRepositoryChange noted. It answers whether it wrote the
+	// record: false, and nothing written, for a record already on repo, so a pass that reads one
+	// correction twice corrects once and the repository the issue left is kept as it was. It
+	// refuses an empty repository, default branch or GitHub spelling, and a GitHub spelling that
+	// names another repository, as FillIssueRepository does. Those two are a different act:
+	// FillIssueRepository and NameIssueRepository fill in what an older record never carried, and
+	// each refuses a record that carries it, while this one corrects a record that has a
+	// repository, because the repository is Dispatch's fact and the daemon's record follows it.
+	CorrectIssueRepository(ctx context.Context, tx pgx.Tx, key, repo, defaultBranch, githubRepo string, at time.Time) (bool, error)
+	// NoteIssueRepositoryChange records change, the repository Dispatch names for the issue that
+	// the daemon has not applied and why it has not, as Issue.RepoChange; it writes that and
+	// nothing else, and nil clears it. So what the record holds here is always a change still to
+	// be made: applying it clears the change through CorrectIssueRepository, which is the act this
+	// note belongs to rather than FillIssueRepository or NameIssueRepository, whose records carry
+	// no repository to change.
+	NoteIssueRepositoryChange(ctx context.Context, tx pgx.Tx, key string, change *RepositoryChange) error
 	// HandedOffWithoutOpenOrMergedPullRequest is every record of the Dispatch project key project in
 	// implementing, named on its repository as GitHub spells it, whose implementer has recorded its
 	// handoff and which has no open or merged pull request recorded, by key, each with its
@@ -1515,15 +1588,6 @@ type Store interface {
 	// reviewer's own review from another review-App session's by the Legion footer each carries
 	// (PullRequestReview.LegionSession).
 	ClaimSession(ctx context.Context, tx pgx.Tx, token claim.Token) (string, error)
-	// ClearGeneration drops the facts one generation of an issue owns: a merged or closed pull
-	// request, the last generation's reading of a still-open one (the next generation runs on the
-	// same branch and pull request), its design gate, and each role's handoff, review rounds,
-	// verdict and summary. Each role keeps its claim and its last handoff, so a
-	// commit an earlier generation reported is never new again. An issue whose gate rows it
-	// deletes has the empty set of design-gate documents queued for it, due at now, since the set
-	// Dispatch holds for that issue is the one those rows recorded.
-	ClearGeneration(ctx context.Context, tx pgx.Tx, issue string, now time.Time) error
-	ClearTreeGeneration(ctx context.Context, tx pgx.Tx, tree string, now time.Time) error
 	// GatesOf is every design gate issue holds, by step: one entry for each step the issue's
 	// architect has registered. An issue with no gate at all gives an empty map, and a step with
 	// no row has no entry.

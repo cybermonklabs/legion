@@ -206,6 +206,10 @@ func populatedState(t *testing.T) State {
 	approvedVersion, mergedApproval, lineApproval := 6, 4, 3
 	waitedSince := time.Date(2026, 9, 22, 8, 5, 0, 0, time.UTC)
 	answeredAt := time.Date(2026, 9, 22, 9, 21, 0, 0, time.UTC)
+	// LEGION-210's repository was corrected: Dispatch moved the issue to zeta/tools and the
+	// daemon's record followed it at this moment, which is what `repoBefore` and
+	// `repoCorrectedAt` carry.
+	repoCorrectedAt := time.Date(2026, 9, 22, 7, 40, 0, 0, time.UTC)
 	// When LEGION-210's implementer failed, the moment its claim carries beside the cause.
 	implementerFailedAt := time.Date(2026, 9, 22, 8, 47, 3, 0, time.UTC)
 	// When LEGION-207's linger runs out: its work finished and its tree lingers until then.
@@ -427,6 +431,20 @@ func populatedState(t *testing.T) State {
 				Repo:          "zeta/tools",
 				DefaultBranch: "release/v7.1",
 				HoldReason:    "escalated",
+				// The issue left acme/widgets for zeta/tools above: its branch, its pull request
+				// and any rescue branch of the pod it ran in before are on acme/widgets still.
+				RepoBefore:      "acme/widgets",
+				RepoCorrectedAt: &repoCorrectedAt,
+				// The pull request the correction left behind: it was opened on acme/widgets and
+				// it is open there still, while the issue works zeta/tools. The two repositories
+				// are what a reader of this record reads the left work from, and no GitHub event
+				// of this pull request reaches the issue any longer.
+				PullRequest: &PullRequestView{
+					Repo:   "acme/widgets",
+					Number: 1251,
+					Head:   "c4a7f0b36d2e18a95f7b0c43e62d1a8f94b7e305",
+					State:  "open",
+				},
 				// The phase the hold took this root out of, which its release puts it back to. It
 				// stands beside the reason here; the two part on a tree that lingers, where the
 				// reason is withheld and this is not (internal/projection).
@@ -542,7 +560,12 @@ func populatedState(t *testing.T) State {
 				Tree:          "LEGION-212",
 				Repo:          "acme/widgets",
 				DefaultBranch: "main",
-				Workers:       map[claim.Role]PhaseView{},
+				// Dispatch has named acme/gadgets for this issue and the daemon has not applied
+				// it, so `repo` above is the repository the issue works and these two say what
+				// the change waits on.
+				RepoChangePending: "acme/gadgets",
+				RepoChangeReason:  "acme/gadgets is not mapped to project LEGION in Dispatch",
+				Workers:           map[claim.Role]PhaseView{},
 				// The first part's only member, at the front of the whole line: its place, its
 				// place within its own part, the moment its work came back and no rank at all,
 				// since the returned part is ordered by that moment. It holds a slot, so its

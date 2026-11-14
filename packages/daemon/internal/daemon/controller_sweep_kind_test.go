@@ -102,11 +102,17 @@ func controllerSweepKindRuntime(ctx context.Context, cfg config.Config, listener
 	}
 	opts.Agent = controllerSweepKindStub
 	repos := func() []ghrepo.Repository { return nil }
-	// The proof maps no repository and configures no rename, so the mapping's rule
-	// (repositories.serving) answers every provisioning token's repository as it is recorded.
-	serving := newRepositories(cfg.Project, ghrepo.Renames{}).serving
-	return sandboxRuntime(rc, opts, repos, serving, ghrepo.Renames{}, "")(ctx, listener, listener.Addr(), outboxTokens{}, nil, st, noRepositories)
+	// The proof maps no repository and configures no rename, so the mapping's rules
+	// (repositories.serving, repositories.left) answer every repository as it is recorded.
+	mapping := newRepositories(cfg.Project, ghrepo.Renames{})
+	return sandboxRuntime(rc, opts, repos, mapping.serving, mapping.left, ghrepo.Renames{}, "")(ctx, listener, listener.Addr(), outboxTokens{}, nil, st, noRepositories, noWriteOnIssue)
 }
+
+// noWriteOnIssue is the proof's writer for the one message a runtime may leave on a Dispatch
+// issue, the refusal of a saved workspace bundle of a repository the issue has left
+// (tellBundleRepositoryRefused): the proof saves no bundle and restores none, so nothing calls
+// it. A deployment passes the plan's own write there (plan.writeBodyOnIssue).
+func noWriteOnIssue(context.Context, string, string) error { return nil }
 
 // controllerSweepKindSpec is the project controller's launch as the proof makes it: the
 // controller's token and role, no issue, tree or repository, the launch secret the file's

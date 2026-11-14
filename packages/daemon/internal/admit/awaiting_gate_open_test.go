@@ -139,7 +139,7 @@ func TestAnOpenGateAnswersAQuestionWaitWhateverOpenedIt(t *testing.T) {
 					resumes = append(resumes, request)
 				}
 			}
-			if len(resumes) != 1 || !strings.Contains(resumes[0].Task, tc.task) {
+			if len(resumes) != 1 || !strings.Contains(startText(t, pool, "LEGION-208", tc.policy, resumes[0]), tc.task) {
 				t.Fatalf("architect starts = %+v, want one resume naming %q", resumes, tc.task)
 			}
 			if told := gateNotices(t, pool, "LEGION-208", "design-approved"); len(told) != 0 {
@@ -167,16 +167,38 @@ func waitingRoot(t *testing.T, policy config.DesignGate) (*pgxpool.Pool, *Admiss
 	return pool, admission
 }
 
-// architectResumes returns the tasks of every architect start queued for LEGION-208.
-func architectResumes(t *testing.T, pool *pgxpool.Pool) []string {
+// architectResumes returns the tasks of every architect start queued for LEGION-208, each as it
+// reads under policy now (startText).
+func architectResumes(t *testing.T, pool *pgxpool.Pool, policy config.DesignGate) []string {
 	t.Helper()
 	var tasks []string
 	for _, request := range superviseRequests(t, pool, "LEGION-208") {
 		if request.Op == "start" && request.Role == claim.RoleArchitect {
-			tasks = append(tasks, request.Task)
+			tasks = append(tasks, startText(t, pool, "LEGION-208", policy, request))
 		}
 	}
 	return tasks
+}
+
+// startText is the text an architect start of key delivers: a resume carries the wait it answers
+// and no text (record.SuperviseRequest.Awaiting), and is written from the record at its send, as
+// the daemon's rootTask writes it (workflow.ResumeTask), so it is written here from the record as
+// it stands when the test reads it, under policy's steps; any other start carries its own text.
+func startText(t *testing.T, pool *pgxpool.Pool, key string, policy config.DesignGate, request record.SuperviseRequest) string {
+	t.Helper()
+	if request.Awaiting == nil {
+		return request.Task
+	}
+	var task string
+	ctx := context.Background()
+	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		var err error
+		task, err = workflow.ResumeTask(ctx, tx, record.NewStore(), key, *request.Awaiting, policy.Steps())
+		return err
+	}); err != nil {
+		t.Fatalf("write the resume of %s from the record: %v", key, err)
+	}
+	return task
 }
 
 // A registration's read of a changes request on a root already waiting on its question applies the
@@ -206,7 +228,7 @@ func TestARegistrationsChangesReadOnAWaitingRootIsToldOnce(t *testing.T) {
 			admission.ReleaseCatchUp("LEGION-208")
 			tick(t, pool, admission, "tick-2")
 			named := 0
-			resumes := architectResumes(t, pool)
+			resumes := architectResumes(t, pool, config.DesignGateRootIssues)
 			for _, task := range resumes {
 				named += strings.Count(task, "split it")
 			}
@@ -259,7 +281,7 @@ func TestAChangesRequestOnAnAnsweredWaitIsNamedByTheResume(t *testing.T) {
 			if told := gateNotices(t, pool, "LEGION-208", "design-changes-requested"); len(told) != 0 {
 				t.Fatalf("changes notices = %+v, want the resume alone to name the request", told)
 			}
-			resumes := architectResumes(t, pool)
+			resumes := architectResumes(t, pool, config.DesignGateRootIssues)
 			if len(resumes) != 1 {
 				t.Fatalf("architect starts = %q, want one resume", resumes)
 			}
@@ -289,7 +311,7 @@ func TestTheResumeUnderGateOffSaysNoPersonApproved(t *testing.T) {
 	applyFact(t, pool, admission, "register", intake.GateRegistered{Issue: "LEGION-208", ArtifactID: "artifact-208", Version: 3, DispatchVersion: 3, Since: record.EventMark{Seq: 8}})
 	admission.ReleaseCatchUp("LEGION-208")
 	tick(t, pool, admission, "tick-2")
-	resumes := architectResumes(t, pool)
+	resumes := architectResumes(t, pool, config.DesignGateOff)
 	if len(resumes) != 1 {
 		t.Fatalf("architect starts = %q, want one resume", resumes)
 	}
@@ -327,7 +349,7 @@ func TestAGateWaitAnsweredByTheGateSwitchedOffResumesInThatPass(t *testing.T) {
 	var resumes []string
 	for _, request := range superviseRequests(t, pool, "LEGION-100") {
 		if request.Op == "start" && request.Role == claim.RoleArchitect {
-			resumes = append(resumes, request.Task)
+			resumes = append(resumes, startText(t, pool, "LEGION-100", config.DesignGateOff, request))
 		}
 	}
 	if len(resumes) != 1 || !strings.Contains(resumes[0], "closed at version 3") {

@@ -336,7 +336,9 @@ func TestRunFeedsTheStreamAndTheSweepIntoTheClaimsMachine(t *testing.T) {
 		return c.Pending != nil && c.Pending.DeliveredAt != nil
 	})
 	acknowledged := d.claim(token).Pending.ID
-	sh.send(shimwire.Response{ID: second.ID, Command: shimwire.TypePrompt, Success: false, Error: "Agent is already processing. Use steer() or followUp() to queue messages, or wait for completion."})
+	sh.send(shimwire.Response{ID: second.ID, Command: shimwire.TypePrompt, Success: false,
+		Error: "Agent is already processing. Use steer() or followUp() to queue messages, or wait for completion.",
+		Code:  shimwire.CodeSessionBusy})
 	testwait.Eventually(t, "the refused task to return to waiting", func() bool {
 		c := d.claim(token)
 		return c.Pending != nil && c.Pending.ID != acknowledged && c.Budgets.PromptFailures == 0
@@ -1204,12 +1206,16 @@ func TestEveryStreamEventMapsToItsSuperviseEvent(t *testing.T) {
 			supervise.StreamToolStep{Claim: token, Tool: "bash", CallID: "toolu_turn1_0", End: true, ConnSequence: 4}},
 		{stream.PromptResult{Claim: token, DeliveryID: "d1", AgentInvoked: true},
 			supervise.StreamPromptResult{Claim: token, DeliveryID: "d1", AgentInvoked: true}},
-		{stream.PromptResult{Claim: token, DeliveryID: "d1", Error: "no model"},
-			supervise.StreamPromptResult{Claim: token, DeliveryID: "d1", Error: "no model"}},
-		{stream.LateRefusal{Claim: token, DeliveryID: "d1", Error: "Agent is already processing. Use steer() or followUp() to queue messages, or wait for completion."},
-			supervise.StreamLateRefusal{Claim: token, DeliveryID: "d1", Error: "Agent is already processing. Use steer() or followUp() to queue messages, or wait for completion."}},
-		{stream.LateRefusal{Claim: token, DeliveryID: "d2", Error: "Agent is already processing.", Replayed: true, ConnSequence: 3},
-			supervise.StreamLateRefusal{Claim: token, DeliveryID: "d2", Error: "Agent is already processing.", Replayed: true, ConnSequence: 3}},
+		{stream.PromptResult{Claim: token, DeliveryID: "d1", Error: "no model", Outcome: runtime.OutcomeNoTurnRun},
+			supervise.StreamPromptResult{Claim: token, DeliveryID: "d1", Error: "no model", Outcome: runtime.OutcomeNoTurnRun}},
+		{stream.LateRefusal{Claim: token, DeliveryID: "d1", Error: "Agent is already processing. Use steer() or followUp() to queue messages, or wait for completion.",
+			Outcome: runtime.OutcomeAgentBusy},
+			supervise.StreamLateRefusal{Claim: token, DeliveryID: "d1", Error: "Agent is already processing. Use steer() or followUp() to queue messages, or wait for completion.",
+				Outcome: runtime.OutcomeAgentBusy}},
+		{stream.LateRefusal{Claim: token, DeliveryID: "d2", Error: "Agent is already processing.", Outcome: runtime.OutcomeAgentBusy,
+			Replayed: true, ConnSequence: 3},
+			supervise.StreamLateRefusal{Claim: token, DeliveryID: "d2", Error: "Agent is already processing.", Outcome: runtime.OutcomeAgentBusy,
+				Replayed: true, ConnSequence: 3}},
 		{stream.Closed{Claim: token}, supervise.StreamClosed{Claim: token}},
 	}
 	mapped := map[string]bool{}

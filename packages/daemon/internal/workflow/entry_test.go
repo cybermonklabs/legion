@@ -215,7 +215,7 @@ func TestAProductionChecksLookRaisesNoEntry(t *testing.T) {
 // A re-admitted tree's promotion hands its mid-phase member's role the work of its phase again,
 // so it raises that role's entry and writes the resume task as the work of the new entry. The
 // re-admission cleared the task the earlier entry named with the rest of the generation
-// (record.Store.ClearTreeGeneration), so the record would otherwise name an entry whose work
+// (Engine.ClearTreeGeneration), so the record would otherwise name an entry whose work
 // nothing could send again.
 func TestThePromotionsStartRaisesTheEntryAndWritesItsTask(t *testing.T) {
 	pool := migratedPool(t)

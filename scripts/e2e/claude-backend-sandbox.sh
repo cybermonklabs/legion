@@ -1526,22 +1526,22 @@ pass
 
 # Check 3. The endless phase reminder on the Claude Code backend (INFRA-220), which runs while the
 # implementer still holds its phase, before Check 4 completes it, as the tmux proof runs it. The
-# phase is open since the daemon's start task, which reached the session as an assignment
-# (packages/claude-envoy/src/legion-phase-hook.ts), and nothing has completed it. So a turn of the
-# implementer's that ends now settles its `Stop` hook: the pod's `legion` MCP server answers
+# phase is open in the daemon's record since the daemon's start task, and nothing has completed
+# it. So a turn of the implementer's that ends now settles its `Stop` hook: the pod's `legion` MCP
+# server answers
 # `{"decision":"block","reason":<the reminder>}`, and Claude Code carries that reason into the
 # session as `Stop hook feedback` and one more turn of the same session. The instruction is what
-# makes the turn settle that way: it arrives as an Envoy delivery, which puts an open phase's run of
-# reminders back at zero but never reopens a closed one (the `inbound-event` case of
-# packages/pi-shared/src/phase-stall.ts), so it must come while the phase is still open, and the
-# reminder this settle earns is the hook's own continuation rather than a later timer's; it forbids
-# the `legion` tool, so the phase is still open when the turn ends; and it forbids a WAITING line,
-# which would buy a quiet wait in place of the block. The run moves no LEGION_STALL_* number: every
-# wait of this step is on that first reminder, which the machine hands back to the hook as the turn
-# settles. The reminded turn's own settle earns the stall's second reminder, which the server arms
-# on the default five-minute timer instead; the next step's instruction usually arrives inside that,
-# and were it not to, that reminder is the behaviour under test and the worker answers it as it
-# answered this one.
+# makes the turn settle that way: it arrives as an Envoy delivery, which puts the run of reminders
+# back at zero (the `inbound` case of packages/pi-shared/src/phase-stall.ts), so the reminder this
+# settle earns is the hook's own continuation rather than a later timer's. It must come while the
+# phase is still open, because once the daemon has the completion it answers that the claim owes
+# nothing and no reminder comes. It forbids the `legion` tool, so the phase is still open when the
+# turn ends. It forbids a WAITING line, which would buy a quiet wait in place of the block. The run
+# moves no LEGION_STALL_* number: every wait of this step is on that first reminder, which the
+# machine hands back to the hook as the turn settles. The reminded turn's own settle earns the
+# stall's second reminder, which the server arms on the default five-minute timer instead; the next
+# step's instruction usually arrives inside that, and were it not to, that reminder is the behaviour
+# under test and the worker answers it as it answered this one.
 begin stop-hook-reminds-the-open-phase
 stall_offset=$(transcript_size)
 send_agent "$issue" implementer "Claude backend sandbox proof stall operation: reply with one line of plain prose saying you are standing by for your implementation instruction, and end your turn there. Change nothing, do not call the legion tool in this turn, call no other tool either, and do not begin any line with WAITING. Legion will then remind you that your phase is not complete: answer that reminder with one more line of plain prose saying the proof will instruct you next, under these same rules — no legion tool, no other tool, no WAITING line."

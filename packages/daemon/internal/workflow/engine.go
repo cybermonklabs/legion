@@ -279,13 +279,12 @@ func (e *Engine) dispatchIssue(ctx context.Context, tx pgx.Tx, fact intake.Dispa
 	if issue == nil {
 		return e.recordChildUnderLiveTree(ctx, tx, fact)
 	}
-	// The record keeps the repository it was recorded with, so a newer event resolving the issue
-	// to another is not applied, which the issue is told. This runs before any fence below: an
-	// edit of the repository alone changes no status. So does the telling of a root a person has
-	// made a child of a live tree (tellReparented), which is a parent change and often no status
-	// change at all.
+	// The record's repository is Dispatch's fact, so an event resolving the issue to another moves
+	// the record onto it. This runs before any fence below: an edit of the repository alone
+	// changes no status. So does the telling of a root a person has made a child of a live tree
+	// (tellReparented), which is a parent change and often no status change at all.
 	if fact.Seq == 0 || fact.Seq > issue.LastDispatchSeq {
-		if err := e.NoteRepositoryKept(ctx, tx, *issue, fact.ResolvedRepo); err != nil {
+		if err := e.ApplyRepositoryChange(ctx, tx, *issue, fact.ResolvedRepo); err != nil {
 			return intake.Result{}, err
 		}
 		if err := e.tellReparented(ctx, tx, issue, fact); err != nil {
@@ -663,7 +662,7 @@ func (e *Engine) ReenterChild(ctx context.Context, tx pgx.Tx, child record.Issue
 			return err
 		}
 	}
-	if err := e.store.ClearGeneration(ctx, tx, child.Key, e.now()); err != nil {
+	if err := e.ClearGeneration(ctx, tx, child, e.now()); err != nil {
 		return err
 	}
 	if err := e.enterChild(ctx, tx, *root, fact, next, recordedResolution(child)); err != nil {

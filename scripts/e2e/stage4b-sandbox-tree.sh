@@ -2734,17 +2734,18 @@ fixture_markers() {
 }
 # completion_verdict reads a phase worker's session (JSONL on stdin) and prints, for every
 # assignment (the daemon's task, a user message) its worker answered with the legion tool's
-# handoff_complete, the calls that got no result, how many results succeeded, and whether the phase
-# stall recorded `closed` after the call that succeeded (the extension records it inside the call,
-# before Oh My Pi writes the result); and how many phase reminders came after the session's
-# last successful completion. It is the 4b.13b acceptance's stall check
-# (stage3-4b13b-acceptance.sh, phase-stall-follow-up) for a pod's session: a worker
-# stopped while its handoff_complete call runs leaves that call with no result and no `closed`
-# (LEGION-283), and a worker resumed from such a session may report the phase again. The reminder
-# comes at the end of every turn a phase stays open through, and none at all once it is closed,
-# which is what the count after the last success reads.
+# handoff_complete, the calls that got no result, how many results succeeded, and how many phase
+# reminders came after the result that succeeded and before the next assignment; and how many
+# phase reminders came after the session's last successful completion. It is the 4b.13b
+# acceptance's stall check (stage3-4b13b-acceptance.sh, phase-stall-follow-up) for a pod's session:
+# a worker stopped while its handoff_complete call runs leaves that call with no result (LEGION-283),
+# and a worker resumed from such a session may report the phase again. The reminder comes at the
+# end of every turn for as long as the daemon answers that the claim owes work, and none at all once
+# the daemon has the completion, which is what the counts after a success read. The reminder is
+# found by a sentence that both of its texts carry (owedReminder and UNREAD_REMINDER in
+# packages/pi-shared/src/phase-stall.ts).
 completion_verdict() {
-  jq -R -s -c --arg followup "Your turn ended with your Legion phase still open" '
+  jq -R -s -c --arg followup "This reminder repeats at the end of every turn" '
     [split("\n")[] | fromjson?] | to_entries
     | [.[] | .key as $i | .value as $e
         | if $e.type == "message" and $e.message.role == "user" then {i: $i, kind: "assignment"}
@@ -2753,7 +2754,6 @@ completion_verdict() {
             | if ($ids | length) > 0 then {i: $i, kind: "call", ids: $ids} else empty end
           elif $e.type == "message" and $e.message.role == "toolResult" and $e.message.toolName == "legion" then
             {i: $i, kind: "result", id: $e.message.toolCallId, ok: ($e.message.isError != true)}
-          elif $e.type == "custom" and $e.customType == "legion-phase-stall" then {i: $i, kind: "stall", state: $e.data.state}
           elif (($e | tostring) | contains($followup)) then {i: $i, kind: "followup"}
           else empty end] as $t
     | [$t[] | select(.kind == "assignment") | .i] as $starts
@@ -2763,21 +2763,20 @@ completion_verdict() {
         | select(($calls | length) > 0)
         | [$seg[] | select(.kind == "result") | select(.id as $id | $calls | index($id) != null)] as $results
         | [$results[] | select(.ok)] as $ok
-        | ([$seg[] | select(.kind == "call" and ($ok[0].id as $id | .ids | index($id) != null)) | .i] | first) as $okcall
         | {assignment: $from, calls: ($calls | length),
            unanswered: [$calls[] | select(. as $id | [$results[].id] | index($id) == null)],
            succeeded: ($ok | length),
-           closed: (($ok | length) == 1 and $okcall != null and any($seg[]; .kind == "stall" and .state == "closed" and .i > $okcall))}] as $segments
+           followups_after_success: (if ($ok | length) == 1 then [$seg[] | select(.kind == "followup" and .i > $ok[0].i)] | length else null end)}] as $segments
     | ([$t[] | select(.kind == "result" and .ok) | .i] | last) as $last
     | {segments: $segments,
        followups_after: (if $last == null then null else [$t[] | select(.kind == "followup" and .i > $last)] | length end)}'
 }
 # completions_answered FILE: every assignment its worker answered with handoff_complete got a
-# result for each call, exactly one success (the report, made once), and `closed` after the call
-# that succeeded, and no phase reminder came after the last success.
+# result for each call, exactly one success (the report, made once), and no phase reminder after
+# that success before the next assignment, and no phase reminder came after the last success.
 completions_answered() {
   completion_verdict <"$1" | jq -e '(.segments | length) > 0
-    and all(.segments[]; (.unanswered | length) == 0 and .succeeded == 1 and .closed)
+    and all(.segments[]; (.unanswered | length) == 0 and .succeeded == 1 and .followups_after_success == 0)
     and .followups_after == 0' >/dev/null
 }
 # cut_at_completion_call FILE prints FILE's session up to and including its last assistant entry that
@@ -5016,9 +5015,10 @@ begin completion-closed
 # from inside its turn ends its assignment, not its process: the turn runs to its end and the worker
 # goes idle in the pod and on the session it first registered with, where it stays until tree 1
 # closes. Its live session answers every handoff_complete call, reports each assignment once, and
-# records the phase stall `closed` after the call that succeeded: the 4b.13b acceptance's stall
-# check (completion_verdict), which a stop inside the call fails. The implementer, handed retro in
-# that same session, is where a session holding an unanswered report would report again.
+# is not reminded again after the call that succeeded, since the daemon then answers that the
+# claim owes nothing: the 4b.13b acceptance's stall check (completion_verdict), which a stop inside
+# the call fails. The implementer, handed retro in that same session, is where a session holding an
+# unanswered report would report again.
 for role in planner implementer tester reviewer; do
   resident_kept "$tree1" "$role" || fail "$role on $tree1 did not stay live in the pod and session it first registered with after its phase: $(resident_lost "$tree1" "$role")"
   on_tree "$tree1" until_true 300 "$role on $tree1 to go idle in the pod and session it first registered with" resident_idle "$tree1" "$role"
@@ -5026,8 +5026,8 @@ for role in planner implementer tester reviewer; do
   claim_session_text "$tree1" "$role" >"$session_copy" || fail "$role on $tree1 has no readable session"
   completion_verdict <"$session_copy" >"$evidence/completion-$role-verdict.json"
   completions_answered "$session_copy" ||
-    fail "$role on $tree1 left a phase completion unanswered, unclosed or repeated: $(cat "$evidence/completion-$role-verdict.json")"
-  note "$role on $tree1, idle in its first pod $(cat "$work/resident-$tree1-$role.json"): $(jq -c '[.segments[] | {calls, succeeded, closed}]' "$evidence/completion-$role-verdict.json")"
+    fail "$role on $tree1 left a phase completion unanswered, reminded after it or repeated: $(cat "$evidence/completion-$role-verdict.json")"
+  note "$role on $tree1, idle in its first pod $(cat "$work/resident-$tree1-$role.json"): $(jq -c '[.segments[] | {calls, succeeded, followups_after_success}]' "$evidence/completion-$role-verdict.json")"
 done
 # The control: the planner's session cut at its handoff_complete call, the transcript a stop inside
 # the call leaves, is refused.

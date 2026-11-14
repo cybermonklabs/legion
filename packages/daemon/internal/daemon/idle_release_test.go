@@ -202,8 +202,15 @@ func newIdleRig(t *testing.T) *idleRig {
 	// spelling, as a deployment's do, and the two passes read the two: the candidate answer of
 	// the rule for a pod no claim owns reads issues.project (dispatchProject), everything else
 	// reads the claims' (projectID).
-	w := &workflowRuntime{pool: pool, projectID: "legion", dispatchProject: "LEGION", log: quietLogger(),
+	w := &workflowRuntime{pool: pool, records: records, projectID: "legion", dispatchProject: "LEGION", log: quietLogger(),
 		idleStore: st, idleRuntime: rt, idlePeriod: 10 * time.Minute}
+	// The repository hold reads what the daemon's own attach wires it to read
+	// (attachIdleRelease): the pod through the runtime the supervisor holds, and the record
+	// through the workflow's own read of it. The rig's pods are scripted no repository, so every
+	// pod of it is on the repository its record holds until a test says otherwise
+	// (idleRig.podRepository).
+	s := &supervision{log: quietLogger(), supervisor: sup, plan: plan{recordedRepository: recordedRepositoryOf(w.recordedIssue)}}
+	w.idleRepositoryDrifted = s.podRepositoryDrifted
 	return &idleRig{pool: pool, st: st, issues: records, runner: runner, sup: sup, rt: rt, w: w,
 		issue: issue, token: token, machine: machine}
 }
@@ -682,7 +689,7 @@ func TestACancelWhoseBundleDeleteFailsStillLeavesNoBundleForALaterPod(t *testing
 
 	// The pod an eviction or an update round makes hours later, with the resumed roles' work
 	// pushed in between: it is sent nothing at all.
-	later, take, err := rig.st.TakeWorkspaceBundleForRestore(ctx, rig.issue.Key, "pod-after-an-eviction", time.Now().UTC().Add(time.Hour))
+	later, take, err := rig.st.TakeWorkspaceBundleForRestore(ctx, rig.issue.Key, "pod-after-an-eviction", time.Now().UTC().Add(time.Hour), unrenamed)
 	if err != nil || take != runtime.WorkspaceBundleNone {
 		t.Fatalf("a pod created after the cancelled release's save was answered %q (%v, %v), want nothing", later.Bundle, take, err)
 	}

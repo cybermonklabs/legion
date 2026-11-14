@@ -339,18 +339,18 @@ func TestAnAgentThatRefusesEveryPromptRunsOutOfItsBudget(t *testing.T) {
 	h.wantState(StateLaunching)
 }
 
-// Oh My Pi answers a prompt that reaches it mid-turn "Agent is already processing": the agent is in
-// a turn of its own — an Envoy notice's, which a tree publishes while its workers boot — so it is
-// working, not refusing the work. That answer to the task's own send is charged nothing, as the
-// same answer after an acknowledgement is (lateRefused), and the turn's end sends the task again.
-// Charged, three such collisions in a row retired the agent in the middle of the turn doing the
-// work, and two retirements failed its claim.
+// Oh My Pi answers a prompt that reaches it mid-turn with the busy code, which the
+// stream mints as OutcomeAgentBusy: the agent is in a turn of its own — an Envoy notice's, which
+// a tree publishes while its workers boot — so it is working, not refusing the work. That answer
+// to the task's own send is charged nothing, as the same answer after an acknowledgement is
+// (lateRefused), and the turn's end sends the task again. Charged, three such collisions in a row
+// retired the agent in the middle of the turn doing the work, and two retirements failed its
+// claim.
 func TestABusyAgentsRefusalOfTheSendIsChargedNothingAndItsTurnsEndSendsTheTask(t *testing.T) {
-	const busy = "Agent is already processing. Use steer() or followUp() to queue messages, or wait for completion."
 	h := newHarness(t)
 	h.reach(StateReady)
 	base := len(h.prompts())
-	h.conn.RefusePrompt(busy)
+	h.conn.FailPrompt(busyRefusal())
 	h.must(RequestDeliver{Claim: testToken, Task: "the task", Generation: 7})
 	task := h.pending().ID
 
@@ -400,7 +400,6 @@ func TestABusyAgentsRefusalOfTheSendIsChargedNothingAndItsTurnsEndSendsTheTask(t
 // The busy-refusal test above drives the same refusal with a turn start before each end, which is
 // why this never showed: that is the agent whose turn the daemon watched begin.
 func TestATurnEndTheDaemonNeverSawBeginSendsTheTaskItHolds(t *testing.T) {
-	const busy = "Agent is already processing. Use steer() or followUp() to queue messages, or wait for completion."
 	h := newHarness(t)
 	h.reach(StateReady)
 	base := len(h.prompts())
@@ -411,7 +410,7 @@ func TestATurnEndTheDaemonNeverSawBeginSendsTheTaskItHolds(t *testing.T) {
 
 	// The prompt is acknowledged and then refused: a turn of the agent's own is running, one that
 	// began before this claim was registered. The refusal takes the task back under a new id.
-	h.must(StreamLateRefusal{Claim: testToken, DeliveryID: sent, Error: busy})
+	h.must(StreamLateRefusal{Claim: testToken, DeliveryID: sent, Error: busyWords, Outcome: runtime.OutcomeAgentBusy})
 	if p := h.pending(); p.Task != "the phase task" || !p.ConfirmedAt.IsZero() || !p.DeliveredAt.IsZero() {
 		t.Fatalf("after the busy refusal the task is %+v, want it waiting unread", p)
 	}
@@ -436,7 +435,6 @@ func TestATurnEndTheDaemonNeverSawBeginSendsTheTaskItHolds(t *testing.T) {
 // that confirmation back and is still charged nothing; the claim stays working, and the turn's end
 // sends the task again rather than retiring it as served.
 func TestABusyRefusalAfterTheNoticesTurnConfirmedTheSendIsChargedNothing(t *testing.T) {
-	const busy = "Agent is already processing. Use steer() or followUp() to queue messages, or wait for completion."
 	h := newHarness(t)
 	h.reach(StateReady)
 	gated := newGatedConn()
@@ -451,7 +449,7 @@ func TestABusyRefusalAfterTheNoticesTurnConfirmedTheSendIsChargedNothing(t *test
 	if p := h.pending(); p.ConfirmedAt.IsZero() {
 		t.Fatalf("pending after a turn started with the send in flight = %+v, want it confirmed", p)
 	}
-	gated.RefusePrompt(busy)
+	gated.FailPrompt(busyRefusal())
 	gated.release <- struct{}{}
 	h.m.Wait()
 
@@ -773,19 +771,20 @@ func TestALateRefusalCancelsTheRefusedPromptsTurnTimer(t *testing.T) {
 // produces: an assignment prompt sent a moment after that notice is refused the same way. That is
 // not the agent failing to take work, and charging it let the daemon's own notices walk a healthy
 // worker toward the retirement its prompt budget ends in. Two witnesses say the turn is real, and
-// either is enough: Oh My Pi's own busy answer, and a turn the stream saw start. The task is
-// taken back under a new id, nothing is charged, and it is not re-sent on the spot — the turn's
-// end sends it.
+// either is enough: Oh My Pi's own busy answer, whose code the stream mints as OutcomeAgentBusy, and a
+// turn the stream saw start. The task is taken back under a new id, nothing is charged, and it is
+// not re-sent on the spot — the turn's end sends it.
 func TestALateRefusalIsTheAgentsTurn(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		working bool
 		refusal string
+		outcome runtime.Outcome
 	}{
-		{name: "Oh My Pi's own answer says so", refusal: "Agent is already processing. Use steer() or followUp() to queue messages"},
+		{name: "Oh My Pi's own answer says so", refusal: busyWords, outcome: runtime.OutcomeAgentBusy},
 		// This row's witness is the stream alone, so its refusal says nothing about a turn: with
-		// Oh My Pi's busy wording here too, deleting the stream arm would leave the row passing.
-		{name: "the stream saw the turn start", working: true, refusal: "the model provider refused the request"},
+		// Oh My Pi's busy outcome here too, deleting the stream arm would leave the row passing.
+		{name: "the stream saw the turn start", working: true, refusal: "the model provider refused the request", outcome: runtime.OutcomePromptRefused},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t)
@@ -798,7 +797,7 @@ func TestALateRefusalIsTheAgentsTurn(t *testing.T) {
 				h.must(StreamTurnStart{Claim: testToken})
 			}
 
-			h.must(StreamLateRefusal{Claim: testToken, DeliveryID: refused, Error: tc.refusal})
+			h.must(StreamLateRefusal{Claim: testToken, DeliveryID: refused, Error: tc.refusal, Outcome: tc.outcome})
 
 			h.wantBudgets(Budgets{})
 			rotated := h.pending()

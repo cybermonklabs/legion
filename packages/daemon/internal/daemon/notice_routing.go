@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/wait"
+	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 // noticeSummary is the one-line message a notice is published with, "<kind> on <issue>": the
@@ -63,12 +64,32 @@ type treeSnapshot struct {
 	earlier []record.OutboxRow
 }
 
+// recomposedCatchUp is what the delivery's own read states of a catch-up in place of what the row
+// was written with: the record half (workflow.TreeCatchUp), the notice's reason, and Decided.
+type recomposedCatchUp struct {
+	tree    record.CatchUpTree
+	reason  string
+	decided string
+}
+
 // readNoticeTree reads row's tree in one repeatable-read transaction: that the row is still in the
 // outbox under its lease, row's issue and the tree's route (readNoticeRoute), then the fence. A row
 // deleted under its lease is errNoticeRowGone, and a notice it cannot route is errNoticeUnroutable.
-func (r *outbox) readNoticeTree(ctx context.Context, row record.OutboxRow) (record.Issue, treeSnapshot, error) {
+// For a catch-up (payload.CatchUp) the same transaction composes the tree again
+// (workflow.TreeCatchUp, a pure read), so the tree the architect is told is the record at this
+// read, the one the owner walk and the fence see, rather than at the moment the row was queued:
+// a gate registered between the two reached the architect at its old version
+// (dispatch://INFRA-2819). It writes Decided again from the decisions the row claimed (Kept), each
+// asked of the gates this read holds (workflow.ReadKeptGates, workflow.KeptDecisionsTask), so an
+// approval that followed a kept decision while the row waited drops it from the text. It deletes
+// nothing: the row's queueing claimed those decisions, and its settling stays keyed to the whole
+// of Kept, so the publish forgets a dropped decision with the rest, which the approval answered.
+// A catch-up an earlier release queued with Decided and no Kept is told as its row holds it. It is
+// nil for every other notice. The transaction stays read-only.
+func (r *outbox) readNoticeTree(ctx context.Context, row record.OutboxRow, payload record.Notice) (record.Issue, treeSnapshot, *recomposedCatchUp, error) {
 	var issue record.Issue
 	var tree treeSnapshot
+	var recomposed *recomposedCatchUp
 	if err := pgx.BeginTxFunc(ctx, r.pool, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
 		leased, err := r.records.OutboxLeased(ctx, tx, row.ID, row.LeaseToken)
 		if err != nil {
@@ -80,12 +101,29 @@ func (r *outbox) readNoticeTree(ctx context.Context, row record.OutboxRow) (reco
 		if issue, tree.noticeRoute, err = r.readNoticeRoute(ctx, tx, row.Issue, map[string]noticeRoute{}); err != nil {
 			return err
 		}
-		tree.earlier, err = r.records.EarlierNotices(ctx, tx, tree.root.Key, row.ID)
-		return err
+		if tree.earlier, err = r.records.EarlierNotices(ctx, tx, tree.root.Key, row.ID); err != nil {
+			return err
+		}
+		if payload.CatchUp == nil {
+			return nil
+		}
+		state, reason, err := workflow.TreeCatchUp(ctx, tx, r.records, r.gatedSteps, tree.root)
+		if err != nil {
+			return err
+		}
+		recomposed = &recomposedCatchUp{tree: state, reason: reason, decided: payload.CatchUp.Decided}
+		if kept := payload.CatchUp.Kept; kept != nil {
+			gates, err := workflow.ReadKeptGates(ctx, tx, r.records, tree.root.Key, *kept)
+			if err != nil {
+				return err
+			}
+			recomposed.decided, _ = workflow.KeptDecisionsTask(gates, r.gatedSteps, tree.root.Key, *kept)
+		}
+		return nil
 	}); err != nil {
-		return record.Issue{}, treeSnapshot{}, fmt.Errorf("read the tree of notice row %d: %w", row.ID, err)
+		return record.Issue{}, treeSnapshot{}, nil, fmt.Errorf("read the tree of notice row %d: %w", row.ID, err)
 	}
-	return issue, tree, nil
+	return issue, tree, recomposed, nil
 }
 
 // readNoticeRoute reads in tx the tree of the issue key names, and returns the issue as the tree's

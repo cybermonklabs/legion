@@ -96,7 +96,7 @@ func (s *server) handoffComplete(w http.ResponseWriter, r *http.Request) {
 		writeFailure(w, http.StatusConflict, "HANDOFF_NO_CLAIM", "the daemon supervises no claim for this grant")
 		return
 	}
-	position, err := s.handoffPosition(r.Context(), grant.Issue, grant.Role)
+	position, err := s.handoffPosition(r.Context(), grant.Issue, grant.Role, phase.Implementing)
 	if err != nil {
 		writeFailure(w, http.StatusInternalServerError, "RECORD_UNAVAILABLE", "could not read the issue record")
 		return
@@ -707,24 +707,39 @@ func (s *server) checkReport(w http.ResponseWriter, r *http.Request, grant crede
 // pass — the implementer's count of returns to an earlier phase, which tells each implementing,
 // testing, and reviewing pass from the last — the handoff record the implementer last named for a
 // file-backed phase (record.PhaseRow.LastHandoff), the phase entry the completing role's current
-// phase is on (record.PhaseRow.Entry, 0 on a row no start has stamped), its pull
-// request record while it is implementing (the one phase the route reads it in), nil in any other
-// phase or while none is recorded, and its production check, nil while none was ever opened.
+// phase is on (record.PhaseRow.Entry, 0 on a row no start has stamped), whether that role's row
+// records its completion of its current phase (record.PhaseRow.Completed, which the owed route
+// reads and the completion route does not), its pull request record while the issue stands in
+// the phase the caller reads it in — the completion route reads it in implementing and the owed
+// route in merging, where a merged pull request is what finishes the phase
+// (workflow.PhaseFinished) — nil in any other phase or while none is recorded, and its
+// production check, nil while none was ever opened.
 type completionPosition struct {
 	issue          *record.Issue
 	treeGeneration uint64
 	lingers        bool
 	pass           int
 	entry          int64
+	completed      bool
 	lastHandoff    string
 	pullRequest    *record.PullRequest
 	check          *record.ProductionCheck
 }
 
-// handoffPosition reads key's position (completionPosition) for the completing role, whose phases
-// row names the entry it was last raised to; an issue the workflow does not record is a position
-// with no issue and no error.
-func (s *server) handoffPosition(ctx context.Context, key string, role claim.Role) (completionPosition, error) {
+// merged is whether the position's phase is merging and its pull request is merged: the fact
+// that finishes merging, read by the rule workflow.PhaseFinished applies, since the merger
+// merges and a merged root then stands in merging until the rest of its tree leaves.
+func (p completionPosition) merged() bool {
+	return p.issue != nil && p.issue.Phase == phase.Merging &&
+		p.pullRequest != nil && p.pullRequest.State == record.PullRequestMerged
+}
+
+// handoffPosition reads key's position (completionPosition) for role, the completing role or the
+// role asking what it owes, whose phases row names the entry it was last raised to and whether it
+// has completed; an issue the workflow does not record is a position with no issue and no error.
+// The pull request is read only while the issue stands in pullRequestIn, the one phase where the
+// caller reads it, so neither route pays for a read it does not use.
+func (s *server) handoffPosition(ctx context.Context, key string, role claim.Role, pullRequestIn phase.Phase) (completionPosition, error) {
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly, IsoLevel: pgx.RepeatableRead})
 	if err != nil {
 		return completionPosition{}, err
@@ -747,10 +762,10 @@ func (s *server) handoffPosition(ctx context.Context, key string, role claim.Rol
 	if err != nil {
 		return completionPosition{}, err
 	}
-	implementer := record.PhaseRowOf(rows, claim.RoleImplementer)
-	pass, lastHandoff, entry := implementer.Pass, implementer.LastHandoff, record.PhaseRowOf(rows, role).Entry
+	implementer, own := record.PhaseRowOf(rows, claim.RoleImplementer), record.PhaseRowOf(rows, role)
+	pass, lastHandoff, entry, completed := implementer.Pass, implementer.LastHandoff, own.Entry, own.Completed()
 	var pr *record.PullRequest
-	if issue.Phase == phase.Implementing {
+	if issue.Phase == pullRequestIn {
 		if pr, err = s.records.PullRequest(ctx, tx, key); err != nil {
 			return completionPosition{}, err
 		}
@@ -760,5 +775,5 @@ func (s *server) handoffPosition(ctx context.Context, key string, role claim.Rol
 		return completionPosition{}, err
 	}
 	return completionPosition{issue: issue, treeGeneration: root.Generation, lingers: root.Lingers(), pass: pass,
-		lastHandoff: lastHandoff, entry: entry, pullRequest: pr, check: check}, tx.Commit(ctx)
+		lastHandoff: lastHandoff, entry: entry, completed: completed, pullRequest: pr, check: check}, tx.Commit(ctx)
 }

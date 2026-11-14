@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -176,8 +177,8 @@ func TestAWorkersAddressingNamesItsRepositoryAndTheProjects(t *testing.T) {
 	}}
 	s := specs{
 		stateDir: t.TempDir(), project: "s1", prompts: composer,
-		repository: func(context.Context, string) (ghrepo.Repository, string, error) {
-			return ghrepo.MustParse("acme/widgets"), "release/v7.1", nil
+		repository: func(context.Context, string) (launchRepository, error) {
+			return launchRepository{Repo: ghrepo.MustParse("acme/widgets"), DefaultBranch: "release/v7.1"}, nil
 		},
 		repositories: func() api.RepositoriesView { return view },
 	}
@@ -226,6 +227,87 @@ func TestAWorkersAddressingNamesItsRepositoryAndTheProjects(t *testing.T) {
 	}
 }
 
+// After Dispatch corrected an issue's repository, every launch of the issue's claims is told
+// both repositories: the one it works now, which the repository sentence already names, and the
+// one it left, with the moment the daemon applied the correction, written as an RFC 3339 time in
+// UTC whatever zone the record's moment carries. The sentence says where the issue's branch, its
+// pull request and the old pod's rescue branch stayed, since those never move, and it is
+// rendered at every launch from then on rather than once: no claim turns it off. An issue no
+// correction has reached is told none of it. A daemon with no reader, which is told no
+// repository at all, is the test above's last case.
+//
+// One read of the record answers the repository, its default branch and the correction
+// (workflowRuntime.issueLaunchRepository), so a read that cannot answer refuses the launch, as a
+// launch that cannot read its repository always did, and no launch can be told it left the
+// repository it works.
+func TestAWorkersAddressingNamesARepositoryCorrection(t *testing.T) {
+	composer, err := prompts.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("compose the shipped prompts: %v", err)
+	}
+	correctedAt := time.Date(2026, 11, 12, 9, 30, 0, 0, time.FixedZone("UTC+2", 2*60*60))
+	worked := launchRepository{Repo: ghrepo.MustParse("zeta/tools"), DefaultBranch: "main"}
+	s := specs{
+		stateDir: t.TempDir(), project: "s1", prompts: composer,
+		repository: func(context.Context, string) (launchRepository, error) { return worked, nil },
+		repositories: func() api.RepositoriesView {
+			return api.RepositoriesView{Mapped: []api.MappedRepositoryView{{Repo: "acme/widgets"}, {Repo: "zeta/tools"}}}
+		},
+	}
+	token, err := claim.NewToken("s1", "S1-2", claim.RoleImplementer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	launch := func() string {
+		t.Helper()
+		spec, err := s.SpawnSpec(context.Background(), supervise.Claim{Token: token, Issue: "S1-2", Tree: "S1-1", Role: claim.RoleImplementer})
+		if err != nil {
+			t.Fatalf("SpawnSpec: %v", err)
+		}
+		return spec.Prompt.Addressing
+	}
+	const sentences = "The daemon changed your issue's repository from acme/widgets at 2026-11-12T07:30:00Z. " +
+		"Your issue's branch, your issue's pull request and any rescue branch of the old pod are on acme/widgets. " +
+		"Your work on this issue is on zeta/tools now."
+
+	s.repository = func(context.Context, string) (launchRepository, error) {
+		read := worked
+		read.Corrected = &RepositoryCorrection{RepositoryCorrection: record.RepositoryCorrection{Before: "acme/widgets", At: correctedAt}}
+		return read, nil
+	}
+	corrected := launch()
+	if !strings.HasSuffix(corrected, " "+sentences) {
+		t.Fatalf("the addressing of a corrected issue = %q, want it to end with %q", corrected, sentences)
+	}
+	if !strings.Contains(corrected, "Your issue's repository is zeta/tools (default branch main); the project's repositories are acme/widgets, zeta/tools.") {
+		t.Fatalf("the addressing of a corrected issue = %q, want the repository it works now named before the correction", corrected)
+	}
+	// The second launch of the same claim is told it again: the branch, the pull request and the
+	// rescue branch stay on acme/widgets for the life of the issue, so nothing stops saying so.
+	if again := launch(); again != corrected {
+		t.Fatalf("the second launch's addressing = %q, want the first's %q", again, corrected)
+	}
+
+	s.repository = func(context.Context, string) (launchRepository, error) { return worked, nil }
+	got := launch()
+	if strings.Contains(got, "changed your issue's repository") || strings.Contains(got, "acme/widgets.") {
+		t.Fatalf("the addressing of an issue no correction has reached = %q, want no correction sentence", got)
+	}
+	if !strings.HasSuffix(got, "the project's repositories are acme/widgets, zeta/tools.") {
+		t.Fatalf("the addressing of an issue no correction has reached = %q, want it to end with the repositories clause", got)
+	}
+
+	// The one read is the launch's repository read, so a store that cannot answer refuses the
+	// launch rather than costing it a sentence.
+	s.repository = func(context.Context, string) (launchRepository, error) {
+		return launchRepository{}, errors.New("read the record of S1-2: the store is closed")
+	}
+	if _, err := s.SpawnSpec(context.Background(), supervise.Claim{Token: token, Issue: "S1-2", Tree: "S1-1", Role: claim.RoleImplementer}); err == nil ||
+		!strings.Contains(err.Error(), "the store is closed") {
+		t.Fatalf("the launch of an issue whose record cannot be read = %v, want the store's refusal", err)
+	}
+}
+
 // The daemon's controller (`controller: daemon`) is launched with its role part and the headless
 // part, told the design-gate steps the project gates and its repositories as the operator's
 // controller is, with the deployment's instructions and launch secrets, and with no repository,
@@ -242,9 +324,9 @@ func TestTheControllersLaunchIsItsHeadlessPromptAndNoCheckout(t *testing.T) {
 	s := specs{
 		stateDir: t.TempDir(), project: "s1", prompts: composer, designSteps: config.DesignGateOff.Steps(), repositories: noRepositoriesView,
 		instructions: "/state/deployment-instructions.md", secrets: map[string]string{"ENVOY_TOKEN": "envoy-bearer"},
-		repository: func(context.Context, string) (ghrepo.Repository, string, error) {
+		repository: func(context.Context, string) (launchRepository, error) {
 			t.Error("the controller's launch asked for a repository")
-			return ghrepo.MustParse("acme/widgets"), "main", nil
+			return launchRepository{Repo: ghrepo.MustParse("acme/widgets"), DefaultBranch: "main"}, nil
 		},
 		identity: func(context.Context, claim.Role, ghrepo.Repository) (runtime.GitIdentity, error) {
 			t.Error("the controller's launch asked for a git identity")
@@ -371,13 +453,13 @@ func TestAWorkerLaunchIsOnItsIssuesRecordedRepository(t *testing.T) {
 	recorded := map[string][2]string{"S1-2": {"acme/widgets", "main"}, "S1-3": {"zeta/tools", "release/v7.1"}}
 	var asked []string
 	s := specs{stateDir: t.TempDir(), project: "s1", prompts: composer, repositories: noRepositoriesView,
-		repository: func(_ context.Context, issue string) (ghrepo.Repository, string, error) {
+		repository: func(_ context.Context, issue string) (launchRepository, error) {
 			asked = append(asked, issue)
 			if issue == "S1-9" {
-				return ghrepo.Repository{}, "", errors.New("read the record of S1-9: the database refused")
+				return launchRepository{}, errors.New("read the record of S1-9: the database refused")
 			}
 			named := recorded[issue]
-			return ghrepo.MustParse(named[0]), named[1], nil
+			return launchRepository{Repo: ghrepo.MustParse(named[0]), DefaultBranch: named[1]}, nil
 		}}
 	for issue, want := range recorded {
 		token, err := claim.NewToken("s1", issue, claim.RoleImplementer)
@@ -425,12 +507,12 @@ func TestASpecStampsTheIssueKeyOnlyOnARepositoryTheProjectNames(t *testing.T) {
 		stateDir: t.TempDir(), project: "acme", prompts: composer, repositories: noRepositoriesView,
 		commitIssueTrailerRepos: []ghrepo.Repository{ghrepo.MustParse("acme/widgets")},
 		same:                    newRepositories("acme", ghrepo.MustRenames(ghrepo.MustRename("acme/widgets-legacy", "acme/widgets"))).same,
-		repository: func(_ context.Context, issue string) (ghrepo.Repository, string, error) {
+		repository: func(_ context.Context, issue string) (launchRepository, error) {
 			name, recorded := recorded[issue]
 			if !recorded {
-				return ghrepo.Repository{}, "", nil
+				return launchRepository{}, nil
 			}
-			return ghrepo.MustParse(name), "main", nil
+			return launchRepository{Repo: ghrepo.MustParse(name), DefaultBranch: "main"}, nil
 		},
 	}
 	stamp := func(t *testing.T, s specs, issue string) string {
@@ -496,8 +578,8 @@ func TestAClaudeLaunchCarriesTheIssueKeyItStampsIntoItsPane(t *testing.T) {
 				commitIssueTrailerRepos: []ghrepo.Repository{ghrepo.MustParse("acme/widgets")},
 				same:                    newRepositories("acme", ghrepo.Renames{}).same,
 				backend:                 func(claim.Role) runtime.Backend { return backend },
-				repository: func(context.Context, string) (ghrepo.Repository, string, error) {
-					return ghrepo.MustParse("acme/widgets"), "main", nil
+				repository: func(context.Context, string) (launchRepository, error) {
+					return launchRepository{Repo: ghrepo.MustParse("acme/widgets"), DefaultBranch: "main"}, nil
 				},
 			}
 			token, err := claim.NewToken("acme", "ACME-7", claim.RoleImplementer)
@@ -739,8 +821,8 @@ func TestAHostLaunchProvisionsItsWorkspaceFirst(t *testing.T) {
 	var refuse error
 	s := specs{
 		stateDir: t.TempDir(), project: "s1", prompts: composer, repositories: noRepositoriesView,
-		repository: func(context.Context, string) (ghrepo.Repository, string, error) {
-			return ghrepo.MustParse("acme/widgets"), "release/v7.1", nil
+		repository: func(context.Context, string) (launchRepository, error) {
+			return launchRepository{Repo: ghrepo.MustParse("acme/widgets"), DefaultBranch: "release/v7.1"}, nil
 		},
 		hostWorkspaces: true,
 		ensureWorkspace: func(_ context.Context, issue string, repo ghrepo.Repository, defaultBranch string) error {

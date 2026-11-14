@@ -958,7 +958,7 @@ The checks:
 - `stop-hook-reminds-the-open-phase`: told to answer in one line of prose and call nothing, the implementer ends a turn with `implementing` still open, so the pane's `legion` MCP server answers Claude Code's `Stop` hook with `{"decision":"block","reason":…}` (`legion_phase_hook`, the hook entries of `packages/claude-envoy/legion/hooks/hooks.json`, the endpoint `packages/claude-envoy/src/legion-phase-hook.ts`).
   The transcript holds that reason as one `Stop
   hook feedback` user turn carrying the reminder's own wording
-  — "Your turn ended with your Legion phase still open", a fragment of `REMINDER` in `packages/pi-shared/src/phase-stall.ts`, so a later rewording of the rest of that paragraph does not break the proof silently
+  — "This reminder repeats at the end of every turn", a sentence that both `owedReminder` and `UNREAD_REMINDER` in `packages/pi-shared/src/phase-stall.ts` carry, so a later rewording of the rest of either text does not break the proof silently
   — and an assistant turn follows that feedback, so the block carried the turn on in the same session rather than ending it.
   The run moves no `LEGION_STALL_*` number:
   this first reminder of a run is the hook's own answer as the turn settles, not a timer's, and the instruction before it resets the run of reminders, so no wait here rides on those four delays.
@@ -1095,11 +1095,12 @@ The checks, in order, which is the tmux proof's:
   and the `--mcp-config` it names is a file of this generation's private directory, which the launcher wrote there.
 
 - `stop-hook-reminds-the-open-phase`: while the implementer still holds its phase
-  — open since the daemon's start task, an assignment (`packages/claude-envoy/src/legion-phase-hook.ts`), and not yet completed
+  — open in the daemon's record since its start task, and not yet completed
   — it is told to answer in one line of prose, to call nothing and to begin no line with WAITING, so it ends a turn with that phase open and the pod's `legion` MCP server answers Claude Code's `Stop` hook with `{"decision":"block","reason":…}`.
-  The instruction is an Envoy delivery, which puts an open phase's run of reminders back at zero but never reopens a closed one (the `inbound-event` case of `packages/pi-shared/src/phase-stall.ts`):
-  that is why this check runs before `claude-implementer-handoff` closes the phase, never after.
-  The transcript holds the block's reason as one `Stop hook feedback` user turn carrying the reminder's own wording, "Your turn ended with your Legion phase still open" (a fragment of `REMINDER` in `packages/pi-shared/src/phase-stall.ts`, so a later rewording of the rest of that paragraph does not break the proof silently), and an assistant turn follows that feedback, so the block carried the turn on in the same session.
+  The instruction is an Envoy delivery, which puts the run of reminders back at zero (the `inbound` case of `packages/pi-shared/src/phase-stall.ts`).
+  Once the daemon has the phase's completion, it answers that the claim owes nothing and no reminder comes:
+  that is why this check runs before `claude-implementer-handoff` completes the phase, never after.
+  The transcript holds the block's reason as one `Stop hook feedback` user turn carrying the reminder's own wording, "This reminder repeats at the end of every turn" (a sentence that both `owedReminder` and `UNREAD_REMINDER` in `packages/pi-shared/src/phase-stall.ts` carry, so a later rewording of the rest of either text does not break the proof silently), and an assistant turn follows that feedback, so the block carried the turn on in the same session.
   The run moves no `LEGION_STALL_*` number.
 
 - `claude-implementer-handoff`: told through Dispatch to make the spec's one-file change, push it, write its handoff with `dispatch handoff-write` and call the `legion` tool's `handoff_complete`, it does:
@@ -2588,7 +2589,7 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
 - `completion-closed`
 
   each phase worker of tree 1 — planner, implementer, tester, reviewer
-  — stays live once its phase ends: it goes idle on the session and in the pod (by uid) it first registered with, and its live session answers every `handoff_complete` call of the legion tool, holds one success for each assignment it completed, and records the phase stall `closed` after that call, with no phase reminder after its last success:
+  — stays live once its phase ends: it goes idle on the session and in the pod (by uid) it first registered with, and its live session answers every `handoff_complete` call of the legion tool, holds one success for each assignment it completed, and holds no phase reminder after that success and before the next assignment, nor after its last success:
   the 4b.13b acceptance's stall check (`stage3-4b13b-acceptance.sh`'s `phase-stall-follow-up`), which a stop inside the call fails (LEGION-283).
   The sessions and each verdict are kept as `completion-<role>.jsonl` and `completion-<role>-verdict.json`.
   Its control: the planner's session cut at its `handoff_complete` call, the transcript such a stop leaves, is refused
@@ -3565,7 +3566,7 @@ those are matched as the complete literal sentence, with the run's own repositor
 Dispatch takes a bearer session's actor id from the request body, so that id is the message's claimed author:
 whoever holds the project's Dispatch bearer can post the same text.
 Such a note shows what Dispatch holds, never who posted it.
-Two such sentences are quoted below with their file:line.
+Two such sentences are quoted below, each with the symbols of the source that writes it.
 
 ```sh
 export LEGION_E2E_REPO_T=<owner>/<toolchain repo> LEGION_E2E_REPO_C=<owner>/<consumer repo>
@@ -3683,19 +3684,22 @@ Each item below names an observation, then what it judges; an item that names no
 - `negative no-repo <KEY>`
 
   `.issues | has(<KEY>)` is `false` (refusing outright, never vacuously passing, when `.issues` is not even an object), Dispatch's own `.resolved_repo` is still `null`, and the **latest** repository note among the messages claiming the daemon's actor (`{kind:"session", id:"legion-daemon:<PROJECT>"}`) is the exact no-repository admission refusal, word for word, with the daemon's outbox marker
-  — `"Legion did not admit this issue: its repository resolves to none. Set its repository (the issue header's Repository picker, or dispatch issue-update --repo owner/name) and move it to todo again.\n\n<!-- legion-outbox:<id> -->"` (`packages/daemon/internal/workflow/repository.go:76`, `packages/daemon/internal/record/outbox.go:71-73,104-106`).
+  — `"Legion did not admit this issue: its repository resolves to none. Set its repository (the issue header's Repository picker, or dispatch issue-update --repo owner/name) and move it to todo again.\n\n<!-- legion-outbox:<id> -->"` (`RefuseRecording` in `packages/daemon/internal/workflow/repository.go`, and `messageSeparator`, `messageMarkerOpen` and `messageMarkerClose` in `packages/daemon/internal/record/outbox.go`).
   Dispatch takes a bearer session's actor id from the request body (`packages/envoy/internal/dispatch/api/server.go`, `bearerSessionActor`), so the note shows what Dispatch holds, never who posted it;
   what shows the daemon declined the issue is its own state read.
 
 - `negative repo-edit before|after <run id>? <child>`
 
   a two-call baseline protocol (the paragraph after this list).
+  Its precondition: `LEGION_E2E_REPO_X` is a repository Legion does not serve for the project, because it is not mapped to the project in Dispatch or a GitHub App is not installed on it.
+  When X is mapped and both Apps are installed on it, the daemon moves the record onto X, and the control fails.
   `before` captures the daemon's recorded repository and refuses outright if Dispatch already resolves the issue to X.
   `after` requires: the daemon's record unchanged;
   Dispatch's own `.repo` for the issue now reading X;
   an `issue.updated` event whose `.seq` is above the baseline's own last-seen `.seq` with `.payload.repo` equal to X (Dispatch's own sequence cursor, never a wall-clock comparison, and never merely "any `issue.updated`", which the daemon's own routine status writes also emit);
-  and the daemon's exact kept-repository message, word for word, with its claimed actor id and outbox marker (as for `negative no-repo`), built from Dispatch's own resolved spelling of X (`dispatch_repo_now`, read back from the API) rather than the operator's `LEGION_E2E_REPO_X` spelling, since the daemon's real message echoes whatever case Dispatch itself stored
-  — `"Legion keeps <repo> as this issue's repository; the change to <X> in Dispatch is not applied — an issue's repository is fixed when Legion records it. Create a new issue for <X> instead."` (`packages/daemon/internal/workflow/repository.go:94`)
+  and the daemon's kept-repository message, with its claimed actor id and outbox marker (as for `negative no-repo`) (`noteRepositoryChangeWaits` in `packages/daemon/internal/workflow/repository.go`).
+  The message names why X is not served and what a person can do, so the check matches word for word only the two parts every variant shares: the opening `"Legion did not move this issue off <repo>: "`, with the baseline's own spelling of the kept repository, and the closing sentence `"Legion moves the issue itself once it serves the repository that Dispatch resolves the issue to."` just before the outbox marker.
+  It accepts each variant the daemon writes: X not mapped to the project (`<X> is not mapped to project <PROJECT> in Dispatch. Map <X> to the project in Dispatch, or set another repository (…).`) and X mapped with a GitHub App not installed (`the <role> App is not installed on <X>. Install it on <X>, or set another repository (…).`).
 
 **The two-call baseline protocol** (`negative pr-in-x`, `negative repo-edit`):
 `before` mints a fresh run id, captures the baseline under `$MULTIREPO_EVIDENCE_DIR/runs/<run id>/baseline.json` (the directory made with a plain `mkdir`, the file written with `set -o noclobber` — both fail loudly rather than overwrite, so two overlapping `before` calls for the same issue can never collide), binds it to the project, the daemon URL and the issue's own generation, and prints `BASELINE <name>: captured` — never `PASS`, since capturing a baseline is not an acceptance judgment.
@@ -6054,7 +6058,7 @@ all of it) and fails when it cannot read them:
 the tmux proof `tail`s its local file, the sandbox proof runs the same `tail` in the pod's `roles` container (`roles_exec`).
 Every predicate here reads the transcript through it alone.
 The caller also sets `issue` and `stall_offset` (the transcript's size when it told the implementer to stall), and defines `note`; `role_handoff` is `lib/workflow.sh`'s.
-The file sets `stall_reminder_needle`, the opening of `REMINDER` in `packages/pi-shared/src/phase-stall.ts` ("Your turn ended with your Legion phase still open"), which the caller's notes name.
+The file sets `stall_reminder_needle`, a sentence that both `owedReminder` and `UNREAD_REMINDER` in `packages/pi-shared/src/phase-stall.ts` carry ("This reminder repeats at the end of every turn"), which the caller's notes name.
 
 | function | does |
 | :--- | :--- |

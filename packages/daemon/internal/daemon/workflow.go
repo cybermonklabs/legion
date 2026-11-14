@@ -129,6 +129,13 @@ type workflowRuntime struct {
 	idleStore   *store.Store
 	idleRuntime issuePods
 	idleTick    time.Duration
+	// idleRepositoryDrifted is whether the issue's pod was built from a repository its record no
+	// longer holds (supervision.podRepositoryDrifted), the idle rule's repository hold. It is a
+	// function and not the runtime for the reason plan.recordedRepository is one: the
+	// answer is a reading of the runtime against the workflow's own record, and the pass wants
+	// the reading. Nil where release is off and in a test that builds the runtime by hand, which
+	// reads as no drift.
+	idleRepositoryDrifted func(ctx context.Context, issue string) bool
 	// entrySweep is tickEntrySweep's period, zero being entrySweepInterval; a test shortens it
 	// so it waits out its own period rather than the daemon's minute.
 	entrySweep time.Duration
@@ -156,7 +163,10 @@ type workflowRuntime struct {
 	// mapped repository; mappingMu serializes the mapping's re-reads; mappingChanged carries a
 	// request for a read to refreshOnMappingChange, one waiting at most. mappingRequested counts
 	// the reads asked for (requestMappingRead) and mappingApplied is the last request a finished
-	// read covers; awaiting is each held admission event's request (awaitMappingRead), by issue key
+	// read covers; followRequested counts the follows asked for (a mapping change Dispatch
+	// announced, mappingChange, or a read that served a repository the last did not), and followApplied is the last
+	// of them whose recorded issues followed the mapping read after it (followMapping); awaiting is
+	// each held admission event's request (awaitMappingRead), by issue key
 	// and then the sequence it was delivered at, under awaitingMu. recovering is each repository,
 	// lowercased, a read of the mapping stopped leaving out for a failed installation read whose
 	// issues are still to recover from Dispatch's listing (markRecovered, recoverRepositories),
@@ -174,6 +184,8 @@ type workflowRuntime struct {
 	mappingChanged    chan struct{}
 	mappingRequested  atomic.Uint64
 	mappingApplied    atomic.Uint64
+	followRequested   atomic.Uint64
+	followApplied     atomic.Uint64
 	awaitingMu        sync.Mutex
 	awaiting          map[string]map[int64]uint64
 	recoveringMu      sync.Mutex
@@ -705,18 +717,33 @@ func (w *workflowRuntime) rootHears(ctx context.Context, c supervise.Claim, _ su
 // leaves each KEPT for its own tree to name, and the architect of each tree they are now owed to
 // is written a fresh catch-up naming them at once, exactly as a hand-over writes one
 // (workflow.CatchUpTheTreesOwed). The decisions whose issue the record still shows in this tree
-// stay, in the order the task named them, and the text is written again from them
-// (workflow.KeptDecisionsTask), which is the wording the start that queued the task used. An issue
-// the record does not hold is kept rather than dropped: a person's decision is never lost, and
-// this answer drops one only where the record says another tree is owed it. A task left naming
-// nothing is retired rather than sent, and its delivery's write releases whatever it still held.
+// stay, in the order the task named them, and the text is written again from them by the wording
+// the start that queued the task used (workflow.KeptDecisionsTask). An issue the record does not
+// hold is kept rather than dropped: a person's decision is never lost, and this answer drops one
+// only where the record says another tree is owed it. A task left naming nothing is retired rather
+// than sent, and its delivery's write releases whatever it still held.
 //
 // It is the machine that asks, because the machine owns the pending delivery: the hand-over that
 // moved the issue commits in a transaction of its own, with no lock on this claim, and a task
 // rewritten there would be overwritten by the machine's next write of what memory still held. The
 // write here serializes with every fact (intake.SerializeFacts), since it writes the catch-up a
 // ready would write, and takes no lock of the daemon's: the machine asks it holding its own.
+//
+// A resume task of a root a person answered (supervise.Delivery.Resume) is written here as well,
+// and at every send of it, not where it was queued: the wait it answers is decoded from the
+// delivery, and the gate and the ask mirror are read in this answer's own transaction, so the text
+// says how the document stands at this send (resumeTaskNow). A held task a daemon of an earlier
+// release queued carries no such mark, and is sent as the text it holds.
+//
+// Every kept decision and kept approval the task still names is asked again at this send, against
+// the gates as the record holds them now (workflow.DecisionStands): a person who approved since
+// has answered what the sentence would tell or ask them, so the sentence is dropped
+// (workflow.KeptDecisionsTask), and the row of a decision it superseded is deleted in the same
+// write (workflow.ForgetSuperseded).
 func (w *workflowRuntime) rootTask(ctx context.Context, c supervise.Claim, d supervise.Delivery) (string, []byte, error) {
+	if len(d.Resume) > 0 {
+		return w.resumeTaskNow(ctx, c, d)
+	}
 	if len(d.Kept) == 0 {
 		return d.Task, d.Kept, nil
 	}
@@ -724,7 +751,8 @@ func (w *workflowRuntime) rootTask(ctx context.Context, c supervise.Claim, d sup
 	if err := json.Unmarshal(d.Kept, &named); err != nil {
 		return "", nil, fmt.Errorf("decode what the task held for %s names: %w", c.Token, err)
 	}
-	stays := record.KeptDecisions{KeptApproval: named.KeptApproval}
+	var stays record.KeptDecisions
+	var task string
 	var left []record.DecisionMark
 	scoped, committed := intake.WithCommitHooks(ctx)
 	if err := pgx.BeginFunc(scoped, w.pool, func(tx pgx.Tx) error {
@@ -735,7 +763,7 @@ func (w *workflowRuntime) rootTask(ctx context.Context, c supervise.Claim, d sup
 		if err != nil {
 			return err
 		}
-		stays.Decisions, left = nil, nil
+		stays, left = record.KeptDecisions{KeptApproval: named.KeptApproval}, nil
 		for _, mark := range named.Decisions {
 			if !slices.Contains(holds, mark.Ref) {
 				// The row this mark named is not this delivery's any more, and only these take a
@@ -760,6 +788,11 @@ func (w *workflowRuntime) rootTask(ctx context.Context, c supervise.Claim, d sup
 			}
 			stays.Decisions = append(stays.Decisions, mark)
 		}
+		gates, err := workflow.ForgetSuperseded(scoped, tx, w.records, w.gatedSteps, c.Tree, stays)
+		if err != nil {
+			return err
+		}
+		task, stays = workflow.KeptDecisionsTask(gates, w.gatedSteps, c.Tree, stays)
 		if len(left) == 0 {
 			return nil
 		}
@@ -772,10 +805,9 @@ func (w *workflowRuntime) rootTask(ctx context.Context, c supervise.Claim, d sup
 		return "", nil, fmt.Errorf("read what the task held for %s still names of %s's tree: %w", c.Token, c.Tree, err)
 	}
 	committed()
-	if len(stays.Decisions) == len(named.Decisions) {
+	if len(stays.Decisions) == len(named.Decisions) && stays.KeptApproval == named.KeptApproval {
 		return d.Task, d.Kept, nil
 	}
-	task := workflow.KeptDecisionsTask(c.Tree, stays)
 	if task == "" {
 		return "", nil, nil
 	}
@@ -784,6 +816,41 @@ func (w *workflowRuntime) rootTask(ctx context.Context, c supervise.Claim, d sup
 		return "", nil, fmt.Errorf("encode what the task held for %s still names: %w", c.Token, err)
 	}
 	return task, kept, nil
+}
+
+// resumeTaskNow is the resume task delivery d carries the wait of (supervise.Delivery.Resume),
+// written from the record as it stands now: the root's gates and its ask mirror rows, read in one
+// transaction, rendered by the one rule (workflow.ResumeTask), which asks of every review it names
+// whether the person's approval followed it (workflow.DecisionStands), and of every approval
+// request whether the gate's approval answered it. A read that fails returns its error, as the
+// kept-decisions answer above does: the machine sends nothing then, and the next trigger asks again.
+func (w *workflowRuntime) resumeTaskNow(ctx context.Context, c supervise.Claim, d supervise.Delivery) (string, []byte, error) {
+	var waiting record.Awaiting
+	if err := json.Unmarshal(d.Resume, &waiting); err != nil {
+		return "", nil, fmt.Errorf("decode the wait the resume task of %s answers: %w", c.Token, err)
+	}
+	var task string
+	if err := pgx.BeginTxFunc(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+		var err error
+		task, err = workflow.ResumeTask(ctx, tx, w.records, c.Tree, waiting, w.gatedSteps)
+		return err
+	}); err != nil {
+		return "", nil, fmt.Errorf("read how the gate of %s stands for its resume task: %w", c.Tree, err)
+	}
+	return task, d.Kept, nil
+}
+
+// resumeJSON encodes the wait a resume start answers for the delivery to carry and the claim
+// store to persist (supervise.Delivery.Resume). A start that is no resume carries nothing.
+func resumeJSON(waiting *record.Awaiting) ([]byte, error) {
+	if waiting == nil {
+		return nil, nil
+	}
+	encoded, err := json.Marshal(waiting)
+	if err != nil {
+		return nil, fmt.Errorf("encode the wait a resume task answers: %w", err)
+	}
+	return encoded, nil
 }
 
 // treeClosable answers supervise's Deps.TreeClosable: a tree a workflow issue backs closes when
@@ -843,14 +910,16 @@ func (w *workflowRuntime) reconcile(ctx context.Context) error {
 // keep keeps, judged against every record, while every summary of the listing is still the walk
 // each chain is read up.
 func (w *workflowRuntime) reconcileListing(ctx context.Context, issues []dispatch.IssueSummary, keep func(records map[string]*record.Issue, summary dispatch.IssueSummary) bool, boot bool) error {
-	// The transaction performs no I/O: what admission reads of a todo issue's repository, the
-	// Dispatch chain above its parent, and who set the label of a labelled triage root the workflow
-	// does not record, are read now, up one walk over the whole listing (listingAncestry); each
-	// listed issue's fact carries that chain, or that setter, to admission.
+	// The transaction performs no I/O: what admission reads of a listed issue's repository, the
+	// Dispatch chain above a todo issue's parent, and who set the label of a labelled triage root
+	// the workflow does not record, are read now, up one walk over the whole listing
+	// (listingAncestry); each listed issue's fact carries that chain, or that setter, to admission.
+	// The records are what say which arm a summary takes, and what keep judges a summary against,
+	// so they are read with that walk once for the whole listing, before any summary is judged.
 	var records map[string]*record.Issue
 	var walk ancestry
 	var err error
-	if keep != nil {
+	if keep != nil || len(issues) > 0 {
 		if records, walk, err = w.listingAncestry(ctx, issues); err != nil {
 			return err
 		}
@@ -863,24 +932,27 @@ func (w *workflowRuntime) reconcileListing(ctx context.Context, issues []dispatc
 		}
 		fact := intake.ListedIssue(summary)
 		labelledTriageRoot := fact.LabelledTriageRoot()
-		if fact.Status == "todo" || labelledTriageRoot {
-			if walk == nil {
-				if records, walk, err = w.listingAncestry(ctx, issues); err != nil {
-					return err
-				}
-			}
-		}
 		switch {
-		case fact.Status == "todo":
+		// Every recorded issue of the listing is prepared, whatever its status, and so is every
+		// todo: admission's reconcile has the engine follow Dispatch's resolution for each issue it
+		// holds a record of (admit's applySummary, workflow.Engine.ApplyRepositoryChange), and the
+		// engine resolves that repository inside the reconcile's own transaction, which performs no
+		// I/O, so a served repository whose default branch nobody read is an error there that would
+		// fail the whole pass — prepareRecorded reads it here. An unrecorded todo is what admission
+		// records, from the repository this reads for it. Only a todo that queues under its parent
+		// takes an ancestry (queuesUnderParent), so an issue of any other status gains none: it
+		// gains the repository read alone.
+		case records[summary.Key] != nil || fact.Status == "todo":
 			prepared, err := w.prepareListed(ctx, records, walk, fact)
 			if err != nil {
 				return fmt.Errorf("prepare the repository of %s for admission: %w", summary.Key, err)
 			}
 			fact.Ancestry = prepared.Ancestry
-		case labelledTriageRoot && records[summary.Key] == nil:
-			// The listing carries no actor, so the setter is read from the log as an event's is;
-			// a recorded root a person moved back to triage is never queued again, so its log is
-			// not read.
+		case labelledTriageRoot:
+			// A labelled triage root the workflow records nothing of, which the arm above takes
+			// every recorded one out of. The listing carries no actor, so the setter is read from
+			// the log as an event's is; a recorded root a person moved back to triage is never
+			// queued again, so its log is not read.
 			if fact.LabelSetter, err = w.labelSetter(ctx, summary.Key); err != nil {
 				return fmt.Errorf("prepare who set the label of %s for admission: %w", summary.Key, err)
 			}
@@ -1065,7 +1137,6 @@ func (w *workflowRuntime) attach(supervision *supervision) {
 	w.outboxWake.Store(w.outbox)
 	w.limits = supervision.supervisor.deps.Limits
 	supervision.supervisor.OnDurableState(w.claimDurableState)
-	supervision.enqueue = w.enqueueOutbox
 	supervision.applySweepFacts = w.applySweepFacts
 	w.attachIdleRelease(supervision)
 }
@@ -1074,6 +1145,11 @@ func (w *workflowRuntime) attach(supervision *supervision) {
 // `runtime: kubernetes` with a non-zero idle_minutes, over a runtime that can say whether an
 // issue's pod runs the image the configuration names and whether it still holds the issue's
 // Sandbox (issuePods).
+//
+// The repository reading the rule's repository hold rests on is supervision's
+// (podRepositoryDrifted), which reads the pod through the runtime and the record through the
+// plan's own reader (plan.recordedRepository), set before supervision was built, so the hold is
+// never left reading an issue whose record nothing can answer for.
 func (w *workflowRuntime) attachIdleRelease(supervision *supervision) {
 	k := supervision.cfg.Runtime.Kubernetes
 	if supervision.cfg.Runtime.Name != "kubernetes" || k == nil || !k.IdleRelease.Releases() {
@@ -1085,6 +1161,7 @@ func (w *workflowRuntime) attachIdleRelease(supervision *supervision) {
 		return
 	}
 	w.idlePeriod, w.idleStore, w.idleRuntime = k.IdleRelease.Idle(), supervision.supervisor.store, podRuntime
+	w.idleRepositoryDrifted = supervision.podRepositoryDrifted
 	w.outbox.backstop = k.IdleRelease.Backstop()
 }
 

@@ -347,7 +347,11 @@ const legionPhaseView = z.object({
  * repository requires holds the head. `fixAttempts` counted the heads pushed onto a red verdict
  * until contract 59 removed the count. */
 const legionPullRequestView = z.object({
-  /** The repository (`owner/name`) the pull request is in, its issue's (contract 31). */
+  /** The repository (`owner/name`) the pull request is in (contract 31), which is the issue's own
+   * until a correction of the issue's repository leaves it behind: the correction moves the
+   * issue's record alone, so this keeps the repository the pull request was opened on. Where this
+   * and the issue's `repo` name two repositories, the issue has work on a repository it has left,
+   * and the daemon applies no GitHub event of that pull request to the issue any more. */
   repo: nonEmptyString,
   number: z.number().int().positive(),
   head: nonEmptyString,
@@ -625,6 +629,21 @@ const legionIssue = z.object({
    * workflow does not record (phase `unrecorded`, an operator's claim) (contract 31). */
   repo: nonEmptyString.optional(),
   defaultBranch: nonEmptyString.optional(),
+  /** The repository the record held before the newest correction of the issue's repository, and
+   * the instant the daemon applied that correction. The daemon writes the two together, and
+   * writes neither for an issue no correction has reached, but the schema takes each as optional
+   * and does not check the pair. The issue's branch, its pull request and any rescue branch of a
+   * pod built before that instant are on `repoBefore`, and `repo` above is the repository the
+   * issue works now. */
+  repoBefore: nonEmptyString.optional(),
+  repoCorrectedAt: timestamp.optional(),
+  /** A repository Dispatch has named for the issue that the daemon has not applied to its record,
+   * and why it has not. The daemon writes the two together, and writes neither while nothing
+   * waits, but the schema takes each as optional and does not check the pair. While they are
+   * there, `repo` above still names the repository the issue works: a reader of a record that
+   * names the old repository reads here why it does. */
+  repoChangePending: nonEmptyString.optional(),
+  repoChangeReason: nonEmptyString.optional(),
   /** Why a held issue is held, when its hold has one: `escalated` once its architect sent it to
    * the controller. `heldFrom` beside it is the phase the hold took the issue out of, and is
    * absent for an issue that is not held. The linger suppression is `holdReason`'s alone: the
@@ -1140,6 +1159,39 @@ export const LegionActivityRequest = z.strictObject({
 });
 
 export type LegionActivityRequestBody = z.output<typeof LegionActivityRequest>;
+
+/** `api.OwedRequest`, the body of `POST /legion/v1/claims/owed` (contract 119): a live role's
+ * session asking, at the end of its turn, what its claim owes now. It carries what
+ * `claims/activity` carries — the claim, the session the claim records, and the registration's
+ * secret — and no generation, since the question changes nothing. A token the daemon does not
+ * hold, a wrong secret and a session the claim does not record are each refused 403 with
+ * `Invalid session secret`, with one exception: a claim the daemon holds failed, asked from the
+ * session the claim records (from any session when it records none), is answered 200 with
+ * `owes` false whatever the secret, since a failed claim holds no secret any more. */
+export const LegionOwedRequest = z.strictObject({
+  claimToken: nonEmptyString,
+  sessionId: nonEmptyString,
+  secret: nonEmptyString,
+});
+
+export type LegionOwedRequestBody = z.output<typeof LegionOwedRequest>;
+
+/** `api.OwedResponse`, the body `POST /legion/v1/claims/owed` answers: whether the claim owes work
+ * now, and what that work is called as a person reads it in a reminder — `the testing phase of
+ * LEGION-208`, `the production check of LEGION-208`. The daemon reads it from the issue's record,
+ * so a role whose phase has finished owes nothing whatever its process remembers, and a role
+ * whose phase is open owes it. `work` is empty exactly when `owes` is false; a reminder renders
+ * the phrase it is given and names no work of its own. */
+export const LegionOwedResponse = z
+  .object({
+    owes: z.boolean(),
+    work: z.string(),
+  })
+  .refine((body) => body.owes === (body.work !== ""), {
+    message: "work names the owed work exactly when owes is true",
+  });
+
+export type LegionOwed = z.output<typeof LegionOwedResponse>;
 
 /** `api.ReleaseRecord` — one issue pod the daemon released: the run it released, the roles whose
  * claims it suspended (sorted, as the store holds them), when the release completed, and the size

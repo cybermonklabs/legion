@@ -652,7 +652,7 @@ func TestAKeptEntryOfATransferredPairKeepsTheProjectsDefault(t *testing.T) {
 	installs.setMissing(false, "review "+old)
 	failure := &appauth.TransientError{Err: errors.New("GitHub answered 502")}
 	installs.setFailing(failure, "implement "+old)
-	if err := w.refreshMapping(ctx); err != nil {
+	if _, err := w.refreshMapping(ctx); err != nil {
 		t.Fatalf("refreshMapping: %v", err)
 	}
 	if got := repositoryNames(w.repositories.Accepted()); !slices.Equal(got, []string{moved}) {
@@ -698,7 +698,7 @@ func TestAKeptEntrysWebhookAppGapNamesTheRepositoryItIsServedUnder(t *testing.T)
 	}
 	installs.setMissing(false, "review "+old)
 	installs.setFailing(errors.New("GitHub answered 502"), "implement "+old)
-	if err := w.refreshMapping(ctx); err != nil {
+	if _, err := w.refreshMapping(ctx); err != nil {
 		t.Fatalf("refreshMapping: %v", err)
 	}
 	if got := repositoryNames(w.repositories.Accepted()); !slices.Equal(got, []string{moved}) {

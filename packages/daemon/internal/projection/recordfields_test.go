@@ -188,6 +188,9 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 	root, held := "LEGION-500", "LEGION-501"
 	drawnAt := time.Date(2026, 11, 2, 9, 0, 0, 0, time.UTC)
 	lingerUntil := projectedAt.Add(90 * time.Minute)
+	// When the daemon applied the correction of this issue's repository, which `repoCorrectedAt`
+	// carries beside the repository it left.
+	correctedAt := projectedAt.Add(-3 * time.Hour)
 	answeredAt := projectedAt.Add(-time.Minute)
 	declaredAt := projectedAt.Add(-2 * time.Hour)
 	parent := "LEGION-400"
@@ -202,7 +205,9 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 		LastDispatchSeq: 91,
 		HandedOver:      true, TakenBack: true, DispatchStatus: "needs_review",
 		Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
-		Ancestry: []string{parent, "LEGION-300"}, HandedOverFrom: "LEGION-200",
+		RepoCorrection: &record.RepositoryCorrection{Before: "acme/gadgets", At: correctedAt},
+		RepoChange:     &record.RepositoryChange{Pending: "zeta/tools", Reason: "zeta/tools is not mapped to project OTHER in Dispatch"},
+		Ancestry:       []string{parent, "LEGION-300"}, HandedOverFrom: "LEGION-200",
 		Awaiting: &record.Awaiting{
 			Ask: "9a8fd348-55d5-4d72-a793-3cd037f75f13", Since: record.EventMark{Seq: 12, At: projectedAt.Add(-time.Hour)},
 			AnsweredAt: &answeredAt, AnsweredBy: record.AnsweredByAsk,
@@ -360,6 +365,8 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 			"lingerUntil": issue.LingerUntil,
 			"holdReason":  issue.Hold.Reason, "heldFrom": issue.Hold.From,
 			"repo": issue.Repo, "defaultBranch": issue.DefaultBranch,
+			"repoBefore": issue.RepoCorrection.Before, "repoCorrectedAt": issue.RepoCorrection.At,
+			"repoChangePending": issue.RepoChange.Pending, "repoChangeReason": issue.RepoChange.Reason,
 			"ancestry": issue.Ancestry,
 			"waitingOn": map[string]any{
 				"kind": "ask", "ask": issue.Awaiting.Ask, "since": issue.Awaiting.Since.At,

@@ -15,6 +15,9 @@ import {
   LegionHandoffCompleteRequest,
   LegionHandoffCompleteResponse,
   LegionIssueStatusRequest,
+  type LegionOwed,
+  LegionOwedRequest,
+  LegionOwedResponse,
   LegionPhaseBackwardRequest,
   LegionPhaseRetryRequest,
   type LegionReadyForUpdateRequest,
@@ -86,11 +89,13 @@ export interface ExitInput {
  * claim and the idle rule reads (`src/session-activity.ts` builds it). */
 export type ActivityInput = z.input<typeof LegionActivityRequest>;
 
+/** `api.OwedRequest`: the claim, the session it records and the registration's secret, asking what
+ * the claim owes now. */
+export type OwedInput = z.input<typeof LegionOwedRequest>;
+
 export interface LegionDaemonClient {
-  /** The daemon's whole state. `signal` aborts the request, its answer's body included: a caller
-   * that stops waiting for a daemon that does not answer (the phase reminder's bounded record
-   * check) aborts it rather than leave it open. */
-  readonly state: (options?: { readonly signal?: AbortSignal }) => Promise<LegionState>;
+  /** The daemon's whole state. */
+  readonly state: () => Promise<LegionState>;
   readonly register: (input: RegisterInput) => Promise<LegionRegistration>;
   /** The same route, for the operator-launched controller: `bootToken` is the capability `legion
    * controller start` fetched, and the answer is the controller's registration. */
@@ -110,6 +115,14 @@ export interface LegionDaemonClient {
   /** The session's report of what it is doing, after each of its turns and whenever the report's
    * content changes. It is authenticated by the claim, as `ready` is, and answers 204. */
   readonly activity: (input: ActivityInput) => Promise<void>;
+  /** What this session's claim owes now, read from the daemon's record, and what that work is
+   * called (`POST /legion/v1/claims/owed`). It is authenticated by the claim, as `activity` is,
+   * and changes nothing. `signal` aborts the request, its answer's body included: the phase
+   * reminder bounds the question and aborts it at the bound rather than leave it open. */
+  readonly owed: (
+    input: OwedInput,
+    options?: { readonly signal?: AbortSignal }
+  ) => Promise<LegionOwed>;
   /** The deployment's idle-release records of one window: every release, resume and hold the
    * daemon recorded at or after `since`, oldest first. It is authenticated by the claim, as
    * `activity` is, and the claim's secret rides in the body rather than a query string, which
@@ -457,13 +470,15 @@ export function createLegionDaemonClient(
     return parsed.value;
   };
 
-  /** Parses the request before it leaves the pane, then reads the route's success body. */
+  /** Parses the request before it leaves the pane, then reads the route's success body. `signal`
+   * aborts the request, its answer's body included. */
   const post = <Input, Output>(
     path: string,
     request: z.ZodType<Input>,
     response: z.ZodType<Output>,
-    body: Input
-  ): Promise<Output> => read("POST", path, response, request.parse(body) as object);
+    body: Input,
+    signal?: AbortSignal
+  ): Promise<Output> => read("POST", path, response, request.parse(body) as object, signal);
 
   /** The claim routes that answer 204 and nothing else. */
   const acknowledge = async (path: string, body: object, signal?: AbortSignal): Promise<void> => {
@@ -479,8 +494,7 @@ export function createLegionDaemonClient(
   };
 
   return {
-    state: (options) =>
-      read("GET", "/legion/v1/state", LegionStateResponse, undefined, options?.signal),
+    state: () => read("GET", "/legion/v1/state", LegionStateResponse),
     register: (input) => read("POST", "/legion/v1/claims/register", LegionRegisterResponse, input),
     registerController: (input) =>
       read("POST", "/legion/v1/claims/register", LegionControllerRegisterResponse, input),
@@ -495,6 +509,9 @@ export function createLegionDaemonClient(
         input
       ),
     activity: (input) => acknowledge("/legion/v1/claims/activity", input),
+    // async, so a request the contract refuses comes back as a rejected promise, not a throw.
+    owed: async (input, options) =>
+      post("/legion/v1/claims/owed", LegionOwedRequest, LegionOwedResponse, input, options?.signal),
     releaseRecords: (input) =>
       post(
         "/legion/v1/claims/release-records",

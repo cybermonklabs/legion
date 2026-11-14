@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
 // PodUpdateContract is the daemon contract that introduced ready_for_update (api/version.go's
@@ -489,9 +490,14 @@ func (m *Machine) staleRegistration(ctx context.Context, got int) error {
 			"pluginContract", got, "daemonApiVersion", m.deps.PluginContract, "due", m.wake.at)
 		return claim.StalePluginContract(got, m.deps.PluginContract)
 	}
+	// Which registration is a failure is this site's guard, and no outcome question: a relaunch
+	// onto the daemon's own contract already ran for this claim, so the process it started came
+	// back stale and names OutcomeStalePlugin, which the policy charges to the launch budget. Any
+	// other stale registration is no failure of the claim's — its process predates the relaunch
+	// that will move it — and is the lane's uncharged relaunch (relaunchStale).
 	var err error
 	if m.claim.PluginRelaunchFor == m.deps.PluginContract {
-		err = m.relaunchAfterFailure(ctx, CauseStalePlugin)
+		err = m.relaunchAfterFailure(ctx, runtime.OutcomeStalePlugin)
 	} else {
 		err = m.relaunchStale(ctx, WakeLaunch, "registration")
 	}

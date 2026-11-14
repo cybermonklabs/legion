@@ -23,9 +23,10 @@ import (
 )
 
 // newWorkflowHarness serves the daemon's routes with the workflow of cfg deciding every fact they
-// apply, over a real Postgres and the GitHub stand-in a completing implementer reads. It answers
-// the engine the test applies its own facts with — a settlement, a status a person set, a failed
-// claim — and the recorder of every fact the routes applied.
+// apply, over a real Postgres and the GitHub stand-in a completing implementer reads, and with the
+// workflow's own table of which role works each phase (workflow.RoleFor), as the daemon wires it.
+// It answers the engine the test applies its own facts with — a settlement, a status a person set,
+// a failed claim — and the recorder of every fact the routes applied.
 func newWorkflowHarness(t *testing.T, cfg workflow.Config) (*harness, *workflow.Engine, *factRecorder) {
 	t.Helper()
 	h := newHarness(t)
@@ -37,7 +38,7 @@ func newWorkflowHarness(t *testing.T, cfg workflow.Config) (*harness, *workflow.
 		Steps:      cfg.Steps,
 		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken,
 		Controller: h.store, Grants: credential.New(nil), Pool: h.store.Pool(), Record: record.NewStore(),
-		Handlers: []intake.Handler{engine, facts}, Dispatch: h.handoffs,
+		Handlers: []intake.Handler{engine, facts}, Dispatch: h.handoffs, RoleFor: workflow.RoleFor,
 		Tokens: handoffTokens{}, GitHubAPI: github.url,
 	}).Handler
 	return h, engine, facts

@@ -799,10 +799,12 @@ func TestProcessEndsListsEveryEndDeclared(t *testing.T) {
 // file of each. The walk above reads those rather than type-checking the dependency tree from
 // its source, which this package's dependencies make tens of seconds of the test binary's run
 // (the source read sealed makes, in table_test.go, is the longest test in the package by
-// itself).
-func compiledDependencies(t *testing.T) func(string) (io.ReadCloser, error) {
+// itself). also names other packages, by directory, whose dependencies are listed with this
+// package's, for a test that type-checks their source too.
+func compiledDependencies(t *testing.T, also ...string) func(string) (io.ReadCloser, error) {
 	t.Helper()
-	listed, err := exec.Command("go", "list", "-deps", "-export", "-json=ImportPath,Export", ".").Output()
+	args := append([]string{"list", "-deps", "-export", "-json=ImportPath,Export", "."}, also...)
+	listed, err := exec.Command("go", args...).Output()
 	if err != nil {
 		var exit *exec.ExitError
 		if errors.As(err, &exit) {

@@ -46,7 +46,7 @@ func TestNoStreamCallOfAMappingReadHoldsTheFactSerializer(t *testing.T) {
 	w, client, _, _ := mappingRigWith(t, &installations{}, held.install)
 	client.set(dispatch.RepoProject{Repo: "acme/widgets", Project: "LEGION", Default: true})
 	refreshed := make(chan error, 1)
-	go func() { refreshed <- w.refreshMapping(ctx) }()
+	go func() { _, err := w.refreshMapping(ctx); refreshed <- err }()
 
 	calls := 0
 	for {

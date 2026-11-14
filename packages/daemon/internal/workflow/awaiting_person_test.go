@@ -406,6 +406,54 @@ func TestAnUnsequencedChangesReadThenItsLiveEventTellsTheReviewOnce(t *testing.T
 	}
 }
 
+// The resume task asks the one rule (DecisionStands) about the changes request that answered the
+// wait at the version the answer recorded with it, not at a version read back out of the detail's
+// words: the detail is display text, and a rewording of it, or a row that holds it in another
+// shape, must not turn a review the person's approval followed back into a request to revise.
+// The wait is answered through the engine and read back from the record, so the version is the
+// one the answer's own write stored. The control is the same pair of details with no approval
+// after the review, where both name it.
+//
+// The last case needs that stored version: the gate holds an approval of version 1, an older
+// version than the one reviewed, delivered after the wait began. It answers nothing of a review of
+// version 2, which is named; a review asked at no version would be asked at the approved version 1
+// instead, read as superseded by that approval, and dropped.
+func TestARewordedChangesDetailDoesNotChangeWhetherTheResumeNamesTheReview(t *testing.T) {
+	pool, apply := askRig(t)
+	seedIssue(t, pool, awaitingRoot(3))
+	seedQuestion(t, pool, "ask-q", 3)
+	seedGate(t, pool, record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact-208", LatestVersion: 2})
+	apply("changes", intake.DispatchArtifact{Key: "LEGION-208", ArtifactID: "artifact-208", Kind: intake.DispatchArtifactChangesRequested,
+		Version: 2, Reason: "say more", Mark: record.EventMark{Seq: 8, At: time.Date(2026, 11, 13, 9, 0, 0, 0, time.UTC)}})
+	answered := recordedRoot(t, pool).Awaiting
+	if answered == nil || answered.AnsweredBy != record.AnsweredByChanges {
+		t.Fatalf("awaiting after the changes request = %+v, want it answered by the request", answered)
+	}
+	reworded := *answered
+	reworded.AnsweredDetail = "the review of the second version, which says \"say more\""
+	approvedVersion := 2
+	approved := record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact-208", LatestVersion: 2, ApprovedVersion: &approvedVersion,
+		ApprovedMark: record.EventMark{Seq: 9, At: time.Date(2026, 11, 13, 9, 5, 0, 0, time.UTC)}}
+	closed := record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact-208", LatestVersion: 2}
+	olderVersion := 1
+	olderApproved := record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact-208", LatestVersion: 2, ApprovedVersion: &olderVersion,
+		ApprovedMark: record.EventMark{Seq: 9, At: time.Date(2026, 11, 13, 9, 5, 0, 0, time.UTC)}}
+	for _, waiting := range []record.Awaiting{*answered, reworded} {
+		if task := resumeTask("LEGION-208", waiting, record.DesignStepSpec, &approved, nil, true); !strings.Contains(task, "asks for no revision now") ||
+			strings.Contains(task, "revise the primary document as they ask") {
+			t.Errorf("resume task with the detail %q = %q, want the review the approval followed to ask for no revision", waiting.AnsweredDetail, task)
+		}
+		if task := resumeTask("LEGION-208", waiting, record.DesignStepSpec, &closed, nil, true); !strings.Contains(task, "revise the primary document as they ask") {
+			t.Errorf("control: resume task with the detail %q and no approval = %q, want the review named", waiting.AnsweredDetail, task)
+		}
+		if task := resumeTask("LEGION-208", waiting, record.DesignStepSpec, &olderApproved, nil, true); !strings.Contains(task, "revise the primary document as they ask") ||
+			strings.Contains(task, "asks for no revision now") {
+			t.Errorf("resume task with the detail %q and an approval of version 1 after it = %q, want the review of version 2 named: "+
+				"an approval of an older version answers nothing of it", waiting.AnsweredDetail, task)
+		}
+	}
+}
+
 // A changes request a read gives no sequence to cannot be placed against a root's wait: it is
 // neither told nor recorded as told, and its own sequenced event decides later.
 func TestAnUnplaceableChangesRequestIsNeitherToldNorRecorded(t *testing.T) {

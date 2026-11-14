@@ -125,6 +125,20 @@ type Runtime interface {
 	// and the round open over it ends. Any other error means the runtime itself could not be
 	// asked, and is never a statement that something drifted either.
 	PodDrift(ctx context.Context, k Known) ([]string, error)
+	// PodRepository is the repository the place k's process runs in was built from: the
+	// repository that place's own workspace fetch names, fixed at the place's creation as
+	// everything else about it is. Only a runtime whose processes share such a place has an
+	// answer — the Sandbox runtime's issue pod, which clones one repository into the issue's
+	// workspace — and a runtime whose processes share no such place answers "". So does a claim
+	// with no process, which records no place at all, and a place whose fetch names no
+	// repository.
+	//
+	// It states what the place holds and compares nothing: the record of the repository an issue
+	// works is the daemon's, so the daemon is what reads this answer against that record and
+	// decides that a pod built from the repository the issue has left must be replaced
+	// (internal/daemon's groupDrift). An error means the runtime itself could not be asked, and
+	// is never a statement that the place was built from another repository.
+	PodRepository(ctx context.Context, k Known) (string, error)
 	// ReplacePod ends the place k's process runs in, once its update round is over, and returns
 	// when the runtime no longer has it. It creates nothing in its stead: every process it ends is
 	// reported ended by the daemon's own act (Observation.Displaced), and the supervisor's resume
@@ -245,6 +259,15 @@ type WorkspaceBundler interface {
 // fetch provisioned, and a bundle the daemon kept open for the pod after it would be applied
 // over that work. The saved work stays in the database for a person to recover and holds the
 // issue's pod (workflow.IdleHoldBundleUnrestored).
+//
+// WorkspaceBundleRefusedRepository is that one attempt spent for the other reason: the bundle is
+// of a repository the issue has left, which Dispatch corrected and the daemon's record followed.
+// The issue's pods are now clones of another repository, so the saved commits have no bases
+// there. The store moves the bundle out of the issue's one row and into a table of its own
+// (workspace_bundles_refused), where no later release of the issue overwrites or deletes it and
+// no pod is ever sent it, even after Dispatch moves the issue back. The daemon writes on the
+// issue where the work is, and the bundle holds no pod: a hold for work nothing restores would
+// never end.
 type SavedWorkspaceBundle func(ctx context.Context, issue, podUID string, podCreated time.Time) (WorkspaceBundle, WorkspaceBundleTake, error)
 
 // WorkspaceBundleRestored is the runtime's confirmation that the pod replacing the released one

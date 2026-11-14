@@ -63,7 +63,7 @@ func leakCheckStore(t *testing.T) (*store.Store, runtime.WorkspaceBundle) {
 	t.Helper()
 	st := migratedStore(t)
 	saved := savedWorkspaceBundle()
-	if err := st.PutWorkspaceBundle(context.Background(), testTree, saved.Release, saved); err != nil {
+	if err := st.PutWorkspaceBundle(context.Background(), testTree, saved.Release, savedBundleRepo, saved); err != nil {
 		t.Fatalf("save the released workspace's bundle: %v", err)
 	}
 	return st, saved
@@ -74,7 +74,7 @@ func leakCheckStore(t *testing.T) (*store.Store, runtime.WorkspaceBundle) {
 func withLeakCheckAndStore(source LeakCheckReader, st *store.Store) rigOption {
 	return withOptions(func(o *Options) {
 		o.LeakCheck = source
-		o.SavedWorkspaceBundle, o.WorkspaceBundleRestored = st.TakeWorkspaceBundleForRestore, st.DeleteRestoredWorkspaceBundle
+		o.SavedWorkspaceBundle, o.WorkspaceBundleRestored = savedBundles(st), st.DeleteRestoredWorkspaceBundle
 	})
 }
 
@@ -246,7 +246,7 @@ func TestARefusedLeakCheckStartsNothingAndLeavesTheSavedBundle(t *testing.T) {
 			if pod == nil {
 				t.Fatal("the refused launch left no pod")
 			}
-			bundle, take, err := st.TakeWorkspaceBundleForRestore(g.ctx, testTree, string(pod.UID), pod.CreationTimestamp.Time)
+			bundle, take, err := savedBundles(st)(g.ctx, testTree, string(pod.UID), pod.CreationTimestamp.Time)
 			if err != nil {
 				t.Fatal(err)
 			}

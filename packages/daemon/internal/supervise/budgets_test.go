@@ -396,7 +396,7 @@ func TestATurnThatEndsClearsTheDeathsEvenWhenItNeverRanTheTask(t *testing.T) {
 	h.wantBudgets(Budgets{Deaths: 1})
 
 	h.must(StreamTurnStart{Claim: testToken})
-	h.must(StreamLateRefusal{Claim: testToken, DeliveryID: resent, Error: "Agent is already processing a request"})
+	h.must(StreamLateRefusal{Claim: testToken, DeliveryID: resent, Error: busyWords, Outcome: runtime.OutcomeAgentBusy})
 	h.must(StreamTurnEnd{Claim: testToken})
 
 	if p := h.pending(); !p.ConfirmedAt.IsZero() {

@@ -47,9 +47,12 @@ func TestASpecDecisionNobodyInItsTreeHearsGoesToTheController(t *testing.T) {
 		{"the tree lingers before its architect's suspend ran", supervise.StateWorking, true, true},
 		{"the architect's claim failed on a running tree", supervise.StateFailed, false, true},
 	} {
+		// The review's place in Dispatch's log travels with a design decision's notice and is
+		// kept with the decision, so a later approval is weighed against it by Dispatch's order.
+		review := record.EventMark{Seq: 7, At: time.Date(2026, 10, 24, 9, 0, 0, 0, time.UTC)}
 		for _, decision := range []record.Notice{
-			{Kind: "design-approved", Version: 3, Actor: "user:alice", Ref: "dispatch://LEGION-1/spec"},
-			{Kind: "design-changes-requested", Version: 3, Reason: "name the rollback path", Actor: "user:alice", Ref: "dispatch://LEGION-1/spec"},
+			{Kind: "design-approved", Version: 3, Actor: "user:alice", Ref: "dispatch://LEGION-1/spec", Review: review},
+			{Kind: "design-changes-requested", Version: 3, Reason: "name the rollback path", Actor: "user:alice", Ref: "dispatch://LEGION-1/spec", Review: review},
 			{Kind: "carried-gate-opened", Version: 3, Reason: carried, Actor: "user:alice", Ref: "dispatch://LEGION-9/spec"},
 		} {
 			t.Run(tc.name+"/"+string(decision.Kind), func(t *testing.T) {
@@ -79,8 +82,12 @@ func TestASpecDecisionNobodyInItsTreeHearsGoesToTheController(t *testing.T) {
 				if got := parkedDecisions(t, pool); len(got) != 1 || !reflect.DeepEqual(got[0], want) {
 					t.Fatalf("parked decisions %#v, want one %#v", got, want)
 				}
-				if kept := keptDecisions(t, pool, records, "LEGION-1"); len(kept) != 1 || kept[0].Ref != decision.Ref || kept[0].Decision != kind || kept[0].Actor != "user:alice" {
+				kept := keptDecisions(t, pool, records, "LEGION-1")
+				if len(kept) != 1 || kept[0].Ref != decision.Ref || kept[0].Decision != kind || kept[0].Actor != "user:alice" {
 					t.Fatalf("kept %#v, want the decision kept for LEGION-1's next admission", kept)
+				}
+				if decision.Review.Seq != 0 && (kept[0].Seq != review.Seq || !kept[0].At.Equal(review.At)) {
+					t.Fatalf("kept at %s, sequence %d; want Dispatch's mark of the review %#v, not the daemon's clock", kept[0].At, kept[0].Seq, review)
 				}
 			})
 		}
@@ -157,6 +164,53 @@ func TestASpecDecisionThatNamesNoPersonIsNotRelayed(t *testing.T) {
 			}
 			if line == "" || !strings.Contains(line, tc.ref) || !strings.Contains(line, "root=LEGION-1") || !strings.Contains(line, "key=legion-outbox:") {
 				t.Fatalf("log %q; want the not-relayed line naming %s, the root and the key", logged.String(), tc.ref)
+			}
+		})
+	}
+}
+
+// A changes request that the person's approval of the same version followed is not relayed,
+// though the approval's mark carries a time and no sequence, as an approval read from Dispatch
+// without one does: the review is asked at its own mark, which the notice carries
+// (record.Notice.Review), and the two are ordered by Dispatch's times (record.EventMark.After). A
+// review asked at no mark would come after any approval with no sequence and be relayed as the
+// person's word. The control is a changes request Dispatch recorded after that approval, which is
+// the person's word and is relayed.
+func TestAChangesRequestAnApprovalWithNoSequenceFollowedIsNotRelayed(t *testing.T) {
+	approvedAt := time.Date(2026, 11, 13, 9, 5, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name    string
+		review  record.EventMark
+		relayed bool
+	}{
+		{"the approval followed the review", record.EventMark{Seq: 7, At: approvedAt.Add(-5 * time.Minute)}, false},
+		{"the review followed the approval", record.EventMark{Seq: 9, At: approvedAt.Add(5 * time.Minute)}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			pool := isolatedOutboxPool(t)
+			records := record.NewStore()
+			noticeTree(t, pool, records, true)
+			version := 3
+			if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+				return records.PutGate(ctx, tx, record.DesignGate{Issue: "LEGION-1", Step: record.DesignStepSpec, ArtifactID: "artifact-1",
+					LatestVersion: 3, ApprovedVersion: &version, ApprovedMark: record.EventMark{At: approvedAt}})
+			}); err != nil {
+				t.Fatalf("approve version 3: %v", err)
+			}
+			sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
+			architectClaim(t, sup, "LEGION-1", supervise.StateSuspended)
+			runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, notices: &holderPublisher{},
+				supervisor: sup, project: "legion", gatedSteps: config.DesignGateRootIssues.Steps(), now: time.Now}
+			notice := record.Notice{Kind: "design-changes-requested", Version: 3, Reason: "name the rollback path", Actor: "user:alice",
+				Ref: "dispatch://LEGION-1/spec", Review: tc.review}
+			row := leasedOutboxRow(t, pool, records, mustOutboxRow(t, "LEGION-1", notice, time.Now()))
+			if err := runner.notice(ctx, row, notice); err != nil {
+				t.Fatalf("notice: %v", err)
+			}
+			told, kept := parkedDecisions(t, pool), keptDecisions(t, pool, records, "LEGION-1")
+			if relayed := len(told) == 1 && len(kept) == 1; relayed != tc.relayed || !relayed && (len(told) != 0 || len(kept) != 0) {
+				t.Fatalf("relayed %#v and kept %#v, want relayed and kept %v", told, kept, tc.relayed)
 			}
 		})
 	}

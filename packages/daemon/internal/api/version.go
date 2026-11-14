@@ -1545,4 +1545,79 @@ package api
 // that reading and no head's for good, which is why this line is a reading and never the rule.
 // Read the base's own number and every open head again at the next forward merge rather than
 // from this line.)
-const DaemonAPIVersion = 111
+//
+// 119: INFRA-3136 -- an issue's repository follows the one Dispatch resolves it to, and
+// `GET /legion/v1/state` says so: an issue takes four keys, `repoBefore` and `repoCorrectedAt`,
+// the repository the issue left and the moment the daemon applied the correction, and
+// `repoChangePending` and `repoChangeReason`, a repository Dispatch has named that the daemon has
+// not applied and why it has not. The four are the whole of the wire change: no key is removed,
+// no key changes its meaning, and an issue no correction has reached and nothing waits on carries
+// none of them, so most issues are served exactly as before. A plugin below this contract is
+// served every issue with the four stripped (`withoutRepositoryCorrection`), composed with the
+// sixteen narrowings 111 describes, because one built before sjawhar/legion#2788 reads the state
+// with a strict schema and would refuse the whole body for a key it does not name.
+// `packages/contracts/src/legion-api.ts` mirrors the four on `legionIssue`, each optional.
+//
+// The same contract adds the claim route `POST /legion/v1/claims/owed` (`api.OwedRequest`, the
+// claim token, session and secret `claims/activity` carries), which answers `{"owes": bool,
+// "work": string}` (`api.OwedResponse`): whether the claim owes work now, read from the issue's
+// record — its phase, the role's own row of it, the entry that row names against the entry the
+// claim was given (94's two numbers: a claim behind its entry owes that entry's work, which the
+// daemon is sending, and one level with it owes the phase while the row records no completion)
+// and its production check — and what that work is called, "the testing phase of LEGION-208" or
+// "the production check of LEGION-208", empty when nothing is owed. The end-of-turn reminder
+// renders that answer in both harnesses and keeps no model of the phase of its own
+// (dispatch://INFRA-2746). A plugin below 119 calls no such route,
+// and nothing else of the claim wire changes; `packages/contracts/src/legion-api.ts` mirrors the
+// two bodies as `LegionOwedRequest` and `LegionOwedResponse`, and
+// `packages/contracts/fixtures/daemon-api/owed.json` is the answer's golden.
+//
+// The daemon ships two store migrations with it. `20261112012123_issue_repository_correction.up.sql`
+// adds the four `issues` columns the keys are read from, `workspace_bundles.repo`, the third
+// restore outcome `refused_repository`, and the table `workspace_bundles_refused` a bundle of that
+// outcome is moved to. An older daemon binary put back on this schema writes none of them and
+// reads none of them, and it carries the write-once guard this change removes, so it refuses a
+// corrected repository as it always did while a correction this release applied stands.
+// `20261112215432_delivery_resume.up.sql` adds `pending_task_deliveries.resume`, the wait a held
+// task that resumes an answered root carries, so the task's text is written at each send. An
+// older daemon neither reads nor writes that column: it sends the task text a row holds, which is
+// empty for a resume task this release queued and never sent. It also adds `parked_decisions.seq`,
+// Dispatch's sequence of a kept spec decision's review, which an older daemon neither reads nor
+// writes: a row it keeps carries no sequence and its own clock, as before this release.
+// (This entry takes 119. It took 95 at the fifth forward merge of 2026-11-13, when main declared
+// 87, held 95 through the sixth, which brought main in at 045ee0762538, #3677, declaring 94, and
+// took 101 at that sixth merge. The seventh brings main in at 0fde2dcff6e4, #3707, which declares
+// 98, landed by #3708. The reading of 2026-11-13T13:43:48Z, with
+// main declaring 98, still found 101 free. The reading of 2026-11-13T13:47:56Z found #3659
+// declaring 105, and likely to land before this change, so this entry took 106, the lowest
+// number above 105 that no other open head declared then: a release at 105 landing first would
+// put an entry at 101 below its base and force the renumber then. The reading of
+// 2026-11-13T14:18:53Z found #3730 and #3793 declaring 106, beside the other open heads
+// declaring 37 (#2213), 61 (#2230), 86 (#3534) and 96 (#2731) below the base and, above it, 99
+// (#3575), 100 (#3573, #3715), 103 (#3519), 104 (#3830, #3937) and 105 (#3659). So 107 was the
+// lowest number above every number another open head declared, and this entry took it. The
+// eighth merge brings main in at 2a6ff6c03269, #3786, still declaring 98. The ninth brings main
+// in at aee2873c54ee, #3830, which declares 104. The reading of 2026-11-13T16:58:14Z found no
+// other open head declaring 107: the others declare 37, 61, 86, 99, 100, 104 (twice), 105, 106
+// (three times), 108 and 109. By the rule of 2026-11-13T06:29Z this entry kept 107, which stood
+// above the base's 104 and no other open head declared. The tenth merge brings main in at
+// 61685f973c9a, #3997, which declares 111, #3573's entry right above this one, so 107 no longer
+// stands above the base. The reading of 2026-11-13T23:41:03Z found the other open heads
+// declaring 37, 61 and 86 below the base and, above it, 112, 113, 114, 115 (four times) and 116,
+// so 117 was then the lowest number above the base's 111 and above every number another open
+// head declared, and this entry took it. The reading of 2026-11-14T00:41:11Z, with main still
+// declaring 111, found #3711 declaring 117 beside 37 (#2213), 61 (#2230) and 86 (#3534) below
+// the base and, above it, 112 (#2731), 113 (#3575), 114 (#3730), 115 (#3519, #3659, #3793 and
+// #3937) and 116 (#3715), so 118 was then the lowest number above the base's 111 and above every
+// number another open head declared, and this entry took it. The reading of
+// 2026-11-14T00:48:05Z, with main still declaring 111, found #3659 declaring 118 beside 37, 61
+// and 86 below the base and, above it, 112 (#2731), 113 (#3575), 114 (#3730), 115 (#3519, #3793
+// and #3937), 116 (#3715) and 117 (#3711), so 119 is the lowest number above the base's 111 and
+// above every number another open head declares, and this entry takes it. A
+// reading is of this file at refs/pull/<n>/head for every open pull request, not of a file list:
+// GitHub cuts a pull request's file list short, so one that changes more files than the page
+// holds answers without this path. Read the base's own number and every open pull request again
+// at the next merge rather than from this line, as
+// docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
+// says.)
+const DaemonAPIVersion = 119

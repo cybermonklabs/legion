@@ -310,13 +310,24 @@ type Prompt struct {
 
 // Response is OMP's answer to a request, carrying the request's own id. Data is the answer's
 // payload, left raw because its shape belongs to the command (worker-rpc.ts:369-377).
+//
+// Code is the machine-readable reason Oh My Pi gives beside a refusal's `error`, where it gives
+// one (rpc-types.ts: "`code` is an optional machine-readable reason"), and "" where it gives none.
+// It is what the daemon decides on; Error is words for a person (CodeSessionBusy).
 type Response struct {
 	ID      string          `json:"id"`
 	Command string          `json:"command"`
 	Success bool            `json:"success"`
 	Error   string          `json:"error,omitempty"`
+	Code    string          `json:"code,omitempty"`
 	Data    json.RawMessage `json:"data,omitempty"`
 }
+
+// CodeSessionBusy is the code of a refusal the agent makes because it is in a turn of its own:
+// Oh My Pi's word for that refusal on every RPC command that can meet it, and the code the Claude
+// Code bridge gives its own. It is the only way the daemon reads a busy agent; a refusal that
+// says so in words alone is not one (internal/stream's PromptRefusalOutcome).
+const CodeSessionBusy = "session_busy"
 
 // StateData is the get_state answer's payload. IsStreaming is absent rather than false when the
 // worker does not report it, which is the difference between "idle" and "unknown"
@@ -375,30 +386,43 @@ type PromptResult struct {
 }
 
 // PromptError is how a prompt's work failed, as the pinned Oh My Pi declares it: `{message,
-// provider?, model?, httpStatus?, retryable}`, the "failure detail of a `prompt_result` with
-// `status: \"error\"`". Oh My Pi writes it for a prompt whose last assistant message ended with
-// stopReason "error" — a provider request its own retries could not get through, where
+// provider?, model?, httpStatus?, retryable, code?}`, the "failure detail of a `prompt_result`
+// with `status: \"error\"`". Oh My Pi writes it for a prompt whose last assistant message ended
+// with stopReason "error" — a provider request its own retries could not get through, where
 // Retryable says it may still succeed later — and for one it failed outright before any turn.
 //
-// Only Message is read, as the reason a failed prompt is recorded with (PromptResult.Reason).
-// The other members are modelled so the frame survives this package whole, the way every other
-// frame does: a decode that kept only what today's reader wants would quietly drop the provider,
-// the model and the status behind a failure from anything that re-encodes it.
+// Message is the reason a failed prompt is recorded with (PromptResult.Reason), for a person to
+// read. Code is Oh My Pi's machine-readable reason where it gives one — CodeSessionBusy for a
+// prompt that failed because the agent was in a turn of its own — and it, not Message, is what a
+// failure is told apart by (PromptResult.Code). The other members are modelled so the frame
+// survives this package whole, the way every other frame does: a decode that kept only what
+// today's reader wants would quietly drop the provider, the model and the status behind a failure
+// from anything that re-encodes it.
 type PromptError struct {
 	Message    string `json:"message"`
 	Provider   string `json:"provider,omitempty"`
 	Model      string `json:"model,omitempty"`
 	HTTPStatus int    `json:"httpStatus,omitempty"`
 	Retryable  bool   `json:"retryable"`
+	Code       string `json:"code,omitempty"`
 }
 
 // Reason is Oh My Pi's message for work that ended in an error, and the empty string for work
-// that did not: the one thing the daemon reads of the failure.
+// that did not.
 func (f PromptResult) Reason() string {
 	if f.Error == nil {
 		return ""
 	}
 	return f.Error.Message
+}
+
+// Code is Oh My Pi's machine-readable reason for work that ended in an error, and the empty
+// string for work that did not or for an error that carries none.
+func (f PromptResult) Code() string {
+	if f.Error == nil {
+		return ""
+	}
+	return f.Error.Code
 }
 
 // ToolExecutionStart is Oh My Pi beginning one tool call of a turn, and ToolExecutionEnd that

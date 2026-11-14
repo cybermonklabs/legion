@@ -48,6 +48,10 @@ func keptJSON(kept *record.KeptDecisions) ([]byte, error) {
 // not relayed (by no person, on a root that is no parked tree, on a tree that hears it, or on a
 // root with no record), or handled before under the same key, by an earlier run or another row
 // carrying the same notice, whose own line said what became of it.
+//
+// A decision the person has since answered with a later approval is not relayed: the gates of the
+// issue it was made on, as the record holds them now, are asked (decisionSuperseded), and the
+// controller is not told to act on a review the person's own approval took the place of.
 func (r *outbox) parkDecision(ctx context.Context, issue, root string, notice record.Notice, key string, row int64) error {
 	decision, ok := record.SpecDecision(notice.Kind)
 	if !ok {
@@ -55,7 +59,7 @@ func (r *outbox) parkDecision(ctx context.Context, issue, root string, notice re
 	}
 	args := []any{"row", row, "kind", notice.Kind, "issue", issue, "root", root, "key", key}
 	now := r.now().UTC()
-	outcome, fresh, recorded := record.RelayNone, false, false
+	outcome, fresh, recorded, superseded := record.RelayNone, false, false, false
 	scoped, committed := intake.WithCommitHooks(ctx)
 	if err := pgx.BeginFunc(scoped, r.pool, func(tx pgx.Tx) error {
 		marked, err := r.records.MarkProcessed(scoped, tx, parkedDecisionSource, key)
@@ -68,8 +72,20 @@ func (r *outbox) parkDecision(ctx context.Context, issue, root string, notice re
 			return err
 		}
 		recorded = true
+		if superseded, err = r.decisionSuperseded(scoped, tx, issue, notice, decision); err != nil || superseded {
+			return err
+		}
+		// The decision is kept at Dispatch's mark of the review it reports (record.Notice.Review),
+		// so a later approval is weighed against it by Dispatch's order and not by this clock;
+		// this clock places it only where the notice carries no time of the review (one an
+		// earlier release queued, or a Dispatch event that gave none).
+		at := notice.Review.At
+		if at.IsZero() {
+			at = now
+		}
 		outcome, err = record.RelayParkedDecision(scoped, tx, r.records, issue, *stored, true,
-			record.ParkedDecision{Ref: notice.Ref, Decision: decision, Actor: notice.Actor, At: now}, notice.Version, notice.Reason, r.gatedSteps)
+			record.ParkedDecision{Ref: notice.Ref, Decision: decision, Actor: notice.Actor, At: at, Seq: notice.Review.Seq},
+			notice.Version, notice.Reason, r.gatedSteps)
 		return err
 	}); err != nil {
 		return fmt.Errorf("send the controller the decision %s carried on %s: %w", key, issue, err)
@@ -80,6 +96,8 @@ func (r *outbox) parkDecision(ctx context.Context, issue, root string, notice re
 		r.log.Info("outbox parked decision handled before under this key", args...)
 	case !recorded:
 		r.log.Info("outbox parked decision not relayed: its root has no record", args...)
+	case superseded:
+		r.log.Info("outbox parked decision not relayed: the person approved a later version since", append(args, "version", notice.Version)...)
 	case outcome == record.RelaySent:
 		r.log.Info("outbox parked decision sent to the controller", args...)
 	case outcome == record.RelayKept:
@@ -92,6 +110,21 @@ func (r *outbox) parkDecision(ctx context.Context, issue, root string, notice re
 		r.log.Info("outbox parked decision not relayed: its tree hears it", args...)
 	}
 	return nil
+}
+
+// decisionSuperseded says whether the spec decision notice carries on issue is no longer the
+// person's word, by the one predicate (workflow.DecisionStands) over the gates of issue as the
+// record holds them now: the decision of the document notice.Ref names, at the version the notice
+// carries and at Dispatch's mark of the review (record.Notice.Review), which this release puts on
+// every design decision's notice. A notice an earlier release queued carries no mark, and is asked
+// at its version alone.
+func (r *outbox) decisionSuperseded(ctx context.Context, tx pgx.Tx, issue string, notice record.Notice, decision record.DecisionKind) (bool, error) {
+	gates, err := r.records.GatesOf(ctx, tx, issue)
+	if err != nil {
+		return false, err
+	}
+	return !workflow.DecisionStands(gates, r.gatedSteps, workflow.Decision{Kind: decision, Issue: issue, Ref: notice.Ref,
+		Version: notice.Version, Mark: notice.Review}), nil
 }
 
 // settleKept settles what an architect start row's task named of what its tree is owed, once the

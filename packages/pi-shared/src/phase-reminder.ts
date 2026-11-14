@@ -1,12 +1,13 @@
 import { randomUUID } from "node:crypto";
-import { ROLE_TOPIC_PREFIX, roleForPhase, roleToken } from "@legion/contracts";
-import type { LegionIssue, LegionState } from "@legion/contracts/legion-api";
+import { roleToken, roleTopic } from "@legion/contracts";
+import type { LegionOwed } from "@legion/contracts/legion-api";
 import { messageFor } from "@legion/envoy-client/errors";
 import {
   EnvoyApiError,
   type PublishInput,
   type PublishResult,
 } from "@legion/envoy-client/transport";
+import type { OwedInput } from "./daemon-client";
 import type { ClaimCapability } from "./legion-phase-ops";
 import {
   LAST_MESSAGE_LIMIT,
@@ -27,6 +28,10 @@ import type { StallLimits } from "./stall-limits";
  * run of reminders changes nothing. It imports nothing of Oh My Pi — every collaborator is a
  * field, so a unit test drives it without a host, and `extensions/legion.ts` is the only place
  * that knows what `pi` and the daemon client are.
+ *
+ * Whether a reminder goes out at all is the daemon's answer (`POST /legion/v1/claims/owed`),
+ * asked as each one is due: the reminder keeps no model of the issue's phase, so a process the
+ * daemon restarts or a pod it replaces asks again and reads the same answer.
  *
  * The first reminder of a run is the `session_stop` continuation, which the host turns into one
  * more turn of the same session, and it is the only one of that run: every one after it is a
@@ -70,10 +75,12 @@ export interface PhaseReminderDeps {
   readonly saveEntry: (entry: PhaseStallEntry) => void;
   /** This session's own claim, or undefined before it has registered one. */
   readonly claim: () => ClaimCapability | undefined;
-  /** The daemon's whole state, read as the `legion` tool's `read_record` reads it. `signal` is
-   * aborted once the record check's bound passes without an answer, and the read is to abort with
-   * it (`LegionDaemonClient.state`'s `signal`), so a daemon that hangs is left no open request. */
-  readonly readState: (signal: AbortSignal) => Promise<LegionState>;
+  /** What this session's claim owes now (`LegionDaemonClient.owed`): the one answer that decides
+   * whether a due reminder goes out, and the name of the work the reminder and the architect
+   * notice give. `signal` is aborted once `OWED_READ_BOUND_MS` passes without an answer, and the
+   * request is to abort with it, so a daemon that hangs is left no open request. An answer that
+   * does not arrive is `UNREAD_CHECK`'s to decide, and no host decides it again. */
+  readonly readOwed: (input: OwedInput, signal: AbortSignal) => Promise<LegionOwed>;
   /** The Envoy listener the architect notice goes to, or undefined when Envoy is off for this
    * session. Built lazily and once by the caller. */
   readonly publisher: () => EnvoyPublish | undefined;
@@ -81,15 +88,17 @@ export interface PhaseReminderDeps {
   readonly project: string | undefined;
   readonly limits: StallLimits;
   readonly log: PhaseReminderLog;
-  /** The bound on one daemon read; `RECORD_READ_BOUND_MS` when it is left out. */
-  readonly recordBoundMs?: number;
+  /** The bound on the owed read; `OWED_READ_BOUND_MS` when it is left out. Only a test, whose
+   * daemon hangs on purpose, passes one. */
+  readonly owedBoundMs?: number;
 }
 
 export interface PhaseReminder {
   /** `session_start`: the record this host persisted, or undefined when it holds none yet. */
   readonly restore: (entry: PhaseStallEntry | undefined) => void;
-  /** `session_start`, once the claim bootstrap has returned: the resume reminder, for a worker
-   * the daemon relaunched into an open phase that nothing else will wake. */
+  /** `session_start`, once the claim bootstrap has returned: the resume reminder, armed at every
+   * phase worker's boot, for a worker that owes work nothing else will wake it for. The daemon's
+   * answer when it is due decides whether it goes out. */
   readonly armResumeReminder: () => void;
   /** `message_start`: a turn is running, and every armed timer is now stale. */
   readonly turnStarted: () => void;
@@ -111,16 +120,36 @@ export interface PhaseReminder {
   /** The phase half of the session's activity report (`src/session-activity.ts`): when the
    * reminder this session armed last is due. This is the one statement of that moment — the
    * delay each arming picks comes from the limits here, so nothing outside recomputes it.
-   * `nextReminderAt` is null when no armed timer is still live: none was armed, the phase has
-   * closed, or something has happened since that made it stale, which is the same generation
-   * guard the armed callback applies to itself. */
+   * `nextReminderAt` is null when no armed timer is still live: none was armed, or something has
+   * happened since that made it stale, which is the same generation guard the armed callback
+   * applies to itself. */
   readonly phaseWake: () => SessionActivityPhase;
 }
 
-/** How long the record check waits for the daemon. `createLegionDaemonClient` puts no deadline on
- * its fetch, and `session_stop` is a hook the host awaits, so the check bounds the read itself and
- * aborts it at the bound. */
-export const RECORD_READ_BOUND_MS = 5_000;
+/**
+ * How long a due reminder waits for the daemon's answer of what this claim owes
+ * (`POST /legion/v1/claims/owed`) before it reads that answer as unread (`UNREAD_CHECK`).
+ * `createLegionDaemonClient` puts no deadline on its fetch, and `session_stop` is a hook the host
+ * awaits, so the check bounds the read itself and aborts it at the bound. It is a constant, with
+ * no setting and no switch: a value nobody measures is worse than a line somebody edits, so the
+ * measurement it was sized against is written here.
+ *
+ * Measured on 2026-11-12. The INFRA daemon answered a cheap route (`GET /healthz`) in 4.4 ms to
+ * 6.7 ms, with one first connection at 1.0 s, while its `GET /legion/v1/state` answered in 9.2 s
+ * to 9.6 s (4,121,439 bytes), which is why the check reads no whole state. The owed route reads
+ * the asking claim, its issue's record and its tree root's, and that issue's own phase, pull
+ * request and check rows (`claimOwed` in `packages/daemon/internal/api/owed.go`, `handoffPosition`
+ * in `handoff.go`), each by key, so its time does not grow with the deployment: through the real
+ * handler over the test PostgreSQL, with 2,300 issues and 300 live claims seeded, 600 requests
+ * answered at a median of 1.9 ms to 2.0 ms and a maximum of 9.7 ms to 25.8 ms over two runs.
+ *
+ * The worst answer those numbers predict is about 1.03 s: a first connection of 1.0 s, INFRA's
+ * network of about 5 ms, and the route's own 26 ms. 3 s is about three times that, which leaves
+ * room for a daemon whose database is busy with many turns ending at once, while a daemon that is
+ * really down costs a worker's turn end 3 s, not 5 s, and stays well inside the 30 s Claude Code
+ * gives the `Stop` hook that awaits it (`packages/claude-envoy/scripts/build.ts`).
+ */
+export const OWED_READ_BOUND_MS = 3_000;
 
 /**
  * The listener's "no live session holds that role": a 404 whose body names `unclaimed` or
@@ -132,7 +161,7 @@ export const RECORD_READ_BOUND_MS = 5_000;
  * published with `keep: false` (INFRA-839). That is what the kept lane reserves the flag for: a
  * sender that holds a retry of its own, as the daemon's notice publisher does
  * (`packages/daemon/internal/notify/notify.go`). This sender's retry is the reminding itself —
- * reminders never stop while the phase is open, so every one after this one tries the notice
+ * reminders never stop while the work is owed, so every one after this one tries the notice
  * again — while a kept copy waits out the listener's window and is then dropped with nothing
  * left to send it again.
  *
@@ -153,12 +182,8 @@ function roleUnheld(error: unknown): boolean {
 
 /** `work`'s answer, or a rejection once `ms` have passed without one, when the signal `work` was
  * handed is aborted so what it started does not outlive the bound (`withinBudget` in
- * `src/capability-report.ts` is the same shape, with a fallback answer in place of the throw).
- * The stall watch's own notice bounds its record read with this (`pi-legion/src/stall-evidence.ts`). */
-export async function withBound<T>(
-  work: (signal: AbortSignal) => Promise<T>,
-  ms: number
-): Promise<T> {
+ * `src/capability-report.ts` is the same shape, with a fallback answer in place of the throw). */
+async function withBound<T>(work: (signal: AbortSignal) => Promise<T>, ms: number): Promise<T> {
   const controller = new AbortController();
   const deadline = Promise.withResolvers<T>();
   const timer = setTimeout(() => {
@@ -173,25 +198,32 @@ export async function withBound<T>(
   }
 }
 
-/** Whether an issue's own architect claim is live: a record the daemon holds, whose architect is
- * neither retired nor failed. An issue whose own architect is not live is one whose tree's
- * architect owns the worker, which is what decides the topic both this reminder (`tellArchitect`)
- * and the stall notice (`pi-legion/src/stall-evidence.ts`) publish to. */
-export function architectLive(record: LegionIssue | undefined): boolean {
-  const architect = record?.architect;
-  return architect !== undefined && architect.state !== "retired" && architect.state !== "failed";
-}
+/** What the owed check decided, for the reminder and the architect notice that may follow it: the
+ * same reminder never asks the daemon twice. `work` is the daemon's name for what is owed, and
+ * undefined when its answer did not arrive (`UNREAD_CHECK`), which names no work. */
+type OwedCheck =
+  | { readonly reminds: false }
+  | { readonly reminds: true; readonly work: string | undefined };
 
-/** What the record check decided, and the record it read, for the architect notice that may
- * follow it: the same reminder never reads the daemon twice. */
-interface RecordCheck {
-  readonly reminds: boolean;
-  readonly record?: LegionIssue;
-}
+/**
+ * The owed check's decision when the daemon's answer of what this claim owes could not be read:
+ * the session holds no claim yet, or the read failed — the daemon unreachable, a refusal, an
+ * answer the contract does not describe, or no answer inside `OWED_READ_BOUND_MS`. This is the
+ * one place that choice is made. Both hosts build their reminder here (`createPhaseReminder`: Oh
+ * My Pi in `packages/pi-legion/extensions/legion.ts`, Claude Code in
+ * `packages/claude-envoy/src/legion-phase-hook.ts`), and neither decides it again.
+ *
+ * It reminds — the worker is nudged on a failed read — because on a daemon that does not itself
+ * send a silent phase worker its task after `worker_silence_minutes` (dispatch://INFRA-3163),
+ * nothing else nudges a stalled worker. The nudge says that it could not read the record
+ * (`UNREAD_REMINDER`), and names no phase, no operation and no owed work, because it read none
+ * of them.
+ */
+const UNREAD_CHECK: OwedCheck = { reminds: true, work: undefined };
 
 export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
-  const boundMs = deps.recordBoundMs ?? RECORD_READ_BOUND_MS;
-  let stall: PhaseStallState = { state: "closed", count: 0 };
+  const boundMs = deps.owedBoundMs ?? OWED_READ_BOUND_MS;
+  let stall: PhaseStallState = { state: "active", count: 0 };
   let reported = false;
   let reportKey: string | undefined;
   /** Bumped by everything that makes an armed timer stale. */
@@ -199,9 +231,9 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
   let turnRunning = false;
   /** Whether a continuation has already been delivered in the run that is now settling. The count
    * cannot say so: the continuation's own turn is one the worker is being told to call a tool in,
-   * so a `tool-call` or an `inbound-event` puts the count back to 0 mid-run. At most one
-   * continuation per run: the run then settles, the daemon sees the turn end, and the next
-   * reminder comes from the timer with its delay. */
+   * so a `tool-call` or an `inbound` puts the count back to 0 mid-run. At most one continuation
+   * per run: the run then settles, the daemon sees the turn end, and the next reminder comes from
+   * the timer with its delay. */
   let continued = false;
   /** The head of what the worker said as its last turn settled: the architect notice quotes it,
    * and it rides the record, so a notice the resume reminder of a relaunched worker earns still
@@ -233,7 +265,7 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
   };
   recorded = JSON.stringify(entryOf());
 
-  const advance = (input: PhaseStallInput): string | undefined => {
+  const advance = (input: PhaseStallInput): boolean => {
     const step = stepPhaseStall(stall, input);
     stall = step.state;
     // A count back at zero is a worker that has done something: the next run of reminders reports
@@ -243,67 +275,59 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
       reportKey = undefined;
     }
     writeEntry();
-    return step.reminder;
+    return step.remind === true;
   };
 
   /**
-   * D5: this session's own issue record, read as `read_record` reads it, bounded. The reminder is
-   * dropped when the record says this role no longer works this phase — the shape of a worker
-   * that completed its phase from the shell instead of the tool — and when the daemon has failed
-   * this role's claim, which is the daemon's own word that this session is finished: a claim the
-   * daemon failed is replaced by a retry in a session of its own, and a reminder written into
-   * this one reaches nobody who can act on it. That is what stops Claude Code's reminder, which
-   * has no refused-turn settle of its own for a turn the provider never answered. Everything else
-   * fails open and is logged at debug: an unreachable daemon is exactly when a stalled worker
-   * must still be nudged.
+   * What this session's claim owes, asked of the daemon and bounded. The reminder is dropped when
+   * the daemon answers that the claim owes nothing — a worker whose phase has finished, whether
+   * through the tool, from the shell, or by a move of the issue it did not make, and a claim the
+   * daemon has failed, which is the daemon's own word that this session is finished: a retry
+   * runs in a session of its own, and a reminder written into this one reaches nobody who can act
+   * on it. That is what ends the reminding of a session whose provider refuses every turn, on
+   * either host. An answer that could not be read is `UNREAD_CHECK`, logged at debug: it reminds,
+   * and the reminder it sends names no work.
    */
-  const recordCheck = async (): Promise<RecordCheck> => {
+  const owedCheck = async (): Promise<OwedCheck> => {
     const claim = deps.claim();
-    if (claim === undefined) return { reminds: true };
-    let record: LegionIssue | undefined;
+    if (claim === undefined) return UNREAD_CHECK;
+    let answer: LegionOwed;
     try {
-      record = (await withBound(deps.readState, boundMs)).issues[claim.issue];
+      answer = await withBound(
+        (signal) =>
+          deps.readOwed(
+            { claimToken: claim.claimToken, sessionId: claim.sessionID, secret: claim.secret },
+            signal
+          ),
+        boundMs
+      );
     } catch (error) {
-      deps.log.debug("legion: the daemon did not answer the phase reminder's record check", {
+      deps.log.debug("legion: the daemon did not say what this claim owes", {
         issue: claim.issue,
         error: messageFor(error),
       });
-      return { reminds: true };
+      return UNREAD_CHECK;
     }
-    if (record === undefined) {
-      deps.log.debug("legion: the daemon holds no record for this phase reminder's issue", {
-        issue: claim.issue,
-      });
-      return { reminds: true };
-    }
-    if (roleForPhase(record.phase) !== claim.role) {
-      deps.log.debug("legion: this role no longer works this phase; no reminder is sent", {
-        issue: claim.issue,
-        phase: record.phase,
-        role: claim.role,
-      });
-      return { reminds: false, record };
-    }
-    const state = record.workers[claim.role]?.claim.state;
-    if (state === "failed") {
-      deps.log.debug("legion: the daemon has failed this claim; no reminder is sent", {
+    if (!answer.owes) {
+      deps.log.debug("legion: the daemon says this claim owes nothing; no reminder is sent", {
         issue: claim.issue,
         role: claim.role,
       });
-      return { reminds: false, record };
+      return { reminds: false };
     }
-    return { reminds: true, record };
+    return { reminds: true, work: answer.work };
   };
 
   /**
-   * D6: one Envoy message to the issue's architect, when a delivered reminder brought the count to
-   * the threshold. `reportKey` is minted at the first attempt of a run of reminders and kept until
-   * the count resets, so a publish that timed out after the listener accepted it is not delivered
-   * twice, and a failure leaves `reported` false for the next reminder to try again. The key also
-   * names the run an acceptance belongs to: one that lands after the run ended acknowledges
-   * nothing.
+   * D6: one Envoy message to the architect that owns this worker, when a delivered reminder
+   * brought the count to the threshold. It names the work the daemon answered was owed, or says
+   * that the record could not be read, as the reminder did. `reportKey` is minted at the first
+   * attempt of a run of reminders and kept until the count resets, so a publish that timed out
+   * after the listener accepted it is not delivered twice, and a failure leaves `reported` false
+   * for the next reminder to try again. The key also names the run an acceptance belongs to: one
+   * that lands after the run ended acknowledges nothing.
    */
-  const tellArchitect = async (record: LegionIssue | undefined): Promise<void> => {
+  const tellArchitect = async (work: string | undefined): Promise<void> => {
     const claim = deps.claim();
     if (claim === undefined) return;
     const publish = deps.publisher();
@@ -317,26 +341,30 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
     reportKey ??= randomUUID();
     const key = reportKey;
     writeEntry();
-    const phase = record?.phase ?? "unknown";
     const reminders = stall.count;
+    const owed =
+      work === undefined
+        ? "its turns keep ending while the daemon's record of what it owes cannot be read"
+        : `its turns keep ending with ${work} still owed`;
     try {
-      // An issue whose own architect claim is live owns this worker; otherwise the tree's does.
-      const live = architectLive(record);
-      const topic =
-        ROLE_TOPIC_PREFIX +
-        roleToken(deps.project ?? "", live ? claim.issue : claim.tree, "architect");
+      // The tree's architect, named from the claim's tree and LEGION_PROJECT exactly as the
+      // daemon's `Legion addressing` names "the architect that owns your issue" to this pane
+      // (`AddressingFragment`, packages/daemon/internal/daemon/specs.go). Nothing is read for it:
+      // the daemon's whole state takes longer than any bound to read on a large deployment,
+      // exactly when a stalled worker's architect most needs telling.
+      const topic = roleTopic(roleToken(deps.project ?? "", claim.tree, "architect"));
       const answer = await publish({
         topic,
         message:
-          `The ${claim.role} of ${claim.issue} has let ${reminders} phase reminders go unanswered: ` +
-          `its turns keep ending with the phase ${phase} still open and no successful ` +
-          `handoff_complete, and nothing it does clears the reminder. ` +
+          `The ${claim.role} of ${claim.issue} has let ${reminders} reminders go unanswered: ` +
+          `${owed}, and nothing it does clears the reminder. ` +
           `What it last said was: ${lastMessage}`,
-        // The listener refuses an object here: the facts travel as a JSON string.
+        // The listener refuses an object here: the facts travel as a JSON string. `work` is left
+        // out when the daemon's answer did not arrive.
         payload: JSON.stringify({
           issue: claim.issue,
           role: claim.role,
-          phase,
+          ...(work === undefined ? {} : { work }),
           reminders,
           lastMessage,
         }),
@@ -388,7 +416,7 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
     }
   };
 
-  const deliver = async (reminder: string, record: LegionIssue | undefined): Promise<void> => {
+  const deliver = async (lastText: string, work: string | undefined): Promise<void> => {
     // Counted before it is sent, so a reminder the worker was given is never uncounted: a host
     // whose turn starts inside `sendReminder` saves the count before the turn can move it.
     const uncounted = stall;
@@ -397,7 +425,7 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
     generation += 1;
     const sentAt = generation;
     try {
-      await deps.sendReminder(reminder);
+      await deps.sendReminder(reminderText(lastText, work));
     } catch (error) {
       deps.log.warn("legion: a phase reminder did not reach this worker; it comes again later", {
         error: messageFor(error),
@@ -409,27 +437,29 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
         stall = uncounted;
         writeEntry();
       }
-      if (generation === sentAt) armReminder(reminder, deps.limits.reminderMs);
+      if (generation === sentAt) armReminder(lastText, deps.limits.reminderMs);
       return;
     }
     if (reported || stall.count < deps.limits.architectAfter) return;
-    await tellArchitect(record);
+    await tellArchitect(work);
   };
 
   /**
-   * D4: the one guard. A timer fires only while nothing has happened since it was armed, the phase
-   * is still open, no turn is running, and the record check passes. The check awaits the daemon, so
-   * the generation and the turn are read again after it.
+   * D4: the one guard. A timer fires only while nothing has happened since it was armed, no turn
+   * is running, and the daemon does not answer that the claim owes nothing. The check awaits the
+   * daemon, so the generation and the turn are read again after it. `lastText` is what the worker
+   * said as the turn that armed it settled, which decides whether the reminder leads with the
+   * tool call written as text.
    */
-  const armReminder = (reminder: string, delayMs: number): void => {
+  const armReminder = (lastText: string, delayMs: number): void => {
     const armedAt = generation;
     armed = { at: Date.now() + delayMs, generation: armedAt };
     deps.armTimer(async () => {
-      if (generation !== armedAt || stall.state === "closed" || turnRunning) return;
-      const check = await recordCheck();
+      if (generation !== armedAt || turnRunning) return;
+      const check = await owedCheck();
       if (!check.reminds) return;
       if (generation !== armedAt || turnRunning) return;
-      await deliver(reminder, check.record);
+      await deliver(lastText, check.work);
     }, delayMs);
   };
 
@@ -437,7 +467,7 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
     restore: (entry) => {
       stall =
         entry === undefined
-          ? { state: "closed", count: 0 }
+          ? { state: "active", count: 0 }
           : { state: entry.state, count: entry.count };
       // The run of reminders the restored count belongs to keeps its notice: a relaunch mid-run
       // neither repeats one the listener accepted nor mints a second key for one it refused. No
@@ -450,15 +480,13 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
       recorded = JSON.stringify(entryOf());
     },
     armResumeReminder: () => {
-      if (stall.state === "closed") return;
-      armReminder(reminderText(""), deps.limits.resumeMs);
+      armReminder("", deps.limits.resumeMs);
     },
     turnStarted: () => {
       generation += 1;
       turnRunning = true;
     },
     apply: (input) => {
-      if (input.kind === "phase-closed") generation += 1;
       advance(input);
     },
     settle: async (turn) => {
@@ -473,41 +501,30 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
         // and nothing else would wake this worker, so a single transient refusal would leave its
         // issue idle. By the time the timer fires the daemon has had every refusal of the run
         // reported (`POST /legion/v1/claims/turn-outcome`): at the limit it has failed the claim,
-        // and the record check the timer runs drops the reminder, which is what stops the
-        // reminding of a session the provider refuses for ever — the whole of
-        // dispatch://INFRA-264.
+        // and the owed check the timer runs reads that the claim owes nothing and drops the
+        // reminder, which is what stops the reminding of a session the provider refuses for
+        // ever — the whole of dispatch://INFRA-264.
         advance(turn);
         continued = false;
-        armReminder(reminderText(""), deps.limits.reminderMs);
+        armReminder("", deps.limits.reminderMs);
         return undefined;
       }
       const text = turn.lastAssistantText;
-      // Only a phase that is not closed can earn the notice that quotes these words, so a closed
-      // one records none: a finished worker's chatter writes nothing.
-      if (stall.state !== "closed") lastMessage = text.slice(0, LAST_MESSAGE_LIMIT);
+      lastMessage = text.slice(0, LAST_MESSAGE_LIMIT);
       const before = stall.count;
-      const reminder = advance(turn);
+      const remind = advance(turn);
       // Every outcome but the continuation ends the run here, so the next one may continue again.
 
-      // The wait a `ready_for_update` answer created is the daemon's to end, so nothing is armed
-      // in it: the round replaces the pod, and the task it held behind the round reaches the
-      // worker in the process that comes back on the new pod, while a reminder steered in
-      // meanwhile is the turn the daemon reads as the answer retracted (`awaiting-update` in
-      // `./phase-stall`).
-      if (stall.state === "awaiting-update") {
+      // Neither wait earns a reminder now. The wait a `ready_for_update` answer created is the
+      // daemon's to end, so nothing is armed in it: the round replaces the pod, and the task it
+      // held behind the round reaches the worker in the process that comes back on the new pod,
+      // while a reminder steered in meanwhile is the turn the daemon reads as the answer
+      // retracted (`awaiting-update` in `./phase-stall`). The machine sends no reminder into a
+      // quiet wait either, so the timer carries the one this settling message earned, for when
+      // the wait has been long enough.
+      if (!remind) {
         continued = false;
-        return undefined;
-      }
-      // The machine sends no reminder into a quiet wait, so the timer carries the one this
-      // settling message earned, for when the wait has been long enough.
-      if (stall.state === "waiting") {
-        continued = false;
-        armReminder(reminderText(text), deps.limits.waitingMs);
-        return undefined;
-      }
-      // A closed phase earns none.
-      if (reminder === undefined) {
-        continued = false;
+        if (stall.state === "waiting") armReminder(text, deps.limits.waitingMs);
         return undefined;
       }
       // The continuation is the first reminder of a run and the only one of it: the worker has
@@ -516,23 +533,24 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
       // end, and the next reminder comes with its delay.
       if (before !== 0 || continued) {
         continued = false;
-        armReminder(reminder, deps.limits.reminderMs);
+        armReminder(text, deps.limits.reminderMs);
         return undefined;
       }
-      if (!(await recordCheck()).reminds) {
+      const check = await owedCheck();
+      if (!check.reminds) {
         continued = false;
         return undefined;
       }
       advance({ kind: "reminded" });
       generation += 1;
       continued = true;
-      return reminder;
+      return reminderText(text, check.work);
     },
     sessionChanged: () => {
       generation += 1;
     },
     phaseWake: () => {
-      if (stall.state === "closed" || armed === undefined || armed.generation !== generation) {
+      if (armed === undefined || armed.generation !== generation) {
         return { nextReminderAt: null };
       }
       return { nextReminderAt: new Date(armed.at).toISOString() };

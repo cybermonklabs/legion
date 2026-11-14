@@ -7,8 +7,8 @@
     "startedAt": "2026-09-22T09:15:02Z"
   },
   "contract": {
-    "daemon": 111,
-    "caller": 111
+    "daemon": 119,
+    "caller": 119
   },
   "admission": {
     "cap": 3,
@@ -287,6 +287,8 @@
       "tree": "LEGION-210",
       "repo": "zeta/tools",
       "defaultBranch": "release/v7.1",
+      "repoBefore": "acme/widgets",
+      "repoCorrectedAt": "2026-09-22T07:40:00Z",
       "holdReason": "escalated",
       "heldFrom": "implementing",
       "workers": {
@@ -312,6 +314,12 @@
           "pass": 1,
           "rounds": 1
         }
+      },
+      "pullRequest": {
+        "repo": "acme/widgets",
+        "number": 1251,
+        "head": "c4a7f0b36d2e18a95f7b0c43e62d1a8f94b7e305",
+        "state": "open"
       },
       "gatedSteps": [
         {
@@ -395,6 +403,8 @@
       "tree": "LEGION-212",
       "repo": "acme/widgets",
       "defaultBranch": "main",
+      "repoChangePending": "acme/gadgets",
+      "repoChangeReason": "acme/gadgets is not mapped to project LEGION in Dispatch",
       "workers": {},
       "gatedSteps": [
         {

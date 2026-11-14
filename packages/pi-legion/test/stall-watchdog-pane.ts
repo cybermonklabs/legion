@@ -5,7 +5,6 @@
 // this module runs nothing on import but the constants below.
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import * as path from "node:path";
-import type { LegionState } from "@legion/contracts/legion-api";
 import {
   type Block,
   type Cleanup,
@@ -186,44 +185,6 @@ export function warmedWedge(
   };
 }
 
-/** The daemon's state with the issue past this pane's phase: the reviewer works it now, so the
- * phase-stall follow-up (`src/phase-stall.ts`) has no reminder for this role and every turn a case
- * sees is one it asked for. */
-const MOVED_ON = {
-  daemon: {
-    project: PROJECT.toUpperCase(),
-    schemaVersion: 1,
-    boots: 1,
-    firstBootAt: "2026-10-30T14:03:27Z",
-    startedAt: "2026-10-31T09:15:02Z",
-  },
-  admission: { cap: 1, active: [TREE], waiting: [], blocked: [] },
-  issues: {
-    [ISSUE]: {
-      key: ISSUE,
-      generation: 1,
-      phase: "reviewing",
-      status: "in_progress",
-      repo: "acme/widgets",
-      defaultBranch: "main",
-      workers: {},
-    },
-  },
-  pendingStatusWrites: [],
-  heldOutboxRows: [],
-  strandedClaims: [],
-  capabilities: [],
-  repositories: {
-    owners: ["acme"],
-    mapped: [{ repo: "acme/widgets", default: true }],
-    refused: [],
-    withoutWebhookApp: [],
-    caches: [],
-  },
-  settings: { review_round_cap: 3, worker_boot_timeout_seconds: 120 },
-  consumers: [],
-} satisfies LegionState;
-
 /**
  * The one-handler extension the last step's cases load beside the plugin. `abort` is not an own
  * property of the session context: it lives on the object every context is made from, so dropping
@@ -354,9 +315,9 @@ export interface StallPane {
 /**
  * Starts one Legion phase-worker pane on the real Oh My Pi: pi-envoy's extension and this
  * package's, the role's `LEGION_*` environment against a stand-in that is the model gateway, the
- * daemon's claim, grant, state and activity routes and the Envoy listener, and the three stall
- * numbers set low. The pane takes no NATS delivery of its own and is given a real server all the
- * same (`LEGION_TEST_NATS_URL`): a session receives only what its own consumer holds
+ * daemon's register, ready, activity, owed and grant routes and the Envoy listener, and the three
+ * stall numbers set low. The pane takes no NATS delivery of its own and is given a real server
+ * all the same (`LEGION_TEST_NATS_URL`): a session receives only what its own consumer holds
  * (INFRA-771), so one that can open no relay subject is answered no consumer, every registration
  * of its fails, and its claim boot ends the session rather than running on deaf. A side request —
  * the run-end self-check, a routing hint — is answered at once with one word, since none of them
@@ -414,7 +375,11 @@ export async function startPane(options: PaneOptions): Promise<StallPane> {
     }
     if (url.pathname === "/legion/v1/claims/ready") return new Response(null, { status: 204 });
     if (url.pathname === "/legion/v1/claims/activity") return new Response(null, { status: 204 });
-    if (url.pathname === "/legion/v1/state") return Response.json(MOVED_ON);
+    // The phase reminder asks the daemon what the claim owes, and the stand-in answers nothing,
+    // so the reminder puts nothing in front of this role and every turn a case sees is one it
+    // asked for. The stall watch's notice reads nothing of the daemon: its topic is the tree's
+    // architect, named from the claim (`stallNoticeTopic`, `pi-legion/src/stall-evidence.ts`).
+    if (url.pathname === "/legion/v1/claims/owed") return Response.json({ owes: false, work: "" });
     if (url.pathname === "/legion/v1/grants") {
       grants += 1;
       return Response.json({

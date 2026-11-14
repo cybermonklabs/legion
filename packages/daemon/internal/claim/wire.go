@@ -225,10 +225,10 @@ func (w BackgroundWork) KnownKinds() []string {
 	return known
 }
 
-// PhaseActivity is when the reminder armed for the session's phase is due; NextReminderAt is null
-// when no armed reminder is still live, which a session whose phase has closed always reports.
-// Whether the phase is open is the daemon's own reading of the record (workflow's idlePhaseOpen),
-// not the session's to state.
+// PhaseActivity is when the reminder armed in the session is due; NextReminderAt is null when no
+// armed reminder is still live. The session keeps no model of the phase: whether the phase is open
+// is the daemon's own reading of the record (workflow's idlePhaseOpen), and the reminder asks the
+// daemon what the claim owes when its timer is due.
 type PhaseActivity struct {
 	NextReminderAt *time.Time `json:"nextReminderAt"`
 }

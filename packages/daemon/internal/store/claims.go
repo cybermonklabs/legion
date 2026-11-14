@@ -51,7 +51,7 @@ const claimSelect = `select c.token, c.project, c.tree, c.issue, c.role, c.gener
 	d.delivery_id, d.task, d.phase, d.generation, d.entry, d.check_look, d.check_opened_at,
 	d.queued_at, d.delivered_at, d.marked_by, d.confirmed_at, d.interrupted, d.prompted, d.out_of_memory,
 	d.send_failures, d.last_send_failure_at, d.last_send_error,
-	d.kept_decisions, d.provider_error_retries, d.provider_error_note
+	d.kept_decisions, d.provider_error_retries, d.provider_error_note, d.resume
 	from claims c left join pending_task_deliveries d on d.claim_token = c.token`
 
 // PutClaim persists an admitted claim's state: every write a claim's machine makes. A claim enters
@@ -544,19 +544,23 @@ func putDelivery(ctx context.Context, tx pgx.Tx, token claim.Token, d supervise.
 		return fmt.Errorf("put delivery %s on %s: generation %d does not fit a bigint", d.ID, token, d.Generation)
 	}
 	kept := keptDecisions(d.Kept)
+	resume, err := resumeColumn(d)
+	if err != nil {
+		return fmt.Errorf("put delivery %s on %s: %w", d.ID, token, err)
+	}
 	unconfirmed := d.ConfirmedAt.IsZero()
 	if unconfirmed {
 		if err := putBackARetakenConfirmation(ctx, tx, token, d.ID, kept); err != nil {
 			return err
 		}
 	}
-	_, err := tx.Exec(ctx, `insert into pending_task_deliveries (claim_token, delivery_id, task,
+	_, err = tx.Exec(ctx, `insert into pending_task_deliveries (claim_token, delivery_id, task,
 		phase, generation, entry, check_look, check_opened_at, queued_at, delivered_at, marked_by,
 		confirmed_at, interrupted, prompted, out_of_memory,
 		send_failures, last_send_failure_at, last_send_error, kept_decisions,
-		provider_error_retries, provider_error_note)
+		provider_error_retries, provider_error_note, resume)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18,
-		coalesce($19::jsonb, '{}'::jsonb), $20, $21)
+		coalesce($19::jsonb, '{}'::jsonb), $20, $21, $22::jsonb)
 		on conflict (claim_token) do update set delivery_id = excluded.delivery_id,
 		task = excluded.task, phase = excluded.phase, generation = excluded.generation,
 		entry = excluded.entry, check_look = excluded.check_look,
@@ -567,12 +571,12 @@ func putDelivery(ctx context.Context, tx pgx.Tx, token claim.Token, d supervise.
 		last_send_failure_at = excluded.last_send_failure_at, last_send_error = excluded.last_send_error,
 		kept_decisions = excluded.kept_decisions,
 		provider_error_retries = excluded.provider_error_retries,
-		provider_error_note = excluded.provider_error_note`,
+		provider_error_note = excluded.provider_error_note, resume = excluded.resume`,
 		string(token), d.ID, d.Task, string(d.Phase), int64(d.Generation), d.Entry,
 		d.CheckLook.Look, instant(d.CheckLook.OpenedAt), d.QueuedAt, instant(d.DeliveredAt), d.MarkedBy,
 		instant(d.ConfirmedAt), d.Interrupted, d.Prompted, d.OutOfMemory,
 		d.SendFailures, instant(d.LastSendFailureAt), d.LastSendError, kept,
-		d.ProviderErrorRetries, d.ProviderErrorNote,
+		d.ProviderErrorRetries, d.ProviderErrorNote, resume,
 	)
 	if err != nil {
 		return fmt.Errorf("put delivery %s on %s: %w", d.ID, token, err)
@@ -682,6 +686,7 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		kept                        []byte
 		retries                     *int64
 		note                        *string
+		resume                      []byte
 		stepAt, turnStarted         *time.Time
 		stepStarted, stepEnded      *time.Time
 		reportedAt, reminderAt      *time.Time
@@ -704,7 +709,7 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		&reportedAt, &c.ActivityBackground, &kinds, &reminderAt,
 		&deliveryID, &task, &deliveryPhase, &deliveryGeneration, &deliveryEntry, &deliveryCheckLook, &deliveryCheckOpened,
 		&queuedAt, &delivered, &markedBy, &confirmed, &interrupted, &prompted, &outOfMemory,
-		&sendFailures, &lastSendFailure, &lastSendError, &kept, &retries, &note)
+		&sendFailures, &lastSendFailure, &lastSendError, &kept, &retries, &note, &resume)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return supervise.Claim{}, err
 	}
@@ -763,6 +768,10 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		c.Enrollment = &supervise.Enrollment{ID: *enrollmentID, Incarnation: *enrollmentIC}
 	}
 	if deliveryID != nil {
+		wait, err := resumeOf(resume, *deliveryID)
+		if err != nil {
+			return supervise.Claim{}, fmt.Errorf("read claim %s: %w", token, err)
+		}
 		c.Pending = &supervise.Delivery{
 			ID:          *deliveryID,
 			Task:        *task,
@@ -784,11 +793,50 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 			LastSendFailureAt:    orZero(lastSendFailure),
 			LastSendError:        *lastSendError,
 			Kept:                 keptDecisions(kept),
+			Resume:               wait,
 			ProviderErrorRetries: int(orZeroInt(retries)),
 			ProviderErrorNote:    *note,
 		}
 	}
 	return c, nil
+}
+
+// storedResume is pending_task_deliveries.resume (20261112215432_delivery_resume): the wait a
+// resume task answers (supervise.Delivery.Resume) under the id of the delivery it was written
+// with. The id is what keeps the mark on its own delivery: a daemon of an earlier release writes
+// the claim's next delivery over the row without naming the column, which keeps the value, and a
+// wait read under another delivery's id is that leftover and marks nothing.
+type storedResume struct {
+	Delivery string          `json:"delivery"`
+	Wait     json.RawMessage `json:"wait"`
+}
+
+// resumeColumn is d's resume mark as the column holds it, nil for a task that is no resume.
+func resumeColumn(d supervise.Delivery) ([]byte, error) {
+	if len(d.Resume) == 0 {
+		return nil, nil
+	}
+	column, err := json.Marshal(storedResume{Delivery: d.ID, Wait: d.Resume})
+	if err != nil {
+		return nil, fmt.Errorf("encode the wait its resume task answers: %w", err)
+	}
+	return column, nil
+}
+
+// resumeOf is the wait the column holds for the delivery with id, nil for none: a null column, and
+// one written under another delivery's id (storedResume).
+func resumeOf(column []byte, id string) ([]byte, error) {
+	if len(column) == 0 {
+		return nil, nil
+	}
+	var stored storedResume
+	if err := json.Unmarshal(column, &stored); err != nil {
+		return nil, fmt.Errorf("decode the wait its resume task answers: %w", err)
+	}
+	if stored.Delivery != id || len(stored.Wait) == 0 {
+		return nil, nil
+	}
+	return []byte(stored.Wait), nil
 }
 
 // instant is a time as a nullable column: the zero time is "not yet", which SQL says as null.

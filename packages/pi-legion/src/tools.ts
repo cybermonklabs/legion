@@ -298,10 +298,8 @@ export function createLegionTool(deps: {
   readonly session: (context: SessionContext) => LegionToolSession;
   /** Mints the controller's grant, authenticated by its registration's secret. */
   readonly controllerGrant: (sessionId: string) => Promise<LegionGrant>;
-  /** Told of each `handoff_complete` that succeeded: the session's phase is complete. */
-  readonly onPhaseCompleted: (context: SessionContext) => void;
   /** Told of each `ready_for_update` that succeeded: the session has answered the daemon's
-   * update task on its pod, and its phase stays open. */
+   * update task on its pod, and the turn it answered in is to be continued by no reminder. */
   readonly onUpdateAnswered: (context: SessionContext) => void;
   /** What a completion of `phase` by `role` reports beside its summary (`findHandoffReport`): for
    * a file-backed phase the role works, the newest Dispatch handoff record of the phase, with the
@@ -324,7 +322,6 @@ export function createLegionTool(deps: {
     daemon,
     session,
     controllerGrant,
-    onPhaseCompleted,
     onUpdateAnswered,
     handoffReport,
     branchHead,
@@ -437,17 +434,10 @@ export function createLegionTool(deps: {
             { daemon: daemon(), claim: active, handoffReport, branchHead, restart },
             parameters
           );
-          // A call that returned without throwing: a completion, and a backward move, which hands
-          // the issue to another phase. Either way this session's phase is no longer open.
-          // `ready_for_update` ends no phase: it answers the pod's update task, and the worker
-          // then waits for its process to be replaced rather than working, so the turn it ends
-          // after answering earns no reminder (the `update-answered` input of
-          // `@legion/pi-shared/phase-stall`).
-          if (operation === "handoff_complete" || operation === "request_backward_move") {
-            onPhaseCompleted(context);
-          } else if (operation === "ready_for_update") {
-            onUpdateAnswered(context);
-          }
+          // `ready_for_update` answers the pod's update task, and the worker then waits for its
+          // process to be replaced rather than working, so the turn it ends after answering earns
+          // no reminder (the `update-answered` input of `@legion/pi-shared/phase-stall`).
+          if (operation === "ready_for_update") onUpdateAnswered(context);
           return jsonSuccess(answer);
         }
         assertOperationInput(parameters, operation);

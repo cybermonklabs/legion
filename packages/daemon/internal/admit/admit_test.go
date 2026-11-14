@@ -280,8 +280,8 @@ func TestReadmissionStartsTheTreesMidPhaseChildren(t *testing.T) {
 
 // A re-admitted tree's merging child is resumed with no approved head: the re-admission clears the
 // generation, which empties the review round's decision with the rest of the tree's handoffs
-// (record.ClearTreeGeneration), so the merger refuses for want of one and the round is reviewed
-// again rather than merged on the last generation's approval.
+// (workflow.Engine.ClearTreeGeneration), so the merger refuses for want of one and the round is
+// reviewed again rather than merged on the last generation's approval.
 func TestAResumedMergerIsToldNoApprovedHeadAcrossGenerations(t *testing.T) {
 	pool := migratedPool(t)
 	admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))

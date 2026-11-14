@@ -47,6 +47,10 @@ const (
 	// pod_update_retask_hours and pod_update_notice_hours set them.
 	podUpdateRetask = 30 * time.Minute
 	podUpdateNotice = 4 * time.Hour
+	// podUpdateRepo is the repository the issue's record holds and the pod was built from: the
+	// two agree, as they do for every issue no correction has moved, so the sweep reads no
+	// repository reason (groupDrift). A test that moves the record scripts both.
+	podUpdateRepo = "acme/widgets"
 	// podUpdateSilence is the third, as legion.yaml's worker_silence_minutes sets it: how long a
 	// phase worker's last recorded step may be in the past before the silence sweep reads that
 	// worker as one nothing will prompt (config.Config.WorkerSilence). It is the shipped default.
@@ -170,7 +174,7 @@ func newPodUpdateRig(t *testing.T, roles ...podUpdateRole) *podUpdateRig {
 		claims = append(claims, c)
 	}
 	seedWorkflowTree(t, dsn, podUpdateProject, record.Issue{
-		Key: podUpdateIssue, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+		Key: podUpdateIssue, Repo: podUpdateRepo, DefaultBranch: "main", GitHubRepo: podUpdateRepo,
 		Project: "LEGION", Tree: podUpdateIssue, Title: "The update round", Phase: phase.Implementing,
 		Generation: 1, Status: "in_progress", HandedOver: true, Rank: "U",
 	}, claims...)
@@ -192,6 +196,9 @@ func newPodUpdateRig(t *testing.T, roles ...podUpdateRole) *podUpdateRig {
 	// backend writes rig.s.cfg, and the closure reads it when a registration asks.
 	logs := &syncBuffer{}
 	log := slog.New(slog.NewJSONHandler(logs, nil))
+	// The workflow's own outbox, record reads and fact handlers, which is everything supervision
+	// is given of the workflow: the rows a sweep writes, the repository an issue's record holds
+	// now, and the facts the silence sweep applies.
 	w := podUpdateWorkflow(pool, records, clock, log)
 	s := &supervision{
 		// The rig's claims run in an issue pod, so its configuration is a Kubernetes
@@ -199,15 +206,21 @@ func newPodUpdateRig(t *testing.T, roles ...podUpdateRole) *podUpdateRig {
 		// lane is read from, beside the role's backend (noPluginInstall).
 		cfg: config.Config{Project: "LEGION", Runtime: config.Runtime{Name: "kubernetes"},
 			PodUpdateRetask: podUpdateRetask, PodUpdateNotice: podUpdateNotice, WorkerSilence: podUpdateSilence},
-		log:     log,
-		plan:    plan{clock: clock, project: podUpdateProject, pluginRelaunchable: true, orphanSweep: orphanSweepInterval},
+		log: log,
+		// The plan carries every answer the workflow lends supervision, the repository an
+		// issue's record holds among them, so a supervision this rig relaunches keeps it: it
+		// copies the plan (podUpdateRig.restart).
+		plan: plan{clock: clock, project: podUpdateProject, pluginRelaunchable: true, orphanSweep: orphanSweepInterval,
+			enqueue: w.enqueueOutbox, recordedRepository: recordedRepositoryOf(w.recordedIssue)},
 		runtime: rt, supervisor: sup,
-		enqueue:         w.enqueueOutbox,
 		applySweepFacts: w.applySweepFacts,
 		refreshGate:     supervise.NewRefreshGate(0),
 	}
 	sup.deps = supervise.Deps{
-		Runtime: rt, Conns: conns, Store: st, Specs: outboxSpecs{}, Clock: clock, Log: quietLogger(),
+		// Every launch is built from the issue's record, as the daemon's own specs builds one:
+		// the repository the record names now and its default branch, which is what a pod is
+		// provisioned from (recordSpecs).
+		Runtime: rt, Conns: conns, Store: st, Specs: recordSpecs{read: w.recordedIssue}, Clock: clock, Log: quietLogger(),
 		Limits:         supervise.Limits{LaunchFailures: 2, PromptFailures: 2, PromptRetires: 2},
 		Timeouts:       supervise.Timeouts{Boot: time.Second, RegistrationIntervals: 2, RPC: time.Second, Probe: time.Second, Stop: time.Second, LaunchBackoff: time.Millisecond},
 		PluginContract: api.DaemonAPIVersion,
@@ -245,6 +258,11 @@ func newPodUpdateRig(t *testing.T, roles ...podUpdateRole) *podUpdateRig {
 		conn := fake.NewConn()
 		conns.Register(tokens[role.role], conn)
 		rig.workers[role.role] = conn
+	}
+	// The pod every claim records was built from the repository the record holds, which is the
+	// issue that has not been moved: the sweep reads the two as one and adds no reason.
+	for _, token := range tokens {
+		rt.ScriptPodRepository(token, podUpdateRepo)
 	}
 	return rig
 }
@@ -1482,7 +1500,7 @@ func (r *podUpdateRig) restart() *podUpdateRig {
 	next := &podUpdateRig{t: r.t, ctx: r.ctx, sup: sup, rt: rt, pool: r.pool, records: r.records, clock: r.clock,
 		conns: conns, workers: workers, tokens: r.tokens, st: st, logs: r.logs, log: r.log}
 	next.s = &supervision{
-		cfg: r.s.cfg, log: quietLogger(), plan: r.s.plan, runtime: rt, supervisor: sup, enqueue: r.s.enqueue,
+		cfg: r.s.cfg, log: quietLogger(), plan: r.s.plan, runtime: rt, supervisor: sup,
 		applySweepFacts: r.s.applySweepFacts,
 		refreshGate:     supervise.NewRefreshGate(0),
 	}

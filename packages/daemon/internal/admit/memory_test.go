@@ -101,7 +101,7 @@ func TestAdmissionDrawsEachTreesMemoryGroupUnderTheProjectsMode(t *testing.T) {
 
 // A tree is drawn once, and everything that happens to it afterwards keeps that draw byte for
 // byte: a re-admission of its root (a new generation), the clearing of that generation's rows
-// (record.Store.ClearTreeGeneration), and the next epoch its lifecycle opens after a cleanup
+// (workflow.Engine.ClearTreeGeneration), and the next epoch its lifecycle opens after a cleanup
 // confirmed. Each of those passes runs under a mode the operator has since changed and a coin that
 // fails the test when it is flipped, so a second draw would be loud.
 func TestADrawnTreeKeepsItsMemoryGroupThroughEveryLaterPass(t *testing.T) {
@@ -139,7 +139,7 @@ func TestADrawnTreeKeepsItsMemoryGroupThroughEveryLaterPass(t *testing.T) {
 
 	// Clearing the generation's rows is not the tree's memory group's business either.
 	inTx(t, pool, func(tx pgx.Tx) {
-		if err := record.NewStore().ClearTreeGeneration(ctx, tx, root, fixedNow); err != nil {
+		if err := engine.ClearTreeGeneration(ctx, tx, root, fixedNow); err != nil {
 			t.Fatalf("clear the tree's generation: %v", err)
 		}
 	})

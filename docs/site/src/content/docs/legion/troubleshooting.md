@@ -1333,14 +1333,78 @@ back and no state there moves it. Read on GitHub what the base branch requires a
 checks say: that pair is what decides whether the pull request can merge, and the merger waits on
 GitHub for it.
 
-## A repository change was not applied
+## A repository change is not applied yet
 
-The issue says `Legion keeps <owner/name> as this issue's repository; the change to <other> in
-Dispatch is not applied`. An issue's repository is fixed when Legion first records it: its branch,
-workspace and pull request live there, so a later change of the issue's own repository, or its
-parent's or the project's default it inherited, does not move it. Create a new issue on the other
-repository for the work that belongs there. The daemon says it once for each repository the issue
-is changed to.
+The issue says `Legion did not move this issue off <owner/name>: <why>. <what to do> Legion moves
+the issue itself once it serves the repository that Dispatch resolves the issue to.` `<why>` is
+`<other> is not mapped to project <PROJECT> in Dispatch`, with `Map <other> to the project in
+Dispatch, or set another repository (…).`, or a GitHub App not installed on `<other>`, with
+`Install it on <other>, or set another repository (…).`
+
+An issue's repository is the one Dispatch resolves for it: the issue's own, else its nearest
+ancestor's, else the project's default.
+The record follows that resolution.
+A change of it moves the record onto the new repository in the next pass that reads the
+resolution:
+an event of the issue from Dispatch,
+the listing the daemon reads at a boot,
+or the pass over every recorded issue that follows a read of the repository mapping
+when the mapping changed in Dispatch or the read serves a repository the last read did not.
+The move parks nothing, reruns nothing and starts no new generation, so the issue keeps its phase
+and whatever runs for it.
+
+A repository Legion serves no installation of is the one case the daemon does not move the record
+onto.
+The record keeps the repository it has, the daemon writes the line above on the issue once, and the
+record carries the change that waits:
+
+```sh
+legion state --config legion.yaml --json | jq '.issues["<KEY>"] | {repo, repoChangePending, repoChangeReason}'
+```
+
+`repoChangePending` is the repository Dispatch resolves the issue to now, and `repoChangeReason` is
+why the daemon has not applied it: the repository is not mapped to the project in Dispatch, or one
+of the two GitHub Apps is not installed on it.
+Map it to the project in Dispatch and install both Apps on it, as for any repository the daemon
+leaves out ([The daemon will not start](/legion/legion/troubleshooting/#the-daemon-will-not-start)).
+An event of the issue does not make the daemon read the mapping again.
+When you map the repository in Dispatch, Dispatch tells the daemon, and the daemon reads the
+mapping and moves the issue at once.
+When you install a missing App, nothing tells the daemon, and it does not read a missing App again
+on a timer.
+The issue moves at the next read of the mapping:
+the next change of the project's mapping in Dispatch,
+the next issue the daemon is to admit on a repository it does not serve,
+or the daemon's next boot.
+To move the issue at once, restart the daemon.
+Create no new issue for the work.
+
+Dispatch resolving the issue to no repository is said the same way, as `Legion did not move this
+issue off <owner/name>: its repository resolves to none. Set its repository (…).` followed by the
+same closing sentence, and leaves nothing waiting on the record:
+there is no repository to move to until the issue, an ancestor or the project names one.
+
+Under `runtime: kubernetes`, once the daemon has moved the record it replaces the issue's pod,
+because that pod holds the clone, the gh directories and the token of the repository the issue has
+left.
+Every role in the pod is asked to push its work and to answer the update round, as for any other
+pod replacement.
+The issue's branch, its pull request and any rescue branch that replacement pushes are on the
+repository the issue left, and the daemon's message about the rescue branches names it.
+Work a release saved as a bundle of that repository is restored into no pod, even if Dispatch
+later moves the issue back. The daemon moves it to the `workspace_bundles_refused` table, where no
+later release of the issue writes over it or deletes it and nothing holds back the release of a
+pod for it, and writes on the issue the issue key and `release_id` of the row that keeps it. Its
+`bundle` column is a git bundle, which an operator reads out with
+`psql '<postgres_dsn>' -XAt -c "select encode(bundle, 'base64') from workspace_bundles_refused where issue = '<KEY>' and release_id = <release>" | base64 -d > <KEY>.bundle`
+and unbundles into a clone of the repository the row's `repo` names. The daemon never deletes the
+row; delete it once the work is carried out.
+A deployment on `runtime: tmux` reaches none of that: a pane is in no pod, so nothing is replaced
+and no update round is opened, and each pane works the repository the issue left until its next
+launch, which provisions it a workspace of the new repository on the daemon's host.
+The next task of each worker of the issue names the new repository, the one the issue left and the
+moment of the move, which `legion state --json` also shows on the issue as `repoBefore` and
+`repoCorrectedAt`.
 
 ## A status change did not stick
 

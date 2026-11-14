@@ -30,8 +30,21 @@ Projects page, one of them the project's default; `legion.yaml` names none. Each
 repository Dispatch resolves for it: its own (the issue header's Repository picker, or
 `dispatch issue-update --repo owner/name`), else its nearest ancestor's, else the project's default.
 The daemon records an issue on that repository, and its default branch as GitHub names it, when it
-first records the issue, and keeps both: a later change of the issue's repository in Dispatch is
-not applied, and the daemon says so on the issue. An issue whose repository resolves to none, or to
+first records the issue. The record then follows Dispatch: a later change of the issue's repository
+is applied in the next pass that reads it, which is a live Dispatch event of the issue, the boot
+listing, or the pass over every recorded issue that follows a read of the mapping when the mapping
+changed in Dispatch or the read serves a repository the last read did not. Under
+`runtime: kubernetes` the daemon then replaces the issue's pod, so its workspace, its GitHub token
+and its clone are of the new owner; under `runtime: tmux` there is no pod to replace, and each pane
+works the repository the issue left until its next launch, which provisions it a workspace of the
+new repository on the daemon's host.
+A repository Legion serves no installation of is not applied; the record keeps what it has,
+the daemon says so once on the issue, and the record carries the waiting change
+(`repoChangePending` and `repoChangeReason` of `legion state --json`) until a pass finds that
+repository served. Mapping the repository in Dispatch moves the issue at once. Installing a
+missing App does not: the daemon reads a missing App again only at the next read of the mapping,
+which is the next change of the mapping in Dispatch, the next issue it is to admit on a repository
+it does not serve, or its next boot. An issue whose repository resolves to none, or to
 one the daemon does not serve, is not admitted, and the daemon says why on the issue. A claim an
 operator starts on an issue the workflow does not record works the project's default repository as
 it is at each launch, whatever repository Dispatch resolves for that issue: change the default
@@ -726,7 +739,8 @@ What each part is for:
   Four more variables of the same family set the worker's phase reminder rather than its call
   watch: `LEGION_STALL_REMINDER_MS` (300000, how long after a settle that earned a reminder the
   reminder is delivered), `LEGION_STALL_WAITING_MS` (900000, what a WAITING reply buys),
-  `LEGION_STALL_RESUME_MS` (120000, after a resume on an open phase) and
+  `LEGION_STALL_RESUME_MS` (120000, after a resume, when the daemon answers that the claim owes
+  work) and
   `LEGION_STALL_ARCHITECT_AFTER` (3: how many delivered reminders in a row change nothing before
   the architect is told, and never fewer than 2). Each of the six millisecond values is a whole
   number of 0 or more; a value that is not is ignored, the default stands, and the worker's log

@@ -171,6 +171,16 @@ type Handover struct {
 	Issue      string
 	Tree       string
 	Generation uint64
+	// ResolvedRepo is the repository (owner/name) Dispatch resolved the issue to at the read the
+	// outbox made of it just before it applied this fact (its status executor), carried here so
+	// that this door follows Dispatch's resolution as every other one does (the engine's
+	// ApplyRepositoryChange): it raises a generation with no Dispatch event and no PATCH, so a
+	// root handed over while its repository changed in Dispatch would otherwise come back on the
+	// repository the record holds. It is empty where that read answered no repository and where
+	// nothing read one: the absence of a resolution is no statement by Dispatch about which
+	// repository the issue is on, so admission corrects nothing and the record stands, as a
+	// retained event's missing repository leaves it (workflow.SettleRetainedRepository).
+	ResolvedRepo string
 }
 
 func (Handover) isFact() {}
@@ -208,8 +218,11 @@ func (DispatchIssue) isFact() {}
 
 // RepoMappingChanged is Dispatch's settings.repo_project.updated on the daemon's own project: a
 // repository was mapped to the project, unmapped, moved or made its default. It is no workflow
-// fact: the consumer has the daemon read the mapping again (ConsumerSpec.RepositoryMapping) and
-// applies nothing.
+// fact: the consumer hands it to the daemon (ConsumerSpec.RepositoryMapping) and applies nothing
+// itself. The daemon reads the mapping again, then has each recorded issue follow the repository
+// Dispatch's listing resolves it to on that mapping, through the single-issue correction every pass
+// over a recorded issue's resolution makes (workflow.Engine.ApplyRepositoryChange): the event
+// names no issue, and a change of the project's default moves every issue that inherits it.
 type RepoMappingChanged struct {
 	Project string
 }
