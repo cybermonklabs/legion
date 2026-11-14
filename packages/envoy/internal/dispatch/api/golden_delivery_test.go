@@ -54,13 +54,17 @@ type deliveryOracleFixture struct {
 // and strings must be equal; floats within deliveryOracleTolerance of each other, relative to the
 // larger.
 //
-// The one named exception is a deploy's with_prs, whose rule INFRA-2916 changed: a deploy is one
-// with pull requests when it ships any pull request, whenever that pull request merged, where the
-// base head counted only those merged inside the window. So each measures answer's
-// deploys_with_prs must be the base head's plus exactly the deploys of the window whose every
-// shipped pull request merged before it, counted from the fixture's own containment
-// (deploysShippingOnlyEarlier), and with_prs_per_day the base head's plus that count over the
-// window's days; the two fields are then left out of the value-for-value comparison.
+// The two named exceptions are rules INFRA-2916 changed. A deploy's with_prs: a deploy is one with
+// pull requests when it ships any pull request, whenever that pull request merged, where the base
+// head counted only those merged inside the window. So each measures answer's deploys_with_prs
+// must be the base head's plus exactly the deploys of the window whose every shipped pull request
+// merged before it, counted from the fixture's own containment (deploysShippingOnlyEarlier), and
+// with_prs_per_day the base head's plus that count over the window's days. And the change failure
+// rate while no failure source exists (root R11: 0 is a value, never a stand-in): the base head
+// answered an object of zero flag counts and rates over the window's totals, and verdicts over
+// them; this head answers change_failure_rate null and both its verdicts null
+// (takeFailureMeasures). Those fields are then left out of the value-for-value comparison, and
+// every other field must be the base head's.
 func TestTheDeliveryRoutesAnswerWhatTheyAnsweredAtTheBaseHead(t *testing.T) {
 	dir := filepath.Join("testdata", "golden_delivery")
 	var recorded deliveryOracleFixture
@@ -77,7 +81,7 @@ func TestTheDeliveryRoutesAnswerWhatTheyAnsweredAtTheBaseHead(t *testing.T) {
 			fixture.Summary(), fixture.Repos, recorded.Fixture.Summary, recorded.Fixture.Repos)
 	}
 
-	requests, values, differing, moved, movedWindows := 0, 0, 0, 0, 0
+	requests, values, differing, moved, movedWindows, failuresNulled := 0, 0, 0, 0, 0, 0
 	for _, window := range recorded.Windows {
 		var file struct {
 			Head    string                     `json:"head"`
@@ -110,6 +114,13 @@ func TestTheDeliveryRoutesAnswerWhatTheyAnsweredAtTheBaseHead(t *testing.T) {
 					differing++
 					t.Errorf("%s: GET %s: %s", window.File, target, difference)
 				}
+				named, difference := takeFailureMeasures(t, got, want)
+				values += named
+				failuresNulled += named
+				if difference != "" {
+					differing++
+					t.Errorf("%s: GET %s: %s", window.File, target, difference)
+				}
 			}
 			compared, difference := compareDeliveryOracleTrees("", got, want)
 			requests, values = requests+1, values+compared
@@ -125,9 +136,12 @@ func TestTheDeliveryRoutesAnswerWhatTheyAnsweredAtTheBaseHead(t *testing.T) {
 			window.From.Format(time.DateOnly), window.To.Format(time.DateOnly), window.Days, earlier, strings.Join(slices.Compact(withPRsMoved), ", "))
 	}
 	t.Logf("history %s (seed %d, %d days to %s), recorded at %s: %d windows, %d requests, %d values compared, %d requests differing; "+
-		"deploys_with_prs moved in %d of the %d windows, by %d deploys in all",
+		"deploys_with_prs moved in %d of the %d windows, by %d deploys in all; %d failure-measure values the base head answered are null",
 		recorded.Fixture.Spec.Project, recorded.Fixture.Spec.Seed, recorded.Fixture.Spec.Days, recorded.Fixture.Spec.Now.Format(time.DateOnly),
-		recorded.Head, len(recorded.Windows), requests, values, differing, movedWindows, len(recorded.Windows), moved)
+		recorded.Head, len(recorded.Windows), requests, values, differing, movedWindows, len(recorded.Windows), moved, failuresNulled)
+	if failuresNulled == 0 {
+		t.Error("no measures answer held a failure measure to compare, so the named difference was never read")
+	}
 }
 
 // deploysShippingOnlyEarlier is how many of the fixture's deploys started in [from, to) ship pull
@@ -200,6 +214,67 @@ func takeWithPRs(t *testing.T, got, want any, earlier, days int) (string, string
 			gotCount, gotPerDay, wantCount, wantPerDay, earlier, wantCount+int64(earlier), expectedPerDay)
 	}
 	return change, ""
+}
+
+// takeFailureMeasures checks got's change failure rate and its verdicts against want's, a
+// measures answer's and the base head's, while no failure source exists, and takes them out of
+// both: got's measures.change_failure_rate, status.change_failure_rate and
+// status.change_failure_rate_upper_bound must each be null; want's change failure rate must be
+// the base head's stand-in, every flag count and rate 0 over a total that is a count, and each of
+// its verdicts a boolean or null. It answers how many of the base head's values the check named
+// and, where any is off, what is.
+func takeFailureMeasures(t *testing.T, got, want any) (int, string) {
+	t.Helper()
+	field := func(tree any, path ...string) (map[string]any, string) {
+		parent := tree.(map[string]any)
+		for _, key := range path[:len(path)-1] {
+			parent = parent[key].(map[string]any)
+		}
+		return parent, path[len(path)-1]
+	}
+	named := 0
+	for _, path := range [][]string{{"measures", "change_failure_rate"}, {"status", "change_failure_rate"}, {"status", "change_failure_rate_upper_bound"}} {
+		gotParent, key := field(got, path...)
+		wantParent, _ := field(want, path...)
+		gotValue, gotHeld := gotParent[key]
+		wantValue, wantHeld := wantParent[key]
+		if !gotHeld || !wantHeld {
+			return named, fmt.Sprintf("%s is held %t by this answer and %t by the base head's, want both", strings.Join(path, "."), gotHeld, wantHeld)
+		}
+		if gotValue != nil {
+			return named, fmt.Sprintf("%s is %v with no failure source, want null", strings.Join(path, "."), gotValue)
+		}
+		if path[0] == "status" {
+			if _, verdict := wantValue.(bool); wantValue != nil && !verdict {
+				return named, fmt.Sprintf("the base head's %s is %v, want a verdict or null", strings.Join(path, "."), wantValue)
+			}
+			named++
+		} else {
+			rates, ok := wantValue.(map[string]any)
+			if !ok {
+				return named, fmt.Sprintf("the base head's %s is %v, want its object of flag counts", strings.Join(path, "."), wantValue)
+			}
+			for _, cut := range []string{"per_pr", "per_deploy"} {
+				counts, ok := rates[cut].(map[string]any)
+				if !ok {
+					return named, fmt.Sprintf("the base head's change_failure_rate.%s is %v, want an object", cut, rates[cut])
+				}
+				for name, value := range counts {
+					number, isNumber := value.(json.Number)
+					if !isNumber {
+						return named, fmt.Sprintf("the base head's change_failure_rate.%s.%s is %v, want a number", cut, name, value)
+					}
+					if name != "total" && number.String() != "0" {
+						return named, fmt.Sprintf("the base head's change_failure_rate.%s.%s is %s with no flag stored, want its stand-in 0", cut, name, number)
+					}
+					named++
+				}
+			}
+		}
+		delete(gotParent, key)
+		delete(wantParent, key)
+	}
+	return named, ""
 }
 
 func readDeliveryOracleFile(t *testing.T, path string, into any) {

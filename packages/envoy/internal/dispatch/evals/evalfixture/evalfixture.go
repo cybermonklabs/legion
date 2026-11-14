@@ -62,8 +62,9 @@ const (
 )
 
 // LegionTables are the tables the Legion history is written into; the base head 02a7b3c6 has
-// every one of them, with the columns the history writes.
-var LegionTables = []string{"projects", "issues", "events", "handoffs", "legion_observations", "legion_settings"}
+// every one of them, with the columns the history writes (delivery_pull_requests the merged pull
+// requests of legiontest.Spec.Merged).
+var LegionTables = []string{"projects", "issues", "events", "handoffs", "legion_observations", "delivery_pull_requests", "legion_settings"}
 
 // BaseLacks are the tables of this head's Legion evals that the base head 02a7b3c6 does not have
 // (its migrations end at 20261112193821): the filings, the session titles, the registry and its
@@ -77,8 +78,10 @@ var BaseLacks = []string{
 
 // LegionSpec is the Legion history of project the Legion mode writes: enough trees for at least
 // issues finished issues, ending at now, with the older half of the trees unobserved and every
-// observed root waiting for its slot (legiontest.Spec's Unobserved and Queued), numbered after
-// the offset issue numbers the project has already.
+// observed root waiting for its slot (legiontest.Spec's Unobserved and Queued), finished issues
+// that sat parked in `icebox` and in `backlog`, a merged pull request for each issue the merger
+// closes and filings of all four classes (Parked, Merged and Filings, what k6 and k17 read),
+// numbered after the offset issue numbers the project has already.
 func LegionSpec(project string, issues int, now time.Time, offset int) legiontest.Spec {
 	if issues <= 0 {
 		issues = DefaultIssues
@@ -87,6 +90,7 @@ func LegionSpec(project string, issues int, now time.Time, offset int) legiontes
 	return legiontest.Spec{
 		Project: project, Trees: trees, Now: now.UTC(),
 		Spacing: treeSpacing, Unobserved: trees / 2, Queued: true, IssueOffset: offset,
+		Parked: true, Merged: true, Filings: true,
 	}
 }
 

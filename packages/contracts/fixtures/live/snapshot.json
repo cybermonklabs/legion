@@ -228,26 +228,7 @@
             "max_minutes": null
           }
         },
-        "change_failure_rate": {
-          "per_pr": {
-            "confirmed": 0,
-            "pending": 0,
-            "rejected": 0,
-            "reverts": 0,
-            "total": 0,
-            "rate": 0
-          },
-          "per_deploy": {
-            "confirmed": 0,
-            "pending": 0,
-            "rejected": 0,
-            "reverts": 0,
-            "total": 0,
-            "rate": 0,
-            "confirmed_or_pending": 0,
-            "upper_bound_rate": 0
-          }
-        },
+        "change_failure_rate": null,
         "time_to_restore": {
           "median_minutes": null
         },
@@ -367,7 +348,7 @@
       }
     },
     "fields": {
-      "measures": "d91e0023c31c22fa",
+      "measures": "0476774ed59b1261",
       "waiting": "65f5705a0510ccf7",
       "window": "037ec912c5c440a4"
     }

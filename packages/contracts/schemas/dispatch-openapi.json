@@ -3909,7 +3909,7 @@
     },
     "/api/v1/delivery/measures": {
       "get": {
-        "description": "The four delivery measures and Sami's KPI targets for [from, to) (default the last 7 days) and the same facets the timeline takes: deploys a day, lead time (merge, first commit and open to production; open to merge), change failure rate per PR and per deploy (flags_source says whether stored flags fed it), time to restore, rework share, deploy-run success, a per-UTC-day series, the open P0 issues with no owner, and whether each target is met; 404 DELIVERY_NOT_CONFIGURED without a delivery_settings row.",
+        "description": "The four delivery measures and Sami's KPI targets for [from, to) (default the last 7 days) and the same facets the timeline takes: deploys a day, lead time (merge, first commit and open to production; open to merge), change failure rate per PR and per deploy, time to restore, rework share, deploy-run success, a per-UTC-day series, the open P0 issues with no owner, and whether each target is met. flags_source says whether a failure source fed the change failure rate and time to restore: with none (none) change_failure_rate is null, time_to_restore has no median, and both verdicts are null, since a rate nothing measured is no 0. 404 DELIVERY_NOT_CONFIGURED without a delivery_settings row.",
         "operationId": "getApiV1DeliveryMeasures",
         "parameters": [
           {
@@ -4452,7 +4452,7 @@
     },
     "/api/v1/evals": {
       "get": {
-        "description": "The evals of several projects in the project read's item shape and envelope {items, total, limit, offset}, by project in the order named and then by slug, the page running across them: ?project=, repeated, names the projects read, and with none named every project the store holds is read, by key, with no project picked for the caller. The window, compare range, kind, repo and page keys are the project read's. 400 INVALID_QUERY names a malformed key, 404 PROJECT_NOT_FOUND an unknown project.",
+        "description": "The evals of several projects in the project read's item shape and envelope {items, total, limit, offset}, by project in the order named and then by slug, the page running across them: ?project=, repeated, names the projects read, and with none named every project the store holds is read, by key, with no project picked for the caller. The window, compare range, kind, repo and page keys are the project read's. 400 INVALID_QUERY names a malformed key, or a key the route does not take (any but these and the global session parameter), 404 PROJECT_NOT_FOUND an unknown project.",
         "operationId": "getApiV1Evals",
         "parameters": [
           {
@@ -10004,7 +10004,7 @@
     },
     "/api/v1/projects/{key}/evals": {
       "get": {
-        "description": "The project's evals, one page {items, total, limit, offset} by slug (limit 1-200, default 50), each its current definition (every field of eval_versions, read through evals_current), its owner, each listed series with its statistics over the window [from, to) (RFC3339, default the last 7 days, at most 84) and over compare_from..compare_to (both or neither, at most 84 days; the two need not be of one length), the change between them, data_since (the series' first day; a range that starts before it reads every statistic null, \"no data\", never 0), the count of rows that reached the project through a repository, and for a headline series a per-day array; and the verdict of its target (null where the target is off). Every figure is folded from the stored day rows of the UTC days the range covers, through the one fold the eval's source names, or its series' agg for a logged eval; window and compare state those days, freshness the oldest row folded and the day-row refresher's age. ?kind= (delivery, legion, ci, experiment) keeps one kind; ?repo=, repeated, folds those repositories' rows in place of the project's. 400 INVALID_QUERY names a malformed key, 404 PROJECT_NOT_FOUND an unknown project.",
+        "description": "The project's evals, one page {items, total, limit, offset} by slug (limit 1-200, default 50), each its current definition (every field of eval_versions, read through evals_current), its owner, each listed series with its statistics over the window [from, to) (RFC3339, default the last 7 days, at most 84) and over compare_from..compare_to (both or neither, at most 84 days; the two need not be of one length), the change between them, data_since (the series' first day; a range that starts before it reads every statistic null, \"no data\", never 0), the count of rows that reached the project through a repository, and for a headline series a per-day array; and the verdict of its target (null where the target is off). Every figure is folded from the stored day rows of the UTC days the range covers, through the one fold the eval's source names, or its series' agg for a logged eval; window and compare state those days, freshness the oldest row folded and the day-row refresher's age. ?kind= (delivery, legion, ci, experiment) keeps one kind; ?repo=, repeated, folds those repositories' rows in place of the project's. 400 INVALID_QUERY names a malformed key, or a key the route does not take (any but these and the global session parameter), 404 PROJECT_NOT_FOUND an unknown project.",
         "operationId": "getApiV1ProjectsByKeyEvals",
         "parameters": [
           {
@@ -10182,7 +10182,7 @@
     },
     "/api/v1/projects/{key}/evals/{slug}": {
       "get": {
-        "description": "One eval's versions, newest first, one page {items, total, limit, offset} of the list's item shape: the newest states the window's values as the list read does (the same window, compare range, repo and freshness), every older version its definition alone; and doc_text, the method the eval's section of the project's evals-md document holds (null where the document holds none). 400 INVALID_QUERY names a malformed key, 404 PROJECT_NOT_FOUND an unknown project and EVAL_NOT_FOUND a slug no eval of it holds.",
+        "description": "One eval's versions, newest first, one page {items, total, limit, offset} of the list's item shape: the newest states the window's values as the list read does (the same window, compare range, repo and freshness), every older version its definition alone; and doc_text, the method the eval's section of the project's evals-md document holds (null where the document holds none). 400 INVALID_QUERY names a malformed key, or a key the route does not take (any but these and the global session parameter), 404 PROJECT_NOT_FOUND an unknown project and EVAL_NOT_FOUND a slug no eval of it holds.",
         "operationId": "getApiV1ProjectsByKeyEvalsBySlug",
         "parameters": [
           {
@@ -10289,7 +10289,7 @@
     },
     "/api/v1/projects/{key}/evals/{slug}/items": {
       "get": {
-        "description": "The rows behind an eval's numbers over the window and the compare range, one page {items, total, limit, offset}, every row {row_key, row_kind, cols, measured_at, source, href, links, range} whatever its kind, range compare for a row of the compare range: the eval's readings (a reading logged under a computed eval's slug among them), its stored day rows (day), and for a computed eval the rows its numbers count, as its project's day rows counted them: a Legion eval's issues closed in the range and legion-splitting's filings (issue), a delivery eval's pull requests and deploy runs (pull_request, deploy), a CI eval's runs (run) and pr-ci's jobs (job), unowned-p0's open P0 issues with no owner (issue). ?series= narrows to a series (a Legion series' :roots or :children cut, a filed:\u003cclass\u003e series, a job:\u003cname\u003e series), ?row_kind= and ?row= to a row kind and a row key, ?repo=, repeated, to those repositories; ?sort=median answers pr-ci's jobs with their series' min_n timed results, slowest first, and ?sort=failures the jobs that failed in the 24 hours before the range's end. 400 INVALID_QUERY names a malformed key, 404 PROJECT_NOT_FOUND and EVAL_NOT_FOUND as the eval's read answers them.",
+        "description": "The rows behind an eval's numbers over the window and the compare range, one page {items, total, limit, offset}, every row {row_key, row_kind, cols, measured_at, source, href, links, range} whatever its kind, range compare for a row of the compare range: the eval's readings (a reading logged under a computed eval's slug among them), its stored day rows (day), and for a computed eval the rows its numbers count, as its project's day rows counted them: a Legion eval's issues closed in the range and legion-splitting's filings (issue), a delivery eval's pull requests and deploy runs (pull_request, deploy), a CI eval's runs (run) and pr-ci's jobs (job), unowned-p0's open P0 issues with no owner (issue). measured_at is when a row's value was measured, the moment its eval dates it by: a reading's own, a pull request's merge, a deploy run's and a CI run's start, a Legion issue's close, a filing's filing, a day row's day, a job's newest day, a failing job's latest failure, and the read itself for an open P0 issue with no owner. ?series= narrows to a series (a Legion series' :roots or :children cut, a filed:\u003cclass\u003e series, a job:\u003cname\u003e series), ?row_kind= and ?row= to a row kind and a row key, ?repo=, repeated, to those repositories; ?sort=median answers pr-ci's jobs with their series' min_n timed results, slowest first, and ?sort=failures the jobs that failed in the 24 hours before the range's end. 400 INVALID_QUERY names a malformed key, or a key the route does not take (any but these and the global session parameter), 404 PROJECT_NOT_FOUND and EVAL_NOT_FOUND as the eval's read answers them.",
         "operationId": "getApiV1ProjectsByKeyEvalsBySlugItems",
         "parameters": [
           {
@@ -17196,7 +17196,14 @@
       "DeliveryMeasures": {
         "properties": {
           "change_failure_rate": {
-            "$ref": "#/components/schemas/ChangeFailureRate"
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChangeFailureRate"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "daily": {
             "items": {

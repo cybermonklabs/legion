@@ -164,7 +164,9 @@ func TestEveryEvalRouteAnswersTheEnvelope(t *testing.T) {
 
 // TestTheEvalRoutesRefuseWithStableCodes (k7, k4, k9): each bad request is refused with its stable
 // code, a readings write refused for a row names the row by its index, and no refused write
-// stores a reading or a version. A readings write carrying the global session parameter alone is
+// stores a reading or a version. Each of the four reads refuses a query key its route shape does
+// not declare, naming it (the old `scope` among them, and a key another eval route takes), and so
+// does the readings write; each of the five carrying the global session parameter alone is
 // accepted.
 func TestTheEvalRoutesRefuseWithStableCodes(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
@@ -197,6 +199,14 @@ func TestTheEvalRoutesRefuseWithStableCodes(t *testing.T) {
 		{name: "an unknown slug's versions", method: http.MethodGet, path: "/api/v1/projects/EVL/evals/no-such-eval", status: 404, code: codeEvalNotFound},
 		{name: "an unknown slug's items", method: http.MethodGet, path: "/api/v1/projects/EVL/evals/no-such-eval/items", status: 404, code: codeEvalNotFound},
 		{name: "a sort no table has", method: http.MethodGet, path: "/api/v1/projects/EVL/evals/pr-ci/items?sort=fastest", status: 400, code: "INVALID_QUERY", names: "fastest"},
+		{name: "a list read with the old scope", method: http.MethodGet, path: "/api/v1/projects/EVL/evals?scope=roots", status: 400, code: "INVALID_QUERY", names: `"scope"`},
+		{name: "a list read naming a project", method: http.MethodGet, path: "/api/v1/projects/EVL/evals?project=EVL", status: 400, code: "INVALID_QUERY", names: `"project"`},
+		{name: "a cross-project read with the old scope", method: http.MethodGet, path: "/api/v1/evals?project=EVL&scope=roots", status: 400, code: "INVALID_QUERY", names: `"scope"`},
+		{name: "a cross-project read with an items filter", method: http.MethodGet, path: "/api/v1/evals?series=hours", status: 400, code: "INVALID_QUERY", names: `"series"`},
+		{name: "an eval's versions with the old scope", method: http.MethodGet, path: "/api/v1/projects/EVL/evals/pr-ci?scope=roots", status: 400, code: "INVALID_QUERY", names: `"scope"`},
+		{name: "an eval's versions with a kind", method: http.MethodGet, path: "/api/v1/projects/EVL/evals/pr-ci?kind=ci", status: 400, code: "INVALID_QUERY", names: `"kind"`},
+		{name: "an eval's items with the old scope", method: http.MethodGet, path: "/api/v1/projects/EVL/evals/pr-ci/items?scope=roots", status: 400, code: "INVALID_QUERY", names: `"scope"`},
+		{name: "an eval's items with a kind", method: http.MethodGet, path: "/api/v1/projects/EVL/evals/pr-ci/items?kind=ci", status: 400, code: "INVALID_QUERY", names: `"kind"`},
 		{name: "a readings write with a window", method: http.MethodPost, path: readings + "?from=2026-11-01T00:00:00Z", body: map[string]any{"readings": []any{good}}, key: "r-query", status: 400, code: "INVALID_QUERY", names: `"from"`},
 		{name: "a readings write with no Idempotency-Key", method: http.MethodPost, path: readings, body: map[string]any{"readings": []any{good}}, status: 400, code: codeIdempotencyKeyRequired},
 		{name: "a reading carrying recorded_by", method: http.MethodPost, path: readings, body: map[string]any{"readings": []any{withKey(map[string]any{"recorded_by": map[string]any{"kind": "user", "id": "mallory"}})}}, key: "r-by", status: 400, code: evals.CodeFieldServerSet, names: "recorded_by"},
@@ -246,6 +256,17 @@ func TestTheEvalRoutesRefuseWithStableCodes(t *testing.T) {
 	}
 	if got := countRows(t, database, countReadings); got != readingsAfter+1 {
 		t.Errorf("the write with ?session= stored %d readings, want 1", got-readingsAfter)
+	}
+	// And each read takes it beside the keys its shape declares.
+	for _, path := range []string{
+		"/api/v1/projects/EVL/evals?session=s-1",
+		"/api/v1/evals?project=EVL&session=s-1",
+		"/api/v1/projects/EVL/evals/review-time?session=s-1",
+		"/api/v1/projects/EVL/evals/review-time/items?session=s-1",
+	} {
+		if read := evalRequest(t, handler, http.MethodGet, path, nil, ""); read.Code != http.StatusOK {
+			t.Errorf("GET %s: status %d, body %s, want 200", path, read.Code, read.Body.String())
+		}
 	}
 }
 
@@ -636,7 +657,8 @@ func nearly(got *float64, want, tolerance float64) bool {
 // names no first day, and a window that starts before a series' first day reads null and names it
 // while its per-day array answers the days that exist; GET /api/v1/evals answers two projects, one,
 // and with none named every project the store holds, each item equal to the project read's; and the
-// items route answers one field set for every row kind.
+// items route answers one field set for every row kind, each row measured when its value was
+// (itemMeasuredAt).
 func TestTheEvalReadsFoldTheStoredDayRows(t *testing.T) {
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	fixture, windows := seedEvalHistories(t, database, deps, 14)
@@ -819,6 +841,7 @@ func TestTheEvalReadsFoldTheStoredDayRows(t *testing.T) {
 	}
 	kinds := map[string]map[string]bool{}
 	rangesSeen := map[string]bool{}
+	measuredRules := map[string]string{}
 	for _, read := range []struct {
 		project, slug, query string
 	}{
@@ -829,6 +852,7 @@ func TestTheEvalReadsFoldTheStoredDayRows(t *testing.T) {
 		{fixture.Project, evals.SlugDeployFrequency, "row_kind=day"},
 		{fixture.Project, "deploy-notes", "row_kind=sample"},
 		{project, evals.SlugLegionWorkTime, "row_kind=issue&from=" + url.QueryEscape(windows[0].Window.From.Format(time.RFC3339)) + "&to=" + url.QueryEscape(windows[0].Window.To.Format(time.RFC3339))},
+		{project, evals.SlugLegionSplitting, "row_kind=issue&series=filed:" + metrics.ClassInTreeAtDesign + "&from=" + url.QueryEscape(windows[0].Window.From.Format(time.RFC3339)) + "&to=" + url.QueryEscape(windows[0].Window.To.Format(time.RFC3339))},
 	} {
 		query := read.query
 		if !strings.Contains(query, "from=") {
@@ -865,6 +889,20 @@ func TestTheEvalReadsFoldTheStoredDayRows(t *testing.T) {
 			for name := range row {
 				kinds[kind][name] = true
 			}
+			var got time.Time
+			if err := json.Unmarshal(row["measured_at"], &got); err != nil {
+				t.Fatalf("decode a measured_at of %s: %v", read.slug, err)
+			}
+			days := evals.Range{From: from, To: to}
+			if rng == evals.RangeCompare {
+				days = evals.Range{From: fixture.From, To: from}
+			}
+			rule, want := itemMeasuredAt(t, database, read.project, read.slug, kind, days, row)
+			if !got.Equal(want) {
+				t.Errorf("a %s row %s of %s was measured at %s, want %s: %s", kind, row["row_key"], read.slug,
+					got.Format(time.RFC3339Nano), want.Format(time.RFC3339Nano), rule)
+			}
+			measuredRules[read.slug+" "+kind] = rule
 		}
 		t.Logf("%s items ?%s: %d rows, the first %.300s", read.slug, read.query, len(page.Items), mustJSON(t, page.Items[0]))
 	}
@@ -879,6 +917,79 @@ func TestTheEvalReadsFoldTheStoredDayRows(t *testing.T) {
 	}
 	t.Logf("%d row kinds %v, each with the fields %v, of the ranges %v", len(kinds), slices.Sorted(maps.Keys(kinds)), evalItemFields,
 		slices.Sorted(maps.Keys(rangesSeen)))
+	for _, read := range slices.Sorted(maps.Keys(measuredRules)) {
+		t.Logf("%s rows are measured at %s", read, measuredRules[read])
+	}
+}
+
+// itemMeasuredAt is when an items row of kind, of slug's eval of project, over days, was measured
+// by the rule the items route states (evalItemRow.MeasuredAt), read from the row's own columns
+// and, for a job, from its day rows; and the rule, in words. A kind no rule names fails the test.
+func itemMeasuredAt(t *testing.T, database *store.Store, project, slug, kind string, days evals.Range, row map[string]json.RawMessage) (string, time.Time) {
+	t.Helper()
+	var cols map[string]json.RawMessage
+	if err := json.Unmarshal(row["cols"], &cols); err != nil {
+		t.Fatalf("decode the columns of a %s row of %s: %v", kind, slug, err)
+	}
+	column := func(name string) time.Time {
+		var at time.Time
+		if err := json.Unmarshal(cols[name], &at); err != nil {
+			t.Fatalf("decode the column %s of a %s row of %s (%s): %v", name, kind, slug, cols[name], err)
+		}
+		return at
+	}
+	switch kind {
+	case evalRowPullRequest:
+		return "its merge", column("merged_at")
+	case evalRowDeploy, evalRowRun:
+		return "its run's start, the day its measure counts it on", column("started_at")
+	case evalRowDay:
+		var day string
+		if err := json.Unmarshal(cols["day"], &day); err != nil {
+			t.Fatalf("decode the day of a day row of %s: %v", slug, err)
+		}
+		at, err := time.Parse(time.DateOnly, day)
+		if err != nil {
+			t.Fatalf("parse the day %q of a day row of %s: %v", day, slug, err)
+		}
+		return "its day", at
+	case evalRowJob:
+		var name string
+		if err := json.Unmarshal(row["row_key"], &name); err != nil {
+			t.Fatalf("decode a job's name: %v", err)
+		}
+		var newest time.Time
+		if err := database.Pool.QueryRow(t.Context(), `
+			select max(day)::timestamp at time zone 'UTC' from eval_days
+			where project_key = $1 and eval_id = $2 and series = $3 and repo = '' and day >= $4 and day < $5
+		`, project, evals.EvalID(project, slug), measures.JobSeriesPrefix+name, days.From, days.To).Scan(&newest); err != nil {
+			t.Fatalf("read the newest day of job %s: %v", name, err)
+		}
+		return "the newest day its day rows of the range are of", newest
+	case evalRowIssue:
+		if _, filing := cols[legionfacts.ColumnFiledAt]; filing {
+			return "its filing", column(legionfacts.ColumnFiledAt)
+		}
+		return "its close", column(legionfacts.ColumnClosedAt)
+	case "sample":
+		var measured time.Time
+		if err := database.Pool.QueryRow(t.Context(), `select measured_at from eval_readings where id = $1`, mustString(t, cols["id"])).Scan(&measured); err != nil {
+			t.Fatalf("read the reading behind a row of %s: %v", slug, err)
+		}
+		return "the moment its reading was logged as measured", measured
+	}
+	t.Fatalf("no rule names when a %s row of %s is measured", kind, slug)
+	return "", time.Time{}
+}
+
+// mustString is a JSON string's value.
+func mustString(t *testing.T, raw json.RawMessage) string {
+	t.Helper()
+	var value string
+	if err := json.Unmarshal(raw, &value); err != nil {
+		t.Fatalf("decode %s as a string: %v", raw, err)
+	}
+	return value
 }
 
 // TestTheFailingJobsItemsAreThePipelinesFailingJobs: pr-ci's items with sort=failures answer the

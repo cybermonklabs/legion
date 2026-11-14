@@ -23,8 +23,9 @@ import (
 // rows of the day, which the eval routes fold through the six legion/metrics folds the evals'
 // source names.
 //
-// A project's Legion rows of a day are, for each eval with input that day, every series of the
-// eval in each of its cuts (metrics.CutSeries, LegionSeries): the all-repositories row (repo ''),
+// A project's Legion rows of a day are, for each eval with input that day, every series its
+// builder builds in each of its cuts (metrics.CutSeries; every series of LegionSeries but the
+// root figures' children cut, which no day holds): the all-repositories row (repo ''),
 // built from every issue and filing of the day, and one row per repository the eval's input is
 // in, built from that repository's alone. An issue's repository, and a filing's, is the one the
 // issue (the filed issue) resolves to by the rule that fills issue_facts.repo
@@ -62,7 +63,7 @@ const (
 )
 
 // legionDaySlugs is every eval a Legion day's rows are of, and so every eval WriteLegionProjectDay
-// deletes the rows of that a day no longer holds.
+// writes the rows of that a day no longer holds as zero rows.
 var legionDaySlugs = []string{
 	SlugLegionWorkTime, SlugLegionPhaseTime, SlugLegionIdleTime, SlugLegionSlotWait, SlugLegionRework,
 	SlugLegionSplitting,
@@ -92,17 +93,25 @@ var legionBuilders = map[string]func(day time.Time, finished []metrics.IssueFact
 	SlugLegionSplitting: metrics.SplittingDay,
 }
 
-// LegionSeries is every series a Legion eval's day rows are stored under, each of its series in
-// each of its cuts, in the order its builder builds them; none for a slug of no Legion eval.
+// LegionSeries is every series a Legion eval has, each of its series in each of its cuts: those
+// its builder builds, in the order it builds them, and for legion-splitting the children cut of
+// its root figures (metrics.RootFigures), which count roots alone and so hold no issue in that
+// cut. No day row is ever written of those three, so the list read answers them with no value.
+// None for a slug of no Legion eval.
 func LegionSeries(slug string) []string {
 	build, ok := legionBuilders[slug]
 	if !ok {
 		return nil
 	}
 	parts := build(time.Time{}, nil, nil)
-	series := make([]string, len(parts))
+	series := make([]string, len(parts), len(parts)+len(metrics.RootFigures))
 	for i, part := range parts {
 		series[i] = part.Series
+	}
+	if slug == SlugLegionSplitting {
+		for _, figure := range metrics.RootFigures {
+			series = append(series, metrics.CutSeries(figure, metrics.ScopeChildren))
+		}
 	}
 	return series
 }
@@ -281,8 +290,9 @@ func ZeroLegionDay(project string, day time.Time, slugs ...string) ProjectDay {
 
 // WriteLegionProjectDay writes day as its project's Legion rows of its day, as WriteProjectDay
 // writes a delivery day: each row upserted, recording builtBy, the running build; the project's
-// rows of that day of the Legion evals (legionDaySlugs) that day does not hold deleted; and its
-// issues recorded in eval_day_members on its day under the family `legion`, whose items recorded
+// rows of that day of the Legion evals (legionDaySlugs) that day does not hold written as zero
+// rows (zeroStaleDays); and its issues recorded in eval_day_members on its day under the family
+// `legion`, whose items recorded
 // on that day that it does not hold are deleted. A row of another project, another day or an eval
 // that is not a Legion one, and an item of another family, is refused before anything is written.
 func (s *Store) WriteLegionProjectDay(ctx context.Context, day ProjectDay, builtBy string) error {
@@ -290,9 +300,9 @@ func (s *Store) WriteLegionProjectDay(ctx context.Context, day ProjectDay, built
 }
 
 // WriteLegionDay reads project's Legion input of the UTC day day is on (ReadLegionDay) and writes
-// its rows under since (LegionDay.Rows, WriteLegionProjectDay). A day with no input deletes the
-// project's Legion rows and items of the day. builtBy is the running build, which every row
-// written records.
+// its rows under since (LegionDay.Rows, WriteLegionProjectDay). A day with no input writes the
+// project's Legion rows of the day as zero rows and deletes its items. builtBy is the running
+// build, which every row written records.
 func (s *Store) WriteLegionDay(ctx context.Context, project string, day time.Time, since LegionSince, builtBy string) error {
 	read, err := s.ReadLegionDay(ctx, project, day)
 	if err != nil {

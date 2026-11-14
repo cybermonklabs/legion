@@ -205,9 +205,11 @@ func allFacts(rows []DayRow) []string {
 // via_repository 1; the deploy that ships both counts in both; the deploys that ship none count for
 // the deploy repository's project; the CI run counts for its repository's project; the pull
 // request of an unmapped repository counts nowhere; and GAMMA, with nothing, gets no row. Then the
-// day is written again unchanged (no row rewritten), and once acme/alpha#2 names BETA-1 the day's
-// rewrite moves it, and the deploy that shipped it, out of ALPHA, deleting ALPHA's rows and items
-// the day no longer holds.
+// day is written again unchanged (no row rewritten), and
+// once acme/alpha#2 names BETA-1 the day's rewrite moves it, and the deploy that shipped it, out of
+// ALPHA: ALPHA's acme/alpha rows of the pull-request evals, which held it alone, become zero rows
+// rather than going, and its items of the day that it no longer holds are deleted; written again,
+// the moved day rewrites nothing.
 func TestEachDeliveryAndCIRowCountsForTheProjectD1Names(t *testing.T) {
 	r := newRig(t)
 	settings := seedAttribution(t, r)
@@ -329,10 +331,19 @@ func TestEachDeliveryAndCIRowCountsForTheProjectD1Names(t *testing.T) {
 		t.Fatalf("write the moved day: %v", err)
 	}
 	alpha := allFacts(r.stored(t, "ALPHA"))
-	for _, gone := range []string{"rework-share prs acme/alpha", "merge-to-production minutes acme/alpha"} {
-		if slices.ContainsFunc(alpha, func(fact string) bool { return strings.HasPrefix(fact, gone+":") }) {
-			t.Errorf("ALPHA still holds %q, whose last pull request moved to BETA:\n%s", gone, strings.Join(alpha, "\n"))
+	for _, zeroed := range []string{"rework-share prs acme/alpha: n=0 via=0 share=0/0", "merge-to-production minutes acme/alpha: n=0 via=0 samples=[]"} {
+		if !slices.Contains(alpha, zeroed) {
+			t.Errorf("ALPHA's rows after acme/alpha's last pull request moved to BETA lack the zero row %q:\n%s", zeroed, strings.Join(alpha, "\n"))
 		}
+	}
+	if err := r.database.Pool.QueryRow(ctx, `select max(updated_at) from eval_days`).Scan(&newest); err != nil {
+		t.Fatalf("read the newest write: %v", err)
+	}
+	if _, err := r.registry.WriteDeliveryDay(ctx, settings, attributionDay, "", testBuild); err != nil {
+		t.Fatalf("write the moved day again: %v", err)
+	}
+	if rewritten := r.count(t, `select count(*) from eval_days where updated_at > $1`, newest); rewritten != 0 {
+		t.Errorf("writing the moved day again rewrote %d rows, want none: a zero row already zero is left as it is", rewritten)
 	}
 	for _, kept := range []string{
 		"deploy-frequency deploys all: n=1 via=1 sum=1 with_prs=0", "rework-share prs all: n=1 via=0 share=0/1",

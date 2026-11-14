@@ -88,18 +88,24 @@ type ItemRow struct {
 // issue, in the order the rows were given, which is the key order Compute and ComputeProject
 // answer in.
 //
-// The measured time is the row's own UpdatedAt, the moment its facts were computed as of, and
-// never the moment of this call: a row read an hour after it was written was measured an hour
-// ago, and an eval that charts it reads it at the moment it was true.
+// The measured time is when the facts were measured: a closed issue's close, the moment its
+// values stopped moving and the moment its Legion evals count it on, whenever its row was last
+// recomputed; and an open issue's row's own UpdatedAt, the moment its still-moving facts were
+// computed as of. It is never the moment of this call: a row read an hour after it was written was
+// measured an hour ago, and an eval that charts it reads it at the moment it was true.
 func ItemRows(rows []Row) []ItemRow {
 	items := make([]ItemRow, 0, len(rows))
 	for _, row := range rows {
+		measured := row.UpdatedAt
+		if row.ClosedAt != nil {
+			measured = *row.ClosedAt
+		}
 		items = append(items, ItemRow{
 			Project:    row.Project,
 			RowKey:     row.Issue,
 			RowKind:    ItemRowKind,
 			Columns:    itemColumns(row),
-			MeasuredAt: row.UpdatedAt,
+			MeasuredAt: measured,
 			Source:     ItemSource,
 			Href:       "/issues/" + row.Issue,
 		})

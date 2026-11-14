@@ -31,9 +31,11 @@ func count(t *testing.T, database *store.Store, statement string, args ...any) i
 
 // TestTheLegionModeWritesAHistoryObservedFromPartway: -legion writes at least the finished issues
 // it is asked for, observations that begin partway through the history (some issues observed, some
-// not, the first observation the one the result names), a root that waited for its slot, the
-// project's legion_settings row, and two whole-day windows on either side of the first observation
-// that hold every finished issue between them.
+// not, the first observation the one the result names), a root that waited for its slot, finished
+// issues that sat parked in `icebox` and in `backlog`, a merged pull request for each issue the
+// merger closed, filings by a worker into its tree, by a worker outside any tree and by the
+// controller, the project's legion_settings row, and two whole-day windows on either side of the
+// first observation that hold every finished issue between them.
 func TestTheLegionModeWritesAHistoryObservedFromPartway(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := t.Context()
@@ -73,6 +75,25 @@ func TestTheLegionModeWritesAHistoryObservedFromPartway(t *testing.T) {
 	if url := count(t, database, `select count(*) from legion_settings where project = 'LEGK' and state_url = $1`, evalfixture.StateURL); url != 1 {
 		t.Errorf("%d legion_settings rows name %s, want one", url, evalfixture.StateURL)
 	}
+	parked := func(status string) int {
+		return count(t, database, `
+			select count(distinct e.issue_key) from events e join issues i on i.key = e.issue_key
+			where i.project_key = 'LEGK' and i.status = 'done' and e.payload->>'status' = $1`, status)
+	}
+	icebox, backlog := parked("icebox"), parked("backlog")
+	merged := count(t, database, `
+		select count(*) from delivery_pull_requests p join issues i on i.key = p.issue_key
+		where i.project_key = 'LEGK' and p.merged_at is not null and p.merged_at < i.closed_at`)
+	filed := func(title string) int {
+		return count(t, database, `
+			select count(*) from events e join issues i on i.key = e.issue_key
+			where i.project_key = 'LEGK' and e.type = 'issue.created' and e.actor->'origin'->>'session_title' like $1`, title)
+	}
+	later, outside, controller := filed("Legion implementer · %"), filed("Legion reviewer · %"), filed("Legion controller · LEGK")
+	if icebox == 0 || backlog == 0 || merged != loaded.Trees*3 || later == 0 || outside == 0 || controller == 0 {
+		t.Errorf("%d finished issues sat in icebox and %d in backlog, %d merged pull requests (want %d), filings by an implementer %d, a reviewer %d and the controller %d: want some of each",
+			icebox, backlog, merged, loaded.Trees*3, later, outside, controller)
+	}
 
 	before, after := loaded.Windows.Before, loaded.Windows.After
 	if !before.From.Before(loaded.FirstObserved) || before.To != after.From || after.From.Before(loaded.FirstObserved) {
@@ -89,8 +110,8 @@ func TestTheLegionModeWritesAHistoryObservedFromPartway(t *testing.T) {
 		t.Errorf("the windows hold %d and %d of %d finished issues over %d and %d days, want both some, every one between them, and at most 84 days each",
 			early, late, loaded.Finished, before.Days(), after.Days())
 	}
-	t.Logf("%s: %d issues, %d finished (%d before, %d after), %d of %d with phase work observed, %d waited for a slot; first observation %s; windows %s..%s and %s..%s",
-		loaded.Project, loaded.Issues, loaded.Finished, early, late, observed, worked, queued, loaded.FirstObserved.Format(time.RFC3339),
+	t.Logf("%s: %d issues, %d finished (%d before, %d after), %d of %d with phase work observed, %d waited for a slot, %d sat in icebox and %d in backlog, %d merged pull requests, filings by an implementer %d, a reviewer %d and the controller %d; first observation %s; windows %s..%s and %s..%s",
+		loaded.Project, loaded.Issues, loaded.Finished, early, late, observed, worked, queued, icebox, backlog, merged, later, outside, controller, loaded.FirstObserved.Format(time.RFC3339),
 		before.From.Format(time.DateOnly), before.To.Format(time.DateOnly), after.From.Format(time.DateOnly), after.To.Format(time.DateOnly))
 }
 
@@ -119,12 +140,13 @@ func TestTheBaseModeWritesTheSameHistoryIntoTheBaseSchema(t *testing.T) {
 	}
 	// Each table as the rows it holds, ids and the moment of the write left out.
 	digests := map[string]string{
-		"projects":            `select md5(string_agg(key || next_number, ',' order by key)) from projects`,
-		"issues":              `select md5(string_agg(key || coalesce(parent_key, '') || status || created_at || coalesce(closed_at::text, ''), ',' order by key)) from issues`,
-		"events":              `select md5(string_agg(issue_key || seq || type || actor::text || payload::text || created_at, ',' order by issue_key, seq)) from events`,
-		"handoffs":            `select md5(string_agg(issue_key || phase || created_at, ',' order by issue_key, created_at, phase)) from handoffs`,
-		"legion_observations": `select md5(string_agg(issue_key || field || value::text || observed_at, ',' order by issue_key, field, observed_at)) from legion_observations`,
-		"legion_settings":     `select md5(string_agg(project || state_url, ',' order by project)) from legion_settings`,
+		"projects":               `select md5(string_agg(key || next_number, ',' order by key)) from projects`,
+		"issues":                 `select md5(string_agg(key || coalesce(parent_key, '') || status || created_at || coalesce(closed_at::text, ''), ',' order by key)) from issues`,
+		"events":                 `select md5(string_agg(issue_key || seq || type || actor::text || payload::text || created_at, ',' order by issue_key, seq)) from events`,
+		"handoffs":               `select md5(string_agg(issue_key || phase || created_at, ',' order by issue_key, created_at, phase)) from handoffs`,
+		"legion_observations":    `select md5(string_agg(issue_key || field || value::text || observed_at, ',' order by issue_key, field, observed_at)) from legion_observations`,
+		"legion_settings":        `select md5(string_agg(project || state_url, ',' order by project)) from legion_settings`,
+		"delivery_pull_requests": `select md5(string_agg(repo || number || title || coalesce(issue_key, '') || coalesce(merged_at::text, ''), ',' order by repo, number)) from delivery_pull_requests`,
 	}
 	for _, table := range evalfixture.LegionTables {
 		var mine, theirs string

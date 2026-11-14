@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
+	"github.com/sjawhar/envoy/internal/dispatch/legion/metrics"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -375,9 +376,10 @@ func storedSeries(project string, rows []DayRow, into map[string]map[string]bool
 }
 
 // requireCatalogueHolds fails the test unless every series written holds a series row of its
-// eval in the catalogue (SeriesRow), and every catalogue series of the evals in want is written;
-// it answers how many series it compared.
-func requireCatalogueHolds(t *testing.T, written map[string]map[string]bool, want []string) int {
+// eval in the catalogue (SeriesRow), and every catalogue series of the evals in want is written
+// but those unwritten names by eval, which by their rule no day row is ever written of and none
+// may be; it answers how many series it compared.
+func requireCatalogueHolds(t *testing.T, written map[string]map[string]bool, want []string, unwritten map[string][]string) int {
 	t.Helper()
 	compared := 0
 	for _, slug := range slices.Sorted(maps.Keys(written)) {
@@ -393,11 +395,14 @@ func requireCatalogueHolds(t *testing.T, written map[string]map[string]bool, wan
 			if !slices.Contains(seriesNames(catalogue[index]), row) {
 				t.Errorf("%s: day rows of series %s are written, and the catalogue holds no series row %s of it", slug, series, row)
 			}
+			if slices.Contains(unwritten[slug], row) {
+				t.Errorf("%s: day rows of series %s are written, which by its rule holds no input", slug, series)
+			}
 			compared++
 		}
 		if slices.Contains(want, slug) {
 			for _, name := range seriesNames(catalogue[index]) {
-				if !rows[name] {
+				if !rows[name] && !slices.Contains(unwritten[slug], name) {
 					t.Errorf("%s: the catalogue holds series %s, and no day row of it is written", slug, name)
 				}
 			}
@@ -461,7 +466,7 @@ func TestEverySeriesTheDeliveryDaysWriteIsInTheCatalogue(t *testing.T) {
 			jobs++
 		}
 	}
-	compared := requireCatalogueHolds(t, written, append(slices.Clone(deliveryDaySlugs), SlugUnownedP0))
+	compared := requireCatalogueHolds(t, written, append(slices.Clone(deliveryDaySlugs), SlugUnownedP0), nil)
 	if jobs == 0 {
 		t.Errorf("the history wrote no job series of %s, so the check of SeriesJobs compared nothing", SlugPRCI)
 	}
@@ -472,7 +477,8 @@ func TestEverySeriesTheDeliveryDaysWriteIsInTheCatalogue(t *testing.T) {
 // TestEverySeriesTheLegionDaysWriteIsInTheCatalogue: over the golden Legion history
 // (legion/metrics/testdata/golden_compute), every day's Legion rows and the zero day's are built,
 // and every series they name is a series of its eval in the catalogue; and each catalogue series
-// of the six Legion evals is written.
+// of the six Legion evals is written, but the children cut of the splitting eval's root figures
+// (metrics.RootFigures), which count roots alone, so that cut holds no issue and no day row.
 func TestEverySeriesTheLegionDaysWriteIsInTheCatalogue(t *testing.T) {
 	r := newRig(t)
 	windows, project, since := seedGoldenLegionHistory(t, r)
@@ -490,6 +496,10 @@ func TestEverySeriesTheLegionDaysWriteIsInTheCatalogue(t *testing.T) {
 		days++
 	}
 	storedSeries(project, ZeroLegionDay(project, last, legionDaySlugs...).Rows, written)
-	compared := requireCatalogueHolds(t, written, legionDaySlugs)
+	var rootChildren []string
+	for _, figure := range metrics.RootFigures {
+		rootChildren = append(rootChildren, metrics.CutSeries(figure, metrics.ScopeChildren))
+	}
+	compared := requireCatalogueHolds(t, written, legionDaySlugs, map[string][]string{SlugLegionSplitting: rootChildren})
 	t.Logf("%s: %d days, %d day rows built; %d series of %d evals written, each a series of the catalogue", project, days, rows, compared, len(written))
 }

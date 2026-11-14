@@ -219,8 +219,9 @@ func leadSpread(parts []measures.DayPart) measures.Spread {
 }
 
 // foldedMeasures is the measures route's measures folded from parts, one cut's day rows of a
-// window, by the folds the route answers through; ok false, with what is missing, where the parts
-// hold no deploy-frequency or deploy-run-success part, which read "no data".
+// window, by the folds the route answers through, change-fail-rate's and failed-deploy-recovery's
+// over their own day rows, of which no failure source writes any; ok false, with what is missing,
+// where the parts hold no deploy-frequency or deploy-run-success part, which read "no data".
 func foldedMeasures(parts map[string][]measures.DayPart, window measures.Window) (measures.Result, string) {
 	frequency := measures.FoldDeployFrequency(parts[evals.SlugDeployFrequency], window)
 	success := measures.FoldDeployRunSuccess(parts[evals.SlugDeployRunSuccess])
@@ -239,9 +240,11 @@ func foldedMeasures(parts map[string][]measures.DayPart, window measures.Window)
 			OpenedToProduction:      leadSpread(parts[evals.SlugOpenToProduction]),
 			OpenedToMerge:           leadSpread(parts[evals.SlugPROpenToMerge]),
 		},
-		ReworkShare:      *share,
-		DeployRunSuccess: *success,
-		Daily:            measures.DailySeries(parts[evals.SlugDeployFrequency], parts[evals.SlugDeployRunSuccess], window),
+		ChangeFailureRate: measures.FoldChangeFailureRate(parts[evals.SlugChangeFailRate]),
+		TimeToRestore:     measures.FoldTimeToRestore(parts[evals.SlugFailedDeployRecovery]),
+		ReworkShare:       *share,
+		DeployRunSuccess:  *success,
+		Daily:             measures.DailySeries(parts[evals.SlugDeployFrequency], parts[evals.SlugDeployRunSuccess], window),
 	}, ""
 }
 
@@ -311,8 +314,9 @@ type evalDaysWindow struct {
 // measures (lead_time, rework_share) under repo= for each repository's cut, the measures a
 // delivery repo facet narrows; and the deploy repository's deploy, run and CI measures against the
 // route's whole answer, since every run is the deploy repository's (every other repository's cut
-// reads no data for them). Every value of those answers but the failure-flag measures' is
-// compared, deploys_with_prs and with_prs_per_day included: a deploy with pull requests is one
+// reads no data for them). Every value of those answers is compared, the failure-flag measures'
+// no value on both sides and deploys_with_prs and with_prs_per_day included: a deploy with pull
+// requests is one
 // that ships any, whenever it merged, on both sides (delivery.Deploys.ShippedBy). It answers the
 // window's tally and every difference found.
 func compareDayRowsWithRoutes(t *testing.T, handler http.Handler, registry *evals.Store, fixture deliverytest.Fixture, settings delivery.DeliverySettings, stored []evals.DayRow, from, to time.Time) (evalDaysWindow, []string) {
@@ -346,9 +350,9 @@ func compareDayRowsWithRoutes(t *testing.T, handler http.Handler, registry *eval
 		}
 		return decodeDeliveryOracleTree(t, response.Body.Bytes())
 	}
-	// The failure-flag measures read no flag (no failure source exists), and their evals get no day
-	// row: both are left out.
-	measuresDropped := []string{"change_failure_rate", "time_to_restore"}
+	// The failure-flag measures read no value on both sides while no failure source exists: no
+	// day row of their evals, and no part the route builds, so both fold to no value.
+	var measuresDropped []string
 	pipelineDropped := []string{"computed_at", "freshness", "targets", "pr_checks.failing_jobs"}
 
 	wholeMeasures := route("/api/v1/delivery/measures", query)

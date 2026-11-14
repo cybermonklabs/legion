@@ -227,17 +227,26 @@ func TestALegionDayWritesEachEvalInEveryCutAndRepositoryAndRecordsItsIssues(t *t
 		t.Errorf("writing the unchanged day again rewrote %d rows, want none", rewritten)
 	}
 
-	// EVAL-2 closes again on the next day: its first day loses its rows in acme/api but for the
-	// filing that is still there, and the next day, which slot wait now has input on, gains them.
+	// EVAL-2 closes again on the next day: its first day's rows in acme/api, which held EVAL-2
+	// alone, become zero rows but for splitting's, whose filing is still there, and the next day,
+	// which slot wait now has input on, gains them.
 	exec("EVAL-2's new close", `update issue_facts set closed_at = $1 where issue_key = 'EVAL-2'`, at(4, 11, 0))
 	for _, written := range []time.Time{day, next} {
 		if err := r.registry.WriteLegionDay(ctx, "EVAL", written, since, testBuild); err != nil {
 			t.Fatalf("write %s: %v", written.Format(time.DateOnly), err)
 		}
 	}
-	_, firstGroups := r.legionFacts(t, "EVAL", day)
-	if got := firstGroups[SlugLegionWorkTime+" acme/api"]; got != 0 || firstGroups[SlugLegionSplitting+" acme/api"] != 21 {
-		t.Errorf("the first day after EVAL-2 left it: %v, want acme/api's splitting rows alone in acme/api", firstGroups)
+	firstFacts, firstGroups := r.legionFacts(t, "EVAL", day)
+	if !maps.Equal(firstGroups, groups) {
+		t.Errorf("the first day after EVAL-2 left it: %v, want every row it held kept, %v", firstGroups, groups)
+	}
+	for fact := range firstFacts {
+		if strings.Contains(fact, " acme/api: ") && !strings.HasPrefix(fact, SlugLegionSplitting+" ") && !strings.Contains(fact, ": n=0 ") {
+			t.Errorf("the first day after EVAL-2 left it holds %q, want a zero row of acme/api, which held EVAL-2 alone", fact)
+		}
+	}
+	if !firstFacts["legion-work-time hours acme/api: n=0 via=0 samples=[]"] || !firstFacts["legion-splitting filed:in_tree_at_design acme/api: n=1 via=0 sum=1"] {
+		t.Errorf("the first day after EVAL-2 left it lacks acme/api's zero work-time row or its filing")
 	}
 	nextFacts, nextGroups := r.legionFacts(t, "EVAL", next)
 	for _, want := range []string{
@@ -266,29 +275,36 @@ func TestALegionDayWritesEachEvalInEveryCutAndRepositoryAndRecordsItsIssues(t *t
 
 // TestTheZeroLegionDayIsTheBuildersDayWithNoInput: ZeroLegionDay holds the all-repositories row of
 // every series of the evals named, in every cut but the root figures' children cut, each n 0 with
-// a zero value; it holds nothing of a slug of no Legion eval; and the Legion write refuses a row of
-// a delivery eval before writing anything.
+// a zero value; LegionSeries names every one of those and, beside them, the root figures'
+// children cut, which the eval has and no day row is ever written of; it holds nothing of a slug
+// of no Legion eval; and the Legion write refuses a row of a delivery eval before writing
+// anything.
 func TestTheZeroLegionDayIsTheBuildersDayWithNoInput(t *testing.T) {
 	day := at(5, 0, 0)
 	zero := ZeroLegionDay("EVAL", day, legionDaySlugs...)
-	want := 0
+	series := 0
 	for _, slug := range legionDaySlugs {
-		want += len(LegionSeries(slug))
+		series += len(LegionSeries(slug))
 	}
-	if len(zero.Rows) != want || want != 3+21+18+3+9+21 {
-		t.Errorf("the zero day holds %d rows, and the six evals %d series, want 75 of each", len(zero.Rows), want)
+	if len(zero.Rows) != 3+21+18+3+9+21 || series != len(zero.Rows)+len(metrics.RootFigures) {
+		t.Errorf("the zero day holds %d rows and the six evals %d series, want 75 rows and those 75 series with the %d root figures' children cut beside them",
+			len(zero.Rows), series, len(metrics.RootFigures))
 	}
 	for _, row := range zero.Rows {
 		fact := legionFact(row)
+		slug := strings.TrimPrefix(row.EvalID, "EVAL/")
 		if row.N != 0 || row.Repo != "" || !row.Listed || !row.Day.Equal(day) || strings.Contains(fact, "=1") ||
-			strings.HasSuffix(row.Series, ":children") && strings.HasPrefix(row.Series, metrics.SeriesRoots) {
-			t.Errorf("a zero row is %s (repo %q, listed %t, %s), want n 0 and a zero value in the all-repositories row of %s",
+			strings.HasSuffix(row.Series, ":children") && slices.ContainsFunc(metrics.RootFigures, func(figure string) bool { return strings.HasPrefix(row.Series, figure+":") }) ||
+			!slices.Contains(LegionSeries(slug), row.Series) {
+			t.Errorf("a zero row is %s (repo %q, listed %t, %s), want n 0 and a zero value in the all-repositories row of %s of a series LegionSeries names",
 				fact, row.Repo, row.Listed, row.Day.Format(time.DateOnly), day.Format(time.DateOnly))
 		}
 	}
-	if !slices.Contains(LegionSeries(SlugLegionSplitting), "hours_with_children:roots") ||
-		slices.Contains(LegionSeries(SlugLegionSplitting), "hours_with_children:children") {
-		t.Errorf("legion-splitting's series %v, want the root figures in the all and roots cuts alone", LegionSeries(SlugLegionSplitting))
+	for _, figure := range metrics.RootFigures {
+		if !slices.Contains(LegionSeries(SlugLegionSplitting), metrics.CutSeries(figure, metrics.ScopeRoots)) ||
+			!slices.Contains(LegionSeries(SlugLegionSplitting), metrics.CutSeries(figure, metrics.ScopeChildren)) {
+			t.Errorf("legion-splitting's series %v, want %s in all three cuts", LegionSeries(SlugLegionSplitting), figure)
+		}
 	}
 	if got := ZeroLegionDay("EVAL", day, SlugDeployFrequency); len(got.Rows) != 0 {
 		t.Errorf("the zero day of deploy-frequency holds %d Legion rows, want none", len(got.Rows))

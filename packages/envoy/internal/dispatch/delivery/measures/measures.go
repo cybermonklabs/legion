@@ -130,15 +130,17 @@ type DeployRunSuccess struct {
 }
 
 // Result is every number the measures panel and GET /api/v1/delivery/measures show for one window
-// and population.
+// and population. ChangeFailureRate is nil, and TimeToRestore holds no median, while no failure
+// source exists (Compute's flags nil): 0 is a measured value and never a stand-in for one, so a
+// rate nothing measured reads no value rather than a 0 a target would judge met.
 type Result struct {
-	DeployFrequency   DeployFrequency   `json:"deploy_frequency"`
-	LeadTime          LeadTime          `json:"lead_time"`
-	ChangeFailureRate ChangeFailureRate `json:"change_failure_rate"`
-	TimeToRestore     TimeToRestore     `json:"time_to_restore"`
-	ReworkShare       float64           `json:"rework_share"`
-	DeployRunSuccess  DeployRunSuccess  `json:"deploy_run_success"`
-	Daily             []DailyPoint      `json:"daily"`
+	DeployFrequency   DeployFrequency    `json:"deploy_frequency"`
+	LeadTime          LeadTime           `json:"lead_time"`
+	ChangeFailureRate *ChangeFailureRate `json:"change_failure_rate"`
+	TimeToRestore     TimeToRestore      `json:"time_to_restore"`
+	ReworkShare       float64            `json:"rework_share"`
+	DeployRunSuccess  DeployRunSuccess   `json:"deploy_run_success"`
+	Daily             []DailyPoint       `json:"daily"`
 }
 
 // Targets are Sami's engineering targets (the prototype's KPI_TARGETS, CONTRACT.md "KPI targets",
@@ -629,6 +631,12 @@ func deliveryDays(prs []PR, runs []Run, flags []Flag, window Window) []*delivery
 // parts built by the day builders, and the window's parts folded by the same folds an eval read
 // folds stored parts with. Every run counts and every PR counts: the caller's query applied the
 // window and branch to runs, and the facets to prs.
+//
+// flags is a failure source's flags, nil where no failure source exists. With none, no part of
+// change-fail-rate or failed-deploy-recovery is built, as no day row of either is stored, so the
+// two read no value through their folds (a nil ChangeFailureRate and no median to restore),
+// exactly as their evals read them; a source that holds no flag (an empty, non-nil list) measures
+// a rate of 0.
 func Compute(prs []PR, runs []Run, flags []Flag, window Window) Result {
 	var frequency, success, mergeToProduction, firstCommitToProduction, openedToProduction, openedToMerge, rework, changeFailure, restore []DayPart
 	for _, rows := range deliveryDays(prs, runs, flags, window) {
@@ -639,15 +647,17 @@ func Compute(prs []PR, runs []Run, flags []Flag, window Window) Result {
 		openedToProduction = append(openedToProduction, OpenToProductionDay(rows.day, rows.prs)...)
 		openedToMerge = append(openedToMerge, OpenToMergeDay(rows.day, rows.prs)...)
 		rework = append(rework, ReworkShareDay(rows.day, rows.prs)...)
-		changeFailure = append(changeFailure, ChangeFailureRateDay(rows.day, rows.prs, rows.runs, rows.flags)...)
-		restore = append(restore, TimeToRestoreDay(rows.day, rows.flags)...)
+		if flags != nil {
+			changeFailure = append(changeFailure, ChangeFailureRateDay(rows.day, rows.prs, rows.runs, rows.flags)...)
+			restore = append(restore, TimeToRestoreDay(rows.day, rows.flags)...)
+		}
 	}
 	spread := func(parts []DayPart) Spread {
 		cell := FoldLeadTime(parts)
 		return Spread{MedianMinutes: cell.MedianMinutes, P90Minutes: cell.P90Minutes, MaxMinutes: cell.MaxMinutes}
 	}
 	// deliveryDays answers at least one day, the window's, and each day has a part of every
-	// series, so no fold below reads "no data".
+	// series but the two failure measures', so no other fold below reads "no data".
 	return Result{
 		DeployFrequency: *FoldDeployFrequency(frequency, window),
 		LeadTime: LeadTime{
@@ -656,7 +666,7 @@ func Compute(prs []PR, runs []Run, flags []Flag, window Window) Result {
 			OpenedToProduction:      spread(openedToProduction),
 			OpenedToMerge:           spread(openedToMerge),
 		},
-		ChangeFailureRate: *FoldChangeFailureRate(changeFailure),
+		ChangeFailureRate: FoldChangeFailureRate(changeFailure),
 		TimeToRestore:     FoldTimeToRestore(restore),
 		// The panel's share reads 0 for a window with no pull request (dora.ts:215).
 		ReworkShare:      valueOrZero(FoldReworkShare(rework)),
@@ -667,7 +677,8 @@ func Compute(prs []PR, runs []Run, flags []Flag, window Window) Result {
 
 // KPIStatus judges result and the count of unowned P0 issues against targets (the prototype's
 // dora.ts:280-295): "at least" targets are met at the target, "under" targets are missed at it,
-// and a measure with nothing to measure is nil rather than met.
+// and a measure with nothing to measure is nil rather than met: a change failure rate with no
+// value (no failure source) or over no deploy among them.
 func KPIStatus(result Result, unownedP0 int, targets Targets) Status {
 	under := func(value *float64, target float64) *bool {
 		if value == nil {
@@ -676,9 +687,9 @@ func KPIStatus(result Result, unownedP0 int, targets Targets) Status {
 		met := *value < target
 		return &met
 	}
-	cfr := result.ChangeFailureRate.PerDeploy
 	var cfrMet, cfrUpperMet *bool
-	if cfr.Total > 0 {
+	if result.ChangeFailureRate != nil && result.ChangeFailureRate.PerDeploy.Total > 0 {
+		cfr := result.ChangeFailureRate.PerDeploy
 		cfrMet = under(&cfr.Rate, targets.ChangeFailureRate)
 		cfrUpperMet = under(&cfr.UpperBoundRate, targets.ChangeFailureRate)
 	}

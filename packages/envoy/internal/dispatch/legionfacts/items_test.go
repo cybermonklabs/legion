@@ -9,11 +9,12 @@ import (
 )
 
 // TestTheItemsRowsCarryTheStoredFactsOfEachIssue: the rows an eval's issue list serves are one
-// per stored row, each keyed by its issue, of kind `issue`, carrying the stored facts as columns
-// with the row's own measured time, the computation as the source and the issue's own address as
-// the link (R5). The columns are compared field by field against the row they came from, so a
-// column that carried another issue's number, or the moment of the call in place of the moment
-// the facts were computed as of, fails here.
+// per stored row, each keyed by its issue, of kind `issue`, carrying the stored facts as columns,
+// measured at the issue's close where it closed and at the row's own time where it is open, with
+// the computation as the source and the issue's own address as the link (R5). The columns are
+// compared field by field against the row they came from, so a column that carried another
+// issue's number, or the moment of the call in place of the moment the facts were measured,
+// fails here.
 func TestTheItemsRowsCarryTheStoredFactsOfEachIssue(t *testing.T) {
 	seeded := seed(t, 4)
 	project := seeded.fixture.Project
@@ -27,15 +28,21 @@ func TestTheItemsRowsCarryTheStoredFactsOfEachIssue(t *testing.T) {
 	if len(items) != len(rows) {
 		t.Fatalf("%d rows made %d items, want one item per row", len(rows), len(items))
 	}
-	withHours, withoutHours := 0, 0
+	withHours, withoutHours, closed, open := 0, 0, 0, 0
 	for index, item := range items {
 		row := rows[index]
 		if item.RowKey != row.Issue || item.RowKind != ItemRowKind || item.Project != row.Project {
 			t.Errorf("row %s answered key %q, kind %q, project %q, want %q, %q, %q",
 				row.Issue, item.RowKey, item.RowKind, item.Project, row.Issue, ItemRowKind, row.Project)
 		}
-		if !item.MeasuredAt.Equal(row.UpdatedAt) {
-			t.Errorf("%s was measured at %s, want the row's own %s", row.Issue, item.MeasuredAt, row.UpdatedAt)
+		want := row.UpdatedAt
+		if row.ClosedAt != nil {
+			want, closed = *row.ClosedAt, closed+1
+		} else {
+			open++
+		}
+		if !item.MeasuredAt.Equal(want) {
+			t.Errorf("%s was measured at %s, want %s, its close or, open, its row's own time", row.Issue, item.MeasuredAt, want)
 		}
 		if item.Source != ItemSource {
 			t.Errorf("%s names the source %q, want %q", row.Issue, item.Source, ItemSource)
@@ -52,12 +59,12 @@ func TestTheItemsRowsCarryTheStoredFactsOfEachIssue(t *testing.T) {
 	}
 	// Both shapes are in the answer, so the columns above were read over an issue whose work
 	// took measured time and over one whose work took none.
-	if withHours == 0 || withoutHours == 0 {
-		t.Fatalf("%d rows carry phase hours and %d carry none, want both shapes in the answer",
-			withHours, withoutHours)
+	if withHours == 0 || withoutHours == 0 || closed == 0 || open == 0 {
+		t.Fatalf("%d rows carry phase hours and %d carry none, %d closed and %d open, want both shapes of each in the answer",
+			withHours, withoutHours, closed, open)
 	}
-	t.Logf("%d items rows built for %d stored rows; scope project %s, window %s to %s; %d rows carry phase hours, %d carry none",
-		len(items), len(rows), project, seeded.fixture.From.Format(time.RFC3339),
+	t.Logf("%d items rows built for %d stored rows (%d closed, measured at their close; %d open); scope project %s, window %s to %s; %d rows carry phase hours, %d carry none",
+		len(items), len(rows), closed, open, project, seeded.fixture.From.Format(time.RFC3339),
 		seeded.fixture.To.Format(time.RFC3339), withHours, withoutHours)
 }
 

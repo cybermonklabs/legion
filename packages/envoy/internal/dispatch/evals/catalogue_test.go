@@ -14,6 +14,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
+	"github.com/sjawhar/envoy/internal/dispatch/legion/metrics"
 )
 
 // dispatchSource is the directory every catalogue source's package path is under.
@@ -206,17 +207,36 @@ func seriesNames(entry catalogueEntry) []string {
 }
 
 // TestTheCatalogueSeriesAreTheSeriesTheDayBuildersBuild: each Legion eval's series are exactly
-// LegionSeries', every cut included, and each delivery and CI eval's are exactly those of its
-// rows in the day builders' zero day (ZeroDeliveryDay, under settings naming both staging jobs),
-// pr-ci's job series row beside them. change-fail-rate and failed-deploy-recovery, which get no
-// day rows, are the only evals with no row of the zero day.
+// those its rows in the day builders' zero day hold (ZeroLegionDay), every cut included, and by
+// the rule of the splitting eval's root figures (metrics.RootFigures, which count roots alone) the
+// children cut of each of those, which no day row is ever written for; and they are LegionSeries'.
+// Each delivery and CI eval's series are exactly those of its rows in the day builders' zero day
+// (ZeroDeliveryDay, under settings naming both staging jobs), pr-ci's job series row beside them.
+// change-fail-rate and failed-deploy-recovery, which get no day rows, are the only evals with no
+// row of the zero day.
 func TestTheCatalogueSeriesAreTheSeriesTheDayBuildersBuild(t *testing.T) {
+	day := time.Date(2026, 11, 3, 0, 0, 0, 0, time.UTC)
 	built := map[string][]string{}
+	for _, row := range ZeroLegionDay("EVAL", day, legionDaySlugs...).Rows {
+		slug := strings.TrimPrefix(row.EvalID, "EVAL/")
+		built[slug] = append(built[slug], row.Series)
+	}
+	unwritten := 0
+	for _, figure := range metrics.RootFigures {
+		children := metrics.CutSeries(figure, metrics.ScopeChildren)
+		if slices.Contains(built[SlugLegionSplitting], children) {
+			t.Errorf("the zero day writes %s, which holds no root and so no issue", children)
+		}
+		built[SlugLegionSplitting] = append(built[SlugLegionSplitting], children)
+		unwritten++
+	}
 	for _, slug := range legionDaySlugs {
-		built[slug] = slices.Sorted(slices.Values(LegionSeries(slug)))
+		if got, want := slices.Sorted(slices.Values(LegionSeries(slug))), slices.Sorted(slices.Values(built[slug])); !slices.Equal(got, want) {
+			t.Errorf("%s: LegionSeries is %v, the builders and the root figures' rule %v", slug, got, want)
+		}
 	}
 	settings := delivery.DeliverySettings{StagingE2EJobName: new("e2e"), StagingApplyJobName: new("staging-apply")}
-	zero := ZeroDeliveryDay(settings, "EVAL", time.Date(2026, 11, 3, 0, 0, 0, 0, time.UTC))
+	zero := ZeroDeliveryDay(settings, "EVAL", day)
 	for _, row := range zero.Rows {
 		slug := strings.TrimPrefix(row.EvalID, "EVAL/")
 		built[slug] = append(built[slug], row.Series)
@@ -245,7 +265,8 @@ func TestTheCatalogueSeriesAreTheSeriesTheDayBuildersBuild(t *testing.T) {
 	if len(built) != 0 {
 		t.Errorf("the builders build the series of %v, which the catalogue holds no eval of", slices.Sorted(maps.Keys(built)))
 	}
-	t.Logf("%d series of %d evals are the series the day builders build", compared, len(catalogue)-2)
+	t.Logf("%d series of %d evals are the series the day builders build, %d of them the root figures' children cut no day row holds",
+		compared, len(catalogue)-2, unwritten)
 }
 
 // TestTheRequiredMethodsSayWhatTheSpecRequires: slot wait's method states flow analysis version

@@ -120,8 +120,8 @@ func parseLegionLiveView(spec *deliveryLiveSpec, view DeliveryLiveView) *LiveErr
 // timeline view names one, and its query, the query string GET /api/v1/projects/{key}/evals
 // would be sent without from and to: the compare range (compare_from and compare_to), the
 // repositories (repo), the kind (kind) and the page (limit and offset). A query the route
-// refuses is refused here, by the route's own reading of it (parseEvalListQuery), before the
-// view is held.
+// refuses, a key it does not take among them, is refused here, by the route's own reading of it
+// (parseEvalListQuery), before the view is held.
 func parseEvalsLiveView(spec *deliveryLiveSpec, view DeliveryLiveView) *LiveError {
 	project, refusal := readLiveProject(view, "an evals view")
 	if refusal != nil {
@@ -131,7 +131,7 @@ func parseEvalsLiveView(spec *deliveryLiveSpec, view DeliveryLiveView) *LiveErro
 	if refusal != nil {
 		return refusal
 	}
-	if _, err := parseEvalListQuery(spec.query); err != nil {
+	if _, err := parseEvalListQuery(spec.query, evalListQueryKeys); err != nil {
 		return invalidLiveView("INVALID_QUERY", err.Error())
 	}
 	spec.project = project

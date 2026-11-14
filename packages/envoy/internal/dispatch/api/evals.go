@@ -10,6 +10,7 @@ import (
 	"math"
 	"net/http"
 	"net/url"
+	"reflect"
 	"slices"
 	"strings"
 	"time"
@@ -58,13 +59,55 @@ const (
 	codeIdempotencyKeyRequired = "IDEMPOTENCY_KEY_REQUIRED"
 	codeReadingAppendOnly      = "READING_APPEND_ONLY"
 
-	// evalSessionQueryKey is the one query key a readings write takes: the `session` parameter
-	// every operation carries (actingPerson, openapi.go's openAPISessionParameter).
+	// evalSessionQueryKey is the one query key every eval route takes beside those its shape
+	// declares: the `session` parameter every operation carries (actingPerson, openapi.go's
+	// openAPISessionParameter).
 	evalSessionQueryKey = "session"
 )
 
 // evalKinds are the kinds an eval read keeps with `kind`: eval_versions' check.
 var evalKinds = []string{evals.KindDelivery, evals.KindLegion, evals.KindCI, evals.KindExperiment}
+
+// The query keys each eval read declares: the `query` tags of the query struct its route shape
+// names (routeShapes' Params), read once when the package starts. A readings write declares none.
+var (
+	evalListQueryKeys   = queryKeysOf(evalListQuery{})
+	evalsQueryKeys      = queryKeysOf(evalsQuery{})
+	evalDetailQueryKeys = queryKeysOf(evalDetailQuery{})
+	evalItemsQueryKeys  = queryKeysOf(evalItemsQuery{})
+)
+
+// queryKeysOf is the keys params, a route's query struct, declares: each field's `query` tag.
+func queryKeysOf(params any) []string {
+	structure := reflect.TypeOf(params)
+	keys := make([]string, 0, structure.NumField())
+	for index := range structure.NumField() {
+		if key, tagged := structure.Field(index).Tag.Lookup("query"); tagged {
+			keys = append(keys, key)
+		}
+	}
+	return keys
+}
+
+// undeclaredQueryKey refuses a query carrying a key its eval route does not take: 400
+// INVALID_QUERY naming the first such key in name order, where declared is the keys the route's
+// shape declares and the global session parameter is taken by every route; nil where every key
+// is one of those. A read that passed over a key it does not take would answer a question other
+// than the one asked: a caller still sending the old `scope=` would be answered every issue as if
+// it had been answered the roots.
+func undeclaredQueryKey(query url.Values, declared []string) error {
+	for _, key := range slices.Sorted(maps.Keys(query)) {
+		if key == evalSessionQueryKey || slices.Contains(declared, key) {
+			continue
+		}
+		if len(declared) == 0 {
+			return errorf(http.StatusBadRequest, "INVALID_QUERY", "%q is no query key of this route, which takes none but %s", key, evalSessionQueryKey)
+		}
+		return errorf(http.StatusBadRequest, "INVALID_QUERY", "%q is no query key of this route, which takes %s and %s",
+			key, strings.Join(declared, ", "), evalSessionQueryKey)
+	}
+	return nil
+}
 
 // evalRange is a range of whole UTC days an answer folded: [from, to), both UTC midnights, and how
 // many days that is.
@@ -421,8 +464,13 @@ type evalListRequest struct {
 }
 
 // parseEvalListQuery reads the list read's query, every key but `project`, which only the
-// cross-project read takes. A malformed key is 400 INVALID_QUERY naming it.
-func parseEvalListQuery(query url.Values) (evalListRequest, error) {
+// cross-project read takes; declared is the keys the reading route takes (evalListQueryKeys,
+// evalsQueryKeys), any other of which is refused (undeclaredQueryKey). A malformed key is 400
+// INVALID_QUERY naming it.
+func parseEvalListQuery(query url.Values, declared []string) (evalListRequest, error) {
+	if err := undeclaredQueryKey(query, declared); err != nil {
+		return evalListRequest{}, err
+	}
 	invalid := func(err error) (evalListRequest, error) {
 		return evalListRequest{}, errorf(http.StatusBadRequest, "INVALID_QUERY", "%s", err.Error())
 	}
@@ -451,7 +499,7 @@ func (s *server) listProjectEvals(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
-	request, err := parseEvalListQuery(r.URL.Query())
+	request, err := parseEvalListQuery(r.URL.Query(), evalListQueryKeys)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -479,7 +527,7 @@ func (s *server) listEvals(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	query := r.URL.Query()
-	request, err := parseEvalListQuery(query)
+	request, err := parseEvalListQuery(query, evalsQueryKeys)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -787,13 +835,17 @@ func evalVerdictOf(entry evals.Entry, series []evalSeriesValues) *evalVerdict {
 // getProjectEval answers GET /api/v1/projects/{key}/evals/{slug}: one page of the eval's versions,
 // newest first (evals.Store.Versions), the newest stating the window's values as the list read
 // states them, and the method its section of the project's `evals-md` holds (evals.Store.Method).
-// 404 PROJECT_NOT_FOUND for a project no row holds, 404 EVAL_NOT_FOUND for a slug no eval of it
-// holds.
+// A query key the route does not take is 400 INVALID_QUERY (undeclaredQueryKey), 404
+// PROJECT_NOT_FOUND for a project no row holds, 404 EVAL_NOT_FOUND for a slug no eval of it holds.
 func (s *server) getProjectEval(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
 	query := r.URL.Query()
+	if err := undeclaredQueryKey(query, evalDetailQueryKeys); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	ranges, err := parseEvalRanges(query)
 	if err != nil {
 		writeError(w, "INVALID_QUERY", http.StatusBadRequest, err.Error())
@@ -905,12 +957,9 @@ func (s *server) logEvalReadings(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
-	for _, key := range slices.Sorted(maps.Keys(r.URL.Query())) {
-		if key != evalSessionQueryKey {
-			writeError(w, "INVALID_QUERY", http.StatusBadRequest, fmt.Sprintf(
-				"%q is no query key of a readings write, which takes none but %s", key, evalSessionQueryKey))
-			return
-		}
+	if err := undeclaredQueryKey(r.URL.Query(), nil); err != nil {
+		s.writeHandlerError(w, err)
+		return
 	}
 	if _, present, _ := requestKeyHeader(r); !present {
 		writeError(w, codeIdempotencyKeyRequired, http.StatusBadRequest, fmt.Sprintf(

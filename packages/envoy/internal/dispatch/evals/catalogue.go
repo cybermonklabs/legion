@@ -21,14 +21,16 @@ import (
 // it does not count and its failure modes, each with its guard (catalogueEntry.method).
 //
 // The series are those the day builders write (delivery_days.go, legion_days.go), every cut of a
-// Legion series included, so every stored day row names a series of its eval. A listed series is
-// one the list read folds; pr-ci's job series are not, and are read by the items route alone. A
-// series is a headline one where a card of the eval states it, every cut of a Legion series
-// included (R6: a chart draws the cut it needs, and no toggle picks one), and a control one where
-// it qualifies another (change-fail-rate's upper bound, pr-ci's job series). An eval's primary
-// series is the one its target judges, or the one its card leads with; an eval whose series are
-// parts of equal standing (a bar per role, a count per class of filing) has none, and a target
-// set on it names the series it judges.
+// Legion series included, so every stored day row names a series of its eval; and the splitting
+// eval's root figures in their children cut, which no day row holds (LegionSeries), so every
+// Legion series has its three cuts and the list read answers that one with no value. A listed
+// series is one the list read folds; pr-ci's job series are not, and are read by the items route
+// alone. A series is a headline one where a card of the eval states it, every cut of a Legion
+// series included (R6: a chart draws the cut it needs, and no toggle picks one), and a control
+// one where it qualifies another (change-fail-rate's upper bound, pr-ci's job series). An eval's
+// primary series is the one its target judges, or the one its card leads with; an eval whose
+// series are parts of equal standing (a bar per role, a count per class of filing) has none, and
+// a target set on it names the series it judges.
 //
 // The seeded targets are main's (measures.DefaultTargets) where main sets one, and off where it
 // sets none: "at least" is an inclusive target of a higher_better eval, "under" a strict one of a
@@ -105,12 +107,8 @@ func control(series Series) Series {
 	return series
 }
 
-// The cuts a Legion series is stored in (metrics.CutSeries): every series in all three, and the
-// splitting eval's root figures, which count roots alone, in the all and roots cuts.
-var (
-	everyCut = []metrics.Scope{metrics.ScopeAll, metrics.ScopeRoots, metrics.ScopeChildren}
-	rootCuts = []metrics.Scope{metrics.ScopeAll, metrics.ScopeRoots}
-)
+// everyCut is the cuts every Legion series is stored in (metrics.CutSeries).
+var everyCut = []metrics.Scope{metrics.ScopeAll, metrics.ScopeRoots, metrics.ScopeChildren}
 
 // inCuts is each of series in each of scopes, named as the cut stores it; only the all cut of a
 // primary series is primary.
@@ -474,19 +472,15 @@ var catalogue = []catalogueEntry{
 			Unit: unitIssues,
 			Kind: KindLegion, Source: SourceComputedPrefix + "legion/metrics.FoldSplitting",
 		},
-		series: append(
-			inCuts(everyCut,
-				headline(metrics.FilingSeries(metrics.ClassInTreeAtDesign), unitIssues, AggSum),
-				headline(metrics.FilingSeries(metrics.ClassInTreeLater), unitIssues, AggSum),
-				headline(metrics.FilingSeries(metrics.ClassOutOfTree), unitIssues, AggSum),
-				headline(metrics.FilingSeries(metrics.ClassByTheController), unitIssues, AggSum),
-				headline(metrics.SeriesFinished, unitIssues, AggSum),
-			),
-			inCuts(rootCuts,
-				headline(metrics.SeriesRoots, unitIssues, AggSum),
-				headline(metrics.SeriesHoursWithChildren, unitHours, AggQuantile),
-				headline(metrics.SeriesHoursWithoutChildren, unitHours, AggQuantile),
-			)...,
+		series: inCuts(everyCut,
+			headline(metrics.FilingSeries(metrics.ClassInTreeAtDesign), unitIssues, AggSum),
+			headline(metrics.FilingSeries(metrics.ClassInTreeLater), unitIssues, AggSum),
+			headline(metrics.FilingSeries(metrics.ClassOutOfTree), unitIssues, AggSum),
+			headline(metrics.FilingSeries(metrics.ClassByTheController), unitIssues, AggSum),
+			headline(metrics.SeriesFinished, unitIssues, AggSum),
+			headline(metrics.SeriesRoots, unitIssues, AggSum),
+			headline(metrics.SeriesHoursWithChildren, unitHours, AggQuantile),
+			headline(metrics.SeriesHoursWithoutChildren, unitHours, AggQuantile),
 		),
 	},
 }

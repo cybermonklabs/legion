@@ -23,9 +23,9 @@ import (
 // Every series is stored in three cuts (R6, D5), which CutSeries names: every issue
 // (`<series>`), the roots of their trees (`<series>:roots`, an issue whose tree root is itself)
 // and the rest (`<series>:children`). A filing is cut by the filed issue's tree. The splitting
-// eval's root figures (SeriesRoots, SeriesHoursWithChildren, SeriesHoursWithoutChildren) count
-// roots alone whatever the cut, as metric 4 counts them: their `:roots` cut is their all cut, and
-// they have no `:children` cut, which therefore reads no data.
+// eval's root figures (RootFigures) count roots alone whatever the cut, as metric 4 counts them:
+// their `:roots` cut is their all cut, and their `:children` cut holds no issue, so SplittingDay
+// builds no part of it and a fold of it reads no data.
 //
 // A sample series holds one value per finished issue of the day: its work time, its hours on a
 // bar (zero on a bar no hour of it fell on), its idle hours in a role, its slot wait, its review
@@ -61,6 +61,12 @@ const (
 	SeriesHoursWithChildren    = "hours_with_children"
 	SeriesHoursWithoutChildren = "hours_without_children"
 )
+
+// RootFigures are legion-splitting's series that count the finished roots alone whatever the cut
+// (metric 4): SplittingDay builds them in the all and the roots cut, the same in both, and never
+// in the children cut, which holds no root. The eval still has that cut of each, as every Legion
+// series has its three, and it reads no data.
+var RootFigures = []string{SeriesRoots, SeriesHoursWithChildren, SeriesHoursWithoutChildren}
 
 // The named counts a Legion part carries beside its value: a phase-time bar's five segments, each
 // under its segment's name (Segment), and CountIssues, how many finished issues hold hours on the

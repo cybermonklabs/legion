@@ -320,8 +320,10 @@ func TestGetDeliveryMeasuresComputesTheFixture(t *testing.T) {
 	if body.FlagsSource != "none" {
 		t.Errorf("flags_source = %q, want none", body.FlagsSource)
 	}
-	if got := result.ChangeFailureRate.PerPR; got.Confirmed != 0 || got.Total != 14 {
-		t.Errorf("change_failure_rate.per_pr = %+v, want no confirmed flags of 14", got)
+	// No failure source exists, so the change failure rate is no value and time to restore has no
+	// median: a 0 would be a measured rate, which a target would judge met.
+	if result.ChangeFailureRate != nil {
+		t.Errorf("change_failure_rate = %+v with flags_source none, want null", *result.ChangeFailureRate)
 	}
 	if result.TimeToRestore.MedianMinutes != nil {
 		t.Errorf("time_to_restore.median_minutes = %v, want null", *result.TimeToRestore.MedianMinutes)
@@ -338,9 +340,9 @@ func TestGetDeliveryMeasuresComputesTheFixture(t *testing.T) {
 	if body.Status.DeploysPerDay || body.Status.MergeToProduction == nil || *body.Status.MergeToProduction {
 		t.Errorf("status = %+v, want the fixture to miss deploys a day and merge to production", body.Status)
 	}
-	if body.Status.ChangeFailureRate == nil {
-		// flags_source none still has 5 successful deploys to judge the per-deploy rate over.
-		t.Error("status.change_failure_rate = null, want a verdict over 5 deploys")
+	if verdict, upper := body.Status.ChangeFailureRate, body.Status.ChangeFailureRateUpperBound; verdict != nil || upper != nil {
+		// flags_source none measures no failure rate, so there is nothing to judge, met or missed.
+		t.Errorf("status.change_failure_rate is set %t and its upper bound %t, want no verdict with no failure source", verdict != nil, upper != nil)
 	}
 	timeline := getDeliveryTimeline(t, handler, measuresFixtureWindow)
 	if body.Freshness != timeline.Freshness {

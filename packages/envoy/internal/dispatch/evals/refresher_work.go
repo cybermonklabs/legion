@@ -560,7 +560,7 @@ func (r *refresh) readDelivery(ctx context.Context, day time.Time) (DeliveryDay,
 // writeDelivery writes project's delivery and CI rows of read's day, with a zero row of every
 // series the day has no input of whose first input day is on or before it (zerosFrom), once a
 // pass. A project the day counts nothing for and holds no series of before that day writes nothing
-// unless explicit, which a project eval_day_members named is: its write deletes what the day held.
+// unless explicit, which a project eval_day_members named is: its write zeroes what the day held.
 func (r *refresh) writeDelivery(ctx context.Context, read DeliveryDay, project string, explicit bool) error {
 	key := builtDay{family: walkDelivery, project: project, day: read.Day}
 	if r.done[key] {
@@ -633,7 +633,7 @@ func (r *refresh) applyLegion(ctx context.Context, w *pageWork) error {
 // writeLegion writes project's Legion rows of day, with a zero row of every series the day has no
 // input of whose first input day is on or before it, once a pass. A day with no input and no
 // series begun before it writes nothing unless explicit, which a change naming the day is: its
-// write deletes what the day held.
+// write zeroes what the day held.
 func (r *refresh) writeLegion(ctx context.Context, project string, day time.Time, explicit bool) error {
 	key := builtDay{family: walkLegion, project: project, day: day}
 	if r.done[key] {

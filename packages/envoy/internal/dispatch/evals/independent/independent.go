@@ -52,16 +52,21 @@ func (w Window) String() string {
 
 // Reading is one run of this reading: the project and the window it covered, how many issues
 // finished in the window and how many filings the project's Legion sessions made in it, the
-// moments the project's claim and slot observations begin, and the six measures.
+// moments the project's claim and slot observations begin, and the six measures. ParkedHours and
+// FilingsByClass state what the history the measures were read over holds: the hours the
+// window's finished issues sat in each parked status inside their work time, which the work time
+// leaves out, and the window's filings of each class.
 type Reading struct {
-	Project               string     `json:"project"`
-	WindowFrom            string     `json:"window_from"`
-	WindowTo              string     `json:"window_to"`
-	Issues                int        `json:"issues"`
-	Filings               int        `json:"filings"`
-	FirstClaimObservation *time.Time `json:"first_claim_observation"`
-	FirstSlotObservation  *time.Time `json:"first_slot_observation"`
-	Measures              []Measure  `json:"measures"`
+	Project               string             `json:"project"`
+	WindowFrom            string             `json:"window_from"`
+	WindowTo              string             `json:"window_to"`
+	Issues                int                `json:"issues"`
+	Filings               int                `json:"filings"`
+	ParkedHours           map[string]float64 `json:"parked_hours"`
+	FilingsByClass        map[string]int     `json:"filings_by_class"`
+	FirstClaimObservation *time.Time         `json:"first_claim_observation"`
+	FirstSlotObservation  *time.Time         `json:"first_slot_observation"`
+	Measures              []Measure          `json:"measures"`
 }
 
 // Read answers the six measures of project over window.
@@ -86,6 +91,16 @@ func Read(ctx context.Context, db Querier, project string, window Window) (Readi
 		}
 	}
 	slices.SortFunc(m.closes, func(a, b time.Time) int { return a.Compare(b) })
+	parked := map[string]float64{}
+	for _, one := range m.finished {
+		for status, hours := range one.parked {
+			parked[status] = rounded(parked[status] + hours)
+		}
+	}
+	byClass := map[string]int{}
+	for _, class := range classes {
+		byClass[class] = 0
+	}
 	for _, filed := range held.filings {
 		if m.firstFiling == nil || filed.at.Before(*m.firstFiling) {
 			m.firstFiling = new(filed.at)
@@ -93,7 +108,9 @@ func Read(ctx context.Context, db Querier, project string, window Window) (Readi
 		if filed.at.Before(window.From) || !filed.at.Before(window.To) {
 			continue
 		}
-		m.filed = append(m.filed, classified{class: measured.classOf(filed), root: measured.rootOf(filed.key) == filed.key})
+		one := classified{class: measured.classOf(filed), root: measured.rootOf(filed.key) == filed.key}
+		m.filed = append(m.filed, one)
+		byClass[one.class]++
 	}
 	return Reading{
 		Project:               project,
@@ -101,6 +118,8 @@ func Read(ctx context.Context, db Querier, project string, window Window) (Readi
 		WindowTo:              window.To.Format(time.RFC3339),
 		Issues:                len(m.finished),
 		Filings:               len(m.filed),
+		ParkedHours:           parked,
+		FilingsByClass:        byClass,
 		FirstClaimObservation: held.firstClaim,
 		FirstSlotObservation:  held.firstSlot,
 		Measures:              m.measures(),
@@ -126,4 +145,15 @@ func (m Measure) Series(name string) (Statistics, bool) {
 		}
 	}
 	return nil, false
+}
+
+// SeriesSince is the first input day of one series as the eval routes name it: the measure's
+// first input day, and none for a series no day holds input of (CutValues.Unheld).
+func (m Measure) SeriesSince(name string) *string {
+	for _, cut := range m.Cuts {
+		if slices.Contains(cut.Unheld, name) {
+			return nil
+		}
+	}
+	return m.DataSince
 }

@@ -305,7 +305,7 @@ func (h *deliveryHub) readEvalsView(ctx context.Context, spec deliveryLiveSpec, 
 	query := maps.Clone(spec.query)
 	query.Set("from", from.Format(time.RFC3339Nano))
 	query.Set("to", to.Format(time.RFC3339Nano))
-	request, err := parseEvalListQuery(query)
+	request, err := parseEvalListQuery(query, evalListQueryKeys)
 	if err != nil {
 		return nil, err
 	}

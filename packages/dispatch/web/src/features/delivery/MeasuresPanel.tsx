@@ -3,10 +3,11 @@
 // per-day table. Every number, every target and whether each is met come from
 // GET /api/v1/delivery/measures; nothing is computed here. Three differences, each from LEGION-567's
 // slice 2 plan: the change-failure-rate card says flags arrive with flag confirmation while the
-// server stores none; the P0 card links each issue inside Dispatch and dates its count by the
-// response's computed_at; and the cards and the strip lay themselves out for the panel's own
-// width, since Dispatch's sidebar leaves it narrower than the prototype's page and a phone
-// narrower still, where the prototype is desktop-only.
+// server stores none, and then shows no rate and no verdict, since the server answers the rate as
+// null (a 0 would be a measured rate the target judges met); the P0 card links each issue inside
+// Dispatch and dates its count by the response's computed_at; and the cards and the strip lay
+// themselves out for the panel's own width, since Dispatch's sidebar leaves it narrower than the
+// prototype's page and a phone narrower still, where the prototype is desktop-only.
 import { type ReactNode, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 
@@ -38,6 +39,10 @@ import { formatMinutes, pct } from "./lib/format";
 import { TargetBadge } from "./TargetBadge";
 
 const UNOWNED_P0_SHOWN = 6;
+
+/** What a card shows for a measure the server answers no value of: the change failure rate while
+ *  no failure source exists, or a run-success share with no concluded run. */
+const NO_VALUE = "n/a";
 
 /** The deploys-a-day card's chart: one bar a day against the target. */
 function deploySeries(response: DeliveryMeasuresResponse): ChartSeries[] {
@@ -199,7 +204,14 @@ export function MeasuresPanel({
       label: "Lead time (merge\u2192prod)",
       value: show((d) => formatMinutes(d.measures.lead_time.merge_to_production.median_minutes)),
     },
-    { label: "CFR (per PR)", value: show((d) => pct(d.measures.change_failure_rate.per_pr.rate)) },
+    {
+      label: "CFR (per PR)",
+      value: show((d) =>
+        d.measures.change_failure_rate === null
+          ? NO_VALUE
+          : pct(d.measures.change_failure_rate.per_pr.rate)
+      ),
+    },
     {
       label: "Time to restore",
       value: show((d) => formatMinutes(d.measures.time_to_restore.median_minutes)),
@@ -252,11 +264,18 @@ export function MeasuresPanel({
           <div className="flex items-baseline gap-2">
             {/* Two decimals: 4.96% meets the target, 5.00% does not. */}
             <BigNumber className={toneOf((d) => d.status.change_failure_rate)}>
-              {show((d) => pct(d.measures.change_failure_rate.per_deploy.rate, 2))}
+              {show((d) =>
+                d.measures.change_failure_rate === null
+                  ? NO_VALUE
+                  : pct(d.measures.change_failure_rate.per_deploy.rate, 2)
+              )}
             </BigNumber>
-            <span className={`text-xs ${textMutedOnSurface}`}>confirmed</span>
+            {measures?.change_failure_rate === null ? null : (
+              <span className={`text-xs ${textMutedOnSurface}`}>confirmed</span>
+            )}
           </div>
-          {data === undefined ? null : data.flags_source === "none" ? (
+          {data === undefined ? null : data.flags_source === "none" ||
+            data.measures.change_failure_rate === null ? (
             <div className={`text-xs ${textMutedOnCanvas}`}>
               Flags arrive with flag confirmation
             </div>
@@ -346,7 +365,7 @@ export function MeasuresPanel({
             <BigNumber className={toneOf((d) => d.status.deploy_run_success)}>
               {show((d) =>
                 d.measures.deploy_run_success.rate === null
-                  ? "n/a"
+                  ? NO_VALUE
                   : pct(d.measures.deploy_run_success.rate)
               )}
             </BigNumber>
@@ -455,8 +474,7 @@ function Definitions({ data }: { data: DeliveryMeasuresResponse }): ReactNode {
   const newestFirst = useMemo(() => [...(measures.daily ?? [])].reverse(), [measures.daily]);
   const frequency = measures.deploy_frequency;
   const lead = measures.lead_time;
-  const perPR = measures.change_failure_rate.per_pr;
-  const perDeploy = measures.change_failure_rate.per_deploy;
+  const failures = measures.change_failure_rate;
   return (
     <>
       <div
@@ -489,15 +507,31 @@ function Definitions({ data }: { data: DeliveryMeasuresResponse }): ReactNode {
           p90 {formatMinutes(lead.opened_to_production.p90_minutes)}
         </DefinitionCard>
 
-        <DefinitionCard title="Change failure rate (per PR)" value={pct(perPR.rate)}>
-          {perPR.confirmed} confirmed ({perPR.reverts} reverts), {perPR.pending} pending,{" "}
-          {perPR.rejected} rejected of {perPR.total} PRs. Incidents: no source yet.
-        </DefinitionCard>
-
-        <DefinitionCard title="Change failure rate (per deploy)" value={pct(perDeploy.rate)}>
-          {perDeploy.confirmed} of {perDeploy.total} deploys; {pct(perDeploy.upper_bound_rate)} if
-          every pending flag is confirmed
-        </DefinitionCard>
+        {failures === null ? (
+          <>
+            <DefinitionCard title="Change failure rate (per PR)" value={NO_VALUE}>
+              No failure source yet: flags arrive with flag confirmation. Incidents: no source yet.
+            </DefinitionCard>
+            <DefinitionCard title="Change failure rate (per deploy)" value={NO_VALUE}>
+              No failure source yet: flags arrive with flag confirmation.
+            </DefinitionCard>
+          </>
+        ) : (
+          <>
+            <DefinitionCard title="Change failure rate (per PR)" value={pct(failures.per_pr.rate)}>
+              {failures.per_pr.confirmed} confirmed ({failures.per_pr.reverts} reverts),{" "}
+              {failures.per_pr.pending} pending, {failures.per_pr.rejected} rejected of{" "}
+              {failures.per_pr.total} PRs. Incidents: no source yet.
+            </DefinitionCard>
+            <DefinitionCard
+              title="Change failure rate (per deploy)"
+              value={pct(failures.per_deploy.rate)}
+            >
+              {failures.per_deploy.confirmed} of {failures.per_deploy.total} deploys;{" "}
+              {pct(failures.per_deploy.upper_bound_rate)} if every pending flag is confirmed
+            </DefinitionCard>
+          </>
+        )}
 
         <DefinitionCard
           title="Time to restore"
@@ -551,7 +585,7 @@ function Definitions({ data }: { data: DeliveryMeasuresResponse }): ReactNode {
                         : tone(d.run_success_rate >= targets.deploy_run_success_rate)
                     }`}
                   >
-                    {d.run_success_rate === null ? "n/a" : pct(d.run_success_rate)}
+                    {d.run_success_rate === null ? NO_VALUE : pct(d.run_success_rate)}
                   </td>
                   <td className="px-2 py-0.5 text-right">{d.cancelled}</td>
                 </tr>

@@ -3100,19 +3100,21 @@ Each item below names a path with its method and identity, then its purpose.
   `kind` keeps one kind, and `repo`, repeated, folds those repositories' rows in place of the project's own; `freshness` is the oldest `updated_at` of the rows folded and the day-row refresher's age.
   POST registers an eval or writes the next version of its definition, `{slug, ...}` with each field it sets, every other copied forward from the newest version (`target: null` turns the target off), and `doc_text` replacing the eval's method in its section of the project's `evals-md`; it answers `201` with the version written, or `200` where the body changed nothing.
   A link `{rel, href, label}` takes the server's `recorded_at`, and an `href` that is not an absolute URL is `400 LINK_HREF_NOT_ABSOLUTE`; the server never fetches it.
-  `400 INVALID_QUERY` names a malformed key, `404 PROJECT_NOT_FOUND` an unknown project, and a project-scoped credential of another project is `403 PROJECT_SCOPE`.
+  `400 INVALID_QUERY` names a malformed key, and a key the route does not take (any but those above and the global `session` parameter, so a caller still sending the old `scope=` is told rather than answered every issue), `404 PROJECT_NOT_FOUND` an unknown project, and a project-scoped credential of another project is `403 PROJECT_SCOPE`.
 
 - `/api/v1/projects/{key}/evals/{slug}` (GET; cookie, trusted header, or bearer)
 
   One eval's versions, newest first, in the list read's envelope and item shape: the newest carries the window's values (the same window, compare range and `repo` keys), every older version its definition alone.
   `doc_text` is the method the eval's section of the project's `evals-md` holds, read by the version's `doc_block`.
-  `404 EVAL_NOT_FOUND` for a slug no eval of the project holds.
+  `400 INVALID_QUERY` names a malformed key or one the route does not take, as the list read does; `404 EVAL_NOT_FOUND` for a slug no eval of the project holds.
 
 - `/api/v1/projects/{key}/evals/{slug}/items?from=&to=&compare_from=&compare_to=&series=&row_kind=&row=&repo=&sort=&limit=&offset=` (GET; cookie, trusted header, or bearer)
 
   The rows behind an eval's numbers, `{items, total, limit, offset}`, every row `{row_key, row_kind, cols, measured_at, source, href, links, range}` whatever its kind, `range: compare` for a row of the compare range.
   Every eval answers its readings (a reading logged under a computed eval's slug among them) and its stored day rows (`day`); a computed eval answers the rows its numbers count, as its project's day rows counted them: a Legion eval's issues closed in the range and `legion-splitting`'s filings (`issue`, with the issue's title and priority), a delivery eval's pull requests and deploy runs (`pull_request`, `deploy`), a CI eval's runs (`run`) and `pr-ci`'s jobs (`job`), and `unowned-p0`'s open P0 issues with no owner (`issue`).
   `series` narrows to a series (a Legion series' `:roots` or `:children` cut, `filed:<class>`, `job:<name>`), `row_kind` and `row` to a row kind and a row key, `repo` to those repositories; `sort=median` answers `pr-ci`'s jobs with their series' `min_n` timed results, slowest first, and `sort=failures` the jobs that failed in the 24 hours before the range's end.
+  Each row's `measured_at` is when its value was measured, the moment its eval dates it by: a reading's own, a pull request's merge, a deploy run's and a CI run's start, a Legion issue's close, a filing's filing, a day row's day, a job's newest day and a failing job's latest failure; an open P0 issue with no owner is measured at the read.
+  `400 INVALID_QUERY` names a malformed key or one the route does not take, as the list read does.
 
 - `/api/v1/projects/{key}/evals/{slug}/readings` (POST; cookie, trusted header, or bearer)
 
@@ -3127,7 +3129,7 @@ Each item below names a path with its method and identity, then its purpose.
 
   The project read across projects, in its envelope and item shape: `project`, repeated, names the projects read in the order named, and with none named every project the store holds is read, by key; no project is picked for the caller.
   The page runs across the projects.
-  `404 PROJECT_NOT_FOUND` names a project no row holds.
+  `400 INVALID_QUERY` names a malformed key or one the route does not take, as the project read does; `404 PROJECT_NOT_FOUND` names a project no row holds.
 
 - `/api/v1/github/app-installation/{owner}/{repo}` (GET; cookie, trusted header, or bearer)
 

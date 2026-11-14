@@ -47,7 +47,8 @@ import (
 // whole again.
 //
 // A day written is every row of its project's family of that day, upserted where a value moved
-// (upsertDays), the rows the day no longer builds deleted, and a zero row of every series whose
+// (upsertDays), the rows the day no longer builds written as zero rows (zeroStaleDays: each had
+// input once, so a zero is its value), and a zero row of every series whose
 // first input day is on or before it and that the day has no input of. A series' first input day
 // is the first day the store holds a row of it: the builders write a row of a series only on a day
 // with its input, and the refresher writes a zero row only on a day at or after that first day, so

@@ -16,6 +16,6 @@ For each UTC day, `metrics.SplittingDay` builds these series:
 
 `metrics.FoldSplitting` merges a window's days. It answers the filings of each class and the issues that finished, in all and by UTC week, a week starting on a Monday. It also answers the roots, their children, the children per root, and the median and 90th percentile of the two work times.
 
-The filings and `finished` have their roots cut and their children cut, read by the tree that the filed or finished issue is in now. The root figures count roots alone, so their roots cut is the same as their all cut, and they have no children cut.
+The filings and `finished` have their roots cut and their children cut, read by the tree that the filed or finished issue is in now. The root figures count roots alone, so their roots cut is the same as their all cut, and their children cut holds no issue: no day row is written for it, and it reads "no data".
 
 **What it does not count.** Issues that a person, or a session that is not a Legion session, created. The root figures count no open root.

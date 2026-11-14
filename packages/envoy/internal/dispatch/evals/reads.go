@@ -31,20 +31,29 @@ type Range struct {
 
 // Current reads one page of a project's evals through evals_current, ordered by slug, with each
 // eval's current series: every eval of the project, or those of one kind where kind is not "".
+// Its three statements (the count, the page and the page's series) read one snapshot, in a
+// read-only repeatable-read transaction: a write that commits between two of them, such as a
+// reading that registers its eval, would otherwise answer a page holding the new eval under the
+// total counted before it, which a live view's delta would send as it stands.
 func (s *Store) Current(ctx context.Context, project, kind string, limit, offset int) (Page[Entry], error) {
 	if err := checkPage(limit, offset); err != nil {
 		return Page[Entry]{}, err
 	}
+	tx, err := s.database.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return Page[Entry]{}, fmt.Errorf("begin the read of the evals of %s: %w", project, err)
+	}
+	defer tx.Rollback(ctx)
 	filter, args := `project_key = $1`, []any{project}
 	if kind != "" {
 		filter, args = filter+` and kind = $2`, append(args, kind)
 	}
 	var total int
-	if err := s.database.Pool.QueryRow(ctx, `select count(*) from evals_current where `+filter, args...).Scan(&total); err != nil {
+	if err := tx.QueryRow(ctx, `select count(*) from evals_current where `+filter, args...).Scan(&total); err != nil {
 		return Page[Entry]{}, fmt.Errorf("count the evals of %s: %w", project, err)
 	}
 	limitAt, offsetAt := strconv.Itoa(len(args)+1), strconv.Itoa(len(args)+2)
-	rows, err := s.database.Pool.Query(ctx, `
+	rows, err := tx.Query(ctx, `
 		select `+definitionColumns+` from evals_current where `+filter+`
 		order by slug limit $`+limitAt+` offset $`+offsetAt, append(args, limit, offset)...)
 	if err != nil {
@@ -63,7 +72,7 @@ func (s *Store) Current(ctx context.Context, project, kind string, limit, offset
 		position[definition.EvalID] = index
 	}
 	if len(ids) > 0 {
-		rows, err := s.database.Pool.Query(ctx, `
+		rows, err := tx.Query(ctx, `
 			select `+seriesColumns+` from eval_series_current where eval_id = any($1)
 			order by eval_id, is_primary desc, series
 		`, ids)

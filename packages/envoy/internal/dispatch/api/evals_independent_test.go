@@ -58,6 +58,7 @@ func TestTheLegionEvalsEqualTheIndependentReading(t *testing.T) {
 	}
 
 	issues, values := 0, 0
+	parked, classes := map[string]float64{}, map[string]int{}
 	for _, side := range []struct {
 		name     string
 		window   evalfixture.Window
@@ -87,13 +88,32 @@ func TestTheLegionEvalsEqualTheIndependentReading(t *testing.T) {
 		}
 		issues += reading.Issues
 		values += compared
-		t.Logf("%s: %d finished issues, %d filings, %d values of %d measures compared, %d differences",
-			where, reading.Issues, reading.Filings, compared, measures, len(differences))
+		for status, hours := range reading.ParkedHours {
+			parked[status] += hours
+		}
+		for class, filed := range reading.FilingsByClass {
+			classes[class] += filed
+		}
+		t.Logf("%s: %d finished issues, %d filings %v, parked hours %v, %d values of %d measures compared, %d differences",
+			where, reading.Issues, reading.Filings, reading.FilingsByClass, reading.ParkedHours, compared, measures, len(differences))
 	}
 	if issues < legionIssueFloor {
 		t.Errorf("the two windows hold %d finished issues, want at least %d", issues, legionIssueFloor)
 	}
-	t.Logf("compared %d values over %d finished issues in two windows", values, issues)
+	// The history holds what the rules differ on beyond phases: hours parked in each parked status
+	// (which the work time leaves out), stored merge times, and filings of every class.
+	var merged int
+	if err := database.Pool.QueryRow(ctx, `
+		select count(*) from issue_facts f join issues i on i.key = f.issue_key
+		where i.project_key = $1 and f.merged_at is not null`, loaded.Project).Scan(&merged); err != nil {
+		t.Fatalf("count the stored merge times: %v", err)
+	}
+	if parked["backlog"] == 0 || parked["icebox"] == 0 || merged == 0 || len(classes) != 4 || slices.Contains(slices.Collect(maps.Values(classes)), 0) {
+		t.Errorf("the windows' finished issues sat %v hours parked, %d hold a stored merge time, and their filings by class are %v: want hours in both parked statuses, merge times and every class",
+			parked, merged, classes)
+	}
+	t.Logf("compared %d values over %d finished issues in two windows; parked hours %.1f (backlog %.1f, icebox %.1f), %d stored merge times, filings by class %v",
+		values, issues, parked["backlog"]+parked["icebox"], parked["backlog"], parked["icebox"], merged, classes)
 
 	// The negative control: the reading's window shifted by 7 days and the route's not. A
 	// comparison that still finds every value equal compares nothing that moves with the window.
@@ -115,7 +135,8 @@ func TestTheLegionEvalsEqualTheIndependentReading(t *testing.T) {
 // compareLegionEvals holds every Legion eval of route (a list read of one project) to reading,
 // series by series and statistic by statistic, and answers how many values it compared, how many
 // Legion evals the route answered, and each difference. A series or a statistic one side states
-// and the other does not is a difference, and so is a first day the two sides name differently.
+// and the other does not is a difference, and so is a first day the two sides name differently
+// (independent.Measure.SeriesSince: a series no day holds input of names none).
 func compareLegionEvals(route evalListResponse, reading independent.Reading) (int, int, []string) {
 	compared, measures := 0, 0
 	var differences []string
@@ -146,8 +167,8 @@ func compareLegionEvals(route evalListResponse, reading independent.Reading) (in
 				continue
 			}
 			compared++
-			if showDay(series.DataSince) != showDay(measure.DataSince) {
-				differ("%s %s: data since %s on the route, %s in the reading", slug, name, showDay(series.DataSince), showDay(measure.DataSince))
+			if since := measure.SeriesSince(name); showDay(series.DataSince) != showDay(since) {
+				differ("%s %s: data since %s on the route, %s in the reading", slug, name, showDay(series.DataSince), showDay(since))
 			}
 			names := statNames(series.Window)
 			if mineNames := statNames(mine); strings.Join(names, ",") != strings.Join(mineNames, ",") {

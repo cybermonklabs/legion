@@ -72,12 +72,14 @@ func inCut(cut string, root bool) bool {
 // figure with no value is nil, which the routes answer as null.
 type Statistics map[string]*float64
 
-// CutValues is one measure in one cut: how many finished issues of the window the cut holds, and
-// each series of the measure in the cut by its name (SeriesName).
+// CutValues is one measure in one cut: how many finished issues of the window the cut holds, each
+// series of the measure in the cut by its name (SeriesName), and the series of the cut no day can
+// hold input of (Unheld), which read no data and name no first day.
 type CutValues struct {
 	Cut    string                `json:"cut"`
 	Issues int                   `json:"issues"`
 	Series map[string]Statistics `json:"series"`
+	Unheld []string              `json:"unheld"`
 }
 
 // Measure is one measure over the window: its first input day (DataSince, a UTC date, nil where it
@@ -88,6 +90,12 @@ type Measure struct {
 	NoData    bool        `json:"no_data"`
 	Cuts      []CutValues `json:"cuts"`
 }
+
+// rootFigures are splitting's figures of the finished roots: "These root figures count the
+// project's finished roots whatever the all, roots or children toggle says, since they describe
+// roots". The children cut holds no root, so it holds no input of them on any day: each reads no
+// data there and names no first day.
+var rootFigures = []string{"roots", "hours_with_children", "hours_without_children"}
 
 // sampleStatistics is a series of one value per issue, by the names the eval routes state it
 // with: n, median and p90, and its sum under sumName where the series states one ("" for none).
@@ -181,6 +189,11 @@ func (m measuring) measures() []Measure {
 					}
 				}
 				stated.Series[SeriesName(series, cut)] = stats
+			}
+			if slug == SlugSplitting && cut == CutChildren {
+				for _, figure := range rootFigures {
+					stated.Unheld = append(stated.Unheld, SeriesName(figure, cut))
+				}
 			}
 			measure.Cuts = append(measure.Cuts, stated)
 		}
@@ -328,7 +341,7 @@ func phaseTime(finished []values) map[string]Statistics {
 // all and roots cuts alike, the finished roots with their children, children per root and the
 // work time of the roots with children and of those without: "These root figures count the
 // project's finished roots whatever the all, roots or children toggle says, since they describe
-// roots", so the children cut, which holds no root, states none of them.
+// roots", so the children cut, which holds no root, states each of them with no value.
 func (m measuring) splitting(cut string, finished []values) map[string]Statistics {
 	answer := map[string]Statistics{}
 	for _, class := range classes {
@@ -342,6 +355,9 @@ func (m measuring) splitting(cut string, finished []values) map[string]Statistic
 	}
 	answer["finished"] = Statistics{"issues": figure(float64(len(finished)))}
 	if cut == CutChildren {
+		answer["roots"] = Statistics{"issues": nil, "children": nil, "children_per_root": nil}
+		answer["hours_with_children"] = Statistics{"n": nil, "median": nil, "p90": nil}
+		answer["hours_without_children"] = Statistics{"n": nil, "median": nil, "p90": nil}
 		return answer
 	}
 	roots, children := 0.0, 0.0

@@ -96,7 +96,7 @@ const (
 const SeriesUnownedP0 = "issues"
 
 // deliveryDaySlugs is every eval a delivery day's rows are of, and so every eval WriteProjectDay
-// deletes the rows of that a day no longer holds: neither change-fail-rate nor
+// writes the rows of that a day no longer holds as zero rows: neither change-fail-rate nor
 // failed-deploy-recovery, which get no rows, nor unowned-p0, which WriteUnownedP0Day writes.
 var deliveryDaySlugs = []string{
 	SlugDeployFrequency, SlugDeployRunSuccess, SlugMergeToProduction, SlugFirstCommitToProduction,
@@ -653,8 +653,8 @@ func (d DeliveryDay) buildFamilies(project, repo string, rows familyRows, every 
 // WriteDeliveryDay reads the delivery and CI rows of the UTC day day is on (ReadDeliveryDay) and
 // writes the rows of project, or of every project they count for where project is "", each
 // project in a transaction of its own (WriteProjectDay), and answers the projects written. A
-// project named that no row of the day counts for has its delivery and CI rows of the day
-// deleted. builtBy is the running build, which every row written records.
+// project named that no row of the day counts for has its delivery and CI rows of the day written
+// as zero rows. builtBy is the running build, which every row written records.
 func (s *Store) WriteDeliveryDay(ctx context.Context, settings delivery.DeliverySettings, day time.Time, project, builtBy string) ([]string, error) {
 	read, err := s.ReadDeliveryDay(ctx, settings, day)
 	if err != nil {
@@ -676,20 +676,20 @@ func (s *Store) WriteDeliveryDay(ctx context.Context, settings delivery.Delivery
 // each row with `insert … on conflict … do update … where (…) is distinct from (…)`, so a row
 // whose every value is what it holds is left as it is (and logs no change, migration
 // 20261113082202), recording builtBy, the running build, as the build that wrote it; then it
-// deletes the project's rows of that day of the delivery and CI evals (deliveryDaySlugs) that day
-// does not hold, such as a repository whose last row moved to another day or project. It records
-// day's members in eval_day_members on its day, and deletes the members of the project's delivery
-// and CI families recorded on that day that day does not hold, so each item's row there says
-// where it was last counted. A row of another project, another day or another eval, and an item
-// of another family, is refused before anything is written.
+// writes each of the project's rows of that day of the delivery and CI evals (deliveryDaySlugs)
+// that day does not hold, such as a repository whose last row moved to another day or project, as
+// a zero row (zeroStaleDays). It records day's members in eval_day_members on its day, and deletes
+// the members of the project's delivery and CI families recorded on that day that day does not
+// hold, so each item's row there says where it was last counted. A row of another project, another
+// day or another eval, and an item of another family, is refused before anything is written.
 func (s *Store) WriteProjectDay(ctx context.Context, day ProjectDay, builtBy string) error {
 	return s.writeProjectDay(ctx, "delivery", day, deliveryDaySlugs, deliveryDayFamilies, builtBy)
 }
 
 // writeProjectDay is the write of one project's computed rows of one day: day's rows of the evals
 // slugs name, and its members of families, written as WriteProjectDay says. The stale rows it
-// deletes are those of slugs alone and the stale members those of families alone, so the
-// delivery and the Legion writes of one day leave each other's rows and members as they are.
+// zeroes are those of slugs alone and the stale members it deletes those of families alone, so
+// the delivery and the Legion writes of one day leave each other's rows and members as they are.
 // what names the rows in a refusal.
 func (s *Store) writeProjectDay(ctx context.Context, what string, day ProjectDay, slugs, families []string, builtBy string) error {
 	date := utcMidnight(day.Day)
@@ -717,16 +717,8 @@ func (s *Store) writeProjectDay(ctx context.Context, what string, day ProjectDay
 	if err := upsertDays(ctx, tx, day.Rows, builtBy); err != nil {
 		return err
 	}
-	evals, series, repos := make([]string, len(day.Rows)), make([]string, len(day.Rows)), make([]string, len(day.Rows))
-	for i, row := range day.Rows {
-		evals[i], series[i], repos[i] = row.EvalID, row.Series, row.Repo
-	}
-	if _, err := tx.Exec(ctx, `
-		delete from eval_days
-		where project_key = $1 and day = $2 and eval_id = any($3)
-		  and (eval_id, series, repo) not in (select * from unnest($4::text[], $5::text[], $6::text[]))
-	`, day.Project, date, evalIDs, evals, series, repos); err != nil {
-		return fmt.Errorf("delete the day rows %s no longer holds on %s: %w", day.Project, date.Format(time.DateOnly), err)
+	if err := zeroStaleDays(ctx, tx, day.Project, date, evalIDs, day.Rows, builtBy); err != nil {
+		return err
 	}
 	count := len(day.Members)
 	memberFamilies, keys, memberRepos, shippedBy := make([]string, count), make([]string, count), make([]string, count), make([]string, count)
@@ -820,6 +812,47 @@ func upsertDays(ctx context.Context, tx pgx.Tx, rows []DayRow, builtBy string) e
 			is distinct from (excluded.listed, excluded.n, excluded.sum, excluded.num, excluded.den, excluded.max,
 				excluded.samples, excluded.last_value, excluded.last_at, excluded.counts,
 				excluded.via_repository, excluded.built_by)`)
+}
+
+// zeroStaleDays writes each stored row of project's day of the evals evalIDs names that held is
+// not among as a zero row, in one statement, recording builtBy: n 0, a zero sum, numerator and
+// denominator where the row holds one, an empty sample list where it holds one, no maximum and no
+// last value, each named count 0 and via_repository 0, the zero row the day builders build for a
+// day with no input. Such a row had input once (no write creates a row of a series and repository
+// with none), so its series has a first input day and 0 is that day's value; deleting it would
+// leave the day with no row, which reads as no data, and would log no eval_days change, so a view
+// of the row's numbers would never wake to the change. A row already zero, built_by included, is
+// left as it is and logs nothing.
+func zeroStaleDays(ctx context.Context, tx pgx.Tx, project string, day time.Time, evalIDs []string, held []DayRow, builtBy string) error {
+	evals, series, repos := make([]string, len(held)), make([]string, len(held)), make([]string, len(held))
+	for i, row := range held {
+		evals[i], series[i], repos[i] = row.EvalID, row.Series, row.Repo
+	}
+	if _, err := tx.Exec(ctx, `
+		with stale as (
+			select project_key, eval_id, series, repo, day,
+				case when sum is not null then 0 end as sum, case when num is not null then 0 end as num,
+				case when den is not null then 0 end as den,
+				case when samples is not null then '{}'::double precision[] end as samples,
+				coalesce((select jsonb_object_agg(key, 0) from jsonb_object_keys(counts) as key), '{}'::jsonb) as counts
+			from eval_days
+			where project_key = $1 and day = $2 and eval_id = any($3)
+				and (eval_id, series, repo) not in (select * from unnest($4::text[], $5::text[], $6::text[]))
+		)
+		update eval_days
+		set n = 0, sum = stale.sum, num = stale.num, den = stale.den, max = null, samples = stale.samples,
+			last_value = null, last_at = null, counts = stale.counts, via_repository = 0, built_by = $7, updated_at = now()
+		from stale
+		where eval_days.project_key = stale.project_key and eval_days.eval_id = stale.eval_id
+			and eval_days.series = stale.series and eval_days.repo = stale.repo and eval_days.day = stale.day
+			and (eval_days.n, eval_days.sum, eval_days.num, eval_days.den, eval_days.max, eval_days.samples,
+				eval_days.last_value, eval_days.last_at, eval_days.counts, eval_days.via_repository, eval_days.built_by)
+			is distinct from (0, stale.sum, stale.num, stale.den, null::double precision, stale.samples,
+				null::double precision, null::timestamptz, stale.counts, 0, $7::text)
+	`, project, day, evalIDs, evals, series, repos, builtBy); err != nil {
+		return fmt.Errorf("write the day rows %s no longer holds on %s as zero rows: %w", project, day.Format(time.DateOnly), err)
+	}
+	return nil
 }
 
 // insertMissingDays writes each of rows that the table holds no row of the same key for, in one

@@ -13,9 +13,10 @@ import (
 // declares its closed set, "none" | "stored"; this server writes only "none".
 type deliveryFlagsSource string
 
-// deliveryFlagsSourceNone is every answer while Dispatch stores no failed-change flags: the change
-// failure rate and time to restore are computed from an empty flag set, since a flag counts only
-// once the dora role holder confirms it (LEGION-294).
+// deliveryFlagsSourceNone is every answer while Dispatch stores no failed-change flags: no failure
+// source exists (a flag counts only once the dora role holder confirms it, LEGION-294), so
+// measures.Compute is handed none and the change failure rate is null and time to restore holds
+// no median, each with no verdict, as their evals read "no data" (root R11: 0 is a value).
 const deliveryFlagsSourceNone deliveryFlagsSource = "none"
 
 // deliveryMeasuresResponse is GET /api/v1/delivery/measures, and the timeline's `measures`: the

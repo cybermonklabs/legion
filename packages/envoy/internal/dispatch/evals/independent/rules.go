@@ -157,6 +157,10 @@ type values struct {
 	sentBack         bool
 	afterFirstReview float64
 	children         int
+	// parked is the hours of the issue's work time it sat in each parked status ("minus any time
+	// in `backlog` or `icebox`"), by status: what the work time left out, which no measure states
+	// and the reading reports beside them.
+	parked map[string]float64
 }
 
 // reading is one run over one population: the trees it placed the issues in, and the timelines
@@ -202,6 +206,14 @@ func (r *reading) valuesOf(key string) values {
 		idle:      r.idleByRole(key, worked),
 		slotWait:  rounded(r.slotWait(key)),
 		children:  len(r.children[key]),
+		parked:    map[string]float64{},
+	}
+	if at, works := r.firstWork(key); works {
+		life := []span{{from: at, to: r.population.end(key)}}
+		for _, status := range parkedStatuses {
+			sat := markStretches(r.population.issues[key].statusMarks, r.population.end(key), func(value string) bool { return value == status })
+			result.parked[status] = hoursOf(intersect(life, sat))
+		}
 	}
 	result.reviewRounds, result.sentBack, result.afterFirstReview = r.rework(key, worked)
 	return result

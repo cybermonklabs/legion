@@ -43,6 +43,15 @@ import (
 // kind, its columns (cols, whose names are the row kind's own), when it was measured, the source
 // it was read from, the address a reader follows to see it, the links it carries (a reading's
 // own, [] for every other row) and the range it is of.
+//
+// MeasuredAt is when the row's value was measured, the moment its eval dates it by and so the
+// moment that puts it in its range, never when a row was last written: a reading's own
+// measured_at; a pull request's merge, the day its delivery measures count it on; a deploy run's
+// and a CI run's start, which the deploy and CI measures count it by (delivery.ReadDeploys and
+// ReadCIRows read runs by start); a Legion issue's close and a filing's filing; a day row's day; a
+// job's figures the newest day of the day rows they fold; a failing job its latest failure, which
+// measures.FailingJobs counts by completion; and an open P0 issue with no owner the read itself,
+// since the count is of the present.
 type evalItemRow struct {
 	RowKey     string         `json:"row_key"`
 	RowKind    string         `json:"row_kind"`
@@ -96,9 +105,12 @@ type evalItemsRequest struct {
 	offset  int
 }
 
-// parseEvalItemsQuery reads the items route's query; a malformed key is 400 INVALID_QUERY naming
-// it.
+// parseEvalItemsQuery reads the items route's query; a key the route does not take
+// (undeclaredQueryKey) and a malformed key are 400 INVALID_QUERY naming it.
 func parseEvalItemsQuery(query url.Values) (evalItemsRequest, error) {
+	if err := undeclaredQueryKey(query, evalItemsQueryKeys); err != nil {
+		return evalItemsRequest{}, err
+	}
 	invalid := func(err error) (evalItemsRequest, error) {
 		return evalItemsRequest{}, errorf(http.StatusBadRequest, "INVALID_QUERY", "%s", err.Error())
 	}
@@ -343,8 +355,8 @@ func readingItemRow(reading evals.Reading, label string) evalItemRow {
 }
 
 // dayItemRow is a stored day row as an items row: keyed `<series>@<day>`, and `@<repo>` after
-// that for a repository's row; its columns the row's parts but its sample list; measured when it
-// was last written; and as its address the items of that day of that series.
+// that for a repository's row; its columns the row's parts but its sample list; measured on its
+// day, the day its parts are of; and as its address the items of that day of that series.
 func dayItemRow(project, slug string, day evals.DayRow, label string) evalItemRow {
 	date := day.Day.Format(time.DateOnly)
 	key := day.Series + "@" + date
@@ -364,7 +376,7 @@ func dayItemRow(project, slug string, day evals.DayRow, label string) evalItemRo
 			"num": day.Num, "den": day.Den, "max": day.Max, "last_value": day.LastValue, "last_at": day.LastAt,
 			"counts": nonNilCounts(day.Counts), "via_repository": day.ViaRepository, "built_by": day.BuiltBy,
 		},
-		MeasuredAt: day.UpdatedAt,
+		MeasuredAt: day.Day,
 		Source:     "eval_days",
 		Href:       evalItemsPath(project, slug) + "?" + behind.Encode(),
 		Links:      []evals.Link{},
@@ -521,7 +533,7 @@ func (s *server) pullRequestItemRows(ctx context.Context, read evalItemsRead) ([
 				"open_to_production_minutes":         sampleOf(measures.OpenToProductionDay(day, one)),
 				"open_to_merge_minutes":              sampleOf(measures.OpenToMergeDay(day, one)),
 			},
-			MeasuredAt: pr.UpdatedAt,
+			MeasuredAt: *pr.MergedAt,
 			Source:     "delivery.ReadMergedRows",
 			Href:       pr.URL,
 			Links:      []evals.Link{},
@@ -580,20 +592,16 @@ func (s *server) deployItemRows(ctx context.Context, read evalItemsRead) ([]eval
 }
 
 // runItemRow is one run as an items row, keyed `<repo>/<run id>`, its columns the run's own and
-// extra, measured when it completed (when it started, while it runs), and addressed by its page
-// on GitHub.
+// extra, measured when it started, which is what the deploy and CI measures count a run by, and
+// addressed by its page on GitHub.
 func runItemRow(run delivery.DeliveryRun, kind, source, label string, extra map[string]any) evalItemRow {
 	cols := map[string]any{
 		"repo": run.Repo, "run_id": run.RunID, "pr_number": run.PRNumber, "event": run.Event, "head_sha": run.HeadSHA,
 		"started_at": run.StartedAt, "completed_at": run.CompletedAt, "conclusion": run.Conclusion,
 	}
 	maps.Copy(cols, extra)
-	measured := run.StartedAt
-	if run.CompletedAt != nil {
-		measured = *run.CompletedAt
-	}
 	return evalItemRow{
-		RowKey: run.Repo + "/" + strconv.FormatInt(run.RunID, 10), RowKind: kind, Cols: cols, MeasuredAt: measured,
+		RowKey: run.Repo + "/" + strconv.FormatInt(run.RunID, 10), RowKind: kind, Cols: cols, MeasuredAt: run.StartedAt,
 		Source: source, Href: run.URL, Links: []evals.Link{}, Range: label,
 	}
 }
@@ -682,7 +690,7 @@ func (s *server) jobItemRows(ctx context.Context, read evalItemsRead) ([]evalIte
 		return nil, err
 	}
 	byJob := map[string][]measures.DayPart{}
-	updated := map[string]time.Time{}
+	newest := map[string]time.Time{}
 	for _, day := range days {
 		name, job := strings.CutPrefix(day.Series, measures.JobSeriesPrefix)
 		if !job {
@@ -692,8 +700,8 @@ func (s *server) jobItemRows(ctx context.Context, read evalItemsRead) ([]evalIte
 		part := day.Part()
 		part.Series = measures.SeriesMinutes
 		byJob[name] = append(byJob[name], part)
-		if day.UpdatedAt.After(updated[name]) {
-			updated[name] = day.UpdatedAt
+		if day.Day.After(newest[name]) {
+			newest[name] = day.Day
 		}
 	}
 	minN := measures.SlowestMinResults
@@ -730,7 +738,7 @@ func (s *server) jobItemRows(ctx context.Context, read evalItemsRead) ([]evalIte
 				"success": job.cell.Success, "failure": job.cell.Failure, "cancelled": job.cell.Cancelled,
 				"success_rate": job.cell.SuccessRate,
 			},
-			MeasuredAt: updated[job.name],
+			MeasuredAt: newest[job.name],
 			Source:     "measures.FoldTiming",
 			Href:       evalItemsPath(read.project, read.entry.Definition.Slug) + "?" + behind.Encode(),
 			Links:      []evals.Link{},
