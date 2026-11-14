@@ -23,6 +23,8 @@ import type {
   InboxReadResponse,
   Issue,
   Message,
+  PatchPriorityInput,
+  Priority,
   RepoProject,
   UpdateIssueInput,
   UserAgentState,
@@ -152,6 +154,14 @@ export const answerIssueCreates = () =>
   answerRoute<(input: CreateIssueInput, bounds: WriteBounds) => Promise<Issue>>(
     "POST",
     "/api/v1/issues"
+  );
+
+/** `PATCH /api/v1/priorities/{id}` (`priorityPatchRequest`): called with the priority's id, the
+ *  change and the bounds. */
+export const answerPriorityPatches = () =>
+  answerRoute<(id: string, input: PatchPriorityInput, bounds: WriteBounds) => Promise<Priority>>(
+    "PATCH",
+    "/api/v1/priorities/*"
   );
 
 /** `PUT /api/v1/settings/repo-projects/{owner}/{repo}` (`repoProjectRequest`): called with the

@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"golang.org/x/sys/unix"
@@ -464,12 +465,36 @@ func carryOver(cfg RoleInitConfig, dir, stage string, place func() error) error 
 	return nil
 }
 
+// roleNamespaceDrain bounds the wait role-init gives a role whose shim exited on its own: the
+// span between the SIGTERM it sends over the role's namespace and the SIGKILL that ends the
+// namespace, which is the only time anything the role left running has to finish what it was
+// doing. Two seconds, because what the wait is there for is a git or a jj whose index or
+// operation lock is held across a write of a few files, which it finishes in milliseconds, and
+// the wait ends the moment the namespace is empty, so the bound is paid only by a process that
+// ignores SIGTERM or hangs on it. It is a constant and no flag of role-init and no setting of the
+// pod, so no deployment can set it to a span that holds the launcher's next generation up.
+//
+// It costs the role's next generation nothing the daemon waits on: the launcher reads the status
+// pipe and only then waits on role-init (manager.wait), so the daemon learns the role's exit
+// before this wait begins, and only the generation's own teardown spends it.
+const roleNamespaceDrain = 2 * time.Second
+
 // runRoleShim runs the generation's shim as this init's own child, in a nested user namespace as
 // the image's unprivileged user with no capability outside it. role-init stays the role's PID 1:
-// it forwards the launcher's stop (stop's end, held since role-init began) to every process of
-// the role as SIGTERM, once, reaps the orphans the role leaves behind, reports the shim's own wait
-// status, and ends the namespace with its own exit. The launcher's only other signal is SIGKILL,
-// which ends role-init, and the namespace with it, without asking.
+// it reaps the orphans the role leaves behind, reports the shim's own wait status, and ends the
+// namespace with its own exit. A generation ends down one of two paths, and on either of them
+// every process of the role is asked to leave before anything is killed.
+//
+// On the launcher's stop (stop's end, held since role-init began) role-init forwards it to every
+// process of the role as SIGTERM, once, and the shim has the launcher's stop grace to end; the
+// launcher's SIGKILL of role-init at the end of that grace ends the namespace with it, without
+// asking, and is the only other signal the launcher sends.
+//
+// A shim that exits on its own is the other path, and there is no stop and no grace on it: role-
+// init sends that SIGTERM itself once it has reported the shim's status, and waits up to
+// roleNamespaceDrain for the role's processes to go before the SIGKILL below ends the namespace.
+// Without it a git or a jj the role left running would be killed outright and leave its lock in
+// the issue's shared clone, which stops every jj command of every role of the pod.
 func runRoleShim(stop context.Context, cfg RoleInitConfig, exits <-chan os.Signal) error {
 	cmd := exec.Command(cfg.Argv[0], cfg.Argv[1:]...)
 	cmd.Env = os.Environ()
@@ -487,6 +512,7 @@ func runRoleShim(stop context.Context, cfg RoleInitConfig, exits <-chan os.Signa
 	ended := make(chan struct{})
 	go func() { _ = cmd.Wait(); close(ended) }()
 	stopped := stop.Done()
+	stopArrived := false
 	for running := true; running; {
 		select {
 		case <-ended:
@@ -496,14 +522,48 @@ func runRoleShim(stop context.Context, cfg RoleInitConfig, exits <-chan os.Signa
 				roleLogf(cfg, "role-init: %v", err)
 			}
 		case <-stopped:
-			// Every process of the role, a detached one included: this is its PID 1.
-			stopped = nil
+			// Every process of the role, a detached one included: this is its PID 1. The stop is
+			// forwarded once: the channel goes to nil so this arm, ready for good once the stop's
+			// end is closed, stops being chosen, and stopArrived is what the drain below reads.
+			stopped, stopArrived = nil, true
 			if err := signalGeneration(cmd.Process.Pid, syscall.SIGTERM); err != nil {
 				roleLogf(cfg, "role-init: %v", err)
 			}
 		}
 	}
 	reportStatus(cfg, cmd.ProcessState)
+	// The role's processes are asked to leave before the kill below takes the namespace: a git or
+	// a jj the shim left running, killed outright, leaves its lock behind in the issue's shared
+	// clone. Where the launcher's stop arrived its SIGTERM is that signal, sent once and already
+	// answered through the stop grace, so this path is the one where no stop came, and no role of
+	// a container's stop pays this wait twice. A stop that arrives during the wait does not cut
+	// it short: every process it waits for has this init's SIGTERM in hand, and ending the wait
+	// there would send the SIGKILL below to a git a few milliseconds after it was asked to leave,
+	// which is the one thing this wait exists to prevent. It holds the container's stop up by
+	// nothing worth having: roleNamespaceDrain is two seconds, inside the shortest stop grace the
+	// daemon allows, and the wait ends the moment the namespace is empty.
+	if !stopArrived {
+		if err := signalGeneration(cmd.Process.Pid, syscall.SIGTERM); err != nil {
+			roleLogf(cfg, "role-init: %v", err)
+		}
+		// Each pass reaps as it counts, so the zombies this init adopts as the role's processes
+		// end are not counted as processes that keep the wait running.
+		ticks := time.NewTicker(namespaceReapPoll)
+		drained := time.Now().Add(roleNamespaceDrain)
+		for draining := true; draining; {
+			remaining, err := reapNamespace()
+			switch {
+			case err != nil:
+				roleLogf(cfg, "role-init: %v", err)
+				draining = false
+			case !remaining, !time.Now().Before(drained):
+				draining = false
+			default:
+				<-ticks.C
+			}
+		}
+		ticks.Stop()
+	}
 	// Nothing of the role outlives its report. The kernel ends a PID namespace with its init, and
 	// this kill makes that certain before the launcher admits the role's next generation.
 	_ = syscall.Kill(-1, syscall.SIGKILL)

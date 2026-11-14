@@ -13,6 +13,7 @@ export type UserPreference =
   | "inbox.folded-groups"
   | "inbox.pane-width"
   | "inbox.thread-order"
+  | "priorities.margin"
   | "project.board-edges"
   | "project.board-lanes"
   | "project.issue-filters"

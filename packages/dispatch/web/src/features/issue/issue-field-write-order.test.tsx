@@ -30,6 +30,8 @@ import { PriorityControl } from "./PriorityControl";
  * count, never which value lands last.
  */
 const issue: Issue = {
+  advances: [],
+  advances_revision: 0,
   assignee: null,
   blocked_by: [],
   claim: null,

@@ -2,7 +2,7 @@ import { useCache } from "../../api/cache/cache";
 import type { Shown } from "../../api/cache/write-store";
 import { issueQuery, projectDefaultAssigneesQuery, projectListsKey } from "../../api/queries";
 import type { InboxRow, IssueDetails, IssueSummary } from "../../api/types";
-import { issueProject } from "../inbox/list-row";
+import { issueProject } from "../../lib/issue-key";
 import { type IssueFieldWrite, inboxKey, useIssueFieldWrite } from "./useIssueFieldWrite";
 
 /**

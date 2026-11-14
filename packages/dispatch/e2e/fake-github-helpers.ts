@@ -26,12 +26,16 @@ interface FakeGithubRepo {
     readonly {
       app_id?: number;
       check_suite_id: number;
+      completed_at?: string | null;
       conclusion: string | null;
+      html_url?: string;
       id: number;
       name: string;
+      output?: { title: string | null; summary: string | null };
       status: string;
     }[]
   >;
+  readonly check_run_faults?: Record<string, { status: number } | { hold_ms: number }>;
   readonly workflow_runs?: Record<
     string,
     readonly { check_suite_id: number; event: string; id: number; name: string }[]
@@ -49,10 +53,14 @@ interface FakeGithubRepo {
  * derives the branch commit from their content, so a re-seed with different
  * files moves the commit exactly like a push. `pulls` (keyed by number), and
  * `check_runs` and `workflow_runs` (keyed by commit sha), answer the issue
- * header's GitHub link. `commits` names the commits the repository holds with
- * nothing else attached to them, beside the commits those fields imply: a result
- * is refused `400 RESULT_COMMIT_UNKNOWN` at any other 40-hex commit, so a row
- * recording one names it here. A deployed server
+ * header's GitHub link; `check_runs` also answers the results read of a check
+ * CI proves, which takes a run's `completed_at`, `html_url` and `output` (each
+ * answered as GitHub answers a run that has none when unset), and
+ * `check_run_faults` (keyed by commit sha) makes that commit's check-runs read
+ * answer `{status}` or wait `{hold_ms}` before answering. `commits` names the
+ * commits the repository holds with nothing else attached to them, beside the
+ * commits those fields imply: a result is refused `400 RESULT_COMMIT_UNKNOWN` at
+ * any other 40-hex commit, so a row recording one names it here. A deployed server
  * (`PLAYWRIGHT_BASE_URL`) talks to no fake, so the test that seeds it there is
  * skipped at that point rather than failed. */
 export async function seedFakeGithub(repos: Record<string, FakeGithubRepo>): Promise<void> {
@@ -61,6 +69,24 @@ export async function seedFakeGithub(repos: Record<string, FakeGithubRepo>): Pro
     "the fake GitHub is unavailable with PLAYWRIGHT_BASE_URL"
   );
   await putFakeGithubRepos(repos);
+}
+
+/** How many times the server read each commit's check runs from the fake GitHub since the last
+ * seed, keyed by "owner/repo" and then by commit sha, from `GET /__fixture/requests`, whose
+ * answer is `{check_runs: {"owner/repo": {"<sha>": <count>}}}`. Each page is one read, a
+ * faulted read is counted as well, and every seed (`seedFakeGithub`, `resetFakeGithub`) starts
+ * the counts again from none. Only a row that seeded the fake reads it. */
+export async function fakeGithubCheckRunReads(): Promise<Record<string, Record<string, number>>> {
+  const response = await fetch(
+    `http://127.0.0.1:${harnessPorts().fakeGithub.port}/__fixture/requests`
+  );
+  if (!response.ok) {
+    throw new Error(`read fake github requests: ${response.status}`);
+  }
+  const answer = (await response.json()) as {
+    check_runs: Record<string, Record<string, number>>;
+  };
+  return answer.check_runs;
 }
 
 /** Makes the local delivery reconcile succeed against an empty acme/widgets history, so a pass that

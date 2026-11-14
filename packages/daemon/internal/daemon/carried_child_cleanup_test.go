@@ -11,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
 	"k8s.io/apimachinery/pkg/api/resource"
 
 	"github.com/sjawhar/legion/daemon/internal/appauth"
@@ -118,7 +117,7 @@ func TestTheSweepDeletesACarriedChildsOwnSandboxOnceItLeavesTheLine(t *testing.T
 type carriedCleanup struct {
 	t                         *testing.T
 	ctx                       context.Context
-	pool                      *pgxpool.Pool
+	pool                      *store.Pool
 	st                        *store.Store
 	records                   record.Store
 	api                       *issueSandboxAPI

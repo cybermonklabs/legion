@@ -262,11 +262,11 @@ func feedRemote(feed string, repo ghrepo.Repository, bookmark, defaultBranch str
 }
 
 // ensureRepoClone ports workspace.ts's ensureRepoClone: clone into a temporary sibling, verify it
-// contains .jj, record what it holds (RecordHeld), then rename it into place. A killed clone can
-// therefore never appear to be a final clone. From GitHub the clone is `jj git clone`; from a pod's
-// feed (source.feed) it is a local git clone followed by Jujutsu's import of every commit. The
-// size-following steps share one CloneTimeout, counted on clock from the first's start, each given
-// what remains of it (cloneSteps), not the runner's slow-command budget.
+// contains .jj, then rename it into place. A killed clone can therefore never appear to be a final
+// clone. From GitHub the clone is `jj git clone`; from a pod's feed (source.feed) it is a local git
+// clone followed by Jujutsu's import of every commit. The size-following steps share one
+// CloneTimeout, counted on clock from the first's start, each given what remains of it
+// (cloneSteps), not the runner's slow-command budget.
 func ensureRepoClone(ctx context.Context, run Runner, clock Clock, cloneDir, remote, defaultBranch string, source remote) error {
 	jjDir := filepath.Join(cloneDir, ".jj")
 	if exists, err := pathExists(cloneDir); err != nil {
@@ -311,11 +311,6 @@ func ensureRepoClone(ctx context.Context, run Runner, clock Clock, cloneDir, rem
 	if !complete {
 		return fmt.Errorf("incomplete Jujutsu clone at %s: missing .jj", temporary)
 	}
-	// Before the rename, so a clone in place always carries its record of what it held when it was
-	// made, and a clone with none is one an earlier release made.
-	if err := RecordHeld(ctx, run, temporary); err != nil {
-		return err
-	}
 	if err := os.Rename(temporary, cloneDir); err != nil {
 		if cloneCollision(err) {
 			complete, statErr := pathExists(jjDir)
@@ -334,8 +329,8 @@ func ensureRepoClone(ctx context.Context, run Runner, clock Clock, cloneDir, rem
 // GitHub, as a `jj git clone` of it would leave it; `jj git init --colocate` makes it jj's; and the
 // default branch's bookmark tracks origin's, as jj's own clone tracks it, so a later fetch moves it.
 // The clone takes no working tree (`git clone --no-checkout`), so the pod writes the repository's
-// working copy once, in the issue's own jj workspace: nothing but the rescue check ever read the
-// shared clone's, and that check reads commits, not files. The two jj steps that follow keep jj's
+// working copy once, in the issue's own jj workspace: nothing reads the shared clone's working
+// copy, so it is never written. The two jj steps that follow keep jj's
 // first snapshot from recording that absent tree as deleted — `jj sparse set --clear` leaves the
 // clone's working copy with no file in it, and `jj abandon @` drops the snapshot `jj git init`
 // already took. The order is load-bearing, and was measured both ways: clearing the patterns

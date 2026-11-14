@@ -466,6 +466,13 @@ export function issuePatchRequest(key: string, input: Body<"/api/v1/issues/{key}
   return writeRequest("patch", "/api/v1/issues/{key}", { key }, input);
 }
 
+/** `PATCH /api/v1/priorities/{id}`: the priority's title, description or owner, and its place
+ *  in the one order (`rank: {before, after}`, the priorities it lands between, as the issue
+ *  board's own drag names them). Each field left out is left alone. */
+export function priorityPatchRequest(id: string, input: Body<"/api/v1/priorities/{id}", "patch">) {
+  return writeRequest("patch", "/api/v1/priorities/{id}", { id }, input);
+}
+
 /** `POST /api/v1/agents/{session_id}/messages`: a person's message to one session
  *  (`createAgentMessage`). */
 export function agentMessageRequest(
@@ -1291,6 +1298,29 @@ export class DispatchApiClient {
    *  plan document - so a reader draws its answer rather than judging again. */
   getIssueCoverage(key: string) {
     return this.read("/api/v1/issues/{key}/coverage", { key });
+  }
+
+  /** `GET /api/v1/priorities`: every live priority in rank order, each with the work that
+   *  advances it, and the two faults the page draws beside them - the open work under no
+   *  priority and the work parked under one. A priority belongs to no project, so this reads the
+   *  whole deployment; `project`, repeatable, counts only the work of those projects, and
+   *  `summary: true` answers the two fault counts alone, with no row and no issue list. */
+  listPriorities(query: Query<"/api/v1/priorities", "get"> = {}) {
+    return this.read("/api/v1/priorities", {}, query);
+  }
+
+  /** `POST /api/v1/priorities`: one new priority, which takes the last place of the order. Its
+   *  id defaults to its title as a slug. */
+  createPriority(input: Body<"/api/v1/priorities", "post">, bounds: WriteBounds) {
+    return this.post("/api/v1/priorities", {}, input, bounds);
+  }
+
+  /** `GET /api/v1/priorities/{id}/history`: the priority's own history, newest first - each
+   *  write of its title, description, owner, order, state and visibility, and each `advances`
+   *  relation an issue asserted or retracted on it, with the actor who stated it and when. A
+   *  priority that was deleted still answers its history, the delete its newest act. */
+  getPriorityHistory(id: string) {
+    return this.read("/api/v1/priorities/{id}/history", { id });
   }
 
   getInbox(project?: string) {

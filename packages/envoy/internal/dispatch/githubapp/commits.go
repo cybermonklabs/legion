@@ -173,13 +173,19 @@ func (c *Client) HasCommit(ctx context.Context, token, owner, repo, sha string) 
 // message that begins with anything else — the validation failure and the spammed endpoint
 // GitHub names for the same status — is no proof of absence.
 func noCommitForSHA(body []byte) bool {
+	return strings.HasPrefix(responseMessage(body), "No commit found for SHA")
+}
+
+// responseMessage is the `message` of body, the JSON object GitHub answers a refused request
+// with, and "" for a body that is not JSON or names none.
+func responseMessage(body []byte) string {
 	var answer struct {
 		Message string `json:"message"`
 	}
-	if err := json.Unmarshal(body, &answer); err != nil {
-		return false
+	if json.Unmarshal(body, &answer) != nil {
+		return ""
 	}
-	return strings.HasPrefix(answer.Message, "No commit found for SHA")
+	return answer.Message
 }
 
 // DefaultBranch is the name of the repository's default branch (`GET /repos/{owner}/{repo}`,

@@ -12,7 +12,7 @@ import userEvent from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
 import { type LayoutColumns, useTableLayout } from "../features/project/issues-table-layout";
 import { tableStorageKey } from "../features/project/issues-table-storage";
-import { DataTable, useDataTable } from "./DataTable";
+import { DataTable, DataTableGroupRow, useDataTable } from "./DataTable";
 
 /** A row that is not an issue: the core knows nothing of what its rows are. */
 interface Deploy {
@@ -119,12 +119,21 @@ function Deploys({
         filterCounts={NO_COUNTS}
         label={`Deploys ${layoutKey}`}
         model={model}
+        noun={{ many: "deploys", one: "deploy" }}
         onOpenFilterChange={setOpenFilter}
         openFilter={openFilter}
-        renderGroup={({ entry, index, measure }) => (
-          <tr data-group={String(entry.row.groupingValue)} data-index={index} ref={measure}>
-            <td>{String(entry.row.groupingValue)}</td>
-          </tr>
+        renderGroup={({ entry: { row }, index, measure }) => (
+          <DataTableGroupRow
+            columns={model.table.getVisibleLeafColumns().length}
+            expanded={row.getIsExpanded()}
+            heading={String(row.groupingValue)}
+            index={index}
+            label={`${row.getIsExpanded() ? "Collapse" : "Expand"} ${String(row.groupingValue)}`}
+            measure={measure}
+            onToggle={row.getToggleExpandedHandler()}
+            slot={<span>{row.getLeafRows().length} deploys</span>}
+            width={300}
+          />
         )}
         renderRow={({ row, index, measure }) => (
           <tr data-index={index} data-issue-row={row.id} ref={measure} tabIndex={-1}>
@@ -181,7 +190,7 @@ test("draws the rows it is given, of a type that is not an issue, under its labe
   const table = await screen.findByRole("table", { name: "Deploys deploys" });
   expect(listed(table)).toEqual(["d1", "d2", "d3"]);
   expect(within(table).getByText("billing")).toBeInTheDocument();
-  expect(screen.getByText("3 of 3 issues")).toBeInTheDocument();
+  expect(screen.getByText("3 of 3 deploys")).toBeInTheDocument();
 });
 
 test("sorts by a column's value when its header is pressed", async () => {
@@ -207,7 +216,7 @@ test("filters by the text typed into a column's filter", async () => {
   await user.type(screen.getByRole("textbox", { name: "Filter Service" }), "led");
 
   expect(listed(table)).toEqual(["d3"]);
-  expect(screen.getByText("1 of 3 issues")).toBeInTheDocument();
+  expect(screen.getByText("1 of 3 deploys")).toBeInTheDocument();
 });
 
 test("pages its rows and moves to the next page", async () => {
@@ -236,9 +245,28 @@ test("groups its rows with the headings in the caller's order", async () => {
 
   const table = await screen.findByRole("table", { name: "Deploys deploys" });
   expect(
-    [...table.querySelectorAll("[data-group]")].map((row) => row.getAttribute("data-group"))
-  ).toEqual(["us", "eu"]);
+    within(table)
+      .getAllByRole("button", { name: /^(Collapse|Expand) / })
+      .map((toggle) => toggle.getAttribute("aria-label"))
+  ).toEqual(["Collapse us", "Collapse eu"]);
   expect(listed(table)).toEqual(["d2", "d1", "d3"]);
+});
+
+test("a group's heading row folds its rows away and opens them again, with the caller's slot beside it", async () => {
+  const user = userEvent.setup();
+  draw(<Deploys groupOrder={(_column, a, b) => a.localeCompare(b)} grouping={["region"]} />);
+
+  const table = await screen.findByRole("table", { name: "Deploys deploys" });
+  const eu = within(table).getByRole("button", { name: "Collapse eu" });
+  expect(eu).toHaveAttribute("aria-expanded", "true");
+  expect(eu.closest("td")).toHaveAttribute("colspan", "5");
+  expect(within(table).getByText("2 deploys")).toBeInTheDocument();
+  await user.click(eu);
+  expect(listed(table)).toEqual(["d2"]);
+  const folded = within(table).getByRole("button", { name: "Expand eu" });
+  expect(folded).toHaveAttribute("aria-expanded", "false");
+  await user.click(folded);
+  expect(listed(table)).toEqual(["d1", "d3", "d2"]);
 });
 
 test("says the caller's own words when no row is listed", async () => {

@@ -673,6 +673,9 @@ test("live: a fresh page load opens the socket at the current head and stays wit
     // `me/replies?kind=reply,agent&limit=1`, whose total is the other half of that one Inbox
     // number (the sidebar's on desktop, the compact header's on phone).
     "/api/v1/me/replies?kind=reply%2Cagent&limit=1",
+    // The navigation rail's Priorities entry, whose badge is the two fault counts added
+    // (`?summary=true` answers those two numbers and neither fault list).
+    "/api/v1/priorities?summary=true",
     // The Conversation's list of the issue's phase handoffs, which it shows beside the
     // messages.
     `/api/v1/issues/${issue.key}/handoffs`,

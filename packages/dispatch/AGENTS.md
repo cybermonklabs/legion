@@ -211,7 +211,8 @@ dependency in its body. For the image-pin comparison and `/healthz` deployment e
   composer's edit send), `ask:<id>` (its answer, its decline, its clarification, its snooze and
   the write that gives it to another person), `document:<id>` (the decisions writes, a
   document's title correction and its removal),
-  `project:<KEY>` for a write that adds a row to a project (the issue create),
+  `project:<KEY>` for a write that adds a row to a project (the issue create), `priority:<id>`
+  (a priority's title, description, owner or place in the order, `priority-writes.ts`),
   `agent-token:<id>` and `agent-tokens:me`, `repo-mapping:<repo>`,
   `architecture-source:<project>/<repo>` (`sourceLine`), `settings:delivery` - or, for a read
   mark, `read:` and then the row's own name; the sends that name no row (`broadcast`,

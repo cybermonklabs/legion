@@ -23,8 +23,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
-	"github.com/sjawhar/legion/daemon/internal/rescue"
-	"github.com/sjawhar/legion/daemon/internal/rescue/rescuetest"
 	"github.com/sjawhar/legion/daemon/internal/shim"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/testlog"
@@ -47,7 +45,7 @@ func TestMain(m *testing.M) {
 	if os.Getenv(fakeOMPEnv) == "1" {
 		os.Exit(fakeOMP())
 	}
-	// The tests run real git and jj, in the shim's adoption and push check (fixtureenv.MustGuard).
+	// The tests run real git and jj, in the shim's adoption (fixtureenv.MustGuard).
 	fixtureenv.MustGuard()
 	os.Exit(m.Run())
 }
@@ -223,19 +221,28 @@ func (c *fakeClock) After(d time.Duration) <-chan time.Time {
 	return w.fire
 }
 
-// next is the shim's next wait, which must be of d.
-func (c *fakeClock) next(t *testing.T, d time.Duration) clockWait {
+// nextAny is the shim's next wait whatever its span, named by what the caller expected to be
+// waited for: what a test reads when the span is the thing under test rather than a constant it
+// already knows (drainCommands' bound, which is what is left of a span).
+func (c *fakeClock) nextAny(t *testing.T, what string) clockWait {
 	t.Helper()
 	select {
 	case w := <-c.waits:
-		if w.d != d {
-			t.Fatalf("the shim waited %v, want %v", w.d, d)
-		}
 		return w
 	case <-time.After(waitLimit):
-		t.Fatalf("the shim never waited %v", d)
+		t.Fatalf("the shim never waited %s", what)
 		return clockWait{}
 	}
+}
+
+// next is the shim's next wait, which must be of d.
+func (c *fakeClock) next(t *testing.T, d time.Duration) clockWait {
+	t.Helper()
+	w := c.nextAny(t, fmt.Sprintf("%v", d))
+	if w.d != d {
+		t.Fatalf("the shim waited %v, want %v", w.d, d)
+	}
+	return w
 }
 
 func (w clockWait) elapse() { w.fire <- time.Time{} }
@@ -643,9 +650,7 @@ func TestAnInstallOfThePinStartsTheAgent(t *testing.T) {
 
 // A role whose environment carries the pin and whose pod holds no install of it runs no agent at
 // all: the shim ends with exit 1 and the read's own refusal. Every write path of such a role would
-// refuse anyway, and the rescue helper runs in this same shim — the daemon's frames are read only
-// once the spawn has returned — so a pod that started one would lose a dying pod's work for a
-// reason nobody could see.
+// refuse anyway.
 func TestAnInstallThatIsNotThePinsStartsNoAgent(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -1166,84 +1171,32 @@ func TestAdoptWorkingCopyRunsTheSharedMetaeditAndAnswersTheDaemon(t *testing.T) 
 	}
 }
 
-// `rescue-unpushed` is answered by the shim itself, as its role and in its role's environment: it
-// checks every workspace on the disk its LEGION_WORKSPACE is on, pushes what the remote lacks to a
-// rescue branch, and answers one entry per workspace; OMP never sees the frame. A shim with no
-// LEGION_WORKSPACE has no disk to check and refuses.
-//
-// The test process's own environment names a decoy disk in LEGION_WORKSPACE, as a Legion issue
-// pod's does its live workspace: neither case may check it or push from it, so the disk's
-// environment (fixtureenv.Isolated) carries none of the process's LEGION_ variables.
-func TestRescueUnpushedChecksTheDiskAndAnswersTheDaemon(t *testing.T) {
-	decoy := rescuetest.New(t, "DECOY-7")
-	decoy.Write(decoy.Workspace, "decoy.txt", "work on the pod's own disk\n")
-	decoy.JJ("commit", "-m", "work on the pod's own disk")
-	decoyBranches := decoy.RemoteBranches()
-	t.Setenv("LEGION_WORKSPACE", decoy.Workspace)
-	t.Setenv("LEGION_ISSUE", "DECOY-7")
-	d := rescuetest.New(t, "WIDGETS-42")
-	for _, entry := range d.Env {
-		if strings.HasPrefix(entry, "LEGION_") {
-			t.Fatalf("the disk's environment holds %s, want none of the process's LEGION_ variables", entry)
-		}
+// An older daemon still asks a pod's shim for the push check it ran before it replaced the pod,
+// in a frame of a type this shim no longer knows. The shim passes that line to OMP unchanged, as
+// it does every frame that is not its own. OMP refuses it as a command it does not know, and an
+// older daemon reads that refusal as a shim that predates the check, so it replaces the pod on
+// its workers' answers alone. A shim that dropped the line would leave that daemon with no
+// answer, which it reads as a check that failed, and the pod would not be replaced.
+func TestShimForwardsAnUnknownRescueFrameToItsChild(t *testing.T) {
+	path := socketPath(t)
+	daemon := listen(t, path)
+	child := newOMP(t)
+	run(t, config(t, path, child), newClock())
+	p := daemon.accept(t)
+	p.open(t)
+
+	const older = `{"type":"rescue-unpushed","id":"r1"}`
+	p.sendLine(t, older)
+	p.send(t, shimwire.GetState{ID: "after"})
+	if answer, ok := p.next(t).(shimwire.Response); !ok || answer.ID != "after" {
+		t.Fatalf("the shim sent %#v, want OMP's answer to the get_state after the older daemon's frame", answer)
 	}
-	d.Write(d.Workspace, "feature.txt", "work jj alone holds\n")
-	d.JJ("commit", "-m", "work jj alone holds")
-	commit := d.JJ("log", "--no-graph", "-r", "@-", "-T", "commit_id")
-	for _, tc := range []struct {
-		name        string
-		noWorkspace bool
-	}{{name: "a shim on the issue's workspace"}, {name: "a shim with no LEGION_WORKSPACE", noWorkspace: true}} {
-		t.Run(tc.name, func(t *testing.T) {
-			path := socketPath(t)
-			daemon := listen(t, path)
-			child := newOMP(t)
-			cfg := config(t, path, child)
-			cfg.Env = append(slices.Clone(d.Env), fakeOMPEnv+"=1", "FAKE_OMP_MARKER="+child.marker, "FAKE_OMP_LOG="+child.log)
-			if !tc.noWorkspace {
-				cfg.Env = append(cfg.Env, "LEGION_WORKSPACE="+d.Workspace)
-			}
-			run(t, cfg, newClock())
-			p := daemon.accept(t)
-			p.open(t)
-
-			// The bounds are the check's own, the ones the daemon sets on every request
-			// (rescue.WorkspaceTimeout and rescue.Timeout): the guard keeps a reserve of the
-			// workspace's bound for the push it clears, wide enough for the second run of the
-			// check a pod's pre-push hook makes (rescue.GuardReserve), and a smaller bound here
-			// would be refused for want of time rather than checked.
-			request := shimwire.RescueUnpushed{
-				ID: "r1", Branch: "legion/WIDGETS-42-rescue-9d3f0c7a",
-				WorkspaceTimeoutMs: int(rescue.WorkspaceTimeout.Milliseconds()), TimeoutMs: int(rescue.Timeout.Milliseconds()),
-			}
-			p.send(t, request)
-			got, ok := p.next(t).(shimwire.RescueUnpushedResult)
-			if !ok || got.ID != request.ID {
-				t.Fatalf("the shim answered %#v, want a result for %s", got, request.ID)
-			}
-			if tc.noWorkspace {
-				if got.OK || !strings.Contains(got.Error, "LEGION_WORKSPACE is not set") {
-					t.Fatalf("the shim answered %#v, want a refusal naming LEGION_WORKSPACE", got)
-				}
-			} else {
-				want := []shimwire.RescueWorkspace{{Dir: d.Workspace, Status: "rescued", Branches: []shimwire.RescueBranch{{Name: request.Branch + "-1", Commit: commit}}}}
-				if !got.OK || !reflect.DeepEqual(got.Workspaces, want) {
-					t.Fatalf("the shim answered %#v, want %+v", got, want)
-				}
-				if held := d.RemoteBranch(request.Branch + "-1"); held != commit {
-					t.Fatalf("the remote holds %s-1 at %q, want %s", request.Branch, held, commit)
-				}
-			}
-
-			p.send(t, shimwire.GetState{ID: "after"})
-			p.next(t)
-			if got := frameTypes(child.received(t)); !reflect.DeepEqual(got, []string{shimwire.TypeGetState}) {
-				t.Fatalf("OMP read %v; rescue-unpushed is the shim's own", got)
-			}
-			if got := decoy.RemoteBranches(); !reflect.DeepEqual(got, decoyBranches) {
-				t.Fatalf("the decoy's remote holds %v after the check, want %v: the check reached the process's LEGION_WORKSPACE", got, decoyBranches)
-			}
-		})
+	got := child.received(t)
+	if len(got) != 2 || got[1].FrameType() != shimwire.TypeGetState {
+		t.Fatalf("OMP read %v, want the older daemon's frame and then the get_state", frameTypes(got))
+	}
+	if raw, ok := got[0].(shimwire.Raw); !ok || string(raw.JSON) != older {
+		t.Fatalf("OMP read %#v, want the older daemon's line unchanged: %s", got[0], older)
 	}
 }
 
@@ -1525,11 +1478,13 @@ func treeOf(t *testing.T, root string) map[string]string {
 }
 
 // A git lock an interrupted git or jj left in a running pod's workspace fails the adoption on
-// every write of what it locks, and nothing under a running pod removes it: another role's live git
-// may hold it. The failure names the lock and how long ago it was last written, says not to remove
-// it while the pod runs and that replacing the pod removes it, and says what holds under tmux,
-// whether jj's own git backend reported it (the index jj rewrites as it snapshots the working copy,
-// as in LEGION-731) or a git command jj ran; and the lock stays.
+// every write of what it locks, and the role that reads the failure removes nothing: the launcher
+// of the pod's roles container sweeps such a lock once no process of the container holds it open
+// and it is more than 15 minutes old (internal/launcher's gitLockSweep). The failure names the
+// lock and how long ago it was last written, says what that sweep does and how long it takes,
+// tells the role to run the command again, and says what holds under tmux, whether jj's own git
+// backend reported it (the index jj rewrites as it snapshots the working copy, as in LEGION-731)
+// or a git command jj ran; and the lock stays.
 func TestAdoptWorkingCopyNamesTheStaleGitLockItFailedOn(t *testing.T) {
 	jj, err := exec.LookPath("jj")
 	if err != nil {
@@ -1587,9 +1542,10 @@ func TestAdoptWorkingCopyNamesTheStaleGitLockItFailedOn(t *testing.T) {
 			for _, want := range []string{
 				"Command failed (exit 1)",
 				"git lock " + lock + " was last written 31m",
-				"Do not remove it while the issue's pod runs: another role's git, which this container cannot see, may hold it.",
-				"Replacing the issue's pod removes it.",
+				"The launcher of the issue's pod removes a git lock that no process of the pod holds open and that is more than 15 minutes old, and it looks again every minute.",
+				"Run the command again in about 16 minutes.",
 				"Under the tmux runtime nothing removes it",
+				"If the lock is still there after that time, tell the issue's architect.",
 			} {
 				if !strings.Contains(got.Error, want) {
 					t.Errorf("the result's error %q does not mention %q", got.Error, want)

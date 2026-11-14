@@ -74,6 +74,14 @@ function renderRail({
     spyOn(api, "whoAmI").mockResolvedValue({ event_head: "0", kind: "user", login: "alice" }),
     spyOn(api, "getInbox").mockResolvedValue([]),
     spyOn(api, "getCredentialPending").mockResolvedValue(null),
+    // The rail reads the two fault counts on every page; this deployment has written no
+    // priority, so its entry carries no number and these rows are about the agents alone.
+    spyOn(api, "listPriorities").mockResolvedValue({
+      empty: "No priority is live now, so the list is empty.",
+      priorities: [],
+      priority_work_parked: { by_priority: {}, count: 0, issues: [] },
+      work_under_no_priority: { by_project: {}, count: 0, issues: [] },
+    }),
     spyOn(api, "listIssues").mockResolvedValue([]),
     spyOn(api, "listProjects").mockResolvedValue([]),
     spyOn(api, "listAgents").mockResolvedValue(listed),

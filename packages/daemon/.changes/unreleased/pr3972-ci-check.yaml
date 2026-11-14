@@ -1,0 +1,6 @@
+kind: Changed
+body: |-
+  The tester's, implementer's, reviewer's and architects' role prompts say that a `before_merge`
+  check carrying `ci_check` is CI's: no role runs it or records its result, and `dispatch results`
+  derives its result from the named CI run. The reviewer waits for such a check's run while it is
+  still going or GitHub is unread, and sends a name no run answers to the architect.

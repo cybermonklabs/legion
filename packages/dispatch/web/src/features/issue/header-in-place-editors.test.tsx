@@ -32,6 +32,8 @@ const EDITORS = [
 ] as const;
 
 const base: Issue = {
+  advances: [],
+  advances_revision: 0,
   assignee: null,
   blocked_by: [],
   claim: null,

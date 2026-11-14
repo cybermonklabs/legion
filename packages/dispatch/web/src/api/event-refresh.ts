@@ -1,6 +1,7 @@
-import { askProject, issueProject } from "../features/inbox/list-row";
+import { askProject } from "../features/inbox/list-row";
 import { buildDispatchReference } from "../features/refs/routes";
-import type { RefreshTarget } from "./cache/query-refresh";
+import { issueProject } from "../lib/issue-key";
+import type { RefreshCheck, RefreshTarget } from "./cache/query-refresh";
 import {
   agentMessagesQuery,
   architectureSourcesQuery,
@@ -742,6 +743,19 @@ function issueWriteTargets(
     }
   }
 
+  // The Priorities page's rows and the rail's two counts (`["priorities"]`, both the full body
+  // and the summary under it), and the work listed under one priority (`["issues", "advances",
+  // <id>]`, every scoped issues table's read). What the work under a priority is moves with the
+  // relation itself, with the status each row counts by, and with the parent, which is what an
+  // issue inherits its priorities down. The scoped listing is refreshed by its prefix rather
+  // than by the priority the event names: an issue carries its own relations and the ones it
+  // inherits, so a write can move the work under a priority the payload never names. The
+  // relation is no edge of the reference graph (`changesReferenceGraph` leaves `advances` out),
+  // so no backlink panel reads it.
+  if (moved("advances") || moved("status") || moved("parent")) {
+    targets.push({ queryKey: ["priorities"] }, { queryKey: ["issues", "advances"] });
+  }
+
   // A `child_of` edge into the parent and a `blocked_by` edge into each blocker are rows of their
   // backlink panels: the new parent and blockers are the payload's, the old ones are the panels
   // that still list an edge from this issue.
@@ -763,6 +777,57 @@ function issueWriteTargets(
       )
     );
   }
+  return targets;
+}
+
+/**
+ * What one write of priority `id` changes, by which of the three writes it was. Every one moves
+ * the priorities reads (`["priorities"]`: the Priorities page's body `["priorities", "full"]`,
+ * the rail's two counts `["priorities", "summary"]`, and the priority page's margin
+ * `["priorities", "history", id]`), which is also where every page reads a priority's title and
+ * its place in the order from. A create, a rename, a move or a description moves nothing else:
+ * an issue row carries a priority by its id alone (`{id, inherited}`), so no issue listing
+ * reads again on them, and the description's autosave refetches no fault list.
+ *
+ * A delete takes the priority out of every relation, and the server writes no issue event for
+ * the issues it leaves, so it also moves:
+ *
+ * - the work listed under it (`["issues", "advances", id]`), which the priority page's work
+ *   table and its scope links read, now empty;
+ * - the work under no priority (`["issues", "advances", "none"]`): an issue that advanced only
+ *   this priority joins it, and the cache cannot tell which issues those are, since no row of
+ *   that listing names the priority;
+ * - every read that holds an issue advancing it, by its own relation or one it inherits
+ *   (`advances` lists both): an issue read (`["issue", key]`; an issue's references or its
+ *   collaborators under that prefix carry no `advances`), and a list of issue rows (every
+ *   `["issues", ...]` listing and the Agents page's issue picker). That is the parked fault list
+ *   (`advances=any`), whose rows under this priority alone leave it and whose other rows drop
+ *   it, every other issue listing that draws the row, and above all each open issue read, whose
+ *   header would otherwise keep naming the priority and send it back in the next whole-set write
+ *   of its `advances`, which the server refuses (`400 ADVANCES_INPUT`, a priority that is gone).
+ *   A row of `advances=any` that does not name it stays, since it still advances another.
+ */
+function priorityWriteTargets(
+  event: Extract<DispatchEvent, { type: "priority.updated" }>
+): RefreshTarget[] {
+  const { change, id } = event.payload;
+  const targets: RefreshTarget[] = [{ queryKey: ["priorities"] }];
+  if (change !== "deleted") {
+    return targets;
+  }
+  const advancesIt = (row: unknown): boolean =>
+    typeof row === "object" &&
+    row !== null &&
+    ((row as Pick<IssueSummary, "advances">).advances ?? []).some((entry) => entry.id === id);
+  const when: RefreshCheck = (data) =>
+    Array.isArray(data) ? data.some(advancesIt) : advancesIt(data);
+  targets.push(
+    { queryKey: ["issues", "advances", id] },
+    { queryKey: ["issues", "advances", "none"] },
+    { queryKey: ["issue"], when },
+    { queryKey: ["issues"], when },
+    { exact: true, queryKey: ["agents", "issue-picker"], when }
+  );
   return targets;
 }
 
@@ -977,6 +1042,10 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
     // The event names one thread, or none at all - a Mark all read names its project and no
     // thread - and either way every one of the viewer's thread reads is refreshed.
     return isViewer(payloadString(event, "login"), viewer) ? [{ queryKey: myRepliesKey }] : [];
+  }
+  if (event.type === "priority.updated") {
+    // A create, a rename, a move, a description or a delete of a priority, by anybody.
+    return priorityWriteTargets(event);
   }
   if (event.type === "subscription.remove_requested") {
     return [];

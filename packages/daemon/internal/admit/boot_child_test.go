@@ -133,7 +133,7 @@ func TestTheBootReadRecordsATodoChildOfALiveTreeThatHasNoRecord(t *testing.T) {
 				if got == nil {
 					t.Fatalf("%s after the boot read has no record, want it recorded in %s as its todo event records it: %#v", key, bootRoot, want)
 				}
-				if !reflect.DeepEqual(*got, want) {
+				if !reflect.DeepEqual(withoutMovement(*got), withoutMovement(want)) {
 					t.Fatalf("%s after the boot read = %#v, want the record its todo event leaves, %#v", key, *got, want)
 				}
 			}

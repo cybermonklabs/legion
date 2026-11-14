@@ -249,6 +249,12 @@ func (s *supervisor) add(token claim.Token, m *supervise.Machine) {
 	all := append(slices.Clip(s.supervised()), m)
 	s.all.Store(&all)
 	s.feeding.Add(1)
+	// One claim's events are handled one at a time on this goroutine, beside every other
+	// machine's, and each decision writes the claim through the store, so the machine works under
+	// a hold mark of its own (store.ForConcurrentWorker): on the supervisor's one context the
+	// first machine inside a transaction would have the pool refuse every other machine its first
+	// connection.
+	working := store.ForConcurrentWorker(s.ctx)
 	go func() {
 		defer s.feeding.Done()
 		for {
@@ -256,7 +262,7 @@ func (s *supervisor) add(token claim.Token, m *supervise.Machine) {
 			if !ok {
 				return
 			}
-			if err := m.Handle(s.ctx, ev); err != nil {
+			if err := m.Handle(working, ev); err != nil {
 				s.decisionFailed(token, fmt.Sprintf("%T", ev), err, "supervise: an event failed")
 			}
 			// The turn is over and this machine has recorded that, so a claim of the same issue
@@ -379,7 +385,9 @@ func (s *supervisor) wait() {
 // shim to redial (stream.HelloResolver).
 func (s *supervisor) helloResolver(tokens *api.BootTokens, timeout time.Duration) stream.HelloResolver {
 	resolve := func(bootToken string) (api.BootToken, bool, error) {
-		ctx, cancel := context.WithTimeout(s.ctx, timeout)
+		// Every hello is resolved on its own connection's goroutine, beside every other, so each
+		// read takes a hold mark of its own (store.ForConcurrentWorker).
+		ctx, cancel := context.WithTimeout(store.ForConcurrentWorker(s.ctx), timeout)
 		defer cancel()
 		return tokens.Resolve(ctx, bootToken)
 	}

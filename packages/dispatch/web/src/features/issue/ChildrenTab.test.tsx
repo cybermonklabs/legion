@@ -15,6 +15,8 @@ const issue: IssueDetails = {
   holder_state: null,
   last_seen: null,
   takeable_at: null,
+  advances: [],
+  advances_revision: 0,
   artifacts: [],
   children: [
     {
