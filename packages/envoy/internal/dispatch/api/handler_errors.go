@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -244,8 +245,34 @@ func (s *server) writeHandlerError(w http.ResponseWriter, err error) {
 		writeError(w, "NOT_FOUND", http.StatusNotFound, "not found")
 		return
 	}
+	// A call whose error is its own context's end is the service unable to serve it in time, not
+	// a fault: the same 503 DOC_SERVICE_UNAVAILABLE, with the same reason and the same retry
+	// contract, as the document service's own busy refusal (docs.ErrServiceUnavailable, and docs'
+	// errWriteBusy for a write whose wait for the copy-heap pool ended with its request). A burst
+	// of concurrent API writes meets this wherever a request's context ends outside that one
+	// wait: opening a transaction while every pooled connection is held, taking the owner's row,
+	// reading the stored history. Each of those was answered 500, which names a fault of the
+	// server's and tells the caller not to repeat a write the server never made
+	// (dispatch://INFRA-179). The check comes after the document codes, so a failed room or an
+	// unloadable history keeps the answer its own state earns, whatever cancelled this request.
+	if endedWithACancelledContext(err) {
+		writeError(w, codeDocServiceUnavailable, http.StatusServiceUnavailable, docs.ErrServiceUnavailable.Error())
+		return
+	}
 	writeError(w, codeInternal, http.StatusInternalServerError, "internal server error")
 	slog.Error("dispatch: API handler failed", "error", err)
+}
+
+// endedWithACancelledContext reports whether err is the end of a context rather than a fault of
+// the server's. A handler waits within its request's context - for a pooled connection, a row
+// lock, the copy-heap pool, a statement - and within the server's lifetime, which ends at a
+// shutdown. Work a handler detaches from its request bounds itself instead (context.WithoutCancel
+// under a deadline of its own: a keyed run's keyedRunLimit, a cold read's coldReadTimeout), and
+// such a bound run out says the same thing to the caller as the request's own end - the server
+// could not serve this call in time, and the call may be made again - so the two are refused
+// alike. A genuine internal failure carries neither sentinel and stays a 500.
+func endedWithACancelledContext(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
 // ambiguousTargetError is the 409 TARGET_AMBIGUOUS body a write answers a quote or heading

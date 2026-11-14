@@ -570,6 +570,97 @@
         "x-write-scope": "deployment"
       }
     },
+    "/api/v1/artifacts/_test/room-budget": {
+      "post": {
+        "description": "Test hook: set the open documents' memory budget to bytes (0 restores the real one), so a browser test can fill it.",
+        "operationId": "postApiV1ArtifactsTestRoomBudget",
+        "parameters": [
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RoomBudgetInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RoomBudgetState"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-test-hook": true,
+        "x-write-scope": "deployment"
+      }
+    },
+    "/api/v1/artifacts/_test/room-charges": {
+      "get": {
+        "description": "Test hook: what the room budget charges each room it holds a charge for, beside its own figures, {charges, used, limit}.",
+        "operationId": "getApiV1ArtifactsTestRoomCharges",
+        "parameters": [
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RoomChargesState"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-test-hook": true
+      }
+    },
     "/api/v1/artifacts/_test/rooms": {
       "get": {
         "description": "Test hook: list the documents this process holds a room of.",
@@ -758,6 +849,58 @@
         "x-write-scope": "project"
       }
     },
+    "/api/v1/artifacts/{id}/_test/hold-admission": {
+      "post": {
+        "description": "Test hook: make the document's next socket wait ms before its admission, as a browser in a burst waits for its room (0 takes the hold back).",
+        "operationId": "postApiV1ArtifactsByIdTestHoldAdmission",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HoldAdmissionInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "204": {
+            "description": "No Content"
+          }
+        },
+        "x-auth": "any",
+        "x-test-hook": true,
+        "x-write-scope": "project"
+      }
+    },
     "/api/v1/artifacts/{id}/_test/hold-persistence": {
       "post": {
         "description": "Test hook: hold this process's appends of a document's browser updates for a duration.",
@@ -808,6 +951,54 @@
         "x-auth": "any",
         "x-test-hook": true,
         "x-write-scope": "project"
+      }
+    },
+    "/api/v1/artifacts/{id}/_test/live": {
+      "get": {
+        "description": "Test hook: whether the document's room is resident in this server, {live}; loads and rebuilds nothing.",
+        "operationId": "getApiV1ArtifactsByIdTestLive",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RoomLiveState"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-test-hook": true
       }
     },
     "/api/v1/artifacts/{id}/_test/live-write-pauses/{point}": {
@@ -976,10 +1167,94 @@
         "x-write-scope": "project"
       }
     },
+    "/api/v1/artifacts/{id}/_test/near-decode-cap": {
+      "post": {
+        "description": "Test hook: close the document's room and append deleted characters that leave its history near the decode cap, so the rebuild takes it and the page's read says so.",
+        "operationId": "postApiV1ArtifactsByIdTestNearDecodeCap",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "204": {
+            "description": "No Content"
+          }
+        },
+        "x-auth": "any",
+        "x-test-hook": true,
+        "x-write-scope": "project"
+      }
+    },
     "/api/v1/artifacts/{id}/_test/outside-schema": {
       "post": {
         "description": "Test hook: write a crafted tree outside the Proof schema.",
         "operationId": "postApiV1ArtifactsByIdTestOutsideSchema",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "204": {
+            "description": "No Content"
+          }
+        },
+        "x-auth": "any",
+        "x-test-hook": true,
+        "x-write-scope": "project"
+      }
+    },
+    "/api/v1/artifacts/{id}/_test/refuse-next-update": {
+      "post": {
+        "description": "Test hook: make the document's room refuse the next update a read-write browser sends it, as it refuses one holding content the document does not take.",
+        "operationId": "postApiV1ArtifactsByIdTestRefuseNextUpdate",
         "parameters": [
           {
             "name": "id",
@@ -1064,6 +1339,90 @@
         },
         "x-auth": "any",
         "x-test-hook": true
+      }
+    },
+    "/api/v1/artifacts/{id}/_test/tangled": {
+      "post": {
+        "description": "Test hook: close the document's room and append a tangle no one apply of a browser's may scan through.",
+        "operationId": "postApiV1ArtifactsByIdTestTangled",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "204": {
+            "description": "No Content"
+          }
+        },
+        "x-auth": "any",
+        "x-test-hook": true,
+        "x-write-scope": "project"
+      }
+    },
+    "/api/v1/artifacts/{id}/_test/used-up": {
+      "post": {
+        "description": "Test hook: close the document's room and append a stored history whose re-scan uses up a room's scan total.",
+        "operationId": "postApiV1ArtifactsByIdTestUsedUp",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "204": {
+            "description": "No Content"
+          }
+        },
+        "x-auth": "any",
+        "x-test-hook": true,
+        "x-write-scope": "project"
       }
     },
     "/api/v1/artifacts/{id}/approval-requests": {
@@ -1785,7 +2144,7 @@
     },
     "/api/v1/artifacts/{id}/rebuild": {
       "post": {
-        "description": "Rebuild a document history ygo cannot load from its latest saved markdown; a live document is 409 DOCUMENT_LIVE and one that loads is 409 DOCUMENT_LOADS.",
+        "description": "Rebuild a document's history into one fresh update, keeping its block ids, anchors and margin records as far as its history or its rows record them: a history ygo cannot load, from its latest saved markdown or supplied {markdown}; a history so near the decode cap or the edit-scan total that a write it must still take is refused (a write of its whole text, near the decode cap), from its own text or supplied markdown, closing its room in this server first, whose connected browsers drop their unsent edits - a room this server holds decides that on its own; 409 DOCUMENT_LIVE for any other document live in this server, 409 DOCUMENT_LOADS for any other history that loads.",
         "operationId": "postApiV1ArtifactsByIdRebuild",
         "parameters": [
           {
@@ -13324,6 +13683,12 @@
             ],
             "type": "object"
           },
+          "near_decode_cap": {
+            "type": "boolean"
+          },
+          "near_decode_cap_reason": {
+            "type": "string"
+          },
           "token": {
             "type": "string"
           },
@@ -19788,6 +20153,15 @@
         ],
         "type": "object"
       },
+      "HoldAdmissionInput": {
+        "properties": {
+          "ms": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
       "HoldPersistenceInput": {
         "properties": {
           "duration": {
@@ -24443,6 +24817,55 @@
         ],
         "type": "object"
       },
+      "RoomBudgetInput": {
+        "properties": {
+          "bytes": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "RoomBudgetState": {
+        "properties": {
+          "bytes": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "bytes"
+        ],
+        "type": "object"
+      },
+      "RoomChargesState": {
+        "properties": {
+          "charges": {
+            "additionalProperties": {
+              "format": "int64",
+              "type": "integer"
+            },
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "limit": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "used": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "charges",
+          "used",
+          "limit"
+        ],
+        "type": "object"
+      },
       "RoomCounters": {
         "properties": {
           "awareness_clients": {
@@ -24477,6 +24900,21 @@
           "room_closes",
           "settlement_resumptions",
           "awareness_clients"
+        ],
+        "type": "object"
+      },
+      "RoomLiveState": {
+        "properties": {
+          "holding": {
+            "type": "string"
+          },
+          "live": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "live",
+          "holding"
         ],
         "type": "object"
       },

@@ -338,6 +338,7 @@ test("ProofDocument reports connection status and pending edits through the tool
         readOnly: false,
         rebuiltAt: undefined,
         stored: true,
+        unsent: false,
       });
       status("offline");
     });
@@ -347,6 +348,7 @@ test("ProofDocument reports connection status and pending edits through the tool
         readOnly: false,
         rebuiltAt: undefined,
         stored: true,
+        unsent: false,
       })
     );
     await waitFor(() => expect(toolbar.current?.connection).toBe("offline"));
@@ -381,6 +383,7 @@ test("the margin's wait for this browser's edits is answered by a report taken a
         readOnly: false,
         rebuiltAt: undefined,
         stored: true,
+        unsent: false,
       })
     );
     let answered = false;
@@ -396,6 +399,7 @@ test("the margin's wait for this browser's edits is answered by a report taken a
         readOnly: false,
         rebuiltAt: undefined,
         stored: true,
+        unsent: false,
       })
     );
     await Promise.resolve();
@@ -407,6 +411,7 @@ test("the margin's wait for this browser's edits is answered by a report taken a
         readOnly: false,
         rebuiltAt: undefined,
         stored: true,
+        unsent: false,
       })
     );
     await waiting;
@@ -421,6 +426,7 @@ test("the margin's wait for this browser's edits is answered by a report taken a
         readOnly: true,
         rebuiltAt: undefined,
         stored: true,
+        unsent: false,
       })
     );
     await bridge.whenSent(0);

@@ -119,7 +119,7 @@ func (s *server) reopenComment(w http.ResponseWriter, r *http.Request) {
 		if kindErr == nil {
 			projectionKind = kind
 		}
-		if err := s.deps.Docs.ProjectMark(documentCtx, comment.Anchor.ArtifactID, comment.Anchor.MarkID, commentMarkRecord(comment, replies, projectionKind), actor); err != nil {
+		if err := s.deps.Docs.ProjectMark(documentCtx, comment.Anchor.ArtifactID, comment.Anchor.MarkID, docs.CommentMarkRecord(comment, replies, projectionKind), actor); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -248,7 +248,7 @@ func (s *server) editComment(w http.ResponseWriter, r *http.Request) {
 			s.writeHandlerError(w, err)
 			return
 		}
-		if err := s.deps.Docs.ProjectMark(documentCtx, comment.Anchor.ArtifactID, comment.Anchor.MarkID, commentMarkRecord(comment, replies, projectionKind), actor); err != nil {
+		if err := s.deps.Docs.ProjectMark(documentCtx, comment.Anchor.ArtifactID, comment.Anchor.MarkID, docs.CommentMarkRecord(comment, replies, projectionKind), actor); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -433,7 +433,7 @@ func (s *server) commentAction(w http.ResponseWriter, r *http.Request, action st
 			s.writeHandlerError(w, err)
 			return
 		}
-		if err := s.deps.Docs.ProjectMark(documentCtx, comment.Anchor.ArtifactID, comment.Anchor.MarkID, commentMarkRecord(comment, replies, projectionKind), actor); err != nil {
+		if err := s.deps.Docs.ProjectMark(documentCtx, comment.Anchor.ArtifactID, comment.Anchor.MarkID, docs.CommentMarkRecord(comment, replies, projectionKind), actor); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}

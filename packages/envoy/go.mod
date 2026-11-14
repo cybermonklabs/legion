@@ -5,6 +5,7 @@ go 1.27.3
 require (
 	authelia.com/provider/oauth2 v0.3.3
 	cloud.google.com/go/secretmanager v1.22.0
+	github.com/KimMachineGun/automemlimit v1.0.1
 	github.com/anthropics/anthropic-sdk-go v1.84.0
 	github.com/aws/aws-sdk-go-v2 v1.47.4
 	github.com/aws/aws-sdk-go-v2/config v1.33.10
@@ -123,6 +124,7 @@ require (
 	github.com/opencontainers/image-spec v1.1.1 // indirect
 	github.com/pb33f/go-yaml v0.1.1 // indirect
 	github.com/pb33f/ordered-map/v2 v2.3.2 // indirect
+	github.com/pbnjay/memory v0.0.0-20210728143218-7b4eea64cf58 // indirect
 	github.com/pganalyze/pg_query_go/v6 v6.2.5 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/power-devops/perfstat v0.0.0-20240221224432-82ca36839d55 // indirect
@@ -159,6 +161,82 @@ require (
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 )
 
-// The fork keeps the upstream module path; consume its published tag through a remote
-// versioned replacement. RELEASE_NOTES.md in the tagged fork lists its upstream fixes.
-replace github.com/reearth/ygo => github.com/sjawhar/ygo v1.55.1-sami.2
+// The fork of ygo keeps the upstream module path; consume its published tag through a remote
+// versioned replacement. Releases are cut on theorem-labs/ygo with knives (its registry entry
+// is [repos.ygo-fork]: upstream reearth/ygo, work branches on the personal fork, releases on
+// theorem-labs), and no release is cut on a personal account. The fork is upstream ygo v1.55.0,
+// through upstream main
+// 510c2cf5, plus fixes, each carried until upstream ships it; RELEASE_NOTES.md in the tagged
+// fork lists every member with its upstream pull request. Thirteen wait in open upstream pull
+// requests: pre-integration refusals change nothing,
+// and a partly applied update relays the bytes the room integrated and parked (#340, which
+// replaces #334, #341, #344, #345, #352, #356 and #357); when a non-local transaction advances a
+// document's own client clock, the document takes a new client ID at commit, so every write fork
+// reads that ID after decoding its history (#340, breaking);
+// peer memory is bounded and dead peers close - a per-peer write queue byte budget
+// (Server.PeerWriteQueueBytes, which the document service sets to peerWriteQueueBytes), a failed
+// write or a server close ends the peer and drops its unread input, a joining peer gets the
+// room's state once, and a room an Apply, a relay Inject or a join is inside is not closed under
+// it, so CloseRoom answers ErrRoomInUse and a caller closes the room from inside its own Apply
+// with CloseRoomWithin (#342, which replaces #339, #343, #358 and #366); OnUpdate fires only for
+// a transaction that changes the document, after its GC, and carries only that transaction's
+// deletions (#350); garbage
+// collection and type encoding match Yjs (#347); undo and redo restore what Yjs restores (#359);
+// CloseRoom closes a browser that joins while it runs (#331); a document logs each commit's
+// update, and what the commit parked, in commit order under its own lock (UpdateLog,
+// LoggedUpdate.Parked, #332), against which the room's update observer measures each update; a
+// remote update's scans can be bounded (#333); a map-valued text format no longer panics with the
+// lock held (#335); a transaction names the shared types it changed and every shared type its
+// container (ChangedTypes and Parent, #336), so the room's update observer renders only the
+// top-level blocks an update touched; awareness reaches its sending peer and a read-only peer gets
+// a bounded empty awareness response, so an idle provider stays connected (#338);
+// Server.OnTokenAuthContext, OnTokenAuth with the connection's request context, which Dispatch
+// does not set (#351); and WithFormatCleanup and Doc.SetFormatCleanup, which turn off the format
+// cleanup a remote apply runs, so a copy that replays the room's commit log (newDocumentCopy) and
+// a room loading its stored history (bootstrapLoadedState) make no commit the room never made
+// (#369). Two await upstream pull requests: a per-apply scan budget stacked on #333, which
+// Dispatch sets on every room's documents (roomScans.budget), and Doc.Clone, retained from
+// v1.54.1-sami.4, which copies a document without encoding or decoding it: a write's fork of its
+// room is that room's replica cloned (warmFork, forkPoint). Server.OnPeerUpdate, upstream ygo
+// #304, is in upstream v1.55.0; the document service sets it to weigh each browser's update
+// (weighPeerUpdate).
+// v1.55.1-sami.7 added what this branch's memory work is built on: Doc.StructCount, the per-apply
+// ApplyBudget (Decoded, Structs, Bytes) with its rollback, WithAllowedRoots as a containment rule
+// over everything an apply adds or deletes, RefusedUpdateError's counts, ParseUpdateMeta and
+// ErrPendingCap, which together replaced 899 lines of update decoder in this package
+// (dispatch://INFRA-179), and the linear state handover split this branch's write path needs. It
+// also brings sami.2's and sami.3's breaking changes with it: Content.Len answers uint64 and
+// Content.Splice takes one.
+// v1.55.1-sami.8 closes six holes in that work a browser's update went through, each of which
+// this package now uses. ApplyBudget gains Split, the structs an apply makes by splitting items
+// the room already holds, which Structs never counted: a 17-byte delete inside a word took a
+// room at the decode cap past it and its stored state then answered `crdt: invalid update`, so
+// every allowance the hook builds names Split (peerApplyAllowance). A struct that parks and the
+// bytes it carries are charged to the apply that parked them, so the room's own rules reach
+// content waiting behind a gap: an update parked 17,825,840 bytes under an allowance of
+// Structs: 0, Bytes: 0 before, and a 45-byte gap filler landed it all. Bytes counts a map key, a
+// deleted range and a root name, so an 8 MiB map key no longer passes the room's state cap.
+// WithRefusedContent and SetRefusedContent name the content kinds a remote apply may not carry,
+// which every room sets to the embed and the binary the Proof editor never sends, since one
+// crafted embed puts every browser of a document into the repair state (newRoomApplies).
+// Server.OnStateAnswer runs before a SyncStep1 is answered and its release after, so the service
+// can weigh the whole-state decode that answer costs - 360,954,408 bytes of peak heap on a
+// document of 1,048,576 structs - against the pod's copy heap (weighStateAnswer). And a drain's
+// splits are charged to the apply that lands them, with the drain refused and taken back while
+// the gap filler's own apply stands, so a room can hold a backlog that never drains and the room
+// answers that from its own pending queue (refusedStuckBacklog, crdt.Doc.PendingStats). It also
+// carries the allowed-roots check to where a struct parks and travels the list with it, so a
+// sender can no longer write under a root it may not name by parking behind a clock it never
+// sends, which needed nothing here. Breaking: ApplyBudget's zero value for Split allows no
+// split, so a budget literal that leaves it unset refuses every delete that cuts an item.
+// v1.55.1-sami.9 takes one charge of sami.8's back out, because this package's own drive showed
+// it was never a cost: a deleted range was charged its claimed clock span as content bytes, in
+// the tombstone's integration and again where a merge grows a parked one, so a 17-byte frame
+// claiming 2^40 clocks of a client the room has never seen read as a terabyte of content and
+// every bound refused it, where it deletes nothing and costs the room two integers
+// (TestAFrameClaimingHugeClockSpansCostsOnlyItsBytes). A delete now costs no Bytes at all and is
+// bounded as it was before sami.8: its ranges by Decoded, the splits its edges make by Split,
+// its tombstone structs by Structs. The release owner's own probes measured a 2^40 tombstone at
+// about 48 objects and a 2^30 park growth at about 32, both independent of the span, and a flood
+// of 10,000 ranges still refused by Decoded, so the loosening opens no memory attack.
+replace github.com/reearth/ygo => github.com/theorem-labs/ygo v1.55.1-theorem.4

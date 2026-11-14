@@ -14,6 +14,12 @@ import (
 // testdata/routes.txt, which TestRouteIndexListsEveryRouteSortedByPathThenMethod compares the
 // table against.
 func TestRouteShapesCoverEveryRouteTheTableMounts(t *testing.T) {
+	// 183 production rows, the count testdata/routes.txt pins (routes_table_test.go), plus the
+	// 21 rows Deps.TestHooksEnabled adds.
+	const shapedRoutes = 204
+	if len(routeShapes) != shapedRoutes {
+		t.Fatalf("routeShapes has %d entries, want %d (update the pin when adding a route)", len(routeShapes), shapedRoutes)
+	}
 	if shapeless := shapelessRoutes((&server{deps: Deps{TestHooksEnabled: true}}).routes()); len(shapeless) > 0 {
 		t.Fatalf("mounted rows with no shape: %v", shapeless)
 	}

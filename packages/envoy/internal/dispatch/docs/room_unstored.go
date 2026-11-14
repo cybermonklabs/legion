@@ -38,3 +38,12 @@ func (instance *roomInstance) unstoredUpdates() []*queuedClass {
 	defer instance.unstoredMu.Unlock()
 	return slices.Clone(instance.unstored)
 }
+
+// holdsUnstored is whether the instance holds any update the store has not taken, which a
+// compaction's re-base reads to know its reading of the store leaves nothing of the room's out
+// (Service.markResident).
+func (instance *roomInstance) holdsUnstored() bool {
+	instance.unstoredMu.Lock()
+	defer instance.unstoredMu.Unlock()
+	return len(instance.unstored) > 0
+}

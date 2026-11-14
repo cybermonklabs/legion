@@ -6,7 +6,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -19,37 +18,6 @@ func (s *server) commentProjectionKind(ctx context.Context, comment model.Commen
 		return "", nil
 	}
 	return s.deps.Docs.SuggestionKind(ctx, comment.Anchor.ArtifactID, comment.Anchor.MarkID)
-}
-
-func commentMarkRecord(comment model.Comment, replies []model.Comment, suggestionKind string) docs.MarkRecord {
-	record := docs.MarkRecord{
-		Kind:      "comment",
-		By:        docs.ActorRef(comment.Author),
-		CreatedAt: timestampValue(comment.CreatedAt),
-		Text:      comment.Body,
-		Resolved:  comment.Resolved,
-		Replies:   make([]docs.MarkReply, 0, len(replies)),
-	}
-	for _, reply := range replies {
-		record.Replies = append(record.Replies, docs.MarkReply{
-			By:   docs.ActorRef(reply.Author),
-			Text: reply.Body,
-			At:   timestampValue(reply.CreatedAt),
-		})
-	}
-	if comment.Suggestion != nil {
-		record.Kind = suggestionKind
-		record.Content = comment.Suggestion.ReplaceWith
-		record.Status = "pending"
-		if comment.Suggestion.Accepted != nil {
-			if *comment.Suggestion.Accepted {
-				record.Status = "accepted"
-			} else {
-				record.Status = "rejected"
-			}
-		}
-	}
-	return record
 }
 
 // commentEventThread is what a comment payload says about the thread the comment joined:

@@ -13,6 +13,7 @@ import {
   getArtifact,
   getArtifactText,
   getArtifactVersion,
+  holdDocumentAdmission,
   patchIssue,
 } from "./api";
 import { runDispatch } from "./dispatch-cli";
@@ -328,6 +329,53 @@ test("named versions, the version picker, and the diff stay current across users
   }
 });
 
+/** How long the server holds the editor's socket before it admits it. A burst of browsers opening
+ * documents at the bound measured one waiting 21.4 s for the copy bound before its room loaded,
+ * all of it before the server answers the socket's upgrade; this is longer. */
+const FIRST_SYNC_HOLD_MS = 25_000;
+
+test("a document whose room keeps its first sync waiting 25 seconds loads on its one connection", async ({
+  browser,
+}) => {
+  test.setTimeout(FIRST_SYNC_HOLD_MS + 60_000);
+  await createProject({ key: "WAIT", name: "Waiting rooms" });
+  const issue = await createIssue({
+    project: "WAIT",
+    spec: "# Waited for\n\nThe room took its time.\n",
+    title: "First sync after a wait",
+  });
+  const artifactId = issue.primary_artifact_id;
+  await holdDocumentAdmission(artifactId, FIRST_SYNC_HOLD_MS);
+  const alice = await asUser(browser, "alice");
+
+  try {
+    const page = await alice.newPage();
+    const sockets = countDocumentSockets(page, artifactId);
+    const opened = Date.now();
+    await page.goto(`/issues/${issue.key}/spec`);
+    // Partway through the wait the editor is still on its first socket, waiting, not connected.
+    await page.waitForTimeout(FIRST_SYNC_HOLD_MS / 2);
+    expect(sockets()).toBe(1);
+    await expect(connectedDot(page)).toHaveCount(0);
+
+    await expect(documentEditor(page)).toContainText("The room took its time.", {
+      timeout: FIRST_SYNC_HOLD_MS + 30_000,
+    });
+    expect(Date.now() - opened).toBeGreaterThanOrEqual(FIRST_SYNC_HOLD_MS);
+    await expect(connectedDot(page)).toHaveText("connected");
+    expect(sockets()).toBe(1);
+
+    // And the connection the wait ended on is the one the editor keeps: an edit saves through it.
+    await typeAtEnd(page, " Typed once it loaded.");
+    await expect
+      .poll(async () => (await getArtifactText(artifactId)).markdown)
+      .toContain("Typed once it loaded.");
+    expect(sockets()).toBe(1);
+  } finally {
+    await alice.close();
+  }
+});
+
 // @pr: The live document: an agent's edit has to land in every open editor.
 test("an agent edit lands live in every open editor @pr", async ({ browser }) => {
   await createProject({ key: "LIVE", name: "Live updates" });
@@ -474,8 +522,17 @@ test("moving between issue documents leaves one open document connection, not on
     const page = await alice.newPage();
     const open = openDocumentSockets(page);
     await page.goto(`/projects/NAVDOC/issues`);
-    const table = page.getByRole("table", { name: "Project issues table" });
-    await table.getByRole("link", { name: first.key, exact: true }).click();
+    // The issue a reader clicks, found in the project's issues panel rather than in one view's own
+    // markup: the page opens on whichever view that reader last used, each view draws its rows its
+    // own way, and this drive is about the editor's one connection surviving in-app navigation
+    // rather than about either drawing. The link's name carries the issue's title after its key,
+    // so it is matched from the key rather than by the key alone.
+    const issueLink = (key: string) =>
+      page
+        .locator("#project-issues-panel")
+        .getByRole("link", { name: new RegExp(`^${key}(?!\\d)`) })
+        .first();
+    await issueLink(first.key).click();
     await expect(documentEditor(page)).toContainText("First body.");
     await expect.poll(open).toBe(1);
 
@@ -488,11 +545,11 @@ test("moving between issue documents leaves one open document connection, not on
     for (let visit = 0; visit < 4; visit += 1) {
       await page.mouse.move(0, 0);
       await page.goBack();
-      await table.getByRole("link", { name: second.key, exact: true }).click();
+      await issueLink(second.key).click();
       await expect(documentEditor(page)).toContainText("Second body.");
       await page.mouse.move(0, 0);
       await page.goBack();
-      await table.getByRole("link", { name: first.key, exact: true }).click();
+      await issueLink(first.key).click();
       await expect(documentEditor(page)).toContainText("First body.");
     }
     await expect.poll(open).toBe(1);

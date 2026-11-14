@@ -6,14 +6,17 @@ import (
 	"errors"
 	"log/slog"
 	"math"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/reearth/ygo/crdt"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -414,6 +417,261 @@ func TestACompactionSkipsAnUnfoldableLogUntilItChanges(t *testing.T) {
 	if folds != 2 || strings.Count(logs.String(), logged) != 2 {
 		t.Fatalf("after the log changed: %d folds and %d log lines, want 2 of each", folds, strings.Count(logs.String(), logged))
 	}
+}
+
+// disagreeingLine is a substring of the line a compaction logs, once, for a document whose stored
+// version disagrees with its rows (versionDisagreesWarning).
+const disagreeingLine = "stored version disagrees with the stored updates it was taken at"
+
+// poisonTypist is the client whose keystrokes a poisoned log holds, and poisonKeystrokes how many
+// characters it types.
+const (
+	poisonTypist     crdt.ClientID = 1000
+	poisonKeystrokes               = 20
+)
+
+// A compaction keeps the rows a stored version disagrees with, and says so once for the document.
+// The log is a typist's keystrokes and the crafted update that parks over clocks they already
+// hold (poisonedLog), with a version named while a read of the rows dropped the typist's text, so
+// it holds three of the twenty characters the rows replay to. Under the pinned library's merge the
+// fold's read-back refuses those rows as well; under a merge that keeps the held structs they fold
+// and read back, and only the version check keeps them. Either way they stay through the room's
+// close, the sweep, and the compaction of a new fold point after a keystroke lands above them,
+// and the line naming the document and its named version is logged once.
+func TestACompactionKeepsTheRowsAStoredVersionDisagreesWith(t *testing.T) {
+	logs := captureLogs(t)
+	ctx := context.Background()
+	service, artifactID := newTestService(t)
+	service.settle = time.Hour
+	versioned := service.persistence.(*PgVersioned)
+	log := storePoisonedLog(t, versioned, service.store, artifactID)
+	ageUpdatesThrough(t, service.store, artifactID, everyVersion, time.Hour)
+	if err := service.warmLiveDocument(ctx, artifactID); err != nil {
+		t.Fatalf("load the document's room: %v", err)
+	}
+	waitForLandedAppends(t, service, artifactID)
+	stored := storedRows(t, service.store, artifactID)
+	requireOneLine := func(after string) {
+		t.Helper()
+		var lines []string
+		for line := range strings.Lines(logs.String()) {
+			if strings.Contains(line, disagreeingLine) {
+				lines = append(lines, line)
+			}
+		}
+		if len(lines) != 1 || !strings.Contains(lines[0], "room="+artifactID+" ") || !strings.Contains(lines[0], " version="+strconv.Itoa(log.named)+" ") {
+			t.Fatalf("after %s the log holds %d lines saying a stored version disagrees, want one naming the document and version %d:\n%s",
+				after, len(lines), log.named, strings.Join(lines, ""))
+		}
+	}
+
+	if err := service.Evict(ctx, artifactID); err != nil {
+		t.Fatalf("close the document's room: %v", err)
+	}
+	requireRowsAsStored(t, service.store, artifactID, stored)
+	requireOneLine("the room's close")
+
+	service.compactionSweepTick(ctx, excerptLeases(t, service.store))
+	requireRowsAsStored(t, service.store, artifactID, stored)
+	requireOneLine("the sweep")
+
+	// The typist's next keystroke gives the next compaction a fold point no compaction has read,
+	// which it folds and checks again; the sweep's pass runs here without its lease, which this
+	// hour has already served.
+	text := paragraphTexts(log.writer)[0]
+	appendUpdates(t, versioned, artifactID, docstest.Transact(log.writer, func(txn *crdt.Transaction) {
+		text.Insert(txn, poisonKeystrokes, "a", nil)
+	}))
+	ageUpdatesThrough(t, service.store, artifactID, everyVersion, time.Hour)
+	stored = storedRows(t, service.store, artifactID)
+	service.compactionSweepPass(ctx)
+	requireRowsAsStored(t, service.store, artifactID, stored)
+	requireOneLine("a compaction of a new fold point")
+}
+
+// A compaction still folds an ordinary log, through its room's close and through the sweep, and
+// its rows go as they did before any version was checked: a log whose fold parks nothing is
+// written with no check at all, and one whose fold parks a keystroke whose predecessor never
+// arrived is checked, the version named at its head agrees with it, and it folds the same way.
+// Neither is logged as disagreeing.
+func TestACompactionFoldsAnOrdinaryLogWhoseVersionsAgreeWithIt(t *testing.T) {
+	for _, shape := range []struct {
+		name   string
+		parked bool
+	}{
+		{"a log whose fold parks nothing", false},
+		{"a log whose fold parks a keystroke awaiting its predecessor", true},
+	} {
+		for _, through := range []string{"its room's close", "the sweep"} {
+			t.Run(shape.name+" through "+through, func(t *testing.T) {
+				logs := captureLogs(t)
+				ctx := context.Background()
+				service, artifactID := newTestService(t)
+				service.settle = time.Hour
+				versioned := service.persistence.(*PgVersioned)
+				var checks atomic.Int32
+				versioned.duringVersionCheck = func(room string) {
+					if room == artifactID {
+						checks.Add(1)
+					}
+				}
+				writer, rows, rendered := typedRows(t, poisonTypist, poisonKeystrokes)
+				if shape.parked {
+					rows = append(rows, awaitingPredecessor(t, writer))
+				}
+				var head int64
+				for index, row := range rows {
+					version, err := versioned.AppendUpdate(ctx, artifactID, row)
+					if err != nil {
+						t.Fatalf("append row %d: %v", index+1, err)
+					}
+					head = int64(version)
+				}
+				recordVersion(t, service.store, artifactID, rendered[len(rendered)-1], head, true)
+				ageUpdatesThrough(t, service.store, artifactID, everyVersion, time.Hour)
+				closing := through == "its room's close"
+				if closing {
+					if err := service.warmLiveDocument(ctx, artifactID); err != nil {
+						t.Fatalf("load the document's room: %v", err)
+					}
+					waitForLandedAppends(t, service, artifactID)
+				}
+				before, cursor := storedRows(t, service.store, artifactID), settlementCursor(t, service.store, artifactID)
+				reading := storedReading(t, versioned, artifactID)
+
+				if closing {
+					if err := service.Evict(ctx, artifactID); err != nil {
+						t.Fatalf("close the document's room: %v", err)
+					}
+				} else {
+					service.compactionSweepTick(ctx, excerptLeases(t, service.store))
+				}
+				requireCompactedFrom(t, service.store, artifactID, before, head, cursor)
+				if got := storedReading(t, versioned, artifactID); got != reading {
+					t.Fatalf("the compacted document reads\n%s\nwant\n%s", got, reading)
+				}
+				want := int32(0)
+				if shape.parked {
+					want = 1
+				}
+				if got := checks.Load(); got != want {
+					t.Fatalf("the compaction checked the stored versions %d times, want %d", got, want)
+				}
+				if strings.Contains(logs.String(), disagreeingLine) {
+					t.Fatalf("an ordinary log was logged as one a stored version disagrees with:\n%s", logs.String())
+				}
+			})
+		}
+	}
+}
+
+// typedRows is a typist's rows: one transaction makes a paragraph holding "a", and each of the
+// keystrokes after it types one more "a" at the paragraph's end, each its own update, as a room
+// stores a browser's keystrokes. rendered[i] is what the typist's document, which it also returns,
+// renders once it has made rows[i].
+func typedRows(t *testing.T, typist crdt.ClientID, keystrokes int) (writer *crdt.Doc, rows [][]byte, rendered []string) {
+	t.Helper()
+	writer = crdt.New(crdt.WithClientID(typist))
+	fragment := writer.GetXmlFragment(fragmentName)
+	render := func() {
+		markdown, err := renderDocument(writer)
+		if err != nil {
+			t.Fatalf("render the typist's document: %v", err)
+		}
+		rendered = append(rendered, markdown)
+	}
+	rows = append(rows, docstest.Transact(writer, func(txn *crdt.Transaction) {
+		paragraph := crdt.NewYXmlElement("paragraph")
+		fragment.InsertElement(txn, 0, paragraph)
+		run := crdt.NewYXmlText()
+		paragraph.InsertText(txn, 0, run)
+		run.Insert(txn, 0, "a", nil)
+	}))
+	render()
+	text := paragraphTexts(writer)[0]
+	for index := 1; index < keystrokes; index++ {
+		rows = append(rows, docstest.Transact(writer, func(txn *crdt.Transaction) { text.Insert(txn, index, "a", nil) }))
+		render()
+	}
+	return writer, rows, rendered
+}
+
+// poisonedLog is what storePoisonedLog stored: the typist's document, which the test types on, and
+// the number of the version named while a read of the rows dropped the typist's text.
+type poisonedLog struct {
+	writer *crdt.Doc
+	named  int
+}
+
+// storePoisonedLog stores, as artifactID's rows, the typist's keystrokes (typedRows), a version a
+// settlement took of them halfway, which agrees with them, the crafted update (poisonUpdate), and a
+// named version recorded at it holding the typist's first three characters. Under
+// github.com/theorem-labs/ygo v1.55.1-theorem.3 a read of these rows - a room's load, a cold read,
+// the read a named version is rendered from - renders those three: the merge of the document's
+// encoding with the struct it parks lets that struct win the clock tie at the typist's clock 5,
+// and drops every struct after it. A replay of the rows one at a time renders all twenty.
+func storePoisonedLog(t *testing.T, versioned *PgVersioned, database *store.Store, artifactID string) poisonedLog {
+	t.Helper()
+	ctx := context.Background()
+	writer, rows, rendered := typedRows(t, poisonTypist, poisonKeystrokes)
+	var versions []int64
+	for index, row := range rows {
+		version, err := versioned.AppendUpdate(ctx, artifactID, row)
+		if err != nil {
+			t.Fatalf("append keystroke %d: %v", index+1, err)
+		}
+		versions = append(versions, int64(version))
+	}
+	settled := len(rows) / 2
+	recordVersion(t, database, artifactID, rendered[settled], versions[settled], false)
+	poisoned, err := versioned.AppendUpdate(ctx, artifactID, poisonUpdate())
+	if err != nil {
+		t.Fatalf("append the crafted update: %v", err)
+	}
+	return poisonedLog{writer: writer, named: recordVersion(t, database, artifactID, rendered[2], int64(poisoned), true)}
+}
+
+// poisonUpdate is the crafted 11-byte update: one struct of deleted content, a thousand clocks
+// long, at the typist's clock 5, whose right origin (77, 0) no document holds, and no delete set.
+// A fold parks it over clocks the typist's rows already hold.
+func poisonUpdate() []byte {
+	return newV1Frame(1).group(1, uint64(poisonTypist), 5).
+		raw(structDeletedRef | infoHasRightOrigin).uint(77).uint(0).uint(1000).noDeletes()
+}
+
+// awaitingPredecessor is a keystroke whose predecessor no row holds: another browser types "b" at
+// the end of writer's paragraph, which is never stored, and a third types "c" after it, which a
+// fold parks until the "b" arrives.
+func awaitingPredecessor(t *testing.T, writer *crdt.Doc) []byte {
+	t.Helper()
+	typed := func(client crdt.ClientID, from *crdt.Doc, character string) (*crdt.Doc, []byte) {
+		browser := crdt.New(crdt.WithClientID(client))
+		if err := crdt.ApplyUpdateV1(browser, crdt.EncodeStateAsUpdateV1(from, nil), nil); err != nil {
+			t.Fatalf("copy the document: %v", err)
+		}
+		text := paragraphTexts(browser)[0]
+		at := text.Len()
+		return browser, docstest.Transact(browser, func(txn *crdt.Transaction) { text.Insert(txn, at, character, nil) })
+	}
+	unstored, _ := typed(3000, writer, "b")
+	_, parked := typed(2000, unstored, "c")
+	return parked
+}
+
+// recordVersion records the document's next version, holding markdown at docUpdateVersion and
+// named as POST /versions names one when named is set, and returns its number.
+func recordVersion(t *testing.T, database *store.Store, artifactID, markdown string, docUpdateVersion int64, named bool) int {
+	t.Helper()
+	var number int
+	if err := database.Pool.QueryRow(context.Background(), `
+		insert into artifact_versions (artifact_id, number, markdown, authors, named, summary, doc_update_version)
+		select $1, coalesce(max(number), 0) + 1, $2, '[]', $3, case when $3 then 'Named' end, $4
+		from artifact_versions where artifact_id = $1
+		returning number
+	`, artifactID, markdown, named, docUpdateVersion).Scan(&number); err != nil {
+		t.Fatalf("record a version at update %d: %v", docUpdateVersion, err)
+	}
+	return number
 }
 
 // A browser's edit lands in the store while the document's compaction is held inside its fold:

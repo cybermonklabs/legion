@@ -404,6 +404,9 @@ type server struct {
 	// issue reads judge routes against and agents lists list (issue_route_status.go). Only
 	// register gives it non-zero TTLs.
 	rosters rosterCache
+	// writes is how many of this server's transactions may be open at once, held from before
+	// each one takes a connection (apiWriteLimit, begin).
+	writes writeLimiter
 	// listAnswers keeps what the comment list and the activity feed last answered, under the ETag
 	// each answers with, so a warm read of either writes bytes instead of making them again
 	// (list_answers.go). Every server register mounts has one; a server a test builds directly
@@ -767,6 +770,13 @@ func register(mux *http.ServeMux, lifetime context.Context, deps Deps) *server {
 		// (compressAnswers).
 		handler = varyOnDisplayTrees(handler)
 		if route.Method != http.MethodGet {
+			// The write limit, outside everything the handler does: a write the pod has no room
+			// for is refused before it reads its body, resolves its artifact or opens anything
+			// (holdWriteLimit). It is inside the drain below, so a client waiting to continue is
+			// answered as it is for every other early answer.
+			handler = s.holdWriteLimit(handler)
+		}
+		if route.Method != http.MethodGet {
 			// Every layer above may answer before the body is read; the answer waits for the body.
 			//
 			// A client that asked to be told to continue before it sends its body (Expect:
@@ -801,9 +811,16 @@ func register(mux *http.ServeMux, lifetime context.Context, deps Deps) *server {
 	return s
 }
 
+// trackTransactions marks the request's context for the pool's nested-acquire check and, with it,
+// as a live caller's request beginning now (docs.WithCallerRequest), which is what bounds the
+// time a write of this request may spend waiting at the pod's memory bounds before it is refused
+// 503 (docs.WriteWaitBound). It is the one place every route of this API passes through, which
+// is why the mark is put here rather than in each write's handler; a request whose work a handler
+// detaches to outlive it keeps the mark and loses its cancellation, and is the server's own work
+// from then on (docs.BoundWriteWait).
 func trackTransactions(handler http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		handler(w, r.WithContext(store.WithTransactionTracking(r.Context())))
+		handler(w, r.WithContext(docs.WithCallerRequest(store.WithTransactionTracking(r.Context()))))
 	}
 }
 
@@ -1504,15 +1521,27 @@ func (s *server) publish(ctx context.Context, events ...model.Event) {
 	s.storeEventDisplayTrees(ctx, events)
 }
 
+// begin opens one of the API's transactions on a slot of the API's write limit, which the
+// transaction holds until it ends (limitedTx) - a request that opens two in turn holds one at a
+// time. The slot is taken before any connection and before any lock, so a caller the pool has no
+// room for waits holding nothing and the connections the limit leaves stay free for the callers
+// that take one without a transaction - the room workers' durable appends among them
+// (apiWriteLimit). A request's entry only probed the limit, holding nothing of it, so a request
+// whose body is still arriving holds no slot (holdWriteLimit).
 func (s *server) begin(ctx context.Context) (pgx.Tx, error) {
 	if s.deps.Store == nil || s.deps.Store.Pool == nil {
 		return nil, errorf(http.StatusServiceUnavailable, "DATABASE_UNAVAILABLE", "database unavailable")
 	}
+	release, err := s.writes.take(ctx)
+	if err != nil {
+		return nil, err
+	}
 	tx, err := s.deps.Store.Pool.Begin(ctx)
 	if err != nil {
+		release()
 		return nil, fmt.Errorf("begin transaction: %w", err)
 	}
-	return tx, nil
+	return &limitedTx{Tx: tx, release: release}, nil
 }
 
 // readyPool is the pool a route reads through before it opens its transaction, with the

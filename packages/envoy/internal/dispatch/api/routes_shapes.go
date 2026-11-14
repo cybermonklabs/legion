@@ -462,6 +462,39 @@ type liveWritePauseQuery struct {
 	Wait string `query:"wait"`
 }
 
+// roomBudgetInput is POST /api/v1/artifacts/_test/room-budget's body, and roomBudgetState its
+// answer: the budget the open documents are charged against, in bytes, as it stands after the
+// call (0 asks for the deployment's real one back).
+type roomBudgetInput struct {
+	Bytes int64 `json:"bytes"`
+}
+
+type roomBudgetState struct {
+	Bytes int64 `json:"bytes"`
+}
+
+// roomChargesState is GET /api/v1/artifacts/_test/room-charges's answer: what the room budget
+// charges each room it holds a charge for, by document id, beside the budget's own two figures.
+type roomChargesState struct {
+	Charges map[string]int64 `json:"charges"`
+	Used    int64            `json:"used"`
+	Limit   int64            `json:"limit"`
+}
+
+// roomLiveState is GET /api/v1/artifacts/{id}/_test/live's answer: whether this server holds a
+// room of the document, and what holds that room open - the empty string for a room nothing
+// holds, which is the one state the budget's sweep can close it in (docs' RoomHoldingForTest).
+type roomLiveState struct {
+	Live    bool   `json:"live"`
+	Holding string `json:"holding"`
+}
+
+// holdAdmissionInput is POST /api/v1/artifacts/{id}/_test/hold-admission's body: how long, in
+// milliseconds, the document's next socket waits before its admission (0 takes the hold back).
+type holdAdmissionInput struct {
+	MS int64 `json:"ms"`
+}
+
 // --- the shapes ------------------------------------------------------------------------------
 
 // routeShapes is the shape of every row of the table with its test hooks in, by
@@ -986,6 +1019,18 @@ var routeShapes = map[string]routeShape{
 		// other call carries whatever bytes it likes, none included.
 		OptionalRequest: true,
 	},
+	"POST /api/v1/artifacts/_test/room-budget": {
+		Status: http.StatusOK, Response: roomBudgetState{}, Request: roomBudgetInput{},
+	},
+	"GET /api/v1/artifacts/_test/room-charges": {Status: http.StatusOK, Response: roomChargesState{}},
+	"GET /api/v1/artifacts/{id}/_test/live":    {Status: http.StatusOK, Response: roomLiveState{}},
+	"POST /api/v1/artifacts/{id}/_test/hold-admission": {
+		Status: http.StatusNoContent, Request: holdAdmissionInput{},
+	},
+	"POST /api/v1/artifacts/{id}/_test/refuse-next-update":       {Status: http.StatusNoContent},
+	"POST /api/v1/artifacts/{id}/_test/used-up":                  {Status: http.StatusNoContent},
+	"POST /api/v1/artifacts/{id}/_test/tangled":                  {Status: http.StatusNoContent},
+	"POST /api/v1/artifacts/{id}/_test/near-decode-cap":          {Status: http.StatusNoContent},
 	"GET /api/v1/artifacts/_test/rooms":                          {Status: http.StatusOK, Response: residentRooms{}},
 	"GET /api/v1/artifacts/{id}/_test/room-counters":             {Status: http.StatusOK, Response: docs.RoomCounters{}},
 	"POST /api/v1/artifacts/{id}/_test/hold-persistence":         {Status: http.StatusNoContent, Request: holdPersistenceInput{}},

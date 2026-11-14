@@ -278,7 +278,7 @@ func gateAppend(ctx context.Context, q Queryer, room string, through int64, kind
 // does a run it cannot apply: the run is admitted whole or not at all.
 func storedHistoryHolds(ctx context.Context, q Queryer, room string, head int64, updates []BrowserUpdate, maxPending int) (bool, error) {
 	version := persistence.Version(head)
-	doc, err := documentThrough(room, version, storedUpdates(ctx, q, room, version), maxPending)
+	doc, err := documentThrough(ctx, room, version, storedUpdates(ctx, q, room, version), maxPending)
 	if err != nil || doc == nil {
 		return false, err
 	}

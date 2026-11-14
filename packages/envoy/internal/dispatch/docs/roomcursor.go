@@ -65,6 +65,31 @@ type roomInstance struct {
 	unstored   []*queuedClass
 }
 
+// loadedState is what one room load read of the store and made of it, kept on the load's record
+// from the read until the room's load takes it (roomLoad.read, roomLoad.take).
+type loadedState struct {
+	// state is the durable state the load read. The room's load hook decodes it into the room's
+	// document itself (bootstrapLoadedState), ygo being handed no bytes to decode with its format
+	// cleanup on.
+	state []byte
+	// decoded is that state's one decode of the load's own (decodeStoredCopy): its scans are the
+	// room's scan total at its load, which onLoadDocument hands the room's scan budget (roomScans),
+	// and its copy becomes the room's replica (keepReplica). The room's own decode of the same
+	// bytes runs as this decode did, with the format cleanup off and under the same pending cap
+	// (bootstrapLoadedState), so the room holds item for item what the copy holds.
+	decoded decodedState
+	// slot is the load's slot of the pod's load concurrency (loadSlots), which covers LoadDoc's
+	// read - its fold of a history of several updates, taken where the rows are read (foldRead) -
+	// and its decode, and the room's own decode of the state after it; a load that took a
+	// socket's preload reads nothing and the slot covers those two decodes, the socket's own
+	// having covered its read and the decode of its schema check (loadTree). LoadDoc's wait has
+	// no deadline, ygo handing it no context, and holds no slot while
+	// it waits. Whoever takes the record gives the slot back: onLoadDocument, once its decode has
+	// returned, and the room's next load, which replaces a record ygo never handed to that hook
+	// (beginRoomLoad).
+	slot *loadSlot
+}
+
 // roomLoad is one room load's record of the durable history behind the room it loads, kept from
 // before the load reads the store (servicePersistenceAdapter.LoadDoc) until the instance that
 // load leaves behind stands in its place (keepInstance, which onLoadDocument calls on the same
@@ -78,10 +103,12 @@ type roomInstance struct {
 type roomLoad struct {
 	mu   sync.Mutex
 	head int64
-	// state is the durable state the load read (read), until the room's load hook takes it
-	// (takeState, takeLoadedState) and decodes it itself (bootstrapLoadedState) rather than ygo:
-	// nil once taken, and for a load that read an empty history.
-	state []byte
+	// loaded is what this load read of the store and made of it, which the room's load hook takes
+	// before anything that can refuse the room (takeLoadedState) and decodes itself
+	// (bootstrapLoadedState) rather than ygo, so the record, which stays until the room's
+	// document is collected (keepInstance), holds neither the state nor the replica's copy for as
+	// long as that document lives. Empty once taken, and for a load that read an empty history.
+	loaded loadedState
 	// appended are the versions took recorded before the instance existed, folded into its cursor
 	// when it does (start). instance is that instance, which took advances directly from then on.
 	appended []int64
@@ -101,32 +128,39 @@ type roomLoad struct {
 // record of the room's last load, which ygo has finished with - one room loads at a time
 // (getOrCreateRoom) - so the records never outnumber the documents this process has loaded. A
 // record goes when the document of the load that left it is collected (keepInstance), or, for a
-// load that left none, where the failure that ended it was met (LoadDoc, onLoadDocument).
+// load that left none, where the failure that ended it was met (LoadDoc, onLoadDocument). A
+// record that is replaced, or dropped by such a failure, while it still holds what its load read
+// gives up its state, its copy and its slot with it (take, failRoomLoad).
 func (s *Service) beginRoomLoad(room string) *roomLoad {
 	load := &roomLoad{}
-	s.roomLoads.Store(room, load)
+	if previous, replaced := s.roomLoads.Swap(room, load); replaced {
+		previous.(*roomLoad).take().slot.release()
+	}
 	return load
 }
 
 // read records what the load's read of the store saw: the head, the version the room it loads
-// holds every update through, the state through that head, which the room's load applies next
-// (takeState), and rendered, what a document socket's admission read and rendered of that state,
-// when the load took that socket's preload, zero when the load read the store itself (takeLoaded).
-func (load *roomLoad) read(head persistence.Version, state []byte, rendered admissionRendering) {
+// holds every update through, the state through that head, which the room's load hook decodes
+// itself (bootstrapLoadedState), the decode of that state it made of its own, the slot that
+// covers that decode and the room's own after it, and rendered, what a document socket's
+// admission read and rendered of that state, when the load took that socket's preload, zero when
+// the load read the store itself (takeLoaded).
+func (load *roomLoad) read(head persistence.Version, state []byte, decoded decodedState, slot *loadSlot, rendered admissionRendering) {
 	load.mu.Lock()
 	defer load.mu.Unlock()
-	load.head = int64(head)
-	load.state, load.size, load.rendered = state, len(state), rendered
+	load.head, load.loaded = int64(head), loadedState{state: state, decoded: decoded, slot: slot}
+	load.size, load.rendered = len(state), rendered
 }
 
-// takeState hands over the state the load read, once, so the record holds no copy of it for as
-// long as the document it loaded lives.
-func (load *roomLoad) takeState() []byte {
+// take hands over what the load read, once, so the record holds neither the state nor the copy
+// for as long as the document it loaded lives. Whoever takes it gives the slot back, once the
+// room's own apply of the state - the last thing the slot covers - has returned.
+func (load *roomLoad) take() loadedState {
 	load.mu.Lock()
 	defer load.mu.Unlock()
-	state := load.state
-	load.state = nil
-	return state
+	loaded := load.loaded
+	load.loaded = loadedState{}
+	return loaded
 }
 
 // takeLoaded is the size of the history the load read, and what a socket's admission read and
@@ -140,14 +174,19 @@ func (load *roomLoad) takeLoaded() (size int, rendered admissionRendering) {
 	return size, rendered
 }
 
-// takeLoadedState is the state room's load read (servicePersistenceAdapter.LoadDoc), taken off its
-// record (roomLoad.takeState): nil for a room ygo loads without that read, and for an empty
-// history.
-func (s *Service) takeLoadedState(room string) []byte {
-	if loading, ok := s.roomLoads.Load(room); ok {
-		return loading.(*roomLoad).takeState()
+// takeLoadedState is what room's load under way read and decoded (roomLoad.read), which it takes
+// off the load's record (take), and that record, nil where no load of room read the store through
+// this service's persistence at all. Only the room's load takes it, once (onLoadDocument), on the
+// goroutine that recorded it (ygo's loadRoom), and before anything that can refuse the room, so a
+// refused load leaves neither the state nor the copy on the record, which that refusal then drops
+// (failRoomLoad).
+func (s *Service) takeLoadedState(room string) (loadedState, *roomLoad) {
+	value, ok := s.roomLoads.Load(room)
+	if !ok {
+		return loadedState{}, nil
 	}
-	return nil
+	load := value.(*roomLoad)
+	return load.take(), load
 }
 
 // took records version, which this process has made durable for the room while its load runs: on

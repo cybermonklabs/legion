@@ -1385,6 +1385,44 @@ admission keeps them all, and an `ARTIFACT_NOT_FOUND` admission removes rows for
 is gone. The connection indicator names saved edits while disconnected and warns when IndexedDB
 cannot retain them across a reload.
 
+The server refuses one browser's edit two ways, and `connection.ts` answers each by its close code
+(`packages/contracts`). `4413` (`DOCUMENT_TOO_LARGE_CLOSE_CODE`) is permanent - the edit would take
+the document past a bound of its own, the server could not merge it quickly enough
+(`DOC_TOO_TANGLED`), the document must be rebuilt before it can take it (`DOC_NEEDS_REBUILD`), or
+the edit was typed against the history someone else's rebuild replaced (`DOC_REBUILT`) - so the
+provider is stopped, the refused `Update` frame's saved row alone is
+dropped (`dropRefused`, after this admission's restore has settled; a refused `SyncStep2` names no
+row, so its rows stay and the replay after the rebuild finds the one the server refuses), and
+`ProofDocument` tears the editor down and admits again from a fresh read, since the refused text is
+still in the connection's document and any reconnect would send it again. The notice the reader
+sees is the close reason's own sentence (`refusedEditNotice`), shown by `RefusedEditNotice` and
+dismissible; it says the other edits are kept, except for `DOC_REBUILT`, where the rows typed
+against the replaced history are dropped as the restore reads them (`addsParking`) and the notice
+says so. Of the close reasons, `DOC_NEEDS_REBUILD` alone carries the rebuild offer, a button that
+confirms first and then calls `POST /api/v1/artifacts/{id}/rebuild` with the editor suspended, as
+the `409 DOCUMENT_UNLOADABLE` repair state does. The same offer, in a panel of its own on the
+document's page (never in a reading column), goes only where the rebuild route takes the document
+by the decode cap, as the server's own test (`nearACap`) answers it; the page runs no test of its
+own. The document's text read says so (`near_decode_cap`, with the server's reason in
+`near_decode_cap_reason`, shown beside it) whether or not anyone has been refused yet, so the
+person who opens a document an agent's write was refused for meets the offer; dismissed, the
+read does not bring it back on that page. The server answers it from what it holds without an
+encode, so it is never set where the route would refuse and may be unset where the route would
+take the document, which a refused write or edit then offers. A write to the document refused
+at the cap brings it at once: the store's refused outcomes (`Writes.onOutcome`) reach the page
+from wherever the write was made, and a `413 CAP_EXCEEDED` whose reason says "a person can
+rebuild the document" names the rebuild route of the document it was refused for
+(`nearCapRefusalDocument`), which the server writes only when that same test answers near.
+Every other `CAP_EXCEEDED` (the byte and element bounds, or a change so large it would carry a
+document far from the cap past it) is shown at the write's own control, with no offer. `4503`
+(`DOCUMENT_BUSY_CLOSE_CODE`) is transient - the
+memory budget over the documents the server holds open is full - so nothing is dropped and the
+provider's own reconnect stands: the page shows that Dispatch is out of room and keeps trying,
+the edits stay in the document and in the browser's saved rows, and the notice goes once a frame
+from this browser applies again (`onBusy(false)`, a `SyncStatus(1)` the socket reads). A
+read-only admission's promise is unchanged by both: it keeps every saved row, since a plain
+not-applied answer drops nothing.
+
 The one exception is a page being left: from `beforeunload` no failure reloads it, because WebKit
 and Firefox cancel the chunk downloads in flight when a navigation starts (WebKit also refuses new
 ones), and a reload then would replace the reader's navigation with a reload of the page they are
