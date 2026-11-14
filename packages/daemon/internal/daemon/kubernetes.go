@@ -567,11 +567,11 @@ func sandboxRuntime(rc *rest.Config, opts sandbox.Options, repos func() []ghrepo
 
 // memoryGuardKills turns one process an issue pod's memory guard ended, as the pod's launcher
 // reported it, into the fact the workflow applies (intake.MemoryGuardKill). It is the seam between
-// the Kubernetes runtime, which is built before the workflow opens, and the fact path, which
-// exists only after it: prepareSandbox makes one and hands it to the factory, and the boot fills it
-// the moment the workflow is open (plan.memoryGuardKills, daemon.run). A holder nobody filled
-// refuses every report with errMemoryGuardKillsUnbound, which the launcher session logs with the
-// report it drops.
+// the Kubernetes runtime factory (sandboxRuntime), which prepareSandbox builds before the workflow
+// opens, and the fact path, which exists only after it: prepareSandbox makes one and hands it to
+// the factory, and the boot fills it the moment the workflow is open (plan.memoryGuardKills,
+// daemon.run). A holder nobody filled refuses every report with errMemoryGuardKillsUnbound, which
+// the launcher session logs with the report it drops.
 //
 // It is filled once, in the boot's own goroutine, before the runtime is built and so before any
 // launcher can connect: there is nothing to lock, and nothing ever replaces what was filled.
