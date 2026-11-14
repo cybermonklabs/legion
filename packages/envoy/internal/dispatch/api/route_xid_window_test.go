@@ -232,6 +232,28 @@ var routeXidWindowTable = []routeXidWindowCase{
 			"the lock of the caller's thread rows, the dismissals' update, the lock of the project its "+
 				"event names, the batch appending user_thread_state.updated and the COMMIT ending them"),
 	},
+	// A patch naming a repository refuses one that is not a mapping of the issue's project
+	// (REPO_NOT_MAPPED) by a plain read in its read phase, and takes the mapping's key-share lock
+	// (checkIssueRepoMapped), which assigns its transaction id, as its write phase's first
+	// statement. This one closes the issue too, so its read phase holds the close's document work
+	// - the block ask withdrawn and its block written resolved into the spec (prepareWithdrawal) -
+	// and a session's write advice, none of it inside the window.
+	{
+		name: "the issue patch setting its repository while closing it", route: "PATCH /api/v1/issues/{key} naming a repository (patchIssue, checkIssueRepoMapped, prepareWithdrawal)",
+		ready: readyIssuePatchNamingRepository, window: storetest.XidWindowOf(6,
+			"the mapping's key-share lock, the issue row's own update, the two reads that load the issue it answers with, "+
+				"the batch withdrawing its asks and its COMMIT"),
+	},
+	// A create naming a repository takes the mapping's key-share lock after its first write, the
+	// project's next number, under the project's owner lock it holds from its read phase, where
+	// its spec's seed, task count and reference index, all of the harness's size, and its write
+	// advice run.
+	{
+		name: "the issue create naming a repository", route: "POST /api/v1/issues naming a repository (createIssue, checkIssueRepoMapped)",
+		ready: readyIssueCreateNamingRepository, window: storetest.XidWindowOf(11,
+			"the create's inline steering writes - the project's next number, the mapping's key-share lock, the rank lock, the rank read, the issue row, its blocked_by links and its artifact row - "+
+				"the two reads that load the issue it answers with, the queued batch and its COMMIT"),
+	},
 }
 
 // TestXidWindowRouteTable measures every row of routeXidWindowTable.
@@ -324,6 +346,73 @@ func readyIssueReopen(t *testing.T, base routeFixture) lockedItemWrite {
 			}
 			if restored := fixture.rowCount(t, `select count(*) from asks where issue_key = $1 and state = 'open'`, fixture.issueKey); restored != 2 {
 				t.Fatalf("the reopened issue holds %d open asks, want the two its close withdrew", restored)
+			}
+		})
+}
+
+// mapRouteRepository maps owner/repo to the route fixture's project, LOCK, so a write naming that
+// repository passes the mapping check (checkIssueRepoMapped).
+func mapRouteRepository(t *testing.T, fixture itemRowFixture) {
+	t.Helper()
+	if mapped := dispatchRequest(t, fixture.handler, http.MethodPut, "/api/v1/settings/repo-projects/owner/repo", map[string]string{
+		"project": "LOCK",
+	}, "alice"); mapped.Code != http.StatusOK {
+		t.Fatalf("map the repository: status=%d body=%s", mapped.Code, mapped.Body.String())
+	}
+}
+
+// readyIssuePatchNamingRepository drives PATCH /api/v1/issues/{key} by a session that sets the
+// issue's repository to a mapping of its project and closes it in the same request: the close
+// withdraws the ask settlement opened from the spec's `:::ask` block and writes the block resolved
+// into the spec (prepareWithdrawal), and the session's write advice is read, all before the
+// patch's first write.
+func readyIssuePatchNamingRepository(t *testing.T, base routeFixture) lockedItemWrite {
+	t.Helper()
+	base.spec += "\n" + transportAsk
+	fixture := base.issue(t, "Patch naming a repository")
+	awaitIndexedAskBlock(t, fixture.handler, fixture.artifactID, "decision", "Which transport?")
+	mapRouteRepository(t, fixture)
+	return fixture.routeWrite(t, "the issue's repository and its close",
+		func(handler http.Handler) *httptest.ResponseRecorder {
+			return sessionRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+fixture.issueKey, map[string]any{
+				"status": "done", "repo": "owner/repo", "actor": sessionActor(),
+			})
+		},
+		func(t *testing.T, answer *httptest.ResponseRecorder) {
+			if answer.Code != http.StatusOK {
+				t.Fatalf("patch the issue: status=%d body=%s", answer.Code, answer.Body.String())
+			}
+			if patched := decodeBody[model.Issue](t, answer); patched.Repo == nil || *patched.Repo != "owner/repo" || patched.Status != "done" {
+				t.Fatalf("the patched issue = repo %v status %q, want owner/repo and done", patched.Repo, patched.Status)
+			}
+			if open := fixture.rowCount(t, `select count(*) from asks where issue_key = $1 and state = 'open'`, fixture.issueKey); open != 0 {
+				t.Fatalf("the closed issue still holds %d open asks, want the block ask its close withdrew", open)
+			}
+		})
+}
+
+// readyIssueCreateNamingRepository drives POST /api/v1/issues by a session naming a mapping of
+// the project as the new issue's repository, with a spec of the harness's size, whose seed,
+// task count and reference index are the create's document work, read before its first write
+// with the session's write advice.
+func readyIssueCreateNamingRepository(t *testing.T, base routeFixture) lockedItemWrite {
+	t.Helper()
+	fixture := base.issue(t, "Create naming a repository")
+	mapRouteRepository(t, fixture)
+	spec, _ := xidSpec(2)
+	return fixture.routeWrite(t, "the new issue naming its repository",
+		func(handler http.Handler) *httptest.ResponseRecorder {
+			return sessionRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{
+				"project": "LOCK", "title": "A second spec naming its repository", "spec": spec,
+				"repo": "owner/repo", "force": true, "actor": sessionActor(),
+			})
+		},
+		func(t *testing.T, answer *httptest.ResponseRecorder) {
+			if answer.Code != http.StatusCreated {
+				t.Fatalf("create the issue: status=%d body=%s", answer.Code, answer.Body.String())
+			}
+			if created := decodeBody[model.Issue](t, answer); created.Repo == nil || *created.Repo != "owner/repo" {
+				t.Fatalf("the created issue's repo = %v, want owner/repo", created.Repo)
 			}
 		})
 }

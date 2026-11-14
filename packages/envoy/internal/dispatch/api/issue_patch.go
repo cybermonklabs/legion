@@ -246,8 +246,13 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// A repository that is not a mapping of the issue's project is refused here, before the
+	// document work and the advice, by a plain read, which assigns no transaction id. The
+	// mapping's key-share lock, which holds it against a move or a delete until this patch
+	// commits, is taken in the write phase, directly ahead of the row's update
+	// (checkIssueRepoMapped).
 	if repo != nil {
-		if err := checkIssueRepoMapped(r.Context(), tx, *repo, before.Project); err != nil {
+		if err := readIssueRepoMapped(r.Context(), tx, *repo, before.Project); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -373,6 +378,16 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		excluded: askIDs(closingAsks),
 		opened:   askIDs(reopenedAsks),
 	})
+	// The write phase opens on the mapping's key-share lock, which assigns the transaction its id:
+	// a mapping deleted or moved since the read above is refused as the read refuses it, and the
+	// lock holds the one it finds until commit, so the row's foreign key always finds it and a
+	// mapping write after this patch counts the issue as naming it (refuseRepoProjectInUse).
+	if repo != nil {
+		if err := checkIssueRepoMapped(r.Context(), tx, *repo, before.Project); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+	}
 	if changed {
 		sets = append(sets, "updated_at = "+issueUpdatedNow)
 		if _, err := tx.Exec(r.Context(), `update issues set `+strings.Join(sets, ", ")+` where key = $1`, args...); err != nil {
