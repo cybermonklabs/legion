@@ -4,16 +4,19 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/broker/answer"
+	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/metrics"
 )
@@ -320,6 +323,99 @@ func TestTheLineNamesTheRouteAndTheCallersCorrelationID(t *testing.T) {
 				t.Errorf("line %d carries correlation_id %v for a caller that sent none", i, got)
 			}
 		}
+	}
+}
+
+// A refusal's line lists the secret names its request named in the request's order, up to 32 KiB
+// of names, and says how many the request named (secrets_count) and, when it left names out, how
+// many it left out (secrets_omitted). Cloud Logging refuses an entry over 256 KiB, and GKE drops a
+// jsonPayload entry over that size, so a line that listed every name of a request naming
+// thousands would leave that refusal with no record at all (ca-refusal-record, Verification v9).
+// A request below the bound still lists every name, with its count and no secrets_omitted. The
+// line is read as the broker writes it, through its own JSON handler, so its size is the entry's.
+//
+// The named revert: list every name the request noted, with no bound and no counts (fbaa5626);
+// the row of 4,000 names then writes a line of about a MiB, and this test fails.
+func TestARefusalsLineBoundsTheNamesItLists(t *testing.T) {
+	const (
+		nameBytes  = 256
+		listBudget = 32 << 10
+		entryLimit = 256 << 10
+	)
+	named := make([]string, 4000)
+	for i := range named {
+		prefix := fmt.Sprintf("NAME_%04d_", i)
+		named[i] = prefix + strings.Repeat("X", nameBytes-len(prefix))
+	}
+	driven := 0
+	for _, row := range []struct {
+		name  string
+		names []string
+	}{
+		{"4,000 names of 256 bytes", named},
+		{"three names", named[:3]},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			driven++
+			out := &logtest.Buffer{}
+			logtest.SetDefault(t, logging.NewCloudHandler(out))
+			handler := answer.Middleware(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				answer.FromContext(req.Context()).NoteSecrets(row.names...)
+				writeJSON(w, http.StatusBadRequest, `{"code":"NAMES_REFUSED","error":"no"}`)
+			}), nil)
+			handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/v1/requests", nil))
+
+			var refusals []string
+			for line := range strings.Lines(out.String()) {
+				if strings.Contains(line, `"message":"`+answer.RefusalMessage+`"`) {
+					refusals = append(refusals, line)
+				}
+			}
+			if len(refusals) != 1 {
+				t.Fatalf("one refusal wrote %d lines under %q, want 1", len(refusals), answer.RefusalMessage)
+			}
+			text := refusals[0]
+			if len(text) >= entryLimit {
+				t.Fatalf("the refusal's line is %d bytes, want under the %d bytes of one Cloud Logging entry", len(text), entryLimit)
+			}
+			var line struct {
+				Secrets  []string `json:"secrets"`
+				Count    *int     `json:"secrets_count"`
+				Omitted  *int     `json:"secrets_omitted"`
+				Severity string   `json:"severity"`
+			}
+			if err := json.Unmarshal([]byte(text), &line); err != nil {
+				t.Fatalf("the refusal's line is not one JSON object: %v", err)
+			}
+			if line.Count == nil || *line.Count != len(row.names) {
+				t.Fatalf("secrets_count = %v, want %d, the names the request named", line.Count, len(row.names))
+			}
+			if len(line.Secrets) == 0 || len(line.Secrets) > len(row.names) || !slices.Equal(line.Secrets, row.names[:len(line.Secrets)]) {
+				t.Fatalf("the line lists %d names, want the first names the request named, in its order", len(line.Secrets))
+			}
+			listed := 0
+			for _, name := range line.Secrets {
+				listed += len(name)
+			}
+			if listed > listBudget {
+				t.Fatalf("the line lists %d bytes of names, want at most %d", listed, listBudget)
+			}
+			left := len(row.names) - len(line.Secrets)
+			switch {
+			case left == 0 && line.Omitted != nil:
+				t.Fatalf("a line that lists every name carries secrets_omitted %d", *line.Omitted)
+			case left > 0 && (line.Omitted == nil || *line.Omitted != left):
+				t.Fatalf("secrets_omitted = %v, want %d, the names the line left out", line.Omitted, left)
+			case left > 0 && listed+2*nameBytes <= listBudget:
+				t.Fatalf("the line left %d names out but lists only %d bytes of the %d it may", left, listed, listBudget)
+			}
+			if len(row.names) <= 3 && left != 0 {
+				t.Fatalf("a request of %d names below the bound lists %d of them", len(row.names), len(line.Secrets))
+			}
+		})
+	}
+	if driven != 2 {
+		t.Fatalf("the table drove %d rows, want 2", driven)
 	}
 }
 
