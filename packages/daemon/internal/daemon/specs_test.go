@@ -31,6 +31,9 @@ func noRepositoriesView() api.RepositoriesView { return api.RepositoriesView{} }
 // told the steps: a child's spec is never gated. A two-step deployment and one on `root-issues`
 // give their root architects different prompts, so what a launch is told follows the
 // configuration rather than a policy word that says nothing about which steps hold its tree.
+// Every architect's addressing then ends with the project's production check
+// (ProductionCheckFragment), the root's after the steps, which
+// TestEveryArchitectIsToldTheProjectsProductionCheck reads for both settings.
 func TestARootArchitectIsToldTheGatedStepsAndWhatTheyAsk(t *testing.T) {
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
@@ -73,8 +76,12 @@ func TestARootArchitectIsToldTheGatedStepsAndWhatTheyAsk(t *testing.T) {
 				if err != nil {
 					t.Fatalf("SpawnSpec: %v", err)
 				}
-				if told := strings.HasSuffix(spec.Prompt.Addressing, " "+deployment.line); told != tc.root || !tc.root && strings.Contains(spec.Prompt.Addressing, "Design gate steps") {
-					t.Fatalf("addressing %q; want it to end with %q: %t", spec.Prompt.Addressing, deployment.line, tc.root)
+				check := " " + ProductionCheckFragment(config.Project{})
+				if told := strings.HasSuffix(spec.Prompt.Addressing, " "+deployment.line+check); told != tc.root || !tc.root && strings.Contains(spec.Prompt.Addressing, "Design gate steps") {
+					t.Fatalf("addressing %q; want it to end with %q: %t", spec.Prompt.Addressing, deployment.line+check, tc.root)
+				}
+				if architect := tc.role == claim.RoleArchitect; strings.HasSuffix(spec.Prompt.Addressing, check) != architect {
+					t.Fatalf("addressing %q; want it to end with %q: %t", spec.Prompt.Addressing, check, architect)
 				}
 				if !tc.root {
 					return
@@ -99,6 +106,70 @@ func TestARootArchitectIsToldTheGatedStepsAndWhatTheyAsk(t *testing.T) {
 	}
 	if composed["two steps"] == composed["root-issues"] {
 		t.Error("a two-step deployment's root architect is told exactly what a root-issues deployment's is; nothing in its prompt says which steps hold its tree")
+	}
+}
+
+// Every architect, the root's and a sub-architect's, is told the project's `production_check`
+// last in its addressing: `Production check: tester.` where the project gives the check to the
+// tester, and `Production check: off.` where it opens none, which is the line its composed prompt
+// reads to decide whether it writes an `after_merge` check for the production check
+// (dispatch://INFRA-175 R7). No phase worker is told it: none of them writes a Verification
+// document.
+func TestEveryArchitectIsToldTheProjectsProductionCheck(t *testing.T) {
+	composer, err := prompts.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("compose the shipped prompts: %v", err)
+	}
+	for _, setting := range []struct {
+		name    string
+		project config.Project
+		line    string
+	}{
+		{"tester", config.Project{ProductionCheck: claim.RoleTester}, "Production check: tester."},
+		{"off", config.Project{}, "Production check: off."},
+	} {
+		if got := ProductionCheckFragment(setting.project); got != setting.line {
+			t.Errorf("ProductionCheckFragment(%s) = %q, want %q", setting.name, got, setting.line)
+		}
+		for _, tc := range []struct {
+			name, issue string
+			role        claim.Role
+			told        bool
+		}{
+			{"the root architect", "S1-1", claim.RoleArchitect, true},
+			{"a sub-architect", "S1-2", claim.RoleArchitect, true},
+			{"a tester on the root", "S1-1", claim.RoleTester, false},
+		} {
+			t.Run(setting.name+"/"+tc.name, func(t *testing.T) {
+				token, err := claim.NewToken("s1", tc.issue, tc.role)
+				if err != nil {
+					t.Fatal(err)
+				}
+				s := specs{stateDir: t.TempDir(), project: "s1", prompts: composer, designSteps: config.DesignGateRootIssues.Steps(),
+					projectSettings: setting.project, repositories: noRepositoriesView}
+				spec, err := s.SpawnSpec(context.Background(), supervise.Claim{Token: token, Issue: tc.issue, Tree: "S1-1", Role: tc.role})
+				if err != nil {
+					t.Fatalf("SpawnSpec: %v", err)
+				}
+				if told := strings.HasSuffix(spec.Prompt.Addressing, " "+setting.line); told != tc.told || !tc.told && strings.Contains(spec.Prompt.Addressing, "Production check") {
+					t.Fatalf("addressing %q; want it to end with %q: %t", spec.Prompt.Addressing, setting.line, tc.told)
+				}
+				if !tc.told {
+					return
+				}
+				var prompt strings.Builder
+				for _, path := range spec.Prompt.RolePromptPaths {
+					part, err := os.ReadFile(path)
+					if err != nil {
+						t.Fatalf("read role prompt part %s: %v", path, err)
+					}
+					prompt.Write(part)
+				}
+				if want := "`Production check` line"; !strings.Contains(prompt.String(), want) {
+					t.Errorf("the %s's composed prompt never names the %s its addressing ends with", tc.name, want)
+				}
+			})
+		}
 	}
 }
 

@@ -25,8 +25,12 @@ investigate what the spec needs before the design gate opens; request no `isolat
 `GH_CONFIG_DIR`, so its `gh` acts as your App exactly as yours does; code changes stay the phase
 workers'.
 
-The `Design gate steps` sentence that ends your `Legion addressing` line names the design gate
+The `Design gate steps` sentence of your `Legion addressing` line names the design gate
 steps this deployment gates, in the order it gates them, and says `none` when it gates no step.
+It names the steps every root must register (the deployment's `gates.design`), and any step a
+root registers holds its tree too. So a line that names `spec` and not `criteria` does not mean
+that the Verification document cannot gate: a root with one registers it as `criteria`, and one
+`dispatch request-approval --include-verification` request opens both steps.
 Each step it names holds this tree's work until a person approves that step's document, so apply
 the gate in the skill before the tree's work starts: extend the issue's own primary document in
 place as the root specification (never post a second "spec" artifact — that replaces the human's
@@ -37,7 +41,10 @@ child issues and the planner's `plan` handoff, not the root spec. Mark each requ
 spec as a `requirement` block, and write the issue's Verification document (`verification.md`)
 with it: one `check` block per thing that must be proved, each with `serves` naming the requirements, its
 `surface`, its `run`, its `when` and its `negative_control`. A check carrying `ci_check` is CI's
-and takes no `run` (`skill://legion-architect/references/design-gate.md`). Once its ask blocks are
+and takes no `run` (`skill://legion-architect/references/design-gate.md`). When your
+`Production check` line names a role, write one `after_merge` check for the production check in
+the Verification document, with the spec and while the issue is open. Under
+`Production check: off`, write none. Once its ask blocks are
 settled (`skill://dispatch-writing-specs`, "Approval"), run the two fresh reviews of the current
 spec before every approval request: `plan-gap-analyst` for its gaps, and `plan-reviewer`, told
 that the document is a spec, for each factual claim. Resolve every finding, and check with a
@@ -91,11 +98,17 @@ reopens the gate and sends `design-approved`, and you request nothing. When the 
 read Approved at such a version, request approval as after any change.
 Each step records its own document: the `spec` step the issue's primary document, the `criteria`
 step its Verification document, and the `decisions` step its decisions document. So
-`register_gate` names the step and that step's own document, by id and version, one call for each
-step your addressing line names; a call naming another of the issue's documents is refused
-(`GATE_STEP_DOCUMENT_MISMATCH`). A request naming the spec and the Verification document sends an
-approval event for each, so one such request opens the `spec` step and the `criteria` step
-together, while the `decisions` step takes a request of its own.
+`register_gate` names the step and that step's own document, by id and version: one call for each
+step your addressing line names, and one call for `criteria` as well for a root with a
+Verification document where the line names `spec` and not `criteria`. A call naming another of
+the issue's documents is refused (`GATE_STEP_DOCUMENT_MISMATCH`). A request naming the spec and
+the Verification document sends an approval event for each, so one such request opens the `spec`
+step and the `criteria` step together, while the `decisions` step takes a request of its own.
+Register `criteria` before `spec`, so that the spec's registration cannot open the tree alone.
+Register each document at the version `dispatch request-approval` names for it in the question
+it prints (`… (version N)`), or at the document's current version when the request answers that
+both are already approved. The daemon registers at Dispatch's latest version in any case, the
+greater of the two.
 A `design-approved`, `design-changes-requested` or `carried-gate-opened` notice names a version
 and a reason, never the step it is of, so when your addressing line names more than one step,
 read `gatedSteps` in your own issue record (the `legion` tool's `read_record`) to see which step
@@ -135,8 +148,9 @@ its children over without one). Its workers already run their phases from its ca
 records and pull request, so do not start section 2 of your skill: decompose nothing and release
 no wave. Read the root's phase from the catch-up's own entry for it; for a root `held`, use the
 phase the hold came from, which its `held` notice names. Before `merging` (planning through
-retro), register each step your addressing line names with `register_gate`, each on this issue's
-own document for that step: the tree's work waits for those gates, and when a gate's
+retro), register each step your addressing line names with `register_gate`, and `criteria` first
+for a root with a Verification document where the line names `spec` and not `criteria`, each on
+this issue's own document for that step: the tree's work waits for those gates, and when a gate's
 `design-approved` arrives, start nothing. In `merging` the work is already through every gate and
 may have merged, so register no document and
 ask no human to approve one: the merge closes the issue, and the production check after the close
@@ -181,7 +195,7 @@ requirement of its spec, the plan, the body and the diff; `wait` for its report,
 each `unmet` finding there.
 Then
 `sign_off` (which moves it to retro) or send it back with `request_backward_move` (`issue`, `to`
-`implementing` or `testing`, `reason`). Your acceptance comment names each check with its result.
+`planning`, `implementing` or `testing`, `reason`). Your acceptance comment names each check with its result.
 The gate is the `before_merge` checks of the issue's own Verification document, read at the
 issue's own head: each needs a pass standing at that head, which
 `dispatch results --issue <issue>` shows. A result a child recorded against one of the root's

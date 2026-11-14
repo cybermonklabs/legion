@@ -737,12 +737,12 @@ test("the architect shows a person the surface before it asks them to approve th
     "The picture is the cheapest thing that answers the question. A labelled sketch is enough where it answers it. Where the real surface, built read-only, costs no more than the mock-up, build that and show that."
   );
   // The six ordering lines, each whole: they are what keeps the rule from closing an open gate or
-  // writing a spec version of its own, so a dropped one costs a tree its phase in flight.
+  // writing a spec version of its own, so a dropped one holds a tree's merge on a new version.
   expect(gate).toContain(
     "A spec written before the picture is fine. What may not happen is reaching the gate with no picture."
   );
   expect(gate).toContain(
-    'A tree whose gate is already open starts no round for the work in flight and writes no spec version for a picture: a new version closes the gate and stops the phase under it ("After approval").'
+    'A tree whose gate is already open starts no round for the work in flight and writes no spec version for a picture: a new version closes the gate and holds the merge until a person approves it ("After approval").'
   );
   expect(gate).toContain(
     "The round writes no spec version of its own. The agreed pictures go into the version you first submit for approval."

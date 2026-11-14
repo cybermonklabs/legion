@@ -37,6 +37,10 @@ EOF
   document (name a requirement of the root by what it says), and no text copied from the root that
   does not apply to this child. Write the child's Verification document with it, one `check` block
   per thing that must be proved. The child's workers read only this spec and those checks.
+- Your `Production check` line says whether this project checks production after a merge. When it
+  names a role, write one `after_merge` check for the production check in each child's
+  Verification document, with its spec and while the child is open, because a closed issue
+  refuses every new document. Under `Production check: off`, write none.
 - Before `dispatch issue` creates any child, dispatch a fresh red-team subagent
   (`task(agent="oracle")`) with the
   root spec, the tree's open children with their repositories and pull requests, and the proposed

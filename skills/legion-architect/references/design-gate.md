@@ -28,6 +28,11 @@ reviewer approves only once a pass stands for every `before_merge` check at the 
 check's own answer in `dispatch results --issue <issue>`, and never a pass at another commit, a
 pass recorded under an older wording of the check or a retracted one.
 
+Your `Production check` line says whether this project checks production after a merge. When it
+names a role, write one `after_merge` check for the production check in the Verification document,
+with the spec and while the issue is open, because a closed issue refuses every new document.
+Under `Production check: off`, write none.
+
 On your first pass over the spec, cut each requirement carried over from an earlier issue's spec or
 decisions that no source of this issue states: those were decided for that issue. This issue's
 sources are the words a person wrote in it, and its `Filed for` line with what that line cites: the
@@ -125,7 +130,8 @@ The ordering, which this rule needs and does not change:
 
 - A spec written before the picture is fine. What may not happen is reaching the gate with no picture.
 - A tree whose gate is already open starts no round for the work in flight and writes no spec version
-  for a picture: a new version closes the gate and stops the phase under it ("After approval").
+  for a picture: a new version closes the gate and holds the merge until a person approves it
+  ("After approval").
 - The round writes no spec version of its own. The agreed pictures go into the version you first
   submit for approval.
 - A picture that must change after approval follows "After approval": it is a new version only when
@@ -142,6 +148,13 @@ gates, in the order it gates them, each in backticks: ``Design gate steps: `spec
 ``Design gate steps: `decisions`, `criteria`.``, or `Design gate steps: none.` A sub-architect on
 a child issue has no such sentence and never runs the gate.
 
+The line names the steps every root must register, and any step a root registers holds its tree
+too. A line that names `spec` and not `criteria` says so in a second sentence:
+``Design gate steps: `spec`. A root that registers its Verification document as `criteria` is held on that step too.``
+Under such a line, register a root's Verification document as `criteria` as well. One
+`--include-verification` request then opens both steps, and a new version of either document
+closes the gate.
+
 Each step is one document of the root issue, and the daemon keeps one gate record for each step:
 
 | Step | The document it records |
@@ -150,7 +163,8 @@ Each step is one document of the root issue, and the daemon keeps one gate recor
 | `criteria` | its Verification document (`verification.md`) |
 | `spec` | its primary document |
 
-The tree's work starts when every step the sentence names is open, so run the armed sequence below
+The tree's work starts when every step the sentence names is open, and `criteria` too where you
+registered it, so run the armed sequence below
 once for each of them, each on that step's own document. Under `Design gate steps: none.` write
 the spec and register it with `register_gate` at its current version, with no `step` and no
 approval step: do not request approval and do not wait for `design-approved`; the gate opens at
@@ -222,17 +236,22 @@ and the `spec` step together (step 4), and each of them is registered on its own
    })
    ```
 
-   Copy `artifactId` and `version` from what `dispatch request-approval` printed. The document id is
+   Copy `artifactId` from what `dispatch request-approval` printed, and each document's `version`
+   from the question it prints (`… (version N)`), or the document's current version when the
+   request answers that both are already approved. The daemon registers at Dispatch's latest
+   version in any case, the greater of the two. The document id is
    never the slug or file name you passed in (`spec`, `spec.md`): the daemon recognizes the
    document's approval events by that id alone; the `legion` tool looks a slug or file name up in
    Dispatch and hands the daemon the id.
 
    Each step records its own document, so register the spec's id and version under `step: "spec"`
    and the Verification document's under `step: "criteria"`: the request that named both sent an
-   `artifact.approved` event for each, and each step opens on its own document's alone. Leave
-   `step` out only where your line names one step, which is the whole list a one-step deployment
-   gates. Register no step your line does not name: a step the deployment does not gate is
-   refused, and a record of it would hold nothing open.
+   `artifact.approved` event for each, and each step opens on its own document's alone. Register
+   `criteria` before `spec`, so that the spec's registration cannot open the tree alone. Leave
+   `step` out only for the one step a one-step line names. Register no step your line does not
+   name, with one exception: where the line names `spec` and not `criteria`, register the
+   Verification document under `step: "criteria"` too. Any other step the deployment does not gate
+   is refused, and a record of it would hold nothing open.
 
 Facts about the request:
 
@@ -313,8 +332,8 @@ reason, and answer it in the spec if the latest version does not already.
 ## After approval
 
 Each step's approval is pinned to the version of the document that step records: a new version of
-that document closes that step again, with no wake to say so; you know from your own edit, or
-from the `artifact.version` event on your issue. One step closing holds the tree's work whatever
+that document closes that step again. When that closes the gate, the daemon tells you and every
+phase holder of the tree on each role topic. One step closing holds the tree's work whatever
 the other steps stand at. The exceptions are the version a human's own answer to a decision block
 writes when that answer is the whole change since the version they approved, and a version whose
 text is exactly that of the version they approved, with no decision block in it decided

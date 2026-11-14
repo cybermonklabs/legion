@@ -168,7 +168,7 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "first, because the pod and its disk are replaced after every worker of the pod has answered. The call ends no phase. The " +
   "daemon holds your next task until your process comes back on the new pod, in this same session. " +
   "request_backward_move returns an issue to an earlier phase (`to`, `reason`): " +
-  "a phase worker moves its own issue; the tree's architect moves an issue in accepting, named by `issue`, back to implementing or testing, which " +
+  "a phase worker moves its own issue; the tree's architect moves an issue in accepting, named by `issue`, back to planning, implementing or testing, which " +
   "counts a review round. " +
   "retry_or_escalate decides an issue the daemon holds after its worker failed (issue, decision): retry puts the issue " +
   "back in the phase it was held from and starts that phase's worker again, escalate leaves it held for the controller, " +

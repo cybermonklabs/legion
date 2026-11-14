@@ -151,9 +151,10 @@ it there until that answer comes clean.
   approval of the head by SHA; the daemon refuses the sign-off while an issue beneath it is still
   in the workflow, `SIGNOFF_CHILD_IN_WORKFLOW`, so a parent is accepted after its children, on
   the head of its last round, `skill://legion-architect`, section 4) and accepts with the
-  `legion` tool's `sign_off`, which moves the issue to retro, or sends it back to `implementing`
-  or `testing` with `request_backward_move` and a reason, which reaches the started worker's task
-  as its `Reason:` line and counts a review round. The acceptance comment names each check with
+  `legion` tool's `sign_off`, which moves the issue to retro, or sends it back to `planning`,
+  `implementing` or `testing` with `request_backward_move` and a reason, which reaches the
+  started worker's task as its `Reason:` line and counts a review round. The acceptance comment
+  names each check with
   its result. An issue with no Verification document, or none holding a `before_merge` check,
   is a gap the tester and the reviewer named and neither refused, so that comment is its only
   gate: it names the gap and decides how each delivered item is proven at this head, never
@@ -232,6 +233,14 @@ it there until that answer comes clean.
     worker can do — a repository setting or an App permission only a person can change — with
     GitHub's own answer quoted. The repository's required reviews and checks decide what may
     merge: Legion bypasses none, and a review only a person can give is waited for.
+- **The root's design gate holds the merge.** While the gate is closed the merger merges nothing,
+  enqueues nothing, takes a queued pull request back out of the merge queue and does not complete.
+  It ends each turn of that wait with a WAITING line that names the opening, because the daemon
+  sends a task only between turns. The opening comes as the message
+  `The design gate of <tree> opened: …`, or as a news task that starts with those words and then
+  names what changed in the approved design for the issue. A start task can carry such news too,
+  after a blank line. The merger reads that news before it merges. Then it merges from the first
+  step, or moves the issue back with `request_backward_move` when the change makes the head stale.
 - *The completion* is `handoff_complete` with the ordinary two-sentence `summary`, which names the
   pull request, the head merged and the merge commit. It records the merger's phase row and moves
   nothing: no Dispatch message, no publish, no phase. What moves the issue is the daemon's own
@@ -294,6 +303,10 @@ it there until that answer comes clean.
     decision as a `dispatch ask` there, whose reference you publish to that topic. Either names
     this issue, the pull request, the merge commit, what you drove and what failed, and the
     result's `observed` and the summary name it (`dispatch://<REPORT KEY>/ask/<id>`).
+- **An issue whose Verification document holds no `after_merge` check is a named gap.** The look
+  has no check to record against. Record no result and write no check, since a closed issue
+  refuses every new document. Name the gap in your pull-request comment and in your report, as a
+  named gap, never a failure: the gap alone never makes the verdict `fail`.
 - **Numbers the daemon holds are read with the `legion` tool.** Where the verdict rests on what a
   deployment's idle release has done, `read_release_records` answers a window of the daemon's own
   records of its releases, resumes and holds: its one argument `since` is the RFC 3339 instant
