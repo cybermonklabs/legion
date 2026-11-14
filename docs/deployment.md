@@ -164,7 +164,9 @@ two lines change nothing else.
 It then runs the next `git` on `PATH` after `bin/`, a host's own git wrapper included, and it runs
 every other command through that `git` unchanged.
 Where a host's git wrapper runs `bin/git` again, as a wrapper that searches `PATH` for the next
-`git` can, that second run goes on past the host's wrapper and adds nothing, so the loop ends.
+`git` can, that second run goes on past each `git` the first runs ran, a script or a compiled
+program, and adds nothing, so the loop ends. Where the `git` programs on `PATH` only run one
+another and `bin/git`, it stops them with exit 127 and says so.
 The trailers need git 2.32 or later, the first git with `git commit --trailer`, and a commit
 through an older git gets neither line.
 `legion controller start` writes the same `git` into the `bin/` of its own state directory, by the

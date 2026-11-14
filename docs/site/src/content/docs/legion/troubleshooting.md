@@ -1074,9 +1074,9 @@ On such a daemon, an update round or a message wake can take the author of the c
 
 **Where jj reads the identity and the trailers.**
 
-- jj keeps one configuration file for each repository, `~/.config/jj/repos/<id>/config.toml`, and every workspace of that repository reads it.
+- jj keeps one configuration file for each repository, `${XDG_CONFIG_HOME:-$HOME/.config}/jj/repos/<id>/config.toml`, and every workspace of that repository reads it.
   In an issue pod it holds `trunk()` and `git.abandon-unreachable-commits`, and no identity and no trailer.
-  Print it with no jj command, from the `.jj` directory of the issue's workspace: `cd "$LEGION_WORKSPACE/.jj" && cat ~/.config/jj/repos/"$(cat "$(cat repo)/config-id")"/config.toml`.
+  Print it with no jj command, from the `.jj` directory of the issue's workspace: `cd "$LEGION_WORKSPACE/.jj" && cat "${XDG_CONFIG_HOME:-$HOME/.config}/jj/repos/$(cat "$(cat repo)/config-id")/config.toml"`.
 
 - A `templates.commit_trailers` in that file replaces the overlay's trailers: a commit then carries the trailers of that file, and neither line of the overlay.
 

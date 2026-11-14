@@ -68,20 +68,24 @@ func gitTrailers(env map[string]string) []gitTrailer {
 	return lines
 }
 
-// gitCommit is the argument list that `legion git` hands git for a commit, and keep, the file
-// whose descriptor that list names in place of a message or template git could no longer read
-// (commitStash). keep must stay open until the exec.
+// gitCommit is the argument list that `legion git` hands git for a commit, keep, the file whose
+// descriptor that list names in place of a message or template git could no longer read, and
+// stdin, the file that is to be git's standard input in place of the one the wrapper read
+// (commitStash). keep must stay open until the exec, and stdin goes onto descriptor 0 before it
+// (asStandardInput).
 type gitCommit struct {
-	args []string
-	keep *os.File
+	args  []string
+	keep  *os.File
+	stdin *os.File
 }
 
-// commitWithTrailers is the argument list for `git <globals> commit <args>`, read with helper.
-// It adds a `--trailer '<key>: <value>'` for each line of gitTrailers that the message lacks, and
-// only when it has shown that git alone would accept the message and that git's trailer step
-// would change nothing but add those lines (commitBuild.lines). It puts them after every option
-// of the caller: right before the `--` or `--end-of-options` that ends the options, or at the end
-// when no word ends them. git applies --trailer options in order, and its default
+// commitWithTrailers is the argument list for `git <globals> commit <args>`, read with git, the
+// helper, whose globals are the caller's global options. script is whether the git that runs the
+// commit is a script. It adds a `--trailer '<key>: <value>'` for each line of gitTrailers that the
+// message lacks, and only when it has shown that git alone would accept the message and that git's
+// trailer step would change nothing but add those lines (commitBuild.lines). It puts them after
+// every option of the caller: right before the `--` or `--end-of-options` that ends the options,
+// or at the end when no word ends them. git applies --trailer options in order, and its default
 // (trailer.ifExists addIfDifferentNeighbor) compares each with the line before it, so a line put
 // before the caller's own would change which of the caller's lines git keeps. git commit reads an
 // option after a path (parse_options with no PARSE_OPT_STOP_AT_NON_OPTION), so the end is a
@@ -91,13 +95,11 @@ type gitCommit struct {
 // It adds none and leaves every argument as written when no line is valid, when -h or --help is
 // among the options, when an option matches no option of git commit, when git would make no
 // commit (a dry run), when the helper's version is below 2.32 (the first git with
-// `commit --trailer`), and when it cannot show those two things. One rewrite it always makes: a
-// message or template that it has read from standard input or from a file that is no regular
-// file, and that git reads once, goes to git as /dev/fd/<n> (commitStash), trailers or not, since
-// git can no longer read the original. The error is a stash it could not write, and then it hands
-// git nothing.
-func commitWithTrailers(helper string, globals, args []string, env map[string]string) (gitCommit, error) {
-	written := gitCommit{args: slices.Concat(globals, []string{"commit"}, args)}
+// `commit --trailer`), and when it cannot show those two things. A message or template that it has
+// read and that git can no longer read goes to git as a file of its own, trailers or not
+// (commitStash). The error is a stash it could not write, and then it hands git nothing.
+func commitWithTrailers(git gitReader, script bool, args []string, env map[string]string) (gitCommit, error) {
+	written := gitCommit{args: slices.Concat(git.globals, []string{"commit"}, args)}
 	want := gitTrailers(env)
 	if len(want) == 0 {
 		return written, nil
@@ -110,17 +112,20 @@ func commitWithTrailers(helper string, globals, args []string, env map[string]st
 	if !ok {
 		return written, nil
 	}
-	git := gitReader{path: helper, globals: globals}
 	if !git.atLeast(2, 32) {
 		return written, nil
 	}
-	b := commitBuild{git: git, opts: opts, plan: plan}
+	b := commitBuild{git: git, script: script, opts: opts, plan: plan}
 	lines, err := b.lines(want)
 	if err != nil {
 		return gitCommit{}, err
 	}
 	commit := gitCommit{args: slices.Clone(args)}
-	if b.stash != nil {
+	switch {
+	case b.stash == nil:
+	case b.stash.stdin:
+		commit.stdin = b.stash.file
+	default:
 		word := commit.args[b.stash.arg]
 		commit.args[b.stash.arg] = word[:b.stash.at] + "/dev/fd/" + strconv.Itoa(int(b.stash.file.Fd()))
 		commit.keep = b.stash.file
@@ -129,7 +134,7 @@ func commitWithTrailers(helper string, globals, args []string, env map[string]st
 	for _, line := range lines {
 		added = append(added, "--trailer", line.String())
 	}
-	commit.args = slices.Concat(globals, []string{"commit"}, commit.args[:opts.end], added, commit.args[opts.end:])
+	commit.args = slices.Concat(git.globals, []string{"commit"}, commit.args[:opts.end], added, commit.args[opts.end:])
 	return commit, nil
 }
 
@@ -626,23 +631,33 @@ const cutLine = "------------------------ >8 ------------------------"
 // commitStash is a message or template that the wrapper read, that git reads once, and that git
 // can no longer read: standard input for -F -, or a -F path, or a -t path that template_untouched
 // alone reads, that is no regular file (a FIFO, /dev/stdin, a process substitution). It is in
-// file, an unlinked regular file under TMPDIR whose descriptor stays open across the exec, and git
-// gets /dev/fd/<that descriptor> in place of the value at args[arg][at:]. The descriptor is the
-// one the open returned, the lowest free one, so it takes the place of none that the caller
-// passed.
+// file, an unlinked regular file under TMPDIR.
+//
+// Standard input (stdin) becomes git's standard input again: the file goes onto descriptor 0
+// before the exec (asStandardInput), and `-F -` stays as written in every spelling. Descriptors 0
+// to 2 reach git through any host wrapper, and a wrapper that closes the ones above 2 (Python's
+// subprocess, Node's spawn, sudo) leaves them open.
+//
+// Any other source keeps its descriptor open across the exec, and git gets /dev/fd/<that
+// descriptor> in place of the value at args[arg][at:]. The descriptor is the one the open
+// returned, the lowest free one, so it takes the place of none that the caller passed. Only a git
+// that is no script gets such a stash: a host's wrapper may close every descriptor above 2, so for
+// a script the wrapper leaves such a source unread and adds no line (commitBuild.readFile).
 type commitStash struct {
-	file *os.File
-	arg  int
-	at   int
+	file  *os.File
+	stdin bool
+	arg   int
+	at    int
 }
 
 // commitBuild builds a commit's message as git does, to learn whether git accepts it and what
-// git's trailer step makes of it.
+// git's trailer step makes of it. script is whether the git that runs the commit is a script.
 type commitBuild struct {
-	git   gitReader
-	opts  commitRead
-	plan  commitPlan
-	stash *commitStash
+	git    gitReader
+	script bool
+	opts   commitRead
+	plan   commitPlan
+	stash  *commitStash
 }
 
 // lines is each line of want that the message lacks, when the wrapper may add those lines, and
@@ -735,15 +750,15 @@ func (b *commitBuild) lines(want []gitTrailer) ([]gitTrailer, error) {
 	// The commits git reads: use_message (parse_and_validate_options), then --squash's and
 	// --fixup's (prepare_to_commit).
 	squashIsUse := o.squash.set && p.use.set && p.use.value == o.squash.value
-	var useText, squashText, fixupText string
+	var use, squash, fixup commitText
 	for _, read := range []struct {
 		on   bool
 		name string
-		text *string
+		text *commitText
 	}{
-		{p.use.set, p.use.value, &useText},
-		{o.squash.set && !squashIsUse, o.squash.value, &squashText},
-		{o.fixup.set, p.fixupCommit, &fixupText},
+		{p.use.set, p.use.value, &use},
+		{o.squash.set && !squashIsUse, o.squash.value, &squash},
+		{o.fixup.set, p.fixupCommit, &fixup},
 	} {
 		if read.on {
 			var err error
@@ -759,8 +774,7 @@ func (b *commitBuild) lines(want []gitTrailer) ([]gitTrailer, error) {
 	case squashIsUse:
 		text = "squash! "
 	case o.squash.set:
-		subject, _ := commitSubjectAndBody(squashText)
-		text = "squash! " + subject + "\n\n"
+		text = "squash! " + squash.subject + "\n\n"
 	}
 	fromTemplate := false
 	templateText, templateRead := "", false
@@ -778,21 +792,20 @@ func (b *commitBuild) lines(want []gitTrailer) ([]gitTrailer, error) {
 		}
 		text += read
 	case p.use.set:
-		text += skipBlankLines(useText)
+		text += skipBlankLines(use.message)
 	case o.fixup.set:
-		subject, body := commitSubjectAndBody(fixupText)
-		text += p.fixupPrefix + "! " + subject + "\n\n"
+		text += p.fixupPrefix + "! " + fixup.subject + "\n\n"
 		switch {
 		case p.fixupPrefix == "fixup":
 			if o.haveMessage {
 				text += o.message
 			}
-		case strings.HasPrefix(skipBlankLines(fixupText), "amend!"):
+		case strings.HasPrefix(fixup.subject, "amend!"):
 			// prepare_amend_commit: an amend! commit gives its body only, so its subject is not
 			// written twice.
-			text += body
+			text += fixup.body
 		default:
-			text += fixupText
+			text += fixup.message
 		}
 	case fileExists(paths.merge):
 		// SQUASH_MSG goes first when a `merge --squash` left it beside MERGE_MSG.
@@ -826,9 +839,11 @@ func (b *commitBuild) lines(want []gitTrailer) ([]gitTrailer, error) {
 		text += read
 		fromTemplate, templateText, templateRead = true, read, true
 	}
-	if template.set && !templateRead {
-		// template_untouched reads the template again, the one read git makes of it here. A
-		// template it cannot read refuses nothing.
+	if template.set && !templateRead && !verbatim {
+		// template_untouched reads the template again, the one read git makes of it here. Under
+		// verbatim the wrapper never uses that text, and it reads nothing: template_untouched
+		// returns before it opens the template for a message that is not empty, and for an empty
+		// one git reads the template itself, once. A template it cannot read refuses nothing.
 		read, status, err := b.readFile(template, templatePath, false, templateWritten)
 		switch status {
 		case readDeclined:
@@ -858,6 +873,8 @@ func (b *commitBuild) lines(want []gitTrailer) ([]gitTrailer, error) {
 			return nil, nil
 		}
 	}
+	// verbose is -1 until a -v option, and -1 counts as verbose here: git's commit.verbose may turn
+	// verbose on, and the wrapper does not read it.
 	if (mode == cleanupScissors || o.verbose != 0) && strings.Contains(first, cutLine) {
 		return nil, nil
 	}
@@ -956,10 +973,11 @@ const (
 // It reads a regular file and leaves it for git to read again. git cannot read anything else
 // twice, so readFile stashes it (commitStash) when written is true: the command line names it,
 // and git reads it once. It declines it when written is false: commit.template names it, so no
-// argument can name the stash, or git reads it twice (commitBuild.lines). It declines standard
-// input and every file that is no regular file when --interactive, -p or --pathspec-from-file is
-// given, since git reads standard input for each before the message. The error is a stash it
-// could not write after it read the source.
+// argument can name the stash, or git reads it twice (commitBuild.lines). It declines a file that
+// is no regular file when the git to run is a script, which may close the stash's descriptor. It
+// declines standard input and every file that is no regular file when --interactive, -p or
+// --pathspec-from-file is given, since git reads standard input for each before the message. The
+// error is a stash it could not write after it read the source.
 func (b *commitBuild) readFile(f commitFile, path string, stdin, written bool) (string, commitReadStatus, error) {
 	if !stdin {
 		info, err := os.Stat(path)
@@ -974,7 +992,7 @@ func (b *commitBuild) readFile(f commitFile, path string, stdin, written bool) (
 			return string(read), readDone, nil
 		}
 	}
-	if !written || b.opts.interactive || b.opts.patch || b.opts.pathspecFromFile.set {
+	if !written || !stdin && b.script || b.opts.interactive || b.opts.patch || b.opts.pathspecFromFile.set {
 		return "", readDeclined, nil
 	}
 	file, err := os.CreateTemp("", "legion-git-message-*")
@@ -999,12 +1017,33 @@ func (b *commitBuild) readFile(f commitFile, path string, stdin, written bool) (
 		file.Close()
 		return "", readDeclined, fmt.Errorf("keep the text git can no longer read: %w", err)
 	}
-	if _, err := unix.FcntlInt(file.Fd(), unix.F_SETFD, 0); err != nil {
-		file.Close()
-		return "", readDeclined, fmt.Errorf("keep the text git can no longer read open for git: %w", err)
+	if !stdin {
+		if _, err := unix.FcntlInt(file.Fd(), unix.F_SETFD, 0); err != nil {
+			file.Close()
+			return "", readDeclined, fmt.Errorf("keep the text git can no longer read open for git: %w", err)
+		}
 	}
-	b.stash = &commitStash{file: file, arg: f.arg, at: f.at}
+	b.stash = &commitStash{file: file, stdin: stdin, arg: f.arg, at: f.at}
 	return string(read), readDone, nil
+}
+
+// asStandardInput makes file, a stash of standard input (commitStash), descriptor 0 of this
+// process, read from its start, so git reads it as the standard input it was. A dup onto 0 leaves
+// the new descriptor open across the exec, and file's own descriptor closes there. A file that is
+// already descriptor 0 (this process started with none) has its close-on-exec flag cleared.
+func asStandardInput(file *os.File) error {
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return fmt.Errorf("rewind the standard input kept for git: %w", err)
+	}
+	fd := int(file.Fd())
+	if fd == 0 {
+		_, err := unix.FcntlInt(0, unix.F_SETFD, 0)
+		return err
+	}
+	if err := dupOnto(fd, 0); err != nil {
+		return fmt.Errorf("hand git the standard input kept for it: %w", err)
+	}
+	return nil
 }
 
 // withSignoff is text with the line -s adds, as append_signoff (sequencer.c) adds it with no
@@ -1165,24 +1204,6 @@ func skipBlankLines(s string) string {
 	}
 }
 
-// commitSubjectAndBody is %s and %b of a commit whose %B is message (pretty.c). The subject is
-// the lines of the first paragraph, each without the spaces at its end, joined by a space
-// (format_subject). The body is the rest after that paragraph and the blank lines after it.
-func commitSubjectAndBody(message string) (subject, body string) {
-	s := skipBlankLines(message)
-	var lines []string
-	for {
-		line := oneLine(s)
-		s = s[len(line):]
-		trimmed := trimGitSpace(line)
-		if trimmed == "" {
-			break
-		}
-		lines = append(lines, trimmed)
-	}
-	return strings.Join(lines, " "), skipBlankLines(s)
-}
-
 // commitSubjectLength is the length of the first paragraph of body, its line feeds included
 // (commit_subject_length, commit.c).
 func commitSubjectLength(body string) int {
@@ -1217,18 +1238,27 @@ func messageIsEmpty(message string, verbatim bool) bool {
 	return restIsEmpty(message)
 }
 
-// gitReader runs the helper git for the reads of a commit: with the caller's global options, and
-// with standard input from /dev/null unless the read hands it text. Its standard error goes
-// nowhere, since a read prints nothing of its own.
+// gitReader runs the helper git for the reads of a commit: with the caller's global options, with
+// env as its environment (the process's own when env is nil), and with standard input from
+// /dev/null unless the read hands it text. Its standard error goes nowhere, since a read prints
+// nothing of its own.
 type gitReader struct {
 	path    string
 	globals []string
+	env     []string
+}
+
+// command is `<helper> <args…>` under the reader's environment.
+func (g gitReader) command(args ...string) *exec.Cmd {
+	cmd := exec.Command(g.path, args...)
+	cmd.Env = g.env
+	return cmd
 }
 
 // output runs `<helper> <globals> <args…>` with stdin as its standard input and answers what it
 // printed.
 func (g gitReader) output(stdin string, args ...string) (string, error) {
-	cmd := exec.Command(g.path, slices.Concat(g.globals, args)...)
+	cmd := g.command(slices.Concat(g.globals, args)...)
 	if stdin != "" {
 		cmd.Stdin = strings.NewReader(stdin)
 	}
@@ -1238,7 +1268,7 @@ func (g gitReader) output(stdin string, args ...string) (string, error) {
 
 // atLeast is whether `<helper> version` names major.minor or later.
 func (g gitReader) atLeast(major, minor int) bool {
-	out, err := exec.Command(g.path, "version").Output()
+	out, err := g.command("version").Output()
 	if err != nil {
 		return false
 	}
@@ -1275,20 +1305,29 @@ func (g gitReader) config(name string, typ ...string) (value string, found bool,
 	return strings.TrimSuffix(out, "\n"), true, nil
 }
 
-// commitMessage is %B of the commit name names: its whole message, as use_message and
-// prepare_amend_commit read it. `--end-of-options` and `--` keep a name that looks like an option
-// or a path a revision, and a name git commit cannot look up (a range, a negative revision)
-// prints no commit, which is a failure.
-func (g gitReader) commitMessage(name string) (string, error) {
-	out, err := g.output("", "log", "-1", "--no-show-signature", "--format=%B", "--end-of-options", name, "--")
+// commitText is a commit's message as git formats it: %s, its subject, the lines of the first
+// paragraph joined by a space, %b, the body after that paragraph, and %B, the whole message.
+type commitText struct {
+	subject, body, message string
+}
+
+// commitMessage is %s, %b and %B of the commit name names, read in one `git log -1`, as
+// prepare_to_commit and prepare_amend_commit format them: `squash! %s`, `fixup! %s`, the body of
+// an amend! commit, and the whole message of -C, -c and --amend. NUL bytes part the three, which
+// git keeps out of every commit message. `--end-of-options` and `--` keep a name that looks like
+// an option or a path a revision, and a name git commit cannot look up (a range, a negative
+// revision) prints no commit, which is a failure.
+func (g gitReader) commitMessage(name string) (commitText, error) {
+	out, err := g.output("", "log", "-1", "--no-show-signature", "--format=%s%x00%b%x00%B", "--end-of-options", name, "--")
 	if err != nil {
-		return "", err
+		return commitText{}, err
 	}
-	text, ok := strings.CutSuffix(out, "\n")
-	if !ok {
-		return "", fmt.Errorf("git log -1 %s printed no commit", name)
+	parts := strings.Split(out, "\x00")
+	message, ok := strings.CutSuffix(parts[len(parts)-1], "\n")
+	if len(parts) != 3 || !ok {
+		return commitText{}, fmt.Errorf("git log -1 %s printed no commit", name)
 	}
-	return text, nil
+	return commitText{subject: parts[0], body: parts[1], message: message}, nil
 }
 
 // stripComments is text cleaned by `git stripspace --strip-comments`, which runs

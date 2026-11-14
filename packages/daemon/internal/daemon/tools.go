@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/lookpath"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
@@ -93,17 +93,11 @@ func resolveTool(lookupEnv func(string) (string, bool), tool string) (string, er
 // LEGION_GH_PATH override is the operator's own word and is taken as it is; this check reads only
 // what PATH found. `legion controller start` makes the same check on the operator's PATH.
 func RefuseScriptGH(gh string) error {
-	file, err := os.Open(gh)
+	script, _, err := lookpath.Kind(gh)
 	if err != nil {
 		return fmt.Errorf("read %s, the first gh on PATH: %w", gh, err)
 	}
-	defer file.Close()
-	head := make([]byte, 2)
-	n, err := io.ReadFull(file, head)
-	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
-		return fmt.Errorf("read %s, the first gh on PATH: %w", gh, err)
-	}
-	if string(head[:n]) == "#!" {
+	if script {
 		return fmt.Errorf("the first gh on PATH, %s, is a script, not the real gh: a gh wrapper would answer in place of the GitHub App token `legion gh` gives it; set LEGION_GH_PATH to the real gh's install path (`mise which gh` or `asdf which gh` prints it; a version manager's shims directory is no install path)", gh)
 	}
 	return nil

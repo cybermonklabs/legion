@@ -8,29 +8,17 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/runtime/workerbin"
 )
-
-// trailerGit is the tests' git: the first git on the test process's PATH that is no script. In a
-// Legion pod /opt/legion/bin/git comes first and is a script, so this is /usr/bin/git. On CI it is
-// the runner's own git.
-func trailerGit(t *testing.T) string {
-	t.Helper()
-	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
-		git := dir + "/git"
-		if info, err := os.Stat(git); err == nil && dir != "" && executableFile(info) && !isGitScript(git) {
-			return git
-		}
-	}
-	t.Fatal("no git on PATH that is no script: these tests run a real git")
-	return ""
-}
 
 // trailerLegion is a `legion` for a test's commands: a two-line script that runs this test binary
 // as legion (testMainEnv). So the environment of a command that runs it can hold no LEGION_*
@@ -74,13 +62,18 @@ func trailerPath(git string) string {
 }
 
 // trailerRun runs name with args in dir, with env and stdin, and answers its exit status and what
-// it printed. A command that cannot start, or that runs for a minute, fails the test.
+// it printed. A command that cannot start, or that runs for a minute, fails the test. The command
+// runs in a process group of its own, and the minute kills the whole group, so a chain of gits
+// that run one another without end stops there too and holds no output pipe open.
 func trailerRun(t *testing.T, dir string, env []string, stdin, name string, args ...string) (code int, stdout, stderr string) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir, cmd.Env, cmd.Stdin = dir, env, strings.NewReader(stdin)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
+	cmd.WaitDelay = 5 * time.Second
 	var out, errb bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errb
 	err := cmd.Run()
@@ -101,7 +94,7 @@ func trailerRun(t *testing.T, dir string, env []string, stdin, name string, args
 func trailerRepo(t *testing.T, git string) string {
 	t.Helper()
 	dir := filepath.Join(t.TempDir(), "repo")
-	if code, _, stderr := trailerRun(t, t.TempDir(), trailerEnv(t, trailerPath(git)), "", git, "init", "-q", "-b", "main", dir); code != 0 {
+	if code, _, stderr := trailerRun(t, t.TempDir(), trailerEnv(t, trailerPath(git)), "", git, fixturegit.InitWorkTree(dir, "main")[1:]...); code != 0 {
 		t.Fatalf("git init: %s", stderr)
 	}
 	return dir
@@ -152,7 +145,7 @@ func trailerWrapperDir(t *testing.T, legion string) string {
 // commit carries both lines. With no LEGION_* variable in the environment, a `git status` and a
 // `git commit` still reach the script, and the commit carries the session line alone.
 func TestGitWrapperAfterRunsTheNextGitOnPathAScriptIncluded(t *testing.T) {
-	git := trailerGit(t)
+	git := fixturegit.CompiledGit(t)
 	legion := trailerLegion(t)
 	bin := trailerWrapperDir(t, legion)
 	host := t.TempDir()
@@ -242,11 +235,19 @@ const realGit = `real_git() {
 // when PATH names the pane's git twice around it, and when it names the host's wrapper twice
 // around the pane's git: the host's wrapper runs, and the commit carries each line once. It ends
 // too when the host's wrapper puts a new entry in front of PATH before it runs the next git, which
-// moves every entry's index. Each case runs `sh -c 'git commit …'` with the case's PATH in the
-// command's environment, since exec.Command("git") would look git up on the test process's own
-// PATH.
+// moves every entry's index.
+//
+// A host's wrapper that runs the first git on PATH that is not itself ends too: a compiled one,
+// whose runs the chain lists as it lists a script's (the commit is made once, with both lines),
+// and a script reached through two PATH entries that name one directory, one a symbolic link to
+// the other (the chain compares files, so the script runs once). Where PATH holds no real git,
+// two such scripts, or one compiled wrapper, run one another and the pane's git without end, and
+// the pane's git stops the chain with exit 127 and says so.
+//
+// Each case runs `sh -c 'git …'` with the case's PATH in the command's environment, since
+// exec.Command("git") would look git up on the test process's own PATH.
 func TestGitWrapperAfterEndsAHostWrapperLoop(t *testing.T) {
-	git := trailerGit(t)
+	git := fixturegit.CompiledGit(t)
 	legion := trailerLegion(t)
 	bash, err := exec.LookPath("bash")
 	if err != nil {
@@ -300,14 +301,178 @@ func TestGitWrapperAfterEndsAHostWrapperLoop(t *testing.T) {
 			}
 		})
 	}
+
+	compiled := hostGitProgram(t)
+	firstNotSelf := func(log string) string {
+		return "#!" + bash + "\nprintf 'run\\n' >> '" + log + "'\n" +
+			"IFS=:\nfor dir in $PATH; do\n" +
+			"  [[ -n $dir && -f $dir/git && -x $dir/git && ! $dir/git -ef $0 ]] && exec \"$dir/git\" \"$@\"\n" +
+			"done\nexit 127\n"
+	}
+	for _, tc := range []struct {
+		name string
+		// path is the case's PATH, given the pane's git's directory.
+		path func(t *testing.T, bin string) (path, log string)
+		// runs is how often the host's wrapper that log records runs, -1 for any number.
+		runs int
+		// loop is whether the command ends with the pane's git's loop message, and else it commits.
+		loop bool
+	}{
+		{"a compiled host's git that runs the first git that is not itself", func(t *testing.T, bin string) (string, string) {
+			host := t.TempDir()
+			copyExecutable(t, compiled, filepath.Join(host, "git"))
+			return bin + ":" + host + ":" + real, filepath.Join(host, "runs")
+		}, -1, false},
+		{"a host's script on two PATH entries of one directory", func(t *testing.T, bin string) (string, string) {
+			dir := t.TempDir()
+			host, alias := filepath.Join(dir, "h"), filepath.Join(dir, "hdup")
+			if err := os.Mkdir(host, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(host, alias); err != nil {
+				t.Fatal(err)
+			}
+			log := filepath.Join(dir, "runs")
+			if err := os.WriteFile(filepath.Join(host, "git"), []byte(firstNotSelf(log)), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			return bin + ":" + host + ":" + alias + ":" + real, log
+		}, 1, false},
+		{"two host scripts and no real git", func(t *testing.T, bin string) (string, string) {
+			one, two := t.TempDir(), t.TempDir()
+			log := filepath.Join(t.TempDir(), "runs")
+			for _, host := range []string{one, two} {
+				if err := os.WriteFile(filepath.Join(host, "git"), []byte(firstNotSelf(log)), 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			return bin + ":" + one + ":" + two, log
+		}, 2, true},
+		// The compiled wrapper is also the helper here, so the commit's reads run it too.
+		{"a compiled host's git and no real git", func(t *testing.T, bin string) (string, string) {
+			host := t.TempDir()
+			copyExecutable(t, compiled, filepath.Join(host, "git"))
+			return bin + ":" + host, filepath.Join(host, "runs")
+		}, -1, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bin := trailerWrapperDir(t, legion)
+			path, log := tc.path(t, bin)
+			repo := trailerRepo(t, git)
+			env := trailerEnv(t, path+":/usr/bin:/bin", "DISPATCH_HOST=omp", "DISPATCH_SESSION_ID=loop-session", "LEGION_ROLE=implementer")
+			if tc.loop {
+				// /usr/bin and /bin come after the hosts here only for the shell's own tools: the
+				// case's gits are the hosts', so PATH ends at the last host for git.
+				env = trailerEnv(t, path, "DISPATCH_HOST=omp", "DISPATCH_SESSION_ID=loop-session", "LEGION_ROLE=implementer")
+			}
+			code, _, stderr := trailerRun(t, repo, env, "", sh, "-c", "git commit --allow-empty -m loop")
+			if tc.loop {
+				if want := "legion git: the git programs on PATH after " + bin + " run one another in a loop"; code != 127 || !strings.Contains(stderr, want) {
+					t.Fatalf("git commit = %d, stderr %q; want 127 and %q", code, stderr, want)
+				}
+			} else {
+				if code != 0 {
+					t.Fatalf("git commit = %d: %s", code, stderr)
+				}
+				if got, want := trailerMessage(t, git, repo), "loop\n\nOmp-Session: loop-session\nLegion-Role: implementer\n"; got != want {
+					t.Fatalf("message = %q, want %q", got, want)
+				}
+				if _, count, _ := trailerRun(t, repo, trailerEnv(t, trailerPath(git)), "", git, "rev-list", "--count", "HEAD"); count != "1\n" {
+					t.Fatalf("the repository holds %q commits, want 1", count)
+				}
+			}
+			if tc.runs >= 0 {
+				runs, err := os.ReadFile(log)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got := strings.Count(string(runs), "run\n"); got != tc.runs {
+					t.Fatalf("the host's wrapper ran %d times, want %d", got, tc.runs)
+				}
+			}
+		})
+	}
+}
+
+// hostGitProgram is a compiled host's git wrapper, built once per test with the Go toolchain that
+// runs the tests: it writes a line to `runs` beside itself on each run, and runs the first git on
+// PATH that is not itself (os.SameFile), as a compiled multiplexer of a host does.
+func hostGitProgram(t *testing.T) string {
+	t.Helper()
+	goTool, err := exec.LookPath("go")
+	if err != nil {
+		goTool = filepath.Join(runtime.GOROOT(), "bin", "go")
+	}
+	src := t.TempDir()
+	if err := os.WriteFile(filepath.Join(src, "go.mod"), []byte("module hostgit\n\ngo 1.21\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "main.go"), []byte(hostGitSource), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(t.TempDir(), "git")
+	build := exec.Command(goTool, "build", "-o", out, ".")
+	build.Dir = src
+	if output, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build the compiled host's git: %v: %s", err, output)
+	}
+	return out
+}
+
+// hostGitSource is hostGitProgram's program.
+const hostGitSource = `package main
+
+import (
+	"os"
+	"path/filepath"
+	"syscall"
+)
+
+func main() {
+	self, err := os.Executable()
+	if err != nil {
+		os.Exit(126)
+	}
+	if f, err := os.OpenFile(filepath.Join(filepath.Dir(self), "runs"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600); err == nil {
+		f.WriteString("run\n")
+		f.Close()
+	}
+	selfInfo, err := os.Stat(self)
+	if err != nil {
+		os.Exit(126)
+	}
+	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
+		git := filepath.Join(dir, "git")
+		info, err := os.Stat(git)
+		if dir == "" || err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 || os.SameFile(info, selfInfo) {
+			continue
+		}
+		syscall.Exec(git, append([]string{git}, os.Args[1:]...), os.Environ())
+		os.Exit(126)
+	}
+	os.Exit(127)
+}
+`
+
+// copyExecutable copies the program at from to an executable file at to.
+func copyExecutable(t *testing.T, from, to string) {
+	t.Helper()
+	data, err := os.ReadFile(from)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(to, data, 0o700); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // A WRAPPED_GIT_AT that names no git on PATH is stale and no re-entry: the commit through the
-// pane's git carries both lines. The next git, the tests' compiled git, is no script, so the
-// pane's git takes the variable out, and an alias `!env` run through it prints none. Among the
-// values are two that hold a number where a path goes.
+// pane's git carries both lines. Among the values are some of another form. The pane's git starts
+// a new chain for the git it runs, so an alias `!env` run through it sees the variable name that
+// git alone: a git that git itself starts never reaches the pane's git, so the value in a real
+// git's environment changes nothing.
 func TestGitWrapperAfterClearsAMarkerItDoesNotNeed(t *testing.T) {
-	git := trailerGit(t)
+	git := fixturegit.CompiledGit(t)
 	legion := trailerLegion(t)
 	sh, err := exec.LookPath("sh")
 	if err != nil {
@@ -328,8 +493,8 @@ func TestGitWrapperAfterClearsAMarkerItDoesNotNeed(t *testing.T) {
 			if code != 0 {
 				t.Fatalf("git showenv = %d: %s", code, stderr)
 			}
-			if !strings.Contains(stdout, "DISPATCH_SESSION_ID=marker-session") || strings.Contains(stdout, wrappedGitAt+"=") {
-				t.Fatalf("the alias's environment = %q, want the session and no %s", stdout, wrappedGitAt)
+			if want := wrappedGitAt + "=0:" + git; !strings.Contains(stdout, "DISPATCH_SESSION_ID=marker-session") || !slices.Contains(strings.Split(stdout, "\n"), want) {
+				t.Fatalf("the alias's environment = %q, want the session and %s", stdout, want)
 			}
 		})
 	}
@@ -367,7 +532,7 @@ func TestGitWrapperAfterExecsTheNextGit(t *testing.T) {
 // it, with the trailers among its arguments, and the commit carries both lines. A command in an
 // environment that holds no LEGION_* variable still runs through it.
 func TestGitWrapperInstallsAPanesTrailers(t *testing.T) {
-	git := trailerGit(t)
+	git := fixturegit.CompiledGit(t)
 	legion := trailerLegion(t)
 	host := t.TempDir()
 	log := filepath.Join(host, "calls")
@@ -467,7 +632,8 @@ func TestGitWrapperHelpPrintsUsage(t *testing.T) {
 }
 
 // Any first argument but --real, --after or a help request is a usage error, exit 2, and so is a
-// form without its value or its `--`. A help request after `--` is git's.
+// form without its value or its `--`. A help request after `--` is git's
+// (TestGitWrapperLeavesGitsHelpAndPathWordsAlone).
 func TestGitWrapperRefusesAnyOtherForm(t *testing.T) {
 	for _, args := range [][]string{
 		{},
@@ -481,5 +647,129 @@ func TestGitWrapperRefusesAnyOtherForm(t *testing.T) {
 		if code := run(context.Background(), append([]string{"legion", "git"}, args...), &out, &errb); code != 2 || !strings.Contains(errb.String(), "usage: legion git --real") {
 			t.Errorf("legion git %q = %d, stderr %q; want exit 2 and the usage", args, code, errb.String())
 		}
+	}
+}
+
+// A host's git wrapper that closes every descriptor above 2 before it runs the next git, as
+// Python's subprocess, Node's spawn and sudo do, still gets a `-F -` commit's message: the pane's
+// git hands git the text it read as standard input again, and the commit carries both lines. A
+// process substitution, which git reads once, is left for git to read when the git to run is a
+// script, so its commit is git alone's: through that host both fail alike, and through a host's
+// script that keeps the descriptor both commit `msg`, with no line added.
+func TestGitWrapperAfterHandsStandardInputThroughAHostThatClosesDescriptors(t *testing.T) {
+	git := fixturegit.CompiledGit(t)
+	legion := trailerLegion(t)
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Fatal(err)
+	}
+	closer, keeper := t.TempDir(), t.TempDir()
+	closing := "#!" + bash + "\n" +
+		"for fd in /proc/self/fd/*; do n=${fd##*/}; if [ \"$n\" -gt 2 ] && [ \"$n\" != 255 ]; then eval \"exec $n>&-\"; fi; done 2>/dev/null\n" +
+		"exec '" + git + "' \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(closer, "git"), []byte(closing), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeTrailerScript(t, filepath.Join(keeper, "git"), "exec '"+git+"' \"$@\"\n")
+	lines := "\nOmp-Session: closer-session\nLegion-Role: implementer\n"
+	for _, tc := range []struct {
+		name, host, command, stdin string
+		// commits is whether git alone commits, and added what the pane's git adds then.
+		commits bool
+		added   string
+	}{
+		{"-F - through a host that closes descriptors", closer, "git commit -q --allow-empty -F -", "msg", true, lines},
+		{"-F <(printf msg) through a host that closes descriptors", closer, "git commit -q --allow-empty -F <(printf msg)", "", false, ""},
+		{"-F <(printf msg) through a host's script that keeps them", keeper, "git commit -q --allow-empty -F <(printf msg)", "", true, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			outcome := func(path string) (int, string) {
+				repo := trailerRepo(t, git)
+				env := trailerEnv(t, path, "DISPATCH_HOST=omp", "DISPATCH_SESSION_ID=closer-session", "LEGION_ROLE=implementer")
+				code, _, stderr := trailerRun(t, repo, env, tc.stdin, bash, "-c", tc.command)
+				if code != 0 {
+					return code, stderr
+				}
+				return 0, trailerMessage(t, git, repo)
+			}
+			aloneCode, alone := outcome(tc.host + ":" + trailerPath(git))
+			wrappedCode, wrapped := outcome(trailerWrapperDir(t, legion) + ":" + tc.host + ":" + trailerPath(git))
+			if (aloneCode == 0) != tc.commits || wrappedCode != aloneCode {
+				t.Fatalf("git alone exited %d (%q) and through the pane's git %d (%q); want a commit: %v, both alike", aloneCode, alone, wrappedCode, wrapped, tc.commits)
+			}
+			if tc.commits && (alone != "msg\n" || wrapped != "msg\n"+tc.added) {
+				t.Fatalf("git alone committed %q and the pane's git %q, want %q and %q", alone, wrapped, "msg\n", "msg\n"+tc.added)
+			}
+		})
+	}
+}
+
+// A host's git that is a script with no `#!` line, which the kernel refuses to run, runs as a
+// shell and execvp run it, with /bin/sh. It counts as a script, not the real git: the helper is the
+// real git after it, and a commit through it carries both lines.
+func TestGitWrapperAfterRunsAHostScriptWithNoInterpreterLine(t *testing.T) {
+	git := fixturegit.CompiledGit(t)
+	legion := trailerLegion(t)
+	host := t.TempDir()
+	if err := os.WriteFile(filepath.Join(host, "git"), []byte("exec '"+git+"' \"$@\"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := trailerRepo(t, git)
+	env := trailerEnv(t, trailerWrapperDir(t, legion)+":"+host+":"+trailerPath(git), "DISPATCH_HOST=omp", "DISPATCH_SESSION_ID=plain-session", "LEGION_ROLE=implementer")
+	if code, _, stderr := trailerRun(t, repo, env, "", sh, "-c", "git status --short && git commit -q --allow-empty -m plain"); code != 0 {
+		t.Fatalf("git status and git commit = %d: %s", code, stderr)
+	}
+	if got, want := trailerMessage(t, git, repo), "plain\n\nOmp-Session: plain-session\nLegion-Role: implementer\n"; got != want {
+		t.Fatalf("message = %q, want %q", got, want)
+	}
+}
+
+// SIGTERM ends legion git while it reads a `-F -` message from a standard input that never ends,
+// as it ends git alone: the command dies of the signal within seconds, and no commit is made.
+func TestGitWrapperEndsOnSIGTERMWhileItReads(t *testing.T) {
+	git := fixturegit.CompiledGit(t)
+	legion := trailerLegion(t)
+	repo := trailerRepo(t, git)
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer writer.Close()
+	cmd := exec.Command(legion, "git", "--real", git, "--", "commit", "--allow-empty", "-F", "-")
+	cmd.Dir, cmd.Stdin = repo, reader
+	cmd.Env = trailerEnv(t, trailerPath(git), "DISPATCH_HOST=omp", "DISPATCH_SESSION_ID=signal-session", "LEGION_ROLE=implementer")
+	var errb bytes.Buffer
+	cmd.Stderr = &errb
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	reader.Close()
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	// The reads before standard input take well under a second; the signal finds the read.
+	time.Sleep(1500 * time.Millisecond)
+	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatalf("signal legion git: %v", err)
+	}
+	select {
+	case err := <-done:
+		var exit *exec.ExitError
+		if !errors.As(err, &exit) {
+			t.Fatalf("legion git ended with %v, want death by SIGTERM: %s", err, errb.String())
+		}
+		status, _ := exit.Sys().(syscall.WaitStatus)
+		if !(status.Signaled() && status.Signal() == syscall.SIGTERM) && exit.ExitCode() != 128+int(syscall.SIGTERM) {
+			t.Fatalf("legion git ended with %v, want death by SIGTERM: %s", err, errb.String())
+		}
+	case <-time.After(10 * time.Second):
+		_ = cmd.Process.Kill()
+		t.Fatal("legion git still runs 10 s after SIGTERM")
+	}
+	if code, _, _ := trailerRun(t, repo, trailerEnv(t, trailerPath(git)), "", git, "rev-parse", "--verify", "-q", "HEAD"); code == 0 {
+		t.Fatal("a commit was made")
 	}
 }

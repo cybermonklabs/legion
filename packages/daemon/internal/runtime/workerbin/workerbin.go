@@ -21,6 +21,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/sjawhar/legion/daemon/internal/lookpath"
 	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 )
 
@@ -66,23 +67,12 @@ func Install(root, legionExecutable, path string) error {
 	return installScript(bin, "git", "#!/bin/sh\nexec "+legion+" git --after "+shellprefix.Literal(bin)+" -- \"$@\"\n")
 }
 
-// firstGit is the first executable git on path, leaving out each entry that is bin (the same
-// cleaned path, or the same directory by os.SameFile), or "" when there is none.
+// firstGit is the first executable git on path, leaving out each entry that is bin, or "" when
+// there is none. It is the first of the gits that `legion git --after <bin>` chooses among
+// (lookpath.Others), so Install reads the git that a pane's git wrapper would run.
 func firstGit(path, bin string) string {
-	binInfo, binErr := os.Stat(bin)
-	for _, entry := range filepath.SplitList(path) {
-		if entry == "" || filepath.Clean(entry) == bin {
-			continue
-		}
-		if binErr == nil {
-			if info, err := os.Stat(entry); err == nil && os.SameFile(info, binInfo) {
-				continue
-			}
-		}
-		git := filepath.Join(entry, "git")
-		if info, err := os.Stat(git); err == nil && info.Mode().IsRegular() && info.Mode().Perm()&0o111 != 0 {
-			return git
-		}
+	if found, _ := lookpath.Others(path, "git", bin); len(found) > 0 {
+		return found[0].Path
 	}
 	return ""
 }

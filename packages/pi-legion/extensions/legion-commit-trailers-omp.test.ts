@@ -8,6 +8,7 @@ import {
   type Cleanup,
   call,
   deliveryFor,
+  isSelfCheck,
   messageStream,
   ompNatsGuard,
   ompRoot,
@@ -39,7 +40,8 @@ import {
 const { skip, setup } = ompNatsGuard();
 
 /** The roles whose subagents the case runs. */
-type Role = "implementer" | "tester" | "reviewer";
+const ROLES = ["implementer", "tester", "reviewer"] as const;
+type Role = (typeof ROLES)[number];
 
 /** The tree and the issue of the pane. The state of the daemon below puts the issue in a phase
  * that none of the three roles works. */
@@ -83,20 +85,10 @@ function isSubagentRequest(request: Request): boolean {
   return JSON.stringify(request.body.system ?? null).includes(DEEP_WORKER_SYSTEM);
 }
 
-/**
- * Whether a Messages request is a side turn: pi-envoy's run-end self-check. The host sends it as
- * an ordinary Messages request over a snapshot of a conversation, and its last message is the
- * `<btw>` block.
- */
-function isSideTurn(request: Request): boolean {
-  const messages = Array.isArray(request.body.messages) ? request.body.messages : [];
-  return JSON.stringify(messages.at(-1) ?? null).includes("<btw>");
-}
-
 /** Whether a Messages request is a turn of the role's own conversation: it carries the assignment
- * of the daemon, and it is not a side turn. */
+ * of the daemon, and it is not a side turn (pi-envoy's run-end self-check, `isSelfCheck`). */
 function isRoleTurn(request: Request): boolean {
-  if (isSubagentRequest(request) || isSideTurn(request)) return false;
+  if (isSubagentRequest(request) || isSelfCheck(request)) return false;
   return JSON.stringify(request.body.messages ?? null).includes(ASSIGNMENT_MARK);
 }
 
@@ -177,7 +169,7 @@ async function startRolePane(role: Role): Promise<RolePane> {
   const { requests, base } = serveStandin(cleanup, async (url, body) => {
     if (url.pathname === "/anthropic/v1/messages") {
       const request: Request = { path: url.pathname, body };
-      if (isSubagentRequest(request) && !isSideTurn(request)) {
+      if (isSubagentRequest(request) && !isSelfCheck(request)) {
         const answer = Promise.withResolvers<string>();
         const index = held.length;
         held.push({
@@ -394,7 +386,7 @@ const MERGING = {
   consumers: [],
 } satisfies LegionState;
 
-for (const role of ["implementer", "tester", "reviewer"] as const) {
+for (const role of ROLES) {
   test.skipIf(skip)(
     `${role === "implementer" ? "an" : "a"} ${role}'s task subagent commits with the ${role}'s session and Legion-Role: ${role}`,
     async () => {

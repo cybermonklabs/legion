@@ -35,6 +35,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
@@ -1950,35 +1951,6 @@ func TestRealTmuxPaneResolvesThisDaemonsLegionCLI(t *testing.T) {
 	}
 }
 
-// compiledGit is the first git on the test process's PATH that is no script (its first two bytes
-// are not `#!`): the runner's own git on CI, and /usr/bin/git in a Legion pod, whose
-// /opt/legion/bin/git ahead of it is the image's git wrapper.
-func compiledGit(t *testing.T) string {
-	t.Helper()
-	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
-		if dir == "" {
-			continue
-		}
-		git := filepath.Join(dir, "git")
-		if info, err := os.Stat(git); err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
-			continue
-		}
-		f, err := os.Open(git)
-		if err != nil {
-			continue
-		}
-		head := make([]byte, 2)
-		n, _ := io.ReadFull(f, head)
-		f.Close()
-		if n == 2 && string(head) == "#!" {
-			continue
-		}
-		return git
-	}
-	t.Fatal("no git on PATH that is no script: this test commits with a real git")
-	return ""
-}
-
 // A pane's git is its launcher directory's git wrapper, which runs `legion git --after`. In the
 // pane's own environment, which the agent's bash tool inherits, `command -v git` names that
 // wrapper, and a commit in a new repository carries the pane's role and the session that Oh My
@@ -1989,7 +1961,7 @@ func compiledGit(t *testing.T) string {
 func TestRealTmuxAPanesGitWrapperTrailsACommit(t *testing.T) {
 	ctx := context.Background()
 	r := newRig(t)
-	git := compiledGit(t)
+	git := fixturegit.CompiledGit(t)
 	spec := r.spec("LEGION-11", "LEGION-11", claim.RoleArchitect)
 	spec.Env["PATH"] = filepath.Dir(git) + ":" + spec.Env["PATH"]
 	if err := workerbin.Install(r.stateDir, r.legion, spec.Env["PATH"]); err != nil {
@@ -2006,9 +1978,7 @@ func TestRealTmuxAPanesGitWrapperTrailsACommit(t *testing.T) {
 		t.Fatalf("OMP's PATH = %q and LEGION_ROLE = %q, want %q and architect", env["PATH"], env["LEGION_ROLE"], want)
 	}
 	repo := filepath.Join(t.TempDir(), "repo")
-	if out, err := exec.Command(git, "init", "-q", repo).CombinedOutput(); err != nil {
-		t.Fatalf("git init: %v: %s", err, out)
-	}
+	fixturegit.Isolated(t, t.TempDir()).Run(t.TempDir(), append([]string{git}, fixturegit.InitWorkTree(repo, "")[1:]...)...)
 	session := "tmux-pane-" + randomHex(t, 4)
 	shell := exec.Command("/bin/sh", "-c", "command -v git && git commit --allow-empty -q -m pane && git log -1 --format=%B")
 	shell.Dir = repo

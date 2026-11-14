@@ -715,11 +715,8 @@ jobs:
               - 'packages/envoy/migrationid/*'
               - 'packages/envoy/roleholder/*'
               - 'packages/envoy/infra/gcp/testdata/dispatch-pod.golden'
-            # Oh My Pi, which .github/actions/install-omp installs at the version .omp-pin names,
-            # through the mise .github/actions/install-jj leaves.
-            omp_install: &omp_install
-              - '.omp-pin'
-              - '.github/actions/install-omp/**'
+            # The jj .github/actions/install-jj installs, and the mise it installs that jj with.
+            jj_install: &jj_install
               - '.github/actions/install-jj/**'
               # install-jj's second step reads `ARG JJ_TOOL` from here, the tool spec mise
               # installs.
@@ -729,6 +726,12 @@ jobs:
               # row's digest, or fetches that row's second source when mise cannot.
               - '.github/ci-tools.yaml'
               - '.github/scripts/ci-tools.sh'
+            # Oh My Pi, which .github/actions/install-omp installs at the version .omp-pin names,
+            # through the mise .github/actions/install-jj leaves.
+            omp_install: &omp_install
+              - '.omp-pin'
+              - '.github/actions/install-omp/**'
+              - *jj_install
             # What the test job's two Go steps read together — the plain step, which tests every
             # package of packages/daemon but the three concurrent ones, and the race step, which
             # tests those three — so the filter still covers the whole module's closure. The
@@ -1075,15 +1078,7 @@ jobs:
               - *bun_install
               - *biome
               - 'packages/pi-shared/**'
-              - '.github/actions/install-jj/**'
-              # install-jj's second step reads `ARG JJ_TOOL` from here, the tool spec mise
-              # installs.
-              - 'packages/daemon/docker/worker.Dockerfile'
-              # install-jj's first step installs mise from the manifest's `mise` row through
-              # that helper, and its second step holds the jj binary mise installs to the `jj`
-              # row's digest, or fetches that row's second source when mise cannot.
-              - '.github/ci-tools.yaml'
-              - '.github/scripts/ci-tools.sh'
+              - *jj_install
               - 'packages/envoy-client/src/**'
               # And @legion/broker-client with it: src/broker-credential.ts:21-22 imports it, so
               # this job compiles its sources too (ci_job_reads.py's envoy_client_dep).
@@ -4422,8 +4417,9 @@ jobs:
     # 123 s, legion-model-fallback 106 s, legion-phase-stall 99 s, legion-commit-trailers 62 s,
     # legion-session-activity 28 s, daemon-pane 21 s and legion-role-tools 11 s are 682 of the
     # 708, and the 25 rows left the other 26.
-    # legion-commit-trailers has no CI run yet. Its 62 s is the slowest of three runs of the file
-    # in a Legion pod on 2026-11-14 (26 s, 30 s and 62 s, the last with other work on the pod).
+    # legion-commit-trailers' 62 s is the slowest of three runs of the file in a Legion pod on
+    # 2026-11-14 (26 s, 30 s and 62 s, the last with other work on the pod), before a CI run
+    # measured it.
     # The stall watchdog's suites among them are cybermonklabs/legion#2922's, merged
     # 2026-11-08T18:46:47Z, and the 10 minutes that stood here came from #2512 (a limit above
     # each job's slowest green run, 2026-10-30), which is before them.

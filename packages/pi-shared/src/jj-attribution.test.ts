@@ -83,7 +83,7 @@ describe("exportJjSessionAttribution", () => {
     ].join("\n");
   }
   /** The overlay with the session line alone: no role and no scope. */
-  const sessionLine = unscopedTable();
+  const sessionOnlyOverlay = unscopedTable();
   /** A real directory to scope an overlay to, under a scratch directory the afterEach removes. */
   async function workspace(name = "ws"): Promise<string> {
     const dir = path.join(await stateDir("jj-attribution-ws-"), name);
@@ -111,7 +111,7 @@ describe("exportJjSessionAttribution", () => {
     const overlay = path.join(dir, `omp-attribution-${ROOT_ID}.toml`);
     expect(chain).toBe(`/u/a.toml:/u/b.toml:${overlay}`);
     expect(env.JJ_CONFIG).toBe(chain);
-    expect(await readFile(overlay, "utf8")).toBe(sessionLine);
+    expect(await readFile(overlay, "utf8")).toBe(sessionOnlyOverlay);
   });
 
   // The whole text, written out once: the session line, then the role line, in each template.
@@ -201,7 +201,7 @@ describe("exportJjSessionAttribution", () => {
       resolveBase: async () => "/u/base.toml",
     });
     expect(await readFile(path.join(dir, `omp-attribution-${ROOT_ID}.toml`), "utf8")).toBe(
-      sessionLine
+      sessionOnlyOverlay
     );
   });
 
@@ -219,7 +219,7 @@ describe("exportJjSessionAttribution", () => {
       resolveBase: async () => "/u/base.toml",
     });
     expect(await readFile(path.join(dir, `omp-attribution-${ROOT_ID}.toml`), "utf8")).toBe(
-      sessionLine
+      sessionOnlyOverlay
     );
   });
 
@@ -249,7 +249,7 @@ describe("exportJjSessionAttribution", () => {
       resolveBase: async () => "/u/base.toml",
     });
     expect(await readFile(path.join(dir, `omp-attribution-${ROOT_ID}.toml`), "utf8")).toBe(
-      sessionLine
+      sessionOnlyOverlay
     );
   });
 
@@ -282,7 +282,7 @@ describe("exportJjSessionAttribution", () => {
       resolveBase: async () => "/u/base.toml",
     });
     expect(await readFile(path.join(dir, `omp-attribution-${ROOT_ID}.toml`), "utf8")).toBe(
-      sessionLine
+      sessionOnlyOverlay
     );
   });
 
@@ -319,7 +319,7 @@ describe("exportJjSessionAttribution", () => {
       resolveBase: async () => "/u/base.toml",
     });
     expect(await readFile(path.join(dir, `omp-attribution-${ROOT_ID}.toml`), "utf8")).toBe(
-      sessionLine
+      sessionOnlyOverlay
     );
   });
 
@@ -345,7 +345,7 @@ describe("exportJjSessionAttribution", () => {
       resolveBase: async () => "/u/base.toml",
     });
     expect(await readFile(path.join(dir, `omp-attribution-${ROOT_ID}.toml`), "utf8")).toBe(
-      sessionLine
+      sessionOnlyOverlay
     );
   });
 

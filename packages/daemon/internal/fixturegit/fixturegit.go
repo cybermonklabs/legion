@@ -19,11 +19,13 @@
 package fixturegit
 
 import (
+	"os"
 	"os/exec"
 	"strings"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
+	"github.com/sjawhar/legion/daemon/internal/lookpath"
 )
 
 // Runner runs a fixture's git or jj commands under one environment. Env is the whole environment
@@ -40,6 +42,22 @@ type Runner struct {
 // credential or session store but the test's own.
 func Isolated(tb testing.TB, home string) Runner {
 	return Runner{TB: tb, Env: fixtureenv.Isolated(home)}
+}
+
+// CompiledGit is the first git on the test process's PATH that is a compiled program
+// (lookpath.Kind), for a test that runs a real git under a git wrapper of its own: in a Legion pod
+// the first git, /opt/legion/bin/git, is a script that wraps /usr/bin/git, and on CI the first git
+// is the runner's own. The test fails when PATH holds none.
+func CompiledGit(tb testing.TB) string {
+	tb.Helper()
+	found, _ := lookpath.Others(os.Getenv("PATH"), "git", "")
+	for _, git := range found {
+		if _, compiled, err := lookpath.Kind(git.Path); err == nil && compiled {
+			return git.Path
+		}
+	}
+	tb.Fatal("no git on PATH that is a compiled program: this test runs a real git")
+	return ""
 }
 
 // With is the runner with extra added to its environment, as a copy, so the one it was made from

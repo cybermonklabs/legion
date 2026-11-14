@@ -6,7 +6,10 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
+
+	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 )
 
 // trailerCommit runs `git <args…>` in dir with env and stdin through `legion git --real <git>`,
@@ -64,7 +67,7 @@ func assertTrailersAdded(t *testing.T, alone, wrapped string, lines []string) {
 // the caller's own trailers and git's trailer configuration, and the cases where the wrapper adds
 // nothing although git commits.
 func TestGitWrapperTrailerAgreesWithGitOnEveryMessageForm(t *testing.T) {
-	git := trailerGit(t)
+	git := fixturegit.CompiledGit(t)
 	legion := trailerLegion(t)
 	bash, err := exec.LookPath("bash")
 	if err != nil {
@@ -77,6 +80,15 @@ func TestGitWrapperTrailerAgreesWithGitOnEveryMessageForm(t *testing.T) {
 		return func(t *testing.T, dir string) {
 			t.Helper()
 			if err := os.WriteFile(filepath.Join(dir, name), []byte(text), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	// noWriter is a FIFO that nothing writes: a read of it waits for ever.
+	noWriter := func(name string) func(t *testing.T, dir string) {
+		return func(t *testing.T, dir string) {
+			t.Helper()
+			if err := syscall.Mkfifo(filepath.Join(dir, name), 0o600); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -166,6 +178,8 @@ func TestGitWrapperTrailerAgreesWithGitOnEveryMessageForm(t *testing.T) {
 		{name: "an option of no git commit", args: []string{"commit", "--allow-empty", "--bogus", "-m", "x"}},
 		{name: "--cleanup=scissors -e keeps a comment line", args: []string{"commit", "--allow-empty", "--cleanup=scissors", "-e", "-m", "#x"}, commits: true, lines: pair},
 		{name: "a cut line under -v adds nothing", args: []string{"commit", "--allow-empty", "-v", "-m", "a\n# ------------------------ >8 ------------------------\nb"}, commits: true},
+		{name: "an amend under verbatim beside a -t FIFO with no writer reads no template", setup: base, files: noWriter("template"),
+			args: []string{"commit", "--amend", "--cleanup=verbatim", "--no-edit", "--allow-empty", "-t", "{files}/template"}, commits: true, lines: pair},
 		{name: "--cleanup=verbatim and a message that ends inside a line adds nothing", files: files("unended", "x"),
 			args: []string{"commit", "--allow-empty", "--cleanup=verbatim", "-F", "{files}/unended"}, commits: true},
 		{name: "a configured trailer command adds nothing", setup: [][]string{
@@ -246,7 +260,7 @@ func TestGitWrapperTrailerAgreesWithGitOnEveryMessageForm(t *testing.T) {
 // acts as and the role decide: the role line only for a Legion role, and the session line only
 // for the id of the host's variable, and only where it is a valid id.
 func TestGitWrapperTrailerTakesTheSessionDispatchActsAs(t *testing.T) {
-	git := trailerGit(t)
+	git := fixturegit.CompiledGit(t)
 	legion := trailerLegion(t)
 	role := "Legion-Role: implementer"
 	for _, tc := range []struct {
@@ -286,7 +300,7 @@ func TestGitWrapperTrailerTakesTheSessionDispatchActsAs(t *testing.T) {
 // and role add nothing, another role's pair goes after every line of the message, and a message
 // with other sessions' lines keeps them all.
 func TestGitWrapperTrailerAmendAddsOnlyTheLinesTheMessageLacks(t *testing.T) {
-	git := trailerGit(t)
+	git := fixturegit.CompiledGit(t)
 	legion := trailerLegion(t)
 	repo := trailerRepo(t, git)
 	implementer := trailerEnv(t, trailerPath(git), "DISPATCH_HOST=omp", "DISPATCH_SESSION_ID=implementer-session", "LEGION_ROLE=implementer")
