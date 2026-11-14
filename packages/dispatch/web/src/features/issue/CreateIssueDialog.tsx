@@ -66,7 +66,7 @@ export function CreateIssueDialog({ onClose }: { onClose: () => void }): ReactNo
       void cache.invalidate({ queryKey: projectsQuery().queryKey });
       if (issue !== null) {
         onClose();
-        navigate(buildIssuePath({ key: issue.key, kind: "issue" }));
+        navigate(buildIssuePath({ key: issue.body.key, kind: "issue" }));
         return;
       }
       // Made, with no answer to open: the draft goes, so a second press makes nothing, and the

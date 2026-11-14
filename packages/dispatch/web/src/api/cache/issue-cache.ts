@@ -45,14 +45,18 @@ export function roleDocument(
  * held is kept out by the issue read's own rule (`issueQuery`).
  */
 export function mergeIssue(cache: Cache, next: Answered<Issue>): void {
-  cache.setDispatched(["issue", next.key], next, (current: IssueDetails | undefined, issue) => {
-    if (current === undefined) {
-      return undefined;
+  cache.setDispatched(
+    ["issue", next.body.key],
+    next,
+    (current: IssueDetails | undefined, issue) => {
+      if (current === undefined) {
+        return undefined;
+      }
+      const reach =
+        current.route === issue.route
+          ? {}
+          : { route_status: null, route_holder: null, route_status_reason: null };
+      return { ...current, ...issue, ...reach };
     }
-    const reach =
-      current.route === issue.route
-        ? {}
-        : { route_status: null, route_holder: null, route_status_reason: null };
-    return { ...current, ...issue, ...reach };
-  });
+  );
 }

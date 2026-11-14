@@ -193,9 +193,9 @@ export function useAskAnswerForm({
       setAnswerText("");
       // Answered either way; with no answer to give, the card reads the ask afresh instead of
       // showing the one Dispatch would have handed back.
-      setJustAnswered(updatedAsk);
+      setJustAnswered(updatedAsk?.body ?? null);
       if (changed || updatedAsk === null) {
-        if (updatedAsk?.answer != null) {
+        if (updatedAsk?.body.answer != null) {
           cache.setDispatched(
             ["ask-thread", ask.id],
             updatedAsk,

@@ -6,7 +6,12 @@ import { MemoryRouter } from "react-router-dom";
 
 import { onFakeClock, settle } from "../../__tests__/fake-clock";
 import { keptTab, keyMinted, memoryFiles } from "../../__tests__/kept-sends-harness";
-import { cacheOf, QueryClient, QueryClientProvider } from "../../api/cache/test-client";
+import {
+  answeredByDispatch,
+  cacheOf,
+  QueryClient,
+  QueryClientProvider,
+} from "../../api/cache/test-client";
 import { Writes } from "../../api/cache/write-store";
 import { ApiError, api } from "../../api/client";
 import type {
@@ -89,9 +94,10 @@ test("broadcasts go in press order, survive a reload, and a made one is kept no 
   const tab = keptTab();
   const first = Promise.withResolvers<BroadcastCreated>();
   const createBroadcast = spyOn(api, "createBroadcast").mockReturnValueOnce(first.promise);
+  // Stands in for the client's own `send`, which mints Dispatch's body as its answer.
   const send = spyOn(api, "send").mockImplementation(async (request) => {
     const input = request.body as CreateBroadcastInput;
-    return created(input) as never;
+    return answeredByDispatch(created(input)) as never;
   });
   const before = new Writes(cacheOf(signedIn()), tab.page(), memoryFiles());
   try {

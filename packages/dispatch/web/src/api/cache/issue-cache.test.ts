@@ -39,6 +39,22 @@ test("a PATCH that leaves the route alone keeps its status until the next read",
   expect(cached.route_status).toBe("no_holder");
 });
 
+// Round eight's Minor of dispatch://INFRA-299's pull request: TypeScript types an
+// `Object.assign` onto Dispatch's answer as an answer, though the copy carries none of it. The
+// cache write checks the answer as it runs and refuses the copy, so the screen's title never
+// enters the cache.
+test("a copy of Dispatch's answer with a field the screen set is refused, and the cache keeps Dispatch's issue", () => {
+  const queryClient = new QueryClient();
+  const key = ["issue", unheld.key];
+  queryClient.setQueryData(key, unheld);
+  const answer = answeredByDispatch({ ...unheld, title: "Dispatch's title" });
+  const copy = Object.assign({}, answer, { title: "The screen's title" });
+  expect(() => cacheOf(queryClient).setDispatched(key, copy)).toThrow(
+    "a cache write takes Dispatch's answer (Answered), and this is none"
+  );
+  expect(queryClient.getQueryData<IssueDetails>(key)).toBe(unheld);
+});
+
 const refilling: IssueDetails = {
   ...fixture,
   route: "role:sre",

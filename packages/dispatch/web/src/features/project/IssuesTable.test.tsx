@@ -4,7 +4,12 @@ import userEvent, { type UserEvent } from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { answerIssueCreates, answerIssuePatches } from "../../__tests__/send-answers";
-import { cacheOf, QueryClient, QueryClientProvider } from "../../api/cache/test-client";
+import {
+  answeredByDispatch,
+  cacheOf,
+  QueryClient,
+  QueryClientProvider,
+} from "../../api/cache/test-client";
 import { ApiError, api } from "../../api/client";
 import { projectIssuesQuery } from "../../api/queries";
 import type { CreateIssueInput, Issue, IssueDetails, IssueSummary } from "../../api/types";
@@ -58,6 +63,11 @@ function savedIssue(key: string): Issue {
     plan_artifact_id: "",
     verification_artifact_id: "",
   };
+}
+/** `savedIssue` as `api.send` answers it, minted as Dispatch's answer, for a spy standing in
+ *  for the client's own `send`. */
+function sentIssue(key: string) {
+  return answeredByDispatch(savedIssue(key));
 }
 function Route(): ReactNode {
   useKeymapScope("project");
@@ -375,7 +385,7 @@ test("dismissing an interrupted action preserves layout and sends none of its fu
       },
     })
   );
-  const send = spyOn(api, "send").mockResolvedValue(savedIssue("CORE-1") as never);
+  const send = spyOn(api, "send").mockResolvedValue(sentIssue("CORE-1") as never);
   restores.push(() => send.mockRestore());
   table([issue("CORE-1")]);
   const recovery = await screen.findByRole("region", { name: "Interrupted table action" });
@@ -426,7 +436,7 @@ test("Title and Columns popovers allow internal Tab, dismiss on an outside press
 test("a partially refused batch keeps selection and identifies the writes already saved", async () => {
   const user = userEvent.setup();
   const send = spyOn(api, "send")
-    .mockResolvedValueOnce(savedIssue("CORE-1"))
+    .mockResolvedValueOnce(sentIssue("CORE-1"))
     .mockRejectedValueOnce(new ApiError(403, { error: "refused", code: "FORBIDDEN" }));
   table([issue("CORE-1"), issue("CORE-2")]);
   restores.push(() => send.mockRestore());
@@ -500,7 +510,7 @@ test("an epic's Start all includes queued siblings hidden by a priority filter",
   const send = spyOn(api, "send").mockImplementation(async (request) => {
     const key = request.path.split("/").at(-1) ?? "";
     written.push(key);
-    return savedIssue(key) as never;
+    return sentIssue(key) as never;
   });
   table(
     [
@@ -528,7 +538,7 @@ test("a refused bulk operation retries independently while the other operations 
       refused = true;
       throw new ApiError(403, { error: "refused", code: "FORBIDDEN" });
     }
-    return savedIssue(key) as never;
+    return sentIssue(key) as never;
   });
   restores.push(() => send.mockRestore());
   const { client, listing } = table([issue("CORE-1"), issue("CORE-2"), issue("CORE-3")]);
@@ -642,7 +652,7 @@ test("a refused merge move leaves the source open and does not post the close re
   const send = spyOn(api, "send").mockImplementation(async (request) => {
     requests.push({ path: request.path, body: request.body });
     if (request.path.endsWith("CORE-3")) throw new ApiError(403, { error: "Move refused" });
-    return savedIssue("CORE-4") as never;
+    return sentIssue("CORE-4") as never;
   });
   const message = spyOn(api, "createMessage").mockRejectedValue(
     new Error("Unexpected close reason")
@@ -839,7 +849,7 @@ test("a bulk action keeps at most eight writes in flight", async () => {
     gates.push(gate.resolve);
     await gate.promise;
     running -= 1;
-    return savedIssue(request.path.split("/").at(-1) ?? "CORE-1") as never;
+    return sentIssue(request.path.split("/").at(-1) ?? "CORE-1") as never;
   });
   restores.push(() => send.mockRestore());
   const keys = Array.from({ length: 20 }, (_, index) => `CORE-${index + 1}`);
@@ -880,7 +890,7 @@ test("a browser that refuses storage still renders the table and runs an action"
     refuse(key);
     write.call(this, key, value);
   });
-  const send = spyOn(api, "send").mockResolvedValue(savedIssue("CORE-2"));
+  const send = spyOn(api, "send").mockResolvedValue(sentIssue("CORE-2"));
   restores.push(() => {
     getItem.mockRestore();
     setItem.mockRestore();
@@ -976,7 +986,7 @@ test("an epic left with no children is still a row while grouped by epic", async
   ];
   const send = spyOn(api, "send").mockImplementation(async () => {
     rows[1] = issue("CORE-2");
-    return savedIssue("CORE-2") as never;
+    return sentIssue("CORE-2") as never;
   });
   restores.push(() => send.mockRestore());
   table(rows, "?group=epic");
@@ -1119,7 +1129,7 @@ test("Start all its queued issues next moves the epic's queued children and repo
   const sent: { path: string; body: unknown }[] = [];
   const send = spyOn(api, "send").mockImplementation(async (request) => {
     sent.push({ path: request.path, body: request.body });
-    return savedIssue("CORE-3") as never;
+    return sentIssue("CORE-3") as never;
   });
   restores.push(() => send.mockRestore());
   table(
@@ -1158,7 +1168,7 @@ test("Finish retries a refused action's writes eight at a time", async () => {
     held.push(holding.resolve);
     await holding.promise;
     inFlight -= 1;
-    return savedIssue("CORE-1") as never;
+    return sentIssue("CORE-1") as never;
   });
   restores.push(() => send.mockRestore());
   const children = Array.from({ length: 20 }, (_, index) =>
@@ -1380,7 +1390,7 @@ test("a retried Move reports in the ordinary wording while an action waits to be
       refused = true;
       throw new ApiError(403, { error: "refused", code: "FORBIDDEN" });
     }
-    return savedIssue(request.path.split("/").at(-1) ?? "CORE-1") as never;
+    return sentIssue(request.path.split("/").at(-1) ?? "CORE-1") as never;
   });
   restores.push(() => send.mockRestore());
   const { client } = table([issue("CORE-1"), issue("CORE-2", { labels: ["legion"] })]);
@@ -1407,7 +1417,7 @@ test("a resumed merge posts no second reason when the source already holds it", 
   const paths: string[] = [];
   const send = spyOn(api, "send").mockImplementation(async (request) => {
     paths.push(request.path);
-    return savedIssue("CORE-1") as never;
+    return sentIssue("CORE-1") as never;
   });
   const messages = spyOn(api, "listIssueMessages").mockResolvedValue([
     { message: { body: "Merged into CORE-2 (“Target”) from the issues table." } },
@@ -1450,7 +1460,7 @@ test("a resumed merge whose discarded reason never landed posts it before closin
     paths.push(request.path);
     if (refuseReason && request.path.endsWith("/messages"))
       throw new ApiError(403, { error: "Message refused", code: "FORBIDDEN" });
-    return savedIssue("CORE-1") as never;
+    return sentIssue("CORE-1") as never;
   });
   const messages = spyOn(api, "listIssueMessages").mockResolvedValue([]);
   restores.push(() => {
@@ -1521,7 +1531,7 @@ test.each([
 // two destructive selects may write on one, so each stages a value for a button to commit.
 test("an arrow key on the move or merge select writes nothing", async () => {
   const user = userEvent.setup();
-  const send = spyOn(api, "send").mockResolvedValue(savedIssue("CORE-3") as never);
+  const send = spyOn(api, "send").mockResolvedValue(sentIssue("CORE-3") as never);
   restores.push(() => send.mockRestore());
   table(
     [
@@ -1556,7 +1566,7 @@ test("an arrow key on the move or merge select writes nothing", async () => {
 // B2: Start next over a selection the reader cannot see all of says how many it will move.
 test("Start next on a selection larger than the page asks first", async () => {
   const user = userEvent.setup();
-  const send = spyOn(api, "send").mockResolvedValue(savedIssue("CORE-1") as never);
+  const send = spyOn(api, "send").mockResolvedValue(sentIssue("CORE-1") as never);
   restores.push(() => send.mockRestore());
   const rows = [
     // Ahead of the queue and out of this view's filter, so the selection has somewhere to move.
@@ -1605,7 +1615,7 @@ test.each([
   const paths: string[] = [];
   const send = spyOn(api, "send").mockImplementation(async (request) => {
     paths.push(request.path);
-    return savedIssue("CORE-1") as never;
+    return sentIssue("CORE-1") as never;
   });
   const messages = spyOn(api, "listIssueMessages").mockResolvedValue([
     { message: { body: "Merged into CORE-2 (“Payments”) from the issues table." } },
@@ -1695,7 +1705,7 @@ test.each([
 // F7: the steps of a start-next are known before the first write, so the store is written once.
 test("Start next writes the store once for the whole batch", async () => {
   const user = userEvent.setup();
-  const send = spyOn(api, "send").mockResolvedValue(savedIssue("CORE-1") as never);
+  const send = spyOn(api, "send").mockResolvedValue(sentIssue("CORE-1") as never);
   restores.push(() => send.mockRestore());
   const rows = Array.from({ length: 10 }, (_, index) =>
     issue(`CORE-${index + 1}`, { labels: ["legion"], rank: String(index).padStart(3, "0") })
@@ -1719,7 +1729,7 @@ test("Start next writes the store once for the whole batch", async () => {
 // O8: a record a tab left behind a day ago is not this reader's unfinished work.
 test("an action record older than a day is gone, and a new action may begin", async () => {
   const user = userEvent.setup();
-  const send = spyOn(api, "send").mockResolvedValue(savedIssue("CORE-1") as never);
+  const send = spyOn(api, "send").mockResolvedValue(sentIssue("CORE-1") as never);
   restores.push(() => send.mockRestore());
   localStorage.setItem(
     "dispatch.project-table.CORE",
@@ -1754,7 +1764,7 @@ test("Finish completes when a refused write was retried from Pending changes", a
   let refuse = true;
   const send = spyOn(api, "send").mockImplementation(async () => {
     if (refuse) throw new ApiError(403, { error: "refused", code: "FORBIDDEN" });
-    return savedIssue("CORE-2") as never;
+    return sentIssue("CORE-2") as never;
   });
   restores.push(() => send.mockRestore());
   const { client } = table([

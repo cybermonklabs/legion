@@ -86,13 +86,74 @@ function shownOf(
   return { data, hash, overlay, select, value };
 }
 
-/** TanStack's `result` with `data` in place of its own: every other member is read through to
- *  `result` as it is read, so TanStack, which tracks what a reader reads, still renders it again
- *  only for that. */
+/** The members of TanStack's result that fetch again and answer with a result of their own,
+ *  whose `data` is Dispatch's as the cache holds it. */
+const REFETCHES: ReadonlySet<PropertyKey> = new Set([
+  "fetchNextPage",
+  "fetchPreviousPage",
+  "refetch",
+]);
+
+type Refetch = (...args: never[]) => Promise<{ readonly data: unknown }>;
+
+/** What a read last rendered of the cache at `key`, for a refetch it handed out to answer by. */
+interface Read {
+  readonly key: QueryKey;
+  readonly shown: Shown;
+  readonly writes: Writes;
+}
+
+/** Each of TanStack's refetches a read has rendered, by TanStack's function, which is one for as
+ *  long as its observer is: the read it last rendered for, and the refetch the read hands out in
+ *  its place (`shownRefetch`). */
+const refetches = new WeakMap<Refetch, { read: Read; readonly shown: Refetch }>();
+
+/** The refetch a read rendering `read` hands out in place of TanStack's `refetch`: one function
+ *  for as long as TanStack's is, so a reader naming it in an effect's dependencies runs nothing
+ *  again, that answers with TanStack's result as the read shows it once it answers - Dispatch's
+ *  data then, with the store's overlay for the key then over it and the read's `select` over
+ *  that, sharing what it can with the value the read last rendered (`shownOf`). */
+function shownRefetch(refetch: Refetch, read: Read): Refetch {
+  const held = refetches.get(refetch);
+  if (held !== undefined) {
+    held.read = read;
+    return held.shown;
+  }
+  const entry = {
+    read,
+    shown: ((...args) =>
+      refetch(...args).then((answer) => {
+        const { key, shown, writes } = entry.read;
+        const now = shownOf(shown, shown.hash, answer.data, writes.overlay(key), shown.select);
+        return withData(answer, now.value);
+      })) as Refetch,
+  };
+  refetches.set(refetch, entry);
+  return entry.shown;
+}
+
+/** TanStack's `result` with `data` in place of its own, and each of its refetches answering as
+ *  the read shows it (`shownRefetch`): every other member is read through to `result` as it is
+ *  read, so TanStack, which tracks what a reader reads, still renders it again only for that. */
 function withData<R extends object>(result: R, data: unknown): R {
   return new Proxy(result, {
-    get: (target, member) => (member === "data" ? data : Reflect.get(target, member)),
+    get: (target, member) => {
+      if (member === "data") return data;
+      const value: unknown = Reflect.get(target, member);
+      if (!REFETCHES.has(member) || typeof value !== "function") return value;
+      return refetches.get(value as Refetch)?.shown ?? value;
+    },
   });
+}
+
+/** `result` as a read rendering `read` shows it: `withData`, its refetches answering by `read`
+ *  until the read renders again. */
+function shownResult<R extends object>(result: R, read: Read): R {
+  for (const member of REFETCHES) {
+    const refetch: unknown = Reflect.get(result, member);
+    if (typeof refetch === "function") shownRefetch(refetch as Refetch, read);
+  }
+  return withData(result, read.shown.value);
 }
 
 /** The store's overlay for the cache at `key`, read through `useSyncExternalStore`: the store
@@ -125,10 +186,10 @@ function useShownData(
   data: unknown,
   overlay: Overlay,
   select: Select | undefined
-): unknown {
+): Shown {
   const last = useRef<Shown | undefined>(undefined);
   last.current = shownOf(last.current, hashKey(key), data, overlay, select);
-  return last.current.value;
+  return last.current;
 }
 
 /** The options every read below is handed, as far as the composition reads them. */
@@ -141,10 +202,8 @@ function useComposedQuery({ select, ...options }: Composed) {
   const { writes } = useCache();
   const overlay = useOverlay(writes, options.queryKey);
   const result = useQuery(libraryOptions(options) as Parameters<typeof useQuery>[0]);
-  return withData(
-    result,
-    useShownData(options.queryKey, result.data, overlay, select as Select | undefined)
-  );
+  const shown = useShownData(options.queryKey, result.data, overlay, select as Select | undefined);
+  return shownResult(result, { key: options.queryKey, shown, writes });
 }
 
 function useComposedInfiniteQuery({ select, ...options }: Composed) {
@@ -153,10 +212,8 @@ function useComposedInfiniteQuery({ select, ...options }: Composed) {
   const result = useInfiniteQuery(
     libraryOptions(options) as Parameters<typeof useInfiniteQuery>[0]
   );
-  return withData(
-    result,
-    useShownData(options.queryKey, result.data, overlay, select as Select | undefined)
-  );
+  const shown = useShownData(options.queryKey, result.data, overlay, select as Select | undefined);
+  return shownResult(result, { key: options.queryKey, shown, writes });
 }
 
 /** What a `useShownQueries` read last showed: each query's value by its key's hash, and what its
@@ -196,7 +253,7 @@ function useComposedQueries({
       query.select as Select | undefined
     );
     byHash.set(hash, one);
-    return withData(result, one.value);
+    return shownResult(result, { key: query.queryKey, shown: one, writes });
   });
   const combined =
     combine === undefined

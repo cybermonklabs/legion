@@ -40,6 +40,7 @@ import {
 import { reachable, routeOf, unreachable } from "../reachability";
 import { cacheOf } from "./cache";
 import { DispatchQueryClient } from "./query-client";
+import { answeredByDispatch } from "./test-client";
 import { defineWriteKind, plainWrite, type Write, type WriteChange, Writes } from "./write-store";
 
 /** A page's query client, signed in: the store stamps every write with this login at its press
@@ -1552,12 +1553,13 @@ test("a plain write on a line goes out as the very request it is kept as", async
     const first = Promise.withResolvers<unknown>();
     void statusWrite(writes, () => first.promise, { target: "issue:CORE-1" }).catch(() => {});
     const request: WriteRequest = { ...patch, body: { status: "backlog" } };
+    const backlog = answeredByDispatch({ status: "backlog" });
     const second = writes.run({
       detail: null,
       kind: plainWrite,
       label: "CORE-1 set to backlog",
       presentation: "indicator",
-      request: sends.answer(request, async () => ({ status: "backlog" })),
+      request: sends.answer(request, async () => backlog),
       target: "issue:CORE-1",
     });
     await settle();
@@ -1585,7 +1587,7 @@ test("a plain write on a line goes out as the very request it is kept as", async
     expect(writes.rows()).toHaveLength(2);
 
     first.resolve({});
-    expect(await second).toEqual({ status: "backlog" });
+    expect(await second).toBe(backlog);
     expect(sends.calls[1]).toBe(request);
     expect(sends.calls[1]).toEqual({
       body: { status: "backlog" },
@@ -2463,6 +2465,82 @@ test("a restore refused while a Show more is loading leaves Dispatch's row on th
     expect(rows()).toEqual([["a", "b"], ["c"]]);
   } finally {
     unsubscribe();
+    writes.clear();
+    tab.close();
+  }
+});
+
+// Round eight's Medium of dispatch://INFRA-299's pull request, the reviewer's own probe: a
+// restore on the Dismissed list lands and the surface reads the list again; while that read is
+// out, Show more is pressed. `fetchNextPage` cancels the read again and reads one page after the
+// pages the cache holds, which were read before the landing, with the restored row among them.
+// That page read reads no page Dispatch answered after the landing, so the restore stays over its
+// answer, and the store reads the list again once it settles: its answer is Dispatch's whole.
+test("a read sent before the save answers after it lands: a Show more while the read again is out leaves the restore over the pages read before the landing", async () => {
+  const tab = keptTab();
+  const client = dispatchClient();
+  const writes = new Writes(cacheOf(client), tab.page(), memoryFiles());
+  const key = ["me", "replies", "inbox", "dismissed"];
+  // Dispatch's Dismissed rows, two to a page, each page after the cursor of the row before it.
+  let dismissed = ["a", "b", "d"];
+  const pageAfter = (cursor: string | undefined): RowPage => {
+    const from = cursor === undefined ? 0 : dismissed.indexOf(cursor) + 1;
+    const rows = dismissed.slice(from, from + 2);
+    return { next: from + 2 < dismissed.length ? rows.at(-1) : undefined, rows };
+  };
+  // Each read of the first page once the restore lands, held for the row to answer.
+  const firstReads: (() => void)[] = [];
+  let holdFirst = false;
+  const read = {
+    getNextPageParam: (last: RowPage) => last.next,
+    initialPageParam: undefined as string | undefined,
+    queryFn: ({ pageParam }: { pageParam: string | undefined }) => {
+      if (pageParam !== undefined || !holdFirst) return Promise.resolve(pageAfter(pageParam));
+      const answered = Promise.withResolvers<RowPage>();
+      firstReads.push(() => answered.resolve(pageAfter(undefined)));
+      return answered.promise;
+    },
+    queryKey: key,
+    retry: false,
+    staleTime: Number.POSITIVE_INFINITY,
+  };
+  await client.prefetchInfiniteQuery(read);
+  const observer = new InfiniteQueryObserver(client, read);
+  const unsubscribe = observer.subscribe(() => {});
+  const shown = () =>
+    shownBy<InfiniteData<RowPage>>(writes, client, key)
+      ?.pages.map((one) => one.rows.join(""))
+      .join("|");
+  try {
+    const seen = [`before:${shown()}`];
+    const saved = Promise.withResolvers<unknown>();
+    const restore = restoreOfA(writes, key, () => saved.promise);
+    seen.push(`pressed:${shown()}`);
+    dismissed = ["b", "d"];
+    holdFirst = true;
+    saved.resolve(null);
+    await restore;
+    seen.push(`landed:${shown()}`);
+    // The surface reads the list again once its restore answered; that read is out.
+    void client.invalidateQueries({ queryKey: key });
+    await waitFor(() => expect(firstReads).toHaveLength(1));
+
+    await observer.fetchNextPage();
+    seen.push(`show-more:${shown()}`);
+    expect(seen).toEqual(["before:ab", "pressed:b", "landed:b", "show-more:b|d"]);
+
+    // The store reads the whole list again, as the page read that cancelled it settled.
+    await waitFor(() => expect(firstReads).toHaveLength(2));
+    expect(shown()).toBe("b|d");
+    firstReads[1]?.();
+    await waitFor(() => expect(client.isFetching()).toBe(0));
+    seen.push(`read-again:${shown()}`);
+    expect(seen).toEqual(["before:ab", "pressed:b", "landed:b", "show-more:b|d", "read-again:bd"]);
+    // Its answer is Dispatch's whole, so no cache holds the restore any more.
+    expect(writes.overlay(key)).toBe(writes.overlay(["nothing composed here"]));
+  } finally {
+    unsubscribe();
+    for (const answer of firstReads) answer();
     writes.clear();
     tab.close();
   }

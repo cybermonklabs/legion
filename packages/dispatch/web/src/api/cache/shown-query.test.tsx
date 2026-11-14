@@ -1,13 +1,13 @@
 import { afterEach, beforeEach, expect, type Mock, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { renderHook } from "@testing-library/react";
+import { act, renderHook } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
 
 import { api } from "../client";
 import { issueQuery } from "../queries";
 import type { IssueDetails } from "../types";
 import { cacheOf } from "./cache";
-import { useShownQuery, watchShownQuery } from "./shown-query";
+import { useShownInfiniteQuery, useShownQuery, watchShownQuery } from "./shown-query";
 
 /**
  * The rows here read through the wrapper over a real `QueryClient`, as the page does. A query's
@@ -127,6 +127,82 @@ test("a reader moved between two issues shows the issue it is on: a caller's sel
     });
   } finally {
     reader.unmount();
+  }
+});
+
+// Round eight's Minor of dispatch://INFRA-299's pull request: TanStack's `refetch` answers with a
+// result of its own, whose `data` is Dispatch's answer as the cache holds it. The read hands out
+// a refetch that answers with the read as it shows it then, the live change and the caller's
+// select over Dispatch's answer, and that refetch is one function from render to render.
+test("a read's refetch answers with what the read shows: a caller's select over the issue, with a live write over it", async () => {
+  const client = clientWithBoth();
+  const pressed = cacheOf(client).writes.fromPress((shown) =>
+    shown.on<IssueDetails>(issueQuery(newer.key).queryKey, (data) => ({ ...data, priority: 0 }))
+  );
+  getIssue.mockImplementation(async () => ({
+    ...newer,
+    title: "Renamed on Dispatch",
+    updated_at: "2026-11-11T00:00:00Z",
+  }));
+  const reader = renderReader(client, (key) =>
+    useShownQuery({
+      ...issueQuery(key),
+      select: ({ key: shownKey, priority, title }) => ({ key: shownKey, priority, title }),
+    })
+  );
+  try {
+    const { refetch } = reader.result.current;
+    const answered = await act(() => reader.result.current.refetch());
+    expect(answered.data).toEqual({ key: newer.key, priority: 0, title: "Renamed on Dispatch" });
+    expect(reader.result.current.data).toEqual(answered.data);
+    expect(reader.result.current.refetch).toBe(refetch);
+  } finally {
+    reader.unmount();
+    pressed.release();
+  }
+});
+
+/** A page of an offset-paged read, as the Answers page pages its rows. */
+interface OffsetPage {
+  readonly offset: number;
+  readonly rows: readonly string[];
+}
+
+// As the row above, for a paged read: the page a Show more reads answers with the pages as the
+// read shows them, the live change taking a row out of every page and the caller's select over
+// that.
+test("a paged read's fetchNextPage answers with what the read shows: a caller's select over the pages, with a live write over them", async () => {
+  const client = clientWithBoth();
+  const key = ["me", "answers"];
+  const all = ["a", "b", "c", "d"];
+  const pressed = cacheOf(client).writes.fromPress((shown) =>
+    shown.on<{ pages: OffsetPage[] }>(key, (data) => ({
+      ...data,
+      pages: data.pages.map((page) => ({ ...page, rows: page.rows.filter((id) => id !== "c") })),
+    }))
+  );
+  const reader = renderReader(client, () =>
+    useShownInfiniteQuery({
+      getNextPageParam: (last: OffsetPage) =>
+        last.offset + 2 < all.length ? last.offset + 2 : undefined,
+      initialPageParam: 0,
+      queryFn: async ({ pageParam }) => ({
+        offset: pageParam,
+        rows: all.slice(pageParam, pageParam + 2),
+      }),
+      queryKey: key,
+      select: (data) => data.pages.flatMap((page) => page.rows).join(""),
+    })
+  );
+  try {
+    await act(async () => {});
+    expect(reader.result.current.data).toBe("ab");
+    const answered = await act(() => reader.result.current.fetchNextPage());
+    expect(answered.data).toBe("abd");
+    expect(reader.result.current.data).toBe("abd");
+  } finally {
+    reader.unmount();
+    pressed.release();
   }
 });
 

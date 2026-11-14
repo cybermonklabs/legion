@@ -110,24 +110,21 @@ export function mergeEventPages(current: EventPages | undefined, incoming: Event
 /** Puts `event`, as Dispatch sent it, at the front of its issue's log, where the log is held and
  *  its head is older: Dispatch's event over Dispatch's pages. */
 export function prependEventToLog(cache: Cache, event: Answered<DispatchEvent>): void {
-  if (event.issue_key === null) {
+  const issueKey = event.body.issue_key;
+  if (issueKey === null) {
     return;
   }
-  cache.setDispatched(
-    ["events", event.issue_key],
-    event,
-    (current: EventPages | undefined, streamed) => {
-      if (current === undefined) {
-        return current;
-      }
-      const first = current.pages[0] ?? [];
-      if (streamed.seq <= (first[0]?.seq ?? 0)) {
-        return current;
-      }
-      return {
-        ...current,
-        pages: [[streamed, ...first], ...current.pages.slice(1)],
-      };
+  cache.setDispatched(["events", issueKey], event, (current: EventPages | undefined, streamed) => {
+    if (current === undefined) {
+      return current;
     }
-  );
+    const first = current.pages[0] ?? [];
+    if (streamed.seq <= (first[0]?.seq ?? 0)) {
+      return current;
+    }
+    return {
+      ...current,
+      pages: [[streamed, ...first], ...current.pages.slice(1)],
+    };
+  });
 }

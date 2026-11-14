@@ -416,7 +416,7 @@ export function ProofDocument({
                 ],
               }
       );
-      onVersionChange(created.number);
+      onVersionChange(created.body.number);
     },
   });
   const rebuild = useKeyedWrite({

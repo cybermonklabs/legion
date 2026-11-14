@@ -220,6 +220,59 @@ test("invalidateQueries while a fetch is out, by default: that fetch is cancelle
   }
 });
 
+// Store row: write-store.test.ts, "a read sent before the save answers after it lands: a Show
+// more while the read again is out leaves the restore over the pages read before the landing".
+// With the store counting a page read as a fetch begun after the landing, or letting a change go
+// on its answer, the page read hands back the first page read before the landing and the row
+// fails; with the store not reading the cache again once it settles, no whole read follows.
+test("fetchNextPage while a refetch is out cancels that refetch and raises a fetch action whose meta names fetchMore", async () => {
+  const client = clientOf();
+  const key = ["me", "replies", "inbox", "dismissed"];
+  const asked: (string | undefined)[] = [];
+  const pages = heldRead<{ readonly next: string | undefined; readonly rows: string[] }>();
+  const read = {
+    getNextPageParam: (last: { readonly next: string | undefined }) => last.next,
+    initialPageParam: undefined as string | undefined,
+    queryFn: (context: { pageParam: string | undefined; signal: AbortSignal }) => {
+      asked.push(context.pageParam);
+      return pages.queryFn(context);
+    },
+    queryKey: key,
+  };
+  const prefetched = client.prefetchInfiniteQuery(read);
+  await settle();
+  pages.fetches[0]?.resolve({ next: "b", rows: ["a", "b"] });
+  await prefetched;
+  const observer = new InfiniteQueryObserver(client, read);
+  const stop = observer.subscribe(() => {});
+  const fetches: (string | null)[] = [];
+  client.getQueryCache().subscribe((event) => {
+    if (event.type !== "updated" || event.action.type !== "fetch") return;
+    fetches.push(event.action.meta?.fetchMore?.direction ?? null);
+  });
+  try {
+    const refetched = observer.refetch();
+    await settle();
+    expect(pages.fetches).toHaveLength(2);
+    const more = observer.fetchNextPage();
+    await settle();
+    expect(pages.fetches).toHaveLength(3);
+    expect(pages.fetches[1]?.signal.aborted).toBe(true);
+    // The page read reads the page after the pages the cache held before the refetch.
+    expect(asked).toEqual([undefined, undefined, "b"]);
+    pages.fetches[2]?.resolve({ next: undefined, rows: ["d"] });
+    await Promise.all([refetched, more]);
+    expect(fetches).toEqual([null, "forward"]);
+    expect(
+      observer.getCurrentResult().data?.pages.map((page) => page.rows),
+      "the cancelled refetch's answer never lands"
+    ).toEqual([["a", "b"], ["d"]]);
+    expect(client.getQueryState(key)?.fetchStatus).toBe("idle");
+  } finally {
+    stop();
+  }
+});
+
 // Store row: write-store.test.ts, "a read sent before the save answers after it lands: the pick
 // stays over it until its list is removed". With the store's fetch counter ignoring `removed`, the
 // pick stays composed on a key no cache holds, and that row fails.

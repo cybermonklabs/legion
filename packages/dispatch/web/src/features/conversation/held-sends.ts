@@ -287,7 +287,7 @@ export const composerSend = defineWriteKind<ComposerSend, KeptComposerSend>({
     request: { ...request, edit: edit === null ? undefined : restoredEdit(edit) },
   }),
   resume: ({ request }, wire) =>
-    wire === null ? sendAttempt(request) : (bounds) => api.send(wire, bounds),
+    wire === null ? sendAttempt(request) : (bounds) => api.resendBody(wire, bounds),
   started: (cache, write, settled, late) => {
     const name = write.detail.mutationKey;
     if (late) {

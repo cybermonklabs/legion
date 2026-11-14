@@ -7,7 +7,7 @@ import {
   useQuery as useLibraryQuery,
 } from "@tanstack/react-query";
 
-import { type Answered, answered } from "./answered";
+import { type Answered, answered, isAnswered } from "./answered";
 import { libraryOptions, type ReadOptions } from "./read-options";
 
 /**
@@ -43,6 +43,13 @@ export { cacheOf } from "./cache";
  *  data enters the page (`answered.ts`), and only a test reaches it. */
 export function answeredByDispatch<T>(body: T): Answered<T> {
   return answered(body);
+}
+
+/** What a rig standing in for `api.send` answers with Dispatch's `body`: the body minted as its
+ *  answer, as the real `send` mints it - nothing where it is nothing, and a fixture the test
+ *  minted already as it is. */
+export function sentAnswer(body: unknown): unknown {
+  return body === undefined || isAnswered(body) ? body : answered(body);
 }
 
 /** TanStack's `QueryObserver` over a read's options as a feature builds them (`ReadOptions`):

@@ -12,7 +12,7 @@ import {
   type InboxThreadKind,
 } from "@legion/contracts";
 
-import type { Answered } from "./cache/answered";
+import { type Answered, answered, answeredBody } from "./cache/answered";
 import {
   type Answer,
   type Body,
@@ -1014,10 +1014,11 @@ export class DispatchApiClient {
    * person who pressed it. A JSON body goes as JSON and a multipart form as itself, through the
    * upload transport; `bounds.sent` is told the request as it goes out. Answers what Dispatch
    * answered (nothing for an empty body), as the request's builder names it (`WriteRequest`):
-   * `Answered` for every builder of this module (`WriteAnswer`), the mint of a write's answer, so
-   * a surface can write it into a cache. Or rejects with its refusal; a 2xx whose body is not JSON
-   * rejects with `UnreadableAnswerError`, a 2xx whose body stops part way with `NetworkError`, and
-   * a replay of an answer Dispatch did not keep with `AnswerNotKeptError`.
+   * `Answered` for every builder of this module (`WriteAnswer`), so a surface can write it into
+   * a cache - this is the mint of a write's answer, which holds Dispatch's body (`answered.ts`).
+   * Or rejects with its refusal; a 2xx whose body is not JSON rejects with
+   * `UnreadableAnswerError`, a 2xx whose body stops part way with `NetworkError`, and a replay of
+   * an answer Dispatch did not keep with `AnswerNotKeptError`.
    */
   send<T>(
     request: WriteRequest<T>,
@@ -1065,8 +1066,8 @@ export class DispatchApiClient {
           typeof reason === "string" ? reason : "Dispatch did not keep this write's answer"
         );
       }
-      // Dispatch's body, as the request names it: for this module's builders, the brand's mint.
-      return answer as T;
+      // Dispatch's body, minted as its answer: every builder of this module names it `Answered`.
+      return (answer === undefined ? undefined : answered(answer)) as T;
     };
     return this.exchange(path, init, deadlineMs, read, progress);
   }
@@ -1090,11 +1091,26 @@ export class DispatchApiClient {
   }
 
   /** `request`'s answer as its plain body, for a method whose answer no surface writes into a
-   *  cache. A method whose answer one does answers `Answered` (`send` with its builder's
-   *  request): `putIssueState`, `putAgentState`, `putProjectDefaultAssignee` and
-   *  `createArtifactVersion`, beside every write made from its request alone. */
-  private sendBody<T>(request: WriteRequest<Answered<T>>, bounds: WriteBounds): Promise<T> {
-    return this.send<T>(request, bounds);
+   *  cache: `send`'s, the body read back out of it. A method whose answer one does answers
+   *  `Answered` (`send` with its builder's request): `putIssueState`, `putAgentState`,
+   *  `putProjectDefaultAssignee` and `createArtifactVersion`, beside every write made from its
+   *  request alone. */
+  private sendBody<T>(
+    request: WriteRequest<Answered<T> | undefined>,
+    bounds: WriteBounds
+  ): Promise<T> {
+    return this.send(request, bounds).then(
+      (answer) => (answer === undefined ? undefined : answeredBody(answer)) as T
+    );
+  }
+
+  /** `request`, a write made again from the request a reload kept, answered with its plain body
+   *  as the client method that first made it answers it (`sendBody`): for a write whose first
+   *  attempt is such a method and whose answer no surface writes into a cache - a broadcast
+   *  (`createBroadcast`), a composer's send (`createComment` and its kin) - so its kind reads one
+   *  shape of answer whether the write was resumed or not. */
+  resendBody(request: WriteRequest, bounds: WriteBounds): Promise<unknown> {
+    return this.sendBody(request as WriteRequest<Answered<unknown> | undefined>, bounds);
   }
 
   private async post<P extends PathsOf<"post">>(
@@ -1103,10 +1119,7 @@ export class DispatchApiClient {
     body: RequestBody<Op<P, "post">> | FormBody<Op<P, "post">>,
     bounds: WriteBounds
   ): Promise<Answer<Op<P, "post">>> {
-    return this.send<Answer<Op<P, "post">>>(
-      requestTo("post", routeUrl(pattern, params), body),
-      bounds
-    );
+    return this.sendBody(requestTo("post", routeUrl(pattern, params), body), bounds);
   }
 
   private async patch<P extends PathsOf<"patch">>(
@@ -1115,10 +1128,7 @@ export class DispatchApiClient {
     body: RequestBody<Op<P, "patch">>,
     bounds: WriteBounds
   ): Promise<Answer<Op<P, "patch">>> {
-    return this.send<Answer<Op<P, "patch">>>(
-      requestTo("patch", routeUrl(pattern, params), body),
-      bounds
-    );
+    return this.sendBody(requestTo("patch", routeUrl(pattern, params), body), bounds);
   }
 
   private async remove<P extends PathsOf<"delete">>(
@@ -1126,10 +1136,7 @@ export class DispatchApiClient {
     params: PathParams<Op<P, "delete">>,
     bounds: WriteBounds
   ): Promise<Answer<Op<P, "delete">>> {
-    return this.send<Answer<Op<P, "delete">>>(
-      requestTo("delete", routeUrl(pattern, params), undefined),
-      bounds
-    );
+    return this.sendBody(requestTo("delete", routeUrl(pattern, params), undefined), bounds);
   }
 
   /** The block schema. The route answers pre-rendered JSON bytes (`pmdoc.SchemaJSON`), so the

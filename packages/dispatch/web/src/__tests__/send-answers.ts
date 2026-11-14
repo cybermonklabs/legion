@@ -1,5 +1,6 @@
 import { type Mock, mock, spyOn } from "bun:test";
 
+import { sentAnswer } from "../api/cache/test-client";
 import {
   api,
   type DeclineAskInput,
@@ -46,7 +47,8 @@ export interface SendAnswers {
  * Answers the writes a test makes from their request alone (`WriteSpec.request`, every plain write
  * on a line): each attempt of such a write is `api.send(request)` with the very request it named,
  * so `answer(request, fn)` has `fn` answer every attempt of it, telling `sent` the request first as
- * the client does. A request the test named no answer for goes through the real `api.send`.
+ * the client does, and minting what `fn` answers as Dispatch's answer, as the client does
+ * (`sentAnswer`). A request the test named no answer for goes through the real `api.send`.
  */
 export function answerSends(): SendAnswers {
   const answers = new WeakMap<WriteRequest, (bounds: WriteBounds) => Promise<unknown>>();
@@ -60,7 +62,7 @@ export function answerSends(): SendAnswers {
     if (answer === undefined) return real(request, bounds);
     calls.push(request);
     bounds.sent?.(request);
-    return answer(bounds);
+    return Promise.resolve(answer(bounds)).then(sentAnswer);
   }) as typeof api.send);
   return {
     answer: (request, fn) => {
@@ -96,7 +98,8 @@ let routing: { restore: () => void } | undefined;
  * each segment the `*`s matched (decoded), the request's body and the attempt's bounds - its key
  * among them - so a test asserts the request a write sent, its method and path by the route it
  * answered on and its body and key by the call (`toHaveBeenCalledWith("CORE-1", { priority: 2 },
- * keyedAttempt)`). The newest route that matches answers; any other request goes to the real
+ * keyedAttempt)`). What the mock answers is minted as Dispatch's answer, as the client mints it
+ * (`sentAnswer`). The newest route that matches answers; any other request goes to the real
  * `api.send`. A route answers until its test ends (`resetRouteAnswers`); `mockRestore` only
  * takes its answers back.
  */
@@ -125,7 +128,9 @@ export function answerRoute<F extends RouteAnswer>(method: WriteMethod, path: st
         const matched = request.method === on ? at.exec(request.path) : null;
         if (matched === null) continue;
         bounds.sent?.(request);
-        return answered(...matched.slice(1).map(decodeURIComponent), request.body, bounds);
+        return Promise.resolve(
+          answered(...matched.slice(1).map(decodeURIComponent), request.body, bounds)
+        ).then(sentAnswer);
       }
       return real(request, bounds);
     }) as typeof api.send);

@@ -14,7 +14,7 @@ import type {
 import { useIsMutating, useMutationState, useQueryClient } from "@tanstack/react-query";
 import { useRef, useSyncExternalStore } from "react";
 
-import type { Answered } from "./answered";
+import { type Answered, answeredBody } from "./answered";
 import { bindClient } from "./client-handle";
 import { isLiveQuery } from "./query-refresh";
 import { libraryOptions, type ReadContext, type ReadOptions } from "./read-options";
@@ -71,12 +71,12 @@ export interface Cache {
     TQueryKey extends QueryKey = QueryKey,
   >(options: ReadOptions<TQueryFnData, TError, TData, TQueryKey>): Promise<TData>;
 
-  /** Writes into the cache at `key` what Dispatch answered: `answer` itself, the cache's whole
-   *  data, typed by the key as TanStack's `setQueryData` is - a live snapshot, a mark's own
-   *  state. Every write a module outside this layer makes into a cache is this one, and the live
-   *  changes are composed over it as over any answer. `answer` is `Answered`, which only
+  /** Writes into the cache at `key` what Dispatch answered: `answer`'s body itself, the cache's
+   *  whole data, typed by the key as TanStack's `setQueryData` is - a live snapshot, a mark's
+   *  own state. Every write a module outside this layer makes into a cache is this one, and the
+   *  live changes are composed over it as over any answer. `answer` is `Answered`, which only
    *  Dispatch's answer to a write and a decoded live frame are (`answered.ts`), so nothing the
-   *  screen built can be written. */
+   *  screen built can be written: any other value is refused by type, and the write throws. */
   setDispatched<TTaggedQueryKey extends QueryKey>(
     key: TTaggedQueryKey,
     answer: Answered<InferDataFromTag<unknown, TTaggedQueryKey>>
@@ -243,12 +243,13 @@ class ClientCache implements Cache {
 
   setDispatched(
     key: QueryKey,
-    answer: unknown,
+    answer: Answered<unknown>,
     merge?: (dispatched: unknown, answer: unknown) => unknown
   ): void {
+    const body = answeredBody(answer);
     this.#client.setQueryData(
       key,
-      merge === undefined ? answer : (dispatched: unknown) => merge(dispatched, answer)
+      merge === undefined ? body : (dispatched: unknown) => merge(dispatched, body)
     );
   }
 

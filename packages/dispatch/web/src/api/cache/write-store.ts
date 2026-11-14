@@ -28,6 +28,7 @@ import { ApiError, api, type WriteBounds, type WriteMethod, type WriteRequest } 
 import type { AuthenticatedUser } from "../types";
 import type { Cache } from "./cache";
 import { clientOf } from "./client-handle";
+import { readsOnePage } from "./query-client";
 
 /** Where a write stands: waiting its turn behind an earlier write to its target (`queued`), out
  *  within its deadline (`sending`), out past it (`late`, `stopping` once the reader pressed Stop
@@ -492,9 +493,8 @@ const NO_SHOWINGS: readonly Showing[] = Object.freeze([]);
 const NO_WRITES: readonly Write[] = Object.freeze([]);
 
 /** The login of the person `client`'s app is signed in as (`["whoami"]`), which every write is
- *  stamped with at its press; undefined while no one is signed in. */ function signedInLogin(
-  client: QueryClient
-): string | undefined {
+ *  stamped with at its press; undefined while no one is signed in. */
+function signedInLogin(client: QueryClient): string | undefined {
   return client.getQueryData<AuthenticatedUser>(["whoami"])?.login;
 }
 
@@ -577,10 +577,17 @@ export class Writes {
    *  `#release`): a read sent before Dispatch made the write can answer after it with the row as
    *  it stood. One leaves once no cache holds it. */
   readonly #made = new Set<Showing>();
-  /** How many fetches of each cache, by hash, have begun since the store began counting: the
-   *  order a landing is compared with (`Showing.landed`). Counted from the cache's own `fetch`
-   *  action, while a landed change is held and only then (`#countFetches`). */
+  /** How many whole reads of each cache, by hash, have begun since the store began counting:
+   *  the order a landing is compared with (`Showing.landed`). Counted from the cache's own
+   *  `fetch` action, while a landed change is held and only then (`#countFetches`); a page read
+   *  (`fetchNextPage`, `fetchPreviousPage`) is none. */
   readonly #fetches = new Map<string, number>();
+  /** What each counted cache's fetch out reads, by hash: every page the cache holds (`whole`), or
+   *  one page beside those it holds (`page`). None while the cache is idle. */
+  readonly #reading = new Map<string, "page" | "whole">();
+  /** Each held cache whose whole read a page read cancelled (`fetchNextPage`'s
+   *  `cancelRefetch`), read again as the page read settles (`#countFetches`). */
+  readonly #owed = new Set<string>();
   /** Stops counting fetches; nothing while none are counted. */
   #stopCounting: (() => void) | undefined;
   /** The overlay of each cache some composed change names, by its hash, with the changes it
@@ -751,8 +758,12 @@ export class Writes {
     if (showing === undefined) return;
     const caches = new Map<string, number>();
     for (const query of this.#client.getQueryCache().findAll()) {
-      if (wrote(showing, query)) {
-        caches.set(query.queryHash, this.#fetches.get(query.queryHash) ?? 0);
+      if (!wrote(showing, query)) continue;
+      const hash = query.queryHash;
+      caches.set(hash, this.#fetches.get(hash) ?? 0);
+      // A fetch out from before the store began counting: what it reads is its `fetchMeta`.
+      if (query.state.fetchStatus !== "idle" && !this.#reading.has(hash)) {
+        this.#reading.set(hash, readsOnePage(query.state.fetchMeta) ? "page" : "whole");
       }
     }
     if (caches.size === 0) return;
@@ -765,26 +776,61 @@ export class Writes {
     this.#countFetches();
   }
 
-  /** Counts each cache's fetches as they begin (`#fetches`), and lets a landed change go from a
-   *  cache that answers a fetch begun after its landing, or that is removed, while any landed
-   *  change is held. A fetch that fails lets nothing go. */
+  /**
+   * Counts each cache's whole reads as they begin (`#fetches`), and lets a landed change go from
+   * a cache that answers a whole read begun after its landing, or that is removed, while any
+   * landed change is held. A fetch that fails lets nothing go, and nor does a page read
+   * (`fetchNextPage`, `fetchPreviousPage`: a `fetch` action whose `meta` names `fetchMore`,
+   * `readsOnePage`): it builds its page on the pages the cache holds, which may have been read
+   * before the landing, and hands them back with it. A page read pressed while a whole read of a
+   * held cache is out cancels that read (`cancelRefetch`); the store reads the cache again as the
+   * page read settles, so a whole read still follows.
+   */
   #countFetches(): void {
     if (this.#stopCounting !== undefined) return;
     this.#stopCounting = this.#client.getQueryCache().subscribe((event) => {
-      const hash = event.query.queryHash;
+      const { query } = event;
+      const hash = query.queryHash;
       if (event.type === "removed") {
         this.#fetches.delete(hash);
+        this.#reading.delete(hash);
+        this.#owed.delete(hash);
         this.#release(hash, undefined);
         return;
       }
       if (event.type !== "updated") return;
       const { action } = event;
-      if (action.type === "fetch") {
+      if (action.type === "fetch" && readsOnePage(action.meta)) {
+        if (this.#reading.get(hash) === "whole" && this.#holds(hash)) this.#owed.add(hash);
+        this.#reading.set(hash, "page");
+      } else if (action.type === "fetch") {
+        this.#owed.delete(hash);
+        this.#reading.set(hash, "whole");
         this.#fetches.set(hash, (this.#fetches.get(hash) ?? 0) + 1);
-      } else if (action.type === "success" && action.manual !== true) {
+      } else if (
+        action.type === "success" &&
+        action.manual !== true &&
+        this.#reading.get(hash) !== "page"
+      ) {
         this.#release(hash, this.#fetches.get(hash) ?? 0);
       }
+      if (query.state.fetchStatus !== "idle") return;
+      this.#reading.delete(hash);
+      if (!this.#owed.delete(hash)) return;
+      // After the fetch that settled has run to its end, so the read begins on an idle cache.
+      queueMicrotask(() => {
+        if (this.#client.getQueryCache().get(hash) !== query || !this.#holds(hash)) return;
+        void this.#client.invalidateQueries({ exact: true, queryKey: query.queryKey });
+      });
     });
+  }
+
+  /** Whether a landed change is still held on the cache hashed `hash`. */
+  #holds(hash: string): boolean {
+    for (const showing of this.#made) {
+      if (showing.landed?.has(hash) === true) return true;
+    }
+    return false;
   }
 
   /** Lets every landed change go from the cache hashed `hash`: one whose landing came before
@@ -811,6 +857,8 @@ export class Writes {
     this.#stopCounting?.();
     this.#stopCounting = undefined;
     this.#fetches.clear();
+    this.#reading.clear();
+    this.#owed.clear();
   }
 
   /** Shows `change` for the write `id`, and holds it with that write: a surface that shows its

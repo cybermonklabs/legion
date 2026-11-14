@@ -80,7 +80,7 @@ export async function fileNewIssue(
   writes: Writes,
   { project, settings, words }: NewIssueWrite
 ): Promise<FiledIssue | undefined> {
-  const issue = await press(writes, `New issue “${words}”`, {
+  const created = await press(writes, `New issue “${words}”`, {
     target: `project:${project}`,
     request: issueCreateRequest({
       project,
@@ -88,9 +88,10 @@ export async function fileNewIssue(
       ...(settings.label === "" ? {} : { labels: [settings.label] }),
     }),
   });
-  if (issue === null) {
+  if (created === null) {
     return undefined;
   }
+  const issue = created.body;
   const filed = (refused?: RefusedWrite): FiledIssue => ({
     issue,
     refused,

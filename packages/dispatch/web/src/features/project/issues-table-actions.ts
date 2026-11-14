@@ -323,7 +323,7 @@ export function useIssueTableActions({
         }
         mergeIssue(cache, epic);
         const changed = await apply(
-          open.map((key) => ({ key, input: { parent: epic.key } })),
+          open.map((key) => ({ key, input: { parent: epic.body.key } })),
           record.id
         );
         if (!recovery.active(record.id)) return undefined;

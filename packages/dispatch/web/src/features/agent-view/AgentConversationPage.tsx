@@ -5,7 +5,6 @@ import { useCache } from "../../api/cache/cache";
 import { useShownQuery } from "../../api/cache/shown-query";
 import { agentMessageRequest, apiErrorMessage } from "../../api/client";
 import { agentMessagesQuery, whoAmIQuery } from "../../api/queries";
-import type { Message } from "../../api/types";
 import { ContextRing } from "../../components/ContextRing";
 import { PinButton } from "../../components/PinButton";
 import { AgentListRefilling } from "../../components/QueryError";
@@ -153,7 +152,7 @@ export function AgentConversationPage({
   // It goes in the session's line with every message to it (`session:<id>`), and its refusal is
   // shown here, on the session it went to.
   const cache = useCache();
-  const switchWrite = useKeyedWrite<Message, { request: SwitchRequest; session: string }>({
+  const switchWrite = useKeyedWrite({
     inline: true,
     label: ({ request }) =>
       request.kind === "model"
@@ -164,7 +163,7 @@ export function AgentConversationPage({
       void cache.invalidate({ queryKey: agentMessagesQuery(session).queryKey });
     },
     target: ({ session }) => `session:${session}`,
-    request: ({ request, session }) =>
+    request: ({ request, session }: { request: SwitchRequest; session: string }) =>
       agentMessageRequest(session, { body: switchCommand(request), delivery: "steer" }),
   });
   // Each message is a write of its own in the app's write store, held for its session rather than
@@ -179,11 +178,14 @@ export function AgentConversationPage({
     [mode, sends, sessionId]
   );
   // The switch's status follows the whole keyed write, from the press until Dispatch answers,
-  // however many attempts that takes.
+  // however many attempts that takes, and reads the message Dispatch stored from its answer.
   const onPick = useCallback(
     (request: SwitchRequest) =>
       void sessionSwitch
-        .run(request, () => switchWrite.mutateAsync({ request, session: sessionId }))
+        .run(request, async () => {
+          const answer = await switchWrite.mutateAsync({ request, session: sessionId });
+          return answer === null ? null : answer.body;
+        })
         .catch(() => {}),
     [sessionId, sessionSwitch, switchWrite]
   );

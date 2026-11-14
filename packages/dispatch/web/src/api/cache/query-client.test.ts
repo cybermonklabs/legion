@@ -1,5 +1,5 @@
 import { expect, jest, spyOn, test } from "bun:test";
-import { QueryObserver } from "@tanstack/react-query";
+import { type InfiniteData, InfiniteQueryObserver, QueryObserver } from "@tanstack/react-query";
 
 import { ApiError, createApiClient, isRetryableQueryError } from "../client";
 import { DispatchQueryClient, queryRetry, queryRetryDelay } from "./query-client";
@@ -105,6 +105,76 @@ test("an invalidation of an idle read fetches it at once", async () => {
     server.answer();
     await invalidation;
     expect(queryClient.getQueryData<string>(["projects"])).toBe("after");
+  } finally {
+    unsubscribe();
+  }
+});
+
+/** A page of the Dismissed list as this row reads it: what the server held when the page was
+ *  read, and the cursor of the page after it. */
+interface HeldPage {
+  readonly next: string | undefined;
+  readonly value: string;
+}
+
+// Round eight of dispatch://INFRA-299's pull request: an invalidation made while a refetch of an
+// infinite read is out waits for that refetch; a Show more then cancels it (`cancelRefetch`) and
+// reads one page after the pages the cache holds. That page read is no whole read, so it does
+// not answer the invalidation: once it settles the client reads the whole query, and the first
+// page shows what the server held after the write.
+test("an invalidation during a refetch that a Show more cancels still ends on a whole read", async () => {
+  const queryClient = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  let value = "before";
+  const asked: { readonly page: string; readonly answer: () => void }[] = [];
+  const observer = new InfiniteQueryObserver(queryClient, {
+    getNextPageParam: (last: HeldPage) => last.next,
+    initialPageParam: "first",
+    queryFn: ({ pageParam }: { pageParam: string }) => {
+      const read = value;
+      const { promise, resolve } = Promise.withResolvers<HeldPage>();
+      asked.push({
+        answer: () => resolve({ next: pageParam === "first" ? "second" : undefined, value: read }),
+        page: pageParam,
+      });
+      return promise;
+    },
+    queryKey: ["me", "replies", "inbox", "dismissed"],
+    staleTime: Number.POSITIVE_INFINITY,
+  });
+  const unsubscribe = observer.subscribe(() => {});
+  const firstPage = () =>
+    queryClient.getQueryData<InfiniteData<HeldPage>>(["me", "replies", "inbox", "dismissed"])
+      ?.pages[0]?.value;
+  try {
+    await settle();
+    asked[0]?.answer();
+    await settle();
+    expect(firstPage()).toBe("before");
+
+    // A refetch is out; the write lands and the mutation invalidates the read.
+    void observer.refetch();
+    await settle();
+    value = "after";
+    const invalidated = queryClient.invalidateQueries({ queryKey: ["me", "replies"] });
+    await settle();
+    expect(asked.map(({ page }) => page)).toEqual(["first", "first"]);
+
+    // Show more cancels the refetch and reads the page after the pages held.
+    const more = observer.fetchNextPage();
+    await settle();
+    expect(asked.map(({ page }) => page)).toEqual(["first", "first", "second"]);
+    asked[2]?.answer();
+    await more;
+    await settle();
+    expect(firstPage()).toBe("before");
+
+    // The whole read the invalidation asked for follows, and reads the write.
+    expect(asked.map(({ page }) => page)).toEqual(["first", "first", "second", "first"]);
+    asked[3]?.answer();
+    await settle();
+    asked[4]?.answer();
+    await invalidated;
+    expect(firstPage()).toBe("after");
   } finally {
     unsubscribe();
   }

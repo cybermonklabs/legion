@@ -759,10 +759,11 @@ function defaultAssigneeServer(initial: ProjectDefaultAssignee[]) {
 /** Renders the Settings route with every read but the default assignees and the people list
  *  stubbed, listing `projects`. `leave` unmounts the page and `reopen` renders it again on the
  *  same QueryClient, as leaving Settings and coming back does; `done` unmounts it and restores
- *  the stubs. */
+ *  the stubs. `queryClient` is the page's client. */
 function renderSettings(projects: string[]): {
   done: () => void;
   leave: () => void;
+  queryClient: QueryClient;
   reopen: () => void;
 } {
   const stubs = [
@@ -803,6 +804,7 @@ function renderSettings(projects: string[]): {
       }
     },
     leave: cleanup,
+    queryClient,
     reopen: () => {
       render(page);
     },
@@ -882,6 +884,53 @@ test("default assignee picks made while one is saving show, and only the newest 
       { assignee: "bob@example.com" },
       { assignee: "carol@example.com" },
     ]);
+  } finally {
+    done();
+    listDefaults.mockRestore();
+    putDefault.mockRestore();
+    listUsers.mockRestore();
+  }
+});
+
+// A refused save is kept with no row observing it (gcTime Infinity), so the saves are forgotten
+// by hand: once a newer save settles, every save settled before it is no longer the one a row
+// reports, and the page keeps only the newest.
+test("default assignee saves that have settled are forgotten once a newer save settles", async () => {
+  const user = userEvent.setup();
+  const server = defaultAssigneeServer([{ assignee: "alice@example.com", project: "CORE" }]);
+  const listDefaults = spyOn(api, "listProjectDefaultAssignees").mockImplementation(server.list);
+  const putDefault = spyOn(api, "putProjectDefaultAssignee").mockImplementation(server.put);
+  const listUsers = spyOn(api, "listUsers").mockResolvedValue([
+    { login: "alice@example.com" },
+    { login: "bob@example.com" },
+    { login: "carol@example.com" },
+  ]);
+  const { done, queryClient } = renderSettings(["CORE"]);
+  const saves = () =>
+    cacheOf(queryClient).mutations({
+      exact: true,
+      mutationKey: ["project-default-assignee", "CORE"],
+    });
+
+  try {
+    const control = await defaultAssigneeControl("CORE");
+    await waitFor(() => expect(control.disabled).toBe(false));
+    // Reaching the control without pressing it: user-event has no form for focus alone.
+    fireEvent.focus(control);
+    await waitFor(() =>
+      expect(within(control).getByRole("option", { name: "carol@example.com" })).toBeDefined()
+    );
+
+    for (const assignee of ["bob@example.com", "carol@example.com", "alice@example.com"]) {
+      await user.selectOptions(control, assignee);
+      await waitFor(() => expect(server.rows()).toEqual([{ assignee, project: "CORE" }]));
+      await waitFor(() => expect(saves().every((save) => save.status === "success")).toBe(true));
+    }
+
+    expect(server.sent).toEqual(["bob@example.com", "carol@example.com", "alice@example.com"]);
+    // Three saves settled; only the newest is left for the row to read.
+    expect(saves().map((save) => save.variables)).toEqual([{ assignee: "alice@example.com" }]);
+    await waitFor(() => expect(control.value).toBe("alice@example.com"));
   } finally {
     done();
     listDefaults.mockRestore();

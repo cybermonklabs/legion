@@ -224,7 +224,7 @@ test("an inbox answer landing while an answer is out keeps the row out and bring
   const held = Promise.withResolvers<Ask>();
   const answer = answerAskAnswers().mockImplementation(() => held.promise);
   const view = renderInboxWrite(() =>
-    useOutstandingAnswerWrite<Ask, AnswerAskInput>({
+    useOutstandingAnswerWrite<unknown, AnswerAskInput>({
       askId: "ask-a",
       label: () => "Answer to “Which approach?”",
       request: (input) => askAnswerRequest("ask-a", input),

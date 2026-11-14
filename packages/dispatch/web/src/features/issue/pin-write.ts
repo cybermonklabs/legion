@@ -57,7 +57,7 @@ function pinAttempt({ issueKey, operation }: PinWrite) {
           { dismissed: applyPinStateOperation(base.dismissed ?? [], operation), seq: base.seq + 1 },
           bounds
         );
-        authoritative.set(issueKey, next);
+        authoritative.set(issueKey, next.body);
         return next;
       } catch (error) {
         const current = staleState(error);

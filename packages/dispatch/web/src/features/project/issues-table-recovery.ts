@@ -10,20 +10,20 @@ import { readTableAction, type TableAction, writeTableAction } from "./issues-ta
 
 export type { TableAction } from "./issues-table-storage";
 
+/** Dispatch's answer to an epic's create, as far as its kind reads it: the issue it made, read
+ *  through the answer's `body`. */
+interface CreatedEpic {
+  readonly body: { readonly key: string };
+}
+
 // Keep the answer's issue key even when the table that started creation is no longer mounted.
-export const tableEpicWrite = defineWriteKind<string>({
+export const tableEpicWrite = defineWriteKind<string, string, CreatedEpic>({
   name: "issues-table-epic",
   kept: (value): value is string => typeof value === "string",
   landed: (cache, write, answer, awaited) => {
     const action = readTableAction(write.detail);
-    if (
-      action?.writes.create === write.key &&
-      answer &&
-      typeof answer === "object" &&
-      "key" in answer &&
-      typeof answer.key === "string"
-    ) {
-      writeTableAction(write.detail, { ...action, target: answer.key });
+    if (action?.writes.create === write.key && answer !== null) {
+      writeTableAction(write.detail, { ...action, target: answer.body.key });
     }
     // What a created epic changes is this project's listings and the ancestry read that hangs
     // off them, not every query the tab holds.

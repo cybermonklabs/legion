@@ -103,7 +103,7 @@ const broadcastSend = defineWriteKind<Broadcast>({
   resume:
     ({ input }, wire) =>
     (bounds) =>
-      wire === null ? api.createBroadcast(input, bounds) : api.send(wire, bounds),
+      wire === null ? api.createBroadcast(input, bounds) : api.resendBody(wire, bounds),
 });
 
 /** Every broadcast `rows` holds, as the strip shows it, newest press first. */

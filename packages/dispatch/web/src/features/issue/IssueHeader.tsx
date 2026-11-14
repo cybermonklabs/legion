@@ -210,7 +210,7 @@ export function IssueHeader({
       } else {
         mergeIssue(cache, next);
       }
-      drafts.onIssueSuccess(next ?? issue);
+      drafts.onIssueSuccess(next?.body ?? issue);
       void cache.invalidate({ queryKey: ["issues"] });
     },
   });

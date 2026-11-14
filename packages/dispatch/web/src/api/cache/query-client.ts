@@ -57,6 +57,24 @@ export function queryRetryDelay(
   return QUERY_RETRY_DELAY_MS;
 }
 
+/** Whether a fetch whose `meta` is `meta` reads one page beside the pages its query holds - an
+ *  infinite query's `fetchNextPage` or `fetchPreviousPage`, whose `fetch` action and `fetchMeta`
+ *  name `fetchMore` - rather than the whole query. TanStack builds such a page on the pages the
+ *  cache holds and hands them back with it, so its answer says nothing new of those pages: the
+ *  one rule both the follow-up below and the store's fetch counter (`Writes.#countFetches`) read
+ *  a whole read by. */
+export function readsOnePage(meta: { readonly fetchMore?: unknown } | null | undefined): boolean {
+  return meta?.fetchMore !== undefined;
+}
+
+/** Waits for `promise` to settle either way. */
+function settled(promise: Promise<unknown>): Promise<void> {
+  return promise.then(
+    () => undefined,
+    () => undefined
+  );
+}
+
 /**
  * Dispatch's query client: TanStack's, except that no read ever has two requests in flight.
  * `refetchQueries` - and through it `invalidateQueries` and `resetQueries`, which TanStack routes
@@ -64,7 +82,10 @@ export function queryRetryDelay(
  * fetched once more when that fetch settles, so an invalidation a mutation makes mid-fetch still
  * ends on the answer composed after the write, and the first request is not left running on the
  * server with its answer thrown away. Calls for one query while it waits share that one follow-up
- * fetch. Every mutation's own `invalidateQueries` call keeps its shape.
+ * fetch. A whole read that began after the one waited on answers the call in its place; a page
+ * read (`readsOnePage`) does not - a Show more cancels the whole read out and builds on the pages
+ * held - so the follow-up waits for it and then reads the whole query. Every mutation's own
+ * `invalidateQueries` call keeps its shape.
  */
 export class DispatchQueryClient extends QueryClient {
   readonly #followUps = new Map<string, Promise<void>>();
@@ -93,31 +114,33 @@ export class DispatchQueryClient extends QueryClient {
     const hash = query.queryHash;
     let followUp = this.#followUps.get(hash);
     if (followUp === undefined) {
-      followUp = running
-        .then(
-          () => undefined,
-          () => undefined
-        )
-        .then(() => {
-          this.#followUps.delete(hash);
-          // Removed while it waited (a sign-out, garbage collection): nothing renders it now.
-          if (this.getQueryCache().get(hash) !== query || query.isDisabled() || query.isStatic()) {
-            return;
-          }
-          // A fetch that began after the one waited on was composed after this call: it answers.
-          const newer = query.state.fetchStatus === "idle" ? undefined : query.promise;
-          if (newer !== undefined) {
-            return newer.then(
-              () => undefined,
-              () => undefined
-            );
-          }
-          return this.#refetch(query, options);
-        });
+      followUp = this.#followUp(query, options, running);
       this.#followUps.set(hash, followUp);
     }
     // TanStack resolves a paused fetch's refetch at once rather than holding its caller until the
     // network returns; the follow-up still runs when it does.
     return query.state.fetchStatus === "paused" ? Promise.resolve() : followUp;
+  }
+
+  /** The fetch of `query` once `running` settles: none where a whole read began after it,
+   *  which answers in its place, and otherwise one, after any page read out then settles. */
+  async #followUp(query: Query, options: RefetchOptions, running: Promise<unknown>): Promise<void> {
+    await settled(running);
+    this.#followUps.delete(query.queryHash);
+    for (;;) {
+      // Removed while it waited (a sign-out, garbage collection): nothing renders it now.
+      if (
+        this.getQueryCache().get(query.queryHash) !== query ||
+        query.isDisabled() ||
+        query.isStatic()
+      ) {
+        return;
+      }
+      const newer = query.state.fetchStatus === "idle" ? undefined : query.promise;
+      if (newer === undefined) return this.#refetch(query, options);
+      // A whole read that began after the one waited on was composed after this call: it answers.
+      if (!readsOnePage(query.state.fetchMeta)) return settled(newer);
+      await settled(newer);
+    }
   }
 }

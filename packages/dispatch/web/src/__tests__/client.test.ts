@@ -278,7 +278,7 @@ test("a POST carries no deadline", async () => {
     expect(stub.requests[0]?.init?.signal).toBeUndefined();
     stub.answer(Response.json({ key: "CORE-1" }));
 
-    expect(await created).toEqual({ key: "CORE-1" } as never);
+    expect((await created).body).toEqual({ key: "CORE-1" } as never);
   });
 });
 
@@ -426,7 +426,7 @@ test("a write's failures are classified by kind", async () => {
   expect(landed).toMatchObject({ code: "ANSWER_NOT_KEPT", status: 201 });
 
   const fresh = createApiClient(async () => Response.json(notKept, { status: 201 }));
-  expect(await fresh.send(create, keyed("k"))).toEqual(notKept as never);
+  expect((await fresh.send(create, keyed("k"))).body).toEqual(notKept as never);
 
   const busy = createApiClient(async () =>
     Response.json(
@@ -472,7 +472,7 @@ test("a 2xx whose body read fails is a NetworkError, retried under its key", asy
     expect(attempts).toBe(1);
     jest.advanceTimersByTime(FIRST_BACKOFF_MS);
 
-    expect(await made).toMatchObject({ key: "CORE-1" });
+    expect((await made)?.body).toMatchObject({ key: "CORE-1" });
     expect(attempts).toBe(2);
   });
 });
@@ -1311,6 +1311,7 @@ const CLIENT_PLUMBING = new Set([
   "json",
   "send",
   "sendBody",
+  "resendBody",
   "post",
   "remove",
   "read",

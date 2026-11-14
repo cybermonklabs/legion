@@ -221,10 +221,10 @@ export function useEventFeed({
         try {
           prependEventToLog(cache, event);
           const targets = eventRefreshTargets(
-            event,
+            event.body,
             cache.dispatched<AuthenticatedUser>(["whoami"])?.login
           );
-          markAskThreadsSeededByAnInFlightInbox(cache, targets, askThreadsIssue(event));
+          markAskThreadsSeededByAnInFlightInbox(cache, targets, askThreadsIssue(event.body));
           queueRefresh(targets);
         } catch (error) {
           // A known type whose payload this page cannot map: no target can be derived from it.

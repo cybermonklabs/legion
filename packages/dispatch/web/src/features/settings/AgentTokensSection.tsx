@@ -219,7 +219,7 @@ export function AgentTokensSection(): ReactNode {
         (current: AgentToken[] | undefined, { token, ...madeToken }) =>
           current === undefined ? undefined : [madeToken, ...current]
       );
-      setShownToken(created);
+      setShownToken(created.body);
       resetCopyStatus();
     },
   });

@@ -23,12 +23,7 @@ import {
   myRepliesKey,
   userAgentStateQuery,
 } from "../../api/queries";
-import type {
-  InboxReadRequest,
-  InboxReadResponse,
-  MyRepliesResponse,
-  MyReplyRow,
-} from "../../api/types";
+import type { InboxReadRequest, MyRepliesResponse, MyReplyRow } from "../../api/types";
 import { compareTimestamps } from "../../lib/timestamps";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import type { InboxFilters } from "./InboxBar";
@@ -160,7 +155,7 @@ export function useMarkAllRead({
     body !== undefined &&
     rows.some((row) => row.kind === "thread" && marksThread(row.thread, body));
 
-  const write = useKeyedWrite<InboxReadResponse, InboxReadRequest, MarkAllDrop>({
+  const write = useKeyedWrite<unknown, InboxReadRequest, MarkAllDrop>({
     inline: true,
     label: () => "Inbox marked read",
     onError: (_error, _input, press) => {

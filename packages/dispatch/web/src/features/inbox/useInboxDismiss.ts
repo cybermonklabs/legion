@@ -35,7 +35,6 @@ import {
 } from "../../api/queries";
 import type {
   InboxDismissRequest,
-  InboxDismissResponse,
   InboxDismissSeen,
   MyRepliesResponse,
   MyReplyRow,
@@ -239,7 +238,7 @@ export function useInboxDismiss({
     });
   };
 
-  const write = useKeyedWrite<InboxDismissResponse, InboxDismissInput, DismissPress>({
+  const write = useKeyedWrite<unknown, InboxDismissInput, DismissPress>({
     inline: true,
     label: (input) => (input.restore === true ? "Threads moved to the Inbox" : "Threads dismissed"),
     onError: (error, input, press) => {
