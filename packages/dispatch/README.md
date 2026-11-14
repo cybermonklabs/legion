@@ -584,7 +584,7 @@ who has signed in, so the project may name her.
 was written `bun e2e/run.ts -- <command>`; that program is gone, and the browser suite starts its
 stacks through Playwright's own global setup now, which no shell driver can reach.
 
-All five source `e2e/acceptance/lib.sh`, the preamble they share: it refuses an unset input or a
+All six source `e2e/acceptance/lib.sh`, the preamble they share: it refuses an unset input or a
 missing command with exit 2, and reads the bearer from `DISPATCH_TOKEN` or `DISPATCH_TOKEN_FILE`
 without printing it, unsetting both so no process the script starts inherits it.
 
