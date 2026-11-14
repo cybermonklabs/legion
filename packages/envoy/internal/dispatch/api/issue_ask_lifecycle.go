@@ -29,16 +29,19 @@ func withdrawnReason(issueKey string) string {
 
 // settleIssueBeforeClose runs, before a close of issueKey opens its transaction, the settlement
 // each document of the issue owes, so every ask block written into them is an ask, credited to its
-// author, for the close to withdraw with a record: a closed issue's document settles too, but that
-// settlement opens no ask and saves a block with no row resolved. It holds no transaction or lock,
-// so it cannot meet the close's. A settlement that stops short is
-// run again a few times within a short budget (docs.SettleIssueDocuments): one that met updates
-// the room had not stored yet, one a write superseded (another process's append among them, which
-// the settlement catches its room up with first), and one whose room held a stored history that
-// was replaced under it, which is reloaded at the head, each settle on a later attempt. A
-// settlement still short after those is logged and the close proceeds; its blocks are not asks
-// yet, and the close's sweep marks them resolved (sweepClosedIssueAsks). An issue already closed,
-// or none, settles nothing: its close is refused.
+// author, for the close to withdraw with a record. The reason is the asks: a block credited after
+// the withdrawal would be an open ask on a closed issue that nothing withdraws, so a settlement
+// after the close credits none. It saves such a block resolved with no ask, and the block becomes
+// an ask once the issue reopens. It holds no transaction or lock, so it cannot meet the close's. A
+// settlement that stops short is run again a few times within a short budget
+// (docs.SettleIssueDocuments): one that met updates the room had not stored yet, one a write
+// superseded (another process's append among them, which the settlement catches its room up with
+// first), and one whose room held a stored history that was replaced under it, which is reloaded
+// at the head, each settle on a later attempt. A settlement still short after those is logged and
+// the close proceeds; its blocks are not asks yet, and the close's sweep marks them resolved
+// (sweepClosedIssueAsks). For an issue already closed, or none, this settles nothing first: its
+// close is refused, and the resumption settles what a closed issue's documents owe
+// (docs.Service.RunSettlementResumption).
 //
 // ctx must not end when the client goes away (outlivingTheClient): a settlement runs to its end
 // whether or not the client waits for the close, as the settlement it stands in for would. On a
@@ -219,8 +222,9 @@ func (s *server) restoreIssueAsksTx(ctx context.Context, tx pgx.Tx, issueKey str
 // indexed: one a browser wrote into the room after the close forked it, or one whose settlement
 // failed before the close. Each such block is logged. An issue reopened in the meantime is left
 // alone. The sweep never fails the close: an error is logged. A block a room stores after the
-// sweep, before its process has heard of the close, leaves its document owing a settlement no
-// settlement runs while the issue is closed, which the repair's interval pass sweeps
+// sweep, before its process has heard of the close, leaves its document owing a settlement, which
+// runs on the closed issue: it saves the block resolved and opens no ask for it. The repair's
+// interval pass sweeps a closed issue's document that still owes a settlement when it runs
 // (RunIssueAskRepair).
 //
 // ctx must not end when the client goes away (outlivingTheClient), and no transaction is open.
@@ -268,12 +272,11 @@ func (s *server) sweepIssueAskBlocksTx(ctx context.Context, tx pgx.Tx, issueKey 
 	// between the close's commit and this lock leave them other than the close wrote them. Every
 	// other resolved or answered block ask's blocks are written from its row too: an ask resolved
 	// or answered after the close's settlement ran and before its transaction took the issue's row
-	// marked its copies owed a settlement, which on the closed issue runs only after the close, so
-	// the sweep writes those copies its state in the close's own write rather than leave it to that
-	// settlement. An answered ask's own block is the answer route's to write, and
-	// WriteIssueAskStates leaves it as it is. A nil
-	// withdrawnIDs is a null array, which matches no id. withdrawing are open rows, which the
-	// query does not select.
+	// marked its copies owed a settlement, which runs only after the close has committed, so the
+	// sweep writes those copies its state now, in the one write it makes of each document. An
+	// answered ask's own block is the answer route's to write, and WriteIssueAskStates leaves it as
+	// it is. A nil withdrawnIDs is a null array, which matches no id. withdrawing are open rows,
+	// which the query does not select.
 	current, err := s.readIssueAsks(ctx, tx, `
 		select `+askRowColumns+`
 		`+askRowFrom+`

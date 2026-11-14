@@ -235,10 +235,11 @@ func (a *servicePersistenceAdapter) StoreUpdate(room string, update []byte) erro
 // that itself, so it needs no room-sync lane and waits on no later notification. An update the
 // room took before the close and whose append reaches the gate after it - queued behind the
 // room's earlier appends, waiting on the document's lock behind a settlement or a compaction, or
-// handed here by the close of the room itself (setRoomIssueOpen) - is stored, and settled once
-// the issue reopens, a compaction's fold of the history meanwhile included: a room closing for
-// its issue takes in no catch-up while its close waits for this append (holdOpen), and that close
-// is the reload a folded history needs.
+// handed here by the close of the room itself (setRoomIssueOpen) - is stored, a compaction's fold
+// of the history meanwhile included: a room closing for its issue takes in no catch-up while its
+// close waits for this append (holdOpen), and that close is the reload a folded history needs.
+// The document's next settlement saves it as it saves any stored update, whether or not the issue
+// is closed (settleRoomWithin).
 //
 // A replaced history fails the room, as any failed append does: the room reloads from the store,
 // which is the close-and-reload a replaced history needs (plan D3.3), and the browser resends the

@@ -479,12 +479,24 @@ A free-text ask block (no bullet list) carries `options: []` on the wire, never 
 
 The closer's timer lives in memory, so the database says which documents still owe it:
 every durable document update writes the document's `doc_settlements_pending` row in its own transaction (`markSettlementPending`, migration 0063), and the settlement that has read every update deletes it in the transaction that commits its writes.
-A settlement that did not commit - one a shutdown's budget cut short or a room failure dropped - is armed again from that row two ways:
-a room's load arms one when the row is there (`onLoadDocument`, unless the load is a settlement's own warm-up), and `cmd/dispatch` runs `docs.Service.RunSettlementResumption`, which at start and every minute arms the settlement of each document whose row is a minute old and whose issue is open (`resumeOwedSettlements`), so a document nobody opens settles too.
+A settlement that did not commit - one a shutdown's budget cut short, a room failure dropped, or an issue's close stopped (`closeRecordLocked`) - is armed again from that row two ways:
+a room's load arms one when the row is there (`onLoadDocument`, unless the load is a settlement's own warm-up), and `cmd/dispatch` runs `docs.Service.RunSettlementResumption`, which at start and every minute arms the settlements of the documents whose row is a minute old (`resumeOwedSettlements`), so a document nobody opens settles too.
 It runs on an interval because a rolling deploy stops the old task after the new one has started.
 Each pass runs under the lease `settlement-resumption` (`duty.Exclusive`), so one process per minute arms the owed settlements:
 a settlement reads the store under the document's lock whichever process runs it.
-A closed issue's rooms arm none until it reopens.
+A document settles whether or not its issue is closed.
+Nothing that arms or runs a settlement reads the issue's state.
+The settlement reads the issue row that it locks (`settlement.issueClosed`), not the room's record.
+A process that has not heard of a close still records the issue as open.
+One pass arms at most 50 documents (`settlementResumeBatch`), and the documents of closed and open issues share that bound.
+The pass takes first the rows that no pass tried, oldest `marked_at` first, and then the rows that a pass tried, oldest `tried_at` first.
+The statement that picks the rows also writes `tried_at` on them (migration `20261114100038`), and a settlement that commits deletes the row.
+So a document whose settlement fails each time waits behind every document not yet tried, and never holds the bound.
+`tried_at` is in the database, so each process that runs the pass reads the same value.
+The pick skips a row that another transaction holds (`for update skip locked`):
+a settlement or an append works on that document, and a later pass takes it.
+Each armed document loads its room, and cold room loads share the four connections of the rooms pool (`store/pool.go`).
+So the bound stops a large backlog from loading every room at once.
 `docs.Service.Shutdown` runs the settlement of each loaded room whose document has that row, and no other, inside its 9 s drain budget (`docs.ShutdownDrainBudget`, within the caller's deadline);
 a settled document's repeat would spend the budget for nothing.
 Each loaded room has a worker of its own that waits for the room's durable appends to land, then reads whether the room's document owes a settlement, settles it if so, and closes its editors:
@@ -499,6 +511,20 @@ Shutdown cancels the database work of any settlement the budget cuts short so it
 after shutdown` with `shutdown_budget_ended`).
 A settlement cut short is not an error; a caller's deadline that passes before Shutdown can read that back is, and its error names the documents that owed one.
 A 1 MiB `a_b*` document's settlement took 4.5-6.8 s at load 90-170 on the development machine, inside the 9 s drain budget, though a slower load or a bigger burst could still leave it to resume.
+
+On a closed issue the settlement saves the text that the store holds, but it changes no ask and wakes nobody.
+It opens, restores, retracts and edits no ask (`reconcileAskBlocks`).
+It writes `state="resolved"` into an ask block that has no ask row, and records the block's author in `doc_ask_block_authors` for the reopen.
+
+To wake nobody, a settlement on a closed issue records no edit notice, and when it writes a version it deletes the document's `document_edit_notices` row.
+It moves no approval request and carries no approval (`versionWrite.closedIssue`).
+Its `block.repaired` and `block.invalid` events carry `SettlementActor`, so they notify nobody.
+Its version still lists the people whose edits it saves, and its `artifact.version` event keeps the actor of its credit:
+the event of an unnamed version is quiet whoever its actor is (`events.Quiet`).
+It sweeps no marks, because `allowInject` refuses the unmark on a closed issue.
+
+A settlement that meets an update that the append gate refused after the close margin saves nothing of that room (`endOnRefusedUpdate`).
+It fails no room and counts no failure, the room closes for its issue, and the resumption settles the document from the store.
 
 `cmd/dispatch/shutdown.go` orders the process's shutdown inside `stopGrace` (30 s:
 ECS's default stop timeout, which Dispatch's task definition leaves unset, `stop_grace_period` in `deploy/compose/dispatch.compose.yml`, and the pod `infra`'s `gcp:Dispatch` renders, whose `terminationGracePeriodSeconds` is this value plus its five-second pre-stop wait, which the kubelet spends inside the same period - `cmd/dispatch/pod_grace_period_test.go` fails when the pod's budget stops covering it).
@@ -725,7 +751,7 @@ The position is one derived field of those reads, so a document they cannot read
 the read answers 200 without `anchor_block` and with `anchor_block_error`, logged at WARN.
 `api.documentErrorCode` names that error for the read and for `writeHandlerError` alike, and both take its codes in one order, so `anchor_block_error` is the code the block route answers the same error with.
 `DOC_SERVICE_UNAVAILABLE` is a room or store that could not serve the document, taken before any cause the error carries:
-a failed room carries the error another operation failed it with (settlement's schema refusal, a settlement that failed three times - its warm-up refused because the issue had closed, among others - a writer's failed or cancelled commit, a failed store write or load, a history that did not decode), which says nothing of this request.
+a failed room carries the error another operation failed it with (settlement's schema refusal, a settlement that failed three times, a writer's failed or cancelled commit, a failed store write or load, a history that did not decode), which says nothing of this request.
 `DOCUMENT_UNLOADABLE` (409) is a stored history this request itself could not decode (`docs.ErrDocumentUnloadable`), the one state `POST /api/v1/artifacts/{id}/rebuild` repairs and the one code the dashboard offers that rebuild for.
 `DOC_SCHEMA` is a tree outside the schema:
 one the document holds is a `docs.OutsideSchemaError`, which `treeOf` and `documentMarkdown` classify where they read or render a document's tree, so every route that starts from it - `GET /text`, `GET /blocks`, `POST /edits`, `POST /versions` - answers 409 with its one message, while a schema refusal of a tree a write itself produced is a 500 (`producedSchemaError`).
@@ -923,7 +949,8 @@ Such a delta is stored, and the append that stored it closes the room at once, s
 no catch-up can bring that room to the head, and each later append of its browsers would decode the whole stored document.
 A refused delta is dropped and its browser resends it to the reloaded room, which a browser whose issue closed meanwhile cannot do: it reconnects read-only.
 It is also refused (`ErrIssueClosed`) when the document's issue is closed and the room took the delta more than `closeMargin` (2 s) after the close committed.
-A delta the room took before that is stored, even when its append reaches the gate after the close, and the issue's reopen settles it.
+A delta the room took before that is stored, even when its append reaches the gate after the close.
+The document's next settlement saves it, whether or not the issue is closed.
 A derived write (`appendDerived`: settlement's repair, a live write's fork, a version's capture, the block-id backfill) still needs the room at the head (`ErrRoomBehindHead`, `docs/append_gate.go`), the live write taking the cold path instead.
 A settlement whose room is behind catches it up under the document's lock it holds, reading through its own transaction, and proceeds:
 the caught-up rows re-arm it, and the re-armed settlement versions every update.
@@ -1863,22 +1890,23 @@ A document's own marker is `document_block_versions.windows_owed_at` (migration 
 `cmd/dispatch` runs `docs.Service.RunBlockIndexReconciliation` under the lease `block-index`:
 each tick indexes up to 20 owed documents, by a keyset cursor, up to 200 owed items, oldest first, then up to 200 comments, messages and asks owed their own blocks, oldest `owed_at` first (`refs.OwedItemBlocks`, one arm per kind), and last up to 200 sources owed an index with the whole grammar, oldest first, every 2 s while a batch is full and every 30 s after, and logs `dispatch: block index` with `documents=`, `items=`, `item_blocks=`, `texts=`, `owed_documents=`, `owed_items=`, `owed_item_blocks=`, `owed_texts=` and `live_ahead=`.
 It reads a document (`TextWithBlocks`) with no transaction held, then, under the document's owner lock, indexes it only while its latest version and its owed mark are the ones it listed, taking the version's time and the `source_seq` of the event that recorded the version (`stampVersionEvent`).
-A document that owes a settlement and whose live markdown differs from its latest version's is skipped, counted `live_ahead` and left owed, except on a closed issue, which no settlement runs on:
-its latest version's own rendering is indexed, with only the blocks the index's stored rows or the live document also hold, each under its stored row's id or its live id (`closedVersionBlocks`), while its pending settlement's `marked_at` is still the one the tick listed.
+A document that owes a settlement and whose live markdown differs from its latest version's is skipped, counted `live_ahead` and left owed, whatever its issue's status.
+A closed issue's document settles as an open one's does, and each settlement indexes the version that it writes, so a block is first indexed at the first version that holds it.
+The window arm windows such a document from its latest version (`heldVersionBlocks`):
+it uses the version's own rendering, with only the blocks that the index's stored rows or the live document also hold, each under its stored row's id or its live id (`closedVersionBlocks`).
 A typed block matches the live block of its id (the version's markdown names only typed blocks' ids;
-the close, its sweep and the repair write ask states with no version).
+the close, its sweep and the repair write ask states that no version holds until the document's next settlement).
 Every stored `document_blocks` row whose type and `text_sha256` the version holds claims its block before any live text is compared, so the block keeps its row, changed version and text under its own id:
 first the untyped blocks are aligned in document order (go-difflib, no junk heuristic) with the live blocks that have a row, by that row's type and `text_sha256`, so a block an unsettled edit changed keeps its place and each of several identical blocks its own row;
 then each version block still unmatched (moved across a first-step match, or deleted by an unsettled edit) takes the stored row of its type and text whose id no other block took, a live id first, else by id.
 Only then are the version blocks no row claimed aligned by type and live text with the live blocks whose id no row claimed, within the gaps between first-step matches (every block of a document the index holds none of yet), so a paragraph an edit deleted and retyped with the same text keeps the deleted block's row and the retyped one gets none.
 A text either side still holds more than once takes no part in that alignment.
 Last, the version blocks and live blocks of each text both still unmatched are paired in order wherever the two sides hold equally many:
-a text held more than once is matched only so, and otherwise not until a settlement, so a copy typed after the close is never dated to the version (an original left unmatched is dated to the reopen's version), and a text held once on each side keeps the version of a block an edit moved in a document with no row yet.
+a text held more than once is matched only so, and otherwise not until a settlement, so a copy typed since the version never takes an original's id and history (an original left unmatched waits for that settlement's version too), and a text held once on each side keeps the version of a block an edit moved in a document with no row yet.
 A live block that repeats an earlier block's id (a paste keeps its source's id until a settlement stamps a new one) takes part in no step, since `refs.IndexBlocks` indexes only the first holder of an id, and no step gives an id a block has taken.
-A stored row whose text the version does not hold (indexed at an older version this one changed) and whose live text it does not hold either is still recorded deleted at it.
-A live block only an unsettled edit made is not indexed until the reopen's settlement writes the version that holds it, so block history names only versions that hold a block's text.
-The loop remembers a skipped document only when its listing read the issue open, and counts it again without reading it while its latest version and its pending settlement's `marked_at` (which every update append moves) stay as they were, the listing still reads the issue open, and this server holds no room for it:
-the listing reads the issue with no lock while the skip is decided under the owner lock, a close can leave the version, the mark and the room as they were, and a closed issue's document is indexed, not skipped.
+A live block that only an unsettled edit made is not indexed until a settlement writes the version that holds it, so block history names only versions that hold a block's text.
+The loop remembers a skipped document, and counts it again without reading it while its latest version and its pending settlement's `marked_at` (which every update append moves) stay as they were and this server holds no room for it.
+The issue's status takes no part, so a close or a reopen that moves neither changes nothing that the loop remembers.
 An item is re-read `for no key update` and re-indexed with this build's grammar (`refs.ReindexOwed` on `refs.BlockGrammarOwed`), a new edge taking the time its text was written and no `source_seq`;
 its owed row is deleted before its text is written and only while it holds the `enqueued_at` the tick listed, so an edit that lands meanwhile leaves the item owed with nothing written for it, for the next tick to read and index.
 That re-index indexes a comment's or issue message's blocks and an ask's parts too (`refs.IndexAskParts`, read from the ask row it locked), so the batch of items owed their own blocks runs after it and finds such an item no longer owed.
@@ -2428,18 +2456,24 @@ Every close - a person's Close or board drag, `dispatch issue-update --status do
 decision blocks, plain asks and approval requests.
 Each is recorded `resolved` with resolution `{kind: "withdrawn", actor: <the closer>, reason: "Withdrawn
 by the close of <KEY>.", at}` and gets one `ask.resolved` (actor the closer) before `issue.closed`;
-its block, and each copy of it in another document of the issue, is written `state="resolved"` into the live document, and no version is written while the issue is closed.
-An ask block that still has no ask row is written `state="resolved"` with no record, logged, and settlement indexes it as a new open ask when the issue reopens.
+its block, and each copy of it in another document of the issue, is written `state="resolved"` into the live document.
+The document's next settlement saves these block writes, and it writes a version when its rendering differs from the latest version.
+That settlement runs whether or not the issue is closed, and on a closed issue it opens no ask and wakes nobody (`settlement.issueClosed`).
+The close's final sweep writes `state="resolved"` into an ask block that still has no ask row, records nothing and logs the block.
+A settlement while the issue is closed keeps such a block resolved, opens no ask for it, and records its author in `doc_ask_block_authors`.
+The reopen marks owed each document that holds such a block, or holds the block of an ask that a settlement retracted when the block left (`docs.Service.MarkUnindexedAskDocumentsOwed`).
+The settlement after the reopen opens the block's ask, credited to the recorded author, and restores the retracted ask.
 A document of the issue whose stored history does not load (`docs.ErrDocumentUnloadable`), like one outside the schema, is left as it is and logged at WARN naming the issue and the document:
 nothing can read or open it, so the close, the reopen and the repair go on without it rather than answer `409 DOCUMENT_UNLOADABLE` for good;
 a failed room's `503` and a database error still fail them.
 Asks already answered or resolved are left as they were, and the close records no answer, review or approval.
 A reopen opens again exactly the asks whose resolution kind is `withdrawn`, with `state: open`, no answer and no resolution and everything else kept, each with one `ask.opened` (actor the reopener) before `issue.updated`, and their blocks read `state="open"` again.
 The close's and the reopen's block writes (`docs.Service.WriteIssueAskStates`) are no edit:
-they credit no pending author and leave each document's latest edit source as it was, so the settlement a reopen leaves owed names the person who last edited the document, never the closer or the reopener.
+they credit no pending author and leave each document's latest edit source as it was, so the settlement that a close or a reopen leaves owed names the person who last edited the document, never the closer or the reopener.
 Only the server writes `withdrawn`: the resolve route accepts `retracted` and `resolved` alone, and an answer, resolution or retraction on a closed issue is still `409 ISSUE_CLOSED`.
 What a release older than this one closed or reopened is converged by `api.RepairIssueAsks`, at boot (bounded at 30 s) and then every `api.IssueAskRepairInterval` (10 minutes) under the lease `issue-ask-repair`, each interval pass bounded at 5 minutes.
 Per issue, under its row, a closed issue's open asks are withdrawn in the name of its latest `issue.closed` actor, an open issue's `withdrawn` asks are restored in the name of the event that reopened it, and a closed issue that has open asks, or whose documents owe a settlement marked since the last pass, gets the close's final sweep in the same write of each document, which writes block `state` attributes only.
+The sweep's write leaves the document owed, and the document's settlement saves that write whether or not the issue is closed.
 Each interval pass moves that bound to one interval before its own start whenever it listed its candidates, and carries every issue it did not repair - one that failed or one it ran out of time before - into the next pass, so one issue failing every pass does not make every pass sweep every closed issue.
 The bound and the carried issues live in the memory of the process that ran the pass:
 a pass on another process, once the lease moves, starts from that process's own and never sees them.
@@ -2452,8 +2486,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   The Go Dispatch server maintains its emitted event names and wire payloads separately; `bun run gen:go` generates Envoy envelope validation only.
 
 - `GET /api/v1/issues` answers every issue its filters match (`project`, `status`, `parent`, `label`, `priority`, `open`, `updated_since`, `closed_since`, `closed_before`, `route_status`, and `pinned`, which needs the `person` scope since the pins are one person's) as an array, or one page of them when the caller names `limit` (1 to `contracts.MaxIssuePageLimit`, 250) or `offset` (0 or more;
-  alone it pages `contracts.DefaultIssuePageLimit`, 50):
-  `{issues, total, limit, offset}` (`model.IssueSummaryPage`), the count beside the rows as `GET /api/v1/asks/open` carries it.
+  alone it pages `contracts.DefaultIssuePageLimit`, 50): `{issues, total, limit, offset}` (`model.IssueSummaryPage`), the count beside the rows as `GET /api/v1/asks/open` carries it.
   Every row carries `closed_at`, the time the issue was closed as its own read carries it, or null while it is open.
   `closed_since` (inclusive) and `closed_before` (exclusive) are RFC3339 bounds on `closed_at`, so an open issue matches neither, and a reader of the issues closed in a window reads those alone rather than the whole listing;
   `listIssues` (`api/issue_queries.go`) refuses a malformed one as `400 INVALID_CLOSED_SINCE` or `400 INVALID_CLOSED_BEFORE`, as it refuses a malformed `updated_since` (`400 INVALID_UPDATED_SINCE`), and a `closed_before` at or before `closed_since` as `400 INVALID_CLOSED_WINDOW`.
@@ -2471,8 +2504,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   an issue that enters or leaves what the filters match (a `route_status` filter's by a refreshed listener answer too), or whose status or rank changes, between two reads shifts rows across a page boundary, and one issue is served twice and another never.
   The unpaged array is the only exact set one read gives.
   The `dispatch issues` command always sends `limit` and `offset` (`DispatchClient.listIssuePage`, `packages/envoy-client`) and refuses an array answered to that paged request, which means a Dispatch older than #1612 or a regression of the page.
-  So a Dispatch rolled back past #1612, or one that stops paging, fails every `dispatch issues` call with that refusal;
-  the SPA and both daemons send neither parameter and keep reading the array.
+  So a Dispatch rolled back past #1612, or one that stops paging, fails every `dispatch issues` call with that refusal; the SPA and both daemons send neither parameter and keep reading the array.
 
 - Issues carry a nullable coarse priority (`P0` highest through `P3` lowest) alongside their server-generated fractional `rank`.
   `POST /api/v1/issues` and `PATCH /api/v1/issues/{key}` accept `priority` as `0` through `3` or null; each priority write emits `issue.updated`.
@@ -2499,13 +2531,11 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   the **lowercase** email of the person every ask on it waits on until somebody hands that ask to another person, or, while it holds nobody, its project's default assignee (`issues.assignee`, migration `0034`, indexed on open issues).
   Both identity implementations name a person by lowercase email, so `model.CanonicalLogin` (`strings.ToLower(strings.TrimSpace(login))`) is the stored form and plain `=` compares it;
   the SPA lowercases the `/auth/whoami` viewer once and compares exact.
-  `POST /api/v1/issues` and `PATCH /api/v1/issues/{key}` accept `assignee` (the PATCH's `json.RawMessage` tri-state:
-  absent leaves it, `null` clears, a string is canonicalised and must name a row of `people` (migration `0068`:
+  `POST /api/v1/issues` and `PATCH /api/v1/issues/{key}` accept `assignee` (the PATCH's `json.RawMessage` tri-state: absent leaves it, `null` clears, a string is canonicalised and must name a row of `people` (migration `0068`:
   everyone who has signed in) — else `400 ASSIGNEE_NOT_ALLOWED` naming the email; a non-string is `400 INVALID_ISSUE`).
   Any authenticated actor may set it; the event's actor is who assigned it, and the whole issue rides in `issue.created` / `issue.updated`, so there is no `assigned_by`.
   Absent or `null` on create (both name nobody there, so only the `PATCH`'s `null` clears), the default is the first match of:
-  a human actor's email; a personal token's `Owner`;
-  the parent's assignee when it names someone;
+  a human actor's email; a personal token's `Owner`; the parent's assignee when it names someone;
   the project's `default_assignee`, which every project names (`projects.default_assignee`, migrations `0116` and `20261111210103`;
   the column is not null, and a default left stale by a restore or a direct write is used as it stands rather than refusing the create, so the step is the column the create's own transaction already read and not `allowedLogin`).
   The chain therefore ends on a person: an issue the shared token creates with no assignee named and no parent assignee lands on the project's default.
@@ -5310,6 +5340,8 @@ a token the issuer never signed, one naming a key id the issuer publishes nothin
   A version whose latest edit names no person names nobody new (`docs.holdEditNotice`):
   an open window keeps its actor and gains the version, its people and a new due time;
   with no window open the version holds a row with no actor and no due time, and the next version that names a person sends one notice covering both.
+  A settlement of a closed issue's document records no notice.
+  When it writes a version, it deletes the document's `document_edit_notices` row in the same transaction, so neither a reopen inside the quiet time nor the first notice after the reopen reports the edits that it saved.
 
 - Dispatch project events use `notifications.dispatch.project.<PROJECT>.<type>` and are retained in JetStream.
   They have no issue route; project, repository-setting, and user-interface state consumers refresh through the live socket's events subscription.
@@ -5625,10 +5657,16 @@ ADC of type `authorized_user` write as they are;
 under any other ADC - a service account key file, a workload identity federation credential (a dev box's own), a workforce identity federation sign-in, or a GCE/GKE metadata-server identity (GKE Workload Identity's too), whose ADC carries no JSON at all - it signs the backend in with the person's gcloud login, or with the lent raw token only when gcloud cannot supply that login, redialing Secret Manager under it (`signIn`) and leaving the machine's ADC as they are, unless `GOOGLE_APPLICATION_CREDENTIALS` named them, a choice it refuses rather than overrides.
 Reads under a machine's ADC run under it.
 On a write under that lent token, `gcpUserinfo` must name a `personAccount`; an empty email or service account is refused, and its lowercased email is `--owner me`.
-`create` requires its owner tag to equal that person. A lent token may only create a new secret it owns: `set`, both retag annotation paths, `delete`, and `restore` refuse before any Secret Manager call.
-After the `create` version add, a lent token re-reads the owner and destroys the exact returned version if the owner changed or that read failed, refusing the write and naming the left version if that undo fails. Because `AddSecretVersion` takes no Etag, that version can exist momentarily between its add and the undo.
-One race is accepted, not prevented: between `CreateSecret` and the version add, a second writer whose IAM grants already reach the new secret (a project-level role does) can add its own version and change the owner. The undo then destroys this create's version, the newest, so `versions/latest` names a destroyed version while the other writer's version stays enabled, and a read of `latest` fails. The window is the time between those two calls, and entering it takes permission to add versions and update the metadata of a secret that did not exist a moment earlier. A predefined role that grants both, such as Secret Manager Admin, also grants destroying versions; a custom role can separate them, and then the race lets that writer make `latest` unreadable: an availability loss, never a read of any value.
-A person who finds `latest` naming a destroyed version runs `agent-secrets secret show NAME` to list its versions, then re-adds the value with `agent-secrets secret set NAME` under their own gcloud sign-in (a lent token refuses `set`). The owner tag is Legion's rule, not Google's access control: its person can still have IAM rights independently.
+`create` requires its owner tag to equal that person.
+A lent token may only create a new secret it owns: `set`, both retag annotation paths, `delete`, and `restore` refuse before any Secret Manager call.
+After the `create` version add, a lent token re-reads the owner and destroys the exact returned version if the owner changed or that read failed, refusing the write and naming the left version if that undo fails.
+Because `AddSecretVersion` takes no Etag, that version can exist momentarily between its add and the undo.
+One race is accepted, not prevented: between `CreateSecret` and the version add, a second writer whose IAM grants already reach the new secret (a project-level role does) can add its own version and change the owner.
+The undo then destroys this create's version, the newest, so `versions/latest` names a destroyed version while the other writer's version stays enabled, and a read of `latest` fails.
+The window is the time between those two calls, and entering it takes permission to add versions and update the metadata of a secret that did not exist a moment earlier.
+A predefined role that grants both, such as Secret Manager Admin, also grants destroying versions; a custom role can separate them, and then the race lets that writer make `latest` unreadable: an availability loss, never a read of any value.
+A person who finds `latest` naming a destroyed version runs `agent-secrets secret show NAME` to list its versions, then re-adds the value with `agent-secrets secret set NAME` under their own gcloud sign-in (a lent token refuses `set`).
+The owner tag is Legion's rule, not Google's access control: its person can still have IAM rights independently.
 `gcloudLogin` borrows the login through gcloud's own interface, never its credential files:
 the first `gcloud` on PATH (`exec.LookPath`) lists its logins (`gcloud auth list --format=json`);
 a person's is an account named by a plain email the broker accepts as a person owner (`personAccount`:

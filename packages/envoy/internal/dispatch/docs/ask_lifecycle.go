@@ -23,10 +23,11 @@ type BlockRef struct {
 }
 
 // logUnindexedAskBlocks logs each ask block with no ask row that a write to issueKey's
-// documents marked resolved: it is not an ask yet, so it has no record to show, and settlement
-// indexes it as a new open ask once the issue reopens. WriteIssueAskStates and RebuildDocument
-// each log the blocks they mark themselves, so every caller sees them logged once, whatever it
-// does with them.
+// documents marked resolved: it is not an ask yet, so it has no record to show. A settlement
+// while the issue is closed keeps it resolved and opens no ask for it, and once the issue
+// reopens, which marks its document owed (MarkUnindexedAskDocumentsOwed), a settlement indexes it
+// as a new open ask. WriteIssueAskStates and RebuildDocument each log the blocks they mark
+// themselves, so every caller sees them logged once, whatever it does with them.
 func logUnindexedAskBlocks(issueKey string, blocks []BlockRef) {
 	for _, block := range blocks {
 		slog.Warn("dispatch: mark resolved an ask block no settlement indexed before its issue closed",
@@ -50,7 +51,9 @@ type lifecycleWriteContextKey struct{}
 // leaves the document's latest edit source (roomState.lastActor) as it was (applyLive). A
 // settlement then names the person who last edited the document, as the author of an ask block it
 // indexes with no author of its own and on its derived events, never the closer or the reopener,
-// however the room is released and loaded between the close and the reopen.
+// however the room is released and loaded between the close and the reopen. A settlement while
+// the issue is closed indexes no ask block, and gives its derived events the settlement's own
+// actor (reconcileAskBlocks, planRepairs).
 func withLifecycleWrite(ctx context.Context) context.Context {
 	return context.WithValue(ctx, lifecycleWriteContextKey{}, true)
 }
@@ -86,21 +89,25 @@ func isLifecycleWrite(ctx context.Context) bool {
 // answerer and time with the answer left out, as settlement writes a block whose document has no
 // room for its answer (withholdAnswers): no write here is weighed for size, so none adds an
 // answer's bytes to a document. A copy that already holds the answer in full is left as it is
-// (answeredCopyAttributes), and the settlement an issue's reopen leaves owed writes the answer into
-// the rest.
+// (answeredCopyAttributes), and the document's next settlement, which this write leaves owed and
+// which runs whether or not the issue is closed, writes the answer into the rest as it writes any
+// copy (withholdAnswers).
 //
 // With markUnindexed it also writes state="resolved" into every readable ask block that neither
 // has an ask of its own on its document nor is a copy of another document's ask: a block no
-// settlement has indexed yet, which no longer reads open once its issue has closed, and which
-// settlement indexes as a new open ask once the issue reopens. Once every document is written, it
-// logs each such block it changed (logUnindexedAskBlocks), so no caller logs them again, and
-// returns them for a caller that counts them. Among these is every readable ask block that repeats
-// the id an earlier ask block of its document holds and does not read state="resolved" - a
-// browser's paste copies a block with its id - which a write addressed by id cannot reach, since
-// such a write lands on the id's first holder (repairLive). It is written by its place among the
-// document's ask blocks instead (markRepeatedAskBlocks), and logged and returned under the id it
-// repeats. Its id is left as it is: stamping it an id of its own is settlement's job, and the
-// reopen's settlement stamps it and indexes it as a new open ask.
+// settlement has indexed yet, which no longer reads open once its issue has closed. A settlement
+// while the issue is closed keeps it resolved with no ask, and once the issue reopens, which marks
+// its document owed (MarkUnindexedAskDocumentsOwed), a settlement indexes it as a new open ask.
+// Once every document is written, it logs each such block it changed (logUnindexedAskBlocks), so
+// no caller logs them again, and returns them for a caller that counts them. Among these is every
+// readable ask block that repeats the id an earlier ask block of its document holds and does not
+// read state="resolved" - a browser's paste copies a block with its id - which a write addressed
+// by id cannot reach, since such a write lands on the id's first holder (repairLive). It is
+// written by its place among the document's ask blocks instead (markRepeatedAskBlocks), and
+// logged and returned under the id it repeats. Its id is left as it is: stamping it an id of its
+// own is settlement's job. The document's next settlement stamps it, and keeps it resolved with no
+// ask while the issue is closed, as it keeps any block with no row (reconcileAskBlocks); a
+// settlement after the reopen indexes it as a new open ask.
 //
 // It runs in the transaction ctx joined (errUnjoined otherwise), and its caller holds the issue's
 // row, as settlement holds it, so the writes are owner-verified: they reach a document whose room
@@ -496,8 +503,9 @@ const (
 // owes, as Shutdown's drain does: it waits for the room's durable appends to land, reads whether
 // the document owes a settlement, and settles it at its room's current generation, in place of the
 // timer armed for it, if one is. Every new ask block the documents hold is then an ask, credited
-// to its author as settlement credits one, which the close of an issue, which no settlement runs
-// after, withdraws with the rest.
+// to its author as settlement credits one, which the close of an issue withdraws with the rest:
+// a settlement after the close opens no ask, and saves a block it finds with none resolved
+// (reconcileAskBlocks).
 //
 // A settlement that stops short (settleOutcome) is run again, up to issueSettleAttempts times for
 // each document and within issueSettleBudget for the whole issue, no retry starting once the

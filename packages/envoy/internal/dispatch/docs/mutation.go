@@ -334,7 +334,8 @@ func (s *Service) applyLiveWritten(ctx context.Context, artifactID string, actor
 	}
 	// A write whose transactions changed nothing made no update and writes nothing. Appended, an
 	// empty update would refresh the anchors and mark the document owing a settlement again
-	// (updateOwedStatement), which every repair pass over a closed issue would then sweep.
+	// (updateOwedStatement): a settlement with nothing to save, and a document the repair's next
+	// pass over a closed issue would sweep again while it still owed that settlement.
 	if len(op.updates) == 0 {
 		return websocket.ErrNoChanges
 	}
