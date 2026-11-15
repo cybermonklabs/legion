@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -176,6 +177,25 @@ func serviceToken(jkt string, life time.Duration) brokertoken.Introspection {
 	return answer
 }
 
+// ciRun is the run a CI result token's answer names: every field of oauthwire.CIRun filled, so a
+// field the Caller drops is a field a test sees missing.
+func ciRun() *brokertoken.CIRun {
+	return &brokertoken.CIRun{
+		Repository: "example-org/example-repo", WorkflowRef: "example-org/example-repo/.github/workflows/ci.yaml@refs/pull/7/merge",
+		Ref: "refs/pull/7/merge", SHA: "0123456789abcdef0123456789abcdef01234567", EventName: "pull_request",
+		RunID: "4242", RunAttempt: "2", RunnerEnvironment: "self-hosted", Actor: "ada-gh", CheckRunID: "987654321",
+	}
+}
+
+// ciResultToken is the answer a token a CI run's exchange minted gets: a session's credential
+// like any other, limited to writing that run's results, with the run beside the limit.
+func ciResultToken(jkt string, life time.Duration) brokertoken.Introspection {
+	answer := liveToken(jkt, life)
+	answer.Session = "ci-results:example-org/example-repo/.github/workflows/ci.yaml"
+	answer.Capability, answer.CI = brokertoken.CapabilityCIResults, ciRun()
+	return answer
+}
+
 // TestATokenThatIsNoSessionsCredentialIsRefused: a live, DPoP-bound token the broker issued for
 // something other than acting as a session names no session to record writes as, so it is
 // refused with an outcome of its own rather than handed back as a Caller for whoever mounts
@@ -187,8 +207,11 @@ func serviceToken(jkt string, life time.Duration) brokertoken.Introspection {
 // project beside it. Those three are refused rather than read as a token that names no project,
 // which would hand their caller every project the person may write; the one naming a project
 // under no scope would otherwise be the louder of the two, since the project beside the scope
-// is then read under nothing at all. The proof-checked Verify and the answer-only Live refuse
-// all six, so an open connection cannot keep one alive either.
+// is then read under nothing at all. Beside them are the three whose capability this package
+// cannot read: one it does not know, which read as no capability would be a token no limit
+// holds, and the CI capability and the run each without the other, which no exchange writes.
+// The proof-checked Verify and the answer-only Live refuse all nine, so an open connection
+// cannot keep one alive either.
 func TestATokenThatIsNoSessionsCredentialIsRefused(t *testing.T) {
 	rig := newRig(t)
 	caller := newSigner(t)
@@ -202,6 +225,12 @@ func TestATokenThatIsNoSessionsCredentialIsRefused(t *testing.T) {
 	unknownScope.ProjectScope = "organisation"
 	namedNoProject := liveToken(caller.jkt, time.Hour)
 	namedNoProject.Project = ""
+	unknownCapability := liveToken(caller.jkt, time.Hour)
+	unknownCapability.Capability = "admin"
+	capabilityNoRun := ciResultToken(caller.jkt, time.Hour)
+	capabilityNoRun.CI = nil
+	runNoCapability := ciResultToken(caller.jkt, time.Hour)
+	runNoCapability.Capability = ""
 	for name, answer := range map[string]brokertoken.Introspection{
 		"a machine login's own token":                 machineLoginToken(caller.jkt, time.Hour),
 		"a token naming neither a person nor service": noOwner,
@@ -209,6 +238,9 @@ func TestATokenThatIsNoSessionsCredentialIsRefused(t *testing.T) {
 		"a token naming no project scope":             noScope,
 		"a token of an unknown project scope":         unknownScope,
 		"a named scope naming no project":             namedNoProject,
+		"a capability this package does not know":     unknownCapability,
+		"the CI capability naming no run":             capabilityNoRun,
+		"a run with no capability beside it":          runNoCapability,
 	} {
 		t.Run(name, func(t *testing.T) {
 			token := "a-token-that-is-" + strings.ReplaceAll(name, " ", "-")
@@ -237,6 +269,35 @@ func TestATokenThatIsNoSessionsCredentialIsRefused(t *testing.T) {
 	rig.broker.Says(sound, liveToken(caller.jkt, time.Hour))
 	if _, err := rig.verifier.Verify(t.Context(), caller.at(resourcePath, sound)); err != nil {
 		t.Fatalf("a session's own token was refused: %v", err)
+	}
+}
+
+// TestACIResultsTokenNamesItsCapabilityAndItsRun: a token a CI run's exchange minted is a
+// session's credential whose Caller carries the one thing it may do and the run it was minted
+// for, every field of it, from both checks, so a reader holds a result's commit to the run's.
+// The run is the caller's own copy: a reader that changes it changes nothing the cache answers
+// the token's next request with.
+func TestACIResultsTokenNamesItsCapabilityAndItsRun(t *testing.T) {
+	rig := newRig(t)
+	caller := newSigner(t)
+	const token = "a-token-a-ci-run-was-exchanged"
+	rig.broker.Says(token, ciResultToken(caller.jkt, time.Hour))
+
+	want := brokertoken.Caller{
+		Session: "ci-results:example-org/example-repo/.github/workflows/ci.yaml", Person: "sjawhar", Project: "INFRA",
+		ProjectScope: brokertoken.ProjectScopeNamed, Capability: brokertoken.CapabilityCIResults, CI: ciRun(),
+	}
+	decided, err := rig.verifier.Verify(t.Context(), caller.at(resourcePath, token))
+	if err != nil || !reflect.DeepEqual(decided, want) {
+		t.Fatalf("Verify = %+v (run %+v), %v; want %+v (run %+v)", decided, decided.CI, err, want, want.CI)
+	}
+	decided.CI.SHA = "ffffffffffffffffffffffffffffffffffffffff"
+	live, err := rig.verifier.Live(t.Context(), caller.at(resourcePath, token))
+	if err != nil || !reflect.DeepEqual(live, want) {
+		t.Fatalf("Live after a reader changed its copy = %+v (run %+v), %v; want %+v (run %+v)", live, live.CI, err, want, want.CI)
+	}
+	if rig.broker.Count() != 1 {
+		t.Fatalf("the broker was asked %d times, want once: the second answer is the cache's", rig.broker.Count())
 	}
 }
 

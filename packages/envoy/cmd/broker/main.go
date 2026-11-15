@@ -477,7 +477,7 @@ func main() {
 	// token. Both halves are optional and the grant is composed either way: a broker told about
 	// no issuer accepts no subject token at all, which the line below says once at boot rather
 	// than leaving an operator to read it out of a refusal.
-	exchangePolicy, err := exchange.NewSet(cfg.ExchangeAccounts, cfg.ExchangeWorkflows, cfg.ExchangeGoogleAccounts, cfg.SignIn.Domain)
+	exchangePolicy, err := exchange.NewSet(cfg.ExchangeAccounts, cfg.ExchangeWorkflows, cfg.ExchangeResultWorkflows, cfg.ExchangeGoogleAccounts, cfg.SignIn.Domain)
 	fatal(err)
 	exchangeConfig := oauth.ExchangeConfig{Policy: exchangePolicy}
 	if cfg.ExchangeK8sAudience != "" {
@@ -512,7 +512,8 @@ func main() {
 		slog.Info("token exchange", "state", "unconfigured", "detail", "no subject token issuer is set, so no pod, workflow run or machine exchanges")
 	} else {
 		slog.Info("token exchange", "state", "on", "kubernetes", cfg.ExchangeK8sAudience != "", "github", cfg.ExchangeGitHubIssuer != "",
-			"accounts", len(cfg.ExchangeAccounts), "workflows", len(cfg.ExchangeWorkflows), "machines", len(cfg.ExchangeGoogleAccounts))
+			"accounts", len(cfg.ExchangeAccounts), "workflows", len(cfg.ExchangeWorkflows), "result_workflows", len(cfg.ExchangeResultWorkflows),
+			"machines", len(cfg.ExchangeGoogleAccounts))
 	}
 	// verification_uri is Dispatch's machine-login page, where the person types the code. With
 	// no page (BROKER_MACHINE_LOGIN_URL unset) the provider composes no device grant at all:

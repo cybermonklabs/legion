@@ -6521,7 +6521,14 @@ whitespace-separated `<repository>=<workflow path>=<ref>=<project>=<person>[=<se
 Every field is compared exactly and nothing is wildcarded, so a run of another workflow, or of this one on another ref, is not this entry;
 the session is everything after the fifth `=`, and a workflow listed twice is refused.
 Needs `BROKER_EXCHANGE_GITHUB_ISSUER` and `BROKER_EXCHANGE_GITHUB_AUDIENCE`;
-unset, no workflow exchanges), `BROKER_ACCESS_TOKEN_SECONDS` (default 900, min 1, max 3600
+unset, no workflow exchanges), `BROKER_EXCHANGE_RESULT_WORKFLOWS` (optional;
+whitespace-separated `<repository>=<workflow path>=<ref pattern>=<project>=<person>` entries, such as `example-org/example-repo=.github/workflows/ci.yaml=refs/pull/*/merge=EXAMPLE=ada@example.com`.
+The ref pattern is `path.Match`'s, so a `*` never crosses a `/`; it starts `refs/heads/`, `refs/pull/` or `refs/tags/`, and its first two segments hold no `*`, `?`, `[` or `\` (`exchange.CheckRefPattern`).
+One workflow may be listed with several patterns; a run whose ref two of them match is refused at the exchange, naming both.
+The token minted for a run writes CI results to that one project and nothing else (capability `ci-results`), carries the run (`ci`), acts for that person, and writes under the session `ci-results:<repository>/<workflow path>`, which belongs to the workflow.
+An entry not of that form or with a blank field, a pattern of another shape, an entry listed twice, and a workflow `BROKER_EXCHANGE_WORKFLOWS` lists too are refused.
+Needs `BROKER_EXCHANGE_GITHUB_ISSUER` and `BROKER_EXCHANGE_GITHUB_AUDIENCE`;
+unset, no run writes CI results), `BROKER_ACCESS_TOKEN_SECONDS` (default 900, min 1, max 3600
 — how long an access token the OAuth provider issues lasts, a machine login's and an exchanged one's alike:
 it trades how often every caller renews against how long a revoked credential's last token stays spendable), `BROKER_ENVOY_URL` (optional;
 turns on best-effort wake notifications to the requesting session through Envoy's `/v1/messages/send`, sent with `BROKER_ENVOY_TOKEN` — read only when the URL is set, and not itself required at startup), `BROKER_LEASE_SECONDS` (default 900, max 3600), `BROKER_SESSION_CARRY_SECONDS` (default 43200, min 0, max 86400
@@ -6557,7 +6564,7 @@ a `BROKER_SECRETS_STORE` that is neither store's name;
 with the AWS store, a `BROKER_SECRETS_PREFIX` that does not end in `/`, starts with one or holds white space, and a `BROKER_SECRETS_KMS_KEY_ARN` that is not a key ARN (an alias can be pointed elsewhere, and a bare key id names no account);
 with the GCP store, a prefix not of its form (a project id in place of the number among them) and a key name outside `global`;
 the other store's key variable set; exactly one of `BROKER_K8S_OIDC_ISSUER`/`BROKER_K8S_OIDC_AUDIENCE` set;
-a `BROKER_API_ACCOUNTS`, `BROKER_SERVICE_LOGINS` or `BROKER_EXCHANGE_K8S_AUDIENCE` set with no cluster issuer, a `BROKER_EXCHANGE_ACCOUNTS` with no `BROKER_EXCHANGE_K8S_AUDIENCE` and a `BROKER_EXCHANGE_WORKFLOWS` with no `BROKER_EXCHANGE_GITHUB_ISSUER`, each naming the pair whose tokens its callers present;
+a `BROKER_API_ACCOUNTS`, `BROKER_SERVICE_LOGINS` or `BROKER_EXCHANGE_K8S_AUDIENCE` set with no cluster issuer, a `BROKER_EXCHANGE_ACCOUNTS` with no `BROKER_EXCHANGE_K8S_AUDIENCE` and a `BROKER_EXCHANGE_WORKFLOWS` or `BROKER_EXCHANGE_RESULT_WORKFLOWS` with no `BROKER_EXCHANGE_GITHUB_ISSUER`, each naming the pair whose tokens its callers present;
 any of `BROKER_VM_SERVICES`, `BROKER_VM_PROJECTS`, `BROKER_VM_INSTANCES` and `BROKER_SIGNIN_DEVICE_AUDIENCE` set with no `BROKER_GOOGLE_OIDC_AUDIENCE`, and that audience set with no `BROKER_VM_SERVICES`;
 each machine-account refusal of the paragraph above; and a `_SECONDS` variable that isn't a whole number between the min and max its row of Load's `ints` table gives (non-numeric fails the same check as out of range).
 `cmd/broker/main.go` logs at boot, before it loads the AWS config or opens the database, how it signs in (`database sign-in method=rds-iam` when `Config.DatabaseIAM`, else `method=password`), then which store it built and under what (`secret store store=<store>
@@ -6718,7 +6725,8 @@ Any other request — another client presenting nothing, this client on another 
 — goes to the library and is answered as it always was.
 `internal/broker/exchange` is the policy half and nothing else (it verifies no token, reads no configuration and takes no clock):
 handed the verified claims, it answers the session the token writes as, the person it acts for or the service it is, and its project scope
-— `named`, the one project `BROKER_EXCHANGE_ACCOUNTS`/`BROKER_EXCHANGE_WORKFLOWS`/`BROKER_VM_EXCHANGE_ACCOUNTS` fixes, or `person`, every project its person may write, which is what a person's own credential gets and the word a token naming no person at all carries, being held to no one project.
+— `named`, the one project `BROKER_EXCHANGE_ACCOUNTS`/`BROKER_EXCHANGE_WORKFLOWS`/`BROKER_EXCHANGE_RESULT_WORKFLOWS`/`BROKER_VM_EXCHANGE_ACCOUNTS` fixes, or `person`, every project its person may write, which is what a person's own credential gets and the word a token naming no person at all carries, being held to no one project.
+A result workflow's token also carries the one capability it is limited to, `ci-results`, and the run it was minted for (`Claims.Capability`, `Claims.CI`, `oauthwire.CIRun`).
 It is also the one reading of a Google identity token's own claim shapes (`exchange.ReadGoogleIdentity`, `GoogleIdentity`, `ComputeEngine`), which `api.GoogleTokens.VerifyGoogle` reads the same token through (the verifier and its `api.GoogleToken` live beside their two callers in `internal/broker/api`, behind the `api.GoogleVerifier` interface a test wires its own), so `email`, `email_verified` and the `google.compute_engine` members are spelled once.
 Its refusals are one answer an operator can act on each:
 `ErrNoEntry`, `ErrNoPodBinding`, `ErrSessionMismatch`, `ErrSessionRequired`, `ErrSessionInvalid`, `ErrClaimMissing`, `ErrEmailNotVerified`, `ErrNoComputeEngine` and `ErrMachineNotAllowed` of a machine, and `ErrNotInDomain` and `ErrNoActorToken` of a person's sign-in, and, of a pod-session registration, `ErrSessionFixed`.

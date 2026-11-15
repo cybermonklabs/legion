@@ -59,13 +59,14 @@ var (
 	// ErrNotASession is a live token that is not a session's credential: the broker's answer
 	// names no session, or names neither a person nor a service, or the token was issued to a
 	// client other than the exchange every Dispatch access token comes from (ExchangeClientID),
-	// or its project scope is a word this package does not know. A machine login's own access
-	// token is exactly that — the credential a dev box holds to ask the broker for other
-	// credentials, DPoP-bound and perfectly live, for which no exchange ever decided a session,
-	// a person or a project scope — and so is any other token the broker issued for something
-	// other than acting as a session. Whoever mounts this check acts as the session a token
-	// names, so a token that names none is refused here rather than admitted for a request body
-	// to name one in its place.
+	// or its project scope is a word this package does not know, or so is its capability, or
+	// it carries the CI capability without its run or a run without the capability. A machine
+	// login's own access token is exactly that — the credential a dev box holds to ask the
+	// broker for other credentials, DPoP-bound and perfectly live, for which no exchange ever
+	// decided a session, a person or a project scope — and so is any other token the broker
+	// issued for something other than acting as a session. Whoever mounts this check acts as
+	// the session a token names, so a token that names none is refused here rather than
+	// admitted for a request body to name one in its place.
 	//
 	// The scope is refused for the same reason it is read at all: it says what Project means, so
 	// a word this package does not know is a token it cannot read rather than one that names no
@@ -174,6 +175,17 @@ type Caller struct {
 	// to its person" from every other answer, and an absent or misspelt scope must not read as
 	// ProjectScopePerson.
 	ProjectScope string
+	// Capability is the one thing this caller may do, when the broker limited its token to
+	// one: CapabilityCIResults for a token a CI run's exchange minted, which writes that run's
+	// results to Project and nothing else. It is empty for every other caller, whose token no
+	// capability limits. A caller is never handed a capability this package does not know: an
+	// answer carrying one is ErrNotASession, since whoever mounts this check could only read
+	// it as no limit at all.
+	Capability string
+	// CI is the run a CapabilityCIResults caller's token was minted for, and is set exactly
+	// where Capability is: an answer carrying one without the other is ErrNotASession. It is
+	// the caller's own copy, so a reader may keep it.
+	CI *CIRun
 }
 
 // Options is what a Verifier needs. BrokerURL, Account, Origin, Replay and Address are required.
@@ -347,7 +359,8 @@ func (v *Verifier) Live(ctx context.Context, r *http.Request) (Caller, error) {
 }
 
 // live is the broker's half of both checks: the token r presents and an answer saying it is
-// live, bound to a key, issued for acting as a session, and scoped by a word this package reads.
+// live, bound to a key, issued for acting as a session, scoped by a word this package reads, and
+// limited by no capability or by one this package reads.
 func (v *Verifier) live(ctx context.Context, r *http.Request) (string, Introspection, error) {
 	token, ok := Presented(r)
 	if !ok {
@@ -374,6 +387,14 @@ func (v *Verifier) live(ctx context.Context, r *http.Request) (string, Introspec
 	if answer.Session == "" || (answer.Person == "" && answer.Service == "") || answer.ClientID != ExchangeClientID ||
 		(answer.ProjectScope != ProjectScopeNamed && answer.ProjectScope != ProjectScopePerson) ||
 		(answer.ProjectScope == ProjectScopeNamed && answer.Project == "") {
+		return "", Introspection{}, ErrNotASession
+	}
+	// The capability is read by the rule the scope is: a token carries none, which no capability
+	// limits, or CapabilityCIResults with the run it was minted for. A capability this package
+	// does not know is refused rather than read as none, since whoever mounts this check can
+	// hold a caller to a capability only when it knows its name; the CI capability with no run,
+	// and a run with no capability, are answers no exchange writes.
+	if (answer.Capability != "" && answer.Capability != CapabilityCIResults) || (answer.Capability == "") != (answer.CI == nil) {
 		return "", Introspection{}, ErrNotASession
 	}
 	return token, answer, nil

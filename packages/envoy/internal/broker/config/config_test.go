@@ -1744,6 +1744,82 @@ func TestLoadReadsTheExchangeWorkflows(t *testing.T) {
 	}
 }
 
+// TestLoadReadsTheExchangeResultWorkflows pins BROKER_EXCHANGE_RESULT_WORKFLOWS:
+// <repository>=<workflow>=<ref pattern>=<project>=<person> entries in order, one workflow under
+// as many patterns as it is listed with, none when unset. Its refusals name the setting and the
+// entry: one not of that form, whether a field short or carrying a sixth (no entry fixes its
+// session, the exchange does), a blank field, a pattern of another prefix, with a wildcard in its
+// first two segments or that is no pattern at all, an entry listed twice, and a workflow
+// BROKER_EXCHANGE_WORKFLOWS lists too. It needs GitHub's issuer and audience, whose tokens its
+// runs present.
+func TestLoadReadsTheExchangeResultWorkflows(t *testing.T) {
+	const setting = "BROKER_EXCHANGE_RESULT_WORKFLOWS"
+	cfg, err := Load(env(validEnv()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ExchangeResultWorkflows != nil {
+		t.Fatalf("ExchangeResultWorkflows = %v, want nil when %s is unset", cfg.ExchangeResultWorkflows, setting)
+	}
+	withGitHub := func() map[string]string {
+		e := validEnv()
+		e["BROKER_EXCHANGE_GITHUB_ISSUER"] = "https://token.actions.githubusercontent.com"
+		e["BROKER_EXCHANGE_GITHUB_AUDIENCE"] = "dispatch-results"
+		return e
+	}
+	const flow = "example-org/example-repo=.github/workflows/ci.yaml"
+	e := withGitHub()
+	e[setting] = flow + "=refs/heads/probe/infra-3577-ci-result=EXAMPLE=ada@example.com\n" +
+		flow + "=refs/pull/*/merge=EXAMPLE=ada@example.com " + flow + "=refs/heads/gh-readonly-queue/main/*=EXAMPLE=ada@example.com"
+	cfg, err = Load(env(e))
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := func(pattern string) exchange.ResultWorkflowEntry {
+		return exchange.ResultWorkflowEntry{Repository: "example-org/example-repo", Workflow: ".github/workflows/ci.yaml", Ref: pattern, Project: "EXAMPLE", Person: "ada@example.com"}
+	}
+	want := []exchange.ResultWorkflowEntry{entry("refs/heads/probe/infra-3577-ci-result"), entry("refs/pull/*/merge"), entry("refs/heads/gh-readonly-queue/main/*")}
+	if !slices.Equal(cfg.ExchangeResultWorkflows, want) {
+		t.Fatalf("ExchangeResultWorkflows = %v, want %v", cfg.ExchangeResultWorkflows, want)
+	}
+	for _, bad := range []string{
+		"example-org/example-repo",
+		flow + "=refs/pull/*/merge=EXAMPLE",
+		flow + "=refs/pull/*/merge=EXAMPLE=ada@example.com=ci-session",
+		flow + "==EXAMPLE=ada@example.com",
+		"example-org/example-repo==refs/pull/*/merge=EXAMPLE=ada@example.com",
+		flow + "=refs/pull/*/merge==ada@example.com",
+		flow + "=refs/remotes/origin/*=EXAMPLE=ada@example.com",
+		flow + "=main=EXAMPLE=ada@example.com",
+		flow + "=refs/*/main=EXAMPLE=ada@example.com",
+		flow + "=refs/he?ds/main=EXAMPLE=ada@example.com",
+		flow + "=refs/heads/probe/[x=EXAMPLE=ada@example.com",
+	} {
+		e := withGitHub()
+		e[setting] = bad
+		if _, err := Load(env(e)); err == nil || !strings.Contains(err.Error(), setting) || !strings.Contains(err.Error(), strconv.Quote(bad)) {
+			t.Errorf("%s = %q: err = %v, want a refusal naming the setting and the entry", setting, bad, err)
+		}
+	}
+	e = withGitHub()
+	twice := flow + "=refs/pull/*/merge"
+	e[setting] = twice + "=A=ada@example.com " + twice + "=B=ada@example.com"
+	if _, err := Load(env(e)); err == nil || !strings.Contains(err.Error(), twice) {
+		t.Errorf("%s naming one workflow and pattern twice: err = %v, want a refusal naming them", setting, err)
+	}
+	e = withGitHub()
+	e["BROKER_EXCHANGE_WORKFLOWS"] = flow + "=refs/heads/main=EXAMPLE=ada@example.com"
+	e[setting] = flow + "=refs/pull/*/merge=EXAMPLE=ada@example.com"
+	if _, err := Load(env(e)); err == nil || !strings.Contains(err.Error(), "BROKER_EXCHANGE_WORKFLOWS") || !strings.Contains(err.Error(), ".github/workflows/ci.yaml") {
+		t.Errorf("a workflow both settings list: err = %v, want a refusal naming BROKER_EXCHANGE_WORKFLOWS and the workflow", err)
+	}
+	e = validEnv()
+	e[setting] = flow + "=refs/pull/*/merge=EXAMPLE=ada@example.com"
+	if _, err := Load(env(e)); err == nil || !strings.Contains(err.Error(), "BROKER_EXCHANGE_GITHUB_ISSUER") {
+		t.Errorf("%s with no GitHub issuer: err = %v, want a refusal naming BROKER_EXCHANGE_GITHUB_ISSUER", setting, err)
+	}
+}
+
 // TestLoadRefusesAHalfConfiguredGitHubIssuer pins that GitHub's issuer and audience are
 // both-or-neither, as the cluster's pair is: half a pair would register a token type whose tokens
 // could not be checked.

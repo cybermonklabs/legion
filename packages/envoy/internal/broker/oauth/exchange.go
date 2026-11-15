@@ -65,6 +65,15 @@ const (
 	// ClaimProject is the one project key a token of the named scope may write, and is absent
 	// from one of the person scope, which names none.
 	ClaimProject = "project"
+	// ClaimCapability is the one thing the token may do, when its entry limits it to one:
+	// oauthwire.CapabilityCIResults for a run of a workflow BROKER_EXCHANGE_RESULT_WORKFLOWS
+	// lists (exchange.Claims.Capability). It is absent from every other token, which no
+	// capability limits, as ClaimMachine is absent from every token no machine acted for.
+	ClaimCapability = "capability"
+	// ClaimCI is the run a ClaimCapability token was minted for, an object of the fields
+	// oauthwire.CIRun names (exchange.Claims.CI), and is present exactly where ClaimCapability
+	// is.
+	ClaimCI = "ci"
 )
 
 // subjectTokenAlgorithms are the signature algorithms a JWT subject token may be signed with: the
@@ -639,6 +648,20 @@ func (p *Provider) decide(_ context.Context, request oauth2.Requester, subjectTo
 	} else {
 		session.Extra[ClaimMachine] = claims.Actor
 	}
+	if claims.Capability == "" {
+		// Absent, as the machine is: a token no capability limits carries neither claim, which
+		// is every token but a result entry's, and a session read back out of a subject token's
+		// row may hold the claims of another decision.
+		delete(session.Extra, ClaimCapability)
+		delete(session.Extra, ClaimCI)
+	} else {
+		run, err := ciClaim(claims.CI)
+		if err != nil {
+			return "", oauth2.ErrServerError.WithWrap(err).WithDebugError(err)
+		}
+		session.Extra[ClaimCapability] = claims.Capability
+		session.Extra[ClaimCI] = run
+	}
 	switch claims.Scope {
 	case exchange.ProjectScopeNamed:
 		session.Extra[ClaimProjectScope] = oauthwire.ProjectScopeNamed
@@ -648,6 +671,26 @@ func (p *Provider) decide(_ context.Context, request oauth2.Requester, subjectTo
 		delete(session.Extra, ClaimProject)
 	}
 	return claims.Principal, nil
+}
+
+// ciClaim is run as the object ClaimCI holds: its JSON, as oauthwire.CIRun's tags name the fields,
+// decoded into the generic object a claim map holds. A session is stored as JSON and read back
+// into that shape, so writing the same shape here means the session decide wrote and the one an
+// introspection reads out of the token's row hold one value. A capability is never written
+// without its run, so a decision that names none is the broker's own fault.
+func ciClaim(run *oauthwire.CIRun) (map[string]any, error) {
+	if run == nil {
+		return nil, errors.New("oauth: the exchange decided a capability with no run beside it")
+	}
+	encoded, err := json.Marshal(run)
+	if err != nil {
+		return nil, fmt.Errorf("oauth: encode the run claim: %w", err)
+	}
+	var claim map[string]any
+	if err := json.Unmarshal(encoded, &claim); err != nil {
+		return nil, fmt.Errorf("oauth: decode the run claim: %w", err)
+	}
+	return claim, nil
 }
 
 // claimSession claims the session name decide wrote onto session for the principal it decided,

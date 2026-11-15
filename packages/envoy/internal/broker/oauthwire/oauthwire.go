@@ -89,6 +89,45 @@ const (
 	ProjectScopePerson = "person"
 )
 
+// CapabilityCIResults is the one capability a token can carry: a token minted for a
+// continuous-integration run of a workflow BROKER_EXCHANGE_RESULT_WORKFLOWS lists, which writes
+// that run's test results to its one project and nothing else. A token that carries no
+// capability is held to no route by it; a reader that meets a capability it does not know
+// refuses the token rather than read it as one with no limit (internal/brokertoken).
+const CapabilityCIResults = "ci-results"
+
+// CIRun is the continuous-integration run a CapabilityCIResults token was minted for, read from
+// the claims of the GitHub token the run presented to the exchange: which repository and
+// workflow ran, on which ref and commit, for which event, which run and which attempt of it, on
+// which kind of runner, started by whom, and which check run its job is. A resource server
+// records it beside each result the token writes and holds the result's commit to SHA.
+type CIRun struct {
+	// Repository is <owner>/<name>, the token's `repository` claim.
+	Repository string `json:"repository"`
+	// WorkflowRef is <owner>/<name>/<path>@<ref>, the workflow the run started in
+	// (`workflow_ref`).
+	WorkflowRef string `json:"workflow_ref"`
+	// Ref is the git ref the run is on (`ref`), such as refs/pull/7/merge.
+	Ref string `json:"ref"`
+	// SHA is the commit the run checked out (`sha`), 40 lowercase hexadecimal digits.
+	SHA string `json:"sha"`
+	// EventName is the event that started the run (`event_name`), such as push or pull_request.
+	EventName string `json:"event_name"`
+	// RunID is the run's id (`run_id`), a positive decimal integer: a re-run keeps it.
+	RunID string `json:"run_id"`
+	// RunAttempt is which attempt of the run this is (`run_attempt`), a positive decimal
+	// integer, 1 for the first.
+	RunAttempt string `json:"run_attempt"`
+	// RunnerEnvironment is github-hosted or self-hosted (`runner_environment`).
+	RunnerEnvironment string `json:"runner_environment"`
+	// Actor is the GitHub account that started the run (`actor`).
+	Actor string `json:"actor"`
+	// CheckRunID is the check run of the one job that asked for the token (`check_run_id`), a
+	// positive decimal integer, which tells two legs of one matrix apart. It is empty for a
+	// token that carries none, as GitHub's older tokens do not.
+	CheckRunID string `json:"check_run_id"`
+}
+
 // Introspection is what the broker knows about one of its access tokens: the RFC 7662 answer the
 // broker's introspection route serialises and a resource server reads a presented token back
 // through (internal/brokertoken). The broker's tokens are opaque, so everything here comes from
@@ -134,4 +173,11 @@ type Introspection struct {
 	// It is what makes a stolen token useless: whoever reads this answer checks the caller's
 	// proof against it.
 	Thumbprint string `json:"jkt,omitempty"`
+	// Capability is the one thing a token may do, when an exchange limited it to one:
+	// CapabilityCIResults for a token minted for a run of a workflow
+	// BROKER_EXCHANGE_RESULT_WORKFLOWS lists. Every other token carries none.
+	Capability string `json:"capability,omitempty"`
+	// CI is the continuous-integration run a CapabilityCIResults token was minted for, and is
+	// set exactly where Capability is.
+	CI *CIRun `json:"ci,omitempty"`
 }

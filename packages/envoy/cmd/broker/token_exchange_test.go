@@ -802,6 +802,121 @@ func TestTheBinaryExchangesAMachinesGoogleIdentityToken(t *testing.T) {
 	}
 }
 
+// The workflow BROKER_EXCHANGE_RESULT_WORKFLOWS lists in the run-token test below, under the
+// three patterns a CI job of it runs on, and the commit its run carries.
+const (
+	resultRepository = "example-org/example-repo"
+	resultWorkflow   = ".github/workflows/ci-result.yaml"
+	resultPullRef    = "refs/pull/7/merge"
+	resultCommit     = "0123456789abcdef0123456789abcdef01234567"
+)
+
+// mintRunToken is a GitHub Actions run's OIDC token as GitHub mints one for a job of
+// resultWorkflow on gitRef: the claims GitHub puts in every such token, a fresh jti, and a life
+// of minutes.
+func mintRunToken(t *testing.T, github *oidctest.Issuer, key *oidctest.Key, gitRef, run string) string {
+	t.Helper()
+	claims := github.Claims("repo:"+resultRepository+":ref:"+gitRef, workflowAudience)
+	now := time.Now()
+	claims["iat"], claims["exp"], claims["jti"] = now.Add(-time.Minute).Unix(), now.Add(5*time.Minute).Unix(), "run-"+run+"-"+gitRef
+	for name, value := range map[string]any{
+		"repository":         resultRepository,
+		"workflow_ref":       resultRepository + "/" + resultWorkflow + "@" + gitRef,
+		"job_workflow_ref":   resultRepository + "/" + resultWorkflow + "@" + gitRef,
+		"ref":                gitRef,
+		"sha":                resultCommit,
+		"event_name":         "pull_request",
+		"run_id":             run,
+		"run_attempt":        "1",
+		"runner_environment": "self-hosted",
+		"actor":              "ada-gh",
+		"check_run_id":       "987654321",
+	} {
+		claims[name] = value
+	}
+	return github.Mint(t, key, claims)
+}
+
+// TestTheBinaryExchangesARunsTokenForOneThatWritesItsResults is the live proof of
+// BROKER_EXCHANGE_RESULT_WORKFLOWS: the real binary reads the setting, reports its entries at
+// boot, exchanges a run's GitHub token for a Dispatch access token under the session the
+// workflow fixes, and its introspection route answers the capability and the run, every field of
+// it, as the JSON a resource server reads. A ref no pattern matches is refused. It skips when
+// BROKER_TEST_DATABASE_URL is unset, as every Postgres-backed broker test does.
+func TestTheBinaryExchangesARunsTokenForOneThatWritesItsResults(t *testing.T) {
+	databaseURL := storetest.URL(t)
+	cluster, github := oidctest.New(t), oidctest.New(t)
+	clusterKey, githubKey := cluster.PublishKey(t, "cluster-key"), github.PublishKey(t, "github-key")
+	key := proofKey(t)
+	apiToken := accountToken(t, cluster, clusterKey, apiAccount)
+	entry := func(pattern string) string {
+		return resultRepository + "=" + resultWorkflow + "=" + pattern + "=" + project + "=" + person
+	}
+	broker := startBroker(t, brokerOptions{Env: append(exchangeEnv(t, databaseURL, cluster, github, longAccessSeconds),
+		"BROKER_EXCHANGE_RESULT_WORKFLOWS="+entry("refs/heads/probe/infra-3577-ci-result")+" "+entry("refs/pull/*/merge")+" "+entry("refs/heads/gh-readonly-queue/main/*"))})
+	live := newLiveBroker(broker.Addr, key)
+
+	t.Run("the real binary boots reporting its result workflows", func(t *testing.T) {
+		broker.AwaitRecord(t, "token exchange", nil)
+		boot := broker.Log()
+		if len(recordsWith(boot, "token exchange", map[string]any{"state": "on", "github": true, "workflows": 0, "result_workflows": 3})) == 0 {
+			t.Fatalf("the boot log has no \"token exchange\" line reporting the three result entries:\n%s", boot)
+		}
+	})
+
+	form := func(subject string) url.Values {
+		return with(exchangeForm(subject, ""), "subject_token_type", oauthwire.SubjectTokenTypeGitHub)
+	}
+	var accessToken string
+	t.Run("a run of the listed workflow on a pull request's merge ref is answered a token", func(t *testing.T) {
+		status, body := live.exchange(t, form(mintRunToken(t, github, githubKey, resultPullRef, "4242")))
+		if status != http.StatusOK {
+			t.Fatalf("the exchange of the run's token = %d %v, want 200", status, body)
+		}
+		accessToken, _ = body["access_token"].(string)
+		if accessToken == "" {
+			t.Fatalf("the exchange answered %v, which carries no access token", body)
+		}
+	})
+
+	t.Run("the listed caller reads back the capability and the run", func(t *testing.T) {
+		if accessToken == "" {
+			t.Fatal("the exchange minted no access token, so there is nothing to read back")
+		}
+		status, body := live.introspect(t, accessToken, apiToken)
+		if status != http.StatusOK || body["active"] != true {
+			t.Fatalf("introspection of the run's token = %d %v, want 200 with the token live", status, body)
+		}
+		for name, want := range map[string]any{
+			"session": "ci-results:" + resultRepository + "/" + resultWorkflow, "person": person, "project": project,
+			"project_scope": oauthwire.ProjectScopeNamed, "capability": oauthwire.CapabilityCIResults,
+		} {
+			if body[name] != want {
+				t.Errorf("introspection answered %s %v, want %v", name, body[name], want)
+			}
+		}
+		run, _ := body["ci"].(map[string]any)
+		want := map[string]any{
+			"repository": resultRepository, "workflow_ref": resultRepository + "/" + resultWorkflow + "@" + resultPullRef,
+			"ref": resultPullRef, "sha": resultCommit, "event_name": "pull_request", "run_id": "4242", "run_attempt": "1",
+			"runner_environment": "self-hosted", "actor": "ada-gh", "check_run_id": "987654321",
+		}
+		if !maps.Equal(run, want) {
+			t.Fatalf("introspection answered ci %v, want %v", body["ci"], want)
+		}
+	})
+
+	t.Run("a run on a ref no pattern matches is refused", func(t *testing.T) {
+		status, body := live.exchange(t, form(mintRunToken(t, github, githubKey, "refs/heads/other", "4243")))
+		if status != http.StatusBadRequest || body["error"] != "invalid_request" {
+			t.Fatalf("the exchange of a run on refs/heads/other = %d %v, want 400 invalid_request", status, body)
+		}
+		if description, _ := body["error_description"].(string); !strings.Contains(description, "refs/heads/other") {
+			t.Fatalf("the refusal reads %q, which does not name the ref", description)
+		}
+	})
+}
+
 // exchangeEnv is what one broker run of this test needs beyond productionEnv: the fresh schema it
 // migrates and serves from, the cluster issuer with the audience a pod enrols with and the one it
 // exchanges with, the GitHub issuer, the two listed accounts with their projects and persons, the

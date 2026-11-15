@@ -296,9 +296,9 @@ func NewOAuthProvider(t *testing.T, st *store.Store, issuer *oidctest.Issuer) *o
 	policy, err := exchange.NewSet(
 		[]exchange.AccountEntry{{Account: ExchangeAccount, Project: ExchangeProject, Person: ExchangePerson, Session: ExchangeSession}},
 		[]exchange.WorkflowEntry{{Repository: ExchangeRepository, Workflow: ExchangeWorkflow, Ref: ExchangeRef, Project: ExchangeProject, Person: ExchangePerson}},
-		nil,
-		// The rig lists no machine, so there is no box a person could have signed in on and no
-		// domain to hold one to.
+		// The rig lists no workflow whose runs write CI results, and no machine, so there is no
+		// box a person could have signed in on and no domain to hold one to.
+		nil, nil,
 		"",
 	)
 	if err != nil {

@@ -6255,15 +6255,23 @@ An issued token carries these claims and no others:
   That credential names the machine's fleet and no person, whatever the fleet's entry says, so the sessions it enrols read the secrets that service owns and no person's.
   Every other kind of subject token carries none.
 
+- `capability` — `ci-results` for a token minted for a workflow run that `BROKER_EXCHANGE_RESULT_WORKFLOWS` lists: it may write that run's CI results to its one project and nothing else.
+  Every other token carries none, and a reader refuses a token whose capability it does not know (`packages/envoy/internal/brokertoken`).
+
+- `ci` — the run a `ci-results` token was minted for, read from the run's own GitHub token: `repository`, `workflow_ref`, `ref`, `sha`, `event_name`, `run_id`, `run_attempt`, `runner_environment`, `actor` and `check_run_id` (`CIRun`, `packages/envoy/internal/broker/oauthwire`).
+  It is present exactly where `capability` is.
+
 The subject token's own kind decides those claims (`packages/envoy/internal/broker/exchange/exchange.go`).
 A pod's token needs an entry for its service account, which gives the project and the person and may fix the session, and Kubernetes must have bound that token to a pod (`Set.Pod`).
-A workflow run's token needs an entry for its repository, its workflow path and its ref (`Set.Workflow`).
+A workflow run's token needs an entry for its repository, its workflow path and its ref (`Set.Workflow`), or, failing one, an entry of `BROKER_EXCHANGE_RESULT_WORKFLOWS` for its repository and workflow path whose ref pattern its ref matches (`Set.resultRun`):
+that entry gives the project and the person, fixes the session `ci-results:<repository>/<workflow path>`, and limits the token to the `ci-results` capability, with the run beside it.
+A ref two of its patterns match is refused, naming both.
 A machine's Google identity token needs an entry for the account its `email` claim names (`BROKER_VM_SERVICES`, `Set.Google`), which gives the service, may pin the Compute Engine project and instance names the machine may carry (`BROKER_VM_PROJECTS`, `BROKER_VM_INSTANCES`), and may give a person and a project as a pod's entry does (`BROKER_VM_EXCHANGE_ACCOUNTS`);
 an entry that gives neither mints a token that names its service and no person at all.
 A machine login's token needs no entry at all: the person is the login's approver, the scope is `person`, and the token names no project (`Set.Machine`).
 A person's own Google identity token needs the machine's own as the actor token, of an account an entry lists (`Set.Person`):
 the person's `hd` claim must name the Workspace domain `BROKER_SIGNIN_DOMAIN` gives, the scope is `person`, and the token names that person and that machine.
-A session name belongs to one principal — the service account, the workflow, the Google account, or the person
+A session name belongs to one principal — the service account, the workflow, the result workflow, the Google account, or the person
 — and the broker refuses `invalid_grant` to another principal that names it (`claimSession`, `packages/envoy/internal/broker/oauth/exchange.go`).
 A claim holds the name for `oauthstore.SessionRetention`, 90 days, past the expiry of the token the claim was made for (`BindSession`, `packages/envoy/internal/broker/oauthstore/exchange.go`).
 A name an entry fixes is held for that entry with no expiry:

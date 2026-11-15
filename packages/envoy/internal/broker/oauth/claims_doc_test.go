@@ -29,13 +29,15 @@ import (
 // What is compared: the names the document's bullets open with, against the keys decide writes into
 // an exchange session's extra claims, which is where this provider's opaque tokens carry them. The
 // code's side is collected by calling decide for each kind of subject token — a pod's, whose entry
-// gives the named project scope, a machine access token's, whose scope is the person's, and a
-// machine's Google identity token, whose entry names a service — and taking the union, since
-// `project` is written under one scope and deleted under the other. So a claim a new scope or a
-// new decision adds is a claim this fails until the list names it. The one claim no decision
-// writes, the launcher credential a machine's exchange mints (machineCredential, which runs after
-// decide because the credential does not exist until the request's key is bound), is added to that
-// union by name; what proves it is written is the live exchange in cmd/broker.
+// gives the named project scope, a machine access token's, whose scope is the person's, a
+// machine's Google identity token, whose entry names a service, a person's sign-in, and a
+// workflow run whose entry writes CI results, whose token carries a capability and the run — and
+// taking the union, since `project` is written under one scope and deleted under the other. So a
+// claim a new scope or a new decision adds is a claim this fails until the list names it. The one
+// claim no decision writes, the launcher credential a machine's exchange mints
+// (machineCredential, which runs after decide because the credential does not exist until the
+// request's key is bound), is added to that union by name; what proves it is written is the live
+// exchange in cmd/broker.
 //
 // A claim is the backticked name a bullet opens with, followed by the em dash the list's shape puts
 // after it, and a backticked word later in a bullet's prose is not a claim. The `project_scope`
@@ -46,10 +48,10 @@ import (
 // What this cannot do: it compares two sets of names, and nothing more. It does not read a bullet's
 // meaning, so a claim whose description is stale, wrong, or swapped with its neighbour's passes
 // here; it does not know the order the list is written in; it says nothing about the claims an
-// introspection answer adds around them (`exp`, `client_id`, `jkt`); and the union is over the two
-// subject kinds it calls decide with, so a claim only a workflow run's token could carry would be
-// missed. A reader still owns all of that. What it does own is the two sets drifting apart while
-// each side looks right on its own.
+// introspection answer adds around them (`exp`, `client_id`, `jkt`); and the union is over the
+// subject kinds it calls decide with, so a claim only a subject kind missing from the list below
+// could carry would be missed. A reader still owns all of that. What it does own is the two sets
+// drifting apart while each side looks right on its own.
 const (
 	// claimsDocHeading is the section's heading, matched as a whole line: a heading is a line of
 	// its own, so the list is reached without parsing the hard-wrapped prose above it.
@@ -81,6 +83,13 @@ const (
 	// domain a signing-in person must belong to.
 	claimsDeviceAudience = "https://broker.example/signin"
 	claimsSignInDomain   = "example.com"
+	// The GitHub half: the audience a workflow run's token must carry, and the one workflow an
+	// entry lists for writing CI results, on one ref.
+	claimsGitHubIssuer   = "https://token.actions.example"
+	claimsGitHubAudience = "https://broker.example/ci"
+	claimsRepository     = "example-org/example-repo"
+	claimsResultWorkflow = ".github/workflows/ci-result.yaml"
+	claimsResultRef      = "refs/pull/7/merge"
 )
 
 // The claims docs/kubernetes.md lists are exactly the claims an exchanged token carries. Both sides
@@ -109,7 +118,10 @@ func issuedClaims(t *testing.T) []string {
 		Account: claimsPodAccount,
 		Project: claimsProject,
 		Person:  claimsPerson,
-	}}, nil, []exchange.GoogleEntry{{Account: claimsGoogleAccount, Service: claimsGoogleService}}, claimsSignInDomain)
+	}}, nil, []exchange.ResultWorkflowEntry{{
+		Repository: claimsRepository, Workflow: claimsResultWorkflow, Ref: "refs/pull/*/merge",
+		Project: claimsProject, Person: claimsPerson,
+	}}, []exchange.GoogleEntry{{Account: claimsGoogleAccount, Service: claimsGoogleService}}, claimsSignInDomain)
 	if err != nil {
 		t.Fatalf("exchange.NewSet: %v", err)
 	}
@@ -120,6 +132,7 @@ func issuedClaims(t *testing.T) []string {
 		Policy:     policy,
 		Kubernetes: IssuerConfig{Issuer: claimsIssuer, Audience: claimsAudience},
 		Google:     IssuerConfig{Issuer: claimsGoogleIssuer, Audience: claimsGoogleAudience},
+		GitHub:     IssuerConfig{Issuer: claimsGitHubIssuer, Audience: claimsGitHubAudience},
 		// The person's own token is checked against Google's issuer too, under the device-flow
 		// client's audience; the actor token below is the machine's, under Google's own.
 		PersonAudience: claimsDeviceAudience,
@@ -128,6 +141,8 @@ func issuedClaims(t *testing.T) []string {
 	subjects := []struct {
 		tokenType    string
 		token, actor map[string]any
+		// fixed is a subject whose entry fixes its session, so the request names none.
+		fixed bool
 	}{{
 		tokenType: oauthwire.SubjectTokenTypeKubernetes,
 		token: map[string]any{
@@ -162,15 +177,36 @@ func issuedClaims(t *testing.T) []string {
 			"email":          claimsGoogleAccount,
 			"email_verified": true,
 		},
+	}, {
+		tokenType: oauthwire.SubjectTokenTypeGitHub,
+		token: map[string]any{
+			"aud":                claimsGitHubAudience,
+			"repository":         claimsRepository,
+			"workflow_ref":       claimsRepository + "/" + claimsResultWorkflow + "@" + claimsResultRef,
+			"job_workflow_ref":   claimsRepository + "/" + claimsResultWorkflow + "@" + claimsResultRef,
+			"ref":                claimsResultRef,
+			"sha":                "0123456789abcdef0123456789abcdef01234567",
+			"event_name":         "pull_request",
+			"run_id":             "4242",
+			"run_attempt":        "1",
+			"runner_environment": "self-hosted",
+			"actor":              "ada-gh",
+			"check_run_id":       "987654321",
+		},
+		fixed: true,
 	}}
 
 	issued := map[string]bool{}
 	for _, subject := range subjects {
 		session := oauthstore.NewExchangeSession()
+		name := claimsSessionName
+		if subject.fixed {
+			name = ""
+		}
 		request := &oauth2.Request{
 			Form: url.Values{
 				FormSubjectTokenType:  {subject.tokenType},
-				oauthwire.FormSession: {claimsSessionName},
+				oauthwire.FormSession: {name},
 			},
 			Session: session,
 		}

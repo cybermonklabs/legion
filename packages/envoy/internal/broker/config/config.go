@@ -477,6 +477,26 @@ type Config struct {
 	// BROKER_EXCHANGE_GITHUB_ISSUER and BROKER_EXCHANGE_GITHUB_AUDIENCE, whose tokens its runs
 	// present. Unset, no workflow exchanges.
 	ExchangeWorkflows []exchange.WorkflowEntry
+	// BROKER_EXCHANGE_RESULT_WORKFLOWS: the GitHub workflows whose runs exchange their token for
+	// one that writes the run's CI results and nothing else, whitespace-separated
+	// <repository>=<workflow path>=<ref pattern>=<project>=<person> entries, such as
+	// example-org/example-repo=.github/workflows/ci.yaml=refs/pull/*/merge=EXAMPLE=ada@example.com.
+	// The ref pattern is path.Match's, so a `*` never crosses a `/`. It starts refs/heads/,
+	// refs/pull/ or refs/tags/, and its first two segments hold no `*`, `?`, `[` or `\`, so no
+	// pattern reaches past the kind of ref it names. A run is an entry's when its repository and
+	// workflow path are the entry's and its ref matches the pattern. One workflow may be listed
+	// with several patterns, and a run whose ref two of them match is refused at the exchange,
+	// naming both. The token minted for a run may write CI results to that one project and
+	// nothing else (capability ci-results), carries the run itself (its repository, workflow,
+	// ref, commit, event, run, attempt, runner, actor and check run), acts for that person, and
+	// writes under the session ci-results:<repository>/<workflow path>, which belongs to that
+	// workflow and to no other caller. Refused, naming the entry: one not of that form or with a
+	// blank field, a pattern of another prefix, with a wildcard in its first two segments or that
+	// is not a pattern at all, an entry listed twice, and a workflow BROKER_EXCHANGE_WORKFLOWS
+	// lists too, since one workflow writes as one identity. Needs BROKER_EXCHANGE_GITHUB_ISSUER
+	// and BROKER_EXCHANGE_GITHUB_AUDIENCE, whose tokens its runs present. Unset, no run writes CI
+	// results.
+	ExchangeResultWorkflows []exchange.ResultWorkflowEntry
 	// BROKER_ENVOY_URL: an Envoy listener the broker notifies, best effort, when a session's
 	// pending request expires undecided. Unset, the broker sends nothing.
 	EnvoyURL string
@@ -1126,6 +1146,42 @@ func parseExchangeWorkflows(setting, value string) ([]exchange.WorkflowEntry, er
 	return entries, nil
 }
 
+// parseExchangeResultWorkflows reads setting's whitespace-separated
+// <repository>=<workflow path>=<ref pattern>=<project>=<person> entries, the workflows
+// BROKER_EXCHANGE_RESULT_WORKFLOWS lists for writing CI results, in order. It refuses, naming the
+// entry: one not of that form — five fields, none blank, so an entry fixes no session of its own,
+// since the exchange fixes it — a ref pattern exchange.CheckRefPattern refuses, a repository,
+// workflow and pattern listed twice, and a workflow exact lists too, exact being the entries
+// BROKER_EXCHANGE_WORKFLOWS lists, since one workflow writes as one identity. exchange.NewSet is
+// the second gate, and the repository's own form is its to refuse.
+func parseExchangeResultWorkflows(setting, value string, exact []exchange.WorkflowEntry) ([]exchange.ResultWorkflowEntry, error) {
+	var entries []exchange.ResultWorkflowEntry
+	seen := map[string]bool{}
+	for _, text := range strings.Fields(value) {
+		fields := strings.Split(text, "=")
+		if len(fields) != 5 || slices.Contains(fields, "") {
+			return nil, fmt.Errorf("%s must be <repository>=<workflow path>=<ref pattern>=<project>=<person> entries, five fields and none blank, got %q", setting, text)
+		}
+		if err := exchange.CheckRefPattern(fields[2]); err != nil {
+			return nil, fmt.Errorf("%s: %w, got %q", setting, err, text)
+		}
+		key := strings.Join(fields[:3], "=")
+		if seen[key] {
+			return nil, fmt.Errorf("%s names the workflow and ref pattern %s twice; one run writes as one identity, so name them once", setting, key)
+		}
+		seen[key] = true
+		for _, other := range exact {
+			if other.Repository == fields[0] && other.Workflow == fields[1] {
+				return nil, fmt.Errorf("%s names the workflow %s of %s, which BROKER_EXCHANGE_WORKFLOWS lists too; one workflow writes as one identity, so list it in one of the two, got %q", setting, fields[1], fields[0], text)
+			}
+		}
+		entries = append(entries, exchange.ResultWorkflowEntry{
+			Repository: fields[0], Workflow: fields[1], Ref: fields[2], Project: fields[3], Person: fields[4],
+		})
+	}
+	return entries, nil
+}
+
 // databasePasswordPlaceholder is the removed BROKER_DATABASE_PASSWORD's placeholder. Load refuses a
 // BROKER_DATABASE_URL that names it, as it refuses the variable, rather than sign in with it as a
 // literal password.
@@ -1574,6 +1630,12 @@ func Load(getenv func(string) string) (Config, error) {
 	}
 	if len(cfg.ExchangeWorkflows) > 0 && cfg.ExchangeGitHubIssuer == "" {
 		return Config{}, fmt.Errorf("BROKER_EXCHANGE_WORKFLOWS needs BROKER_EXCHANGE_GITHUB_ISSUER and BROKER_EXCHANGE_GITHUB_AUDIENCE, whose tokens its runs present")
+	}
+	if cfg.ExchangeResultWorkflows, err = parseExchangeResultWorkflows("BROKER_EXCHANGE_RESULT_WORKFLOWS", getenv("BROKER_EXCHANGE_RESULT_WORKFLOWS"), cfg.ExchangeWorkflows); err != nil {
+		return Config{}, err
+	}
+	if len(cfg.ExchangeResultWorkflows) > 0 && cfg.ExchangeGitHubIssuer == "" {
+		return Config{}, fmt.Errorf("BROKER_EXCHANGE_RESULT_WORKFLOWS needs BROKER_EXCHANGE_GITHUB_ISSUER and BROKER_EXCHANGE_GITHUB_AUDIENCE, whose tokens its runs present")
 	}
 	if cfg.EnvoyURL != "" {
 		if cfg.EnvoyToken, err = secretValue(getenv, "BROKER_ENVOY_TOKEN"); err != nil {

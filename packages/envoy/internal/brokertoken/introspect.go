@@ -35,6 +35,15 @@ const (
 	ProjectScopePerson = oauthwire.ProjectScopePerson
 )
 
+// CapabilityCIResults is the one capability a Caller can carry: a token minted for a CI run of a
+// workflow the broker lists for writing results, which may write that run's results to its one
+// project and nothing else. Carried here for the reason the project scopes are.
+const CapabilityCIResults = oauthwire.CapabilityCIResults
+
+// CIRun is the CI run a CapabilityCIResults caller's token was minted for: the broker's own
+// declaration (internal/broker/oauthwire), named here for the reason Introspection is.
+type CIRun = oauthwire.CIRun
+
 // ExchangeClientID is the OAuth client every token issued for acting as a session is issued to:
 // the RFC 8693 exchange a pod, a workflow run or a dev box session asks for a Dispatch access
 // token through (internal/broker/oauthwire). It is carried here for the same reason the project
@@ -65,11 +74,16 @@ func expiryOf(answer Introspection) time.Time {
 // The service is carried as the broker answered it, which is set exactly where the person is
 // not (live refuses an answer naming neither). ProjectScope is carried whole beside them,
 // because a reader deciding what the token may do needs the scope itself and not only the
-// project rule read off it.
+// project rule read off it, and so is the capability, with the run beside it as the caller's own
+// copy: the answer it came from is the one the cache hands the token's next request.
 func callerOf(answer Introspection) Caller {
-	caller := Caller{Session: answer.Session, Person: answer.Person, Service: answer.Service, ProjectScope: answer.ProjectScope}
+	caller := Caller{Session: answer.Session, Person: answer.Person, Service: answer.Service, ProjectScope: answer.ProjectScope, Capability: answer.Capability}
 	if answer.ProjectScope == ProjectScopeNamed {
 		caller.Project = answer.Project
+	}
+	if answer.CI != nil {
+		run := *answer.CI
+		caller.CI = &run
 	}
 	return caller
 }

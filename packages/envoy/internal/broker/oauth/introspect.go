@@ -2,6 +2,7 @@ package oauth
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -58,7 +59,43 @@ func (p *Provider) Introspect(ctx context.Context, token string) (oauthwire.Intr
 	answer.Machine, _ = session.Extra[ClaimMachine].(string)
 	answer.ProjectScope, _ = session.Extra[ClaimProjectScope].(string)
 	answer.Project, _ = session.Extra[ClaimProject].(string)
+	if answer.Capability, answer.CI, err = capabilityOf(session.Extra); err != nil {
+		return oauthwire.Introspection{}, err
+	}
 	return answer, nil
+}
+
+// capabilityOf reads the capability and the run a token's stored claims carry (ClaimCapability,
+// ClaimCI), which decide writes together or not at all. A row carrying either in a shape decide
+// never writes is the broker's own failure, answered as an error rather than as a live token
+// without it: a token whose capability is absent is one no capability limits, so a capability
+// this cannot read must never read as absent. The run is decoded by oauthwire.CIRun's own tags,
+// so a field a later broker adds to it is read past rather than refused.
+func capabilityOf(extra map[string]any) (string, *oauthwire.CIRun, error) {
+	value, present := extra[ClaimCapability]
+	if !present {
+		if _, run := extra[ClaimCI]; run {
+			return "", nil, fmt.Errorf("oauth: the token's stored claims carry a %s claim and no %s", ClaimCI, ClaimCapability)
+		}
+		return "", nil, nil
+	}
+	capability, ok := value.(string)
+	if !ok || capability == "" {
+		return "", nil, fmt.Errorf("oauth: the token's stored %s claim is %T %v, not a capability", ClaimCapability, value, value)
+	}
+	object, ok := extra[ClaimCI].(map[string]any)
+	if !ok {
+		return "", nil, fmt.Errorf("oauth: the token's stored %s claim is %T, not the run its %s capability was minted for", ClaimCI, extra[ClaimCI], capability)
+	}
+	encoded, err := json.Marshal(object)
+	if err != nil {
+		return "", nil, fmt.Errorf("oauth: encode the token's stored %s claim: %w", ClaimCI, err)
+	}
+	var run oauthwire.CIRun
+	if err := json.Unmarshal(encoded, &run); err != nil {
+		return "", nil, fmt.Errorf("oauth: the token's stored %s claim is not a run: %w", ClaimCI, err)
+	}
+	return capability, &run, nil
 }
 
 // notLiveCauses are the library's own sentinels for a token it found wanting: a string with no

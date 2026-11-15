@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/url"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -61,7 +62,7 @@ const (
 // other test passes none.
 func newPolicy(t *testing.T, accounts []exchange.AccountEntry, workflows []exchange.WorkflowEntry, machines ...exchange.GoogleEntry) *exchange.Set {
 	t.Helper()
-	set, err := exchange.NewSet(accounts, workflows, machines, signInDomain)
+	set, err := exchange.NewSet(accounts, workflows, nil, machines, signInDomain)
 	if err != nil {
 		t.Fatalf("exchange.NewSet: %v", err)
 	}
@@ -1065,4 +1066,123 @@ func TestAnExchangeWithNoListedIdentityIsRefusedByName(t *testing.T) {
 	if hint, _ := body["error_description"].(string); !strings.Contains(hint, account) {
 		t.Errorf("the refusal reads %q, which does not name the account no entry lists", hint)
 	}
+}
+
+// resultWorkflow is a workflow whose runs write CI results, which TestAResultRun's broker lists
+// for pull requests' merge refs beside the release workflow's exact entry; resultCommit is the
+// sha its run carries.
+const (
+	resultWorkflow = ".github/workflows/ci-result.yaml"
+	resultRef      = "refs/pull/7/merge"
+	resultCommit   = "0123456789abcdef0123456789abcdef01234567"
+)
+
+// resultRun spoils nothing: it makes a workflow token a run of resultWorkflow on resultRef,
+// carrying every claim of the run a result entry's token records.
+func resultRun(claims map[string]any) {
+	claims["workflow_ref"] = repository + "/" + resultWorkflow + "@" + resultRef
+	claims["job_workflow_ref"] = claims["workflow_ref"]
+	claims["ref"] = resultRef
+	claims["sha"] = resultCommit
+	claims["event_name"] = "pull_request"
+	claims["run_attempt"] = "1"
+	claims["runner_environment"] = "self-hosted"
+	claims["actor"] = "ada-gh"
+	claims["check_run_id"] = "987654321"
+}
+
+// TestAResultRunExchangesItsTokenForOneThatWritesResultsAndSaysSo: a run of a workflow a result
+// entry lists is answered a token that introspects as the session its workflow fixes, the
+// entry's person and project, the one capability and the run its GitHub token named, check run
+// included; a run of the exact entry beside it introspects as it always has, with no capability
+// and no run, so an exact entry's token is unchanged.
+func TestAResultRunExchangesItsTokenForOneThatWritesResultsAndSaysSo(t *testing.T) {
+	f := newExchangeFixture(t, func(c *oauth.Config) {
+		set, err := exchange.NewSet(nil,
+			[]exchange.WorkflowEntry{{Repository: repository, Workflow: workflow, Ref: ref, Project: project, Person: person}},
+			[]exchange.ResultWorkflowEntry{{Repository: repository, Workflow: resultWorkflow, Ref: "refs/pull/*/merge", Project: project, Person: person}},
+			nil, signInDomain)
+		if err != nil {
+			t.Fatalf("exchange.NewSet: %v", err)
+		}
+		c.Exchange.Policy = set
+	})
+	key := newKey(t)
+	token := f.exchanged(t, exchangeForm(f.workflowToken(t, "4242", resultRun), oauthwire.SubjectTokenTypeGitHub, ""), key)
+	answer, err := f.provider.Introspect(context.Background(), token)
+	if err != nil {
+		t.Fatalf("Introspect: %v", err)
+	}
+	want := oauthwire.Introspection{
+		Active: true, Session: exchange.ResultSession(repository, resultWorkflow), Person: person,
+		ProjectScope: oauthwire.ProjectScopeNamed, Project: project, ClientID: oauthwire.ExchangeClientID,
+		Thumbprint: thumbprint(t, key), ExpiresAt: answer.ExpiresAt,
+		Capability: oauthwire.CapabilityCIResults,
+		CI: &oauthwire.CIRun{
+			Repository: repository, WorkflowRef: repository + "/" + resultWorkflow + "@" + resultRef, Ref: resultRef,
+			SHA: resultCommit, EventName: "pull_request", RunID: "4242", RunAttempt: "1",
+			RunnerEnvironment: "self-hosted", Actor: "ada-gh", CheckRunID: "987654321",
+		},
+	}
+	if !reflect.DeepEqual(answer, want) {
+		t.Fatalf("Introspect = %+v (run %+v), want %+v (run %+v)", answer, answer.CI, want, want.CI)
+	}
+
+	exact := f.exchanged(t, exchangeForm(f.workflowToken(t, "4243", nil), oauthwire.SubjectTokenTypeGitHub, "ci-release"), key)
+	answer, err = f.provider.Introspect(context.Background(), exact)
+	if err != nil {
+		t.Fatalf("Introspect of the exact entry's token: %v", err)
+	}
+	if !answer.Active || answer.Session != "ci-release" || answer.Capability != "" || answer.CI != nil {
+		t.Fatalf("Introspect of the exact entry's token = %+v, want it live under ci-release with no capability and no run", answer)
+	}
+}
+
+// TestAStoredRunThatDoesNotDecodeIsTheBrokersFailure: the run on a result token's stored row is
+// what a resource server holds a result's commit to, so a row whose run, or whose capability,
+// the broker cannot read is an error Introspect returns, the route's 503, never a live answer
+// with the run or the limit missing: a capability read as absent would be a token no capability
+// limits.
+func TestAStoredRunThatDoesNotDecodeIsTheBrokersFailure(t *testing.T) {
+	for _, spoil := range []struct{ name, path, value string }{
+		{name: "a run that is not an object", path: "{session,extra,ci}", value: `"not-a-run"`},
+		{name: "a run whose sha is not a string", path: "{session,extra,ci,sha}", value: `7`},
+		{name: "a capability that is not a string", path: "{session,extra,capability}", value: `["ci-results"]`},
+		{name: "an empty capability", path: "{session,extra,capability}", value: `""`},
+	} {
+		t.Run(spoil.name, func(t *testing.T) {
+			f := newExchangeFixture(t, func(c *oauth.Config) {
+				c.Exchange.Policy = newResultPolicy(t)
+			})
+			ctx := context.Background()
+			token := f.exchanged(t, exchangeForm(f.workflowToken(t, "4242", resultRun), oauthwire.SubjectTokenTypeGitHub, ""), newKey(t))
+			if answer, err := f.provider.Introspect(ctx, token); err != nil || answer.CI == nil {
+				t.Fatalf("Introspect before the row was spoiled = %+v, %v; want the run answered", answer, err)
+			}
+			tag, err := f.pool.Exec(ctx, `update oauth_access_tokens set request = jsonb_set(request, $1::text[], $2::jsonb, false)`, spoil.path, spoil.value)
+			if err != nil || tag.RowsAffected() != 1 {
+				t.Fatalf("rewrite the token's row: %v (%d rows)", err, tag.RowsAffected())
+			}
+			var stored string
+			if err := f.pool.QueryRow(ctx, `select (request #> $1::text[])::text from oauth_access_tokens`, spoil.path).Scan(&stored); err != nil || stored != spoil.value {
+				t.Fatalf("the row's %s reads %q, %v; want %s: the spoil did not land where Introspect reads", spoil.path, stored, err, spoil.value)
+			}
+			answer, err := f.provider.Introspect(ctx, token)
+			if err == nil {
+				t.Fatalf("Introspect of a row whose %s is %s = %+v, want an error", spoil.path, spoil.value, answer)
+			}
+		})
+	}
+}
+
+// newResultPolicy lists resultWorkflow for pull requests' merge refs and nothing else.
+func newResultPolicy(t *testing.T) *exchange.Set {
+	t.Helper()
+	set, err := exchange.NewSet(nil, nil,
+		[]exchange.ResultWorkflowEntry{{Repository: repository, Workflow: resultWorkflow, Ref: "refs/pull/*/merge", Project: project, Person: person}},
+		nil, signInDomain)
+	if err != nil {
+		t.Fatalf("exchange.NewSet: %v", err)
+	}
+	return set
 }

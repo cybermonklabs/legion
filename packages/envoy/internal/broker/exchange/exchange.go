@@ -16,7 +16,10 @@
 //     (system:serviceaccount:<namespace>:<name>) gives the project and the person, and the token
 //     must carry the pod it is bound to;
 //   - a continuous-integration workflow run's GitHub token, where an entry keyed on the
-//     repository, the workflow's path and the ref it ran on gives the project and the person;
+//     repository, the workflow's path and the ref it ran on gives the project and the person, or,
+//     for a run no such entry lists, a result entry keyed on the repository and the path whose
+//     ref pattern the run's ref matches gives them, and limits the token to writing the run's CI
+//     results, which it carries;
 //   - a machine's Google identity token, where an entry keyed on the account's email address
 //     gives the service, may pin the Compute Engine project and instance names the machine may
 //     carry, and may give a person and a project as a pod's entry does;
@@ -37,11 +40,14 @@
 package exchange
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"path"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -343,9 +349,11 @@ type Claims struct {
 	// Principal is who the session name belongs to, and is not a claim of the minted token: it is
 	// what the broker records as the name's holder, so a caller that may exchange cannot mint a
 	// token naming a session another principal writes under. It is the listed account for a pod,
-	// the listed workflow (its repository, path and ref) for a run, the listed Google account for
-	// a machine, and the person for a dev box session, each spelled with its kind first
-	// (account:, workflow:, google:, person:) so principals of two kinds never compare equal.
+	// the listed workflow (its repository, path and ref) for a run, the listed result workflow
+	// (its repository and path, whatever the ref) for a run a result entry lists, the listed
+	// Google account for a machine, and the person for a dev box session, each spelled with its
+	// kind first (account:, workflow:, workflow-results:, google:, person:) so principals of two
+	// kinds never compare equal.
 	// Every pod of one account, every run of one workflow, every machine of one Google account
 	// and every machine of one person is therefore one holder.
 	Principal string
@@ -370,6 +378,15 @@ type Claims struct {
 	// and an introspection answers it (oauth.ClaimMachine), beside the RFC 8693 'act' claim the
 	// library builds from the actor token's own subject; this is the account an operator reads.
 	Actor string
+	// Capability is the one thing the minted token may do, when the entry limits it to one:
+	// oauthwire.CapabilityCIResults for a run of a workflow a ResultWorkflowEntry lists. It is
+	// empty for every other decision, whose token no capability limits. It is a claim of the
+	// minted token, written onto the stored session and answered by an introspection
+	// (oauth.ClaimCapability).
+	Capability string
+	// CI is the run a CapabilityCIResults token was minted for, read from the GitHub token's own
+	// claims, and is set exactly where Capability is (oauth.ClaimCI).
+	CI *oauthwire.CIRun
 }
 
 // Reservation is a session name an entry fixes and the principal it belongs to. The broker holds
@@ -418,6 +435,31 @@ type WorkflowEntry struct {
 	Session string
 }
 
+// ResultWorkflowEntry lists one GitHub workflow of one repository on the refs one pattern
+// matches, and the project and the person a run of it writes its test results for. Every field
+// is required. Its token may do one thing, write CI results (oauthwire.CapabilityCIResults), so
+// the entry may match many refs where a WorkflowEntry matches one: the run's own pull request,
+// the merge queue's branch, a probe branch.
+//
+// It fixes its session, ResultSession of the repository and the path, and its principal, one
+// for every pattern of that workflow, so every run of it on every ref it matches writes under
+// one name that belongs to it alone.
+type ResultWorkflowEntry struct {
+	// Repository is <owner>/<name>, the repository the run belongs to.
+	Repository string
+	// Workflow is the workflow file's path inside the repository, such as
+	// .github/workflows/ci.yaml, compared exactly.
+	Workflow string
+	// Ref is the pattern the git ref of the run must match, in path.Match's syntax, so `*`
+	// never crosses a `/`: refs/pull/*/merge matches every pull request's merge ref and
+	// nothing below it. Its first two segments are literal (CheckRefPattern).
+	Ref string
+	// Project is the one project key the minted token may write results to.
+	Project string
+	// Person is who the run acts for.
+	Person string
+}
+
 // GoogleEntry lists one Google service account and what a machine holding its identity token may
 // write. Account and Service are required; the rest is what the entry chooses to pin and to
 // grant.
@@ -458,12 +500,18 @@ type GoogleEntry struct {
 // so the key is the whole identity and no partial match exists.
 type workflowKey struct{ repository, workflow, ref string }
 
+// resultKey is the pair a result entry's run is looked up by: the repository and the workflow's
+// path, each compared exactly, under which every pattern of that workflow is listed.
+type resultKey struct{ repository, workflow string }
+
 // Set is the listed identities as one build of the configuration read them, with the Google
 // Workspace domain a person signing in on a machine must belong to. It is immutable once built,
 // so every Pod, Workflow, Google, Person and Machine on it is a pure function of its arguments.
 type Set struct {
-	accounts     map[string]AccountEntry
-	workflows    map[workflowKey]WorkflowEntry
+	accounts  map[string]AccountEntry
+	workflows map[workflowKey]WorkflowEntry
+	// results are the result entries of each workflow, in the order they were listed.
+	results      map[resultKey][]ResultWorkflowEntry
 	google       map[string]GoogleEntry
 	signInDomain string
 	reservations []Reservation
@@ -477,17 +525,20 @@ type Set struct {
 // principal. A Google entry is refused on top of that for half a pin and for half a grant: one
 // that pins a Compute Engine project without an instance pattern or the other way round says
 // nothing clear about which machines it means, and one that names a person without a project, or
-// a project without a person, says nothing clear about what they may write.
+// a project without a person, says nothing clear about what they may write. A result entry is
+// refused for a ref pattern CheckRefPattern refuses, for a pattern its workflow is already listed
+// with, and for a workflow an exact entry lists too, since one workflow writes as one identity.
 //
 // signInDomain is the Google Workspace domain BROKER_SIGNIN_DOMAIN names, which Person holds a
 // signing-in person's own token to. It is a field of the set rather than an argument of that
 // decision because it is configuration exactly as the entries are, and it is refused nothing
 // here: an empty one admits nobody (oidc.WorkspaceLogin), which is what a broker told about no
 // domain should do with a person's token.
-func NewSet(accounts []AccountEntry, workflows []WorkflowEntry, machines []GoogleEntry, signInDomain string) (*Set, error) {
+func NewSet(accounts []AccountEntry, workflows []WorkflowEntry, results []ResultWorkflowEntry, machines []GoogleEntry, signInDomain string) (*Set, error) {
 	set := &Set{
 		accounts:     make(map[string]AccountEntry, len(accounts)),
 		workflows:    make(map[workflowKey]WorkflowEntry, len(workflows)),
+		results:      make(map[resultKey][]ResultWorkflowEntry, len(results)),
 		google:       make(map[string]GoogleEntry, len(machines)),
 		signInDomain: signInDomain,
 	}
@@ -547,6 +598,40 @@ func NewSet(accounts []AccountEntry, workflows []WorkflowEntry, machines []Googl
 		}
 		set.workflows[key] = entry
 	}
+	for i, entry := range results {
+		where := fmt.Sprintf("result workflow entry %d, %q", i+1, entry.Repository+"/"+entry.Workflow+"@"+entry.Ref)
+		if !repositoryPattern.MatchString(entry.Repository) {
+			return nil, fmt.Errorf("exchange: %s: a repository is <owner>/<name>", where)
+		}
+		if strings.TrimSpace(entry.Workflow) == "" {
+			return nil, fmt.Errorf("exchange: %s: the workflow's path is required, since an entry with no path matches no run", where)
+		}
+		if err := CheckRefPattern(entry.Ref); err != nil {
+			return nil, fmt.Errorf("exchange: %s: %w", where, err)
+		}
+		key := resultKey{entry.Repository, entry.Workflow}
+		session := ResultSession(entry.Repository, entry.Workflow)
+		if err := checkGrant(where, entry.Project, entry.Person, session); err != nil {
+			return nil, err
+		}
+		for exact := range set.workflows {
+			if exact.repository == key.repository && exact.workflow == key.workflow {
+				return nil, fmt.Errorf("exchange: %s: an exact workflow entry lists the same workflow on %s, and one workflow writes as one identity", where, exact.ref)
+			}
+		}
+		listed := set.results[key]
+		if slices.ContainsFunc(listed, func(other ResultWorkflowEntry) bool { return other.Ref == entry.Ref }) {
+			return nil, fmt.Errorf("exchange: %s: the workflow is listed twice with this ref pattern, and one run writes as one identity", where)
+		}
+		// Every pattern of one workflow writes under the one session it fixes, as one holder, so
+		// the name is reserved once, by the workflow's first entry.
+		if len(listed) == 0 {
+			if err := reserve(where, session, resultPrincipal(key)); err != nil {
+				return nil, err
+			}
+		}
+		set.results[key] = append(listed, entry)
+	}
 	for i, entry := range machines {
 		where := fmt.Sprintf("google entry %d, %q", i+1, entry.Account)
 		if !googleAccountPattern.MatchString(entry.Account) {
@@ -583,8 +668,9 @@ func NewSet(accounts []AccountEntry, workflows []WorkflowEntry, machines []Googl
 }
 
 // Reservations are the session names the entries fix, each with the principal it belongs to, in
-// the order the entries were listed: accounts first, then workflows, then Google accounts. The
-// slice is the caller's own, so the set stays immutable.
+// the order the entries were listed: accounts first, then workflows, then result workflows, each
+// once however many patterns it is listed with, then Google accounts. The slice is the caller's
+// own, so the set stays immutable.
 func (s *Set) Reservations() []Reservation {
 	return slices.Clone(s.reservations)
 }
@@ -687,13 +773,15 @@ func (s *Set) Registration(account, podUID, session string) error {
 }
 
 // Workflow answers the claims for a continuous-integration workflow run's GitHub token, from the
-// claims GitHub puts in it: `repository`, `workflow_ref`, `job_workflow_ref` and `ref`.
+// claims GitHub puts in it: `repository`, `workflow_ref`, `job_workflow_ref` and `ref`, and, for
+// a run a result entry lists, the claims of the run its token records (resultRun).
 //
 // The identity is the repository, the workflow file's path and the ref, each compared exactly. A
 // run whose job comes from a reusable workflow other than the one the run started in is refused:
 // `job_workflow_ref` names the workflow file the job is written in and `workflow_ref` the one the
 // run entered through, and where they differ the code that is running is not the code the entry
-// names.
+// names. A run no exact entry lists is answered by the result entries of its repository and
+// path, whose ref patterns its ref must match (resultRun).
 //
 // The principal is that listed workflow, not the run: every run of it is one holder, so the next
 // run of a release workflow keeps writing under the name the run before it held, however soon
@@ -725,13 +813,138 @@ func (s *Set) Workflow(token map[string]any, session string) (Claims, error) {
 	key := workflowKey{repository, workflow, ref}
 	entry, listed := s.workflows[key]
 	if !listed {
-		return Claims{}, fmt.Errorf("%w: no entry lists the workflow %s of %s on %s", ErrNoEntry, workflow, repository, ref)
+		return s.resultRun(token, resultKey{repository, workflow}, ref, session)
 	}
 	name, err := resolveSession(entry.Session, session, repository+"/"+workflow)
 	if err != nil {
 		return Claims{}, err
 	}
 	return Claims{Session: name, Person: entry.Person, Scope: ProjectScopeNamed, Project: entry.Project, Principal: workflowPrincipal(key)}, nil
+}
+
+// resultRun answers the claims for a run of a workflow no exact entry lists on its ref, from the
+// result entries of that workflow: the one whose ref pattern the run's ref matches.
+//
+// A ref no pattern matches is no entry's, as a ref no exact entry lists is. A ref two patterns
+// match is refused, naming both, rather than answered by whichever was listed first: the two may
+// name different projects or people, and which one a run writes as must not depend on the order
+// of a setting.
+//
+// What the token says follows from the entry: the entry's project and person, the one capability,
+// oauthwire.CapabilityCIResults, and the run the token's own claims describe (readCIRun), which a
+// resource server holds each result's commit to. The session and the principal are the
+// workflow's, whatever the ref: every run of it on every ref its patterns match writes under
+// ResultSession and is one holder, so a request naming another session is refused as an exact
+// entry that fixes one refuses it.
+func (s *Set) resultRun(token map[string]any, key resultKey, ref, session string) (Claims, error) {
+	var matched []ResultWorkflowEntry
+	for _, entry := range s.results[key] {
+		// NewSet refused every pattern path.Match cannot read, so a match has no error to report.
+		if ok, _ := path.Match(entry.Ref, ref); ok {
+			matched = append(matched, entry)
+		}
+	}
+	switch len(matched) {
+	case 0:
+		return Claims{}, fmt.Errorf("%w: no entry lists the workflow %s of %s on %s", ErrNoEntry, key.workflow, key.repository, ref)
+	case 1:
+	default:
+		patterns := make([]string, len(matched))
+		for i, entry := range matched {
+			patterns[i] = entry.Ref
+		}
+		return Claims{}, fmt.Errorf("%w: two entries match the workflow %s of %s on %s, the ref patterns %s; one run writes as one identity, so list it under one",
+			ErrNoEntry, key.workflow, key.repository, ref, strings.Join(patterns, " and "))
+	}
+	run, err := readCIRun(token)
+	if err != nil {
+		return Claims{}, err
+	}
+	name, err := resolveSession(ResultSession(key.repository, key.workflow), session, key.repository+"/"+key.workflow)
+	if err != nil {
+		return Claims{}, err
+	}
+	entry := matched[0]
+	return Claims{
+		Session: name, Person: entry.Person, Scope: ProjectScopeNamed, Project: entry.Project, Principal: resultPrincipal(key),
+		Capability: oauthwire.CapabilityCIResults, CI: run,
+	}, nil
+}
+
+// readCIRun reads the run a GitHub Actions token describes, every claim of oauthwire.CIRun, out
+// of the claim map of a token the exchange has already verified. Each but `check_run_id` is
+// required and refused ErrClaimMissing when it is absent or out of its shape: `sha` is a whole
+// commit id, 40 lowercase hexadecimal digits, and `run_id` and `run_attempt` are positive
+// decimal integers, as GitHub writes them. `check_run_id` is read when the token carries one,
+// as GitHub's newer tokens do, and left empty when it carries none.
+func readCIRun(token map[string]any) (*oauthwire.CIRun, error) {
+	run := &oauthwire.CIRun{}
+	for _, claim := range []struct {
+		name string
+		into *string
+	}{
+		{"repository", &run.Repository}, {"workflow_ref", &run.WorkflowRef}, {"ref", &run.Ref}, {"sha", &run.SHA},
+		{"event_name", &run.EventName}, {"run_id", &run.RunID}, {"run_attempt", &run.RunAttempt},
+		{"runner_environment", &run.RunnerEnvironment}, {"actor", &run.Actor},
+	} {
+		value, err := claimString(token, claim.name)
+		if err != nil {
+			return nil, err
+		}
+		*claim.into = value
+	}
+	if !commitPattern.MatchString(run.SHA) {
+		return nil, fmt.Errorf("%w: the subject token's sha claim is not a commit id of 40 lowercase hexadecimal digits", ErrClaimMissing)
+	}
+	for _, number := range []struct{ name, value string }{{"run_id", run.RunID}, {"run_attempt", run.RunAttempt}} {
+		if !positiveDecimal(number.value) {
+			return nil, fmt.Errorf("%w: the subject token's %s claim is not a positive decimal integer", ErrClaimMissing, number.name)
+		}
+	}
+	checkRun, err := checkRunID(token)
+	if err != nil {
+		return nil, err
+	}
+	run.CheckRunID = checkRun
+	return run, nil
+}
+
+// commitPattern is a whole git commit id as GitHub's `sha` claim writes it.
+var commitPattern = regexp.MustCompile(`^[0-9a-f]{40}$`)
+
+// positiveDecimal reports whether text is a positive integer written in decimal the one way
+// strconv writes it — no sign, no leading zero — that fits an int64, which is how GitHub writes a
+// run's id and attempt and how a reader comparing two of them parses them.
+func positiveDecimal(text string) bool {
+	number, err := strconv.ParseUint(text, 10, 63)
+	return err == nil && number > 0 && strconv.FormatUint(number, 10) == text
+}
+
+// checkRunID reads a token's `check_run_id` claim as a decimal string: GitHub writes it as one,
+// and a claim map decoded from JSON may hold it as a number instead, float64 from encoding/json
+// and json.Number from the library's own parse. A token carrying none answers "", since GitHub's
+// older tokens carry none; one carrying anything but a positive integer is refused.
+func checkRunID(token map[string]any) (string, error) {
+	value, present := token["check_run_id"]
+	if !present || value == nil {
+		return "", nil
+	}
+	var text string
+	switch claim := value.(type) {
+	case string:
+		text = claim
+	case json.Number:
+		text = claim.String()
+	case float64:
+		// A float64 holds every integer up to 2^53 exactly, which is past any check run id.
+		if claim == math.Trunc(claim) && claim > 0 && claim <= 1<<53 {
+			text = strconv.FormatUint(uint64(claim), 10)
+		}
+	}
+	if !positiveDecimal(text) {
+		return "", fmt.Errorf("%w: the subject token's check_run_id claim is not a positive decimal integer", ErrClaimMissing)
+	}
+	return text, nil
 }
 
 // Google answers the claims for a machine's Google identity token, from the claims Google puts in
@@ -939,10 +1152,13 @@ func (s *Set) Machine(credential, approver, session string) (Claims, error) {
 	return Claims{Session: name, Person: approver, Scope: ProjectScopePerson, Principal: PersonPrincipal(approver)}, nil
 }
 
-// The four spellings of a principal, each led by its kind so that no account, workflow, Google
-// account and person ever spell the same string. A workflow's is <repository>/<path>@<ref>, as an
-// operator reads one elsewhere; a path or ref carrying "@" could make two entries spell one
-// string, and NewSet refuses that pair rather than let one's runs hold the other's names.
+// The five spellings of a principal, each led by its kind so that no account, workflow, result
+// workflow, Google account and person ever spell the same string. A workflow's is
+// <repository>/<path>@<ref>, as an operator reads one elsewhere; a path or ref carrying "@" could
+// make two entries spell one string, and NewSet refuses that pair rather than let one's runs hold
+// the other's names. A result workflow's is <repository>/<path> alone, since every ref its
+// patterns match is one holder, and a repository holds exactly one "/", so no two of them spell
+// alike.
 //
 // Three of them are exported because a broker grant follows a session name under one principal
 // too: enroll.Service.Create writes one of these into enrollments.carry_principal, and the next
@@ -957,6 +1173,10 @@ func AccountPrincipal(account string) string { return "account:" + account }
 
 func workflowPrincipal(key workflowKey) string {
 	return "workflow:" + key.repository + "/" + key.workflow + "@" + key.ref
+}
+
+func resultPrincipal(key resultKey) string {
+	return "workflow-results:" + key.repository + "/" + key.workflow
 }
 
 // GooglePrincipal is a Google account's spelling: the fleet a machine's own identity belongs to.
@@ -1044,4 +1264,38 @@ func workflowPath(workflowRef, repository string) (string, bool) {
 		return "", false
 	}
 	return rest[:at], true
+}
+
+// refPatternPrefixes are the kinds of ref a result entry's pattern may name: a branch, a pull
+// request's refs, a tag.
+var refPatternPrefixes = []string{"refs/heads/", "refs/pull/", "refs/tags/"}
+
+// CheckRefPattern refuses a result entry's ref pattern the exchange will not match a run's ref
+// against. A pattern is path.Match's syntax, so a `*` never crosses a `/`; it starts refs/heads/,
+// refs/pull/ or refs/tags/; and its first two segments hold no `*`, `?`, `[` or `\`, so that what
+// kind of ref it names is literal text and no pattern reaches past it. What follows the second
+// `/` is the pattern's own: refs/pull/*/merge is every pull request's merge ref, and
+// refs/heads/gh-readonly-queue/main/* every branch the merge queue makes for main. It is the one
+// grammar the broker's configuration and NewSet both refuse by, so a refusal reads the same at
+// either.
+func CheckRefPattern(pattern string) error {
+	first, rest, _ := strings.Cut(pattern, "/")
+	second, _, _ := strings.Cut(rest, "/")
+	if strings.ContainsAny(first+second, `*?[\`) {
+		return fmt.Errorf("the ref pattern %q holds a wildcard or an escape in its first two segments, which are literal: refs/heads/, refs/pull/ or refs/tags/", pattern)
+	}
+	if !slices.ContainsFunc(refPatternPrefixes, func(prefix string) bool { return strings.HasPrefix(pattern, prefix) }) {
+		return fmt.Errorf("the ref pattern %q names no branch, pull request or tag: it starts refs/heads/, refs/pull/ or refs/tags/", pattern)
+	}
+	if _, err := path.Match(pattern, ""); err != nil {
+		return fmt.Errorf("the ref pattern %q is not a pattern: %w", pattern, err)
+	}
+	return nil
+}
+
+// ResultSession is the session name every run of a result entry's workflow writes under, on
+// every ref its patterns match: ci-results:<repository>/<workflow path>. The broker reserves it
+// for the workflow (Set.Reservations), so no other caller writes under it.
+func ResultSession(repository, workflow string) string {
+	return "ci-results:" + repository + "/" + workflow
 }

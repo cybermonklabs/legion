@@ -1,12 +1,15 @@
 package exchange_test
 
 import (
+	"encoding/json"
 	"errors"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/broker/exchange"
+	"github.com/sjawhar/envoy/internal/broker/oauthwire"
 )
 
 const (
@@ -48,6 +51,20 @@ const (
 	stranger     = "mallory@other.example"
 )
 
+// The workflow whose runs write CI results, listed with three ref patterns: the probe branch,
+// every pull request's merge ref, and the merge queue's branches for main. commit is the sha a
+// run of it carries, and the session and principal are the ones every run of it, on any of those
+// refs, is answered under.
+const (
+	resultFlow      = ".github/workflows/ci-result.yaml"
+	probeRef        = "refs/heads/probe/infra-3577-ci-result"
+	pullPattern     = "refs/pull/*/merge"
+	queuePattern    = "refs/heads/gh-readonly-queue/main/*"
+	commit          = "0123456789abcdef0123456789abcdef01234567"
+	resultSession   = "ci-results:" + repository + "/" + resultFlow
+	resultPrincipal = "workflow-results:" + repository + "/" + resultFlow
+)
+
 // The principals the listed entries' session names belong to, as the exchange spells them.
 const (
 	workerPrincipal  = "account:" + workerAccount
@@ -62,9 +79,10 @@ const (
 
 // listed is the set every decision test asks: one account whose sessions name themselves, one
 // account whose session the entry fixes, the same pair for one workflow of one repository on one
-// ref, and three Google accounts — one pinned to a project and an instance-name pattern that
-// writes for a person, one pinned to nothing that names no person, and one that fixes the session
-// its machines write under.
+// ref, a workflow whose runs write CI results on the refs of three patterns, and three Google
+// accounts — one pinned to a project and an instance-name pattern that writes for a person, one
+// pinned to nothing that names no person, and one that fixes the session its machines write
+// under.
 func listed(t *testing.T) *exchange.Set {
 	t.Helper()
 	set, err := exchange.NewSet(
@@ -76,6 +94,7 @@ func listed(t *testing.T) *exchange.Set {
 			{Repository: repository, Workflow: workflow, Ref: ref, Project: project, Person: person},
 			{Repository: repository, Workflow: nightly, Ref: ref, Project: project, Person: person, Session: nightlySession},
 		},
+		resultEntries(probeRef, pullPattern, queuePattern),
 		[]exchange.GoogleEntry{
 			{Account: pinnedAccount, Service: pinnedService, CloudProject: cloudProject, Instance: instanceGlob, Project: project, Person: person},
 			{Account: poolAccount, Service: poolService},
@@ -87,6 +106,38 @@ func listed(t *testing.T) *exchange.Set {
 		t.Fatalf("NewSet: %v", err)
 	}
 	return set
+}
+
+// resultEntries lists resultFlow of repository once per pattern, each for the one project and
+// person.
+func resultEntries(patterns ...string) []exchange.ResultWorkflowEntry {
+	entries := make([]exchange.ResultWorkflowEntry, 0, len(patterns))
+	for _, pattern := range patterns {
+		entries = append(entries, exchange.ResultWorkflowEntry{Repository: repository, Workflow: resultFlow, Ref: pattern, Project: project, Person: person})
+	}
+	return entries
+}
+
+// resultToken is the token claims of a run of resultFlow on gitRef, carrying every claim of the
+// run a result entry's token records, the check run among them.
+func resultToken(gitRef string) map[string]any {
+	token := workflowToken(repository, repository+"/"+resultFlow+"@"+gitRef, repository+"/"+resultFlow+"@"+gitRef, gitRef)
+	token["sha"] = commit
+	token["event_name"] = "pull_request"
+	token["run_attempt"] = "2"
+	token["runner_environment"] = "self-hosted"
+	token["actor"] = "ada-gh"
+	token["check_run_id"] = "987654321"
+	return token
+}
+
+// resultRun is the run resultToken(gitRef) describes, as a result entry's Claims carry it.
+func resultRun(gitRef string) *oauthwire.CIRun {
+	return &oauthwire.CIRun{
+		Repository: repository, WorkflowRef: repository + "/" + resultFlow + "@" + gitRef, Ref: gitRef, SHA: commit,
+		EventName: "pull_request", RunID: "4242", RunAttempt: "2", RunnerEnvironment: "self-hosted", Actor: "ada-gh",
+		CheckRunID: "987654321",
+	}
 }
 
 // podToken is a projected service-account token's claims as the exchange is handed them, bound to
@@ -133,11 +184,21 @@ func TestNewSetRefusesAnEntryItCannotServe(t *testing.T) {
 		change(&entry)
 		return entry
 	}
+	result := exchange.ResultWorkflowEntry{Repository: repository, Workflow: resultFlow, Ref: pullPattern, Project: project, Person: person}
+	withResult := func(change func(*exchange.ResultWorkflowEntry)) exchange.ResultWorkflowEntry {
+		entry := result
+		change(&entry)
+		return entry
+	}
+	withPattern := func(pattern string) []exchange.ResultWorkflowEntry {
+		return []exchange.ResultWorkflowEntry{withResult(func(e *exchange.ResultWorkflowEntry) { e.Ref = pattern })}
+	}
 	for _, c := range []struct {
 		name      string
 		machines  []exchange.GoogleEntry
 		accounts  []exchange.AccountEntry
 		workflows []exchange.WorkflowEntry
+		results   []exchange.ResultWorkflowEntry
 		names     string
 	}{
 		{name: "an account that is not a service account subject",
@@ -208,9 +269,39 @@ func TestNewSetRefusesAnEntryItCannotServe(t *testing.T) {
 		{name: "a session name a machine and an account fix",
 			accounts: []exchange.AccountEntry{with(func(e *exchange.AccountEntry) { e.Session = fixedSession })},
 			machines: []exchange.GoogleEntry{withMachine(func(e *exchange.GoogleEntry) { e.Session = fixedSession })}, names: pinnedAccount},
+		{name: "a result workflow whose repository is not <owner>/<name>",
+			results: []exchange.ResultWorkflowEntry{withResult(func(e *exchange.ResultWorkflowEntry) { e.Repository = "example-repo" })}, names: "example-repo"},
+		{name: "a result workflow with no path",
+			results: []exchange.ResultWorkflowEntry{withResult(func(e *exchange.ResultWorkflowEntry) { e.Workflow = " " })}, names: "result workflow entry 1"},
+		{name: "a result workflow with no ref pattern", results: withPattern(""), names: "result workflow entry 1"},
+		{name: "a result workflow with no project",
+			results: []exchange.ResultWorkflowEntry{withResult(func(e *exchange.ResultWorkflowEntry) { e.Project = "" })}, names: resultFlow},
+		{name: "a result workflow with no person",
+			results: []exchange.ResultWorkflowEntry{withResult(func(e *exchange.ResultWorkflowEntry) { e.Person = " " })}, names: resultFlow},
+		{name: "a ref pattern of another prefix", results: withPattern("refs/remotes/origin/*"), names: "refs/remotes/origin/*"},
+		{name: "a ref pattern that is no ref at all", results: withPattern("main"), names: "main"},
+		{name: "a ref pattern that is only its prefix's first segment", results: withPattern("refs/heads"), names: "refs/heads"},
+		{name: "a wildcard in a ref pattern's second segment", results: withPattern("refs/*/main"), names: "refs/*/main"},
+		{name: "a single-character wildcard in a ref pattern's second segment", results: withPattern("refs/he?ds/main"), names: "refs/he?ds/main"},
+		{name: "a class in a ref pattern's first segment", results: withPattern("[r]efs/heads/main"), names: "[r]efs/heads/main"},
+		// The refusal quotes the entry, so its backslash reads doubled; the entry's number names it.
+		{name: "an escape in a ref pattern's second segment", results: withPattern(`refs/he\ads/main`), names: "result workflow entry 1"},
+		{name: "a ref pattern that is not a pattern", results: withPattern("refs/heads/probe/[x"), names: "refs/heads/probe/[x"},
+		{name: "the same result workflow and pattern twice",
+			results: []exchange.ResultWorkflowEntry{result, withResult(func(e *exchange.ResultWorkflowEntry) { e.Person = "bob@example.com" })}, names: "result workflow entry 2"},
+		{name: "a workflow listed for its exact runs and for its results",
+			workflows: []exchange.WorkflowEntry{withFlow(func(e *exchange.WorkflowEntry) { e.Workflow = resultFlow })},
+			results:   []exchange.ResultWorkflowEntry{result}, names: "result workflow entry 1"},
+		{name: "a result workflow whose session an exact workflow fixes",
+			workflows: []exchange.WorkflowEntry{withFlow(func(e *exchange.WorkflowEntry) { e.Session = resultSession })},
+			results:   []exchange.ResultWorkflowEntry{result}, names: "result workflow entry 1"},
+		{name: "a result workflow whose session name would be too long",
+			results: []exchange.ResultWorkflowEntry{withResult(func(e *exchange.ResultWorkflowEntry) {
+				e.Workflow = ".github/workflows/" + strings.Repeat("w", exchange.MaxSessionBytes) + ".yaml"
+			})}, names: "result workflow entry 1"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			set, err := exchange.NewSet(c.accounts, c.workflows, c.machines, signInDomain)
+			set, err := exchange.NewSet(c.accounts, c.workflows, c.results, c.machines, signInDomain)
 			if err == nil {
 				t.Fatalf("NewSet(%s) = %v, want a refusal", c.name, set)
 			}
@@ -228,7 +319,7 @@ func TestNewSetTakesTheSameAccountAndWorkflowKeyTwiceApart(t *testing.T) {
 			{Repository: repository, Workflow: workflow, Ref: ref, Project: project, Person: person},
 			{Repository: repository, Workflow: workflow, Ref: "refs/heads/release", Project: "OTHER", Person: person},
 		},
-		nil, signInDomain,
+		nil, nil, signInDomain,
 	)
 	if err != nil {
 		t.Fatalf("NewSet(one workflow on two refs): %v", err)
@@ -244,6 +335,42 @@ func TestNewSetTakesTheSameAccountAndWorkflowKeyTwiceApart(t *testing.T) {
 	}
 }
 
+// TestCheckRefPatternTakesALiteralKindOfRef pins the one grammar of a result entry's ref pattern,
+// which the configuration and NewSet both refuse by: path.Match's syntax, under refs/heads/,
+// refs/pull/ or refs/tags/, with nothing but literal text before the second `/`. A wildcard after
+// it is the pattern's whole point, the pull request's number and the merge queue's branch
+// among them, so a pattern of one segment past the prefix is taken too.
+func TestCheckRefPatternTakesALiteralKindOfRef(t *testing.T) {
+	for _, good := range []string{probeRef, pullPattern, queuePattern, "refs/tags/v*", "refs/heads/*", "refs/heads/release-[0-9]*"} {
+		if err := exchange.CheckRefPattern(good); err != nil {
+			t.Errorf("CheckRefPattern(%q) = %v, want it taken", good, err)
+		}
+	}
+	for _, bad := range []string{"", "main", "refs", "refs/heads", "heads/main", "refs/remotes/origin/main", "refs/notes/*",
+		"refs/*/main", "refs/*", "*/heads/main", "refs/he?ds/main", "refs/[h]eads/main", `refs/he\ads/main`, `refs\/heads/main`, "refs/heads/[x"} {
+		if err := exchange.CheckRefPattern(bad); err == nil {
+			t.Errorf("CheckRefPattern(%q) took it, want a refusal", bad)
+		}
+	}
+}
+
+// TestAResultWorkflowIsNamedOnceAsOneHolder: every pattern of one result workflow writes under
+// one session that belongs to one principal, so listing the workflow with three patterns
+// reserves its one name once, for the workflow, and no pattern is a holder of its own.
+func TestAResultWorkflowIsNamedOnceAsOneHolder(t *testing.T) {
+	if got := exchange.ResultSession(repository, resultFlow); got != resultSession {
+		t.Fatalf("ResultSession = %q, want %q", got, resultSession)
+	}
+	set, err := exchange.NewSet(nil, nil, resultEntries(probeRef, pullPattern, queuePattern), nil, signInDomain)
+	if err != nil {
+		t.Fatalf("NewSet(one result workflow, three patterns): %v", err)
+	}
+	want := []exchange.Reservation{{Session: resultSession, Principal: resultPrincipal}}
+	if got := set.Reservations(); !slices.Equal(got, want) {
+		t.Fatalf("Reservations = %+v, want %+v", got, want)
+	}
+}
+
 // TestTheReservationsAreTheNamesTheEntriesFix: every session name an entry fixes is reserved for
 // that entry's principal, in the order the entries were listed, and a name no entry fixes is not
 // reserved at all. The answer is the caller's own copy, so the set stays as it was built.
@@ -252,6 +379,7 @@ func TestTheReservationsAreTheNamesTheEntriesFix(t *testing.T) {
 	want := []exchange.Reservation{
 		{Session: fixedSession, Principal: daemonPrincipal},
 		{Session: nightlySession, Principal: nightlyPrincipal},
+		{Session: resultSession, Principal: resultPrincipal},
 		{Session: machineSession, Principal: fixedPrincipal},
 	}
 	got := set.Reservations()
@@ -459,6 +587,138 @@ func TestWorkflowRefusesWhatItCannotDecide(t *testing.T) {
 func withRun(token map[string]any, run string) map[string]any {
 	token["run_id"] = run
 	return token
+}
+
+// TestWorkflowAnswersAResultRunWithItsCapabilityAndItsRun pins what a result entry answers: its
+// project and person, the session and principal its workflow fixes whatever the ref, the one
+// capability, and the run read off the token. Each of the three patterns is reached by a ref of
+// its own, the pull request's and the merge queue's by refs the patterns' `*` stands for, and a
+// request may name the fixed session or none. A check run given as a JSON number, which a
+// decoded claim map holds as float64 or as json.Number, is read as the same decimal string, and
+// a token carrying none answers none, since GitHub's older tokens do not carry it.
+func TestWorkflowAnswersAResultRunWithItsCapabilityAndItsRun(t *testing.T) {
+	set := listed(t)
+	claimsFor := func(run *oauthwire.CIRun) exchange.Claims {
+		return exchange.Claims{Session: resultSession, Person: person, Scope: exchange.ProjectScopeNamed, Project: project,
+			Principal: resultPrincipal, Capability: oauthwire.CapabilityCIResults, CI: run}
+	}
+	const pullRef, queueRef = "refs/pull/7/merge", "refs/heads/gh-readonly-queue/main/pr-7-" + commit
+	withoutCheckRun := resultToken(pullRef)
+	delete(withoutCheckRun, "check_run_id")
+	runWithoutCheckRun := resultRun(pullRef)
+	runWithoutCheckRun.CheckRunID = ""
+	numbered := func(value any) map[string]any {
+		token := resultToken(pullRef)
+		token["check_run_id"] = value
+		return token
+	}
+	for _, c := range []struct {
+		name    string
+		token   map[string]any
+		session string
+		want    exchange.Claims
+	}{
+		{name: "the probe branch, naming no session", token: resultToken(probeRef), want: claimsFor(resultRun(probeRef))},
+		{name: "a pull request's merge ref", token: resultToken(pullRef), want: claimsFor(resultRun(pullRef))},
+		{name: "the merge queue's branch", token: resultToken(queueRef), want: claimsFor(resultRun(queueRef))},
+		{name: "the request naming the fixed session", token: resultToken(pullRef), session: resultSession, want: claimsFor(resultRun(pullRef))},
+		{name: "a token carrying no check run", token: withoutCheckRun, want: claimsFor(runWithoutCheckRun)},
+		{name: "a check run decoded as a float", token: numbered(float64(987654321)), want: claimsFor(resultRun(pullRef))},
+		{name: "a check run decoded as a json.Number", token: numbered(json.Number("987654321")), want: claimsFor(resultRun(pullRef))},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			claims, err := set.Workflow(c.token, c.session)
+			if err != nil || !reflect.DeepEqual(claims, c.want) {
+				t.Fatalf("Workflow(%s) = %+v (run %+v), %v; want %+v (run %+v)", c.name, claims, claims.CI, err, c.want, c.want.CI)
+			}
+		})
+	}
+}
+
+// TestWorkflowRefusesAResultRunItCannotDecide: a ref no pattern matches, `*` included, which
+// never crosses a `/`, is no entry's; a run whose token lacks a claim of the run, or carries one
+// out of its shape, is refused naming the claim, since the run it records must be the run that
+// asked; a request naming another session is refused as an exact entry's is; and a job written
+// in another workflow is refused as it is for an exact entry.
+func TestWorkflowRefusesAResultRunItCannotDecide(t *testing.T) {
+	set := listed(t)
+	const pullRef = "refs/pull/7/merge"
+	spoiled := func(claim string, value any) map[string]any {
+		token := resultToken(pullRef)
+		if value == nil {
+			delete(token, claim)
+		} else {
+			token[claim] = value
+		}
+		return token
+	}
+	reusable := resultToken(pullRef)
+	reusable["job_workflow_ref"] = repository + "/.github/workflows/reusable.yaml@" + pullRef
+	for _, c := range []struct {
+		name    string
+		token   map[string]any
+		session string
+		want    error
+		names   string
+	}{
+		{name: "a branch no pattern matches", token: resultToken("refs/heads/other"), want: exchange.ErrNoEntry, names: "refs/heads/other"},
+		{name: "a ref under the pull request's whose * would cross a /", token: resultToken("refs/pull/7/8/merge"), want: exchange.ErrNoEntry, names: "refs/pull/7/8/merge"},
+		{name: "a merge queue ref one segment deeper", token: resultToken("refs/heads/gh-readonly-queue/main/a/b"), want: exchange.ErrNoEntry, names: "refs/heads/gh-readonly-queue/main/a/b"},
+		{name: "the probe branch's child", token: resultToken(probeRef + "/x"), want: exchange.ErrNoEntry, names: probeRef + "/x"},
+		{name: "a token carrying no sha", token: spoiled("sha", nil), want: exchange.ErrClaimMissing, names: "sha"},
+		{name: "a sha in capitals", token: spoiled("sha", strings.ToUpper(commit)), want: exchange.ErrClaimMissing, names: "sha"},
+		{name: "a sha one digit short", token: spoiled("sha", commit[1:]), want: exchange.ErrClaimMissing, names: "sha"},
+		{name: "a sha that is not hexadecimal", token: spoiled("sha", "g"+commit[1:]), want: exchange.ErrClaimMissing, names: "sha"},
+		{name: "a token carrying no run_id", token: spoiled("run_id", nil), want: exchange.ErrClaimMissing, names: "run_id"},
+		{name: "a run_id that is not decimal", token: spoiled("run_id", "42a"), want: exchange.ErrClaimMissing, names: "run_id"},
+		{name: "a run_id of zero", token: spoiled("run_id", "0"), want: exchange.ErrClaimMissing, names: "run_id"},
+		{name: "a run_id with a leading zero", token: spoiled("run_id", "04242"), want: exchange.ErrClaimMissing, names: "run_id"},
+		{name: "a run_id with a sign", token: spoiled("run_id", "+4242"), want: exchange.ErrClaimMissing, names: "run_id"},
+		{name: "a token carrying no run_attempt", token: spoiled("run_attempt", nil), want: exchange.ErrClaimMissing, names: "run_attempt"},
+		{name: "a run_attempt that is not decimal", token: spoiled("run_attempt", "two"), want: exchange.ErrClaimMissing, names: "run_attempt"},
+		{name: "a token carrying no event_name", token: spoiled("event_name", nil), want: exchange.ErrClaimMissing, names: "event_name"},
+		{name: "a token carrying no runner_environment", token: spoiled("runner_environment", nil), want: exchange.ErrClaimMissing, names: "runner_environment"},
+		{name: "a token carrying no actor", token: spoiled("actor", nil), want: exchange.ErrClaimMissing, names: "actor"},
+		{name: "a check_run_id that is not decimal", token: spoiled("check_run_id", "abc"), want: exchange.ErrClaimMissing, names: "check_run_id"},
+		{name: "a check_run_id that is a fraction", token: spoiled("check_run_id", 1.5), want: exchange.ErrClaimMissing, names: "check_run_id"},
+		{name: "a check_run_id of another type", token: spoiled("check_run_id", true), want: exchange.ErrClaimMissing, names: "check_run_id"},
+		{name: "a session the entry does not fix", token: resultToken(pullRef), session: "ci-release", want: exchange.ErrSessionMismatch, names: resultSession},
+		{name: "a job written in a reusable workflow", token: reusable, want: exchange.ErrNoEntry, names: ".github/workflows/reusable.yaml"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			claims, err := set.Workflow(c.token, c.session)
+			if !errors.Is(err, c.want) {
+				t.Fatalf("Workflow(%s) = %+v, %v; want %v", c.name, claims, err, c.want)
+			}
+			if !strings.Contains(err.Error(), c.names) {
+				t.Errorf("Workflow(%s) refused with %q, which does not name %q", c.name, err, c.names)
+			}
+		})
+	}
+}
+
+// TestARunTwoResultEntriesMatchIsRefusedNamingBoth: two patterns of one workflow can both match
+// one ref, which no load-time check can rule out for patterns in general, and the two may name
+// different projects or people. The run is refused, naming both patterns, rather than answered
+// by whichever entry was listed first; a ref only one of them matches is answered by it.
+func TestARunTwoResultEntriesMatchIsRefusedNamingBoth(t *testing.T) {
+	const wide, narrow = "refs/heads/probe/*", "refs/heads/probe/infra-*"
+	set, err := exchange.NewSet(nil, nil, resultEntries(wide, narrow), nil, signInDomain)
+	if err != nil {
+		t.Fatalf("NewSet: %v", err)
+	}
+	_, err = set.Workflow(resultToken(probeRef), "")
+	if !errors.Is(err, exchange.ErrNoEntry) {
+		t.Fatalf("Workflow(a ref both patterns match) = %v, want %v", err, exchange.ErrNoEntry)
+	}
+	for _, want := range []string{"two entries match", wide, narrow} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal reads %q, which does not carry %q", err, want)
+		}
+	}
+	if claims, err := set.Workflow(resultToken("refs/heads/probe/other"), ""); err != nil || claims.CI == nil || claims.CI.Ref != "refs/heads/probe/other" {
+		t.Fatalf("Workflow(a ref only %s matches) = %+v, %v; want its run answered", wide, claims, err)
+	}
 }
 
 func TestMachineActsForTheApproverAndWritesEveryProjectThePersonMay(t *testing.T) {
@@ -820,7 +1080,7 @@ func TestPersonSaysWhichRefusalItIs(t *testing.T) {
 // their token says, rather than taking every account outside any Workspace. It is the rule
 // oidc.WorkspaceLogin states, and the one a broker told about no domain has to follow.
 func TestAnEmptySignInDomainAdmitsNobody(t *testing.T) {
-	set, err := exchange.NewSet(nil, nil, []exchange.GoogleEntry{{Account: poolAccount, Service: poolService}}, "")
+	set, err := exchange.NewSet(nil, nil, nil, []exchange.GoogleEntry{{Account: poolAccount, Service: poolService}}, "")
 	if err != nil {
 		t.Fatalf("NewSet: %v", err)
 	}
