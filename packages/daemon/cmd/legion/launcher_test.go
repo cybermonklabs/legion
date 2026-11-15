@@ -133,6 +133,29 @@ func TestTheLauncherCommandRefusesAMixOfItsTwoForms(t *testing.T) {
 	}
 }
 
+// A service account to impersonate names a session database, so the launcher told one without the
+// instance, the database and the login refuses before it dials anything. A launcher that did not
+// know the flag would exit 2 on its usage, and one that parsed it and dropped it would take the
+// configuration for the other stores and dial the unreachable daemon until its context ends.
+func TestTheLauncherCommandRefusesAServiceAccountWithoutItsSessionDatabase(t *testing.T) {
+	token := filepath.Join(t.TempDir(), "LAUNCHER_TOKEN")
+	if err := os.WriteFile(token, []byte("token"), 0o400); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var stdout, stderr bytes.Buffer
+	code := run(ctx, []string{
+		"legion", "launcher", "--connect", "tcp://127.0.0.1:1", "--sandbox", "s", "--pod-uid", "p",
+		"--token-file", token, "--role", "tester", "--private-dir", t.TempDir(),
+		"--session-impersonate-service-account", "legion-sessions@example-project.iam.gserviceaccount.com",
+	}, &stdout, &stderr)
+	const want = "the session database is named in part: no --session-instance, no --session-database, no --session-user"
+	if code != 1 || !strings.Contains(stderr.String(), want) {
+		t.Fatalf("exit %d, stderr %q; want 1 naming %q", code, stderr.String(), want)
+	}
+}
+
 // `legion launcher role-init` is the launcher's own, hidden from its usage, and refuses to run
 // anywhere but as the init of a role's new namespaces: run by hand it would otherwise mount a
 // role's private view over the caller's own. Every refusal, its usage's included, is a failure

@@ -756,7 +756,8 @@ func launcherCommand(l launch, r *Runtime) shimwire.LauncherStart {
 	// which it does when something needs it (mountsProviders: a provider key, a providers secret, or
 	// a session database URL key); a directory it is told and cannot read refuses its start
 	// (shim.ReadProviderEnv). Under cloudsql-iam no URL key is held — each pod signs in to Cloud SQL
-	// as itself — so a deployment with no provider key and no providers secret has no such directory.
+	// as itself, or as the service account it impersonates — so a deployment with no provider key
+	// and no providers secret has no such directory.
 	if r.mountsProviders() {
 		shim = append(shim, "--provider-env-dir", ProvidersDir)
 	}

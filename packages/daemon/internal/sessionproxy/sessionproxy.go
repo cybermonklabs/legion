@@ -1,8 +1,10 @@
 // Package sessionproxy carries one generation's Oh My Pi session database traffic to Cloud SQL
-// over the pod's own cloud identity, so that no database password is ever written into a pod. The
-// agent's client (Bun's SQL client over a unix socket) sends a plain Postgres startup packet with
-// a user and a database and no password; this proxy dials Cloud SQL for every accepted connection
-// with automatic IAM database authentication and copies bytes both ways.
+// with the pod's own cloud credentials, so that no database password is ever written into a pod.
+// The proxy signs in as the pod's own identity, or as a Google service account that the
+// deployment names and that the pod's credentials impersonate (Config.ImpersonateServiceAccount).
+// The agent's client (Bun's SQL client over a unix socket) sends a plain Postgres startup packet
+// with a user and a database and no password; this proxy dials Cloud SQL for every accepted
+// connection with automatic IAM database authentication and copies bytes both ways.
 //
 // Nothing here reads the Postgres wire protocol, and nothing here belongs to it: with automatic
 // IAM database authentication the login token travels in the connector's ephemeral-certificate
@@ -21,6 +23,8 @@ import (
 	"time"
 
 	"cloud.google.com/go/cloudsqlconn"
+	"google.golang.org/api/impersonate"
+	"google.golang.org/api/option"
 
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 )
@@ -43,9 +47,15 @@ type Config struct {
 	// Instance is the Cloud SQL instance connection name, project:region:instance, or
 	// domain:project:region:instance for a domain-scoped project (ompsessions.ValidInstance).
 	Instance string
-	// NewDialer builds the upstream dialer. Nil builds the Cloud SQL connector's, dialing the
-	// instance's private IP with automatic IAM database authentication.
-	NewDialer func(ctx context.Context) (Dialer, error)
+	// ImpersonateServiceAccount is the email of the Google service account the proxy impersonates
+	// with the pod's own credentials and signs in as (ompsessions.ServiceAccountLogin says which
+	// emails are one). Empty signs in as the pod's own identity.
+	ImpersonateServiceAccount string
+	// NewDialer builds the upstream dialer for account, which is ImpersonateServiceAccount. Nil
+	// builds the Cloud SQL connector's: it dials the instance's private IP with automatic IAM
+	// database authentication, and signs in as account, which the pod's own credentials
+	// impersonate, or as the pod itself when account is "".
+	NewDialer func(ctx context.Context, account string) (Dialer, error)
 	// ProofTimeout bounds Start's proof dial, the one upstream connection that proves the
 	// credential path before Start returns. It must be positive: an instance that never answers,
 	// an unreachable address or a peer that stalls its handshake, would otherwise hold Start for as
@@ -115,6 +125,11 @@ func Start(ctx context.Context, cfg Config) (*Proxy, error) {
 	if !ompsessions.ValidInstance(cfg.Instance) {
 		return nil, fmt.Errorf("sessionproxy: Instance %q is not the Cloud SQL instance's connection name, project:region:instance, or domain:project:region:instance for a domain-scoped project", cfg.Instance)
 	}
+	if cfg.ImpersonateServiceAccount != "" {
+		if _, ok := ompsessions.ServiceAccountLogin(cfg.ImpersonateServiceAccount); !ok {
+			return nil, fmt.Errorf("sessionproxy: ImpersonateServiceAccount %q is not a Google service account's email", cfg.ImpersonateServiceAccount)
+		}
+	}
 	if cfg.ProofTimeout <= 0 {
 		return nil, fmt.Errorf("sessionproxy: ProofTimeout %s is not positive", cfg.ProofTimeout)
 	}
@@ -136,7 +151,7 @@ func Start(ctx context.Context, cfg Config) (*Proxy, error) {
 	// The serving context outlives ctx: it carries ctx's values and nothing of its cancellation, and
 	// only Close ends it.
 	runCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
-	dialer, err := newDialer(runCtx)
+	dialer, err := newDialer(runCtx, cfg.ImpersonateServiceAccount)
 	if err != nil {
 		cancel()
 		_ = listener.Close()
@@ -174,7 +189,11 @@ func Start(ctx context.Context, cfg Config) (*Proxy, error) {
 		conns:    make(map[net.Conn]net.Conn),
 		log:      cfg.Log,
 	}
-	p.logf("sessionproxy: serving %s on %s", cfg.Instance, cfg.Socket)
+	if cfg.ImpersonateServiceAccount != "" {
+		p.logf("sessionproxy: serving %s on %s as %s", cfg.Instance, cfg.Socket, cfg.ImpersonateServiceAccount)
+	} else {
+		p.logf("sessionproxy: serving %s on %s", cfg.Instance, cfg.Socket)
+	}
 	p.inFlight.Add(1)
 	go p.accept(runCtx)
 	return p, nil
@@ -340,16 +359,67 @@ func (c connectorDialer) Dial(ctx context.Context, instance string) (net.Conn, e
 
 func (c connectorDialer) Close() error { return c.dialer.Close() }
 
-// newConnectorDialer builds the dialer a pod uses: automatic IAM database authentication, which
-// puts the pod's own login token in the ephemeral-certificate exchange, over the instance's
-// private IP, which is the only address a pod's network reaches.
-func newConnectorDialer(ctx context.Context) (Dialer, error) {
-	dialer, err := cloudsqlconn.NewDialer(ctx,
-		cloudsqlconn.WithIAMAuthN(),
-		cloudsqlconn.WithDefaultDialOptions(cloudsqlconn.WithPrivateIP()),
-	)
+// newConnectorDialer builds the dialer a pod uses, with connectorOptions. It signs in as account,
+// which the pod's own credentials impersonate, or as the pod itself when account is "".
+func newConnectorDialer(ctx context.Context, account string) (Dialer, error) {
+	opts, err := connectorOptions(ctx, account)
+	if err != nil {
+		return nil, err
+	}
+	dialer, err := cloudsqlconn.NewDialer(ctx, opts...)
 	if err != nil {
 		return nil, err
 	}
 	return connectorDialer{dialer: dialer}, nil
+}
+
+// The scopes of the two token sources the connector takes for an impersonated account. The
+// documentation of cloudsqlconn.WithIAMAuthNTokenSources names them: the API client's source
+// should have sqlservice.admin and cloud-platform, and the IAM login's source should only have
+// sqlservice.login.
+const (
+	sqlAdminScope      = "https://www.googleapis.com/auth/sqlservice.admin"
+	cloudPlatformScope = "https://www.googleapis.com/auth/cloud-platform"
+	sqlLoginScope      = "https://www.googleapis.com/auth/sqlservice.login"
+)
+
+// connectorOptions are the Cloud SQL connector's options for a pod. The connector uses automatic
+// IAM database authentication, which puts a login token in the ephemeral-certificate exchange. It
+// dials the instance's private IP, which is the only address a pod's network reaches.
+//
+// With account "", the connector signs in as the pod itself, with the pod's own credentials. With
+// an account, the pod's credentials impersonate that account through the IAM Service Account
+// Credentials API. One impersonated source signs the Admin API calls, and the other gives the
+// login token, so the proxy signs in as the account.
+//
+// ctx is the proxy's serving context, which only Close ends. The library builds each source's
+// client and finds the pod's credentials with it, so a credential that fetches its own token with
+// that context keeps doing so for as long as the proxy serves; never Start's own context, which
+// ends once the proof dial is over. Each source refreshes its one-hour token by itself when the
+// connector next asks for one. iam goes to the IAM Credentials API's client: production passes
+// none, and a test passes a fake endpoint.
+func connectorOptions(ctx context.Context, account string, iam ...option.ClientOption) ([]cloudsqlconn.Option, error) {
+	opts := make([]cloudsqlconn.Option, 0, 3)
+	opts = append(opts,
+		cloudsqlconn.WithIAMAuthN(),
+		cloudsqlconn.WithDefaultDialOptions(cloudsqlconn.WithPrivateIP()),
+	)
+	if account == "" {
+		return opts, nil
+	}
+	api, err := impersonate.CredentialsTokenSource(ctx, impersonate.CredentialsConfig{
+		TargetPrincipal: account,
+		Scopes:          []string{sqlAdminScope, cloudPlatformScope},
+	}, iam...)
+	if err != nil {
+		return nil, fmt.Errorf("impersonate %s for the Admin API: %w", account, err)
+	}
+	login, err := impersonate.CredentialsTokenSource(ctx, impersonate.CredentialsConfig{
+		TargetPrincipal: account,
+		Scopes:          []string{sqlLoginScope},
+	}, iam...)
+	if err != nil {
+		return nil, fmt.Errorf("impersonate %s for the database login: %w", account, err)
+	}
+	return append(opts, cloudsqlconn.WithIAMAuthNTokenSources(api, login)), nil
 }

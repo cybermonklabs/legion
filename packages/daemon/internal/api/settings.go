@@ -151,8 +151,8 @@ type TmuxSettings struct {
 
 // KubernetesSettings is the settled `runtime.kubernetes` block without its credential file
 // (`kubeconfig`, `context`), the session store's own fields (`session_dsn_secret`, the credential
-// source, and `session_database`, the instance and login behind it) and the operator's `pod`
-// pieces, which every pod reads from its own spec.
+// source, and `session_database`, the instance, login and service account behind it) and the
+// operator's `pod` pieces, which every pod reads from its own spec.
 type KubernetesSettings struct {
 	Namespace    string               `json:"namespace"`
 	Image        string               `json:"image"`

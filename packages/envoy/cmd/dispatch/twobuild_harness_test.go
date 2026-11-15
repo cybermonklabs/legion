@@ -13,14 +13,16 @@
 //
 // The previous build is a directory packages/envoy/scripts/build-dispatch-build.sh writes, named by
 // DISPATCH_PREVIOUS_BUILD. The suite skips only when that variable is unset; a directory it names
-// that lacks a part fails the suite, naming the parts it lacks. The current side is this tree: its
-// server from cmdtest.Build, its CLI run as `bun packages/envoy-client/bin/dispatch.ts`, its corpus
-// read from the working tree.
+// that lacks a part fails the suite, naming the parts it lacks. One row of the transition file
+// runs another earlier build instead, the first-rollout build named by
+// DISPATCH_FIRST_ROLLOUT_BUILD (firstRolloutRelease), on the same terms. The current side is this
+// tree: its server from cmdtest.Build, its CLI run as `bun packages/envoy-client/bin/dispatch.ts`,
+// its corpus read from the working tree.
 //
 // Its own build tag and its own CI job, dispatch-two-builds in .github/workflows/ci.yaml, for the
 // reason the multiprocess suite has its own: a row waits for durable hand-overs and settings
-// polls, tens of seconds each. That job builds the previous release with build-dispatch-build.sh,
-// caches the build by its commit, and runs this suite against it.
+// polls, tens of seconds each. That job builds the previous release and the first-rollout release
+// with build-dispatch-build.sh, caches each build by its commit, and runs this suite against them.
 
 package main
 
@@ -39,6 +41,18 @@ import (
 
 // previousBuildVariable names the directory build-dispatch-build.sh wrote for the previous build.
 const previousBuildVariable = "DISPATCH_PREVIOUS_BUILD"
+
+// firstRolloutBuildVariable names the directory build-dispatch-build.sh wrote for the first-rollout
+// build, firstRolloutRelease, which TestThisBuildsPageTurnsWritableOnceThePreviousBuildsProcessLeavesTheFleet
+// runs as its earlier build.
+const firstRolloutBuildVariable = "DISPATCH_FIRST_ROLLOUT_BUILD"
+
+// firstRolloutRelease is the newest release before the fleet columns (migration
+// 20261101030537_server_processes_schema), which legion-envoy-v30.21.0 is the first to carry and
+// to register its schema numbers in (cybermonklabs/legion#2461): a process of it reads as version
+// 0 in the fleet, which is the first rollout of those numbers. A release that is already out
+// never changes, so this pin and the one in ci.yaml's dispatch-two-builds job stay right.
+const firstRolloutRelease = "legion-envoy-v30.20.2"
 
 // previousBuildParts is every part of a previous build's directory a row reads, as
 // build-dispatch-build.sh lays it out.
@@ -62,17 +76,30 @@ type previousBuild struct {
 	commit string
 }
 
-// openPreviousBuild reads DISPATCH_PREVIOUS_BUILD. It skips the test when the variable is unset,
-// and fails it when the directory the variable names lacks any part a row reads.
+// openPreviousBuild reads DISPATCH_PREVIOUS_BUILD, and openFirstRolloutBuild
+// DISPATCH_FIRST_ROLLOUT_BUILD (openBuild).
 func openPreviousBuild(t *testing.T) previousBuild {
 	t.Helper()
-	dir, set := os.LookupEnv(previousBuildVariable)
+	return openBuild(t, previousBuildVariable, "--previous-release")
+}
+
+func openFirstRolloutBuild(t *testing.T) previousBuild {
+	t.Helper()
+	return openBuild(t, firstRolloutBuildVariable, "--commit "+firstRolloutRelease)
+}
+
+// openBuild reads the build the variable names. It skips the test when the variable is unset,
+// naming the build-dispatch-build.sh arguments that build it, and fails it when the directory the
+// variable names lacks any part a row reads.
+func openBuild(t *testing.T, variable, buildArguments string) previousBuild {
+	t.Helper()
+	dir, set := os.LookupEnv(variable)
 	if !set {
-		t.Skipf("%s is unset. Build the previous build with packages/envoy/scripts/build-dispatch-build.sh --previous-release --out <dir>, then set %s=<dir>.",
-			previousBuildVariable, previousBuildVariable)
+		t.Skipf("%s is unset. Build it with packages/envoy/scripts/build-dispatch-build.sh %s --out <dir>, then set %s=<dir>.",
+			variable, buildArguments, variable)
 	}
 	if dir == "" {
-		t.Fatalf("%s is set but empty. Set it to the directory build-dispatch-build.sh wrote.", previousBuildVariable)
+		t.Fatalf("%s is set but empty. Set it to the directory build-dispatch-build.sh wrote.", variable)
 	}
 	var missing []string
 	for _, part := range previousBuildParts {
@@ -89,8 +116,8 @@ func openPreviousBuild(t *testing.T) previousBuild {
 		}
 	}
 	if len(missing) > 0 {
-		t.Fatalf("%s=%s is not a complete previous build. It has no %s. Build it again with packages/envoy/scripts/build-dispatch-build.sh.",
-			previousBuildVariable, dir, strings.Join(missing, ", "))
+		t.Fatalf("%s=%s is not a complete build. It has no %s. Build it again with packages/envoy/scripts/build-dispatch-build.sh %s.",
+			variable, dir, strings.Join(missing, ", "), buildArguments)
 	}
 	commit, err := os.ReadFile(filepath.Join(dir, "COMMIT"))
 	if err != nil {
@@ -115,9 +142,19 @@ type twoBuilds struct {
 }
 
 // newTwoBuilds opens the previous build, the database and the NATS server, and starts nothing.
+// newFirstRolloutBuilds is the same with the first-rollout build as the earlier one.
 func newTwoBuilds(t *testing.T) *twoBuilds {
 	t.Helper()
-	build := openPreviousBuild(t)
+	return newTwoBuildsOf(t, openPreviousBuild(t))
+}
+
+func newFirstRolloutBuilds(t *testing.T) *twoBuilds {
+	t.Helper()
+	return newTwoBuildsOf(t, openFirstRolloutBuild(t))
+}
+
+func newTwoBuildsOf(t *testing.T, build previousBuild) *twoBuilds {
+	t.Helper()
 	return &twoBuilds{dispatchPair: newPair(t), build: build, binary: cmdtest.Build(t, "envoy-dispatch")}
 }
 

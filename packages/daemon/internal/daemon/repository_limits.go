@@ -267,14 +267,17 @@ func limitAttributes(read limitedRead) []any {
 // backfillRead is named's read of repo for the boot's backfill of key's record (fillRepositories,
 // nameRepositories). GitHub's rate limit, or a read GitHub does not answer, neither ends the boot
 // nor leaves the record unfilled, since every later reader of the record takes its repository and
-// GitHub's spelling of it as given. A read of a repository read or held before is answered from that
-// (defaultBranches.Named). One GitHub's limit refuses with nothing held is waited out as GitHub asks
-// (defaultBranchLimit); one GitHub does not answer (backfillUnanswered) is waited 1 s, doubling to a
-// minute. Each wait is one line naming the issue, the repository and the time it waits until, and
-// the read is made again, until GitHub answers or ctx ends. Any other failure — GitHub's answer
-// about the repository, such as a 404, or a mint refused — is returned and refuses the boot, as
-// before. No record's branch stands in for the read, since what the backfill reads GitHub for is
-// GitHub's spelling of the repository the record will carry.
+// GitHub's spelling of it as given. A repository read within named's ttl, or held until a limit's
+// reset, is answered from that read or hold and GitHub is not asked (defaultBranches.Named). Past
+// that, only a read GitHub's limit refuses is answered from the last read or hold, however old; a
+// read GitHub does not answer, such as a 5xx, a transport failure or a timeout, is not, and takes
+// the backoff below. One GitHub's limit refuses with nothing held is waited out as GitHub asks
+// (defaultBranchLimit); one GitHub does not answer (backfillUnanswered) is waited 1 s, doubling to
+// a minute. Each wait is one line naming the issue, the repository and the time it waits until,
+// and the read is made again, until GitHub answers or ctx ends. Any other failure — GitHub's
+// answer about the repository, such as a 404, or a mint refused — is returned and refuses the
+// boot, as before. No record's branch stands in for the read, since what the backfill reads GitHub
+// for is GitHub's spelling of the repository the record will carry.
 func backfillRead(ctx context.Context, named *defaultBranches, repo ghrepo.Repository, key string, log *slog.Logger) (ghbranch.Repository, error) {
 	backoff := time.Second
 	for {
