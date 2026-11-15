@@ -412,9 +412,9 @@ function eventHead(event: DispatchEvent): string | undefined {
       const verb = event.type === "artifact.approved" ? "approved" : "changes requested";
       // A Dispatch older than review kinds writes none, and a newer one may write a kind this
       // build does not know: neither names who reviewed.
-      const by =
+      const reviewer =
         kind === "plan_review" ? " by plan review" : kind === "person" ? " by a person" : "";
-      return textHead(`${name} v${version} ${verb}${by}${reason ? `: ${reason}` : ""}`);
+      return textHead(`${name} v${version} ${verb}${reviewer}${reason ? `: ${reason}` : ""}`);
     }
     case "artifact.human_edited":
       return textHead(humanEditHead(event.payload));
