@@ -89,8 +89,9 @@ func (p *guardPod) writeFile(path, content string) {
 }
 
 // guardProcess is one process of a guardPod: its place in the tree, its executable and arguments,
-// its PID namespace, its working directory when it matters, and the anonymous memory its smaps
-// reads.
+// its PID namespace, its working directory when it matters, the anonymous memory its smaps
+// reads, and its resident size, which its stat's rss field holds in pages, the size the guest
+// watch reads of it.
 type guardProcess struct {
 	pid, ppid int
 	exe       string
@@ -98,6 +99,7 @@ type guardProcess struct {
 	ns        string
 	cwd       string
 	anon      uint64
+	resident  uint64
 }
 
 // add writes each process. The test process holds a pid of its own, which stands for the
@@ -131,8 +133,8 @@ func (p *guardPod) write(gp guardProcess) {
 		p.t.Fatal(err)
 	}
 	// The start time is the pid's, so a role-init's children are oldest first by pid.
-	p.writeWhole(filepath.Join(dir, "stat"), fmt.Sprintf("%d (%s) S %d %d %d 0 -1 4194304 100 0 0 0 5 3 0 0 20 0 1 0 %d 123456789 2048 "+
-		"18446744073709551615 1 1 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0\n", gp.pid, name, gp.ppid, gp.pid, gp.pid, gp.pid*10))
+	p.writeWhole(filepath.Join(dir, "stat"), fmt.Sprintf("%d (%s) S %d %d %d 0 -1 4194304 100 0 0 0 5 3 0 0 20 0 1 0 %d 123456789 %d "+
+		"18446744073709551615 1 1 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0\n", gp.pid, name, gp.ppid, gp.pid, gp.pid, gp.pid*10, gp.resident/uint64(os.Getpagesize())))
 	p.writeWhole(filepath.Join(dir, "cmdline"), strings.Join(gp.args, "\x00")+"\x00")
 	p.writeWhole(filepath.Join(dir, "smaps"), fmt.Sprintf(
 		"01a5c000-41a5c000 rw-p 00000000 00:00 0                                  [heap]\nSize:           %d kB\nRss:            %d kB\nAnonymous:      %d kB\n",
@@ -159,13 +161,11 @@ func (p *guardPod) writeWhole(path, content string) {
 	}
 }
 
-// setScore writes the files the guest watch reads of pid besides the scan's: its oom_score_adj,
-// its oom_score, and its resident size, statm's second field, in pages.
-func (p *guardPod) setScore(pid, adj, score int, resident uint64) {
+// setScore writes the files the guest watch reads of pid besides the scan's: its oom_score_adj and
+// its oom_score.
+func (p *guardPod) setScore(pid, adj, score int) {
 	p.t.Helper()
 	dir := filepath.Join(p.proc, strconv.Itoa(pid))
-	pages := resident / uint64(os.Getpagesize())
-	p.writeWhole(filepath.Join(dir, "statm"), fmt.Sprintf("%d %d 512 64 0 %d 0\n", 2*pages+1024, pages, pages))
 	p.writeWhole(filepath.Join(dir, "oom_score"), fmt.Sprintf("%d\n", score))
 	p.writeWhole(filepath.Join(dir, "oom_score_adj"), fmt.Sprintf("%d\n", adj))
 }
@@ -1325,7 +1325,7 @@ func TestAMicroVMLauncherRaisesTheAgentsWorkAndKeepsItsOwnProcessesAtTheStarting
 	)
 	pod.setSelfScore(start)
 	for _, pid := range []int{launcher, roleInit, shim, agent, broker, mux, gopls, eval, command, fakeMux} {
-		pod.setScore(pid, start, 0, 0)
+		pod.setScore(pid, start, 0)
 	}
 	noGuard(t, "a microVM pod's launcher built a memory guard")
 	rig := useGuestPod(t, pod, nil)
@@ -1377,12 +1377,12 @@ func TestAMicroVMLauncherRunsNoGuardAndTellsTheKilledProcesssRoleAlone(t *testin
 	const testers, reviewers = 750, 751
 	pod := newGuardPod(t)
 	pod.add(
-		guardProcess{pid: testers, ppid: 1, exe: "/usr/bin/python3.13", args: []string{"python3", "grow.py"}},
-		guardProcess{pid: reviewers, ppid: 1, exe: "/usr/bin/python3.13", args: []string{"python3", "lint.py"}},
+		guardProcess{pid: testers, ppid: 1, exe: "/usr/bin/python3.13", args: []string{"python3", "grow.py"}, resident: 900 * guardMiB},
+		guardProcess{pid: reviewers, ppid: 1, exe: "/usr/bin/python3.13", args: []string{"python3", "lint.py"}, resident: 300 * guardMiB},
 	)
 	pod.setSelfScore(0)
-	pod.setScore(testers, 0, 1400, 900*guardMiB)
-	pod.setScore(reviewers, 0, 1100, 300*guardMiB)
+	pod.setScore(testers, 0, 1400)
+	pod.setScore(reviewers, 0, 1100)
 	pod.setKernelKills(0, guardGiB, 32*guardMiB)
 	noGuard(t, "a microVM pod's launcher built a memory guard")
 	rig := useGuestPod(t, pod, map[int]string{testers: "tester", reviewers: "reviewer"})

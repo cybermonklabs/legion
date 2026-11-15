@@ -1072,9 +1072,11 @@ func (e *Engine) memoryGuardKill(ctx context.Context, tx pgx.Tx, fact intake.Mem
 			"issue", fact.Issue, "role", fact.Token, "pod", fact.PodUID, "guard", report.Guard, "sequence", report.Sequence, "pid", report.PID, "cause", report.Cause)
 		return intake.Result{}, nil
 	}
-	note, told := memoryGuardNote(report), "workflow: the role whose process the memory guard ended is told why"
+	var note, told string
 	if report.Cause == shimwire.MemoryKillCauseKernel {
 		note, told = kernelKillNote(report), "workflow: the role whose process the pod's kernel stopped is told why"
+	} else {
+		note, told = memoryGuardNote(report), "workflow: the role whose process the memory guard ended is told why"
 	}
 	if err := e.enqueue(ctx, tx, issue.Key, record.RoleMessage{Role: string(fact.Token), Body: note}); err != nil {
 		return intake.Result{}, err

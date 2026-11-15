@@ -139,20 +139,17 @@ func (c *cgroupFiles) readStat() cgroupStat {
 
 // oomGroup is v2's memory.oom.group as the start line writes it: 1 where the kernel kills the
 // cgroup's processes together rather than one, which no kill line could then name one by one;
-// `-` for v1, which has no such file, or where it cannot be read.
-func (c *cgroupFiles) oomGroup() string {
+// none for v1, which has no such file, or where it cannot be read.
+func (c *cgroupFiles) oomGroup() figure {
 	if c.version != cgroupV2 {
-		return "-"
+		return figure{}
 	}
 	data, err := os.ReadFile(filepath.Join(c.dir, "memory.oom.group"))
 	if err != nil {
-		return "-"
+		return figure{}
 	}
 	n, ok := parseCount(data)
-	if !ok {
-		return "-"
-	}
-	return strconv.FormatUint(n, 10)
+	return figure{n: n, ok: ok}
 }
 
 func (c *cgroupFiles) close() {

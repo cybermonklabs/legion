@@ -3391,7 +3391,7 @@ A write that fails, as a write to a process that is not dumpable does, is logged
 **The kills.**
 The kernel counts each process it stops in the cgroup's `oom_kill`: the `oom_kill` line of `memory.events` on cgroup v2, and of `memory.oom_control` on cgroup v1.
 Nothing else tells the launcher which process it stopped, since a stopped command's exit goes to its parent, the shell that ran it, and not to the launcher.
-So at each scan the watch keeps every process it read, by its pid and its start time, with its resident size (`statm`) and its `oom_score`, and it reads the counter after the scan.
+So at each scan the watch keeps every process it read, by its pid and its start time, with its resident size (the `rss` field of its `stat`) and its `oom_score`, and it reads the counter after the scan.
 When the counter rises by n, the stopped processes are the ones the watch held before the rise that a scan no longer holds: a process that exited, a zombie, or a pid back with another start time, which is another process.
 The watch ranks them by their last `oom_score` before the rise, then by their resident size, highest first, and names the first n.
 A process the kernel stopped can still run while it frees its memory.

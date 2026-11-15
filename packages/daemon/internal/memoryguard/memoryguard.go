@@ -299,8 +299,6 @@ type Guard struct {
 
 // New is a guard of cfg, at the default settings and on, with an id of its own.
 func New(cfg Config) *Guard {
-	var id [8]byte
-	_, _ = rand.Read(id[:])
 	proc := cmp.Or(cfg.Proc, "/proc")
 	cgroup := cmp.Or(cfg.Cgroup, "/sys/fs/cgroup/memory")
 	g := &Guard{
@@ -310,7 +308,7 @@ func New(cfg Config) *Guard {
 		logf:         cfg.Logf,
 		clock:        cfg.Clock,
 		signal:       cfg.Signal,
-		id:           hex.EncodeToString(id[:]),
+		id:           newWatchID(),
 		self:         os.Getpid(),
 		settings:     Defaults(),
 		on:           true,
@@ -333,6 +331,14 @@ func New(cfg Config) *Guard {
 		g.signal = defaultSignal()
 	}
 	return g
+}
+
+// newWatchID is a watch's own id, 8 random bytes in hex: the guard's (New) and the guest watch's
+// (NewGuest) alike.
+func newWatchID() string {
+	var id [8]byte
+	_, _ = rand.Read(id[:])
+	return hex.EncodeToString(id[:])
 }
 
 // ID is the guard's own id, random for each guard, which every kill report carries: with the
@@ -789,9 +795,8 @@ func (g *Guard) hour(now time.Time, reading, limit uint64) {
 	g.takeScan()
 	if !now.Before(g.window.end) {
 		g.closeWindow()
-		start := g.window.end
-		start = start.Add(now.Sub(start).Truncate(time.Hour))
-		g.window = window{start: start, end: start.Add(time.Hour)}
+		start, end := nextWindow(g.window.end, now)
+		g.window = window{start: start, end: end}
 	}
 	w := &g.window
 	first := !w.readings
@@ -808,6 +813,14 @@ func (g *Guard) hour(now time.Time, reading, limit uint64) {
 	if reading == w.readingHigh && (!w.scanned || reading >= w.scannedHigh+limit/100) && g.startScan(w.start) {
 		w.scanned, w.scannedHigh = true, reading
 	}
+}
+
+// nextWindow is the start and the end of the hour now falls in, counted in whole hours from end,
+// the end of an hourly window that has passed: the guard's (Guard.hour) and the guest watch's
+// (Guest.hour) alike.
+func nextWindow(end, now time.Time) (time.Time, time.Time) {
+	start := end.Add(now.Sub(end).Truncate(time.Hour))
+	return start, start.Add(time.Hour)
 }
 
 // closeWindow logs the hourly line of the window that has passed, if it holds any reading.

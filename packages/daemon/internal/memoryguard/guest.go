@@ -4,12 +4,9 @@ import (
 	"bytes"
 	"cmp"
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"maps"
-	"math"
 	"os"
 	"path/filepath"
 	"slices"
@@ -39,15 +36,16 @@ import (
 // The kills. The kernel counts each process it kills in the cgroup's oom_kill (memory.events in
 // v2, memory.oom_control in v1), and a killed grandchild's exit goes to its parent, not to the
 // launcher. So each scan keeps every process the scan read, by pid and start time, with its
-// resident size (statm) and its oom_score, and reads the counter after the scan. When the counter
-// rises by n, the killed are the processes the watch held before the rise that a scan no longer
-// holds (exited, a zombie, or a pid another process took), ranked by their last oom_score before
-// the rise, then their resident size, highest first; the first n are named (attribute). A process
-// the kernel killed may still run while it frees its memory, so a rise waits, up to guestKillWait,
-// while a process ranked above the n-th gone one still runs; at the wait's end the n highest
-// gone ones are named, and a rise beyond them has one unnamed line. Each killed process has the
-// guard's own endedLine and, in a role, a Kill to the sink with Cause shimwire.MemoryKillCauseKernel,
-// the watch's id and its own sequence from 1; a process of no role has the line alone.
+// resident size (stat's rss) and its oom_score, and reads the counter after the scan. When the
+// counter rises by n, the killed are the processes the watch held before the rise that a scan no
+// longer holds (exited, a zombie, or a pid another process took), ranked by their last oom_score
+// before the rise, then their resident size, highest first; the first n are named (attribute). A
+// process the kernel killed may still run while it frees its memory, so a rise waits, up to
+// guestKillWait, while a process ranked above the n-th gone one still runs; at the wait's end the n
+// highest gone ones are named, and a rise beyond them has one unnamed line. Each killed process has
+// the guard's own endedLine and, in a role, a Kill to the sink with Cause
+// shimwire.MemoryKillCauseKernel, the watch's id and its own sequence from 1; a process of no role
+// has the line alone.
 //
 // The hour. Each hour from its start, one line gives the cgroup's usage, its working set (the usage
 // less the inactive file pages, cAdvisor's figure), each with its high and when, memory.stat's
@@ -106,8 +104,7 @@ type Guest struct {
 	stat   cgroupStat
 	limit  figure
 	statAt time.Time
-	// small is the buffer of the watch's reads of one short file: a statm, an oom_score, an
-	// oom_score_adj.
+	// small is the buffer of the watch's reads of one short file: an oom_score, an oom_score_adj.
 	small []byte
 }
 
@@ -190,8 +187,6 @@ type guestWindow struct {
 
 // NewGuest is a guest watch of cfg, with an id of its own.
 func NewGuest(cfg GuestConfig) *Guest {
-	var id [8]byte
-	_, _ = rand.Read(id[:])
 	g := &Guest{
 		proc:          cmp.Or(cfg.Proc, "/proc"),
 		cgroupDir:     cfg.Cgroup,
@@ -199,7 +194,7 @@ func NewGuest(cfg GuestConfig) *Guest {
 		sink:          cfg.Sink,
 		logf:          cfg.Logf,
 		clock:         cfg.Clock,
-		id:            hex.EncodeToString(id[:]),
+		id:            newWatchID(),
 		self:          os.Getpid(),
 		pageSize:      uint64(os.Getpagesize()),
 		writeScore:    writeScoreFile,
@@ -293,9 +288,9 @@ func (g *Guest) tick(now time.Time) {
 	g.snapshot(t, classes)
 	if g.pending > 0 {
 		g.attribute(now)
-	}
-	if g.pending == 0 {
-		maps.DeleteFunc(g.known, func(_ procKey, w *watched) bool { return w.gone })
+		if g.pending == 0 {
+			maps.DeleteFunc(g.known, func(_ procKey, w *watched) bool { return w.gone })
+		}
 	}
 }
 
@@ -389,8 +384,9 @@ func (g *Guest) count(now time.Time) {
 
 // snapshot takes t into known: each process it holds that the watch had not read, with its size
 // and score, and each it holds that the watch had, read again unless a rise waits, whose ranking
-// is by the reads before it; each the watch had that t does not hold is gone. A pid whose stat the
-// scan could not read is not gone, since nothing says it is.
+// is by the reads before it. Each the watch had that t does not hold is let go where no rise
+// waits, and marked gone while one does, for attribute to name. A pid whose stat the scan could
+// not read is not gone, since nothing says it is.
 func (g *Guest) snapshot(t *Table, classes map[int]Class) {
 	g.scans++
 	for pid, p := range t.byPID {
@@ -403,6 +399,7 @@ func (g *Guest) snapshot(t *Table, classes map[int]Class) {
 		}
 		if fresh || g.pending == 0 {
 			w.role = classes[pid].Role
+			w.resident = p.Resident * g.pageSize
 			g.read(w)
 		}
 		w.seen = g.scans
@@ -417,20 +414,17 @@ func (g *Guest) snapshot(t *Table, classes map[int]Class) {
 				continue
 			}
 		}
+		if g.pending == 0 {
+			delete(g.known, w.key)
+			continue
+		}
 		w.gone = true
 	}
 }
 
-// read reads w's resident size from its statm and its oom_score, keeping the last of each that
-// does not read.
+// read reads w's oom_score, keeping the last that does not read.
 func (g *Guest) read(w *watched) {
-	dir := filepath.Join(g.proc, strconv.Itoa(w.key.pid))
-	if data, err := readHead(filepath.Join(dir, "statm"), g.small); err == nil {
-		if pages, ok := statmResident(data); ok {
-			w.resident = pages * g.pageSize
-		}
-	}
-	if score, err := readScore(filepath.Join(dir, "oom_score"), g.small); err == nil {
+	if score, err := readScore(filepath.Join(g.proc, strconv.Itoa(w.key.pid), "oom_score"), g.small); err == nil {
 		w.score = score
 	}
 }
@@ -523,9 +517,8 @@ func (g *Guest) reportLimit() uint64 {
 func (g *Guest) hour(now time.Time) {
 	if !now.Before(g.window.end) {
 		g.closeWindow()
-		start := g.window.end
-		start = start.Add(now.Sub(start).Truncate(time.Hour))
-		g.window = guestWindow{start: start, end: start.Add(time.Hour)}
+		start, end := nextWindow(g.window.end, now)
+		g.window = guestWindow{start: start, end: end}
 	}
 	if g.statAt.IsZero() || now.Sub(g.statAt) >= guestStatEvery {
 		g.statAt = now
@@ -576,29 +569,11 @@ func readScore(path string, buf []byte) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	text := bytes.TrimSpace(data)
-	negative := len(text) > 0 && text[0] == '-'
-	if negative {
-		text = text[1:]
-	}
-	n, rest, ok := parseUint(text)
-	if !ok || len(rest) != 0 || n > math.MaxInt64 {
+	n, err := strconv.ParseInt(string(bytes.TrimSpace(data)), 10, 64)
+	if err != nil {
 		return 0, fmt.Errorf("%s reads %q", path, data)
 	}
-	if negative {
-		return -int64(n), nil
-	}
-	return int64(n), nil
-}
-
-// statmResident is the resident pages of a statm, its second field.
-func statmResident(statm []byte) (uint64, bool) {
-	_, rest, ok := parseUint(statm)
-	if !ok || len(rest) == 0 || rest[0] != ' ' {
-		return 0, false
-	}
-	pages, _, ok := parseUint(rest[1:])
-	return pages, ok
+	return n, nil
 }
 
 // writeScoreFile writes value to the oom_score_adj at path, as a shell's redirection does. A

@@ -616,8 +616,8 @@ func readAdvertiseHost(value *yaml.Node, key string) (*string, error) {
 // TypeScript daemon's role_profiles and gateway) is known so that its refusal names what replaced
 // it, which is what `legion start --check-config` shows the operator to edit. The sandbox's rules
 // that read the block's scheduling and pod too are checked once all three are read
-// (checkSandboxPlacement). What depends on keys outside the block is checked once the whole file
-// is read (checkKubernetesKeys), and the reservations the file leaves out are filled when the
+// (checkSandboxSchedulingAndPod). What depends on keys outside the block is checked once the whole
+// file is read (checkKubernetesKeys), and the reservations the file leaves out are filled when the
 // block is settled (resolveKubernetes).
 func readKubernetes(value *yaml.Node) (*Kubernetes, error) {
 	if value.Kind != yaml.MappingNode {
@@ -705,7 +705,7 @@ func readKubernetes(value *yaml.Node) (*Kubernetes, error) {
 	if block.Sandbox, err = readSandbox(fields["sandbox"], block.StorageClass); err != nil {
 		return nil, err
 	}
-	if err := checkSandboxPlacement(block); err != nil {
+	if err := checkSandboxSchedulingAndPod(block); err != nil {
 		return nil, err
 	}
 	return block, nil
@@ -1005,13 +1005,13 @@ func readMetadata(value *yaml.Node) (*MetadataConfig, error) {
 	return block, nil
 }
 
-// checkSandboxPlacement refuses, while an issue pod runs in a microVM, what the operator's
+// checkSandboxSchedulingAndPod refuses, while an issue pod runs in a microVM, what the operator's
 // scheduling and pod would set that the microVM pod's own placement and endpoint own: a node
 // selector or a toleration on sandbox.gke.io/runtime, since the pod's RuntimeClass adds both at
 // admission; and, while the metadata endpoint is on, a pod.env variable the pod's launcher sets
 // to that endpoint. Each refusal names the operator's key. With no issue pod in a microVM it
 // refuses nothing, so a microvm block kept for a revert changes nothing.
-func checkSandboxPlacement(block *Kubernetes) error {
+func checkSandboxSchedulingAndPod(block *Kubernetes) error {
 	sandbox := block.Sandbox
 	if !sandbox.AnyMicroVM() {
 		return nil

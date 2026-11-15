@@ -114,22 +114,18 @@ func (c *fakeCgroup) setStat(s fakeStat) {
 }
 
 // guestProcess is a fakeProcess with the files the guest watch reads of it besides the scan's:
-// its oom_score_adj, its oom_score and its resident size, statm's second field, in pages.
+// its oom_score_adj and its oom_score.
 type guestProcess struct {
 	fakeProcess
-	adj      int
-	score    int
-	resident uint64
+	adj   int
+	score int
 }
 
 func (p *fakePod) addGuest(gps ...guestProcess) {
 	p.t.Helper()
 	for _, gp := range gps {
 		p.add(gp.fakeProcess)
-		dir := filepath.Join(p.proc, strconv.Itoa(gp.pid))
-		pages := gp.resident / uint64(os.Getpagesize())
-		p.writeWhole(filepath.Join(dir, "statm"), fmt.Sprintf("%d %d 512 64 0 %d 0\n", 2*pages+1024, pages, pages))
-		p.writeWhole(filepath.Join(dir, "oom_score"), fmt.Sprintf("%d\n", gp.score))
+		p.writeWhole(filepath.Join(p.proc, strconv.Itoa(gp.pid), "oom_score"), fmt.Sprintf("%d\n", gp.score))
 		p.setScore(gp.pid, gp.adj)
 	}
 }
@@ -190,7 +186,7 @@ func guestTree(pod *fakePod, start int) map[int]Class {
 	const omp = "/opt/omp/bin/omp"
 	const legion = "/usr/local/bin/legion"
 	at := func(pid, ppid int, exe string, args []string, score int, resident uint64) guestProcess {
-		return guestProcess{fakeProcess: fakeProcess{pid: pid, ppid: ppid, exe: exe, args: args}, adj: start, score: score, resident: resident}
+		return guestProcess{fakeProcess: fakeProcess{pid: pid, ppid: ppid, exe: exe, args: args, resident: resident}, adj: start, score: score}
 	}
 	pod.addGuest(
 		at(guestInit, 1, legion, []string{"legion", "launcher", "role-init", "--role", "tester"}, 2, 8*mib),
@@ -214,7 +210,7 @@ func guestTree(pod *fakePod, start int) map[int]Class {
 
 // command is a process of the tester's that the agent's command runs, under the shell command.
 func command(pid int, start uint64, name string, score int, resident uint64) guestProcess {
-	return guestProcess{fakeProcess: fakeProcess{pid: pid, ppid: guestBash, start: start, args: []string{name}}, score: score, resident: resident}
+	return guestProcess{fakeProcess: fakeProcess{pid: pid, ppid: guestBash, start: start, args: []string{name}, resident: resident}, score: score}
 }
 
 // guestHarness runs one guest watch over a /proc and a cgroup directory with a fake clock, one
@@ -535,7 +531,7 @@ func TestGuestTellsNoSinkOfAKillOfAProcessOfNoRole(t *testing.T) {
 	pod.setSelfScore(0)
 	classes := guestTree(pod, 0)
 	pod.addGuest(
-		guestProcess{fakeProcess: fakeProcess{pid: outside, ppid: guestOutsider, args: []string{"python3", "big.py"}}, score: 1500, resident: 700 * mib},
+		guestProcess{fakeProcess: fakeProcess{pid: outside, ppid: guestOutsider, args: []string{"python3", "big.py"}, resident: 700 * mib}, score: 1500},
 		command(load, 8410, "python3", 1400, 1500*mib),
 	)
 	classes[load] = Class{Role: "tester"}

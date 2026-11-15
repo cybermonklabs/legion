@@ -20,6 +20,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
 
@@ -183,7 +184,7 @@ func newMetadataRig(t *testing.T) *metadataRig {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	g.server = newMetadataServer(ctx, MetadataConfig{
-		WorkloadPool: testWorkloadPool, IdentityProvider: testIdentityProvider, TokenFile: g.tokenFile, TokenURL: sts.URL,
+		WorkloadPool: testWorkloadPool, IdentityProvider: testIdentityProvider, tokenFile: g.tokenFile, tokenURL: sts.URL,
 	}, func(format string, args ...any) { _, _ = fmt.Fprintf(g.log, format+"\n", args...) })
 	g.server.now = g.now
 	endpoint := httptest.NewServer(g.server)
@@ -664,10 +665,10 @@ func TestMetadataEnvNamesTheAddressOnlyWhereItsLauncherServes(t *testing.T) {
 // A pod's endpoint listens at MetadataAddress, the one its launcher's configuration names when it
 // names none; only a test names an address of its own, so no test holds the pod's port.
 func TestMetadataListensAtTheConstantAddressUnlessATestNamesItsOwn(t *testing.T) {
-	if got := (MetadataConfig{WorkloadPool: testWorkloadPool, IdentityProvider: testIdentityProvider}).address(); got != MetadataAddress {
+	if got := (MetadataConfig{WorkloadPool: testWorkloadPool, IdentityProvider: testIdentityProvider}).listenAddress(); got != MetadataAddress {
 		t.Errorf("a pod's endpoint listens at %q, want %q", got, MetadataAddress)
 	}
-	if got := (MetadataConfig{Address: "127.0.0.1:0"}).address(); got != "127.0.0.1:0" {
+	if got := (MetadataConfig{address: "127.0.0.1:0"}).listenAddress(); got != "127.0.0.1:0" {
 		t.Errorf("a test's endpoint listens at %q, want the address it named", got)
 	}
 }
@@ -678,13 +679,12 @@ func TestMetadataListensAtTheConstantAddressUnlessATestNamesItsOwn(t *testing.T)
 // back as the test found it.
 func holdMetadataVariables(t *testing.T, carried string) {
 	t.Helper()
+	if carried == "" {
+		fixtureenv.Unset(t, MetadataHostVariable, MetadataIPVariable)
+		return
+	}
 	for _, name := range []string{MetadataHostVariable, MetadataIPVariable} {
 		t.Setenv(name, carried)
-		if carried == "" {
-			if err := os.Unsetenv(name); err != nil {
-				t.Fatal(err)
-			}
-		}
 	}
 }
 
@@ -696,7 +696,7 @@ func newMetadataFleet(t *testing.T, carried, address string) *fleet {
 	holdMetadataVariables(t, carried)
 	return newFleetOf(t, Config{
 		StopGrace: 2 * time.Second, MicroVM: true,
-		Metadata: &MetadataConfig{WorkloadPool: testWorkloadPool, IdentityProvider: testIdentityProvider, Address: address},
+		Metadata: &MetadataConfig{WorkloadPool: testWorkloadPool, IdentityProvider: testIdentityProvider, address: address},
 	}, "tester")
 }
 

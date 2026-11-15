@@ -1,6 +1,7 @@
 package launcher
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"net"
@@ -25,9 +26,9 @@ import (
 // answers), and gets the access token it hands out the way GKE's server does: it exchanges the
 // pod's projected ServiceAccount token at Google's security token service.
 //
-// MetadataAddress is where a pod's endpoint listens (MetadataConfig.Address): on the loopback every
-// role shares, since a role has no network namespace of its own (role-init), and at a port above
-// 1024, since the pod runs as no root. MetadataHostVariable and MetadataIPVariable are where
+// MetadataAddress is where a pod's endpoint listens (MetadataConfig.listenAddress): on the loopback
+// every role shares, since a role has no network namespace of its own (role-init), and at a port
+// above 1024, since the pod runs as no root. MetadataHostVariable and MetadataIPVariable are where
 // Google's clients look for it: Go's compute/metadata and Python's google-auth read the first,
 // Node's gcp-metadata the second before the first. The launcher sets both, to the address it
 // listens at, in its own environment and on every generation it starts (metadataEnv).
@@ -47,22 +48,18 @@ const (
 // ServiceAccount is bound to no Google service account, and whose project is the project it
 // answers; IdentityProvider is the cluster's identity provider,
 // `https://container.googleapis.com/v1/projects/<project>/locations/<location>/clusters/<cluster>`,
-// which with the pool makes the token exchange's audience. Address, TokenFile and TokenURL are a
-// test's: "" is MetadataAddress, which a pod always listens on, the token the daemon mounts
-// (WorkloadIdentityDirName under the roles directory) and Google's security token service. A
-// test listens on a port of its own (`127.0.0.1:0`), so no test holds the pod's.
+// which with the pool makes the token exchange's audience. address, tokenFile and tokenURL are a
+// test's, which only this package's tests set: "" is MetadataAddress, which a pod always listens
+// on, the token the daemon mounts (WorkloadIdentityDirName under the roles directory) and Google's
+// security token service. A test listens on a port of its own (`127.0.0.1:0`), so no test holds
+// the pod's.
 type MetadataConfig struct {
 	WorkloadPool, IdentityProvider string
-	Address, TokenFile, TokenURL   string
+	address, tokenFile, tokenURL   string
 }
 
-// address is where the endpoint listens.
-func (c MetadataConfig) address() string {
-	if c.Address == "" {
-		return MetadataAddress
-	}
-	return c.Address
-}
+// listenAddress is where the endpoint listens.
+func (c MetadataConfig) listenAddress() string { return cmp.Or(c.address, MetadataAddress) }
 
 const (
 	// metadataPrefix is the version of the metadata API Google's clients read. Every path under it
@@ -109,7 +106,7 @@ var accountScopes = []string{cloudPlatformScope, "https://www.googleapis.com/aut
 // which signs in as the pod) read the endpoint too.
 func serveMetadata(ctx context.Context, cfg Config, logf func(format string, args ...any)) (<-chan struct{}, string) {
 	metadata := *cfg.Metadata
-	listener, err := net.Listen("tcp", metadata.address())
+	listener, err := net.Listen("tcp", metadata.listenAddress())
 	if err != nil {
 		logf("launcher: metadata: off reason=%v", err)
 		return nil, ""
@@ -119,9 +116,7 @@ func serveMetadata(ctx context.Context, cfg Config, logf func(format string, arg
 		// A listener's address: Setenv refuses only a name or value holding '=' or NUL.
 		_ = os.Setenv(name, address)
 	}
-	if metadata.TokenFile == "" {
-		metadata.TokenFile = filepath.Join(cfg.RolesDir, WorkloadIdentityDirName, WorkloadIdentityTokenFile)
-	}
+	metadata.tokenFile = cmp.Or(metadata.tokenFile, filepath.Join(cfg.RolesDir, WorkloadIdentityDirName, WorkloadIdentityTokenFile))
 	server := &http.Server{Handler: newMetadataServer(ctx, metadata, logf)}
 	served := make(chan struct{})
 	go func() {
@@ -159,7 +154,11 @@ type metadataServer struct {
 	ctx                 context.Context
 	pool, audience      string
 	tokenFile, tokenURL string
-	logf                func(format string, args ...any)
+	// accounts is the listing of instance/service-accounts/ and accountJSON the account's answer
+	// to `?recursive=true`, each made once (newMetadataServer).
+	accounts    []string
+	accountJSON []byte
+	logf        func(format string, args ...any)
 	// now is the clock a token's remaining seconds and the failure lines' interval are read
 	// against; a test replaces it.
 	now func() time.Time
@@ -172,15 +171,20 @@ type metadataServer struct {
 }
 
 func newMetadataServer(ctx context.Context, cfg MetadataConfig, logf func(format string, args ...any)) *metadataServer {
-	tokenURL := cfg.TokenURL
-	if tokenURL == "" {
-		tokenURL = stsTokenURL
-	}
+	accounts := []string{"default/", cfg.WorkloadPool + "/"}
+	slices.Sort(accounts)
+	// Strings alone, which json.Marshal always encodes.
+	accountJSON, _ := json.Marshal(struct {
+		Aliases []string `json:"aliases"`
+		Email   string   `json:"email"`
+		Scopes  []string `json:"scopes"`
+	}{[]string{"default"}, cfg.WorkloadPool, accountScopes})
 	return &metadataServer{
 		ctx:       context.WithValue(ctx, oauth2.HTTPClient, &http.Client{Timeout: exchangeTimeout}),
 		pool:      cfg.WorkloadPool,
 		audience:  "identitynamespace:" + cfg.WorkloadPool + ":" + cfg.IdentityProvider,
-		tokenFile: cfg.TokenFile, tokenURL: tokenURL, logf: logf, now: time.Now,
+		tokenFile: cfg.tokenFile, tokenURL: cmp.Or(cfg.tokenURL, stsTokenURL),
+		accounts: accounts, accountJSON: accountJSON, logf: logf, now: time.Now,
 		sources: map[string]oauth2.TokenSource{}, notServed: map[string]bool{},
 	}
 }
@@ -224,9 +228,7 @@ func (s *metadataServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case "instance/":
 		s.listing(w, r, "service-accounts/")
 	case "instance/service-accounts/":
-		accounts := []string{"default/", s.pool + "/"}
-		slices.Sort(accounts)
-		s.listing(w, r, accounts...)
+		s.listing(w, r, s.accounts...)
 	case "universe/":
 		s.listing(w, r, "universe-domain", "universe_domain")
 	case "universe/universe-domain", "universe/universe_domain":
@@ -256,16 +258,7 @@ func (s *metadataServer) account(w http.ResponseWriter, r *http.Request, rest st
 			answerText(w, "aliases\nemail\nscopes\ntoken\n")
 			return
 		}
-		body, err := json.Marshal(struct {
-			Aliases []string `json:"aliases"`
-			Email   string   `json:"email"`
-			Scopes  []string `json:"scopes"`
-		}{[]string{"default"}, s.pool, accountScopes})
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		answer(w, "application/json", body)
+		answer(w, "application/json", s.accountJSON)
 	case "email":
 		answerText(w, s.pool)
 	case "aliases":

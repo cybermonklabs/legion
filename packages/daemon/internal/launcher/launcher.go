@@ -163,7 +163,7 @@ func Run(ctx context.Context, cfg Config) error {
 		var served string
 		metadata, served = serveMetadata(ctx, cfg, managers[0].log.linef)
 		for _, m := range managers {
-			m.metadata = served
+			m.metadataAddress = served
 		}
 	}
 	// The pod's own test database, before any role starts: a role that starts at once finds the
@@ -418,20 +418,10 @@ func (c Config) validateSessionDatabase() error {
 	if c.SessionDatabase == (ompsessions.Database{}) {
 		return nil
 	}
-	var missing []string
-	for _, named := range []struct{ flag, value string }{
-		{"--session-instance", c.SessionDatabase.Instance},
-		{"--session-database", c.SessionDatabase.Name},
-		{"--session-user", c.SessionDatabase.User},
-	} {
-		if named.value == "" {
-			missing = append(missing, named.flag)
-		}
-	}
-	if len(missing) == 0 {
-		return nil
-	}
-	return fmt.Errorf("launcher: the session database is named in part: no %s", strings.Join(missing, ", no "))
+	return namedInPart("the session database",
+		namedFlag{"--session-instance", c.SessionDatabase.Instance},
+		namedFlag{"--session-database", c.SessionDatabase.Name},
+		namedFlag{"--session-user", c.SessionDatabase.User})
 }
 
 // validateMetadata refuses the metadata endpoint anywhere but in a microVM issue pod's container,
@@ -442,24 +432,37 @@ func (c Config) validateMetadata() error {
 	if c.Metadata == nil {
 		return nil
 	}
-	var missing []string
-	for _, named := range []struct{ flag, value string }{
-		{"--metadata-workload-pool", c.Metadata.WorkloadPool},
-		{"--metadata-identity-provider", c.Metadata.IdentityProvider},
-	} {
-		if named.value == "" {
-			missing = append(missing, named.flag)
-		}
+	if err := namedInPart("the metadata endpoint",
+		namedFlag{"--metadata-workload-pool", c.Metadata.WorkloadPool},
+		namedFlag{"--metadata-identity-provider", c.Metadata.IdentityProvider}); err != nil {
+		return err
 	}
 	switch {
-	case len(missing) != 0:
-		return fmt.Errorf("launcher: the metadata endpoint is named in part: no %s", strings.Join(missing, ", no "))
 	case !c.MicroVM:
 		return errors.New("launcher: the metadata endpoint serves a microVM's pod: it needs --microvm")
 	case c.RolesDir == "":
 		return errors.New("launcher: the metadata endpoint is an issue pod's container: it needs --roles-dir")
 	}
 	return nil
+}
+
+// namedFlag is one flag of a setting that several flags name together, and its value.
+type namedFlag struct{ flag, value string }
+
+// namedInPart refuses what, a setting that flags name together, where any of them is empty,
+// naming each one that is missing. Its caller decides first whether the setting is named at all
+// (validateSessionDatabase, validateMetadata).
+func namedInPart(what string, flags ...namedFlag) error {
+	var missing []string
+	for _, named := range flags {
+		if named.value == "" {
+			missing = append(missing, named.flag)
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	return fmt.Errorf("launcher: %s is named in part: no %s", what, strings.Join(missing, ", no "))
 }
 
 func tcpAddress(addr string) (string, error) {
@@ -553,9 +556,9 @@ type manager struct {
 	// check is the launcher process's one install of the shared public leak check, which every
 	// role manager of the container shares as it shares restore.
 	check *checkInstall
-	// metadata is the address this launcher serves the pod-local metadata endpoint at, which
+	// metadataAddress is the address this launcher serves the pod-local metadata endpoint at, which
 	// every generation it starts is told (metadataEnv); "" when it serves none.
-	metadata string
+	metadataAddress string
 	// memoryGuard is the pod's one memory guard, which every role manager of an issue pod's
 	// container shares: each connection's acknowledgement hands it the daemon's settings
 	// (serve). It is nil in the controller's pod, in a launcher that is not its container's
@@ -721,7 +724,7 @@ func (m *manager) start(ctx context.Context, command shimwire.LauncherStart) shi
 	// The pod-local metadata endpoint: its address, over whatever the daemon's start command
 	// carried, when this launcher serves it, and the environment as it is when it does not
 	// (metadataEnv).
-	env = metadataEnv(env, m.metadata)
+	env = metadataEnv(env, m.metadataAddress)
 	process, err := m.command(command, env)
 	if err != nil {
 		return abandon(err)

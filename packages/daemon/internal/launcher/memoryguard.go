@@ -433,12 +433,13 @@ func (m *manager) sendMemoryKills() {
 			dropped := m.memoryKills
 			m.memoryKills = nil
 			m.mu.Unlock()
-			reason := "this connection's acknowledgement carries no memory guard settings, so the daemon behind it may not know the report"
+			member := "memory guard settings"
 			if m.cfg.MicroVM {
-				reason = "this connection's acknowledgement carries no kernelKills, so the daemon behind it may not know the report"
+				member = "kernelKills"
 			}
 			for _, report := range dropped {
-				m.logf("launcher: memory guard: report dropped sequence=%d pid=%d reason=%s", report.Sequence, report.PID, reason)
+				m.logf("launcher: memory guard: report dropped sequence=%d pid=%d reason=this connection's acknowledgement carries no %s, so the daemon behind it may not know the report",
+					report.Sequence, report.PID, member)
 			}
 			return
 		}
