@@ -1844,6 +1844,8 @@ export async function executeEnvoyTool(
         recipient: result.recipient,
         recipient_state: result.recipientState,
         confirmed: result.confirmed,
+        state: result.state,
+        ...(result.lastSeen === undefined ? {} : { last_seen: result.lastSeen }),
       }
     }
     case EnvoyToolOperation.publish: {
@@ -1855,15 +1857,19 @@ export async function executeEnvoyTool(
         message: args.message,
         ...toMessageMetadata(args),
       })
-      // The answer the model reads, its line first. A publish to a topic the stream captures is
-      // answered with the envelope alone; a kept answer is a success of its own, which the line
-      // says in the words the Oh My Pi plugin uses (`publishConfirmationText`).
+      // The answer the model reads, its line first: the counts of a stored topic's answer, a role
+      // holder, or a kept answer, which is a success of its own, all in the words the Oh My Pi
+      // plugin uses (`publishConfirmationText`).
       return {
         message: publishConfirmationText(result),
         event_id: result.envelope.event_id,
         topic: result.envelope.topic,
         ...(result.holder === undefined ? {} : { holder: result.holder }),
         ...(result.holderState === undefined ? {} : { holder_state: result.holderState }),
+        ...(result.recipients === undefined ? {} : { recipients: result.recipients }),
+        ...(result.recipientsConnected === undefined
+          ? {}
+          : { recipients_connected: result.recipientsConnected }),
         ...(result.kept === undefined ? {} : { kept: result.kept }),
         ...(result.keptReason === undefined ? {} : { kept_reason: result.keptReason }),
       }

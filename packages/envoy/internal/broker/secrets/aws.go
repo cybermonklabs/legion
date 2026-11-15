@@ -39,12 +39,20 @@ const currentStage = "AWSCURRENT"
 // the one GetSecretValue reads: the broker serves a secret only then, and the agent-secrets CLI
 // shows it as having a value only then.
 func HasCurrentVersion(versionsToStages map[string][]string) bool {
-	for _, stages := range versionsToStages {
+	return currentVersion(versionsToStages) != ""
+}
+
+// currentVersion is the id of the version a secret's version stages (ListSecrets'
+// SecretVersionsToStages, DescribeSecret's VersionIdsToStages) label AWSCURRENT, the one
+// GetSecretValue reads, and "" when none carries the label: a Listing's Version, and whether it
+// has a current value at all (HasCurrentVersion).
+func currentVersion(versionsToStages map[string][]string) string {
+	for id, stages := range versionsToStages {
 		if slices.Contains(stages, currentStage) {
-			return true
+			return id
 		}
 	}
-	return false
+	return ""
 }
 
 // SecretsManagerAPI is the three Secrets Manager calls the AWS store reads with: ListSecrets for
@@ -91,12 +99,12 @@ func (a AWS) ValidName(id string) error {
 }
 
 // List lists every secret under prefix with ListSecrets' name filter, a case-sensitive prefix
-// match, reading every page. Whether a secret has a value is read from the same listing's
-// SecretVersionsToStages, with no call per secret; ListSecrets leaves out a secret scheduled for
-// deletion, since it is not asked to include one. A listing's OnKey reads the key's aliases at
-// most once per List, the first time it is asked about a secret that names its key by one, so a
-// secret the policy refuses for its name or tags costs no KMS call. A failed Secrets Manager call
-// fails the whole List.
+// match, reading every page. Whether a secret has a value, and the id of the version that holds
+// it, are read from the same listing's SecretVersionsToStages, with no call per secret;
+// ListSecrets leaves out a secret scheduled for deletion, since it is not asked to include one. A
+// listing's OnKey reads the key's aliases at most once per List, the first time it is asked about
+// a secret that names its key by one, so a secret the policy refuses for its name or tags costs
+// no KMS call. A failed Secrets Manager call fails the whole List.
 func (a AWS) List(ctx context.Context, prefix string) ([]Listing, error) {
 	var listings []Listing
 	keys := a.keys()
@@ -109,9 +117,10 @@ func (a AWS) List(ctx context.Context, prefix string) ([]Listing, error) {
 			return nil, fmt.Errorf("list secrets under %s: %w", prefix, err)
 		}
 		for _, e := range page.SecretList {
+			version := currentVersion(e.SecretVersionsToStages)
 			listings = append(listings, Listing{
 				ID: aws.ToString(e.Name), Source: aws.ToString(e.ARN), Tags: TagMap(e.Tags),
-				OnKey: a.onKey(aws.ToString(e.KmsKeyId), keys), HasCurrentValue: HasCurrentVersion(e.SecretVersionsToStages),
+				OnKey: a.onKey(aws.ToString(e.KmsKeyId), keys), HasCurrentValue: version != "", Version: version,
 			})
 		}
 	}
@@ -120,7 +129,8 @@ func (a AWS) List(ctx context.Context, prefix string) ([]Listing, error) {
 
 // Describe reads one secret with DescribeSecret, which is read-after-write consistent where
 // ListSecrets may lag a change by minutes: ErrNotFound for one Secrets Manager does not hold, and
-// for one scheduled for deletion, which DescribeSecret still answers with its DeletedDate.
+// for one scheduled for deletion, which DescribeSecret still answers with its DeletedDate. Its
+// version stages (VersionIdsToStages) answer whether it has a value and the version holding it.
 func (a AWS) Describe(ctx context.Context, id string) (Listing, error) {
 	out, err := a.Client.DescribeSecret(ctx, &secretsmanager.DescribeSecretInput{SecretId: aws.String(id)})
 	var notFound *types.ResourceNotFoundException
@@ -132,9 +142,10 @@ func (a AWS) Describe(ctx context.Context, id string) (Listing, error) {
 	case out.DeletedDate != nil:
 		return Listing{}, ErrNotFound
 	}
+	version := currentVersion(out.VersionIdsToStages)
 	return Listing{
 		ID: aws.ToString(out.Name), Source: aws.ToString(out.ARN), Tags: TagMap(out.Tags),
-		OnKey: a.onKey(aws.ToString(out.KmsKeyId), a.keys()), HasCurrentValue: HasCurrentVersion(out.VersionIdsToStages),
+		OnKey: a.onKey(aws.ToString(out.KmsKeyId), a.keys()), HasCurrentValue: version != "", Version: version,
 	}, nil
 }
 
@@ -208,7 +219,8 @@ func (a AWS) onKey(kmsKeyID string, keys *keyIdentifiers) func(context.Context) 
 // deletion") rather than answering it absent, which is the same answer to its caller - the secret
 // is no longer readable - and must not be the broker's own 500. InvalidRequestException is that
 // state: GetSecretValue's other refusals name the request itself (InvalidParameterException) or the
-// key (DecryptionFailure), and this one is the only request state a caller can reach.
+// key (DecryptionFailure), and this one is the only request state a caller can reach. A value that
+// is no non-empty SecretString - one stored as SecretBinary - wraps ErrValueNotText.
 func (a AWS) Read(ctx context.Context, source string) (string, error) {
 	out, err := a.Client.GetSecretValue(ctx, &secretsmanager.GetSecretValueInput{SecretId: aws.String(source)})
 	var notFound *types.ResourceNotFoundException
@@ -220,7 +232,7 @@ func (a AWS) Read(ctx context.Context, source string) (string, error) {
 		return "", fmt.Errorf("secrets manager %s: %w", source, err)
 	}
 	if out.SecretString == nil || *out.SecretString == "" {
-		return "", fmt.Errorf("secrets manager %s: value is not a non-empty string", source)
+		return "", fmt.Errorf("secrets manager %s: %w", source, ErrValueNotText)
 	}
 	return *out.SecretString, nil
 }

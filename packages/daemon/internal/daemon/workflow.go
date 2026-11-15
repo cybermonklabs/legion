@@ -158,8 +158,9 @@ type workflowRuntime struct {
 	// the reads asked for (requestMappingRead) and mappingApplied is the last request a finished
 	// read covers; awaiting is each held admission event's request (awaitMappingRead), by issue key
 	// and then the sequence it was delivered at, under awaitingMu. recovering is each repository,
-	// lowercased, a read of the mapping stopped leaving out for a failed installation read whose
-	// issues are still to recover from Dispatch's listing (markRecovered, recoverRepositories),
+	// lowercased, a read of the mapping stopped leaving out for a read GitHub did not answer (its
+	// installation read, or its default-branch read past GitHub's rate limit), whose issues are still
+	// to recover from Dispatch's listing (markRecovered, recoverRepositories),
 	// under recoveringMu. silenced is, by the same repository, each issue whose apply said nothing
 	// because the repository was unread (noteUnread), which the repository's recovery takes into its
 	// scope whatever the issue resolves to by then; releaseWaits is, by repository, each child a

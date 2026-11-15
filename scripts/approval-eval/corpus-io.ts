@@ -1,17 +1,19 @@
 import { readFile, realpath } from "node:fs/promises";
 import { isAbsolute, join, resolve, sep } from "node:path";
 import type { AskOption, CaseRow, CaseVerdict } from "./build-corpus";
+import { RESERVE_VARIABLE, readReferenceOf, reserveOf } from "./reserve";
 import { type Interval, MINIMUM_DECIDED } from "./stats";
 
 /**
- * What the approval-eval commands share: a built corpus read back, the rule that reads a verdict
- * out of an answer, the readers of unknown JSON, the fields a case is read by, the counts, shares
- * and tables their records print, the flag readers they all use, and the base class of every
- * error that means a command cannot run.
+ * What the approval-eval commands share: a built corpus read back, with the reserve of the next
+ * final test held out of it, the rule that reads a verdict out of an answer, the readers of
+ * unknown JSON, the fields a case is read by, the counts, shares and tables their records print,
+ * the flag readers they all use, and the base class of every error that means a command cannot
+ * run.
  *
  * The types come from `build-corpus.ts`, which writes them, and from `stats.ts`, which measures
  * what is printed, and both imports are type-only: they are erased, so importing this module
- * runs none of the build and makes no measurement.
+ * runs none of the build and makes no measurement. `reserve.ts` holds only the reserve's rule.
  */
 
 /**
@@ -54,9 +56,19 @@ export interface Corpus {
   /** The directory it was read from, resolved. */
   directory: string;
   snapshot: CorpusSnapshot;
-  /** The cases in the order `corpus.jsonl` holds them, which is answer time. */
+  /**
+   * The cases in the order `corpus.jsonl` holds them, which is answer time. A case the reserve
+   * holds (`reserve.ts`) is in neither this nor `byCaseId`, unless the read named a reference.
+   */
   rows: CaseRow[];
   byCaseId: Map<string, CaseRow>;
+  /**
+   * The reserve of INFRA-2897's next final test in this corpus: how many cases it holds, on how
+   * many issues, and the reference they were read under, null where they were held out. A
+   * command that reads a file an earlier run wrote reads only the case ids `byCaseId` holds, so a
+   * held case, or one an older corpus never had, is refused there.
+   */
+  reserve: { cases: number; issues: number; readUnder: string | null };
 }
 
 export function recordOf(value: unknown): Record<string, unknown> | null {
@@ -211,23 +223,66 @@ export async function outDirectory(out: string): Promise<string> {
  * The corpus a `--corpus` names, read back from the two files this opens of the ones the build
  * wrote: `snapshot.json` and `corpus.jsonl`. The `counts.json` the build writes beside them is
  * a reading of the same rows, and this reader never opens it.
+ *
+ * Every command reads its corpus here, so this is where the reserve of INFRA-2897's next final
+ * test is held (`reserve.ts`): a case on a reserved issue is left out of the corpus, and the
+ * count left out is printed, unless `APPROVAL_EVAL_RESERVE` is `read:<reference>`, naming the
+ * claim run or the written release that reads it. A corpus built before the build recorded when
+ * each issue was created, holding a case the reserve could hold, is refused: only a new build can
+ * say whether that case is reserved.
  */
 export async function readCorpus(corpus: string): Promise<Corpus> {
   const directory = resolve(corpus);
+  const readUnder = readReferenceOf(process.env[RESERVE_VARIABLE]);
+  if (readUnder === undefined) {
+    throw new CorpusError(
+      `${RESERVE_VARIABLE} takes read:<reference>, naming the claim run or the written release ` +
+        "that reads the reserved cases, or no value at all"
+    );
+  }
   const snapshot = snapshotOf(directory, await textOf(directory, "snapshot.json"));
   const lines = (await textOf(directory, "corpus.jsonl")).split("\n");
   const rows: CaseRow[] = [];
   const byCaseId = new Map<string, CaseRow>();
+  const reservedIssues = new Set<string>();
+  let reservedCases = 0;
   for (const [index, line] of lines.entries()) {
     if (line.trim() === "") continue;
     const row = caseRowOf(directory, index + 1, line);
+    const reserve = reserveOf(row);
+    if (reserve === "unknown") {
+      throw new CorpusError(
+        `${join(directory, "corpus.jsonl")} line ${index + 1}: case ${row.caseId} on ` +
+          `${row.issueKey} may be reserved for INFRA-2897's next final test, and this corpus ` +
+          "was built before build-corpus.ts recorded when each issue was created: build it again"
+      );
+    }
+    if (reserve === "held") {
+      reservedCases += 1;
+      if (row.issueKey !== null) reservedIssues.add(row.issueKey);
+      if (readUnder === null) continue;
+    }
     rows.push(row);
     byCaseId.set(row.caseId, row);
+  }
+  if (reservedCases > 0) {
+    const what = `${counted(reservedCases, "case")} on ${counted(reservedIssues.size, "issue")}`;
+    console.error(
+      readUnder === null
+        ? `reserve: held out ${what} for INFRA-2897's next final test (reserve.ts)`
+        : `reserve: read ${what} of INFRA-2897's next final test, under ${readUnder}`
+    );
   }
   if (rows.length === 0) {
     throw new CorpusError(`${join(directory, "corpus.jsonl")} holds no case`);
   }
-  return { directory, snapshot, rows, byCaseId };
+  return {
+    directory,
+    snapshot,
+    rows,
+    byCaseId,
+    reserve: { cases: reservedCases, issues: reservedIssues.size, readUnder },
+  };
 }
 
 /** A seed for a pick no `--seed` named, which the command prints so the pick can be made again. */

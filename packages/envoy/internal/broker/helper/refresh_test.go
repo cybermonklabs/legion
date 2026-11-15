@@ -375,7 +375,7 @@ func TestARefusalDuringARefreshNeverUndoesIt(t *testing.T) {
 	b.testBeforeDrop = func() { close(waiting) }
 	rejected := &BrokerError{Status: http.StatusUnauthorized, Code: "LAUNCHER_INVALID", Message: "the launcher credential is not valid"}
 	refused := make(chan error, 1)
-	go func() { refused <- b.clearOnInvalid(signed, rejected) }()
+	go func() { refused <- b.clearOnInvalid(context.Background(), signed, rejected) }()
 	<-waiting
 	if err := release(); err != nil {
 		t.Fatalf("refresh: %v", err)
