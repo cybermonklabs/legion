@@ -41,7 +41,7 @@ export async function renderRecipients({
   /** An Error rejects the agent registry read, as an unreachable Envoy listener does. */
   agents?: Agent[] | Error;
   props?: Partial<AskRecipientsProps>;
-  removeFollower?: (askId: string, sessionId: string) => Promise<void>;
+  removeFollower?: AskRecipientsProps["removeFollower"];
   /** An Error rejects the subscribers fetch, as an unreachable Envoy listener does. */
   subscribers?: Subscriber[] | Error;
 } = {}) {
@@ -65,7 +65,7 @@ export async function renderRecipients({
   });
   queryClient.setQueryData(["whoami"], { kind: "user", login: "alice" });
   // Each recipient is an `AgentName`, whose live link needs a router.
-  const view = render(
+  const recipients = (drawn: Partial<AskRecipientsProps>) => (
     <MemoryRouter>
       <QueryClientProvider client={queryClient}>
         <AskRecipients
@@ -77,11 +77,12 @@ export async function renderRecipients({
           route={null}
           routeHolder={null}
           routeStatus={null}
-          {...props}
+          {...drawn}
         />
       </QueryClientProvider>
     </MemoryRouter>
   );
+  const view = render(recipients(props));
   const user = userEvent.setup();
   // The routing list is folded at rest; every assertion of the tests that render it is about
   // what it holds, so the harness opens it once and each test reads the open list.
@@ -90,6 +91,10 @@ export async function renderRecipients({
     getArtifactSubscribers,
     getIssueSubscribers,
     queryClient,
+    /** Draws the same card again with `next` over the props it was rendered with, as a host
+     *  that draws one card for one ask after another does. */
+    rerender: (next: Partial<AskRecipientsProps>) =>
+      view.rerender(recipients({ ...props, ...next })),
     unmount: () => {
       view.unmount();
       listAgents.mockRestore();

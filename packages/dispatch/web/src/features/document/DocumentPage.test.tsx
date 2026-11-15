@@ -312,7 +312,7 @@ test("an unsubscribe the reader stopped says Retry sends it again, not that it f
     await stopTheLateWrite(page.queryClient);
     // The alert's paragraph, without its Retry button's name.
     expect(screen.getByRole("alert").querySelector("p")?.textContent).toBe(
-      stoppedWriteNote("this agent's unsubscribe", "made", {
+      stoppedWriteNote("this agent's unsubscribe from “Design notes”", "made", {
         method: "DELETE",
         stopped: new SendStoppedError(),
       })
@@ -342,10 +342,11 @@ test("an unsubscribe answered SUBSCRIBER_NOT_FOUND is the unsubscribe done, not 
   }
 });
 
-// The page stays mounted as the reader follows a link to another document, and a stopped
-// unsubscribe's refusal stays on it. Its Retry is still that unsubscribe, so it takes the
-// session off the document it was pressed on, not off the one the page shows by then.
-test("an unsubscribe's Retry on another document's page is of the document it was pressed on", async () => {
+/** The page at `design-notes` with one removable subscriber whose unsubscribe never reaches
+ *  Dispatch: presses Unsubscribe and Confirm, stops the late write, and follows a link to
+ *  `release-notes`, the page staying mounted. Hands back the stopped press's key and how many
+ *  attempts it made, on the clock the case holds from the stop on. */
+async function stoppedThenMoved() {
   const other: Artifact = {
     ...artifact,
     id: "artifact-2",
@@ -384,6 +385,12 @@ test("an unsubscribe's Retry on another document's page is of the document it wa
   const { queryClient, runtime, view } = renderDocumentPage(
     <Link to="/projects/CORE/documents/release-notes">Release notes</Link>
   );
+  const restore = () => {
+    realClock();
+    view.unmount();
+    queryClient.clear();
+    for (const mock of mocks) mock.mockRestore();
+  };
 
   try {
     await screen.findByTestId("artifact-header");
@@ -407,19 +414,47 @@ test("an unsubscribe's Retry on another document's page is of the document it wa
     await waitFor(() =>
       expect(screen.getByTestId("artifact-header")).toHaveTextContent("Release notes")
     );
-    unsubscribeArtifactSession.mockResolvedValue(undefined);
-    await user.click(within(screen.getByRole("alert")).getByRole("button", { name: "Retry" }));
+    return { restore, stopped, stoppedKey, unsubscribeArtifactSession, user };
+  } catch (error) {
+    restore();
+    throw error;
+  }
+}
+
+// The page stays mounted as the reader follows a link to another document, and a stopped
+// unsubscribe's refusal stays on it. Its Retry is still that unsubscribe, so it takes the
+// session off the document it was pressed on, not off the one the page shows by then.
+test("an unsubscribe's Retry on another document's page is of the document it was pressed on", async () => {
+  const page = await stoppedThenMoved();
+  try {
+    page.unsubscribeArtifactSession.mockResolvedValue(undefined);
+    await page.user.click(within(screen.getByRole("alert")).getByRole("button", { name: "Retry" }));
     await tick(1_000);
 
-    expect(unsubscribeArtifactSession).toHaveBeenCalledTimes(stopped + 1);
-    const again = unsubscribeArtifactSession.mock.calls.at(-1);
+    expect(page.unsubscribeArtifactSession).toHaveBeenCalledTimes(page.stopped + 1);
+    const again = page.unsubscribeArtifactSession.mock.calls.at(-1);
     expect(again?.[0]).toBe("artifact-1");
     expect(again?.[1]).toBe("0123456789abcdef");
-    expect(again?.[2]?.key).toBe(stoppedKey);
+    expect(again?.[2]?.key).toBe(page.stoppedKey);
   } finally {
-    realClock();
-    view.unmount();
-    queryClient.clear();
-    for (const mock of mocks) mock.mockRestore();
+    page.restore();
+  }
+});
+
+// That refusal is read on another document's page, so it names the document its Retry
+// unsubscribes from: "this agent's unsubscribe" alone would read as one from the document on
+// screen.
+test("a stopped unsubscribe's refusal on another document's page names the document it is of", async () => {
+  const page = await stoppedThenMoved();
+  try {
+    // The alert's paragraph, without its Retry button's name.
+    expect(screen.getByRole("alert").querySelector("p")?.textContent).toBe(
+      stoppedWriteNote("this agent's unsubscribe from “Design notes”", "made", {
+        method: "DELETE",
+        stopped: new SendStoppedError(),
+      })
+    );
+  } finally {
+    page.restore();
   }
 });

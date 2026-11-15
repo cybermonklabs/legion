@@ -67,25 +67,35 @@ export function press<T>(
   });
 }
 
-/** Where an offer's press of `words` stands once a write of it threw - the create or the send, or
- *  a write onto the issue the create made (`RefusedWrite`): stopped by the person before Dispatch
- *  confirmed it, when it may have landed and there is no refusal to report, or refused, with
- *  Dispatch's reason (`whenSilent` where it gave none). */
-export type UnconfirmedPress =
-  | { readonly kind: "refused"; readonly refusal: string; readonly words: string }
-  | { readonly kind: "stopped"; readonly words: string };
+/** Where a write of an offer stands once it threw - the create or the send, or a write onto the
+ *  issue the create made (`RefusedWrite`): stopped by the person before Dispatch confirmed it,
+ *  when it may have landed and there is no refusal to report, or refused, with Dispatch's reason
+ *  (`whenSilent` where it gave none). */
+export type UnconfirmedWrite =
+  | { readonly kind: "refused"; readonly refusal: string }
+  | { readonly kind: "stopped" };
 
-/** The state an offer's press of `words` is left in by `error`, the write's (`UnconfirmedPress`). */
+/** The state a write of an offer is left in by `error`, the write's (`UnconfirmedWrite`). */
+export function unconfirmedWrite(error: unknown, whenSilent: string): UnconfirmedWrite {
+  if (error instanceof SendStoppedError) {
+    return { kind: "stopped" };
+  }
+  // Dispatch's own refusal where it gave one, and `whenSilent` for whatever else ended the write:
+  // a reader told only "could not" has nothing to act on.
+  const refusal = error instanceof Error && error.message !== "" ? error.message : whenSilent;
+  return { kind: "refused", refusal };
+}
+
+/** Where an offer's press of `words` stands once its create or its send threw
+ *  (`UnconfirmedWrite`), named by the words it was of, as every state of an offer is
+ *  (`useWordsState`). */
+export type UnconfirmedPress = UnconfirmedWrite & { readonly words: string };
+
+/** The state an offer's press of `words` is left in by `error`, its write's (`UnconfirmedPress`). */
 export function unconfirmedPress(
   error: unknown,
   words: string,
   whenSilent: string
 ): UnconfirmedPress {
-  if (error instanceof SendStoppedError) {
-    return { kind: "stopped", words };
-  }
-  // Dispatch's own refusal where it gave one, and `whenSilent` for whatever else ended the write:
-  // a reader told only "could not" has nothing to act on.
-  const refusal = error instanceof Error && error.message !== "" ? error.message : whenSilent;
-  return { kind: "refused", refusal, words };
+  return { ...unconfirmedWrite(error, whenSilent), words };
 }

@@ -38,9 +38,10 @@ interface AskSnoozePress {
  * refuses, and the list refetches once the save settles - the same shape as the issue field
  * writes, without their cross-surface caches: a snooze is on the ask and shows nowhere else.
  *
- * Each press carries the ask it is of, as a press carries every value its Retry sends: a Retry of
- * a press the reader stopped is of that press's ask, whichever ask the control is drawn for by
- * then, since a host may draw one control for one ask after another.
+ * Each press carries the ask it is of: `retry()` runs the newest render's `write` with the
+ * press's own values (`useKeyedWrite`), so every byte a Retry sends rides in the press, and the
+ * Retry of a press the reader stopped is of that press's ask, whichever ask the hook is rendered
+ * for by then.
  */
 export function useAskSnooze(askId: string): AskSnoozeWrite {
   const queryClient = useQueryClient();
@@ -49,17 +50,19 @@ export function useAskSnooze(askId: string): AskSnoozeWrite {
   const mutation = useKeyedWrite({
     // A snooze is a `PUT`, and bringing the row back a `DELETE`.
     method: ({ until }: AskSnoozePress) => (until === null ? "DELETE" : "PUT"),
-    write: ({ askId: ask, until }: AskSnoozePress, bounds) =>
-      until === null
-        ? api.unsnoozeAsk(ask, bounds)
-        : api.snoozeAsk(ask, until, bounds).then(() => undefined),
+    write: (press: AskSnoozePress, bounds) =>
+      press.until === null
+        ? api.unsnoozeAsk(press.askId, bounds)
+        : api.snoozeAsk(press.askId, press.until, bounds).then(() => undefined),
     inline: true,
     label: ({ until }) => (until === null ? "Ask brought back now" : "Ask snoozed"),
-    onMutate: async ({ askId: ask, until }) => {
+    onMutate: async (press) => {
       await queryClient.cancelQueries({ queryKey: inboxKey });
       const previous = queryClient.getQueriesData<InboxRow[]>({ queryKey: inboxKey });
       queryClient.setQueriesData<InboxRow[]>({ queryKey: inboxKey }, (current) =>
-        current?.map((row) => (row.id === ask ? { ...row, snoozed_until: until } : row))
+        current?.map((row) =>
+          row.id === press.askId ? { ...row, snoozed_until: press.until } : row
+        )
       );
       return previous;
     },

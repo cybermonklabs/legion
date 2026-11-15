@@ -49,12 +49,13 @@ export function DocumentPage(): ReactNode {
     },
   });
   const agentText = useAgentText();
-  // The press carries the document it unsubscribes from: the page stays mounted as the reader
-  // moves to another document, and the Retry of a stopped unsubscribe is of the document that
-  // press named, not of the one the page shows by then.
+  // The press carries the document it unsubscribes from, its id and its name: the page stays
+  // mounted as the reader moves to another document, and the Retry of a stopped unsubscribe, and
+  // the sentence about it, are of the document that press named, not of the one the page shows
+  // by then.
   const unsubscribe = useKeyedWrite({
-    label: ({ sessionId }: { artifactId: string; sessionId: string }) =>
-      `${agentText.sessionText(sessionId, subscribers.data?.find((row) => row.session_id === sessionId)?.title)} unsubscribed from this document`,
+    label: ({ name, sessionId }: { artifactId: string; name: string; sessionId: string }) =>
+      `${agentText.sessionText(sessionId, subscribers.data?.find((row) => row.session_id === sessionId)?.title)} unsubscribed from ${name}`,
     // An unsubscribe made again after one that landed finds the session no longer subscribed
     // (`404 SUBSCRIBER_NOT_FOUND`), which is the unsubscribe done (`removedEvenIfGone`).
     method: "DELETE",
@@ -129,7 +130,11 @@ export function DocumentPage(): ReactNode {
       >
         <SubscribedAgents
           onUnsubscribe={(sessionId) =>
-            unsubscribe.mutate({ artifactId: owner.artifactId, sessionId })
+            unsubscribe.mutate({
+              artifactId: owner.artifactId,
+              name: artifact.data.name,
+              sessionId,
+            })
           }
           ownerLabel={`${artifact.data.project}/${artifact.data.slug}`}
           subscribers={subscribers.isError ? [] : (subscribers.data ?? [])}
@@ -145,8 +150,11 @@ export function DocumentPage(): ReactNode {
         {unsubscribe.isError ? (
           <QueryError
             message={
-              stoppedNote(unsubscribe, "this agent's unsubscribe", "made") ??
-              "Could not unsubscribe this agent."
+              stoppedNote(
+                unsubscribe,
+                `this agent's unsubscribe from “${(unsubscribe.variables ?? artifact.data).name}”`,
+                "made"
+              ) ?? "Could not unsubscribe this agent."
             }
             onRetry={unsubscribe.retry}
             retrying={unsubscribe.isPending}

@@ -40,7 +40,7 @@ import {
 import { buildDispatchReference, type DispatchReferenceRoute } from "../refs/routes";
 import { retriesUnderItsKey, stoppedWriteNote } from "../writes/keyed-write";
 import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
-import { endedStopped, useKeyedWrite } from "../writes/useKeyedWrite";
+import { endedStopped, stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
 
 /** Why a closed issue's Artifacts tab, or its document's repair, takes no upload: Dispatch refuses
  *  one until the issue is reopened. */
@@ -183,27 +183,24 @@ export const UPLOAD_BASE_UNREADABLE_REFUSAL =
 // sentences, not one - the document moved under the upload, the upload named no version where
 // Dispatch requires one, and the token could not be read at all - and a person told the wrong
 // one of those is told something untrue. An upload the reader stopped is no refusal: it may have
-// been stored, and `again` says what the surface's control that makes that very press again is: a
-// plain Retry the sentence does not name (`"retry"`), or one with its own words (`{ label }`), each
-// under the method the hook read for it (`KeyedWriteResult.method`); it is undefined where
-// uploading the file again is a press of its own.
+// been stored, and `again` names the surface's control that makes that very press again, under
+// the method the hook read for it (`KeyedWriteResult.method`), or is undefined where uploading the
+// file again is a press of its own. A plain Retry the sentence need not name is `stoppedNote`'s,
+// which a surface reads before this (`DraftUploadStatus`).
 export function uploadErrorMessage(
   upload: Pick<DraftUpload, "error" | "method">,
-  again: "retry" | { label: string } | undefined
+  again: string | undefined
 ): string {
   const { error } = upload;
   if (endedStopped(upload)) {
-    if (again === undefined) {
-      return stoppedWriteNote("the upload", "stored", {
-        anew: "Uploading the file again is a new upload, which Dispatch may store a second time.",
-      });
-    }
     return stoppedWriteNote(
       "the upload",
       "stored",
-      again === "retry"
-        ? { method: upload.method, stopped: upload.error }
-        : { again: again.label, method: upload.method, stopped: upload.error }
+      again === undefined
+        ? {
+            anew: "Uploading the file again is a new upload, which Dispatch may store a second time.",
+          }
+        : { again, method: upload.method, stopped: upload.error }
     );
   }
   if (error instanceof UploadBaseUnreadableError) {
@@ -423,7 +420,9 @@ export function DraftUploadStatus({ upload }: { upload: DraftUpload }): ReactNod
       ) : null}
       {upload.isError ? (
         <QueryError
-          message={uploadErrorMessage(upload, "retry")}
+          message={
+            stoppedNote(upload, "the upload", "stored") ?? uploadErrorMessage(upload, undefined)
+          }
           onRetry={upload.retry}
           retrying={upload.isPending}
         />
@@ -472,7 +471,12 @@ export interface ArtifactUpload {
   refusedFile: File | undefined;
   selectFile(event: ChangeEvent<HTMLInputElement>): void;
   setSummary(value: string): void;
+  /** What the summary field shows: the words typed into it, or, while a stopped press of the
+   *  staged file is held, the summary that press sent (`summaryHeld`). */
   summary: string;
+  /** Whether the summary field shows a stopped press's summary, which it takes no edit to:
+   *  Upload makes that press again as it stands. */
+  summaryHeld: boolean;
 }
 
 /** What one press of Upload sends, every field of its body the row could change after it: the
@@ -536,6 +540,14 @@ export function useArtifactUpload(
       }
     },
   });
+  // While a stopped press of the staged file is held, the summary field shows the summary that
+  // press sent and takes no edit, and keeps those words once Upload makes the press again: the
+  // press goes as it stands and its landing clears the field, so words typed meanwhile would be
+  // sent nowhere and lost without a word.
+  const held =
+    pendingFile === null
+      ? undefined
+      : upload.stopped((variables) => variables.file === pendingFile);
   /** A press of `file` with what the row holds now: the document name it goes under and the
    *  summary in the field. Both ride in the press, so the press made again sends them as they
    *  were, however the field or the document's name has changed since. */
@@ -582,6 +594,7 @@ export function useArtifactUpload(
         const chosen = chosenBase.current;
         chosenBase.current = undefined;
         if (stopped !== undefined) {
+          setSummary(stopped.variables.summary ?? "");
           upload.again(stopped);
           return;
         }
@@ -622,7 +635,8 @@ export function useArtifactUpload(
       event.target.value = "";
     },
     setSummary,
-    summary,
+    summary: held === undefined ? summary : (held.variables.summary ?? ""),
+    summaryHeld: held !== undefined,
   };
 }
 
@@ -669,6 +683,7 @@ export function ArtifactUploadRow({
           <input
             aria-label="Summary (optional)"
             className={`min-h-11 min-w-40 flex-1 rounded-lg border px-3 py-2 text-sm outline-none ${inputClasses(true)}`}
+            disabled={upload.summaryHeld}
             onChange={(event) => upload.setSummary(event.target.value)}
             placeholder="Summary (optional)"
             value={upload.summary}
@@ -711,7 +726,7 @@ export function ArtifactUploadStatus({ upload }: { upload: ArtifactUpload }): Re
     const staged = upload.pendingFile !== null && upload.pendingFile === upload.refusedFile;
     return (
       <p className={`w-full text-sm ${dangerText}`} role="alert">
-        {uploadErrorMessage(upload, staged ? { label: "Upload" } : undefined)}
+        {uploadErrorMessage(upload, staged ? "Upload" : undefined)}
       </p>
     );
   }

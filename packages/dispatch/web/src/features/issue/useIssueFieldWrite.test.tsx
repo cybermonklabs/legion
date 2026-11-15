@@ -1,12 +1,12 @@
 import { expect, jest, test } from "bun:test";
-import { act } from "@testing-library/react";
+import { act, waitFor } from "@testing-library/react";
 
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { renderOnQueue } from "../../__tests__/query-provider";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { NetworkError } from "../../api/client";
-import type { Issue } from "../../api/types";
+import type { Issue, IssueDetails } from "../../api/types";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { useIssueAssignee } from "./useIssueAssignee";
 
@@ -103,10 +103,11 @@ test("the control's Retry after a stopped save goes under that save's key", asyn
   }
 });
 
-// The control can outlive the issue it saved to: the reading column's head is one control for
-// each ask the reader moves to. Its Retry is still of the stopped save, so it goes to that save's
-// issue under its key, and the words beside it name that issue. Sent to the issue the control
-// is drawn for by then, it would be other bytes under the stopped save's key.
+// A Retry runs the newest render's request with the press's own values, so every byte it sends
+// rides in the press, the issue among them. Rendered for another issue by then, the hook's Retry
+// is still of the stopped save: it goes to that save's issue under its key, and the words beside
+// it name that issue. Sent to the issue the hook is rendered for by then, it would be other
+// bytes under the stopped save's key.
 test("a Retry after the control moved to another issue is of the stopped save's issue", async () => {
   jest.useFakeTimers();
   const { held, patchIssue } = dispatchHoldingAssignee();
@@ -141,5 +142,85 @@ test("a Retry after the control moved to another issue is of the stopped save's 
     hook.unmount();
     patchIssue.mockRestore();
     realClock();
+  }
+});
+
+// A pick made during a save waits behind it, one per issue. A pick on another issue waits in a
+// place of its own rather than in place of the one already waiting, so that one is still saved,
+// not left on screen with no save behind it.
+test("a pick waiting behind a save is still saved when a pick on another issue waits too", async () => {
+  const first = Promise.withResolvers<Issue>();
+  const patchIssue = answerIssuePatches()
+    .mockImplementationOnce(() => first.promise)
+    .mockImplementation(async (key, input) => ({ assignee: input.assignee ?? null, key }) as Issue);
+  let issueKey = "CORE-1";
+  const { hook } = renderOnQueue(() => useIssueAssignee(issueKey));
+
+  try {
+    act(() => hook.result.current.submit("alice"));
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
+    act(() => hook.result.current.submit("bob"));
+    issueKey = "CORE-2";
+    hook.rerender();
+    act(() => hook.result.current.submit("carol"));
+
+    await act(async () => {
+      first.resolve({ assignee: "alice", key: "CORE-1" } as Issue);
+      await first.promise;
+    });
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(3));
+    expect(patchIssue.mock.calls.map(([key, input]) => [key, input])).toEqual([
+      ["CORE-1", { assignee: "alice" }],
+      ["CORE-1", { assignee: "bob" }],
+      ["CORE-2", { assignee: "carol" }],
+    ]);
+  } finally {
+    hook.unmount();
+    patchIssue.mockRestore();
+  }
+});
+
+// A refused save rolls its issue's detail back to what that issue held, and a pick of another
+// issue waiting behind it keeps its own issue's: refused in turn, that pick rolls its issue
+// back to that issue's own detail, never to the detail of the issue the first save was of.
+test("a refused pick of one issue after a refused save of another rolls back to its own detail", async () => {
+  const first = Promise.withResolvers<Issue>();
+  const second = Promise.withResolvers<Issue>();
+  const patchIssue = answerIssuePatches()
+    .mockImplementationOnce(() => first.promise)
+    .mockImplementationOnce(() => second.promise);
+  let issueKey = "CORE-1";
+  const { client, hook } = renderOnQueue(() => useIssueAssignee(issueKey));
+  const core1 = { assignee: null, key: "CORE-1" } as IssueDetails;
+  const core2 = { assignee: "dave", key: "CORE-2" } as IssueDetails;
+  client.setQueryData(["issue", "CORE-1"], core1);
+  client.setQueryData(["issue", "CORE-2"], core2);
+
+  try {
+    act(() => hook.result.current.submit("alice"));
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
+    issueKey = "CORE-2";
+    hook.rerender();
+    act(() => hook.result.current.submit("carol"));
+    expect(client.getQueryData<IssueDetails>(["issue", "CORE-2"])).toEqual({
+      ...core2,
+      assignee: "carol",
+    });
+
+    await act(async () => {
+      first.reject(new Error("refused"));
+    });
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(2));
+    await act(async () => {
+      second.reject(new Error("refused"));
+    });
+
+    await waitFor(() =>
+      expect(client.getQueryData<IssueDetails>(["issue", "CORE-2"])).toEqual(core2)
+    );
+    expect(client.getQueryData<IssueDetails>(["issue", "CORE-1"])).toEqual(core1);
+  } finally {
+    hook.unmount();
+    patchIssue.mockRestore();
   }
 });

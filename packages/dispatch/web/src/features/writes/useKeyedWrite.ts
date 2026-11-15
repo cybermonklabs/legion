@@ -133,10 +133,10 @@ export function endedStopped<
 
 /** The sentence a surface shows for its write where the reader stopped it, under the plain Retry
  *  the surface offers that makes that very press again (`stoppedWriteNote`, `retry`), or
- *  `undefined` where the newest press did not end stopped, so the surface shows its refusal's own
- *  words instead (`apiErrorMessage`). `what` is what Dispatch has not confirmed and `made` what the
- *  write does once it lands, as `stoppedWriteNote` takes them; the method the Retry's sentence
- *  reads is the write's own, so no site states it a second time (`KeyedWriteResult.method`). */
+ *  `undefined` where the newest press did not end stopped, so the surface shows its own text for
+ *  the refusal instead. `what` is what Dispatch has not confirmed and `made` what the write does
+ *  once it lands, as `stoppedWriteNote` takes them; the method the Retry's sentence reads is the
+ *  write's own, so no site states it a second time (`KeyedWriteResult.method`). */
 export function stoppedNote<
   W extends { readonly error: unknown; readonly method: WriteMethod | undefined },
 >(write: W, what: string, made: string): string | undefined {

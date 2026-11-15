@@ -204,12 +204,57 @@ test("pressing Upload again after a stopped press sends that press's base under 
   }
 });
 
-// The summary is part of the body the key covers, as the base is. Pressing Upload again after a
-// stopped press is that press made again under its key, so it sends the summary that press
-// sent: an edit made since would be other bytes under the same key, and Dispatch answers the key
-// with what the stopped press did there, so the edited words would be dropped while the row
-// said the upload is stored at most once.
+// The summary is part of the body the key covers, as the base is. The field takes an edit while
+// the press is out, and pressing Upload again once the reader stopped that press makes it again
+// under its key, so it sends the summary that press sent: the edit would be other bytes under
+// the same key, and Dispatch answers the key with what the stopped press did there, so the
+// edited words would be dropped while the row said the upload is stored at most once.
 test("pressing Upload again after a stopped press sends that press's summary, not the field's", async () => {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  const ownerArtifactText = spyOn(api, "ownerArtifactText").mockResolvedValue({
+    markdown: "# Notes\n",
+    token: "sha256:chosen",
+    version: 1,
+  });
+  const uploadArtifact = spyOn(api, "uploadArtifact").mockRejectedValue(unreachable);
+  const view = renderHarness();
+
+  try {
+    const file = new File(["content"], "notes.md", { type: "text/markdown" });
+    await user.upload(screen.getByLabelText("Upload artifact"), [file]);
+    await tick(0);
+    await user.type(screen.getByLabelText("Summary (optional)"), "First draft");
+    await user.click(screen.getByRole("button", { name: "Upload" }));
+    await untilAttempted(uploadArtifact, 1);
+    await user.clear(screen.getByLabelText("Summary (optional)"));
+    await user.type(screen.getByLabelText("Summary (optional)"), "Second thoughts");
+    await stopTheLateWrite(view.queryClient);
+    const stopped = uploadArtifact.mock.calls.length;
+
+    uploadArtifact.mockResolvedValue(UPLOADED);
+    await user.click(screen.getByRole("button", { name: "Upload" }));
+    await untilAttempted(uploadArtifact, stopped + 1);
+    await tick(1_000);
+
+    expect(uploadArtifact).toHaveBeenCalledTimes(stopped + 1);
+    const first = uploadArtifact.mock.calls[0];
+    const again = uploadArtifact.mock.calls.at(-1);
+    expect(first?.[1].summary).toBe("First draft");
+    expect(again?.[2].key).toBe(first?.[2].key);
+    expect(again?.[1]).toEqual(first?.[1]);
+  } finally {
+    view.unmount();
+    uploadArtifact.mockRestore();
+    ownerArtifactText.mockRestore();
+    realClock();
+  }
+});
+
+// Upload makes a stopped press again as it stands, and its landing clears the field. So while
+// that press is held the field shows the summary it sent and takes no edit: words typed there
+// would go out with no press and be cleared, lost without a word.
+test("a stopped press holds the summary field at its own summary, and Upload sends that", async () => {
   jest.useFakeTimers();
   const user = userOnFakeClock();
   const ownerArtifactText = spyOn(api, "ownerArtifactText").mockResolvedValue({
@@ -230,9 +275,11 @@ test("pressing Upload again after a stopped press sends that press's summary, no
     await stopTheLateWrite(view.queryClient);
     const stopped = uploadArtifact.mock.calls.length;
 
+    const summary = screen.getByLabelText("Summary (optional)");
+    expect(summary).toHaveValue("First draft");
+    expect(summary).toBeDisabled();
+
     uploadArtifact.mockResolvedValue(UPLOADED);
-    await user.clear(screen.getByLabelText("Summary (optional)"));
-    await user.type(screen.getByLabelText("Summary (optional)"), "Second thoughts");
     await user.click(screen.getByRole("button", { name: "Upload" }));
     await untilAttempted(uploadArtifact, stopped + 1);
     await tick(1_000);
@@ -240,9 +287,8 @@ test("pressing Upload again after a stopped press sends that press's summary, no
     expect(uploadArtifact).toHaveBeenCalledTimes(stopped + 1);
     const first = uploadArtifact.mock.calls[0];
     const again = uploadArtifact.mock.calls.at(-1);
-    expect(first?.[1].summary).toBe("First draft");
+    expect(again?.[1].summary).toBe("First draft");
     expect(again?.[2].key).toBe(first?.[2].key);
-    expect(again?.[1]).toEqual(first?.[1]);
   } finally {
     view.unmount();
     uploadArtifact.mockRestore();
