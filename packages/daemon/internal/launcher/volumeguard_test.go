@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -501,6 +502,56 @@ func TestTheGuardWalkReadsNothingThroughAChildSwappedForARelativeLinkCrossingAnA
 	if !newest.Before(fresh) {
 		t.Errorf("the walk answered %s as the newest time in %s, want a time of its own files at %s: the file written at %s is in %s and not on the volume",
 			newest, tree, old, fresh, bait)
+	}
+}
+
+// The guards' walk holds a batch of one level's names at a time and not the whole level: a role
+// may make a cache entry holding a directory of any number of names, and the walk runs in PID 1
+// on every sweep, once in the listing and again before the delete (walkEntries). The case walks
+// an entry whose one directory holds twenty thousand names of two hundred bytes, and reads the
+// live heap after a collection at every two thousandth name the walk visits: it may rise by no
+// more than a megabyte over the heap before the walk. The negative control is the level read
+// whole, as fs.ReadDir read it at b7085e21, which held every name's entry and lstat for as long
+// as the level was being visited.
+func TestTheGuardWalkHoldsABatchOfALevelsNamesAndNotAllOfThem(t *testing.T) {
+	const names, sample, bound = 20000, 2000, 1 << 20
+	dir := t.TempDir()
+	wide := filepath.Join(dir, "entry", "wide")
+	mkdirFixture(t, wide)
+	for at := range names {
+		if err := os.WriteFile(filepath.Join(wide, fmt.Sprintf("%05d", at)+strings.Repeat("n", 195)), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	held, err := openVolumeDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = held.Close() })
+
+	live := func() uint64 {
+		runtime.GC()
+		var stats runtime.MemStats
+		runtime.ReadMemStats(&stats)
+		return stats.HeapAlloc
+	}
+	before := live()
+	visited, peak := 0, before
+	err = walkEntries(held, "entry", nil, func(os.FileInfo) error {
+		visited++
+		if visited%sample == 0 {
+			peak = max(peak, live())
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if visited != names+1 {
+		t.Fatalf("the walk visited %d entries, want the directory and its %d names", visited, names)
+	}
+	if rise := peak - before; rise > bound {
+		t.Errorf("the live heap rose %d bytes over the walk of a directory of %d names, want no more than %d: the walk held the level whole", rise, names, bound)
 	}
 }
 

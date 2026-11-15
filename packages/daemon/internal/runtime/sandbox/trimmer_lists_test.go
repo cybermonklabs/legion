@@ -27,13 +27,14 @@ import (
 // "the lists mention it": the reclaimable list names a path only as that path itself, and the
 // protected list names it as that path itself or as an ancestor of it. Coverage by a reclaimable
 // root never counts, because $TMPDIR and the cache home are roots of which only part is eligible
-// — one `go-build*` directory, one immediate child that is neither of the two exceptions. A new
-// directory under either would otherwise be accounted for by a root that deletes none of it (a
-// role's work under $TMPDIR, which the trimmer may not touch and which therefore still fills the
-// volume) or by one that deletes all of it (a child of the cache home a role cannot afford to
-// lose, as the browser registry and the Claude npm cache cannot be). The same narrowness is why
-// reclaim_doc_test.go reads docs/kubernetes.md's two lists as lists rather than as prose: a check
-// that accepts a mention anywhere cannot fail where it matters.
+// — under $TMPDIR, a directory named `go-build` followed by digits; under the cache home, an
+// immediate child that is neither of the two exceptions. A new directory under either would
+// otherwise be accounted for by a root that deletes none of it (a role's work under $TMPDIR,
+// which the trimmer may not touch and which therefore still fills the volume) or by one that
+// deletes all of it (a child of the cache home a role cannot afford to lose, as the browser
+// registry and the Claude npm cache cannot be). The same narrowness is why reclaim_doc_test.go
+// reads docs/kubernetes.md's two lists as lists rather than as prose: a check that accepts a
+// mention anywhere cannot fail where it matters.
 //
 // A path both lists name is a contradiction and fails too: the trimmer would delete entries of a
 // root it is told at the same line never to write to, and which of the two the code follows is

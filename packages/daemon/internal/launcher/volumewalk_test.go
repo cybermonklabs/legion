@@ -330,16 +330,16 @@ func TestTheWalkKeepsAsManyUnmeasuredDirectoriesAsAReportNamesAndCountsTheRest(t
 	}
 	clock := &fakeClock{at: time.Date(2026, 11, 11, 9, 0, 0, 0, time.UTC)}
 	root := walkTree(t, clock.at.Add(-2*time.Hour))
-	const planted = volumeReportSizesMissing + 30
+	const planted = shimwire.VolumeReportSizesMissing + 30
 	for at := range planted {
 		lockedUnder(t, filepath.Join(root, "scratch", fmt.Sprintf("sealed-%03d", at)), clock.at)
 	}
 
 	result := walkOf(root, clock, &fakeTicks{}, measureTree).run(context.Background())
 
-	if len(result.Missing) != volumeReportSizesMissing || result.MissingOmitted != planted-volumeReportSizesMissing {
+	if len(result.Missing) != shimwire.VolumeReportSizesMissing || result.MissingOmitted != planted-shimwire.VolumeReportSizesMissing {
 		t.Errorf("the walk keeps %d unmeasured directories and counts %d more, want the %d a report names and the %d past them",
-			len(result.Missing), result.MissingOmitted, volumeReportSizesMissing, planted-volumeReportSizesMissing)
+			len(result.Missing), result.MissingOmitted, shimwire.VolumeReportSizesMissing, planted-shimwire.VolumeReportSizesMissing)
 	}
 	for _, missing := range result.Missing {
 		if missing.Reason != "openat: "+syscall.EACCES.Error() {
@@ -685,7 +685,7 @@ func TestDirectoriesReadInPartAreBoundedInTheReportAndTheLog(t *testing.T) {
 	}
 	f := newTrimFixture(t, 1)
 	scratch := filepath.Join(f.root, "scratch")
-	const planted = 2 * volumeReportSizes
+	const planted = 2 * shimwire.VolumeReportSizes
 	plantWalkTargets(t, scratch, planted)
 	entries, err := os.ReadDir(scratch)
 	if err != nil {
@@ -706,8 +706,8 @@ func TestDirectoriesReadInPartAreBoundedInTheReportAndTheLog(t *testing.T) {
 
 	report := tr.report(context.Background(), sweepOutcome{reason: "the sweep this walk's report goes with"})
 
-	if len(report.Sizes) != volumeReportSizes {
-		t.Fatalf("the report carries %d sizes, want the %d this launcher bounds it to", len(report.Sizes), volumeReportSizes)
+	if len(report.Sizes) != shimwire.VolumeReportSizes {
+		t.Fatalf("the report carries %d sizes, want the %d this launcher bounds it to", len(report.Sizes), shimwire.VolumeReportSizes)
 	}
 	for _, size := range report.Sizes {
 		if size.Refused == "" {
@@ -721,13 +721,13 @@ func TestDirectoriesReadInPartAreBoundedInTheReportAndTheLog(t *testing.T) {
 	if len(lines) != 1 {
 		t.Fatalf("the trimmer wrote %d lines of the walk, want one: %q", len(lines), f.linesWritten())
 	}
-	if listed := strings.Count(lines[0], `" at "`); listed != volumeReportSizes {
-		t.Errorf("the walk's line names %d directories read in part, want the %d a report carries", listed, volumeReportSizes)
+	if listed := strings.Count(lines[0], `" at "`); listed != shimwire.VolumeReportSizes {
+		t.Errorf("the walk's line names %d directories read in part, want the %d a report carries", listed, shimwire.VolumeReportSizes)
 	}
 	if want := fmt.Sprintf("%d of them only in part", planted); !strings.Contains(lines[0], want) {
 		t.Errorf("the walk's line does not say %q: %.400s", want, lines[0])
 	}
-	if want := fmt.Sprintf(", and %d more)", planted-volumeReportSizes); !strings.Contains(lines[0], want) {
+	if want := fmt.Sprintf(", and %d more)", planted-shimwire.VolumeReportSizes); !strings.Contains(lines[0], want) {
 		t.Errorf("the walk's line does not say %q, how many it left out: %.400s", want, lines[0])
 	}
 }
@@ -748,5 +748,144 @@ func TestTheWalksFirstTwoChildrenAreTheOnesTheReclaimableRootsLieUnder(t *testin
 	}
 	if len(under) != 2 {
 		t.Errorf("the reclaimable roots lie under %v, want the two children the walk measures first", under)
+	}
+}
+
+// sizedFile makes a file of size bytes at path, sparse, aged at, with every directory above it:
+// the walk counts a file's apparent size (countFile), so a case can stand megabytes on the
+// volume without writing them.
+func sizedFile(t *testing.T, path string, size int64, at time.Time) {
+	t.Helper()
+	mkdirFixture(t, filepath.Dir(path))
+	writeAged(t, path, at)
+	if err := os.Truncate(path, size); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(path, at, at); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A report keeps the largest sizes the walk measured, in the order it measured them, and not the
+// first: the walk measures the scratch children before the go children, and a role can make any
+// number of directories under /legion/scratch, so fifty empty ones pushed the build cache out of
+// the report. The case stands fifty-five empty directories under scratch and a 5 MiB file under
+// go/build, and the report must carry go/build and forty-nine of the empty ones, those the walk
+// measured first, in walk order. The negative control is the cut as it stood at b7085e21, the
+// first fifty, which carried fifty empty directories and left go/build out.
+func TestTheReportKeepsTheLargestSizesInTheOrderTheWalkMeasuredThem(t *testing.T) {
+	const empty, build = 55, 5 << 20
+	clock := &fakeClock{at: time.Date(2026, 11, 11, 9, 0, 0, 0, time.UTC)}
+	root := t.TempDir()
+	for at := range empty {
+		mkdirFixture(t, filepath.Join(root, "scratch", fmt.Sprintf("empty-%02d", at)))
+	}
+	cache := filepath.Join(root, "go", "build")
+	sizedFile(t, filepath.Join(cache, "ab", "abcdef-a"), build, clock.at.Add(-2*time.Hour))
+	walk := walkOf(root, clock, &fakeTicks{}, measureTree).run(context.Background())
+	if len(walk.Sizes) != empty+1 {
+		t.Fatalf("the walk measured %d targets, want the %d empty directories and the build cache", len(walk.Sizes), empty+1)
+	}
+
+	report := newTrimFixture(t, 0).trimmer().bound(shimwire.LauncherVolumeReport{Trimmer: "trim-1", Episode: 1, Sizes: walk.Sizes})
+
+	if len(report.Sizes) != shimwire.VolumeReportSizes || report.SizesOmitted != empty+1-shimwire.VolumeReportSizes {
+		t.Fatalf("the report carries %d sizes and counts %d left out, want %d and %d", len(report.Sizes), report.SizesOmitted, shimwire.VolumeReportSizes, empty+1-shimwire.VolumeReportSizes)
+	}
+	var want []string
+	for at := range shimwire.VolumeReportSizes - 1 {
+		want = append(want, filepath.Join(root, "scratch", fmt.Sprintf("empty-%02d", at)))
+	}
+	want = append(want, cache)
+	if got := pathsOf(report.Sizes); !slices.Equal(got, want) {
+		t.Errorf("the report carries\n%v\nwant the build cache and the first %d empty directories, in walk order:\n%v", got, shimwire.VolumeReportSizes-1, want)
+	}
+	if last := report.Sizes[len(report.Sizes)-1]; last.Bytes != build {
+		t.Errorf("the report carries the build cache at %d bytes, want %d", last.Bytes, build)
+	}
+}
+
+// A regular file directly in an immediate child of the volume root that also holds directories
+// is a size of its own: the walk measures the directories two levels down, and a file beside
+// them would otherwise be in no size at all, bytes on the volume the report never names. The
+// case stands a 7 MiB `scratch/big.img` beside `scratch/tmp`, and every file of the tree must lie
+// under exactly one size. The negative control is the walk as it stood at b7085e21, which
+// measured `scratch/tmp` alone and left the 7 MiB in nothing.
+func TestAFileBesideTheDirectoriesOfAChildIsASizeOfItsOwn(t *testing.T) {
+	const big = 7 << 20
+	clock := &fakeClock{at: time.Date(2026, 11, 11, 9, 0, 0, 0, time.UTC)}
+	root := t.TempDir()
+	sizedFile(t, filepath.Join(root, "scratch", "tmp", "one"), 1, clock.at.Add(-2*time.Hour))
+	image := filepath.Join(root, "scratch", "big.img")
+	sizedFile(t, image, big, clock.at.Add(-2*time.Hour))
+	if err := os.Symlink("tmp", filepath.Join(root, "scratch", "tmp-link")); err != nil {
+		t.Fatal(err)
+	}
+
+	walk := walkOf(root, clock, &fakeTicks{}, measureTree).run(context.Background())
+
+	want := []string{image, filepath.Join(root, "scratch", "tmp")}
+	if got := pathsOf(walk.Sizes); !slices.Equal(got, want) {
+		t.Fatalf("the walk measured %v, want %v: the file beside the directory, and no size for the link, which holds no bytes", got, want)
+	}
+	if walk.Sizes[0].Bytes != big || walk.Sizes[0].BytesOverHour != big {
+		t.Errorf("the walk measured %s as %+v, want its %d bytes, all older than an hour", image, walk.Sizes[0], big)
+	}
+	if err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil || !entry.Type().IsRegular() {
+			return err
+		}
+		under := 0
+		for _, size := range walk.Sizes {
+			if path == size.Path || strings.HasPrefix(path, size.Path+"/") {
+				under++
+			}
+		}
+		if under != 1 {
+			t.Errorf("%s lies under %d of the sizes the walk measured, want exactly 1", path, under)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The walk descends no more than volumeWalkDepth levels below a target: each level it descends
+// holds a handle on the directory until the level is done, in PID 1, and a role can make a chain
+// of directories of any depth. A directory deeper than that is not opened; it is a refused
+// reading of the target, named by its name and depth as a refusal of the kernel's is, and the
+// walk goes on to its end. The case stands a chain one level deeper than the walk descends, with
+// a file in the deepest directory the walk opens, which it counts, and one in the directory past
+// it, which it does not. The negative control is the walk with no bound on its descent, which
+// opened every level, counted both files and named no refusal.
+func TestTheWalkDescendsNoDeeperThanItsDepthAndCountsTheRestRefused(t *testing.T) {
+	const reached, past = 3, 5
+	clock := &fakeClock{at: time.Date(2026, 11, 11, 9, 0, 0, 0, time.UTC)}
+	root := t.TempDir()
+	target := filepath.Join(root, "scratch", "deep")
+	chain := target
+	for level := 1; level <= volumeWalkDepth+1; level++ {
+		chain = filepath.Join(chain, fmt.Sprintf("d%02d", level))
+		if level == volumeWalkDepth {
+			sizedFile(t, filepath.Join(chain, "reached"), reached, clock.at.Add(-2*time.Hour))
+		}
+	}
+	sizedFile(t, filepath.Join(chain, "past"), past, clock.at.Add(-2*time.Hour))
+
+	walk := walkOf(root, clock, &fakeTicks{}, measureTree).run(context.Background())
+
+	if walk.Partial || len(walk.Missing) != 0 {
+		t.Errorf("the walk is partial %t and missing %v, want it at its end with nothing unmeasured: a level it does not descend to ends nothing", walk.Partial, walk.Missing)
+	}
+	at := slices.IndexFunc(walk.Sizes, func(size shimwire.LauncherVolumeSize) bool { return size.Path == target })
+	if at < 0 {
+		t.Fatalf("the walk did not measure %s: %+v", target, walk.Sizes)
+	}
+	size := walk.Sizes[at]
+	if size.Bytes != reached {
+		t.Errorf("the walk measured %d bytes under the chain, want the %d of the file at the deepest level it opens and not the %d past it", size.Bytes, reached, past)
+	}
+	if want := refusedPath(target, fmt.Sprintf("d%02d", volumeWalkDepth+1), volumeWalkDepth+1); size.Refused != want || size.Refusals != 1 {
+		t.Errorf("the walk names %q with %d refusals, want %q and 1: the directory past its depth, by its name and depth", size.Refused, size.Refusals, want)
 	}
 }

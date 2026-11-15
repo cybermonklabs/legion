@@ -131,8 +131,12 @@ under `$HOME` fails the first condition and is outside the sanctioned form, howe
 changes. The three artefacts above are the whole of that line's ground. Disk is not: every cache is
 already relocated onto the issue's volume (`docs/kubernetes.md`, "The tools a role's own work
 needs", carries the figures, and the cache trimmer that holds part of that volume under a mark is
-in `skill://legion-worker/references/tools.md`), and a sanctioned install is paid once per
-issue pod, on the issue's own disk, by the issue's roles together.
+in `skill://legion-worker/references/tools.md`), and a sanctioned install is paid on the issue's
+own disk, by the issue's roles together. It is paid once per issue pod where the trimmer never
+deletes: uv's cache and its Pythons, the Go module cache and the Playwright registry. It is paid
+again after a sweep where the trimmer does delete: a `bunx --package` run installs its package
+again once a sweep has deleted the bun install cache's entries for it, and a `go run …@version`
+compiles again, from the module cache, once a sweep has deleted its entries of the Go build cache.
 
 **The worked case, and the one a role actually meets: the Dispatch e2e stack.** A change to
 `packages/dispatch` is proved in the pod by driving the specs it touches, one spec a command

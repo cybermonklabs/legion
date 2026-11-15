@@ -2,6 +2,8 @@ kind: Changed
 custom:
   Issue: pr3519
 body: |-
-  The daemon API contract this plugin declares is 140, for the launcher wire the cache trimmer in
-  an issue pod adds: the trimmer's settings on the daemon's answer to a launcher's hello, and the
-  trimmer's report frame.
+  The daemon API contract this plugin declares is 140, for what the cache trimmer in an issue pod
+  adds: the trimmer's settings on the daemon's answer to a launcher's hello, the trimmer's report
+  frame, sent for a sweep that leaves the pod's volume above its low mark and once when the
+  trimmer switches itself off, and `volume_trim` under the state body's
+  `settings.runtime.kubernetes`.

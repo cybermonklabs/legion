@@ -134,12 +134,13 @@ func openRetrying(open func() (int, error)) (int, error) {
 // descriptor's own fstat says so), its names are read through that descriptor and removed the
 // same way, and it is removed last with unlinkat(AT_REMOVEDIR) from the descriptor of the
 // directory it is in. A name that became a link or a file between the unlink and the open is
-// refused by the open (ELOOP, or the fstat's ENOTDIR) and unlinked again as what it is now. A
-// directory renamed away while its names are removed is emptied where it went, through the
-// descriptor already open on it, and the link left in its place is refused by the last
-// unlinkat, which answers ENOTDIR and leaves the link standing: raced so in a test process with
-// no containment, 80 trials of 80, on 2026-11-14, kernel 4.19.0-gvisor, under go1.27.3
-// (TestTheDeletersRemovalFollowsNoLinkWithNoContainment).
+// refused by the open (ELOOP, or the fstat's ENOTDIR) and unlinked again as what it is now
+// (TestARemovalUnlinksWhatWasSwappedInBetweenItsUnlinkAndItsOpen, which makes that swap in the
+// window every time through betweenUnlinkAndOpen). A directory renamed away while its names are
+// removed is emptied where it went, through the descriptor already open on it, and the link left
+// in its place is refused by the last unlinkat, which answers ENOTDIR and leaves the link
+// standing: raced so in a test process with no containment, 80 trials of 80, on 2026-11-14,
+// kernel 4.19.0-gvisor, under go1.27.3 (TestTheDeletersRemovalFollowsNoLinkWithNoContainment).
 //
 // The error names what it failed on below dir by the entry's name, the name that failed and how
 // deep that name lay (removalFailure), so a line in the pod's log is the entry's path followed by
@@ -172,6 +173,9 @@ func (r *treeRemoval) remove(parent int, name string) error {
 	if err := unlinkRetrying(parent, name, 0); err == nil || errors.Is(err, syscall.ENOENT) {
 		return nil
 	}
+	if betweenUnlinkAndOpen != nil {
+		betweenUnlinkAndOpen(name)
+	}
 	fd, err := openElementAt(parent, name, name)
 	switch {
 	case errors.Is(err, syscall.ENOENT):
@@ -196,6 +200,14 @@ func (r *treeRemoval) remove(parent int, name string) error {
 	}
 	return nil
 }
+
+// betweenUnlinkAndOpen is called, where a case sets it, with the name remove is removing,
+// between the unlink of that name that failed and the open that follows it. It is nil in the pod
+// and in every deleter, where that window is a role's to race and no test's: the window is the
+// span between two syscalls, which a case racing it from another goroutine meets only by chance,
+// so the case that holds the open to its refusal makes its swap here instead, in the window
+// every time (TestARemovalUnlinksWhatWasSwappedInBetweenItsUnlinkAndItsOpen).
+var betweenUnlinkAndOpen func(name string)
 
 // volumeRemovalPasses is how many times empty removes the names it reads from one directory: the
 // first pass, and one more for the names created while the first ran.

@@ -550,3 +550,94 @@ func TestTheNoticeTellsADirectoryReadInPartAndAWalkThatWasCutApart(t *testing.T)
 		})
 	}
 }
+
+// The sentence of a sweep is in the past tense: the frame carries no time for the sweep it
+// reports, and a report the launcher held through an outage reaches the daemon after it, so the
+// volume was above its low mark when the sweep ended and the sentence says nothing of it now. Its
+// freed bytes are the sweep's first reading's used bytes less its last's, which are negative when
+// the roles wrote more than the sweep removed, and such a sweep is told as the volume growing by
+// that many bytes. The negative control is the sentence at b7085e21, which read "is still above
+// its low mark after a sweep" in both rows and "-1048576 freed by this sweep" in the second.
+func TestAVolumeNoticeTellsTheSweepInThePastAndAGrowthAsAGrowth(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		freed   int64
+		want    []string
+		notSaid []string
+	}{
+		{
+			name:    "a sweep that freed bytes",
+			freed:   3 << 30,
+			want:    []string{"was still above its low mark when the sweep ended", ": 51539607552 bytes used, 2147483648 free, 3221225472 freed by the sweep;"},
+			notSaid: []string{"is still above", "grew"},
+		},
+		{
+			name:    "a sweep the roles outwrote",
+			freed:   -1 << 20,
+			want:    []string{"was still above its low mark when the sweep ended", ": 51539607552 bytes used, 2147483648 free, and the volume grew by 1048576 bytes while the sweep ran;"},
+			notSaid: []string{"is still above", "-1048576", "freed"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sweep := fullSweep()
+			sweep.PodUID, sweep.FreedBytes = volumePod, tc.freed
+			reason := volumeNoticeReason("LEGION-208", sweep)
+			for _, want := range tc.want {
+				if !strings.Contains(reason, want) {
+					t.Errorf("the sentence the architect reads does not say %q: %s", want, reason)
+				}
+			}
+			for _, not := range tc.notSaid {
+				if strings.Contains(reason, not) {
+					t.Errorf("the sentence the architect reads says %q: %s", not, reason)
+				}
+			}
+		})
+	}
+}
+
+// The switched-off trimmer's report is made by no sweep, so its sentence names no bytes freed and
+// no episode: the frame's freed bytes are zero because nothing swept, and its episode and what
+// raised it are filled in for the frame's own rule where the trimmer raised none (launcher's
+// switchOff). Its used and free bytes are the trimmer's last reading, and both zero where it made
+// none, which the sentence says in words rather than as a volume of zero bytes. The negative
+// control is the sentence at b7085e21, which read `0 bytes used, 0 free, 0 freed by this sweep`
+// and `episode 1 raised by "first"` for a trimmer that made no reading and raised no episode.
+func TestASwitchedOffNoticeNamesNoSweepAndNoEpisode(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		used, free int64
+		want       string
+		notSaid    []string
+	}{
+		{
+			name:    "a trimmer that made no reading",
+			want:    `(trimmer "trim-1"): it made no reading of the volume;`,
+			notSaid: []string{"bytes used", "freed", "episode", "raised by", "last reading"},
+		},
+		{
+			name: "a trimmer whose last reading stands",
+			used: 49 << 30, free: 1 << 30,
+			want:    `(trimmer "trim-1"): its last reading of the volume was 52613349376 bytes used, 1073741824 free;`,
+			notSaid: []string{"freed", "episode", "raised by", "no reading"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			off := record.VolumeNearFull{PodUID: volumePod, Trimmer: "trim-1", Episode: 1, RaisedBy: shimwire.VolumeEpisodeFirst,
+				UsedBytes: tc.used, FreeBytes: tc.free, StopReason: "the trimmer switched itself off after 3 panics in a row",
+				Faults: []string{"read the volume: panic: runtime error: invalid memory address\ngoroutine 9 [running]:"}, SwitchedOff: true}
+			reason := volumeNoticeReason("LEGION-208", off)
+			if want := "the cache trimmer on LEGION-208's pod " + volumePod + " has switched itself off"; !strings.HasPrefix(reason, want) {
+				t.Errorf("the sentence the architect reads does not open %q: %s", want, reason)
+			}
+			if !strings.Contains(reason, tc.want) {
+				t.Errorf("the sentence the architect reads does not say %q: %s", tc.want, reason)
+			}
+			for _, not := range tc.notSaid {
+				if strings.Contains(reason, not) {
+					t.Errorf("the sentence the architect reads says %q: %s", not, reason)
+				}
+			}
+		})
+	}
+}

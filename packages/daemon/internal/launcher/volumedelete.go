@@ -42,8 +42,8 @@ import (
 //
 // The second bound is where the removal runs: in a mount namespace of its own, walked from the
 // same list and by the same walk that build a role's (RoleCover.replaced and eachReplaced,
-// roleinit.go), each with a callback of its own: every path a role's own namespace replaces with
-// something of the role's is an empty filesystem of this child's instead, with a procfs of the
+// roleinit.go), each with a callback of its own: every directory a role's own namespace replaces
+// with something of the role's is an empty filesystem of this child's instead, with a procfs of the
 // child's own PID namespace where a role is given one and the child's working directory at the
 // root of its own namespace (containDeletions). /legion is left as the container mounted it,
 // since that is where the deletions are made. A link a removal did follow would then reach only
@@ -128,8 +128,10 @@ import (
 // There is no fallback. A deleter that cannot start, and one that dies while the sweep runs,
 // each leave the sweep deleting nothing more: it says so in one line of the pod's log and ends
 // with that reason in its report (sweep, volumetrim.go). Deleting the rest in the launcher's
-// own view is the behaviour this file exists to end, and a sweep that skips a cycle costs the
-// pod one interval of a volume that is already full.
+// own view is the behaviour this file exists to end. A sweep whose deleter would not start frees
+// nothing, so the trimmer's ten-interval pause follows it (volumeQuietIntervals, volumetrim.go):
+// the next sweep is eleven intervals later, eleven minutes at the default interval of sixty
+// seconds, of a volume that is already full.
 
 // VolumeTrimDeleteSubcommand is `legion launcher`'s second hidden subcommand, the one the
 // trimmer runs itself, as RoleInitSubcommand is the one the launcher runs for a role.
@@ -489,15 +491,38 @@ const volumeDeleteFirstFD = 3
 // child is still running: exec copies into it from a goroutine of its own, so the two meet under
 // one lock. It is this package's own and not the tests' lockedBuffer, which is an alias for a
 // test helper's buffer (launcher_test.go).
+//
+// It keeps the first volumeDeleteSaidBytes of it and drops the rest, saying that it did
+// (trailing): what it keeps goes into errRemoverGone's text, and from there into the sweep's
+// stop reason and a line of the pod's log, so its size is this package's to choose rather than
+// the child's. The first bytes are the ones kept because they are the ones that say why: the
+// error runVolumeTrimDelete writes before it exits, or a panic's message before its stack.
 type saidBuffer struct {
 	mu  sync.Mutex
 	buf bytes.Buffer
+	cut bool
 }
 
+// volumeDeleteSaidBytes is the most of the deleter's standard error a saidBuffer keeps, the
+// bound a reply of the deleter is kept to (volumeDeleteReplyBytes), and volumeDeleteSaidCut what
+// trailing writes after what it kept where the child said more.
+const (
+	volumeDeleteSaidBytes = volumeDeleteReplyBytes
+	volumeDeleteSaidCut   = "… (the deleter said more, which was cut here)"
+)
+
+// Write keeps what fits under the bound and answers the whole of p as written, so the copy exec
+// runs from the child's standard error drains it to its end rather than stopping at an error and
+// closing the pipe under the child (os/exec's exec.go:613-614, go1.27.3).
 func (b *saidBuffer) Write(p []byte) (int, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return b.buf.Write(p)
+	kept := p
+	if room := volumeDeleteSaidBytes - b.buf.Len(); len(kept) > room {
+		kept, b.cut = kept[:max(room, 0)], true
+	}
+	b.buf.Write(kept)
+	return len(p), nil
 }
 
 // trailing is what the child has said so far, as one parenthesised line for an error to carry,
@@ -506,6 +531,9 @@ func (b *saidBuffer) trailing() string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	said := strings.TrimSpace(b.buf.String())
+	if b.cut {
+		said += volumeDeleteSaidCut
+	}
 	if said == "" {
 		return ""
 	}

@@ -88,6 +88,78 @@ func TestARemovalAskedOfADirectoryTheListingDidNotOpenNamesItQuoted(t *testing.T
 	}
 }
 
+// A deleter that answers nothing, or answers outside the protocol, is gone: the sweep stops at
+// that entry and keeps what it deleted (errRemoverGone, sweep), rather than reading the next
+// line as the answer to the next request or taking a broken answer for a removal. The replies
+// are an empty stream, which is a child that died before it answered, a line that is no answer
+// of the protocol, and a refusal whose words are not quoted; each is read through the reader the
+// remover is started with, and every later request is answered the same. What the child said on
+// its standard error goes with it. The negative controls are the answer to the end of the replies
+// and the default branch each returned as a plain error, which the sweep took for a removal that
+// failed and went on to the next entry.
+func TestADeleterThatAnswersNothingOrOutsideTheProtocolIsGone(t *testing.T) {
+	for name, replies := range map[string]string{
+		"an empty reply stream":                  "",
+		"a reply of no answer this protocol has": "bogus\n",
+		"a refusal whose words are not quoted":   "failed it is not quoted\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := &sweepDir{}
+			said := &saidBuffer{}
+			_, _ = said.Write([]byte("volume-trim-delete: the child's own words\n"))
+			remover := &containedRemover{requests: discardRequests{}, replies: newDeleterReplies(strings.NewReader(replies)),
+				at: map[*sweepDir]int{dir: 0}, said: said}
+
+			first := remover.removeAll(dir, "entry")
+			if !errors.Is(first, errRemoverGone) {
+				t.Fatalf("the remover answered %v, want %v", first, errRemoverGone)
+			}
+			if !strings.Contains(first.Error(), "the child's own words") {
+				t.Errorf("the remover answered %q, want what the child said on its standard error with it", first)
+			}
+			if again := remover.removeAll(dir, "entry"); again != first {
+				t.Errorf("the next request was answered %v, want the same %v: no later removal can be asked of a remover that is gone", again, first)
+			}
+		})
+	}
+}
+
+// The deleter's standard error is kept to a bound: what it said goes into errRemoverGone's text
+// and from there into the sweep's stop reason and a line of the pod's log, so its size is this
+// package's to choose and not the child's. The first bytes are kept, which say why, and a mark
+// says the rest was cut; every write is answered as written, so exec's copy goes on draining the
+// pipe. The negative control is the buffer that kept everything, which put all 256 KiB the child
+// wrote into the error.
+func TestTheDeletersStandardErrorIsKeptToItsBound(t *testing.T) {
+	said := &saidBuffer{}
+	const first = "volume-trim-delete: the error that says why"
+	long := strings.Repeat("y", 64*volumeDeleteSaidBytes)
+	for _, written := range []string{first + "\n", long, "the last of it\n"} {
+		if n, err := said.Write([]byte(written)); n != len(written) || err != nil {
+			t.Fatalf("a write of %d bytes was answered %d, %v, want the whole of it written", len(written), n, err)
+		}
+	}
+	dir := &sweepDir{}
+	remover := &containedRemover{requests: discardRequests{}, replies: newDeleterReplies(strings.NewReader("")),
+		at: map[*sweepDir]int{dir: 0}, said: said}
+	gone := remover.removeAll(dir, "entry")
+	if !errors.Is(gone, errRemoverGone) {
+		t.Fatalf("the remover answered %v, want %v", gone, errRemoverGone)
+	}
+	// The bytes kept, each newline among them written as "; " on the one line (trailing), the
+	// mark, and the parentheses: the first write's one newline is the only one kept.
+	trailing := said.trailing()
+	if bound := len(" (") + volumeDeleteSaidBytes + strings.Count(first+"\n", "\n") + len(volumeDeleteSaidCut) + len(")"); len(trailing) > bound {
+		t.Errorf("what the child said is carried as %d bytes, want at most %d", len(trailing), bound)
+	}
+	if !strings.Contains(trailing, first) || !strings.HasSuffix(trailing, volumeDeleteSaidCut+")") {
+		t.Errorf("what the child said is carried as %.120q…%q, want its first words and the mark %q at the end", trailing, trailing[max(0, len(trailing)-60):], volumeDeleteSaidCut)
+	}
+	if !strings.HasSuffix(gone.Error(), trailing) {
+		t.Errorf("the remover's error does not end with what the child said: %.200q", gone)
+	}
+}
+
 // discardRequests is a deleter's request pipe that goes nowhere, for a case that writes its
 // replies itself.
 type discardRequests struct{}

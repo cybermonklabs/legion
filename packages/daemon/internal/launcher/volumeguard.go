@@ -438,13 +438,19 @@ func newerThan(dir *dirHandle, name string, cutoff time.Time, halt func() error)
 // where there is one, is asked before each directory is opened, and the walk ends with the
 // first error it answers.
 //
-// It holds one handle per level of the tree, which is two descriptors and the level's listing,
-// until that level is done, and no path: a handle keeps the one above it and its own name
-// (dirHandle.path). A cache entry is shallow — Go's own build trees and bun's install cache are
-// two or three levels — but a role may make one of any depth, and the pod's limit is 1048576
-// descriptors (`ulimit -n`, measured in an issue pod of this deployment at 2026-11-12T06:30Z);
-// a level the kernel refuses for that or any other reason is the error the guard answers with,
-// and the entry is passed over.
+// A level is listed walkEntriesBatch names at a time, as eachName reads a process's
+// descriptors, and the names of one batch are visited in the order they sort, which for a
+// directory of no more names than that is the order every name of it sorts in. A level of N
+// names costs the walk a batch of them and not all N: a role may make a cache entry with a
+// directory of any number of names, and the walk runs in PID 1 on every sweep.
+//
+// It holds one handle per level of the tree until that level is done, which is three
+// descriptors — the handle's two and the listing's own — and a batch of names, and no path: a
+// handle keeps the one above it and its own name (dirHandle.path). A cache entry is shallow —
+// Go's own build trees and bun's install cache are two or three levels — but a role may make one
+// of any depth, and the pod's limit is 1048576 descriptors (`ulimit -n`, measured in an issue
+// pod of this deployment at 2026-11-12T06:30Z); a level the kernel refuses for that or any
+// other reason is the error the guard answers with, and the entry is passed over.
 //
 // That error names what failed from name, as the deleter's removal names what it failed on from
 // the entry (treeRemoval.remove): name itself where its own open or listing failed, and
@@ -465,33 +471,50 @@ func walkEntries(dir *dirHandle, name string, halt func() error, visit func(info
 		return err
 	}
 	defer func() { _ = level.Close() }()
-	entries, err := level.readDir()
+	// The listing is a File opened in the handle's Root, so each entry it reads carries the
+	// lstat its own descriptor made (os.newUnixDirent, go1.27.3), as dirHandle.ReadDir's do.
+	listing, err := level.root.Open(".")
 	if err != nil {
 		return under(name, within(err, ""))
 	}
-	for _, entry := range entries {
-		info, err := entry.Info()
-		if err != nil {
-			// Not met under go1.27.3: an entry listed through a handle carries the lstat its
-			// listing made, and Info answers that with no error (dirHandle.ReadDir). Were it
-			// to fail, a name gone since the listing holds nothing back, and any other error
-			// names the entry by its name below name, quoted, as every other read here does.
-			if errors.Is(err, fs.ErrNotExist) {
-				continue
+	defer func() { _ = listing.Close() }()
+	for {
+		entries, read := listing.ReadDir(walkEntriesBatch)
+		slices.SortFunc(entries, func(a, b os.DirEntry) int { return strings.Compare(a.Name(), b.Name()) })
+		for _, entry := range entries {
+			info, err := entry.Info()
+			if err != nil {
+				// Not met under go1.27.3: an entry listed through a handle carries the lstat
+				// its listing made, and Info answers that with no error (dirHandle.ReadDir).
+				// Were it to fail, a name gone since the listing holds nothing back, and any
+				// other error names the entry by its name below name, quoted, as every other
+				// read here does.
+				if errors.Is(err, fs.ErrNotExist) {
+					continue
+				}
+				return under(name, within(err, entry.Name()))
 			}
-			return under(name, within(err, entry.Name()))
-		}
-		if err := visit(info); err != nil {
-			return err
-		}
-		if entry.IsDir() {
-			if err := walkEntries(level, entry.Name(), halt, visit); err != nil {
-				return under(name, err)
+			if err := visit(info); err != nil {
+				return err
 			}
+			if entry.IsDir() {
+				if err := walkEntries(level, entry.Name(), halt, visit); err != nil {
+					return under(name, err)
+				}
+			}
+		}
+		switch {
+		case errors.Is(read, io.EOF):
+			return nil
+		case read != nil:
+			return under(name, within(read, ""))
 		}
 	}
-	return nil
 }
+
+// walkEntriesBatch is how many names of one level walkEntries reads at a time: procNamesBatch,
+// the batch eachName reads a process's descriptors in.
+const walkEntriesBatch = procNamesBatch
 
 // errWalkDone ends a walk from inside a visit, as fs.SkipAll ended the walk this replaced.
 var errWalkDone = errors.New("the walk has what it was asked for")

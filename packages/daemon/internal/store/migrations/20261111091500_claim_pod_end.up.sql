@@ -10,15 +10,18 @@
 -- and is prose for an operator (INFRA-2009).
 --
 -- The column holds that reason and message alone, bounded where it is built
--- (runtime.PodEndRunes), never the detail: an unbounded log tail in a claims column would be
--- copied into every claim read and published to an Envoy role topic with the notice.
+-- (runtime.PodEndRunes), never the detail: the detail is kept whole beside it, in
+-- last_death_cause, and this is what the worker-died's reason names whole, on its one line
+-- (workflow's deathReason), so it holds the kubelet's words and nothing of the role's log, at a
+-- size the daemon chose.
 --
--- It is written where the death is recorded (supervise's Machine.died) and cleared before a retry
--- exactly as failure is (launchNow), so a claim that comes back and later fails for something else
--- carries nothing of the earlier end. It is durable for the reason failure is: the deaths a claim
--- is charged can run out hours after the end that started them, with a daemon restart in between,
--- and the restarted daemon replays the failure from the claim it read back
--- (workflowRuntime.replayTerminal).
+-- It is written by each report of a death (supervise's Machine.died) and cleared with failure at
+-- each launch (launchNow), so a claim that comes back and later fails for something else carries
+-- nothing of the earlier end, and a failed claim that holds one failed with no launch since the
+-- death that wrote it. It is durable for the reason failure is: a failure whose fact no daemon
+-- applied — the live apply failed, or the daemon's stop cut it off after the claim's state was
+-- written — is applied at the next boot from the claim read back from this table
+-- (workflowRuntime.replayTerminal), and that fact names the pod end only where the column kept it.
 --
 -- Not null with an empty default, as failure is: a claim that has observed no pod end holds the
 -- empty string, so every read of it is one branch and no scan takes a pointer.

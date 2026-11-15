@@ -1563,6 +1563,119 @@ func TestAnEntryIsAsFreshAsTheNewestFileAnywhereInIt(t *testing.T) {
 	f.assertProtected()
 }
 
+// Of $TMPDIR the sweep deletes only what Go names a build's working directory, `go-build` and
+// one or more decimal digits (isGoBuildTree): a name that only begins `go-build` is a role's own
+// work, and nothing automatic deletes a role's own work. The case stands a role's
+// `go-build-repro`, `go-builder`, a bare `go-build` and a `go-build.log`, every one a month old,
+// beside a real `go-build123` two hours old, which is the control and goes. The negative control
+// is the rule as it stood at b7085e21, `strings.HasPrefix(name, "go-build")`, which deleted the
+// three directories and passed the file over with a line naming it as an entry of the wrong kind.
+func TestOnlyANameGoGivesABuildTreeIsAnEntryOfTMPDIR(t *testing.T) {
+	f := newTrimFixture(t, 0)
+	tmp := f.roots[0]
+	if tmp.Entry != GoBuildTrees {
+		t.Fatalf("the first reclaimable root is %+v, want $TMPDIR", tmp)
+	}
+	built := f.addTree(filepath.Join(tmp.Path, "go-build123"), tmp.Entry)
+	month := f.clock.at.Add(-30 * 24 * time.Hour)
+	var own []string
+	for _, name := range []string{"go-build-repro", "go-builder", "go-build"} {
+		path := filepath.Join(tmp.Path, name)
+		agedUnder(t, tmp.Path, filepath.Join(path, "work", "notes.md"), month)
+		own = append(own, path)
+	}
+	logFile := filepath.Join(tmp.Path, "go-build.log")
+	writeAged(t, logFile, month)
+	own = append(own, logFile)
+	f.useVolume(steady(90))
+	f.setSettings(trimSettings())
+
+	out := f.trimmer().sweep(context.Background(), *trimSettings(), steady(90)(0))
+
+	if f.exists(built.path) {
+		t.Errorf("the sweep left %s, Go's own build tree two hours old, so the case shows nothing: %s", built.path, out.reason)
+	}
+	for _, path := range own {
+		if !f.exists(path) {
+			t.Errorf("the sweep deleted %s, a role's own name that only begins go-build", path)
+		}
+		if said := f.logged(filepath.Base(path) + `"`); said != 0 {
+			t.Errorf("the sweep wrote %d lines naming %s, want none: it is no entry of $TMPDIR at all; it wrote %q", said, path, f.linesWritten())
+		}
+	}
+	if out.deletions != 1 {
+		t.Errorf("the sweep deleted %d entries, want the one build tree: %s", out.deletions, out.reason)
+	}
+	f.assertProtected()
+}
+
+// The used-path set the removal acts on is never older than volumeUsedPathsMaxAge. The sweep
+// asks the set of an entry at the entry's boundary, then re-reads the whole entry's tree before
+// the delete (newerThan), and that re-read takes as long as the tree is large: so the set is
+// asked again immediately before the removal and read again first once the re-read has taken it
+// past a second. The case moves the trimmer's clock a second and a millisecond inside the
+// re-read of one late directory entry, at its first directory, and a process takes hold of that
+// entry at the same moment; the set asked at the boundary was fresh and named no such process.
+// The entry must stand, and every other entry go. The control is the same sweep with no process
+// appearing, where that entry goes. The negative control is the sweep as it stood at b7085e21,
+// which asked the set at the boundary alone and deleted the entry.
+func TestTheUsedPathSetIsAskedAgainAfterAPreDeleteReReadThatTookItPastASecond(t *testing.T) {
+	sweep := func(t *testing.T, appears bool) (survived bool, deletions, entries int) {
+		f := newTrimFixture(t, 4)
+		order := f.oldestFirst()
+		late := -1
+		for at := len(order) - 1; at >= 0; at-- {
+			if info, err := os.Lstat(order[at].path); err == nil && info.IsDir() {
+				late = at
+				break
+			}
+		}
+		if late <= 0 {
+			t.Fatal("the fixture holds no late directory entry for the process to take hold of")
+		}
+		entry, before := order[late], order[:late]
+		// The trimmer's clock is read three times from the moment every entry before this one
+		// is gone: the boundary's halted, the boundary's question of the set's age, which finds
+		// it fresh, and the halt before the first directory the entry's re-read opens.
+		reads := 0
+		f.clock.setHook(func(clock *fakeClock) {
+			if reads == 0 && (!f.exists(entry.path) || slices.ContainsFunc(before, func(e *fixtureEntry) bool { return f.exists(e.path) })) {
+				return
+			}
+			reads++
+			if reads != 3 {
+				return
+			}
+			if appears {
+				placeProcess(t, f.proc, 4343, filepath.Join(entry.path, "b1"))
+			}
+			clock.advance(volumeUsedPathsMaxAge + time.Millisecond)
+		})
+		f.useVolume(steady(90))
+		f.setSettings(trimSettings())
+
+		out := f.trimmer().sweep(context.Background(), *trimSettings(), steady(90)(0))
+		if reads < 3 {
+			t.Fatalf("the case never reached the entry's re-read, having seen %d readings of the clock there: %s", reads, out.reason)
+		}
+		return f.exists(entry.path), out.deletions, len(f.entries)
+	}
+
+	survived, deletions, entries := sweep(t, true)
+	if !survived {
+		t.Error("the sweep deleted the entry a process took hold of during its re-read, more than a second after the set was read: the removal acted on a stale set")
+	}
+	if deletions != entries-1 {
+		t.Errorf("the sweep deleted %d entries, want the %d that nothing holds", deletions, entries-1)
+	}
+	t.Run("the control, with no process appearing", func(t *testing.T) {
+		survived, deletions, entries := sweep(t, false)
+		if survived || deletions != entries {
+			t.Errorf("the control sweep left the entry %t and deleted %d of %d entries, want every one deleted", survived, deletions, entries)
+		}
+	})
+}
+
 // The Go build cache rule reaches the names ending `-a` and `-d` inside a shard directory and
 // nothing else: the cache's own trim.txt and README sit in the cache root rather than in a
 // shard, and a name with neither suffix is not an entry whatever its age. A `-d` that is a
@@ -3697,6 +3810,62 @@ func TestTheTrimmerHoldsAReportItsSendRefused(t *testing.T) {
 	})
 }
 
+// A report that replaces a held one carries what only the held one carried. The trimmer clears
+// its faults and refused /proc reads into the report it builds (report), so when report A is
+// held, its flush fails and the newer report B fails too, B replaces A and must take A's fault
+// and refused read with it: R1 has the trimmer carry a fault into the next report it sends, and
+// R3 a refused read. The case makes two failed sends in a row — A's own, then A's flush and B's
+// together — and then lets one through. The negative control is the replacement as it stood at
+// b7085e21, `t.held = &report`, which sent B with no fault and no refused read. The log line of
+// A's failed flush is read too: it said A was held for the next attempt with no condition, two
+// lines before B took its place.
+func TestAReportThatReplacesAHeldOneCarriesItsFaultsAndRefusedReads(t *testing.T) {
+	const (
+		refusedA = "process 7: /proc/7/fd: permission denied"
+		refusedB = "process 8: /proc/8/fd: permission denied"
+	)
+	f := newTrimFixture(t, 1)
+	tr := f.trimmer()
+	tr.episode, tr.raisedBy = 1, shimwire.VolumeEpisodeFirst
+	f.refuseSends(errors.New("the bound connection is gone"))
+
+	tr.fault("a panic of A's interval", []byte("goroutine 1 [running]:\nA's stack"))
+	tr.deliver(tr.report(context.Background(), sweepOutcome{reason: "A", refused: []string{refusedA}}))
+	tr.deliver(tr.report(context.Background(), sweepOutcome{reason: "B", refused: []string{refusedB, refusedA}}))
+	if tr.held == nil || tr.held.StopReason != "B" {
+		t.Fatalf("the trimmer holds %+v after two failed sends, want report B in place of A", tr.held)
+	}
+	if f.logged("holding it for the next attempt") != 1 || f.logged("it replaces the held report, carrying that report's 1 recovered faults and 1 refused /proc reads") != 1 {
+		t.Errorf("the trimmer wrote %q, want A held once and B said to replace it with A's fault and refused read", f.linesWritten())
+	}
+	if flushed := f.logged("the held report could not be sent either"); flushed != 1 || f.logged("either (the bound connection is gone); holding it for the next attempt") != 0 {
+		t.Errorf("the trimmer wrote %q, want A's failed flush said once and not as a report held for the next attempt", f.linesWritten())
+	}
+
+	f.refuseSends(nil)
+	tr.flush()
+	sent := f.reports()
+	if len(sent) != 1 {
+		t.Fatalf("the trimmer sent %d reports once the connection took them, want B alone: %+v", len(sent), sent)
+	}
+	report := sent[0]
+	if report.StopReason != "B" {
+		t.Errorf("the report sent stopped because %q, want B's", report.StopReason)
+	}
+	if len(report.Faults) != 1 || !strings.HasPrefix(report.Faults[0], "a panic of A's interval") || report.FaultsOmitted != 0 {
+		t.Errorf("the report sent carries faults %q and %d left out, want the one fault A carried", report.Faults, report.FaultsOmitted)
+	}
+	if want := []string{refusedA, refusedB}; !slices.Equal(report.RefusedReads, want) || report.RefusedReadsOmitted != 0 {
+		t.Errorf("the report sent names the refused reads %q and %d left out, want %q: A's first, then B's own, and A's once though B met it again", report.RefusedReads, report.RefusedReadsOmitted, want)
+	}
+	if err := report.Validate(); err != nil {
+		t.Errorf("the daemon would refuse the report sent: %v", err)
+	}
+	if tr.held != nil {
+		t.Errorf("the trimmer still holds %+v after the connection took it", tr.held)
+	}
+}
+
 // plantWalkTargets puts count directories under the volume's scratch, each named with the 255
 // bytes a directory component allows. Every one is a target of the size walk, which measures
 // every directory two levels under the volume root, and every one is one mkdir by any role of
@@ -3772,18 +3941,18 @@ func TestAReportOfAVolumeHoldingThousandsOfDirectoriesIsOneTheConnectionTakes(t 
 	}
 
 	switch {
-	case len(report.Sizes) != volumeReportSizes:
-		t.Errorf("the report carries %d measured directories, want the %d this launcher bounds it to", len(report.Sizes), volumeReportSizes)
+	case len(report.Sizes) != shimwire.VolumeReportSizes:
+		t.Errorf("the report carries %d measured directories, want the %d this launcher bounds it to", len(report.Sizes), shimwire.VolumeReportSizes)
 	case len(report.Sizes)+report.SizesOmitted != walkedTargets:
 		t.Errorf("the report carries %d measured directories and says %d were left out, want the %d the walk measured",
 			len(report.Sizes), report.SizesOmitted, walkedTargets)
-	case len(report.SizesMissing) != volumeReportSizesMissing:
-		t.Errorf("the report names %d unmeasured directories, want the %d this launcher bounds it to", len(report.SizesMissing), volumeReportSizesMissing)
+	case len(report.SizesMissing) != shimwire.VolumeReportSizesMissing:
+		t.Errorf("the report names %d unmeasured directories, want the %d this launcher bounds it to", len(report.SizesMissing), shimwire.VolumeReportSizesMissing)
 	case len(report.SizesMissing)+report.SizesMissingOmitted < planted-walkedTargets:
 		t.Errorf("the report names %d unmeasured directories and says %d were left out, want at least the %d the walk never reached",
 			len(report.SizesMissing), report.SizesMissingOmitted, planted-walkedTargets)
-	case len(report.Faults) != volumeReportFaults:
-		t.Errorf("the report carries %d faults, want the newest %d", len(report.Faults), volumeReportFaults)
+	case len(report.Faults) != shimwire.VolumeReportFaults:
+		t.Errorf("the report carries %d faults, want the newest %d", len(report.Faults), shimwire.VolumeReportFaults)
 	case len(report.Faults)+report.FaultsOmitted != faults:
 		t.Errorf("the report carries %d faults and says %d were left out, want the %d the trimmer recovered",
 			len(report.Faults), report.FaultsOmitted, faults)
@@ -3825,8 +3994,8 @@ func TestAReportOfAVolumeHoldingThousandsOfDirectoriesIsOneTheConnectionTakes(t 
 		testwait.Eventually(t, "the report of the sweep that deleted nothing", func() bool { return len(f.reports()) == 1 })
 		report := f.reports()[0]
 		switch {
-		case len(report.RefusedReads) != volumeReportRefusedReads:
-			t.Errorf("the report names %d refused reads, want the %d this launcher bounds it to", len(report.RefusedReads), volumeReportRefusedReads)
+		case len(report.RefusedReads) != shimwire.VolumeReportRefusedReads:
+			t.Errorf("the report names %d refused reads, want the %d this launcher bounds it to", len(report.RefusedReads), shimwire.VolumeReportRefusedReads)
 		case len(report.RefusedReads)+report.RefusedReadsOmitted != refusedProcesses:
 			t.Errorf("the report names %d refused reads and says %d were left out, want the %d processes the sweep met",
 				len(report.RefusedReads), report.RefusedReadsOmitted, refusedProcesses)

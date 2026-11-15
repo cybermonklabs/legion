@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"syscall"
 	"time"
@@ -73,10 +74,10 @@ type walkResult struct {
 	Partial bool
 	// Missing is what the walk did not measure: a directory it could not open or list, with the
 	// read the kernel refused (LauncherVolumeMissing.Reason), and everything it had not reached
-	// when the budget or the container's stop cut it. It holds at most volumeReportSizesMissing
-	// of them, the most a report names, and MissingOmitted counts the rest (miss): the trimmer
-	// keeps a walk for the hour its numbers are reported (trimmer.sizes), and a role may make any
-	// number of directories under /legion/scratch.
+	// when the budget or the container's stop cut it. It holds at most
+	// shimwire.VolumeReportSizesMissing of them, the most a report names, and MissingOmitted
+	// counts the rest (miss): the trimmer keeps a walk for the hour its numbers are reported
+	// (trimmer.sizes), and a role may make any number of directories under /legion/scratch.
 	Missing        []shimwire.LauncherVolumeMissing
 	MissingOmitted int
 }
@@ -84,7 +85,7 @@ type walkResult struct {
 // miss names one directory the walk did not measure, and why where a read was refused, or counts
 // it once Missing holds as many as a report names.
 func (r *walkResult) miss(path, reason string) {
-	if len(r.Missing) >= volumeReportSizesMissing {
+	if len(r.Missing) >= shimwire.VolumeReportSizesMissing {
 		r.MissingOmitted++
 		return
 	}
@@ -104,13 +105,14 @@ type measured struct {
 	// its open or its listing (unreadReason). Nothing of it was measured, so the walk names it
 	// as missing with that reason rather than as a size of no bytes (run).
 	unread string
-	// refused is how many reads beneath the directory the kernel refused, and refusedName and
-	// refusedDepth the first of them: the name refused and how many levels below the directory
-	// it lay (refuse). A refusal makes the reading a lower bound of the directory and ends
-	// nothing: /legion/feed is a read-only mount inside the same claim, so the walk reaches it
-	// and its bytes are already in the statfs reading the marks are taken from. run carries them
-	// on the size (refusedPath), where a reader is told the number is at least that many bytes
-	// and where the read was refused.
+	// refused is how many reads beneath the directory the walk did not make — each the kernel
+	// refused, and each directory deeper than the walk descends (volumeWalkDepth) — and
+	// refusedName and refusedDepth the first of them: the name refused and how many levels below
+	// the directory it lay (refuse). A refusal makes the reading a lower bound of the directory
+	// and ends nothing: /legion/feed is a read-only mount inside the same claim, so the walk
+	// reaches it and its bytes are already in the statfs reading the marks are taken from. run
+	// carries them on the size (refusedPath), where a reader is told the number is at least that
+	// many bytes and where the read was refused.
 	refused      int
 	refusedName  string
 	refusedDepth int
@@ -121,14 +123,14 @@ type measured struct {
 	depth int
 }
 
-// walkTarget is one directory the walk measures, named the way every read of it is made: the
-// immediate child of the volume root it lies in, and its own name in that child — "" when the
-// target is the child itself, which is what an immediate child holding no directory of its own
-// is measured as.
+// walkTarget is one target the walk measures, named the way every read of it is made: the
+// immediate child of the volume root it lies in, and its own name in that child — a directory,
+// or a regular file beside the directories of that child — or "" when the target is the child
+// itself, which is what an immediate child holding no directory of its own is measured as.
 //
 // The walk carries names and not handles because a volume may hold thousands of targets — a
 // role may make any number of directories under /legion/scratch, and the report is bounded for
-// that very reason (volumeReportSizes, volumetrim.go) — and a handle each would be thousands of
+// that very reason (shimwire.VolumeReportSizes) — and a handle each would be thousands of
 // descriptors held open for the length of a walk. Each is opened in turn, one name at a time,
 // when it is measured (run).
 type walkTarget struct {
@@ -149,7 +151,7 @@ type sizeWalk struct {
 	measure func(ctx context.Context, dir *dirHandle, name string, at time.Time) measured
 }
 
-// run measures the directories two levels under the volume root and answers what it read.
+// run measures the targets two levels under the volume root (targets) and answers what it read.
 //
 // Every read of the walk goes through a handle the walk opened, and nothing it carries from one
 // read to the next is a path. The listing used to answer absolute paths and each measurement
@@ -295,7 +297,7 @@ func (w sizeWalk) pathOf(target walkTarget) string {
 func (w sizeWalk) cut(result *walkResult, targets []walkTarget) {
 	result.Partial = true
 	for at, target := range targets {
-		if len(result.Missing) >= volumeReportSizesMissing {
+		if len(result.Missing) >= shimwire.VolumeReportSizesMissing {
 			result.MissingOmitted += len(targets) - at
 			return
 		}
@@ -325,11 +327,15 @@ func unreadReason(err error) string {
 }
 
 // targets is what the walk measures, in order: every directory exactly two levels under the
-// volume root, and, for an immediate child of the root that holds no directory of its own, that
-// child itself, so that nothing on the volume is left unaccounted. Two levels is the depth at
-// which the numbers mean something to a reader — `/legion/scratch/tmp` and `/legion/go/build`
-// rather than `/legion/scratch`, which is every cache of the pod in one figure — and no deeper,
-// because the level below that is one directory per cache entry.
+// volume root, with every regular file beside those directories in the same immediate child of
+// the root, each a target of its own, and, for an immediate child of the root that holds no
+// directory of its own, that child itself. So nothing on the volume is left unaccounted but what
+// counts nowhere anyway — a link, a device or a socket beside those directories holds no bytes
+// of a regular file (countFile) — and a 7 MiB `/legion/scratch/big.img` is a size of its own
+// rather than bytes in no size at all. Two levels is the depth at which the numbers mean
+// something to a reader — `/legion/scratch/tmp` and `/legion/go/build` rather than
+// `/legion/scratch`, which is every cache of the pod in one figure — and no deeper, because the
+// level below that is one directory per cache entry.
 //
 // The root's listing goes through the handle on the volume root and each child's through a
 // handle opened on that child by its single name in it, so what becomes a target is an entry of
@@ -387,15 +393,15 @@ func (w sizeWalk) targets(ctx context.Context, handle *dirHandle) ([]walkTarget,
 			result.miss(w.pathOf(walkTarget{child: child.Name()}), unreadReason(err))
 			continue
 		}
-		found := false
-		for _, entry := range inside {
-			if entry.IsDir() {
-				groups[group] = append(groups[group], walkTarget{child: child.Name(), inside: entry.Name()})
-				found = true
-			}
-		}
-		if !found {
+		holdsDirs := slices.ContainsFunc(inside, func(entry os.DirEntry) bool { return entry.IsDir() })
+		if !holdsDirs {
 			groups[group] = append(groups[group], walkTarget{child: child.Name()})
+			continue
+		}
+		for _, entry := range inside {
+			if entry.IsDir() || entry.Type().IsRegular() {
+				groups[group] = append(groups[group], walkTarget{child: child.Name(), inside: entry.Name()})
+			}
 		}
 	}
 	return listed(), result
@@ -462,16 +468,18 @@ func measureTree(ctx context.Context, dir *dirHandle, name string, at time.Time)
 // A directory below the target it cannot open or list is a refused reading and ends nothing:
 // the walk goes on with the rest of the entries, since /legion/feed is a read-only mount inside
 // the same claim and a sweep is deleting in these directories moments before. The target itself
-// refused is the reading unread (fail).
+// refused is the reading unread (fail). A directory more than volumeWalkDepth levels below the
+// target is not opened at all, and is a refused reading the same way, named by its name and its
+// depth (refusedPath).
 //
 // It costs one handle per level of the tree — two descriptors and the level's listing, and no
 // path (dirHandle.path, within) — held until the level is done, where the walk it replaced held
 // one descriptor at a time and resolved the paths below it again at every step: a child can only
 // be opened from a handle on the directory that holds it, so a safe descent is a descent that
-// keeps its ancestors open. What bounds the cost is the walk's own budget, asked before each
-// entry, and the pod's limit, which is 1048576 descriptors (`ulimit -n`, measured in an issue pod
-// of this deployment at 2026-11-12T06:30Z); a level the kernel refuses for any reason, that one
-// included, is a refused reading like any other and the walk goes on.
+// keeps its ancestors open. What bounds the cost is the depth it descends to — the target and
+// volumeWalkDepth levels below it, sixty-five handles at most — and the walk's own budget, asked
+// before each entry; a level the kernel refuses for any reason is a refused reading like any
+// other and the walk goes on.
 func measureUnder(ctx context.Context, dir *dirHandle, name string, hour, day time.Time, out *measured) {
 	under, err := dir.open(name)
 	if err != nil {
@@ -492,6 +500,10 @@ func measureUnder(ctx context.Context, dir *dirHandle, name string, hour, day ti
 		default:
 		}
 		if entry.IsDir() {
+			if out.depth+1 > volumeWalkDepth {
+				out.refuse(errWalkTooDeep, entry.Name(), out.depth+1)
+				continue
+			}
 			out.depth++
 			measureUnder(ctx, under, entry.Name(), hour, day, out)
 			out.depth--
@@ -508,6 +520,21 @@ func measureUnder(ctx context.Context, dir *dirHandle, name string, hour, day ti
 		countFile(out, info, hour, day)
 	}
 }
+
+// volumeWalkDepth is how many levels below a target the size walk descends. Each level it
+// descends holds a handle, two descriptors, until the level is done, in the process that is
+// PID 1 of the roles container, where the descriptors the walk holds count against the one
+// limit every open of the launcher shares, a role's start among them; and a role may make a
+// chain of directories of any depth under /legion/scratch. The deepest directory of this issue
+// pod's volume on 2026-11-15 lay 18 levels below /legion, 16 below its target (`find /legion
+// -xdev -type d -printf '%d %p\n' | sort -n`, a workspace's node_modules), so sixty-four levels
+// measures every tree this pod's tools made with room to spare, and stops a made-up one at
+// sixty-five handles.
+const volumeWalkDepth = 64
+
+// errWalkTooDeep is a directory the walk did not open because it lies more than volumeWalkDepth
+// levels below the target, counted among the target's refused reads (measured.refuse).
+var errWalkTooDeep = errors.New("deeper than the size walk descends")
 
 // fail is a read of the directory being read, name, that the kernel refused: of the target
 // itself, which leaves nothing of it read and names why (unread), or of a directory below it,

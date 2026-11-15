@@ -1726,22 +1726,31 @@ package api
 // says.
 //
 // 140: INFRA-2009 -- the cache trimmer in an issue pod's launcher process, which is two shapes of
-// the launcher wire. The daemon's answer to a launcher's hello carries the settings the trimmer
-// runs by, as one optional member of `shimwire.LauncherHelloAck` (`volumeTrim`: the two marks,
-// the minimum age and the interval, from `runtime.kubernetes.volume_trim`), written by
-// `internal/stream`'s Listener.hello from what the runtime's launcher resolver hands it. The
-// launcher sends the daemon at most one `launcher_volume_report` frame per sweep that ends with
-// the volume still above its low mark, none for a sweep the settings stopped, and
-// `ServeLauncher` reads it into at most one `volume-near-full` notice to the issue's architect,
-// since the daemon's own bounds decide which reports are told. That frame carries, beside the
-// sweep's own numbers, how many
+// the launcher wire and one member of `GET /legion/v1/state`. The daemon's answer to a
+// launcher's hello carries the settings the trimmer runs by, as one optional member of
+// `shimwire.LauncherHelloAck` (`volumeTrim`: the two marks, the minimum age and the interval,
+// from `runtime.kubernetes.volume_trim`), written by `internal/stream`'s Listener.hello from what
+// the runtime's launcher resolver hands it. The launcher sends the daemon at most one
+// `launcher_volume_report` frame per sweep that ends with the volume still above its low mark,
+// none for a sweep the settings stopped, and one that no sweep makes when the trimmer has
+// switched itself off after three panics in a row (`switchedOff`, carrying the faults that
+// stopped it and its last reading of the volume, if it made one). `ServeLauncher` reads each
+// into at most one `volume-near-full` notice to the issue's architect, since the daemon's own
+// bounds decide which sweep reports are told, and the switched-off report passes every one of
+// them. That frame carries, beside the sweep's own numbers, how many
 // entries the launcher's own bound left out of each of its lists (`sizesOmitted` and its three
 // siblings), so a reader never takes a cut list for the whole of what the trimmer measured, and
 // two optional members of each size, `refused` and `refusals`: the first read the kernel refused
 // under that directory, named by the directory, the name refused and its depth, and how
 // many it refused there, so a size the walk could read only in part is told as a lower bound
 // and never as the directory's whole. Its `sizesPartial` is a walk its budget or the container's
-// stop cut, and nothing else.
+// stop cut, and nothing else. The state body's `settings.runtime.kubernetes` gains
+// `volume_trim` (`enabled`, `high_percent`, `low_percent`, `min_age_minutes` and
+// `interval_seconds`, api.VolumeTrimSettings): the settled block, `enabled` false where the
+// deployment switched the trimmer off, which the contracts' state fixture
+// (`packages/contracts/fixtures/daemon-api/state.json`) carries. A plugin's schema reads
+// `settings` as a loose object (`legionSettings` in `packages/contracts/src/legion-api.ts`), so
+// a reader of an earlier contract takes the state body with the member in it.
 //
 // The skew is safe in both directions, and this entry records why, because that is what a
 // reader of it needs. A new worker image under an older daemon reads the member absent, which

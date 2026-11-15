@@ -222,9 +222,14 @@ type Claim struct {
 	// so a claim that comes back and later fails for something else carries nothing of the
 	// earlier end. The retry that admits a failed claim again clears Failure and not this
 	// (retry), so a retried claim whose launch has not run yet still carries the pod end of its
-	// last death. It is durable for the one reason Failure is: the deaths a claim is charged can
-	// run out hours after the end that started them, with a daemon restart in between, and the
-	// restarted daemon reports the failure from the claim it read back.
+	// last death. Since a launch clears it, a failed claim that holds one failed with no launch
+	// since the death that wrote it.
+	//
+	// It is durable for the reason Failure is: the failed claim is what a restarted daemon
+	// reports the failure from. A failure whose fact no daemon applied — the live apply failed, or
+	// the daemon's stop cut it off after the claim's state was written — is applied at the next
+	// boot from the claim read back from the store (the daemon's replayTerminal), and that fact
+	// names the pod end only where the store kept it.
 	PodEnd string
 	// FailureCause is the one word for what failed the claim, written beside that sentence by the
 	// site that failed it (fail), and FailedAt is when it did. Both are cleared where Failure is,
@@ -2638,10 +2643,12 @@ func (m *Machine) died(ctx context.Context, observation runtime.Observation) err
 		"detail", observation.Detail, "podEnd", observation.PodEnd, "chargedBefore", m.claim.DeathCharged)
 	m.claim.LastDeathCause = deathCause(observation)
 	// The pod's own reason for this end is kept on the claim, so the failure the workflow is told
-	// of — which can come hours and a daemon restart later, when the deaths this one is charged
-	// against run out — still names the cause the role never chose (Claim.PodEnd). It is written
-	// before any branch below returns: each of them persists the claim or leaves it to the next
-	// decision's write, and every path out of here has had the end recorded.
+	// of when this death fails it — here, or where the relaunch it raises finds the launch budget
+	// spent (relaunchAfterFailure) — names the cause the role never chose, and so does the boot's
+	// replay of that failure after a daemon restart (Claim.PodEnd). Each report writes its own, an
+	// empty one included, so the pod end and the account above are always one report's. It is
+	// written before any branch below returns: each of them persists the claim or leaves it to
+	// the next decision's write, and every path out of here has had the end recorded.
 	m.claim.PodEnd = observation.PodEnd
 	ended := endDied(m.claim.LastDeathCause)
 	m.recordGoneEnd(ctx, ended)

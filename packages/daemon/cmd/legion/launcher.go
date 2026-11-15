@@ -142,17 +142,21 @@ const volumeTrimDeleteUsage = "usage: legion launcher volume-trim-delete --roles
 // runVolumeTrimDelete is `legion launcher volume-trim-delete`, the launcher's second hidden
 // subcommand: the process one sweep of the pod's cache trimmer makes every one of its removals
 // through, in a user, mount, PID and IPC namespace of its own, built over the same cover a role's
-// namespace is built over: every path a role is given something of its own at is an empty
+// namespace is built over: every directory a role is given something of its own at is an empty
 // filesystem of the deleter's but /proc, a procfs of the deleter's own PID namespace, and
 // /legion, where the deletions are made, is left as the container mounted it. The trimmer starts
 // it and hands it the descriptor of every directory the sweep listed; it reads one request per
 // line on its standard input and answers one line on its standard output, and
 // `legion launcher --help` does not offer it.
 //
-// Nothing a person runs reaches it: run by hand it holds no descriptor of the volume and is not
-// the init of a PID namespace of its own, and it refuses rather than sitting there reading
-// requests with nothing covered (launcher.VolumeTrimDelete). ctx is not taken because the sweep
-// ends it by closing the requests, and kills it if it outlives the grace.
+// Run by hand in the container it refuses: it is not the init of a PID namespace of its own,
+// and it stops before it reads a request rather than sitting there reading requests with nothing
+// covered (launcher.VolumeTrimDelete). That check is the whole of the refusal, so a person who
+// makes it PID 1 — under `unshare --user --map-root-user --pid --fork --mount`, say — gets a
+// deleter that runs. It gains nothing by that: it holds only the descriptors that person handed
+// it, and its namespaces give it no privilege outside them, so what it can remove is what the
+// uid that started it could remove anyway. ctx is not taken because the sweep ends it by closing
+// the requests, and kills it if it outlives the grace.
 func runVolumeTrimDelete(args []string, stdout, stderr io.Writer) int {
 	flags := newFlags("launcher volume-trim-delete", volumeTrimDeleteUsage, stderr)
 	// The same registration role-init makes, so the deleter is told the cover whole.

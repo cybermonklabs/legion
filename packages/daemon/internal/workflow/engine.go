@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
 // Hook is one hook of the deployment as the engine runs it: its words are the text, never a
@@ -873,9 +874,9 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 // worker-died of a role that does not work the issue's phase names it too, since that role's
 // architect decides whether to start it again on the same evidence. The tree architect's own
 // worker-died carries no failure record, so its reason carries the sentence instead, with the
-// pod end when the claim holds one, or else the first line of the runtime's account of the last
-// death (deathReason): it is the one notice of that failure the architect and the controller
-// are sent.
+// pod end when the claim holds one, or else, for a claim that failed because its process died,
+// the first line of the runtime's account of that death (deathReason): it is the one notice of
+// that failure the architect and the controller are sent.
 //
 // A child's sub-architect works no phase and holds none: the operator starts it, and no transition
 // or admission ever starts an architect below the tree's root. Its claim failing holds nothing and
@@ -970,14 +971,15 @@ func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFa
 // own — the tree architect's and the held phase's. It names the supervisor's own sentence
 // (supervise.Claim.Failure, intake.ClaimFailed.Reason), then what ended the process: the pod end
 // it was last observed to have died of (supervise.Claim.PodEnd), which is the cause no role
-// chose — an eviction for ephemeral storage above all — or, where the claim holds no pod end,
-// the first line of the runtime's account of its last death (supervise.Claim.LastDeathCause,
-// intake.ClaimFailed.Death). They are joined with "; ", and any of them the fact does not hold is
-// left out. The sentence is made one line and cut to a bound (deathSentence) and the death's
-// first line is quoted (deathFirstLine), so neither a provider's message nor a role's log writes
-// a line of its own into the reason; the pod end is the kubelet's reason and message, bounded
-// where it is built (runtime.PodEnd). All three are persisted on the claim, so a daemon that
-// restarted between the death and the moment the budget ran out says the same thing.
+// chose — an eviction for ephemeral storage above all — or, where the claim holds no pod end and
+// failed because its process died, the first line of the runtime's account of that death
+// (supervise.Claim.LastDeathCause, intake.ClaimFailed.Death). They are joined with "; ", and any
+// of them the fact does not hold is left out. The sentence is made one line and cut to a bound
+// (deathSentence) and the death's first line is quoted (deathFirstLine), so neither a provider's
+// message nor a role's log writes a line of its own into the reason; the pod end is the
+// kubelet's reason and message, bounded where it is built (runtime.PodEnd). All three are
+// persisted on the claim, so the boot's replay of a failure no daemon applied says the same thing
+// (the daemon's replayTerminal).
 //
 // The death is named only where there is no pod end, because on a pod the cluster ended it is
 // the runtime's whole detail (sandbox's Runtime.ended): the pod's reason and the kubelet's
@@ -987,13 +989,25 @@ func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFa
 // deathCause), `gone` above all, so it is written after "the process was last found "
 // (deathFirstLine).
 //
+// It is named only where the fact's cause is supervise.CauseDied, too: the death is written at
+// every death of the claim and cleared by nothing (supervise's died), so a claim that died, was
+// launched again and then failed for something else — its provider's refusals, its prompt
+// retirements, an agent that never registered — still holds the account of the earlier death,
+// and beside that failure the reason would name an end that did not cause it: an old eviction
+// beside a provider error, which reads as the cluster's fault. A fact whose cause is "" or
+// `unrecorded` does not say the process's death failed it either, so it names no death. The pod
+// end needs no such test: each launch clears it (supervise's launchNow), so a fact that carries
+// one failed with no launch since the death that wrote it.
+//
 // failureCarried says the notice carries a failure record beside this reason, as the held
 // phase's does whenever the fact names a cause. That record's `detail` already carries the
 // sentence and its `death` the runtime's account (noticeFailure), so such a reason is the pod
 // end alone, and empty when there is none, since repeating either would say one thing twice.
 // The tree architect's notice carries no failure record, and neither does a held phase's whose
-// fact names no cause, so their reason carries the sentence, and the pod end or, where there is
-// none, the death: without them the notice would say nothing of why the claim failed.
+// fact names no cause, so their reason carries the sentence and the pod end, and the tree
+// architect's, where there is no pod end and its claim failed because it died, the death: without
+// them the notice would say nothing of why the claim failed. A held phase's fact that names no
+// cause does not name `died` either, so its reason names no death.
 //
 // The two paths that already build a reason keep theirs: a role that does not work the issue's
 // phase, and a checking role of a closed issue, each say what the failure meant for that issue,
@@ -1006,7 +1020,7 @@ func deathReason(fact intake.ClaimFailed, failureCarried bool) string {
 	switch {
 	case fact.PodEnd != "":
 		said = append(said, "the pod ended: "+fact.PodEnd)
-	case !failureCarried && fact.Death != "":
+	case !failureCarried && fact.Cause == supervise.CauseDied && fact.Death != "":
 		said = append(said, fmt.Sprintf("the process was last found %q", deathFirstLine(fact.Death)))
 	}
 	return strings.Join(said, "; ")
@@ -1196,6 +1210,13 @@ func volumeNoticeHeldBy(report record.VolumeNearFull, counts store.VolumeNoticeC
 // own Volume member carries the same facts in a shape a reader can compute with; this is what a
 // person or an agent reads in the message.
 //
+// It is written in the past tense, because the frame carries no time for the sweep it reports and
+// a report the launcher held through an outage reaches the daemon after it (launcher's deliver):
+// the volume was above its low mark when the sweep ended, which says nothing of it now. The freed
+// bytes are the sweep's first reading's used bytes less its last's (launcher's sweep), so they are
+// negative when the roles wrote more than the sweep removed; such a sweep is told as the volume
+// growing by that many bytes while it ran, and never as a negative number freed.
+//
 // Everything that comes from the pod rather than from this package is rendered with %q: a
 // directory two levels under /legion is a name a role of that pod chose — /legion/scratch is
 // writable by the role uid — and the sentence is read by the architect's own agent session, so a
@@ -1212,6 +1233,15 @@ func volumeNoticeHeldBy(report record.VolumeNearFull, counts store.VolumeNoticeC
 // where that bound left entries out the sentence says so: a reader must not take a cut list for
 // the whole of what the trimmer measured.
 //
+// The report of a switched-off trimmer is made by no sweep (launcher's switchOff), so its
+// sentence names no bytes freed and no episode: its freed bytes are zero because nothing swept,
+// and its episode and what raised it are filled in for the frame's own rule where the trimmer
+// never raised one, so the sentence cannot tell an episode the trimmer raised from one the frame
+// was given. The structured Volume member still carries all three. Its used and free bytes are
+// the trimmer's last reading of the volume, whenever that was, and both zero where it made none,
+// which is how the sentence tells the two apart: the frame carries no mark of its own for a
+// trimmer that made no reading, and a reading of a mounted volume does not have both at zero.
+//
 // The opening clause of a switched-off trimmer counts nothing, and what the report carries does
 // the counting: what stops the trimmer is three recovered panics in a row (volumeFaultLimit,
 // launcher's volumetrim.go), which the stop reason the launcher sends says and the sentence
@@ -1219,15 +1249,25 @@ func volumeNoticeHeldBy(report record.VolumeNearFull, counts store.VolumeNoticeC
 // one it left out makes four.
 func volumeNoticeReason(issue string, report record.VolumeNearFull) string {
 	var out strings.Builder
-	if report.SwitchedOff {
-		fmt.Fprintf(&out, "the cache trimmer on %s's pod %s has switched itself off and frees nothing more until the pod's roles container restarts",
-			issue, report.PodUID)
-	} else {
-		fmt.Fprintf(&out, "the volume %s's roles share on pod %s is still above its low mark after a sweep",
-			issue, report.PodUID)
+	switch {
+	case report.SwitchedOff:
+		fmt.Fprintf(&out, "the cache trimmer on %s's pod %s has switched itself off and frees nothing more until the pod's roles container restarts (trimmer %q)",
+			issue, report.PodUID, report.Trimmer)
+		if report.UsedBytes == 0 && report.FreeBytes == 0 {
+			out.WriteString(": it made no reading of the volume")
+		} else {
+			fmt.Fprintf(&out, ": its last reading of the volume was %d bytes used, %d free", report.UsedBytes, report.FreeBytes)
+		}
+	default:
+		fmt.Fprintf(&out, "the volume %s's roles share on pod %s was still above its low mark when the sweep ended (trimmer %q, episode %d raised by %q): %d bytes used, %d free, ",
+			issue, report.PodUID, report.Trimmer, report.Episode, report.RaisedBy, report.UsedBytes, report.FreeBytes)
+		if report.FreedBytes < 0 {
+			// The magnitude as uint64, which holds it for every int64, the least one included.
+			fmt.Fprintf(&out, "and the volume grew by %d bytes while the sweep ran", uint64(-report.FreedBytes))
+		} else {
+			fmt.Fprintf(&out, "%d freed by the sweep", report.FreedBytes)
+		}
 	}
-	fmt.Fprintf(&out, " (trimmer %q, episode %d raised by %q): %d bytes used, %d free, %d freed by this sweep",
-		report.Trimmer, report.Episode, report.RaisedBy, report.UsedBytes, report.FreeBytes, report.FreedBytes)
 	if report.StopReason != "" {
 		fmt.Fprintf(&out, "; it stopped because %q", report.StopReason)
 	}

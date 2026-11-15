@@ -248,20 +248,22 @@ const (
 )
 
 // LauncherVolumeSize is one target of the trimmer's size walk — a directory two levels under the
-// pod's volume root, or an immediate child of the root that holds no directory of its own — as
-// the walk measured it: the bytes of the regular files under it, and of those the bytes of the
-// files whose modification time is more than an hour old and more than a day old, which are what
-// tell a reader a working set from cold bytes.
+// pod's volume root, a regular file beside such directories in an immediate child of the root,
+// or an immediate child of the root that holds no directory of its own — as the walk measured
+// it: the bytes of the regular files under it, and of those the bytes of the files whose
+// modification time is more than an hour old and more than a day old, which are what tell a
+// reader a working set from cold bytes.
 //
-// Refused names the first read under Path the kernel refused, and Refusals is how many of the
-// walk's reads there it refused in all. It is Path/<name> for a name in Path, and
-// Path/.../<name> (depth N) for a name N levels below it, so its size is set by two names and
-// never by the depth of the tree. A size that carries them is what the walk could read under
-// Path and no more: Bytes and its two splits are a lower bound of the directory's own, never the
-// whole of it. The walk went on past each refusal, so neither makes the walk partial
-// (LauncherVolumeReport.SizesPartial). A directory the kernel refused the walk itself, so that
-// it read nothing of it, is no size: the report names it among SizesMissing with that read
-// (LauncherVolumeMissing).
+// Refused names the first read under Path the walk did not make, and Refusals is how many there
+// were in all: a read the kernel refused, or a directory deeper below Path than the walk
+// descends, which it does not open (internal/launcher's volumeWalkDepth). It is Path/<name> for a
+// name in Path, and Path/.../<name> (depth N) for a name N levels below it, so its size is set
+// by two names and never by the depth of the tree. A size that carries them is what the walk
+// could read under Path and no more: Bytes and its two splits are a lower bound of the
+// directory's own, never the whole of it. The walk went on past each refusal, so neither makes
+// the walk partial (LauncherVolumeReport.SizesPartial). A directory the kernel refused the walk
+// itself, so that it read nothing of it, is no size: the report names it among SizesMissing with
+// that read (LauncherVolumeMissing).
 type LauncherVolumeSize struct {
 	Path          string `json:"path"`
 	Bytes         int64  `json:"bytes"`
@@ -328,11 +330,13 @@ const (
 // report no sweep produces: the trimmer has stopped itself after three faults in a row, and this
 // is the last the daemon hears from it until the launcher restarts.
 //
-// Every list above is bounded by the launcher that built the report, because a path two levels
-// under /legion is a name a role of the pod chose and a pod may hold thousands of them
-// (internal/launcher's bound): the four Omitted counts are how many entries that bound left
-// out, so a reader is never shown a cut list as the whole of what the trimmer measured. Each
-// path, each reason, the stop reason and each fault are cut in runes there too.
+// Every list above is bounded, because a path two levels under /legion is a name a role of the
+// pod chose and a pod may hold thousands of them: the launcher that built the report cuts each to
+// its cap below (internal/launcher's bound), and the four Omitted counts are how many entries
+// that cut left out, so a reader is never shown a cut list as the whole of what the trimmer
+// measured. Validate refuses a report whose list is longer than its cap, so the daemon holds a
+// report to the caps whatever sent it. Each path, each reason, the stop reason and each fault are
+// cut in runes by that launcher too, and Validate checks none of them.
 type LauncherVolumeReport struct {
 	Trimmer             string                  `json:"trimmer"`
 	Episode             int                     `json:"episode"`
@@ -353,6 +357,32 @@ type LauncherVolumeReport struct {
 	FaultsOmitted       int                     `json:"faultsOmitted,omitempty"`
 	SwitchedOff         bool                    `json:"switchedOff,omitempty"`
 }
+
+// The most entries each list of a LauncherVolumeReport may hold: the launcher's trimmer cuts a
+// list to its cap and counts the rest in the list's Omitted count (internal/launcher's bound),
+// and Validate refuses a report that holds more. They are here, in the one package both ends
+// read, so that the cap the launcher cuts at and the cap the daemon refuses past are one number
+// and not two that could disagree.
+const (
+	// VolumeReportSizes is how many sizes a report carries (Sizes): the largest of what the walk
+	// measured, in the order the walk measured them. A pod's own layout makes about fifteen
+	// directories two levels under the volume root, and a role can make thousands under
+	// /legion/scratch; fifty is room for a layout that grows, and the largest fifty are the ones
+	// a reader acts on, whichever of them the walk reached first.
+	VolumeReportSizes = 50
+	// VolumeReportSizesMissing is how many unmeasured directories a report names (SizesMissing).
+	// The list can run as long as the one above, so it takes the same cap.
+	VolumeReportSizesMissing = 50
+	// VolumeReportRefusedReads is how many refused /proc reads a report names (RefusedReads): one
+	// per process of the pod the kernel refused a read of, or one for /proc itself. A pod runs
+	// six roles and their children, and an operator who must go and look needs a handful of pids
+	// rather than one per process.
+	VolumeReportRefusedReads = 25
+	// VolumeReportFaults is how many recovered panics a report carries (Faults), the newest ones.
+	// The launcher's trimmer stops itself after three in a row (its volumeFaultLimit), so the
+	// newest three are the run that stopped it.
+	VolumeReportFaults = 3
+)
 
 // LauncherChild is the actual worker-shim child the launcher has running, if any.
 type LauncherChild struct {
@@ -1352,13 +1382,29 @@ func (f LauncherStop) Validate() error {
 
 // Validate refuses a volume report the daemon could not count: one naming no trimmer, which is
 // the identity its notice bounds count a restarted roles container apart by, and one whose
-// episode is below the 1 the trimmer counts from.
+// episode is below the 1 the trimmer counts from. It refuses, too, a report holding more entries
+// in a list than that list's cap (VolumeReportSizes and the three beside it): the daemon renders
+// every entry it is given into a notice, and the launcher's own cut runs only where the sender is
+// that launcher.
 func (f LauncherVolumeReport) Validate() error {
 	switch {
 	case f.Trimmer == "":
 		return fmt.Errorf("%w: launcher_volume_report carries no trimmer", ErrMalformedFrame)
 	case f.Episode < 1:
 		return fmt.Errorf("%w: launcher_volume_report episode is %d", ErrMalformedFrame, f.Episode)
+	}
+	for _, list := range []struct {
+		name      string
+		held, cap int
+	}{
+		{"sizes", len(f.Sizes), VolumeReportSizes},
+		{"sizesMissing", len(f.SizesMissing), VolumeReportSizesMissing},
+		{"refusedReads", len(f.RefusedReads), VolumeReportRefusedReads},
+		{"faults", len(f.Faults), VolumeReportFaults},
+	} {
+		if list.held > list.cap {
+			return fmt.Errorf("%w: launcher_volume_report %s holds %d entries, past the %d a report may hold", ErrMalformedFrame, list.name, list.held, list.cap)
+		}
 	}
 	return nil
 }

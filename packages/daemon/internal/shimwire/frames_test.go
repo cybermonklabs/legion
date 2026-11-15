@@ -503,6 +503,42 @@ func TestTheFramesTheShippedCodeValidatesRefuseTheirMalformedForms(t *testing.T)
 	}
 }
 
+// A volume report may hold each of its four lists up to the list's cap and not one entry past
+// it. The caps are the ones the launcher's trimmer cuts its reports at (internal/launcher's
+// bound), and this is the daemon's side of them: a report over a cap is refused rather than
+// rendered whole into the notice, whatever sent it. The negative control is the report at every
+// cap, which validates.
+func TestAVolumeReportOverAListCapIsRefused(t *testing.T) {
+	at := LauncherVolumeReport{
+		Trimmer: "trim-9f3c", Episode: 1, RaisedBy: VolumeEpisodeFirst,
+		Sizes:        make([]LauncherVolumeSize, VolumeReportSizes),
+		SizesMissing: make([]LauncherVolumeMissing, VolumeReportSizesMissing),
+		RefusedReads: make([]string, VolumeReportRefusedReads),
+		Faults:       make([]string, VolumeReportFaults),
+	}
+	if err := at.Validate(); err != nil {
+		t.Fatalf("a report holding every list at its cap was refused: %v", err)
+	}
+	for _, tc := range []struct {
+		list string
+		over func(*LauncherVolumeReport)
+	}{
+		{"sizes", func(r *LauncherVolumeReport) { r.Sizes = append(r.Sizes, LauncherVolumeSize{}) }},
+		{"sizesMissing", func(r *LauncherVolumeReport) { r.SizesMissing = append(r.SizesMissing, LauncherVolumeMissing{}) }},
+		{"refusedReads", func(r *LauncherVolumeReport) { r.RefusedReads = append(r.RefusedReads, "") }},
+		{"faults", func(r *LauncherVolumeReport) { r.Faults = append(r.Faults, "") }},
+	} {
+		t.Run(tc.list, func(t *testing.T) {
+			report := at
+			tc.over(&report)
+			err := report.Validate()
+			if !errors.Is(err, ErrMalformedFrame) || !strings.Contains(err.Error(), tc.list+" holds") {
+				t.Fatalf("a report holding one entry past the cap of %s validated as %v, want ErrMalformedFrame naming the list", tc.list, err)
+			}
+		})
+	}
+}
+
 func TestHello2RoundTripsWithAndWithoutAnIdentity(t *testing.T) {
 	identity := &AgentSecretsHello{Thumbprint: "NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs", PodToken: "eyJhbGciOiJSUzI1NiJ9.e30.sig"}
 	for name, frame := range map[string]Hello2{

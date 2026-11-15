@@ -7,13 +7,15 @@ import (
 	"testing"
 )
 
-// The four roots the trimmer may delete entries of, in the order it sweeps them, and what one
-// entry of each is. The list is pinned here because it is a decision and not a derivation: each
-// root was chosen for what the pod writes there and each rule for who names the entries, and a
-// root added or a rule widened — $TMPDIR swept by immediate child, say, which is where a role's
-// clones and databases live — is the edit that deletes a role's work. A test in
-// internal/runtime/sandbox holds the same two lists to the renderer's paths, which is the other
-// half: this case says what may be deleted, that one says nothing on the volume was forgotten.
+// The four roots the trimmer may delete entries of, in the order it lists them, and what one
+// entry of each is. The sweep deletes the entries of all four oldest first, whichever root each
+// is in, so the order is the listing's alone. The list is pinned here because it is a decision
+// and not a derivation: each root was chosen for what the pod writes there and each rule for who
+// names the entries, and a root added or a rule widened — $TMPDIR swept by immediate child, say,
+// which is where a role's clones and databases live — is the edit that deletes a role's work. A
+// test in internal/runtime/sandbox holds the same two lists to the renderer's paths, which is the
+// other half: this case says what may be deleted, that one says nothing on the volume was
+// forgotten.
 func TestTheTrimmerSweepsTheFourCacheRootsInOrder(t *testing.T) {
 	want := []ReclaimableRoot{
 		{Path: "/legion/scratch/tmp", Entry: GoBuildTrees},
@@ -32,10 +34,13 @@ func TestTheTrimmerSweepsTheFourCacheRootsInOrder(t *testing.T) {
 }
 
 // Every path of either list is an absolute, clean path on the pod's volume, and every exception
-// is one base name. The trimmer joins an exception to its root and compares a listed entry's
-// name against it, and it deletes by the path it built, so a path that is not clean, a path that
-// is not on the volume, or an exception carrying a separator would each be a deletion somewhere
-// the trimmer never meant to reach.
+// is one base name. The trimmer opens each root by its path, an element at a time, after
+// cleaning it (openVolumeDir), and asks the used-path set of the root's own path (usedPaths.Holds)
+// and of each entry's path joined under it; it passes over a listed entry whose name equals an
+// exception. So a path that is not clean is a root the trimmer opens and deletes in somewhere it
+// never meant to reach — `/legion/scratch/tmp/..` cleans to `/legion/scratch` — a path that is
+// not on the volume is one outside it, and an exception carrying a separator equals no listed
+// name and protects nothing.
 func TestEveryTrimmerPathIsAnAbsoluteCleanPathOfThePodsVolume(t *testing.T) {
 	if VolumeRoot != "/legion" {
 		t.Fatalf("VolumeRoot is %q, want the issue volume's mount point /legion (sandbox.TreeRoot)", VolumeRoot)

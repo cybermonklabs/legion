@@ -207,9 +207,13 @@ high mark its deployment sets, 85 per cent used by default, it deletes, oldest f
 low mark, 70 per cent by default, and stops there or sooner: when deleting more frees nothing,
 when its five-minute budget runs out, when nothing eligible is left, or when it cannot read
 `/proc` or the volume or loses the child it deletes through. After a sweep that freed under one
-point of the volume it starts no other for ten intervals. It deletes only these:
+point of the volume it starts no other for ten intervals. It reads the used fraction unrounded,
+and `df` rounds it up, so `df -h /legion` can print 85% while the trimmer reads 84.1 per cent and
+does not sweep. It deletes only these:
 
-- a `go-build*` directory of `$TMPDIR`, which Go names and owns, and **nothing else of `$TMPDIR`**;
+- a directory of `$TMPDIR` named `go-build` followed by digits and nothing else, which is how Go
+  names the build directories it makes and owns, and **nothing else of `$TMPDIR`**: a directory
+  of yours named `go-build-repro` or `go-builder` stays;
 - a `-a` or `-d` entry of the Go build cache, `/legion/go/build`, a file or a directory, the
   entries Go's own cache trim removes by age;
 - an immediate child of the cache home, `/legion/scratch/cache`, that is a directory, except
@@ -228,8 +232,8 @@ A `-a` or `-d` entry of the Go build cache has an hour more than that: Go moves 
 modification time on use at most once an hour, so one a build used a minute ago can read
 fifty-nine minutes old, and the trimmer takes it only once it is older than the minimum age and
 that hour together.
-It opens every directory one name at a time and refuses a symbolic link at that name, so what it
-lists is what it opened and not what a name came to mean later.
+It opens every directory of the volume one name at a time and refuses a symbolic link at that
+name, so what it lists is what it opened and not what a name came to mean later.
 Its removal of an entry keeps that rule below the name: it opens each directory inside the entry
 one name at a time, unlinks a link as the link it is, and follows none.
 Those guards are what keep it off your work, and they are guards rather than a wall: every role
@@ -240,9 +244,9 @@ under `/var/run/legion/roles` (not its state home under `/legion/scratch/state`,
 volume), its launcher token, the pod's shared configuration home, the home every role's own is
 built over, and the container's own temporary directories, lock directories, shared memory,
 terminals, message queues and `/proc`. The deletions are made in a mount namespace built from the
-one list a role's own namespace is built from, where every path a role is given something of its
-own at is an empty filesystem instead, and `/proc` is a procfs of the deleting process's own,
-which shows nothing of any other process.
+one list a role's own namespace is built from, where every directory a role is given something of
+its own at is an empty filesystem instead, `/proc` aside, which is a procfs of the deleting
+process's own and shows nothing of any other process.
 
 That cuts both ways: **`$TMPDIR` is yours to clean.** What you leave there lives as long as the
 pod does and counts against the volume for every role. Delete the paths you made, each by its

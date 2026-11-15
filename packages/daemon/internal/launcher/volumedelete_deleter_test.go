@@ -78,6 +78,71 @@ func TestTheDeletersRemovalFollowsNoLinkWithNoContainment(t *testing.T) {
 	})
 }
 
+// A name that became a link or a file between the unlink the removal tried and the open that
+// follows it is refused by the open and unlinked as what it is now, and nothing behind it is
+// read or removed (removeEntryAt). The window is the span between two syscalls, so the case
+// makes its swap in it every time, through the seam the removal calls there
+// (betweenUnlinkAndOpen): the entry, a directory, so its unlink fails, is renamed away and a
+// link to a directory of bait, or a file, is left at its name. The bait must be read back whole,
+// the name swapped in gone and the renamed directory untouched. The negative control is the
+// removal opening that name with an open that follows a link (`O_RDONLY|O_DIRECTORY` with no
+// O_NOFOLLOW in openElementAt's place), which emptied the bait and answered the last unlinkat's
+// ENOTDIR.
+func TestARemovalUnlinksWhatWasSwappedInBetweenItsUnlinkAndItsOpen(t *testing.T) {
+	for _, swap := range []struct {
+		name string
+		put  func(t *testing.T, path, bait string)
+	}{
+		{"a link to a directory of bait", func(t *testing.T, path, bait string) {
+			if err := os.Symlink(bait, path); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"a file", func(t *testing.T, path, _ string) { writeAged(t, path, time.Now()) }},
+	} {
+		t.Run(swap.name, func(t *testing.T) {
+			dir, bait := t.TempDir(), t.TempDir()
+			at := time.Now().Add(-2 * time.Hour)
+			planted := plantBait(t, bait, at, filepath.Join("tester", RolePrivateDir, "notes.md"), "TOKEN")
+			entry := filepath.Join(dir, "entry")
+			agedUnder(t, dir, filepath.Join(entry, "sub", "kept"), at)
+			held, err := os.Open(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer held.Close()
+			swapped := 0
+			betweenUnlinkAndOpen = func(name string) {
+				if name != "entry" || swapped > 0 {
+					return
+				}
+				swapped++
+				if err := os.Rename(entry, entry+".real"); err != nil {
+					t.Fatal(err)
+				}
+				swap.put(t, entry, bait)
+			}
+			t.Cleanup(func() { betweenUnlinkAndOpen = nil })
+
+			removal := removeEntryAt(held, "entry", make([]byte, volumeRemovalNamesBytes))
+
+			if swapped != 1 {
+				t.Fatalf("the swap was made %d times, want the once the removal reached the window: the case staged nothing", swapped)
+			}
+			if removal != nil {
+				t.Errorf("the removal answered %v, want the name swapped in unlinked as what it is now", removal)
+			}
+			assertBaitHeld(t, planted, "the removal opened the link swapped in between its unlink and its open")
+			if _, err := os.Lstat(entry); !errors.Is(err, os.ErrNotExist) {
+				t.Errorf("the name swapped in is still there (%v), want it unlinked", err)
+			}
+			if _, err := os.Stat(filepath.Join(entry+".real", "sub", "kept")); err != nil {
+				t.Errorf("the directory renamed away lost what it held: %v; the removal reaches it by no name", err)
+			}
+		})
+	}
+}
+
 // A directory something keeps creating names in does not hold its removal. The removal reads a
 // directory's names again after each pass for what was created while it removed, and the sweep
 // waits on its deleter's answer with no deadline, reading its own budget only between entries:
@@ -626,5 +691,98 @@ func TestTheReaperLeavesTheSweepsDeleterToItsOwnWait(t *testing.T) {
 	guard.mu.Unlock()
 	if len(held) != 0 {
 		t.Errorf("the guard still holds %v after the close read the deleter's exit, want nothing", held)
+	}
+}
+
+// The real deleter answers a removal it cannot make as a refusal of that entry, in its own
+// words, and goes on answering: the sweep passes such an entry over and asks for the next one
+// (trimmer.remove). The child runs in a user namespace whose root is the test's own uid, which
+// unlinks in a directory of that uid whatever its mode, so the refusals are of names no removal
+// can make: a name longer than NAME_MAX, which the kernel answers ENAMETOOLONG, and a name with a
+// separator in it, which the deleter refuses before it resolves anything. An entry it can remove
+// is asked for last and goes, so the refusals left the deleter answering. The negative control is
+// the child answering `removed` for a removal that failed, which every deleter case before this
+// one left green.
+func TestTheDeleterAnswersARemovalItCannotMakeAsARefusal(t *testing.T) {
+	requireRoleNamespaces(t)
+	useContainedDeleter(t)
+	dir := t.TempDir()
+	handle, err := openVolumeDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = handle.Close() })
+	listed := &sweepDir{root: ReclaimableRoot{Path: dir}, handle: handle}
+	remover, err := startContainedRemover(&pidGuard{}, coverUnder(t, namespaceScratch(t)), []*sweepDir{listed})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer remover.close()
+
+	for _, refused := range []struct {
+		name, why string
+	}{
+		{strings.Repeat("x", 256), syscall.ENAMETOOLONG.Error()},
+		{"entry/inside", "is not one name in one directory"},
+	} {
+		err := remover.removeAll(listed, refused.name)
+		switch {
+		case err == nil:
+			t.Errorf("the deleter answered the removal of %.40q… as made, want its refusal", refused.name)
+		case errors.Is(err, errRemoverGone):
+			t.Fatalf("the deleter is gone after the removal of %.40q…: %v", refused.name, err)
+		case !strings.Contains(err.Error(), refused.why):
+			t.Errorf("the deleter refused the removal of %.40q… with %q, want %q", refused.name, err, refused.why)
+		}
+	}
+	entry := filepath.Join(dir, "entry")
+	agedUnder(t, dir, filepath.Join(entry, "inside", "kept"), time.Now().Add(-2*time.Hour))
+	if err := remover.removeAll(listed, "entry"); err != nil {
+		t.Fatalf("the deleter answered %v for an entry it can remove, after the refusals", err)
+	}
+	if _, err := os.Lstat(entry); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the entry the deleter answered removed is still there: %v", err)
+	}
+}
+
+// A deleter that does not end when its requests do is killed once the grace is over, and the
+// remover's close returns: the launcher's Run waits on the trimmer's goroutine at the
+// container's stop, and a close that waited on a child for ever would hold it there, in the
+// process that is PID 1 of the roles container. The child here is a `sleep` that never reads
+// its standard input, started through the guard as the deleter is. The negative control is the
+// close with no grace kill, which waited on the child until the case's own bound.
+func TestADeleterThatIgnoresTheEndOfItsRequestsIsKilledAtTheGrace(t *testing.T) {
+	cmd := exec.Command("sleep", "300")
+	requests, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	guard := &pidGuard{}
+	if _, err := guard.start(cmd); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cmd.Process.Kill() })
+	remover := &containedRemover{cmd: cmd, guard: guard, requests: requests, at: map[*sweepDir]int{}, said: &saidBuffer{}}
+
+	began := time.Now()
+	closed := make(chan struct{})
+	go func() { remover.close(); close(closed) }()
+	select {
+	case <-closed:
+	case <-time.After(volumeRemoverGrace + testwait.Bounded(t, 30*time.Second, 5*time.Second)):
+		t.Fatalf("the remover's close had not returned %v after it began, with a child that ignores the end of its requests", time.Since(began))
+	}
+	if took := time.Since(began); took < volumeRemoverGrace {
+		t.Errorf("the close returned after %v, before the %v grace: the child ended some other way", took, volumeRemoverGrace)
+	}
+	status, ok := cmd.ProcessState.Sys().(syscall.WaitStatus)
+	if !ok || !status.Signaled() || status.Signal() != syscall.SIGKILL {
+		t.Errorf("the child ended %v, want killed with %v at the end of the grace", cmd.ProcessState, syscall.SIGKILL)
+	}
+	guard.mu.Lock()
+	held := guard.held()
+	guard.mu.Unlock()
+	if len(held) != 0 {
+		t.Errorf("the guard still holds %v after the close read the child's exit", held)
 	}
 }

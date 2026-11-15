@@ -19,9 +19,9 @@ const VolumeRoot = "/legion"
 type EntryRule string
 
 const (
-	// GoBuildTrees: one `go-build*` directory of the root, removed whole. Go names these and
-	// owns them, and makes one for every `go build` and every `go test`, because the pod sets
-	// no GOTMPDIR.
+	// GoBuildTrees: one directory of the root named `go-build` and one or more decimal digits,
+	// removed whole. Go names these and owns them, and makes one for every `go build` and every
+	// `go test`, because the pod sets no GOTMPDIR (isGoBuildTree, volumetrim.go).
 	GoBuildTrees EntryRule = "go-build tree"
 	// GoCacheEntries: one name ending `-a` or `-d` inside a shard directory of the root, with
 	// its own modification time, deleted on its own; one that is a directory is removed whole.
@@ -66,8 +66,9 @@ var ReclaimableRoots = []ReclaimableRoot{
 	// scratch databases and half-written artefacts live here too, under names the role chose,
 	// and no program can tell a role's cache from a role's work by looking at them: a sweep of
 	// this directory's other entries is exactly the hand deletion that lost a role's work
-	// mid-round. A `go-build*` directory is the one entry Go names and owns, and it makes one
-	// for every `go build` and every `go test` because the pod sets no GOTMPDIR.
+	// mid-round. A directory named `go-build` and one or more decimal digits is the one entry Go
+	// names and owns, and it makes one for every `go build` and every `go test` because the pod
+	// sets no GOTMPDIR; a role's own `go-build-repro` is no such name.
 	{Path: VolumeRoot + "/scratch/tmp", Entry: GoBuildTrees},
 	// GOCACHE, swept the way Go's own trim sweeps it: "Remove only cache entries (xxxx-a and
 	// xxxx-d)" inside a shard directory, each judged by its own modification time taken an hour

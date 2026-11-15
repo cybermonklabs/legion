@@ -462,26 +462,33 @@ type Observation struct {
 	// container's, which every role writes to, to its sharedLogBytes, and quotes at most
 	// logTailLines of the role's lines and as many of the container's own from what it read.
 	//
+	// An eviction ends every role of the pod, and a sibling's launch can replace the ended pod
+	// before a role's next check reads it. The Sandbox runtime records the ended pod's end on its
+	// Sandbox, keyed by the pod's uid, in the write that replaces it, so a role recorded in that
+	// pod reads the same PodEnd once the pod is gone or another has taken its name, a restarted
+	// daemon included (sandbox's endedPodAnnotation).
+	//
 	// Detail is kept whole on the claim, behind its verdict (supervise.Claim.LastDeathCause), and
 	// reaches a notice two ways: whole, as the `death` of the failure record a claim that failed
 	// with a cause carries (workflow's noticeFailure), and as its first line alone, quoted and
-	// without the header of the log tail, in the worker-died's reason on the two paths that carry
-	// no failure record — the tree architect's, and a held phase's whose fact names no cause —
-	// for a death with no pod end alone (workflow's deathReason). Where there is one, that reason
-	// names this field in Detail's place: the pod's cause once, on one line, and nothing of the
-	// log.
+	// without the header of the log tail, in the tree architect's worker-died reason, which
+	// carries no failure record, for a claim that failed because its process died and holds no
+	// pod end (workflow's deathReason). Where there is one, that reason names this field in
+	// Detail's place: the pod's cause once, on one line, and nothing of the log.
 	//
 	// It is bounded at PodEndRunes, which is a kubelet message with room to spare: the eviction
 	// message above is 120 runes, and the longest the kubelet writes names each resource it
-	// reclaimed. A longer one is cut at that bound with an ellipsis, so neither the claims table
-	// nor a notice can carry a message of a size nothing chose.
+	// reclaimed. A longer one is cut at that bound with an ellipsis.
 	PodEnd string
 }
 
 // PodEndRunes bounds Observation.PodEnd: a few hundred runes, which is a kubelet's reason and
-// message whole and nothing of a log. The bound exists because the field is stored on the claim
-// and published to a role topic, so its size must be one this package chose rather than one a
-// node's message happened to have.
+// message whole and nothing of a log. The bound exists because the field is what a worker-died's
+// reason names whole, on the one line the architect reads (workflow's deathReason), beside the
+// supervisor's sentence cut to this same bound (workflow's deathSentence), so the reason's size is
+// one this package chose rather than one a node's message happened to have. The claim keeps the
+// runtime's whole account beside it (supervise.Claim.LastDeathCause); this field is the part of it
+// a reason carries.
 const PodEndRunes = 400
 
 // PodEnd is reason and message as Observation.PodEnd holds them, bounded at PodEndRunes: the

@@ -22,11 +22,15 @@
 -- trimmer or episode it names, which is what makes the hour the pod's and not the episode's.
 -- pod_volume_notices_pod_at serves that read; the unique index serves the count.
 --
--- Nothing deletes a row here, and nothing deletes a pod_holds row either: a tree's close takes
--- neither table's rows with it. A row is one line of counters per pod, trimmer and episode of a
--- project that ever filled a volume, so the table grows with those and not with the reports,
--- which is the cost this shape was chosen for; what it buys is the account of what an architect
--- was told, which the issue's production check reads beside the daemon's log lines.
+-- No path of the daemon deletes a row here, and none deletes a pod_holds row either: a tree's
+-- close takes neither table's rows with it. The one statement that deletes rows of this table
+-- is the operator's rollback below the release that adds it (docs/kubernetes.md, "Rolling back
+-- below the release that trims an issue pod's volume"), which deletes every row of each pod
+-- whose queued volume-near-full notice it deletes. A row is one line of counters per pod,
+-- trimmer and episode of a project that ever filled a volume, so the table grows with those and
+-- not with the reports, which is the cost this shape was chosen for; what it buys is the account
+-- of what an architect was told, which the issue's production check reads beside the daemon's log
+-- lines.
 create table pod_volume_notices (
   id bigserial primary key,
   project text not null,

@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
 
 // The bounds on what a role's tree can make the sweep spend: time inside the walk of one entry,
@@ -196,8 +198,8 @@ func TestAMapsLineLongerThanTheBufferStillMarksItsEntryUsed(t *testing.T) {
 // A sweep whose first read of /proc was refused names the refusals in its reason, which is a
 // line of the pod's log, and a role that starts processes the launcher cannot read decides how
 // many there are: the reason names the first 25, the most a report names
-// (volumeReportRefusedReads), and how many more there were. The negative control is the reason
-// that joined every one.
+// (shimwire.VolumeReportRefusedReads), and how many more there were. The negative control is the
+// reason that joined every one.
 func TestASweepsReasonNamesAtMostTwentyFiveRefusals(t *testing.T) {
 	const refusedProcesses = 40
 	f := newTrimFixture(t, 1)
@@ -299,5 +301,47 @@ func TestAnAgeThatCannotBeReadIsLoggedAtASizeItsDepthDoesNotSet(t *testing.T) {
 	if grown := len(deep) - len(shallow); grown > 16 {
 		t.Errorf("the line for an entry 300 deep is %d bytes, %d more than the %d of one 2 deep: its size is set by the depth a role made, not by the names in it: %.200s…",
 			len(deep), grown, len(shallow), deep)
+	}
+}
+
+// The launcher cuts each list of a report to the cap the daemon holds a report to, from the one
+// place both read (shimwire.VolumeReportSizes and the three beside it): a report built over every
+// cap is one the daemon refuses, and the same report once bounded is one it takes, each list at
+// its cap and the rest counted. The negative controls are each half on its own: a Validate that
+// checked no list took the report over the caps, which this case refuses to read further, and a
+// bound cutting at a cap of its own past the daemon's sends a report the daemon drops.
+func TestEveryReportTheTrimmerBoundsIsOneTheDaemonTakes(t *testing.T) {
+	const past = 7
+	tr := newTrimFixture(t, 0).trimmer()
+	over := shimwire.LauncherVolumeReport{
+		Trimmer: tr.id, Episode: 1, RaisedBy: shimwire.VolumeEpisodeFirst,
+		Sizes:        make([]shimwire.LauncherVolumeSize, shimwire.VolumeReportSizes+past),
+		SizesMissing: make([]shimwire.LauncherVolumeMissing, shimwire.VolumeReportSizesMissing+past),
+		Faults:       make([]string, shimwire.VolumeReportFaults+past),
+	}
+	for at := range shimwire.VolumeReportRefusedReads + past {
+		over.RefusedReads = append(over.RefusedReads, fmt.Sprintf("process %d: /proc/%d/fd: permission denied", at, at))
+	}
+	if err := over.Validate(); err == nil {
+		t.Fatal("the daemon takes a report holding every list past its cap, so the bound below is held to nothing")
+	}
+
+	bounded := tr.bound(over)
+
+	if err := bounded.Validate(); err != nil {
+		t.Errorf("the daemon refuses the report this launcher bounded: %v", err)
+	}
+	for _, list := range []struct {
+		name            string
+		held, cap, left int
+	}{
+		{"sizes", len(bounded.Sizes), shimwire.VolumeReportSizes, bounded.SizesOmitted},
+		{"unmeasured directories", len(bounded.SizesMissing), shimwire.VolumeReportSizesMissing, bounded.SizesMissingOmitted},
+		{"refused reads", len(bounded.RefusedReads), shimwire.VolumeReportRefusedReads, bounded.RefusedReadsOmitted},
+		{"faults", len(bounded.Faults), shimwire.VolumeReportFaults, bounded.FaultsOmitted},
+	} {
+		if list.held != list.cap || list.left != past {
+			t.Errorf("the bounded report holds %d %s and counts %d left out, want the cap of %d and the %d past it", list.held, list.name, list.left, list.cap, past)
+		}
 	}
 }

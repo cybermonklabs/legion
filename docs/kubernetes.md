@@ -2009,10 +2009,17 @@ No migration of that earlier release deletes these rows, so unlike the `waiting-
 Run this with the daemon stopped, before the earlier image is pinned:
 
 ```sql
-delete from outbox where kind = 'notice' and payload->>'kind' = 'volume-near-full';
+with dropped as (
+  delete from outbox where kind = 'notice' and payload->>'kind' = 'volume-near-full'
+  returning issue, payload->'volume'->>'podUid' as pod_uid
+)
+delete from pod_volume_notices where (issue, pod_uid) in (select issue, pod_uid from dropped);
 ```
 
-Nothing of these notices need come back except one kind: a notice of a filling volume is reported again by its trimmer at its next sweep above the low mark once the newer release is pinned again, but the notice that a trimmer switched itself off is not, since that trimmer sends nothing more until its roles container restarts.
+The statement deletes those rows and, in the same statement, every row of `pod_volume_notices` for each pod one of them was of: the counts the daemon's bounds on this notice read (`store/volume_notices.go`), which a daemon of the earlier release never reads or deletes.
+A pod the rollback leaves running keeps its trimmer and the identifier that trimmer minted, so without the second half that pod's next report, once the newer release is pinned again, would be counted against a notice that never reached its architect, and the three-notice bound or the hour could hold it back.
+`psql` answers `DELETE` with the number of count rows the statement deleted, not the number of notices.
+With the counts gone, nothing of these notices need come back except one kind: a notice of a filling volume is reported again by its trimmer at its next sweep that ends above the low mark once the newer release is pinned again, but the notice that a trimmer switched itself off is not, since that trimmer sends nothing more until its roles container restarts.
 The trimmer itself needs no statement either — `runtime.kubernetes.volume_trim` is a key an earlier loader refuses by name, so take the block out of `legion.yaml` before pinning that image, and a pod of the earlier release's own worker image runs no trimmer at all.
 
 ### Pinning a release that drops what a running pod still uses
@@ -2559,8 +2566,8 @@ One directory is per role, its state home at `/legion/scratch/state/<role>`, hol
 it is per role for a mechanism, not isolation, since every role of the issue can write it:
 Oh My Pi names its browser broker's lock from the state root, the name is an abstract unix socket, an abstract socket name is one name across a network namespace, and every role of a pod shares the pod's, so one state home would block every role's broker but the first.
 An operator's arithmetic is therefore the issue's: one set of four, one Go pair, and one state home per role the issue runs.
-The project controller's pod has a volume of the same size — its Sandbox's own, not its pod's — holding the scratch of its one role.
-The caches the cache trimmer holds are the only part of `/legion/scratch` that anything prunes ("A cache trimmer in the pod's launcher process" below): the rest grows for the life of the pod, which is the life of the disk it sits on, and this change raises `issue_volume`'s default from `20Gi` to `50Gi` (`defaultIssueVolume`, `packages/daemon/internal/config/kubernetes.go`)
+The project controller's pod has a volume of the same size — its Sandbox's own, not its pod's — holding the scratch of its one role, and nothing prunes that volume: the controller's launcher serves its one role and runs no cache trimmer (`serveVolumeTrim`, `packages/daemon/internal/launcher/launcher.go`).
+On an issue pod, the caches its cache trimmer holds are the only part of `/legion/scratch` that anything prunes ("A cache trimmer in each issue pod's launcher process" below): the rest grows for the life of the pod, which is the life of the disk it sits on, and this change raises `issue_volume`'s default from `20Gi` to `50Gi` (`defaultIssueVolume`, `packages/daemon/internal/config/kubernetes.go`)
 — a default every project takes rather than a line of one deployment, so the apply this change needs is the image digest alone, with no deployment edit.
 The size rides in the pod's own ephemeral claim template, evaluated when the kubelet creates the claim, so every pod created after that apply gets 50 GiB and a pod already running keeps the size it started with.
 The disk size is one of the five keys of the `legion.dev/pod-shape` record a Sandbox carries ([The disk dies with its pod](#the-disk-dies-with-its-pod)), so a running issue pod is brought onto the new size by its update round, once every role in it has answered or at the round's bound, and the controller's pod, which no round covers, by the next launch into it.
@@ -2573,13 +2580,16 @@ the volume this change was written on reached **17 GiB of its 20, 3.0 GiB free**
 A disk that dies with its pod fills no slower than one that outlived it:
 the same clone, the same caches, the same size, and a single pod's life is long enough to fill 50 GiB, since a pod lives as long as the issue runs without being stopped or replaced.
 
-A cache trimmer in the pod's launcher process deletes the oldest entries of four of those directories when the volume reaches a mark, and leaves everything else on the volume alone.
+A cache trimmer in each issue pod's launcher process deletes the oldest entries of four of those directories when the volume reaches a mark, and leaves everything else on the volume alone; the controller's pod runs none.
 Every `interval_seconds`, 60 by default, it reads the volume with one `statfs` and compares the used bytes over the used plus the available bytes, which is the fraction `df` prints, against two marks.
+It compares that fraction unrounded, and `df` rounds its percentage up, so `df -h /legion` in the pod can print a number less than one point above the fraction the trimmer acted on: `df` printed 10% on a volume whose fraction was 9.26 per cent (`packages/daemon/internal/launcher/volumeusage.go`), and a volume `df` shows at 85% can still be below the default high mark.
 At or above `high_percent`, 85 by default, it sweeps, unless the sweep before it freed under one point of the volume, which holds sweeping off for the next ten intervals: it lists every eligible entry of the four roots with its time and deletes them oldest first, and it stops at the first fresh reading at or below `low_percent`, 70 by default, when three readings in a row show no decrease, when no entry is left eligible, when its own five-minute budget runs out, on a `/proc` read the kernel refused, when the volume cannot be read or the child it deletes through ends, or on a stop from the daemon or the container.
 It deletes no entry a process of the pod held — open, mapped, or as its working or root directory — at its latest read of `/proc`, which it takes at the sweep's start and again before an entry once the last read is a second old, the launcher and the child it deletes through aside; none whose newest modification time is inside `min_age_minutes`, 15 by default — an hour more than that for an entry of the Go build cache, below — none whose kind is not the kind its row names below, and it never unlinks a root itself.
-Every directory it reads is opened one element at a time, each open naming a single name in a directory it already holds and refusing a symbolic link at that name, so the kernel resolves no path of the volume to open one; the open blocks on nothing, so a named pipe where a cache root belongs is skipped rather than waited on.
+Every directory of the volume it reads is opened one element at a time, each open naming a single name in a directory it already holds and refusing a symbolic link at that name, so the kernel resolves no path of the volume to open one; the open blocks on nothing, so a named pipe where a cache root belongs is skipped rather than waited on.
 The deletions themselves are made by a child of the launcher, and it removes an entry bottom up through descriptors, as Rust's `std::fs::remove_dir_all` does since CVE-2022-21658: each directory is opened as one name in the directory it is in and refused if that name is a symbolic link, each name is unlinked from its parent's descriptor, and a name that is a link is unlinked as a link and never opened, so the removal follows no link a role leaves in an entry, nor one a role swaps in for a subdirectory while the removal is inside it (`removeEntryAt`, `packages/daemon/internal/launcher/volumedir_linux.go`).
-That child runs in a mount namespace of its own, built from the one list a role's own namespace is built from: every path a role is given something of its own at is an empty filesystem of that child's instead — the roles directory `/var/run/legion/roles`, the home mounts directory `/var/run/legion/home` where the pod's shared configuration home is mounted, the image home `/home/legion` that every role's own home is built over, the fixed root's own mount points, and the container's `/tmp`, `/var/tmp`, lock directories, shared memory, pseudo-terminals and message queues — with a procfs of the child's own PID namespace where a role is given one, its working directory at the root of that namespace, and `/legion`, which is what it deletes in, as the container mounted it.
+That child runs in a mount namespace of its own, built from the one list a role's own namespace is built from: every directory a role is given something of its own at is an empty filesystem of that child's instead — the roles directory `/var/run/legion/roles`, the home mounts directory `/var/run/legion/home` where the pod's shared configuration home is mounted, the image home `/home/legion` that every role's own home is built over, the fixed root's own mount points, and the container's `/tmp`, `/var/tmp`, lock directories, shared memory, pseudo-terminals and message queues — with a procfs of the child's own PID namespace where a role is given one, its working directory at the root of that namespace, and `/legion`, which is what it deletes in, as the container mounted it.
+The child leaves one path as the container holds it: `/dev/ptmx`, the one path a role's namespace replaces that is not a directory, which in a role's namespace opens into that role's own pseudo-terminals.
+A removal unlinks a name that is not a directory as the name it is and never recurses through it (`replaced`, `packages/daemon/internal/launcher/roleinit.go`).
 Since both namespaces are built from that one list, a path added to a role's is covered for the deleter in the same edit.
 So a link a removal did follow would reach only what the role that left it could already delete itself, by its own path, as the same uid.
 That is the bound and the whole of it: the six roles of a pod share one uid and `/legion` is wholly visible to that child, so containment takes nothing away from what a role can delete of its own volume, and what it removes is the reach across the role-isolation boundary into what the container holds for the roles and no role holds itself — another role's private, state and agent-secrets directories under the roles directory (not its state home under `/legion/scratch/state`, which is on the volume), its launcher token, the shared configuration home, the home each role starts from, and whatever the container keeps at the paths where a role has its own.
@@ -2587,9 +2597,19 @@ A sweep whose child will not start deletes nothing and says why in the pod's log
 `runtime.kubernetes.volume_trim` sets all five values, and `enabled: false` hands the pod's launcher no settings, on which its trimmer reads and deletes nothing.
 A change to them reaches a running pod at its next connection to the daemon, which every daemon restart gives it, and no pod is replaced for it: a pod told `enabled: false` stops sweeping and keeps its trimmer, which takes up an answer that carries settings again within ten seconds, its poll of the settings in force, and reads the volume one `interval_seconds` after that — the same for a daemon rolled back to a release that does not know this work and the roll-forward after it.
 
+The loader refuses the file, naming the key, on any of these (`readVolumeTrim`, `packages/daemon/internal/config/kubernetes.go`):
+
+- a mark that is not an integer from 1 to 99, or a `low_percent` that is not below `high_percent`;
+
+- a `min_age_minutes` that is not an integer from 1 to 10080, which is seven days, or an `interval_seconds` that is not an integer from 1 to 3600;
+
+- an `enabled` that is not a YAML boolean: `off` and `yes` are strings to this loader, so it refuses them rather than reading them as `false` and `true`;
+
+- a block that is not a mapping, or one that names a member the loader does not know or names one member twice.
+
 What it may delete, and what one entry is in each:
 
-- `/legion/scratch/tmp` — one `go-build*` directory, removed whole, and nothing else of the temporary directory:
+- `/legion/scratch/tmp` — one directory whose name is `go-build` followed by decimal digits and nothing else, which is how Go names the build directories it makes in `$TMPDIR` (`os.MkdirTemp` with the pattern `go-build`, `cmd/go/internal/work/action.go`), removed whole, and nothing else of the temporary directory, so a role's own directory named `go-build-repro` or `go-builder` stays:
   a role's clones, toolchains and databases live there too, under names the role chose, and no program can tell a role's cache from a role's work.
 
 - `/legion/go/build` — one regular file or directory whose name ends `-a` or `-d`, inside a shard directory, which is a directory named as Go names its 256, by two lowercase hex digits (any other directory of the cache root is passed over and counted in one line per sweep), judged by its newest modification time taken an hour further back than `min_age_minutes`, the directory form removed whole.
@@ -2658,7 +2678,7 @@ So delete `tmp` with the role stopped, not merely between its turns;
 the rest of the list is reclaimable between turns, when no role is mid-build or mid-install.
 Do not leave it out of the list either, because a temporary directory sounds transient:
 a role at the merge base is told no `TMPDIR` at all and its temporaries died with the container, where here a killed build's residue lives as long as the issue does
-— one interrupted `go build` left **851 MB in a single `go-build*` tree** on this branch's volume, more than everything else the reclaim found.
+— one interrupted `go build` left **851 MB in a single Go build tree** on this branch's volume, more than everything else the reclaim found.
 As for the rest: a role mid-build rebuilds what it loses, but deleting `$BUN_INSTALL_CACHE_DIR` under a role installing its plugin pair takes the `flock` inode with it, so a second role enters the critical section while the first is inside it and both fill one cold cache entry (measured:
 with no delete the second waits the full bound; with the directory deleted and remade mid-install it does not).
 The install block cannot prevent that and does not claim to

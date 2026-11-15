@@ -18,11 +18,11 @@ import (
 )
 
 // The pod's cache trimmer: the interval loop that reads the volume, the sweep that deletes the
-// oldest entries of the four reclaimable roots, the episode number a report is counted under,
-// and the report itself. It runs in the launcher process, which is PID 1 of an issue pod's
-// roles container, beside the six roles whose caches fill the one volume they share, 50 GiB
-// by default (INFRA-2009: a pod filled 45 GiB of 49, and a role's work was deleted by hand
-// mid-round).
+// oldest entries of the four reclaimable roots, and the episode number a report is counted
+// under. The report itself is volumereport.go's and the size walk it carries volumewalk.go's.
+// It runs in the launcher process, which is PID 1 of an issue pod's roles container, beside the
+// six roles whose caches fill the one volume they share, 50 GiB by default (INFRA-2009: a pod
+// filled 45 GiB of 49, and a role's work was deleted by hand mid-round).
 //
 // Everything the trimmer reads of the machine is a field or a package-level var, so a test
 // drives a tree, a /proc and a clock of its own: the volume reading is readVolumeUsage
@@ -79,17 +79,30 @@ const (
 	// imprecision of our “last used” mtimes", `cutoff := now.Add(-trimLimit - mtimeInterval)`
 	// (cache.go:427-429).
 	//
-	// No other rule has it, because only Go writes its mtimes this way. A `go-build*` tree of
+	// No other rule has it, because only Go writes its mtimes this way. A Go build tree of
 	// $TMPDIR is not of this class either: it is Go's working directory for one build, written
 	// as that build runs, and nothing ever marks it used — its time is the time it was last
 	// written.
 	goCacheMtimeSlack = time.Hour
 	// volumeQuietIntervals is how many intervals pass after a sweep that freed less than
-	// volumeSweepMinFreedPoints before another sweep may start. A sweep that freed nothing has
-	// no eligible entry left or is losing to the roles writing, and repeating it every interval
-	// would spend the listing's cost — minutes of walking the volume — for nothing, on the
-	// volume that is already full. The interval reading continues through the pause, because it
-	// is what ends an episode (episodeOf).
+	// volumeSweepMinFreedPoints before another sweep may start, so the next sweep is the
+	// eleventh interval after that one. A sweep that freed nothing has no eligible entry left or
+	// is losing to the roles writing, and repeating it every interval would spend the listing's
+	// cost — minutes of walking the volume — for nothing, on the volume that is already full. The
+	// interval reading continues through the pause, because it is what ends an episode
+	// (episodeOf).
+	//
+	// The pause follows every sweep that freed under a point, whatever stopped it, and so it
+	// follows each sweep that deleted nothing at all: one whose deleter would not start, one a
+	// refused first /proc read stopped, and one whose listing its budget cut (sweep). The last
+	// sets a limit nothing else states: a listing reads every name of every entry's tree under
+	// the roots (newestModTime), so a sweep whose reclaimable roots hold more names than the
+	// listing reads in volumeSweepBudget is cut while it lists, deletes nothing, pauses, and is
+	// cut the same way the next time, and that volume is never swept. In a test process of this
+	// issue pod on 2026-11-15, kernel 4.19.0-gvisor, under go1.27.3, the listing read 8,400 to
+	// 9,700 names a second over 400 entries of five directories of ten files each, three runs,
+	// which is about 2.5 million names in the five minutes at the slowest, for a tree of that
+	// shape.
 	volumeQuietIntervals = 10
 	// volumeSweepMinFreedPoints is what a sweep must free, in percentage points of the volume,
 	// not to engage the pause above.
@@ -115,10 +128,13 @@ const (
 	volumePassedOverLines = 10
 )
 
-// refusedTrimSettings is every reason the settings cannot be run, each naming the key as it is
-// written on the wire and the value that was sent, and empty when they can. A trimmer that
-// refuses its settings stays off rather than starting its ticker: there is no safe default to
-// fall back to, since every default is a guess at how full this operator's volume may get.
+// refusedTrimSettings is every reason the settings cannot be run, each naming the key as the
+// daemon's YAML writes it — high_percent, low_percent, min_age_minutes and interval_seconds of
+// runtime.kubernetes.volume_trim, where the operator sets them, and not the wire's names for
+// them (shimwire.LauncherVolumeTrim) — and the value that was sent, and empty when they can. A
+// trimmer that refuses its settings stays off rather than starting its ticker: there is no safe
+// default to fall back to, since every default is a guess at how full this operator's volume may
+// get.
 //
 // This is the ranges checked a second time on the trimmer's own side of the wire. The daemon
 // validates them too, but it is another binary across a connection this design expects to carry
@@ -216,7 +232,7 @@ type trimmer struct {
 	anchored  bool    // whether a sweep has reported in this episode at all
 	pause     int     // intervals left of the pause after a sweep that freed under a point
 	last      volumeUsage
-	faults    []string // the newest recovered panics the next report carries (volumeReportFaults)
+	faults    []string // the newest recovered panics the next report carries (shimwire.VolumeReportFaults)
 	// faultsDropped is how many older ones the rule above left out, which the next report says
 	// rather than dropping them silently.
 	faultsDropped int
@@ -613,14 +629,15 @@ func (t *trimmer) anchorAt(percent float64) {
 
 // fault records one recovered panic and answers whether the trimmer must now stay off.
 //
-// Only the newest volumeReportFaults stacks are kept, and what they displace is counted: the
-// faults are cleared when a report carries them (report), so a pod whose volume stays healthy
-// never reports and would otherwise keep every stack it ever recovered for the life of the
-// launcher process, kilobytes each, in the process that is PID 1 of the roles container.
+// Only the newest shimwire.VolumeReportFaults stacks are kept, and what they displace is
+// counted: the faults are cleared when a report carries them (report), so a pod whose volume
+// stays healthy never reports and would otherwise keep every stack it ever recovered for the
+// life of the launcher process, kilobytes each, in the process that is PID 1 of the roles
+// container.
 func (t *trimmer) fault(recovered any, stack []byte) bool {
 	t.consecutive++
 	t.faults = append(t.faults, fmt.Sprintf("%v\n%s", recovered, stack))
-	if over := len(t.faults) - volumeReportFaults; over > 0 {
+	if over := len(t.faults) - shimwire.VolumeReportFaults; over > 0 {
 		t.faultsDropped += over
 		t.faults = slices.Delete(t.faults, 0, over)
 	}
@@ -696,7 +713,7 @@ func walkShortfall(walk walkResult) string {
 	for _, size := range walk.Sizes {
 		switch {
 		case size.Refused == "":
-		case len(partly) == volumeReportSizes:
+		case len(partly) == shimwire.VolumeReportSizes:
 			partlyLeft++
 		default:
 			partly = append(partly, fmt.Sprintf("%q at %q",
@@ -896,8 +913,10 @@ func (t *trimmer) sweep(ctx context.Context, set shimwire.LauncherVolumeTrim, fi
 	// There is no fallback. A deleter that will not start leaves the sweep deleting nothing: it
 	// says so in one line of the pod's log and carries the reason into its report, because the
 	// deletions it would have made in the launcher's own view are the deletions this change
-	// exists to stop, and a sweep that skips a cycle costs the pod a minute of a volume that is
-	// already full.
+	// exists to stop. That costs the pod more than the one sweep: a sweep that deleted nothing
+	// freed under a point, so the ten-interval pause follows it (volumeQuietIntervals) and the
+	// next sweep is eleven intervals later — eleven minutes, at the default interval of sixty
+	// seconds, of a volume that is already full.
 	var remover entryRemover
 	if len(entries) > 0 {
 		started, err := t.removals(t.cover, dirs)
@@ -919,11 +938,14 @@ func (t *trimmer) sweep(ctx context.Context, set shimwire.LauncherVolumeTrim, fi
 	// heldSaid is the roots this sweep has already reported as taken open, so the line below is
 	// one per root: there are four roots and tens of thousands of entries under them.
 	var heldSaid []string
-	for _, entry := range entries {
-		if reason, settingsStop := t.halted(ctx, deadline); reason != "" {
-			out.reason, out.settingsStop = reason, settingsStop
-			break
-		}
+	// guard is the used-path set asked of one entry: whether the entry may go, and the ending
+	// of the sweep where the set read again is one it knows to be incomplete. The set is read
+	// again first whenever it is volumeUsedPathsMaxAge old. The sweep asks it at every entry
+	// boundary, and remove asks it again after the entry's pre-delete re-read and immediately
+	// before the removal: that re-read walks the entry's tree (newerThan), which takes as long as
+	// the tree is large, so a set asked at the boundary alone could be older than
+	// volumeUsedPathsMaxAge by the time the removal acts on its answer.
+	guard := func(entry sweepEntry) (bool, error) {
 		if t.now().Sub(usedAt) >= volumeUsedPathsMaxAge {
 			// The deleter is left out with the trimmer: it holds every directory the listing
 			// opened, and read as a use it was a hold on the root it deletes from (readUsedPaths).
@@ -934,8 +956,7 @@ func (t *trimmer) sweep(ctx context.Context, set shimwire.LauncherVolumeTrim, fi
 				// rather than deleting on a reading of the pod's processes it knows to be
 				// incomplete.
 				out.refused = append(out.refused, used.Refused...)
-				out.reason = fmt.Sprintf("a /proc read the kernel refused while the sweep ran, so it kept what it had deleted and stopped (%s)", refusalsSaid(used.Refused))
-				break
+				return false, &sweepHalt{reason: fmt.Sprintf("a /proc read the kernel refused while the sweep ran, so it kept what it had deleted and stopped (%s)", refusalsSaid(used.Refused))}
 			}
 		}
 		if used.Holds(entry.dir.root.Path) {
@@ -959,17 +980,30 @@ func (t *trimmer) sweep(ctx context.Context, set shimwire.LauncherVolumeTrim, fi
 				heldSaid = append(heldSaid, entry.dir.root.Path)
 				t.logf(volumeTrimLog+"the reclaimable root %s was taken open by a process of the pod after the listing and its entries are skipped while it is held", entry.dir.root.Path)
 			}
+			return false, nil
+		}
+		return !used.Covers(entry.path), nil
+	}
+	for _, entry := range entries {
+		if reason, settingsStop := t.halted(ctx, deadline); reason != "" {
+			out.reason, out.settingsStop = reason, settingsStop
+			break
+		}
+		clear, err := guard(entry)
+		if err != nil {
+			out.reason = err.Error()
+			break
+		}
+		if !clear {
 			continue
 		}
-		if used.Covers(entry.path) {
-			continue
-		}
-		removed, ended := t.remove(remover, entry, passed, halt)
+		removed, ended := t.remove(remover, entry, passed, halt, guard)
 		var stopped *sweepHalt
 		if errors.As(ended, &stopped) {
-			// One of the three endings, met in the entry's pre-delete re-read: the entry's
-			// removal had not begun, so the entry stands whole and the sweep ends on it, as it
-			// would have at the boundary after.
+			// An ending met inside the entry, before its removal began — one of the three in
+			// its pre-delete re-read, or a refused /proc read where the set was read again
+			// after it — so the entry stands whole and the sweep ends on it, as it would have
+			// at the boundary after.
 			out.reason, out.settingsStop = stopped.reason, stopped.bySettings
 			break
 		}
@@ -1053,9 +1087,10 @@ func (t *trimmer) halted(ctx context.Context, deadline time.Time) (reason string
 	return "", false
 }
 
-// sweepHalt is halted's answer as the error that ends a walk of one entry, the listing's
-// (newestModTime) or the pre-delete re-read's (newerThan), so the sweep ends with the reason the
-// walk met.
+// sweepHalt is an ending the sweep meets inside the handling of one entry, as the error that
+// ends it: halted's answer to a walk of the entry, the listing's (newestModTime) or the
+// pre-delete re-read's (newerThan), and the refused /proc read of the used-path set read again
+// after that re-read (sweep's guard, remove). The sweep ends with the reason it carries.
 type sweepHalt struct {
 	reason     string
 	bySettings bool
@@ -1075,14 +1110,14 @@ func (t *trimmer) haltCheck(ctx context.Context, deadline time.Time) func() erro
 }
 
 // refusalsSaid is the refused /proc reads a sweep's reason names: the first
-// volumeReportRefusedReads of them, the most a report names, and how many more there were. The
-// reason is a line of the pod's log, and a role that starts processes the launcher cannot read
-// chooses how many there are (carryRefused bounds the report's list the same way).
+// shimwire.VolumeReportRefusedReads of them, the most a report names, and how many more there
+// were. The reason is a line of the pod's log, and a role that starts processes the launcher
+// cannot read chooses how many there are (carryRefused bounds the report's list the same way).
 func refusalsSaid(refused []string) string {
-	if len(refused) <= volumeReportRefusedReads {
+	if len(refused) <= shimwire.VolumeReportRefusedReads {
 		return strings.Join(refused, "; ")
 	}
-	return fmt.Sprintf("%s; and %d more", strings.Join(refused[:volumeReportRefusedReads], "; "), len(refused)-volumeReportRefusedReads)
+	return fmt.Sprintf("%s; and %d more", strings.Join(refused[:shimwire.VolumeReportRefusedReads], "; "), len(refused)-shimwire.VolumeReportRefusedReads)
 }
 
 // passedOver is what one sweep passes over, counted root by root: the entries its listing or
@@ -1236,8 +1271,9 @@ func (t *trimmer) list(ctx context.Context, used usedPaths, cutoff, deadline tim
 			case GoBuildTrees:
 				// Go names these and owns them, and makes one for every `go build` and every
 				// `go test` because the pod sets no GOTMPDIR. Everything else in $TMPDIR is a
-				// role's own work under a name the role chose.
-				if !strings.HasPrefix(child.Name(), "go-build") {
+				// role's own work under a name the role chose, a `go-build-repro` of its own
+				// among them (isGoBuildTree).
+				if !isGoBuildTree(child.Name()) {
 					continue
 				}
 			case GoCacheEntries:
@@ -1285,6 +1321,25 @@ func (t *trimmer) list(ctx context.Context, used usedPaths, cutoff, deadline tim
 func isGoCacheShard(name string) bool {
 	const hex = "0123456789abcdef"
 	return len(name) == 2 && strings.IndexByte(hex, name[0]) >= 0 && strings.IndexByte(hex, name[1]) >= 0
+}
+
+// isGoBuildTree is whether name is one Go gives a build's working directory: `go-build` and one
+// or more decimal digits, which is what `os.MkdirTemp(cfg.Getenv("GOTMPDIR"), "go-build")` makes
+// (cmd/go/internal/work/action.go:298, with os.MkdirTemp appending nextRandom's
+// strconv.FormatUint(uint64(uint32(runtime_rand())), 10), os/tempfile.go:22-23, read in this
+// pod's own go1.27.3). A name that only begins `go-build` — a role's `go-build-repro`,
+// `go-builder` or `go-build.log` — is a role's own and never an entry (list).
+func isGoBuildTree(name string) bool {
+	digits, found := strings.CutPrefix(name, "go-build")
+	if !found || digits == "" {
+		return false
+	}
+	for _, digit := range []byte(digits) {
+		if digit < '0' || digit > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // goCacheNotShards is how many of a Go build cache root's directories are not named as a shard
@@ -1339,18 +1394,24 @@ func closeDirs(dirs []*sweepDir) {
 	}
 }
 
-// remove is the two reads the sweep makes immediately before it deletes one entry and the
-// removal itself. removed is whether the entry went; ended is what ends the sweep where it
-// stands (sweep) and which no later entry can be asked of: the deleter rather than the removal,
-// or one of the sweep's three endings as halt answered it inside the pre-delete re-read
-// (sweepHalt, moved), before the removal has begun. Each read goes through the handle on the
+// remove is the two reads the sweep makes of one entry immediately before it deletes it, the
+// used-path set asked of it again, and the removal itself. removed is whether the entry went;
+// ended is what ends the sweep where it stands (sweep) and which no later entry can be asked
+// of: the deleter rather than the removal, or an ending met before the removal began
+// (sweepHalt) — one of the sweep's three endings as halt answered it inside the pre-delete
+// re-read (moved), or a refused /proc read of guard. Each read goes through the handle on the
 // directory the listing read the entry from, under the entry's own name, and the removal is
 // asked of that same descriptor — the deleter was handed it with the rest of the listing's and
-// removes the entry from it by that name alone (removeOneRequest, volumedelete.go) — so all
-// three reach the inode the listing judged (sweepDir). Every reason not to delete is the sweep's
-// to pass over rather than to stop for, as it was when each of these resolved a path of its own,
-// and each is said through passed (passedOver).
-func (t *trimmer) remove(remover entryRemover, entry sweepEntry, passed *passedOver, halt func() error) (removed bool, ended error) {
+// removes the entry from it by that name alone (removeOneRequest, volumedelete.go) — so the two
+// reads and the removal reach the inode the listing judged (sweepDir). Every reason not to
+// delete is the sweep's to pass over rather than to stop for, as it was when each of these
+// resolved a path of its own, and each is said through passed (passedOver).
+//
+// guard is the used-path set the sweep asked of the entry at its boundary, asked again after
+// the re-read and immediately before the removal, and read again first where the re-read took
+// it past volumeUsedPathsMaxAge (sweep): the removal acts on a reading of the pod's processes
+// no older than that, however long the entry's tree took to read.
+func (t *trimmer) remove(remover entryRemover, entry sweepEntry, passed *passedOver, halt func() error, guard func(sweepEntry) (bool, error)) (removed bool, ended error) {
 	switch ok, why, err := entryKindOK(entry.dir.handle, entry.name, entry.dir.root.Entry); {
 	case errors.Is(err, fs.ErrNotExist):
 		return false, nil // a role's own tool deleted it between the listing and now
@@ -1374,6 +1435,9 @@ func (t *trimmer) remove(remover entryRemover, entry sweepEntry, passed *passedO
 		// Something wrote in it between the listing and this moment: a build that started
 		// while the sweep listed, which the age guard would have kept out had it run now.
 		return false, nil
+	}
+	if clear, err := guard(entry); err != nil || !clear {
+		return false, err
 	}
 	if err := remover.removeAll(entry.dir, entry.name); err != nil {
 		if errors.Is(err, errRemoverGone) {

@@ -831,8 +831,9 @@ func TestTheDeleterOverTheImagesOwnPathsDeletesWhatTheSweepLists(t *testing.T) {
 }
 
 // A sweep whose deleter will not start deletes nothing at all. There is no fallback to deleting
-// in the launcher's own view: that is the behaviour this change exists to end, and a sweep that
-// skips a cycle costs the pod one interval of a volume that is already full. The reason is in
+// in the launcher's own view: that is the behaviour this change exists to end, and it costs the
+// pod more than the one sweep, since a sweep that frees nothing is followed by the ten-interval
+// pause and the next sweep comes eleven intervals later (volumeQuietIntervals). The reason is in
 // one line of the pod's log and in the report the daemon gets, because a trimmer silently
 // freeing nothing on a full volume is the pod nobody is told about.
 func TestASweepWhoseDeleterCannotStartDeletesNothingAndSaysSo(t *testing.T) {
@@ -932,16 +933,19 @@ func (r *dyingRemover) process() int { return os.Getpid() }
 
 func (r *dyingRemover) close() { *r.closed++ }
 
-// No child of a sweep's may outlive the sweep that made it. The launcher's Run waits on the
-// trimmer's goroutine at the container's stop and gives it the pod's whole termination grace,
-// and a deleter left behind would hold the listing's descriptors on directories nobody is
+// The sweep closes its deleter on every way out of it, exactly once. The launcher's Run waits on
+// the trimmer's goroutine at the container's stop and gives it the pod's whole termination
+// grace, and a deleter left behind would hold the listing's descriptors on directories nobody is
 // deleting out of, in the process that is PID 1 of the roles container (volumedelete.go).
 //
-// So the deleter is closed on every way out of the sweep. Three of the four are here — the
-// sweep that ran out of entries, the settings that stopped the trimmer mid-sweep, and the
-// container's stop — and the fourth, the deleter that died under it, is the case above. The two
-// stops are staged after the first deletion, because a stop that arrived during the listing
-// ends the sweep before any deleter is started at all.
+// This case counts the closes of a remover of its own on three of the four ways out — the sweep
+// that ran out of entries, the settings that stopped the trimmer mid-sweep, and the container's
+// stop — and the fourth, the deleter that died under it, is the case above. That a close ends
+// the child, and kills one that outlives its grace, is
+// TestADeleterThatIgnoresTheEndOfItsRequestsIsKilledAtTheGrace: the two together are what keep a
+// child of a sweep's from outliving the sweep. The two stops are staged after the first
+// deletion, because a stop that arrived during the listing ends the sweep before any deleter is
+// started at all.
 func TestASweepClosesItsDeleterHoweverItEnded(t *testing.T) {
 	for _, tc := range []struct {
 		name string
