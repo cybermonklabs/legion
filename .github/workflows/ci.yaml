@@ -421,6 +421,7 @@ jobs:
               # tree: lean/ holds the model, which airlock-lean alone reads.
               - 'packages/envoy/internal/broker/airlock/*'
               - 'packages/envoy/internal/broker/airlock/testdata/**'
+              - 'packages/envoy/internal/broker/answer/*'
               - 'packages/envoy/internal/broker/api/*'
               # The approval page's own files, its embedded templates and stylesheet included.
               - 'packages/envoy/internal/broker/approval/**'
@@ -447,6 +448,7 @@ jobs:
               - 'packages/envoy/internal/bus/*'
               - 'packages/envoy/internal/bus/testdata/*'
               - 'packages/envoy/internal/contracts/*'
+              - 'packages/envoy/internal/ctxlock/*'
               # pmdoc reads a stored text's display tree through this cache (pmdoc/display_json.go),
               # so every build of the parser compiles it.
               - 'packages/envoy/internal/dispatch/bytelru/*'
@@ -460,10 +462,13 @@ jobs:
               - 'packages/envoy/internal/googleidentity/*'
               - 'packages/envoy/internal/id/*'
               - 'packages/envoy/internal/logtest/*'
+              # internal/broker/policy, answer and secrets count on counters of this package.
+              - 'packages/envoy/internal/metrics/*'
               - 'packages/envoy/internal/oidc/**'
               - 'packages/envoy/internal/pgmigrate/*'
               - 'packages/envoy/internal/ratelimit/*'
               - 'packages/envoy/internal/redact/*'
+              - 'packages/envoy/internal/serverwait/*'
               - 'packages/envoy/internal/testnats/*'
               # storetest's DatabaseURL makes a test's own database with internal/testpg.
               - 'packages/envoy/internal/testpg/*'
@@ -561,6 +566,7 @@ jobs:
               - 'packages/envoy/internal/redirects/*'
               - 'packages/envoy/internal/roles/*'
               - 'packages/envoy/internal/routing/*'
+              - 'packages/envoy/internal/serverwait/*'
               - 'packages/envoy/internal/session/*'
               - 'packages/envoy/internal/store/*'
               - 'packages/envoy/listenfd/*'
@@ -638,6 +644,7 @@ jobs:
               - 'packages/envoy/dispatchbody/*'
               - 'packages/envoy/internal/brokerclient/*'
               - 'packages/envoy/internal/contracts/*'
+              - 'packages/envoy/internal/ctxlock/*'
               - 'packages/envoy/internal/dispatch/itemblocks/*'
               - 'packages/envoy/internal/dispatch/model/*'
               - 'packages/envoy/internal/dispatch/pmdoc/**'
@@ -729,6 +736,7 @@ jobs:
               - 'packages/envoy/internal/redirects/*'
               - 'packages/envoy/internal/roles/*'
               - 'packages/envoy/internal/routing/*'
+              - 'packages/envoy/internal/serverwait/*'
               - 'packages/envoy/internal/session/*'
               - 'packages/envoy/internal/store/*'
               - 'packages/envoy/internal/testsocks5/*'
@@ -929,8 +937,8 @@ jobs:
               # envoy's ./cmd/{dispatch,broker,agent-secrets,agent-secrets-helper,broker-refgen};
               # the screenshots' harness starts the Dispatch server (packages/dispatch/e2e/harness-start.ts,
               # which docs/site/media/harness.ts:21,97 imports).
-              # broker-refgen also parses broker/api, broker/approval, broker/config, broker/helper,
-              # cmd/broker and cmd/agent-secrets at run time (generators/broker-reference.sh:13-14).
+              # broker-refgen also parses broker/api, broker/approval, broker/airlockproxy, broker/config,
+              # broker/helper, cmd/broker and cmd/agent-secrets at run time (generators/broker-reference.sh:14-15).
               - *legion_command
               - *dispatch_server
               # agentloop: the model loop cmd/broker's judge runs a model and its tools through.
@@ -941,6 +949,7 @@ jobs:
               - 'packages/envoy/cmd/broker-refgen/*'
               - 'packages/envoy/internal/broker/airlock/*'
               - 'packages/envoy/internal/broker/airlockproxy/*'
+              - 'packages/envoy/internal/broker/answer/*'
               - 'packages/envoy/internal/broker/api/*'
               # The approval page's own files, its embedded templates and stylesheet included.
               - 'packages/envoy/internal/broker/approval/**'
@@ -1344,6 +1353,7 @@ jobs:
               - 'packages/envoy/cmd/dev-oidc-issuer/*'
               - 'packages/envoy/internal/broker/airlock/*'
               - 'packages/envoy/internal/broker/airlockproxy/*'
+              - 'packages/envoy/internal/broker/answer/*'
               - 'packages/envoy/internal/broker/api/*'
               # The approval page's own files, its embedded templates and stylesheet included.
               - 'packages/envoy/internal/broker/approval/**'
@@ -1719,6 +1729,7 @@ jobs:
               - 'packages/envoy/internal/bus/bustest/*'
               - 'packages/envoy/internal/cmdtest/*'
               - 'packages/envoy/internal/contracts/testdata/**'
+              - 'packages/envoy/internal/ctxlock/*'
               - 'packages/envoy/internal/dispatch/accesslog/*'
               - 'packages/envoy/internal/dispatch/agentsecrets/*'
               - 'packages/envoy/internal/dispatch/agentstream/*'
@@ -1773,6 +1784,7 @@ jobs:
               - 'packages/envoy/internal/pgmigrate/*'
               - 'packages/envoy/internal/ratelimit/*'
               - 'packages/envoy/internal/redact/*'
+              - 'packages/envoy/internal/serverwait/*'
               - 'packages/envoy/internal/testnats/*'
               - 'packages/envoy/internal/testpg/*'
               - 'packages/envoy/internal/testwait/*'
@@ -1790,11 +1802,14 @@ jobs:
               - 'packages/envoy/agentloop/*'
               - 'packages/envoy/cmd/broker/*'
               - 'packages/envoy/cmd/agent-secrets/*'
-              # cmd/broker/main_test.go:220 (sslrootcert).
+              # cmd/broker/main_test.go:348 (sslrootcert).
               - 'packages/envoy/docker/rds-global-bundle.pem'
               - 'packages/envoy/internal/broker/airlock/*'
+              # cmd/broker/minters_test.go mints through the GitHub stand-in.
+              - 'packages/envoy/internal/broker/airlock/airlocktest/*'
               - 'packages/envoy/internal/broker/airlock/testdata/**'
               - 'packages/envoy/internal/broker/airlockproxy/*'
+              - 'packages/envoy/internal/broker/answer/*'
               - 'packages/envoy/internal/broker/api/*'
               # The approval page's own files, its embedded templates and stylesheet included.
               - 'packages/envoy/internal/broker/approval/**'
@@ -1825,15 +1840,19 @@ jobs:
               - 'packages/envoy/internal/brokertoken/*'
               - 'packages/envoy/internal/buildversion/*'
               - 'packages/envoy/internal/cmdtest/*'
+              - 'packages/envoy/internal/ctxlock/*'
               - 'packages/envoy/internal/dispatch/githubapp/githubapptest/*'
               - 'packages/envoy/internal/githubappjwt/*'
               - 'packages/envoy/internal/googleidentity/*'
+              - 'packages/envoy/internal/logging/*'
               - 'packages/envoy/internal/logtest/*'
+              - 'packages/envoy/internal/metrics/*'
               - 'packages/envoy/internal/oidc/**'
               - 'packages/envoy/internal/pglisten/*'
               - 'packages/envoy/internal/pgmigrate/*'
               - 'packages/envoy/internal/ratelimit/*'
               - 'packages/envoy/internal/redact/*'
+              - 'packages/envoy/internal/serverwait/*'
               # storetest's DatabaseURL makes a test's own database with internal/testpg.
               - 'packages/envoy/internal/testpg/*'
               - 'packages/envoy/internal/testwait/*'
@@ -5680,11 +5699,34 @@ jobs:
           PREVIOUS_COMMIT: ${{ steps.previous.outputs.commit }}
           DISPATCH_PREVIOUS_BUILD: ${{ runner.temp }}/dispatch-previous
         run: packages/envoy/scripts/build-dispatch-build.sh --commit "$PREVIOUS_COMMIT" --out "$DISPATCH_PREVIOUS_BUILD"
+      # The first-rollout build: the newest release before the first that registers its schema
+      # numbers (firstRolloutRelease in packages/envoy/cmd/dispatch/twobuild_harness_test.go, which
+      # names the same tag). The transition row that drives the fleet's first rollout runs it as its
+      # earlier build, since every previous release from legion-envoy-v30.21.0 on registers its
+      # numbers. The release is pinned, so its cache entry is written once and restored after that.
+      - name: Resolve the first-rollout build's commit
+        id: first-rollout
+        run: |
+          commit=$(packages/envoy/scripts/build-dispatch-build.sh --commit legion-envoy-v30.20.2 --resolve)
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+      - name: Cache the first-rollout build
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ runner.temp }}/dispatch-first-rollout
+            !${{ runner.temp }}/dispatch-first-rollout/src
+          key: dispatch-first-rollout-build-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('packages/envoy/scripts/build-dispatch-build.sh') }}-${{ steps.first-rollout.outputs.commit }}
+      - name: Build the first-rollout build
+        env:
+          FIRST_ROLLOUT_COMMIT: ${{ steps.first-rollout.outputs.commit }}
+          DISPATCH_FIRST_ROLLOUT_BUILD: ${{ runner.temp }}/dispatch-first-rollout
+        run: packages/envoy/scripts/build-dispatch-build.sh --commit "$FIRST_ROLLOUT_COMMIT" --out "$DISPATCH_FIRST_ROLLOUT_BUILD"
       - name: Size the service for this lane's Dispatch processes
         run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
       - name: Two-build tests of the Dispatch server
         env:
           DISPATCH_PREVIOUS_BUILD: ${{ runner.temp }}/dispatch-previous
+          DISPATCH_FIRST_ROLLOUT_BUILD: ${{ runner.temp }}/dispatch-first-rollout
         run: go test -tags twobuild -count=1 -timeout 30m ./cmd/dispatch
         working-directory: packages/envoy
       - name: Build contracts for dispatch e2e
@@ -5717,6 +5759,22 @@ jobs:
           psql "postgres://postgres:ci@localhost:5432/postgres" -c 'create database dispatch_cross_build'
           DISPATCH_E2E_BINARY_B="$DISPATCH_PREVIOUS_BUILD/envoy-dispatch" \
             DISPATCH_E2E_WEB_DIST_B="$DISPATCH_PREVIOUS_BUILD/web" \
+            bun run e2e:multiprocess -- cross-build.multiprocess
+        working-directory: packages/dispatch
+      # The same rows with B the first-rollout build, a release before the fleet columns, which
+      # registers no schema numbers: a page of either build is read-only on A's server while it is
+      # live, which the previous release, registering its numbers, no longer shows. The spec reads
+      # which of the two B is from the live registry (pageWritable). The database is made again,
+      # so this run starts from what the step above started from.
+      - name: Browser-test each build's page against the first-rollout build's server
+        env:
+          DISPATCH_FIRST_ROLLOUT_BUILD: ${{ runner.temp }}/dispatch-first-rollout
+        run: |
+          psql "postgres://postgres:ci@localhost:5432/postgres" \
+            -c 'drop database dispatch_cross_build with (force)' \
+            -c 'create database dispatch_cross_build'
+          DISPATCH_E2E_BINARY_B="$DISPATCH_FIRST_ROLLOUT_BUILD/envoy-dispatch" \
+            DISPATCH_E2E_WEB_DIST_B="$DISPATCH_FIRST_ROLLOUT_BUILD/web" \
             bun run e2e:multiprocess -- cross-build.multiprocess
         working-directory: packages/dispatch
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

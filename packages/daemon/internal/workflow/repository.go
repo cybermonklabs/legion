@@ -24,9 +24,10 @@ type Repositories interface {
 // Resolution is the repository an issue is recorded on: Repo and DefaultBranch when Legion serves
 // it, with GitHubRepo, GitHub's spelling of Repo that Envoy's event subjects carry, or Refusal, why
 // it does not. LeftOut is a mapped repository Legion leaves out, for a GitHub App not installed on
-// it or, with Unread, for now, because GitHub did not answer its installation read; Refusal names
-// which. An Unread issue is not refused but left: RefuseRecording says nothing on it, and the
-// daemon takes it from Dispatch's listing once GitHub answers for the repository (its recovery).
+// it or, with Unread, for now, because GitHub did not answer its installation read, or its
+// default-branch read past GitHub's rate limit; Refusal names which. An Unread issue is not refused
+// but left: RefuseRecording says nothing on it, and the daemon takes it from Dispatch's listing
+// once GitHub answers for the repository (its recovery).
 type Resolution struct {
 	Repo          string
 	DefaultBranch string

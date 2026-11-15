@@ -20732,6 +20732,82 @@ describe("consumer delivery", () => {
     expect(session.subscriptions()).toEqual([`agentstream.${SESSION}.control`, RELAY]);
   });
 
+  // The listener's connection check (INFRA-626) is a core request on the session's own relay
+  // subject that carries `Envoy-Probe: 1` and nothing else: an answer, or a second of silence,
+  // reads connected, and the no-responders a server gives a subject nothing subscribes reads
+  // stopped. The probe is no frame, so it reaches no card and moves no resume point, and the
+  // session holds no subscription for it beyond the relay subject the set above pins.
+  test("a connection probe on the relay subject is answered, follows a session-id change, and the relay subscription closes when the session moves or shuts down", async () => {
+    process.env.ENVOY_RESUBSCRIBE_DELAY_MS = "10";
+    globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
+    const { default: envoyExtension } = await import("./envoy.ts?connection-probe");
+    const fixture = createPi();
+    envoyExtension(fixture.pi);
+    let inboxes = 0;
+    /** Probes `controls` as the listener does; answers what the session replied on the inbox. */
+    const probe = async (
+      controls: SubscriptionControls | undefined
+    ): Promise<readonly string[]> => {
+      if (controls === undefined) throw new Error("that relay subject was never subscribed");
+      inboxes += 1;
+      const inbox = `_INBOX.probe.${inboxes}`;
+      controls.push("", inbox, { [RelayHeader.probe]: "1" });
+      await settle();
+      return natsState.published
+        .filter((published) => published.subject === inbox)
+        .map((published) => new TextDecoder().decode(published.data));
+    };
+    const consumerStates = () =>
+      JSON.stringify(
+        fixture.entries.filter((entry) => entry.customType === "envoy-consumer-state")
+      );
+    const cards = () =>
+      fixture.deliveries.filter((delivery) => delivery.customType === "envoy-message");
+    const first = "ses_probe_first";
+    const next = "ses_probe_next";
+    const firstContext = sessionContext(first);
+
+    await fixture.handlers.get("session_start")?.({}, firstContext);
+    await until(
+      () => natsState.controls.get(deliverSubject(first))?.active() === true,
+      "the first session's relay subject"
+    );
+    const firstRelay = natsState.controls.get(deliverSubject(first));
+    const states = consumerStates();
+    expect(await probe(firstRelay)).toEqual(["done"]);
+    expect(cards()).toEqual([]);
+    expect(consumerStates()).toBe(states);
+
+    // A switch moves the relay subject to the new id: a probe of the id left behind meets no
+    // subscriber, which a server answers no-responders, and the new id is answered.
+    await fixture.handlers.get("session_switch")?.({}, sessionContext(next));
+    await until(
+      () => natsState.controls.get(deliverSubject(next))?.active() === true,
+      "the new session's relay subject"
+    );
+    // The switch tells the session its id changed; that notice is the one card it is shown.
+    const shown = cards().length;
+    expect(firstRelay?.active()).toBe(false);
+    const nextRelay = natsState.controls.get(deliverSubject(next));
+    expect(await probe(nextRelay)).toEqual(["done"]);
+
+    // The connection drops: nats.js ends the subscription.
+    nextRelay?.end();
+    await settle();
+    // The session subscribes its relay subject again, and is answered again.
+    await until(
+      () => natsState.controls.get(deliverSubject(next)) !== nextRelay,
+      "the relay subject subscribed again"
+    );
+    const reopened = natsState.controls.get(deliverSubject(next));
+    expect(await probe(reopened)).toEqual(["done"]);
+
+    // The session shuts down: its relay subject closes with its connection.
+    await fixture.handlers.get("session_shutdown")?.({}, sessionContext(next));
+    expect(reopened?.active()).toBe(false);
+    expect(cards()).toHaveLength(shown);
+  });
+
   // A refusal is the whole of a session's inbound: nothing else reaches it, so the session must
   // say so and keep asking rather than run on quietly deaf.
   for (const refusal of [
@@ -21449,4 +21525,125 @@ describe.skipIf(!envoyStackEnabled)("against a real natsd and Envoy listener", (
       else process.env.ENVOY_HEARTBEAT_MS = originalHeartbeat;
     }
   }, 120_000);
+});
+
+// What the envoy_send and envoy_publish tools tell the model about where a message went
+// (INFRA-626): a send to a stopped session is queued and never sent, and a publish counts the
+// other sessions it reaches, or says it reaches none.
+describe("the send and publish answers", () => {
+  const SESSION = "ses_answers";
+
+  /** One envelope, as the listener echoes it back to a send or a publish. */
+  const envelope = (topic: string) => ({
+    event_id: "evt_text",
+    source: "agent",
+    source_event_id: "evt_text",
+    topic,
+    dedupe_key: "dedupe_text",
+    issued_at: 1,
+    payload_summary: "message",
+    trace_id: "trace_text",
+  });
+
+  /** Boots a session whose listener answers every send and publish with `answer`. */
+  async function bootTool(query: string, answer: unknown) {
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) =>
+      responseWithRegistration(input, init, answer)) as typeof fetch;
+    const { default: envoyExtension } = await import(`./envoy.ts?${query}`);
+    const fixture = createPi();
+    envoyExtension(fixture.pi);
+    const context = sessionContext(SESSION);
+    await fixture.handlers.get("session_start")?.({}, context);
+    return { fixture, stop: () => fixture.handlers.get("session_shutdown")?.({}, context) };
+  }
+
+  test("tells a model its message was queued, never sent, when the target is stopped", async () => {
+    const lastSeen = Date.UTC(2026, 10, 2, 9, 15, 0);
+    const session = await bootTool("answers-send-stopped", {
+      ...envelope("notifications.agent.ses_target"),
+      recipient: "ses_target",
+      // A session with no entry but a record: the registry's state stays one of its three.
+      recipient_state: "gone",
+      state: "stopped",
+      last_seen: lastSeen,
+    });
+
+    try {
+      const result = await session.fixture.tools
+        .find((tool) => tool.name === "envoy_send")
+        ?.execute("", { session_id: "ses_target", message: "direct" });
+
+      expect(result?.content[0]?.text).toBe(
+        "queued evt_text for ses_target: the session is stopped (last seen 2026-11-02T09:15:00Z); if it runs again within 72 hours, it gets the message"
+      );
+      expect(result?.details).toMatchObject({
+        recipient_state: "gone",
+        state: "stopped",
+        last_seen: lastSeen,
+      });
+    } finally {
+      await session.stop();
+    }
+  });
+
+  test("names a connected target's registry state, as before the state existed", async () => {
+    const session = await bootTool("answers-send-connected", {
+      ...envelope("notifications.agent.ses_target"),
+      recipient: "ses_target",
+      recipient_state: "live",
+      state: "connected",
+    });
+
+    try {
+      const result = await session.fixture.tools
+        .find((tool) => tool.name === "envoy_send")
+        ?.execute("", { session_id: "ses_target", message: "direct" });
+
+      expect(result?.content[0]?.text).toBe("sent evt_text to ses_target (live)");
+      expect(result?.details).toMatchObject({ recipient_state: "live", state: "connected" });
+    } finally {
+      await session.stop();
+    }
+  });
+
+  for (const published of [
+    {
+      counts: { recipients: 0, recipients_connected: 0 },
+      label: "no other session subscribes",
+      text: "published evt_text; no other session subscribes to notifications.team.test, so no other session gets it",
+    },
+    {
+      counts: { recipients: 3, recipients_connected: 2 },
+      label: "three other sessions get it",
+      text: "published evt_text to 3 other sessions (2 running now)",
+    },
+    {
+      counts: {},
+      label: "a listener that counts nobody",
+      text: "published evt_text.",
+    },
+  ]) {
+    test(`renders a publish the listener answered with ${published.label}`, async () => {
+      const session = await bootTool(`answers-publish-${published.label.replaceAll(" ", "-")}`, {
+        ...envelope("notifications.team.test"),
+        ...published.counts,
+      });
+
+      try {
+        const result = await session.fixture.tools
+          .find((tool) => tool.name === "envoy_publish")
+          ?.execute("", { topic: "notifications.team.test", message: "broadcast" });
+
+        expect(result?.content[0]?.text).toBe(published.text);
+        // Strict, so a count the listener did not send is no key of the details at all.
+        expect(result?.details).toStrictEqual({
+          event_id: "evt_text",
+          topic: "notifications.team.test",
+          ...published.counts,
+        });
+      } finally {
+        await session.stop();
+      }
+    });
+  }
 });

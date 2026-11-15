@@ -1283,26 +1283,21 @@ jobs:
   #   the upload                                       1             1             -             2             1
   #   the whole job                                  180           201           163           318           272
   #
-  # The rule is in this file's head. The browser step's maximum is 193 s, so 193 x 1.15 = 222 s
-  # -> 4 min. The job budget is that step's 240 s plus the measured maximum of every step
-  # without one, which is 314 s of the five columns together: 554 s -> 10 min.
+  # The rule is in this file's head. The browser step's maximum was 106 s, so 106 x 1.15 = 122 s
+  # -> 3 min, and the job budget was that step's 180 s plus the measured maximum of every step
+  # without one, which is 314 s of the five columns together: 494 s -> 9 min.
+  #
+  # The browser step then outran its budget, which is this rule's signal to derive it again. Over
+  # the 17 merge-group runs of this job from 2026-11-14T08:40Z to 2026-11-15T06:25Z that passed,
+  # it read 111-179 s, and two runs that day timed out on it at 183 s and 182 s (run 43687635217,
+  # a merge group, and run 43691184536, a pull request). So 183 x 1.15 = 211 s -> 4 min, and the
+  # job budget is that step's 240 s plus the same 314 s: 554 s -> 10 min.
   #
   # The first of those runs was the only one this job had when these budgets were first written,
   # and one run proved too thin a sample: 90 s gave a 2-minute bound by the rule's own floor, and
   # the next run came in at 106 s, 14 s inside it. A third run then read 78 s, so the spread of
   # the browser step is 78-106 s over three runs and the 15 per cent the rule adds carries the
   # rest.
-  #
-  # The browser step outgrew that 3-minute budget, which is the signal the first paragraph above
-  # names, so it is re-derived here from seven later runs of it, each read from the jobs API as
-  # the step's own `started_at` to `completed_at`: on main's merge-group lane 193 s (run
-  # 43721616594), 183 s (43722562290), 184 s (43723093652), 189 s (43723095631) and 182 s
-  # (43724869797), every one of them a pass; on a branch 152 s (43685139376), a pass, and 183 s
-  # (43715506305), which the 3-minute budget killed with its 22 rows already green (`22 passed
-  # (55.1s)`). So the step now needs about twice what the 78-106 s sample above measured: the
-  # visual projects grew to 22 rows, and the stack the step starts - a Postgres container, the
-  # broker and the Dispatch server - takes about two of its minutes before the first row runs.
-  # Main's own lane was passing by seconds, which is why a red appeared on a branch first.
   #
   # The job budget was 5 min on the first three columns, where setup-bun read 1-2 s because the
   # runner image carried the pinned Bun. The last two columns are runs during a GitHub release
