@@ -60,16 +60,17 @@ const (
 // public cannot skip a rule pass.
 //
 // A read GitHub refuses for a spent rate limit is read once more after the reset, where that is
-// at most rateLimitWaitBound away and the caller's bound leaves room for the wait. The limit is
-// the installation's core REST limit or GitHub's secondary rate limit (limitRefusal). A secondary
-// limit with no reset, as GitHub usually reports it, is read next with git's ls-remote and no
-// credential (Guard.lsRemote), which answers public and nothing else: GraphQL requests count
-// against the same secondary limit. Any other limit still spent after the wait, and one whose
-// reset is further away, already past or not given, is read a second way that costs no REST
-// request: GitHub's GraphQL API (Guard.graphQLVisibility), with the repository's own token, whose
-// budget is separate from the core one. Its answer of public, private or internal is taken as
-// gh's is. Only where GraphQL refuses the read for a rate limit of its own is the visibility read
-// with ls-remote. Every other failure of either read, an unauthenticated refusal of ls-remote
+// at most rateLimitWaitBound away and the caller's bound leaves room for the wait and the reads
+// after it (waitFits). The limit is the installation's core REST limit or GitHub's secondary
+// rate limit (limitRefusal). A secondary limit with no reset, as GitHub usually reports it, is
+// read next with git's ls-remote and no credential (Guard.lsRemote), which answers public and
+// nothing else: GraphQL requests count against the same secondary limit. Any other limit still
+// spent after the wait, and one whose reset is further away, already past, not given, or not one
+// the caller's bound has room to wait for, is read a second way that costs no REST request:
+// GitHub's GraphQL API (Guard.graphQLVisibility), with the repository's own token, whose budget
+// is separate from the core one. Its answer of public, private or internal is taken as gh's is.
+// Only where GraphQL refuses the read for a rate limit of its own is the visibility read with
+// ls-remote. Every other failure of either read, an unauthenticated refusal of ls-remote
 // included, refuses the call, naming the spent limit and its reset and what the read said. The
 // answer is kept as gh's is.
 //
@@ -128,13 +129,15 @@ func (g *Guard) Visibility(ctx context.Context, slug string) (Visibility, error)
 	return visibility, nil
 }
 
-// waitFits is whether a wait of wait ends before ctx's deadline, where ctx has one. A wait the
-// caller's bound cuts short leaves no time for the read after it, so the guard reads the
-// visibility another way instead: `legion gh` answers the shared check's own read inside the 20 s
-// the check gives it, which no near reset fits.
+// waitFits is whether a wait of wait, and after it lsRemoteBound for the reads that can follow it,
+// end before ctx's deadline, where ctx has one. lsRemoteBound is the longest of those reads' caps:
+// the retried REST read, and where that is refused again, GraphQL and ls-remote. A wait that
+// leaves them no room only makes the call refuse later, so the guard reads the visibility another
+// way at once instead. `legion gh` answers the shared check's own read inside 15 s, which no wait
+// fits.
 func waitFits(ctx context.Context, wait time.Duration) bool {
 	deadline, ok := ctx.Deadline()
-	return !ok || wait < time.Until(deadline)
+	return !ok || wait+lsRemoteBound < time.Until(deadline)
 }
 
 func (g *Guard) clock() Clock {
@@ -359,7 +362,8 @@ func (g *Guard) graphQLVisibility(ctx context.Context, slug string) (Visibility,
 //     rate-limit errors or beside data, NOT_FOUND among them (which is also what an installation
 //     that cannot see a private repository is told);
 //   - an error response that limitRefusal reads as a rate limit is a *rateLimitError too;
-//   - the status line, where gh printed one, must be 200, and gh must have exited 0;
+//   - gh must have printed a status line, as --include always does, and it must say 200; and gh
+//     must have exited 0;
 //   - the repository must be there, and its nameWithOwner must be slug, case aside: GitHub can
 //     resolve a renamed or moved repository's old name to the repository under its new one,
 //     which is not the repository the push names;
@@ -411,7 +415,10 @@ func graphQLAnswer(status int, printed, stderr, slug string) (Visibility, error)
 	if limited, secondary := limitRefusal(httpStatus, headers, answer.Message); limited {
 		return "", limitResettingAt(headers, secondary)
 	}
-	if httpStatus != 0 && httpStatus != 200 {
+	switch {
+	case httpStatus == 0:
+		return "", fmt.Errorf("gh api graphql for %s printed no status line this reads: %s", maskPath(slug), said())
+	case httpStatus != 200:
 		return "", fmt.Errorf("gh api graphql for %s answered the status %d: %s", maskPath(slug), httpStatus, said())
 	}
 	if status != 0 {
@@ -437,20 +444,21 @@ func graphQLAnswer(status int, printed, stderr, slug string) (Visibility, error)
 
 // limitRefusal is whether GitHub's error response refused the request for a rate limit, read
 // from that response alone, and whether the limit is GitHub's secondary one. The status 403 or
-// 429 with no requests left is the primary limit, whose X-RateLimit-Reset says when it resets.
-// The same statuses with a Retry-After, or with a message naming the secondary rate limit
-// (namesSecondaryLimit), are the secondary limit, which usually gives no reset. Text elsewhere in
-// gh's output says nothing. The REST read (rateLimitFrom) and the GraphQL read (graphQLAnswer)
-// both read their responses with it.
+// 429 with a Retry-After, or with a message naming the secondary rate limit
+// (namesSecondaryLimit), is the secondary limit, which usually gives no reset; that evidence
+// wins where the response also says no requests are left. The same statuses with no requests
+// left and neither of those are the primary limit, whose X-RateLimit-Reset says when it resets.
+// Text elsewhere in gh's output says nothing. The REST read (rateLimitFrom) and the GraphQL read
+// (graphQLAnswer) both read their responses with it.
 func limitRefusal(status int, headers map[string]string, message string) (limited, secondary bool) {
 	if status != 403 && status != 429 {
 		return false, false
 	}
-	if headers["x-ratelimit-remaining"] == "0" {
-		return true, false
-	}
 	if headers["retry-after"] != "" || namesSecondaryLimit(message) {
 		return true, true
+	}
+	if headers["x-ratelimit-remaining"] == "0" {
+		return true, false
 	}
 	return false, false
 }

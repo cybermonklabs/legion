@@ -98,12 +98,12 @@ func TestKeptVisibilityRejectsUntrustedEntries(t *testing.T) {
 	}
 }
 
-// boundPastAWait is a test's bound with room for the guard's wait for a near reset, which the
-// guard makes only where the caller's bound leaves room for it (waitFits). The test clock's wait
-// itself takes no time.
+// boundPastAWait is a test's bound with room for the guard's wait for a near reset of at most
+// rateLimitWaitBound and the reads after it, which the guard waits only where the caller's bound
+// leaves (waitFits). The test clock's wait itself takes no time.
 func boundPastAWait(t *testing.T) context.Context {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 2*rateLimitWaitBound)
+	ctx, cancel := context.WithTimeout(context.Background(), rateLimitWaitBound+lsRemoteBound+time.Minute)
 	t.Cleanup(cancel)
 	return ctx
 }

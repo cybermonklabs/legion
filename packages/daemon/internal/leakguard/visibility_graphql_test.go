@@ -64,6 +64,18 @@ func TestVisibilityTakesOnlyAnAnswerGraphQLGives(t *testing.T) {
 
 		{name: "errors all RATE_LIMITED", exit: 1, printed: included(ok, 0, `{"errors":[`+rateLimit+`]}`), limit: true},
 		{name: "the status 403 with no points left", exit: 1, printed: included("HTTP/2.0 403 Forbidden", 0, `{"message":"API rate limit exceeded"}`), limit: true},
+		{
+			name:    "the status 403 with no points left and a Retry-After",
+			exit:    1,
+			printed: included("HTTP/2.0 403 Forbidden", 0, `{"message":"invented"}`, "Retry-After: 60"),
+			limit:   true, secondary: true,
+		},
+		{
+			name:    "the status 429 with no points left, naming the secondary limit",
+			exit:    1,
+			printed: included("HTTP/2.0 429 Too Many Requests", 0, `{"message":"`+secondary+`"}`),
+			limit:   true, secondary: true,
+		},
 		{name: "the status 429 with no points left", exit: 1, printed: included("HTTP/2.0 429 Too Many Requests", 0, `{"message":"API rate limit exceeded"}`), limit: true},
 		{name: "the status 403 with a Retry-After", exit: 1, printed: included("HTTP/2.0 403 Forbidden", 12221, `{"message":"invented"}`, "Retry-After: 60"), limit: true, secondary: true},
 		{name: "the status 429 with a Retry-After", exit: 1, printed: included("HTTP/2.0 429 Too Many Requests", 12221, `{"message":"invented"}`, "Retry-After: 60"), limit: true, secondary: true},
@@ -107,6 +119,9 @@ func TestVisibilityTakesOnlyAnAnswerGraphQLGives(t *testing.T) {
 		{name: "the status 500 with a private body, exit 0", printed: included("HTTP/2.0 500 Internal Server Error", 12221, answerBody(theRepo, "PRIVATE")), fails: "answered the status 500"},
 		{name: "a refused credential", exit: 1, printed: included("HTTP/2.0 401 Unauthorized", 12221, `{"message":"Bad credentials","status":"401"}`), stderr: "gh: Bad credentials (HTTP 401)", fails: "answered the status 401"},
 		{name: "a valid body with exit 1", exit: 1, printed: included(ok, 12221, answerBody(theRepo, "PRIVATE")), fails: "exited 1"},
+		{name: "no status line, a private body and exit 0", printed: answerBody(theRepo, "PRIVATE"), fails: "printed no status line this reads"},
+		{name: "a malformed status line, a private body and exit 0", printed: included("HTTP/2.0 OK", 12221, answerBody(theRepo, "PRIVATE")), fails: "printed no status line this reads"},
+		{name: "a status line with no code, a private body and exit 0", printed: included("HTTP/2.0", 12221, answerBody(theRepo, "PRIVATE")), fails: "printed no status line this reads"},
 		{name: "a gh that cannot reach GitHub", exit: 1, stderr: "error connecting to api.github.com", fails: "error connecting to api.github.com"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -292,6 +307,10 @@ func TestVisibilityReadsASecondaryRateLimitWithLsRemote(t *testing.T) {
 	}{
 		{name: "no reset, and ls-remote answers", rest: secondary(""), git: answersTheRefs, want: Public, gitRuns: 1},
 		{
+			name: "no requests left beside a Retry-After and the secondary message, no reset, and ls-remote answers",
+			rest: secondary("'X-Ratelimit-Remaining: 0' "), git: answersTheRefs, want: Public, gitRuns: 1,
+		},
+		{
 			name: "no reset, and ls-remote fails", rest: secondary(""), git: cannotConnect, gitRuns: 1,
 			fails: "GitHub's secondary rate limit refused the read and GitHub gave no reset time, and git ls-remote could not answer",
 		},
@@ -384,6 +403,17 @@ func TestRateLimitFromReadsTheErrorResponseAlone(t *testing.T) {
 		{name: "403 with a Retry-After", printed: response("HTTP/2.0 403 Forbidden", []string{"Retry-After: 60"}, `{"message":"invented"}`, ""), limit: true, secondary: true},
 		{name: "429 with a Retry-After", printed: response("HTTP/2.0 429 Too Many Requests", []string{"Retry-After: 60"}, `{"message":"invented"}`, ""), limit: true, secondary: true},
 		{name: "403 naming the secondary limit", printed: response("HTTP/2.0 403 Forbidden", nil, secondary, ""), limit: true, secondary: true},
+		{
+			name:    "403 with no requests left, a Retry-After and the secondary message, and no reset",
+			printed: response("HTTP/2.0 403 Forbidden", []string{"X-Ratelimit-Remaining: 0", "Retry-After: 60"}, secondary, ""),
+			limit:   true, secondary: true,
+		},
+		{name: "403 with no requests left and the secondary message, with a reset", printed: response("HTTP/2.0 403 Forbidden", spent, secondary, ""), limit: true, secondary: true, reset: reset},
+		{
+			name:    "429 with no requests left and a Retry-After, with a reset",
+			printed: response("HTTP/2.0 429 Too Many Requests", append([]string{"Retry-After: 60"}, spent...), `{"message":"invented"}`, ""),
+			limit:   true, secondary: true, reset: reset,
+		},
 		{name: "404 naming the secondary limit", printed: response("HTTP/2.0 404 Not Found", nil, secondary, "")},
 		{name: "the secondary limit's words in gh's line only", printed: response("HTTP/2.0 403 Forbidden", nil, `{"message":"invented"}`, "gh: You have exceeded a secondary rate limit. (HTTP 403)")},
 		{name: "an answer", printed: response("HTTP/2.0 200 OK", []string{"X-Ratelimit-Remaining: 4999"}, "public", "")},

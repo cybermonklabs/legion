@@ -13,8 +13,10 @@ import (
 // visibilityAnswerBound is the longest `legion gh` takes to answer the shared check's own
 // visibility read (answerVisibilityRead). The installed check gives each of its two tries of that
 // read 20 s (public_leak_check.py's vis_of), so the answer, or its refusal, comes before the check
-// stops waiting, and no read made for it outlives the check's wait. It also leaves no room for the
-// guard's wait for a near reset (Guard.Visibility), so the answer goes on to GraphQL instead.
+// stops waiting, and no read made for it outlives the check's wait. The guard waits for a near
+// reset only where the bound leaves room for the wait and then lsRemoteBound for the reads after
+// it (Guard.Visibility's waitFits), and 15 s leaves room for no wait, so the answer goes on to
+// GraphQL at once.
 const visibilityAnswerBound = 15 * time.Second
 
 // answerVisibilityRead answers the shared public leak check's own visibility read of repo, exactly
