@@ -94,9 +94,10 @@ func signedInBox(t *testing.T, tokenURL string) *brokerclient.SignInAuthority {
 // is in flight waits for the lock only while its own context lives (ctxlock), so the wait ends at
 // the bound (Server.brokerCall) before the op has sent the broker anything, and the op answers
 // what it knows: ENROLL_FAILED, timed out waiting for the person's sign-in. The row asserts that
-// code, that text, and that the fake broker received no enroll while the op waited. Those three
-// tell this answer from brokerCall's timer, which answers an unknown outcome a second later; the
-// time alone would not.
+// code and that text, which brokerCall's timer (ENROLL_OUTCOME_UNKNOWN, a second later) never
+// gives, and that the fake received no enroll while the op waited. That count shows the failure
+// is known, since the broker made nothing, and that the wait that ended was Current's and not
+// Refused's, whose error carries the same text after a refused enroll.
 //
 // The trade waits at a gate the row opens once it has read its answer, so the trade lasts as long
 // as the row needs and no longer. The row runs under a bound of 1 s rather than the real 20 s.

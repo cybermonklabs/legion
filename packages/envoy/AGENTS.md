@@ -6017,11 +6017,11 @@ the op made nothing, since it had sent the broker nothing, or, for an enroll, th
 behind a refresh, the drop that a 401 `LAUNCHER_INVALID` makes (`dropOutsideRefresh`) drops nothing, and the op answers the broker's 401 as it came.
 That refresh settles the credential only when it succeeds or the broker answers `invalid_grant`; a refresh that fails otherwise leaves the refused credential held until the refresh loop's next refresh settles it or a later refused call drops it, whichever comes first.
 `TestAPassThroughOpAnswersInsideItsBoundWhileTheBoxsSignInIsTrading` and `TestAPassThroughOpAnswersInsideItsBoundWhileARefreshHoldsTheMachineLogin` hold one of each, and each asserts its answer's code, `ENROLL_FAILED`, and its text: the sign-in that it waited on, or the broker's 401 `LAUNCHER_INVALID`.
-The sign-in row also asserts that the broker received no enroll call while the op waited.
-Those three checks, and not the time of the answer, tell this answer from the timer's answer, `ENROLL_OUTCOME_UNKNOWN`, which comes a second later.
-A login waits for a login already in progress on `Broker.loginMu`, a `sync.Mutex`, but not past its own bound.
-The login that holds `loginMu` sends one request while it does, its device authorization, under its own op's context (`contextClient`), and polls the token endpoint only after it unlocks.
-So it unlocks by the end of its own bound, which ends before the bound of any login that came after it.
+The sign-in row also asserts that the broker received no enroll call while the op waited, so its text is `Current`'s wait and not `Refused`'s, which carries the same text after a refused enroll.
+The code and the text tell each answer from the timer's answer, `ENROLL_OUTCOME_UNKNOWN`, which comes a second later.
+A login waits for a login already in progress on `Broker.loginMu`, a `sync.Mutex`.
+The login that holds `loginMu` sends one request while it does, its device authorization, under its own op's context (`contextClient`), and its poll of the token endpoint never takes `loginMu`.
+So it unlocks by the end of its own bound, and a login waiting behind an earlier one gets `loginMu` before its own bound ends, unless a later login takes it first: a `sync.Mutex` keeps no order, and then the timer answers the waiter.
 The timer is the backstop for an op that waits on something that does not watch its context: it answers such an op unknown, and the helper logs the WARN `a broker call did not end within its bound; its outcome is answered as unknown` with the op and the bound.
 When the op ends after that, the helper logs its result (`a broker call answered as unknown has ended`, with its code and any `enrollment_id`), so an operator can see what the broker did.
 

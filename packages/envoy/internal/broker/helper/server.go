@@ -271,12 +271,13 @@ func (s *Server) brokerCallBound() time.Duration {
 //     the broker nothing, or, for an enroll, the broker had refused its first request under the
 //     person's credential (401 LAUNCHER_INVALID, Broker.enrollAs); behind a refresh, the broker
 //     refused it, and the drop returns that 401 as it came.
-//   - A login waits for a login already in progress on Broker.loginMu, a sync.Mutex, but not past
-//     its own B: the login that holds loginMu sends one request while it does, its device
-//     authorization, under its own op's context (contextClient), and polls only after it
-//     unlocks, so it unlocks by the end of its own bound, which ends before the bound of any
-//     login that came after it. The timer is the backstop for an op that waits on something that
-//     does not watch its context: it ends the wait, and the answer is unknown.
+//   - A login waits for a login already in progress on Broker.loginMu, a sync.Mutex. The login
+//     that holds it sends one request while it does, its device authorization, under its own
+//     op's context (contextClient), and its poll never takes loginMu, so it unlocks by the end of
+//     its own bound; a login waiting behind an earlier one gets loginMu before its own bound
+//     ends, unless a later login takes it first (a sync.Mutex keeps no order), and then the timer
+//     answers it. The timer is the backstop for an op that waits on something that does not
+//     watch its context: it ends the wait, and the answer is unknown.
 //   - The op runs local code only (signing a proof, reading the operator file): its result is the
 //     answer, at once.
 //   - The helper is stopping (ctx ends): the op's context ends with it, and then as above; Serve
