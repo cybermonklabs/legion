@@ -150,21 +150,22 @@ type Tokens interface {
 	// repository its lease is cached under, and a call naming none is a caller's mistake.
 	Token(ctx context.Context, role AppRole, repo ghrepo.Repository) (Lease, error)
 	// ReadToken is the App's installation token for owner narrowed to reading: contents, pull
-	// requests, Actions and metadata read. It reaches every repository the owner's installation
-	// holds, as Token's does, and repos — repository names alone, as a caller names them inside
-	// one installation — key the lease alone. A pane holds one for every owner of the project but
-	// the one its issue's repository is under (a configured rename's two owners count as that
-	// one, GitHubCredential), one more for each other repository that owner serves, each cached
-	// under that repository alone, a controller holds one for every owner it has, and the
+	// requests, issues, Actions and metadata read. It reaches every repository the owner's
+	// installation holds, as Token's does, and repos — repository names alone, as a caller names
+	// them inside one installation — key the lease alone. A pane holds one for every owner of the
+	// project but the one its issue's repository is under (a configured rename's two owners count
+	// as that one, GitHubCredential), one more for each other repository that owner serves, each
+	// cached under that repository alone, a controller holds one for every owner it has, and the
 	// Kubernetes runtime's provisioning token is one of the implement App for the issue's own
 	// owner cached under the one repository its pod clones, which every issue pod's
 	// workspace-fetch and every repository cache clones with (implementTokens, internal/daemon).
-	// An App on token_command gets what its command's read-only release
-	// holds instead, which the command decides: the secrets broker's is the same four (its
-	// readOnlyPermissions). With a key of its own the mint asks for what the installation is
-	// granted of those four and leaves the rest out (exchangeGranted), so an installation whose
-	// account has not granted the App Actions gets the other three rather than nothing. A call
-	// naming no repository is refused before anything is minted, as Token's is.
+	// An App on token_command gets what its command's read-only release holds instead, which the
+	// command decides: the secrets broker's holds the same reads less issues (its
+	// readOnlyPermissions), so such a lease reads no issue. With a key of its own the mint asks
+	// for what the installation is granted of those five and leaves the rest out
+	// (exchangeGranted), so an installation whose account has not granted the App Actions gets
+	// the other four rather than nothing. A call naming no repository is refused before anything
+	// is minted, as Token's is.
 	ReadToken(ctx context.Context, role AppRole, owner string, repos []string) (Lease, error)
 }
 
