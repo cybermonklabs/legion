@@ -219,6 +219,22 @@ test("a child's name hides each password libpq reads and keeps the rest", () => 
       "postgres://127.0.0.1:5433/?pass%57ord=sekrit&db%6Eame=mine",
       "postgres://127.0.0.1:5433/?pass%57ord=***&db%6Eame=mine",
     ],
+    "the oauth_client_secret keyword": [
+      "host=127.0.0.1 oauth_client_secret=sekrit dbname=mine",
+      "host=127.0.0.1 oauth_client_secret=*** dbname=mine",
+    ],
+    "an oauth_client_secret parameter whose name escapes an underscore": [
+      "postgres://127.0.0.1:5433/?oauth%5Fclient_secret=sekrit&dbname=mine",
+      "postgres://127.0.0.1:5433/?oauth%5Fclient_secret=***&dbname=mine",
+    ],
+    "a scram_client_key query parameter": [
+      "postgres://127.0.0.1:5433/?scram_client_key=sekrit&dbname=mine",
+      "postgres://127.0.0.1:5433/?scram_client_key=***&dbname=mine",
+    ],
+    "the scram_server_key keyword in capitals": [
+      "host=127.0.0.1 SCRAM_SERVER_KEY=sekrit dbname=mine",
+      "host=127.0.0.1 SCRAM_SERVER_KEY=*** dbname=mine",
+    ],
     "a URL with no password": [
       "postgres://127.0.0.1:5433/mine?sslmode=disable",
       "postgres://127.0.0.1:5433/mine?sslmode=disable",
@@ -236,6 +252,10 @@ test("a child's name hides each password libpq reads and keeps the rest", () => 
     "keys that are not password": [
       "host=127.0.0.1 passwords=x mypassword=x dbname=mine",
       "host=127.0.0.1 passwords=x mypassword=x dbname=mine",
+    ],
+    "keys that are not oauth_client_secret or scram_client_key": [
+      "host=127.0.0.1 my_oauth_client_secret=x scram_client_keys=x dbname=mine",
+      "host=127.0.0.1 my_oauth_client_secret=x scram_client_keys=x dbname=mine",
     ],
     "an empty keyword value, which holds no password": [
       "host=127.0.0.1 password=",
@@ -267,31 +287,13 @@ test("a child's name hides each password libpq reads and keeps the rest", () => 
     "A child's name, which the cost line and a failure print on the run's stderr, still holds a " +
       "password of the form named, or hides other than what this row expects of that form."
   ).toEqual(Object.fromEntries(Object.entries(forms).map(([form, [, shown]]) => [form, shown])));
-  // `named` itself, for what it does beyond `masked`: an entry named PGPASSWORD, the variable
-  // libpq reads a password from, hides its whole value, spaces and all, and one the caller takes
-  // away still says so; an argument that assigns PGPASSWORD, as `env` or a shell's `-c` takes it,
-  // hides its value; an entry is masked as `NAME=value`, so a variable named PASSWORD is hidden
-  // too; a line break in a value is escaped only after `masked` has read it; and each argument
-  // and each entry is masked on its own, so an empty `password=` at the end of one leaves the
-  // next whole.
+  // `named` itself, for what it does beyond `masked` with an argument: each argument is masked on
+  // its own, so an empty `password=` at the end of one leaves the next whole; an argument that
+  // assigns PGPASSWORD, as `env` or a shell's `-c` takes it, hides its value; and a line break in
+  // an argument is escaped only after `masked` has read it. What `named` prints of the
+  // environment is the last row of this file.
   expect(
     {
-      given: named({
-        argv: ["psql", "-c", "select 1"],
-        env: {
-          DATABASE_URL: "host=127.0.0.1\npassword=sekrit",
-          PASSWORD: "sekrit",
-          PGHOST: "127.0.0.1",
-          PGPASSWORD: "se kr it",
-        },
-        from: import.meta.url,
-      }),
-      takenAway: named({ argv: ["psql"], env: { PGPASSWORD: undefined }, from: import.meta.url }),
-      emptyInAVariable: named({
-        argv: ["psql"],
-        env: { DATABASE_URL: "host=127.0.0.1 password=", PGHOST: "127.0.0.1" },
-        from: import.meta.url,
-      }),
       emptyInAnArgument: named({
         argv: ["psql", "host=127.0.0.1 password=", "-c", "select 1"],
         from: import.meta.url,
@@ -304,17 +306,14 @@ test("a child's name hides each password libpq reads and keeps the rest", () => 
         argv: ["bash", "-c", "PGPASSWORD=sekrit psql -c 'select 1'"],
         from: import.meta.url,
       }),
+      brokenInAnArgument: named({
+        argv: ["psql", "host=127.0.0.1\npassword=sekrit", "-c", "select 1"],
+        from: import.meta.url,
+      }),
     },
-    "A child's name printed part of a password, or a mask reached past its own argument or " +
-      "variable and hid a part of the command or the environment that is no password."
+    "A child's name printed part of a password, or a mask reached past its own argument and hid " +
+      "a part of the command that is no password."
   ).toEqual({
-    given:
-      "e2e/__tests__/bounded-subprocess.test.ts | psql -c select 1 | " +
-      "DATABASE_URL=host=127.0.0.1\\npassword=*** PASSWORD=*** PGHOST=127.0.0.1 PGPASSWORD=***",
-    takenAway: "e2e/__tests__/bounded-subprocess.test.ts | psql | PGPASSWORD=",
-    emptyInAVariable:
-      "e2e/__tests__/bounded-subprocess.test.ts | psql | " +
-      "DATABASE_URL=host=127.0.0.1 password= PGHOST=127.0.0.1",
     emptyInAnArgument:
       "e2e/__tests__/bounded-subprocess.test.ts | psql host=127.0.0.1 password= -c select 1 | " +
       "this process's environment",
@@ -323,6 +322,9 @@ test("a child's name hides each password libpq reads and keeps the rest", () => 
       "this process's environment",
     assignedInAShell:
       "e2e/__tests__/bounded-subprocess.test.ts | bash -c PGPASSWORD=*** psql -c 'select 1' | " +
+      "this process's environment",
+    brokenInAnArgument:
+      "e2e/__tests__/bounded-subprocess.test.ts | psql host=127.0.0.1\\npassword=*** -c select 1 | " +
       "this process's environment",
   });
 });
@@ -351,4 +353,55 @@ test("a child's name hides the sslpassword libpq reads, as it hides password", (
     "A child's name, which the cost line and a failure print on the run's stderr, still holds " +
       "the sslpassword of the form named, or hides a key that is no password."
   ).toEqual(Object.fromEntries(Object.entries(forms).map(([form, [, shown]]) => [form, shown])));
+});
+
+test("a child's name prints an environment value only for a variable that tells runs apart", () => {
+  // The cost line and a failure print on the run's stderr, which CI keeps in a public log, so
+  // `named` prints an environment entry's value only where its variable tells one run of a command
+  // from another (`runTellingVariables`), and every other entry by its name alone: a token no mask
+  // knows, a connection string that holds a password, and PGPASSWORD alike. A name the caller
+  // takes away prints as `NAME=`, and HOME, PATH and TMPDIR, which every caller gives, not at all.
+  // Every value here is made up.
+  const from = import.meta.url;
+  expect(
+    {
+      token: named({ argv: ["psql"], env: { SOME_TOKEN: "secret" }, from }),
+      runTelling: named({
+        argv: ["psql"],
+        env: {
+          DISPATCH_E2E_PROCESSES: "2",
+          DISPATCH_E2E_SERVER_BIN: "/given/envoy-dispatch",
+          DISPATCH_E2E_SIGNIN: "oidc",
+          TEST_PARALLEL_INDEX: "1",
+        },
+        from,
+      }),
+      libpq: named({
+        argv: ["psql"],
+        env: {
+          DATABASE_URL: "host=127.0.0.1\npassword=sekrit",
+          HOME: "/home/given",
+          PASSWORD: "sekrit",
+          PGHOST: "127.0.0.1",
+          PGPASSWORD: "se kr it",
+        },
+        from,
+      }),
+      takenAway: named({
+        argv: ["psql"],
+        env: { DISPATCH_E2E_SIGNIN: undefined, PGPASSWORD: undefined },
+        from,
+      }),
+    },
+    "A child's name printed the value of a variable that does not tell runs apart, which may be " +
+      "a secret, or hid the value of one that does, or lost a name the caller took away."
+  ).toEqual({
+    token: "e2e/__tests__/bounded-subprocess.test.ts | psql | SOME_TOKEN",
+    runTelling:
+      "e2e/__tests__/bounded-subprocess.test.ts | psql | DISPATCH_E2E_PROCESSES=2 " +
+      "DISPATCH_E2E_SERVER_BIN=/given/envoy-dispatch DISPATCH_E2E_SIGNIN=oidc TEST_PARALLEL_INDEX=1",
+    libpq:
+      "e2e/__tests__/bounded-subprocess.test.ts | psql | DATABASE_URL PASSWORD PGHOST PGPASSWORD",
+    takenAway: "e2e/__tests__/bounded-subprocess.test.ts | psql | DISPATCH_E2E_SIGNIN= PGPASSWORD=",
+  });
 });
