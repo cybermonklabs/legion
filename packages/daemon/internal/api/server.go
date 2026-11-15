@@ -798,22 +798,21 @@ func statementBound(bound time.Duration) int64 {
 // contract that added each issue's measure of its tree's quiet time, is served it without
 // `treeMovedAt` and `quietHours` (withoutQuietTime); a caller below waitingOnIssueContract, the
 // contract that added `waiting_on_issue` to the line's `kind`, is served every member of that
-// kind without its `kind` (withoutWaitingOnIssue), a word and not a key; and a caller below
+// kind without its `kind` (withoutWaitingOnIssue), a word and not a key; a caller below
+// mergeWaitContract, the contract that added what a reviewing issue's round waits on from
+// GitHub, is served it without `mergeWait` (withoutMergeWait); and a caller below
 // assignmentsContract, the contract that added the experiment answers each issue runs under, is
 // served every issue without `assignments` (withoutAssignments).
 // The narrowings compose: each is applied when the state carries something of its own, so a
 // caller below all of them — a pod below supervise.PodUpdateContract — is served a body
-// carrying none of the keys they take, the line's own fields being fields of a view such a
+// carrying none of the keys they strip, the line's own fields being fields of a view such a
 // caller is served none of at all, each of them absent rather than empty, since a strict reader
 // before the contract that added a key refuses it whether or not it names anything, and with no
-// retired entry under `strandedClaims`. Every later reader takes each of those keys as
-// optional and all three states — `packages/contracts/src/legion-api.ts` marks
-// `admission.trees`, `admission.held`, `wakesWaiting`, `claimsToRefresh`, the issues'
-// `gatedSteps`, `waitingLine`, `why`, `phaseEntry`, `givenEntry`, `treeMovedAt`, `quietHours`
-// and `assignments`, the workers' counts of the moves back, the claim views' `step` and
-// `leakCheckCause`, each of the nine the decided record added and `contract` itself optional
-// for exactly these bodies. Any other caller — a pod at this contract, the operator's `legion
-// state`, a tmux pane — is served the state as this contract writes it.
+// retired entry under `strandedClaims`. Every later reader takes each key a row of
+// stateNarrowings strips as optional for exactly these bodies, and
+// `packages/contracts/src/legion-api.ts` marks each one so. Any other
+// caller — a pod at this contract, the operator's `legion state`, a tmux pane — is served the
+// state as this contract writes it.
 //
 // Each narrowing is written to the daemon's own log as it is applied, one line naming the
 // caller, the contract that caller's pod records, the contract this daemon declares and what
@@ -929,6 +928,7 @@ var stateNarrowings = []stateNarrowing{
 	{quietTimeContract, carriesQuietTime, withoutQuietTime, "the issues' treeMovedAt and quietHours"},
 	{waitingOnIssueContract, carriesWaitingOnIssue, withoutWaitingOnIssue, "the waiting line's kind " +
 		"of every member waiting on another issue"},
+	{mergeWaitContract, carriesMergeWait, withoutMergeWait, "the issues' mergeWait"},
 	{assignmentsContract, carriesAssignments, withoutAssignments, "the issues' assignments"},
 }
 
@@ -1001,12 +1001,8 @@ const backwardMovesContract = 62
 // one built after strips the key instead, so the strip is what keeps the count from a caller
 // that did not ask for it rather than what keeps such a caller reading at all. It was the
 // highest of the bands when it was taken, this daemon's own contract then; recordFieldsContract,
-// whyAndLineFieldsContract, leakCheckCauseContract, phaseEntriesContract, heldContract,
-// quietTimeContract, waitingOnIssueContract and assignmentsContract stand above it now, so a
-// caller in a pod from it to below recordFieldsContract is served the count and neither the
-// decided record's keys, nor each issue's answer with the line's own fields, nor a claim view's
-// `leakCheckCause`, nor the two entry numbers, nor `admission.held`, nor the tree's quiet time,
-// nor any word of the line's `kind`, nor the issues' `assignments`.
+// whyAndLineFieldsContract and every later row of stateNarrowings stand above it now, so a
+// caller in a pod at 73 or 74 is served the count and none of what those later rows add.
 const claimsToRefreshContract = 73
 
 // recordFieldsContract is the daemon contract that decided every field of the claim record and
@@ -1056,14 +1052,7 @@ const leakCheckCauseContract = 87
 // built before sjawhar/legion#2788 reads it with a strict schema and would refuse the whole body
 // for a key it does not name, and one built after strips the keys instead, so the strip is what
 // keeps the numbers from a caller that did not ask for them rather than what keeps such a caller
-// reading at all. Its band stands below heldContract's, quietTimeContract's,
-// waitingOnIssueContract's and assignmentsContract's, the last this daemon's own contract, and
-// waitingOnIssueContract's strip takes a word and no key, so a caller in a pod from it to below
-// heldContract is served the two keys and none of `admission.held`, the tree's quiet time and
-// `assignments`, a caller from heldContract to below quietTimeContract the two keys and
-// `admission.held` and neither the quiet time nor `assignments`, a caller from
-// quietTimeContract to below assignmentsContract all of those but `assignments`, and a caller at
-// assignmentsContract all of them.
+// reading at all.
 const phaseEntriesContract = 94
 
 // quietTimeContract is the daemon contract that added each issue's measure of its tree's quiet
@@ -1074,10 +1063,11 @@ const phaseEntriesContract = 94
 // strips them instead, so the strip is what keeps the pair from a caller that did not ask for
 // it rather than what keeps such a caller reading at all. The two are one gate because they are
 // one measure: a caller served the movement without the quiet time beside it, or the other way
-// about, would hold half of what one read of the tree said. Its band stands below
-// waitingOnIssueContract's, whose strip takes a word of the line's `kind` and no key, and
-// assignmentsContract's, this daemon's own contract, so a caller from it to below
-// assignmentsContract is served the measure and no `assignments`.
+// about, would hold half of what one read of the tree said. Every later row of stateNarrowings
+// stands above it — waitingOnIssueContract's, whose strip takes a word of the line's `kind` and
+// no key, then mergeWaitContract's and assignmentsContract's, the last this daemon's own
+// contract — so a caller from it up is served the measure, and none of what a later row adds
+// until it reaches that row's contract.
 const quietTimeContract = 111
 
 // waitingOnIssueContract is the daemon contract that added `waiting_on_issue` to the waiting
@@ -1087,18 +1077,28 @@ const quietTimeContract = 111
 // INFRA-3146's 123 among them, reads `kind` with a `z.enum` of the four words before it, which
 // refuses a word it does not name and with it the whole state body, so a caller below 132 is
 // served such a member without its `kind` (withoutWaitingOnIssue), which that schema takes as
-// optional. Its band stands below assignmentsContract's, this daemon's own contract, so a caller
-// from it to below assignmentsContract is served the word and no `assignments`.
+// optional.
 const waitingOnIssueContract = 132
 
+// mergeWaitContract is the daemon contract that added `mergeWait`, what a reviewing issue's
+// round waits on from GitHub (version.go's 133). A plugin before it is served the state without
+// the object: one built before sjawhar/legion#2788 reads it with a strict schema and would
+// refuse the whole body for a key it does not name, and one built after strips the key instead,
+// so the strip is what keeps the object from a caller that did not ask for it rather than what
+// keeps such a caller reading at all. A key's contract is the one that added it, so this is the
+// number dispatch://INFRA-3027 declares and no band of another change: a caller from a pod
+// below it is served the state without `mergeWait`, whatever else the contracts it does reach
+// give it.
+const mergeWaitContract = 133
+
 // assignmentsContract is the daemon contract that added each issue's experiment assignments to
-// the state (version.go's 136). A plugin before it is served the state without the field: one
+// the state (version.go's 139). A plugin before it is served the state without the field: one
 // built before sjawhar/legion#2788 reads it with a strict schema and would refuse the whole body
 // for a key it does not name, and one built after strips the key instead. The three memory
 // fields keep their own gate at memoryContract beside this one, so a caller from memoryContract
 // to below this one is served the one experiment's answer in the three keys it has read since 49
 // and no assignments, whatever else its own band gives it, and a caller below 49 neither.
-const assignmentsContract = 136
+const assignmentsContract = 139
 
 // carriesUpdateRounds is whether any claim view of state carries `updateRound` or `updateHead`.
 func carriesUpdateRounds(state State) bool {
@@ -1269,6 +1269,32 @@ func withoutWaitingLine(state State) State {
 	issues := make(map[string]Issue, len(state.Issues))
 	for key, issue := range state.Issues {
 		issue.WaitingLine = nil
+		issues[key] = issue
+	}
+	state.Issues = issues
+	return state
+}
+
+// carriesMergeWait is whether any issue of state carries what its review round waits on from
+// GitHub. Like the step record and the place in the line it is written only where there is one —
+// an issue that is not reviewing, and a reviewing issue whose round waits on nothing at GitHub,
+// carries no such key — so this is asked of the state rather than answered true.
+func carriesMergeWait(state State) bool {
+	for _, issue := range state.Issues {
+		if issue.MergeWait != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// withoutMergeWait is state with no issue carrying `mergeWait`, the object mergeWaitContract
+// added to the state; nothing else of that contract is on the route. The issue map is copied, so
+// the state the source answered is left as it was.
+func withoutMergeWait(state State) State {
+	issues := make(map[string]Issue, len(state.Issues))
+	for key, issue := range state.Issues {
+		issue.MergeWait = nil
 		issues[key] = issue
 	}
 	state.Issues = issues

@@ -1,17 +1,10 @@
-// The harness this package's whole-daemon live proofs share: child_adoption_live_test.go,
-// handoff_records_live_test.go and admission_issues_live_test.go, which embed liveProof;
-// behind_entry_fence_live_test.go, conflict_no_takeover_live_test.go and
-// phase_entry_converge_live_test.go, which embed live_issue_proof_test.go's liveIssueProof,
-// liveProof grown for one issue on an open pull request; and the proofs that drive real Oh My Pi
-// panes, through live_agent_proof_test.go's liveAgentProof. Every one of them but
-// admission_issues_live_test.go is built with `-tags e2e` by a script of its own
-// (scripts/e2e/child-adoption.sh, scripts/e2e/handoff-records.sh,
-// scripts/e2e/behind-entry-fence.sh, scripts/e2e/conflict-no-takeover.sh,
-// scripts/e2e/phase-entry-converge.sh and the four live_agent_proof_test.go names), which makes
-// the same run around it through scripts/e2e/lib/live-daemon-proof.sh;
-// admission_issues_live_test.go runs in the ordinary `go test ./internal/daemon/` on the broker
-// that package's other tests take (newLiveProofOn over workflowNATS), which is why this file
-// carries no build tag of its own.
+// The harness this package's whole-daemon live proofs share: every *_live_test.go of this package
+// that embeds liveProof, directly or through live_issue_proof_test.go's liveIssueProof, those that
+// drive real Oh My Pi panes through liveAgentProof among them. Each one carrying the `e2e` build tag
+// is built by a script of its own under scripts/e2e, which makes the same run around it through
+// scripts/e2e/lib/live-daemon-proof.sh; admission_issues_live_test.go, which carries no build tag,
+// runs in the ordinary `go test ./internal/daemon/` on the broker that package's other tests take
+// (newLiveProofOn over workflowNATS), which is why this file carries no build tag of its own.
 //
 // A driver embeds liveProof, which holds what every such proof needs before and around the daemon
 // it boots: the configuration it boots with (newLiveProof reads the broker LEGION_E2E_NATS_URL

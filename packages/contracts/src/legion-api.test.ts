@@ -643,12 +643,12 @@ test("the state golden carries each issue's tree memory draw", () => {
   expect(parses()).toBeFalse();
 });
 
-// Contract 136: the state golden carries LEGION-208, a root, and LEGION-209, a child of its
+// Contract 139: the state golden carries LEGION-208, a root, and LEGION-209, a child of its
 // tree, each under two experiments — the tree experiment `memory`, whose answer every issue of
 // the tree shows, and the issue experiment `plan-length`, drawn for each issue on its own, so
 // the two stand in different arms of it — and LEGION-210, whose hand-over settled it at no arm:
 // an empty variant, an empty mode and no instant. An issue no experiment holds an answer for
-// carries no key at all, as does every issue of the body served a caller before 136, so the
+// carries no key at all, as does every issue of the body served a caller before 139, so the
 // field is optional; a daemon before this contract sent none, and its state must still parse.
 test("the state golden carries the experiments each issue was drawn for", () => {
   const state = fixture("state.json") as {
@@ -688,7 +688,7 @@ test("the state golden carries the experiments each issue was drawn for", () => 
   const parses = () => LegionStateResponse.safeParse(state).success;
   expect(parses()).toBeTrue();
 
-  // A state from a daemon before contract 136, and one served to a pod below it.
+  // A state from a daemon before contract 139, and one served to a pod below it.
   const held = drawn.assignments;
   delete drawn.assignments;
   expect(parses()).toBeTrue();
@@ -759,6 +759,59 @@ test("the state golden carries a done issue's open production check", () => {
   expect(LegionStateResponse.safeParse(state).success).toBeFalse();
 
   closed.check = { ...unwoken, role: "" };
+  expect(LegionStateResponse.safeParse(state).success).toBeFalse();
+});
+
+// The state golden carries two reviewing issues whose rounds wait on GitHub's merge state for
+// their heads: LEGION-218, waiting for a first answer — the head it waits on, when GitHub last
+// moved that head and no settled check run on it yet, with no state read and no told marks — and
+// LEGION-219, stuck, carrying the state read and both marks the telling left. A round waiting on
+// nothing from GitHub has no `mergeWait` at all, and a merge state no GitHub answer spells, or a
+// state read that is no time, is refused.
+test("the state golden carries the rounds waiting on GitHub's merge state", () => {
+  const state = fixture("state.json") as {
+    issues: Record<string, { phase: string; mergeWait?: Record<string, unknown> }>;
+  };
+  const first = state.issues["LEGION-218"];
+  const stuck = state.issues["LEGION-219"];
+  if (first?.mergeWait === undefined || stuck?.mergeWait === undefined) {
+    throw new Error("state fixture lacks LEGION-218 or LEGION-219 or their merge waits");
+  }
+  expect(first.phase).toBe("reviewing");
+  expect(stuck.phase).toBe("reviewing");
+
+  // LEGION-218's fixture: no merge state, no read time, and neither told mark.
+  expect(first.mergeWait).toEqual({
+    waitsOn: "6c2f8a0d4b7e13952a8c0f6d3b5e9172c4a8d063",
+    headUpdatedAt: "2026-09-22T08:58:40Z",
+    checkRuns: 0,
+  });
+  // Stuck: GitHub holds the head on a check or a review the repository requires, the architect
+  // and the reviewer have been told, and the marks name the head and state told of.
+  expect(stuck.mergeWait).toEqual({
+    waitsOn: "0f5a7c2e9b48d1630a7f2c8e4b6d0915a3c7e284",
+    mergeState: "blocked",
+    stateReadAt: "2026-09-22T09:16:12Z",
+    headUpdatedAt: "2026-09-20T14:05:33Z",
+    checkRuns: 2,
+    toldHead: "0f5a7c2e9b48d1630a7f2c8e4b6d0915a3c7e284",
+    toldState: "blocked",
+  });
+
+  const told = stuck.mergeWait;
+  // A round that waits on nothing from GitHub, and the body the route serves a caller below the
+  // contract that added the merge wait (api's mergeWaitContract).
+  first.mergeWait = undefined;
+  stuck.mergeWait = undefined;
+  expect(LegionStateResponse.safeParse(state).error?.issues ?? []).toEqual([]);
+
+  stuck.mergeWait = { ...told, mergeState: "stuck", toldState: "stuck" };
+  expect(LegionStateResponse.safeParse(state).success).toBeFalse();
+
+  stuck.mergeWait = { ...told, stateReadAt: "the morning" };
+  expect(LegionStateResponse.safeParse(state).success).toBeFalse();
+
+  stuck.mergeWait = { ...told, waitsOn: "" };
   expect(LegionStateResponse.safeParse(state).success).toBeFalse();
 });
 
