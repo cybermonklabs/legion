@@ -177,10 +177,13 @@ func (t *trimmer) report(ctx context.Context, out sweepOutcome) shimwire.Launche
 // exactly the pod the notice exists to describe.
 const (
 	// volumeReportPathRunes bounds each path of Sizes, the read each names as refused
-	// (LauncherVolumeSize.Refused) and each path of SizesMissing. The longest this layout makes
-	// is `/legion/scratch/bun`, and the paths a reader acts on are of that order, while one
-	// directory component may be 255 bytes and a role may make it: a few hundred runes keeps
-	// every real path whole and cuts a made-up one.
+	// (LauncherVolumeSize.Refused), each path of SizesMissing and each refused /proc read. Of
+	// the directories this layout makes two levels under the volume root, the fixed ones are at
+	// most 26 runes (`/legion/scratch/leak-check`) and a repository owner's, under
+	// `/legion/workspaces` or `/legion/feed`, at most 58 under GitHub's 39-character owner, and
+	// the paths a reader acts on are of that order, while one directory component may be 255
+	// bytes and a role may make it: a few hundred runes keeps every real path whole and cuts a
+	// made-up one.
 	volumeReportPathRunes = 200
 	// volumeReportSizes is how many measured directories a report carries. The walk measures
 	// every directory two levels under the volume root in a deliberate order — the scratch
@@ -188,16 +191,21 @@ const (
 	// the ones a reader acts on, and a pod's own layout makes about fifteen. Fifty is room for
 	// a layout that grows and a cut for the thousands a role can make under /legion/scratch.
 	volumeReportSizes = 50
-	// volumeReportSizesMissing is how many unmeasured directories a report names. The missing
-	// list is the same population as the one above — the walk's own targets, from where its
-	// minute ran out — so it takes the same bound.
+	// volumeReportSizesMissing is how many unmeasured directories a report names. The list holds
+	// the walk's own targets it did not measure — each it could not open, and of a cut walk every
+	// one from the one it was cut in — with each immediate child of the volume root it could not
+	// list, or the volume root alone when the root could not be opened or listed; it can run as
+	// long as the list above, so it takes the same bound.
 	volumeReportSizesMissing = 50
-	// volumeReportRefusedReads is how many refused /proc reads a report names, one per process
-	// of the pod whose /proc the kernel refused. A pod runs six roles and their children, and
-	// an operator who must go and look needs a handful of pids rather than one per process.
+	// volumeReportRefusedReads is how many refused /proc reads a report names: one per process
+	// of the pod the kernel refused a read of, or one for /proc itself when /proc could not be
+	// listed, gathered from this sweep and from the earlier ones that sent no report
+	// (carryRefused). A pod runs six roles and their children, and an operator who must go and
+	// look needs a handful of pids rather than one per process.
 	volumeReportRefusedReads = 25
-	// volumeReportStopReasonRunes bounds the sweep's own reason, which embeds the joined text
-	// of every refused /proc read. It is the same few hundred runes runtime.PodEndRunes gives a
+	// volumeReportStopReasonRunes bounds the sweep's own reason, which names at most the first
+	// volumeReportRefusedReads refused /proc reads and how many more there were (refusalsSaid,
+	// volumetrim.go). It is the same few hundred runes runtime.PodEndRunes gives a
 	// kubelet's reason and message, and for the same reason: the sentence is stored in an outbox
 	// row and published to a role topic.
 	volumeReportStopReasonRunes = 400

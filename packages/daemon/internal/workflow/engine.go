@@ -870,8 +870,9 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 // worker-died of a role that does not work the issue's phase names it too, since that role's
 // architect decides whether to start it again on the same evidence. The tree architect's own
 // worker-died carries no failure record, so its reason carries the sentence instead, with the
-// runtime's account of the last death and the pod end when the claim holds them (deathReason):
-// it is the one notice of that failure the architect and the controller are sent.
+// pod end when the claim holds one, or else the first line of the runtime's account of the last
+// death (deathReason): it is the one notice of that failure the architect and the controller
+// are sent.
 //
 // A child's sub-architect works no phase and holds none: the operator starts it, and no transition
 // or admission ever starts an architect below the tree's root. Its claim failing holds nothing and
@@ -967,19 +968,18 @@ func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFa
 // (supervise.Claim.Failure, intake.ClaimFailed.Reason), then what ended the process: the pod end
 // it was last observed to have died of (supervise.Claim.PodEnd), which is the cause no role
 // chose — an eviction for ephemeral storage above all — or, where the claim holds no pod end,
-// the runtime's account of its last death (supervise.Claim.LastDeathCause,
-// intake.ClaimFailed.Death). They are joined with "; " so an architect reads them as one line,
-// and any of them the fact does not hold is left out. All three are persisted on the claim, so
-// a daemon that restarted between the death and the moment the budget ran out says the same
-// thing.
+// the first line of the runtime's account of its last death (supervise.Claim.LastDeathCause,
+// intake.ClaimFailed.Death). They are joined with "; " into one line, and any of them the fact
+// does not hold is left out. All three are persisted on the claim, so a daemon that restarted
+// between the death and the moment the budget ran out says the same thing.
 //
 // The death is named only where there is no pod end, because on a pod the cluster ended it is
 // the runtime's whole detail (sandbox's Runtime.ended): the pod's reason and the kubelet's
 // message, which are the pod end, and after them a tail of the role's log and the container's.
-// Beside the pod end it would name the kubelet's message twice, put the pod end after that log,
-// and spread the reason over as many lines as the log has. The death begins with the verdict the
-// runtime reached (supervise's deathCause), `gone` above all, so it is written after "the
-// process was last found " as it stands.
+// Its first line holds that reason and message too, so beside the pod end it would name the
+// kubelet's message twice. The death begins with the verdict the runtime reached (supervise's
+// deathCause), `gone` above all, so it is written after "the process was last found "
+// (deathFirstLine).
 //
 // failureCarried says the notice carries a failure record beside this reason, as the held
 // phase's does whenever the fact names a cause. That record's `detail` already carries the
@@ -1001,9 +1001,26 @@ func deathReason(fact intake.ClaimFailed, failureCarried bool) string {
 	case fact.PodEnd != "":
 		said = append(said, "the pod ended: "+fact.PodEnd)
 	case !failureCarried && fact.Death != "":
-		said = append(said, "the process was last found "+fact.Death)
+		said = append(said, fmt.Sprintf("the process was last found %q", deathFirstLine(fact.Death)))
 	}
 	return strings.Join(said, "; ")
+}
+
+// deathFirstLine is the part of a death the worker-died's reason carries: its first line — the
+// verdict and the start of the runtime's account — without the header of a log tail that ends
+// it. The sandbox runtime ends that line with "; last lines of <role>:" and writes the tail of
+// the role's log and of the container's on the lines after it, among them lines a role wrote:
+// carried whole, each of those became a line of the architect's notice. The whole account stays
+// on the claim (supervise.Claim.LastDeathCause), where an operator reads it, and in the `death`
+// of the failure record a notice carries when the fact names a cause (noticeFailure). The line
+// is quoted where it is written (deathReason), so whatever else is in it stays inside the
+// reason's one line.
+func deathFirstLine(death string) string {
+	first, _, cut := strings.Cut(death, "\n")
+	if at := strings.LastIndex(first, "; last lines of "); cut && at >= 0 && strings.HasSuffix(first, ":") {
+		first = first[:at]
+	}
+	return first
 }
 
 // The bounds on what an issue's architect is told about its pod's volume filling, and the two
@@ -1014,7 +1031,9 @@ func deathReason(fact intake.ClaimFailed, failureCarried bool) string {
 // one episode: three is enough to show a trend — it is filling, the trimmer is not keeping up,
 // here is what is in it — and a fourth says nothing the third did not. VolumeNoticePodInterval
 // is the most often it hears about one pod at all, whatever trimmer or episode reported, so an
-// episode that ends and another that opens a minute later is still one notice an hour.
+// episode that ends and another that opens a minute later is still one notice an hour. Two
+// kinds of report pass a bound (volumeNoticeHeldBy): one whose episode a rise raised skips the
+// hour and not the cap, and the report that the trimmer switched itself off skips both.
 //
 // Both lines begin with VolumeNoticeLinePrefix and each names the issue, the pod, the trimmer,
 // the episode and the count, because the issue's production check reads them from the daemon's

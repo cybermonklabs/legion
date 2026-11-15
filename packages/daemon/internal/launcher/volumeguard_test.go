@@ -152,6 +152,17 @@ func mkdirFixture(t *testing.T, dir string) {
 	}
 }
 
+// reclaimableRootPaths is the pod's reclaimable roots as the used-path read is given them: the
+// paths whose own use, or a use under which, the sweep asks about (readUsedPaths). The fixture
+// cases name paths of the pod's own layout, so they read through the pod's own roots.
+func reclaimableRootPaths() []string {
+	paths := make([]string, 0, len(ReclaimableRoots))
+	for _, root := range ReclaimableRoots {
+		paths = append(paths, root.Path)
+	}
+	return paths
+}
+
 // Every one of the six /proc entries is read, driven one path at a time: each case builds a
 // /proc holding one process that names the path through that entry alone, so a reader that
 // covered only open file descriptors fails five of the six. An open descriptor is not enough on
@@ -185,7 +196,7 @@ func TestTheUsedPathSetReadsEveryProcEntry(t *testing.T) {
 			process := fixtureProcess{pid: 101}
 			source.place(&process, held)
 			proc, _ := writeProcFixture(t, process)
-			used := readUsedPaths(proc, os.Getpid())
+			used := readUsedPaths(proc, reclaimableRootPaths(), os.Getpid())
 			if len(used.Refused) > 0 {
 				t.Fatalf("the fixture was refused: %v", used.Refused)
 			}
@@ -219,7 +230,7 @@ func TestTheUsedPathSetLeavesTheReadersOwnProcessOut(t *testing.T) {
 		fixtureProcess{reader: true, fds: []string{own}, cwd: "/legion/go/build"},
 		fixtureProcess{pid: os.Getpid() + 1, fds: []string{other}},
 	)
-	used := readUsedPaths(proc, os.Getpid())
+	used := readUsedPaths(proc, reclaimableRootPaths(), os.Getpid())
 	if len(used.Refused) > 0 {
 		t.Fatalf("the fixture was refused: %v", used.Refused)
 	}
@@ -263,7 +274,7 @@ func TestTheUsedPathSetNamesEveryProcessWhoseProcWasRefused(t *testing.T) {
 			// The third process has no entry at all, which is what the kernel shows of a process
 			// that exited while the pass read it.
 			proc, pids := writeProcFixture(t, staging.process, fixtureProcess{pid: 400, fds: []string{gone}}, fixtureProcess{pid: 500})
-			used := readUsedPaths(proc, os.Getpid())
+			used := readUsedPaths(proc, reclaimableRootPaths(), os.Getpid())
 			if len(used.Refused) != 1 {
 				t.Fatalf("Refused = %v, want exactly the one process this case made unreadable", used.Refused)
 			}
@@ -315,7 +326,7 @@ func TestTheAgeGuardReadsTheNewestTimeAnywhereInAnEntry(t *testing.T) {
 	if own.ModTime().After(fresh.Add(-time.Second)) {
 		t.Fatalf("the tree's own time is %s, want the old one this case set: the case would prove nothing", own.ModTime())
 	}
-	newest, err := newestModTime(held, "go-build2026")
+	newest, err := newestModTime(held, "go-build2026", nil)
 	if err != nil {
 		t.Fatalf("newestModTime(%s): %v", tree, err)
 	}
@@ -327,7 +338,7 @@ func TestTheAgeGuardReadsTheNewestTimeAnywhereInAnEntry(t *testing.T) {
 	// A file is its own time.
 	file := filepath.Join(dir, "lone")
 	writeAged(t, file, fresh)
-	if newest, err := newestModTime(held, "lone"); err != nil || newest.Sub(fresh).Abs() > time.Second {
+	if newest, err := newestModTime(held, "lone", nil); err != nil || newest.Sub(fresh).Abs() > time.Second {
 		t.Errorf("newestModTime(%s) = %s, %v, want the file's own time %s", file, newest, err, fresh)
 	}
 
@@ -351,7 +362,7 @@ func TestTheAgeGuardReadsTheNewestTimeAnywhereInAnEntry(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { _ = os.Chmod(late, 0o700) })
-		if _, err := newestModTime(held, "go-build1999"); err == nil {
+		if _, err := newestModTime(held, "go-build1999", nil); err == nil {
 			t.Error("a full walk of the tree read the directory this case made unreadable, so the early stop below proves nothing")
 		}
 	}
@@ -453,7 +464,7 @@ func TestTheGuardWalkReadsNothingThroughAChildSwappedForARelativeLinkCrossingAnA
 	swaps := 0
 	newest := time.Time{}
 	var visited []string
-	walked := walkEntries(held, "go-build2026", func(info os.FileInfo) error {
+	walked := walkEntries(held, "go-build2026", nil, func(info os.FileInfo) error {
 		visited = append(visited, info.Name())
 		if at := info.ModTime(); at.After(newest) {
 			newest = at
@@ -682,7 +693,7 @@ func TestThePodsProcessesAreVisibleThroughEveryProcEntry(t *testing.T) {
 		time.Sleep(testwait.Poll)
 	}
 
-	used := readUsedPaths("/proc", os.Getpid())
+	used := readUsedPaths("/proc", []string{dir}, os.Getpid())
 	if len(used.paths) == 0 {
 		t.Fatalf("the reader found no path at all in this container's /proc; refused %v", used.Refused)
 	}

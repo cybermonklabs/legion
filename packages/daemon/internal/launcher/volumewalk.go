@@ -348,12 +348,14 @@ func (w sizeWalk) readChild(handle *dirHandle, name string) ([]os.DirEntry, erro
 // cluster's kernel does not let through a link (run). Nothing here is read by a path, so a
 // rename made while the walk runs cannot aim it out of the volume.
 //
-// It follows no symbolic link and counts no directory's own blocks, so what it reports is the
-// bytes a deletion of the tree would free, which is the number a reader of a trim report is
-// after. A read the kernel refuses makes the reading a lower bound, counted and the first of
-// them named (refuse), and ends nothing, and a file that is gone by the time it is stat'ed is
-// nothing at all: the sweep that made this report was deleting in these very directories
-// moments ago.
+// It follows no symbolic link and counts no directory's own blocks: what it reports is the
+// apparent size of the regular files under the tree, once per name, which is the number a reader
+// of a trim report is after and not always the bytes a deletion of the tree would free — a file
+// linked from elsewhere, as bun links its cache into node_modules, is counted though deleting
+// the tree frees none of it, and a sparse file counts at its apparent size. A read the kernel
+// refuses makes the reading a lower bound, counted and the first of them named (refuse), and
+// ends nothing, and a file that is gone by the time it is stat'ed is nothing at all: the sweep
+// that made this report was deleting in these very directories moments ago.
 func measureTree(ctx context.Context, dir *dirHandle, name string, at time.Time) measured {
 	out := measured{}
 	hour, day := at.Add(-volumeSizeHour), at.Add(-volumeSizeDay)
@@ -382,12 +384,13 @@ func measureTree(ctx context.Context, dir *dirHandle, name string, at time.Time)
 // with the rest of the entries, since /legion/feed is a read-only mount inside the same claim
 // and a sweep is deleting in these directories moments before.
 //
-// It costs one descriptor per level of the tree, held until the level is done, where the walk
-// it replaced held one at a time and resolved the paths below it again at every step: a child
-// can only be opened from a handle on the directory that holds it, so a safe descent is a
-// descent that keeps its ancestors open. What bounds the cost is the walk's own budget and the
-// pod's limit, which is 1048576 descriptors (`ulimit -n`, measured in an issue pod of this
-// deployment at 2026-11-12T06:30Z); a level the kernel refuses for any reason, that one
+// It costs one handle per level of the tree — two descriptors and the level's listing, and no
+// path (dirHandle.path) — held until the level is done, where the walk it replaced held one
+// descriptor at a time and resolved the paths below it again at every step: a child can only be
+// opened from a handle on the directory that holds it, so a safe descent is a descent that keeps
+// its ancestors open. What bounds the cost is the walk's own budget, asked before each entry,
+// and the pod's limit, which is 1048576 descriptors (`ulimit -n`, measured in an issue pod of
+// this deployment at 2026-11-12T06:30Z); a level the kernel refuses for any reason, that one
 // included, is a refused reading like any other and the walk goes on.
 func measureUnder(ctx context.Context, dir *dirHandle, name string, hour, day time.Time, out *measured) {
 	under, err := dir.open(name)
@@ -458,8 +461,8 @@ func refusedPath(dir, name string, depth int) string {
 }
 
 // countFile adds one file's bytes to out, and its bytes to each age split it falls in. A file
-// that is not a regular file is no bytes a deletion of the tree would free: a symbolic link is
-// counted nowhere and followed nowhere, and a device or a socket holds nothing.
+// that is not a regular file is counted nowhere: a symbolic link is counted nowhere and followed
+// nowhere, and a device or a socket holds nothing.
 func countFile(out *measured, info os.FileInfo, hour, day time.Time) {
 	if !info.Mode().IsRegular() {
 		return

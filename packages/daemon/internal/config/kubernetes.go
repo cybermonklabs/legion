@@ -120,10 +120,11 @@ type Kubernetes struct {
 	// deployment; `idle_minutes: 0` turns it off.
 	IdleRelease IdleReleaseConfig
 	// VolumeTrim is `runtime.kubernetes.volume_trim`, settled: what the cache trimmer in each
-	// issue pod's launcher process runs by, bounding the four cache roots under a size mark.
-	// Every default applies when the file sets no block, so the trimmer is on for every
-	// Kubernetes deployment, as idle release is; `enabled: false` turns it off, and the pod's
-	// launcher is then handed no settings at all (sandbox.Options.VolumeTrim nil).
+	// issue pod's launcher process runs by, deleting the oldest entries of the four cache roots
+	// when the volume reaches a size mark. Every default applies when the file sets no block, so
+	// the trimmer is on for every Kubernetes deployment, as idle release is; `enabled: false`
+	// turns it off, and the pod's launcher is then handed no settings at all
+	// (sandbox.Options.VolumeTrim nil), on which its trimmer reads and deletes nothing.
 	VolumeTrim VolumeTrimConfig
 }
 
@@ -188,10 +189,11 @@ func DefaultIdleRelease() IdleReleaseConfig { return defaultIdleRelease }
 
 // VolumeTrimConfig is `runtime.kubernetes.volume_trim`: what the cache trimmer in each issue
 // pod's launcher process runs by. The trimmer reads the pod's volume every IntervalSeconds,
-// sweeps the four cache roots once the used fraction reaches HighPercent, deletes only what
-// nothing has touched for MinAgeMinutes, and stops once the fraction is back under LowPercent
-// (shimwire.LauncherVolumeTrim, which the launcher is handed on the answer to its hello).
-// Enabled false runs no trimmer at all, and an issue volume then fills as it did before this
+// sweeps the four cache roots once the used fraction reaches HighPercent, deletes only entries in
+// which nothing was modified for MinAgeMinutes, and stops deleting at the first reading at or
+// below LowPercent, if nothing stops it sooner (shimwire.LauncherVolumeTrim, which the launcher
+// is handed on the answer to its hello). Enabled false hands the launcher no settings, on which
+// its trimmer reads and deletes nothing, and an issue volume then fills as it did before this
 // work.
 type VolumeTrimConfig struct {
 	Enabled         bool
@@ -202,9 +204,9 @@ type VolumeTrimConfig struct {
 }
 
 // defaultVolumeTrim is the trimmer when the file sets none of it: a sweep at 85% of the issue
-// volume down to 70%, touching nothing used inside the last quarter hour, looking every minute.
-// Every deployment's issue volume is a fixed size whose caches grow with the issue's work, so the
-// defaults are on, as idle release's are (defaultIdleRelease).
+// volume down to 70%, deleting nothing modified inside the last quarter hour, looking every
+// minute. Every deployment's issue volume is a fixed size whose caches grow with the issue's
+// work, so the defaults are on, as idle release's are (defaultIdleRelease).
 var defaultVolumeTrim = VolumeTrimConfig{Enabled: true, HighPercent: 85, LowPercent: 70, MinAgeMinutes: 15, IntervalSeconds: 60}
 
 // DefaultVolumeTrim is the cache trimmer's settled configuration when the file sets none.
@@ -790,7 +792,7 @@ func readIdleRelease(value *yaml.Node) (IdleReleaseConfig, error) {
 // (shimwire.VolumeMarkMax, shimwire.VolumeMinAgeMax, shimwire.VolumeIntervalMax), which the
 // launcher's trimmer checks the settings against a second time on its side of the connection: a
 // maximum widened here alone would load cleanly and then be refused by every pod's trimmer,
-// which stays off for the life of its launcher process.
+// which then sweeps nothing until a daemon sends settings inside the launcher's ranges.
 func readVolumeTrim(value *yaml.Node) (VolumeTrimConfig, error) {
 	const key = kubernetesKey + ".volume_trim"
 	settled := defaultVolumeTrim

@@ -164,19 +164,19 @@ func Run(ctx context.Context, cfg Config) error {
 	if testPG != nil {
 		<-testPG
 	}
-	// The trimmer watches the same context as the roles and stops beside them, never as extra
-	// time after them: worker_stop_timeout_seconds is the pod's termination grace as well as
-	// each role's own --stop-grace, and the roles are given it whole.
+	// The trimmer watches the same context as the roles and is stopped beside them rather than
+	// after them: worker_stop_timeout_seconds is the pod's termination grace as well as each
+	// role's own --stop-grace, and the roles are given it whole.
 	<-trim
 	<-locks
 	return ctx.Err()
 }
 
-// serveVolumeTrim runs the pod's cache trimmer until ctx ends and answers a channel closed once
-// its loop has returned, so Run can wait for it as it waits for the test database's ticker
-// (serveTestPG). The controller's pod gets none: Run's single-role branch returns before this
-// is reached, since that launcher runs one role, its volume belongs to its Sandbox rather than
-// to an issue, and no architect would read its report.
+// serveVolumeTrim runs the pod's cache trimmer until ctx ends or the trimmer switches itself off
+// (trimmer.run), and answers a channel closed once its loop has returned, so Run can wait for it
+// as it waits for the test database's ticker (serveTestPG). The controller's pod gets none:
+// Run's single-role branch returns before this is reached, since that launcher runs one role, its
+// volume belongs to its Sandbox rather than to an issue, and no architect would read its report.
 //
 // The trimmer is constructed here, once per launcher process and never again: its identifier is
 // minted at construction (trimmer.id) and kept across every reconnection, where an identifier
@@ -187,9 +187,9 @@ func Run(ctx context.Context, cfg Config) error {
 // (applyAck): a trimmer that asked before that would wait out its first settings poll for
 // nothing. A connection that merely drops afterwards leaves the settings in force (volumeTrim)
 // and the trimmer sweeping, holding any report it cannot write until that connection is up
-// again (sendVolumeReport); an acknowledgement that carries none stops the sweeping and leaves
-// the trimmer waiting for settings to come back, which is the whole of the trimmer's life in
-// this process (trimmer.run).
+// again (sendVolumeReport); an acknowledgement that carries none, or carries settings the
+// trimmer refuses, stops the sweeping and leaves the trimmer waiting for settings it can run
+// (trimmer.run).
 //
 // It is given the cover each sweep's deleter builds its own mount namespace over before it
 // removes anything, the one role-init is given (roleCoverFor): this launcher's roles directory,
@@ -329,9 +329,9 @@ func (m *manager) serve(ctx context.Context, address string) error {
 		address, m.launcherID, m.cfg.Sandbox, m.role, m.cfg.PodUID)
 	m.applyAck(writer, ack)
 	// The end of this connection takes its writer out of force and leaves everything else: the
-	// trimmer settings the acknowledgement carried stay in force, so the pod holds its volume
-	// under the mark while the daemon restarts, and only an acknowledgement carrying none, or
-	// carrying settings the trimmer refuses, stops the trimmer (applyAck).
+	// trimmer settings the acknowledgement carried stay in force, so the trimmer goes on sweeping
+	// while the daemon restarts, and only an acknowledgement carrying none, or carrying settings
+	// the trimmer refuses, stops its sweeping (applyAck).
 	defer func() {
 		m.mu.Lock()
 		if m.writer == writer {
@@ -524,11 +524,12 @@ type manager struct {
 	// role manager of the container shares as it shares restore.
 	check *checkInstall
 	// volumeTrimSettings is what the latest acknowledgement of this role handed the pod's cache
-	// trimmer, and nil when it handed none, which is the one thing that means "run no trimmer"
-	// (shimwire.LauncherHelloAck.VolumeTrim). Only the manager the trimmer is bound to is read
-	// for it (serveVolumeTrim), and it lives under mu with the writer because the two must
-	// become readable in the same moment: one connection decides both the settings and where
-	// the reports go.
+	// trimmer, and nil when it handed none (shimwire.LauncherHelloAck.VolumeTrim): on nil the
+	// trimmer reads and deletes nothing, as on settings it refuses (volumeTrimRuns), and a report
+	// it holds is discarded (trimmer.settingsInForce). Only the manager the trimmer is bound to
+	// is read for it (serveVolumeTrim), and it lives under mu with the writer because the two
+	// must become readable in the same moment: one connection decides both the settings and
+	// where the reports go.
 	volumeTrimSettings *shimwire.LauncherVolumeTrim
 	// volumeTrimRuns is whether volumeTrimSettings are settings the trimmer can run, which is
 	// decided once per acknowledgement (applyAck) rather than at each of the tens of thousands of
@@ -601,11 +602,12 @@ func (m *manager) volumeTrimming() bool {
 // A manager with no connection up, and one whose answer carries no settings, each answer an
 // error, which is what the trimmer reads as "not now": it holds the report until an
 // acknowledgement puts both back, as reportRestore holds its own confirmation, rather than
-// dropping a volume nobody was told about, and settings that stay away discard the held report
-// at the next interval (trimmer.tick). They are two errors rather than one so that the line the
-// pod's log carries says which of them it was. The writer is taken under the same mutex as state
-// and reportRestore take it, and shimwire.Writer has a mutex of its own, so writing here beside
-// the command loop is safe.
+// dropping a volume nobody was told about, and an answer with no settings has the held report
+// discarded the next time the trimmer waits for settings or tries its last report
+// (trimmer.settingsInForce). They are two errors rather than one so that the line the pod's log
+// carries says which of them it was. The writer is taken under the same mutex as state and
+// reportRestore take it, and shimwire.Writer has a mutex of its own, so writing here beside the
+// command loop is safe.
 func (m *manager) sendVolumeReport(report shimwire.LauncherVolumeReport) error {
 	m.mu.Lock()
 	writer, settings := m.writer, m.volumeTrimSettings

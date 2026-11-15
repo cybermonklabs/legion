@@ -196,27 +196,34 @@ a command — and a tool no runner reaches is an image change ("When no runner r
 ## The disk your pod works on, and what the trimmer deletes
 
 Your pod has one volume, mounted at `/legion`, and the six roles of the issue share it: the
-clone, every workspace, the temporary directory, the cache home, the data home, the bun install
-cache, the Go build and module caches, and uv's cache and Pythons are all on it. Nothing else of
-the pod is: a role's own home and `/tmp` are on the node's disk, which is small and whose limit
-evicts the whole pod. Read its free space with `df -h /legion`.
+clone, every workspace, the feed, the temporary directory, the cache home, the data home, every
+role's state home, the bun install cache, the Go build and module caches, uv's cache and Pythons,
+and the shared leak check are all on it. Nothing else of the pod is: a role's own home and `/tmp`
+are on the node's disk, which is small and whose limit evicts the whole pod. Read its free space
+with `df -h /legion`.
 
-A cache trimmer in the pod's launcher process holds part of it under a mark. At the high mark
-its deployment sets, 85 per cent used by default, it deletes, oldest first, until the volume is
-back to the low mark, 70 per cent by default, and it deletes only these:
+A cache trimmer in the pod's launcher process deletes part of it when the volume fills. At the
+high mark its deployment sets, 85 per cent used by default, it deletes, oldest first, toward the
+low mark, 70 per cent by default, and stops there or sooner: when deleting more frees nothing,
+when its five-minute budget runs out, when nothing eligible is left, or when it cannot read
+`/proc` or the volume or loses the child it deletes through. After a sweep that freed under one
+point of the volume it starts no other for ten intervals. It deletes only these:
 
 - a `go-build*` directory of `$TMPDIR`, which Go names and owns, and **nothing else of `$TMPDIR`**;
-- a `-a` or `-d` entry of the Go build cache, `/legion/go/build`, the entries Go's own cache
-  trim removes by age;
-- an immediate child of the cache home, `/legion/scratch/cache`, except `ms-playwright` and
-  `legion-claude-code`;
-- an immediate child of the bun install cache, `/legion/scratch/bun/install/cache`.
+- a `-a` or `-d` entry of the Go build cache, `/legion/go/build`, a file or a directory, the
+  entries Go's own cache trim removes by age;
+- an immediate child of the cache home, `/legion/scratch/cache`, that is a directory, except
+  `ms-playwright` and `legion-claude-code`;
+- an immediate child of the bun install cache, `/legion/scratch/bun/install/cache`, that is a
+  directory.
 
 An ordinary sweep deletes nothing a role put anywhere else: not your workspace, not the clone,
 not the feed, not a role's state home, not the data home, not the Go module cache, not uv's
 cache or its Pythons, and no clone, toolchain or database you wrote under `$TMPDIR`.
-It skips anything a process of the pod has open, anything touched inside the minimum age,
-fifteen minutes by default, and anything that is not the kind of file its row names.
+It skips anything a process of the pod held open, mapped or stood in at its latest read of
+`/proc`, which it takes again before an entry once the last read is a second old; anything that
+was modified, or holds something modified, inside the minimum age, fifteen minutes by default;
+and anything that is not the kind of file its row names.
 A `-a` or `-d` entry of the Go build cache has an hour more than that: Go moves such an entry's
 modification time on use at most once an hour, so one a build used a minute ago can read
 fifty-nine minutes old, and the trimmer takes it only once it is older than the minimum age and
@@ -228,13 +235,14 @@ one name at a time, unlinks a link as the link it is, and follows none.
 Those guards are what keep it off your work, and they are guards rather than a wall: every role
 of this pod runs as one uid, and `/legion` is wholly visible to the process that deletes.
 What it cannot be led to at all, even by a link it did follow, is what the container holds for
-the roles and no role holds itself: another role's private, state and agent-secrets directories,
-its launcher token, the pod's shared configuration home, the home every role's own is built
-over, and the container's own temporary directories, lock directories, shared memory, terminals,
-message queues and `/proc`. The deletions are made in a mount namespace built from the one list
-a role's own namespace is built from, where every path a role is given something of its own at
-is an empty filesystem instead, and `/proc` is a procfs of the deleting process's own, which
-shows nothing of any other process.
+the roles and no role holds itself: another role's private, state and agent-secrets directories
+under `/var/run/legion/roles` (not its state home under `/legion/scratch/state`, which is on the
+volume), its launcher token, the pod's shared configuration home, the home every role's own is
+built over, and the container's own temporary directories, lock directories, shared memory,
+terminals, message queues and `/proc`. The deletions are made in a mount namespace built from the
+one list a role's own namespace is built from, where every path a role is given something of its
+own at is an empty filesystem instead, and `/proc` is a procfs of the deleting process's own,
+which shows nothing of any other process.
 
 That cuts both ways: **`$TMPDIR` is yours to clean.** What you leave there lives as long as the
 pod does and counts against the volume for every role. Delete the paths you made, each by its

@@ -143,7 +143,7 @@ func TestEveryExchangedFrameRoundTripsItsWireLine(t *testing.T) {
 		{"launcher_hello_ack", `{"type":"launcher_hello_ack"}`, LauncherHelloAck{}},
 		{
 			// The ack that hands the launcher its trimmer settings. An ack with no volumeTrim is
-			// the row above, and the one thing that means this daemon runs no trimmer here
+			// the row above, and the only ack that hands the launcher no settings
 			// (TestALauncherHelloAckWithoutSettingsIsTheOnlyAbsenceOfThem).
 			"launcher_hello_ack with trimmer settings",
 			`{"type":"launcher_hello_ack","volumeTrim":{"highPercent":85,"lowPercent":70,"minAgeMinutes":120,"intervalSeconds":60}}`,
@@ -485,7 +485,7 @@ func TestTheFramesTheShippedCodeValidatesRefuseTheirMalformedForms(t *testing.T)
 		}
 	}
 	// The volume report is the trimmer's own, and the daemon counts its notice bounds per
-	// trimmer and per episode: a report naming neither is one it could not count.
+	// trimmer and per episode: a report missing either is one it could not count.
 	report := LauncherVolumeReport{Trimmer: "trim-9f3c", Episode: 1, RaisedBy: VolumeEpisodeFirst}
 	if err := report.Validate(); err != nil {
 		t.Fatalf("LauncherVolumeReport.Validate: %v", err)
@@ -623,11 +623,12 @@ func TestTokenFramesRoundTrip(t *testing.T) {
 	}
 }
 
-// An ack with no volumeTrim is the one thing that says "run no trimmer": the empty object every
-// daemon built before INFRA-2009 writes, and the ack a deployment that turned the trimmer off
-// writes, are the same line. Settings whose numbers are all zero are not that line — they are
-// settings, and a launcher that read them as an absence would run no trimmer where it was told
-// to run one — which is why the member is a pointer (LauncherHelloAck.VolumeTrim).
+// An ack with no volumeTrim is the one ack that hands the launcher no settings: the empty object
+// every daemon built before INFRA-2009 writes, and the ack a deployment that turned the trimmer
+// off writes, are the same line. Settings whose numbers are all zero are not that line — they are
+// settings, which the launcher refuses value by value, and a launcher that read them as an
+// absence would say no settings came and discard a held report that the daemon which sent them
+// can take — which is why the member is a pointer (LauncherHelloAck.VolumeTrim).
 func TestALauncherHelloAckWithoutSettingsIsTheOnlyAbsenceOfThem(t *testing.T) {
 	decoded, err := Decode([]byte(`{"type":"launcher_hello_ack"}`))
 	if err != nil {

@@ -22,8 +22,8 @@ type volumeUsage struct{ UsedBytes, AvailableBytes uint64 }
 // sees a number up to one point higher than the one the trimmer acted on.
 //
 // A volume whose used and available bytes are both zero — nothing is mounted at the path, or a
-// filesystem reports neither — is 0 per cent rather than a division by zero, which is the one
-// reading that makes no sweep run.
+// filesystem reports neither — is 0 per cent rather than a division by zero, which is under every
+// high mark the trimmer accepts (shimwire.VolumeMarkMin), so no sweep runs on it.
 func (u volumeUsage) Percent() float64 {
 	total := u.UsedBytes + u.AvailableBytes
 	if total == 0 {

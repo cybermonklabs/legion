@@ -25,7 +25,8 @@ const volumeOpenFlags = syscall.O_RDONLY | syscall.O_NOFOLLOW | syscall.O_NONBLO
 
 // openVolumeDir opens an absolute path as a directory, one element at a time from the root of
 // the filesystem: the volume root the size walk measures and the four reclaimable roots the
-// sweep lists are reached this way, and nothing else of the trimmer's resolves a path at all.
+// sweep lists are reached this way, and nothing else of the trimmer's resolves a path on the
+// volume but the statfs of its mount point (readVolumeUsage).
 //
 // It is one open per element because the elements above a reclaimable root are the roles' own:
 // /legion is the pod's mount point, and scratch, go, scratch/bun and scratch/bun/install under
@@ -52,53 +53,54 @@ func openVolumeDir(path string) (*dirHandle, error) {
 			break // the path is the root of the filesystem itself, which fd already holds
 		}
 		at = filepath.Join(at, element)
-		next, err := openElementAt(fd, element, at)
+		next, err := openElementAt(fd, element, func() string { return at })
 		_ = unix.Close(fd)
 		if err != nil {
 			return nil, err
 		}
 		fd = next
 	}
-	return handleOf(os.NewFile(uintptr(fd), clean), clean)
+	return handleOf(os.NewFile(uintptr(fd), clean), nil, clean)
 }
 
 // open is one element of the tree, opened from the descriptor this handle holds: the one read
 // that is resolved by that descriptor and nothing else. A name with a separator in it, or one
 // that is "." or "..", is refused rather than resolved, which is this change's own rule made a
-// check instead of a convention (volumedir.go).
+// check instead of a convention (volumedir.go). The handle it answers keeps this one and the
+// name, and no path (dirHandle.path).
 func (d *dirHandle) open(name string) (*dirHandle, error) {
-	path := filepath.Join(d.path, name)
-	fd, err := openElementAt(int(d.file.Fd()), name, path)
+	fd, err := openElementAt(int(d.file.Fd()), name, func() string { return filepath.Join(d.path(), name) })
 	if err != nil {
 		return nil, err
 	}
-	return handleOf(os.NewFile(uintptr(fd), path), path)
+	return handleOf(os.NewFile(uintptr(fd), name), d, name)
 }
 
 // openElementAt opens one name in the directory parent holds open and answers the descriptor,
-// which is a directory because its own fstat says so. path is what the name is called on the
-// volume, which the error names.
-func openElementAt(parent int, name, path string) (int, error) {
+// which is a directory because its own fstat says so. path answers what the name is called on
+// the volume, which the error names; it is asked only for an error, so an open that succeeds
+// builds no path (dirHandle.path).
+func openElementAt(parent int, name string, path func() string) (int, error) {
 	if !isOneName(name) {
-		return -1, &quotedPathError{op: "openat", path: path, err: syscall.EINVAL}
+		return -1, &quotedPathError{op: "openat", path: path(), err: syscall.EINVAL}
 	}
 	fd, err := openRetrying(func() (int, error) {
 		return unix.Openat(parent, name, volumeOpenFlags, 0)
 	})
 	if err != nil {
-		return -1, &quotedPathError{op: "openat", path: path, err: err}
+		return -1, &quotedPathError{op: "openat", path: path(), err: err}
 	}
 	var stat unix.Stat_t
 	if err := unix.Fstat(fd, &stat); err != nil {
 		_ = unix.Close(fd)
-		return -1, &quotedPathError{op: "fstat", path: path, err: err}
+		return -1, &quotedPathError{op: "fstat", path: path(), err: err}
 	}
 	if stat.Mode&unix.S_IFMT != unix.S_IFDIR {
 		// Asked of the descriptor and not of the open, because O_DIRECTORY is the flag this
 		// kernel follows a link under, and because an open that has already happened is the
 		// only reading of a name no role can move under it.
 		_ = unix.Close(fd)
-		return -1, &quotedPathError{op: "openat", path: path, err: syscall.ENOTDIR}
+		return -1, &quotedPathError{op: "openat", path: path(), err: syscall.ENOTDIR}
 	}
 	return fd, nil
 }
@@ -166,7 +168,7 @@ func (r *treeRemoval) remove(parent int, name string) error {
 	if err := unlinkRetrying(parent, name, 0); err == nil || errors.Is(err, syscall.ENOENT) {
 		return nil
 	}
-	fd, err := openElementAt(parent, name, name)
+	fd, err := openElementAt(parent, name, func() string { return name })
 	switch {
 	case errors.Is(err, syscall.ENOENT):
 		return nil

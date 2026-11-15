@@ -187,18 +187,20 @@ type LauncherHello struct {
 // LauncherHelloAck admits a launcher to receive child process commands, and hands it the
 // settings its cache trimmer runs by, when this daemon has any to hand it.
 type LauncherHelloAck struct {
-	// VolumeTrim is absent rather than zero when no settings are sent, and that absence is the
-	// whole of what "run no trimmer" means: a daemon built before this work and a deployment
-	// that turned the trimmer off both send no member at all, where a present member whose
-	// numbers are zero is settings the launcher would act on. The pointer is what tells the two
-	// apart, as it does for Hello2.AgentSecrets, StateData.IsStreaming and LauncherState.Child.
+	// VolumeTrim is absent rather than zero when no settings are sent: a daemon built before
+	// this work and a deployment that turned the trimmer off both send no member at all, and the
+	// launcher's trimmer then reads and deletes nothing and discards a report it was holding,
+	// since that daemon has no case for one. A present member whose numbers are zero is settings,
+	// which the launcher refuses, logging each value; its trimmer deletes nothing on them either,
+	// but it tries a report it was holding. The pointer is what tells an absent member from a
+	// zero one, as it does for Hello2.AgentSecrets, StateData.IsStreaming and LauncherState.Child.
 	VolumeTrim *LauncherVolumeTrim `json:"volumeTrim,omitempty"`
 }
 
 // LauncherVolumeTrim is what a launcher's cache trimmer runs by: it reads the pod's volume every
 // IntervalSeconds, sweeps the cache roots when the used fraction reaches HighPercent, deletes
-// only what nothing has touched for MinAgeMinutes, and stops once the fraction is back under
-// LowPercent.
+// only entries in which nothing was modified for MinAgeMinutes, and stops deleting at the first
+// reading at or below LowPercent, if nothing stops it sooner (launcher's sweep).
 //
 // It holds no `enabled` member: a deployment that turns the trimmer off sends no member at all,
 // which is the same absence a daemon that does not know this work sends, so one rule in the
@@ -210,15 +212,18 @@ type LauncherVolumeTrim struct {
 	IntervalSeconds int `json:"intervalSeconds"`
 }
 
-// The ranges LauncherVolumeTrim's four numbers must be in. Both sides of the wire read them:
-// the daemon's loader refuses a file outside them (config's readVolumeTrim) and the launcher's
-// trimmer refuses a frame outside them a second time, on its own side of a connection this
-// design expects to carry version skew both ways (launcher's refusedTrimSettings). The two
-// checks are deliberate; their values are one source here, because a widening of the loader's
-// maximum the trimmer did not know would load cleanly and then be refused by every pod's
-// trimmer, which stays off for the life of its launcher process.
+// The ranges LauncherVolumeTrim's four numbers must be in. The launcher's trimmer reads all six
+// and refuses a frame outside them (launcher's refusedTrimSettings), on its own side of a
+// connection this design expects to carry version skew both ways. The daemon's loader refuses a
+// file outside them too (config's readVolumeTrim): it reads the three maxima here, and its
+// minimum is its own rule that each value be a positive integer, which is the minimum of 1 the
+// three take here. The two checks are deliberate, and the maxima are one source here, because a
+// widening of the loader's maximum the trimmer did not know would load cleanly and then be
+// refused by every pod's trimmer, which then sweeps nothing until a daemon sends settings inside
+// its ranges.
 //
-// A mark at 100 is a volume already full, the one fraction no sweep can reach down from.
+// A mark at 100 is a volume already full: a high mark there would start a sweep only once the
+// roles' writes were already failing for want of space.
 // VolumeIntervalMax is an hour, the longest wait between two looks that is still a trimmer: a
 // pod's caches can fill a volume inside one. VolumeMinAgeMax is seven days, a generous age for a
 // cache entry and far below where the arithmetic breaks: the sweep's cutoff is its start less
@@ -242,10 +247,11 @@ const (
 	VolumeIntervalMax = 3600
 )
 
-// LauncherVolumeSize is one directory two levels under the pod's volume root as the trimmer's
-// size walk measured it: the bytes under it, and of those the bytes whose newest modification
-// time is more than an hour old and more than a day old, which are what tell a reader a working
-// set from cold bytes.
+// LauncherVolumeSize is one target of the trimmer's size walk — a directory two levels under the
+// pod's volume root, or an immediate child of the root that holds no directory of its own — as
+// the walk measured it: the bytes of the regular files under it, and of those the bytes of the
+// files whose modification time is more than an hour old and more than a day old, which are what
+// tell a reader a working set from cold bytes.
 //
 // Refused names the first read at or under Path the kernel refused, and Refusals is how many of
 // the walk's reads there it refused in all. It is Path itself where the walk could read nothing
@@ -292,10 +298,11 @@ const (
 // UsedBytes and FreeBytes are the volume as the sweep's last reading saw it, and FreedBytes what
 // the sweep freed, read from the volume itself and never counted from the bytes unlinked: a
 // deletion the kernel has not accounted for yet is not space anything can use. StopReason is why
-// the sweep stopped, in the trimmer's own words, and RefusedReads names each process whose
-// /proc the kernel refused while the sweep ran.
+// the sweep stopped, in the trimmer's own words, and RefusedReads the /proc reads the kernel
+// refused that no report has carried yet, of this sweep and of earlier ones that sent no report:
+// one per process it could not read, or one for /proc itself when /proc could not be listed.
 //
-// Sizes are the directories two levels under the volume root and SizesAt when they were
+// Sizes are the size walk's targets (LauncherVolumeSize) and SizesAt when they were
 // measured: a report made between walks carries the last walk's numbers with that walk's time,
 // so a reader never reads a stale measurement as this sweep's. SizesPartial is a walk that ended
 // early, which is a walk its budget or the container's stop cut before it reached every

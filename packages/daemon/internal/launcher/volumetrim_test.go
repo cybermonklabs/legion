@@ -917,9 +917,9 @@ func TestAnAgeWhoseCutoffWouldOverflowNeverSweepsAnEntryWrittenMomentsAgo(t *tes
 //
 // The minutes are written out rather than read off shimwire.VolumeMinAgeMax, because a case
 // staged from the constant moves with it: with the maximum lowered, these settings are refused,
-// the trimmer stays off for the life of its launcher process and the week-old entry below is
-// still there, which is what turns this case red (refusedTrimSettings). It holds the maximum
-// from below alone: a maximum raised rather than lowered is held by the case below
+// the trimmer sweeps nothing on them and the week-old entry below is still there, which is what
+// turns this case red (refusedTrimSettings). It holds the maximum from below alone: a maximum
+// raised rather than lowered is held by the case below
 // (TestAnAgeAMinutePastTheGreatestIsRefusedAndSweepsNothing), since the overflow case above is
 // written at 2147483647 and says nothing until the maximum reaches 153,722,868.
 //
@@ -927,7 +927,8 @@ func TestAnAgeWhoseCutoffWouldOverflowNeverSweepsAnEntryWrittenMomentsAgo(t *tes
 // min_age_minutes (config's readVolumeTrim) and its own cases are written from it (config's
 // volume_trim_test.go, "an age at the maximum" and "an age past the maximum"), because a
 // maximum widened on one side alone would load cleanly and then be refused by every pod's
-// trimmer, which stays off for the life of its launcher process (shimwire.VolumeMinAgeMax).
+// trimmer, which then sweeps nothing until a daemon sends settings inside its ranges
+// (shimwire.VolumeMinAgeMax).
 func TestASweepAtTheGreatestMinimumAgeDeletesPastItAndKeepsInsideIt(t *testing.T) {
 	// Seven days in minutes, which is shimwire.VolumeMinAgeMax written out, with a minute
 	// either side of it.
@@ -999,7 +1000,7 @@ func TestASweepAtTheGreatestMinimumAgeDeletesPastItAndKeepsInsideIt(t *testing.T
 // The loader bounds the same key by the same constant (config's readVolumeTrim, and "an age
 // past the maximum" in its volume_trim_test.go), so one value is refused on both sides of the
 // wire: a maximum widened on one side alone would load cleanly and then be refused by every
-// pod's trimmer, which stays off for the life of its launcher process.
+// pod's trimmer, which then sweeps nothing until a daemon sends settings inside its ranges.
 func TestAnAgeAMinutePastTheGreatestIsRefusedAndSweepsNothing(t *testing.T) {
 	// Seven days and a minute: shimwire.VolumeMinAgeMax + 1 written out.
 	const pastGreatest = 10081
@@ -3200,9 +3201,10 @@ func TestTheWorstCaseIsTwoSweepsAndThenOneEveryEleventhInterval(t *testing.T) {
 
 // A panic in the trimmer's own work is recovered and logged with its stack, the interval is
 // passed over, and three in a row stop the trimmer for the life of the launcher process with
-// one last report saying so. The recovery is a departure from this daemon's practice, which has
-// none in any production path, because this goroutine runs in the process that is PID 1 of the
-// roles container: its crash costs six live roles their round over a cache sweep.
+// one last report saying so. The recovery is a departure from this daemon's practice, whose
+// production code recovers no other panic of its own work (leakguard's compile recovers one only
+// to turn regexp.MustCompile's into an error), because this goroutine runs in the process that is
+// PID 1 of the roles container: its crash costs six live roles their round over a cache sweep.
 func TestAPanicIsRecoveredAndThreeInARowSwitchTheTrimmerOff(t *testing.T) {
 	f := newTrimFixture(t, 1)
 	f.setOnRead(func(call int) {
@@ -3300,8 +3302,8 @@ func TestAPanicIsRecoveredAndThreeInARowSwitchTheTrimmerOff(t *testing.T) {
 // R1 has the trimmer, "after three in a row", stay off "and send one last report saying so", and
 // R2 has it hold its report while the bound connection is down "until that connection is up
 // again". So the report of a trimmer that switched itself off with no connection up is held, and
-// sent once a connection takes it; the trimmer's loop returns only then. An answer with no
-// settings in the meantime discards it, as it discards any report the trimmer holds.
+// sent once a connection takes it; the trimmer's loop returns then, or on the container's stop,
+// or on an answer with no settings, which discards it as it discards any report the trimmer holds.
 func TestTheSwitchedOffReportIsHeldUntilTheConnectionIsUp(t *testing.T) {
 	switchOffDisconnected := func(t *testing.T) (*trimFixture, *trimmer, <-chan struct{}) {
 		t.Helper()
@@ -3576,8 +3578,9 @@ func TestOneReportPerSweepThatEndsAboveTheLowMarkAndNoneWhenItReachesIt(t *testi
 
 // A report the connection refuses is held and sent on the next attempt, as the launcher's
 // bundleRestore holds its own confirmation: a report the daemon never got is a volume nobody
-// was told about. Settings that stop the trimmer discard it, because the pod is being told to
-// run no trimmer at all.
+// was told about. An answer with no settings discards it, because the daemon that sent that
+// answer has no case for a report; settings the trimmer refuses keep it held and try it
+// (awaitSettings).
 func TestTheTrimmerHoldsAReportItsSendRefused(t *testing.T) {
 	f := newTrimFixture(t, 25) // a hundred entries, ten points: the volume ends below the high mark
 	f.useVolume(f.modelled(90))

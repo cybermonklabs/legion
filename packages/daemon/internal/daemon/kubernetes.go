@@ -342,9 +342,10 @@ func sandboxOptions(cfg config.Config, k config.Kubernetes, project, dispatchTok
 		return sandbox.Options{}, err
 	}
 	// The trimmer's settings reach an accepted issue-pod launcher on the answer to its hello
-	// (sandbox Runtime.LauncherResolver). Nil is what the launcher reads as "run no trimmer", so
-	// a deployment that turned `runtime.kubernetes.volume_trim` off and a daemon built before
-	// this work write the same ack (shimwire.LauncherHelloAck.VolumeTrim, INFRA-2009).
+	// (sandbox Runtime.LauncherResolver). Nil is what the launcher reads as "no settings", on
+	// which its trimmer reads and deletes nothing, so a deployment that turned
+	// `runtime.kubernetes.volume_trim` off and a daemon built before this work write the same ack
+	// (shimwire.LauncherHelloAck.VolumeTrim, INFRA-2009).
 	var volumeTrim *shimwire.LauncherVolumeTrim
 	if t := k.VolumeTrim; t.Enabled {
 		volumeTrim = &shimwire.LauncherVolumeTrim{
@@ -542,11 +543,12 @@ func sandboxRuntime(rc *rest.Config, opts sandbox.Options, repos func() []ghrepo
 		// bundle is sent or that pod is refused as no newer than the save, and nothing is
 		// answered for that bundle again.
 		opts.SavedWorkspaceBundle, opts.WorkspaceBundleRestored = st.TakeWorkspaceBundleForRestore, st.DeleteRestoredWorkspaceBundle
-		// The cache trimmer's own half: every sweep of an issue pod's volume that left it above
-		// its low mark reaches the daemon through this, and the daemon turns it into the one
-		// fact that can tell the issue's architect (volumeTrimReports.report). The workflow is
-		// what applies that fact, and it opens after this factory is built, so the pair the
-		// apply needs is held in reports and filled when it does (plan.volumeReports).
+		// The cache trimmer's own half: every report a pod's trimmer sends — of a sweep that
+		// left the volume above its low mark, or of the trimmer switching itself off — reaches
+		// the daemon through this, and the daemon turns it into the one fact that can tell the
+		// issue's architect (volumeTrimReports.report). The workflow is what applies that fact,
+		// and it opens after this factory is built, so the pair the apply needs is held in
+		// reports and filled when it does (plan.volumeReports).
 		opts.VolumeReported = reports.report
 		// The shared public leak check each pod's launcher is pushed before any role of the pod
 		// starts, read with the implement App's read lease on the check's owner (leakCheckToken);
@@ -604,18 +606,18 @@ func (v *volumeTrimReports) bind(pool *store.Pool, handlers []intake.Handler) {
 // report applies one sweep of issue's pod as one intake fact (runtime.VolumeReported). It runs on
 // the launcher's own frame loop under that loop's bounded context, so an apply that cannot be
 // made is returned to the launcher session, which logs it and drops the report; the trimmer's
-// next sweep reports the same volume. Every launcher's frame loop runs beside the others and
-// beside the daemon's own loops, so each report applies under a hold mark of its own
-// (store.ForConcurrentWorker): this is a fact source, and a fact source marks its context where
-// it starts (store.ErrNestedAcquire).
+// next sweep that ends above the low mark reports the volume again, and a dropped report of a
+// trimmer that switched itself off is not sent again. Every launcher's frame loop runs beside
+// the others and beside the daemon's own loops, so each report applies under a hold mark of its
+// own (store.ForConcurrentWorker): this is a fact source, and a fact source marks its context
+// where it starts (store.ErrNestedAcquire).
 //
-// The event id is unique per report and never per sweep: the launcher sends one report per
-// sweep, but nothing in the frame numbers them, and ApplyFact applies one id exactly once — an
-// id built from the report's own contents would silently drop the second report of an episode
-// whose numbers had not moved, which is precisely the pod that is full and not changing. So the
-// id carries the daemon's own receipt — the issue, the pod, the trimmer and the episode — with
-// the random tail every fact this daemon mints an id for carries (api.requestFactID), which is
-// unique across processes as well as within one.
+// The event id is unique per report and never per sweep: nothing in the frame numbers a report,
+// and ApplyFact applies one id exactly once — an id built from the report's own contents would
+// silently drop the second report of an episode whose numbers had not moved, which is precisely
+// the pod that is full and not changing. So the id carries the daemon's own receipt — the issue,
+// the pod, the trimmer and the episode — with a random tail, as api.requestFactID gives each of
+// the API's own requests, which is unique across processes as well as within one.
 func (v *volumeTrimReports) report(ctx context.Context, issue, podUID string, report shimwire.LauncherVolumeReport) error {
 	if v.pool == nil || len(v.handlers) == 0 {
 		// Nothing bound the holder to the workflow, so there is no fact path to apply the report

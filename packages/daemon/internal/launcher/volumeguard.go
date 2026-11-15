@@ -1,8 +1,11 @@
 package launcher
 
 import (
+	"bufio"
+	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -19,7 +22,8 @@ import (
 // a role's work: the pod gives six roles one volume, the roles write into the same four cache
 // roots, and nothing on the volume says which role owns what.
 
-// usedPaths is what every process of the pod is using, read once.
+// usedPaths is what every process of the pod is using under the roots the sweep asks about,
+// read once.
 //
 // The paths are one sorted list tested by prefix rather than a set tested per entry: a sweep
 // asks about thousands of cache entries, and the pod's processes hold thousands of paths, so the
@@ -28,11 +32,14 @@ import (
 // on a directory and not on a file in it, and because an executing binary's own path is the
 // entry (Covers).
 type usedPaths struct {
-	paths   []string // sorted
-	Refused []string // one entry per process whose /proc the kernel refused, naming it
+	paths []string // sorted
+	// Refused is one entry per process whose /proc the kernel refused, naming it, or one entry
+	// naming /proc itself when the list of processes could not be read at all.
+	Refused []string
 }
 
-// readUsedPaths reads procRoot, leaving the sweep's own processes out.
+// readUsedPaths reads procRoot, leaving the sweep's own processes out, and keeps the paths that
+// are one of under or lie below one.
 //
 // Every process is read through six entries, because no one of them is enough. An open file
 // descriptor misses a running program's own binary and every library it mapped, which is exactly
@@ -41,6 +48,13 @@ type usedPaths struct {
 // `task/<tid>/cwd` name a directory a build is running in, which holds no descriptor either, and
 // a process's threads can sit in different directories from the process's own. `root` names a
 // directory a chrooted process is confined to.
+//
+// under is the reclaimable roots, which the trimmer passes, and a path anywhere else is dropped
+// as it is read: the guard is asked only whether a root is held (Holds) and whether an entry
+// under a root is used (Covers), and no path outside every root answers either. The set is read
+// again every second for the whole of a sweep, and what a process maps and holds open is the
+// role's to choose, so the pass keeps no more of it than those two questions can match: the
+// libraries every process maps and the files of a workspace are none of them.
 //
 // The sweep's own processes are left out, and that is why own is an argument rather than read
 // here: listing a root and removing an entry both hold a handle under a root, and a rule that
@@ -62,7 +76,7 @@ type usedPaths struct {
 // this pass read it is no refusal — its paths are gone with it — so ENOENT and ESRCH are passed
 // over. At most one refusal is recorded per process: a process whose /proc directory the kernel
 // refuses refuses every entry of it, and six lines would say one thing.
-func readUsedPaths(procRoot string, own ...int) usedPaths {
+func readUsedPaths(procRoot string, under []string, own ...int) usedPaths {
 	used := usedPaths{}
 	entries, err := os.ReadDir(procRoot)
 	if err != nil {
@@ -73,12 +87,13 @@ func readUsedPaths(procRoot string, own ...int) usedPaths {
 		used.Refused = append(used.Refused, fmt.Sprintf("%s: %v", procRoot, err))
 		return used
 	}
+	lines := bufio.NewReaderSize(nil, procMapsReadBytes)
 	for _, entry := range entries {
 		pid, err := strconv.Atoi(entry.Name())
 		if err != nil || slices.Contains(own, pid) {
 			continue
 		}
-		process := procProcess{dir: filepath.Join(procRoot, entry.Name()), pid: pid}
+		process := procProcess{dir: filepath.Join(procRoot, entry.Name()), pid: pid, under: under, lines: lines}
 		process.read()
 		used.paths = append(used.paths, process.paths...)
 		if process.refusal != "" {
@@ -89,6 +104,19 @@ func readUsedPaths(procRoot string, own ...int) usedPaths {
 	used.paths = slices.Compact(used.paths)
 	return used
 }
+
+const (
+	// procMapsReadBytes is the buffer one pass reads every process's maps through, a line at a
+	// time, and the most of one line it holds (mapped). A line is five short fields and a path,
+	// and a path whose line is longer than this is far deeper than any entry the sweep asks
+	// about: an entry is one name in a root or in a shard of one, and a name is at most NAME_MAX,
+	// 255 bytes.
+	procMapsReadBytes = 4096
+	// procNamesBatch is how many names of a process's fd or task directory are read at a time
+	// (eachName), so that a process holding a great many descriptors costs the pass a batch of
+	// names at a time rather than a list of all of them.
+	procNamesBatch = 256
+)
 
 // Covers is whether any process holds path itself or something under it.
 //
@@ -120,11 +148,14 @@ func (u usedPaths) Holds(path string) bool {
 	return held
 }
 
-// procProcess is one process of the pod as this pass reads it: the paths it was found to use and
-// the first /proc read of it the kernel refused.
+// procProcess is one process of the pod as this pass reads it: the paths it was found to use
+// under the roots it is given, and the first /proc read of it the kernel refused. lines is the
+// pass's one reader its maps are read through.
 type procProcess struct {
 	dir     string
 	pid     int
+	under   []string
+	lines   *bufio.Reader
 	paths   []string
 	refusal string
 }
@@ -153,13 +184,10 @@ func (p *procProcess) link(what, path string) {
 // the reading of its link is gone rather than refused (refuse).
 func (p *procProcess) descriptors() {
 	dir := filepath.Join(p.dir, "fd")
-	entries, err := os.ReadDir(dir)
-	if err != nil {
+	if err := eachName(dir, func(name string) {
+		p.link("fd/"+name, filepath.Join(dir, name))
+	}); err != nil {
 		p.refuse("fd", err)
-		return
-	}
-	for _, entry := range entries {
-		p.link("fd/"+entry.Name(), filepath.Join(dir, entry.Name()))
 	}
 }
 
@@ -169,29 +197,66 @@ func (p *procProcess) descriptors() {
 // stepped over rather than the line split, and the anonymous mappings ([heap], [stack], an empty
 // field) are left out by the absolute-path rule in add.
 //
-// The body is cut line by line rather than split into one: the used-path set is read again every
-// second for the whole of a sweep, and a browser or a node process maps thousands of regions,
-// nearly all anonymous and dropped at once. Cutting leaves every line a slice of the one buffer,
-// so the pass allocates that buffer and the paths it keeps and nothing per line.
+// The file is read a line at a time through the pass's one buffer, and a line becomes a string
+// only when its path, as the kernel wrote it, is one of the roots or lies under one: the set is
+// read again every second for the whole of a sweep, and a browser or a node process maps
+// thousands of regions, nearly all of them libraries and anonymous memory that no root holds. A
+// line longer than the buffer (procMapsReadBytes) is taken as far as the buffer holds it, cut
+// back to its last whole name, and the rest of it is read past: that much of a path already lies
+// under every entry the whole path lies under, since an entry's path is far shorter, so the guard
+// answers for it as it would for the whole path, and a role that maps a file deep in a tree
+// costs the pass no more than the buffer.
 func (p *procProcess) mapped() {
-	body, err := os.ReadFile(filepath.Join(p.dir, "maps"))
+	file, err := os.Open(filepath.Join(p.dir, "maps"))
 	if err != nil {
 		p.refuse("maps", err)
 		return
 	}
-	for rest := string(body); rest != ""; {
-		line, after, _ := strings.Cut(rest, "\n")
-		rest = after
-		for range 5 {
-			line = strings.TrimLeft(line, " \t")
-			end := strings.IndexAny(line, " \t")
-			if end < 0 {
-				line = ""
-				break
-			}
-			line = line[end:]
+	defer func() { _ = file.Close() }()
+	p.lines.Reset(file)
+	defer p.lines.Reset(nil)
+	for {
+		line, err := p.lines.ReadSlice('\n')
+		long := errors.Is(err, bufio.ErrBufferFull)
+		p.mappedLine(line, long)
+		for errors.Is(err, bufio.ErrBufferFull) {
+			_, err = p.lines.ReadSlice('\n')
 		}
-		p.add(strings.TrimLeft(line, " \t"))
+		switch {
+		case errors.Is(err, io.EOF):
+			return
+		case err != nil:
+			p.refuse("maps", err)
+			return
+		}
+	}
+}
+
+// mappedLine adds the path of one line of maps, which is the buffer's own bytes and is read
+// before the buffer is read into again. cut is a line longer than the buffer, whose path is kept
+// up to its last whole name (mapped).
+func (p *procProcess) mappedLine(line []byte, cut bool) {
+	if end := len(line) - 1; end >= 0 && line[end] == '\n' {
+		line = line[:end]
+	}
+	for range 5 {
+		line = bytes.TrimLeft(line, " \t")
+		end := bytes.IndexAny(line, " \t")
+		if end < 0 {
+			return
+		}
+		line = line[end:]
+	}
+	path := bytes.TrimLeft(line, " \t")
+	if cut {
+		at := bytes.LastIndexByte(path, '/')
+		if at <= 0 {
+			return
+		}
+		path = path[:at]
+	}
+	if p.keepsBytes(path) {
+		p.add(string(path))
 	}
 }
 
@@ -199,25 +264,62 @@ func (p *procProcess) mapped() {
 // thread may chdir on its own, and a program's worker threads routinely do.
 func (p *procProcess) threads() {
 	dir := filepath.Join(p.dir, "task")
-	entries, err := os.ReadDir(dir)
-	if err != nil {
+	if err := eachName(dir, func(name string) {
+		p.link("task/"+name+"/cwd", filepath.Join(dir, name, "cwd"))
+	}); err != nil {
 		p.refuse("task", err)
-		return
-	}
-	for _, entry := range entries {
-		p.link("task/"+entry.Name()+"/cwd", filepath.Join(dir, entry.Name(), "cwd"))
 	}
 }
 
-// add keeps an absolute path and drops everything else: a descriptor on a pipe, a socket or an
-// anonymous inode reads as `pipe:[12345]` and names no file. A target the kernel marks
-// ` (deleted)` is kept as it reads, and so matches nothing the sweep lists, which is right: the
-// name is already unlinked, so no entry of that name is there to protect.
+// eachName calls each for every name in dir, read procNamesBatch names at a time.
+func eachName(dir string, each func(name string)) error {
+	file, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = file.Close() }()
+	for {
+		names, err := file.Readdirnames(procNamesBatch)
+		for _, name := range names {
+			each(name)
+		}
+		switch {
+		case errors.Is(err, io.EOF):
+			return nil
+		case err != nil:
+			return err
+		}
+	}
+}
+
+// add keeps an absolute path that is one of the roots or lies under one, and drops everything
+// else: a descriptor on a pipe, a socket or an anonymous inode reads as `pipe:[12345]` and names
+// no file, and a file outside every root is none the guard is asked about (readUsedPaths). A
+// target the kernel marks ` (deleted)` is kept as it reads: it is the path of no entry, since
+// that name is already unlinked, and it is a use of every entry it lies under, whose tree the
+// process still holds an inode of.
 func (p *procProcess) add(target string) {
 	if !strings.HasPrefix(target, "/") {
 		return
 	}
-	p.paths = append(p.paths, filepath.Clean(target))
+	target = filepath.Clean(target)
+	for _, root := range p.under {
+		if strings.HasPrefix(target, root) && (len(target) == len(root) || target[len(root)] == '/') {
+			p.paths = append(p.paths, target)
+			return
+		}
+	}
+}
+
+// keepsBytes is whether path, a line's path as the kernel wrote it, is one of the roots or lies
+// under one: add's test, asked of the line's own bytes before any string is made of them.
+func (p *procProcess) keepsBytes(path []byte) bool {
+	for _, root := range p.under {
+		if len(path) >= len(root) && string(path[:len(root)]) == root && (len(path) == len(root) || path[len(root)] == '/') {
+			return true
+		}
+	}
+	return false
 }
 
 // refuse records the first read of this process the kernel refused. A process that exited under
@@ -247,7 +349,12 @@ func (p *procProcess) refuse(what string, err error) {
 // (walkEntries), where fs.WalkDir over a Root's FS named each entry by its path below the root
 // and had os.Root resolve every element of it but the last with the open this kernel follows a
 // link under (volumedir.go).
-func newestModTime(dir *dirHandle, name string) (time.Time, error) {
+//
+// halt is asked before every directory of the tree is opened, and the first error it answers
+// ends the walk and is this one's: the listing passes the sweep's three endings (trimmer.list),
+// since one entry a role made deep or wide would otherwise hold the listing, and the sweep
+// with it, past the budget and the container's stop for as long as its walk takes.
+func newestModTime(dir *dirHandle, name string, halt func() error) (time.Time, error) {
 	info, err := dir.Lstat(name)
 	if err != nil {
 		return time.Time{}, err
@@ -256,7 +363,7 @@ func newestModTime(dir *dirHandle, name string) (time.Time, error) {
 	if !info.IsDir() {
 		return newest, nil
 	}
-	err = walkEntries(dir, name, func(info os.FileInfo) error {
+	err = walkEntries(dir, name, halt, func(info os.FileInfo) error {
 		if at := info.ModTime(); at.After(newest) {
 			newest = at
 		}
@@ -272,6 +379,11 @@ func newestModTime(dir *dirHandle, name string) (time.Time, error) {
 // all the pre-delete re-read needs: a second full walk of a go-build tree would cost as much as
 // the listing. It reads through dir's handle and follows no symbolic link, as newestModTime
 // above does and for the reasons given there.
+//
+// Nothing halts it part way. It is one of the reads of one entry's removal (trimmer.remove),
+// and an ending of the sweep is taken at the boundary between two entries and never inside
+// one, as the removal itself is never interrupted; the tree it reads is one the listing walked
+// whole inside the same budget moments before.
 func newerThan(dir *dirHandle, name string, cutoff time.Time) (bool, error) {
 	info, err := dir.Lstat(name)
 	if err != nil {
@@ -284,7 +396,7 @@ func newerThan(dir *dirHandle, name string, cutoff time.Time) (bool, error) {
 		return false, nil
 	}
 	newer := false
-	err = walkEntries(dir, name, func(info os.FileInfo) error {
+	err = walkEntries(dir, name, nil, func(info os.FileInfo) error {
 		if info.ModTime().After(cutoff) {
 			newer = true
 			return errWalkDone
@@ -301,14 +413,23 @@ func newerThan(dir *dirHandle, name string, cutoff time.Time) (bool, error) {
 // and stops where a visit answers errWalkDone. Every level is opened by one name in the level
 // above and listed through that descriptor, and the time and the kind a visit reads are the
 // lstat that listing made through it (dirHandle), so a link inside a tree is read as the link
-// it is and the tree it points into is never walked, exactly as filepath.WalkDir read it.
+// it is and the tree it points into is never walked, exactly as filepath.WalkDir read it. halt,
+// where there is one, is asked before each directory is opened, and the walk ends with the
+// first error it answers.
 //
-// It holds one handle per level of the tree, which is two descriptors, until that level is
-// done. A cache entry is shallow — Go's own build trees and bun's install cache are two or
-// three levels — and the pod's limit is 1048576 descriptors (`ulimit -n`, measured in an issue
-// pod of this deployment at 2026-11-12T06:30Z); a level the kernel refuses for that or any
-// other reason is the error the guard answers with, and the entry is passed over.
-func walkEntries(dir *dirHandle, name string, visit func(info os.FileInfo) error) error {
+// It holds one handle per level of the tree, which is two descriptors and the level's listing,
+// until that level is done, and no path: a handle keeps the one above it and its own name
+// (dirHandle.path). A cache entry is shallow — Go's own build trees and bun's install cache are
+// two or three levels — but a role may make one of any depth, and the pod's limit is 1048576
+// descriptors (`ulimit -n`, measured in an issue pod of this deployment at 2026-11-12T06:30Z);
+// a level the kernel refuses for that or any other reason is the error the guard answers with,
+// and the entry is passed over.
+func walkEntries(dir *dirHandle, name string, halt func() error, visit func(info os.FileInfo) error) error {
+	if halt != nil {
+		if err := halt(); err != nil {
+			return err
+		}
+	}
 	under, err := dir.open(name)
 	if err != nil {
 		return err
@@ -321,18 +442,20 @@ func walkEntries(dir *dirHandle, name string, visit func(info os.FileInfo) error
 	for _, entry := range entries {
 		info, err := entry.Info()
 		if err != nil {
-			// The entry was removed between the listing and the stat: a cache is a live
-			// directory, and an entry that is gone holds nothing back.
+			// Not met under go1.27.3: an entry listed through a handle carries the lstat its
+			// listing made, and Info answers that with no error (dirHandle.ReadDir). Were it
+			// to fail, a name gone since the listing holds nothing back, and any other error
+			// names the entry by its path on the volume, quoted, as every other read here does.
 			if errors.Is(err, fs.ErrNotExist) {
 				continue
 			}
-			return err
+			return under.named(err, entry.Name())
 		}
 		if err := visit(info); err != nil {
 			return err
 		}
 		if entry.IsDir() {
-			if err := walkEntries(under, entry.Name(), visit); err != nil {
+			if err := walkEntries(under, entry.Name(), halt, visit); err != nil {
 				return err
 			}
 		}

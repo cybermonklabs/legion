@@ -401,20 +401,21 @@ type Notice struct {
 // (shimwire.VolumeEpisodeFirst, VolumeEpisodeRecovery, VolumeEpisodeRise). UsedBytes and
 // FreeBytes are the volume as the sweep's last reading saw it and FreedBytes what the sweep
 // freed, read from the volume and never counted from the bytes unlinked. StopReason is why the
-// sweep stopped, in the trimmer's own words, and RefusedReads names each process whose /proc the
-// kernel refused while it ran.
+// sweep stopped, in the trimmer's own words, and RefusedReads the /proc reads the kernel refused
+// that no report had carried yet, of this sweep and of earlier ones that sent no report: one per
+// process the trimmer could not read, or one for /proc itself when /proc could not be listed.
 //
-// Sizes are the directories two levels under the volume root with their two age splits, SizesAt
-// when they were measured — a report made between walks carries the last walk's numbers with
-// that walk's time — SizesPartial a walk its budget or the container's stop cut before it reached
-// every directory, which is the one way a walk ends early, and SizesMissing every directory the
-// walk did not measure at all: one it could not open or list, and, of a walk that was cut, the
-// one it was cut in and every one after it. A directory the walk could read only in part is a
-// size that names the read the kernel refused (VolumeSize). Faults are the panics the trimmer
-// recovered from, each with its stack, and SwitchedOff the report no sweep produces: the trimmer
-// has stopped itself after three faults, and the daemon sends that one whatever its bounds stand
-// at, since the protection this notice exists for has stopped on exactly the pod that has been
-// reporting.
+// Sizes are the size walk's targets with their two age splits (VolumeSize), SizesAt when they
+// were measured — a report made between walks carries the last walk's numbers with that walk's
+// time — SizesPartial a walk its budget or the container's stop cut before it reached every
+// directory, which is the one way a walk ends early, and SizesMissing every directory the walk
+// did not measure at all: one it could not open or list, and, of a walk that was cut, the one it
+// was cut in and every one after it. A directory the walk could read only in part is a size that
+// names the read the kernel refused (VolumeSize). Faults are the panics the trimmer recovered
+// from, each with its stack, and SwitchedOff the report no sweep produces: the trimmer has
+// stopped itself after three faults in a row, and the daemon sends that one whatever its bounds
+// stand at, since the protection this notice exists for has stopped on exactly the pod that has
+// been reporting.
 //
 // The four Omitted counts are how many entries the launcher's own bound left out of each list,
 // which it cuts because a path two levels under /legion is a name a role of the pod chose and a
@@ -446,14 +447,15 @@ type VolumeNearFull struct {
 	SwitchedOff         bool         `json:"switchedOff,omitempty"`
 }
 
-// VolumeSize is one directory two levels under the pod's volume root as the trimmer's size walk
-// measured it: the bytes under it, and of those the bytes whose newest modification time is more
-// than an hour old and more than a day old, which are what tell a reader a working set from cold
-// bytes. Refused names the first read at or under Path the kernel refused — Path itself where
-// the walk could read nothing of it, Path/<name> for a name in it and Path/.../<name> (depth N)
-// for a name N levels below it — and Refusals is how many of the walk's reads there it refused in
-// all: a size that carries them is a lower bound of the directory's own, never the whole of it
-// (shimwire.LauncherVolumeSize).
+// VolumeSize is one target of the trimmer's size walk — a directory two levels under the pod's
+// volume root, or an immediate child of the root that holds no directory of its own — as the
+// walk measured it: the bytes of the regular files under it, and of those the bytes of the files
+// whose modification time is more than an hour old and more than a day old, which are what tell
+// a reader a working set from cold bytes. Refused names the first read at or under Path the
+// kernel refused — Path itself where the walk could read nothing of it, Path/<name> for a name in
+// it and Path/.../<name> (depth N) for a name N levels below it — and Refusals is how many of the
+// walk's reads there it refused in all: a size that carries them is a lower bound of the
+// directory's own, never the whole of it (shimwire.LauncherVolumeSize).
 type VolumeSize struct {
 	Path          string `json:"path"`
 	Bytes         int64  `json:"bytes"`

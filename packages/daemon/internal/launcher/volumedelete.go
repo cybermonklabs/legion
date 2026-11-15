@@ -207,8 +207,9 @@ type containedRemover struct {
 
 // startContainedRemover starts the deleter for one sweep: the child in its own user, mount, PID
 // and IPC namespaces (roleNamespaceAttr, the same clone a role generation is started with),
-// holding the descriptor of every directory the listing opened and nothing else of the volume.
-// It starts through guard, as the test database's script does (runTestPG).
+// handed the descriptor of every directory the listing opened and no other descriptor of the
+// volume, though /legion stays mounted in its namespace as the container mounted it
+// (containDeletions). It starts through guard, as the test database's script does (runTestPG).
 func startContainedRemover(guard *pidGuard, cover RoleCover, dirs []*sweepDir) (*containedRemover, error) {
 	attr, err := roleNamespaceAttr()
 	if err != nil {

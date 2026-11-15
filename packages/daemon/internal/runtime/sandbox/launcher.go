@@ -592,10 +592,10 @@ func (d *launchers) restoreReported(s *launcherSession, report shimwire.Launcher
 
 // volumeReported hands the daemon one sweep of the pod's volume as that pod's cache trimmer
 // reported it (shimwire.LauncherVolumeReport). The launcher sends one unasked per sweep that
-// ended with the volume still above its low mark, and one when the trimmer has switched itself
-// off; a sweep that reached the low mark sends none, so every frame that arrives here is one the
-// issue's architect may need to hear about, and the daemon's own bounds decide which of them it
-// is told (workflow's volumeNearFull).
+// ended with the volume still above its low mark, unless the settings stopped that sweep, and
+// one when the trimmer has switched itself off; a sweep that reached the low mark sends none, so
+// every frame that arrives here is one the issue's architect may need to hear about, and the
+// daemon's own bounds decide which of them it is told (workflow's volumeNearFull).
 //
 // The pod a report is of is the one this connection authenticated for, so the uid is the
 // session's and never the report's: a launcher cannot name another pod's volume. The trimmer's
@@ -604,10 +604,12 @@ func (d *launchers) restoreReported(s *launcherSession, report shimwire.Launcher
 //
 // A store that does not answer is logged and the report is dropped here. The launcher cannot
 // hold it again once the daemon has read it — nothing acknowledges this frame — and it is not
-// asked to: the trimmer goes on sweeping, and the next sweep's report carries the same volume,
-// the same episode and the same trimmer, so what a dropped report would have said reaches the
-// architect from the one after it. That is the same bargain restoreReported makes with its
-// delete, for the same reason.
+// asked to: the trimmer goes on sweeping, and its next sweep that ends above the low mark reports
+// the volume again under the same trimmer, and under the same episode unless a recovery or a rise
+// raised it in between, so what a dropped sweep's report would have said reaches the architect
+// from a later one, within the notice bounds. A dropped report of a trimmer that switched itself
+// off is not sent again: that trimmer sends nothing more. That is the same bargain
+// restoreReported makes with its delete, for the same reason.
 //
 // A report the frame's own rule refuses — one naming no trimmer, which is the identity the
 // notice bounds count a restarted roles container apart by, and one whose episode is below the 1

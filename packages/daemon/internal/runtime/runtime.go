@@ -264,10 +264,12 @@ type WorkspaceBundleRestored func(ctx context.Context, issue string, release int
 //
 // A store that does not answer is logged and the report is dropped there. The launcher cannot
 // hold it again once the daemon has read it, and it is not asked to: the trimmer sweeps on, and
-// the next sweep's report carries the same volume, the same episode and the same trimmer, so the
-// state a dropped report would have told reaches the architect from the one after it
-// (internal/runtime/sandbox's volumeReported, as restoreReported's own comment says of its
-// delete).
+// the next sweep that ends above the low mark reports the volume again, under the same trimmer
+// and the episode it is then in, so the state a dropped report would have told reaches the
+// architect from a later one, as far as the notice bounds let that one through (workflow's
+// volumeNoticeHeldBy; internal/runtime/sandbox's volumeReported, as restoreReported's own
+// comment says of its delete). The report that the trimmer switched itself off is its last, and
+// one dropped here is not sent again.
 type VolumeReported func(ctx context.Context, issue, podUID string, report shimwire.LauncherVolumeReport) error
 
 // RegistrationDeadline is the registration deadline's base Boot×RegistrationIntervals bound plus
@@ -436,23 +438,24 @@ type Observation struct {
 	// for the reason Displaced is: Detail is prose for an operator and nothing else.
 	OutOfMemory bool
 	// PodEnd is the pod's own reason for the end and the kubelet's message with it, as
-	// `<reason>: <message>` and empty where the pod carries neither: `Evicted: The node was low
-	// on resource: ephemeral-storage. ...` is the one that costs an issue its work. It is a field
-	// rather than a shape of Detail for the reason Displaced is: Detail is prose for an operator
-	// and nothing else. The Detail the Sandbox runtime writes beside a pod end holds this same
-	// reason and message, and after them a tail of the role's log and the container's, over many
-	// lines and the role's own in words a role chose: it reads a container's own log to its
-	// logTailBytes and the issue pod's one container's, which every role writes to, to its
-	// sharedLogBytes, and quotes at most logTailLines of the role's lines and as many of the
-	// container's own from what it read.
+	// `<reason>: <message>`, the reason alone where there is no message, and empty where the pod
+	// carries no reason: `Evicted: The node was low on resource: ephemeral-storage. ...` is the
+	// one that costs an issue its work. It is a field rather than a shape of Detail for the
+	// reason Displaced is: Detail is prose for an operator and nothing else. The Detail the
+	// Sandbox runtime writes beside a pod end holds this same reason and message, and after them
+	// a tail of the role's log and the container's, over many lines and the role's own in words
+	// a role chose: it reads a container's own log to its logTailBytes and the issue pod's one
+	// container's, which every role writes to, to its sharedLogBytes, and quotes at most
+	// logTailLines of the role's lines and as many of the container's own from what it read.
 	//
 	// Detail is kept whole on the claim, behind its verdict (supervise.Claim.LastDeathCause), and
-	// reaches a notice two ways: as the `death` of the failure record a claim that failed with a
-	// cause carries (workflow's noticeFailure), and as part of the worker-died's reason on the two
-	// paths that carry no failure record — the tree architect's, and a held phase's whose fact
-	// names no cause — for a death with no pod end alone (workflow's deathReason). Where there is
-	// one, that reason names this field in Detail's place: the pod's cause once, on one line, and
-	// nothing of the log.
+	// reaches a notice two ways: whole, as the `death` of the failure record a claim that failed
+	// with a cause carries (workflow's noticeFailure), and as its first line alone, quoted and
+	// without the header of the log tail, in the worker-died's reason on the two paths that carry
+	// no failure record — the tree architect's, and a held phase's whose fact names no cause —
+	// for a death with no pod end alone (workflow's deathReason). Where there is one, that reason
+	// names this field in Detail's place: the pod's cause once, on one line, and nothing of the
+	// log.
 	//
 	// It is bounded at PodEndRunes, which is a kubelet message with room to spare: the eviction
 	// message above is 120 runes, and the longest the kubelet writes names each resource it

@@ -211,11 +211,13 @@ type Claim struct {
 	// failure the workflow is told name the cause a role never chose, where Failure alone says
 	// only that the relaunch budget ran out.
 	//
-	// It is written where the death is recorded (died) and cleared before a retry exactly as
-	// Failure is, so a claim that comes back and later fails for something else carries nothing
-	// of the earlier end. It is durable for the one reason Failure is: the deaths a claim is
-	// charged can run out hours after the end that started them, with a daemon restart in
-	// between, and the restarted daemon reports the failure from the claim it read back.
+	// It is written where the death is recorded (died) and cleared with Failure at each launch
+	// (launchNow), so a claim that comes back and later fails for something else carries nothing
+	// of the earlier end. The retry that admits a failed claim again clears Failure and not this
+	// (retry), so a retried claim whose launch has not run yet still carries the pod end of its
+	// last death. It is durable for the one reason Failure is: the deaths a claim is charged can
+	// run out hours after the end that started them, with a daemon restart in between, and the
+	// restarted daemon reports the failure from the claim it read back.
 	PodEnd string
 	// FailureCause is the one word for what failed the claim, written beside that sentence by the
 	// site that failed it (fail), and FailedAt is when it did. Both are cleared where Failure is,
@@ -2101,8 +2103,8 @@ func (m *Machine) launchNow(ctx context.Context, charged, exempt bool) error {
 		m.claim.BootTokenHash = HashBootToken(token)
 
 		m.claim.State = StateLaunching
-		// The pod end goes with the failure: a claim being retried carries nothing of the end
-		// that stopped the process before it (Claim.PodEnd).
+		// The pod end goes with the failure: a claim being launched again carries nothing of the
+		// end that stopped the process before it (Claim.PodEnd).
 		m.claim.Failure, m.claim.FailureCause, m.claim.FailedAt, m.claim.PodEnd = "", "", time.Time{}, ""
 		if err := m.persist(starting); err != nil {
 			err = errors.Join(err, m.stopPrevious(starting))

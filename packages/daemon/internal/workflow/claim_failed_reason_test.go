@@ -4,10 +4,11 @@ package workflow
 // tree architect's, and the held phase's. Each now carries the sentence the supervisor wrote when
 // it gave up on the claim, and the pod end the claim's process was last observed to have died of,
 // which is the cause no role chose — an eviction for the node's disk above all (INFRA-2009) — or,
-// where there is none, the runtime's account of the process's last death.
+// where there is none, the first line of the runtime's account of the process's last death.
 
 import (
 	"context"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -224,12 +225,12 @@ func TestAHeldPhasesWorkerDiedNamesTheSentenceOnceWithAPodEnd(t *testing.T) {
 
 // A death whose pod gives no reason of its own leaves the claim no pod end, and the runtime's own
 // account of it is what the daemon last observed. The two notices with no failure record — the
-// tree architect's, and a held phase's whose fact names no cause — name it in their reason beside
-// the sentence, since nothing else in either notice carries it, and name its verdict once: the
-// account begins with it, and the reason reads on from "the process was last found". The
-// negative controls are deathReason reading only the sentence and the pod end, which left both
-// reasons the sentence alone, and deathReason writing "the process was last found gone: " before
-// the account, which read `gone: gone:`.
+// tree architect's, and a held phase's whose fact names no cause — name its first line in their
+// reason beside the sentence, since nothing else in either notice carries it, and name its
+// verdict once: the account begins with it, and the reason reads on from "the process was last
+// found". The negative controls are deathReason reading only the sentence and the pod end, which
+// left both reasons the sentence alone, and deathReason writing "the process was last found
+// gone: " before the account, which read `gone: gone:`.
 func TestAWorkerDiedWithNoFailureRecordNamesTheLastObservedDeath(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -260,8 +261,55 @@ func TestAWorkerDiedWithNoFailureRecordNamesTheLastObservedDeath(t *testing.T) {
 			if strings.Contains(notices[0].Reason, "gone: gone:") {
 				t.Errorf("the worker-died reads %q, which names the verdict twice", notices[0].Reason)
 			}
-			if want := budgetRanOut + "; the process was last found " + death; notices[0].Reason != want {
+			const firstLine = "gone: pod legion-legion-208 (uid 8a1f) container roles terminated (OOMKilled, exit code 137)"
+			if want := budgetRanOut + "; the process was last found " + strconv.Quote(firstLine); notices[0].Reason != want {
 				t.Errorf("the worker-died reads %q, want %q", notices[0].Reason, want)
+			}
+		})
+	}
+}
+
+// The death a reason names ends in the tail of the role's own log, and a role writes what it
+// likes there: a line of its own after a newline. The two notices with no failure record carry
+// the death's first line alone, quoted, so the reason stays one line and no line the role wrote
+// reaches the architect as a line of the notice. The account stays whole on the claim. The
+// negative control is deathReason writing the death whole after "the process was last found ",
+// which put the role's line in the reason as a line of its own.
+func TestAWorkerDiedsReasonCarriesNoLineTheRoleWrote(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		role  claim.Role
+		phase phase.Phase
+	}{
+		{"the tree architect's", claim.RoleArchitect, phase.Planning},
+		{"a held phase's whose fact names no cause", claim.RoleImplementer, phase.Implementing},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+				Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: tc.phase, Generation: 1, Status: "in_progress", Rank: "U"})
+
+			const forged = "the role is fine"
+			const firstLine = "gone: pod legion-legion-208 (uid 8a1f) container roles terminated (Error, exit code 1)"
+			death := firstLine + "; last lines of " + string(tc.role) + ":\n" + forged + "\n" + roleLogTail
+			if _, err := intake.ApplyFact(context.Background(), pool, "supervise", "claim-failed",
+				intake.ClaimFailed{Issue: "LEGION-208", Role: tc.role, Reason: budgetRanOut, Death: death},
+				testEngine(config.DesignGateRootIssues, nil), admissionStub{}); err != nil {
+				t.Fatalf("ApplyFact the failed claim: %v", err)
+			}
+			notices := noticesOfKind(t, pool, "LEGION-208", "worker-died")
+			if len(notices) != 1 {
+				t.Fatalf("the outbox holds %d worker-died notices, want one", len(notices))
+			}
+			reason := notices[0].Reason
+			if strings.Contains(reason, "\n") {
+				t.Errorf("the worker-died reads over %d lines, want one: %q", strings.Count(reason, "\n")+1, reason)
+			}
+			if strings.Contains(reason, forged) {
+				t.Errorf("the worker-died carries %q, a line the role wrote in its log: %q", forged, reason)
+			}
+			if want := budgetRanOut + "; the process was last found " + strconv.Quote(firstLine); reason != want {
+				t.Errorf("the worker-died reads %q, want %q", reason, want)
 			}
 		})
 	}
