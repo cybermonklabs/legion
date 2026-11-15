@@ -879,6 +879,10 @@
         "idle_release": {
           "idle_minutes": 10,
           "backstop_minutes": 60
+        },
+        "sandbox": {
+          "type": "gvisor",
+          "canary_issues": []
         }
       }
     },
