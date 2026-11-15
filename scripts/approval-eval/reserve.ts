@@ -19,11 +19,13 @@ import type { DispatchEvent } from "./dispatch-read";
  *
  * Version 2 makes the issue tree the unit, as the approved method's draw groups by tree: an ask
  * that opened at or after `RESERVE_TREE_CUT` is reserved when the first hexadecimal digit of the
- * sha256 of `RESERVE_TREE_TEXT` followed by the key of its tree's root, at the moment it opened
- * (`askTreeRoot`, the root a live scorer meets), is 0 to 7. A case is held under version 2 only
- * when no issue of its tree's chain changed its parent between the ask's opening and the build
- * (`askTreeMoved`): a scorer that met the request in between may have read it under another
- * root.
+ * sha256 of `RESERVE_TREE_TEXT` followed by the key of its tree's root is 0 to 7. The root is read
+ * at the ask's first opening (`askTreeRoot`, the root a live scorer meets) and at the build's
+ * pinned event (`issueTreeRoot`), and a case is held when the rule picks either: an issue moves
+ * between trees, and a case a scorer may have skipped under either root stays out of every
+ * development read. Holding more never lets a read case into the final test: the claim checks
+ * every final-test tree against the scorers' own records of what they read (the registration's
+ * item 6).
  *
  * A reserved issue, or under version 2 a tree by its root's key, that a read has already spent is
  * in `MOVED_TO_DEVELOPMENT`, with the record of that read, and is held no more.
@@ -86,8 +88,9 @@ export function pickedRoot(rootKey: string): boolean {
 }
 
 /**
- * Whether a case is held by the reserve: `held` when either version holds it, else `unknown` when
- * either cannot say, else `kept`. Once `ended` names the record that ended the reserve
+ * Whether a case is held by the reserve: `unknown` when either version cannot say, so a corpus
+ * built before what a version reads is refused even where the other holds the case; else `held`
+ * when either version holds it; else `kept`. Once `ended` names the record that ended the reserve
  * (`claim.ts`), every case is kept.
  */
 export function reserveOf(
@@ -97,8 +100,8 @@ export function reserveOf(
   if (ended !== null || row.issueKey === null) return "kept";
   const first = issueReserveOf(row, row.issueKey);
   const second = treeReserveOf(row);
-  if (first === "held" || second === "held") return "held";
-  return first === "unknown" || second === "unknown" ? "unknown" : "kept";
+  if (first === "unknown" || second === "unknown") return "unknown";
+  return first === "held" || second === "held" ? "held" : "kept";
 }
 
 /**
@@ -119,22 +122,22 @@ function issueReserveOf(row: CaseRow, key: string): "held" | "kept" | "unknown" 
 }
 
 /**
- * Version 2's answer. An ask that opened before its cut is kept. `unknown` is a case that may have
- * opened after the cut, from a corpus built before `build-corpus.ts` recorded its tree. A root the
- * build could not follow (`askTreeRoot` null), a chain that changed after the ask opened, or an
- * opening time that is missing or does not parse, is kept, not held: only a held case can enter
- * the final test, and a scorer may have read this one. An answer before the cut still shows an
- * opening before it.
+ * Version 2's answer. An ask that opened before its cut is kept; one whose opening time is missing
+ * or does not parse is placed by its answer, which comes after the opening, so it may be held. On
+ * or after the cut, `unknown` is a case from a corpus built before `build-corpus.ts` recorded its
+ * tree's roots; otherwise the case is held when the rule picks its root at the opening or at the
+ * build (a root the build could not follow is null and picks nothing), unless a read spent that
+ * tree.
  */
 function treeReserveOf(row: CaseRow): "held" | "kept" | "unknown" {
   const opened = Date.parse(row.askCreatedAt ?? "");
-  const answered = Date.parse(row.answeredAt);
-  if (opened < TREE_CUT_TIME || answered < TREE_CUT_TIME) return "kept";
-  const root = row.askTreeRoot;
-  if (root === undefined || row.askTreeMoved === undefined) return "unknown";
-  if (Number.isNaN(opened) || root === null || row.askTreeMoved) return "kept";
-  if (Object.hasOwn(MOVED_TO_DEVELOPMENT, root)) return "kept";
-  return pickedRoot(root) ? "held" : "kept";
+  if ((Number.isNaN(opened) ? Date.parse(row.answeredAt) : opened) < TREE_CUT_TIME) return "kept";
+  if (row.askTreeRoot === undefined || row.issueTreeRoot === undefined) return "unknown";
+  const roots = [row.askTreeRoot, row.issueTreeRoot].filter(
+    (root): root is string => root !== null
+  );
+  if (roots.some((root) => Object.hasOwn(MOVED_TO_DEVELOPMENT, root))) return "kept";
+  return roots.some(pickedRoot) ? "held" : "kept";
 }
 
 /**
@@ -404,18 +407,8 @@ export function noteIssueCreated(times: Map<string, string>, event: DispatchEven
   times.set(event.issue_key, typeof own === "string" ? own : event.created_at);
 }
 
-/** Each issue's parent as far as a walk of the log has read, and when each last changed. */
-export interface IssueParents {
-  /** The parent by issue key: null for a root. */
-  parent: Map<string, string | null>;
-  /** The id of the last event that changed an issue's parent after the walk first read it. */
-  changedAt: Map<string, number>;
-}
-
-/** An empty record of parents, for a walk to fill. */
-export function issueParents(): IssueParents {
-  return { parent: new Map(), changedAt: new Map() };
-}
+/** Each issue's parent, by key, as far as a walk of the log has read: null for a root. */
+export type IssueParents = Map<string, string | null>;
 
 /** How many parents a chain is followed through before it is taken for a cycle. */
 const TREE_DEPTH = 64;
@@ -424,84 +417,52 @@ const TREE_DEPTH = 64;
  * Records an issue's parent from an event of the log that carries the whole issue: an `issue.`
  * event whose payload holds the issue's `key` and a `parent` field (`issue.created`,
  * `issue.updated`, `issue.closed`). The latest such event read is the parent at that point of the
- * walk, so a parent that changes later does not reach back to an ask that opened earlier; a
- * change of an issue the walk already knew is recorded in `changedAt`.
+ * walk, so a parent that changes later does not reach back to an ask that opened earlier.
  */
 export function noteIssueParent(parents: IssueParents, event: DispatchEvent): void {
   if (!event.type.startsWith("issue.")) return;
   const key = event.payload.key;
   if (typeof key !== "string" || !Object.hasOwn(event.payload, "parent")) return;
   const value = event.payload.parent;
-  const parent = typeof value === "string" && value !== "" ? value : null;
-  if (parents.parent.has(key) && parents.parent.get(key) !== parent) {
-    parents.changedAt.set(key, event.id);
-  }
-  parents.parent.set(key, parent);
+  parents.set(key, typeof value === "string" && value !== "" ? value : null);
 }
 
 /**
- * The issues from `issueKey` up to the root of its tree, as `parent` records them: the issue, its
- * parent, and so on to an issue with no parent. Null when the chain reaches an issue `parent` does
- * not know, comes back to an issue it passed, or runs past `TREE_DEPTH` parents: such a root
- * cannot be named, and version 2 keeps the case rather than hold it.
+ * The root of an issue's tree as `parents` records it: the issue reached by following each
+ * issue's parent until one has none. Null when the chain reaches an issue `parents` does not
+ * know, comes back to an issue it passed, or runs past `TREE_DEPTH` parents: such a root cannot
+ * be named, and picks nothing.
  */
-export function chainOf(
+export function treeRootOf(
   issueKey: string,
-  parent: ReadonlyMap<string, string | null>
-): string[] | null {
-  const chain: string[] = [];
+  parents: ReadonlyMap<string, string | null>
+): string | null {
+  const passed = new Set<string>();
   let at = issueKey;
-  while (chain.length <= TREE_DEPTH) {
-    if (!parent.has(at) || chain.includes(at)) return null;
-    chain.push(at);
-    const next = parent.get(at) ?? null;
-    if (next === null) return chain;
-    at = next;
+  while (passed.size <= TREE_DEPTH) {
+    if (!parents.has(at) || passed.has(at)) return null;
+    passed.add(at);
+    const parent = parents.get(at) ?? null;
+    if (parent === null) return at;
+    at = parent;
   }
   return null;
 }
 
-/** What a walk keeps of an ask's opening: the event that opened it and its tree's chain then. */
-export interface AskOpening {
-  eventId: number;
-  /** The ask's issue up to its root when the ask opened; null on no issue or no root. */
-  chain: string[] | null;
-}
-
 /**
- * Records an ask's opening from its `ask.opened` event and the parents read before it, keeping
- * the first opening an ask id has. Its chain then ends at the root a live scorer meets.
+ * Records the root of an ask's tree at the ask's first opening, from its `ask.opened` event and
+ * the parents read before it, keeping the first opening an ask id has: the root a live scorer
+ * meets. An ask that opened on no issue records null.
  */
-export function noteAskOpening(
-  openings: Map<string, AskOpening>,
-  parents: IssueParents,
+export function noteAskRoot(
+  roots: Map<string, string | null>,
+  parents: ReadonlyMap<string, string | null>,
   event: DispatchEvent
 ): void {
   if (event.type !== "ask.opened") return;
   const askId = event.payload.id;
-  if (typeof askId !== "string" || openings.has(askId)) return;
+  if (typeof askId !== "string" || roots.has(askId)) return;
   const own = event.payload.issue_key;
   const issueKey = typeof own === "string" ? own : event.issue_key;
-  openings.set(askId, {
-    eventId: event.id,
-    chain: issueKey === null ? null : chainOf(issueKey, parents.parent),
-  });
-}
-
-/**
- * The root of an ask's tree when it opened, and whether that tree moved before the walk's end: an
- * issue on its chain when it opened, or on its chain at the end, changed its parent after the
- * opening, or the chain can no longer be followed. No opening, or no chain at it, has no root.
- */
-export function askTreeOf(
-  opening: AskOpening | undefined,
-  parents: IssueParents
-): { root: string | null; moved: boolean } {
-  const then = opening?.chain ?? null;
-  if (opening === undefined || then === null) return { root: null, moved: false };
-  const now = chainOf(then[0] as string, parents.parent);
-  const moved =
-    now === null ||
-    [...then, ...now].some((key) => (parents.changedAt.get(key) ?? 0) > opening.eventId);
-  return { root: then.at(-1) as string, moved };
+  roots.set(askId, issueKey === null ? null : treeRootOf(issueKey, parents));
 }

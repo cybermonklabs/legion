@@ -14,13 +14,12 @@ import {
 } from "./corpus-io";
 import { type DispatchEvent, pageEventLog } from "./dispatch-read";
 import {
-  type AskOpening,
-  askTreeOf,
-  issueParents,
-  noteAskOpening,
+  type IssueParents,
+  noteAskRoot,
   noteIssueCreated,
   noteIssueParent,
   reserveOf,
+  treeRootOf,
 } from "./reserve";
 
 /**
@@ -38,9 +37,9 @@ import {
  *
  * The same walk reads each issue's `issue.created` event, so each case carries when its issue was
  * created, and each issue's `parent` as every whole-issue event records it, so each case carries
- * the root of its issue's tree when its ask opened and whether that tree moved before the build's
- * pinned event. The reserve of INFRA-2897's next final test reads them (`reserve.ts`), and the
- * build prints how many of its cases the reserve holds from every command.
+ * the root of its issue's tree at its ask's first opening and at the build's pinned event. The
+ * reserve of INFRA-2897's next final test reads them (`reserve.ts`), and the build prints how many
+ * of its cases the reserve holds from every command.
  *
  * Nothing it writes goes into this repository: `--out` is an absolute path outside the workspace,
  * since a corpus of a production log is large and the workspace is snapshotted whole.
@@ -141,18 +140,17 @@ export interface CaseRow {
    */
   issueCreatedAt?: string | null;
   /**
-   * The root of the case's issue tree at the moment its ask opened, following each issue's
-   * `parent` as the log's whole-issue events recorded it up to the `ask.opened` event: null where
-   * the ask opened on no issue, the walk found no opening, or the chain could not be followed;
-   * absent from a corpus built before the build recorded it. The reserve reads it (`reserve.ts`).
+   * The root of the case's issue tree at its ask's first opening, following each issue's `parent`
+   * as the log's whole-issue events recorded it up to the `ask.opened` event: null where the ask
+   * opened on no issue, the walk found no opening, or the chain could not be followed; absent from
+   * a corpus built before the build recorded it. The reserve reads it (`reserve.ts`).
    */
   askTreeRoot?: string | null;
   /**
-   * Whether an issue on that chain, when the ask opened or at the build's pinned event, changed
-   * its parent after the ask opened: a scorer that met the request in between may have read it
-   * under another root. Absent as `askTreeRoot` is.
+   * The root of the case's issue tree at the build's pinned event, read the same way: null where
+   * the case has no issue or the chain could not be followed, and absent as `askTreeRoot` is.
    */
-  askTreeMoved?: boolean;
+  issueTreeRoot?: string | null;
   answeredAt: string;
   eventCreatedAt: string;
   approval: CaseApproval | null;
@@ -400,8 +398,8 @@ async function build(flags: Flags): Promise<number> {
   }
   const seeds = new Map<string, CaseSeed>();
   const issueCreated = new Map<string, string>();
-  const parents = issueParents();
-  const openings = new Map<string, AskOpening>();
+  const parents: IssueParents = new Map();
+  const askRoots = new Map<string, string | null>();
   let keptEvents = 0;
   const walk = await pageEventLog({
     through,
@@ -409,7 +407,7 @@ async function build(flags: Flags): Promise<number> {
       for (const event of events) {
         noteIssueCreated(issueCreated, event);
         noteIssueParent(parents, event);
-        noteAskOpening(openings, parents, event);
+        noteAskRoot(askRoots, parents, event);
         if (KEPT_TYPES[event.type] !== true) continue;
         keptEvents += 1;
         const seed = caseOf(event, flags.person);
@@ -420,15 +418,12 @@ async function build(flags: Flags): Promise<number> {
   });
   const readFinishedAt = new Date().toISOString();
   const rows = withConfounds(
-    [...seeds.values()].map((seed) => {
-      const tree = askTreeOf(openings.get(seed.askId), parents);
-      return {
-        ...seed,
-        issueCreatedAt: seed.issueKey === null ? null : (issueCreated.get(seed.issueKey) ?? null),
-        askTreeRoot: tree.root,
-        askTreeMoved: tree.moved,
-      };
-    })
+    [...seeds.values()].map((seed) => ({
+      ...seed,
+      issueCreatedAt: seed.issueKey === null ? null : (issueCreated.get(seed.issueKey) ?? null),
+      askTreeRoot: askRoots.get(seed.askId) ?? null,
+      issueTreeRoot: seed.issueKey === null ? null : treeRootOf(seed.issueKey, parents),
+    }))
   );
   const counts = countsOf(rows);
   const snapshot: Snapshot = {

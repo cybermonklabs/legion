@@ -8,13 +8,9 @@ import type { DispatchEvent } from "../dispatch-read";
 import { FreshError, type FreshReport, refuseReportsOutside } from "../fresh-agent";
 import { PoolError, type RunOutcomes, refuseRunsOutside } from "../pool-runs";
 import {
-  type AskOpening,
-  askTreeOf,
-  chainOf,
   DigestError,
   type IssueParents,
-  issueParents,
-  noteAskOpening,
+  noteAskRoot,
   noteIssueCreated,
   noteIssueParent,
   pickedKey,
@@ -26,6 +22,7 @@ import {
   readReferenceOf,
   reserveOf,
   runDigestOf,
+  treeRootOf,
 } from "../reserve";
 
 /**
@@ -174,22 +171,23 @@ describe("version 2: the tree is the unit", () => {
   const NOT_PICKED_ROOT = "INFRA-2523";
   const later = "2026-11-16T01:00:00Z";
 
-  /** A case on an issue version 1 never holds, its ask opened at `openedAt` under `root`. */
+  /**
+   * A case on an issue version 1 never holds, its ask opened at `openedAt` under `root` and its
+   * issue under `buildRoot` at the build; `undefined` leaves both roots out, as an older build did.
+   */
   function treeCase(
     caseId: string,
     openedAt: string,
     root: string | null | undefined,
-    moved = false
+    buildRoot: string | null | undefined = root
   ): CaseRow {
     const answeredAt = new Date(Date.parse(openedAt) + 3_600_000).toISOString();
     const row: CaseRow = {
       ...caseRow(caseId, NOT_PICKED, answeredAt, "2026-11-01T00:00:00Z"),
       askCreatedAt: openedAt,
     };
-    if (root !== undefined) {
-      row.askTreeRoot = root;
-      row.askTreeMoved = moved;
-    }
+    if (root !== undefined) row.askTreeRoot = root;
+    if (buildRoot !== undefined) row.issueTreeRoot = buildRoot;
     return row;
   }
 
@@ -204,23 +202,29 @@ describe("version 2: the tree is the unit", () => {
     expect(reserveOf(treeCase("before-cut", before, PICKED_ROOT))).toBe("kept");
   });
 
-  test("keeps an ask under a root it does not pick, under no root, or on a tree that moved", () => {
+  test("keeps an ask under a root it does not pick, and one with no root", () => {
     expect(reserveOf(treeCase("not-picked", later, NOT_PICKED_ROOT))).toBe("kept");
     expect(reserveOf(treeCase("no-root", later, null))).toBe("kept");
-    expect(reserveOf(treeCase("moved", later, PICKED_ROOT, true))).toBe("kept");
   });
 
-  test("never holds an ask with no opening time, and keeps one answered before the cut", () => {
-    expect(reserveOf({ ...treeCase("late", later, PICKED_ROOT), askCreatedAt: null })).toBe("kept");
-    const lateOld = { ...treeCase("late-old", later, undefined), askCreatedAt: null };
-    expect(reserveOf(lateOld)).toBe("unknown");
+  test("holds an ask whose issue moved, when the rule picks its root at the opening or the build", () => {
+    expect(reserveOf(treeCase("moved-out", later, PICKED_ROOT, NOT_PICKED_ROOT))).toBe("held");
+    expect(reserveOf(treeCase("moved-in", later, NOT_PICKED_ROOT, PICKED_ROOT))).toBe("held");
+    expect(reserveOf(treeCase("lost", later, null, PICKED_ROOT))).toBe("held");
+  });
+
+  test("places an ask with no opening time by its answer", () => {
+    expect(reserveOf({ ...treeCase("late", later, PICKED_ROOT), askCreatedAt: null })).toBe("held");
     const early = { ...treeCase("early", "2026-11-15T01:00:00Z", PICKED_ROOT), askCreatedAt: null };
     expect(reserveOf(early)).toBe("kept");
   });
 
   test("cannot say for a corpus built before trees, unless the ask opened before the cut", () => {
     expect(reserveOf(treeCase("old-build", later, undefined))).toBe("unknown");
-    expect(reserveOf(treeCase("old-ask", "2026-11-15T01:00:00Z", undefined))).toBe("kept");
+    const justBefore = new Date(Date.parse(RESERVE_TREE_CUT) - 60_000).toISOString();
+    const oldAsk = treeCase("old-ask", justBefore, undefined);
+    expect(Date.parse(oldAsk.answeredAt)).toBeGreaterThan(Date.parse(RESERVE_TREE_CUT));
+    expect(reserveOf(oldAsk)).toBe("kept");
   });
 
   test("leaves version 1 holding its issues after the cut, whatever their tree", () => {
@@ -228,9 +232,17 @@ describe("version 2: the tree is the unit", () => {
       ...caseRow("version-1", PICKED, "2026-11-16T02:00:00Z", "2026-11-14T09:00:00Z"),
       askCreatedAt: later,
       askTreeRoot: NOT_PICKED_ROOT,
-      askTreeMoved: false,
+      issueTreeRoot: NOT_PICKED_ROOT,
     };
     expect(reserveOf(row)).toBe("held");
+  });
+
+  test("cannot say for an older build after the cut, even where version 1 holds the case", () => {
+    const row: CaseRow = {
+      ...caseRow("version-1-old", PICKED, "2026-11-16T02:00:00Z", "2026-11-14T09:00:00Z"),
+      askCreatedAt: later,
+    };
+    expect(reserveOf(row)).toBe("unknown");
   });
 });
 
@@ -250,68 +262,45 @@ describe("an ask's tree, from the walk of the log", () => {
 
   function walk(events: DispatchEvent[]): {
     parents: IssueParents;
-    openings: Map<string, AskOpening>;
+    roots: Map<string, string | null>;
   } {
-    const parents = issueParents();
-    const openings = new Map<string, AskOpening>();
+    const parents: IssueParents = new Map();
+    const roots = new Map<string, string | null>();
     for (const one of events) {
       noteIssueParent(parents, one);
-      noteAskOpening(openings, parents, one);
+      noteAskRoot(roots, parents, one);
     }
-    return { parents, openings };
+    return { parents, roots };
   }
 
-  test("keeps the root an ask had when it opened, and says when its tree moved after", () => {
-    const { parents, openings } = walk([
+  test("keeps the root an ask had at its first opening, whatever moves after", () => {
+    const { parents, roots } = walk([
       event(1, "issue.created", { key: "INFRA-1", parent: null }),
       event(2, "issue.created", { key: "INFRA-2", parent: "INFRA-1" }),
       event(3, "ask.opened", { id: "first", issue_key: "INFRA-2" }),
       event(4, "issue.created", { key: "INFRA-3", parent: null }),
-      event(5, "ask.opened", { id: "steady", issue_key: "INFRA-3" }),
-      event(6, "issue.updated", { key: "INFRA-2", parent: "INFRA-3" }),
-      event(7, "ask.opened", { id: "second", issue_key: "INFRA-2" }),
-      event(8, "ask.opened", { id: "first", issue_key: "INFRA-3" }),
+      event(5, "issue.updated", { key: "INFRA-2", parent: "INFRA-3" }),
+      event(6, "ask.opened", { id: "second", issue_key: "INFRA-2" }),
+      event(7, "ask.opened", { id: "first", issue_key: "INFRA-3" }),
     ]);
-    expect(askTreeOf(openings.get("first"), parents)).toEqual({ root: "INFRA-1", moved: true });
-    expect(askTreeOf(openings.get("steady"), parents)).toEqual({ root: "INFRA-3", moved: false });
-    expect(askTreeOf(openings.get("second"), parents)).toEqual({ root: "INFRA-3", moved: false });
-  });
-
-  test("a tree that moves away and back after the ask still moved", () => {
-    const { parents, openings } = walk([
-      event(1, "issue.created", { key: "INFRA-1", parent: null }),
-      event(2, "issue.created", { key: "INFRA-9", parent: null }),
-      event(3, "issue.created", { key: "INFRA-2", parent: "INFRA-1" }),
-      event(4, "ask.opened", { id: "ask", issue_key: "INFRA-2" }),
-      event(5, "issue.updated", { key: "INFRA-2", parent: "INFRA-9" }),
-      event(6, "issue.updated", { key: "INFRA-2", parent: "INFRA-1" }),
+    expect([...roots]).toEqual([
+      ["first", "INFRA-1"],
+      ["second", "INFRA-3"],
     ]);
-    expect(askTreeOf(openings.get("ask"), parents)).toEqual({ root: "INFRA-1", moved: true });
-  });
-
-  test("a root that gains a parent after the ask moved its tree", () => {
-    const { parents, openings } = walk([
-      event(1, "issue.created", { key: "INFRA-1", parent: null }),
-      event(2, "ask.opened", { id: "ask", issue_key: "INFRA-1" }),
-      event(3, "issue.created", { key: "INFRA-5", parent: null }),
-      event(4, "issue.updated", { key: "INFRA-1", parent: "INFRA-5" }),
-    ]);
-    expect(askTreeOf(openings.get("ask"), parents)).toEqual({ root: "INFRA-1", moved: true });
+    expect(treeRootOf("INFRA-2", parents)).toBe("INFRA-3");
   });
 
   test("names no root on no issue, an issue the walk has not read, or a cycle", () => {
-    const parent = new Map<string, string | null>([
+    const parents: IssueParents = new Map([
       ["INFRA-5", "INFRA-6"],
       ["INFRA-6", "INFRA-5"],
       ["INFRA-7", "INFRA-8"],
     ]);
-    expect(chainOf("INFRA-4", parent)).toBeNull();
-    expect(chainOf("INFRA-5", parent)).toBeNull();
-    expect(chainOf("INFRA-7", parent)).toBeNull();
-    const { parents, openings } = walk([event(1, "ask.opened", { id: "no-issue" })]);
-    expect(openings.get("no-issue")?.chain).toBeNull();
-    expect(askTreeOf(openings.get("no-issue"), parents)).toEqual({ root: null, moved: false });
-    expect(askTreeOf(undefined, parents)).toEqual({ root: null, moved: false });
+    expect(treeRootOf("INFRA-4", parents)).toBeNull();
+    expect(treeRootOf("INFRA-5", parents)).toBeNull();
+    expect(treeRootOf("INFRA-7", parents)).toBeNull();
+    const { roots } = walk([event(1, "ask.opened", { id: "no-issue" })]);
+    expect(roots.get("no-issue")).toBeNull();
   });
 
   test("reads a parent only from an issue event that carries the field", () => {
@@ -319,10 +308,10 @@ describe("an ask's tree, from the walk of the log", () => {
       event(1, "issue.created", { key: "INFRA-1", parent: "INFRA-9" }),
       event(2, "issue.released", { key: "INFRA-1" }),
       event(3, "comment.created", { key: "INFRA-1", parent: null }),
-      event(4, "issue.updated", { key: "INFRA-1", parent: "INFRA-9" }),
+      event(4, "issue.updated", { key: "INFRA-2", parent: "" }),
     ]);
-    expect(parents.parent.get("INFRA-1")).toBe("INFRA-9");
-    expect(parents.changedAt.has("INFRA-1")).toBe(false);
+    expect(parents.get("INFRA-1")).toBe("INFRA-9");
+    expect(parents.get("INFRA-2")).toBeNull();
   });
 });
 
@@ -600,7 +589,7 @@ describe("readCorpus and the reserve", () => {
       ...caseRow(caseId, issueKey, "2026-11-16T02:00:00Z", "2026-11-01T00:00:00Z"),
       askCreatedAt: opened,
       askTreeRoot: root,
-      askTreeMoved: false,
+      issueTreeRoot: root,
     });
     const rows = [
       tree("root", "INFRA-3189", "INFRA-3189"),
