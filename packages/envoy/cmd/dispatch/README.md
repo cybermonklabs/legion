@@ -921,7 +921,8 @@ What the two processes share, and what each keeps to itself:
   — the ordinary case, since each ticker draws its phase at boot and a rolling update starts the second process minutes after the first
   — finds the period already served and logs the same skip: each runs once per period across the processes.
   A row per lease and period is what keeps two builds whose interval for one loop differs from each running on every tick after the other's pass: the processes at one period make one pass per period between them, whatever the processes at another period do.
-  The two leased woken loops, the reference excerpts and the edit notices, take their lease with no period:
+
+- The two leased woken loops, the reference excerpts and the edit notices, take their lease with no period:
   a process that finds it held tries again until a pass of its own runs, since the other process's pass may have read before the change that woke this one.
   The suggestion outcome sweep takes no lease at all:
   each of its pages holds the `suggestion_outcome_cursor` row `for update`, which serialises two processes by itself (Background loops, below).
@@ -1189,6 +1190,8 @@ So for each surface the two builds share, this is what build N+1 may change whil
   settlement writes no version of it and leaves an approval to carry over to a build that reads it; and the excerpt reconciliation leaves its mentions owed.
   A renderer change (the markdown a tree renders as) and a reference-grammar change (what a body's references parse as) are reader-first too:
   a build whose renderer writes an unchanged document differently writes no new version of it, and a rewrite of a body keeps the reference edges to node kinds this build does not know.
+
+- **Stored documents: the document socket, and ygo's encoding.**
   A page's document socket is writable by the whole fleet's numbers (`internal/dispatch/docs/socket_admission.go`, `authorize`):
   each process registers V, the schema version it reads, and R, the highest `since` among the elements it may create, in `server_processes` (migration `20261101030537_server_processes_schema`).
   A page presents its own V and R as `schema_version` and `schema_creatable`, and is writable on an open issue when its R is at most every live process's V and at most the highest R among the live processes, and its V is at least every live process's R and the highest `since` among the elements the document holds; otherwise it is read-only.
@@ -4279,11 +4282,15 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/api/v1/artifacts/{id}/versions/{n}` (GET; cookie, trusted header, or bearer)
 
-  Read a document version or download a blob.
+  Read a document version as JSON, or download any version.
   `{id}` must be a UUID.
   A file whose bytes are in the bucket is `502 FILE_STORE_UNAVAILABLE` when the bucket does not answer, `503` on a server with no bucket configured.
-  A file or image version, whoever owns it, is served with `Cache-Control: private, max-age=31536000, immutable` beside its `ETag` (the bytes' sha256), since a version's bytes never change and the route is authenticated;
-  a document version, and every error, carries no cache header.
+  A file or image version, whoever owns it, is served as `Content-Disposition: attachment` under the artifact's stored name, with `-v<number>` before the name's last `.` for a version older than the latest (`report-v2.pdf`; `Makefile-v1` and `.env-v1` for a name with no `.` after its first character), so a saved file is not named after the version number its address ends in.
+  It carries `Cache-Control: private, max-age=31536000, immutable` beside its `ETag` (the bytes' sha256), since a version's bytes never change and the route is authenticated;
+  a document version read without `?download=true`, and every error, carries no cache header.
+  `?download=true` is the download address, which the web app's Download links use (exactly `true`; any other value answers as without it):
+  every kind answers there `Content-Disposition: attachment` under that name and `Cache-Control: private, no-cache`, so a browser asks again before it uses a copy it holds and saves under the name of the moment, an older version's `-v<number>` included once a newer version arrives.
+  A document version answers there its Markdown, the text the JSON's `markdown` field holds, rather than the JSON, as `text/markdown; charset=utf-8`, its name given `.md` first when it ends in neither `.md` nor `.markdown`, whatever their case (`Launch notes-v1.md`).
 
 - `/api/v1/artifacts/{id}/versions` (POST; cookie, trusted header, or bearer)
 
@@ -4363,7 +4370,7 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/api/v1/issues/{key}/artifacts/{slug}/versions/{n}` (GET; cookie, trusted header, or bearer)
 
-  Read an issue artifact version or download its blob, as `/api/v1/artifacts/{id}/versions/{n}` does.
+  Read an issue artifact version or download it, as `/api/v1/artifacts/{id}/versions/{n}` does, `?download=true` included.
 
 - `/api/v1/issues/{key}/artifacts/{slug}/versions` (POST; cookie, trusted header, or bearer)
 
@@ -4391,7 +4398,7 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/api/v1/projects/{key}/artifacts/{slug}/versions/{n}` (GET; cookie, trusted header, or bearer)
 
-  Read an unlinked project document version or download its blob, as `/api/v1/artifacts/{id}/versions/{n}` does.
+  Read an unlinked project document version or download it, as `/api/v1/artifacts/{id}/versions/{n}` does, `?download=true` included.
 
 - `/api/v1/projects/{key}/artifacts/{slug}/versions` (POST; cookie, trusted header, or bearer)
 
@@ -4426,7 +4433,9 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/api/v1/agents/{session_id}/artifacts/{slug}/versions/{n}` (GET; cookie, trusted header, or bearer)
 
-  Download one version of an agent's conversation's file or image, as `/api/v1/artifacts/{id}/versions/{n}` does, with its cache header.
+  Download one version of an agent's conversation's file or image, as `/api/v1/artifacts/{id}/versions/{n}` does:
+  its bytes under the file's name, `-v<number>` included for an older version, with `Cache-Control: private, max-age=31536000, immutable`, or `Cache-Control: private, no-cache` with `?download=true`.
+  A conversation holds no document, so no version here answers Markdown.
 
 - `/...` (GET; none)
 
