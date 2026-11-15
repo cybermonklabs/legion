@@ -499,11 +499,11 @@ type chain struct {
 // held event is read again beside it - and behind its nextAttempt when it is not. Two copies
 // wait that way, and both for the same reason: nothing else delivers them to that session.
 // A role route's copy waits for the mention that decides its key (resolveRoleHolders): a keep
-// waits for the role's next claim and a forward is the holder's one copy, so a later event let
-// past it would reach the role's holder first - the kept lane is drained in stream order
-// (walkKeptRole in cmd/listener/role_keep.go) and a forward goes straight to the holder's agent
-// subject. The copy of a session the owner's own work names waits for an attempt of the comment
-// that names no session yet and whose role this read could name no holder for
+// waits up to its hour for the role's next live holder and a forward is the holder's one copy, so
+// a later event let past it would reach the role's holder first - the kept lane is drained in
+// stream order (walkKeptRole in cmd/listener/role_keep.go) and a forward goes straight to the
+// holder's agent subject. The copy of a session the owner's own work names waits for an attempt of
+// the comment that names no session yet and whose role this read could name no holder for
 // (destinations.addWorkingSession): that mention may be pinned to another session, and then
 // nothing but this copy delivers the comment here, so a later event let past it would overtake
 // the comment at that session.

@@ -9,9 +9,10 @@ body: |-
   At the end of a copy's hour the listener drops it, counts it on `envoy_role_kept_expired_total`
   (labels `kept_by` and `stale`) and logs it once, whether or not any session holds the role, and
   sends the sender's session one dead letter on its agent subject when the publish named that
-  session (`envoy_role_dead_letters_total`). A copy whose hour ended more than an hour before is
-  dropped as stale with no dead letter, and a copy Dispatch's outbox kept gets none. The sweep now
-  walks every kept lane, at most 16 at a time, and raises the role's wake report again in each
-  five-minute interval while a copy has at least 20 minutes of its hour left and no live session
-  holds the role. `envoy_role_kept_undecodable_total` counts copies no read can decode. The lane
-  cursor gains `dead_letter`, which an earlier listener and Dispatch's outbox ignore.
+  session (`envoy_role_dead_letters_total`). A copy that no walk had claimed, and whose hour ended
+  more than an hour before the walk that drops it, is dropped as stale with no dead letter, and a
+  copy Dispatch's outbox kept gets none. The sweep now walks every kept lane, at most 16 at a time,
+  and raises the role's wake report again in each five-minute interval while a copy has at least 20
+  minutes of its hour left and no live session holds the role. `envoy_role_kept_undecodable_total`
+  counts copies no read can decode. The lane cursor gains `dead_letter`, which an earlier listener
+  and Dispatch's outbox ignore.

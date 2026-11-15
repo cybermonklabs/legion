@@ -162,8 +162,8 @@ const roleKeepDrainIdleRounds = 3
 // still inside its hour - and it is wide enough for the walks a lane of thousands of copies takes.
 const roleKeepHandoverWindow = 10 * time.Minute
 
-// roleKeepHolderWindow bounds a handover's resolution of the role's holder: the claim read, the
-// holder's session read, and at most one release of a lapsed claim. Every pass that resolves at
+// roleKeepHolderWindow bounds a handover's resolution of the role's holder: the claim read and the
+// holder's session read, since no resolution releases a lapsed claim. Every pass that resolves at
 // all resolves within it, which is every pass whose lane holds copies to hand over
 // (handOverKeptRole). It answers no caller - the keep's own answer is written by
 // then - so it ends rather than waiting out a bus that is not answering, and what a resolution that

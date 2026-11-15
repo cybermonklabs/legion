@@ -672,9 +672,10 @@ export type PublishResult = {
    * listener adds is added in one place. */
   readonly keptReason?: z.infer<typeof PublishResponseSchema>["kept_reason"];
   /** The end of the kept copy's hour, in epoch milliseconds. If no session takes the copy by
-   * then, the listener drops it and sends the publish's source session a message that names it.
-   * Absent from a listener of an earlier release, which names no time and sends no such
-   * message. */
+   * then, the listener drops it and sends the publish's source session a message that names it,
+   * unless no walk had claimed the copy and its hour ended more than an hour before the walk that
+   * drops it. Absent from a listener of an earlier release, which names no time and sends no
+   * such message. */
   readonly keptUntil?: number;
 };
 
