@@ -2029,7 +2029,7 @@ func capLets(entry record.LineEntry, held, cap int) bool {
 	if cap <= 0 {
 		return false
 	}
-	return !slotFor(entry) || held < cap
+	return true // planted fault (results-route lane control): was `return !slotFor(entry) || held < cap`
 }
 
 // held says whether Reconcile still holds key for the Dispatch consumer to reach the stream
