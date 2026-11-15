@@ -265,6 +265,23 @@ type SavedWorkspaceBundle func(ctx context.Context, issue, podUID string, podCre
 // the issue's next pod.
 type WorkspaceBundleRestored func(ctx context.Context, issue string, release int64) error
 
+// MemoryGuardKilled is the daemon's reading of one process an issue pod's launcher ended with
+// SIGKILL because the pod was near its memory limit (shimwire.LauncherMemoryKill): the launcher
+// sends the report on the connection of the role whose process it was, and the daemon tells that
+// role why the process is gone. The session gives it the issue key, the claim token of the role
+// the connection authenticated for, the uid of the pod the launcher runs in and the report; the
+// three are the session's own and never the report's, so a launcher cannot name another role,
+// issue or pod.
+//
+// It takes the wire's own frame rather than a shape of this package's: shimwire imports nothing
+// of the daemon's own packages, so the import is acyclic, and a second copy of the report would
+// be one more shape to keep in step for no reader that needs it.
+//
+// An error, a store that did not answer among them, is returned to the session, which logs it
+// and drops the report: nothing acknowledges the frame, so the launcher does not send it again,
+// and the guard's kill line in the pod's own log is then the one record of the kill.
+type MemoryGuardKilled func(ctx context.Context, issue string, token claim.Token, podUID string, report shimwire.LauncherMemoryKill) error
+
 // VolumeReported is the daemon's reading of one sweep of an issue pod's volume, as the cache
 // trimmer in that pod's launcher process reported it: the launcher sends at most one such frame
 // per sweep that ended with the volume still above its low mark, none for a sweep the settings

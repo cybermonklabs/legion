@@ -185,10 +185,10 @@ func (g *roleConn) acknowledge() shimwire.LauncherState {
 	return g.acknowledgeWith(shimwire.LauncherHelloAck{})
 }
 
-// acknowledgeWith admits the hello with an acknowledgement of the case's own and reads the
-// launcher's first state on it: the answer to an issue pod's first role carries the settings the
-// pod's cache trimmer runs by, and the absence of them is what turns it off (launcher.go's
-// serveVolumeTrim).
+// acknowledgeWith admits the hello with an acknowledgement of the case's own, whatever memory
+// guard settings it carries, and reads the launcher's first state on it: the answer to an issue
+// pod's first role carries the settings the pod's cache trimmer runs by, and the absence of them
+// is what turns it off (launcher.go's serveVolumeTrim).
 func (g *roleConn) acknowledgeWith(ack shimwire.LauncherHelloAck) shimwire.LauncherState {
 	g.t.Helper()
 	g.send(ack)
@@ -611,10 +611,11 @@ func newFleetDialed(t *testing.T, grace time.Duration, roles ...string) *fleet {
 // leak-check directory) besides the fields every fleet's launcher is given, over a roles
 // directory shaped as an issue pod's one container gives it — every role's launcher token, gh
 // bundle, private, state and agent-secrets directory — and takes every role's connection up to
-// its hello, acknowledging none: a case that drives the pod's cache trimmer answers each hello
-// itself, since the answer to the first role's is what hands the trimmer its settings
-// (launcher.go's serveVolumeTrim). A generation of such a launcher runs in namespaces of its
-// own, so a test that starts one calls requireRoleNamespaces first.
+// its hello, acknowledging none: a case that drives the pod's cache trimmer or its memory guard
+// answers each hello itself, since the answer to the first role's is what hands the trimmer its
+// settings (launcher.go's serveVolumeTrim) and each answer hands the guard its own (serve). A
+// generation of such a launcher runs in namespaces of its own, so a test that starts one calls
+// requireRoleNamespaces first.
 func newFleetDialedOf(t *testing.T, cfg Config, roles ...string) *fleet {
 	t.Helper()
 	scratch := namespaceScratch(t)

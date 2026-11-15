@@ -488,12 +488,12 @@ func TestTheControllersAcceptedLauncherIsHandedNoTrimmerSettings(t *testing.T) {
 				Token:   string(g.secret(roleSecretName(name, claim.RoleController)).Data[LauncherTokenFile]),
 				Sandbox: name, Role: string(claim.RoleController), PodUID: loc.Sandbox.PodUID, LauncherID: "l-1",
 			}
-			handler, trim, reason := g.r.LauncherResolver()(hello)
+			handler, ack, reason := g.r.LauncherResolver()(hello)
 			if handler == nil {
 				t.Fatalf("the controller's own launcher was refused: %s", reason)
 			}
-			if trim != nil {
-				t.Fatalf("the controller's launcher was handed %+v, want none", *trim)
+			if ack.VolumeTrim != nil {
+				t.Fatalf("the controller's launcher was handed %+v, want none", *ack.VolumeTrim)
 			}
 		})
 	}

@@ -183,6 +183,8 @@ provider_keys: {ANTHROPIC_API_KEY: anthropic_api_key}
 			Resources: Reservation{CPU: "2", CPURequest: "2", Memory: "4Gi", MemoryRequest: "4Gi", EphemeralStorage: "2Gi", EphemeralStorageRequest: "1Gi"},
 		},
 		IdleRelease: IdleReleaseConfig{IdleMinutes: 20, BackstopMinutes: 120},
+		// The file sets no memory_guard block, so the guard settles on at the wire's defaults.
+		MemoryGuard: DefaultMemoryGuard(),
 		// The file sets no volume_trim, so the whole block settles on the daemon's defaults.
 		VolumeTrim: DefaultVolumeTrim(),
 	}}

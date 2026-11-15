@@ -726,8 +726,8 @@ type guardTree struct {
 	Ready  string // where each process writes its marker once it is holding what it holds
 }
 
-// guardProcess is one process of that tree: what it does before it reports itself ready.
-type guardProcess struct {
+// volumeGuardProcess is one process of that tree: what it does before it reports itself ready.
+type volumeGuardProcess struct {
 	Kind   string
 	Open   string
 	Cwd    string
@@ -897,7 +897,7 @@ func TestVolumeGuardNamespaceHelper(t *testing.T) {
 		fmt.Fprintln(os.Stderr, "volume-guard namespace child:", err)
 		os.Exit(2)
 	}
-	for _, process := range []guardProcess{
+	for _, process := range []volumeGuardProcess{
 		{Kind: "opener", Open: tree.Open, Cwd: tree.Cwd, Marker: filepath.Join(tree.Ready, "opener")},
 		{Kind: "runner", Marker: filepath.Join(tree.Ready, "runner")},
 		// The marker is written after the chroot, so its path is the one the process sees: the
@@ -935,7 +935,7 @@ func TestVolumeGuardProcessHelper(t *testing.T) {
 	if encoded == "" {
 		return
 	}
-	var plan guardProcess
+	var plan volumeGuardProcess
 	if err := json.Unmarshal([]byte(encoded), &plan); err != nil {
 		fmt.Fprintln(os.Stderr, "volume-guard process:", err)
 		os.Exit(2)

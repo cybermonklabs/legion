@@ -378,6 +378,11 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		plan.taskConfirmed = workflow.taskConfirmed
 		plan.sessionLost, plan.sessionStoreFault = workflow.sessionLost, workflow.sessionStoreFault
 		plan.providerErrorRunReached = workflow.providerErrorRunReached
+		// The memory guards' kill holder is filled here, once the workflow is open
+		// (memoryGuardKills).
+		if plan.memoryGuardKills != nil {
+			plan.memoryGuardKills.bind(workflow.pool, workflow.handlers)
+		}
 		// The cache trimmers of this project's issue pods report through the pool and the
 		// handlers the workflow has just built, which is what turns a sweep of a filling volume
 		// into the fact that tells the issue's architect (volumeTrimReports).
@@ -712,6 +717,9 @@ type plan struct {
 	rootHears    func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (bool, error)
 	rootTask     func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (string, []byte, error)
 	treeClosable func(ctx context.Context, c supervise.Claim) (bool, error)
+	// memoryGuardKills is the memory guards' kill holder (memoryGuardKills); nil under tmux, and
+	// for a replaced runtime, where no launcher reports.
+	memoryGuardKills *memoryGuardKills
 	// volumeReports is how the Kubernetes runtime's launcher sessions reach the fact path with
 	// one issue pod's volume sweep (volumeTrimReports, prepareSandbox): a pointer, so the
 	// factory built before the workflow opens and the boot that fills it once it has hold the

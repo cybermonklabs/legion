@@ -552,8 +552,9 @@ func withCauselessLeakCheck() rigOption {
 	return func(g *rig, _ *Options) { g.causelessLeakCheck = true }
 }
 
-// testLaunchers is a launchers of its own, outside any rig, with no volume seam behind it: the
-// tests that build one drive the launcher protocol itself.
+// testLaunchers is a launchers of its own, outside any rig, with no saved workspace bundles to
+// carry, no receiver for a memory guard's reports and no volume seam behind it: the tests that
+// build one drive the launcher protocol itself.
 func testLaunchers() *launchers { return volumeLaunchers(nil) }
 
 // launcherIssue is the issue key a role token's pod is of, as the role Secret's annotation

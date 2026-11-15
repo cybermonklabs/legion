@@ -211,6 +211,17 @@ type Options struct {
 	// every process in it, so a server a role started would die with that generation and take
 	// every sibling role's test database with it.
 	TestPostgres bool
+	// MemoryGuard is what the memory guard in an issue pod's launcher runs by
+	// (runtime.kubernetes.memory_guard.issue_pods), handed to it on the daemon's answer to each
+	// of its roles' hellos (LauncherResolver). Nil is a deployment that turned the guard off, and
+	// the launcher reads the absent member as "run none", as it reads a daemon that does not know
+	// the guard. The controller's pod takes none however this is set: its settings are its own
+	// block's, which this runtime does not carry.
+	//
+	// It is no part of the pod shape a template records (podShapeRecord): nothing of a running
+	// pod is built from it, since a launcher is told it on every hello, a reconnect after a
+	// daemon restart included, so a changed setting reaches every pod without replacing one.
+	MemoryGuard *shimwire.LauncherMemoryGuard
 	// VolumeTrim is what the launcher of an issue pod is told its cache trimmer should run by,
 	// handed to it on the daemon's answer to its hello (LauncherResolver). Nil is a deployment
 	// that runs no trimmer, which is the absence the launcher reads as "run none". The
@@ -294,6 +305,13 @@ type Options struct {
 	// neither restores nothing, which is what a pod whose issue was never released does anyway.
 	SavedWorkspaceBundle    runtime.SavedWorkspaceBundle
 	WorkspaceBundleRestored runtime.WorkspaceBundleRestored
+	// MemoryGuardKilled takes one process an issue pod's memory guard ended, as that pod's
+	// launcher reported it on the connection of the role whose process it was
+	// (runtime.MemoryGuardKilled): the daemon turns it into the note that tells that role why its
+	// process is gone. A runtime given none reads the frame, logs a warning naming where the
+	// daemon sets this field, and drops it; it never closes the connection on it, since the
+	// launcher would redial a second later and send its waiting reports into the same refusal.
+	MemoryGuardKilled runtime.MemoryGuardKilled
 	// VolumeReported takes one sweep of an issue pod's volume as that pod's launcher reported it
 	// (runtime.VolumeReported): the daemon turns it into the fact that tells the issue's
 	// architect its volume is filling. A runtime given none reads the frame, logs a warning naming

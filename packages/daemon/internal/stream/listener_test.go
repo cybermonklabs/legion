@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net"
 	"os"
+	"reflect"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -183,8 +184,8 @@ func TestNarrowKeepsTheNamedClaimsAndAnswersOnlyLaunchers(t *testing.T) {
 	if event := h.next(); event != (Hello{Claim: otherClaim, Generation: testGeneration}) {
 		t.Fatalf("event = %#v, want the other claim's hello", event)
 	}
-	h.listener.SetLauncherResolver(func(shimwire.LauncherHello) (LauncherHandler, *shimwire.LauncherVolumeTrim, string) {
-		return &launcherServe{frames: make(chan shimwire.Frame, 4)}, nil, ""
+	h.listener.SetLauncherResolver(func(shimwire.LauncherHello) (LauncherHandler, shimwire.LauncherHelloAck, string) {
+		return &launcherServe{frames: make(chan shimwire.Frame, 4)}, shimwire.LauncherHelloAck{}, ""
 	})
 
 	h.listener.Narrow(func(token claim.Token) bool { return token == testClaim })
@@ -504,9 +505,9 @@ func TestALauncherHelloReachesTheLauncherAcceptorAlone(t *testing.T) {
 	h := startListener(t, harnessOptions{})
 	served := &launcherServe{frames: make(chan shimwire.Frame, 4)}
 	var got shimwire.LauncherHello
-	h.listener.SetLauncherResolver(func(hello shimwire.LauncherHello) (LauncherHandler, *shimwire.LauncherVolumeTrim, string) {
+	h.listener.SetLauncherResolver(func(hello shimwire.LauncherHello) (LauncherHandler, shimwire.LauncherHelloAck, string) {
 		got = hello
-		return served, nil, ""
+		return served, shimwire.LauncherHelloAck{}, ""
 	})
 	p := dial(t, h.listener.Addr())
 	hello := shimwire.LauncherHello{Token: "launcher-token", Sandbox: "legion-legion-legion-208", Role: "tester", PodUID: "pod-1", LauncherID: "l-1"}
@@ -532,6 +533,37 @@ func TestALauncherHelloReachesTheLauncherAcceptorAlone(t *testing.T) {
 	}
 }
 
+// The acknowledgement the listener writes is the one the resolver returned, member for member:
+// the memory guard's settings are decided where the launcher is accepted (sandbox's
+// LauncherResolver fills them for an issue pod alone), and a listener that wrote an ack of its
+// own would hand every launcher none, which turns every pod's guard off.
+func TestMemoryGuardTheListenerWritesTheResolversAcknowledgement(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		ack  shimwire.LauncherHelloAck
+	}{
+		{"settings", shimwire.LauncherHelloAck{MemoryGuard: &shimwire.LauncherMemoryGuard{
+			ActPercent: 70, FloorPercent: 20, WaitSeconds: 9, IntervalMilliseconds: 250,
+		}}},
+		{"none", shimwire.LauncherHelloAck{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := startListener(t, harnessOptions{})
+			served := &launcherServe{frames: make(chan shimwire.Frame, 4)}
+			h.listener.SetLauncherResolver(func(shimwire.LauncherHello) (LauncherHandler, shimwire.LauncherHelloAck, string) {
+				return served, tc.ack, ""
+			})
+			p := dial(t, h.listener.Addr())
+			p.send(shimwire.LauncherHello{Token: "launcher-token", Sandbox: "legion-legion-legion-208", Role: "tester", PodUID: "pod-1", LauncherID: "l-1"})
+			got := p.expect(shimwire.TypeLauncherHelloAck).(shimwire.LauncherHelloAck)
+			if !reflect.DeepEqual(got, tc.ack) {
+				t.Fatalf("the launcher read %+v (memory guard %+v), want the resolver's %+v (memory guard %+v)",
+					got, got.MemoryGuard, tc.ack, tc.ack.MemoryGuard)
+			}
+		})
+	}
+}
+
 // What an accepted launcher's cache trimmer runs by travels on the ack the listener writes, and is
 // read here from that line as a launcher reads it: an acceptor that hands settings has them reach
 // the launcher whole, and one that hands none writes an ack with no member at all, the one absence
@@ -544,8 +576,8 @@ func TestTheLauncherHelloAckCarriesWhatItsAcceptorHanded(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			h := startListener(t, harnessOptions{})
 			served := &launcherServe{frames: make(chan shimwire.Frame, 4)}
-			h.listener.SetLauncherResolver(func(shimwire.LauncherHello) (LauncherHandler, *shimwire.LauncherVolumeTrim, string) {
-				return served, handed, ""
+			h.listener.SetLauncherResolver(func(shimwire.LauncherHello) (LauncherHandler, shimwire.LauncherHelloAck, string) {
+				return served, shimwire.LauncherHelloAck{VolumeTrim: handed}, ""
 			})
 			p := dial(t, h.listener.Addr())
 			p.send(shimwire.LauncherHello{Token: "launcher-token", Sandbox: "legion-legion-legion-208", Role: "tester", PodUID: "pod-1", LauncherID: "l-1"})
@@ -568,8 +600,8 @@ func TestTheLauncherHelloAckCarriesWhatItsAcceptorHanded(t *testing.T) {
 func TestARefusedLauncherHelloIsClosedAndLogged(t *testing.T) {
 	const reason = "launcher token is not current"
 	h := startListener(t, harnessOptions{})
-	h.listener.SetLauncherResolver(func(shimwire.LauncherHello) (LauncherHandler, *shimwire.LauncherVolumeTrim, string) {
-		return nil, nil, reason
+	h.listener.SetLauncherResolver(func(shimwire.LauncherHello) (LauncherHandler, shimwire.LauncherHelloAck, string) {
+		return nil, shimwire.LauncherHelloAck{}, reason
 	})
 	p := dial(t, h.listener.Addr())
 	p.send(shimwire.LauncherHello{Token: "stale", Sandbox: "s", Role: "tester", PodUID: "pod-1", LauncherID: "l-1"})
@@ -601,8 +633,8 @@ func TestALauncherHelloBeforeTheAcceptorIsServedAfterIt(t *testing.T) {
 
 	served := &launcherServe{frames: make(chan shimwire.Frame, 4)}
 	handed := shimwire.LauncherVolumeTrim{HighPercent: 85, LowPercent: 70, MinAgeMinutes: 120, IntervalSeconds: 60}
-	h.listener.SetLauncherResolver(func(shimwire.LauncherHello) (LauncherHandler, *shimwire.LauncherVolumeTrim, string) {
-		return served, &handed, ""
+	h.listener.SetLauncherResolver(func(shimwire.LauncherHello) (LauncherHandler, shimwire.LauncherHelloAck, string) {
+		return served, shimwire.LauncherHelloAck{VolumeTrim: &handed}, ""
 	})
 
 	ack := p.expect(shimwire.TypeLauncherHelloAck).(shimwire.LauncherHelloAck)

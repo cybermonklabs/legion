@@ -694,6 +694,40 @@ func TestTheReaperLeavesTheSweepsDeleterToItsOwnWait(t *testing.T) {
 	}
 }
 
+// The pod's memory guard never ends the sweep's deleter. Outside every role the guard spares the
+// launcher and each process the launcher holds through its pidGuard, with everything under it
+// (podClassifier.classify), and the deleter is the launcher's own child started through that
+// same guard (startContainedRemover), the one Run hands both the trimmer and the memory guard. So
+// a deleter still running when the pod nears its memory limit is no process the guard may end.
+// The case starts the real deleter through a pidGuard, and the classifier the launcher builds
+// over that guard reads a scan of a /proc whose only processes are the test's and the deleter's,
+// each a link to the process's own directory in the machine's /proc, as
+// TestMemoryGuardOnRealRoleNamespaces reads its role's processes.
+func TestTheMemoryGuardSparesTheSweepsRunningDeleter(t *testing.T) {
+	requireRoleNamespaces(t)
+	useContainedDeleter(t)
+	guard := &pidGuard{}
+	remover, err := startContainedRemover(guard, coverUnder(t, namespaceScratch(t)), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(remover.close)
+	deleter := remover.process()
+	pod := newGuardPod(t)
+	for _, pid := range []int{os.Getpid(), deleter} {
+		if err := os.Symlink(filepath.Join("/proc", strconv.Itoa(pid)), filepath.Join(pod.proc, strconv.Itoa(pid))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	table := scanTable(t, pod)
+	if p, ok := table.Get(deleter); !ok || p.PPID != os.Getpid() {
+		t.Fatalf("the scan reads the running deleter %d as %+v, want the launcher's child", deleter, p)
+	}
+	if class := newPodClassifier(t.TempDir(), nil, guard).classify(table)[deleter]; !class.Protected {
+		t.Errorf("the sweep's running deleter %d is classified %+v, want protected: the memory guard could end it mid-sweep", deleter, class)
+	}
+}
+
 // The real deleter answers a removal it cannot make as a refusal of that entry, in its own
 // words, and goes on answering: the sweep passes such an entry over and asks for the next one
 // (trimmer.remove). The child runs in a user namespace whose root is the test's own uid, which

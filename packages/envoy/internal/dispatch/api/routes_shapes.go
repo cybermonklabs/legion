@@ -482,12 +482,13 @@ type liveWritePauseQuery struct {
 // reads a route's emitted answer for the tree fields its shape carries (display_trees_test.go)
 // holds the rule for the routes its table lists, and a new read that carries a tree adds a row
 // there; the routes it does not list rest on this rule alone. Two things that look like the same
-// fault and are not: a write answers the row it wrote, so POST /artifacts/{id}/reviews and
-// POST .../plan-reviews name model.ArtifactReview while the GET beside them names
-// []artifactReviewRead - the handlers write what docs.WriteReview returned, and the dashboard
-// draws the read rather than the write's answer (ApprovalChip.tsx invalidates and refetches);
-// and a model that carries its own tree field needs no shaped read at all, which is why
-// model.MyAnswersResponse, model.MyRepliesResponse and model.SearchResponse stand as they are.
+// fault and are not: a write answers the row it wrote, so POST /artifacts/{id}/reviews, POST
+// .../versions/{number}/reviews and POST .../plan-reviews name model.ArtifactReview while the
+// GET beside them names []artifactReviewRead - the handlers write what docs.WriteReview
+// returned, and the dashboard draws the read rather than the write's answer (ApprovalChip.tsx
+// invalidates and refetches); and a model that carries its own tree field needs no shaped read
+// at all, which is why model.MyAnswersResponse, model.MyRepliesResponse and
+// model.SearchResponse stand as they are.
 var routeShapes = map[string]routeShape{
 	"GET /api/v1": {Status: http.StatusOK, Response: routeIndex{}},
 	"GET /api/v1/schema/blocks": {
@@ -817,6 +818,9 @@ var routeShapes = map[string]routeShape{
 	},
 	"GET /api/v1/artifacts/{id}/reviews": {Status: http.StatusOK, Response: []artifactReviewRead{}},
 	"POST /api/v1/artifacts/{id}/reviews": {
+		Status: http.StatusCreated, Response: model.ArtifactReview{}, Request: createArtifactReviewInput{},
+	},
+	"POST /api/v1/artifacts/{id}/versions/{number}/reviews": {
 		Status: http.StatusCreated, Response: model.ArtifactReview{}, Request: createArtifactReviewInput{},
 	},
 	"POST /api/v1/artifacts/{id}/plan-reviews": {

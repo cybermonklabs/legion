@@ -26,6 +26,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
+	"github.com/sjawhar/legion/daemon/internal/memoryguard"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/sessionproxy"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
@@ -107,11 +108,11 @@ func Run(ctx context.Context, cfg Config) error {
 	if err != nil {
 		return err
 	}
-	// The guard comes before the managers: the pod's put-back of a released workspace starts its
-	// jj and git through it (newManagers), as the test database's script and each sweep's deleter
-	// start through it below.
-	guard := &pidGuard{}
-	managers, err := newManagers(cfg, guard)
+	// The pid guard comes before the managers: the pod's put-back of a released workspace starts
+	// its jj and git through it (newManagers), as the test database's script and each sweep's
+	// deleter start through it below.
+	pids := &pidGuard{}
+	managers, err := newManagers(cfg, pids)
 	if err != nil {
 		return err
 	}
@@ -124,7 +125,7 @@ func Run(ctx context.Context, cfg Config) error {
 		exits := make(chan os.Signal, 1)
 		signal.Notify(exits, syscall.SIGCHLD)
 		defer signal.Stop(exits)
-		go reapOrphans(ctx, exits, managers, guard)
+		go reapOrphans(ctx, exits, managers, pids)
 	}
 	if cfg.RolesDir == "" {
 		return managers[0].serveUntil(ctx, address)
@@ -134,17 +135,22 @@ func Run(ctx context.Context, cfg Config) error {
 	// controller's pod, whose working directory is no jj workspace and whose generations carry
 	// no workspace at all. The first pass is this call's, before serveTestPG, which starts a
 	// PostgreSQL: the first pass's rule is that no process of the container holds a lock yet.
-	sweep := newGitLockSweep(managers[0].log.linef)
-	for _, m := range managers {
-		m.gitLocks = sweep
-	}
-	locks := sweep.serve(ctx)
+	// Only a launcher that is the container's first process sweeps, as only that one runs the
+	// memory guard below, since only it sees every process that may hold a lock; any other logs
+	// a line instead (serveGitLockSweep).
+	locks := serveGitLockSweep(ctx, managers)
+	// The pod's one memory guard, before the test database and any role start, so it watches
+	// both from their first process; only a launcher that is the container's first process runs
+	// one, as only that one runs the reaper above, and any other logs a line instead
+	// (serveMemoryGuard). Its loop is waited on with the roles below, as the test database's
+	// ticker is.
+	memory := serveMemoryGuard(ctx, cfg, managers, pids)
 	// The pod's own test database, before any role starts: a role that starts at once finds the
 	// server serving its DSN (serveTestPG). Its ticker is waited on with the roles below, so Run
 	// returns with nothing of the launcher's still running.
 	var testPG <-chan struct{}
 	if cfg.TestPostgres {
-		testPG = serveTestPG(ctx, cfg, managers[0].log, guard)
+		testPG = serveTestPG(ctx, cfg, managers[0].log, pids)
 	}
 	// The pod's one cache trimmer, bound to the first role of the --role list: that role is the
 	// issue's architect, whose connection exists for the life of the pod, and one connection
@@ -153,7 +159,7 @@ func Run(ctx context.Context, cfg Config) error {
 	// (serveVolumeTrim). It is built before any role starts, as the test database is, and its
 	// loop is waited on with the roles below, so Run returns with nothing of the launcher's
 	// still running.
-	trim := serveVolumeTrim(ctx, managers[0], guard)
+	trim := serveVolumeTrim(ctx, managers[0], pids)
 	var running sync.WaitGroup
 	for _, m := range managers {
 		running.Add(1)
@@ -166,6 +172,7 @@ func Run(ctx context.Context, cfg Config) error {
 	if testPG != nil {
 		<-testPG
 	}
+	<-memory
 	// The trimmer watches the same context as the roles and is stopped beside them rather than
 	// after them: worker_stop_timeout_seconds is the pod's termination grace as well as each
 	// role's own --stop-grace, and the roles are given it whole.
@@ -300,8 +307,10 @@ func (m *manager) logf(format string, args ...any) {
 // state, then start, stop, bundle and leak-check commands until the connection ends. The hello
 // names the launcher's leak-check pin and whether this process has installed it, so the daemon
 // pushes the check only to a launcher that still needs it. The acknowledgement is logged as one
-// line, so a launcher the daemon accepted reads apart from one still dialing, and what it
-// carries for the pod's cache trimmer is put in force with the writer (applyAck).
+// line, so a launcher the daemon accepted reads apart from one still dialing. The memory guard
+// settings it carries, or their absence, go to the pod's guard, and decide whether the guard's
+// reports of this role's processes go on this connection (openMemoryReports); what it carries for
+// the pod's cache trimmer is put in force with the writer (applyAck).
 func (m *manager) serve(ctx context.Context, address string) error {
 	conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", address)
 	if err != nil {
@@ -329,8 +338,15 @@ func (m *manager) serve(ctx context.Context, address string) error {
 	}
 	m.logf("launcher: connected to the daemon at %s as launcher %s (sandbox %s, role %s, pod %s)",
 		address, m.launcherID, m.cfg.Sandbox, m.role, m.cfg.PodUID)
+	// The guard runs by the newest acknowledgement of any role, and an acknowledgement that
+	// carries no settings turns it off: that is how a daemon built before the guard answers, and
+	// how a deployment that turned the guard off does. A connection that merely drops keeps the
+	// settings in force.
+	if m.memoryGuard != nil {
+		m.memoryGuard.Apply(ack.MemoryGuard)
+	}
 	m.applyAck(writer, ack)
-	// The end of this connection takes its writer out of force and leaves everything else: the
+	// The end of this connection takes its writers out of force and leaves everything else: the
 	// trimmer settings the acknowledgement carried stay in force, so the trimmer goes on sweeping
 	// while the daemon restarts, and only an acknowledgement carrying none, or carrying settings
 	// the trimmer refuses, stops its sweeping (applyAck).
@@ -338,6 +354,9 @@ func (m *manager) serve(ctx context.Context, address string) error {
 		m.mu.Lock()
 		if m.writer == writer {
 			m.writer = nil
+		}
+		if m.reportWriter == writer {
+			m.reportWriter, m.reportsCarried = nil, false
 		}
 		m.mu.Unlock()
 	}()
@@ -347,6 +366,9 @@ func (m *manager) serve(ctx context.Context, address string) error {
 	// A restore whose outcome no connection has carried yet goes over this one: until the daemon
 	// has it, the saved work stays in its database (bundleRestore.owed).
 	m.reportRestore()
+	// The guard's reports of this role's processes go on this connection from here, after its
+	// state, or are dropped when its acknowledgement carried no settings.
+	m.openMemoryReports(writer, ack.MemoryGuard != nil)
 	for {
 		frame, err := readFrame(reader)
 		if err != nil {
@@ -526,11 +548,34 @@ type manager struct {
 	restore *bundleRestore
 	// gitLocks is the pod's one sweep of the clone's stale git locks, which every role manager
 	// of the container shares: the first role start that carries a workspace tells it which
-	// clone to sweep, when the container's working directory did not (gitLockSweep.learn).
+	// clone to sweep, when the container's working directory did not (gitLockSweep.learn). It is
+	// nil where the launcher runs no sweep: the controller's pod, and a roles launcher that is
+	// not the container's first process (serveGitLockSweep); learn, its one use, takes a nil
+	// sweep for one with nothing to learn.
 	gitLocks *gitLockSweep
 	// check is the launcher process's one install of the shared public leak check, which every
 	// role manager of the container shares as it shares restore.
 	check *checkInstall
+	// memoryGuard is the pod's one memory guard, which every role manager of an issue pod's
+	// container shares: each connection's acknowledgement hands it the daemon's settings
+	// (serve). It is nil in the controller's pod and in a launcher that is not its container's
+	// first process, which run none (serveMemoryGuard).
+	memoryGuard *memoryguard.Guard
+	// memoryKills are the guard's reports of this role's processes it ended that no connection
+	// has carried yet, oldest first, at most maxWaitingMemoryKills (queueMemoryKill). reportWriter
+	// is the connection they go on, this role's current one from its state frame on, nil while
+	// none is up; reportsCarried is whether that connection's acknowledgement carried guard
+	// settings, without which the daemon behind it may not know the report (openMemoryReports).
+	// memorySending is the sequence of the oldest report while it is being written, 0 while none
+	// is, since a guard counts its kills from 1 (sendMemoryKills). All four are guarded by mu.
+	memoryKills    []shimwire.LauncherMemoryKill
+	reportWriter   *shimwire.Writer
+	reportsCarried bool
+	memorySending  uint64
+	// memoryWake tells this role's report sender a report is waiting (sendMemoryKillsUntil), and
+	// memorySend holds one send of the waiting reports at a time (sendMemoryKills).
+	memoryWake chan struct{}
+	memorySend sync.Mutex
 	// volumeTrimSettings is what the latest acknowledgement of this role handed the pod's cache
 	// trimmer, and nil when it handed none (shimwire.LauncherHelloAck.VolumeTrim): on nil the
 	// trimmer reads and deletes nothing, as on settings it refuses (volumeTrimRuns), and a report
@@ -751,7 +796,8 @@ func (m *manager) start(ctx context.Context, command shimwire.LauncherStart) shi
 	}
 	// The clone's stale git locks: this start names the workspace the sweep works, and a sweep
 	// that had none sweeps it here, before the restore below runs real git and jj against that
-	// clone, where a stale lock would fail it (gitLockSweep.learn).
+	// clone, where a stale lock would fail it (gitLockSweep.learn). A launcher that runs no sweep
+	// holds none here, and its restore runs over the clone as it stands.
 	m.gitLocks.learn(ctx, envValue(env, "LEGION_WORKSPACE"))
 	// The pod's one workspace-bundle restore, if a release saved one: after writeFiles, which
 	// clears the role's private directory, and before any role of the pod runs, so no role works
