@@ -43,13 +43,14 @@ func (wallClock) Sleep(ctx context.Context, wait time.Duration) error {
 }
 
 // VisibilitySource says where a guard's answer came from: GitHub's REST API, the role's kept
-// answer, or git's ls-remote, the read the guard makes when the REST read is refused for a spent
-// rate limit it does not wait for (Guard.lsRemoteVisibility).
+// answer, GitHub's GraphQL API, or git's ls-remote. The last two are the reads the guard makes
+// when the REST read is refused for a spent rate limit it does not wait for (Guard.Visibility).
 type VisibilitySource string
 
 const (
 	VisibilityFromGitHub   VisibilitySource = "github"
 	VisibilityFromCache    VisibilitySource = "kept"
+	VisibilityFromGraphQL  VisibilitySource = "graphql"
 	VisibilityFromLsRemote VisibilitySource = "ls-remote"
 )
 
@@ -58,10 +59,16 @@ const (
 // public cannot skip a rule pass.
 //
 // A read GitHub refuses for a spent rate limit is read once more after the reset, where that is
-// at most rateLimitWaitBound away. A limit still spent after that, and one that resets later, is
-// read a second way, which costs no REST request: git's ls-remote (Guard.lsRemoteVisibility),
-// whose answer is kept as gh's is. Where that read cannot answer either, the call is refused,
-// naming the spent limit and its reset.
+// at most rateLimitWaitBound away. The limit is the installation's core REST limit, or GitHub's
+// secondary rate limit, which rateLimitFrom does not tell apart from it and which usually gives no
+// reset. A limit still spent after that wait, and one whose reset is further away, already past
+// or not given, is read a second way that costs no REST request: GitHub's GraphQL API
+// (Guard.graphQLVisibility), as the same installation, whose budget is separate from the core
+// one. Its answer of public, private or internal is taken as gh's is. Only where GraphQL refuses
+// the read for a rate limit of its own is the visibility read a third way: git's ls-remote with no
+// credential (Guard.lsRemote), which answers public and nothing else. Every other failure of
+// either read, an unauthenticated refusal of ls-remote included, refuses the call, naming the
+// spent limit and its reset and what the read said. The answer is kept as gh's is.
 //
 // The header-bearing read is:
 //
@@ -89,8 +96,18 @@ func (g *Guard) Visibility(ctx context.Context, slug string) (Visibility, error)
 	}
 	source := VisibilityFromGitHub
 	if errors.As(err, &limited) {
-		visibility, err = g.lsRemoteVisibility(ctx, slug, limited)
-		source = VisibilityFromLsRemote
+		source = VisibilityFromGraphQL
+		visibility, err = g.graphQLVisibility(ctx, slug)
+		var graphQLLimited *rateLimitError
+		switch {
+		case errors.As(err, &graphQLLimited):
+			source = VisibilityFromLsRemote
+			if visibility, err = g.lsRemote(ctx, githubOrigin, slug); err != nil {
+				err = fmt.Errorf("%w; GraphQL's rate limit is spent too, and git ls-remote could not answer: %w", limited, err)
+			}
+		case err != nil:
+			err = fmt.Errorf("%w, and GraphQL could not answer: %w", limited, err)
+		}
 	}
 	if err != nil {
 		return "", err
@@ -216,10 +233,11 @@ func (g *Guard) visibilityCachePath(slug string) string {
 }
 
 // VisibilityReadVar is the environment variable the shared public leak check's own visibility
-// callback carries, naming the repository it reads. It is exported with VisibilityReadArgs because
-// `legion gh` has to let exactly this callback through unchecked. A callback written from a second
-// copy of these strings can silently part from this exemption, making a first write to another
-// owner's repository recurse without end.
+// callback carries, naming the repository it reads; the guard's own two reads carry it too
+// (VisibilityReadWithHeadersArgs, VisibilityGraphQLArgs). It is exported with those argv because
+// `legion gh` has to let exactly these reads through unchecked. A read written from a second copy
+// of these strings can silently part from this exemption, making a first write to another owner's
+// repository recurse without end.
 const VisibilityReadVar = "PUBLIC_LEAK_CHECK_VISIBILITY_READ"
 
 // VisibilityReadArgs is the shared public leak check callback's exact argv for slug, gh's own
@@ -232,6 +250,23 @@ func VisibilityReadArgs(slug string) []string {
 // shared check callback because it needs headers for rate-limit handling.
 func VisibilityReadWithHeadersArgs(slug string) []string {
 	return []string{"api", "--hostname", "github.com", "repos/" + slug, "--include", "--jq", ".visibility"}
+}
+
+// visibilityQuery is the GraphQL query of the guard's GraphQL read (VisibilityGraphQLArgs): the
+// visibility of the repository its two variables name.
+const visibilityQuery = "query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { visibility } }"
+
+// VisibilityGraphQLArgs is the guard's GraphQL read of slug's visibility, gh's own name aside: the
+// second read Guard.Visibility makes when GitHub refuses the REST read for a spent rate limit
+// (Guard.graphQLVisibility). It is exported beside VisibilityReadArgs because `legion gh` lets
+// exactly this argv through unchecked, with VisibilityReadVar naming the same slug: checking it
+// would call the guard again. The owner and the name go as raw string variables (-f), so a name
+// of digits stays a string, and --include prints the status line and the headers, which say
+// whether GitHub refused the read for a rate limit.
+func VisibilityGraphQLArgs(slug string) []string {
+	owner, name, _ := strings.Cut(slug, "/")
+	return []string{"api", "--hostname", "github.com", "graphql", "--include",
+		"-f", "query=" + visibilityQuery, "-f", "owner=" + owner, "-f", "name=" + name}
 }
 
 // ghVisibility is the gh read itself, the guard's answer where a caller named no reader of its
@@ -259,48 +294,104 @@ func (g *Guard) ghVisibility(ctx context.Context, slug string) (Visibility, erro
 	}
 }
 
-// githubOrigin is the scheme and host of the read without REST: the repository's URL begins with
-// it, and git names it in the line that says GitHub asked for a credential (lsRemoteRefused).
-const githubOrigin = "https://github.com"
-
-// lsRemoteVisibility is the visibility read Guard.Visibility makes when GitHub refused gh's read
-// for a spent rate limit that the guard does not wait for: `git ls-remote` of the repository's
-// HTTPS URL, made with no credential (Guard.lsRemote). That read goes through git's smart HTTP
-// protocol, which GitHub does not count against the REST rate limit, so it answers while the
-// installation's REST budget is spent: pushes refused for that limit have met `git ls-remote
-// origin` answering at the same moments. GitHub's GraphQL API would be no second way, since its
-// budget is the installation's as well, and the same load spends it.
+// graphQLVisibility reads slug's visibility from GitHub's GraphQL API through gh, as the same
+// installation as the REST read and with the same VisibilityReadVar and GH_HOST
+// (Guard.ghVisibility), under the caller's bound. GraphQL's budget is separate from the core REST
+// one: at 2026-11-15T09:34:29Z `gh api rate_limit` showed installation 171972716 with 12,221 of
+// its 12,500 GraphQL points left, and GraphQL reads have answered while core reads were refused.
 //
-// A read that answers neither public nor private leaves the visibility unknown, and the call is
-// refused as it was before this read was made, naming the spent limit and its reset, with what
-// git said after them.
-func (g *Guard) lsRemoteVisibility(ctx context.Context, slug string, limited *rateLimitError) (Visibility, error) {
-	visibility, err := g.lsRemote(ctx, githubOrigin, slug)
+// PUBLIC, PRIVATE and INTERNAL are the answer. A refusal for GraphQL's own rate limit is a
+// *rateLimitError: the status 403 or 429 with no requests left, GitHub's secondary rate limit,
+// or an error of type RATE_LIMITED, which GitHub can send with the status 200. Anything else is an
+// error that Guard.Visibility refuses the call on, and never an answer: an error beside the data,
+// such as NOT_FOUND for a repository GitHub could not resolve (which is also what an
+// installation that cannot see a private repository is told), no repository, a visibility
+// GraphQL does not define, a body that is no JSON, gh exiting non-zero, and a gh that the
+// caller's bound stopped, after which no bound is left for another read.
+func (g *Guard) graphQLVisibility(ctx context.Context, slug string) (Visibility, error) {
+	status, printed, err := g.run(ctx, child{
+		argv: append([]string{"gh"}, VisibilityGraphQLArgs(slug)...),
+		env:  []string{VisibilityReadVar + "=" + slug, "GH_HOST=github.com"},
+	})
 	if err != nil {
-		return "", fmt.Errorf("%w, and the read without REST could not answer: %w", limited, err)
+		return "", err
 	}
-	return visibility, nil
+	if limited := rateLimitFrom(printed); limited != nil {
+		return "", limited
+	}
+	masked := maskPath(slug)
+	body := visibilityBody(printed)
+	said := strings.ReplaceAll(strings.TrimSpace(body), slug, masked)
+	var answer struct {
+		Data *struct {
+			Repository *struct {
+				Visibility string `json:"visibility"`
+			} `json:"repository"`
+		} `json:"data"`
+		Errors []struct {
+			Type    string `json:"type"`
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
+	// The first JSON value alone: gh prints its own error line after the body when GraphQL
+	// answers errors.
+	if err := json.NewDecoder(strings.NewReader(body)).Decode(&answer); err != nil {
+		return "", fmt.Errorf("gh api graphql for %s exited %d with no GraphQL answer: %s", masked, status, said)
+	}
+	if len(answer.Errors) > 0 {
+		errs := make([]string, len(answer.Errors))
+		for i, e := range answer.Errors {
+			if e.Type == "RATE_LIMITED" {
+				_, headers := responseHeaders(printed)
+				return "", limitResettingAt(headers)
+			}
+			errs[i] = e.Type + ": " + strings.ReplaceAll(e.Message, slug, masked)
+		}
+		return "", fmt.Errorf("GraphQL answered %s with %s", masked, strings.Join(errs, "; "))
+	}
+	if status != 0 {
+		return "", fmt.Errorf("gh api graphql for %s exited %d: %s", masked, status, said)
+	}
+	if answer.Data == nil || answer.Data.Repository == nil {
+		return "", fmt.Errorf("GraphQL answered no repository for %s: %s", masked, said)
+	}
+	switch answer.Data.Repository.Visibility {
+	case "PUBLIC":
+		return Public, nil
+	case "PRIVATE":
+		return Private, nil
+	case "INTERNAL":
+		return Internal, nil
+	default:
+		return "", fmt.Errorf("GraphQL answered %q as the visibility of %s, which is none GitHub defines", answer.Data.Repository.Visibility, masked)
+	}
 }
 
-// lsRemote is what `git ls-remote <origin>/<slug>.git HEAD` says of the repository's
-// visibility, read with no credential: public where git exits 0, listing the repository's HEAD
-// (an empty repository lists nothing and exits 0 all the same), private where the server asks for
-// a credential (lsRemoteRefused), and an error for anything else. origin is a parameter so that a
-// test can point the read at a server of its own; the guard's one caller passes githubOrigin.
+// githubOrigin is the scheme and host of the read without a credential: the repository's URL
+// begins with it.
+const githubOrigin = "https://github.com"
+
+// lsRemote is what `git ls-remote <origin>/<slug>.git HEAD`, read with no credential, says of the
+// repository's visibility: public where git exits 0, listing the repository's HEAD (an empty
+// repository lists nothing and exits 0 all the same), and an error for anything else. origin is a
+// parameter so that a test can point the read at a server of its own; the guard's one caller
+// passes githubOrigin. That read goes through git's smart HTTP protocol, which GitHub does not
+// count against the REST rate limit: pushes refused for that limit have met `git ls-remote origin`
+// answering at the same moments.
 //
-// Private is the one answer that cannot be told from a repository that is not there: GitHub asks
-// an anonymous reader for a credential in both cases, and git prints the same line for both
-// (measured with git 2.47.3). Both are answered private. The write's own request, which carries
-// the role's credential, then decides: a write to a repository that is not there fails on its own.
+// Public is the one answer because a refusal says nothing of the repository. GitHub answers an
+// anonymous read of a private repository, and of a name no repository has, with a 401; it also
+// answers one of a public repository with a 401 while it limits unusual traffic (GitHub's
+// changelog of 2026-10-19, "Some Git over HTTPS may temporarily require authentication"); and git
+// prints the same `could not read Username` line for each, as it does for a server's ERR packet
+// that carries that line. Public is also the safe answer: it runs the rule pass. So this read can
+// never skip one, and every exit but 0 refuses the call.
 //
-// Private skips the rule pass, which is the direction that can leak, so no credential may reach
-// this read. GitHub refuses a bad credential for a public repository too, and git reports that
-// refusal with the same line as an anonymous read of a private one: measured with git 2.47.3, an
-// http.extraHeader carrying an invented token made ls-remote of a public repository print
-// lsRemoteRefused's line. A pod hands its git a credential helper in GIT_CONFIG_KEY_<n>
-// variables, and a repository's own configuration can hold an extra header or a URL rewrite that
-// carries a token. So this git reads no configuration but the command line's, and no credential
-// file:
+// For the same reason no credential reaching this read can skip a rule pass: a credential that
+// reads a private repository answers 0, and the push is scanned; a bad one is refused with a 401,
+// even for a public repository. What follows spares a refusal the read did not need, or a scan of
+// a private repository's push. This git reads no configuration but the command line's, and no
+// credential file:
 //
 //   - of the caller's environment it keeps no GIT_ variable but three that carry no credential,
 //     and none of the names libcurl finds a netrc file by (lsRemoteInherits), so no
@@ -315,7 +406,7 @@ func (g *Guard) lsRemoteVisibility(ctx context.Context, slug string, limited *ra
 //     repository's configuration;
 //   - `-c credential.helper=` empties the helper list again on the command line, after anything
 //     a wrapper of the pod's git puts in front of it;
-//   - `-c http.extraHeader=`, `-c http.<origin>/<slug>.git.extraHeader=` and, last,
+//   - `-c http.extraHeader=`, `-c http.<origin>/<slug>.git.extraHeader=` and
 //     `-c http.<origin>/<slug>.git//.extraHeader=` empty the extra headers again after one that a
 //     wrapper's own `-c` added; outside the image, `legion git --after` runs the host's next git
 //     on PATH, a wrapper of its own included. git keeps the setting whose URL matches the request
@@ -323,20 +414,30 @@ func (g *Guard) lsRemoteVisibility(ctx context.Context, slug string, limited *ra
 //     alone leaves a header set for the host. git matches http settings against the repository's
 //     URL with a slash appended, and strips one trailing slash from a setting's URL, so a setting
 //     for `<origin>/<slug>.git//` matches more closely than one for the URL itself. The `//`
-//     reset matches as closely as any setting can, and it comes last, which wins a tie. Measured
-//     with git 2.47.3 against a public repository on github.com, with a wrapper's header carrying
-//     an invented token, after `-c credential.helper=`: a generic header made ls-remote print
-//     lsRemoteRefused's line, and it exited 0 after the generic reset; a header for
-//     https://github.com/ printed the line after the generic reset too, and exited 0 after the
-//     reset for the repository's URL; a header for that URL with `//` appended, also with the URL
-//     in capitals, with :443, or with a letter %-escaped, printed the line after both of those
-//     resets, and exited 0 after the `//` reset. Not covered: a wrapper that rewrites the URL
-//     with its own url.<base>.insteadOf to another github.com path, and sets a header for the
-//     rewritten URL, which these resets do not name;
+//     reset matches as closely as any setting can, and it comes after the wrapper's, which wins a
+//     tie. Measured with git 2.47.3 against a public repository on github.com, with a wrapper's
+//     header carrying an invented token, after `-c credential.helper=`: a generic header made
+//     ls-remote exit 128, and it exited 0 after the generic reset; a header for
+//     https://github.com/ exited 128 after the generic reset too, and 0 after the reset for the
+//     repository's URL; a header for that URL with `//` appended, also with the URL in capitals,
+//     with :443, or with a letter %-escaped, exited 128 after both of those resets, and 0 after
+//     the `//` reset;
+//   - `-c http.proactiveAuth=none` and, last, `-c http.<origin>/<slug>.git//.proactiveAuth=none`
+//     undo a wrapper's http.proactiveAuth, by the same rule of the closest URL. `basic` or `auto`
+//     makes git ask for a credential before its first request, and with none to give it exits
+//     128. Measured with git 2.47.3 against a local server serving a public repository: a
+//     wrapper's setting for no URL, for the host, for the repository's URL or for that URL with
+//     `//` appended exited 128; the generic reset cleared the first alone, and the `//` reset
+//     after it cleared all four;
 //   - the guard's prompt settings (promptsNothing) leave git's askpass and its terminal prompt
 //     nothing to answer with, and the URL holds no user and no token.
 //
-// LC_ALL=C keeps git's messages in the English lsRemoteRefused reads.
+// The resets name the settings measured to make an anonymous read of a public repository fail,
+// one key at a time. A setting they do not name, or a wrapper that rewrites the URL with its own
+// url.<base>.insteadOf and sets a header for the rewritten URL, can still make this read refuse
+// the call; none can make it answer anything but public.
+//
+// LC_ALL=C keeps git's messages in the refusal in English.
 //
 // The read runs at most lsRemoteBound, and never past the caller's own bound. That cap is this
 // read's own, not the call's: a call that waited out a near reset and was refused again has spent
@@ -354,6 +455,7 @@ func (g *Guard) lsRemote(ctx context.Context, origin, slug string) (Visibility, 
 	status, printed, err := g.run(ctx, child{
 		argv: gitArgv("-c", "credential.helper=",
 			"-c", "http.extraHeader=", "-c", "http."+url+".extraHeader=", "-c", "http."+url+"//.extraHeader=",
+			"-c", "http.proactiveAuth=none", "-c", "http."+url+"//.proactiveAuth=none",
 			"ls-remote", url, "HEAD"),
 		dir:     "/",
 		inherit: lsRemoteInherits,
@@ -362,19 +464,15 @@ func (g *Guard) lsRemote(ctx context.Context, origin, slug string) (Visibility, 
 	if err != nil {
 		return "", err
 	}
-	switch {
-	case status == 0:
-		return Public, nil
-	case lsRemoteRefused(origin, status, printed):
-		return Private, nil
-	default:
+	if status != 0 {
 		masked := maskPath(slug)
 		return "", fmt.Errorf("git ls-remote of %s exited %d: %s", masked, status, strings.ReplaceAll(strings.TrimSpace(printed), slug, masked))
 	}
+	return Public, nil
 }
 
-// lsRemoteBound is the longest the read without REST runs (Guard.lsRemote): as long as the guard
-// waits for a near reset, so a server that never answers costs no more than that wait would
+// lsRemoteBound is the longest the read with no credential runs (Guard.lsRemote): as long as the
+// guard waits for a near reset, so a server that never answers costs no more than that wait would
 // have. It is a variable so that a test can shorten it.
 var lsRemoteBound = rateLimitWaitBound
 
@@ -395,53 +493,19 @@ func lsRemoteInherits(name string) bool {
 	return !strings.HasPrefix(name, "GIT_")
 }
 
-// lsRemoteRefused is whether git's exit status and output are its account of a server that asked
-// for a credential the read had none to give. Asked on a 401, git runs its askpass, which answers
-// nothing (promptsNothing), finds its terminal prompt off, and exits 128 with
-//
-//	fatal: could not read Username for 'https://github.com': terminal prompts disabled
-//
-// That line, whole and naming origin, is the one read as private: it is what git prints when
-// GitHub answers an anonymous read of a private repository (measured with git 2.47.3, and with
-// the git CI runs in TestLsRemoteReadsWhatARealGitPrints). Three near misses are read as no
-// answer, because each can come from a public repository:
-//
-//   - "Authentication failed for …": git sent a credential and the server refused it, which
-//     GitHub does for a public repository too. lsRemote sends none, so this means a credential
-//     reached the request some way it did not close, and the answer says nothing of the
-//     repository.
-//   - "The requested URL returned error: 403": a 403 asks for no credential. It is a refusal a
-//     credential would not change, and a proxy that refuses the request answers one whatever the
-//     repository's visibility.
-//   - The line naming another origin, or the line inside a "remote: " line: the first is git
-//     asking for some other server's credential, such as a proxy's, and the second is text the
-//     server wrote.
-//
-// Anything else leaves the visibility unknown, and the call is refused as it was before.
-func lsRemoteRefused(origin string, status int, printed string) bool {
-	if status != 128 {
-		return false
-	}
-	want := "fatal: could not read Username for '" + origin + "': terminal prompts disabled"
-	for line := range strings.Lines(printed) {
-		if strings.TrimRight(line, "\r\n") == want {
-			return true
-		}
-	}
-	return false
-}
-
+// rateLimitError is a read GitHub refused for a spent rate limit, and when the limit resets, zero
+// where GitHub gave no reset.
 type rateLimitError struct{ reset time.Time }
 
-func (e *rateLimitError) Error() string { return e.refusal().Error() }
-
-func (e *rateLimitError) refusal() error {
+func (e *rateLimitError) Error() string {
 	if e.reset.IsZero() {
-		return errors.New("the installation's rate limit is spent and GitHub gave no reset time")
+		return "the installation's rate limit is spent and GitHub gave no reset time"
 	}
-	return fmt.Errorf("the installation's rate limit is spent until %s UTC", e.reset.UTC().Format(time.RFC3339))
+	return fmt.Sprintf("the installation's rate limit is spent until %s UTC", e.reset.UTC().Format(time.RFC3339))
 }
 
+// rateLimitFrom is the spent limit gh's --include output reports, and nil where it reports none:
+// the status 403 or 429 with no requests left, or GitHub's secondary rate limit by its text.
 func rateLimitFrom(printed string) *rateLimitError {
 	status, headers := responseHeaders(printed)
 	lower := strings.ToLower(printed)
@@ -449,6 +513,12 @@ func rateLimitFrom(printed string) *rateLimitError {
 		!strings.Contains(lower, "secondary rate limit") && !strings.Contains(lower, "secondary rate-limit") {
 		return nil
 	}
+	return limitResettingAt(headers)
+}
+
+// limitResettingAt is a spent limit that resets when headers' X-RateLimit-Reset says, and one
+// with no reset where they give none.
+func limitResettingAt(headers map[string]string) *rateLimitError {
 	reset, _ := strconv.ParseInt(headers["x-ratelimit-reset"], 10, 64)
 	if reset == 0 {
 		return &rateLimitError{}

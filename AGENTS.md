@@ -377,7 +377,7 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
 - `legion gh`'s visibility guard, rate-limit wait and call log
 
   the guard keeps public repository visibility answers for the pod and reads private or internal visibility on every call;
-  where GitHub says its rate limit is spent, it waits once only when the stated reset is at most two minutes away, otherwise refusing with that reset in UTC;
+  where GitHub says its rate limit is spent (the core limit, or its secondary rate limit), it waits once only when the stated reset is at most two minutes away; otherwise, and when the retry is still refused, it reads the visibility through GitHub's GraphQL API as the same installation, taking its public, private or internal, and only where GraphQL's own limit is spent too through an unauthenticated `git ls-remote`, whose exit 0 alone reads public; any other outcome refuses the call, naming the spent limit and its reset in UTC;
   the exact `gh api rate_limit` read bypasses that guard, while a different endpoint or any option remains guarded;
   each user-initiated wrapped call appends a line to a 1 MiB-bounded log, `$XDG_STATE_HOME/legion-gh/calls.log` (`appendGhCallLog`, `packages/daemon/cmd/legion/gh.go`), serializing append and rotation across processes, with its time, role, issue, resolved repository, command path, visibility source and exit status, never argument text or a response body
 

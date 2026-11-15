@@ -1156,12 +1156,13 @@ func readRecord(t *testing.T, path string) string {
 // buffered handed to gh in this process's place.
 //
 // Two calls reach gh unchecked. `legion gh auth git-credential` answers git as it always did,
-// with no check run at all, since reading its standard input would break git's protocol. And the
-// shared check's own visibility read passes when it is exactly that read for exactly the
-// repository PUBLIC_LEAK_CHECK_VISIBILITY_READ names — without it a pod's gh, which is this
-// command, would call the check, whose own read would call it again, without end — while the
-// same variable with any other argv, and a variable naming no repository, are checked like
-// anything else.
+// with no check run at all, since reading its standard input would break git's protocol. And a
+// visibility read of the shared check's or of the guard's own (the GraphQL read the guard makes
+// when GitHub refuses its REST read for a spent rate limit) passes when it is exactly that read
+// for exactly the repository PUBLIC_LEAK_CHECK_VISIBILITY_READ names — without it a pod's gh,
+// which is this command, would call the check, whose own read would call it again, without end —
+// while the same variable with any other argv, and a variable naming no repository, are checked
+// like anything else.
 func TestLegionGhChecksTheCallWithTheLeakGuard(t *testing.T) {
 	root, defaultDir := gitCredentialBundle(t)
 	help, err := filepath.Abs(ghHelpDir)
@@ -1274,6 +1275,20 @@ func TestLegionGhChecksTheCallWithTheLeakGuard(t *testing.T) {
 		}
 	})
 
+	t.Run("unchecked: the guard's own GraphQL visibility read", func(t *testing.T) {
+		graphql := leakguard.VisibilityGraphQLArgs("sjawhar/legion")
+		code, stdout, stderr, ghRan, checked := call(t, ghCheckRefuses, "", map[string]string{leakguard.VisibilityReadVar: "sjawhar/legion"}, graphql...)
+		if code != 0 || stdout != "public\n" {
+			t.Errorf("the guard's own GraphQL read = exit %d, stdout %q, stderr %q; want exit 0 and gh's answer", code, stdout, stderr)
+		}
+		if checked != "" {
+			t.Errorf("the shared check ran for the guard's own GraphQL read: %q", checked)
+		}
+		if want := "visibility " + strings.Join(graphql, " ") + "\n"; ghRan != want {
+			t.Errorf("gh recorded %q, want %q", ghRan, want)
+		}
+	})
+
 	for _, tc := range []struct {
 		name string
 		slug string
@@ -1281,6 +1296,7 @@ func TestLegionGhChecksTheCallWithTheLeakGuard(t *testing.T) {
 	}{
 		{"another argv under the same variable", "sjawhar/legion", []string{"api", "--hostname", "github.com", "repos/sjawhar/legion", "--jq", ".name"}},
 		{"a variable naming no repository", "sjawhar/legion/pulls", []string{"api", "--hostname", "github.com", "repos/sjawhar/legion/pulls", "--jq", ".visibility"}},
+		{"the GraphQL read of another repository under the variable", "sjawhar/legion", leakguard.VisibilityGraphQLArgs("sjawhar/other")},
 	} {
 		t.Run("checked: "+tc.name, func(t *testing.T) {
 			code, stdout, stderr, ghRan, checked := call(t, ghCheckRefuses, "", map[string]string{leakguard.VisibilityReadVar: tc.slug}, tc.args...)
@@ -1289,6 +1305,43 @@ func TestLegionGhChecksTheCallWithTheLeakGuard(t *testing.T) {
 			}
 			if checked == "" || ranGh(ghRan) {
 				t.Errorf("the check recorded %q and gh %q; want the call checked and gh not run", checked, ghRan)
+			}
+		})
+	}
+}
+
+// ghVisibilityRead lets through the shared check's visibility callback and the guard's own REST
+// and GraphQL visibility reads, each for exactly the repository PUBLIC_LEAK_CHECK_VISIBILITY_READ
+// names, and nothing else: not the GraphQL read of another repository, not another query, not
+// the read with a field added, not the read with no variable, and not a variable naming no
+// repository.
+func TestGhVisibilityReadLetsThroughOnlyTheExactReads(t *testing.T) {
+	const slug = "sjawhar/legion"
+	env := map[string]string{leakguard.VisibilityReadVar: slug}
+	graphql := leakguard.VisibilityGraphQLArgs(slug)
+	for _, tc := range []struct {
+		name string
+		argv []string
+		env  map[string]string
+		want bool
+	}{
+		{"the shared check's callback", leakguard.VisibilityReadArgs(slug), env, true},
+		{"the guard's REST read", leakguard.VisibilityReadWithHeadersArgs(slug), env, true},
+		{"the guard's GraphQL read", graphql, env, true},
+		{"the GraphQL read of another repository", leakguard.VisibilityGraphQLArgs("sjawhar/other"), env, false},
+		{"another GraphQL query", []string{"api", "--hostname", "github.com", "graphql", "--include", "-f", "query={viewer{login}}", "-f", "owner=sjawhar", "-f", "name=legion"}, env, false},
+		{"the GraphQL read with a field added", append(slices.Clone(graphql), "-f", "extra=1"), env, false},
+		{"the GraphQL read with no variable", graphql, map[string]string{}, false},
+		{
+			"the GraphQL read under a variable naming no repository",
+			leakguard.VisibilityGraphQLArgs("sjawhar/legion/pulls"),
+			map[string]string{leakguard.VisibilityReadVar: "sjawhar/legion/pulls"},
+			false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ghVisibilityRead(tc.argv, tc.env); got != tc.want {
+				t.Errorf("ghVisibilityRead(%q) = %v, want %v", tc.argv, got, tc.want)
 			}
 		})
 	}

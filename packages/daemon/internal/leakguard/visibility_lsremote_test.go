@@ -21,16 +21,20 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 )
 
-// theRepo is the repository these tests read the visibility of, and theURL the HTTPS URL the
-// read without REST hands git for it.
+// theRepo is the repository these tests read the visibility of, theURL the HTTPS URL the read
+// with no credential hands git for it, and theResets what that read puts after the package's
+// pins and before ls-remote.
 const (
-	theRepo = "invented-org/invented-repo"
-	theURL  = githubOrigin + "/" + theRepo + ".git"
+	theRepo   = "invented-org/invented-repo"
+	theURL    = githubOrigin + "/" + theRepo + ".git"
+	theResets = "-c credential.helper= -c http.extraHeader= -c http." + theURL + ".extraHeader= -c http." + theURL + "//.extraHeader= " +
+		"-c http.proactiveAuth=none -c http." + theURL + "//.proactiveAuth=none"
 )
 
 // githubAsksForACredential is what git 2.47.3 printed, exit 128, for an anonymous ls-remote of a
 // private repository on github.com, with the guard's askpass and terminal prompt settings: the
-// askpass answers nothing, and the terminal prompt is off.
+// askpass answers nothing, and the terminal prompt is off. GitHub's 401 for a public repository
+// under unusual traffic makes git print the same.
 var githubAsksForACredential = []string{
 	"error: unable to read askpass response from '/usr/bin/false'",
 	"fatal: could not read Username for 'https://github.com': terminal prompts disabled",
@@ -45,11 +49,16 @@ var (
 	cannotConnect      = printsToStderr("fatal: unable to access '"+theURL+"/': Could not resolve host: github.com") + "exit 128\n"
 )
 
+// shQuote is s as one word of sh.
+func shQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
 // printsToStderr is a line of sh that prints lines to standard error, each quoted for the shell.
 func printsToStderr(lines ...string) string {
 	quoted := make([]string, len(lines))
 	for i, line := range lines {
-		quoted[i] = "'" + strings.ReplaceAll(line, "'", `'\''`) + "'"
+		quoted[i] = shQuote(line)
 	}
 	return "printf '%s\\n' " + strings.Join(quoted, " ") + " >&2\n"
 }
@@ -84,9 +93,58 @@ func spentRateLimit(reset time.Time, reads string) string {
 		"exit 1\n"
 }
 
+// ghStandIn is a stand-in gh whose REST visibility read does what rest says and whose GraphQL
+// read does what graphql says. The GraphQL read is the one whose fourth argument is graphql
+// (VisibilityGraphQLArgs); the REST read's is the repos/ endpoint.
+func ghStandIn(rest, graphql string) string {
+	return "if [ \"$4\" = graphql ]; then\n" + graphql + "fi\n" + rest
+}
+
+// graphQLReset is when the GraphQL limit of the stand-in GraphQL reads resets.
+var graphQLReset = time.Date(2026, 11, 14, 6, 0, 0, 0, time.UTC)
+
+// graphQLRead is the GraphQL read of a stand-in gh. It appends its call to record, with its
+// arguments and the two variables the guard sets on it (readCalls reads the line), then prints
+// status, GraphQL's rate-limit headers with remaining points left, a blank line and body, as `gh
+// api --include` prints them, then gh's own error line where stderr is one, and exits with exit.
+func graphQLRead(record, status string, remaining int, body, stderr string, exit int) string {
+	script := `printf 'argv=%s\tread=%s\thost=%s\n' "$*" "${` + VisibilityReadVar + `-unset}" "${GH_HOST-unset}" >> ` + shQuote(record) + "\n" +
+		"printf '%s\\r\\n' " + shQuote(status) + " 'Content-Type: application/json; charset=utf-8' 'X-Ratelimit-Limit: 12500' " +
+		fmt.Sprintf("'X-Ratelimit-Remaining: %d' 'X-Ratelimit-Reset: %d' ", remaining, graphQLReset.Unix()) +
+		"'X-Ratelimit-Resource: graphql' ''\n" +
+		"printf '%s' " + shQuote(body) + "\n"
+	if stderr != "" {
+		script += printsToStderr(stderr)
+	}
+	return script + fmt.Sprintf("exit %d\n", exit)
+}
+
+// graphQLAnswers is a GraphQL read that answers visibility, as GitHub answers for a repository
+// the installation can read.
+func graphQLAnswers(record, visibility string) string {
+	return graphQLRead(record, "HTTP/2.0 200 OK", 12221, `{"data":{"repository":{"visibility":"`+visibility+`"}}}`, "", 0)
+}
+
+// graphQLRateLimited is a GraphQL read GitHub refuses for GraphQL's own spent limit: the status
+// 200 with no points left and an error of type RATE_LIMITED, then gh's error, exit 1.
+func graphQLRateLimited(record string) string {
+	const message = "API rate limit already exceeded for installation ID 1."
+	return graphQLRead(record, "HTTP/2.0 200 OK", 0, `{"errors":[{"type":"RATE_LIMITED","message":"`+message+`"}]}`, "gh: "+message, 1)
+}
+
+// graphQLNotFound is a GraphQL read of a repository GitHub could not resolve, as GitHub answered
+// it on 2026-11-15 for a name no repository has: no repository, an error of type NOT_FOUND, and
+// gh's error, exit 1.
+func graphQLNotFound(record string) string {
+	const message = "Could not resolve to a Repository with the name '" + theRepo + "'."
+	return graphQLRead(record, "HTTP/2.0 200 OK", 12221,
+		`{"data":{"repository":null},"errors":[{"type":"NOT_FOUND","path":["repository"],"locations":[{"line":1,"column":42}],"message":"`+message+`"}]}`,
+		"gh: "+message, 1)
+}
+
 // recordsItsCall is the start of a stand-in git: it appends to record one line per call, with
-// its arguments, the variables the read without REST sets, must not inherit or must keep, what
-// its HOME holds, and the directory it runs in, each as key=value and separated by tabs
+// its arguments, the variables the read with no credential sets, must not inherit or must keep,
+// what its HOME holds, and the directory it runs in, each as key=value and separated by tabs
 // (readCalls).
 func recordsItsCall(record string) string {
 	return `printf 'argv=%s\tprompt=%s\taskpass=%s\tnosystem=%s\tglobal=%s\tcount=%s\tkey0=%s\tparameters=%s\tgitdir=%s\tprotocol=%s\tcainfo=%s\tcapath=%s\tproxy=%s\tlang=%s\thome=%s\tnetrc=%s\thomeholds=%s\tdir=%s\n' ` +
@@ -135,64 +193,100 @@ func countLines(t *testing.T, path string) int {
 }
 
 // When GitHub refuses the visibility read for a spent core limit whose reset is 30 minutes away,
-// past the wait bound, the guard reads the visibility through git's ls-remote, which costs no
-// REST request. An answer is public, and the push is scanned; GitHub asking for a credential is
-// private, and the push is not; any other failure refuses the push, naming the spent limit and
-// its reset. In every case gh is read once and nothing is waited for, and git is run once, with
-// the credential helper and the extra headers emptied on its command line, after the package's
-// pins and before ls-remote, and with GIT_TERMINAL_PROMPT=0.
-func TestLsRemoteReadsTheVisibilityWhenTheRateLimitIsSpent(t *testing.T) {
+// past the wait bound, the guard reads the visibility through GitHub's GraphQL API, and only where
+// GraphQL refuses the read for a rate limit of its own through git's ls-remote. GraphQL's public
+// is scanned, and its private and internal are not; ls-remote's public is scanned. A GraphQL that
+// could not resolve the repository, and an ls-remote that fails, git's own line for a server that
+// asked for a credential included, refuse the push, naming the spent limit and its reset. In
+// every case gh's REST read and its GraphQL read run once each, as the guard's own exact argv
+// with the variable naming the repository, and nothing is waited for. git runs only after
+// GraphQL's rate limit, once, with the credential helper, the extra headers and
+// http.proactiveAuth emptied after the package's pins and before ls-remote, and with
+// GIT_TERMINAL_PROMPT=0.
+func TestVisibilityWithoutRESTDecidesThePush(t *testing.T) {
 	now := time.Date(2026, 11, 14, 5, 0, 0, 0, time.UTC)
 	reset := now.Add(30 * time.Minute)
+	scanned := func(source VisibilitySource) func(*testing.T, error, []VisibilitySource) {
+		return func(t *testing.T, err error, sources []VisibilitySource) {
+			t.Helper()
+			if refused := refusal(t, err); refused.By != byRules {
+				t.Errorf("the push was refused by %q, want the rules: a public destination is scanned", refused.By)
+			}
+			if want := []VisibilitySource{source}; !slices.Equal(sources, want) {
+				t.Errorf("the guard reported the sources %q, want %q", sources, want)
+			}
+		}
+	}
+	unscanned := func(t *testing.T, err error, sources []VisibilitySource) {
+		t.Helper()
+		if err != nil {
+			t.Fatalf("the push to a private or internal destination: %v; want it passed, unscanned", err)
+		}
+		if want := []VisibilitySource{VisibilityFromGraphQL}; !slices.Equal(sources, want) {
+			t.Errorf("the guard reported the sources %q, want %q", sources, want)
+		}
+	}
+	refusedSaying := func(wants ...string) func(*testing.T, error, []VisibilitySource) {
+		return func(t *testing.T, err error, sources []VisibilitySource) {
+			t.Helper()
+			says(t, setupFailure(t, err), append([]string{
+				"the visibility of " + theRepo + " could not be read",
+				"the installation's rate limit is spent until " + reset.Format(time.RFC3339),
+			}, wants...)...)
+			if len(sources) != 0 {
+				t.Errorf("the guard reported the sources %q for a read that failed, want none", sources)
+			}
+		}
+	}
+	answers := func(visibility string) func(string) string {
+		return func(record string) string { return graphQLAnswers(record, visibility) }
+	}
 	for _, tc := range []struct {
 		name string
-		// git is what the stand-in git does after it records its call.
-		git string
+		// graphql is what the stand-in gh's GraphQL read does, given the file it records its call
+		// in, and git what the stand-in git does after it records its call.
+		graphql func(record string) string
+		git     string
+		// gitRuns is how many times git runs: once where GraphQL is rate-limited, else never.
+		gitRuns int
 		// check reads the push's answer and the sources the guard reported.
 		check func(t *testing.T, err error, sources []VisibilitySource)
 	}{
+		{name: "GraphQL answers public", graphql: answers("PUBLIC"), git: answersTheRefs, check: scanned(VisibilityFromGraphQL)},
+		{name: "GraphQL answers private", graphql: answers("PRIVATE"), git: answersTheRefs, check: unscanned},
+		{name: "GraphQL answers internal", graphql: answers("INTERNAL"), git: answersTheRefs, check: unscanned},
 		{
-			name: "ls-remote answers",
-			git:  answersTheRefs,
-			check: func(t *testing.T, err error, sources []VisibilitySource) {
-				if refused := refusal(t, err); refused.By != byRules {
-					t.Errorf("the push was refused by %q, want the rules: a public destination is scanned", refused.By)
-				}
-				if want := []VisibilitySource{VisibilityFromLsRemote}; !slices.Equal(sources, want) {
-					t.Errorf("the guard reported the sources %q, want %q", sources, want)
-				}
-			},
+			name:    "GraphQL could not resolve the repository",
+			graphql: graphQLNotFound,
+			git:     answersTheRefs,
+			check:   refusedSaying("GraphQL could not answer", "NOT_FOUND"),
 		},
 		{
-			name: "GitHub asks for a credential",
-			git:  asksForACredential,
-			check: func(t *testing.T, err error, sources []VisibilitySource) {
-				if err != nil {
-					t.Fatalf("the push to a private destination: %v; want it passed, unscanned", err)
-				}
-				if want := []VisibilitySource{VisibilityFromLsRemote}; !slices.Equal(sources, want) {
-					t.Errorf("the guard reported the sources %q, want %q", sources, want)
-				}
-			},
+			name:    "GraphQL is rate-limited and ls-remote answers",
+			graphql: graphQLRateLimited,
+			git:     answersTheRefs,
+			gitRuns: 1,
+			check:   scanned(VisibilityFromLsRemote),
 		},
 		{
-			name: "ls-remote fails another way",
-			git:  cannotConnect,
-			check: func(t *testing.T, err error, sources []VisibilitySource) {
-				says(t, setupFailure(t, err),
-					"the visibility of "+theRepo+" could not be read",
-					"the installation's rate limit is spent until "+reset.Format(time.RFC3339),
-					"Could not resolve host")
-				if len(sources) != 0 {
-					t.Errorf("the guard reported the sources %q for a read that failed, want none", sources)
-				}
-			},
+			name:    "GraphQL is rate-limited and GitHub asks ls-remote for a credential",
+			graphql: graphQLRateLimited,
+			git:     asksForACredential,
+			gitRuns: 1,
+			check:   refusedSaying("GraphQL's rate limit is spent too", "could not read Username"),
+		},
+		{
+			name:    "GraphQL is rate-limited and ls-remote fails another way",
+			graphql: graphQLRateLimited,
+			git:     cannotConnect,
+			gitRuns: 1,
+			check:   refusedSaying("GraphQL's rate limit is spent too", "Could not resolve host"),
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			bin := t.TempDir()
-			reads, record := filepath.Join(t.TempDir(), "reads"), filepath.Join(t.TempDir(), "record")
-			writeProgram(t, bin, "gh", spentRateLimit(reset, reads))
+			bin, records := t.TempDir(), t.TempDir()
+			reads, graphql, record := filepath.Join(records, "reads"), filepath.Join(records, "graphql"), filepath.Join(records, "git")
+			writeProgram(t, bin, "gh", ghStandIn(spentRateLimit(reset, reads), tc.graphql(graphql)))
 			writeProgram(t, bin, "git", recordsItsCall(record)+tc.git)
 			clock := &visibilityTestClock{now: now}
 			var sources []VisibilitySource
@@ -212,19 +306,29 @@ func TestLsRemoteReadsTheVisibilityWhenTheRateLimitIsSpent(t *testing.T) {
 			})
 			tc.check(t, err, sources)
 			if got := countLines(t, reads); got != 1 {
-				t.Errorf("gh read the visibility %d times, want once", got)
+				t.Errorf("gh's REST read ran %d times, want once", got)
 			}
 			if len(clock.waits) != 0 {
 				t.Errorf("the waits are %v, want none: the reset is past the wait bound", clock.waits)
 			}
-			calls := readCalls(t, record)
-			if len(calls) != 1 {
-				t.Fatalf("git ran %d times, want the one ls-remote", len(calls))
+			queries := readCalls(t, graphql)
+			if len(queries) != 1 {
+				t.Fatalf("gh's GraphQL read ran %d times, want once", len(queries))
 			}
-			want := "--no-replace-objects -c core.quotePath=false -c core.hooksPath=/dev/null -c core.fsmonitor=false " +
-				"-c credential.helper= -c http.extraHeader= -c http." + theURL + ".extraHeader= -c http." + theURL + "//.extraHeader= " +
-				"ls-remote " + theURL + " HEAD"
-			if calls[0]["argv"] != want {
+			if want := strings.Join(VisibilityGraphQLArgs(theRepo), " "); queries[0]["argv"] != want {
+				t.Errorf("gh's GraphQL read ran as\n%s\nwant\n%s", queries[0]["argv"], want)
+			}
+			if queries[0]["read"] != theRepo || queries[0]["host"] != "github.com" {
+				t.Errorf("gh's GraphQL read ran with %s=%q and GH_HOST=%q, want %q and github.com", VisibilityReadVar, queries[0]["read"], queries[0]["host"], theRepo)
+			}
+			calls := readCalls(t, record)
+			if len(calls) != tc.gitRuns {
+				t.Fatalf("git ran %d times, want %d", len(calls), tc.gitRuns)
+			}
+			if tc.gitRuns == 0 {
+				return
+			}
+			if want := strings.Join(gitPins, " ") + " " + theResets + " ls-remote " + theURL + " HEAD"; calls[0]["argv"] != want {
 				t.Errorf("git ran as\n%s\nwant\n%s", calls[0]["argv"], want)
 			}
 			if calls[0]["prompt"] != "0" {
@@ -234,14 +338,198 @@ func TestLsRemoteReadsTheVisibilityWhenTheRateLimitIsSpent(t *testing.T) {
 	}
 }
 
-// The read without REST carries no credential of the pod's. Of the caller's GIT_ variables only
-// the transport one reaches git, so neither the GIT_CONFIG_COUNT block a pod's git gets its
-// credential helper from, nor GIT_CONFIG_PARAMETERS holding an extra Authorization header, nor a
-// GIT_DIR whose configuration could hold either does. Neither the caller's HOME, whose .netrc
-// libcurl would read, nor NETRC does: git's HOME is an empty directory, made for the read and
-// removed after it. git reads no system or user configuration file, runs in / outside any
-// repository, has an askpass that answers nothing, and prints its messages in the English
-// lsRemoteRefused reads.
+// Of what GraphQL says, PUBLIC, PRIVATE and INTERNAL alone are an answer, and a rate limit of
+// GraphQL's own alone sends the read on to ls-remote: an error of type RATE_LIMITED, the status
+// 403 with no points left, and GitHub's secondary rate limit. Everything else refuses the call,
+// naming the spent core limit, its reset and what GraphQL said, and runs no ls-remote: a
+// visibility GitHub does not define or in another case, NOT_FOUND, an error beside the data, no
+// repository, no data, a body that is no JSON, a refused credential and a gh that cannot reach
+// GitHub. None is read as private or public.
+func TestVisibilityTakesOnlyAnAnswerGraphQLGives(t *testing.T) {
+	now := time.Date(2026, 11, 14, 5, 0, 0, 0, time.UTC)
+	reset := now.Add(30 * time.Minute)
+	answers := func(visibility string) func(string) string {
+		return func(record string) string { return graphQLAnswers(record, visibility) }
+	}
+	prints := func(status string, remaining int, body, stderr string) func(string) string {
+		return func(record string) string { return graphQLRead(record, status, remaining, body, stderr, 1) }
+	}
+	for _, tc := range []struct {
+		name    string
+		graphql func(record string) string
+		// want is the answer, empty where the call is refused; lsRemote is whether the read went
+		// on to ls-remote, whose stand-in answers public; fails is what a refusal says of GraphQL.
+		want     Visibility
+		lsRemote bool
+		fails    string
+	}{
+		{name: "PUBLIC", graphql: answers("PUBLIC"), want: Public},
+		{name: "PRIVATE", graphql: answers("PRIVATE"), want: Private},
+		{name: "INTERNAL", graphql: answers("INTERNAL"), want: Internal},
+		{name: "a visibility in lower case", graphql: answers("public"), fails: `"public" as the visibility`},
+		{name: "an empty visibility", graphql: answers(""), fails: `"" as the visibility`},
+		{name: "a visibility GitHub does not define", graphql: answers("SECRET"), fails: `"SECRET" as the visibility`},
+		{name: "NOT_FOUND", graphql: graphQLNotFound, fails: "NOT_FOUND: Could not resolve to a Repository"},
+		{
+			name: "an error beside the data",
+			graphql: prints("HTTP/2.0 200 OK", 12221,
+				`{"data":{"repository":{"visibility":"PUBLIC"}},"errors":[{"type":"FORBIDDEN","message":"Resource not accessible by integration"}]}`,
+				"gh: Resource not accessible by integration"),
+			fails: "FORBIDDEN: Resource not accessible by integration",
+		},
+		{
+			name: "no repository",
+			graphql: func(record string) string {
+				return graphQLRead(record, "HTTP/2.0 200 OK", 12221, `{"data":{"repository":null}}`, "", 0)
+			},
+			fails: "GraphQL answered no repository",
+		},
+		{
+			name: "no data",
+			graphql: func(record string) string {
+				return graphQLRead(record, "HTTP/2.0 200 OK", 12221, `{"data":null}`, "", 0)
+			},
+			fails: "GraphQL answered no repository",
+		},
+		{
+			name:    "a body that is no JSON",
+			graphql: prints("HTTP/2.0 502 Bad Gateway", 12221, "<html>bad gateway</html>", "gh: HTTP 502"),
+			fails:   "with no GraphQL answer",
+		},
+		{
+			name:    "a refused credential",
+			graphql: prints("HTTP/2.0 401 Unauthorized", 12221, `{"message":"Bad credentials","status":"401"}`, "gh: Bad credentials (HTTP 401)"),
+			fails:   "exited 1",
+		},
+		{
+			name: "a gh that cannot reach GitHub",
+			graphql: func(record string) string {
+				return "echo read >> " + shQuote(record) + "\n" + printsToStderr("error connecting to api.github.com") + "exit 1\n"
+			},
+			fails: "error connecting to api.github.com",
+		},
+		{name: "RATE_LIMITED", graphql: graphQLRateLimited, want: Public, lsRemote: true},
+		{
+			name:     "the status 403 with no points left",
+			graphql:  prints("HTTP/2.0 403 Forbidden", 0, `{"message":"API rate limit exceeded for installation ID 1."}`, "gh: API rate limit exceeded for installation ID 1. (HTTP 403)"),
+			want:     Public,
+			lsRemote: true,
+		},
+		{
+			name: "the secondary rate limit",
+			graphql: prints("HTTP/2.0 403 Forbidden", 12221,
+				`{"message":"You have exceeded a secondary rate limit. Please wait a few minutes before you try again."}`,
+				"gh: You have exceeded a secondary rate limit. (HTTP 403)"),
+			want:     Public,
+			lsRemote: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bin, records := t.TempDir(), t.TempDir()
+			graphql, record := filepath.Join(records, "graphql"), filepath.Join(records, "git")
+			writeProgram(t, bin, "gh", tc.graphql(graphql))
+			writeProgram(t, bin, "git", recordsItsCall(record)+answersTheRefs)
+			var sources []VisibilitySource
+			visibility, err := New(Options{
+				Clock:        &visibilityTestClock{now: now},
+				OnVisibility: func(source VisibilitySource) { sources = append(sources, source) },
+				Env:          append(fixtureenv.Isolated(t.TempDir()), pathWith(bin), "XDG_STATE_HOME="+t.TempDir()),
+				Visibility: func(context.Context, string) (Visibility, error) {
+					return "", &rateLimitError{reset: reset}
+				},
+			}).Visibility(bound(t), theRepo)
+			if got := countLines(t, graphql); got != 1 {
+				t.Errorf("gh's GraphQL read ran %d times, want once", got)
+			}
+			gitRuns, source := 0, VisibilityFromGraphQL
+			if tc.lsRemote {
+				gitRuns, source = 1, VisibilityFromLsRemote
+			}
+			if got := len(readCalls(t, record)); got != gitRuns {
+				t.Errorf("git ran %d times, want %d", got, gitRuns)
+			}
+			if tc.want != "" {
+				if err != nil || visibility != tc.want {
+					t.Fatalf("read %q, %v; want %s", visibility, err, tc.want)
+				}
+				if want := []VisibilitySource{source}; !slices.Equal(sources, want) {
+					t.Errorf("the guard reported the sources %q, want %q", sources, want)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("read %q, want the call refused", visibility)
+			}
+			for _, want := range []string{
+				"the installation's rate limit is spent until " + reset.Format(time.RFC3339),
+				"GraphQL could not answer: ",
+				tc.fails,
+			} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("the failure %q does not say %q", err, want)
+				}
+			}
+			if len(sources) != 0 {
+				t.Errorf("the guard reported the sources %q for a read that failed, want none", sources)
+			}
+		})
+	}
+}
+
+// A GraphQL read that the caller's bound stops refuses the call at once, naming the spent limit,
+// its reset and gh's stop, and does not go on to ls-remote: no bound is left for it. The bound
+// ends only once the stand-in gh has started, so it is a running gh the bound stops.
+func TestVisibilityRefusesAGraphQLReadTheCallersBoundStops(t *testing.T) {
+	clock := &visibilityTestClock{now: time.Date(2026, 11, 14, 5, 0, 0, 0, time.UTC)}
+	reset := clock.Now().Add(30 * time.Minute)
+	bin, records := t.TempDir(), t.TempDir()
+	started, record := filepath.Join(records, "started"), filepath.Join(records, "git")
+	writeProgram(t, bin, "gh", ": > "+shQuote(started)+"\nsleep 30\n")
+	writeProgram(t, bin, "git", recordsItsCall(record)+answersTheRefs)
+	deadline, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	t.Cleanup(cancel)
+	ctx := &deadlineOnceStarted{Context: deadline, done: make(chan struct{})}
+	whenWritten(bound(t), started, func() {
+		<-deadline.Done()
+		close(ctx.done)
+	})
+	began := time.Now()
+	_, err := New(Options{
+		Clock: clock,
+		Env:   append(fixtureenv.Isolated(t.TempDir()), pathWith(bin), "XDG_STATE_HOME="+t.TempDir()),
+		Visibility: func(context.Context, string) (Visibility, error) {
+			return "", &rateLimitError{reset: reset}
+		},
+	}).Visibility(ctx, theRepo)
+	answeredWithin10s(t, began)
+	if err == nil {
+		t.Fatal("the visibility read passed while gh never answered")
+	}
+	for _, want := range []string{
+		"the installation's rate limit is spent until " + reset.Format(time.RFC3339),
+		"GraphQL could not answer: gh ran ",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the failure %q does not say %q", err, want)
+		}
+	}
+	if got := stopBound(t, err); got > 2 {
+		t.Errorf("gh was stopped by a bound of %d s, want the caller's deadline of 2 s", got)
+	}
+	if calls := readCalls(t, record); len(calls) != 0 {
+		t.Errorf("git ran %d times, want none: the caller's bound is spent", len(calls))
+	}
+}
+
+// The read with no credential carries no credential of the pod's. Of the caller's GIT_ variables
+// only the transport one reaches git, so neither the GIT_CONFIG_COUNT block a pod's git gets its
+// credential helper from, nor GIT_CONFIG_PARAMETERS holding an extra Authorization header and
+// http.proactiveAuth, nor a GIT_DIR whose configuration could hold either does. Neither the
+// caller's HOME, whose .netrc libcurl would read, nor NETRC does: git's HOME is an empty
+// directory, made for the read and removed after it. git reads no system or user configuration
+// file, runs in / outside any repository, has the credential helper, the extra headers and
+// http.proactiveAuth emptied in front of ls-remote, has an askpass that answers nothing, and
+// prints its messages in English.
 func TestLsRemoteReadsWithNoCredentialOfThePods(t *testing.T) {
 	bin, record, home := t.TempDir(), filepath.Join(t.TempDir(), "record"), t.TempDir()
 	writeProgram(t, bin, "git", recordsItsCall(record)+answersTheRefs)
@@ -254,7 +542,7 @@ func TestLsRemoteReadsWithNoCredentialOfThePods(t *testing.T) {
 		"GIT_CONFIG_COUNT=1",
 		"GIT_CONFIG_KEY_0=credential.https://github.com.helper",
 		"GIT_CONFIG_VALUE_0=!invented-helper",
-		"GIT_CONFIG_PARAMETERS='http.extraheader'='Authorization: Basic aW52ZW50ZWQ6aW52ZW50ZWQ='",
+		"GIT_CONFIG_PARAMETERS='http.extraheader'='Authorization: Basic aW52ZW50ZWQ6aW52ZW50ZWQ=' 'http.proactiveauth'='basic'",
 		"GIT_CONFIG_GLOBAL="+filepath.Join(t.TempDir(), "gitconfig"),
 		"GIT_DIR="+t.TempDir(),
 		"GIT_ALLOW_PROTOCOL=https",
@@ -293,8 +581,8 @@ func TestLsRemoteReadsWithNoCredentialOfThePods(t *testing.T) {
 	} else if _, err := os.Stat(gitHome); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("git's HOME %s is still there after the read (%v), want it removed", gitHome, err)
 	}
-	if resets := " -c credential.helper= -c http.extraHeader= -c http." + theURL + ".extraHeader= -c http." + theURL + "//.extraHeader= ls-remote " + theURL + " "; !strings.Contains(" "+calls[0]["argv"]+" ", resets) {
-		t.Errorf("git ran as %q, want the credential helper and the extra headers emptied in front of ls-remote %s", calls[0]["argv"], theURL)
+	if resets := " " + theResets + " ls-remote " + theURL + " "; !strings.Contains(" "+calls[0]["argv"]+" ", resets) {
+		t.Errorf("git ran as %q, want the credential helper, the extra headers and http.proactiveAuth emptied in front of ls-remote %s", calls[0]["argv"], theURL)
 	}
 	askpass := calls[0]["askpass"]
 	if askpass == "unset" || askpass == "" {
@@ -305,8 +593,8 @@ func TestLsRemoteReadsWithNoCredentialOfThePods(t *testing.T) {
 	}
 }
 
-// The read without REST reaches GitHub the way the caller's environment says to, and asks for
-// no credential however the caller asks for one. The CA bundle git trusts (GIT_SSL_CAINFO,
+// The read with no credential reaches GitHub the way the caller's environment says to, and asks
+// for no credential however the caller asks for one. The CA bundle git trusts (GIT_SSL_CAINFO,
 // GIT_SSL_CAPATH) and libcurl's proxy (HTTPS_PROXY), none of which carries a credential, reach
 // git as the caller set them. A caller's GIT_TERMINAL_PROMPT=1, and a GIT_ASKPASS that would
 // print a credential, do not: git sees GIT_TERMINAL_PROMPT=0 and the guard's own askpass.
@@ -344,13 +632,13 @@ func TestLsRemoteKeepsTheCallersTransportButNotItsPrompts(t *testing.T) {
 	}
 }
 
-// No netrc credential reaches the real git of the read without REST, whether the .netrc is in the
-// caller's home or NETRC names it (libcurl reads NETRC from curl 8.16; an older libcurl ignores
-// it). A server of the test's own answers every request 401 with a challenge, as GitHub answers
-// an anonymous read of a private repository, and both netrc files name that server's host.
-// libcurl answers such a challenge with a netrc credential it finds by sending the request again
-// with an Authorization header (measured by hand with git 2.47.3 and the caller's HOME); here the
-// server sees no such header, and the answer is private.
+// No netrc credential reaches the real git of the read with no credential, whether the .netrc is
+// in the caller's home or NETRC names it (libcurl reads NETRC from curl 8.16; an older libcurl
+// ignores it). A server of the test's own answers every request 401 with a challenge, as GitHub
+// answers an anonymous read of a private repository, and both netrc files name that server's
+// host. libcurl answers such a challenge with a netrc credential it finds by sending the request
+// again with an Authorization header (measured by hand with git 2.47.3 and the caller's HOME);
+// here the server sees no such header, and the read is no answer.
 func TestLsRemoteSendsNoNetrcCredential(t *testing.T) {
 	git := realGit(t)
 	var mu sync.Mutex
@@ -376,8 +664,8 @@ func TestLsRemoteSendsNoNetrcCredential(t *testing.T) {
 	}
 	guard := New(Options{Env: loopbackEnv(home, pathWith(filepath.Dir(git)), "NETRC="+named)})
 	visibility, err := guard.lsRemote(bound(t), server.URL, "private/invented-repo")
-	if err != nil || visibility != Private {
-		t.Fatalf("read %q, %v; want private", visibility, err)
+	if err == nil {
+		t.Fatalf("read %q, want no answer: a 401 is not one", visibility)
 	}
 	mu.Lock()
 	defer mu.Unlock()
@@ -389,9 +677,10 @@ func TestLsRemoteSendsNoNetrcCredential(t *testing.T) {
 	}
 }
 
-// The read without REST ends at its own cap when git never answers, inside a caller's bound
+// The read with no credential ends at its own cap when git never answers, inside a caller's bound
 // that would let it run longer, and the call is refused naming the spent limit and git's stop by
-// a bound no longer than that cap.
+// a bound no longer than that cap. GraphQL's own limit is spent, which is what sends the read on
+// to git.
 func TestLsRemoteThatHangsEndsAtItsOwnBound(t *testing.T) {
 	saved := lsRemoteBound
 	lsRemoteBound = 2 * time.Second
@@ -399,6 +688,7 @@ func TestLsRemoteThatHangsEndsAtItsOwnBound(t *testing.T) {
 	clock := &visibilityTestClock{now: time.Date(2026, 11, 14, 5, 0, 0, 0, time.UTC)}
 	reset := clock.Now().Add(30 * time.Minute)
 	bin := t.TempDir()
+	writeProgram(t, bin, "gh", graphQLRateLimited(filepath.Join(t.TempDir(), "graphql")))
 	writeProgram(t, bin, "git", "sleep 30\n")
 	started := time.Now()
 	_, err := New(Options{
@@ -412,22 +702,28 @@ func TestLsRemoteThatHangsEndsAtItsOwnBound(t *testing.T) {
 	if err == nil {
 		t.Fatal("the visibility read passed while git never answered")
 	}
-	if want := "the installation's rate limit is spent until " + reset.Format(time.RFC3339); !strings.Contains(err.Error(), want) {
-		t.Errorf("the failure %q does not say %q", err, want)
+	for _, want := range []string{
+		"the installation's rate limit is spent until " + reset.Format(time.RFC3339),
+		"GraphQL's rate limit is spent too, and git ls-remote could not answer: git ran ",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the failure %q does not say %q", err, want)
+		}
 	}
 	if got := stopBound(t, err); got > 2 {
 		t.Errorf("git was stopped by a bound of %d s, want the read's own %s, not the caller's minute", got, lsRemoteBound)
 	}
 }
 
-// stopBound is the bound, in whole seconds, that err says git was stopped by, and fails the test
-// where err says no such stop. The bound is read against a ceiling, not for its exact seconds: on
-// a loaded machine git can start late in its bound, which then gives it less than the whole.
+// stopBound is the bound, in whole seconds, that err says a child (git or gh) was stopped by, and
+// fails the test where err says no such stop. The bound is read against a ceiling, not for its
+// exact seconds: on a loaded machine the child can start late in its bound, which then gives it
+// less than the whole.
 func stopBound(t *testing.T, err error) int64 {
 	t.Helper()
-	match := regexp.MustCompile(`git ran -?\d+ s and was stopped by its bound of (-?\d+) s`).FindStringSubmatch(err.Error())
+	match := regexp.MustCompile(`(?:git|gh) ran -?\d+ s and was stopped by its bound of (-?\d+) s`).FindStringSubmatch(err.Error())
 	if match == nil {
-		t.Fatalf("the failure %q says no stop of git by a bound", err)
+		t.Fatalf("the failure %q says no stop by a bound", err)
 	}
 	seconds, parseErr := strconv.ParseInt(match[1], 10, 64)
 	if parseErr != nil {
@@ -436,12 +732,13 @@ func stopBound(t *testing.T, err error) int64 {
 	return seconds
 }
 
-// The read without REST also ends when the caller's context ends, before its own cap: a caller
-// that cancels while git hangs, and one whose deadline comes before lsRemoteBound, each get the
-// call back at once, refused naming the spent limit, its reset and git's stop. Nothing is kept,
-// so the next call reads the visibility again. lsRemoteBound keeps its own two minutes here. Each
-// caller's context ends only once the stand-in git has started, so it is a running git the end
-// stops on a loaded machine too.
+// The read with no credential also ends when the caller's context ends, before its own cap: a
+// caller that cancels while git hangs, and one whose deadline comes before lsRemoteBound, each
+// get the call back at once, refused naming the spent limit, its reset and git's stop. Nothing is
+// kept, so the next call reads the visibility again. lsRemoteBound keeps its own two minutes
+// here. Each caller's context ends only once the stand-in git has started, so it is a running git
+// the end stops on a loaded machine too. GraphQL's own limit is spent, which is what sends the
+// read on to git.
 func TestLsRemoteStopsWithTheCallersContext(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -488,7 +785,8 @@ func TestLsRemoteStopsWithTheCallersContext(t *testing.T) {
 			clock := &visibilityTestClock{now: time.Date(2026, 11, 14, 5, 0, 0, 0, time.UTC)}
 			reset := clock.Now().Add(30 * time.Minute)
 			bin, started := t.TempDir(), filepath.Join(t.TempDir(), "started")
-			writeProgram(t, bin, "git", ": > '"+started+"'\nsleep 30\n")
+			writeProgram(t, bin, "gh", graphQLRateLimited(filepath.Join(t.TempDir(), "graphql")))
+			writeProgram(t, bin, "git", ": > "+shQuote(started)+"\nsleep 30\n")
 			guard := New(Options{
 				Clock: clock,
 				Env:   append(fixtureenv.Isolated(t.TempDir()), pathWith(bin), "XDG_STATE_HOME="+t.TempDir()),
@@ -505,7 +803,7 @@ func TestLsRemoteStopsWithTheCallersContext(t *testing.T) {
 			}
 			for _, want := range []string{
 				"the installation's rate limit is spent until " + reset.Format(time.RFC3339),
-				"the read without REST could not answer: git ran ",
+				"GraphQL's rate limit is spent too, and git ls-remote could not answer: git ran ",
 			} {
 				if !strings.Contains(err.Error(), want) {
 					t.Errorf("the failure %q does not say %q", err, want)
@@ -538,9 +836,10 @@ func whenWritten(ctx context.Context, path string, then func()) {
 }
 
 // deadlineOnceStarted is a caller's context with a deadline, which ends at that deadline but not
-// before the test closes done once the stand-in git has started: on a loaded machine git can start
-// after a short deadline has passed, and an end before git starts stops no git. Its Deadline and
-// Value are the embedded context's, so the guard reads the deadline as the caller's bound.
+// before the test closes done once the stand-in program (git or gh) has started: on a loaded
+// machine it can start after a short deadline has passed, and an end before it starts stops
+// nothing. Its Deadline and Value are the embedded context's, so the guard reads the deadline as
+// the caller's bound.
 type deadlineOnceStarted struct {
 	context.Context
 	done chan struct{}
@@ -557,40 +856,61 @@ func (c *deadlineOnceStarted) Err() error {
 	}
 }
 
-// An answer of the read without REST is kept by the rules a gh answer is (Guard.keepVisibility):
-// public for the pod's life, so the next call reads neither gh nor git, and private not at all,
-// so the next call reads both again. Each call builds a guard of its own, as every call site
-// does.
-func TestVisibilityKeepsAnLsRemoteAnswerAsItKeepsGhs(t *testing.T) {
+// An answer read without REST is kept by the rules a gh answer is (Guard.keepVisibility): public
+// for the pod's life, so the next call reads neither gh nor git, and private and internal not at
+// all, so the next call reads them again. That holds for GraphQL's answers and for ls-remote's
+// public. Each call builds a guard of its own, as every call site does.
+func TestVisibilityKeepsAnAnswerWithoutRESTAsItKeepsGhs(t *testing.T) {
 	now := time.Date(2026, 11, 14, 5, 0, 0, 0, time.UTC)
 	reset := now.Add(30 * time.Minute)
+	answers := func(visibility string) func(string) string {
+		return func(record string) string { return graphQLAnswers(record, visibility) }
+	}
 	for _, tc := range []struct {
 		name    string
-		git     string
+		graphql func(record string) string
 		want    Visibility
+		// reads is how many times each of gh's two reads runs over the two calls, and gitRuns how
+		// many times git does.
 		reads   int
+		gitRuns int
 		sources []VisibilitySource
 	}{
 		{
-			name:    "public",
-			git:     answersTheRefs,
+			name:    "GraphQL's public",
+			graphql: answers("PUBLIC"),
 			want:    Public,
 			reads:   1,
-			sources: []VisibilitySource{VisibilityFromLsRemote, VisibilityFromCache},
+			sources: []VisibilitySource{VisibilityFromGraphQL, VisibilityFromCache},
 		},
 		{
-			name:    "private",
-			git:     asksForACredential,
+			name:    "GraphQL's private",
+			graphql: answers("PRIVATE"),
 			want:    Private,
 			reads:   2,
-			sources: []VisibilitySource{VisibilityFromLsRemote, VisibilityFromLsRemote},
+			sources: []VisibilitySource{VisibilityFromGraphQL, VisibilityFromGraphQL},
+		},
+		{
+			name:    "GraphQL's internal",
+			graphql: answers("INTERNAL"),
+			want:    Internal,
+			reads:   2,
+			sources: []VisibilitySource{VisibilityFromGraphQL, VisibilityFromGraphQL},
+		},
+		{
+			name:    "ls-remote's public",
+			graphql: graphQLRateLimited,
+			want:    Public,
+			reads:   1,
+			gitRuns: 1,
+			sources: []VisibilitySource{VisibilityFromLsRemote, VisibilityFromCache},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			bin, state := t.TempDir(), t.TempDir()
-			reads, record := filepath.Join(t.TempDir(), "reads"), filepath.Join(t.TempDir(), "record")
-			writeProgram(t, bin, "gh", spentRateLimit(reset, reads))
-			writeProgram(t, bin, "git", recordsItsCall(record)+tc.git)
+			bin, state, records := t.TempDir(), t.TempDir(), t.TempDir()
+			reads, graphql, record := filepath.Join(records, "reads"), filepath.Join(records, "graphql"), filepath.Join(records, "git")
+			writeProgram(t, bin, "gh", ghStandIn(spentRateLimit(reset, reads), tc.graphql(graphql)))
+			writeProgram(t, bin, "git", recordsItsCall(record)+answersTheRefs)
 			var sources []VisibilitySource
 			for range 2 {
 				visibility, err := New(Options{
@@ -606,62 +926,13 @@ func TestVisibilityKeepsAnLsRemoteAnswerAsItKeepsGhs(t *testing.T) {
 				t.Errorf("the guards reported the sources %q, want %q", sources, tc.sources)
 			}
 			if got := countLines(t, reads); got != tc.reads {
-				t.Errorf("gh read the visibility %d times, want %d", got, tc.reads)
+				t.Errorf("gh's REST read ran %d times, want %d", got, tc.reads)
 			}
-			if got := len(readCalls(t, record)); got != tc.reads {
-				t.Errorf("git ran %d times, want %d", got, tc.reads)
+			if got := len(readCalls(t, graphql)); got != tc.reads {
+				t.Errorf("gh's GraphQL read ran %d times, want %d", got, tc.reads)
 			}
-		})
-	}
-}
-
-// Only git's own line for a server that asked for a credential, naming the URL's origin, after
-// exit 128, reads as private. Each near miss can come from a public repository, and reads as no
-// answer.
-func TestLsRemoteReadsOnlyARequestForACredentialAsPrivate(t *testing.T) {
-	asked := strings.Join(githubAsksForACredential, "\n") + "\n"
-	for _, tc := range []struct {
-		name    string
-		status  int
-		printed string
-		want    bool
-	}{
-		{name: "git asks github.com for a user name", status: 128, printed: asked, want: true},
-		{
-			name:    "a credential was sent and refused",
-			status:  128,
-			printed: "remote: Invalid username or token.\nfatal: Authentication failed for '" + theURL + "/'\n",
-		},
-		{
-			name:    "a 403",
-			status:  128,
-			printed: "fatal: unable to access '" + theURL + "/': The requested URL returned error: 403\n",
-		},
-		{
-			name:    "git asks a proxy for a user name",
-			status:  128,
-			printed: "fatal: could not read Username for 'http://proxy.invented:3128': terminal prompts disabled\n",
-		},
-		{
-			name:    "git asks a host whose name begins with github.com",
-			status:  128,
-			printed: "fatal: could not read Username for 'https://github.com.invented': terminal prompts disabled\n",
-		},
-		{
-			name:    "the server wrote the line",
-			status:  128,
-			printed: "remote: " + githubAsksForACredential[1] + "\nfatal: the remote end hung up unexpectedly\n",
-		},
-		{name: "the line with another exit status", status: 1, printed: asked},
-		{
-			name:    "a host git cannot resolve",
-			status:  128,
-			printed: "fatal: unable to access '" + theURL + "/': Could not resolve host: github.com\n",
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := lsRemoteRefused(githubOrigin, tc.status, tc.printed); got != tc.want {
-				t.Errorf("lsRemoteRefused = %v, want %v", got, tc.want)
+			if got := len(readCalls(t, record)); got != tc.gitRuns {
+				t.Errorf("git ran %d times, want %d", got, tc.gitRuns)
 			}
 		})
 	}
@@ -677,21 +948,36 @@ func pktLine(payload string) string {
 // answering by the repository's owner. "public" lists its refs to a request that carries no
 // credential, and refuses one that carries any 401 with a challenge, as GitHub refuses a bad
 // credential for a public repository. "private" answers every request 401 with a challenge, as
-// GitHub answers an anonymous read of a private repository. "forbidden" answers 403, and any
-// other owner 404.
+// GitHub answers an anonymous read of a private repository. "throttled" answers as GitHub did a
+// public repository's anonymous clone under unusual traffic in GitHub's community discussion
+// #206581: the advertisement's GET is answered, here with protocol version 2's, so git goes on
+// to POST its ls-refs command, and the POST is answered 401 with GitHub's challenge. "forged"
+// answers the GET with an ERR packet carrying git's own line for a server that asked for a
+// credential. "forbidden" answers 403, and any other owner 404.
 func gitHubStandIn(t *testing.T) *httptest.Server {
 	t.Helper()
 	head := strings.Repeat("1", 40)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		owner, _, _ := strings.Cut(strings.TrimPrefix(r.URL.Path, "/"), "/")
 		switch {
-		case owner == "public" && r.Header.Get("Authorization") == "":
+		case owner == "public" && r.Header.Get("Authorization") == "" && r.Method == http.MethodGet:
 			w.Header().Set("Content-Type", "application/x-git-upload-pack-advertisement")
 			fmt.Fprint(w, pktLine("# service=git-upload-pack\n")+"0000"+
 				pktLine(head+" HEAD\x00agent=invented\n")+pktLine(head+" refs/heads/main\n")+"0000")
 		case owner == "public", owner == "private":
 			w.Header().Set("WWW-Authenticate", `Basic realm="invented"`)
 			w.WriteHeader(http.StatusUnauthorized)
+		case owner == "throttled" && r.Method == http.MethodGet:
+			w.Header().Set("Content-Type", "application/x-git-upload-pack-advertisement")
+			fmt.Fprint(w, pktLine("version 2\n")+pktLine("agent=invented\n")+pktLine("ls-refs=unborn\n")+
+				pktLine("fetch=shallow\n")+pktLine("object-format=sha1\n")+"0000")
+		case owner == "throttled":
+			w.Header().Set("WWW-Authenticate", `Basic realm="GitHub"`)
+			w.WriteHeader(http.StatusUnauthorized)
+		case owner == "forged":
+			w.Header().Set("Content-Type", "application/x-git-upload-pack-advertisement")
+			fmt.Fprint(w, pktLine("# service=git-upload-pack\n")+"0000"+
+				pktLine("ERR invented\nfatal: could not read Username for 'http://"+r.Host+"': terminal prompts disabled"))
 		case owner == "forbidden":
 			w.WriteHeader(http.StatusForbidden)
 		default:
@@ -723,35 +1009,38 @@ func loopbackEnv(home, path string, extra ...string) []string {
 	return append(env, extra...)
 }
 
-// The lines lsRemote reads are the ones a real git prints. A server of the test's own stands in
-// for GitHub's smart HTTP endpoint (gitHubStandIn), and the git on this machine reads it with the
-// environment the guard gives it: a repository whose refs it lists is public, one it answers 401
-// for is private, and a 403 or a 404 is no answer.
+// The read with no credential answers public where a real git lists the refs, and nothing else.
+// A server of the test's own stands in for GitHub's smart HTTP endpoint (gitHubStandIn), and the
+// git on this machine reads it with the environment the guard gives it. A 401 for a private
+// repository, a 401 for a public one under GitHub's throttle, and a server's ERR packet each make
+// git print its line for a server that asked for a credential, the line this read once took for
+// private; each is now no answer, as are a 403 and a 404.
 func TestLsRemoteReadsWhatARealGitPrints(t *testing.T) {
 	git := realGit(t)
 	server := gitHubStandIn(t)
 	guard := New(Options{Env: loopbackEnv(t.TempDir(), pathWith(filepath.Dir(git)))})
 	for _, tc := range []struct {
 		owner string
-		want  Visibility
-		// fails is what the error says where the read answers nothing.
+		// fails is what the error says, empty where the read answers public.
 		fails string
 	}{
-		{owner: "public", want: Public},
-		{owner: "private", want: Private},
+		{owner: "public"},
+		{owner: "private", fails: "could not read Username"},
+		{owner: "throttled", fails: "could not read Username"},
+		{owner: "forged", fails: "remote error: invented"},
 		{owner: "forbidden", fails: "The requested URL returned error: 403"},
 		{owner: "missing", fails: "not found"},
 	} {
 		t.Run(tc.owner, func(t *testing.T) {
 			visibility, err := guard.lsRemote(bound(t), server.URL, tc.owner+"/invented-repo")
 			if tc.fails == "" {
-				if err != nil || visibility != tc.want {
-					t.Fatalf("read %q, %v; want %s", visibility, err, tc.want)
+				if err != nil || visibility != Public {
+					t.Fatalf("read %q, %v; want public", visibility, err)
 				}
 				return
 			}
-			if err == nil {
-				t.Fatalf("read %q, want no answer", visibility)
+			if err == nil || visibility != "" {
+				t.Fatalf("read %q, %v; want no answer", visibility, err)
 			}
 			if !strings.Contains(err.Error(), tc.fails) {
 				t.Errorf("the error %q does not say %q", err, tc.fails)
@@ -760,38 +1049,117 @@ func TestLsRemoteReadsWhatARealGitPrints(t *testing.T) {
 	}
 }
 
-// An extra header a git wrapper adds does not reach the read without REST, whether the wrapper
-// sets it for no URL, for the host, or for the repository's URL with none, one or two slashes
-// after it. `legion git --after` runs the host's next git on PATH, and a wrapper there can put a
-// -c of its own in front of the guard's arguments. Here the machine's real git sits behind such a
-// wrapper, which adds an Authorization header. The stand-in server refuses that header 401 for
-// its public repository, as GitHub refuses a bad credential, and the read still answers public
-// in every case. With the generic reset alone, the host's case reads private; with the generic
-// reset and the one for the repository's URL but not the `//` one, the last case reads private
-// (both measured with git 2.47.3). Either would skip the rule pass for a public repository.
-func TestLsRemoteClearsTheHeaderAGitWrapperAdds(t *testing.T) {
+// No unauthenticated refusal reads as private, from the call's start: GitHub refuses the REST
+// read for a spent core limit, GraphQL for a spent limit of its own, and ls-remote is made by the
+// machine's real git against the stand-in server (gitHubStandIn), which a git wrapper first on
+// PATH points https://github.com at with url.<base>.insteadOf. A public repository answers
+// public; a throttled public repository's 401 and a server's ERR packet carrying git's old line
+// refuse the call, naming the spent limit and its reset, and keep nothing.
+func TestVisibilityNeverReadsAnUnauthenticatedRefusalAsPrivate(t *testing.T) {
+	git := realGit(t)
+	server := gitHubStandIn(t)
+	clock := &visibilityTestClock{now: time.Date(2026, 11, 14, 5, 0, 0, 0, time.UTC)}
+	reset := clock.Now().Add(30 * time.Minute)
+	for _, tc := range []struct {
+		owner string
+		// fails is what the refusal says of git, empty where the call answers public.
+		fails string
+	}{
+		{owner: "public"},
+		{owner: "throttled", fails: "could not read Username"},
+		{owner: "forged", fails: "remote error: invented"},
+	} {
+		t.Run(tc.owner, func(t *testing.T) {
+			slug := tc.owner + "/invented-repo"
+			bin := t.TempDir()
+			writeProgram(t, bin, "gh", graphQLRateLimited(filepath.Join(t.TempDir(), "graphql")))
+			writeProgram(t, bin, "git", "exec "+shQuote(git)+" -c "+shQuote("url."+server.URL+"/.insteadOf="+githubOrigin+"/")+" \"$@\"\n")
+			var sources []VisibilitySource
+			guard := New(Options{
+				Clock:        clock,
+				OnVisibility: func(source VisibilitySource) { sources = append(sources, source) },
+				Env:          loopbackEnv(t.TempDir(), pathWith(bin), "XDG_STATE_HOME="+t.TempDir()),
+				Visibility: func(context.Context, string) (Visibility, error) {
+					return "", &rateLimitError{reset: reset}
+				},
+			})
+			visibility, err := guard.Visibility(bound(t), slug)
+			if tc.fails == "" {
+				if err != nil || visibility != Public {
+					t.Fatalf("read %q, %v; want public", visibility, err)
+				}
+				return
+			}
+			if err == nil || visibility != "" {
+				t.Fatalf("read %q, %v; want the call refused", visibility, err)
+			}
+			for _, want := range []string{
+				"the installation's rate limit is spent until " + reset.Format(time.RFC3339),
+				"GraphQL's rate limit is spent too, and git ls-remote could not answer",
+				tc.fails,
+			} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("the failure %q does not say %q", err, want)
+				}
+			}
+			if len(sources) != 0 {
+				t.Errorf("the guard reported the sources %q for a refused call, want none", sources)
+			}
+			if _, err := os.Stat(guard.visibilityCachePath(slug)); !errors.Is(err, os.ErrNotExist) {
+				t.Errorf("a visibility was kept for the refused call (%v), want none", err)
+			}
+		})
+	}
+}
+
+// A setting a git wrapper adds does not make the read with no credential refuse a public
+// repository, whether it is an extra header or http.proactiveAuth, and whether the wrapper sets it
+// for no URL, for the host, or for the repository's URL with none, one or two slashes after it;
+// nor does http.proactiveAuth in the caller's environment, which the read does not keep.
+// `legion git --after` runs the host's next git on PATH, and a wrapper there can put a -c of its
+// own in front of the guard's arguments. Here the machine's real git sits behind such a wrapper.
+// The stand-in server refuses an Authorization header 401 for its public repository, as GitHub
+// refuses a bad credential, and proactiveAuth makes git ask for a credential before it sends a
+// request, so each setting that reached git would make it exit 128; the read answers public in
+// every case. Each is a refusal the resets spare, never a private answer: with the generic header
+// reset alone, the header for the host exits 128, and without the `//` header reset the header
+// for the repository's URL and two slashes does; with the generic proactiveAuth reset alone, each
+// proactiveAuth for a URL exits 128 (measured with git 2.47.3).
+func TestLsRemoteClearsTheSettingsAGitWrapperAdds(t *testing.T) {
 	git := realGit(t)
 	server := gitHubStandIn(t)
 	repo := server.URL + "/public/invented-repo.git"
+	const header = "=Authorization: Basic aW52ZW50ZWQ6aW52ZW50ZWQ="
 	for _, tc := range []struct {
 		name string
-		// key is the setting the wrapper adds the header under.
-		key string
+		// setting is the -c the wrapper adds, empty for none, and env what the caller's
+		// environment holds beyond the test's.
+		setting string
+		env     []string
 	}{
-		{name: "for no URL", key: "http.extraHeader"},
-		{name: "for the host", key: "http." + server.URL + "/.extraHeader"},
-		{name: "for the repository's URL", key: "http." + repo + ".extraHeader"},
-		{name: "for the repository's URL and a slash", key: "http." + repo + "/.extraHeader"},
-		{name: "for the repository's URL and two slashes", key: "http." + repo + "//.extraHeader"},
+		{name: "a header for no URL", setting: "http.extraHeader" + header},
+		{name: "a header for the host", setting: "http." + server.URL + "/.extraHeader" + header},
+		{name: "a header for the repository's URL", setting: "http." + repo + ".extraHeader" + header},
+		{name: "a header for the repository's URL and a slash", setting: "http." + repo + "/.extraHeader" + header},
+		{name: "a header for the repository's URL and two slashes", setting: "http." + repo + "//.extraHeader" + header},
+		{name: "proactiveAuth basic for no URL", setting: "http.proactiveAuth=basic"},
+		{name: "proactiveAuth basic for the host", setting: "http." + server.URL + "/.proactiveAuth=basic"},
+		{name: "proactiveAuth auto for the host", setting: "http." + server.URL + "/.proactiveAuth=auto"},
+		{name: "proactiveAuth basic for the repository's URL", setting: "http." + repo + ".proactiveAuth=basic"},
+		{name: "proactiveAuth basic for the repository's URL and two slashes", setting: "http." + repo + "//.proactiveAuth=basic"},
+		{name: "proactiveAuth basic in the caller's environment", env: []string{"GIT_CONFIG_PARAMETERS='http.proactiveauth'='basic'"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			bin, record := t.TempDir(), filepath.Join(t.TempDir(), "record")
-			writeProgram(t, bin, "git", "echo ran >> '"+record+"'\n"+
-				"exec '"+git+"' -c '"+tc.key+"=Authorization: Basic aW52ZW50ZWQ6aW52ZW50ZWQ=' \"$@\"\n")
-			guard := New(Options{Env: loopbackEnv(t.TempDir(), pathWith(bin))})
+			wrapper := "echo ran >> " + shQuote(record) + "\nexec " + shQuote(git)
+			if tc.setting != "" {
+				wrapper += " -c " + shQuote(tc.setting)
+			}
+			writeProgram(t, bin, "git", wrapper+" \"$@\"\n")
+			guard := New(Options{Env: loopbackEnv(t.TempDir(), pathWith(bin), tc.env...)})
 			visibility, err := guard.lsRemote(bound(t), server.URL, "public/invented-repo")
 			if err != nil || visibility != Public {
-				t.Fatalf("read %q, %v; want public: the wrapper's header reached the request", visibility, err)
+				t.Fatalf("read %q, %v; want public: the setting reached the request", visibility, err)
 			}
 			if got := countLines(t, record); got != 1 {
 				t.Errorf("the wrapper ran %d times, want once: the read must go through it", got)

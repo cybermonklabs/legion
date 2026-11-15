@@ -1,16 +1,18 @@
 kind: Fixed
 body: |-
   When GitHub refuses the leak guard's visibility read because the installation's REST rate limit
-  is spent, and the reset is more than two minutes away, the guard reads the visibility with `git
-  ls-remote` of the repository's HTTPS URL, which costs no REST request, instead of refusing the
-  write. The read carries no credential: git keeps no `GIT_` variable of the caller's but
-  `GIT_ALLOW_PROTOCOL`, `GIT_SSL_CAINFO` and `GIT_SSL_CAPATH`, reads no system, user or
-  repository configuration, and runs with an empty `HOME` of its own and no `NETRC`, so libcurl
-  finds no netrc file. Its command line empties again the credential helpers, and the extra HTTP
-  headers that a git wrapper in front of it may have added for no URL, for github.com, or for the
-  repository's URL. An answer is public, and the write is scanned. GitHub asking for a credential
-  is private, which is also what a repository that does not exist answers, and the write's own
-  request then decides. Any other failure refuses the write as before, naming the spent limit and
-  its reset, with git's output after them. The read runs at most two minutes of its own, after any
-  wait for a near reset. The `legion gh` call log records such an answer as
-  `visibility="ls-remote"`.
+  is spent, or for its secondary rate limit, and the reset is more than two minutes away, already
+  past, not given, or still ahead after the guard's one wait, the guard reads the visibility from
+  GitHub's GraphQL API as the same installation, whose budget is separate from the REST one,
+  instead of refusing the write. GraphQL's public, private and internal are taken as the REST
+  read's are. Only where GraphQL refuses for a rate limit of its own does the guard run an
+  unauthenticated `git ls-remote` of the repository's HTTPS URL, and there only exit 0 reads as
+  public; a 401 or any other failure is no answer, since GitHub also answers an anonymous read of
+  a public repository with 401 under unusual traffic. Any other GraphQL answer (a repository
+  GitHub could not resolve, an error, no visibility it defines) and any failed `ls-remote` refuse
+  the write as before, naming the spent limit and its reset and what the read said. The `ls-remote`
+  carries no credential and empties the credential helpers, the extra HTTP headers and
+  `http.proactiveAuth` a git wrapper may have added for no URL, for github.com or for the
+  repository's URL. A public answer is kept for the pod as before; a private or internal one is
+  read again on each call. The `legion gh` call log records such an answer as
+  `visibility="graphql"` or `visibility="ls-remote"`.
