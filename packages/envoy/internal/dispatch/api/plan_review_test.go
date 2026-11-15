@@ -203,3 +203,36 @@ func TestAProjectDocumentNamedPlanIsAPlainDocument(t *testing.T) {
 		}
 	}
 }
+
+// A closed issue takes no approval of any kind: its plan review is refused 409 ISSUE_CLOSED, as
+// every other write a closed issue refuses is. So an approval request on a closed issue's plan
+// answers ISSUE_CLOSED, the real blocker, and not PLAN_APPROVED_BY_REVIEW, whose advice to record
+// the approval with dispatch plan-approve would only be refused in its turn.
+func TestAnApprovalRequestOnAClosedIssuesPlanNamesTheClose(t *testing.T) {
+	handler, _, _ := newTestServer(t, testServerOptions{})
+	issue := createInteractionIssue(t, handler, "PLANC", "Closed with its plan", "A spec\n")
+	plan := uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "plan.md", "# Plan\n\nOne.\n")
+	if reviewed := sessionRequest(t, handler, http.MethodPost,
+		"/api/v1/artifacts/"+plan.Artifact.ID+"/plan-reviews", map[string]any{"actor": sessionActor(), "version": 1}); reviewed.Code != http.StatusCreated {
+		t.Fatalf("record the plan review while the issue is open: status=%d body=%s", reviewed.Code, reviewed.Body.String())
+	}
+	closeIssue(t, handler, issue.Key)
+
+	// The approval request, and the plan review PLAN_APPROVED_BY_REVIEW would send the caller to,
+	// are both refused for the close.
+	for _, refusedWrite := range []struct {
+		route string
+		body  map[string]any
+	}{
+		{route: "approval-requests", body: map[string]any{"actor": sessionActor()}},
+		{route: "plan-reviews", body: map[string]any{"actor": sessionActor(), "version": 1}},
+	} {
+		refused := sessionRequest(t, handler, http.MethodPost,
+			"/api/v1/artifacts/"+plan.Artifact.ID+"/"+refusedWrite.route, refusedWrite.body)
+		code, _ := refusalOf(t, refused)
+		if refused.Code != http.StatusConflict || code != "ISSUE_CLOSED" {
+			t.Fatalf("%s on the closed issue's plan: status=%d code=%s body=%s, want 409 ISSUE_CLOSED",
+				refusedWrite.route, refused.Code, code, refused.Body.String())
+		}
+	}
+}
