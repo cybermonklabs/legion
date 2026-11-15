@@ -7,8 +7,8 @@
     "startedAt": "2026-09-22T09:15:02Z"
   },
   "contract": {
-    "daemon": 141,
-    "caller": 141
+    "daemon": 144,
+    "caller": 144
   },
   "admission": {
     "cap": 5,
@@ -914,6 +914,15 @@
         "idle_release": {
           "idle_minutes": 10,
           "backstop_minutes": 60
+        },
+        "memory_guard": {
+          "issue_pods": {
+            "enabled": true,
+            "act_percent": 80,
+            "floor_percent": 15,
+            "wait_seconds": 8,
+            "interval_milliseconds": 250
+          }
         }
       }
     },
