@@ -149,7 +149,7 @@ func (m *Machine) backstopStalledTurn(ctx context.Context, ev StallBackstop) err
 			"kind", m.wake.kind, "due", m.wake.at, "bound", ev.Bound, "deadline", ev.Deadline, "lastStep", last)
 		return nil
 	}
-	suspended := m.held != nil
+	suspended := m.holding()
 	// The claim's process is read through a guard, and the two reads this recovery's own other
 	// entries make are too (repoint, displaced, noProcessRecorded). No live path reaches any of
 	// the three with no process recorded: the sweep posts this event only over a claim in

@@ -169,6 +169,12 @@ const (
 	// TimerPromptRetry is the wait before a task a provider error took back is sent to the same
 	// session again (promptRetryDelay), armed on that task's own delivery id.
 	TimerPromptRetry TimerKind = "prompt_retry"
+	// TimerPause is the gate's own stop of a claim whose launch it held while the project is paused
+	// (pauseGate, pauseStopDue): armed at once by the decision that held the launch, so the stop is
+	// the claim's next decision, and again at the probe interval when that stop fails. A claim with
+	// no process of its own waits launching until it fires; one whose process runs waits as the
+	// gate found it.
+	TimerPause TimerKind = "pause"
 )
 
 // Timer is a timer the machine armed, firing.
@@ -397,17 +403,43 @@ type RequestReady struct {
 // turn's end, behind an answer that told the caller its request did nothing (api's freshSession).
 // Every other suspension leaves it false and is held as above: the outbox retries its rows until
 // the claim answers nil, and `legion claims suspend` waits the hold out.
+//
+// Pause is the project pause this suspension stops the claim for (store.Pause.ID, decision 4 of
+// dispatch://INFRA-3759's plan), 0 for a suspension of no pause. It is set by the daemon's
+// `pause_stop` row and by the gate's own stop of a launch it held (pauseStopDue), only with By
+// SuspendedByReleased — any other source with a pause, or a negative id, is refused
+// (suspendRequest). A suspension that carries one ends in the pause's stop transaction rather than
+// the plain claim write (Deps.PauseStopped, suspendedFor), and a hold of one is the pause's: kept
+// across a start while its pause is open (StartedBy), dropped where it fires once that pause has
+// ended (holding), and dropped by the resume's event (ResumePause).
 type RequestSuspend struct {
 	Claim     claim.Token
 	Reason    string
 	By        SuspendSource
 	Deadline  time.Time
 	NeverHold bool
+	Pause     int64
 }
 
 // RequestResume is the operator's resume: it relaunches a suspended claim's session, whoever
 // suspended it.
 type RequestResume struct{ Claim claim.Token }
+
+// ResumePause is the daemon's word, posted to every machine of its project once a resume of the
+// project has committed (decision 22 of dispatch://INFRA-3759's plan), that pause Pause is over.
+// The daemon clears its flag (Deps.Paused) before it posts this. The machine drops a suspension it
+// holds for that pause, so a role in a turn runs on and a launch held until its agent is ready
+// goes ahead; it takes a launch the pause's gate held for that pause into the wake pacing — a
+// reservation from the limiter, then its timer — or, where a later pause holds the project by
+// then, stops the claim for that one (pauseStopDue); and it sends the task it holds where it may
+// now go (sendPending), so the daemon's resume needs nothing else to hand a role its held task.
+// It touches nothing of any other pause: a hold or a held launch a later pause took over carries
+// that pause's id, so an event that arrives after the next pause began finds nothing of its own.
+// Pause is the ended pause's id (store.Pause.ID), never 0, which is refused.
+type ResumePause struct {
+	Claim claim.Token
+	Pause int64
+}
 
 // RequestRuleResume is the daemon's own resume, by rule: it relaunches a suspended claim's session
 // unless an operator suspended it (Claim.RuleMayResume): that suspension holds until the operator
@@ -622,6 +654,7 @@ func (RequestExit) isEvent()          {}
 func (RequestTurnOutcome) isEvent()   {}
 func (RequestCompact) isEvent()       {}
 func (CompactEnded) isEvent()         {}
+func (ResumePause) isEvent()          {}
 
 // eventKind is what the table is keyed on beside the state: an event's type, with a Timer split
 // by its kind, because each wait means a different thing.
@@ -648,6 +681,8 @@ const (
 	onWakeTimer     eventKind = timerPrefix + eventKind(TimerWake)
 	// The wait a turn that ended in a provider error arms (promptResulted).
 	onPromptRetryTimer eventKind = timerPrefix + eventKind(TimerPromptRetry)
+	// The gate's own stop of a launch it held while the project is paused (pauseGate).
+	onPauseTimer eventKind = timerPrefix + eventKind(TimerPause)
 
 	onSpawn         eventKind = "request_spawn"
 	onRegister      eventKind = "request_register"
@@ -675,6 +710,8 @@ const (
 	onPodUpdateOpen      eventKind = "pod_update_open"
 	onPodUpdateEnded     eventKind = "pod_update_ended"
 	onPodUpdateSignalled eventKind = "pod_update_signalled"
+
+	onResumePause eventKind = "resume_pause"
 
 	timerPrefix eventKind = "timer:"
 )
@@ -751,6 +788,8 @@ func kindOf(ev Event) eventKind {
 		return onCompact
 	case CompactEnded:
 		return onCompactEnded
+	case ResumePause:
+		return onResumePause
 	}
 	return ""
 }
@@ -978,6 +1017,16 @@ func fillTable(t *builder) {
 	t.ignore(onWakeTimer, "no wake is waiting: a paced wake of a claim with no process is written launching before it waits, and a suspension, a failure, a retirement and an undecided pane each leave the claim without one",
 		processless...)
 
+	// The gate's own stop of a launch it held while the project is paused (pauseGate). A claim
+	// with no process of its own waits launching for it; one whose process still runs waits in
+	// the state the gate found it, which is every other live state. The stop ends the claim
+	// suspended, or holds it for a turn's deadline of now (holdSuspension); a launch whose pause
+	// has ended by then goes to the pacing instead, and may launch here (letOutHeldLaunch).
+	t.row(onPauseTimer, "the gate held this claim's launch while the project is paused: stop the claim for the pause, or let the launch out if the pause is over", pauseStopDue,
+		[]ClaimState{StateSuspended, StateLaunching, StateFailed}, live...)
+	t.ignore(onPauseTimer, "no launch is held by the pause's gate: a claim with no process it holds is written launching, and a suspension, a failure, a retirement and an undecided pane each leave the claim without one",
+		processless...)
+
 	// A re-adopted claim found still speaking another plugin contract, at boot or at a later sweep.
 	t.row(onStalePlugin, "the process speaks another plugin contract: relaunch it onto the current one", refreshStalePlugin,
 		[]ClaimState{StateLaunching, StateFailed}, StateRegistered, StateReady, StateWorking, StateIdle)
@@ -1156,6 +1205,14 @@ func fillTable(t *builder) {
 	t.ignore(onCompactEnded, "the claim is not in a compaction: the process it ran on was let go first", prompted...)
 	t.ignore(onCompactEnded, "the agent is not ready, so the compaction's process is gone", unready...)
 	t.ignore(onCompactEnded, "no process of this claim is running, so the compaction's own is gone", gone...)
+
+	// The project's resume, which the daemon posts to every machine of the project (ResumePause),
+	// so every state takes it. A claim that holds nothing of the pause it names is changed by
+	// nothing but the send of the task it holds (sendPending); one whose held launch is let out
+	// launches, or fails, or is suspended by a tree whose cleanup is reserved, as a wake's turn is
+	// (runWake), and one that is sent its task can be found in a turn already (sendPending).
+	t.row(onResumePause, "the project's pause is over: drop that pause's held suspension, let out the launch its gate held, and send the task that waits", resumePause,
+		[]ClaimState{StateLaunching, StateFailed, StateSuspended, StateWorking}, slices.Concat(live, processless)...)
 }
 
 type builder struct{ rules map[key]rule }
@@ -1971,7 +2028,7 @@ func turnEnded(m *Machine, ctx context.Context, _ Event) error {
 		return nil
 	}
 	m.askFirst, m.busyTurn = false, false
-	if m.held != nil {
+	if m.holding() {
 		if err := m.suspendHeldAtEnd(ctx, StateIdle); err != nil {
 			if m.held == nil {
 				// The stop landed and let the process go; only its write failed, and the claim is
@@ -2348,7 +2405,7 @@ func ready(m *Machine, ctx context.Context, _ Event) error {
 	// when this agent came up (Claim.PendingCause).
 	m.claim.Budgets.LaunchFailures, m.claim.PendingCause = 0, ""
 	m.disarm(TimerRegistration)
-	if m.held != nil {
+	if m.holding() {
 		return m.suspendHeld(ctx)
 	}
 	return finishReady(m, ctx)
@@ -2381,7 +2438,7 @@ func finishReady(m *Machine, ctx context.Context) error {
 // suspension still wins: the retry completes that suspension instead of publishing ready and
 // releasing notices to a claim the operator or workflow is stopping.
 func reready(m *Machine, ctx context.Context, _ Event) error {
-	if m.held != nil {
+	if m.holding() {
 		return m.suspendHeld(ctx)
 	}
 	return finishReady(m, ctx)
@@ -2675,7 +2732,7 @@ func exit(m *Machine, ctx context.Context, ev Event) error {
 			m.log.Error("supervise: could not suspend the exited root's process; suspending its claim anyway",
 				"incarnation", incarnation, "error", err)
 		}
-		return m.suspended(ctx, SuspendedByExit)
+		return m.suspended(ctx, SuspendedByExit, nil)
 	}
 	if err := m.release(ctx); err != nil {
 		m.log.Error("supervise: could not release the exited agent's process; retiring its claim anyway", "error", err)

@@ -255,7 +255,7 @@ func (m *Machine) holdStaleRelaunch(trigger string) {
 // because none is written until the launch starts; staleRegistration's own guard is what answers
 // it, and stops a second relaunch being raised over the wake the first one parked.
 func (m *Machine) relaunchStale(ctx context.Context, kind WakeKind, trigger string) error {
-	if m.held == nil {
+	if !m.holding() {
 		if err := m.checkLaunch(ctx); err != nil {
 			// The relaunch reserves nothing, so the credit it was admitted on goes back at the
 			// end of this decision, which raised no wake (endRefreshLane): this return is as far
