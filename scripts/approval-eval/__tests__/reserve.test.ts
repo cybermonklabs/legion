@@ -301,6 +301,30 @@ describe("runDigestOf", () => {
     );
   });
 
+  test("reads an option as a file only in a command where it names one", async () => {
+    const root = await bundleRoot();
+    const directory = await mkdtemp(join(tmpdir(), "cases-"));
+    made.push(directory);
+    const of = (name: string) => [
+      `/repository/scripts/approval-eval/${name}`,
+      "--cases",
+      directory,
+    ];
+    const fresh = ["/usr/local/bin/bun", ...of("fresh-agent.ts")];
+    expect(await runDigestOf({ argv: fresh, env }, root)).toMatch(/^[0-9a-f]{64}$/);
+    const analyze = ["/usr/local/bin/bun", ...of("analyze.ts")];
+    await expect(runDigestOf({ argv: analyze, env }, root)).rejects.toThrow(DigestError);
+  });
+
+  test("refuses an agent PATH does not find, since the runtime could find another", async () => {
+    const root = await bundleRoot();
+    const argv = ["/usr/local/bin/bun", "/repository/scripts/approval-eval/fresh-agent.ts"];
+    const unfound = { ...env, PATH: "" };
+    await expect(
+      runDigestOf({ argv: [...argv, "--omp", "printf"], env: unfound }, root)
+    ).rejects.toThrow(DigestError);
+  });
+
   test("moves with the servers a run reads and the lines a command adds, not with a key", async () => {
     const root = await bundleRoot();
     const first = await runDigestOf({ argv: command, env }, root);

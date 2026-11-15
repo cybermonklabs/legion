@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { createReadStream, type Dirent } from "node:fs";
 import { readdir, stat } from "node:fs/promises";
-import { basename, join, resolve } from "node:path";
+import { basename, isAbsolute, join, resolve } from "node:path";
 import type { CaseRow } from "./build-corpus";
 import { RESERVE_ENDED, RESERVE_READS, type ReserveRead } from "./claim";
 import type { DispatchEvent } from "./dispatch-read";
@@ -115,18 +115,19 @@ const PATH_OPTIONS: readonly string[] = [
 ];
 
 /**
- * Options whose value can name a file a run reads: the digest takes the value as written and the
- * bytes of the file at the trimmed value, as the commands trim it. `--omp` names an executable,
- * which a bare name finds on `PATH`.
+ * Each command's options whose value names a file it reads: the digest takes the value as written
+ * and the bytes of the file at the trimmed value, as the commands trim it. An option is listed by
+ * command because one name can mean a file in one command and a count in another (`--cases`).
+ * `--omp` names an executable, which a bare name finds on `PATH`. A command that gains a file
+ * option adds it here, or a change to that file does not move its digest.
  */
-const FILE_OPTIONS: readonly string[] = [
-  "--arms",
-  "--distillation",
-  "--backlog-roots",
-  "--cases",
-  "--fixtures",
-  "--omp",
-];
+const FILE_OPTIONS: Readonly<Record<string, readonly string[]>> = {
+  "analyze.ts": ["--cases"],
+  "draw.ts": ["--backlog-roots"],
+  "fresh-agent.ts": ["--omp"],
+  "refusals.ts": ["--fixtures", "--distillation"],
+  "run-round.ts": ["--arms", "--distillation"],
+};
 
 /**
  * The environment that chooses the servers a run reads: the model server, and the Dispatch server
@@ -186,7 +187,9 @@ export async function bytesDigestOf(path: string): Promise<string> {
  * or answers) are not in the digest; and what the model and Dispatch servers answer is live.
  */
 export async function runDigestOf(run: Run, root: string): Promise<string> {
-  const lines = ["approval-eval run digest 3", `command ${basename(run.argv[1] ?? "")}`];
+  const command = basename(run.argv[1] ?? "");
+  const fileOptions = FILE_OPTIONS[command] ?? [];
+  const lines = ["approval-eval run digest 4", `command ${command}`];
   const files: string[] = [];
   for (const directory of BUNDLE_DIRECTORIES) {
     const found = await filesUnder(root, directory);
@@ -198,18 +201,19 @@ export async function runDigestOf(run: Run, root: string): Promise<string> {
   let option: string | null = null;
   for (const argument of run.argv.slice(2)) {
     const equals = argument.startsWith("--") ? argument.indexOf("=") : -1;
-    if (option !== null && (PATH_OPTIONS.includes(option) || FILE_OPTIONS.includes(option))) {
-      lines.push(await valueLine(option, argument, run.env));
+    if (option !== null && (PATH_OPTIONS.includes(option) || fileOptions.includes(option))) {
+      lines.push(await valueLine(option, argument, run.env, fileOptions));
       option = null;
     } else if (equals > 0) {
       const name = argument.slice(0, equals);
-      lines.push(`flag ${name}`, await valueLine(name, argument.slice(equals + 1), run.env));
+      const value = argument.slice(equals + 1);
+      lines.push(`flag ${name}`, await valueLine(name, value, run.env, fileOptions));
       option = null;
     } else if (argument.startsWith("-")) {
       lines.push(`flag ${argument}`);
       option = argument;
     } else {
-      lines.push(await valueLine(option, argument, run.env));
+      lines.push(await valueLine(option, argument, run.env, fileOptions));
       option = null;
     }
   }
@@ -243,20 +247,30 @@ async function filesUnder(root: string, directory: string): Promise<string[] | n
 }
 
 /** One argument value as the digest takes it, by the option it is the value of. */
-async function valueLine(option: string | null, value: string, env: Run["env"]): Promise<string> {
+async function valueLine(
+  option: string | null,
+  value: string,
+  env: Run["env"],
+  fileOptions: readonly string[]
+): Promise<string> {
   if (option !== null && PATH_OPTIONS.includes(option)) return "value path";
   const written = `value ${JSON.stringify(value)}`;
-  if (option === null || !FILE_OPTIONS.includes(option)) return written;
+  if (option === null || !fileOptions.includes(option)) return written;
   const trimmed = value.trim();
-  const path = option === "--omp" ? executableOf(trimmed, env.PATH) : trimmed;
-  return `${written} ${await bytesDigestOf(path)}`;
+  if (option !== "--omp") return `${written} ${await bytesDigestOf(trimmed)}`;
+  const executable = executableOf(trimmed, env.PATH);
+  if (!isAbsolute(executable)) {
+    throw new DigestError(`--omp ${trimmed} is not found on PATH, so no digest covers the agent`);
+  }
+  return `${written} ${await bytesDigestOf(executable)}`;
 }
 
 /**
  * The absolute path of the executable an `--omp` names: a path with a slash from the working
  * directory, a bare name from `PATH`, as the shell finds it. `fresh-agent.ts` runs this exact path
  * for every case, so the executable the digest reads is the one each case runs, whatever working
- * directory a case runs in. A bare name that `PATH` does not find is returned as it is.
+ * directory a case runs in. A bare name that `PATH` does not find is returned as it is, and a
+ * digest refuses it, since the runtime could still find something else under that name.
  */
 export function executableOf(omp: string, path: string | undefined): string {
   if (omp.includes("/")) return resolve(omp);

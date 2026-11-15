@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { appendFile, copyFile, cp, mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { parseArgs } from "node:util";
 import { labelKey, type ArmReading as RoundArm, readRound } from "./analyze";
 import type { CaseRow } from "./build-corpus";
@@ -26,7 +26,7 @@ import { labelsOf, scrubSecrets } from "./models";
 import { renderPrompt } from "./recipes";
 import { renderChecked } from "./render";
 import type { ReplayedDocument } from "./replay";
-import { bytesDigestOf, executableOf } from "./reserve";
+import { bytesDigestOf, DigestError, executableOf } from "./reserve";
 import {
   CACHE_VERSION,
   cachePath,
@@ -1018,11 +1018,15 @@ async function modelsFileOf(omp: string): Promise<string | null> {
 /**
  * What a run that reads the reserve adds to its digest (`reserve.ts`) for the agent it scores,
  * which lives outside the repository: the bytes of the executable, the version it prints, and the
- * bytes of the models file every profile copies. `omp` is the absolute path `readFlags` resolved,
- * the one each case runs. An upgrade of the agent or a change of its models is then another run,
- * which the reserve's registration does not name.
+ * bytes of the models file every profile copies. `omp` is the path `readFlags` resolved, the one
+ * each case runs; a bare name `PATH` did not find is refused (`DigestError`), since the runtime
+ * could still find another executable under it. An upgrade of the agent or a change of its models
+ * is then another run, which the reserve's registration does not name.
  */
 async function agentInputsOf(omp: string): Promise<string[]> {
+  if (!isAbsolute(omp)) {
+    throw new DigestError(`${omp} is not found on PATH, so no digest covers the agent`);
+  }
   const child = Bun.spawn({ cmd: [omp, "--version"], stdout: "pipe", stderr: "ignore" });
   const [printed, code] = await Promise.all([new Response(child.stdout).text(), child.exited]);
   const models = await modelsFileOf(omp);
