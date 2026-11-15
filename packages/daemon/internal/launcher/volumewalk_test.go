@@ -208,10 +208,11 @@ func TestTheWalkEndsOnItsBudgetAgainstAWalkerThatBlocks(t *testing.T) {
 	if !result.Partial {
 		t.Error("the walk that was cut is not marked partial")
 	}
-	if len(result.Missing) == 0 || result.Missing[0] != filepath.Join(root, "scratch", "tmp") {
-		t.Errorf("the walk named %v as missing, want the directory it was cut in and everything after it", result.Missing)
+	missing := missingPaths(result.Missing)
+	if len(missing) == 0 || missing[0] != filepath.Join(root, "scratch", "tmp") {
+		t.Errorf("the walk named %v as missing, want the directory it was cut in and everything after it", missing)
 	}
-	if slices.Contains(result.Missing, want[0]) {
+	if slices.Contains(missing, want[0]) {
 		t.Errorf("the walk named %s both measured and missing", want[0])
 	}
 }
@@ -225,9 +226,10 @@ func TestTheWalkEndsOnItsBudgetAgainstAWalkerThatBlocks(t *testing.T) {
 // reads the rest of; a mode-0000 directory at the foot of a chain thirty directories deep, which
 // is named by the target, its own name and its depth and never by the path between, as the
 // deleter's removal failure is (removalFailure); a target that is itself mode 0000, whose lstat
-// in its readable parent succeeds and whose open is refused, so the walk reads nothing of it;
-// and an immediate child of the root that is mode 0000, which the walk cannot list and names as
-// missing. The negative control is every other target of the tree, which carries no refusal.
+// in its readable parent succeeds and whose open is refused, so the walk reads nothing of it and
+// names it as unmeasured with the read the kernel refused, and as no size; and an immediate
+// child of the root that is mode 0000, which the walk cannot list and names as unmeasured the
+// same way. The negative control is every other target of the tree, which carries no refusal.
 func TestARefusedReadUnderATargetIsNamedOnItsSizeAndIsNoEarlyEnd(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("the test process is root, which reads a mode-000 directory: a refused read cannot be staged for it")
@@ -264,8 +266,9 @@ func TestARefusedReadUnderATargetIsNamedOnItsSizeAndIsNoEarlyEnd(t *testing.T) {
 	if result.Partial {
 		t.Error("a walk that went on past every refusal to its end is marked partial, which a reader reads as a walk that ended early")
 	}
-	if !slices.Equal(result.Missing, []string{sealed}) {
-		t.Errorf("the walk named %q as missing, want only %s, the child it could not list", result.Missing, sealed)
+	permission := "openat: " + syscall.EACCES.Error()
+	if want := []shimwire.LauncherVolumeMissing{{Path: sealed, Reason: permission}, {Path: locked, Reason: permission}}; !slices.Equal(result.Missing, want) {
+		t.Errorf("the walk named %q as missing, want %q: the child it could not list and the target it could not open, each with the read refused", result.Missing, want)
 	}
 	sizeOf := func(path string) (shimwire.LauncherVolumeSize, bool) {
 		at := slices.IndexFunc(result.Sizes, func(size shimwire.LauncherVolumeSize) bool { return size.Path == path })
@@ -278,8 +281,8 @@ func TestARefusedReadUnderATargetIsNamedOnItsSizeAndIsNoEarlyEnd(t *testing.T) {
 	if size, ok := sizeOf(feed); ok && (size.Bytes != 1 || size.Refused != first || size.Refusals != 2) {
 		t.Errorf("the walk measured the feed as %+v, want the 1 B it could read, refused first at %s and 2 refusals in all", size, first)
 	}
-	if size, ok := sizeOf(locked); ok && (size.Bytes != 0 || size.Refused != locked || size.Refusals != 1) {
-		t.Errorf("the walk measured the directory it could not open as %+v, want 0 B read, refused at itself, 1 refusal", size)
+	if at := slices.IndexFunc(result.Sizes, func(size shimwire.LauncherVolumeSize) bool { return size.Path == locked }); at >= 0 {
+		t.Errorf("the walk reports the directory it could not open as the size %+v, want it named as unmeasured and no size at all", result.Sizes[at])
 	}
 	if size, ok := sizeOf(deep); ok {
 		want := deep + "/.../locked (depth 31)"
@@ -300,16 +303,96 @@ func TestARefusedReadUnderATargetIsNamedOnItsSizeAndIsNoEarlyEnd(t *testing.T) {
 	}
 }
 
-// A volume root the walk cannot open is named as what it did not measure, and nothing cut the
-// walk, so it is not partial: the report still goes, and a reader is not told the walk ended
-// early when it never began.
+// A volume root the walk cannot open is named as what it did not measure, with the read the
+// kernel refused, and nothing cut the walk, so it is not partial: the report still goes, and a
+// reader is not told the walk ended early when it never began.
 func TestAVolumeRootTheWalkCannotOpenIsNamedMissingAndIsNoEarlyEnd(t *testing.T) {
 	clock := &fakeClock{at: time.Date(2026, 11, 11, 9, 0, 0, 0, time.UTC)}
 	root := filepath.Join(t.TempDir(), "gone")
 	result := walkOf(root, clock, &fakeTicks{}, measureTree).run(context.Background())
-	if result.Partial || !slices.Equal(result.Missing, []string{root}) || len(result.Sizes) != 0 {
-		t.Errorf("the walk of a root that is not there is partial %t, missing %q, with %d sizes; want not partial, missing %s alone, and no size",
-			result.Partial, result.Missing, len(result.Sizes), root)
+	want := []shimwire.LauncherVolumeMissing{{Path: root, Reason: "openat: " + syscall.ENOENT.Error()}}
+	if result.Partial || !slices.Equal(result.Missing, want) || len(result.Sizes) != 0 {
+		t.Errorf("the walk of a root that is not there is partial %t, missing %q, with %d sizes; want not partial, missing %q alone, and no size",
+			result.Partial, result.Missing, len(result.Sizes), want)
+	}
+}
+
+// The walk keeps no more unmeasured directories than a report names, and counts the rest: the
+// trimmer holds a walk for the hour its numbers are reported (trimmer.sizes), and a role can make
+// any number of directories under /legion/scratch that the walk cannot open. The case makes
+// thirty more of them than the bound, each a target the walk is refused, and the walk's own list
+// holds the bound with the count of the rest beside it, each kept entry naming the read refused.
+// The negative control is the walk keeping every one, as it did at b7085e21, where only the
+// report's copy was cut: its list held all eighty.
+func TestTheWalkKeepsAsManyUnmeasuredDirectoriesAsAReportNamesAndCountsTheRest(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("the test process is root, which opens a mode-000 directory: a refused open cannot be staged for it")
+	}
+	clock := &fakeClock{at: time.Date(2026, 11, 11, 9, 0, 0, 0, time.UTC)}
+	root := walkTree(t, clock.at.Add(-2*time.Hour))
+	const planted = volumeReportSizesMissing + 30
+	for at := range planted {
+		lockedUnder(t, filepath.Join(root, "scratch", fmt.Sprintf("sealed-%03d", at)), clock.at)
+	}
+
+	result := walkOf(root, clock, &fakeTicks{}, measureTree).run(context.Background())
+
+	if len(result.Missing) != volumeReportSizesMissing || result.MissingOmitted != planted-volumeReportSizesMissing {
+		t.Errorf("the walk keeps %d unmeasured directories and counts %d more, want the %d a report names and the %d past them",
+			len(result.Missing), result.MissingOmitted, volumeReportSizesMissing, planted-volumeReportSizesMissing)
+	}
+	for _, missing := range result.Missing {
+		if missing.Reason != "openat: "+syscall.EACCES.Error() {
+			t.Errorf("the walk names %s as unmeasured with %q, want the open the kernel refused", missing.Path, missing.Reason)
+		}
+	}
+	if result.Partial {
+		t.Error("a walk that went on past every directory it could not open is marked partial, which a reader reads as a walk that ended early")
+	}
+}
+
+// The walk's budget is armed before it lists its targets, and the listing is cut by it as a
+// measurement is: a role can make any number of directories under /legion/scratch, and the walk
+// opens and lists each child of the volume root to find its targets. The budget here is spent
+// before the walk begins, and the volume root holds two thousand children, each with a
+// directory of its own: the walk ends on its budget part way through the listing, measures
+// nothing, and names among what it did not measure a child of the root it never listed, by the
+// child's own path. The negative control is the walk arming its budget after the listing, as it
+// did at b7085e21: it listed every child and named only the targets two levels down.
+func TestTheWalksBudgetCutsTheListingOfItsTargets(t *testing.T) {
+	clock := &fakeClock{at: time.Date(2026, 11, 11, 9, 0, 0, 0, time.UTC)}
+	root := t.TempDir()
+	const children = 2000
+	for at := range children {
+		mkdirFixture(t, filepath.Join(root, fmt.Sprintf("child-%04d", at), "inner"))
+	}
+	measurements := 0
+	walk := sizeWalk{root: root, now: clock.now, budget: volumeWalkBudget,
+		after: func(time.Duration) (<-chan time.Time, func()) {
+			spent := make(chan time.Time)
+			close(spent)
+			return spent, func() {}
+		},
+		measure: func(ctx context.Context, dir *dirHandle, name string, at time.Time) measured {
+			measurements++
+			return measureTree(ctx, dir, name, at)
+		},
+	}
+
+	result := walk.run(context.Background())
+
+	if !result.Partial || len(result.Sizes) != 0 || measurements != 0 {
+		t.Errorf("the walk whose budget was spent before it began is partial %t with %d sizes after %d measurements, want partial and nothing measured",
+			result.Partial, len(result.Sizes), measurements)
+	}
+	unlisted := slices.ContainsFunc(result.Missing, func(missing shimwire.LauncherVolumeMissing) bool {
+		return filepath.Dir(missing.Path) == root
+	})
+	if !unlisted {
+		t.Errorf("the walk names %d of the %d children's targets as unmeasured, all two levels down: it listed every child after its budget ran out", len(result.Missing)+result.MissingOmitted, children)
+	}
+	if total := len(result.Missing) + result.MissingOmitted; total != children {
+		t.Errorf("the walk names %d directories as unmeasured, want one for each of the %d children, listed or not", total, children)
 	}
 }
 
@@ -415,7 +498,7 @@ func TestTheWalkMeasuresNothingThroughAChildSwappedForARelativeLinkCrossingAnAbs
 			t.Errorf("the walk measured %s at %d B, and no directory of this volume holds a file over one byte: it read through the relative link and across the absolute one, into %s", size.Path, size.Bytes, bait)
 		}
 	}
-	for _, missing := range result.Missing {
+	for _, missing := range missingPaths(result.Missing) {
 		if strings.HasPrefix(missing, inside) {
 			accounted++
 		}
@@ -581,7 +664,7 @@ func TestAWalkThatWasCutSaysSoWithWhatItDidNotReach(t *testing.T) {
 		t.Fatalf("the trimmer wrote %d lines of the walk, want one: %q", len(lines), f.linesWritten())
 	}
 	for _, want := range []string{"was cut by its budget or the container's stop before it reached every directory",
-		"measured 2 directories", fmt.Sprintf("left %d unmeasured", len(report.SizesMissing)), strconv.Quote(report.SizesMissing[0])} {
+		"measured 2 directories", fmt.Sprintf("left %d unmeasured", len(report.SizesMissing)), strconv.Quote(report.SizesMissing[0].Path)} {
 		if !strings.Contains(lines[0], want) {
 			t.Errorf("the walk's line does not say %q: %s", want, lines[0])
 		}

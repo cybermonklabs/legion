@@ -33,6 +33,10 @@ import (
 // entry (Covers).
 type usedPaths struct {
 	paths []string // sorted
+	// held is every root a process holds a descriptor open on, sorted: the one kind of path a
+	// `flock` on a root is, kept apart from paths because a root is held by nothing else
+	// (Holds).
+	held []string
 	// Refused is one entry per process whose /proc the kernel refused, naming it, or one entry
 	// naming /proc itself when the list of processes could not be read at all.
 	Refused []string
@@ -96,12 +100,15 @@ func readUsedPaths(procRoot string, under []string, own ...int) usedPaths {
 		process := procProcess{dir: filepath.Join(procRoot, entry.Name()), pid: pid, under: under, lines: lines}
 		process.read()
 		used.paths = append(used.paths, process.paths...)
+		used.held = append(used.held, process.held...)
 		if process.refusal != "" {
 			used.Refused = append(used.Refused, process.refusal)
 		}
 	}
 	slices.Sort(used.paths)
 	used.paths = slices.Compact(used.paths)
+	slices.Sort(used.held)
+	used.held = slices.Compact(used.held)
 	return used
 }
 
@@ -135,28 +142,35 @@ func (u usedPaths) Covers(path string) bool {
 	return at < len(u.paths) && strings.HasPrefix(u.paths[at], under)
 }
 
-// Holds is whether any process holds path itself, which Covers cannot be asked: Covers answers
-// yes for a path something under it is in use, which of a reclaimable root is true the moment
-// one role has one cache entry open.
+// Holds is whether any process holds a descriptor open on path itself, which Covers cannot be
+// asked: Covers answers yes for a path something under it is in use, which of a reclaimable root
+// is true the moment one role has one cache entry open.
 //
-// The sweep asks it of each root. A process holding the root's own inode is a tool that took the
-// `flock` every rendered install takes on its cache root for the length of the install
-// (installBlock and claudeCodeBlock, internal/runtime/sandbox/plugins.go), and the entries under
-// it are the ones that install is filling, so the whole root is left alone until it lets go.
+// The sweep asks it of each root, and it counts an open descriptor on the root and nothing else,
+// because that is what a `flock` on the root holds: the rendered install takes one on bun's
+// install cache root for the length of the install (installBlock,
+// internal/runtime/sandbox/plugins.go), the entries under it are the ones that install is
+// filling, and the whole root is left alone until it lets go. A process standing in the root —
+// its working directory or a thread's, or its root directory — holds no lock on it: a role's
+// bash keeps one shell for its whole session, and one that ran `cd "$TMPDIR"` would otherwise
+// keep every Go build tree of the pod from being swept for as long as it stood there
+// (TestAProcessStandingInARootIsNoHoldOnIt). What such a process stands in under a root is still
+// a use of the entry it lies in (Covers).
 func (u usedPaths) Holds(path string) bool {
-	_, held := slices.BinarySearch(u.paths, filepath.Clean(path))
+	_, held := slices.BinarySearch(u.held, filepath.Clean(path))
 	return held
 }
 
 // procProcess is one process of the pod as this pass reads it: the paths it was found to use
-// under the roots it is given, and the first /proc read of it the kernel refused. lines is the
-// pass's one reader its maps are read through.
+// under the roots it is given, the roots it holds a descriptor open on, and the first /proc read
+// of it the kernel refused. lines is the pass's one reader its maps are read through.
 type procProcess struct {
 	dir     string
 	pid     int
 	under   []string
 	lines   *bufio.Reader
 	paths   []string
+	held    []string
 	refusal string
 }
 
@@ -170,22 +184,25 @@ func (p *procProcess) read() {
 	p.threads()
 }
 
-// link adds what one /proc symbolic link names.
-func (p *procProcess) link(what, path string) {
+// link adds what one /proc symbolic link names, and answers it as add kept it.
+func (p *procProcess) link(what, path string) string {
 	target, err := os.Readlink(path)
 	if err != nil {
 		p.refuse(what, err)
-		return
+		return ""
 	}
-	p.add(target)
+	return p.add(target)
 }
 
-// descriptors adds every file the process has open. A descriptor closed between the listing and
-// the reading of its link is gone rather than refused (refuse).
+// descriptors adds every file the process has open, and keeps a descriptor on a root itself as
+// a hold of that root (Holds). A descriptor closed between the listing and the reading of its
+// link is gone rather than refused (refuse).
 func (p *procProcess) descriptors() {
 	dir := filepath.Join(p.dir, "fd")
 	if err := eachName(dir, func(name string) {
-		p.link("fd/"+name, filepath.Join(dir, name))
+		if kept := p.link("fd/"+name, filepath.Join(dir, name)); slices.Contains(p.under, kept) {
+			p.held = append(p.held, kept)
+		}
 	}); err != nil {
 		p.refuse("fd", err)
 	}
@@ -297,18 +314,19 @@ func eachName(dir string, each func(name string)) error {
 // no file, and a file outside every root is none the guard is asked about (readUsedPaths). A
 // target the kernel marks ` (deleted)` is kept as it reads: it is the path of no entry, since
 // that name is already unlinked, and it is a use of every entry it lies under, whose tree the
-// process still holds an inode of.
-func (p *procProcess) add(target string) {
+// process still holds an inode of. It answers the path as it kept it, and "" for one it dropped.
+func (p *procProcess) add(target string) string {
 	if !strings.HasPrefix(target, "/") {
-		return
+		return ""
 	}
 	target = filepath.Clean(target)
 	for _, root := range p.under {
 		if strings.HasPrefix(target, root) && (len(target) == len(root) || target[len(root)] == '/') {
 			p.paths = append(p.paths, target)
-			return
+			return target
 		}
 	}
+	return ""
 }
 
 // keepsBytes is whether path, a line's path as the kernel wrote it, is one of the roots or lies
@@ -353,7 +371,8 @@ func (p *procProcess) refuse(what string, err error) {
 // halt is asked before every directory of the tree is opened, and the first error it answers
 // ends the walk and is this one's: the listing passes the sweep's three endings (trimmer.list),
 // since one entry a role made deep or wide would otherwise hold the listing, and the sweep
-// with it, past the budget and the container's stop for as long as its walk takes.
+// with it, past the budget and the container's stop for as long as its walk takes. A file has
+// no tree to walk, so its one lstat asks nothing.
 func newestModTime(dir *dirHandle, name string, halt func() error) (time.Time, error) {
 	info, err := dir.Lstat(name)
 	if err != nil {
@@ -380,11 +399,13 @@ func newestModTime(dir *dirHandle, name string, halt func() error) (time.Time, e
 // the listing. It reads through dir's handle and follows no symbolic link, as newestModTime
 // above does and for the reasons given there.
 //
-// Nothing halts it part way. It is one of the reads of one entry's removal (trimmer.remove),
-// and an ending of the sweep is taken at the boundary between two entries and never inside
-// one, as the removal itself is never interrupted; the tree it reads is one the listing walked
-// whole inside the same budget moments before.
-func newerThan(dir *dirHandle, name string, cutoff time.Time) (bool, error) {
+// halt is asked as newestModTime asks it, before every directory of the tree is opened, and
+// for the same reason: between the listing and this re-read a role may grow the entry into a
+// tree as deep or wide as it likes and set its times back, and a walk that asked nothing would
+// hold the sweep past its budget and the container's stop for as long as that tree took to
+// read. The re-read comes before the entry's removal begins (trimmer.remove), so an ending it
+// meets leaves the entry whole and ends the sweep there.
+func newerThan(dir *dirHandle, name string, cutoff time.Time, halt func() error) (bool, error) {
 	info, err := dir.Lstat(name)
 	if err != nil {
 		return false, err
@@ -396,7 +417,7 @@ func newerThan(dir *dirHandle, name string, cutoff time.Time) (bool, error) {
 		return false, nil
 	}
 	newer := false
-	err = walkEntries(dir, name, nil, func(info os.FileInfo) error {
+	err = walkEntries(dir, name, halt, func(info os.FileInfo) error {
 		if info.ModTime().After(cutoff) {
 			newer = true
 			return errWalkDone
@@ -424,20 +445,29 @@ func newerThan(dir *dirHandle, name string, cutoff time.Time) (bool, error) {
 // descriptors (`ulimit -n`, measured in an issue pod of this deployment at 2026-11-12T06:30Z);
 // a level the kernel refuses for that or any other reason is the error the guard answers with,
 // and the entry is passed over.
+//
+// That error names what failed from name, as the deleter's removal names what it failed on from
+// the entry (treeRemoval.remove): name itself where its own open or listing failed, and
+// otherwise name, the name that failed and how many levels below name it lay (removalFailure),
+// lifted a level at a time on the way back up (under). No level builds the path above it, so
+// the line the sweep writes of an entry whose age could not be read is of a size set by two
+// names and not by the depth a role nested the entry to
+// (TestAnAgeThatCannotBeReadIsLoggedAtASizeItsDepthDoesNotSet). A halt's error and a visit's
+// errWalkDone are answered as they are.
 func walkEntries(dir *dirHandle, name string, halt func() error, visit func(info os.FileInfo) error) error {
 	if halt != nil {
 		if err := halt(); err != nil {
 			return err
 		}
 	}
-	under, err := dir.open(name)
+	level, err := dir.open(name)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = under.Close() }()
-	entries, err := under.ReadDir()
+	defer func() { _ = level.Close() }()
+	entries, err := level.readDir()
 	if err != nil {
-		return err
+		return under(name, within(err, ""))
 	}
 	for _, entry := range entries {
 		info, err := entry.Info()
@@ -445,18 +475,18 @@ func walkEntries(dir *dirHandle, name string, halt func() error, visit func(info
 			// Not met under go1.27.3: an entry listed through a handle carries the lstat its
 			// listing made, and Info answers that with no error (dirHandle.ReadDir). Were it
 			// to fail, a name gone since the listing holds nothing back, and any other error
-			// names the entry by its path on the volume, quoted, as every other read here does.
+			// names the entry by its name below name, quoted, as every other read here does.
 			if errors.Is(err, fs.ErrNotExist) {
 				continue
 			}
-			return under.named(err, entry.Name())
+			return under(name, within(err, entry.Name()))
 		}
 		if err := visit(info); err != nil {
 			return err
 		}
 		if entry.IsDir() {
-			if err := walkEntries(under, entry.Name(), halt, visit); err != nil {
-				return err
+			if err := walkEntries(level, entry.Name(), halt, visit); err != nil {
+				return under(name, err)
 			}
 		}
 	}

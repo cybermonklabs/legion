@@ -152,14 +152,14 @@ func TestEveryExchangedFrameRoundTripsItsWireLine(t *testing.T) {
 		{
 			// One sweep as the trimmer reports it, every member set: the episode and what raised
 			// it, the volume before and after, the sizes of the directories two levels under the
-			// root, one of them read only in part, and the faults that have now stopped the
-			// trimmer itself.
+			// root, one of them read only in part, a directory it could not open with the read the
+			// kernel refused, and the faults that have now stopped the trimmer itself.
 			"launcher_volume_report",
 			`{"type":"launcher_volume_report","trimmer":"trim-9f3c","episode":2,"raisedBy":"rise","usedBytes":48318382080,"freeBytes":5368709120,"freedBytes":10737418240,` +
 				`"stopReason":"the reading fell below the low mark","refusedReads":["1842 role-init"],` +
 				`"sizes":[{"path":"/legion/go/build","bytes":32212254720,"bytesOverHour":21474836480,"bytesOverDay":10737418240},` +
 				`{"path":"/legion/scratch/tmp","bytes":16106127360,"bytesOverHour":8589934592,"bytesOverDay":0,"refused":"/legion/scratch/tmp/.../locked (depth 3)","refusals":2}],` +
-				`"sizesAt":"2026-11-10T04:05:06Z","sizesPartial":true,"sizesMissing":["/legion/uv"],` +
+				`"sizesAt":"2026-11-10T04:05:06Z","sizesPartial":true,"sizesMissing":[{"path":"/legion/uv","reason":"openat: permission denied"}],` +
 				`"faults":["panic: the size walk read a path that went away (goroutine 42)"],"switchedOff":true}`,
 			LauncherVolumeReport{
 				Trimmer: "trim-9f3c", Episode: 2, RaisedBy: VolumeEpisodeRise,
@@ -173,7 +173,7 @@ func TestEveryExchangedFrameRoundTripsItsWireLine(t *testing.T) {
 				},
 				SizesAt:      time.Date(2026, 11, 10, 4, 5, 6, 0, time.UTC),
 				SizesPartial: true,
-				SizesMissing: []string{"/legion/uv"},
+				SizesMissing: []LauncherVolumeMissing{{Path: "/legion/uv", Reason: "openat: permission denied"}},
 				Faults:       []string{"panic: the size walk read a path that went away (goroutine 42)"},
 				SwitchedOff:  true,
 			},

@@ -448,10 +448,13 @@ const ownHoldEntries = 2000
 //
 // Two controls stand beside it. The same tree swept by the in-process remover is deleted whole,
 // which is what makes the child, and not the tree, the hold the first sweep is read for. And a
-// root a separate process takes after the listing, by standing in it, is still skipped with the
-// one line that says so, which is what makes the change leave the deleter out and not the guard:
-// with the refresh's reading replaced by an empty set, that sweep deleted all 2000 entries and
-// wrote no line, on the same day and kernel.
+// root a separate process takes after the listing, by holding a descriptor open on it as a
+// `flock` does, is still skipped with the one line that says so, which is what makes the change
+// leave the deleter out and not the guard: with the refresh's reading replaced by an empty set,
+// that sweep deleted all 2000 entries and wrote no line, on 2026-11-15, kernel 4.19.0-gvisor,
+// under go1.27.3. That process stands at / so that the descriptor is the only path it names on
+// the root: a process standing in a root is no hold on it (usedPaths.Holds,
+// TestAProcessStandingInARootIsNoHoldOnIt).
 func TestASweepsOwnDeleterIsNoHoldOnTheRootsItDeletesFrom(t *testing.T) {
 	requireRoleNamespaces(t)
 	self, err := os.Executable()
@@ -525,9 +528,9 @@ func TestASweepsOwnDeleterIsNoHoldHelper(t *testing.T) {
 	tr.removals = func(cover RoleCover, dirs []*sweepDir) (entryRemover, error) {
 		// After the listing and before the first deletion, which is where the sweep starts its
 		// deleter: the set the next entry is asked against is read again, with the deleter
-		// running and, for the control, the separate process standing in the root.
+		// running and, for the control, the separate process holding the root open.
 		if sweep == ownHoldSeparate {
-			standIn(t, root.Path)
+			holdOpen(t, root.Path)
 		}
 		ahead = volumeUsedPathsMaxAge + time.Millisecond
 		return start(cover, dirs)
@@ -555,22 +558,31 @@ func TestASweepsOwnDeleterIsNoHoldHelper(t *testing.T) {
 	f.assertProtected()
 }
 
-// standIn starts a process of its own standing in dir, which is a hold on dir through that
-// process's /proc cwd, and returns once the /proc this sweep reads names it there.
-func standIn(t *testing.T, dir string) {
+// holdOpen starts a process of its own that holds a descriptor open on dir, which is a hold on dir
+// through that process's /proc fd, and returns once the /proc this sweep reads names it there.
+// The process stands at /, and this one closes its own descriptor once the other has it.
+func holdOpen(t *testing.T, dir string) {
 	t.Helper()
+	handle, err := os.Open(dir)
+	if err != nil {
+		t.Fatalf("a descriptor on %s: %v", dir, err)
+	}
 	holder := exec.Command("sleep", "300")
-	holder.Dir = dir
-	if err := holder.Start(); err != nil {
-		t.Fatalf("a process standing in %s: %v", dir, err)
+	holder.Dir = "/"
+	holder.ExtraFiles = []*os.File{handle}
+	started := holder.Start()
+	_ = handle.Close()
+	if started != nil {
+		t.Fatalf("a process holding %s open: %v", dir, started)
 	}
 	t.Cleanup(func() {
 		_ = holder.Process.Kill()
 		_ = holder.Wait()
 	})
-	cwd := filepath.Join("/proc", strconv.Itoa(holder.Process.Pid), "cwd")
-	testwait.Eventually(t, cwd+" to name "+dir, func() bool {
-		target, err := os.Readlink(cwd)
+	// ExtraFiles[0] is the child's descriptor 3.
+	fd := filepath.Join("/proc", strconv.Itoa(holder.Process.Pid), "fd", "3")
+	testwait.Eventually(t, fd+" to name "+dir, func() bool {
+		target, err := os.Readlink(fd)
 		return err == nil && target == dir
 	})
 }

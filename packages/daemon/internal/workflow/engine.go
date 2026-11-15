@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 
@@ -17,6 +18,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/store"
 )
@@ -970,9 +972,12 @@ func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFa
 // it was last observed to have died of (supervise.Claim.PodEnd), which is the cause no role
 // chose — an eviction for ephemeral storage above all — or, where the claim holds no pod end,
 // the first line of the runtime's account of its last death (supervise.Claim.LastDeathCause,
-// intake.ClaimFailed.Death). They are joined with "; " into one line, and any of them the fact
-// does not hold is left out. All three are persisted on the claim, so a daemon that restarted
-// between the death and the moment the budget ran out says the same thing.
+// intake.ClaimFailed.Death). They are joined with "; ", and any of them the fact does not hold is
+// left out. The sentence is made one line and cut to a bound (deathSentence) and the death's
+// first line is quoted (deathFirstLine), so neither a provider's message nor a role's log writes
+// a line of its own into the reason; the pod end is the kubelet's reason and message, bounded
+// where it is built (runtime.PodEnd). All three are persisted on the claim, so a daemon that
+// restarted between the death and the moment the budget ran out says the same thing.
 //
 // The death is named only where there is no pod end, because on a pod the cluster ended it is
 // the runtime's whole detail (sandbox's Runtime.ended): the pod's reason and the kubelet's
@@ -996,7 +1001,7 @@ func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFa
 func deathReason(fact intake.ClaimFailed, failureCarried bool) string {
 	said := make([]string, 0, 2)
 	if !failureCarried && fact.Reason != "" {
-		said = append(said, fact.Reason)
+		said = append(said, deathSentence(fact.Reason))
 	}
 	switch {
 	case fact.PodEnd != "":
@@ -1005,6 +1010,50 @@ func deathReason(fact intake.ClaimFailed, failureCarried bool) string {
 		said = append(said, fmt.Sprintf("the process was last found %q", deathFirstLine(fact.Death)))
 	}
 	return strings.Join(said, "; ")
+}
+
+// deathSentenceCut ends a supervisor's sentence deathSentence cut.
+const deathSentenceCut = "… (cut)"
+
+// deathSentence is the supervisor's sentence as a worker-died's reason carries it: each run of
+// line breaks between two pieces of its text written as " / " and any at either end dropped, and
+// the whole cut to runtime.PodEndRunes runes, the bound the pod end beside it is cut to, ending in
+// deathSentenceCut where it was longer. For a run of refused turns the sentence holds the
+// provider's message as the role's own plugin posted it (supervise's refusalCause, api's
+// turn-outcome route), which can run to a mebibyte over many lines; the claim and a failure
+// record's `detail` keep it whole (noticeFailure).
+func deathSentence(sentence string) string {
+	cut := false
+	if at := runeOffset(sentence, runtime.PodEndRunes); at < len(sentence) {
+		sentence, cut = sentence[:at], true
+	}
+	line := strings.Join(strings.FieldsFunc(sentence, isLineBreak), " / ")
+	if !cut && utf8.RuneCountInString(line) <= runtime.PodEndRunes {
+		return line
+	}
+	keep := runtime.PodEndRunes - utf8.RuneCountInString(deathSentenceCut)
+	return line[:runeOffset(line, keep)] + deathSentenceCut
+}
+
+// isLineBreak is whether r ends a line where the reason is read: a line feed, a carriage return,
+// a vertical tab, a form feed, a next line, or Unicode's line and paragraph separators.
+func isLineBreak(r rune) bool {
+	switch r {
+	case '\n', '\r', '\v', '\f', '\u0085', '\u2028', '\u2029':
+		return true
+	}
+	return false
+}
+
+// runeOffset is the byte offset of the rune n runes into s, and len(s) where s holds n runes or
+// fewer.
+func runeOffset(s string, n int) int {
+	at := 0
+	for ; n > 0 && at < len(s); n-- {
+		_, size := utf8.DecodeRuneInString(s[at:])
+		at += size
+	}
+	return at
 }
 
 // deathFirstLine is the part of a death the worker-died's reason carries: its first line — the
@@ -1197,19 +1246,20 @@ func volumeNoticeReason(issue string, report record.VolumeNearFull) string {
 		// A size the kernel let the walk read only in part is what the walk could read and no
 		// more, so it is told as a lower bound with the read that was refused, which is where a
 		// reader looks for the rest (record.VolumeSize).
-		fmt.Fprintf(&out, "; %q holds at least %d bytes (%d older than an hour, %d older than a day, of what the walk could read): the kernel refused %d of the walk's reads at or under it, the first at %q",
+		fmt.Fprintf(&out, "; %q holds at least %d bytes (%d older than an hour, %d older than a day, of what the walk could read): the kernel refused %d of the walk's reads under it, the first at %q",
 			size.Path, size.Bytes, size.BytesOverHour, size.BytesOverDay, size.Refusals, size.Refused)
 	}
 	if report.SizesOmitted > 0 {
 		fmt.Fprintf(&out, "; %d more measured directories are left out of this report", report.SizesOmitted)
 	}
 	// Two facts and not one: a walk that was cut ended early, and a directory the walk measured
-	// none of may be one it could not open while it went on to its end (record.VolumeNearFull).
+	// none of may be one it could not open while it went on to its end, which is told with the
+	// read the kernel refused (record.VolumeNearFull, record.VolumeMissing).
 	if report.SizesPartial {
 		out.WriteString("; the size walk was cut before it reached every directory")
 	}
 	if len(report.SizesMissing) > 0 {
-		fmt.Fprintf(&out, "; the size walk measured none of %s", quotedList(report.SizesMissing))
+		fmt.Fprintf(&out, "; the size walk measured none of %s", missingList(report.SizesMissing))
 		if report.SizesMissingOmitted > 0 {
 			fmt.Fprintf(&out, " and %d more it leaves out", report.SizesMissingOmitted)
 		}
@@ -1243,6 +1293,20 @@ func quotedList(list []string) string {
 	quoted := make([]string, len(list))
 	for at, one := range list {
 		quoted[at] = strconv.Quote(one)
+	}
+	return strings.Join(quoted, ", ")
+}
+
+// missingList is the directories a size walk measured none of as quotedList writes a list, each
+// followed by the reason the kernel gave where it has one, quoted the same way: the reason comes
+// from the pod as the path does.
+func missingList(list []record.VolumeMissing) string {
+	quoted := make([]string, len(list))
+	for at, one := range list {
+		quoted[at] = strconv.Quote(one.Path)
+		if one.Reason != "" {
+			quoted[at] += " (because " + strconv.Quote(one.Reason) + ")"
+		}
 	}
 	return strings.Join(quoted, ", ")
 }

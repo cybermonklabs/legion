@@ -367,7 +367,7 @@ func TestTheAgeGuardReadsTheNewestTimeAnywhereInAnEntry(t *testing.T) {
 			t.Error("a full walk of the tree read the directory this case made unreadable, so the early stop below proves nothing")
 		}
 	}
-	switch newer, err := newerThan(held, "go-build1999", cutoff); {
+	switch newer, err := newerThan(held, "go-build1999", cutoff, nil); {
 	case err != nil:
 		t.Errorf("newerThan(%s) walked past the first fresh file: %v", stop, err)
 	case !newer:
@@ -375,7 +375,7 @@ func TestTheAgeGuardReadsTheNewestTimeAnywhereInAnEntry(t *testing.T) {
 	}
 
 	// Nothing newer than the cutoff is the answer that lets a sweep delete.
-	if newer, err := newerThan(held, "go-build2026", time.Now()); err != nil || newer {
+	if newer, err := newerThan(held, "go-build2026", time.Now(), nil); err != nil || newer {
 		t.Errorf("newerThan(%s, now) = %v, %v, want false: nothing in it was written in this second", tree, newer, err)
 	}
 }
@@ -486,10 +486,12 @@ func TestTheGuardWalkReadsNothingThroughAChildSwappedForARelativeLinkCrossingAnA
 	if swaps != 1 {
 		t.Fatalf("the swap was made %d times, want the one the visit of the entry's first child makes: the case staged nothing; the walk read %v", swaps, visited)
 	}
+	// The error names the swapped child from the entry, by the entry's name and its own
+	// (walkEntries), as the deleter names what it failed on.
 	if walked == nil {
 		t.Errorf("the walk read the whole of %s with a child of it swapped for a link: a level it may not open is the error the guard answers with", tree)
-	} else if !strings.Contains(walked.Error(), swapped) {
-		t.Errorf("the walk answered %v, want an error naming %s: the pod's log is read by a person", walked, swapped)
+	} else if want := strconv.Quote(filepath.Base(tree) + "/" + filepath.Base(swapped)); !strings.Contains(walked.Error(), want) {
+		t.Errorf("the walk answered %v, want an error naming %s, the child it could not open, from the entry: the pod's log is read by a person", walked, want)
 	}
 	for _, name := range visited {
 		if name == "TOKEN" || name == "sh" {

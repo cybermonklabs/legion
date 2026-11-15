@@ -2684,8 +2684,9 @@ func (f *trimFixture) assertNothingHalfRemoved() {
 }
 
 // The budget, a stop from the settings and the container's own stop each take effect at the
-// next entry boundary once deleting has begun: what was deleted stands, nothing is left half
-// removed, and the container's stop lets run return at once rather than after the budget.
+// next entry boundary once deleting has begun, or in the next entry's pre-delete re-read, before
+// its removal begins: what was deleted stands, nothing is left half removed, and the container's
+// stop lets run return at once rather than after the budget.
 func TestTheThreeEndingsTakeEffectAtTheNextEntryBoundary(t *testing.T) {
 	const before = 3 // deletions before the ending arrives
 
@@ -2784,6 +2785,12 @@ func TestTheThreeEndingsTakeEffectAtTheNextEntryBoundary(t *testing.T) {
 		f.useVolume(steady(90))
 		f.setSettings(trimSettings())
 		tr := f.trimmer()
+		// The entry the sweep reaches after its third deletion, and whether its pre-delete
+		// re-read has a tree to walk.
+		next, err := os.Lstat(f.oldestFirst()[before].path)
+		if err != nil {
+			t.Fatal(err)
+		}
 		cancel, done := f.start(tr)
 		stopped := false
 		f.clock.setHook(func(_ *fakeClock) {
@@ -2806,18 +2813,70 @@ func TestTheThreeEndingsTakeEffectAtTheNextEntryBoundary(t *testing.T) {
 		if moved := f.clock.moved(); moved >= volumeSweepBudget {
 			t.Errorf("the trimmer's clock moved %s before run returned, want less than the %s budget: the stop and not the budget ended it", moved, volumeSweepBudget)
 		}
-		// One more entry than the stop was staged after: the boundary that reads the clock has
-		// already asked the context, so the entry it was on is removed whole and the stop is
-		// taken at the boundary after it, which is the rule — an ending is never taken in the
-		// middle of a removal.
-		if gone := len(f.gone()); gone != before+1 {
-			t.Errorf("%d entries are gone, want the %d deletions that stood when the stop was taken at the next boundary", gone, before+1)
+		// The boundary that reads the clock has already asked the context, so the stop reaches
+		// the sweep in the entry after the third deletion, and no removal has begun there. A
+		// directory's pre-delete re-read asks the context before it opens the directory
+		// (newerThan), so the stop is taken there and that entry stands whole; a file's re-read
+		// is one lstat that asks nothing, so its removal begins and the stop is taken at the
+		// boundary after it. Either way an ending is never taken in the middle of a removal.
+		want := before
+		if !next.IsDir() {
+			want = before + 1
+		}
+		if gone := len(f.gone()); gone != want {
+			t.Errorf("%d entries are gone, want the %d deletions that stood when the stop was taken (the entry after the third is a directory: %t)", gone, want, next.IsDir())
 		}
 		if gone := len(f.gone()); gone >= len(f.entries) {
 			t.Errorf("every one of the %d entries is gone: the sweep ran to its end rather than stopping", len(f.entries))
 		}
 		f.assertNothingHalfRemoved()
 	})
+}
+
+// A stop that reaches the sweep while it re-reads an entry's age just before deleting it ends the
+// sweep there, with that entry whole: the re-read walks the entry's tree (newerThan), which a role
+// can grow as deep or as wide as it likes between the listing and the delete, and it asks the
+// sweep's endings before each directory it opens, as the listing's walk does. The stop is the
+// settings', staged at the second time the sweep asks them after its third deletion: the first is
+// the boundary before the fourth entry, and the second is that entry's re-read, before its
+// removal begins. Every entry is a directory, so every re-read has a tree to walk. The negative
+// control is newerThan asking nothing, as it did at b7085e21: the fourth entry was deleted and
+// the stop was taken at the boundary after it.
+func TestAStopInAnEntrysPreDeleteReReadEndsTheSweepWithTheEntryWhole(t *testing.T) {
+	const before = 3 // deletions before the stop arrives
+	f := newTrimFixture(t, 0)
+	root := f.roots[3]
+	for n := range 6 {
+		f.addTree(filepath.Join(root.Path, fmt.Sprintf("tool-%02d", n)), root.Entry)
+	}
+	f.useVolume(steady(90))
+	f.setSettings(trimSettings())
+	asked, stopped := 0, false
+	f.setOnSettings(func() {
+		if stopped || len(f.gone()) < before {
+			return
+		}
+		if asked++; asked == 2 {
+			stopped = true
+			f.setSettings(nil)
+		}
+	})
+
+	out := f.trimmer().sweep(context.Background(), *trimSettings(), steady(90)(0))
+
+	if !stopped {
+		t.Fatalf("the case never reached the moment it stages: the sweep asked the settings %d times after its third deletion (%s)", asked, out.reason)
+	}
+	if out.deletions != before || len(f.gone()) != before {
+		t.Errorf("the sweep deleted %d entries and %d are gone, want the %d it had made when the stop reached the next entry's re-read", out.deletions, len(f.gone()), before)
+	}
+	if next := f.oldestFirst()[before]; !f.exists(next.path) {
+		t.Errorf("the sweep deleted %s, the entry whose re-read the stop reached before its removal began", next.path)
+	}
+	if !out.settingsStop {
+		t.Errorf("the sweep ended with %q, want the settings' stop it met in the re-read", out.reason)
+	}
+	f.assertNothingHalfRemoved()
 }
 
 // A removal that fails part way is reported and passed over, and the part-removed entry a later
@@ -2929,12 +2988,14 @@ func TestARemovalThatFailsPartWayIsLoggedWithTheRoleChosenNameQuoted(t *testing.
 
 // The sweep's line for an entry whose age could not be read names the entry and the guard's error
 // with every name a role chose quoted, so a name holding a newline is written with it escaped and
-// the line stays one line of the pod's log (quotedPathError). The entry is an immediate child of
-// bun's install cache whose name holds a newline and a line of text after it, and its child b1 is
-// a directory the age read cannot pass: made 0000, its open fails (openElementAt), and made 0400,
-// it opens and its listing fails (dirHandle.named). The negative controls are each of those two
-// answering the fs.PathError it raised, which put the role's line of text in the log as a line of
-// its own, "forged: a line the role wrote/b1: permission denied", for the child of that mode.
+// the line stays one line of the pod's log (quotedPathError, removalFailure). The entry is an
+// immediate child of bun's install cache whose name holds a newline and a line of text after it,
+// and its child b1 is a directory the age read cannot pass: made 0000, its open fails
+// (openElementAt), and made 0400, it opens and its listing fails (within). The guard's error
+// names b1 from the entry, by the entry's name and b1's (walkEntries), as the deleter names what
+// it failed on. The negative controls are each of those two answering the fs.PathError it
+// raised, which put the role's line of text in the log as a line of its own, "forged: a line the
+// role wrote/b1: permission denied", for the child of that mode.
 func TestAnAgeThatCannotBeReadIsLoggedWithTheRoleChosenNameQuoted(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("the test process is root, which opens and lists a directory whatever its mode: an age read that fails cannot be staged for it")
@@ -2980,7 +3041,7 @@ func TestAnAgeThatCannotBeReadIsLoggedWithTheRoleChosenNameQuoted(t *testing.T) 
 			if strings.Contains(unread[0], "\n") {
 				t.Errorf("the trimmer wrote %q, whose error holds a newline of the name a role chose", unread[0])
 			}
-			if want := "openat " + strconv.Quote(blocked) + ": " + unix.EACCES.Error(); !strings.HasSuffix(unread[0], want) {
+			if want := "openat " + strconv.Quote(filepath.Base(entry.path)+"/b1") + ": " + unix.EACCES.Error(); !strings.HasSuffix(unread[0], want) {
 				t.Errorf("the trimmer wrote %q, want the guard's error to name the child as %s", unread[0], want)
 			}
 		})
@@ -3729,7 +3790,7 @@ func TestAReportOfAVolumeHoldingThousandsOfDirectoriesIsOneTheConnectionTakes(t 
 	}
 
 	cut := 0
-	for _, path := range append(pathsOf(report.Sizes), report.SizesMissing...) {
+	for _, path := range append(pathsOf(report.Sizes), missingPaths(report.SizesMissing)...) {
 		if runes := utf8.RuneCountInString(path); runes > volumeReportPathRunes {
 			t.Errorf("the report carries a path of %d runes, want none over the %d bound", runes, volumeReportPathRunes)
 		}
@@ -3811,6 +3872,15 @@ func pathsOf(sizes []shimwire.LauncherVolumeSize) []string {
 	paths := make([]string, len(sizes))
 	for at, size := range sizes {
 		paths[at] = size.Path
+	}
+	return paths
+}
+
+// missingPaths is the path of each directory a walk or a report names as unmeasured.
+func missingPaths(missing []shimwire.LauncherVolumeMissing) []string {
+	paths := make([]string, len(missing))
+	for at, one := range missing {
+		paths[at] = one.Path
 	}
 	return paths
 }

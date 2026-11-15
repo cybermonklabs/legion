@@ -58,8 +58,10 @@ type dirHandle struct {
 	// parent and name are how the handle was opened: the handle it was opened from by one name
 	// (open) and that name, or no parent and the absolute path for a handle openVolumeDir
 	// opened. The trimmer's log lines are read by a person, and a name under a descriptor names
-	// nothing to one, so every error raised against the descriptor path is renamed to the
-	// handle's path before it is logged (named). That path is built from these when an error
+	// nothing to one, so every error raised against the descriptor path is renamed before it is
+	// logged: to the handle's path where the handle is a root, a shard or a child of the volume
+	// root (named), and to the name alone below an entry or a target, which the walk lifts into
+	// what it failed on from there (within, under). That path is built from these when an error
 	// asks for it (path) and is kept nowhere: a handle that kept its own path held a copy of
 	// every name above it, so a walk at the foot of a chain d levels deep held about d²/2 names'
 	// bytes. Measured in a test process on 2026-11-15, kernel 4.19.0-gvisor, under go1.27.3, on
@@ -72,13 +74,14 @@ type dirHandle struct {
 
 // handleOf is the handle over a descriptor already opened and checked, by name from parent or,
 // with no parent, by the absolute path name: it takes the descriptor over, closing it if the
-// Root it needs cannot be made, so a caller that gets an error holds nothing to close.
+// Root it needs cannot be made, so a caller that gets an error holds nothing to close. Its error
+// names name, as the open's own does (dirHandle.open).
 func handleOf(file *os.File, parent *dirHandle, name string) (*dirHandle, error) {
 	handle := &dirHandle{file: file, parent: parent, name: name}
 	root, err := rootOverDescriptor(file)
 	if err != nil {
 		_ = file.Close()
-		return nil, &quotedPathError{op: "open", path: handle.path(), err: err}
+		return nil, &quotedPathError{op: "open", path: name, err: err}
 	}
 	handle.root = root
 	return handle, nil
@@ -87,7 +90,8 @@ func handleOf(file *os.File, parent *dirHandle, name string) (*dirHandle, error)
 // path is the absolute path the handle was opened through: the path of the handle at the top
 // of its chain and every name opened below it, joined once. Every name of the chain is one name
 // (open refuses any other before it makes a handle), so this is the path each open used to join
-// a level at a time, and it is built in one pass of the chain into one string.
+// a level at a time, and it is built in one pass of the chain into one string. named is its one
+// caller.
 func (d *dirHandle) path() string {
 	depth := 0
 	for at := d; at.parent != nil; at = at.parent {
@@ -144,17 +148,37 @@ func (d *dirHandle) Lstat(name string) (os.FileInfo, error) {
 // The entries come back in the order their names sort, which is what fs.ReadDir answers and
 // what os.ReadDir answered before the handles.
 func (d *dirHandle) ReadDir() ([]os.DirEntry, error) {
-	entries, err := fs.ReadDir(d.root.FS(), ".")
+	entries, err := d.readDir()
 	return entries, d.named(err, "")
+}
+
+// readDir is ReadDir with the error os.Root raised against the descriptor path, for a walk below
+// an entry or a target, which names it by no path of its own (within).
+func (d *dirHandle) readDir() ([]os.DirEntry, error) {
+	return fs.ReadDir(d.root.FS(), ".")
 }
 
 // named is err with the descriptor path os.Root raises it against replaced by the path this
 // handle was opened through, so a line in the pod's log names a directory of the volume, and
-// quoted (quotedPathError).
+// quoted (quotedPathError). It builds that path (path), so it is asked only of the handles the
+// sweep and the size walk hold on a root, a shard or a child of the volume root and of a name in
+// one; a walk below an entry or a target names what it failed on with within instead.
 func (d *dirHandle) named(err error, name string) error {
 	var failed *fs.PathError
 	if err != nil && errors.As(err, &failed) {
 		return &quotedPathError{op: failed.Op, path: filepath.Join(d.path(), name), err: failed.Err}
+	}
+	return err
+}
+
+// within is err, raised by a read through a handle a walk opened below an entry, named by name
+// alone, the name in that handle's directory the read failed on, or "" for the directory itself:
+// the level above lifts it into what it failed on from the entry (under), so no level builds the
+// path above it (dirHandle.path) and the error a walk answers is of a size set by two names.
+func within(err error, name string) error {
+	var failed *fs.PathError
+	if err != nil && errors.As(err, &failed) {
+		return &quotedPathError{op: failed.Op, path: name, err: failed.Err}
 	}
 	return err
 }
@@ -177,9 +201,59 @@ func (e *quotedPathError) Unwrap() error { return e.err }
 // quotedPathText is how the trimmer's two path errors read, quotedPathError and removalFailure:
 // the operation, the path quoted, what is said of the path if anything (removalFailure's depth),
 // and the error. The opens, reads and removals made through a handle answer one of the two
-// whenever their error names a path of the volume (named, openElementAt, under); the few other
-// errors that name a name below a cache root quote it with %q where they are made
+// whenever their error names a path of the volume (named, within, openElementAt, under); the few
+// other errors that name a name below a cache root quote it with %q where they are made
 // (containedRemover.removeAll, removeOneRequest, volumedelete.go).
 func quotedPathText(op, path, said string, err error) string {
 	return op + " " + strconv.Quote(path) + said + ": " + err.Error()
 }
+
+// under is err, raised below the directory name, renamed to what it failed on from the directory
+// name is in: the error of a name in name becomes a removalFailure under it, the error of name
+// itself names name (quotedPathError), and a removalFailure already under name is moved up a
+// level in place. An error that names the directory itself carries no path of its own. Any other
+// error — a walk's halt, a visit's errWalkDone — is answered as it is. The deleter's removal
+// renames its errors this way on its way back up (treeRemoval.remove), and so does the guards'
+// walk of an entry's tree (walkEntries).
+func under(name string, err error) error {
+	switch failed := err.(type) {
+	case *removalFailure:
+		failed.top = name
+		failed.depth++
+		return failed
+	case *quotedPathError:
+		if failed.path == "" {
+			failed.path = name
+			return failed
+		}
+		return &removalFailure{op: failed.op, top: name, name: failed.path, depth: 1, err: failed.err}
+	}
+	return err
+}
+
+// removalFailure is a removal or a guard's walk that failed in an entry's tree, named by the
+// directory it is in (top), the name that failed and how many levels below top that name lay
+// (depth, 1 for a name in top itself), and never by the path between them: the deleter answers
+// it as its reply, the guards' walk answers it for an entry whose age it could not read, and the
+// sweep logs both (trimmer.list, trimmer.remove), so a failure deep in a tree is an error of a
+// size set by two names rather than by the tree's depth
+// (TestARemovalThatFailsDeepInATreeAnswersABoundedError,
+// TestAnAgeThatCannotBeReadIsLoggedAtASizeItsDepthDoesNotSet). It reads as quotedPathError does,
+// with the levels between top and name written as "..." and the depth beside them where there
+// are any: every name in it is one a role chose (TestARemovalErrorQuotesTheNamesARoleChose).
+type removalFailure struct {
+	op    string
+	top   string
+	name  string
+	depth int
+	err   error
+}
+
+func (f *removalFailure) Error() string {
+	if f.depth == 1 {
+		return quotedPathText(f.op, f.top+"/"+f.name, "", f.err)
+	}
+	return quotedPathText(f.op, f.top+"/.../"+f.name, " (depth "+strconv.Itoa(f.depth)+")", f.err)
+}
+
+func (f *removalFailure) Unwrap() error { return f.err }

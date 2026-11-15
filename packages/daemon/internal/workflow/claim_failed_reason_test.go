@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -310,6 +311,62 @@ func TestAWorkerDiedsReasonCarriesNoLineTheRoleWrote(t *testing.T) {
 			}
 			if want := budgetRanOut + "; the process was last found " + strconv.Quote(firstLine); reason != want {
 				t.Errorf("the worker-died reads %q, want %q", reason, want)
+			}
+		})
+	}
+}
+
+// The supervisor's sentence for a run of refused turns ends in the provider's message as the
+// role's own plugin posted it, which can hold a line break and run to a mebibyte. The two notices
+// with no failure record carry it on one line, its line break written as " / ", and cut at the
+// bound the pod end is cut to with the mark that says so, so the reason is one line of a size
+// this package chose. A held phase whose fact names a cause carries the sentence whole in its
+// failure record's `detail`, as before, and none of it in its reason. The negative control is
+// deathReason writing the sentence as it came, as it did at b7085e21: both reasons read over two
+// lines and 2000 runes past the bound.
+func TestAWorkerDiedsReasonCarriesTheSentenceOnOneBoundedLine(t *testing.T) {
+	const head = "the provider refused 3 turns in a row: request rejected"
+	const forged = "forged: the role is fine"
+	sentence := head + "\n" + forged + " " + strings.Repeat("y", 2000)
+	whole := []rune(head + " / " + forged + " " + strings.Repeat("y", 2000))
+	carried := string(whole[:runtime.PodEndRunes-len([]rune(deathSentenceCut))]) + deathSentenceCut
+	for _, tc := range []struct {
+		name       string
+		role       claim.Role
+		phase      phase.Phase
+		cause      supervise.FailureCause
+		wantReason string
+	}{
+		{"the tree architect's", claim.RoleArchitect, phase.Planning, "", carried},
+		{"a held phase's whose fact names no cause", claim.RoleImplementer, phase.Implementing, "", carried},
+		{"a held phase's whose fact names a cause", claim.RoleImplementer, phase.Implementing, supervise.CauseProviderError, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+				Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: tc.phase, Generation: 1, Status: "in_progress", Rank: "U"})
+
+			if _, err := intake.ApplyFact(context.Background(), pool, "supervise", "claim-failed",
+				intake.ClaimFailed{Issue: "LEGION-208", Role: tc.role, Reason: sentence, Cause: tc.cause},
+				testEngine(config.DesignGateRootIssues, nil), admissionStub{}); err != nil {
+				t.Fatalf("ApplyFact the failed claim: %v", err)
+			}
+			notices := noticesOfKind(t, pool, "LEGION-208", "worker-died")
+			if len(notices) != 1 {
+				t.Fatalf("the outbox holds %d worker-died notices, want one", len(notices))
+			}
+			reason := notices[0].Reason
+			if strings.Contains(reason, "\n") {
+				t.Errorf("the worker-died reads over %d lines, want one: %.200q", strings.Count(reason, "\n")+1, reason)
+			}
+			if runes := len([]rune(reason)); runes > runtime.PodEndRunes {
+				t.Errorf("the worker-died's reason is %d runes, want at most the %d the pod end is cut to", runes, runtime.PodEndRunes)
+			}
+			if reason != tc.wantReason {
+				t.Errorf("the worker-died reads %.200q, want %.200q", reason, tc.wantReason)
+			}
+			if tc.cause != "" && (notices[0].Failure == nil || notices[0].Failure.Detail != sentence) {
+				t.Errorf("the held phase's worker-died carries the failure record %+v, want the sentence whole in its detail", notices[0].Failure)
 			}
 		})
 	}

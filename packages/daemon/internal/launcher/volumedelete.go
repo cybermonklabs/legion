@@ -289,7 +289,7 @@ func (r *containedRemover) removeAll(dir *sweepDir, name string) error {
 // volumeDeleteReplyCut what it writes after a reply it kept only that much of. A reply is the
 // one line the parent logs of a removal (trimmer.remove), so its size is this package's to
 // choose rather than the child's. A refusal of a removal names the entry it was asked for and at
-// most one name below it (removalFailure, volumedir_linux.go), each at most NAME_MAX, 255 bytes
+// most one name below it (removalFailure, volumedir.go), each at most NAME_MAX, 255 bytes
 // on Linux, before it is quoted.
 const (
 	volumeDeleteReplyBytes = 4096

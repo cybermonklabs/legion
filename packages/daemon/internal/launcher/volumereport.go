@@ -157,6 +157,7 @@ func (t *trimmer) report(ctx context.Context, out sweepOutcome) shimwire.Launche
 		SizesAt:             walk.At,
 		SizesPartial:        walk.Partial,
 		SizesMissing:        walk.Missing,
+		SizesMissingOmitted: walk.MissingOmitted,
 		Faults:              faults,
 		FaultsOmitted:       dropped,
 	})
@@ -177,13 +178,13 @@ func (t *trimmer) report(ctx context.Context, out sweepOutcome) shimwire.Launche
 // exactly the pod the notice exists to describe.
 const (
 	// volumeReportPathRunes bounds each path of Sizes, the read each names as refused
-	// (LauncherVolumeSize.Refused), each path of SizesMissing and each refused /proc read. Of
-	// the directories this layout makes two levels under the volume root, the fixed ones are at
-	// most 26 runes (`/legion/scratch/leak-check`) and a repository owner's, under
-	// `/legion/workspaces` or `/legion/feed`, at most 58 under GitHub's 39-character owner, and
-	// the paths a reader acts on are of that order, while one directory component may be 255
+	// (LauncherVolumeSize.Refused), each path of SizesMissing and its reason, and each refused
+	// /proc read. Of the directories this layout makes two levels under the volume root, the
+	// fixed ones are at most 26 runes (`/legion/scratch/leak-check`) and a repository owner's,
+	// under `/legion/workspaces` or `/legion/feed`, at most 58 under GitHub's 39-character owner,
+	// and the paths a reader acts on are of that order, while one directory component may be 255
 	// bytes and a role may make it: a few hundred runes keeps every real path whole and cuts a
-	// made-up one.
+	// made-up one. A reason takes the same bound (unreadReason, volumewalk.go).
 	volumeReportPathRunes = 200
 	// volumeReportSizes is how many measured directories a report carries. The walk measures
 	// every directory two levels under the volume root in a deliberate order — the scratch
@@ -193,9 +194,10 @@ const (
 	volumeReportSizes = 50
 	// volumeReportSizesMissing is how many unmeasured directories a report names. The list holds
 	// the walk's own targets it did not measure — each it could not open, and of a cut walk every
-	// one from the one it was cut in — with each immediate child of the volume root it could not
-	// list, or the volume root alone when the root could not be opened or listed; it can run as
-	// long as the list above, so it takes the same bound.
+	// one it had not measured — with each immediate child of the volume root it could not list,
+	// or the volume root alone when the root could not be opened or listed; it can run as long as
+	// the list above, so it takes the same bound, and the walk keeps no more of it than that
+	// (walkResult.miss).
 	volumeReportSizesMissing = 50
 	// volumeReportRefusedReads is how many refused /proc reads a report names: one per process
 	// of the pod the kernel refused a read of, or one for /proc itself when /proc could not be
@@ -258,9 +260,18 @@ func (t *trimmer) bound(report shimwire.LauncherVolumeReport) shimwire.LauncherV
 
 	missing := report.SizesMissing
 	if over := len(missing) - volumeReportSizesMissing; over > 0 {
-		missing, report.SizesMissingOmitted = missing[:volumeReportSizesMissing], over
+		missing, report.SizesMissingOmitted = missing[:volumeReportSizesMissing], report.SizesMissingOmitted+over
 	}
-	report.SizesMissing = cutEach(missing, volumeReportPathRunes)
+	report.SizesMissing = nil
+	if len(missing) > 0 {
+		report.SizesMissing = make([]shimwire.LauncherVolumeMissing, len(missing))
+		for at, one := range missing {
+			report.SizesMissing[at] = shimwire.LauncherVolumeMissing{
+				Path:   cutRunes(one.Path, volumeReportPathRunes),
+				Reason: cutRunes(one.Reason, volumeReportPathRunes),
+			}
+		}
+	}
 
 	refused := report.RefusedReads
 	if over := len(refused) - volumeReportRefusedReads; over > 0 {

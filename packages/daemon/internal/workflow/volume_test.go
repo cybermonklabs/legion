@@ -442,7 +442,7 @@ func TestANameTheRoleChoseReachesTheArchitectQuotedAndOnOneLine(t *testing.T) {
 	refusedUnder := planted + "/.../\nlocked (depth 2)"
 	sweep.Sizes = []record.VolumeSize{{Path: planted, Bytes: 12 << 30, BytesOverHour: 11 << 30, BytesOverDay: 9 << 30,
 		Refused: refusedUnder, Refusals: 1}}
-	sweep.SizesPartial, sweep.SizesMissing = true, []string{"workspaces/\nLEGION-208"}
+	sweep.SizesPartial, sweep.SizesMissing = true, []record.VolumeMissing{{Path: "workspaces/\nLEGION-208", Reason: "openat: the kernel\nsaid so"}}
 	sweep.RefusedReads = []string{"pid 42\n(/proc/42/fd): permission denied"}
 	sweep.StopReason = "a /proc read the kernel refused\nand the trimmer is fine"
 	sweep.Faults = []string{"panic: the walk fell over\nwith its stack behind it"}
@@ -458,7 +458,7 @@ func TestANameTheRoleChoseReachesTheArchitectQuotedAndOnOneLine(t *testing.T) {
 	if strings.Contains(notice.Reason, "\n") {
 		t.Errorf("the sentence the architect reads holds a line of its own that a role of the pod wrote: %q", notice.Reason)
 	}
-	for _, want := range []string{planted, refusedUnder, "workspaces/\nLEGION-208", "pid 42\n(/proc/42/fd): permission denied",
+	for _, want := range []string{planted, refusedUnder, "workspaces/\nLEGION-208", "openat: the kernel\nsaid so", "pid 42\n(/proc/42/fd): permission denied",
 		"a /proc read the kernel refused\nand the trimmer is fine", "panic: the walk fell over",
 		sweep.Trimmer, sweep.RaisedBy} {
 		if !strings.Contains(notice.Reason, strconv.Quote(want)) {
@@ -473,10 +473,12 @@ func TestANameTheRoleChoseReachesTheArchitectQuotedAndOnOneLine(t *testing.T) {
 // A size the walk could read only in part is told as a lower bound with the read the kernel
 // refused there, and a walk that went on past it to its end is told nothing of ending early: for
 // exactly that report the sentence used to read `that walk ended early and measured none of `
-// followed by nothing, with the unreadable directory's bytes given as the directory's own. A walk
-// its budget cut is told as cut, beside what it measured none of, and where it names nothing as
-// unmeasured the sentence carries no empty list. The negative control is fullSweep's own sizes,
-// which the walk read whole and which no row tells as a lower bound.
+// followed by nothing, with the unreadable directory's bytes given as the directory's own. A
+// directory the walk could not open is told as one it measured none of, with the read the kernel
+// refused, and as no size. A walk its budget cut is told as cut, beside what it measured none of,
+// and where it names nothing as unmeasured the sentence carries no empty list. The negative
+// control is fullSweep's own sizes, which the walk read whole and which no row tells as a lower
+// bound.
 func TestTheNoticeTellsADirectoryReadInPartAndAWalkThatWasCutApart(t *testing.T) {
 	const pack, under = "/legion/feed/pack", "/legion/feed/pack/under"
 	for _, tc := range []struct {
@@ -491,14 +493,22 @@ func TestTheNoticeTellsADirectoryReadInPartAndAWalkThatWasCutApart(t *testing.T)
 				sweep.Sizes = append(sweep.Sizes, record.VolumeSize{Path: pack, Bytes: 1, Refused: under, Refusals: 2})
 			},
 			want: []string{strconv.Quote(pack) + " holds at least 1 bytes",
-				"the kernel refused 2 of the walk's reads at or under it, the first at " + strconv.Quote(under),
+				"the kernel refused 2 of the walk's reads under it, the first at " + strconv.Quote(under),
 				`"caches/uv" holds 12884901888 bytes`},
 			not: []string{"ended early", "was cut", "measured none of", `"caches/uv" holds at least`},
 		},
 		{
+			name: "a directory the walk could not open",
+			sweep: func(sweep *record.VolumeNearFull) {
+				sweep.SizesMissing = []record.VolumeMissing{{Path: "/legion/scratch/sealed", Reason: "openat: permission denied"}}
+			},
+			want: []string{`the size walk measured none of "/legion/scratch/sealed" (because "openat: permission denied")`},
+			not:  []string{"was cut", `"/legion/scratch/sealed" holds`, "at least"},
+		},
+		{
 			name: "a walk its budget cut",
 			sweep: func(sweep *record.VolumeNearFull) {
-				sweep.SizesPartial, sweep.SizesMissing, sweep.SizesMissingOmitted = true, []string{"/legion/uv/cache"}, 3
+				sweep.SizesPartial, sweep.SizesMissing, sweep.SizesMissingOmitted = true, []record.VolumeMissing{{Path: "/legion/uv/cache"}}, 3
 			},
 			want: []string{"the size walk was cut before it reached every directory",
 				`the size walk measured none of "/legion/uv/cache" and 3 more it leaves out`},

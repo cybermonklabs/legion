@@ -253,13 +253,15 @@ const (
 // files whose modification time is more than an hour old and more than a day old, which are what
 // tell a reader a working set from cold bytes.
 //
-// Refused names the first read at or under Path the kernel refused, and Refusals is how many of
-// the walk's reads there it refused in all. It is Path itself where the walk could read nothing
-// of it, Path/<name> for a name in it, and Path/.../<name> (depth N) for a name N levels below
-// it, so its size is set by two names and never by the depth of the tree. A size that carries
-// them is what the walk could read under Path and no more: Bytes and its two splits are a lower
-// bound of the directory's own, never the whole of it. The walk went on past each refusal, so
-// neither makes the walk partial (LauncherVolumeReport.SizesPartial).
+// Refused names the first read under Path the kernel refused, and Refusals is how many of the
+// walk's reads there it refused in all. It is Path/<name> for a name in Path, and
+// Path/.../<name> (depth N) for a name N levels below it, so its size is set by two names and
+// never by the depth of the tree. A size that carries them is what the walk could read under
+// Path and no more: Bytes and its two splits are a lower bound of the directory's own, never the
+// whole of it. The walk went on past each refusal, so neither makes the walk partial
+// (LauncherVolumeReport.SizesPartial). A directory the kernel refused the walk itself, so that
+// it read nothing of it, is no size: the report names it among SizesMissing with that read
+// (LauncherVolumeMissing).
 type LauncherVolumeSize struct {
 	Path          string `json:"path"`
 	Bytes         int64  `json:"bytes"`
@@ -267,6 +269,15 @@ type LauncherVolumeSize struct {
 	BytesOverDay  int64  `json:"bytesOverDay"`
 	Refused       string `json:"refused,omitempty"`
 	Refusals      int    `json:"refusals,omitempty"`
+}
+
+// LauncherVolumeMissing is one directory the size walk measured none of. Reason is why, for a
+// directory the walk could not open or list: the read the kernel refused and its answer, as
+// `openat: permission denied`, and never a path, since Path names the directory already. It is
+// empty for a directory a cut walk never reached, which the report's SizesPartial says.
+type LauncherVolumeMissing struct {
+	Path   string `json:"path"`
+	Reason string `json:"reason,omitempty"`
 }
 
 // The three things that raise an episode, which a report's RaisedBy names. An episode is the run
@@ -306,10 +317,12 @@ const (
 // measured: a report made between walks carries the last walk's numbers with that walk's time,
 // so a reader never reads a stale measurement as this sweep's. SizesPartial is a walk that ended
 // early, which is a walk its budget or the container's stop cut before it reached every
-// directory. SizesMissing is every directory the walk did not measure at all: one it could not
-// open or list, which ends nothing, and, of a walk that was cut, the one it was cut in and every
-// one after it. A directory the walk could read only in part is a size of its own, which names
-// the read the kernel refused (LauncherVolumeSize.Refused).
+// directory. SizesMissing is every directory the walk did not measure at all, each with its
+// reason where a read was refused (LauncherVolumeMissing): one it could not open or list, which
+// ends nothing, and, of a walk that was cut, every one it had not measured when it was cut —
+// where the cut came while it listed them, every one it had listed and every child of the volume
+// root it had not yet listed. A directory the walk could read only in part is a size of its own,
+// which names the read the kernel refused (LauncherVolumeSize.Refused).
 //
 // Faults are the panics the trimmer recovered from, each with its stack, and SwitchedOff the one
 // report no sweep produces: the trimmer has stopped itself after three faults in a row, and this
@@ -319,26 +332,26 @@ const (
 // under /legion is a name a role of the pod chose and a pod may hold thousands of them
 // (internal/launcher's bound): the four Omitted counts are how many entries that bound left
 // out, so a reader is never shown a cut list as the whole of what the trimmer measured. Each
-// path, the stop reason and each fault are cut in runes there too.
+// path, each reason, the stop reason and each fault are cut in runes there too.
 type LauncherVolumeReport struct {
-	Trimmer             string               `json:"trimmer"`
-	Episode             int                  `json:"episode"`
-	RaisedBy            string               `json:"raisedBy"`
-	UsedBytes           int64                `json:"usedBytes"`
-	FreeBytes           int64                `json:"freeBytes"`
-	FreedBytes          int64                `json:"freedBytes"`
-	StopReason          string               `json:"stopReason"`
-	RefusedReads        []string             `json:"refusedReads,omitempty"`
-	RefusedReadsOmitted int                  `json:"refusedReadsOmitted,omitempty"`
-	Sizes               []LauncherVolumeSize `json:"sizes"`
-	SizesOmitted        int                  `json:"sizesOmitted,omitempty"`
-	SizesAt             time.Time            `json:"sizesAt"`
-	SizesPartial        bool                 `json:"sizesPartial,omitempty"`
-	SizesMissing        []string             `json:"sizesMissing,omitempty"`
-	SizesMissingOmitted int                  `json:"sizesMissingOmitted,omitempty"`
-	Faults              []string             `json:"faults,omitempty"`
-	FaultsOmitted       int                  `json:"faultsOmitted,omitempty"`
-	SwitchedOff         bool                 `json:"switchedOff,omitempty"`
+	Trimmer             string                  `json:"trimmer"`
+	Episode             int                     `json:"episode"`
+	RaisedBy            string                  `json:"raisedBy"`
+	UsedBytes           int64                   `json:"usedBytes"`
+	FreeBytes           int64                   `json:"freeBytes"`
+	FreedBytes          int64                   `json:"freedBytes"`
+	StopReason          string                  `json:"stopReason"`
+	RefusedReads        []string                `json:"refusedReads,omitempty"`
+	RefusedReadsOmitted int                     `json:"refusedReadsOmitted,omitempty"`
+	Sizes               []LauncherVolumeSize    `json:"sizes"`
+	SizesOmitted        int                     `json:"sizesOmitted,omitempty"`
+	SizesAt             time.Time               `json:"sizesAt"`
+	SizesPartial        bool                    `json:"sizesPartial,omitempty"`
+	SizesMissing        []LauncherVolumeMissing `json:"sizesMissing,omitempty"`
+	SizesMissingOmitted int                     `json:"sizesMissingOmitted,omitempty"`
+	Faults              []string                `json:"faults,omitempty"`
+	FaultsOmitted       int                     `json:"faultsOmitted,omitempty"`
+	SwitchedOff         bool                    `json:"switchedOff,omitempty"`
 }
 
 // LauncherChild is the actual worker-shim child the launcher has running, if any.

@@ -8,7 +8,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"syscall"
 
@@ -54,7 +53,7 @@ func openVolumeDir(path string) (*dirHandle, error) {
 			break // the path is the root of the filesystem itself, which fd already holds
 		}
 		at = filepath.Join(at, element)
-		next, err := openElementAt(fd, element, func() string { return at })
+		next, err := openElementAt(fd, element, at)
 		_ = unix.Close(fd)
 		if err != nil {
 			return nil, err
@@ -68,9 +67,13 @@ func openVolumeDir(path string) (*dirHandle, error) {
 // that is resolved by that descriptor and nothing else. A name with a separator in it, or one
 // that is "." or "..", is refused rather than resolved, which is this change's own rule made a
 // check instead of a convention (volumedir.go). The handle it answers keeps this one and the
-// name, and no path (dirHandle.path).
+// name, and no path (dirHandle.path), and its error names the name alone, as the deleter's open
+// of a name does (treeRemoval.remove): a walk below an entry lifts it into what it failed on
+// from the entry a level at a time (walkEntries, under), so no error of an open is a path of a
+// size set by the depth of the tree, and a caller that names the directory the name is in does
+// so itself (listShard, volumetrim.go).
 func (d *dirHandle) open(name string) (*dirHandle, error) {
-	fd, err := openElementAt(int(d.file.Fd()), name, func() string { return filepath.Join(d.path(), name) })
+	fd, err := openElementAt(int(d.file.Fd()), name, name)
 	if err != nil {
 		return nil, err
 	}
@@ -78,30 +81,30 @@ func (d *dirHandle) open(name string) (*dirHandle, error) {
 }
 
 // openElementAt opens one name in the directory parent holds open and answers the descriptor,
-// which is a directory because its own fstat says so. path answers what the name is called on
-// the volume, which the error names; it is asked only for an error, so an open that succeeds
-// builds no path (dirHandle.path).
-func openElementAt(parent int, name string, path func() string) (int, error) {
+// which is a directory because its own fstat says so. path is what the error names the name by:
+// the path an open from the root of the filesystem has reached (openVolumeDir), or the name
+// alone (dirHandle.open, treeRemoval.remove).
+func openElementAt(parent int, name, path string) (int, error) {
 	if !isOneName(name) {
-		return -1, &quotedPathError{op: "openat", path: path(), err: syscall.EINVAL}
+		return -1, &quotedPathError{op: "openat", path: path, err: syscall.EINVAL}
 	}
 	fd, err := openRetrying(func() (int, error) {
 		return unix.Openat(parent, name, volumeOpenFlags, 0)
 	})
 	if err != nil {
-		return -1, &quotedPathError{op: "openat", path: path(), err: err}
+		return -1, &quotedPathError{op: "openat", path: path, err: err}
 	}
 	var stat unix.Stat_t
 	if err := unix.Fstat(fd, &stat); err != nil {
 		_ = unix.Close(fd)
-		return -1, &quotedPathError{op: "fstat", path: path(), err: err}
+		return -1, &quotedPathError{op: "fstat", path: path, err: err}
 	}
 	if stat.Mode&unix.S_IFMT != unix.S_IFDIR {
 		// Asked of the descriptor and not of the open, because O_DIRECTORY is the flag this
 		// kernel follows a link under, and because an open that has already happened is the
 		// only reading of a name no role can move under it.
 		_ = unix.Close(fd)
-		return -1, &quotedPathError{op: "openat", path: path(), err: syscall.ENOTDIR}
+		return -1, &quotedPathError{op: "openat", path: path, err: syscall.ENOTDIR}
 	}
 	return fd, nil
 }
@@ -169,7 +172,7 @@ func (r *treeRemoval) remove(parent int, name string) error {
 	if err := unlinkRetrying(parent, name, 0); err == nil || errors.Is(err, syscall.ENOENT) {
 		return nil
 	}
-	fd, err := openElementAt(parent, name, func() string { return name })
+	fd, err := openElementAt(parent, name, name)
 	switch {
 	case errors.Is(err, syscall.ENOENT):
 		return nil
@@ -193,51 +196,6 @@ func (r *treeRemoval) remove(parent int, name string) error {
 	}
 	return nil
 }
-
-// under is err, raised below the directory name, renamed to what it failed on from the directory
-// name is in: the error of a name in name becomes a removalFailure under it, the error of name
-// itself names name (quotedPathError), and a removalFailure already under name is moved up a
-// level in place. An error that names the directory itself carries no path of its own.
-func under(name string, err error) error {
-	switch failed := err.(type) {
-	case *removalFailure:
-		failed.top = name
-		failed.depth++
-		return failed
-	case *quotedPathError:
-		if failed.path == "" {
-			failed.path = name
-			return failed
-		}
-		return &removalFailure{op: failed.op, top: name, name: failed.path, depth: 1, err: failed.err}
-	}
-	return err
-}
-
-// removalFailure is a removal that failed in a directory's tree, named by the directory it is
-// in (top), the name that failed and how many levels below top that name lay (depth, 1 for a
-// name in top itself), and never by the path between them: the deleter answers it as its reply
-// and the sweep logs it, so a failure deep in a tree is an error of a size set by two names
-// rather than by the tree's depth (TestARemovalThatFailsDeepInATreeAnswersABoundedError). It
-// reads as quotedPathError does, with the levels between top and name written as "..." and the
-// depth beside them where there are any: every name in it is one a role chose
-// (TestARemovalErrorQuotesTheNamesARoleChose).
-type removalFailure struct {
-	op    string
-	top   string
-	name  string
-	depth int
-	err   error
-}
-
-func (f *removalFailure) Error() string {
-	if f.depth == 1 {
-		return quotedPathText(f.op, f.top+"/"+f.name, "", f.err)
-	}
-	return quotedPathText(f.op, f.top+"/.../"+f.name, " (depth "+strconv.Itoa(f.depth)+")", f.err)
-}
-
-func (f *removalFailure) Unwrap() error { return f.err }
 
 // volumeRemovalPasses is how many times empty removes the names it reads from one directory: the
 // first pass, and one more for the names created while the first ran.

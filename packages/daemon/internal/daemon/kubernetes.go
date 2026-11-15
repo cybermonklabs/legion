@@ -632,7 +632,7 @@ func (v *volumeTrimReports) report(ctx context.Context, issue, podUID string, re
 		StopReason: report.StopReason, RefusedReads: report.RefusedReads, RefusedReadsOmitted: report.RefusedReadsOmitted,
 		Sizes: volumeSizes(report.Sizes), SizesOmitted: report.SizesOmitted,
 		SizesAt: report.SizesAt, SizesPartial: report.SizesPartial,
-		SizesMissing: report.SizesMissing, SizesMissingOmitted: report.SizesMissingOmitted,
+		SizesMissing: volumeMissing(report.SizesMissing), SizesMissingOmitted: report.SizesMissingOmitted,
 		Faults: report.Faults, FaultsOmitted: report.FaultsOmitted, SwitchedOff: report.SwitchedOff,
 	}}
 	eventID := fmt.Sprintf("volume-near-full:%s:%s:%s:%d:%s", issue, podUID, report.Trimmer, report.Episode, rand.Text())
@@ -642,9 +642,9 @@ func (v *volumeTrimReports) report(ctx context.Context, issue, podUID string, re
 	return nil
 }
 
-// volumeSizes is the wire's size walk as the record keeps it. The two shapes are the same
-// members by design — the record's is durable and the wire's is not — and this is the one place
-// they are copied across.
+// volumeSizes and volumeMissing are the wire's size walk as the record keeps it. The two shapes
+// are the same members by design — the record's is durable and the wire's is not — and these are
+// the one place they are copied across.
 func volumeSizes(sizes []shimwire.LauncherVolumeSize) []record.VolumeSize {
 	if len(sizes) == 0 {
 		return nil
@@ -654,6 +654,18 @@ func volumeSizes(sizes []shimwire.LauncherVolumeSize) []record.VolumeSize {
 		kept = append(kept, record.VolumeSize{Path: size.Path, Bytes: size.Bytes,
 			BytesOverHour: size.BytesOverHour, BytesOverDay: size.BytesOverDay,
 			Refused: size.Refused, Refusals: size.Refusals})
+	}
+	return kept
+}
+
+// volumeMissing is the walk's unmeasured directories, each with its reason, as volumeSizes says.
+func volumeMissing(missing []shimwire.LauncherVolumeMissing) []record.VolumeMissing {
+	if len(missing) == 0 {
+		return nil
+	}
+	kept := make([]record.VolumeMissing, 0, len(missing))
+	for _, one := range missing {
+		kept = append(kept, record.VolumeMissing{Path: one.Path, Reason: one.Reason})
 	}
 	return kept
 }
